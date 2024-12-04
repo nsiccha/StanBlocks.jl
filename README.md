@@ -45,7 +45,7 @@ pdb = PosteriorDB.database()
 post = PosteriorDB.posterior(pdb, "earnings-earn_height")
 
 jlpdf = StanBlocks.julia_implementation(post)
-jlpdf(randn(3)) # Returns some number
+jlpdf(randn(StanBlocks.dimension(jlpdf))) # Returns some number
 ```
 
 # Caveats
