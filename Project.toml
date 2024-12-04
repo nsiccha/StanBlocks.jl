@@ -1,0 +1,20 @@
+name = "StanBlocks"
+uuid = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
+authors = ["Nikolas Siccha <nikolassiccha@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+LogExpFunctions = "2ab3a3ac-af41-5b50-aa03-7779005ae688"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+
+[weakdeps]
+OrdinaryDiffEq = "1dea7af3-3e70-54e6-95c3-0bf5283fa5ed"
+LogDensityProblems = "6fdf6af0-433a-55f7-b3ed-c6c6e0b8df7c"
+PosteriorDB = "1c4bc282-d2f5-44f9-b6d1-8c4424a23ad4"
+
+[extensions]
+LogDensityProblemsExt = "LogDensityProblems"
+PosteriorDBExt = "PosteriorDB"
+OrdinaryDiffEqExt = "OrdinaryDiffEq"
