@@ -1,0 +1,13 @@
+author: "Nikolas Siccha"
+project:
+  type: website
+website:
+  title: "StanBlocks.jl"
+  navbar:
+    left:
+      - icon: github
+        href:  https://github.com/nsiccha/StanBlocks.jl
+format: 
+    html:
+        page-layout: full
+        toc: true

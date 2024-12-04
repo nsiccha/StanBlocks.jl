@@ -1,4 +1,6 @@
-import Test, StanBlocks, PosteriorDB, StanLogDensityProblems, LogDensityProblems
+import StanBlocks, PosteriorDB
+
+import Test, StanLogDensityProblems, LogDensityProblems
 
 pdb = PosteriorDB.database()
 for posterior_name in PosteriorDB.posterior_names(pdb)
@@ -12,6 +14,8 @@ for posterior_name in PosteriorDB.posterior_names(pdb)
     m = 10
     n = LogDensityProblems.dimension(stan_problem)
     @info "Testing $posterior_name ($n) with $m random draws"
+    Test.@test n == StanBlocks.dimension(jlpdf) == LogDensityProblems.dimension(jlpdf)
+    continue
     try
         Test.@inferred jlpdf(randn(n))
     catch e

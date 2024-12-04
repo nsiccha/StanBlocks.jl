@@ -27,3 +27,10 @@ Manifest.toml
 .vscode
 *.sjl
 stan_compilation
+_site
+index_files
+getopt
+os
+sys
+sysconfig
+cache

@@ -51,6 +51,35 @@ const X_NAME = gensym("x")
 const TMP = gensym("tmp")
 const XPOS = gensym("xpos")
 
+begin
+sum_expr(f, args) = begin
+    fargs = filter(!isnothing, map(f, args))
+    length(fargs) > 0 ? Expr(:call, :+, fargs...) : nothing
+end
+compute_dimension(e) = nothing
+compute_dimension(e::Expr) = if e.head == :macrocall && e.args[1] == Symbol("@parameters") 
+    sum_expr(compute_dimension_, e.args)
+else
+    sum_expr(compute_dimension, e.args)
+end
+compute_dimension_(e) = nothing
+compute_dimension_(e::Expr) = if e.head == :block
+    sum_expr(compute_dimension_, e.args)
+else
+    @assert e.head == :(::)
+    name, varinfo = e.args
+    if !Meta.isexpr(varinfo, :ref)
+        type, kws = extract_kws(varinfo)
+        @assert type == :real
+        1
+    else
+        type, kws = extract_kws(varinfo.args[1])
+        dims = varinfo.args[2:end]
+        dim = Symbol(type, "_unconstrained_dim")
+        isdefined(StanBlocks, dim) && (dim = :(StanBlocks.$dim))
+        :($dim($(dims...)))
+    end
+end
 macro_stan(x) = begin
     fname = gensym("stan_lpdf") 
     quote 
@@ -59,7 +88,9 @@ macro_stan(x) = begin
             $x
             return target
         end
+        StanBlocks.VectorPosterior($fname, $(compute_dimension(x)))
     end
+end
 end
 macro stan(x)
     esc(macro_stan(x))
@@ -81,28 +112,6 @@ macro generated_quantities(block)
 end
 begin
     macro_parameters(e) = e
-    # macro_parameters(e::Symbol; xpos) = macro_parameters(:($e::real); xpos)
-    # parameters_info(e::Symbol; xpos) = begin 
-    #     @assert e in (:real, :vector) e
-    #     :($X_NAME[$xpos]), xpos, -Inf, +Inf
-    # end
-    # parameters_info(e::Expr; xpos) = if e.head == :call
-    #     X_VIEW, xslice, lower, upper = parameters_info(e.args[1]; xpos)
-    #     for arg in e.args[2:end]
-    #         @assert Meta.isexpr(arg, :kw) arg
-    #         lower = arg.args[1] == :lower ? arg.args[2] : lower
-    #         upper = arg.args[1] == :upper ? arg.args[2] : upper
-    #     end
-    #     X_VIEW, xslice, lower, upper
-    # elseif e.head == :ref
-    #     @assert length(e.args) == 2 e.args
-    #     xslice = :($xpos:($xpos+$(e.args[2])-1))
-    #     _, _, lower, upper = parameters_info(e.args[1]; xpos)
-    #     :(view($X_NAME, $xslice)), xslice, lower, upper
-    # else
-    #     @error e.head
-    #     error()
-    # end
     extract_kws(e::Symbol) = e, ()
     extract_kws(e::Expr) = begin 
         @assert e.head == :call
