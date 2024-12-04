@@ -50,20 +50,6 @@ jlpdf(randn(3)) # Returns some number
 
 # Caveats
 
-## Getting the dimension of a posterior
-
-I hadn't really thought things fully through at the beginning, so right now there's no "easy" way to get the dimension of a posterior.
-The easiest way to get that dimension is currently to also load `StanLogDensityProblems` and `LogDensityProblems` to compile and load the 
-underlying Stan model, and than query the resulting `StanProblem` for its dimension, e.g. via 
-
-```julia
-import StanLogDensityProblems, LogDensityProblems
-
-# Initialize `post` as above. 
-stan_problem = StanLogDensityProblems.StanProblem(post, ".", force=true)
-n = LogDensityProblems.dimension(stan_problem)
-```
-
 ## Differences in the returned log-density
 
 Stan's default "sampling statement" (e.g. `y ~ normal(mu, sigma);`) automatically drops constant terms (unless configured differently), see [https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement](https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement). 
@@ -80,6 +66,8 @@ Just that.
 
 # Using and testing the implementations
 
-See `test/runtests.jl` for a way to run and check the models. 
+See [https://nsiccha.github.io/StanBlocks.jl/](https://nsiccha.github.io/StanBlocks.jl/) for an overview of (hopefully) correctly implemented models.
+
+See [`test/runtests.jl`](https://github.com/nsiccha/StanBlocks.jl/blob/main/test/runtests.jl) for a way to run and check the models. 
 After importing `PosteriorDB`, `StanLogDensityProblems` and `LogDensityProblems`, you should have access to reference Stan implementations of the log density and of its gradient, see the documentation of `StanLogDensityProblems.jl`.
 The Stan log density can then be compared to the Julia log density as is, and after loading Julia's AD packages, you can also compare the Stan log density gradient to the Julia log density gradient.

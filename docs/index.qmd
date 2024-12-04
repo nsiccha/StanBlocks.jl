@@ -36,16 +36,6 @@ pdb = PosteriorDB.database()
 posterior_names = PosteriorDB.posterior_names(pdb)
 tests = map(posterior_names) do posterior_name
     cache_path = joinpath("cache", "$posterior_name.sjl")
-    # rv = Serialization.deserialize(cache_path)
-    # post = PosteriorDB.posterior(pdb, posterior_name)
-    # jlpdf = StanBlocks.julia_implementation(post)
-    # inferred = try
-    #     @inferred jlpdf(randn(LogDensityProblems.dimension(jlpdf)))
-    #     true
-    # catch e
-    #     false
-    # end
-    # Serialization.serialize(cache_path, merge(rv, (;inferred)))
     isfile(cache_path) && return Serialization.deserialize(cache_path)
     post = PosteriorDB.posterior(pdb, posterior_name)
     jlpdf = StanBlocks.julia_implementation(post)
