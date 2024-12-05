@@ -34,3 +34,4 @@ os
 sys
 sysconfig
 cache
+*.ipynb

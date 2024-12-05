@@ -66,7 +66,7 @@ Just that.
 
 # Using and testing the implementations
 
-See [https://nsiccha.github.io/StanBlocks.jl/](https://nsiccha.github.io/StanBlocks.jl/) for an overview of (hopefully) correctly implemented models.
+See [https://nsiccha.github.io/StanBlocks.jl/#overview-of-posteriors](https://nsiccha.github.io/StanBlocks.jl/#overview-of-posteriors) for an overview of (hopefully) correctly implemented models.
 
 See [`test/runtests.jl`](https://github.com/nsiccha/StanBlocks.jl/blob/main/test/runtests.jl) for a way to run and check the models. 
 After importing `PosteriorDB`, `StanLogDensityProblems` and `LogDensityProblems`, you should have access to reference Stan implementations of the log density and of its gradient, see the documentation of `StanLogDensityProblems.jl`.

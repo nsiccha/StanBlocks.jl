@@ -1,15 +1,19 @@
 ---
-title: "StanBlocks.jl"
+# title: "StanBlocks.jl"
 jupyter: julia-1.10
 execute:
   echo: false
   daemon: 60000
 ---
 
+{{< include _README.md >}}
+
+# Overview of posteriors
+
 The below table shows information about the implemented posteriors. 
 The column `directly comparable` has value `yes` if the **median absolute deviation** of the reference (Stan) and unadjusted Julia implementation of the log density is less than `1e-4`. 
 That quantity being different from zero usually implies that Stan has eliminated constant terms in the log density, saving some computational work. 
-The column `usable` has value `yes` if the **median relative absolute deviation** of the reference (Stan) and constant-adjusted Julia implementation of the log density is less than `1e-8`.
+The column `usable` has value `yes` if the **median relative absolute deviation** of the reference (Stan) and constant-adjusted Julia implementation of the log density is less than `1e-8`. 
 
 ```{julia}
 ENV["DATAFRAMES_ROWS"] = 500
