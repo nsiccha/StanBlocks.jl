@@ -4,10 +4,23 @@ project:
 website:
   title: "StanBlocks.jl"
   navbar:
+    search: true
     left:
+      - text: "Overview"
+        href: index.qmd
+      - text: "Performance"
+        href: performance.qmd
+      - text: "Implementations"
+        href: implementations.qmd
       - icon: github
         href:  https://github.com/nsiccha/StanBlocks.jl
 format: 
     html:
         page-layout: full
         toc: true
+jupyter: julia-1.10
+execute:
+  echo: false
+  daemon: 60000
+filters:
+   - include-code-files

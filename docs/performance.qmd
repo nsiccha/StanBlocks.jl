@@ -1,0 +1,147 @@
+---
+title: "Julia vs Stan performance comparison"
+---
+
+::: {.callout-warning}
+ALL COMPARISONS ARE PRELIMINARY, INTERPRET THEM WITH A BIG HELPING OF SALT.
+WILL ELABORATE.
+:::
+
+# Primitive runtime comparison
+
+```{julia}
+ENV["DATAFRAMES_ROWS"] = 500
+using DataFrames, StanBlocks, Markdown, PosteriorDB, StanLogDensityProblems, LogDensityProblems, Statistics, OrderedCollections, PrettyTables, Serialization, Chairmarks, Enzyme, BridgeStan, Markdown
+using Logging, Test
+mkpath("cache")
+include("julia/common.jl")
+getsampletimes(x::Chairmarks.Benchmark) = getfield.(x.samples, :time)
+
+pdb = PosteriorDB.database()
+posterior_names = PosteriorDB.posterior_names(pdb)
+benchmarks = map(posterior_names) do posterior_name
+    performance_path = joinpath("cache", "$(posterior_name)_performance.sjl")
+    isfile(performance_path) && return Serialization.deserialize(performance_path)
+    validity_path = joinpath("cache", "$posterior_name.sjl")
+    isfile(validity_path) || return 
+    validity = Serialization.deserialize(validity_path)
+    validity.usable == "yes" || return
+    try
+        post = PosteriorDB.posterior(pdb, posterior_name)
+        jlpdf = StanBlocks.julia_implementation(post)
+        stan_path = PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(post), "stan"))
+        stan_problem = with_logger(ConsoleLogger(stderr, Logging.Error)) do 
+            StanProblem(
+                stan_path, 
+                PosteriorDB.load(PosteriorDB.dataset(post), String);
+                nan_on_error=true
+            )
+        end
+        slpdf(x) = LogDensityProblems.logdensity(stan_problem, x)
+        n = LogDensityProblems.dimension(jlpdf)
+        jbenchmark = (@be randn(n) jlpdf)
+        sbenchmark = (@be randn(n) slpdf)
+        min_time = min(mean(jbenchmark).time, mean(sbenchmark).time)
+        jtimes = getsampletimes(jbenchmark) ./ min_time
+        stimes = getsampletimes(sbenchmark) ./ min_time
+        rv = (;
+            jtime=UncertainStatistic(mean, jtimes), 
+            jallocs=mean(jbenchmark).allocs, 
+            stime=UncertainStatistic(mean, stimes)
+        )
+        Serialization.serialize(performance_path, rv)
+        return rv
+    catch
+    end
+end
+df = DataFrame([
+    merge((;posterior_name), row) for (posterior_name, row) in zip(posterior_names, benchmarks) if !isnothing(row)
+])
+sort!(df, :jallocs)
+df = DataFrame(OrderedDict(
+    "posterior name"=>df.posterior_name,
+    "dimension"=>posterior_dimension.(df.posterior_name),
+    "Stan mean relative runtime"=>df.stime,
+    "Julia mean relative runtime"=>df.jtime,
+    "Julia allocations"=>df.jallocs,
+    "implementations"=>implementations_string.(df.posterior_name)
+))
+pretty_table(df; backend=Val(:html), show_subheader=false)
+```
+
+# Gradient runtime comparison
+
+```{julia}
+
+benchmarks = map(posterior_names) do posterior_name
+    # posterior_name == "earnings-earn_height" || return
+    performance_path = joinpath("cache", "$(posterior_name)_gradient.sjl")
+    if isfile(performance_path) 
+        rv = Serialization.deserialize(performance_path)
+        !isnothing(rv) && return rv
+    end
+    validity_path = joinpath("cache", "$posterior_name.sjl")
+    isfile(validity_path) || return 
+    validity = Serialization.deserialize(validity_path)
+    validity.usable == "yes" || return
+    try
+        Serialization.serialize(performance_path, nothing)
+        post = PosteriorDB.posterior(pdb, posterior_name)
+        jlpdf = StanBlocks.julia_implementation(post)
+        stan_path = PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(post), "stan"))
+        stan_problem = with_logger(ConsoleLogger(stderr, Logging.Error)) do 
+            StanProblem(
+                stan_path, 
+                PosteriorDB.load(PosteriorDB.dataset(post), String);
+                nan_on_error=true
+            )
+        end
+        elpdf((x,g)) = begin 
+            xg = Enzyme.Duplicated(x, g)
+            Enzyme.autodiff(
+                Enzyme.set_runtime_activity(Enzyme.ReverseWithPrimal), Enzyme.Const(jlpdf), 
+                Enzyme.Active, 
+                xg
+            )[2], g
+        end
+        slpdf((x,g)) = BridgeStan.log_density_gradient!(stan_problem.model, x, g)
+        n = LogDensityProblems.dimension(jlpdf)
+        jbenchmark = (@be (randn(n),zeros(n)) elpdf)
+        jtimes = getsampletimes(jbenchmark)
+        rv = (;
+            jtime=UncertainStatistic(mean, jtimes), 
+            jallocs=mean(jbenchmark).allocs, 
+            stime=UncertainStatistic(mean, [Inf]), 
+            sallocs=Inf
+        )
+        Serialization.serialize(performance_path, rv)
+        sbenchmark = (@be (randn(n),zeros(n)) slpdf)
+        min_time = min(mean(jbenchmark).time, mean(sbenchmark).time)
+        jtimes = getsampletimes(jbenchmark) ./ min_time
+        stimes = getsampletimes(sbenchmark) ./ min_time
+        rv = (;
+            jtime=UncertainStatistic(mean, jtimes), 
+            jallocs=mean(jbenchmark).allocs, 
+            stime=UncertainStatistic(mean, stimes), 
+            sallocs=mean(sbenchmark).allocs
+        )
+        Serialization.serialize(performance_path, rv)
+        return rv
+    catch
+        # rethrow()
+    end
+end
+df = DataFrame([
+    merge((;posterior_name), row) for (posterior_name, row) in zip(posterior_names, benchmarks) if !isnothing(row)
+])
+sort!(df, :jallocs)
+df = DataFrame(OrderedDict(
+    "posterior name"=>df.posterior_name,
+    "dimension"=>posterior_dimension.(df.posterior_name),
+    "Stan mean relative runtime"=>df.stime,
+    "Julia mean relative runtime"=>df.jtime,
+    "Julia allocations"=>df.jallocs,
+    "implementations"=>implementations_string.(df.posterior_name)
+))
+pretty_table(df; backend=Val(:html), show_subheader=false)
+```

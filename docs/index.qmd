@@ -1,11 +1,3 @@
----
-# title: "StanBlocks.jl"
-jupyter: julia-1.10
-execute:
-  echo: false
-  daemon: 60000
----
-
 {{< include _README.md >}}
 
 # Overview of posteriors
@@ -19,15 +11,7 @@ The column `usable` has value `yes` if the **median relative absolute deviation*
 ENV["DATAFRAMES_ROWS"] = 500
 using DataFrames, StanBlocks, Markdown, PosteriorDB, StanLogDensityProblems, LogDensityProblems, Statistics, OrderedCollections, PrettyTables, Serialization
 using Logging, Test
-mad(x) = median(abs.(x .- median(x)))
-struct UncertainStatistic{F,V}
-    f::F
-    vals::V
-end
-se(s::UncertainStatistic{typeof(mean)}) = std(s.vals)/sqrt(length(s.vals))
-se(s::UncertainStatistic{typeof(median)}) = mad(s.vals)/sqrt(length(s.vals))
-Base.isless(s::UncertainStatistic, x::Float64) = isless(s.f(s.vals) + 2 * se(s), x)
-Base.show(io::IO, s::UncertainStatistic) = print(io, round(s.f(s.vals); sigdigits=2), " ± ", round(se(s); sigdigits=2))
+include("julia/common.jl")
 nan_on_error(f, x) = try
     f(x)
 catch e

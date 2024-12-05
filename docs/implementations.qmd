@@ -1,0 +1,7 @@
+---
+title: Julia posteriordb implementations
+---
+See the `PosteriorDB.jl` extension at [https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl](https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl), also included below:
+
+```{.julia include="PosteriorDBExt.jl"}
+```
