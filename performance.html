@@ -171,707 +171,1177 @@ Warning
 </div>
 <section id="primitive-runtime-comparison" class="level1">
 <h1>Primitive runtime comparison</h1>
-<div id="ec0ff741" class="cell" data-execution_count="1">
+<div id="b283056d" class="cell" data-execution_count="1">
 <div class="cell-output cell-output-display">
 <table data-quarto-postprocess="true" class="table table-sm table-striped small">
+<colgroup>
+<col style="width: 16%">
+<col style="width: 16%">
+<col style="width: 16%">
+<col style="width: 16%">
+<col style="width: 16%">
+<col style="width: 16%">
+</colgroup>
 <thead>
 <tr class="header headerLastRow">
 <th style="text-align: right;" data-quarto-table-cell-role="th">posterior name</th>
+<th style="text-align: right;" data-quarto-table-cell-role="th">dimension</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">Stan mean relative runtime</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">Julia mean relative runtime</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">Julia allocations</th>
+<th style="text-align: right;" data-quarto-table-cell-role="th">implementations</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
 <td style="text-align: right;">GLMM_Poisson_data-GLMM_Poisson_model</td>
+<td style="text-align: right;">45</td>
 <td style="text-align: right;">3.2 ± 0.002</td>
 <td style="text-align: right;">1.0 ± 0.0021</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLMM_Poisson_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1596">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">GLMM_data-GLMM1_model</td>
+<td style="text-align: right;">237</td>
 <td style="text-align: right;">3.4 ± 0.007</td>
 <td style="text-align: right;">1.0 ± 0.0013</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLMM1_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1617">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">GLM_Binomial_data-GLM_Binomial_model</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">1.4 ± 0.0023</td>
 <td style="text-align: right;">1.0 ± 0.0019</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLM_Binomial_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1372">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">GLM_Poisson_Data-GLM_Poisson_model</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">2.8 ± 0.0077</td>
 <td style="text-align: right;">1.0 ± 0.0014</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLM_Poisson_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1267">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">M0_data-M0_model</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">1.1 ± 0.0014</td>
 <td style="text-align: right;">1.0 ± 0.0013</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/M0_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1733">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Rate_1_data-Rate_1_model</td>
+<td style="text-align: right;">1</td>
 <td style="text-align: right;">2.6 ± 0.0037</td>
 <td style="text-align: right;">1.0 ± 0.00092</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_1_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L49">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Rate_2_data-Rate_2_model</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">1.9 ± 0.0027</td>
 <td style="text-align: right;">1.0 ± 0.0023</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_2_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L522">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Rate_3_data-Rate_3_model</td>
+<td style="text-align: right;">1</td>
 <td style="text-align: right;">1.9 ± 0.007</td>
 <td style="text-align: right;">1.0 ± 0.0019</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_3_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L149">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Rate_4_data-Rate_4_model</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">3.0 ± 0.26</td>
 <td style="text-align: right;">1.0 ± 0.0038</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_4_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L672">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Rate_5_data-Rate_5_model</td>
+<td style="text-align: right;">1</td>
 <td style="text-align: right;">2.9 ± 0.012</td>
 <td style="text-align: right;">1.0 ± 0.0024</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_5_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L815">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">dogs-dogs</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">4.8 ± 0.011</td>
 <td style="text-align: right;">1.0 ± 0.0026</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dogs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1307">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">dogs-dogs_hierarchical</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">1.8 ± 0.0052</td>
 <td style="text-align: right;">1.0 ± 0.00088</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dogs_hierarchical.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1667">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">dogs-dogs_log</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">2.5 ± 0.0085</td>
 <td style="text-align: right;">1.0 ± 0.0015</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dogs_log.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1348">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">dugongs_data-dugongs_model</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">1.7 ± 0.002</td>
 <td style="text-align: right;">1.0 ± 0.0016</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dugongs_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L829">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-earn_height</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">10.0 ± 0.049</td>
 <td style="text-align: right;">1.0 ± 0.0017</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/earn_height.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L16">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">earnings-log10earn_height</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">7.6 ± 0.0085</td>
 <td style="text-align: right;">1.0 ± 0.0038</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/log10earn_height.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L191">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-logearn_height</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">7.2 ± 0.012</td>
 <td style="text-align: right;">1.0 ± 0.0047</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_height.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L104">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">earnings-logearn_height_male</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">2.7 ± 0.012</td>
 <td style="text-align: right;">1.0 ± 0.0026</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_height_male.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L163">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-logearn_interaction</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">2.9 ± 0.0098</td>
 <td style="text-align: right;">1.0 ± 0.0012</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_interaction.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L385">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">earnings-logearn_interaction_z</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">2.8 ± 0.004</td>
 <td style="text-align: right;">1.0 ± 0.00093</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_interaction_z.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L687">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-logearn_logheight_male</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">2.4 ± 0.0038</td>
 <td style="text-align: right;">1.0 ± 0.00082</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_logheight_male.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L297">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">garch-garch11</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">3.3 ± 0.0078</td>
 <td style="text-align: right;">1.0 ± 0.0018</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/garch11.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L415">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_c</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">3.7 ± 0.025</td>
 <td style="text-align: right;">1.0 ± 0.00095</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_interaction_c.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L576">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_c2</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">3.4 ± 0.011</td>
 <td style="text-align: right;">1.0 ± 0.0017</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_interaction_c2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L592">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_z</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">3.7 ± 0.012</td>
 <td style="text-align: right;">1.0 ± 0.0014</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_interaction_z.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L746">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_mom_work</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">3.3 ± 0.0072</td>
 <td style="text-align: right;">1.0 ± 0.0018</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_mom_work.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L505">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">kilpisjarvi_mod-kilpisjarvi</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">7.8 ± 0.019</td>
 <td style="text-align: right;">1.0 ± 0.0016</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kilpisjarvi.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L762">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">mesquite-logmesquite</td>
+<td style="text-align: right;">8</td>
 <td style="text-align: right;">4.6 ± 0.0051</td>
 <td style="text-align: right;">1.0 ± 0.00099</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L400">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">mesquite-logmesquite_logva</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">3.6 ± 0.01</td>
 <td style="text-align: right;">1.0 ± 0.0016</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logva.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L889">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">mesquite-logmesquite_logvas</td>
+<td style="text-align: right;">8</td>
 <td style="text-align: right;">4.7 ± 0.0048</td>
 <td style="text-align: right;">1.0 ± 0.001</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logvas.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1418">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">mesquite-logmesquite_logvash</td>
+<td style="text-align: right;">7</td>
 <td style="text-align: right;">4.5 ± 0.011</td>
 <td style="text-align: right;">1.0 ± 0.0014</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logvash.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1418">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">mesquite-logmesquite_logvolume</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">8.5 ± 0.011</td>
 <td style="text-align: right;">1.0 ± 0.0021</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logvolume.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L400">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">mesquite-mesquite</td>
+<td style="text-align: right;">8</td>
 <td style="text-align: right;">4.6 ± 0.0039</td>
 <td style="text-align: right;">1.0 ± 0.0019</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/mesquite.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L400">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">nes1972-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">3.8 ± 0.011</td>
 <td style="text-align: right;">1.0 ± 0.0017</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">nes1976-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">3.9 ± 0.04</td>
 <td style="text-align: right;">1.0 ± 0.0049</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">nes1980-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">4.0 ± 0.0082</td>
 <td style="text-align: right;">1.0 ± 0.0013</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">nes1984-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">3.7 ± 0.0094</td>
 <td style="text-align: right;">1.0 ± 0.0025</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">nes1988-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">4.1 ± 0.06</td>
 <td style="text-align: right;">1.0 ± 0.0017</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">nes1992-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">3.8 ± 0.0072</td>
 <td style="text-align: right;">1.0 ± 0.0014</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">nes1996-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">4.2 ± 0.029</td>
 <td style="text-align: right;">1.0 ± 0.0018</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">nes2000-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">3.9 ± 0.016</td>
 <td style="text-align: right;">1.0 ± 0.0026</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">normal_2-normal_mixture</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">2.7 ± 0.004</td>
 <td style="text-align: right;">1.0 ± 0.0017</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/normal_mixture.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L240">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_county_intercept</td>
+<td style="text-align: right;">388</td>
 <td style="text-align: right;">4.2 ± 0.044</td>
 <td style="text-align: right;">1.0 ± 0.002</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county_intercept.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L556">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_all-radon_hierarchical_intercept_centered</td>
+<td style="text-align: right;">391</td>
 <td style="text-align: right;">5.6 ± 0.22</td>
 <td style="text-align: right;">1.0 ± 0.0031</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1088">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_partially_pooled_centered</td>
+<td style="text-align: right;">389</td>
 <td style="text-align: right;">4.0 ± 0.073</td>
 <td style="text-align: right;">1.0 ± 0.0027</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L723">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_all-radon_pooled</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">29.0 ± 0.41</td>
 <td style="text-align: right;">1.0 ± 0.00076</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_pooled.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L367">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_intercept_centered</td>
+<td style="text-align: right;">390</td>
 <td style="text-align: right;">4.1 ± 0.039</td>
 <td style="text-align: right;">1.0 ± 0.0042</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L931">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_all-radon_variable_intercept_slope_centered</td>
+<td style="text-align: right;">777</td>
 <td style="text-align: right;">3.6 ± 0.11</td>
 <td style="text-align: right;">1.0 ± 0.014</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1212">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_slope_centered</td>
+<td style="text-align: right;">390</td>
 <td style="text-align: right;">4.2 ± 0.054</td>
 <td style="text-align: right;">1.0 ± 0.0028</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L906">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mn-radon_county_intercept</td>
+<td style="text-align: right;">87</td>
 <td style="text-align: right;">4.4 ± 0.0068</td>
 <td style="text-align: right;">1.0 ± 0.0014</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county_intercept.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L556">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_hierarchical_intercept_centered</td>
+<td style="text-align: right;">90</td>
 <td style="text-align: right;">4.1 ± 0.0092</td>
 <td style="text-align: right;">1.0 ± 0.0016</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1088">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mn-radon_partially_pooled_centered</td>
+<td style="text-align: right;">88</td>
 <td style="text-align: right;">3.5 ± 0.0056</td>
 <td style="text-align: right;">1.0 ± 0.002</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L723">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_pooled</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">24.0 ± 0.028</td>
 <td style="text-align: right;">1.0 ± 0.0023</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_pooled.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L367">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_centered</td>
+<td style="text-align: right;">89</td>
 <td style="text-align: right;">4.4 ± 0.018</td>
 <td style="text-align: right;">1.0 ± 0.0026</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L931">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_slope_centered</td>
+<td style="text-align: right;">175</td>
 <td style="text-align: right;">4.1 ± 0.019</td>
 <td style="text-align: right;">1.0 ± 0.0026</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1212">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mn-radon_variable_slope_centered</td>
+<td style="text-align: right;">89</td>
 <td style="text-align: right;">3.8 ± 0.0083</td>
 <td style="text-align: right;">1.0 ± 0.002</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L906">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">rats_data-rats_model</td>
+<td style="text-align: right;">65</td>
 <td style="text-align: right;">3.6 ± 0.012</td>
 <td style="text-align: right;">1.0 ± 0.0028</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/rats_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1486">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">seeds_data-seeds_model</td>
+<td style="text-align: right;">26</td>
 <td style="text-align: right;">1.6 ± 0.0035</td>
 <td style="text-align: right;">1.0 ± 0.0015</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/seeds_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1035">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">sesame_data-sesame_one_pred_a</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">9.6 ± 0.02</td>
 <td style="text-align: right;">1.0 ± 0.0011</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/sesame_one_pred_a.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L38">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">surgical_data-surgical_model</td>
+<td style="text-align: right;">14</td>
 <td style="text-align: right;">2.0 ± 0.0021</td>
 <td style="text-align: right;">1.0 ± 0.0015</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/surgical_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L633">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">wells_data-wells_dist</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">1.7 ± 0.0057</td>
 <td style="text-align: right;">1.0 ± 0.0063</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dist.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L28">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Mh_data-Mh_model</td>
+<td style="text-align: right;">388</td>
 <td style="text-align: right;">2.2 ± 0.02</td>
 <td style="text-align: right;">1.0 ± 0.0036</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mh_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2253">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Mt_data-Mt_model</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">2.5 ± 0.0099</td>
 <td style="text-align: right;">1.0 ± 0.0015</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mt_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1789">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Survey_data-Survey_model</td>
+<td style="text-align: right;">1</td>
 <td style="text-align: right;">1.2 ± 0.0034</td>
 <td style="text-align: right;">1.0 ± 0.0016</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Survey_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1952">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">low_dim_gauss_mix_collapse-low_dim_gauss_mix_collapse</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">2.1 ± 0.017</td>
 <td style="text-align: right;">1.0 ± 0.0027</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/low_dim_gauss_mix_collapse.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L220">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_all-radon_hierarchical_intercept_noncentered</td>
+<td style="text-align: right;">391</td>
 <td style="text-align: right;">5.4 ± 0.22</td>
 <td style="text-align: right;">1.0 ± 0.0066</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1391">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_partially_pooled_noncentered</td>
+<td style="text-align: right;">389</td>
 <td style="text-align: right;">4.3 ± 0.12</td>
 <td style="text-align: right;">1.0 ± 0.0034</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1011">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_all-radon_variable_intercept_noncentered</td>
+<td style="text-align: right;">390</td>
 <td style="text-align: right;">4.2 ± 0.04</td>
 <td style="text-align: right;">1.0 ± 0.0026</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1241">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_slope_noncentered</td>
+<td style="text-align: right;">390</td>
 <td style="text-align: right;">5.3 ± 0.27</td>
 <td style="text-align: right;">1.0 ± 0.0049</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1186">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mn-radon_hierarchical_intercept_noncentered</td>
+<td style="text-align: right;">90</td>
 <td style="text-align: right;">4.2 ± 0.07</td>
 <td style="text-align: right;">1.0 ± 0.085</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1391">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_partially_pooled_noncentered</td>
+<td style="text-align: right;">88</td>
 <td style="text-align: right;">4.0 ± 0.016</td>
 <td style="text-align: right;">1.0 ± 0.0029</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1011">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_noncentered</td>
+<td style="text-align: right;">89</td>
 <td style="text-align: right;">4.2 ± 0.0061</td>
 <td style="text-align: right;">1.0 ± 0.0021</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1241">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_variable_slope_noncentered</td>
+<td style="text-align: right;">89</td>
 <td style="text-align: right;">4.8 ± 0.014</td>
 <td style="text-align: right;">1.0 ± 0.0018</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1186">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">sblrc-blr</td>
+<td style="text-align: right;">6</td>
 <td style="text-align: right;">3.8 ± 0.0072</td>
 <td style="text-align: right;">1.0 ± 0.087</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/blr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L118">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">sblri-blr</td>
+<td style="text-align: right;">6</td>
 <td style="text-align: right;">4.0 ± 0.011</td>
 <td style="text-align: right;">1.0 ± 0.015</td>
 <td style="text-align: right;">1.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/blr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L118">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">nes_logit_data-nes_logit_model</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">1.0 ± 0.0017</td>
 <td style="text-align: right;">1.3 ± 0.14</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes_logit_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">normal_5-normal_mixture_k</td>
+<td style="text-align: right;">14</td>
 <td style="text-align: right;">1.7 ± 0.0036</td>
 <td style="text-align: right;">1.0 ± 0.002</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/normal_mixture_k.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L240">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">pilots-pilots</td>
+<td style="text-align: right;">18</td>
 <td style="text-align: right;">1.8 ± 0.0017</td>
 <td style="text-align: right;">1.0 ± 0.12</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/pilots.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1141">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_intercept_slope_noncentered</td>
+<td style="text-align: right;">777</td>
 <td style="text-align: right;">4.5 ± 0.072</td>
 <td style="text-align: right;">1.0 ± 0.0025</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1565">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_slope_noncentered</td>
+<td style="text-align: right;">175</td>
 <td style="text-align: right;">4.9 ± 0.017</td>
 <td style="text-align: right;">1.0 ± 0.0017</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1565">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_mod-radon_county</td>
+<td style="text-align: right;">389</td>
 <td style="text-align: right;">3.5 ± 0.028</td>
 <td style="text-align: right;">1.0 ± 0.069</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L278">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Mb_data-Mb_model</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">2.2 ± 0.0089</td>
 <td style="text-align: right;">1.0 ± 0.1</td>
 <td style="text-align: right;">3.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mb_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2218">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Mth_data-Mth_model</td>
+<td style="text-align: right;">394</td>
 <td style="text-align: right;">2.2 ± 0.021</td>
 <td style="text-align: right;">1.0 ± 0.0021</td>
 <td style="text-align: right;">3.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mth_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2285">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">diamonds-diamonds</td>
+<td style="text-align: right;">26</td>
 <td style="text-align: right;">1.3 ± 0.0025</td>
 <td style="text-align: right;">1.0 ± 0.095</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/diamonds.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1763">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">low_dim_gauss_mix-low_dim_gauss_mix</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">2.2 ± 0.015</td>
 <td style="text-align: right;">1.0 ± 0.0026</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/low_dim_gauss_mix.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L220">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">ovarian-logistic_regression_rhs</td>
+<td style="text-align: right;">3075</td>
 <td style="text-align: right;">1.5 ± 0.046</td>
 <td style="text-align: right;">1.0 ± 0.017</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logistic_regression_rhs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2160">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">wells_data-wells_daae_c_model</td>
+<td style="text-align: right;">6</td>
 <td style="text-align: right;">1.0 ± 0.0025</td>
 <td style="text-align: right;">1.3 ± 0.17</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_daae_c_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L779">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">wells_data-wells_dae_c_model</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">1.0 ± 0.0031</td>
 <td style="text-align: right;">1.2 ± 0.12</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dae_c_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L654">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">wells_data-wells_dae_inter_model</td>
+<td style="text-align: right;">7</td>
 <td style="text-align: right;">1.0 ± 0.0036</td>
 <td style="text-align: right;">1.1 ± 0.1</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dae_inter_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1166">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">wells_data-wells_dae_model</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">1.0 ± 0.0033</td>
 <td style="text-align: right;">1.2 ± 0.13</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dae_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L312">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">wells_data-wells_dist100_model</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">1.0 ± 0.0019</td>
 <td style="text-align: right;">1.3 ± 0.15</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dist100_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L134">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">wells_data-wells_dist100ars_model</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">1.0 ± 0.0017</td>
 <td style="text-align: right;">1.2 ± 0.17</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dist100ars_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L205">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">wells_data-wells_interaction_c_model</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">1.0 ± 0.0033</td>
 <td style="text-align: right;">1.2 ± 0.11</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_interaction_c_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L539">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">wells_data-wells_interaction_model</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">1.0 ± 0.0026</td>
 <td style="text-align: right;">1.3 ± 0.1</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_interaction_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L351">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Mtbh_data-Mtbh_model</td>
+<td style="text-align: right;">154</td>
 <td style="text-align: right;">2.2 ± 0.018</td>
 <td style="text-align: right;">1.0 ± 0.12</td>
 <td style="text-align: right;">6.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mtbh_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2360">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">gp_pois_regr-gp_pois_regr</td>
+<td style="text-align: right;">13</td>
 <td style="text-align: right;">1.0 ± 0.0022</td>
 <td style="text-align: right;">1.0 ± 0.2</td>
 <td style="text-align: right;">6.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/gp_pois_regr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L608">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">prostate-logistic_regression_rhs</td>
+<td style="text-align: right;">11935</td>
 <td style="text-align: right;">1.8 ± 0.18</td>
 <td style="text-align: right;">1.0 ± 0.03</td>
 <td style="text-align: right;">6.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logistic_regression_rhs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2160">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">traffic_accident_nyc-bym2_offset_only</td>
+<td style="text-align: right;">3845</td>
 <td style="text-align: right;">2.0 ± 0.0043</td>
 <td style="text-align: right;">1.0 ± 0.22</td>
 <td style="text-align: right;">6.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/bym2_offset_only.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2108">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">gp_pois_regr-gp_regr</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">1.4 ± 0.0056</td>
 <td style="text-align: right;">1.0 ± 0.18</td>
 <td style="text-align: right;">9.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/gp_regr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L482">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">election88-election88_full</td>
+<td style="text-align: right;">90</td>
 <td style="text-align: right;">2.5 ± 0.23</td>
 <td style="text-align: right;">1.0 ± 0.12</td>
 <td style="text-align: right;">10.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/election88_full.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1819">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">mcycle_splines-accel_splines</td>
+<td style="text-align: right;">82</td>
 <td style="text-align: right;">2.1 ± 0.003</td>
 <td style="text-align: right;">1.0 ± 0.13</td>
 <td style="text-align: right;">11.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/accel_splines.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2515">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">mcycle_gp-accel_gp</td>
+<td style="text-align: right;">66</td>
 <td style="text-align: right;">1.7 ± 0.0039</td>
 <td style="text-align: right;">1.0 ± 0.32</td>
 <td style="text-align: right;">12.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/accel_gp.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2804">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">lsat_data-lsat_model</td>
+<td style="text-align: right;">1006</td>
 <td style="text-align: right;">1.3 ± 0.032</td>
 <td style="text-align: right;">1.0 ± 0.12</td>
 <td style="text-align: right;">20.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/lsat_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1536">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">uk_drivers-state_space_stochastic_level_stochastic_seasonal</td>
+<td style="text-align: right;">389</td>
 <td style="text-align: right;">1.3 ± 0.0022</td>
 <td style="text-align: right;">1.0 ± 0.16</td>
 <td style="text-align: right;">184.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/state_space_stochastic_level_stochastic_seasonal.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L982">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">hmm_example-hmm_example</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">1.3 ± 0.01</td>
 <td style="text-align: right;">1.0 ± 0.11</td>
 <td style="text-align: right;">303.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_example.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2192">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">bball_drive_event_0-hmm_drive_0</td>
+<td style="text-align: right;">6</td>
 <td style="text-align: right;">1.7 ± 0.013</td>
 <td style="text-align: right;">1.0 ± 0.0032</td>
 <td style="text-align: right;">423.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_drive_0.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2705">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">bball_drive_event_1-hmm_drive_1</td>
+<td style="text-align: right;">6</td>
 <td style="text-align: right;">1.3 ± 0.01</td>
 <td style="text-align: right;">1.0 ± 0.21</td>
 <td style="text-align: right;">425.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_drive_1.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2738">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">hmm_gaussian_simulated-hmm_gaussian</td>
+<td style="text-align: right;">14</td>
 <td style="text-align: right;">1.8 ± 0.047</td>
 <td style="text-align: right;">1.0 ± 0.11</td>
 <td style="text-align: right;">506.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_gaussian.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2680">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">iohmm_reg_simulated-iohmm_reg</td>
+<td style="text-align: right;">29</td>
 <td style="text-align: right;">3.7 ± 0.14</td>
 <td style="text-align: right;">1.0 ± 0.007</td>
 <td style="text-align: right;">1009.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/iohmm_reg.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2770">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">three_docs1200-ldaK2</td>
+<td style="text-align: right;">7</td>
 <td style="text-align: right;">1.0 ± 0.008</td>
 <td style="text-align: right;">1.6 ± 0.32</td>
 <td style="text-align: right;">2402.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1439">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">bones_data-bones_model</td>
+<td style="text-align: right;">13</td>
 <td style="text-align: right;">1.0 ± 0.0041</td>
 <td style="text-align: right;">11.0 ± 8.0</td>
 <td style="text-align: right;">4420.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/bones_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2134">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">ecdc0401-covid19imperial_v2</td>
+<td style="text-align: right;">51</td>
 <td style="text-align: right;">1.0 ± 0.021</td>
 <td style="text-align: right;">1.4 ± 0.17</td>
 <td style="text-align: right;">5484.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/covid19imperial_v2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2976">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">three_men1-ldaK2</td>
+<td style="text-align: right;">502</td>
 <td style="text-align: right;">1.0 ± 0.0077</td>
 <td style="text-align: right;">1.2 ± 0.056</td>
 <td style="text-align: right;">10000.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1439">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">three_men2-ldaK2</td>
+<td style="text-align: right;">510</td>
 <td style="text-align: right;">1.0 ± 0.016</td>
 <td style="text-align: right;">1.3 ± 0.087</td>
 <td style="text-align: right;">10000.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1439">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">three_men3-ldaK2</td>
+<td style="text-align: right;">505</td>
 <td style="text-align: right;">1.0 ± 0.0056</td>
 <td style="text-align: right;">1.2 ± 0.057</td>
 <td style="text-align: right;">10000.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1439">Julia</a></p>
+</div></td>
 </tr>
 </tbody>
 </table>
@@ -880,677 +1350,1147 @@ Warning
 </section>
 <section id="gradient-runtime-comparison" class="level1">
 <h1>Gradient runtime comparison</h1>
-<div id="3165a4d9" class="cell" data-execution_count="2">
+<div id="4012aa85" class="cell" data-execution_count="2">
 <div class="cell-output cell-output-display">
 <table data-quarto-postprocess="true" class="table table-sm table-striped small">
+<colgroup>
+<col style="width: 16%">
+<col style="width: 16%">
+<col style="width: 16%">
+<col style="width: 16%">
+<col style="width: 16%">
+<col style="width: 16%">
+</colgroup>
 <thead>
 <tr class="header headerLastRow">
 <th style="text-align: right;" data-quarto-table-cell-role="th">posterior name</th>
+<th style="text-align: right;" data-quarto-table-cell-role="th">dimension</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">Stan mean relative runtime</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">Julia mean relative runtime</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">Julia allocations</th>
+<th style="text-align: right;" data-quarto-table-cell-role="th">implementations</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
 <td style="text-align: right;">GLMM_Poisson_data-GLMM_Poisson_model</td>
+<td style="text-align: right;">45</td>
 <td style="text-align: right;">2.1 ± 0.0031</td>
 <td style="text-align: right;">1.0 ± 0.0014</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLMM_Poisson_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1596">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">GLMM_data-GLMM1_model</td>
+<td style="text-align: right;">237</td>
 <td style="text-align: right;">2.1 ± 0.007</td>
 <td style="text-align: right;">1.0 ± 0.0027</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLMM1_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1617">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">GLM_Binomial_data-GLM_Binomial_model</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">1.0 ± 0.0011</td>
 <td style="text-align: right;">1.2 ± 0.0011</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLM_Binomial_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1372">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">GLM_Poisson_Data-GLM_Poisson_model</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">1.7 ± 0.0025</td>
 <td style="text-align: right;">1.0 ± 0.0016</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLM_Poisson_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1267">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">M0_data-M0_model</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">1.0 ± 0.0012</td>
 <td style="text-align: right;">1.2 ± 0.0013</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/M0_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1733">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Rate_1_data-Rate_1_model</td>
+<td style="text-align: right;">1</td>
 <td style="text-align: right;">2.7 ± 0.0031</td>
 <td style="text-align: right;">1.0 ± 0.0011</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_1_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L49">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Rate_2_data-Rate_2_model</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">2.1 ± 0.0033</td>
 <td style="text-align: right;">1.0 ± 0.0021</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_2_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L522">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Rate_3_data-Rate_3_model</td>
+<td style="text-align: right;">1</td>
 <td style="text-align: right;">2.0 ± 0.0065</td>
 <td style="text-align: right;">1.0 ± 0.00057</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_3_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L149">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Rate_4_data-Rate_4_model</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">3.7 ± 0.012</td>
 <td style="text-align: right;">1.0 ± 0.0018</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_4_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L672">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Rate_5_data-Rate_5_model</td>
+<td style="text-align: right;">1</td>
 <td style="text-align: right;">4.3 ± 0.019</td>
 <td style="text-align: right;">1.0 ± 0.0035</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_5_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L815">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">dogs-dogs</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">3.9 ± 0.0083</td>
 <td style="text-align: right;">1.0 ± 0.00088</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dogs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1307">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">dogs-dogs_hierarchical</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">1.0 ± 0.0016</td>
 <td style="text-align: right;">2.1 ± 0.0034</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dogs_hierarchical.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1667">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">dogs-dogs_log</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">1.7 ± 0.003</td>
 <td style="text-align: right;">1.0 ± 0.0016</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dogs_log.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1348">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">dugongs_data-dugongs_model</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">1.1 ± 0.0028</td>
 <td style="text-align: right;">1.0 ± 0.0012</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dugongs_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L829">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-earn_height</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">4.7 ± 0.0095</td>
 <td style="text-align: right;">1.0 ± 0.0012</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/earn_height.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L16">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">earnings-log10earn_height</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">3.3 ± 0.35</td>
 <td style="text-align: right;">1.0 ± 0.0013</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/log10earn_height.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L191">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-logearn_height</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">3.2 ± 0.0082</td>
 <td style="text-align: right;">1.0 ± 0.0018</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_height.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L104">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">earnings-logearn_height_male</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">3.8 ± 0.0047</td>
 <td style="text-align: right;">1.0 ± 0.0013</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_height_male.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L163">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-logearn_interaction</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">5.0 ± 0.0089</td>
 <td style="text-align: right;">1.0 ± 0.0016</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_interaction.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L385">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">earnings-logearn_interaction_z</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">5.4 ± 0.0094</td>
 <td style="text-align: right;">1.0 ± 0.00065</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_interaction_z.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L687">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-logearn_logheight_male</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">4.9 ± 0.0073</td>
 <td style="text-align: right;">1.0 ± 0.0019</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_logheight_male.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L297">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">garch-garch11</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">2.6 ± 0.0016</td>
 <td style="text-align: right;">1.0 ± 0.00068</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/garch11.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L415">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_c</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">4.9 ± 0.015</td>
 <td style="text-align: right;">1.0 ± 0.0058</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_interaction_c.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L576">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_c2</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">5.0 ± 0.0059</td>
 <td style="text-align: right;">1.0 ± 0.0017</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_interaction_c2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L592">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_z</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">5.1 ± 0.005</td>
 <td style="text-align: right;">1.0 ± 0.0012</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_interaction_z.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L746">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_mom_work</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">5.1 ± 0.0052</td>
 <td style="text-align: right;">1.0 ± 0.00088</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_mom_work.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L505">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">kilpisjarvi_mod-kilpisjarvi</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">3.3 ± 0.0066</td>
 <td style="text-align: right;">1.0 ± 0.00098</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kilpisjarvi.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L762">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">mesquite-logmesquite_logva</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">4.4 ± 0.0064</td>
 <td style="text-align: right;">1.0 ± 0.002</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logva.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L889">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">mesquite-logmesquite_logvolume</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">3.1 ± 0.0044</td>
 <td style="text-align: right;">1.0 ± 0.002</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logvolume.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L400">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">normal_2-normal_mixture</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">1.8 ± 0.005</td>
 <td style="text-align: right;">1.0 ± 0.0021</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/normal_mixture.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L240">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_county_intercept</td>
+<td style="text-align: right;">388</td>
 <td style="text-align: right;">13.0 ± 0.26</td>
 <td style="text-align: right;">1.0 ± 0.011</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county_intercept.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L556">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_all-radon_hierarchical_intercept_centered</td>
+<td style="text-align: right;">391</td>
 <td style="text-align: right;">14.0 ± 0.53</td>
 <td style="text-align: right;">1.0 ± 0.0042</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1088">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_partially_pooled_centered</td>
+<td style="text-align: right;">389</td>
 <td style="text-align: right;">12.0 ± 0.85</td>
 <td style="text-align: right;">1.0 ± 0.0064</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L723">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_all-radon_pooled</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">10.0 ± 0.2</td>
 <td style="text-align: right;">1.0 ± 0.0034</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_pooled.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L367">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_intercept_centered</td>
+<td style="text-align: right;">390</td>
 <td style="text-align: right;">13.0 ± 0.15</td>
 <td style="text-align: right;">1.0 ± 0.0016</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L931">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_all-radon_variable_intercept_slope_centered</td>
+<td style="text-align: right;">777</td>
 <td style="text-align: right;">10.0 ± 0.13</td>
 <td style="text-align: right;">1.0 ± 0.0041</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1212">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_slope_centered</td>
+<td style="text-align: right;">390</td>
 <td style="text-align: right;">12.0 ± 0.16</td>
 <td style="text-align: right;">1.0 ± 0.0021</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L906">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mn-radon_county_intercept</td>
+<td style="text-align: right;">87</td>
 <td style="text-align: right;">11.0 ± 0.024</td>
 <td style="text-align: right;">1.0 ± 0.0033</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county_intercept.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L556">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_hierarchical_intercept_centered</td>
+<td style="text-align: right;">90</td>
 <td style="text-align: right;">12.0 ± 0.018</td>
 <td style="text-align: right;">1.0 ± 0.002</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1088">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mn-radon_partially_pooled_centered</td>
+<td style="text-align: right;">88</td>
 <td style="text-align: right;">8.6 ± 0.016</td>
 <td style="text-align: right;">1.0 ± 0.0028</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L723">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_pooled</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">9.2 ± 0.014</td>
 <td style="text-align: right;">1.0 ± 0.0011</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_pooled.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L367">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_centered</td>
+<td style="text-align: right;">89</td>
 <td style="text-align: right;">6.9 ± 0.044</td>
 <td style="text-align: right;">1.0 ± 0.0044</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L931">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_slope_centered</td>
+<td style="text-align: right;">175</td>
 <td style="text-align: right;">8.5 ± 0.012</td>
 <td style="text-align: right;">1.0 ± 0.0014</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1212">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mn-radon_variable_slope_centered</td>
+<td style="text-align: right;">89</td>
 <td style="text-align: right;">9.9 ± 0.018</td>
 <td style="text-align: right;">1.0 ± 0.0017</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L906">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">rats_data-rats_model</td>
+<td style="text-align: right;">65</td>
 <td style="text-align: right;">7.4 ± 0.011</td>
 <td style="text-align: right;">1.0 ± 0.0013</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/rats_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1486">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">seeds_data-seeds_model</td>
+<td style="text-align: right;">26</td>
 <td style="text-align: right;">1.1 ± 0.0011</td>
 <td style="text-align: right;">1.0 ± 0.00098</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/seeds_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1035">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">sesame_data-sesame_one_pred_a</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">3.7 ± 0.0032</td>
 <td style="text-align: right;">1.0 ± 0.00086</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/sesame_one_pred_a.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L38">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">surgical_data-surgical_model</td>
+<td style="text-align: right;">14</td>
 <td style="text-align: right;">1.1 ± 0.0014</td>
 <td style="text-align: right;">1.0 ± 0.0009</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/surgical_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L633">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">wells_data-wells_dist</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">1.0 ± 0.0027</td>
 <td style="text-align: right;">1.2 ± 0.0066</td>
 <td style="text-align: right;">0.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dist.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L28">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Mh_data-Mh_model</td>
+<td style="text-align: right;">388</td>
 <td style="text-align: right;">1.1 ± 0.0014</td>
 <td style="text-align: right;">1.0 ± 0.0012</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mh_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2253">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">low_dim_gauss_mix_collapse-low_dim_gauss_mix_collapse</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">1.5 ± 0.011</td>
 <td style="text-align: right;">1.0 ± 0.0019</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/low_dim_gauss_mix_collapse.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L220">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_all-radon_hierarchical_intercept_noncentered</td>
+<td style="text-align: right;">391</td>
 <td style="text-align: right;">12.0 ± 0.29</td>
 <td style="text-align: right;">1.0 ± 0.0028</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1391">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_partially_pooled_noncentered</td>
+<td style="text-align: right;">389</td>
 <td style="text-align: right;">9.3 ± 0.1</td>
 <td style="text-align: right;">1.0 ± 0.0013</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1011">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_all-radon_variable_intercept_noncentered</td>
+<td style="text-align: right;">390</td>
 <td style="text-align: right;">12.0 ± 0.18</td>
 <td style="text-align: right;">1.0 ± 0.0054</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1241">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_slope_noncentered</td>
+<td style="text-align: right;">390</td>
 <td style="text-align: right;">11.0 ± 0.17</td>
 <td style="text-align: right;">1.0 ± 0.0043</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1186">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mn-radon_hierarchical_intercept_noncentered</td>
+<td style="text-align: right;">90</td>
 <td style="text-align: right;">11.0 ± 0.049</td>
 <td style="text-align: right;">1.0 ± 0.0021</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1391">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_partially_pooled_noncentered</td>
+<td style="text-align: right;">88</td>
 <td style="text-align: right;">5.4 ± 0.02</td>
 <td style="text-align: right;">1.0 ± 0.22</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1011">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_noncentered</td>
+<td style="text-align: right;">89</td>
 <td style="text-align: right;">11.0 ± 0.015</td>
 <td style="text-align: right;">1.0 ± 0.0012</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1241">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_variable_slope_noncentered</td>
+<td style="text-align: right;">89</td>
 <td style="text-align: right;">10.0 ± 0.021</td>
 <td style="text-align: right;">1.0 ± 0.0021</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1186">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">sblrc-blr</td>
+<td style="text-align: right;">6</td>
 <td style="text-align: right;">1.1 ± 0.0014</td>
 <td style="text-align: right;">1.0 ± 0.27</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/blr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L118">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">sblri-blr</td>
+<td style="text-align: right;">6</td>
 <td style="text-align: right;">1.0 ± 0.0015</td>
 <td style="text-align: right;">1.0 ± 0.2</td>
 <td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/blr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L118">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">nes_logit_data-nes_logit_model</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">1.0 ± 0.0016</td>
 <td style="text-align: right;">2.6 ± 0.42</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes_logit_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">pilots-pilots</td>
+<td style="text-align: right;">18</td>
 <td style="text-align: right;">1.0 ± 0.001</td>
 <td style="text-align: right;">1.2 ± 0.32</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/pilots.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1141">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_all-radon_variable_intercept_slope_noncentered</td>
+<td style="text-align: right;">777</td>
 <td style="text-align: right;">11.0 ± 0.49</td>
 <td style="text-align: right;">1.0 ± 0.0027</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1565">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_slope_noncentered</td>
+<td style="text-align: right;">175</td>
 <td style="text-align: right;">6.2 ± 0.0088</td>
 <td style="text-align: right;">1.0 ± 0.19</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1565">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">radon_mod-radon_county</td>
+<td style="text-align: right;">389</td>
 <td style="text-align: right;">1.0 ± 0.0015</td>
 <td style="text-align: right;">1.6 ± 0.29</td>
 <td style="text-align: right;">4.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L278">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">diamonds-diamonds</td>
+<td style="text-align: right;">26</td>
 <td style="text-align: right;">1.0 ± 0.002</td>
 <td style="text-align: right;">3.5 ± 0.55</td>
 <td style="text-align: right;">8.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/diamonds.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1763">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">traffic_accident_nyc-bym2_offset_only</td>
+<td style="text-align: right;">3845</td>
 <td style="text-align: right;">1.1 ± 0.0047</td>
 <td style="text-align: right;">1.0 ± 0.01</td>
 <td style="text-align: right;">8.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/bym2_offset_only.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2108">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">wells_data-wells_daae_c_model</td>
+<td style="text-align: right;">6</td>
 <td style="text-align: right;">1.0 ± 0.0033</td>
 <td style="text-align: right;">3.3 ± 0.051</td>
 <td style="text-align: right;">8.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_daae_c_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L779">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">wells_data-wells_dae_c_model</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">1.0 ± 0.0016</td>
 <td style="text-align: right;">2.8 ± 0.0064</td>
 <td style="text-align: right;">8.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dae_c_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L654">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">wells_data-wells_dae_inter_model</td>
+<td style="text-align: right;">7</td>
 <td style="text-align: right;">1.0 ± 0.0042</td>
 <td style="text-align: right;">2.1 ± 0.0062</td>
 <td style="text-align: right;">8.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dae_inter_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1166">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">wells_data-wells_dae_model</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">1.0 ± 0.0023</td>
 <td style="text-align: right;">2.3 ± 0.013</td>
 <td style="text-align: right;">8.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dae_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L312">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">wells_data-wells_dist100_model</td>
+<td style="text-align: right;">2</td>
 <td style="text-align: right;">1.0 ± 0.0023</td>
 <td style="text-align: right;">3.2 ± 0.99</td>
 <td style="text-align: right;">8.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dist100_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L134">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">wells_data-wells_dist100ars_model</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">1.0 ± 0.0023</td>
 <td style="text-align: right;">2.4 ± 0.014</td>
 <td style="text-align: right;">8.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dist100ars_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L205">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">wells_data-wells_interaction_c_model</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">1.0 ± 0.0017</td>
 <td style="text-align: right;">2.2 ± 0.004</td>
 <td style="text-align: right;">8.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_interaction_c_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L539">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">wells_data-wells_interaction_model</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">1.0 ± 0.0016</td>
 <td style="text-align: right;">2.2 ± 0.0075</td>
 <td style="text-align: right;">8.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_interaction_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L351">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">low_dim_gauss_mix-low_dim_gauss_mix</td>
+<td style="text-align: right;">5</td>
 <td style="text-align: right;">1.3 ± 0.0043</td>
 <td style="text-align: right;">1.0 ± 0.0029</td>
 <td style="text-align: right;">9.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/low_dim_gauss_mix.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L220">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">gp_pois_regr-gp_pois_regr</td>
+<td style="text-align: right;">13</td>
 <td style="text-align: right;">1.0 ± 0.0022</td>
 <td style="text-align: right;">2.1 ± 0.23</td>
 <td style="text-align: right;">10.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/gp_pois_regr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L608">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">normal_5-normal_mixture_k</td>
+<td style="text-align: right;">14</td>
 <td style="text-align: right;">1.0 ± 0.04</td>
 <td style="text-align: right;">3.1 ± 0.13</td>
 <td style="text-align: right;">10.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/normal_mixture_k.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L240">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">gp_pois_regr-gp_regr</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">1.0 ± 0.0021</td>
 <td style="text-align: right;">1.6 ± 0.0039</td>
 <td style="text-align: right;">15.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/gp_regr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L482">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">election88-election88_full</td>
+<td style="text-align: right;">90</td>
 <td style="text-align: right;">1.2 ± 0.0049</td>
 <td style="text-align: right;">1.0 ± 0.15</td>
 <td style="text-align: right;">20.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/election88_full.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1819">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">mcycle_splines-accel_splines</td>
+<td style="text-align: right;">82</td>
 <td style="text-align: right;">1.0 ± 0.0012</td>
 <td style="text-align: right;">1.0 ± 0.17</td>
 <td style="text-align: right;">22.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/accel_splines.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2515">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">mcycle_gp-accel_gp</td>
+<td style="text-align: right;">66</td>
 <td style="text-align: right;">1.0 ± 0.0015</td>
 <td style="text-align: right;">1.0 ± 0.22</td>
 <td style="text-align: right;">24.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/accel_gp.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2804">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">ovarian-logistic_regression_rhs</td>
+<td style="text-align: right;">3075</td>
 <td style="text-align: right;">1.0 ± 0.0059</td>
 <td style="text-align: right;">2.0 ± 0.022</td>
 <td style="text-align: right;">25.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logistic_regression_rhs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2160">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Mt_data-Mt_model</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">1.0 ± 0.00098</td>
 <td style="text-align: right;">5.1 ± 0.44</td>
 <td style="text-align: right;">26.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mt_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1789">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">prostate-logistic_regression_rhs</td>
+<td style="text-align: right;">11935</td>
 <td style="text-align: right;">1.0 ± 0.11</td>
 <td style="text-align: right;">1.9 ± 0.036</td>
 <td style="text-align: right;">29.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logistic_regression_rhs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2160">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
+<td style="text-align: right;">Mth_data-Mth_model</td>
+<td style="text-align: right;">394</td>
+<td style="text-align: right;">1.0 ± 0.013</td>
+<td style="text-align: right;">4.7 ± 0.8</td>
+<td style="text-align: right;">30.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mth_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2285">Julia</a></p>
+</div></td>
+</tr>
+<tr class="even">
 <td style="text-align: right;">Mb_data-Mb_model</td>
+<td style="text-align: right;">3</td>
 <td style="text-align: right;">1.0 ± 0.0024</td>
 <td style="text-align: right;">3.4 ± 0.034</td>
 <td style="text-align: right;">32.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mb_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2218">Julia</a></p>
+</div></td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">Mtbh_data-Mtbh_model</td>
+<td style="text-align: right;">154</td>
+<td style="text-align: right;">1.0 ± 0.0084</td>
+<td style="text-align: right;">2.2 ± 0.059</td>
+<td style="text-align: right;">38.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mtbh_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2360">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Survey_data-Survey_model</td>
+<td style="text-align: right;">1</td>
 <td style="text-align: right;">1.0 ± 0.0019</td>
 <td style="text-align: right;">3.7 ± 0.027</td>
 <td style="text-align: right;">40.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Survey_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1952">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">nes2000-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">1.0 ± 0.0011</td>
 <td style="text-align: right;">5.8 ± 0.035</td>
 <td style="text-align: right;">56.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">mesquite-logmesquite_logvash</td>
+<td style="text-align: right;">7</td>
 <td style="text-align: right;">1.0 ± 0.0034</td>
 <td style="text-align: right;">16.0 ± 4.0</td>
 <td style="text-align: right;">70.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logvash.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1418">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">mesquite-mesquite</td>
+<td style="text-align: right;">8</td>
 <td style="text-align: right;">1.0 ± 0.0021</td>
 <td style="text-align: right;">11.0 ± 2.3</td>
 <td style="text-align: right;">70.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/mesquite.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L400">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">lsat_data-lsat_model</td>
+<td style="text-align: right;">1006</td>
 <td style="text-align: right;">1.0 ± 0.0042</td>
 <td style="text-align: right;">2.0 ± 0.58</td>
 <td style="text-align: right;">79.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/lsat_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1536">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">mesquite-logmesquite</td>
+<td style="text-align: right;">8</td>
 <td style="text-align: right;">1.0 ± 0.0017</td>
 <td style="text-align: right;">10.0 ± 0.016</td>
 <td style="text-align: right;">84.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L400">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">mesquite-logmesquite_logvas</td>
+<td style="text-align: right;">8</td>
 <td style="text-align: right;">1.0 ± 0.0011</td>
 <td style="text-align: right;">11.0 ± 0.026</td>
 <td style="text-align: right;">84.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logvas.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1418">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">nes1972-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">1.0 ± 0.0034</td>
 <td style="text-align: right;">7.0 ± 0.14</td>
 <td style="text-align: right;">88.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">nes1976-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">1.0 ± 0.0043</td>
 <td style="text-align: right;">6.8 ± 0.086</td>
 <td style="text-align: right;">88.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">nes1980-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">1.0 ± 0.0025</td>
 <td style="text-align: right;">7.5 ± 1.3</td>
 <td style="text-align: right;">88.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">nes1984-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">1.0 ± 0.0033</td>
 <td style="text-align: right;">5.5 ± 0.026</td>
 <td style="text-align: right;">88.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">nes1988-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">1.0 ± 0.014</td>
 <td style="text-align: right;">4.8 ± 0.39</td>
 <td style="text-align: right;">88.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">nes1992-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">1.0 ± 0.004</td>
 <td style="text-align: right;">6.6 ± 0.17</td>
 <td style="text-align: right;">88.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">nes1996-nes</td>
+<td style="text-align: right;">10</td>
 <td style="text-align: right;">1.0 ± 0.0076</td>
 <td style="text-align: right;">5.7 ± 0.41</td>
 <td style="text-align: right;">88.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L62">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">hmm_example-hmm_example</td>
+<td style="text-align: right;">4</td>
 <td style="text-align: right;">1.0 ± 0.0019</td>
 <td style="text-align: right;">7.3 ± 0.85</td>
 <td style="text-align: right;">1213.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_example.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2192">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">three_docs1200-ldaK2</td>
+<td style="text-align: right;">7</td>
 <td style="text-align: right;">1.0 ± 0.0034</td>
 <td style="text-align: right;">11.0 ± 4.9</td>
 <td style="text-align: right;">4838.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1439">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">bones_data-bones_model</td>
+<td style="text-align: right;">13</td>
 <td style="text-align: right;">1.0 ± 0.004</td>
 <td style="text-align: right;">11.0 ± 0.052</td>
 <td style="text-align: right;">5366.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/bones_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2134">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">iohmm_reg_simulated-iohmm_reg</td>
+<td style="text-align: right;">29</td>
 <td style="text-align: right;">1.0 ± 0.012</td>
 <td style="text-align: right;">3.6 ± 0.69</td>
 <td style="text-align: right;">9617.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/iohmm_reg.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2770">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">bball_drive_event_0-hmm_drive_0</td>
+<td style="text-align: right;">6</td>
 <td style="text-align: right;">1.0 ± 0.0041</td>
 <td style="text-align: right;">12.0 ± 1.8</td>
 <td style="text-align: right;">17057.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_drive_0.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2705">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">bball_drive_event_1-hmm_drive_1</td>
+<td style="text-align: right;">6</td>
 <td style="text-align: right;">1.0 ± 0.0037</td>
 <td style="text-align: right;">11.0 ± 1.4</td>
 <td style="text-align: right;">17061.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_drive_1.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2738">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">three_men1-ldaK2</td>
+<td style="text-align: right;">502</td>
 <td style="text-align: right;">1.0 ± 0.016</td>
 <td style="text-align: right;">5.9 ± 0.14</td>
 <td style="text-align: right;">20034.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1439">Julia</a></p>
+</div></td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">three_men2-ldaK2</td>
+<td style="text-align: right;">510</td>
 <td style="text-align: right;">1.0 ± 0.028</td>
 <td style="text-align: right;">7.2 ± 1.5</td>
 <td style="text-align: right;">20034.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1439">Julia</a></p>
+</div></td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">three_men3-ldaK2</td>
+<td style="text-align: right;">505</td>
 <td style="text-align: right;">1.0 ± 0.02</td>
 <td style="text-align: right;">5.6 ± 0.62</td>
 <td style="text-align: right;">20034.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1439">Julia</a></p>
+</div></td>
 </tr>
 </tbody>
 </table>
