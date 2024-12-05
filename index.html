@@ -21,6 +21,40 @@ ul.task-list li input[type="checkbox"] {
   margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
   vertical-align: middle;
 }
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
 </style>
 
 
@@ -106,11 +140,24 @@ ul.task-list li input[type="checkbox"] {
 <div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-full page-navbar">
 <!-- sidebar -->
 <!-- margin-sidebar -->
-    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
-        
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#caveats" id="toc-caveats" class="nav-link active" data-scroll-target="#caveats">Caveats</a>
+  <ul class="collapse">
+  <li><a href="#differences-in-the-returned-log-density" id="toc-differences-in-the-returned-log-density" class="nav-link" data-scroll-target="#differences-in-the-returned-log-density">Differences in the returned log-density</a></li>
+  <li><a href="#some-models-are-not-implemented-yet-or-may-have-smaller-or-bigger-errors" id="toc-some-models-are-not-implemented-yet-or-may-have-smaller-or-bigger-errors" class="nav-link" data-scroll-target="#some-models-are-not-implemented-yet-or-may-have-smaller-or-bigger-errors">Some models are not implemented yet, or may have smaller or bigger errors</a></li>
+  <li><a href="#some-models-may-have-been-implemented-suboptimally" id="toc-some-models-may-have-been-implemented-suboptimally" class="nav-link" data-scroll-target="#some-models-may-have-been-implemented-suboptimally">Some models may have been implemented suboptimally</a></li>
+  </ul></li>
+  <li><a href="#using-and-testing-the-implementations" id="toc-using-and-testing-the-implementations" class="nav-link" data-scroll-target="#using-and-testing-the-implementations">Using and testing the implementations</a></li>
+  <li><a href="#overview-of-posteriors" id="toc-overview-of-posteriors" class="nav-link" data-scroll-target="#overview-of-posteriors">Overview of posteriors</a></li>
+  </ul>
+</nav>
     </div>
 <!-- main -->
-<main class="content column-page" id="quarto-document-content">
+<main class="content column-page-left" id="quarto-document-content">
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
@@ -119,7 +166,7 @@ ul.task-list li input[type="checkbox"] {
 
 
 
-<div class="quarto-title-meta column-page">
+<div class="quarto-title-meta column-page-left">
 
     <div>
     <div class="quarto-title-meta-heading">Author</div>
@@ -137,8 +184,63 @@ ul.task-list li input[type="checkbox"] {
 </header>
 
 
+<p>Implements many - but currently not all - of the Bayesian models in <a href="https://github.com/stan-dev/posteriordb"><code>posteriordb</code></a> by implementing Julia macros and functions which mimick Stan blocks and functions respectively, with relatively light dependencies. Using the macros and functions defined in this package, the “shortest” <code>posteriordb</code> model (<a href="https://github.com/stan-dev/posteriordb/blob/master/posterior_database/models/stan/earn_height.stan"><code>earn_height.stan</code></a>)</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode stan code-with-copy"><code class="sourceCode stan"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">data</span> {</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">int</span>&lt;<span class="kw">lower</span>=<span class="dv">0</span>&gt; N;</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">vector</span>[N] earn;</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">vector</span>[N] height;</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="kw">parameters</span> {</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">vector</span>[<span class="dv">2</span>] beta;</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>  <span class="dt">real</span>&lt;<span class="kw">lower</span>=<span class="dv">0</span>&gt; sigma;</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="kw">model</span> {</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>  earn ~ normal(beta[<span class="dv">1</span>] + beta[<span class="dv">2</span>] * height, sigma);</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>}</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>becomes</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode julia code-with-copy"><code class="sourceCode julia"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">julia_implementation</span>(<span class="op">::</span><span class="dt">Val{:earn_height}</span>; N, earn, height, kwargs<span class="op">...</span>) <span class="op">=</span> <span class="cf">begin</span> </span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@stan</span> <span class="cf">begin</span> </span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>        <span class="pp">@parameters</span> <span class="cf">begin</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>            beta<span class="op">::</span><span class="dt">vector</span>[<span class="fl">2</span>]</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>            sigma<span class="op">::</span><span class="dt">real</span>(lower<span class="op">=</span><span class="fl">0</span>.)</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">end</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>        <span class="pp">@model</span> <span class="cf">begin</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>            earn <span class="op">~</span> <span class="fu">normal</span>(<span class="pp">@broadcasted</span>(beta[<span class="fl">1</span>] <span class="op">+</span> beta[<span class="fl">2</span>] <span class="op">*</span> height), sigma);</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>        <span class="cf">end</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a><span class="cf">end</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Instantiating the posterior (i.e.&nbsp;model + data) requires loading <a href="https://github.com/sethaxen/PosteriorDB.jl"><code>PosteriorDB.jl</code></a>, which provides access to the datasets, e.g.&nbsp;to load the <code>earnings-earn_height</code> posterior (<code>earn_height</code> model + <code>earning</code> data):</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode julia code-with-copy"><code class="sourceCode julia"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> <span class="bu">StanBlocks</span>, <span class="bu">PosteriorDB</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>pdb <span class="op">=</span> PosteriorDB.<span class="fu">database</span>()</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>post <span class="op">=</span> PosteriorDB.<span class="fu">posterior</span>(pdb, <span class="st">"earnings-earn_height"</span>)</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>jlpdf <span class="op">=</span> StanBlocks.<span class="fu">julia_implementation</span>(post)</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="fu">jlpdf</span>(<span class="fu">randn</span>(StanBlocks.<span class="fu">dimension</span>(jlpdf))) <span class="co"># Returns some number</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<section id="caveats" class="level1">
+<h1>Caveats</h1>
+<section id="differences-in-the-returned-log-density" class="level2">
+<h2 class="anchored" data-anchor-id="differences-in-the-returned-log-density">Differences in the returned log-density</h2>
+<p>Stan’s default “sampling statement” (e.g.&nbsp;<code>y ~ normal(mu, sigma);</code>) automatically drops constant terms (unless configured differently), see <a href="https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement">https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement</a>. Constant terms are terms which do not depend on model parameters, and this package’s macros and functions currently do not try to figure out which terms do not depend on model parameters, and as such we never drop them. This may lead to (constant) differences in the computed log-densities from the Stan and Julia implementations.</p>
+</section>
+<section id="some-models-are-not-implemented-yet-or-may-have-smaller-or-bigger-errors" class="level2">
+<h2 class="anchored" data-anchor-id="some-models-are-not-implemented-yet-or-may-have-smaller-or-bigger-errors">Some models are not implemented yet, or may have smaller or bigger errors</h2>
+<p>I’ve implemented many of the models, but I haven’t implemented all of them, and I probably have made some mistakes in implementing some of them.</p>
+</section>
+<section id="some-models-may-have-been-implemented-suboptimally" class="level2">
+<h2 class="anchored" data-anchor-id="some-models-may-have-been-implemented-suboptimally">Some models may have been implemented suboptimally</h2>
+<p>Just that.</p>
+</section>
+</section>
+<section id="using-and-testing-the-implementations" class="level1">
+<h1>Using and testing the implementations</h1>
+<p>See <a href="https://nsiccha.github.io/StanBlocks.jl/#overview-of-posteriors">https://nsiccha.github.io/StanBlocks.jl/#overview-of-posteriors</a> for an overview of (hopefully) correctly implemented models.</p>
+<p>See <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/test/runtests.jl"><code>test/runtests.jl</code></a> for a way to run and check the models. After importing <code>PosteriorDB</code>, <code>StanLogDensityProblems</code> and <code>LogDensityProblems</code>, you should have access to reference Stan implementations of the log density and of its gradient, see the documentation of <code>StanLogDensityProblems.jl</code>. The Stan log density can then be compared to the Julia log density as is, and after loading Julia’s AD packages, you can also compare the Stan log density gradient to the Julia log density gradient.</p>
+</section>
+<section id="overview-of-posteriors" class="level1">
+<h1>Overview of posteriors</h1>
 <p>The below table shows information about the implemented posteriors. The column <code>directly comparable</code> has value <code>yes</code> if the <strong>median absolute deviation</strong> of the reference (Stan) and unadjusted Julia implementation of the log density is less than <code>1e-4</code>. That quantity being different from zero usually implies that Stan has eliminated constant terms in the log density, saving some computational work. The column <code>usable</code> has value <code>yes</code> if the <strong>median relative absolute deviation</strong> of the reference (Stan) and constant-adjusted Julia implementation of the log density is less than <code>1e-8</code>.</p>
-<div id="d6a45566" class="cell" data-execution_count="1">
+<div id="a7264a7b" class="cell" data-execution_count="1">
 <div class="cell-output cell-output-display">
 <table data-quarto-postprocess="true" class="table table-sm table-striped small">
 <thead>
@@ -160,7 +262,7 @@ ul.task-list li input[type="checkbox"] {
 </table>
 </div>
 </div>
-<div id="fb1f2aeb" class="cell" data-execution_count="2">
+<div id="b780bab6" class="cell" data-execution_count="2">
 <div class="cell-output cell-output-display">
 <table data-quarto-postprocess="true" class="table table-sm table-striped small">
 <thead>
@@ -1504,6 +1606,7 @@ ul.task-list li input[type="checkbox"] {
 </div>
 
 
+</section>
 
 </main> <!-- /main -->
 <script id="quarto-html-after-body" type="application/javascript">
