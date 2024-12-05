@@ -124,6 +124,18 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </button>
           <div class="collapse navbar-collapse" id="navbarCollapse">
             <ul class="navbar-nav navbar-nav-scroll me-auto">
+  <li class="nav-item">
+    <a class="nav-link active" href="./index.html" aria-current="page"> 
+<span class="menu-text">Overview</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./performance.html"> 
+<span class="menu-text">Performance</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./implementations.html"> 
+<span class="menu-text">Implementations</span></a>
+  </li>  
   <li class="nav-item compact">
     <a class="nav-link" href="https://github.com/nsiccha/StanBlocks.jl"> <i class="bi bi-github" role="img">
 </i> 
@@ -240,7 +252,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="overview-of-posteriors" class="level1">
 <h1>Overview of posteriors</h1>
 <p>The below table shows information about the implemented posteriors. The column <code>directly comparable</code> has value <code>yes</code> if the <strong>median absolute deviation</strong> of the reference (Stan) and unadjusted Julia implementation of the log density is less than <code>1e-4</code>. That quantity being different from zero usually implies that Stan has eliminated constant terms in the log density, saving some computational work. The column <code>usable</code> has value <code>yes</code> if the <strong>median relative absolute deviation</strong> of the reference (Stan) and constant-adjusted Julia implementation of the log density is less than <code>1e-8</code>.</p>
-<div id="a7264a7b" class="cell" data-execution_count="1">
+<div id="5b1accea" class="cell" data-execution_count="1">
 <div class="cell-output cell-output-display">
 <table data-quarto-postprocess="true" class="table table-sm table-striped small">
 <thead>
@@ -262,7 +274,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </table>
 </div>
 </div>
-<div id="b780bab6" class="cell" data-execution_count="2">
+<div id="0f1ac640" class="cell" data-execution_count="2">
 <div class="cell-output cell-output-display">
 <table data-quarto-postprocess="true" class="table table-sm table-striped small">
 <thead>
