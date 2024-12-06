@@ -20,10 +20,10 @@ getsampletimes(x::Chairmarks.Benchmark) = getfield.(x.samples, :time)
 pdb = PosteriorDB.database()
 posterior_names = PosteriorDB.posterior_names(pdb)
 benchmarks = map(posterior_names) do posterior_name
-    performance_path = joinpath("cache", "$(posterior_name)_performance.sjl")
-    isfile(performance_path) && return Serialization.deserialize(performance_path)
     validity_path = joinpath("cache", "$posterior_name.sjl")
+    performance_path = joinpath("cache", "$(posterior_name)_performance.sjl")
     isfile(validity_path) || return 
+    mtime(performance_path) > mtime(validity_path) && return Serialization.deserialize(performance_path)
     validity = Serialization.deserialize(validity_path)
     validity.usable == "yes" || return
     try
@@ -49,11 +49,11 @@ benchmarks = map(posterior_names) do posterior_name
             jallocs=mean(jbenchmark).allocs, 
             stime=UncertainStatistic(mean, stimes)
         )
-        Serialization.serialize(performance_path, rv)
+        Serialization.serialize(performance_path, rv) 
         return rv
     catch
     end
-end
+end 
 df = DataFrame([
     merge((;posterior_name), row) for (posterior_name, row) in zip(posterior_names, benchmarks) if !isnothing(row)
 ])
@@ -64,9 +64,9 @@ df = DataFrame(OrderedDict(
     "Stan mean relative runtime"=>df.stime,
     "Julia mean relative runtime"=>df.jtime,
     "Julia allocations"=>df.jallocs,
-    "implementations"=>implementations_string.(df.posterior_name)
+    "implementations"=>implementations_string.(df.posterior_name) 
 ))
-pretty_table(df; backend=Val(:html), show_subheader=false)
+pretty_table(df; backend=Val(:html), show_subheader=false) 
 ```
 
 # Gradient runtime comparison
@@ -76,12 +76,12 @@ pretty_table(df; backend=Val(:html), show_subheader=false)
 benchmarks = map(posterior_names) do posterior_name
     # posterior_name == "earnings-earn_height" || return
     performance_path = joinpath("cache", "$(posterior_name)_gradient.sjl")
-    if isfile(performance_path) 
+    validity_path = joinpath("cache", "$posterior_name.sjl")
+    isfile(validity_path) || return 
+    if mtime(performance_path) > mtime(validity_path)
         rv = Serialization.deserialize(performance_path)
         !isnothing(rv) && return rv
     end
-    validity_path = joinpath("cache", "$posterior_name.sjl")
-    isfile(validity_path) || return 
     validity = Serialization.deserialize(validity_path)
     validity.usable == "yes" || return
     try
@@ -139,8 +139,8 @@ df = DataFrame(OrderedDict(
     "posterior name"=>df.posterior_name,
     "dimension"=>posterior_dimension.(df.posterior_name),
     "Stan mean relative runtime"=>df.stime,
-    "Julia mean relative runtime"=>df.jtime,
-    "Julia allocations"=>df.jallocs,
+    "Julia+Enzyme mean relative runtime"=>df.jtime,
+    "Julia+Enzyme allocations"=>df.jallocs,
     "implementations"=>implementations_string.(df.posterior_name)
 ))
 pretty_table(df; backend=Val(:html), show_subheader=false)

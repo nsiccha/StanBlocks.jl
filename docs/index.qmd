@@ -15,7 +15,7 @@ include("julia/common.jl")
 nan_on_error(f, x) = try
     f(x)
 catch e
-    NaN
+    NaN 
 end
 nan_on_error(f) = Base.Fix1(nan_on_error, f)
 mkpath("cache")
@@ -40,27 +40,23 @@ tests = map(posterior_names) do posterior_name
     usable = comparable = "no"
 
     n = LogDensityProblems.dimension(stan_problem)
-    dimension = if LogDensityProblems.dimension(stan_problem) == LogDensityProblems.dimension(jlpdf)
-        n
-    else
-        "FAILED"
-    end
-    m = 200
+    dimension = n
+    m = 200 
     X = randn((n, m))
-    jlpdfs = mapreduce(nan_on_error(jlpdf), vcat, eachcol(X)) 
+    jlpdfs = mapreduce((jlpdf), vcat, eachcol(X)) 
     slpdfs = mapreduce(slpdf, vcat, eachcol(X)) 
     finite_idxs = filter(i->isfinite(jlpdfs[i]+slpdfs[i]),1:m)
-    throws = length(finite_idxs) > 0
+    throws = length(finite_idxs) == 0
     if !throws
         jlpdfs = jlpdfs[finite_idxs]
         slpdfs = slpdfs[finite_idxs]
         ajlpdfs = jlpdfs .+ median(slpdfs-jlpdfs) 
         dconstant = UncertainStatistic(median, abs.(jlpdfs-slpdfs))
         dremaining = UncertainStatistic(median, abs.((slpdfs .- ajlpdfs) ./ slpdfs)) 
-        usable = if dremaining <= 1e-8 
+        usable = if dremaining <= 1e-8  
             "yes"
         elseif dremaining <= 1e-4
-            "maybe"
+            "maybe" 
         elseif dremaining <= 1e-2
             "maybe maybe?"
         else
@@ -69,8 +65,10 @@ tests = map(posterior_names) do posterior_name
         comparable = if dconstant <= 1e-4
             "yes"
         else
-            "maybe?"
+            "maybe?" 
         end
+    else
+        error(finite_idxs)
     end
     rv = (;dimension, throws, dconstant, dremaining, usable, comparable)
     Serialization.serialize(cache_path, rv)
@@ -81,7 +79,7 @@ df = DataFrame(OrderedDict(
     "posterior name"=>posterior_names,
     "dimension"=>getproperty.(tests, :dimension),
     "usable"=>getproperty.(tests, :usable),
-    "inferred"=>ternary.(getproperty.(tests, :inferred), "yes", "no"),
+    # "inferred"=>ternary.(getproperty.(tests, :inferred), "yes", "no"),
     "directly comparable"=>getproperty.(tests, :comparable),
     "constant difference"=>getproperty.(tests, :dconstant),
     "remaining relative difference"=>getproperty.(tests, :dremaining),
@@ -90,9 +88,9 @@ sort!(df, :usable; rev=true)
 pretty_table(DataFrame(
     "posteriors"=>size(df, 1), 
     "usable posteriors"=>sum(==("yes"), df.usable), 
-    "return type stable posteriors"=>sum(==("yes"), df.inferred), 
+    # "return type stable posteriors"=>sum(==("yes"), df.inferred), 
     "directly comparable posteriors"=>sum(==("yes"), df[!, "directly comparable"])
-); backend=Val(:html), show_subheader=false)
+); backend=Val(:html), show_subheader=false) 
 ```
 
 ```{julia}

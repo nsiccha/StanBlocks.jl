@@ -3,7 +3,7 @@ module PosteriorDBExt
 import PosteriorDB
 import StanBlocks
 import StanBlocks: julia_implementation, @stan, @parameters, @transformed_parameters, @model, @broadcasted
-import StanBlocks: bernoulli_lpmf, binomial_lpmf, log_sum_exp, logit, binomial_logit_lpmf, bernoulli_logit_lpmf, inv_logit, log_inv_logit, rep_vector, square, normal_lpdf, sd, multi_normal_lpdf, student_t_lpdf, gp_exp_quad_cov, log_mix, append_row, append_col, pow, diag_matrix, normal_id_glm_lpdf, rep_matrix, rep_row_vector, cholesky_decompose, dot_self, cumulative_sum, softmax, log1m_inv_logit, matrix_constrain, integrate_ode_rk45, integrate_ode_bdf, poisson_lpdf, nothrow_log, categorical_lpmf, dirichlet_lpdf, exponential_lpdf, sub_col, stan_tail, dot_product, segment, inv_gamma_lpdf, diag_pre_multiply, multi_normal_cholesky_lpdf
+import StanBlocks: bernoulli_lpmf, binomial_lpmf, log_sum_exp, logit, binomial_logit_lpmf, bernoulli_logit_lpmf, inv_logit, log_inv_logit, rep_vector, square, normal_lpdf, sd, multi_normal_lpdf, student_t_lpdf, gp_exp_quad_cov, log_mix, append_row, append_col, pow, diag_matrix, normal_id_glm_lpdf, rep_matrix, rep_row_vector, cholesky_decompose, dot_self, cumulative_sum, softmax, log1m_inv_logit, matrix_constrain, integrate_ode_rk45, integrate_ode_bdf, poisson_lpdf, nothrow_log, categorical_lpmf, dirichlet_lpdf, exponential_lpdf, sub_col, stan_tail, dot_product, segment, inv_gamma_lpdf, diag_pre_multiply, multi_normal_cholesky_lpdf, logistic_lpdf
 using Statistics, LinearAlgebra
 
 @inline PosteriorDB.implementation(model::PosteriorDB.Model, ::Val{:stan_blocks}) = julia_implementation(Val(Symbol(PosteriorDB.name(model))))
@@ -48,7 +48,6 @@ julia_implementation(::Val{:sesame_one_pred_a}; N, encouraged, watched, kwargs..
 end
 julia_implementation(::Val{:Rate_1_model}; n, k, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             theta::real(lower=0.,upper=1.)
         end
@@ -56,13 +55,11 @@ julia_implementation(::Val{:Rate_1_model}; n, k, kwargs...) = begin
             theta ~ beta(1, 1)
             k ~ binomial(n, theta)
         end
-        return target
     end
 end
 julia_implementation(::Val{:nes_logit_model}; N, income, vote, kwargs...) = begin 
     X = reshape(income, (N, 1))
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::real
             beta::vector[1]
@@ -70,12 +67,10 @@ julia_implementation(::Val{:nes_logit_model}; N, income, vote, kwargs...) = begi
         @model begin
             vote ~ bernoulli_logit_glm(X, alpha, beta);
         end
-        return target
     end
 end
 julia_implementation(::Val{:kidscore_momiq}; N, kid_score, mom_iq, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             beta::vector[2]
             sigma::real(lower=0)
@@ -84,12 +79,10 @@ julia_implementation(::Val{:kidscore_momiq}; N, kid_score, mom_iq, kwargs...) = 
             sigma ~ cauchy(0, 2.5);
             kid_score ~ normal(@broadcasted(beta[1] + beta[2] * mom_iq), sigma);
         end
-        return target
     end
 end
 julia_implementation(::Val{:kidscore_momhs}; N, kid_score, mom_hs, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             beta::vector[2]
             sigma::real(lower=0)
@@ -98,13 +91,11 @@ julia_implementation(::Val{:kidscore_momhs}; N, kid_score, mom_hs, kwargs...) = 
             sigma ~ cauchy(0, 2.5);
             kid_score ~ normal(@broadcasted(beta[1] + beta[2] * mom_hs), sigma);
         end
-        return target
     end
 end
 julia_implementation(::Val{:logearn_height}; N, earn, height, kwargs...) = begin 
     log_earn = @. log(earn)
     @stan begin 
-        target = 0.
         @parameters begin
             beta::vector[2]
             sigma::real(lower=0)
@@ -112,13 +103,11 @@ julia_implementation(::Val{:logearn_height}; N, earn, height, kwargs...) = begin
         @model begin
             log_earn ~ normal(@broadcasted(beta[1] + beta[2] * height), sigma);
         end
-        return target
     end
 end
 julia_implementation(::Val{:blr}; N, D, X, y, kwargs...) = begin 
     @assert size(X) == (N,D)
     @stan begin 
-        target = 0.
         @parameters begin
             beta::vector[D]
             sigma::real(lower=0)
@@ -128,14 +117,12 @@ julia_implementation(::Val{:blr}; N, D, X, y, kwargs...) = begin
             target += normal_lpdf(sigma, 0, 10);
             target += normal_lpdf(y, X * beta, sigma);
         end
-        return target
     end
 end
 julia_implementation(::Val{:wells_dist100_model}; N, switched, dist, kwargs...) = begin 
     dist100 = @. dist / 100.
     X = reshape(dist100, (N, 1))
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::real
             beta::vector[1]
@@ -143,12 +130,10 @@ julia_implementation(::Val{:wells_dist100_model}; N, switched, dist, kwargs...) 
         @model begin
             switched ~ bernoulli_logit_glm(X, alpha, beta);
         end
-        return target
     end
 end
 julia_implementation(::Val{:Rate_3_model}; n1, n2, k1, k2, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             theta::real(lower=0,upper=1)
         end
@@ -157,13 +142,11 @@ julia_implementation(::Val{:Rate_3_model}; n1, n2, k1, k2, kwargs...) = begin
             k1 ~ binomial(n1, theta)
             k2 ~ binomial(n2, theta)
         end
-        return target
     end
 end
 julia_implementation(::Val{:logearn_height_male}; N, earn, height, male, kwargs...) = begin 
     log_earn = @. log(earn)
     @stan begin 
-        target = 0.
         @parameters begin
             beta::vector[3]
             sigma::real(lower=0)
@@ -171,12 +154,10 @@ julia_implementation(::Val{:logearn_height_male}; N, earn, height, male, kwargs.
         @model begin
             log_earn ~ normal(@broadcasted(beta[1] + beta[2] * height + beta[3] * male), sigma);
         end
-        return target
     end
 end
 julia_implementation(::Val{:kidscore_momhsiq}; N, kid_score, mom_iq, mom_hs, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             beta::vector[3]
             sigma::real(lower=0)
@@ -185,13 +166,11 @@ julia_implementation(::Val{:kidscore_momhsiq}; N, kid_score, mom_iq, mom_hs, kwa
             sigma ~ cauchy(0, 2.5);
             kid_score ~ normal(@broadcasted(beta[1] + beta[2] * mom_hs + beta[3] * mom_iq), sigma);
         end
-        return target
     end
 end
 julia_implementation(::Val{:log10earn_height}; N, earn, height, kwargs...) = begin 
     log10_earn = @. log10(earn)
     @stan begin 
-        target = 0.
         @parameters begin
             beta::vector[2]
             sigma::real(lower=0)
@@ -199,14 +178,12 @@ julia_implementation(::Val{:log10earn_height}; N, earn, height, kwargs...) = beg
         @model begin
             log10_earn ~ normal(@broadcasted(beta[1] + beta[2] * height), sigma);
         end
-        return target
     end
 end
 julia_implementation(::Val{:wells_dist100ars_model}; N, switched, dist, arsenic, kwargs...) = begin 
     dist100 = @. dist / 100.
     X = hcat(dist100, arsenic)
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::real
             beta::vector[2]
@@ -214,12 +191,10 @@ julia_implementation(::Val{:wells_dist100ars_model}; N, switched, dist, arsenic,
         @model begin
             switched ~ bernoulli_logit_glm(X, alpha, beta);
         end
-        return target
     end
 end
 julia_implementation(::Val{:low_dim_gauss_mix_collapse}; N, y, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             mu::vector[2]
             sigma::vector(lower=0)[2]
@@ -234,12 +209,10 @@ julia_implementation(::Val{:low_dim_gauss_mix_collapse}; N, y, kwargs...) = begi
                                 normal_lpdf(y[n], mu[2], sigma[2]));
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:normal_mixture_k}; K, N, y, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             theta::simplex[K]
             mu::vector[K]
@@ -252,12 +225,10 @@ julia_implementation(::Val{:normal_mixture_k}; K, N, y, kwargs...) = begin
                 target += log_sum_exp(ps);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:low_dim_gauss_mix}; N, y, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             mu::ordered[2]
             sigma::vector(lower=0)[2]
@@ -272,12 +243,10 @@ julia_implementation(::Val{:low_dim_gauss_mix}; N, y, kwargs...) = begin
                                 normal_lpdf(y[n], mu[2], sigma[2]));
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:radon_county}; N, J, county, y, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             a::vector[J]
             mu_a::real
@@ -291,14 +260,12 @@ julia_implementation(::Val{:radon_county}; N, J, county, y, kwargs...) = begin
             a ~ normal(mu_a, sigma_a);
             y ~ normal(y_hat, sigma_y);
         end
-        return target
     end
 end
 julia_implementation(::Val{:logearn_logheight_male}; N, earn, height, male, kwargs...) = begin 
     log_earn = @. log(earn)
     log_height = @. log(height)
     @stan begin 
-        target = 0.
         @parameters begin
             beta::vector[3]
             sigma::real(lower=0)
@@ -306,7 +273,6 @@ julia_implementation(::Val{:logearn_logheight_male}; N, earn, height, male, kwar
         @model begin
             log_earn ~ normal(@broadcasted(beta[1] + beta[2] * log_height + beta[3] * male), sigma);
         end
-        return target
     end
 end
 julia_implementation(::Val{:wells_dae_model}; N, switched, dist, arsenic, educ, kwargs...) = begin 
@@ -314,7 +280,6 @@ julia_implementation(::Val{:wells_dae_model}; N, switched, dist, arsenic, educ, 
     educ4 = @. educ / 4.
     X = hcat(dist100, arsenic, educ4)
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::real
             beta::vector[3]
@@ -322,12 +287,10 @@ julia_implementation(::Val{:wells_dae_model}; N, switched, dist, arsenic, educ, 
         @model begin
             switched ~ bernoulli_logit_glm(X, alpha, beta);
         end
-        return target
     end
 end
 julia_implementation(::Val{:arK}; K, T, y, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::real
             beta::vector[K]
@@ -345,7 +308,6 @@ julia_implementation(::Val{:arK}; K, T, y, kwargs...) = begin
                 y[t] ~ normal(mu, sigma)
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:wells_interaction_model}; N, switched, dist, arsenic, kwargs...) = begin 
@@ -353,7 +315,6 @@ julia_implementation(::Val{:wells_interaction_model}; N, switched, dist, arsenic
     inter = @. dist100 * arsenic
     X = hcat(dist100, arsenic, inter)
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::real
             beta::vector[3]
@@ -361,12 +322,10 @@ julia_implementation(::Val{:wells_interaction_model}; N, switched, dist, arsenic
         @model begin
             switched ~ bernoulli_logit_glm(X, alpha, beta);
         end
-        return target
     end
 end
 julia_implementation(::Val{:radon_pooled}; N, floor_measure, log_radon, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::real
             beta::real
@@ -379,14 +338,12 @@ julia_implementation(::Val{:radon_pooled}; N, floor_measure, log_radon, kwargs..
 
             log_radon ~ normal(@broadcasted(alpha + beta * floor_measure), sigma_y)
         end
-        return target
     end
 end
 julia_implementation(::Val{:logearn_interaction}; N, earn, height, male, kwargs...) = begin 
         log_earn = @. log(earn)
         inter = @. height * male
 @stan begin 
-            target = 0.
             @parameters begin
                 beta::vector[4]
                 sigma::real(lower=0)
@@ -394,14 +351,12 @@ julia_implementation(::Val{:logearn_interaction}; N, earn, height, male, kwargs.
             @model begin
                 log_earn ~ normal(@broadcasted(beta[1] + beta[2] * height + beta[3] * male + beta[4] * inter), sigma);
             end
-            return target
         end
 end
 julia_implementation(::Val{:logmesquite_logvolume}; N, weight, diam1, diam2, canopy_height, kwargs...) = begin 
         log_weight = @. log(weight);
         log_canopy_volume = @. log(diam1 * diam2 * canopy_height);
 @stan begin 
-            target = 0.
             @parameters begin
                 beta::vector[2]
                 sigma::real(lower=0)
@@ -409,12 +364,10 @@ julia_implementation(::Val{:logmesquite_logvolume}; N, weight, diam1, diam2, can
             @model begin
                 log_weight ~ normal(@broadcasted(beta[1] + beta[2] * log_canopy_volume), sigma);
             end
-            return target
     end
 end
 julia_implementation(::Val{:garch11}; T, y, sigma1, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             mu::real
             alpha0::real(lower=0.)
@@ -429,12 +382,10 @@ julia_implementation(::Val{:garch11}; T, y, sigma1, kwargs...) = begin
                 y[t] ~ normal(mu, sigma)
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:eight_schools_centered}; J, y, sigma, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             theta::vector[J]
             mu::real
@@ -446,13 +397,11 @@ julia_implementation(::Val{:eight_schools_centered}; J, y, sigma, kwargs...) = b
             y ~ normal(theta, sigma);
             mu ~ normal(0, 5);
         end
-        return target
     end
 end
 julia_implementation(::Val{:kidscore_interaction}; N, kid_score, mom_iq, mom_hs, kwargs...) = begin 
         inter = @. mom_hs * mom_iq;
 @stan begin 
-            target = 0.
             @parameters begin
                 beta::vector[4]
                 sigma::real(lower=0)
@@ -461,12 +410,10 @@ julia_implementation(::Val{:kidscore_interaction}; N, kid_score, mom_iq, mom_hs,
                 sigma ~ cauchy(0, 2.5);
                 kid_score ~ normal(@broadcasted(beta[1] + beta[2] * mom_hs + beta[3] * mom_iq + beta[4] * inter), sigma);
             end
-            return target
     end
 end
 julia_implementation(::Val{:mesquite}; N, weight, diam1, diam2, canopy_height, total_height, density, group, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             beta::vector[7]
             sigma::real(lower=0)
@@ -476,12 +423,10 @@ julia_implementation(::Val{:mesquite}; N, weight, diam1, diam2, canopy_height, t
             + beta[4] * canopy_height + beta[5] * total_height
             + beta[6] * density + beta[7] * group), sigma);
         end
-        return target
     end
 end
 julia_implementation(::Val{:gp_regr}; N, x, y, kwargs...) = begin 
 @stan begin 
-            target = 0.
             @parameters begin
                 rho::real(lower=0)
                 alpha::real(lower=0)
@@ -499,7 +444,6 @@ julia_implementation(::Val{:gp_regr}; N, x, y, kwargs...) = begin
                 # Think about how to do this
                 # y ~ multi_normal_cholesky(rep_vector(0, N), L_cov);
             end
-            return target
     end
 end
 julia_implementation(::Val{:kidscore_mom_work}; N, kid_score, mom_work, kwargs...) = begin 
@@ -507,7 +451,6 @@ julia_implementation(::Val{:kidscore_mom_work}; N, kid_score, mom_work, kwargs..
         work3 = @. Float64(mom_work == 3)
         work4 = @. Float64(mom_work == 4)
 @stan begin 
-            target = 0.
             @parameters begin
                 beta::vector[4]
                 sigma::real(lower=0)
@@ -516,12 +459,10 @@ julia_implementation(::Val{:kidscore_mom_work}; N, kid_score, mom_work, kwargs..
                 kid_score ~ normal(@broadcasted(beta[1] + beta[2] * work2 + beta[3] * work3
                 + beta[4] * work4), sigma);
             end
-            return target
         end
 end
 julia_implementation(::Val{:Rate_2_model}; n1, n2, k1, k2, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             theta1::real(lower=0,upper=1)
             theta2::real(lower=0,upper=1)
@@ -533,7 +474,6 @@ julia_implementation(::Val{:Rate_2_model}; n1, n2, k1, k2, kwargs...) = begin
             k1 ~ binomial(n1, theta1)
             k2 ~ binomial(n2, theta2)
         end
-        return target
     end
 end
 julia_implementation(::Val{:wells_interaction_c_model}; N, switched, dist, arsenic, kwargs...) = begin 
@@ -542,7 +482,6 @@ julia_implementation(::Val{:wells_interaction_c_model}; N, switched, dist, arsen
         inter = @. c_dist100 * c_arsenic
         X = hcat(c_dist100, c_arsenic, inter)
 @stan begin 
-            target = 0.
             @parameters begin
                 alpha::real
                 beta::vector[3]
@@ -550,12 +489,10 @@ julia_implementation(::Val{:wells_interaction_c_model}; N, switched, dist, arsen
             @model begin
                 switched ~ bernoulli_logit_glm(X, alpha, beta);
             end
-            return target
         end
 end
 julia_implementation(::Val{:radon_county_intercept}; N, J, county_idx, floor_measure, log_radon, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::vector[J]
             beta::real
@@ -570,7 +507,6 @@ julia_implementation(::Val{:radon_county_intercept}; N, J, county_idx, floor_mea
                 target += normal_lpdf(log_radon[n], mu, sigma_y);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:kidscore_interaction_c}; N, kid_score, mom_iq, mom_hs, kwargs...) = begin 
@@ -578,7 +514,6 @@ julia_implementation(::Val{:kidscore_interaction_c}; N, kid_score, mom_iq, mom_h
         c_mom_iq = @. mom_iq - $mean(mom_iq);
         inter = @. c_mom_hs * c_mom_iq;
 @stan begin 
-            target = 0.
             @parameters begin
                 beta::vector[4]
                 sigma::real(lower=0)
@@ -586,7 +521,6 @@ julia_implementation(::Val{:kidscore_interaction_c}; N, kid_score, mom_iq, mom_h
             @model begin
                 kid_score ~ normal(@broadcasted(beta[1] + beta[2] * c_mom_hs + beta[3] * c_mom_iq + beta[4] * inter), sigma);
             end
-            return target
     end
 end
 julia_implementation(::Val{:kidscore_interaction_c2}; N, kid_score, mom_iq, mom_hs, kwargs...) = begin 
@@ -594,7 +528,6 @@ julia_implementation(::Val{:kidscore_interaction_c2}; N, kid_score, mom_iq, mom_
         c_mom_iq = @. mom_iq - 100;
         inter = @. c_mom_hs * c_mom_iq;
 @stan begin 
-            target = 0.
             @parameters begin
                 beta::vector[4]
                 sigma::real(lower=0)
@@ -602,13 +535,11 @@ julia_implementation(::Val{:kidscore_interaction_c2}; N, kid_score, mom_iq, mom_
             @model begin
                 kid_score ~ normal(@broadcasted(beta[1] + beta[2] * c_mom_hs + beta[3] * c_mom_iq + beta[4] * inter), sigma);
             end
-            return target
         end
 end
 julia_implementation(::Val{:gp_pois_regr}; N, x, k, kwargs...) = begin 
         nugget = diag_matrix(rep_vector(1e-10, N))
 @stan begin 
-            target = 0.
             @parameters begin
                 rho::real(lower=0)
                 alpha::real(lower=0)
@@ -627,12 +558,10 @@ julia_implementation(::Val{:gp_pois_regr}; N, x, k, kwargs...) = begin
                 
                 k ~ poisson_log(f);
             end
-            return target
     end
 end
 julia_implementation(::Val{:surgical_model}; N, r, n, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             mu::real
             sigmasq::real(lower=0)
@@ -648,7 +577,6 @@ julia_implementation(::Val{:surgical_model}; N, r, n, kwargs...) = begin
             b ~ normal(mu, sigma);
             r ~ binomial_logit(n, b);
         end
-        return target
     end
 end
 julia_implementation(::Val{:wells_dae_c_model}; N, switched, dist, arsenic, educ, kwargs...) = begin 
@@ -658,7 +586,6 @@ julia_implementation(::Val{:wells_dae_c_model}; N, switched, dist, arsenic, educ
     educ4 = @. educ / 4.
     X = hcat(c_dist100, c_arsenic, da_inter, educ4)
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::real
             beta::vector[4]
@@ -666,12 +593,10 @@ julia_implementation(::Val{:wells_dae_c_model}; N, switched, dist, arsenic, educ
         @model begin
             switched ~ bernoulli_logit_glm(X, alpha, beta);
         end
-        return target
     end
 end
 julia_implementation(::Val{:Rate_4_model}; n, k, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             theta::real(lower=0,upper=1)
             thetaprior::real(lower=0,upper=1)
@@ -681,7 +606,6 @@ julia_implementation(::Val{:Rate_4_model}; n, k, kwargs...) = begin
             thetaprior ~ beta(1, 1);
             k ~ binomial(n, theta);
         end
-        return target
     end
 end
 julia_implementation(::Val{:logearn_interaction_z}; N, earn, height, male, kwargs...) = begin 
@@ -689,7 +613,6 @@ julia_implementation(::Val{:logearn_interaction_z}; N, earn, height, male, kwarg
         z_height = @. (height - $mean(height)) / $sd(height);
         inter = @. z_height * male
 @stan begin 
-            target = 0.
             @parameters begin
                 beta::vector[4]
                 sigma::real(lower=0)
@@ -697,12 +620,10 @@ julia_implementation(::Val{:logearn_interaction_z}; N, earn, height, male, kwarg
             @model begin
                 log_earn ~ normal(@broadcasted(beta[1] + beta[2] * z_height + beta[3] * male + beta[4] * inter), sigma);
             end
-            return target
     end
 end
 julia_implementation(::Val{:normal_mixture}; N, y, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             theta::real(lower=0,upper=1)
             mu::vector[2]
@@ -717,12 +638,10 @@ julia_implementation(::Val{:normal_mixture}; N, y, kwargs...) = begin
                                 normal_lpdf(y[n], mu[2], 1.0));
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:radon_partially_pooled_centered}; N, J, county_idx, log_radon, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::vector[J]
             mu_alpha::real
@@ -740,7 +659,6 @@ julia_implementation(::Val{:radon_partially_pooled_centered}; N, J, county_idx, 
                 target += normal_lpdf(log_radon[n], mu, sigma_y);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:kidscore_interaction_z}; N, kid_score, mom_iq, mom_hs, kwargs...) = begin 
@@ -748,7 +666,6 @@ julia_implementation(::Val{:kidscore_interaction_z}; N, kid_score, mom_iq, mom_h
         c_mom_iq = @. (mom_iq - $mean(mom_iq)) / (2 * $sd(mom_iq));
         inter = @. c_mom_hs * c_mom_iq;
 @stan begin 
-            target = 0.
             @parameters begin
                 beta::vector[4]
                 sigma::real(lower=0)
@@ -756,13 +673,11 @@ julia_implementation(::Val{:kidscore_interaction_z}; N, kid_score, mom_iq, mom_h
             @model begin
                 kid_score ~ normal(@broadcasted(beta[1] + beta[2] * c_mom_hs + beta[3] * c_mom_iq + beta[4] * inter), sigma);
             end
-            return target
         end
 end
 julia_implementation(::Val{:kilpisjarvi}; N, x, y, xpred, pmualpha, psalpha, pmubeta, psbeta, kwargs...) = begin 
         x_ = x
 @stan begin 
-            target = 0.
             @parameters begin
                 alpha::real
                 beta::real
@@ -773,7 +688,6 @@ julia_implementation(::Val{:kilpisjarvi}; N, x, y, xpred, pmualpha, psalpha, pmu
                 beta ~ normal(pmubeta, psbeta);
                 y ~ normal(@broadcasted(alpha + beta * x_), sigma);
             end
-            return target
     end
 end
 julia_implementation(::Val{:wells_daae_c_model}; N, switched, dist, arsenic, assoc, educ, kwargs...) = begin 
@@ -783,7 +697,6 @@ julia_implementation(::Val{:wells_daae_c_model}; N, switched, dist, arsenic, ass
         educ4 = @. educ / 4.
         X = hcat(c_dist100, c_arsenic, da_inter, assoc, educ4)
 @stan begin 
-            target = 0.
             @parameters begin
                 alpha::real
                 beta::vector[5]
@@ -791,12 +704,10 @@ julia_implementation(::Val{:wells_daae_c_model}; N, switched, dist, arsenic, ass
             @model begin
                 switched ~ bernoulli_logit_glm(X, alpha, beta);
             end
-            return target
     end
 end
 julia_implementation(::Val{:eight_schools_noncentered}; J, y, sigma, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             theta_trans::vector[J]
             mu::real
@@ -809,12 +720,10 @@ julia_implementation(::Val{:eight_schools_noncentered}; J, y, sigma, kwargs...) 
             mu ~ normal(0, 5);
             tau ~ cauchy(0, 5);
         end
-        return target
     end
 end
 julia_implementation(::Val{:Rate_5_model}; n1, n2, k1, k2, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             theta::real(lower=0,upper=1)
         end
@@ -823,13 +732,11 @@ julia_implementation(::Val{:Rate_5_model}; n1, n2, k1, k2, kwargs...) = begin
             k1 ~ binomial(n1, theta);
             k2 ~ binomial(n2, theta);
         end
-        return target
     end
 end
 julia_implementation(::Val{:dugongs_model}; N, x, Y, kwargs...) = begin 
         x_ = x
 @stan begin 
-            target = 0.
             @parameters begin
                 alpha::real
                 beta::real
@@ -851,12 +758,10 @@ julia_implementation(::Val{:dugongs_model}; N, x, Y, kwargs...) = begin
                 lambda ~ uniform(.5, 1.);
                 tau ~ gamma(.0001, .0001);
             end
-            return target
     end
 end
 julia_implementation(::Val{:irt_2pl}; I, J, y, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             sigma_theta::real(lower=0);
             theta::vector[J];
@@ -883,7 +788,6 @@ julia_implementation(::Val{:irt_2pl}; I, J, y, kwargs...) = begin
                 y[i,:] ~ bernoulli_logit(@broadcasted(a[i] * (theta - b[i])));
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:logmesquite_logva}; N, weight, diam1, diam2, canopy_height, group, kwargs...) = begin 
@@ -891,7 +795,6 @@ julia_implementation(::Val{:logmesquite_logva}; N, weight, diam1, diam2, canopy_
         log_canopy_volume = @. log(diam1 * diam2 * canopy_height);
         log_canopy_area = @. log(diam1 * diam2)
 @stan begin 
-            target = 0.
             @parameters begin
                 beta::vector[4]
                 sigma::real(lower=0)
@@ -900,12 +803,10 @@ julia_implementation(::Val{:logmesquite_logva}; N, weight, diam1, diam2, canopy_
                 log_weight ~ normal(@broadcasted(beta[1] + beta[2] * log_canopy_volume
                 + beta[3] * log_canopy_area + beta[4] * group), sigma);
             end
-            return target
     end
 end
 julia_implementation(::Val{:radon_variable_slope_centered}; J, N, county_idx, floor_measure, log_radon, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::real
             beta::vector[J]
@@ -925,12 +826,10 @@ julia_implementation(::Val{:radon_variable_slope_centered}; J, N, county_idx, fl
                 target += normal_lpdf(log_radon[n], mu, sigma_y);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:radon_variable_intercept_centered}; J, N, county_idx, floor_measure, log_radon, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::vector[J]
             beta::real
@@ -950,13 +849,11 @@ julia_implementation(::Val{:radon_variable_intercept_centered}; J, N, county_idx
                 target += normal_lpdf(log_radon[n], mu, sigma_y);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:seeds_stanified_model}; I, n, N, x1, x2, kwargs...) = begin 
         x1x2 = @. x1 * x2;
 @stan begin 
-            target = 0.
             @parameters begin
                 alpha0::real;
                 alpha1::real;
@@ -976,7 +873,6 @@ julia_implementation(::Val{:seeds_stanified_model}; I, n, N, x1, x2, kwargs...) 
                 n ~ binomial_logit(N,
                                    @broadcasted(alpha0 + alpha1 * x1 + alpha2 * x2 + alpha12 * x1x2 + b));
             end
-            return target
     end
 end
 julia_implementation(::Val{:state_space_stochastic_level_stochastic_seasonal}; n, y, x, w, kwargs...) = begin 
@@ -984,7 +880,6 @@ julia_implementation(::Val{:state_space_stochastic_level_stochastic_seasonal}; n
         mu_lower = mean(y) - 3 * sd(y)
         mu_upper = mean(y) + 3 * sd(y)
 @stan begin 
-            target = 0.
             @parameters begin
                 mu::vector(lower=mu_lower, upper=mu_upper)[n]
                 seasonal::vector[n]
@@ -992,7 +887,7 @@ julia_implementation(::Val{:state_space_stochastic_level_stochastic_seasonal}; n
                 lambda::real
                 sigma::positive_ordered[3]
             end
-            @model begin
+            @model @views begin
                 for t in 12:n
                     seasonal[t] ~ normal(-sum(seasonal[t-11:t-1]), sigma[1]);
                 end
@@ -1005,12 +900,10 @@ julia_implementation(::Val{:state_space_stochastic_level_stochastic_seasonal}; n
                 
                 sigma ~ student_t(4, 0, 1);
             end
-            return target
         end
 end
 julia_implementation(::Val{:radon_partially_pooled_noncentered}; N, J, county_idx, log_radon, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             alpha_raw::vector[J]
             mu_alpha::real
@@ -1029,13 +922,11 @@ julia_implementation(::Val{:radon_partially_pooled_noncentered}; N, J, county_id
                 target += normal_lpdf(log_radon[n], mu, sigma_y);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:seeds_model}; I, n, N, x1, x2, kwargs...) = begin 
         x1x2 = @. x1 * x2;
 @stan begin 
-            target = 0.
             @parameters begin
                 alpha0::real;
                 alpha1::real;
@@ -1056,12 +947,10 @@ julia_implementation(::Val{:seeds_model}; I, n, N, x1, x2, kwargs...) = begin
                 n ~ binomial_logit(N,
                                    @broadcasted(alpha0 + alpha1 * x1 + alpha2 * x2 + alpha12 * x1x2 + b));
             end
-            return target
         end
 end
 julia_implementation(::Val{:arma11}; T, y, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             mu::real
             phi::real
@@ -1082,12 +971,10 @@ julia_implementation(::Val{:arma11}; T, y, kwargs...) = begin
                 err ~ normal(0, sigma);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:radon_hierarchical_intercept_centered}; J, N, county_idx, log_uppm, floor_measure, log_radon, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::vector[J]
             beta::vector[2]
@@ -1108,13 +995,11 @@ julia_implementation(::Val{:radon_hierarchical_intercept_centered}; J, N, county
                 target += normal_lpdf(log_radon[n], mu, sigma_y);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:seeds_centered_model}; I, n, N, x1, x2, kwargs...) = begin 
         x1x2 = @. x1 * x2;
 @stan begin 
-            target = 0.
             @parameters begin
                 alpha0::real;
                 alpha1::real;
@@ -1135,12 +1020,10 @@ julia_implementation(::Val{:seeds_centered_model}; I, n, N, x1, x2, kwargs...) =
                 n ~ binomial_logit(N,
                                    @broadcasted(alpha0 + alpha1 * x1 + alpha2 * x2 + alpha12 * x1x2 + b));
             end
-            return target
     end
 end
 julia_implementation(::Val{:pilots}; N, n_groups, n_scenarios, group_id, scenario_id, y, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             a::vector[n_groups];
             b::vector[n_scenarios];
@@ -1160,7 +1043,6 @@ julia_implementation(::Val{:pilots}; N, n_groups, n_scenarios, group_id, scenari
             
             y ~ normal(y_hat, sigma_y);
         end
-        return target
     end
 end
 julia_implementation(::Val{:wells_dae_inter_model}; N, switched, dist, arsenic, educ, kwargs...) = begin 
@@ -1172,7 +1054,6 @@ julia_implementation(::Val{:wells_dae_inter_model}; N, switched, dist, arsenic, 
         ae_inter = @. c_arsenic * c_educ4;
         X = hcat(c_dist100, c_arsenic, c_educ4, da_inter, de_inter, ae_inter, )
 @stan begin 
-            target = 0.
             @parameters begin
                 alpha::real
                 beta::vector[6]
@@ -1180,12 +1061,10 @@ julia_implementation(::Val{:wells_dae_inter_model}; N, switched, dist, arsenic, 
             @model begin
                 switched ~ bernoulli_logit_glm(X, alpha, beta);
             end
-            return target
     end
 end
 julia_implementation(::Val{:radon_variable_slope_noncentered}; J, N, county_idx, floor_measure, log_radon, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::real
             beta_raw::vector[J]
@@ -1206,12 +1085,10 @@ julia_implementation(::Val{:radon_variable_slope_noncentered}; J, N, county_idx,
                 target += normal_lpdf(log_radon[n], mu, sigma_y);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:radon_variable_intercept_slope_centered}; J, N, county_idx, floor_measure, log_radon, kwargs...) = begin 
 @stan begin 
-            target = 0.
             @parameters begin
                 sigma_y::real(lower=0)
                 sigma_alpha::real(lower=0)
@@ -1235,12 +1112,10 @@ julia_implementation(::Val{:radon_variable_intercept_slope_centered}; J, N, coun
                     target += normal_lpdf(log_radon[n], mu, sigma_y);
                 end
             end
-            return target
         end
 end
 julia_implementation(::Val{:radon_variable_intercept_noncentered}; J, N, county_idx, floor_measure, log_radon, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             alpha_raw::vector[J]
             beta::real
@@ -1261,14 +1136,12 @@ julia_implementation(::Val{:radon_variable_intercept_noncentered}; J, N, county_
                 target += normal_lpdf(log_radon[n], mu, sigma_y);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:GLM_Poisson_model}; n, C, year, kwargs...) = begin 
         year_squared = year .^ 2
         year_cubed = year .^ 3
 @stan begin 
-            target = 0.
             @parameters begin
                 alpha::real(lower=-20, upper=+20)
                 beta1::real(lower=-10, upper=+10)
@@ -1279,34 +1152,30 @@ julia_implementation(::Val{:GLM_Poisson_model}; n, C, year, kwargs...) = begin
             @model begin
                 C ~ poisson_log(log_lambda);
             end
-            return target
     end
 end
 julia_implementation(::Val{:ldaK5}; V, M, N, w, doc, alpha, beta, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             theta::simplex[M,5];
             phi::simplex[5,V];
         end
         @model @views begin
             for m in 1:M
-                theta[m] ~ dirichlet(alpha);
+                theta[m,:] ~ dirichlet(alpha);
             end
             for k in 1:5
-                phi[k] ~ dirichlet(beta);
+                phi[k,:] ~ dirichlet(beta);
             end
             for n in 1:N
                 gamma = @broadcasted(log(theta[doc[n], :]) + log(phi[:, w[n]]))
                 target += log_sum_exp(gamma);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:dogs}; n_dogs, n_trials, y, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             beta::vector[3];
         end
@@ -1323,7 +1192,6 @@ julia_implementation(::Val{:dogs}; n_dogs, n_trials, y, kwargs...) = begin
                 end
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:nes}; N, partyid7, real_ideo, race_adj, educ1, gender, income, age_discrete, kwargs...) = begin 
@@ -1331,7 +1199,6 @@ julia_implementation(::Val{:nes}; N, partyid7, real_ideo, race_adj, educ1, gende
         age45_64 = @. Float64(age_discrete == 3);
         age65up = @. Float64(age_discrete == 4);
 @stan begin 
-            target = 0.
             @parameters begin
                 beta::vector[9]
                 sigma::real(lower=0)
@@ -1342,13 +1209,11 @@ julia_implementation(::Val{:nes}; N, partyid7, real_ideo, race_adj, educ1, gende
                 + beta[6] * age65up + beta[7] * educ1 + beta[8] * gender
                 + beta[9] * income), sigma);
             end
-            return target
         end
 end
 julia_implementation(::Val{:dogs_log}; n_dogs, n_trials, y, kwargs...) = begin 
     @assert size(y) == (n_dogs, n_trials)
 @stan begin 
-        target = 0.
         @parameters begin
             beta::vector[2];
         end
@@ -1366,13 +1231,11 @@ julia_implementation(::Val{:dogs_log}; n_dogs, n_trials, y, kwargs...) = begin
                 end
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:GLM_Binomial_model};nyears, C, N, year, kwargs...) = begin 
         year_squared = year .^ 2
 @stan begin 
-            target = 0.
             @parameters begin
                 alpha::real
                 beta1::real
@@ -1385,12 +1248,10 @@ julia_implementation(::Val{:GLM_Binomial_model};nyears, C, N, year, kwargs...) =
                 beta2 ~ normal(0, 100)
                 C ~ binomial_logit(N, logit_p)
             end
-            return target
     end
 end
 julia_implementation(::Val{:radon_hierarchical_intercept_noncentered}; J, N, county_idx, log_uppm, floor_measure, log_radon, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             alpha_raw::vector[J]
             beta::vector[2]
@@ -1412,7 +1273,6 @@ julia_implementation(::Val{:radon_hierarchical_intercept_noncentered}; J, N, cou
                 target += normal_lpdf(log_radon[n], mu, sigma_y);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:logmesquite_logvash}; N, weight, diam1, diam2, canopy_height, total_height, group, kwargs...) = begin 
@@ -1422,7 +1282,6 @@ julia_implementation(::Val{:logmesquite_logvash}; N, weight, diam1, diam2, canop
         log_canopy_shape = @. log(diam1 / diam2);
         log_total_height = @. log(total_height);
 @stan begin 
-            target = 0.
             @parameters begin
                 beta::vector[6]
                 sigma::real(lower=0)
@@ -1433,7 +1292,6 @@ julia_implementation(::Val{:logmesquite_logvash}; N, weight, diam1, diam2, canop
                 + beta[4] * log_canopy_shape
                 + beta[5] * log_total_height + beta[6] * group), sigma);
             end
-            return target
         end
 end
 julia_implementation(::Val{:ldaK2}; V, M, N, w, doc, kwargs...) = begin 
@@ -1441,24 +1299,22 @@ julia_implementation(::Val{:ldaK2}; V, M, N, w, doc, kwargs...) = begin
         alpha = fill(1, K)
         beta = fill(1, V)
 @stan begin 
-            target = 0.
             @parameters begin
                 theta::simplex[M,K];
                 phi::simplex[K,V];
             end
-            @model begin
+            @model @views begin
                 for m in 1:M
-                  theta[m] ~ dirichlet(alpha);
+                  theta[m,:] ~ dirichlet(alpha);
                 end
                 for k in 1:K
-                  phi[k] ~ dirichlet(beta);
+                  phi[k,:] ~ dirichlet(beta);
                 end
                 for n in 1:N
                     gamma = @broadcasted log(theta[doc[n], :]) + log(phi[:, w[n]])
                   target += log_sum_exp(gamma);
                 end
             end
-            return target
     end
 end
 julia_implementation(::Val{:logmesquite}; N, weight, diam1, diam2, canopy_height, total_height, density, group, kwargs...) = begin 
@@ -1469,7 +1325,6 @@ julia_implementation(::Val{:logmesquite}; N, weight, diam1, diam2, canopy_height
         log_total_height = @. log(total_height);
         log_density = @. log(density);
 @stan begin 
-            target = 0.
             @parameters begin
                 beta::vector[7]
                 sigma::real(lower=0)
@@ -1480,13 +1335,11 @@ julia_implementation(::Val{:logmesquite}; N, weight, diam1, diam2, canopy_height
                 + beta[5] * log_total_height + beta[6] * log_density
                 + beta[7] * group), sigma);
             end
-            return target
     end
 end
 julia_implementation(::Val{:rats_model}; N, Npts, rat, x, y, xbar, kwargs...) = begin 
         x_ = x
 @stan begin 
-            target = 0.
             @parameters begin
                 alpha::vector[N];
                 beta::vector[N];
@@ -1507,7 +1360,6 @@ julia_implementation(::Val{:rats_model}; N, Npts, rat, x, y, xbar, kwargs...) = 
                   y[n] ~ normal(alpha[irat] + beta[irat] * (x_[n] - xbar), sigma_y);
                 end
             end
-            return target
     end
 end
 julia_implementation(::Val{:logmesquite_logvas}; N, weight, diam1, diam2, canopy_height, total_height, density, group, kwargs...) = begin 
@@ -1518,7 +1370,6 @@ julia_implementation(::Val{:logmesquite_logvas}; N, weight, diam1, diam2, canopy
         log_total_height = @. log(total_height);
         log_density = @. log(density);
 @stan begin 
-            target = 0.
             @parameters begin
                 beta::vector[7]
                 sigma::real(lower=0)
@@ -1530,41 +1381,37 @@ julia_implementation(::Val{:logmesquite_logvas}; N, weight, diam1, diam2, canopy
                 + beta[5] * log_total_height + beta[6] * log_density
                 + beta[7] * group), sigma);
             end
-            return target
     end
 end
 julia_implementation(::Val{:lsat_model}; N, R, T, culm, response, kwargs...) = begin 
-        r = zeros(Int64, (T, N))
-        for j in 1:culm[1], k in 1:T
-            r[k, j] = response[1, k];
+    r = zeros(Int64, (T, N))
+    for j in 1:culm[1], k in 1:T
+        r[k, j] = response[1, k];
+    end
+    for i in 2:R
+        for j in (culm[i-1]+1):culm[i], k in 1:T
+            r[k, j] = response[i, k];
         end
-        for i in 2:R
-            for j in (culm[i-1]+1):culm[i], k in 1:T
-                r[k, j] = response[i, k];
+    end
+    ones = fill(1., N)
+    @stan begin 
+        @parameters begin
+            alpha::vector[T];
+            theta::vector[N];
+            beta::real(lower=0);
+        end
+        @model @views begin
+            alpha ~ normal(0, 100.);
+            theta ~ normal(0, 1);
+            beta ~ normal(0.0, 100.);
+            for k in 1:T
+                r[k,:] ~ bernoulli_logit(beta * theta - alpha[k] * ones);
             end
         end
-        ones = fill(1., N)
-@stan begin 
-            target = 0.
-            @parameters begin
-                alpha::vector[T];
-                theta::vector[N];
-                beta::real(lower=0);
-            end
-            @model begin
-                alpha ~ normal(0, 100.);
-                theta ~ normal(0, 1);
-                beta ~ normal(0.0, 100.);
-                for k in 1:T
-                    r[k,:] ~ bernoulli_logit(beta * theta - alpha[k] * ones);
-                end
-            end
-            return target
     end
 end
 julia_implementation(::Val{:radon_variable_intercept_slope_noncentered}; J, N, county_idx, floor_measure, log_radon, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             sigma_y::real(lower=0)
             sigma_alpha::real(lower=0)
@@ -1590,33 +1437,29 @@ julia_implementation(::Val{:radon_variable_intercept_slope_noncentered}; J, N, c
                 target += normal_lpdf(log_radon[n], mu, sigma_y);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:GLMM_Poisson_model};n, C, year) = begin 
-        year_squared = year .^ 2
-        year_cubed = year .^ 3
-@stan begin
-            target = 0.
-            @parameters begin
-                alpha::real(lower=-20, upper=+20)
-                beta1::real(lower=-10, upper=+10)
-                beta2::real(lower=-10, upper=+20)
-                beta3::real(lower=-10, upper=+10)
-                eps::vector[n]
-                sigma::real(lower=0, upper=5)
-            end
-            log_lambda = @broadcasted alpha + beta1 * year + beta2 * year_squared + beta3 * year_cubed + eps
-            @model begin
-                C ~ poisson_log(log_lambda)
-                eps ~ normal(0, sigma)
-            end
-            return target
+    year_squared = year .^ 2
+    year_cubed = year .^ 3
+    @stan begin
+        @parameters begin
+            alpha::real(lower=-20, upper=+20)
+            beta1::real(lower=-10, upper=+10)
+            beta2::real(lower=-10, upper=+20)
+            beta3::real(lower=-10, upper=+10)
+            eps::vector[n]
+            sigma::real(lower=0, upper=5)
+        end
+        log_lambda = @broadcasted alpha + beta1 * year + beta2 * year_squared + beta3 * year_cubed + eps
+        @model begin
+            C ~ poisson_log(log_lambda)
+            eps ~ normal(0, sigma)
+        end
     end
 end
 julia_implementation(::Val{:GLMM1_model};nsite, nobs, obs, obsyear, obssite, misyear, missite, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::vector[nsite]
             mu_alpha::real
@@ -1631,12 +1474,10 @@ julia_implementation(::Val{:GLMM1_model};nsite, nobs, obs, obsyear, obssite, mis
                 obs[i] ~ poisson_log(alpha[obssite[i]])
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:hier_2pl}; I, J, N, ii, jj, y, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             theta::vector[J];
             xi1::vector[I];
@@ -1661,7 +1502,6 @@ julia_implementation(::Val{:hier_2pl}; I, J, N, ii, jj, y, kwargs...) = begin
             tau[2] ~ exponential(.1);
             y ~ bernoulli_logit(alpha[ii] .* (theta[jj] - beta[ii]));
         end
-        return target
     end
 end
 julia_implementation(::Val{:dogs_hierarchical}; n_dogs, n_trials, y, kwargs...) = begin 
@@ -1679,7 +1519,6 @@ julia_implementation(::Val{:dogs_hierarchical}; n_dogs, n_trials, y, kwargs...) 
             end
         end
 @stan begin 
-            target = 0.
             @parameters begin
                 a::real(lower=0, upper=1);
                 b::real(lower=0, upper=1);
@@ -1687,7 +1526,6 @@ julia_implementation(::Val{:dogs_hierarchical}; n_dogs, n_trials, y, kwargs...) 
             @model begin
                 y ~ bernoulli(@broadcasted(a ^ prev_shock * b ^ prev_avoid));
             end
-            return target
     end
 end
 
@@ -1706,7 +1544,6 @@ julia_implementation(::Val{:dogs_nonhierarchical}; n_dogs, n_trials, y, kwargs..
             prev_avoid[j, t] = prev_avoid[j, t - 1] + 1 - y[j, t - 1];
         end
     end
-    return @stan begin end
     @stan begin 
         @parameters begin
             mu_logit_ab::vector[2]
@@ -1717,11 +1554,8 @@ julia_implementation(::Val{:dogs_nonhierarchical}; n_dogs, n_trials, y, kwargs..
         @model @views begin
             logit_ab = rep_vector(1, J) * mu_logit_ab'
                                     + z * diag_pre_multiply(sigma_logit_ab, L_logit_ab);
-            Omega_logit_ab = L_logit_ab * L_logit_ab';
-            Sigma_logit_ab = quad_form_diag(Omega_logit_ab,
-                                                            sigma_logit_ab);
-            a = inv_logit(logit_ab[ : , 1]);
-            b = inv_logit(logit_ab[ : , 2]);
+            a = inv_logit.(logit_ab[ : , 1]);
+            b = inv_logit.(logit_ab[ : , 2]);
             y ~ bernoulli(@broadcasted(a ^ prev_shock * b ^ prev_avoid));
             mu_logit_ab ~ logistic(0, 1);
             sigma_logit_ab ~ normal(0, 1);
@@ -1741,7 +1575,6 @@ julia_implementation(::Val{:M0_model}; M, T, y, kwargs...) = begin
             end
         end
 @stan begin 
-            target = 0.
             @parameters begin
                 omega::real(lower=0,upper=1)
                 p::real(lower=0,upper=1)
@@ -1757,7 +1590,6 @@ julia_implementation(::Val{:M0_model}; M, T, y, kwargs...) = begin
                     end
                 end
             end
-            return target
     end
 end
 julia_implementation(::Val{:diamonds}; N, Y, K, X, prior_only, kwargs...) = begin
@@ -1769,7 +1601,6 @@ julia_implementation(::Val{:diamonds}; N, Y, K, X, prior_only, kwargs...) = begi
             @. Xc[ : , i - 1] = X[ : , i] - means_X[i - 1];
         end
 @stan begin 
-            target = 0.
             @parameters begin
                 b::vector[Kc];
                 Intercept::real;
@@ -1783,7 +1614,6 @@ julia_implementation(::Val{:diamonds}; N, Y, K, X, prior_only, kwargs...) = begi
                     target += normal_id_glm_lpdf(Y, Xc, Intercept, b, sigma);
                 end
             end
-            return target
     end
 end
 julia_implementation(::Val{:Mt_model}; M, T, y, kwargs...) = begin 
@@ -1797,7 +1627,6 @@ julia_implementation(::Val{:Mt_model}; M, T, y, kwargs...) = begin
             end
         end
 @stan begin 
-            target = 0.
             @parameters begin
                 omega::real(lower=0,upper=1)
                 p::vector(lower=0,upper=1)[T]
@@ -1813,7 +1642,6 @@ julia_implementation(::Val{:Mt_model}; M, T, y, kwargs...) = begin
                     end
                 end
             end
-            return target
     end
 end
 julia_implementation(::Val{:election88_full}; 
@@ -1834,7 +1662,6 @@ julia_implementation(::Val{:election88_full};
     y,
     kwargs...) = begin 
 @stan begin 
-            target = 0.
             @parameters begin
                 a::vector[n_age];
                 b::vector[n_edu];
@@ -1848,11 +1675,11 @@ julia_implementation(::Val{:election88_full};
                 sigma_d::real(lower=0, upper=100);
                 sigma_e::real(lower=0, upper=100);
             end
-            y_hat = @broadcasted (beta[1] + beta[2] * black + beta[3] * female
-            + beta[5] * female * black + beta[4] * v_prev_full
-            + a[age] + b[edu] + c[age_edu] + d[state]
-            + e[region_full])
-            @model begin
+            @model @views begin
+                y_hat = @broadcasted (beta[1] + beta[2] * black + beta[3] * female
+                    + beta[5] * female * black + beta[4] * v_prev_full
+                    + a[age] + b[edu] + c[age_edu] + d[state]
+                    + e[region_full])
                 a ~ normal(0, sigma_a);
                 b ~ normal(0, sigma_b);
                 c ~ normal(0, sigma_c);
@@ -1861,7 +1688,6 @@ julia_implementation(::Val{:election88_full};
                 beta ~ normal(0, 100);
                 y ~ bernoulli_logit(y_hat);
             end
-            return target
         end
 end
 julia_implementation(::Val{:nn_rbm1bJ10}; N, M, x, K, y, kwargs...) = begin 
@@ -1876,7 +1702,6 @@ julia_implementation(::Val{:nn_rbm1bJ10}; N, M, x, K, y, kwargs...) = begin
 
     return @stan begin end
     @stan begin 
-        target = 0.
         @parameters begin
             sigma2_alpha::real(lower=0);
             sigma2_beta::real(lower=0);
@@ -1904,7 +1729,6 @@ julia_implementation(::Val{:nn_rbm1bJ10}; N, M, x, K, y, kwargs...) = begin
                 y[n] ~ categorical_logit(v[n, :]);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:nn_rbm1bJ100}; N, M, x, K, y, kwargs...) = begin 
@@ -1918,7 +1742,6 @@ julia_implementation(::Val{:nn_rbm1bJ100}; N, M, x, K, y, kwargs...) = begin
     x1 = append_col(ones, x);
     return @stan begin end
     @stan begin 
-        target = 0.
         @parameters begin
             sigma2_alpha::real(lower=0);
             sigma2_beta::real(lower=0);
@@ -1946,7 +1769,6 @@ julia_implementation(::Val{:nn_rbm1bJ100}; N, M, x, K, y, kwargs...) = begin
                 y[n] ~ categorical_logit(v[n, :]);
             end
         end
-        return target
     end
 end
 julia_implementation(::Val{:Survey_model}; nmax, m, k) = begin 
@@ -2108,7 +1930,6 @@ end
 julia_implementation(::Val{:bym2_offset_only}; N, N_edges, node1, node2, y, E, scaling_factor, kwargs...) = begin 
         log_E = @. log(E)
 @stan begin 
-            target = 0.
             @parameters begin
                 beta0::real;
                 sigma::real(lower=0);
@@ -2128,13 +1949,11 @@ julia_implementation(::Val{:bym2_offset_only}; N, N_edges, node1, node2, y, E, s
                 rho ~ beta(0.5, 0.5);
                 sum(phi) ~ normal(0, 0.001 * N);
             end
-            return target
         end
 end
 julia_implementation(::Val{:bones_model}; nChild, nInd, gamma, delta, ncat, grade, kwargs...) = begin 
         # error(ncat)
 @stan begin 
-            target = 0.
             @parameters begin
                 theta::real[nChild]
             end
@@ -2154,7 +1973,6 @@ julia_implementation(::Val{:bones_model}; nChild, nInd, gamma, delta, ncat, grad
                     end
                 end
             end
-            return target
     end
 end
 julia_implementation(::Val{:logistic_regression_rhs}; n, d, y, x, scale_icept,
@@ -2165,7 +1983,6 @@ julia_implementation(::Val{:logistic_regression_rhs}; n, d, y, x, scale_icept,
     slab_df, kwargs...) = begin 
         x = Matrix{Float64}(x)
 @stan begin 
-            target = 0.
             @parameters begin
                 beta0::real;
                 z::vector[d];
@@ -2185,13 +2002,11 @@ julia_implementation(::Val{:logistic_regression_rhs}; n, d, y, x, scale_icept,
                 
                 y ~ bernoulli_logit_glm(x, beta0, beta);
             end
-            return target
         end
 end
 
 julia_implementation(::Val{:hmm_example}; N, K, y, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             theta1::simplex[K]
             theta2::simplex[K]
@@ -2203,16 +2018,16 @@ julia_implementation(::Val{:hmm_example}; N, K, y, kwargs...) = begin
             target += normal_lpdf(mu[2], 10, 1);
             gamma = @. normal_lpdf(y[1], mu, 1) 
             for t in 2:N
-                gamma .= [
+                tmp = [
                     log_sum_exp(@broadcasted(
                         gamma + log(theta[:, k]) 
                         + normal_lpdf(y[t], mu[k], 1) 
                     )) for k in 1:K
                 ]
+                gamma .= tmp
             end
             target += log_sum_exp(gamma)
         end
-        return target
     end
 end
 julia_implementation(::Val{:Mb_model}; M, T, y, kwargs...) = begin 
@@ -2226,7 +2041,6 @@ julia_implementation(::Val{:Mb_model}; M, T, y, kwargs...) = begin
             end
         end
 @stan begin 
-            target = 0.
             @parameters begin
                 omega::real(lower=0.,upper=1.)
                 p::real(lower=0.,upper=1.)
@@ -2247,7 +2061,6 @@ julia_implementation(::Val{:Mb_model}; M, T, y, kwargs...) = begin
                     end
                 end
             end
-            return target
         end
 end
 julia_implementation(::Val{:Mh_model}; M, T, y, kwargs...) = begin 
@@ -2259,7 +2072,6 @@ julia_implementation(::Val{:Mh_model}; M, T, y, kwargs...) = begin
             end
         end
 @stan begin 
-            target = 0.
             @parameters begin
                 omega::real(lower=0,upper=1)
                 mean_p::real(lower=0,upper=1)
@@ -2279,7 +2091,6 @@ julia_implementation(::Val{:Mh_model}; M, T, y, kwargs...) = begin
                     end
                 end
             end
-            return target
         end
 end
 julia_implementation(::Val{:Mth_model}; M, T, y, kwargs...) = begin 
@@ -2293,7 +2104,6 @@ julia_implementation(::Val{:Mth_model}; M, T, y, kwargs...) = begin
             end
         end
         @stan begin 
-            target = 0.
             @parameters begin
                 omega::real(lower=0.,upper=1.)
                 mean_p::vector(lower=0.,upper=1.)[T]
@@ -2313,7 +2123,6 @@ julia_implementation(::Val{:Mth_model}; M, T, y, kwargs...) = begin
                     end
                 end
             end
-            return target
     end
 end
 julia_implementation(::Val{Symbol("2pl_latent_reg_irt")}; I, J, N, ii, jj, y, K, W, kwargs...) = begin 
@@ -2339,7 +2148,6 @@ julia_implementation(::Val{Symbol("2pl_latent_reg_irt")}; I, J, N, ii, jj, y, K,
     adj = obtain_adjustments(W);
     W_adj = @. ((W - adj[1:1,:])/adj[2:2,:])
     @stan begin 
-        target = 0.
         @parameters begin
             alpha::vector(lower=0)[I];
             beta_free::vector[I - 1] ;
@@ -2354,7 +2162,6 @@ julia_implementation(::Val{Symbol("2pl_latent_reg_irt")}; I, J, N, ii, jj, y, K,
             theta ~ normal(W_adj * lambda_adj, 1);
             y ~ bernoulli_logit(@broadcasted(alpha[ii] * theta[jj] - beta[ii]));
         end
-        return target
     end
 end
 julia_implementation(::Val{:Mtbh_model}; M, T, y, kwargs...) = begin 
@@ -2368,7 +2175,6 @@ julia_implementation(::Val{:Mtbh_model}; M, T, y, kwargs...) = begin
             end
         end
 @stan begin 
-            target = 0.
             @parameters begin
                 omega::real(lower=0,upper=1)
                 mean_p::vector(lower=0,upper=1)[T]
@@ -2395,7 +2201,6 @@ julia_implementation(::Val{:Mtbh_model}; M, T, y, kwargs...) = begin
                     end
                 end
             end
-            return target
     end
 end
 julia_implementation(::Val{:multi_occupancy}; J, K, n, X, S, kwargs...) = begin 
@@ -2417,7 +2222,6 @@ julia_implementation(::Val{:multi_occupancy}; J, K, n, X, S, kwargs...) = begin
         return log_sum_exp(lp_unavailable, lp_available);
     end
 @stan begin 
-            target = 0.
             @parameters begin
                 alpha::real
                 beta::real
@@ -2454,7 +2258,6 @@ julia_implementation(::Val{:multi_occupancy}; J, K, n, X, S, kwargs...) = begin
                   target += lp_never_observed(J, K, logit_psi[i], logit_theta[i], Omega);
                 end
             end
-            return target
         end
 end
 julia_implementation(::Val{:losscurve_sislob};
@@ -2478,7 +2281,6 @@ kwargs...) = begin
         return pow_t_omega / (pow_t_omega + theta ^ omega);
     end
     @stan begin 
-            target = 0.
             @parameters begin
                 omega::real(lower=0);
                 theta::real(lower=0);
@@ -2508,13 +2310,11 @@ kwargs...) = begin
                 
                 loss ~ normal(@broadcasted(LR[cohort_id] * premium[cohort_id] * gf[t_idx]), (loss_sd * premium)[cohort_id]);
             end
-            return target
     end
 end
 
 julia_implementation(::Val{:accel_splines}; N,Y,Ks,Xs,knots_1,Zs_1_1, Ks_sigma, Xs_sigma,knots_sigma_1,Zs_sigma_1_1,prior_only, kwargs...) = begin 
 @stan begin 
-            target = 0.
             @parameters begin
                 Intercept::real;
                 bs::vector[Ks];
@@ -2543,7 +2343,6 @@ julia_implementation(::Val{:accel_splines}; N,Y,Ks,Xs,knots_1,Zs_1_1, Ks_sigma, 
                     target += normal_lpdf(Y, mu, sigma);
                 end
             end
-            return target
         end
 end
 julia_implementation(::Val{Symbol("grsm_latent_reg_irt")}; I, J, N, ii, jj, y, K, W, kwargs...) = begin 
@@ -2575,7 +2374,6 @@ julia_implementation(::Val{Symbol("grsm_latent_reg_irt")}; I, J, N, ii, jj, y, K
         adj = obtain_adjustments(W);
         W_adj = @. ((W - adj[1:1,:])/adj[2:2,:])
 @stan begin 
-            target = 0.
             @parameters begin
                 alpha::vector(lower=0)[I];
                 beta_free::vector[I - 1] ;
@@ -2595,7 +2393,6 @@ julia_implementation(::Val{Symbol("grsm_latent_reg_irt")}; I, J, N, ii, jj, y, K
                     target += rsm(y[n], theta[jj[n]] .* alpha[ii[n]], beta[ii[n]], kappa)
                 end
             end
-            return target
     end
 end
 julia_implementation(::Val{:prophet};
@@ -2650,7 +2447,6 @@ julia_implementation(::Val{:prophet};
       end
         A = get_changepoint_matrix(t, t_change, T, S)
 @stan begin 
-            target = 0.
             @parameters begin
                 k::real
                 m::real
@@ -2673,13 +2469,11 @@ julia_implementation(::Val{:prophet};
                              .* (1 .+ X * (beta .* s_m)) + X * (beta .* s_a), sigma_obs);
                 end
             end
-            return target
         end
 end
 
 julia_implementation(::Val{:hmm_gaussian}; T, K, y, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             pi1::simplex[K]
             A::simplex[K,K]
@@ -2689,22 +2483,21 @@ julia_implementation(::Val{:hmm_gaussian}; T, K, y, kwargs...) = begin
         @model @views begin
             logalpha = log.(pi1) .+ normal_lpdf(y[1], mu, sigma);
             for t in 2 : T
-                logalpha .= ([
+                tmp = ([
                     log_sum_exp(@broadcasted(
                         logalpha + log(A[:, j]) + normal_lpdf(y[t], mu[j], sigma[j])
                     ))
                     for j in 1:K
                 ]);
+                logalpha .= tmp
             end
             target += log_sum_exp(logalpha);
         end
-        return target
     end
 end
 
 julia_implementation(::Val{:hmm_drive_0}; K, N, u, v, alpha, kwargs...) = begin 
     @stan begin 
-        target = 0.
         @parameters begin
             theta1::simplex[K]
             theta2::simplex[K]
@@ -2722,16 +2515,16 @@ julia_implementation(::Val{:hmm_drive_0}; K, N, u, v, alpha, kwargs...) = begin
             target += normal_lpdf(lambda[2], 3, 1);
             gamma = @.(exponential_lpdf(u[1], phi) + exponential_lpdf(v[1], lambda))
             for t in 2:N
-                gamma .= ([
+                tmp = ([
                     log_sum_exp(@broadcasted(
                         gamma + log(theta[:, k]) + exponential_lpdf(u[t], phi[k]) + exponential_lpdf(v[t], lambda[k])
                     ))
                     for k in 1:K
                 ]);
+                gamma .= tmp
             end
             target += log_sum_exp(gamma);
         end
-        return target
     end
 end
 
@@ -2754,16 +2547,16 @@ julia_implementation(::Val{:hmm_drive_1}; K, N, u, v, alpha, tau, rho, kwargs...
             target += normal_lpdf(lambda[2], 3, 1);
             gamma = @.(normal_lpdf(u[1], phi, tau) + normal_lpdf(v[1], lambda, rho))
             for t in 2:N
-                gamma .= ([
+                tmp = ([
                     log_sum_exp(@broadcasted(
                         gamma + log(theta[:, k]) + normal_lpdf(u[t], phi[k], tau) + normal_lpdf(v[t], lambda[k], rho)
                     ))
                     for k in 1:K
                 ]);
+                gamma .= tmp
             end
             target += log_sum_exp(gamma);
         end
-        return target
     end
 end
 
@@ -2785,19 +2578,19 @@ julia_implementation(::Val{:iohmm_reg}; T, K, M, y, u, kwargs...) = begin
             logoblik = normal_lpdf.(y, u * b', sigma')
             logalpha = @.(log(pi1) + logoblik[1,:])
             for t in 2:T
-                logalpha .= ([
+                tmp = ([
                     log_sum_exp(@broadcasted(
                         logalpha + log(A[t,:]) + logoblik[t, j]
                     ))
                     for j in 1:K
                 ]);
+                logalpha .= tmp
             end
             w ~ normal(0, 5);
             b ~ normal(0, 5);
             sigma ~ normal(0, 3);
             target += log_sum_exp(logalpha);
         end
-        return target
     end
 end
 
@@ -2846,7 +2639,6 @@ julia_implementation(::Val{:accel_gp}; N, Y, Kgp_1, Dgp_1, NBgp_1, Xgp_1, slambd
               target += normal_lpdf(Y, mu, sigma);
             end
         end
-        return target
     end
 end
 
@@ -2865,7 +2657,6 @@ julia_implementation(::Val{:hierarchical_gp};
         y,
         kwargs...) = begin 
     @stan begin 
-        target = 0.
         years = 1:N_years
         counts = fill(2, 17)
         @parameters begin
@@ -2941,7 +2732,6 @@ julia_implementation(::Val{:hierarchical_gp};
                 length_GP_region_short ~ weibull(30, 3);
                 length_GP_state_short ~ weibull(30, 3);
         end
-        return target
     end
 end
 julia_implementation(::Val{:kronecker_gp}; n1, n2, x1, y, kwargs...) = begin 
@@ -2968,7 +2758,6 @@ julia_implementation(::Val{:kronecker_gp}; n1, n2, x1, y, kwargs...) = begin
             L ~ lkj_corr_cholesky(2);
             target += -0.5 * sum(y .* kron_mvprod(Q1, Q2, kron_mvprod(transpose(Q1), transpose(Q2), y) ./ eigenvalues)) - 0.5 * sum(log(eigenvalues))
         end
-        return target
     end
 end
 
@@ -3021,7 +2810,6 @@ julia_implementation(::Val{:covid19imperial_v2}; M, P, N0, N, N2, cases, deaths,
                                                             phi);
             end
         end
-        return target
     end
 end
 

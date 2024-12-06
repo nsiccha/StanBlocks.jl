@@ -35,3 +35,4 @@ sys
 sysconfig
 cache
 *.ipynb
+*.sh

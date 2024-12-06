@@ -88,6 +88,10 @@ end
 @inline cauchy_lpdf(x, location, scale) = begin
     -bsum(@broadcasted(log(scale) + log1p((x-location)/scale)))
 end
+# https://mc-stan.org/docs/functions-reference/unbounded_continuous_distributions.html#logistic-distribution
+@inline logistic_lpdf(y, location, scale) = begin
+    -bsum(@broadcasted(log(scale) + (y-location)/scale + 2 * log1pexp(-(y-location)/scale)))
+end
 # https://mc-stan.org/docs/functions-reference/positive_continuous_distributions.html#exponential-distribution
 @inline exponential_lpdf(y, beta) = bsum(@broadcasted(log(beta) - beta * y))
 @inline double_exponential_lpdf(x, args...) = bsum(@broadcasted(logpdf(DoubleExponential(args...), x)))
