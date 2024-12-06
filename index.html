@@ -252,29 +252,27 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="overview-of-posteriors" class="level1">
 <h1>Overview of posteriors</h1>
 <p>The below table shows information about the implemented posteriors. The column <code>directly comparable</code> has value <code>yes</code> if the <strong>median absolute deviation</strong> of the reference (Stan) and unadjusted Julia implementation of the log density is less than <code>1e-4</code>. That quantity being different from zero usually implies that Stan has eliminated constant terms in the log density, saving some computational work. The column <code>usable</code> has value <code>yes</code> if the <strong>median relative absolute deviation</strong> of the reference (Stan) and constant-adjusted Julia implementation of the log density is less than <code>1e-8</code>.</p>
-<div id="49b502c3" class="cell" data-execution_count="1">
+<div id="3c224967" class="cell" data-execution_count="1">
 <div class="cell-output cell-output-display">
 <table data-quarto-postprocess="true" class="table table-sm table-striped small">
 <thead>
 <tr class="header headerLastRow">
 <th style="text-align: right;" data-quarto-table-cell-role="th">posteriors</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">usable posteriors</th>
-<th style="text-align: right;" data-quarto-table-cell-role="th">return type stable posteriors</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">directly comparable posteriors</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
 <td style="text-align: right;">147</td>
-<td style="text-align: right;">115</td>
-<td style="text-align: right;">138</td>
-<td style="text-align: right;">51</td>
+<td style="text-align: right;">117</td>
+<td style="text-align: right;">53</td>
 </tr>
 </tbody>
 </table>
 </div>
 </div>
-<div id="83b769b0" class="cell" data-execution_count="2">
+<div id="ce9fd60e" class="cell" data-execution_count="2">
 <div class="cell-output cell-output-display">
 <table data-quarto-postprocess="true" class="table table-sm table-striped small">
 <thead>
@@ -282,7 +280,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <th style="text-align: right;" data-quarto-table-cell-role="th">posterior name</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">dimension</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">usable</th>
-<th style="text-align: right;" data-quarto-table-cell-role="th">inferred</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">directly comparable</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">constant difference</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">remaining relative difference</th>
@@ -294,14 +291,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">45</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">2.2e-5 ± 1.8e-6</td>
 <td style="text-align: right;">2.0e-16 ± 1.7e-17</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">GLMM_data-GLMM1_model</td>
 <td style="text-align: right;">237</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">2.3 ± 3.2e-14</td>
@@ -310,7 +305,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">GLM_Binomial_data-GLM_Binomial_model</td>
 <td style="text-align: right;">3</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">14.0 ± 1.6e-14</td>
@@ -321,14 +315,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.7e-10 ± 1.2e-11</td>
 <td style="text-align: right;">2.7e-16 ± 1.9e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">M0_data-M0_model</td>
 <td style="text-align: right;">2</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.7e-14 ± 4.0e-15</td>
@@ -339,14 +331,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Mh_data-Mh_model</td>
 <td style="text-align: right;">388</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">160.0 ± 2.4e-14</td>
@@ -357,14 +347,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.7e-14 ± 4.0e-15</td>
 <td style="text-align: right;">1.4e-16 ± 9.8e-18</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Mtbh_data-Mtbh_model</td>
 <td style="text-align: right;">154</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">2.3 ± 4.0e-15</td>
@@ -375,14 +363,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">394</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">2.3e-13 ± 8.0e-15</td>
 <td style="text-align: right;">1.7e-16 ± 1.2e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Rate_1_data-Rate_1_model</td>
 <td style="text-align: right;">1</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">5.5 ± 6.3e-17</td>
@@ -392,7 +378,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">Rate_2_data-Rate_2_model</td>
 <td style="text-align: right;">2</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">10.0 ± 1.3e-16</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
@@ -401,7 +386,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">Rate_3_data-Rate_3_model</td>
 <td style="text-align: right;">1</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">10.0 ± 1.3e-16</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
@@ -409,7 +393,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="even">
 <td style="text-align: right;">Rate_4_data-Rate_4_model</td>
 <td style="text-align: right;">2</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">2.7 ± 6.3e-17</td>
@@ -420,14 +403,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">1</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Survey_data-Survey_model</td>
 <td style="text-align: right;">1</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">2.1e-14 ± 7.5e-16</td>
@@ -437,24 +418,21 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">bball_drive_event_0-hmm_drive_0</td>
 <td style="text-align: right;">6</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">2.3 ± 1.6e-14</td>
+<td style="text-align: right;">2.3 ± 0.0</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">bball_drive_event_1-hmm_drive_1</td>
 <td style="text-align: right;">6</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">760.0 ± 1.2e-11</td>
-<td style="text-align: right;">8.9e-16 ± 3.8e-17</td>
+<td style="text-align: right;">760.0 ± 1.0e-11</td>
+<td style="text-align: right;">8.0e-16 ± 3.7e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">bones_data-bones_model</td>
 <td style="text-align: right;">13</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">47.0 ± 1.6e-14</td>
@@ -464,15 +442,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">diamonds-diamonds</td>
 <td style="text-align: right;">26</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">4600.0 ± 1.8e-11</td>
-<td style="text-align: right;">1.4e-15 ± 6.4e-17</td>
+<td style="text-align: right;">4600.0 ± 1.6e-11</td>
+<td style="text-align: right;">1.4e-15 ± 5.4e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">dogs-dogs</td>
 <td style="text-align: right;">3</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">14.0 ± 2.4e-14</td>
@@ -483,14 +459,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">2</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">8.0e-13 ± 4.0e-14</td>
 <td style="text-align: right;">1.0e-15 ± 4.8e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">dogs-dogs_log</td>
 <td style="text-align: right;">2</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">9.2 ± 5.9e-14</td>
@@ -500,7 +474,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">dugongs_data-dugongs_model</td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">22.0 ± 1.0e-15</td>
 <td style="text-align: right;">1.7e-16 ± 1.2e-17</td>
@@ -508,7 +481,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">earnings-earn_height</td>
 <td style="text-align: right;">3</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">0.00034 ± 2.3e-5</td>
@@ -519,14 +491,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">7.0e-10 ± 4.9e-11</td>
 <td style="text-align: right;">7.6e-16 ± 3.4e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-logearn_height</td>
 <td style="text-align: right;">3</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.2e-10 ± 3.7e-11</td>
@@ -537,14 +507,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">3.5e-10 ± 2.5e-11</td>
 <td style="text-align: right;">7.2e-16 ± 2.9e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-logearn_interaction</td>
 <td style="text-align: right;">5</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.2e-9 ± 8.1e-11</td>
@@ -555,14 +523,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.4e-11 ± 2.9e-12</td>
 <td style="text-align: right;">7.7e-16 ± 3.2e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-logearn_logheight_male</td>
 <td style="text-align: right;">4</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.1e-11 ± 3.5e-12</td>
@@ -572,7 +538,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">ecdc0401-covid19imperial_v2</td>
 <td style="text-align: right;">51</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">18.0 ± 1.0e-12</td>
 <td style="text-align: right;">1.4e-16 ± 6.9e-18</td>
@@ -581,15 +546,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">election88-election88_full</td>
 <td style="text-align: right;">90</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">23.0 ± 6.4e-14</td>
+<td style="text-align: right;">23.0 ± 0.0</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">garch-garch11</td>
 <td style="text-align: right;">4</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.7e-13 ± 4.0e-15</td>
@@ -599,7 +562,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">gp_pois_regr-gp_pois_regr</td>
 <td style="text-align: right;">13</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">21.0 ± 1.0e-15</td>
 <td style="text-align: right;">2.0e-16 ± 1.4e-17</td>
@@ -607,7 +569,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="even">
 <td style="text-align: right;">gp_pois_regr-gp_regr</td>
 <td style="text-align: right;">3</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">31.0 ± 5.0e-16</td>
@@ -617,33 +578,29 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">hmm_example-hmm_example</td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">94.0 ± 3.2e-14</td>
-<td style="text-align: right;">2.9e-16 ± 9.3e-18</td>
+<td style="text-align: right;">2.8e-16 ± 1.1e-17</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">hmm_gaussian_simulated-hmm_gaussian</td>
 <td style="text-align: right;">14</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">460.0 ± 1.2e-12</td>
-<td style="text-align: right;">6.9e-16 ± 3.0e-17</td>
+<td style="text-align: right;">460.0 ± 1.0e-12</td>
+<td style="text-align: right;">5.8e-16 ± 2.6e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">iohmm_reg_simulated-iohmm_reg</td>
 <td style="text-align: right;">29</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">420.0 ± 1.8e-13</td>
-<td style="text-align: right;">4.6e-16 ± 2.1e-17</td>
+<td style="text-align: right;">5.4e-16 ± 2.6e-17</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_c</td>
 <td style="text-align: right;">5</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">9.3e-10 ± 6.4e-11</td>
@@ -654,14 +611,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.7e-10 ± 3.3e-11</td>
 <td style="text-align: right;">4.1e-16 ± 1.9e-17</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_z</td>
 <td style="text-align: right;">5</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.7e-10 ± 3.3e-11</td>
@@ -672,14 +627,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.7e-10 ± 3.3e-11</td>
 <td style="text-align: right;">5.6e-16 ± 2.5e-17</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">kilpisjarvi_mod-kilpisjarvi</td>
 <td style="text-align: right;">3</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">1.2 ± 1.3e-9</td>
@@ -689,7 +642,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">low_dim_gauss_mix-low_dim_gauss_mix</td>
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">920.0 ± 1.9e-13</td>
 <td style="text-align: right;">5.7e-16 ± 2.5e-17</td>
@@ -697,7 +649,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="even">
 <td style="text-align: right;">low_dim_gauss_mix_collapse-low_dim_gauss_mix_collapse</td>
 <td style="text-align: right;">5</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">920.0 ± 9.6e-14</td>
@@ -707,15 +658,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">lsat_data-lsat_model</td>
 <td style="text-align: right;">1006</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">28.0 ± 6.4e-14</td>
-<td style="text-align: right;">1.3e-16 ± 9.0e-18</td>
+<td style="text-align: right;">1.2e-16 ± 8.7e-18</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">mcycle_gp-accel_gp</td>
 <td style="text-align: right;">66</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">180.0 ± 3.8e-12</td>
@@ -724,7 +673,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">mcycle_splines-accel_splines</td>
 <td style="text-align: right;">82</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">190.0 ± 3.1e-8</td>
@@ -735,14 +683,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">8</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">9.9e-14 ± 7.0e-15</td>
 <td style="text-align: right;">1.7e-16 ± 9.2e-18</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">mesquite-logmesquite_logva</td>
 <td style="text-align: right;">5</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.1e-13 ± 8.0e-15</td>
@@ -753,14 +699,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">8</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.7e-14 ± 4.0e-15</td>
 <td style="text-align: right;">1.5e-16 ± 1.1e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">mesquite-logmesquite_logvash</td>
 <td style="text-align: right;">7</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.1e-13 ± 8.0e-15</td>
@@ -771,14 +715,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.7e-14 ± 4.0e-15</td>
 <td style="text-align: right;">1.5e-16 ± 1.1e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">mesquite-mesquite</td>
 <td style="text-align: right;">8</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.9e-9 ± 1.3e-10</td>
@@ -789,14 +731,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.5e-11 ± 1.0e-12</td>
 <td style="text-align: right;">7.3e-16 ± 3.5e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">nes1976-nes</td>
 <td style="text-align: right;">10</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">8.6e-12 ± 6.1e-13</td>
@@ -807,14 +747,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.0e-12 ± 3.4e-13</td>
 <td style="text-align: right;">5.6e-16 ± 2.5e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">nes1984-nes</td>
 <td style="text-align: right;">10</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.1e-11 ± 7.5e-13</td>
@@ -825,14 +763,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.1e-11 ± 7.4e-13</td>
 <td style="text-align: right;">7.2e-16 ± 2.9e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">nes1992-nes</td>
 <td style="text-align: right;">10</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.5e-11 ± 1.0e-12</td>
@@ -843,14 +779,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">7.7e-12 ± 5.1e-13</td>
 <td style="text-align: right;">5.4e-16 ± 2.5e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">nes2000-nes</td>
 <td style="text-align: right;">10</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.8e-12 ± 1.3e-13</td>
@@ -861,14 +795,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">2</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">normal_2-normal_mixture</td>
 <td style="text-align: right;">3</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">910.0 ± 3.1e-12</td>
@@ -878,7 +810,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">normal_5-normal_mixture_k</td>
 <td style="text-align: right;">14</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">1600.0 ± 3.2e-13</td>
 <td style="text-align: right;">8.3e-16 ± 3.4e-17</td>
@@ -886,7 +817,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">ovarian-logistic_regression_rhs</td>
 <td style="text-align: right;">3075</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">1700.0 ± 4.5e-11</td>
@@ -897,14 +827,28 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">18</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">2.8e-14 ± 2.0e-15</td>
 <td style="text-align: right;">1.3e-16 ± 9.1e-18</td>
 </tr>
 <tr class="odd">
+<td style="text-align: right;">prideprejudice_chapter-ldaK5</td>
+<td style="text-align: right;">7714</td>
+<td style="text-align: right;">yes</td>
+<td style="text-align: right;">yes</td>
+<td style="text-align: right;">1.2e-9 ± 5.0e-11</td>
+<td style="text-align: right;">4.4e-15 ± 2.0e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">prideprejudice_paragraph-ldaK5</td>
+<td style="text-align: right;">15570</td>
+<td style="text-align: right;">yes</td>
+<td style="text-align: right;">yes</td>
+<td style="text-align: right;">8.6e-10 ± 3.6e-11</td>
+<td style="text-align: right;">3.3e-15 ± 1.4e-16</td>
+</tr>
+<tr class="odd">
 <td style="text-align: right;">prostate-logistic_regression_rhs</td>
 <td style="text-align: right;">11935</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">6800.0 ± 4.7e-12</td>
@@ -914,7 +858,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">radon_all-radon_county_intercept</td>
 <td style="text-align: right;">388</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">11000.0 ± 1.3e-11</td>
 <td style="text-align: right;">3.5e-15 ± 1.4e-16</td>
@@ -922,7 +865,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_hierarchical_intercept_centered</td>
 <td style="text-align: right;">391</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 1.7e-11</td>
@@ -932,7 +874,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">radon_all-radon_hierarchical_intercept_noncentered</td>
 <td style="text-align: right;">391</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 1.9e-11</td>
 <td style="text-align: right;">3.8e-15 ± 1.8e-16</td>
@@ -940,7 +881,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_partially_pooled_centered</td>
 <td style="text-align: right;">389</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 1.3e-11</td>
@@ -950,7 +890,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">radon_all-radon_partially_pooled_noncentered</td>
 <td style="text-align: right;">389</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 1.5e-11</td>
 <td style="text-align: right;">4.3e-15 ± 2.0e-16</td>
@@ -958,7 +897,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_pooled</td>
 <td style="text-align: right;">3</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 4.1e-11</td>
@@ -968,7 +906,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">radon_all-radon_variable_intercept_centered</td>
 <td style="text-align: right;">390</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 1.4e-11</td>
 <td style="text-align: right;">4.0e-15 ± 1.8e-16</td>
@@ -976,7 +913,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_intercept_noncentered</td>
 <td style="text-align: right;">390</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 1.6e-11</td>
@@ -986,7 +922,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">radon_all-radon_variable_intercept_slope_centered</td>
 <td style="text-align: right;">777</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 2.0e-11</td>
 <td style="text-align: right;">4.5e-15 ± 1.8e-16</td>
@@ -994,7 +929,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_intercept_slope_noncentered</td>
 <td style="text-align: right;">777</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 2.6e-11</td>
@@ -1004,7 +938,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">radon_all-radon_variable_slope_centered</td>
 <td style="text-align: right;">390</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 5.7e-11</td>
 <td style="text-align: right;">1.6e-14 ± 7.1e-16</td>
@@ -1012,7 +945,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_slope_noncentered</td>
 <td style="text-align: right;">390</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 8.0e-11</td>
@@ -1022,7 +954,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">radon_mn-radon_county_intercept</td>
 <td style="text-align: right;">87</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">650.0 ± 1.6e-13</td>
 <td style="text-align: right;">7.1e-16 ± 3.1e-17</td>
@@ -1030,7 +961,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_hierarchical_intercept_centered</td>
 <td style="text-align: right;">90</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 1.7e-13</td>
@@ -1040,7 +970,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">radon_mn-radon_hierarchical_intercept_noncentered</td>
 <td style="text-align: right;">90</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 1.9e-13</td>
 <td style="text-align: right;">8.3e-16 ± 3.6e-17</td>
@@ -1048,7 +977,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_partially_pooled_centered</td>
 <td style="text-align: right;">88</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.3e-13</td>
@@ -1058,7 +986,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">radon_mn-radon_partially_pooled_noncentered</td>
 <td style="text-align: right;">88</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.4e-13</td>
 <td style="text-align: right;">8.4e-16 ± 3.5e-17</td>
@@ -1066,7 +993,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_pooled</td>
 <td style="text-align: right;">3</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.6e-13</td>
@@ -1076,7 +1002,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">radon_mn-radon_variable_intercept_centered</td>
 <td style="text-align: right;">89</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 1.8e-13</td>
 <td style="text-align: right;">6.8e-16 ± 2.8e-17</td>
@@ -1084,7 +1009,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_noncentered</td>
 <td style="text-align: right;">89</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 1.8e-13</td>
@@ -1094,7 +1018,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">radon_mn-radon_variable_intercept_slope_centered</td>
 <td style="text-align: right;">175</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.3e-13</td>
 <td style="text-align: right;">7.5e-16 ± 3.0e-17</td>
@@ -1102,7 +1025,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_slope_noncentered</td>
 <td style="text-align: right;">175</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.6e-13</td>
@@ -1112,7 +1034,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">radon_mn-radon_variable_slope_centered</td>
 <td style="text-align: right;">89</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.4e-13</td>
 <td style="text-align: right;">1.1e-15 ± 4.6e-17</td>
@@ -1120,7 +1041,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td style="text-align: right;">radon_mn-radon_variable_slope_noncentered</td>
 <td style="text-align: right;">89</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.1e-13</td>
@@ -1131,14 +1051,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">389</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">7.3e-12 ± 5.1e-13</td>
 <td style="text-align: right;">1.3e-16 ± 8.9e-18</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">rats_data-rats_model</td>
 <td style="text-align: right;">65</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">9.2 ± 2.1e-11</td>
@@ -1148,7 +1066,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">sblrc-blr</td>
 <td style="text-align: right;">6</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">97.0 ± 2.0e-10</td>
 <td style="text-align: right;">2.5e-16 ± 1.2e-17</td>
@@ -1157,7 +1074,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">sblri-blr</td>
 <td style="text-align: right;">6</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">97.0 ± 6.8e-11</td>
 <td style="text-align: right;">2.3e-16 ± 9.7e-18</td>
@@ -1165,7 +1081,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="even">
 <td style="text-align: right;">seeds_data-seeds_model</td>
 <td style="text-align: right;">26</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">35.0 ± 8.0e-15</td>
@@ -1176,14 +1091,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">2.8e-13 ± 1.9e-14</td>
 <td style="text-align: right;">1.3e-15 ± 7.8e-17</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">surgical_data-surgical_model</td>
 <td style="text-align: right;">14</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">14.0 ± 1.6e-14</td>
@@ -1194,41 +1107,36 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">7</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
-<td style="text-align: right;">6.8e-13 ± 3.2e-14</td>
-<td style="text-align: right;">4.3e-16 ± 2.0e-17</td>
+<td style="text-align: right;">4.5e-13 ± 1.6e-14</td>
+<td style="text-align: right;">3.5e-16 ± 1.5e-17</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">three_men1-ldaK2</td>
 <td style="text-align: right;">502</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
-<td style="text-align: right;">5.8e-11 ± 2.1e-12</td>
-<td style="text-align: right;">1.7e-15 ± 6.4e-17</td>
+<td style="text-align: right;">5.8e-11 ± 2.6e-12</td>
+<td style="text-align: right;">1.8e-15 ± 7.7e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">three_men2-ldaK2</td>
 <td style="text-align: right;">510</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
-<td style="text-align: right;">6.5e-11 ± 2.6e-12</td>
-<td style="text-align: right;">1.9e-15 ± 7.6e-17</td>
+<td style="text-align: right;">5.8e-11 ± 2.3e-12</td>
+<td style="text-align: right;">1.8e-15 ± 6.9e-17</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">three_men3-ldaK2</td>
 <td style="text-align: right;">505</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
-<td style="text-align: right;">5.1e-11 ± 2.6e-12</td>
-<td style="text-align: right;">1.5e-15 ± 7.8e-17</td>
+<td style="text-align: right;">5.8e-11 ± 2.1e-12</td>
+<td style="text-align: right;">1.8e-15 ± 6.9e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">traffic_accident_nyc-bym2_offset_only</td>
 <td style="text-align: right;">3845</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">0.65 ± 1.3e-9</td>
@@ -1238,24 +1146,21 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">uk_drivers-state_space_stochastic_level_stochastic_seasonal</td>
 <td style="text-align: right;">389</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">2.9 ± 4.8e-14</td>
-<td style="text-align: right;">3.2e-16 ± 1.4e-17</td>
+<td style="text-align: right;">2.1e-16 ± 1.2e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">wells_data-wells_daae_c_model</td>
 <td style="text-align: right;">6</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.5e-13 ± 3.2e-14</td>
-<td style="text-align: right;">1.2e-16 ± 8.7e-18</td>
+<td style="text-align: right;">1.3e-16 ± 8.9e-18</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">wells_data-wells_dae_c_model</td>
 <td style="text-align: right;">5</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.5e-13 ± 3.2e-14</td>
@@ -1266,14 +1171,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">7</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.5e-13 ± 3.2e-14</td>
-<td style="text-align: right;">1.6e-16 ± 1.1e-17</td>
+<td style="text-align: right;">1.5e-16 ± 1.1e-17</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">wells_data-wells_dae_model</td>
 <td style="text-align: right;">4</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
@@ -1284,14 +1187,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">2</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.6e-8 ± 1.3e-9</td>
 <td style="text-align: right;">2.7e-13 ± 1.4e-14</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">wells_data-wells_dist100_model</td>
 <td style="text-align: right;">2</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
@@ -1302,7 +1203,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
@@ -1311,14 +1211,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.5e-13 ± 3.2e-14</td>
-<td style="text-align: right;">1.4e-16 ± 1.0e-17</td>
+<td style="text-align: right;">1.3e-16 ± 9.0e-18</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">wells_data-wells_interaction_model</td>
 <td style="text-align: right;">4</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
@@ -1329,24 +1227,21 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">106</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
-<td style="text-align: right;">no</td>
 <td style="text-align: right;">missing</td>
 <td style="text-align: right;">missing</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">dogs-dogs_nonhierarchical</td>
-<td style="text-align: right;">FAILED</td>
-<td style="text-align: right;">no</td>
+<td style="text-align: right;">65</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">1400.0 ± 31.0</td>
-<td style="text-align: right;">0.32 ± 0.014</td>
+<td style="text-align: right;">240.0 ± 11.0</td>
+<td style="text-align: right;">0.16 ± 0.0072</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">ecdc0401-covid19imperial_v3</td>
 <td style="text-align: right;">51</td>
 <td style="text-align: right;">no</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">missing</td>
 <td style="text-align: right;">missing</td>
@@ -1355,7 +1250,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">ecdc0501-covid19imperial_v2</td>
 <td style="text-align: right;">51</td>
 <td style="text-align: right;">no</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">missing</td>
 <td style="text-align: right;">missing</td>
@@ -1364,7 +1258,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">ecdc0501-covid19imperial_v3</td>
 <td style="text-align: right;">51</td>
 <td style="text-align: right;">no</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">missing</td>
 <td style="text-align: right;">missing</td>
@@ -1374,32 +1267,28 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">8</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
-<td style="text-align: right;">no</td>
 <td style="text-align: right;">missing</td>
 <td style="text-align: right;">missing</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">mnist-nn_rbm1bJ100</td>
-<td style="text-align: right;">FAILED</td>
-<td style="text-align: right;">no</td>
+<td style="text-align: right;">79411</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">970000.0 ± 4600.0</td>
-<td style="text-align: right;">0.069 ± 0.0029</td>
+<td style="text-align: right;">950000.0 ± 4700.0</td>
+<td style="text-align: right;">0.066 ± 0.0035</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">mnist_100-nn_rbm1bJ10</td>
-<td style="text-align: right;">FAILED</td>
-<td style="text-align: right;">no</td>
+<td style="text-align: right;">7951</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">5400.0 ± 57.0</td>
-<td style="text-align: right;">0.16 ± 0.0053</td>
+<td style="text-align: right;">5700.0 ± 71.0</td>
+<td style="text-align: right;">0.19 ± 0.0058</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">one_comp_mm_elim_abs-one_comp_mm_elim_abs</td>
 <td style="text-align: right;">4</td>
-<td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">missing</td>
@@ -1409,7 +1298,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">rstan_downloads-prophet</td>
 <td style="text-align: right;">62</td>
 <td style="text-align: right;">no</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">4.3e16 ± 3.1e15</td>
 <td style="text-align: right;">1.4e13 ± 9.5e11</td>
@@ -1417,7 +1305,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="even">
 <td style="text-align: right;">sir-sir</td>
 <td style="text-align: right;">4</td>
-<td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">missing</td>
@@ -1428,7 +1315,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">6</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
-<td style="text-align: right;">no</td>
 <td style="text-align: right;">missing</td>
 <td style="text-align: right;">missing</td>
 </tr>
@@ -1436,25 +1322,22 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">state_wide_presidential_votes-hierarchical_gp</td>
 <td style="text-align: right;">933</td>
 <td style="text-align: right;">no</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">2100.0 ± 94.0</td>
 <td style="text-align: right;">0.2 ± 0.011</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">synthetic_grid_RBF_kernels-kronecker_gp</td>
-<td style="text-align: right;">FAILED</td>
-<td style="text-align: right;">no</td>
+<td style="text-align: right;">438</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">4000.0 ± 14.0</td>
-<td style="text-align: right;">0.049 ± 0.0023</td>
+<td style="text-align: right;">4100.0 ± 17.0</td>
+<td style="text-align: right;">0.06 ± 0.0023</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">arK-arK</td>
 <td style="text-align: right;">7</td>
 <td style="text-align: right;">maybe maybe?</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">15.0 ± 0.004</td>
 <td style="text-align: right;">0.00026 ± 1.7e-5</td>
@@ -1463,7 +1346,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">eight_schools-eight_schools_centered</td>
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">maybe maybe?</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">23.0 ± 0.0033</td>
 <td style="text-align: right;">0.0024 ± 0.00013</td>
@@ -1472,7 +1354,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">eight_schools-eight_schools_noncentered</td>
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">maybe maybe?</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">23.0 ± 0.0034</td>
 <td style="text-align: right;">0.0057 ± 0.00018</td>
@@ -1481,7 +1362,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">fims_Aus_Jpn_irt-2pl_latent_reg_irt</td>
 <td style="text-align: right;">531</td>
 <td style="text-align: right;">maybe maybe?</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">37.0 ± 0.94</td>
 <td style="text-align: right;">0.0015 ± 6.0e-5</td>
@@ -1490,7 +1370,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">irt_2pl-irt_2pl</td>
 <td style="text-align: right;">144</td>
 <td style="text-align: right;">maybe maybe?</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">15.0 ± 0.11</td>
 <td style="text-align: right;">0.00058 ± 2.4e-5</td>
@@ -1499,34 +1378,14 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">loss_curves-losscurve_sislob</td>
 <td style="text-align: right;">15</td>
 <td style="text-align: right;">maybe maybe?</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">16.0 ± 0.095</td>
 <td style="text-align: right;">0.0019 ± 8.8e-5</td>
 </tr>
 <tr class="even">
-<td style="text-align: right;">prideprejudice_chapter-ldaK5</td>
-<td style="text-align: right;">7714</td>
-<td style="text-align: right;">maybe maybe?</td>
-<td style="text-align: right;">yes</td>
-<td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">4500.0 ± 130.0</td>
-<td style="text-align: right;">0.0072 ± 0.0003</td>
-</tr>
-<tr class="odd">
-<td style="text-align: right;">prideprejudice_paragraph-ldaK5</td>
-<td style="text-align: right;">15570</td>
-<td style="text-align: right;">maybe maybe?</td>
-<td style="text-align: right;">yes</td>
-<td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">6200.0 ± 160.0</td>
-<td style="text-align: right;">0.0086 ± 0.00031</td>
-</tr>
-<tr class="even">
 <td style="text-align: right;">sat-hier_2pl</td>
 <td style="text-align: right;">669</td>
 <td style="text-align: right;">maybe maybe?</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">73.0 ± 2.2</td>
 <td style="text-align: right;">0.0012 ± 5.0e-5</td>
@@ -1535,7 +1394,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">seeds_data-seeds_centered_model</td>
 <td style="text-align: right;">26</td>
 <td style="text-align: right;">maybe maybe?</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">0.18 ± 0.0055</td>
 <td style="text-align: right;">0.00019 ± 7.4e-6</td>
@@ -1544,7 +1402,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">seeds_data-seeds_stanified_model</td>
 <td style="text-align: right;">26</td>
 <td style="text-align: right;">maybe maybe?</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">0.18 ± 0.0069</td>
 <td style="text-align: right;">0.00021 ± 8.9e-6</td>
@@ -1553,7 +1410,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">timssAusTwn_irt-gpcm_latent_reg_irt</td>
 <td style="text-align: right;">530</td>
 <td style="text-align: right;">maybe maybe?</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">29.0 ± 0.73</td>
 <td style="text-align: right;">0.0011 ± 5.0e-5</td>
@@ -1562,7 +1418,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">arma-arma11</td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">maybe</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">4.7 ± 0.0043</td>
 <td style="text-align: right;">8.2e-5 ± 5.8e-6</td>
@@ -1571,7 +1426,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">kidiq-kidscore_interaction</td>
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">maybe</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">1.0 ± 0.0031</td>
 <td style="text-align: right;">1.2e-8 ± 8.5e-10</td>
@@ -1580,7 +1434,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">kidiq-kidscore_momhs</td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">maybe</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">1.0 ± 0.0041</td>
 <td style="text-align: right;">3.2e-8 ± 2.2e-9</td>
@@ -1589,7 +1442,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">kidiq-kidscore_momhsiq</td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">maybe</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">1.0 ± 0.0035</td>
 <td style="text-align: right;">4.0e-8 ± 2.8e-9</td>
@@ -1598,7 +1450,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">kidiq-kidscore_momiq</td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">maybe</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">1.1 ± 0.0029</td>
 <td style="text-align: right;">9.9e-9 ± 6.8e-10</td>
@@ -1607,7 +1458,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td style="text-align: right;">science_irt-grsm_latent_reg_irt</td>
 <td style="text-align: right;">408</td>
 <td style="text-align: right;">maybe</td>
-<td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">15.0 ± 0.061</td>
 <td style="text-align: right;">8.9e-5 ± 4.1e-6</td>
