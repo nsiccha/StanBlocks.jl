@@ -161,6 +161,19 @@ ul.task-list li input[type="checkbox"] {
 </header>
 
 
+<p>This page compares the performance of Julia’s and Stan’s log density and log density gradient computations for the implemented posteriors. Several caveats apply:</p>
+<ul>
+<li>The <code>posteriordb</code> Stan implementations were never meant to represent “perfect and best-performant” practices.</li>
+<li>The StanBlocks.jl implementations are not line-by-line translations of the Stan implementations. Sometimes small optimizations were applied, to make the implementation fall more in line with common Julia practices, or to make the code more friendly for Julia’s AD packages, e.g.&nbsp;by avoiding mutation.</li>
+<li>Stan often automatically drops constant terms (unless configured differently), see <a href="https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement">https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement</a>, thus avoiding superfluous (for its purposes) computation, while the StanBlocks.jl implementations do not.</li>
+<li>Stan implements a lot of custom AD rules, while StanBlocks.jl does not at all, and Enzyme.jl does rarely (if ever?). I suspect that adding AD rules for <code>_glm_</code> type functions would further improve Julia’s performance.</li>
+<li>The StanBlocks.jl “sampling” statements try to be clever about avoiding repeated computations. While I am not sure whether Stan applies the same optimizations, in principle it could do that without extra work by the user.</li>
+<li>While preliminary benchmark runs included “all” Julia AD packages, all of them are almost always much slower than Enzyme.jl for the implemented posteriors, which on top of that performance advantage also supports more Julia language features than some of the other AD packages. As such, I am only comparing Enzyme and Stan. Enzyme outperforming every other AD package for <em>these</em> posteriors/loss functions does of course not mean that it will necessarily do as well for other applications.</li>
+<li>Enzyme’s development is progressing quite quickly. While it currently sometimes crashes Julia, or it sometimes errors while trying to compute a gradient, in general Enzyme’s performance and reliability are continuously and quickly improving.</li>
+<li>Stan’s benchmark is done from Julia via <code>BridgeStan.jl</code>. While I think that any performance penalty should be extremely small, I am not 100% sure. BridgeStan uses the <code>-O3</code> compiler flag by default, but no additional ones.</li>
+<li>All benchmarks are happening with a single thread on my local machine.</li>
+<li><strong>There are probably more caveats!</strong></li>
+</ul>
 <div class="callout callout-style-default callout-warning callout-titled">
 <div class="callout-header d-flex align-content-center">
 <div class="callout-icon-container">
@@ -171,16 +184,29 @@ Warning
 </div>
 </div>
 <div class="callout-body-container callout-body">
-<p>ALL COMPARISONS ARE PRELIMINARY, INTERPRET THEM WITH A BIG HELPING OF SALT. WILL ELABORATE.</p>
+<p><strong>In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as “A is X-times faster than B”.</strong></p>
 </div>
 </div>
 <section id="runtime-overview" class="level1 page-columns page-full">
 <h1>Runtime overview</h1>
-<p>The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+Enzyme vs Stan, bottom: Julia is faster) for the <code>posteriordb</code> models for which the <a href="./index.html#overview-of-posteriors">overview table</a> has a <code>yes</code> in the <code>usable</code> column. The color of the dots represents the posterior dimension. Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive run and a short explanation, e.g.&nbsp;for the topmost point: <code>mesquite-logmesquite_logvash (D=7, #allocs=0-&gt;70) - Julia's primitive is ~4.5 times faster, but Julia's gradient is ~16.0 times slower.</code></p>
+<p>The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+Enzyme vs Stan, bottom: Julia is faster) for the <code>posteriordb</code> models for which the <a href="./index.html#overview-of-posteriors">overview table</a> has a <code>yes</code> in the <code>usable</code> column. The color of the dots represents the posterior dimension. Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive and gradient run and a short explanation, e.g.&nbsp;for the topmost point: <code>mesquite-logmesquite_logvash (D=7, #allocs=0-&gt;70) - Julia's primitive is ~4.5 times faster, but Julia's gradient is ~16.0 times slower.</code></p>
 <div class="column-page">
-<div id="b3302eef" class="cell" data-execution_count="3">
-<div class="cell-output cell-output-display" data-execution_count="25">
-    <div id="4fb5dfa7-2521-4013-9bc0-3ebb5bf88096" style="width:1000px;height:600px;"></div>
+<div class="callout callout-style-default callout-warning callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Warning
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><strong>In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as “A is X-times faster than B”.</strong></p>
+</div>
+</div>
+<div id="dc573cad" class="cell" data-execution_count="4">
+<div class="cell-output cell-output-display" data-execution_count="11">
+    <div id="1ec4032e-e7c4-4366-b8b5-27442a38a127" style="width:1000px;height:600px;"></div>
     <script>
         requirejs.config({
         paths: {
@@ -189,7 +215,7 @@ Warning
     });
     require(['plotly'], function (Plotly) {
 
-    Plotly.newPlot('4fb5dfa7-2521-4013-9bc0-3ebb5bf88096', [
+    Plotly.newPlot('1ec4032e-e7c4-4366-b8b5-27442a38a127', [
     {
         "showlegend": true,
         "mode": "markers",
@@ -4275,7 +4301,7 @@ Warning
 <section id="primitive-runtime-comparison" class="level1 page-columns page-full">
 <h1>Primitive runtime comparison</h1>
 <div class="column-page">
-<div id="f52f8b70" class="cell" data-execution_count="4">
+<div id="5be3b0f9" class="cell" data-execution_count="5">
 <div class="cell-output cell-output-display">
 <table class="interactive table table-sm table-striped small" data-quarto-postprocess="true">
 <colgroup>
@@ -5486,7 +5512,7 @@ Warning
 <section id="gradient-runtime-comparison" class="level1 page-columns page-full">
 <h1>Gradient runtime comparison</h1>
 <div class="column-page">
-<div id="5fdbc87b" class="cell" data-execution_count="5">
+<div id="4f2b4573" class="cell" data-execution_count="6">
 <div class="cell-output cell-output-display">
 <table class="interactive table table-sm table-striped small" data-quarto-postprocess="true">
 <colgroup>
