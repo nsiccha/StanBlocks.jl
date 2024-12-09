@@ -176,11 +176,11 @@ Warning
 </div>
 <section id="runtime-overview" class="level1 page-columns page-full">
 <h1>Runtime overview</h1>
-<p>The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+Enzyme vs Stan, bottom: Julia is faster) for the <code>posteriordb</code> models for which the <a href="./index.html#overview-of-posteriors">overview table</a> has a <code>yes</code> in the <code>usable</code> column. The color of the dots represents the posterior dimension. Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive run and a short explanation, e.g.&nbsp;for the topmost point: <code>mesquite-logmesquite_logvash (D=7, #allocs=0) - Julia's primitive is ~4.5 times faster, but Julia's gradient is ~16.0 times slower.</code></p>
+<p>The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+Enzyme vs Stan, bottom: Julia is faster) for the <code>posteriordb</code> models for which the <a href="./index.html#overview-of-posteriors">overview table</a> has a <code>yes</code> in the <code>usable</code> column. The color of the dots represents the posterior dimension. Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive run and a short explanation, e.g.&nbsp;for the topmost point: <code>mesquite-logmesquite_logvash (D=7, #allocs=0-&gt;70) - Julia's primitive is ~4.5 times faster, but Julia's gradient is ~16.0 times slower.</code></p>
 <div class="column-page">
-<div id="d1a6e6b8" class="cell" data-execution_count="3">
-<div class="cell-output cell-output-display" data-execution_count="18">
-    <div id="d6109485-16e3-4b66-9eb0-21749661c4ac" style="width:1000px;height:600px;"></div>
+<div id="b3302eef" class="cell" data-execution_count="3">
+<div class="cell-output cell-output-display" data-execution_count="25">
+    <div id="4fb5dfa7-2521-4013-9bc0-3ebb5bf88096" style="width:1000px;height:600px;"></div>
     <script>
         requirejs.config({
         paths: {
@@ -189,7 +189,7 @@ Warning
     });
     require(['plotly'], function (Plotly) {
 
-    Plotly.newPlot('d6109485-16e3-4b66-9eb0-21749661c4ac', [
+    Plotly.newPlot('4fb5dfa7-2521-4013-9bc0-3ebb5bf88096', [
     {
         "showlegend": true,
         "mode": "markers",
@@ -2923,7 +2923,7 @@ Warning
         "name": "y81",
         "yaxis": "y",
         "text": [
-            "radon_mod-radon_county (D=389, #allocs=2->4) <br> Julia's primitive is ~2.5 times slower, and Julia's gradient is ~2.4 times slower."
+            "radon_mod-radon_county (D=389, #allocs=2->2) <br> Julia's primitive is ~2.0 times faster, but Julia's gradient is ~1.4 times slower."
         ],
         "legendgroup": "y81",
         "marker": {
@@ -2936,12 +2936,12 @@ Warning
             "size": 8
         },
         "y": [
-            2.3801417685515016
+            1.426942218997126
         ],
         "type": "scatter",
         "hoverinfo": "text",
         "x": [
-            2.525431669892359
+            0.49332009466884313
         ]
     },
     {
@@ -4125,8 +4125,8 @@ Warning
         ],
         "type": "scatter",
         "x": [
-            6.753168723401449e-210,
-            1.0401310869460012e208
+            1.2736084211736543e-185,
+            3.2554432870500877e183
         ]
     },
     {
@@ -4169,8 +4169,8 @@ Warning
             1.0
         ],
         "range": [
-            -1.6144822124502616,
-            0.4610778894211084
+            -1.6076137238182975,
+            0.22525977972368247
         ],
         "domain": [
             0.06365923009623797,
@@ -4275,7 +4275,7 @@ Warning
 <section id="primitive-runtime-comparison" class="level1 page-columns page-full">
 <h1>Primitive runtime comparison</h1>
 <div class="column-page">
-<div id="f37675b1" class="cell" data-execution_count="4">
+<div id="f52f8b70" class="cell" data-execution_count="4">
 <div class="cell-output cell-output-display">
 <table class="interactive table table-sm table-striped small" data-quarto-postprocess="true">
 <colgroup>
@@ -5100,8 +5100,8 @@ Warning
 <tr class="odd">
 <td style="text-align: right;">radon_mod-radon_county</td>
 <td style="text-align: right;">389</td>
-<td style="text-align: right;">1.0 ± 0.01</td>
-<td style="text-align: right;">2.5 ± 2.1</td>
+<td style="text-align: right;">2.0 ± 0.018</td>
+<td style="text-align: right;">1.0 ± 0.18</td>
 <td style="text-align: right;">2.0</td>
 <td style="text-align: right;"><div class="markdown">
 <p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L253">Julia</a></p>
@@ -5486,7 +5486,7 @@ Warning
 <section id="gradient-runtime-comparison" class="level1 page-columns page-full">
 <h1>Gradient runtime comparison</h1>
 <div class="column-page">
-<div id="37edc56a" class="cell" data-execution_count="5">
+<div id="5fdbc87b" class="cell" data-execution_count="5">
 <div class="cell-output cell-output-display">
 <table class="interactive table table-sm table-striped small" data-quarto-postprocess="true">
 <colgroup>
@@ -6182,6 +6182,17 @@ Warning
 <td style="text-align: right;">Julia 1.10.7 + Enzyme 0.13.21</td>
 </tr>
 <tr class="even">
+<td style="text-align: right;">radon_mod-radon_county</td>
+<td style="text-align: right;">389</td>
+<td style="text-align: right;">1.0 ± 0.014</td>
+<td style="text-align: right;">1.4 ± 0.012</td>
+<td style="text-align: right;">2.0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L253">Julia</a></p>
+</div></td>
+<td style="text-align: right;">Julia 1.10.7 + Enzyme 0.13.21</td>
+</tr>
+<tr class="odd">
 <td style="text-align: right;">nes_logit_data-nes_logit_model</td>
 <td style="text-align: right;">2</td>
 <td style="text-align: right;">1.0 ± 0.004</td>
@@ -6192,7 +6203,7 @@ Warning
 </div></td>
 <td style="text-align: right;">Julia 1.10.7 + Enzyme 0.13.21</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">pilots-pilots</td>
 <td style="text-align: right;">18</td>
 <td style="text-align: right;">1.0 ± 0.0027</td>
@@ -6203,7 +6214,7 @@ Warning
 </div></td>
 <td style="text-align: right;">Julia 1.10.7 + Enzyme 0.13.21</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_intercept_slope_noncentered</td>
 <td style="text-align: right;">777</td>
 <td style="text-align: right;">5.9 ± 0.52</td>
@@ -6214,7 +6225,7 @@ Warning
 </div></td>
 <td style="text-align: right;">Julia 1.10.7 + Enzyme 0.13.21</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_slope_noncentered</td>
 <td style="text-align: right;">175</td>
 <td style="text-align: right;">3.5 ± 0.021</td>
@@ -6222,17 +6233,6 @@ Warning
 <td style="text-align: right;">4.0</td>
 <td style="text-align: right;"><div class="markdown">
 <p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1418">Julia</a></p>
-</div></td>
-<td style="text-align: right;">Julia 1.10.7 + Enzyme 0.13.21</td>
-</tr>
-<tr class="even">
-<td style="text-align: right;">radon_mod-radon_county</td>
-<td style="text-align: right;">389</td>
-<td style="text-align: right;">1.0 ± 0.014</td>
-<td style="text-align: right;">2.4 ± 0.032</td>
-<td style="text-align: right;">4.0</td>
-<td style="text-align: right;"><div class="markdown">
-<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L253">Julia</a></p>
 </div></td>
 <td style="text-align: right;">Julia 1.10.7 + Enzyme 0.13.21</td>
 </tr>

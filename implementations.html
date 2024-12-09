@@ -445,7 +445,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-258"><a href="#cb1-258" aria-hidden="true" tabindex="-1"></a>            sigma_a<span class="op">::</span><span class="dt">real</span>(lower<span class="op">=</span><span class="fl">0</span>, upper<span class="op">=</span><span class="fl">100</span>)</span>
 <span id="cb1-259"><a href="#cb1-259" aria-hidden="true" tabindex="-1"></a>            sigma_y<span class="op">::</span><span class="dt">real</span>(lower<span class="op">=</span><span class="fl">0</span>, upper<span class="op">=</span><span class="fl">100</span>)</span>
 <span id="cb1-260"><a href="#cb1-260" aria-hidden="true" tabindex="-1"></a>        <span class="cf">end</span></span>
-<span id="cb1-261"><a href="#cb1-261" aria-hidden="true" tabindex="-1"></a>        <span class="pp">@model</span> <span class="cf">begin</span></span>
+<span id="cb1-261"><a href="#cb1-261" aria-hidden="true" tabindex="-1"></a>        <span class="pp">@model</span> <span class="pp">@views</span> <span class="cf">begin</span></span>
 <span id="cb1-262"><a href="#cb1-262" aria-hidden="true" tabindex="-1"></a>            y_hat <span class="op">=</span> a[county]</span>
 <span id="cb1-263"><a href="#cb1-263" aria-hidden="true" tabindex="-1"></a>            </span>
 <span id="cb1-264"><a href="#cb1-264" aria-hidden="true" tabindex="-1"></a>            mu_a <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">1</span>);</span>
