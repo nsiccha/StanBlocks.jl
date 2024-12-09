@@ -30,6 +30,7 @@ format:
 jupyter: julia-1.10
 execute:
   echo: false
+  cache: true
   daemon: 60000
 filters:
    - include-code-files

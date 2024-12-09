@@ -2,9 +2,21 @@
 title: "Julia vs Stan performance comparison"
 ---
 
+This page compares the performance of Julia's and Stan's log density and log density gradient computations for the implemented posteriors. Several caveats apply:
+
+* The `posteriordb` Stan implementations were never meant to represent "perfect and best-performant" practices.
+* The StanBlocks.jl implementations are not line-by-line translations of the Stan implementations. Sometimes small optimizations were applied, to make the implementation fall more in line with common Julia practices, or to make the code more friendly for Julia's AD packages, e.g. by avoiding mutation.
+* Stan often automatically drops constant terms (unless configured differently), see [https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement](https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement), thus avoiding superfluous (for its purposes) computation, while the StanBlocks.jl implementations do not.
+* Stan implements a lot of custom AD rules, while StanBlocks.jl does not at all, and Enzyme.jl does rarely (if ever?). I suspect that adding AD rules for `_glm_` type functions would further improve Julia's performance.
+* The StanBlocks.jl "sampling" statements try to be clever about avoiding repeated computations. While I am not sure whether Stan applies the same optimizations, in principle it could do that without extra work by the user. 
+* While preliminary benchmark runs included "all" Julia AD packages, all of them are almost always much slower than Enzyme.jl for the implemented posteriors, which on top of that performance advantage also supports more Julia language features than some of the other AD packages. As such, I am only comparing Enzyme and Stan. Enzyme outperforming every other AD package for *these* posteriors/loss functions does of course not mean that it will necessarily do as well for other applications.
+* Enzyme's development is progressing quite quickly. While it currently sometimes crashes Julia, or it sometimes errors while trying to compute a gradient, in general Enzyme's performance and reliability are continuously and quickly improving.
+* Stan's benchmark is done from Julia via `BridgeStan.jl`. While I think that any performance penalty should be extremely small, I am not 100% sure. BridgeStan uses the `-O3` compiler flag by default, but no additional ones.
+* All benchmarks are happening with a single thread on my local machine.
+* **There are probably more caveats!**
+
 ::: {.callout-warning}
-ALL COMPARISONS ARE PRELIMINARY, INTERPRET THEM WITH A BIG HELPING OF SALT.
-WILL ELABORATE.
+**In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as "A is X-times faster than B".**
 :::
 
 ```{julia}
@@ -13,7 +25,7 @@ using Logging, Test
 include("julia/common.jl")
 const ENZYME_VERSION = filter(x->x.second.name=="Enzyme", Pkg.dependencies()) |> x->first(x)[2].version
 const VERSION_STRING = "Julia $VERSION + Enzyme $ENZYME_VERSION" 
-getsampletimes(x::Chairmarks.Benchmark) = getfield.(x.samples, :time);
+getsampletimes(x::Chairmarks.Benchmark) = getfield.(x.samples, :time); 
 ```
 ```{julia}
 pbenchmarks = map(posterior_names) do posterior_name
@@ -157,11 +169,15 @@ gdf = DataFrame(OrderedDict(
 # Runtime overview
 
 The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+Enzyme vs Stan, bottom: Julia is faster) for the `posteriordb` models for which the [overview table](index.qmd#overview-of-posteriors) has a `yes` in the `usable` column. The color of the dots represents the posterior dimension.
-Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive run and a short explanation, e.g. for the topmost point: `mesquite-logmesquite_logvash (D=7, #allocs=0->70) - Julia's primitive is ~4.5 times faster, but Julia's gradient is ~16.0 times slower.`
+Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive and gradient run and a short explanation, e.g. for the topmost point: `mesquite-logmesquite_logvash (D=7, #allocs=0->70) - Julia's primitive is ~4.5 times faster, but Julia's gradient is ~16.0 times slower.`
 
 :::{.column-page}
-```{julia}
 
+::: {.callout-warning}
+**In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as "A is X-times faster than B".**
+:::
+```{julia}
+ 
 # pretty_table(jdf; backend=Val(:html), show_subheader=false, table_class="interactive")
 color = log.(jdf.dimension)
 color .-= minimum(color)
