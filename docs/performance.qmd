@@ -7,25 +7,21 @@ ALL COMPARISONS ARE PRELIMINARY, INTERPRET THEM WITH A BIG HELPING OF SALT.
 WILL ELABORATE.
 :::
 
-# Primitive runtime comparison
-
 ```{julia}
-ENV["DATAFRAMES_ROWS"] = 500
 using DataFrames, StanBlocks, Markdown, PosteriorDB, StanLogDensityProblems, LogDensityProblems, Statistics, OrderedCollections, PrettyTables, Serialization, Chairmarks, Enzyme, BridgeStan, Markdown
 using Logging, Test
-mkpath("cache")
 include("julia/common.jl")
-getsampletimes(x::Chairmarks.Benchmark) = getfield.(x.samples, :time)
-
-pdb = PosteriorDB.database()
-posterior_names = PosteriorDB.posterior_names(pdb)
-benchmarks = map(posterior_names) do posterior_name
+getsampletimes(x::Chairmarks.Benchmark) = getfield.(x.samples, :time);
+```
+```{julia}
+pbenchmarks = map(posterior_names) do posterior_name
     validity_path = joinpath("cache", "$posterior_name.sjl")
     performance_path = joinpath("cache", "$(posterior_name)_performance.sjl")
     isfile(validity_path) || return 
     mtime(performance_path) > mtime(validity_path) && return Serialization.deserialize(performance_path)
     validity = Serialization.deserialize(validity_path)
     validity.usable == "yes" || return
+    println("Benchmarking primitive $posterior_name")
     try
         post = PosteriorDB.posterior(pdb, posterior_name)
         jlpdf = StanBlocks.julia_implementation(post)
@@ -55,35 +51,30 @@ benchmarks = map(posterior_names) do posterior_name
     end
 end 
 df = DataFrame([
-    merge((;posterior_name), row) for (posterior_name, row) in zip(posterior_names, benchmarks) if !isnothing(row)
+    merge((;posterior_name, dimension=posterior_dimension(posterior_name)), row) for (posterior_name, row) in zip(posterior_names, pbenchmarks) if !isnothing(row)
 ])
 sort!(df, :jallocs)
-df = DataFrame(OrderedDict(
+pdf = DataFrame(OrderedDict(
     "posterior name"=>df.posterior_name,
-    "dimension"=>posterior_dimension.(df.posterior_name),
+    "dimension"=>df.dimension,
     "Stan mean relative runtime"=>df.stime,
     "Julia mean relative runtime"=>df.jtime,
     "Julia allocations"=>df.jallocs,
     "implementations"=>implementations_string.(df.posterior_name) 
 ))
-pretty_table(df; backend=Val(:html), show_subheader=false) 
-```
 
-# Gradient runtime comparison
-
-```{julia}
-
-benchmarks = map(posterior_names) do posterior_name
+gbenchmarks = map(df.posterior_name) do posterior_name
     # posterior_name == "earnings-earn_height" || return
     performance_path = joinpath("cache", "$(posterior_name)_gradient.sjl")
     validity_path = joinpath("cache", "$posterior_name.sjl")
-    isfile(validity_path) || return 
+    isfile(validity_path) || return  
     if mtime(performance_path) > mtime(validity_path)
         rv = Serialization.deserialize(performance_path)
         !isnothing(rv) && return rv
     end
     validity = Serialization.deserialize(validity_path)
     validity.usable == "yes" || return
+    println("Benchmarking gradient $posterior_name")
     try
         Serialization.serialize(performance_path, nothing)
         post = PosteriorDB.posterior(pdb, posterior_name)
@@ -106,16 +97,16 @@ benchmarks = map(posterior_names) do posterior_name
         end
         slpdf((x,g)) = BridgeStan.log_density_gradient!(stan_problem.model, x, g)
         n = LogDensityProblems.dimension(jlpdf)
-        jbenchmark = (@be (randn(n),zeros(n)) elpdf)
-        jtimes = getsampletimes(jbenchmark)
+        sbenchmark = (@be (randn(n),zeros(n)) slpdf)
+        stimes = getsampletimes(sbenchmark)
         rv = (;
-            jtime=UncertainStatistic(mean, jtimes), 
-            jallocs=mean(jbenchmark).allocs, 
-            stime=UncertainStatistic(mean, [Inf]), 
-            sallocs=Inf
+            jtime=UncertainStatistic(mean, [Inf]), 
+            jallocs=Inf,
+            stime=UncertainStatistic(mean, stimes ./ mean(stimes)), 
+            sallocs=mean(sbenchmark).allocs, 
         )
         Serialization.serialize(performance_path, rv)
-        sbenchmark = (@be (randn(n),zeros(n)) slpdf)
+        jbenchmark = (@be (randn(n),zeros(n)) elpdf)
         min_time = min(mean(jbenchmark).time, mean(sbenchmark).time)
         jtimes = getsampletimes(jbenchmark) ./ min_time
         stimes = getsampletimes(sbenchmark) ./ min_time
@@ -127,21 +118,101 @@ benchmarks = map(posterior_names) do posterior_name
         )
         Serialization.serialize(performance_path, rv)
         return rv
-    catch
-        # rethrow()
+    catch 
+        # rethrow(rv) 
     end
 end
+jdf = DataFrame([
+    (;
+        prow.posterior_name, 
+        prow.dimension,
+        prow.jallocs, 
+        ptime=val(prow.jtime) / val(prow.stime), 
+        gtime=val(grow.jtime) / val(grow.stime),
+    ) for (prow, grow) in zip(eachrow(df), gbenchmarks) if !isnothing(grow) && isfinite(grow.jallocs)
+])
+
 df = DataFrame([
-    merge((;posterior_name), row) for (posterior_name, row) in zip(posterior_names, benchmarks) if !isnothing(row)
+    merge((;posterior_name), row) for (posterior_name, row) in zip(df.posterior_name, gbenchmarks) if !isnothing(row) && isfinite(row.jallocs)
 ])
 sort!(df, :jallocs)
-df = DataFrame(OrderedDict(
+gdf = DataFrame(OrderedDict(
     "posterior name"=>df.posterior_name,
     "dimension"=>posterior_dimension.(df.posterior_name),
     "Stan mean relative runtime"=>df.stime,
     "Julia+Enzyme mean relative runtime"=>df.jtime,
     "Julia+Enzyme allocations"=>df.jallocs,
     "implementations"=>implementations_string.(df.posterior_name)
-))
-pretty_table(df; backend=Val(:html), show_subheader=false)
+)); 
 ```
+
+# Runtime overview
+
+The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+Enzyme vs Stan: bottom: Julia is faster) for the `posteriordb` models for which the [overview table](index.qmd#overview-of-posteriors) has a `yes` in the `usable` column. The color of the dots represents the posterior dimension.
+Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive run and a short explanation, e.g. for the topmost point: `mesquite-logmesquite_logvash (D=7, #allocs=0) - Julia's primitive is ~4.5 times faster, but Julia's gradient is ~16.0 times slower.`
+
+:::{.column-page}
+```{julia}
+
+# pretty_table(jdf; backend=Val(:html), show_subheader=false, table_class="interactive")
+color = log.(jdf.dimension)
+color .-= minimum(color)
+color ./= maximum(color)
+color = cgrad(:thermal)[color]'
+# hover = map((n,d)->"$n (D=$d)\ntest", jdf.posterior_name, jdf.dimension) |> permutedims
+hover = map(eachrow(jdf)) do row
+    pdescr = if row.ptime > 1
+        "$(round(row.ptime; sigdigits=2)) times slower"
+    else
+        "$(round(inv(row.ptime); sigdigits=2)) times faster"
+    end
+    gdescr = if row.gtime > 1
+        "$(round(row.gtime; sigdigits=2)) times slower"
+    else
+        "$(round(inv(row.gtime); sigdigits=2)) times faster"
+    end
+    jdescr = if (row.ptime > 1) == (row.gtime > 1) 
+        "and"
+    else
+        "but"
+    end
+    descr = "Julia's primitive is ~$pdescr, $jdescr Julia's gradient is ~$gdescr."
+    "$(row.posterior_name) (D=$(row.dimension), #allocs=$(Int(row.jallocs))) - $descr"
+end |> permutedims
+
+Plots.vline!(
+Plots.hline!(
+    Plots.scatter(
+        (jdf.ptime)', 
+        (jdf.gtime)'; 
+        color, hover, 
+        xlabel="Relative primitive runtime\n(Julia vs Stan, left: Julia is faster)", 
+        ylabel="Relative gradient runtime\n(Julia+Enzyme vs Stan: bottom: Julia is faster)",
+        xscale=:log10, yscale=:log10, 
+        legend=false,
+        size=(1000, 600)
+    ),
+    [1], color=:black
+),
+    [1], color=:black
+)
+```
+:::
+
+# Primitive runtime comparison
+
+:::{.column-page}
+
+```{julia}
+pretty_table(pdf; backend=Val(:html), show_subheader=false, table_class="interactive")
+```
+:::
+
+# Gradient runtime comparison
+
+:::{.column-page}
+
+```{julia}
+pretty_table(gdf; backend=Val(:html), show_subheader=false, table_class="interactive")
+```
+:::

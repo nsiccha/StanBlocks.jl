@@ -18,6 +18,15 @@ format:
     html:
         page-layout: full
         toc: true
+        include-in-header:
+            text: |
+                <link rel="stylesheet" href="https://cdn.datatables.net/2.1.8/css/dataTables.dataTables.css" />
+                <script src="cache/dataTables.js"></script>
+                <script>
+                  $(document).ready( function () {
+                      $('table.interactive').DataTable({paging: false});
+                  } );
+                </script
 jupyter: julia-1.10
 execute:
   echo: false

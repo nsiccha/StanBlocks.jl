@@ -115,8 +115,8 @@ end
 @inline rep_row_vector(x, n) = fill(x, (1, n))
 @inline append_row(args...) = reduce(vcat, args)
 @inline append_col(args...) = reduce(hcat, args)
-@inline sub_col(x, i, j, n_rows) = x[i:(i+n_rows-1), j]
-@inline sub_row(x, i, j, n_cols) = x[i, j:(j+n_cols-1)]'
+@inline sub_col(x, i, j, n_rows) = view(x, i:(i+n_rows-1), j)
+@inline sub_row(x, i, j, n_cols) = view(x, i, j:(j+n_cols-1))'
 @inline segment(x, i, n) = x[i:(i+n-1)]
 @inline stan_tail(x, i) = x[(end-i+1):end]
 @inline diag_matrix(x) = Diagonal(x)

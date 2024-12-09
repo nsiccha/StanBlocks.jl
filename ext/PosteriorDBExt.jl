@@ -7,6 +7,11 @@ import StanBlocks: bernoulli_lpmf, binomial_lpmf, log_sum_exp, logit, binomial_l
 using Statistics, LinearAlgebra
 
 @inline PosteriorDB.implementation(model::PosteriorDB.Model, ::Val{:stan_blocks}) = julia_implementation(Val(Symbol(PosteriorDB.name(model))))
+# @inline StanBlocks.stan_implementation(posterior::PosteriorDB.Posterior) = StanProblem(
+#     PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(posterior), "stan")), 
+#     PosteriorDB.load(PosteriorDB.dataset(posterior), String);
+#     nan_on_error=true
+# )
 
 julia_implementation(posterior::PosteriorDB.Posterior) = julia_implementation(
     Val(Symbol(PosteriorDB.name(PosteriorDB.model(posterior))));
@@ -1953,26 +1958,30 @@ julia_implementation(::Val{:bym2_offset_only}; N, N_edges, node1, node2, y, E, s
 end
 julia_implementation(::Val{:bones_model}; nChild, nInd, gamma, delta, ncat, grade, kwargs...) = begin 
         # error(ncat)
-@stan begin 
-            @parameters begin
-                theta::real[nChild]
-            end
-            @model @views begin
-                theta ~ normal(0.0, 36.);
-                for i in 1:nChild
-                    for j in 1:nInd
-                        Q = vcat(
-                            1., 
-                            @.(inv_logit(delta[j] * (theta[i] - gamma[j, 1:(ncat[j]-1)]))),
-                            0.
-                        )
-                        p = Q[1:end-1] - Q[2:end]
-                        if grade[i, j] != -1
-                            target += log(p[grade[i, j]]);
-                        end
+    @stan begin 
+        @parameters begin
+            theta::real[nChild]
+        end
+        @model @views begin
+            theta ~ normal(0.0, 36.);
+            p = zeros((nChild, nInd, 5))
+            Q = zeros((nChild, nInd, 4))
+            for i in 1:nChild
+                for j in 1:nInd
+                    for k in 1:(ncat[j]-1)
+                        Q[i,j,k] = inv_logit(delta[j] * (theta[i] - gamma[j, k]))
+                    end
+                    p[i,j,1] = 1 - Q[i,j,1]
+                    for k in 2:(ncat[j]-1)
+                        p[i, j, k] = Q[i, j, k - 1] - Q[i, j, k];
+                    end
+                    p[i, j, ncat[j]] = Q[i, j, ncat[j] - 1];
+                    if grade[i, j] != -1
+                        target += log(p[i, j, grade[i, j]]);
                     end
                 end
             end
+        end
     end
 end
 julia_implementation(::Val{:logistic_regression_rhs}; n, d, y, x, scale_icept,
@@ -2013,20 +2022,21 @@ julia_implementation(::Val{:hmm_example}; N, K, y, kwargs...) = begin
             mu::positive_ordered[K]
         end
         theta = hcat(theta1, theta2)'
-        @model begin
+        @model @views begin
             target += normal_lpdf(mu[1], 3, 1);
             target += normal_lpdf(mu[2], 10, 1);
-            gamma = @. normal_lpdf(y[1], mu, 1) 
+            acc = zeros(K)
+            gamma = zeros((K,N))'
+            gamma[1, :] .= @. normal_lpdf(y[1], mu, 1) 
             for t in 2:N
-                tmp = [
-                    log_sum_exp(@broadcasted(
-                        gamma + log(theta[:, k]) 
-                        + normal_lpdf(y[t], mu[k], 1) 
-                    )) for k in 1:K
-                ]
-                gamma .= tmp
+                for k in 1:K
+                    for j in 1:K
+                        acc[j] =  gamma[t - 1, j] + log(theta[j, k]) + normal_lpdf(y[t], mu[k], 1);
+                    end
+                    gamma[t, k] = log_sum_exp(acc);
+                end
             end
-            target += log_sum_exp(gamma)
+            target += log_sum_exp(gamma[N, :])
         end
     end
 end
@@ -2240,7 +2250,7 @@ julia_implementation(::Val{:multi_occupancy}; J, K, n, X, S, kwargs...) = begin
                 alpha ~ cauchy(0, 2.5);
                 beta ~ cauchy(0, 2.5);
                 sigma_uv ~ cauchy(0, 2.5);
-                (rho_uv + 1) / 2 ~ beta(2, 2);
+                ((rho_uv + 1) / 2) ~ beta(2, 2);
                 target += multi_normal_lpdf(uv, rep_vector(0., 2), cov_matrix_2d(sigma_uv, rho_uv));
                 Omega ~ beta(2, 2);
   
@@ -2481,17 +2491,18 @@ julia_implementation(::Val{:hmm_gaussian}; T, K, y, kwargs...) = begin
             sigma::vector(lower=0)[K]
         end
         @model @views begin
-            logalpha = log.(pi1) .+ normal_lpdf(y[1], mu, sigma);
+            logalpha = zeros((K,T))'
+            accumulator = zeros(K)
+            logalpha[1,:] .= log.(pi1) .+ normal_lpdf(y[1], mu, sigma);
             for t in 2 : T
-                tmp = ([
-                    log_sum_exp(@broadcasted(
-                        logalpha + log(A[:, j]) + normal_lpdf(y[t], mu[j], sigma[j])
-                    ))
-                    for j in 1:K
-                ]);
-                logalpha .= tmp
+                for j in 1:K
+                    for i in 1:K
+                        accumulator[i] = logalpha[t - 1, i] + log(A[i, j]) + normal_lpdf(y[t], mu[j], sigma[j]);
+                    end
+                logalpha[t, j] = log_sum_exp(accumulator);
+                end
             end
-            target += log_sum_exp(logalpha);
+            target += log_sum_exp(logalpha[T,:]);
         end
     end
 end
@@ -2513,17 +2524,19 @@ julia_implementation(::Val{:hmm_drive_0}; K, N, u, v, alpha, kwargs...) = begin
             target += normal_lpdf(phi[2], 3, 1);
             target += normal_lpdf(lambda[1], 0, 1);
             target += normal_lpdf(lambda[2], 3, 1);
-            gamma = @.(exponential_lpdf(u[1], phi) + exponential_lpdf(v[1], lambda))
+
+            acc = zeros(K)
+            gamma = zeros((K,N))'
+            gamma[1,:] .= @.(exponential_lpdf(u[1], phi) + exponential_lpdf(v[1], lambda))
             for t in 2:N
-                tmp = ([
-                    log_sum_exp(@broadcasted(
-                        gamma + log(theta[:, k]) + exponential_lpdf(u[t], phi[k]) + exponential_lpdf(v[t], lambda[k])
-                    ))
-                    for k in 1:K
-                ]);
-                gamma .= tmp
+                for k in 1:K
+                    for j in 1:K
+                        acc[j] = gamma[t - 1, j] + log(theta[j, k]) + exponential_lpdf(u[t], phi[k]) + exponential_lpdf(v[t], lambda[k]);
+                    end
+                    gamma[t, k] = log_sum_exp(acc);
+                end
             end
-            target += log_sum_exp(gamma);
+            target += log_sum_exp(gamma[N, :])
         end
     end
 end
@@ -2545,17 +2558,19 @@ julia_implementation(::Val{:hmm_drive_1}; K, N, u, v, alpha, tau, rho, kwargs...
             target += normal_lpdf(phi[2], 3, 1);
             target += normal_lpdf(lambda[1], 0, 1);
             target += normal_lpdf(lambda[2], 3, 1);
-            gamma = @.(normal_lpdf(u[1], phi, tau) + normal_lpdf(v[1], lambda, rho))
+
+            acc = zeros(K)
+            gamma = zeros((K,N))'
+            gamma[1,:] .= @.(normal_lpdf(u[1], phi, tau) + normal_lpdf(v[1], lambda, rho))
             for t in 2:N
-                tmp = ([
-                    log_sum_exp(@broadcasted(
-                        gamma + log(theta[:, k]) + normal_lpdf(u[t], phi[k], tau) + normal_lpdf(v[t], lambda[k], rho)
-                    ))
-                    for k in 1:K
-                ]);
-                gamma .= tmp
+                for k in 1:K
+                    for j in 1:K
+                        acc[j] = gamma[t - 1, j] + log(theta[j, k]) + normal_lpdf(u[t], phi[k], tau) + normal_lpdf(v[t], lambda[k], rho);
+                    end
+                    gamma[t, k] = log_sum_exp(acc);
+                end
             end
-            target += log_sum_exp(gamma);
+            target += log_sum_exp(gamma[N, :])
         end
     end
 end
@@ -2575,21 +2590,23 @@ julia_implementation(::Val{:iohmm_reg}; T, K, M, y, u, kwargs...) = begin
             for t in 2:T
                 A[t, :] .= softmax(unA[t, :])
             end
+            logA = log.(A)
             logoblik = normal_lpdf.(y, u * b', sigma')
-            logalpha = @.(log(pi1) + logoblik[1,:])
+            accumulator = zeros(K)
+            logalpha = zeros((K,T))'
+            logalpha[1,:] .= @.(log(pi1) + logoblik[1,:])
             for t in 2:T
-                tmp = ([
-                    log_sum_exp(@broadcasted(
-                        logalpha + log(A[t,:]) + logoblik[t, j]
-                    ))
-                    for j in 1:K
-                ]);
-                logalpha .= tmp
+                for j in 1:K
+                    for i in 1:K
+                        accumulator[i] = logalpha[t - 1, i] + logA[t,i] + logoblik[t,j];
+                    end
+                    logalpha[t, j] = log_sum_exp(accumulator);
+                end
             end
             w ~ normal(0, 5);
             b ~ normal(0, 5);
             sigma ~ normal(0, 3);
-            target += log_sum_exp(logalpha);
+            target += log_sum_exp(logalpha[T,:]);
         end
     end
 end
@@ -2806,8 +2823,7 @@ julia_implementation(::Val{:covid19imperial_v2}; M, P, N0, N, N2, cases, deaths,
             alpha_hier ~ gamma(.1667, 1);
             ifr_noise ~ normal(1, 0.1);
             for m in 1:M
-                deaths[EpidemicStart[m] : N[m], m] ~ neg_binomial_2(E_deaths[EpidemicStart[m] : N[m], m],
-                                                            phi);
+                deaths[EpidemicStart[m] : N[m], m] ~ neg_binomial_2(E_deaths[EpidemicStart[m] : N[m], m], phi);
             end
         end
     end

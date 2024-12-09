@@ -5,26 +5,16 @@
 The below table shows information about the implemented posteriors. 
 The column `directly comparable` has value `yes` if the **median absolute deviation** of the reference (Stan) and unadjusted Julia implementation of the log density is less than `1e-4`. 
 That quantity being different from zero usually implies that Stan has eliminated constant terms in the log density, saving some computational work. 
-The column `usable` has value `yes` if the **median relative absolute deviation** of the reference (Stan) and constant-adjusted Julia implementation of the log density is less than `1e-8`. 
+The column `usable` has value `yes` if the **median relative absolute deviation** of the reference (Stan) and constant-adjusted Julia implementation of the log density is less than `1e-8`.  
 
 ```{julia}
-ENV["DATAFRAMES_ROWS"] = 500
-using DataFrames, StanBlocks, Markdown, PosteriorDB, StanLogDensityProblems, LogDensityProblems, Statistics, OrderedCollections, PrettyTables, Serialization
+using DataFrames, StanBlocks, Markdown, PosteriorDB, StanLogDensityProblems, LogDensityProblems, Statistics, OrderedCollections, PrettyTables, Serialization  
 using Logging, Test
 include("julia/common.jl")
-nan_on_error(f, x) = try
-    f(x)
-catch e
-    NaN 
-end
-nan_on_error(f) = Base.Fix1(nan_on_error, f)
-mkpath("cache")
-
-pdb = PosteriorDB.database()
-posterior_names = PosteriorDB.posterior_names(pdb)
 tests = map(posterior_names) do posterior_name
     cache_path = joinpath("cache", "$posterior_name.sjl")
     isfile(cache_path) && return Serialization.deserialize(cache_path)
+    println("Checking $posterior_name")
     post = PosteriorDB.posterior(pdb, posterior_name)
     jlpdf = StanBlocks.julia_implementation(post)
     stan_path = PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(post), "stan"))
@@ -77,6 +67,7 @@ end
 ternary(c, t, f) = c ? t : f
 df = DataFrame(OrderedDict(
     "posterior name"=>posterior_names,
+    "implementations"=>implementations_string.(posterior_names),
     "dimension"=>getproperty.(tests, :dimension),
     "usable"=>getproperty.(tests, :usable),
     # "inferred"=>ternary.(getproperty.(tests, :inferred), "yes", "no"),
@@ -92,7 +83,9 @@ pretty_table(DataFrame(
     "directly comparable posteriors"=>sum(==("yes"), df[!, "directly comparable"])
 ); backend=Val(:html), show_subheader=false) 
 ```
+:::{.column-page}
 
 ```{julia}
-pretty_table(df; backend=Val(:html), show_subheader=false)
+pretty_table(df; backend=Val(:html), show_subheader=false, table_class="interactive")
 ```
+:::
