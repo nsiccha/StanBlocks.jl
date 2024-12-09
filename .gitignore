@@ -36,3 +36,4 @@ sysconfig
 cache
 *.ipynb
 *.sh
+.jupyter_cache
