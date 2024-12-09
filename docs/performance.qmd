@@ -8,15 +8,17 @@ WILL ELABORATE.
 :::
 
 ```{julia}
-using DataFrames, StanBlocks, Markdown, PosteriorDB, StanLogDensityProblems, LogDensityProblems, Statistics, OrderedCollections, PrettyTables, Serialization, Chairmarks, Enzyme, BridgeStan, Markdown
+using DataFrames, StanBlocks, Markdown, PosteriorDB, StanLogDensityProblems, LogDensityProblems, Statistics, OrderedCollections, PrettyTables, Serialization, Chairmarks, Enzyme, BridgeStan, Markdown, Pkg
 using Logging, Test
 include("julia/common.jl")
+const ENZYME_VERSION = filter(x->x.second.name=="Enzyme", Pkg.dependencies()) |> x->first(x)[2].version
+const VERSION_STRING = "Julia $VERSION + Enzyme $ENZYME_VERSION" 
 getsampletimes(x::Chairmarks.Benchmark) = getfield.(x.samples, :time);
 ```
 ```{julia}
 pbenchmarks = map(posterior_names) do posterior_name
     validity_path = joinpath("cache", "$posterior_name.sjl")
-    performance_path = joinpath("cache", "$(posterior_name)_performance.sjl")
+    performance_path = joinpath("cache", "$(posterior_name)_primitive.sjl")
     isfile(validity_path) || return 
     mtime(performance_path) > mtime(validity_path) && return Serialization.deserialize(performance_path)
     validity = Serialization.deserialize(validity_path)
@@ -46,6 +48,7 @@ pbenchmarks = map(posterior_names) do posterior_name
             stime=UncertainStatistic(mean, stimes)
         )
         Serialization.serialize(performance_path, rv) 
+        display(rv)
         return rv
     catch
     end
@@ -103,7 +106,8 @@ gbenchmarks = map(df.posterior_name) do posterior_name
             jtime=UncertainStatistic(mean, [Inf]), 
             jallocs=Inf,
             stime=UncertainStatistic(mean, stimes ./ mean(stimes)), 
-            sallocs=mean(sbenchmark).allocs, 
+            sallocs=mean(sbenchmark).allocs,
+            jversion=VERSION_STRING
         )
         Serialization.serialize(performance_path, rv)
         jbenchmark = (@be (randn(n),zeros(n)) elpdf)
@@ -114,9 +118,11 @@ gbenchmarks = map(df.posterior_name) do posterior_name
             jtime=UncertainStatistic(mean, jtimes), 
             jallocs=mean(jbenchmark).allocs, 
             stime=UncertainStatistic(mean, stimes), 
-            sallocs=mean(sbenchmark).allocs
+            sallocs=mean(sbenchmark).allocs,
+            jversion=VERSION_STRING
         )
         Serialization.serialize(performance_path, rv)
+        display(rv)
         return rv
     catch 
         # rethrow(rv) 
@@ -126,7 +132,8 @@ jdf = DataFrame([
     (;
         prow.posterior_name, 
         prow.dimension,
-        prow.jallocs, 
+        pallocs=prow.jallocs, 
+        gallocs=grow.jallocs, 
         ptime=val(prow.jtime) / val(prow.stime), 
         gtime=val(grow.jtime) / val(grow.stime),
     ) for (prow, grow) in zip(eachrow(df), gbenchmarks) if !isnothing(grow) && isfinite(grow.jallocs)
@@ -142,13 +149,14 @@ gdf = DataFrame(OrderedDict(
     "Stan mean relative runtime"=>df.stime,
     "Julia+Enzyme mean relative runtime"=>df.jtime,
     "Julia+Enzyme allocations"=>df.jallocs,
-    "implementations"=>implementations_string.(df.posterior_name)
+    "implementations"=>implementations_string.(df.posterior_name),
+    "Julia version"=>df.jversion
 )); 
 ```
 
 # Runtime overview
 
-The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+Enzyme vs Stan: bottom: Julia is faster) for the `posteriordb` models for which the [overview table](index.qmd#overview-of-posteriors) has a `yes` in the `usable` column. The color of the dots represents the posterior dimension.
+The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+Enzyme vs Stan, bottom: Julia is faster) for the `posteriordb` models for which the [overview table](index.qmd#overview-of-posteriors) has a `yes` in the `usable` column. The color of the dots represents the posterior dimension.
 Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive run and a short explanation, e.g. for the topmost point: `mesquite-logmesquite_logvash (D=7, #allocs=0) - Julia's primitive is ~4.5 times faster, but Julia's gradient is ~16.0 times slower.`
 
 :::{.column-page}
@@ -177,7 +185,7 @@ hover = map(eachrow(jdf)) do row
         "but"
     end
     descr = "Julia's primitive is ~$pdescr, $jdescr Julia's gradient is ~$gdescr."
-    "$(row.posterior_name) (D=$(row.dimension), #allocs=$(Int(row.jallocs))) - $descr"
+    "$(row.posterior_name) (D=$(row.dimension), #allocs=$(Int(row.pallocs))->$(Int(row.gallocs))) <br> $descr"
 end |> permutedims
 
 Plots.vline!(
@@ -187,7 +195,7 @@ Plots.hline!(
         (jdf.gtime)'; 
         color, hover, 
         xlabel="Relative primitive runtime\n(Julia vs Stan, left: Julia is faster)", 
-        ylabel="Relative gradient runtime\n(Julia+Enzyme vs Stan: bottom: Julia is faster)",
+        ylabel="Relative gradient runtime\n(Julia+Enzyme vs Stan, bottom: Julia is faster)",
         xscale=:log10, yscale=:log10, 
         legend=false,
         size=(1000, 600)

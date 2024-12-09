@@ -1,3 +1,4 @@
+cd(dirname(Base.active_project()))
 ENV["DATAFRAMES_ROWS"] = 500
 using Statistics, StanBlocks, PosteriorDB
 mad(x) = median(abs.(x .- median(x)))
