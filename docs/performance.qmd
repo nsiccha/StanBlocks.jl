@@ -157,7 +157,7 @@ gdf = DataFrame(OrderedDict(
 # Runtime overview
 
 The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+Enzyme vs Stan, bottom: Julia is faster) for the `posteriordb` models for which the [overview table](index.qmd#overview-of-posteriors) has a `yes` in the `usable` column. The color of the dots represents the posterior dimension.
-Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive run and a short explanation, e.g. for the topmost point: `mesquite-logmesquite_logvash (D=7, #allocs=0) - Julia's primitive is ~4.5 times faster, but Julia's gradient is ~16.0 times slower.`
+Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive run and a short explanation, e.g. for the topmost point: `mesquite-logmesquite_logvash (D=7, #allocs=0->70) - Julia's primitive is ~4.5 times faster, but Julia's gradient is ~16.0 times slower.`
 
 :::{.column-page}
 ```{julia}

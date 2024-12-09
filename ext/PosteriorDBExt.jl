@@ -258,7 +258,7 @@ julia_implementation(::Val{:radon_county}; N, J, county, y, kwargs...) = begin
             sigma_a::real(lower=0, upper=100)
             sigma_y::real(lower=0, upper=100)
         end
-        @model begin
+        @model @views begin
             y_hat = a[county]
             
             mu_a ~ normal(0, 1);
