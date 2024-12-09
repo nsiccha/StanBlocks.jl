@@ -103,11 +103,15 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" integrity="sha512-c3Nl8+7g4LMSTdrm621y7kf9v3SDPnhxLNhcjFJbKECVnmZHTdo+IRO05sNLTH/D3vA6u1X32ehoLC7WFVdheg==" crossorigin="anonymous"></script>
 
 <script type="application/javascript">define('jquery', [],function() {return window.jQuery;})</script>
+<link rel="stylesheet" href="https://cdn.datatables.net/2.1.8/css/dataTables.dataTables.css">
+<script src="cache/dataTables.js"></script>
+<script>
+  $(document).ready( function () {
+      $('table.interactive').DataTable({paging: false});
+  } );
+</script>
 
-
-</head>
-
-<body class="nav-fixed">
+</head><body class="nav-fixed">
 
 <div id="quarto-search-results"></div>
   <header id="quarto-header" class="headroom fixed-top">
@@ -169,7 +173,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </nav>
     </div>
 <!-- main -->
-<main class="content column-page-left" id="quarto-document-content">
+<main class="content page-columns page-full column-body" id="quarto-document-content">
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
@@ -178,7 +182,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 
-<div class="quarto-title-meta column-page-left">
+<div class="quarto-title-meta column-body">
 
     <div>
     <div class="quarto-title-meta-heading">Author</div>
@@ -249,10 +253,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <p>See <a href="https://nsiccha.github.io/StanBlocks.jl/#overview-of-posteriors">https://nsiccha.github.io/StanBlocks.jl/#overview-of-posteriors</a> for an overview of (hopefully) correctly implemented models.</p>
 <p>See <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/test/runtests.jl"><code>test/runtests.jl</code></a> for a way to run and check the models. After importing <code>PosteriorDB</code>, <code>StanLogDensityProblems</code> and <code>LogDensityProblems</code>, you should have access to reference Stan implementations of the log density and of its gradient, see the documentation of <code>StanLogDensityProblems.jl</code>. The Stan log density can then be compared to the Julia log density as is, and after loading Julia’s AD packages, you can also compare the Stan log density gradient to the Julia log density gradient.</p>
 </section>
-<section id="overview-of-posteriors" class="level1">
+<section id="overview-of-posteriors" class="level1 page-columns page-full">
 <h1>Overview of posteriors</h1>
 <p>The below table shows information about the implemented posteriors. The column <code>directly comparable</code> has value <code>yes</code> if the <strong>median absolute deviation</strong> of the reference (Stan) and unadjusted Julia implementation of the log density is less than <code>1e-4</code>. That quantity being different from zero usually implies that Stan has eliminated constant terms in the log density, saving some computational work. The column <code>usable</code> has value <code>yes</code> if the <strong>median relative absolute deviation</strong> of the reference (Stan) and constant-adjusted Julia implementation of the log density is less than <code>1e-8</code>.</p>
-<div id="3c224967" class="cell" data-execution_count="1">
+<div id="4738a0b2" class="cell" data-execution_count="1">
 <div class="cell-output cell-output-display">
 <table data-quarto-postprocess="true" class="table table-sm table-striped small">
 <thead>
@@ -265,19 +269,30 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tbody>
 <tr class="odd">
 <td style="text-align: right;">147</td>
-<td style="text-align: right;">117</td>
+<td style="text-align: right;">118</td>
 <td style="text-align: right;">53</td>
 </tr>
 </tbody>
 </table>
 </div>
 </div>
-<div id="ce9fd60e" class="cell" data-execution_count="2">
+<div class="column-page">
+<div id="de3108da" class="cell" data-execution_count="2">
 <div class="cell-output cell-output-display">
-<table data-quarto-postprocess="true" class="table table-sm table-striped small">
+<table class="interactive table table-sm table-striped small" data-quarto-postprocess="true">
+<colgroup>
+<col style="width: 14%">
+<col style="width: 14%">
+<col style="width: 14%">
+<col style="width: 14%">
+<col style="width: 14%">
+<col style="width: 14%">
+<col style="width: 14%">
+</colgroup>
 <thead>
 <tr class="header headerLastRow">
 <th style="text-align: right;" data-quarto-table-cell-role="th">posterior name</th>
+<th style="text-align: right;" data-quarto-table-cell-role="th">implementations</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">dimension</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">usable</th>
 <th style="text-align: right;" data-quarto-table-cell-role="th">directly comparable</th>
@@ -288,70 +303,97 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tbody>
 <tr class="odd">
 <td style="text-align: right;">GLMM_Poisson_data-GLMM_Poisson_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLMM_Poisson_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1447">Julia</a></p>
+</div></td>
 <td style="text-align: right;">45</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">2.2e-5 ± 1.8e-6</td>
-<td style="text-align: right;">2.0e-16 ± 1.7e-17</td>
+<td style="text-align: right;">3.7e-9 ± 3.1e-10</td>
+<td style="text-align: right;">2.0e-16 ± 1.6e-17</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">GLMM_data-GLMM1_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLMM1_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1466">Julia</a></p>
+</div></td>
 <td style="text-align: right;">237</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">2.3 ± 3.2e-14</td>
-<td style="text-align: right;">1.4e-16 ± 9.6e-18</td>
+<td style="text-align: right;">2.3 ± 1.6e-14</td>
+<td style="text-align: right;">1.5e-16 ± 1.1e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">GLM_Binomial_data-GLM_Binomial_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLM_Binomial_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1241">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">14.0 ± 1.6e-14</td>
-<td style="text-align: right;">1.8e-16 ± 6.3e-18</td>
+<td style="text-align: right;">1.8e-16 ± 8.6e-18</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">GLM_Poisson_Data-GLM_Poisson_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLM_Poisson_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1146">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">1.7e-10 ± 1.2e-11</td>
-<td style="text-align: right;">2.7e-16 ± 1.9e-17</td>
+<td style="text-align: right;">1.1e-9 ± 7.5e-11</td>
+<td style="text-align: right;">2.1e-16 ± 1.5e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">M0_data-M0_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/M0_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1572">Julia</a></p>
+</div></td>
 <td style="text-align: right;">2</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.7e-14 ± 4.0e-15</td>
-<td style="text-align: right;">1.6e-16 ± 1.1e-17</td>
+<td style="text-align: right;">1.6e-16 ± 1.2e-17</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Mb_data-Mb_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mb_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2043">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">0.0 ± 0.0</td>
-<td style="text-align: right;">0.0 ± 0.0</td>
+<td style="text-align: right;">1.1e-13 ± 8.0e-15</td>
+<td style="text-align: right;">1.1e-16 ± 8.1e-18</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Mh_data-Mh_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mh_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2076">Julia</a></p>
+</div></td>
 <td style="text-align: right;">388</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">160.0 ± 2.4e-14</td>
-<td style="text-align: right;">4.2e-16 ± 1.9e-17</td>
+<td style="text-align: right;">4.1e-16 ± 1.9e-17</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">Mt_data-Mt_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mt_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1624">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.7e-14 ± 4.0e-15</td>
-<td style="text-align: right;">1.4e-16 ± 9.8e-18</td>
+<td style="text-align: right;">1.4e-16 ± 9.7e-18</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Mtbh_data-Mtbh_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mtbh_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2177">Julia</a></p>
+</div></td>
 <td style="text-align: right;">154</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
@@ -360,14 +402,20 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">Mth_data-Mth_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mth_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2106">Julia</a></p>
+</div></td>
 <td style="text-align: right;">394</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">2.3e-13 ± 8.0e-15</td>
-<td style="text-align: right;">1.7e-16 ± 1.2e-17</td>
+<td style="text-align: right;">1.1e-13 ± 8.0e-15</td>
+<td style="text-align: right;">1.5e-16 ± 7.9e-18</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Rate_1_data-Rate_1_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_1_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L54">Julia</a></p>
+</div></td>
 <td style="text-align: right;">1</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
@@ -376,6 +424,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">Rate_2_data-Rate_2_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_2_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L469">Julia</a></p>
+</div></td>
 <td style="text-align: right;">2</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
@@ -384,6 +435,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Rate_3_data-Rate_3_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_3_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L140">Julia</a></p>
+</div></td>
 <td style="text-align: right;">1</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
@@ -392,14 +446,20 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">Rate_4_data-Rate_4_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_4_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L603">Julia</a></p>
+</div></td>
 <td style="text-align: right;">2</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">2.7 ± 6.3e-17</td>
+<td style="text-align: right;">2.7 ± 0.0</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">Rate_5_data-Rate_5_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_5_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L730">Julia</a></p>
+</div></td>
 <td style="text-align: right;">1</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
@@ -408,30 +468,42 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">Survey_data-Survey_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Survey_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1779">Julia</a></p>
+</div></td>
 <td style="text-align: right;">1</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
-<td style="text-align: right;">2.1e-14 ± 7.5e-16</td>
-<td style="text-align: right;">5.4e-16 ± 2.6e-17</td>
+<td style="text-align: right;">2.0e-14 ± 6.3e-16</td>
+<td style="text-align: right;">5.3e-16 ± 2.6e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">bball_drive_event_0-hmm_drive_0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_drive_0.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2510">Julia</a></p>
+</div></td>
 <td style="text-align: right;">6</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">2.3 ± 0.0</td>
+<td style="text-align: right;">2.3 ± 6.4e-14</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">bball_drive_event_1-hmm_drive_1</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_drive_1.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2544">Julia</a></p>
+</div></td>
 <td style="text-align: right;">6</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">760.0 ± 1.0e-11</td>
-<td style="text-align: right;">8.0e-16 ± 3.7e-17</td>
+<td style="text-align: right;">760.0 ± 1.4e-11</td>
+<td style="text-align: right;">8.2e-16 ± 3.9e-17</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">bones_data-bones_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/bones_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1959">Julia</a></p>
+</div></td>
 <td style="text-align: right;">13</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
@@ -440,6 +512,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">diamonds-diamonds</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/diamonds.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1600">Julia</a></p>
+</div></td>
 <td style="text-align: right;">26</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
@@ -448,6 +523,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">dogs-dogs</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dogs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1182">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
@@ -456,6 +534,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">dogs-dogs_hierarchical</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dogs_hierarchical.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1512">Julia</a></p>
+</div></td>
 <td style="text-align: right;">2</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
@@ -464,6 +545,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">dogs-dogs_log</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dogs_log.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1219">Julia</a></p>
+</div></td>
 <td style="text-align: right;">2</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
@@ -472,6 +556,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">dugongs_data-dugongs_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dugongs_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L742">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
@@ -480,6 +567,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-earn_height</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/earn_height.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L21">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
@@ -488,6 +578,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">earnings-log10earn_height</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/log10earn_height.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L176">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
@@ -496,6 +589,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-logearn_height</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_height.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L101">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
@@ -504,6 +600,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">earnings-logearn_height_male</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_height_male.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L152">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
@@ -512,6 +611,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-logearn_interaction</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_interaction.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L348">Julia</a></p>
+</div></td>
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
@@ -520,6 +622,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">earnings-logearn_interaction_z</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_interaction_z.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L616">Julia</a></p>
+</div></td>
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
@@ -528,6 +633,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">earnings-logearn_logheight_male</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_logheight_male.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L270">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
@@ -536,718 +644,988 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">ecdc0401-covid19imperial_v2</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/covid19imperial_v2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2782">Julia</a></p>
+</div></td>
 <td style="text-align: right;">51</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">18.0 ± 1.0e-12</td>
-<td style="text-align: right;">1.4e-16 ± 6.9e-18</td>
+<td style="text-align: right;">1.4e-16 ± 6.8e-18</td>
 </tr>
 <tr class="odd">
+<td style="text-align: right;">ecdc0501-covid19imperial_v2</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/covid19imperial_v2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2782">Julia</a></p>
+</div></td>
+<td style="text-align: right;">51</td>
+<td style="text-align: right;">yes</td>
+<td style="text-align: right;">maybe?</td>
+<td style="text-align: right;">18.0 ± 8.2e-12</td>
+<td style="text-align: right;">1.5e-16 ± 6.1e-18</td>
+</tr>
+<tr class="even">
 <td style="text-align: right;">election88-election88_full</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/election88_full.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1652">Julia</a></p>
+</div></td>
 <td style="text-align: right;">90</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">23.0 ± 0.0</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">garch-garch11</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/garch11.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L374">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.7e-13 ± 4.0e-15</td>
 <td style="text-align: right;">3.1e-16 ± 1.2e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">gp_pois_regr-gp_pois_regr</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/gp_pois_regr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L545">Julia</a></p>
+</div></td>
 <td style="text-align: right;">13</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">21.0 ± 1.0e-15</td>
 <td style="text-align: right;">2.0e-16 ± 1.4e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">gp_pois_regr-gp_regr</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/gp_regr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L433">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">31.0 ± 5.0e-16</td>
 <td style="text-align: right;">1.7e-16 ± 9.5e-18</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">hmm_example-hmm_example</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_example.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2017">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">94.0 ± 3.2e-14</td>
-<td style="text-align: right;">2.8e-16 ± 1.1e-17</td>
+<td style="text-align: right;">94.0 ± 2.4e-14</td>
+<td style="text-align: right;">2.2e-16 ± 1.3e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">hmm_gaussian_simulated-hmm_gaussian</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_gaussian.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2485">Julia</a></p>
+</div></td>
 <td style="text-align: right;">14</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">460.0 ± 1.0e-12</td>
-<td style="text-align: right;">5.8e-16 ± 2.6e-17</td>
+<td style="text-align: right;">460.0 ± 1.2e-12</td>
+<td style="text-align: right;">7.8e-16 ± 3.3e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">iohmm_reg_simulated-iohmm_reg</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/iohmm_reg.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2578">Julia</a></p>
+</div></td>
 <td style="text-align: right;">29</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">420.0 ± 1.8e-13</td>
-<td style="text-align: right;">5.4e-16 ± 2.6e-17</td>
+<td style="text-align: right;">420.0 ± 1.6e-13</td>
+<td style="text-align: right;">4.5e-16 ± 2.1e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_c</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_interaction_c.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L517">Julia</a></p>
+</div></td>
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">9.3e-10 ± 6.4e-11</td>
 <td style="text-align: right;">5.3e-16 ± 2.3e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_c2</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_interaction_c2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L531">Julia</a></p>
+</div></td>
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.7e-10 ± 3.3e-11</td>
 <td style="text-align: right;">4.1e-16 ± 1.9e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_z</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_interaction_z.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L669">Julia</a></p>
+</div></td>
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.7e-10 ± 3.3e-11</td>
 <td style="text-align: right;">4.4e-16 ± 2.0e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">kidiq_with_mom_work-kidscore_mom_work</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_mom_work.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L454">Julia</a></p>
+</div></td>
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.7e-10 ± 3.3e-11</td>
 <td style="text-align: right;">5.6e-16 ± 2.5e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">kilpisjarvi_mod-kilpisjarvi</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kilpisjarvi.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L683">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">1.2 ± 1.3e-9</td>
 <td style="text-align: right;">2.0e-16 ± 1.0e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">low_dim_gauss_mix-low_dim_gauss_mix</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/low_dim_gauss_mix.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L201">Julia</a></p>
+</div></td>
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">920.0 ± 1.9e-13</td>
 <td style="text-align: right;">5.7e-16 ± 2.5e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">low_dim_gauss_mix_collapse-low_dim_gauss_mix_collapse</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/low_dim_gauss_mix_collapse.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L201">Julia</a></p>
+</div></td>
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">920.0 ± 9.6e-14</td>
 <td style="text-align: right;">5.8e-16 ± 2.6e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">lsat_data-lsat_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/lsat_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1391">Julia</a></p>
+</div></td>
 <td style="text-align: right;">1006</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">28.0 ± 6.4e-14</td>
 <td style="text-align: right;">1.2e-16 ± 8.7e-18</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">mcycle_gp-accel_gp</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/accel_gp.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2614">Julia</a></p>
+</div></td>
 <td style="text-align: right;">66</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">180.0 ± 3.8e-12</td>
 <td style="text-align: right;">3.4e-16 ± 1.4e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">mcycle_splines-accel_splines</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/accel_splines.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2326">Julia</a></p>
+</div></td>
 <td style="text-align: right;">82</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">190.0 ± 3.1e-8</td>
 <td style="text-align: right;">6.0e-16 ± 3.2e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">mesquite-logmesquite</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L361">Julia</a></p>
+</div></td>
 <td style="text-align: right;">8</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">9.9e-14 ± 7.0e-15</td>
 <td style="text-align: right;">1.7e-16 ± 9.2e-18</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">mesquite-logmesquite_logva</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logva.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L798">Julia</a></p>
+</div></td>
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.1e-13 ± 8.0e-15</td>
 <td style="text-align: right;">1.8e-16 ± 8.7e-18</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">mesquite-logmesquite_logvas</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logvas.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1283">Julia</a></p>
+</div></td>
 <td style="text-align: right;">8</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.7e-14 ± 4.0e-15</td>
 <td style="text-align: right;">1.5e-16 ± 1.1e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">mesquite-logmesquite_logvash</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logvash.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1283">Julia</a></p>
+</div></td>
 <td style="text-align: right;">7</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.1e-13 ± 8.0e-15</td>
 <td style="text-align: right;">1.8e-16 ± 5.9e-18</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">mesquite-logmesquite_logvolume</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logvolume.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L361">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.7e-14 ± 4.0e-15</td>
 <td style="text-align: right;">1.5e-16 ± 1.1e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">mesquite-mesquite</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/mesquite.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L361">Julia</a></p>
+</div></td>
 <td style="text-align: right;">8</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.9e-9 ± 1.3e-10</td>
 <td style="text-align: right;">1.7e-16 ± 1.0e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">nes1972-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.5e-11 ± 1.0e-12</td>
 <td style="text-align: right;">7.3e-16 ± 3.5e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">nes1976-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">8.6e-12 ± 6.1e-13</td>
 <td style="text-align: right;">5.9e-16 ± 2.7e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">nes1980-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.0e-12 ± 3.4e-13</td>
 <td style="text-align: right;">5.6e-16 ± 2.5e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">nes1984-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.1e-11 ± 7.5e-13</td>
 <td style="text-align: right;">5.8e-16 ± 2.5e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">nes1988-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.1e-11 ± 7.4e-13</td>
 <td style="text-align: right;">7.2e-16 ± 2.9e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">nes1992-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.5e-11 ± 1.0e-12</td>
 <td style="text-align: right;">6.6e-16 ± 3.0e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">nes1996-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">7.7e-12 ± 5.1e-13</td>
 <td style="text-align: right;">5.4e-16 ± 2.5e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">nes2000-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.8e-12 ± 1.3e-13</td>
 <td style="text-align: right;">3.5e-16 ± 1.6e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">nes_logit_data-nes_logit_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes_logit_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
 <td style="text-align: right;">2</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">normal_2-normal_mixture</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/normal_mixture.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L219">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">910.0 ± 3.1e-12</td>
 <td style="text-align: right;">9.9e-16 ± 4.0e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">normal_5-normal_mixture_k</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/normal_mixture_k.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L219">Julia</a></p>
+</div></td>
 <td style="text-align: right;">14</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">1600.0 ± 3.2e-13</td>
 <td style="text-align: right;">8.3e-16 ± 3.4e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">ovarian-logistic_regression_rhs</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logistic_regression_rhs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1987">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3075</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">1700.0 ± 4.5e-11</td>
 <td style="text-align: right;">1.7e-13 ± 4.7e-15</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">pilots-pilots</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/pilots.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1030">Julia</a></p>
+</div></td>
 <td style="text-align: right;">18</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">2.8e-14 ± 2.0e-15</td>
 <td style="text-align: right;">1.3e-16 ± 9.1e-18</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">prideprejudice_chapter-ldaK5</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK5.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1162">Julia</a></p>
+</div></td>
 <td style="text-align: right;">7714</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">1.2e-9 ± 5.0e-11</td>
 <td style="text-align: right;">4.4e-15 ± 2.0e-16</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">prideprejudice_paragraph-ldaK5</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK5.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1162">Julia</a></p>
+</div></td>
 <td style="text-align: right;">15570</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">8.6e-10 ± 3.6e-11</td>
 <td style="text-align: right;">3.3e-15 ± 1.4e-16</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">prostate-logistic_regression_rhs</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logistic_regression_rhs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1987">Julia</a></p>
+</div></td>
 <td style="text-align: right;">11935</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">6800.0 ± 4.7e-12</td>
 <td style="text-align: right;">3.9e-15 ± 2.3e-16</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_all-radon_county_intercept</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county_intercept.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L499">Julia</a></p>
+</div></td>
 <td style="text-align: right;">388</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">11000.0 ± 1.3e-11</td>
 <td style="text-align: right;">3.5e-15 ± 1.4e-16</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">radon_all-radon_hierarchical_intercept_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L981">Julia</a></p>
+</div></td>
 <td style="text-align: right;">391</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 1.7e-11</td>
 <td style="text-align: right;">4.5e-15 ± 2.0e-16</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_all-radon_hierarchical_intercept_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1258">Julia</a></p>
+</div></td>
 <td style="text-align: right;">391</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 1.9e-11</td>
 <td style="text-align: right;">3.8e-15 ± 1.8e-16</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">radon_all-radon_partially_pooled_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L648">Julia</a></p>
+</div></td>
 <td style="text-align: right;">389</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 1.3e-11</td>
 <td style="text-align: right;">5.1e-15 ± 2.1e-16</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_all-radon_partially_pooled_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L910">Julia</a></p>
+</div></td>
 <td style="text-align: right;">389</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 1.5e-11</td>
 <td style="text-align: right;">4.3e-15 ± 2.0e-16</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">radon_all-radon_pooled</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_pooled.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L332">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 4.1e-11</td>
 <td style="text-align: right;">1.4e-14 ± 5.8e-16</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_intercept_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L836">Julia</a></p>
+</div></td>
 <td style="text-align: right;">390</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 1.4e-11</td>
 <td style="text-align: right;">4.0e-15 ± 1.8e-16</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">radon_all-radon_variable_intercept_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1122">Julia</a></p>
+</div></td>
 <td style="text-align: right;">390</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 1.6e-11</td>
 <td style="text-align: right;">3.8e-15 ± 1.6e-16</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_intercept_slope_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1095">Julia</a></p>
+</div></td>
 <td style="text-align: right;">777</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 2.0e-11</td>
 <td style="text-align: right;">4.5e-15 ± 1.8e-16</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">radon_all-radon_variable_intercept_slope_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1418">Julia</a></p>
+</div></td>
 <td style="text-align: right;">777</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 2.6e-11</td>
 <td style="text-align: right;">4.4e-15 ± 2.1e-16</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_all-radon_variable_slope_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L813">Julia</a></p>
+</div></td>
 <td style="text-align: right;">390</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 5.7e-11</td>
 <td style="text-align: right;">1.6e-14 ± 7.1e-16</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">radon_all-radon_variable_slope_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1071">Julia</a></p>
+</div></td>
 <td style="text-align: right;">390</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">12000.0 ± 8.0e-11</td>
 <td style="text-align: right;">1.7e-14 ± 7.4e-16</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_mn-radon_county_intercept</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county_intercept.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L499">Julia</a></p>
+</div></td>
 <td style="text-align: right;">87</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">650.0 ± 1.6e-13</td>
 <td style="text-align: right;">7.1e-16 ± 3.1e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">radon_mn-radon_hierarchical_intercept_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L981">Julia</a></p>
+</div></td>
 <td style="text-align: right;">90</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 1.7e-13</td>
 <td style="text-align: right;">6.1e-16 ± 2.7e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_mn-radon_hierarchical_intercept_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1258">Julia</a></p>
+</div></td>
 <td style="text-align: right;">90</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 1.9e-13</td>
 <td style="text-align: right;">8.3e-16 ± 3.6e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">radon_mn-radon_partially_pooled_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L648">Julia</a></p>
+</div></td>
 <td style="text-align: right;">88</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.3e-13</td>
 <td style="text-align: right;">8.2e-16 ± 3.7e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_mn-radon_partially_pooled_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L910">Julia</a></p>
+</div></td>
 <td style="text-align: right;">88</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.4e-13</td>
 <td style="text-align: right;">8.4e-16 ± 3.5e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">radon_mn-radon_pooled</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_pooled.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L332">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.6e-13</td>
 <td style="text-align: right;">1.3e-15 ± 5.3e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L836">Julia</a></p>
+</div></td>
 <td style="text-align: right;">89</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 1.8e-13</td>
 <td style="text-align: right;">6.8e-16 ± 2.8e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1122">Julia</a></p>
+</div></td>
 <td style="text-align: right;">89</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 1.8e-13</td>
 <td style="text-align: right;">7.1e-16 ± 2.9e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_slope_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1095">Julia</a></p>
+</div></td>
 <td style="text-align: right;">175</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.3e-13</td>
 <td style="text-align: right;">7.5e-16 ± 3.0e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">radon_mn-radon_variable_intercept_slope_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1418">Julia</a></p>
+</div></td>
 <td style="text-align: right;">175</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.6e-13</td>
 <td style="text-align: right;">8.0e-16 ± 3.3e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_mn-radon_variable_slope_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L813">Julia</a></p>
+</div></td>
 <td style="text-align: right;">89</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.4e-13</td>
 <td style="text-align: right;">1.1e-15 ± 4.6e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">radon_mn-radon_variable_slope_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1071">Julia</a></p>
+</div></td>
 <td style="text-align: right;">89</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">840.0 ± 2.1e-13</td>
 <td style="text-align: right;">1.0e-15 ± 4.7e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">radon_mod-radon_county</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L253">Julia</a></p>
+</div></td>
 <td style="text-align: right;">389</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">7.3e-12 ± 5.1e-13</td>
 <td style="text-align: right;">1.3e-16 ± 8.9e-18</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">rats_data-rats_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/rats_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1345">Julia</a></p>
+</div></td>
 <td style="text-align: right;">65</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">9.2 ± 2.1e-11</td>
 <td style="text-align: right;">1.3e-16 ± 8.6e-18</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">sblrc-blr</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/blr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L113">Julia</a></p>
+</div></td>
 <td style="text-align: right;">6</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">97.0 ± 2.0e-10</td>
 <td style="text-align: right;">2.5e-16 ± 1.2e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">sblri-blr</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/blr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L113">Julia</a></p>
+</div></td>
 <td style="text-align: right;">6</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">97.0 ± 6.8e-11</td>
 <td style="text-align: right;">2.3e-16 ± 9.7e-18</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">seeds_data-seeds_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/seeds_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L932">Julia</a></p>
+</div></td>
 <td style="text-align: right;">26</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">35.0 ± 8.0e-15</td>
 <td style="text-align: right;">1.5e-16 ± 7.3e-18</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">sesame_data-sesame_one_pred_a</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/sesame_one_pred_a.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L43">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">2.8e-13 ± 1.9e-14</td>
 <td style="text-align: right;">1.3e-15 ± 7.8e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">surgical_data-surgical_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/surgical_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L568">Julia</a></p>
+</div></td>
 <td style="text-align: right;">14</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">14.0 ± 1.6e-14</td>
 <td style="text-align: right;">1.4e-16 ± 8.7e-18</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">three_docs1200-ldaK2</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1302">Julia</a></p>
+</div></td>
 <td style="text-align: right;">7</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.5e-13 ± 1.6e-14</td>
 <td style="text-align: right;">3.5e-16 ± 1.5e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">three_men1-ldaK2</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1302">Julia</a></p>
+</div></td>
 <td style="text-align: right;">502</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.8e-11 ± 2.6e-12</td>
 <td style="text-align: right;">1.8e-15 ± 7.7e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">three_men2-ldaK2</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1302">Julia</a></p>
+</div></td>
 <td style="text-align: right;">510</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.8e-11 ± 2.3e-12</td>
 <td style="text-align: right;">1.8e-15 ± 6.9e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">three_men3-ldaK2</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1302">Julia</a></p>
+</div></td>
 <td style="text-align: right;">505</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">5.8e-11 ± 2.1e-12</td>
 <td style="text-align: right;">1.8e-15 ± 6.9e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">traffic_accident_nyc-bym2_offset_only</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/bym2_offset_only.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1935">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3845</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">0.65 ± 1.3e-9</td>
 <td style="text-align: right;">9.2e-16 ± 3.8e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">uk_drivers-state_space_stochastic_level_stochastic_seasonal</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/state_space_stochastic_level_stochastic_seasonal.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L883">Julia</a></p>
+</div></td>
 <td style="text-align: right;">389</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">2.9 ± 4.8e-14</td>
 <td style="text-align: right;">2.1e-16 ± 1.2e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">wells_data-wells_daae_c_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_daae_c_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L698">Julia</a></p>
+</div></td>
 <td style="text-align: right;">6</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.5e-13 ± 3.2e-14</td>
 <td style="text-align: right;">1.3e-16 ± 8.9e-18</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">wells_data-wells_dae_c_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dae_c_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L587">Julia</a></p>
+</div></td>
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.5e-13 ± 3.2e-14</td>
 <td style="text-align: right;">1.5e-16 ± 1.0e-17</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">wells_data-wells_dae_inter_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dae_inter_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1053">Julia</a></p>
+</div></td>
 <td style="text-align: right;">7</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.5e-13 ± 3.2e-14</td>
 <td style="text-align: right;">1.5e-16 ± 1.1e-17</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">wells_data-wells_dae_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dae_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L283">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">wells_data-wells_dist</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dist.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L33">Julia</a></p>
+</div></td>
 <td style="text-align: right;">2</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.6e-8 ± 1.3e-9</td>
 <td style="text-align: right;">2.7e-13 ± 1.4e-14</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">wells_data-wells_dist100_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dist100_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L127">Julia</a></p>
+</div></td>
 <td style="text-align: right;">2</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">wells_data-wells_dist100ars_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dist100ars_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L188">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">wells_data-wells_interaction_c_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_interaction_c_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L484">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">4.5e-13 ± 3.2e-14</td>
 <td style="text-align: right;">1.3e-16 ± 9.0e-18</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">wells_data-wells_interaction_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_interaction_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L318">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">yes</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 <td style="text-align: right;">0.0 ± 0.0</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">butterfly-multi_occupancy</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/multi_occupancy.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2216">Julia</a></p>
+</div></td>
 <td style="text-align: right;">106</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">missing</td>
 <td style="text-align: right;">missing</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">dogs-dogs_nonhierarchical</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dogs_nonhierarchical.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1538">Julia</a></p>
+</div></td>
 <td style="text-align: right;">65</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">maybe?</td>
 <td style="text-align: right;">240.0 ± 11.0</td>
 <td style="text-align: right;">0.16 ± 0.0072</td>
 </tr>
-<tr class="even">
-<td style="text-align: right;">ecdc0401-covid19imperial_v3</td>
-<td style="text-align: right;">51</td>
-<td style="text-align: right;">no</td>
-<td style="text-align: right;">no</td>
-<td style="text-align: right;">missing</td>
-<td style="text-align: right;">missing</td>
-</tr>
 <tr class="odd">
-<td style="text-align: right;">ecdc0501-covid19imperial_v2</td>
+<td style="text-align: right;">ecdc0401-covid19imperial_v3</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/covid19imperial_v3.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2833">Julia</a></p>
+</div></td>
 <td style="text-align: right;">51</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
@@ -1256,6 +1634,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">ecdc0501-covid19imperial_v3</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/covid19imperial_v3.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2833">Julia</a></p>
+</div></td>
 <td style="text-align: right;">51</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
@@ -1264,6 +1645,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">hudson_lynx_hare-lotka_volterra</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/lotka_volterra.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1834">Julia</a></p>
+</div></td>
 <td style="text-align: right;">8</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
@@ -1272,6 +1656,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">mnist-nn_rbm1bJ100</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nn_rbm1bJ100.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1739">Julia</a></p>
+</div></td>
 <td style="text-align: right;">79411</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">maybe?</td>
@@ -1280,6 +1667,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">mnist_100-nn_rbm1bJ10</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nn_rbm1bJ10.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1698">Julia</a></p>
+</div></td>
 <td style="text-align: right;">7951</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">maybe?</td>
@@ -1288,6 +1678,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">one_comp_mm_elim_abs-one_comp_mm_elim_abs</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/one_comp_mm_elim_abs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1900">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
@@ -1296,6 +1689,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">rstan_downloads-prophet</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/prophet.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2408">Julia</a></p>
+</div></td>
 <td style="text-align: right;">62</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">maybe?</td>
@@ -1304,6 +1700,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">sir-sir</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/sir.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1794">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
@@ -1312,6 +1711,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">soil_carbon-soil_incubation</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/soil_incubation.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1864">Julia</a></p>
+</div></td>
 <td style="text-align: right;">6</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">no</td>
@@ -1320,6 +1722,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">state_wide_presidential_votes-hierarchical_gp</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hierarchical_gp.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2664">Julia</a></p>
+</div></td>
 <td style="text-align: right;">933</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">maybe?</td>
@@ -1328,6 +1733,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">synthetic_grid_RBF_kernels-kronecker_gp</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kronecker_gp.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2754">Julia</a></p>
+</div></td>
 <td style="text-align: right;">438</td>
 <td style="text-align: right;">no</td>
 <td style="text-align: right;">maybe?</td>
@@ -1336,14 +1744,20 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">arK-arK</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/arK.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L297">Julia</a></p>
+</div></td>
 <td style="text-align: right;">7</td>
 <td style="text-align: right;">maybe maybe?</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">15.0 ± 0.004</td>
-<td style="text-align: right;">0.00026 ± 1.7e-5</td>
+<td style="text-align: right;">15.0 ± 0.0039</td>
+<td style="text-align: right;">0.00023 ± 1.5e-5</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">eight_schools-eight_schools_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/eight_schools_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L392">Julia</a></p>
+</div></td>
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">maybe maybe?</td>
 <td style="text-align: right;">maybe?</td>
@@ -1352,6 +1766,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">eight_schools-eight_schools_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/eight_schools_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L714">Julia</a></p>
+</div></td>
 <td style="text-align: right;">10</td>
 <td style="text-align: right;">maybe maybe?</td>
 <td style="text-align: right;">maybe?</td>
@@ -1360,6 +1777,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">fims_Aus_Jpn_irt-2pl_latent_reg_irt</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/2pl_latent_reg_irt.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2138">Julia</a></p>
+</div></td>
 <td style="text-align: right;">531</td>
 <td style="text-align: right;">maybe maybe?</td>
 <td style="text-align: right;">maybe?</td>
@@ -1368,6 +1788,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">irt_2pl-irt_2pl</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/irt_2pl.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L768">Julia</a></p>
+</div></td>
 <td style="text-align: right;">144</td>
 <td style="text-align: right;">maybe maybe?</td>
 <td style="text-align: right;">maybe?</td>
@@ -1376,6 +1799,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">loss_curves-losscurve_sislob</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/losscurve_sislob.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2273">Julia</a></p>
+</div></td>
 <td style="text-align: right;">15</td>
 <td style="text-align: right;">maybe maybe?</td>
 <td style="text-align: right;">maybe?</td>
@@ -1384,6 +1810,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">sat-hier_2pl</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hier_2pl.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1484">Julia</a></p>
+</div></td>
 <td style="text-align: right;">669</td>
 <td style="text-align: right;">maybe maybe?</td>
 <td style="text-align: right;">maybe?</td>
@@ -1392,6 +1821,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">seeds_data-seeds_centered_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/seeds_centered_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1005">Julia</a></p>
+</div></td>
 <td style="text-align: right;">26</td>
 <td style="text-align: right;">maybe maybe?</td>
 <td style="text-align: right;">maybe?</td>
@@ -1400,6 +1832,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">seeds_data-seeds_stanified_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/seeds_stanified_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L859">Julia</a></p>
+</div></td>
 <td style="text-align: right;">26</td>
 <td style="text-align: right;">maybe maybe?</td>
 <td style="text-align: right;">maybe?</td>
@@ -1408,6 +1843,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">timssAusTwn_irt-gpcm_latent_reg_irt</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/gpcm_latent_reg_irt.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2835">Julia</a></p>
+</div></td>
 <td style="text-align: right;">530</td>
 <td style="text-align: right;">maybe maybe?</td>
 <td style="text-align: right;">maybe?</td>
@@ -1416,14 +1854,20 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">arma-arma11</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/arma11.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L957">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">maybe</td>
 <td style="text-align: right;">maybe?</td>
-<td style="text-align: right;">4.7 ± 0.0043</td>
-<td style="text-align: right;">8.2e-5 ± 5.8e-6</td>
+<td style="text-align: right;">4.7 ± 0.0056</td>
+<td style="text-align: right;">5.3e-5 ± 3.7e-6</td>
 </tr>
 <tr class="odd">
 <td style="text-align: right;">kidiq-kidscore_interaction</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_interaction.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L407">Julia</a></p>
+</div></td>
 <td style="text-align: right;">5</td>
 <td style="text-align: right;">maybe</td>
 <td style="text-align: right;">maybe?</td>
@@ -1432,6 +1876,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">kidiq-kidscore_momhs</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_momhs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L89">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">maybe</td>
 <td style="text-align: right;">maybe?</td>
@@ -1440,6 +1887,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">kidiq-kidscore_momhsiq</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_momhsiq.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L164">Julia</a></p>
+</div></td>
 <td style="text-align: right;">4</td>
 <td style="text-align: right;">maybe</td>
 <td style="text-align: right;">maybe?</td>
@@ -1448,6 +1898,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td style="text-align: right;">kidiq-kidscore_momiq</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_momiq.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L77">Julia</a></p>
+</div></td>
 <td style="text-align: right;">3</td>
 <td style="text-align: right;">maybe</td>
 <td style="text-align: right;">maybe?</td>
@@ -1456,6 +1909,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td style="text-align: right;">science_irt-grsm_latent_reg_irt</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/grsm_latent_reg_irt.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2358">Julia</a></p>
+</div></td>
 <td style="text-align: right;">408</td>
 <td style="text-align: right;">maybe</td>
 <td style="text-align: right;">maybe?</td>
@@ -1464,6 +1920,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 </tbody>
 </table>
+</div>
 </div>
 </div>
 
