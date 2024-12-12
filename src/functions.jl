@@ -1,13 +1,29 @@
-@inline bsum(x) = sum(x)
-@inline flength(x) = Float64(length(x))
-@inline @generated bsum(x::Base.Broadcast.Broadcasted{Style,Axes,typeof(+),Args}) where {Style,Axes,Args} = :(
-    flength(x) * +($([
-        :(bsum(x.args[$i]) / flength(x.args[$i])) for i in 1:fieldcount(Args)
-    ]...))
-)
-@inline bsum(x::Base.Broadcast.Broadcasted{Style,Axes,typeof(-),Tuple{T1,T2}}) where {Style,Axes,T1,T2} = flength(x) * (
-    bsum(x.args[1]) / flength(x.args[1]) - bsum(x.args[2]) / flength(x.args[2])
-)
+# @inline flength(x) = Float64(length(x))
+# @inline @generated bsum(x::Base.Broadcast.Broadcasted{Style,Axes,typeof(+),Args}) where {Style,Axes,Args} = :(
+#     flength(x) * +($([
+#         :(bsum(x.args[$i]) / flength(x.args[$i])) for i in 1:fieldcount(Args)
+#     ]...))
+# )
+# @inline bsum(x::Base.Broadcast.Broadcasted{Style,Axes,typeof(-),Tuple{T1,T2}}) where {Style,Axes,T1,T2} = flength(x) * (
+#     bsum(x.args[1]) / flength(x.args[1]) - bsum(x.args[2]) / flength(x.args[2])
+# )
+begin
+    bsum_expr(::Type; x) = :(sum($x)/length($x))
+    bsum_expr(::Type{Base.Broadcast.Broadcasted{Style,Axes,typeof(+),Args}}; x) where {Style,Axes,Args} = Expr(:call, :+, [
+        bsum_expr(fieldtype(Args, i); x=:($x.args[$i])) for i in 1:fieldcount(Args)
+    ]...)
+    bsum_expr(::Type{Base.Broadcast.Broadcasted{Style,Axes,typeof(-),Tuple{T1,T2}}}; x) where {Style,Axes,T1,T2} = begin
+        Args = Tuple{T1,T2}
+        Expr(
+            :call, :-, [
+            bsum_expr(fieldtype(Args, i); x=:($x.args[$i])) for i in 1:fieldcount(Args)
+        ]...)
+    end
+    @inline bsum(x) = sum(x)
+
+    @inline @generated bsum(x::Base.Broadcast.Broadcasted{Style,Axes,typeof(+),Args}) where {Style,Axes,Args} = :(length(x) * $(bsum_expr(Base.Broadcast.Broadcasted{Style,Axes,typeof(+),Args}; x=:x)))
+    @inline @generated bsum(x::Base.Broadcast.Broadcasted{Style,Axes,typeof(-),Tuple{T1,T2}}) where {Style,Axes,T1,T2} = :(length(x) * $(bsum_expr(Base.Broadcast.Broadcasted{Style,Axes,typeof(-),Tuple{T1,T2}}; x=:x)))
+end
 @inline log1m(x) = log(1-x)
 ternary(c,t,f) = c ? t : f
 @inline nothrow_log(x::Real) = x > 0 ? log(x) : -Inf 
@@ -52,7 +68,7 @@ ternary(c,t,f) = c ? t : f
 @inline bernoulli_logit_lpmf(args...) = bernoulli_logit_lpdf(args...)
 @inline bernoulli_logit_lpdf(y, alpha) = bsum(@broadcasted(bernoulli_logit_lpdf(y, alpha)))
 @inline bernoulli_logit_lpdf(y::Real, alpha::Real) = y == 1 ? loglogistic(alpha) : log1mlogistic(alpha)
-@inline bernoulli_logit_glm_lpdf(y, X, alpha, beta) = bernoulli_logit_lpdf(y, alpha .+ X * beta)
+@inline bernoulli_logit_glm_lpdf(y, X, alpha, beta) = bernoulli_logit_lpdf(y, Base.broadcasted(+, alpha, X * beta))
 # @inline bernoulli_logit_glm_lpdf(y, X::AbstractVector, alpha, beta) = bernoulli_logit_lpdf(y, alpha .+ X * beta)
 # https://mc-stan.org/docs/2_21/functions-reference/beta-distribution.html
 @inline beta_lpmf(args...) = beta_lpdf(args...)
@@ -68,7 +84,7 @@ ternary(c,t,f) = c ? t : f
 @inline std_normal_lpdf(x) = -.5 * bsum(@broadcasted(square(x)))
 @inline normal_lpdf(x, mu, sigma) = -bsum(@broadcasted(log(sigma)+.5*square((x-mu)/sigma)))
 # https://mc-stan.org/docs/2_21/functions-reference/normal-id-glm.html
-@inline normal_id_glm_lpdf(y,X,alpha,beta,sigma) = normal_lpdf(y, alpha .+ X * beta, sigma)
+@inline normal_id_glm_lpdf(y,X,alpha,beta,sigma) = normal_lpdf(y, Base.broadcasted(+, alpha, X * beta), sigma)
 @inline lognormal_lpdf(x, mu, sigma) = begin
     bsum(@broadcasted(
         -log(sigma)

@@ -2,6 +2,8 @@
 title: "Julia vs Stan performance comparison"
 ---
 
+# Caveats
+
 This page compares the performance of Julia's and Stan's log density and log density gradient computations for the implemented posteriors. Several caveats apply:
 
 * The `posteriordb` Stan implementations were never meant to represent "perfect and best-performant" practices.
@@ -17,226 +19,126 @@ This page compares the performance of Julia's and Stan's log density and log den
 
 ::: {.callout-warning}
 **In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as "A is X-times faster than B".**
-:::
+::: 
 
 ```{julia}
-using DataFrames, StanBlocks, Markdown, PosteriorDB, StanLogDensityProblems, LogDensityProblems, Statistics, OrderedCollections, PrettyTables, Serialization, Chairmarks, Enzyme, BridgeStan, Markdown, Pkg
-using Logging, Test
 include("julia/common.jl")
-const ENZYME_VERSION = filter(x->x.second.name=="Enzyme", Pkg.dependencies()) |> x->first(x)[2].version
-const VERSION_STRING = "Julia $VERSION + Enzyme $ENZYME_VERSION" 
-getsampletimes(x::Chairmarks.Benchmark) = getfield.(x.samples, :time); 
+jdf = map(posterior_names) do posterior_name 
+    PosteriorEvaluation(posterior_name).df_row   
+end |> pad_missing |> DataFrame; 
 ```
-```{julia}
-pbenchmarks = map(posterior_names) do posterior_name
-    validity_path = joinpath("cache", "$posterior_name.sjl")
-    performance_path = joinpath("cache", "$(posterior_name)_primitive.sjl")
-    isfile(validity_path) || return 
-    mtime(performance_path) > mtime(validity_path) && return Serialization.deserialize(performance_path)
-    validity = Serialization.deserialize(validity_path)
-    validity.usable == "yes" || return
-    println("Benchmarking primitive $posterior_name")
-    try
-        post = PosteriorDB.posterior(pdb, posterior_name)
-        jlpdf = StanBlocks.julia_implementation(post)
-        stan_path = PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(post), "stan"))
-        stan_problem = with_logger(ConsoleLogger(stderr, Logging.Error)) do 
-            StanProblem(
-                stan_path, 
-                PosteriorDB.load(PosteriorDB.dataset(post), String);
-                nan_on_error=true
-            )
-        end
-        slpdf(x) = LogDensityProblems.logdensity(stan_problem, x)
-        n = LogDensityProblems.dimension(jlpdf)
-        jbenchmark = (@be randn(n) jlpdf)
-        sbenchmark = (@be randn(n) slpdf)
-        min_time = min(mean(jbenchmark).time, mean(sbenchmark).time)
-        jtimes = getsampletimes(jbenchmark) ./ min_time
-        stimes = getsampletimes(sbenchmark) ./ min_time
-        rv = (;
-            jtime=UncertainStatistic(mean, jtimes), 
-            jallocs=mean(jbenchmark).allocs, 
-            stime=UncertainStatistic(mean, stimes)
-        )
-        Serialization.serialize(performance_path, rv) 
-        display(rv)
-        return rv
-    catch
-    end
-end 
-df = DataFrame([
-    merge((;posterior_name, dimension=posterior_dimension(posterior_name)), row) for (posterior_name, row) in zip(posterior_names, pbenchmarks) if !isnothing(row)
-])
-sort!(df, :jallocs)
-pdf = DataFrame(OrderedDict(
-    "posterior name"=>df.posterior_name,
-    "dimension"=>df.dimension,
-    "Stan mean relative runtime"=>df.stime,
-    "Julia mean relative runtime"=>df.jtime,
-    "Julia allocations"=>df.jallocs,
-    "implementations"=>implementations_string.(df.posterior_name) 
-))
-
-gbenchmarks = map(df.posterior_name) do posterior_name
-    # posterior_name == "earnings-earn_height" || return
-    performance_path = joinpath("cache", "$(posterior_name)_gradient.sjl")
-    validity_path = joinpath("cache", "$posterior_name.sjl")
-    isfile(validity_path) || return  
-    if mtime(performance_path) > mtime(validity_path)
-        rv = Serialization.deserialize(performance_path)
-        !isnothing(rv) && return rv
-    end
-    validity = Serialization.deserialize(validity_path)
-    validity.usable == "yes" || return
-    println("Benchmarking gradient $posterior_name")
-    try
-        Serialization.serialize(performance_path, nothing)
-        post = PosteriorDB.posterior(pdb, posterior_name)
-        jlpdf = StanBlocks.julia_implementation(post)
-        stan_path = PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(post), "stan"))
-        stan_problem = with_logger(ConsoleLogger(stderr, Logging.Error)) do 
-            StanProblem(
-                stan_path, 
-                PosteriorDB.load(PosteriorDB.dataset(post), String);
-                nan_on_error=true
-            )
-        end
-        elpdf((x,g)) = begin 
-            xg = Enzyme.Duplicated(x, g)
-            Enzyme.autodiff(
-                Enzyme.set_runtime_activity(Enzyme.ReverseWithPrimal), Enzyme.Const(jlpdf), 
-                Enzyme.Active, 
-                xg
-            )[2], g
-        end
-        slpdf((x,g)) = BridgeStan.log_density_gradient!(stan_problem.model, x, g)
-        n = LogDensityProblems.dimension(jlpdf)
-        sbenchmark = (@be (randn(n),zeros(n)) slpdf)
-        stimes = getsampletimes(sbenchmark)
-        rv = (;
-            jtime=UncertainStatistic(mean, [Inf]), 
-            jallocs=Inf,
-            stime=UncertainStatistic(mean, stimes ./ mean(stimes)), 
-            sallocs=mean(sbenchmark).allocs,
-            jversion=VERSION_STRING
-        )
-        Serialization.serialize(performance_path, rv)
-        jbenchmark = (@be (randn(n),zeros(n)) elpdf)
-        min_time = min(mean(jbenchmark).time, mean(sbenchmark).time)
-        jtimes = getsampletimes(jbenchmark) ./ min_time
-        stimes = getsampletimes(sbenchmark) ./ min_time
-        rv = (;
-            jtime=UncertainStatistic(mean, jtimes), 
-            jallocs=mean(jbenchmark).allocs, 
-            stime=UncertainStatistic(mean, stimes), 
-            sallocs=mean(sbenchmark).allocs,
-            jversion=VERSION_STRING
-        )
-        Serialization.serialize(performance_path, rv)
-        display(rv)
-        return rv
-    catch 
-        # rethrow(rv) 
-    end
-end
-jdf = DataFrame([
-    (;
-        prow.posterior_name, 
-        prow.dimension,
-        pallocs=prow.jallocs, 
-        gallocs=grow.jallocs, 
-        ptime=val(prow.jtime) / val(prow.stime), 
-        gtime=val(grow.jtime) / val(grow.stime),
-    ) for (prow, grow) in zip(eachrow(df), gbenchmarks) if !isnothing(grow) && isfinite(grow.jallocs)
-])
-
-df = DataFrame([
-    merge((;posterior_name), row) for (posterior_name, row) in zip(df.posterior_name, gbenchmarks) if !isnothing(row) && isfinite(row.jallocs)
-])
-sort!(df, :jallocs)
-gdf = DataFrame(OrderedDict(
-    "posterior name"=>df.posterior_name,
-    "dimension"=>posterior_dimension.(df.posterior_name),
-    "Stan mean relative runtime"=>df.stime,
-    "Julia+Enzyme mean relative runtime"=>df.jtime,
-    "Julia+Enzyme allocations"=>df.jallocs,
-    "implementations"=>implementations_string.(df.posterior_name),
-    "Julia version"=>df.jversion
-)); 
-```
-
-# Runtime overview
-
-The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+Enzyme vs Stan, bottom: Julia is faster) for the `posteriordb` models for which the [overview table](index.qmd#overview-of-posteriors) has a `yes` in the `usable` column. The color of the dots represents the posterior dimension.
-Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive and gradient run and a short explanation, e.g. for the topmost point: `mesquite-logmesquite_logvash (D=7, #allocs=0->70) - Julia's primitive is ~4.5 times faster, but Julia's gradient is ~16.0 times slower.`
 
 :::{.column-page}
+ 
+# Visualization
 
 ::: {.callout-warning}
 **In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as "A is X-times faster than B".**
 :::
+
+The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+X vs Stan, bottom: Julia is faster) for the `posteriordb` models for which the [overview table](#tabular-data) has a value less than `1e-8` in the `remaining relative lpdf error` column. **The color of the points represents the Julia AD framework used**, which currently includes [Enzyme.jl](https://github.com/EnzymeAD/Enzyme.jl) and [Mooncake.jl](https://github.com/compintell/Mooncake.jl).
+Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive and gradient run and a short explanation, e.g. `mesquite-logmesquite_logvash (D=7, #allocs=0->70) - Julia's primitive is ~4.5 times faster, but Enzyme's gradient is ~16.0 times slower.` Horizontal and vertical lines around scatter points represent the 90% central credible interval of the ratio of the runtime means, estimated using 200 iterations of Bayesian Bootstrap. **As those intervals are sometimes quite wide, I'm planning to rerun some or all of the benchmarks.**
 ```{julia}
- 
-# pretty_table(jdf; backend=Val(:html), show_subheader=false, table_class="interactive")
-color = log.(jdf.dimension)
-color .-= minimum(color)
-color ./= maximum(color)
-color = cgrad(:thermal)[color]'
-# hover = map((n,d)->"$n (D=$d)\ntest", jdf.posterior_name, jdf.dimension) |> permutedims
-hover = map(eachrow(jdf)) do row
-    pdescr = if row.ptime > 1
-        "$(round(row.ptime; sigdigits=2)) times slower"
+hover_string(posterior_name, dimension, ptime, gtime, pallocs, gallocs; AD) = begin  
+    pdescr = if ptime > 1
+        "$(round(ptime; sigdigits=2)) times slower" 
     else
-        "$(round(inv(row.ptime); sigdigits=2)) times faster"
+        "$(round(inv(ptime); sigdigits=2)) times faster"
     end
-    gdescr = if row.gtime > 1
-        "$(round(row.gtime; sigdigits=2)) times slower"
+    gdescr = if gtime > 1
+        "$(round(gtime; sigdigits=2)) times slower"
     else
-        "$(round(inv(row.gtime); sigdigits=2)) times faster"
+        "$(round(inv(gtime); sigdigits=2)) times faster"
     end
-    jdescr = if (row.ptime > 1) == (row.gtime > 1) 
+    jdescr = if (ptime > 1) == (gtime > 1) 
         "and"
     else
         "but"
     end
-    descr = "Julia's primitive is ~$pdescr, $jdescr Julia's gradient is ~$gdescr."
-    "$(row.posterior_name) (D=$(row.dimension), #allocs=$(Int(row.pallocs))->$(Int(row.gallocs))) <br> $descr"
-end |> permutedims
+    descr = "Julia's primitive is ~$pdescr, $jdescr $AD's gradient is ~$gdescr."
+    "$(posterior_name) (D=$(dimension), #allocs=$(Int(pallocs))->$(Int(gallocs))) <br> $descr"
+end
+pdf = DataFrame(filter(row->!ismissing(row.stan_gradient_times), eachrow(jdf)))
+pdf.ptime = val.(pdf.julia_lpdf_times) ./ val.(pdf.stan_lpdf_times)
+pdf.etime = val.(pdf.enzyme_times) ./ val.(pdf.stan_gradient_times) 
+pdf.mtime = val.(pdf.mooncake_times) ./ val.(pdf.stan_gradient_times)
+ptime_ci = mapreduce(hcat, pdf.julia_lpdf_times, pdf.stan_lpdf_times) do j, s
+    collect(ci(UncertainStatistic(ratio_of_means, (j.vals, s.vals))))
+end
+etime_ci = mapreduce(hcat, pdf.enzyme_times, pdf.stan_gradient_times) do j, s
+    collect(ci(UncertainStatistic(ratio_of_means, (j.vals, s.vals))))
+end
+mtime_ci = mapreduce(hcat, pdf.mooncake_times, pdf.stan_gradient_times) do j, s
+    collect(ci(UncertainStatistic(ratio_of_means, (j.vals, s.vals))))
+end
 
+colors = palette(:tab10)[[1,2]]
 Plots.vline!(
 Plots.hline!(
-    Plots.scatter(
-        (jdf.ptime)', 
-        (jdf.gtime)'; 
-        color, hover, 
+    Plots.scatter!(
+        Plots.plot(
+            [
+                [pdf.ptime pdf.ptime]
+                ptime_ci'
+                [pdf.ptime pdf.ptime]
+                ptime_ci'
+            ]',
+            [
+                etime_ci'
+                [pdf.etime pdf.etime]
+                mtime_ci'
+                [pdf.mtime pdf.mtime]
+            ]',
+            color=permutedims(vcat(fill(colors[1], 2*length(pdf.ptime)), fill(colors[2], 2*length(pdf.ptime)))), label="", hover=""
+        ),
+        pdf.ptime,
+        [pdf.etime, pdf.mtime];
+        label=["Enzyme" "Mooncake"],
+        color=permutedims(colors),
+        hover=hcat(
+            hover_string.(pdf.posterior_name, pdf.dimension, pdf.ptime, pdf.etime, pdf.julia_lpdf_allocs, pdf.enzyme_allocs; AD="Enzyme"), hover_string.(pdf.posterior_name, pdf.dimension, pdf.ptime, pdf.mtime, pdf.julia_lpdf_allocs, pdf.mooncake_allocs; AD="Mooncake") 
+        ),
         xlabel="Relative primitive runtime\n(Julia vs Stan, left: Julia is faster)", 
-        ylabel="Relative gradient runtime\n(Julia+Enzyme vs Stan, bottom: Julia is faster)",
+        ylabel="Relative gradient runtime\n(Julia+X vs Stan, bottom: Julia+X is faster)",
         xscale=:log10, yscale=:log10, 
-        legend=false,
         size=(1000, 600)
     ),
-    [1], color=:black
+    [1], color=:black, label="", hover=""
 ),
-    [1], color=:black
+    [1], color=:black, label="", hover=""
 )
 ```
 :::
 
-# Primitive runtime comparison
+# Tabular data
 
-:::{.column-page}
+The below table shows information about the implemented posteriors. Will elaborate on the exact meaning of columns.
 
-```{julia}
-pretty_table(pdf; backend=Val(:html), show_subheader=false, table_class="interactive")
-```
-:::
-
-# Gradient runtime comparison
-
-:::{.column-page}
+:::{.column-screen}
 
 ```{julia}
-pretty_table(gdf; backend=Val(:html), show_subheader=false, table_class="interactive")
+ternary(c, t, f) = c ? t : f 
+pretty_table( 
+    DataFrame(OrderedDict(  
+        "posterior name"=>jdf.posterior_name,
+        "dimension"=>jdf.dimension,
+        "relative mean primitive Julia runtime"=>jdf.julia_lpdf_times,
+        "relative mean primitive Stan runtime"=>jdf.stan_lpdf_times,
+        "relative mean Enzyme runtime"=>jdf.enzyme_times,
+        "relative mean Mooncake runtime"=>jdf.mooncake_times,
+        "relative mean Stan gradient runtime"=>jdf.stan_gradient_times,
+        "mean primitive Julia allocations"=>jdf.julia_lpdf_allocs,
+        "mean Enzyme allocations"=>jdf.enzyme_allocs,
+        "mean Mooncake allocations"=>jdf.mooncake_allocs,
+        "constant lpdf difference"=>jdf.lpdf_difference,
+        "remaining relative lpdf error"=>jdf.lpdf_accuracy,
+        "Enzyme relative gradient error"=>jdf.enzyme_accuracy,
+        "Mooncake relative gradient error"=>jdf.mooncake_accuracy, 
+        "Enzyme"=>jdf.ENZYME_VERSION,
+        "Mooncake"=>jdf.MOONCAKE_VERSION,
+        "implementations"=>implementations_string.(jdf.posterior_name)
+    ));
+    backend=Val(:html), show_subheader=false, table_class="interactive"
+)
 ```
 :::

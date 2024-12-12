@@ -71,3 +71,7 @@ See [https://nsiccha.github.io/StanBlocks.jl/#overview-of-posteriors](https://ns
 See [`test/runtests.jl`](https://github.com/nsiccha/StanBlocks.jl/blob/main/test/runtests.jl) for a way to run and check the models. 
 After importing `PosteriorDB`, `StanLogDensityProblems` and `LogDensityProblems`, you should have access to reference Stan implementations of the log density and of its gradient, see the documentation of `StanLogDensityProblems.jl`.
 The Stan log density can then be compared to the Julia log density as is, and after loading Julia's AD packages, you can also compare the Stan log density gradient to the Julia log density gradient.
+
+# Overview of implemented posteriors
+
+Check out [https://nsiccha.github.io/StanBlocks.jl/performance.html](https://nsiccha.github.io/StanBlocks.jl/performance.html) for an overview of implemented posteriors and their relative performances.

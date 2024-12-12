@@ -20,11 +20,16 @@ format:
         toc: true
         include-in-header:
             text: |
-                <link rel="stylesheet" href="https://cdn.datatables.net/2.1.8/css/dataTables.dataTables.css" />
-                <script src="cache/dataTables.js"></script>
+                <link rel="stylesheet" href="https://cdn.datatables.net/v/dt/dt-2.1.8/cr-2.0.4/fc-5.0.4/fh-4.0.1/datatables.min.css" />
+                <script src="datatables.min.js"></script>
                 <script>
                   $(document).ready( function () {
-                      $('table.interactive').DataTable({paging: false});
+                      $('table.interactive').DataTable({
+                        paging: false,
+                        fixedHeader: true,
+                        fixedColumns: true,
+                        colReorder: true
+                      });
                   } );
                 </script
 jupyter: julia-1.10
