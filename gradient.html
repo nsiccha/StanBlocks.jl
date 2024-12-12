@@ -1,0 +1,1498 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.4.507">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+<meta name="author" content="Nikolas Siccha">
+
+<title>StanBlocks.jl – gradient</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+</style>
+
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js" integrity="sha512-bLT0Qm9VnAYZDflyKcBaQ2gg0hSYNQrJ8RilYldYQ1FxQYoCLtUjuuRuZo+fjqhx/qtq/1itJ0C2ejDxltZVFg==" crossorigin="anonymous"></script><script src="site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="site_libs/quarto-nav/headroom.min.js"></script>
+<script src="site_libs/clipboard/clipboard.min.js"></script>
+<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="site_libs/quarto-search/fuse.min.js"></script>
+<script src="site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="./">
+<script src="site_libs/quarto-html/quarto.js"></script>
+<script src="site_libs/quarto-html/popper.min.js"></script>
+<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="site_libs/quarto-html/anchor.min.js"></script>
+<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="site_libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" integrity="sha512-c3Nl8+7g4LMSTdrm621y7kf9v3SDPnhxLNhcjFJbKECVnmZHTdo+IRO05sNLTH/D3vA6u1X32ehoLC7WFVdheg==" crossorigin="anonymous"></script>
+
+<script type="application/javascript">define('jquery', [],function() {return window.jQuery;})</script>
+<link rel="stylesheet" href="https://cdn.datatables.net/2.1.8/css/dataTables.dataTables.css">
+<script src="cache/dataTables.js"></script>
+<script>
+  $(document).ready( function () {
+      $('table.interactive').DataTable({paging: false});
+  } );
+</script>
+
+</head><body class="nav-fixed">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="./index.html">
+    <span class="navbar-title">StanBlocks.jl</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Search"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" aria-expanded="false" aria-label="Toggle navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll me-auto">
+  <li class="nav-item">
+    <a class="nav-link" href="./index.html"> 
+<span class="menu-text">Overview</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./performance.html"> 
+<span class="menu-text">Performance</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./implementations.html"> 
+<span class="menu-text">Implementations</span></a>
+  </li>  
+  <li class="nav-item compact">
+    <a class="nav-link" href="https://github.com/nsiccha/StanBlocks.jl"> <i class="bi bi-github" role="img">
+</i> 
+<span class="menu-text"></span></a>
+  </li>  
+</ul>
+          </div> <!-- /navcollapse -->
+          <div class="quarto-navbar-tools">
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-full page-navbar">
+<!-- sidebar -->
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
+        
+    </div>
+<!-- main -->
+<main class="content page-columns page-full column-body" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">Gradient accuracy</h1>
+</div>
+
+
+
+<div class="quarto-title-meta column-body">
+
+    <div>
+    <div class="quarto-title-meta-heading">Author</div>
+    <div class="quarto-title-meta-contents">
+             <p>Nikolas Siccha </p>
+          </div>
+  </div>
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<div class="column-page">
+<div id="0e070cd5" class="cell" data-execution_count="2">
+<div class="cell-output cell-output-display">
+<table class="interactive table table-sm table-striped small" data-quarto-postprocess="true">
+<colgroup>
+<col style="width: 25%">
+<col style="width: 25%">
+<col style="width: 25%">
+<col style="width: 25%">
+</colgroup>
+<thead>
+<tr class="header headerLastRow">
+<th style="text-align: right;" data-quarto-table-cell-role="th">posterior name</th>
+<th style="text-align: right;" data-quarto-table-cell-role="th">implementations</th>
+<th style="text-align: right;" data-quarto-table-cell-role="th">dimension</th>
+<th style="text-align: right;" data-quarto-table-cell-role="th">relative gradient error</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: right;">GLMM_Poisson_data-GLMM_Poisson_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLMM_Poisson_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1447">Julia</a></p>
+</div></td>
+<td style="text-align: right;">45</td>
+<td style="text-align: right;">1.38099e-14</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">GLMM_data-GLMM1_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLMM1_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1466">Julia</a></p>
+</div></td>
+<td style="text-align: right;">237</td>
+<td style="text-align: right;">1.04016e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">GLM_Binomial_data-GLM_Binomial_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLM_Binomial_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1241">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">3.00662e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">GLM_Poisson_Data-GLM_Poisson_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/GLM_Poisson_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1146">Julia</a></p>
+</div></td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">3.16222e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">M0_data-M0_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/M0_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1572">Julia</a></p>
+</div></td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">3.98917e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">Mb_data-Mb_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mb_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2043">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">8.62951e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">Mh_data-Mh_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mh_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2076">Julia</a></p>
+</div></td>
+<td style="text-align: right;">388</td>
+<td style="text-align: right;">2.22345e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">Mt_data-Mt_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mt_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1624">Julia</a></p>
+</div></td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">3.24179e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">Mtbh_data-Mtbh_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mtbh_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2177">Julia</a></p>
+</div></td>
+<td style="text-align: right;">154</td>
+<td style="text-align: right;">1.06582e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">Mth_data-Mth_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Mth_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2106">Julia</a></p>
+</div></td>
+<td style="text-align: right;">394</td>
+<td style="text-align: right;">2.4713e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">Rate_1_data-Rate_1_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_1_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L54">Julia</a></p>
+</div></td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">4.81295e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">Rate_2_data-Rate_2_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_2_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L469">Julia</a></p>
+</div></td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">5.16258e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">Rate_3_data-Rate_3_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_3_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L140">Julia</a></p>
+</div></td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">3.63068e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">Rate_4_data-Rate_4_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_4_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L603">Julia</a></p>
+</div></td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">3.63356e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">Rate_5_data-Rate_5_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Rate_5_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L730">Julia</a></p>
+</div></td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">7.63696e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">Survey_data-Survey_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/Survey_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1779">Julia</a></p>
+</div></td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">4.40168e-14</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">bball_drive_event_0-hmm_drive_0</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_drive_0.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2510">Julia</a></p>
+</div></td>
+<td style="text-align: right;">6</td>
+<td style="text-align: right;">5.42481e-11</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">bball_drive_event_1-hmm_drive_1</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_drive_1.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2544">Julia</a></p>
+</div></td>
+<td style="text-align: right;">6</td>
+<td style="text-align: right;">2.9627e-11</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">bones_data-bones_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/bones_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1959">Julia</a></p>
+</div></td>
+<td style="text-align: right;">13</td>
+<td style="text-align: right;">3.12907e-12</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">diamonds-diamonds</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/diamonds.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1600">Julia</a></p>
+</div></td>
+<td style="text-align: right;">26</td>
+<td style="text-align: right;">2.80115e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">dogs-dogs</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dogs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1182">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">6.6139e-11</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">dogs-dogs_hierarchical</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dogs_hierarchical.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1512">Julia</a></p>
+</div></td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">1.77761e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">dogs-dogs_log</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dogs_log.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1219">Julia</a></p>
+</div></td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">0.000569571</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">dugongs_data-dugongs_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/dugongs_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L742">Julia</a></p>
+</div></td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">2.01662e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">earnings-earn_height</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/earn_height.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L21">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">3.50872e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">earnings-log10earn_height</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/log10earn_height.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L176">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">9.00351e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">earnings-logearn_height</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_height.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L101">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">7.48814e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">earnings-logearn_height_male</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_height_male.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L152">Julia</a></p>
+</div></td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">6.68395e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">earnings-logearn_interaction</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_interaction.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L348">Julia</a></p>
+</div></td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">5.41617e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">earnings-logearn_interaction_z</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_interaction_z.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L616">Julia</a></p>
+</div></td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">1.26547e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">earnings-logearn_logheight_male</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logearn_logheight_male.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L270">Julia</a></p>
+</div></td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">6.44309e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">election88-election88_full</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/election88_full.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1652">Julia</a></p>
+</div></td>
+<td style="text-align: right;">90</td>
+<td style="text-align: right;">1.20106e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">garch-garch11</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/garch11.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L374">Julia</a></p>
+</div></td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">4.69081e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">gp_pois_regr-gp_pois_regr</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/gp_pois_regr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L545">Julia</a></p>
+</div></td>
+<td style="text-align: right;">13</td>
+<td style="text-align: right;">1.16088e-12</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">gp_pois_regr-gp_regr</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/gp_regr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L433">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">2.53796e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">hmm_example-hmm_example</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_example.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2017">Julia</a></p>
+</div></td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">6.74215e-13</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">hmm_gaussian_simulated-hmm_gaussian</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/hmm_gaussian.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2485">Julia</a></p>
+</div></td>
+<td style="text-align: right;">14</td>
+<td style="text-align: right;">5.22419e-11</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">iohmm_reg_simulated-iohmm_reg</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/iohmm_reg.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2578">Julia</a></p>
+</div></td>
+<td style="text-align: right;">29</td>
+<td style="text-align: right;">4.95748e-12</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_c</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_interaction_c.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L517">Julia</a></p>
+</div></td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">1.04488e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_c2</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_interaction_c2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L531">Julia</a></p>
+</div></td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">2.48136e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">kidiq_with_mom_work-kidscore_interaction_z</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_interaction_z.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L669">Julia</a></p>
+</div></td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">4.83845e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">kidiq_with_mom_work-kidscore_mom_work</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kidscore_mom_work.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L454">Julia</a></p>
+</div></td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">7.90572e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">kilpisjarvi_mod-kilpisjarvi</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/kilpisjarvi.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L683">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">2.37754e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">low_dim_gauss_mix-low_dim_gauss_mix</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/low_dim_gauss_mix.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L201">Julia</a></p>
+</div></td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">2.02e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">low_dim_gauss_mix_collapse-low_dim_gauss_mix_collapse</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/low_dim_gauss_mix_collapse.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L201">Julia</a></p>
+</div></td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">1.97239e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">lsat_data-lsat_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/lsat_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1391">Julia</a></p>
+</div></td>
+<td style="text-align: right;">1006</td>
+<td style="text-align: right;">2.9446e-11</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">mcycle_gp-accel_gp</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/accel_gp.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2614">Julia</a></p>
+</div></td>
+<td style="text-align: right;">66</td>
+<td style="text-align: right;">1.76134e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">mcycle_splines-accel_splines</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/accel_splines.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L2326">Julia</a></p>
+</div></td>
+<td style="text-align: right;">82</td>
+<td style="text-align: right;">4.70663e-14</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">mesquite-logmesquite</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L361">Julia</a></p>
+</div></td>
+<td style="text-align: right;">8</td>
+<td style="text-align: right;">2.71137e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">mesquite-logmesquite_logva</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logva.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L798">Julia</a></p>
+</div></td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">2.06402e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">mesquite-logmesquite_logvas</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logvas.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1283">Julia</a></p>
+</div></td>
+<td style="text-align: right;">8</td>
+<td style="text-align: right;">3.32909e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">mesquite-logmesquite_logvash</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logvash.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1283">Julia</a></p>
+</div></td>
+<td style="text-align: right;">7</td>
+<td style="text-align: right;">6.15561e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">mesquite-logmesquite_logvolume</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logmesquite_logvolume.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L361">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">1.05898e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">mesquite-mesquite</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/mesquite.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L361">Julia</a></p>
+</div></td>
+<td style="text-align: right;">8</td>
+<td style="text-align: right;">2.8787e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">nes1972-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">9.02605e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">nes1976-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">1.56415e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">nes1980-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">9.43354e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">nes1984-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">1.4023e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">nes1988-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">9.53248e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">nes1992-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">1.02591e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">nes1996-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">9.46561e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">nes2000-nes</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">8.39165e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">nes_logit_data-nes_logit_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/nes_logit_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L65">Julia</a></p>
+</div></td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">9.34437e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">normal_2-normal_mixture</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/normal_mixture.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L219">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">2.79703e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">normal_5-normal_mixture_k</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/normal_mixture_k.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L219">Julia</a></p>
+</div></td>
+<td style="text-align: right;">14</td>
+<td style="text-align: right;">5.76037e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">ovarian-logistic_regression_rhs</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logistic_regression_rhs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1987">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3075</td>
+<td style="text-align: right;">1.33402e-10</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">prideprejudice_chapter-ldaK5</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK5.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1162">Julia</a></p>
+</div></td>
+<td style="text-align: right;">7714</td>
+<td style="text-align: right;">6.05157e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">prideprejudice_paragraph-ldaK5</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK5.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1162">Julia</a></p>
+</div></td>
+<td style="text-align: right;">15570</td>
+<td style="text-align: right;">3.07795e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">prostate-logistic_regression_rhs</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/logistic_regression_rhs.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1987">Julia</a></p>
+</div></td>
+<td style="text-align: right;">11935</td>
+<td style="text-align: right;">4.62683e-11</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">radon_all-radon_county_intercept</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county_intercept.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L499">Julia</a></p>
+</div></td>
+<td style="text-align: right;">388</td>
+<td style="text-align: right;">2.00779e-14</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">radon_all-radon_hierarchical_intercept_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L981">Julia</a></p>
+</div></td>
+<td style="text-align: right;">391</td>
+<td style="text-align: right;">6.88415e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">radon_all-radon_hierarchical_intercept_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1258">Julia</a></p>
+</div></td>
+<td style="text-align: right;">391</td>
+<td style="text-align: right;">7.89867e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">radon_all-radon_partially_pooled_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L648">Julia</a></p>
+</div></td>
+<td style="text-align: right;">389</td>
+<td style="text-align: right;">7.12664e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">radon_all-radon_partially_pooled_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L910">Julia</a></p>
+</div></td>
+<td style="text-align: right;">389</td>
+<td style="text-align: right;">6.26659e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">radon_all-radon_pooled</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_pooled.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L332">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">1.5095e-14</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">radon_all-radon_variable_intercept_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L836">Julia</a></p>
+</div></td>
+<td style="text-align: right;">390</td>
+<td style="text-align: right;">6.29956e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">radon_all-radon_variable_intercept_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1122">Julia</a></p>
+</div></td>
+<td style="text-align: right;">390</td>
+<td style="text-align: right;">9.78844e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">radon_all-radon_variable_intercept_slope_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1095">Julia</a></p>
+</div></td>
+<td style="text-align: right;">777</td>
+<td style="text-align: right;">6.89397e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">radon_all-radon_variable_intercept_slope_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1418">Julia</a></p>
+</div></td>
+<td style="text-align: right;">777</td>
+<td style="text-align: right;">3.39048e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">radon_all-radon_variable_slope_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L813">Julia</a></p>
+</div></td>
+<td style="text-align: right;">390</td>
+<td style="text-align: right;">9.02753e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">radon_all-radon_variable_slope_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1071">Julia</a></p>
+</div></td>
+<td style="text-align: right;">390</td>
+<td style="text-align: right;">3.76125e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">radon_mn-radon_county_intercept</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county_intercept.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L499">Julia</a></p>
+</div></td>
+<td style="text-align: right;">87</td>
+<td style="text-align: right;">1.68705e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">radon_mn-radon_hierarchical_intercept_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L981">Julia</a></p>
+</div></td>
+<td style="text-align: right;">90</td>
+<td style="text-align: right;">1.65284e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">radon_mn-radon_hierarchical_intercept_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_hierarchical_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1258">Julia</a></p>
+</div></td>
+<td style="text-align: right;">90</td>
+<td style="text-align: right;">6.39471e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">radon_mn-radon_partially_pooled_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L648">Julia</a></p>
+</div></td>
+<td style="text-align: right;">88</td>
+<td style="text-align: right;">2.25918e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">radon_mn-radon_partially_pooled_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_partially_pooled_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L910">Julia</a></p>
+</div></td>
+<td style="text-align: right;">88</td>
+<td style="text-align: right;">9.407e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">radon_mn-radon_pooled</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_pooled.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L332">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">4.08944e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">radon_mn-radon_variable_intercept_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L836">Julia</a></p>
+</div></td>
+<td style="text-align: right;">89</td>
+<td style="text-align: right;">1.90363e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">radon_mn-radon_variable_intercept_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1122">Julia</a></p>
+</div></td>
+<td style="text-align: right;">89</td>
+<td style="text-align: right;">1.31916e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">radon_mn-radon_variable_intercept_slope_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1095">Julia</a></p>
+</div></td>
+<td style="text-align: right;">175</td>
+<td style="text-align: right;">1.30905e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">radon_mn-radon_variable_intercept_slope_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_intercept_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1418">Julia</a></p>
+</div></td>
+<td style="text-align: right;">175</td>
+<td style="text-align: right;">6.72877e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">radon_mn-radon_variable_slope_centered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_centered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L813">Julia</a></p>
+</div></td>
+<td style="text-align: right;">89</td>
+<td style="text-align: right;">9.93597e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">radon_mn-radon_variable_slope_noncentered</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_variable_slope_noncentered.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1071">Julia</a></p>
+</div></td>
+<td style="text-align: right;">89</td>
+<td style="text-align: right;">1.29713e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">radon_mod-radon_county</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/radon_county.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L253">Julia</a></p>
+</div></td>
+<td style="text-align: right;">389</td>
+<td style="text-align: right;">1.32855e-15</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">rats_data-rats_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/rats_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1345">Julia</a></p>
+</div></td>
+<td style="text-align: right;">65</td>
+<td style="text-align: right;">5.59854e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">sblrc-blr</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/blr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L113">Julia</a></p>
+</div></td>
+<td style="text-align: right;">6</td>
+<td style="text-align: right;">2.63617e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">sblri-blr</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/blr.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L113">Julia</a></p>
+</div></td>
+<td style="text-align: right;">6</td>
+<td style="text-align: right;">3.37365e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">seeds_data-seeds_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/seeds_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L932">Julia</a></p>
+</div></td>
+<td style="text-align: right;">26</td>
+<td style="text-align: right;">2.57195e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">sesame_data-sesame_one_pred_a</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/sesame_one_pred_a.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L43">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">1.17698e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">surgical_data-surgical_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/surgical_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L568">Julia</a></p>
+</div></td>
+<td style="text-align: right;">14</td>
+<td style="text-align: right;">1.37117e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">three_docs1200-ldaK2</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1302">Julia</a></p>
+</div></td>
+<td style="text-align: right;">7</td>
+<td style="text-align: right;">1.61776e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">three_men1-ldaK2</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1302">Julia</a></p>
+</div></td>
+<td style="text-align: right;">502</td>
+<td style="text-align: right;">9.45133e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">three_men2-ldaK2</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1302">Julia</a></p>
+</div></td>
+<td style="text-align: right;">510</td>
+<td style="text-align: right;">5.02346e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">three_men3-ldaK2</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/ldaK2.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1302">Julia</a></p>
+</div></td>
+<td style="text-align: right;">505</td>
+<td style="text-align: right;">5.69357e-16</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">traffic_accident_nyc-bym2_offset_only</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/bym2_offset_only.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1935">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3845</td>
+<td style="text-align: right;">3.35924e-16</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">wells_data-wells_daae_c_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_daae_c_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L698">Julia</a></p>
+</div></td>
+<td style="text-align: right;">6</td>
+<td style="text-align: right;">1.65706e-12</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">wells_data-wells_dae_c_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dae_c_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L587">Julia</a></p>
+</div></td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">6.94058e-13</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">wells_data-wells_dae_inter_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dae_inter_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L1053">Julia</a></p>
+</div></td>
+<td style="text-align: right;">7</td>
+<td style="text-align: right;">8.9642e-12</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">wells_data-wells_dae_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dae_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L283">Julia</a></p>
+</div></td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">2.46733e-12</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">wells_data-wells_dist</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dist.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L33">Julia</a></p>
+</div></td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">7.02789e-11</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">wells_data-wells_dist100_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dist100_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L127">Julia</a></p>
+</div></td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">1.07014e-15</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">wells_data-wells_dist100ars_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_dist100ars_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L188">Julia</a></p>
+</div></td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">1.75239e-12</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">wells_data-wells_interaction_c_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_interaction_c_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L484">Julia</a></p>
+</div></td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">3.44355e-12</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">wells_data-wells_interaction_model</td>
+<td style="text-align: right;"><div class="markdown">
+<p><a href="https://github.com/stan-dev/posteriordb/tree/master/posterior_database/models/stan/wells_interaction_model.stan">Stan</a>, <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/ext/PosteriorDBExt.jl#L318">Julia</a></p>
+</div></td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">6.04627e-12</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+
+
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button', {
+    text: function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+  });
+  clipboard.on('success', function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  });
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      return note.innerHTML;
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    const typesetMath = (el) => {
+      if (window.MathJax) {
+        // MathJax Typeset
+        window.MathJax.typeset([el]);
+      } else if (window.katex) {
+        // KaTeX Render
+        var mathElements = el.getElementsByClassName("math");
+        var macros = [];
+        for (var i = 0; i < mathElements.length; i++) {
+          var texText = mathElements[i].firstChild;
+          if (mathElements[i].tagName == "SPAN") {
+            window.katex.render(texText.data, mathElements[i], {
+              displayMode: mathElements[i].classList.contains('display'),
+              throwOnError: false,
+              macros: macros,
+              fleqn: false
+            });
+          }
+        }
+      }
+    }
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        typesetMath(container);
+        return container.innerHTML
+      } else {
+        typesetMath(note);
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      typesetMath(note);
+      return note.innerHTML;
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>
