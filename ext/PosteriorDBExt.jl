@@ -1557,8 +1557,7 @@ julia_implementation(::Val{:dogs_nonhierarchical}; n_dogs, n_trials, y, kwargs..
             z::matrix[J, 2]
         end
         @model @views begin
-            logit_ab = rep_vector(1, J) * mu_logit_ab'
-                                    + z * diag_pre_multiply(sigma_logit_ab, L_logit_ab);
+            logit_ab = rep_vector(1, J) * mu_logit_ab' + z * diag_pre_multiply(sigma_logit_ab, L_logit_ab);
             a = inv_logit.(logit_ab[ : , 1]);
             b = inv_logit.(logit_ab[ : , 2]);
             y ~ bernoulli(@broadcasted(a ^ prev_shock * b ^ prev_avoid));
@@ -2437,6 +2436,7 @@ julia_implementation(::Val{:prophet};
       
       
       logistic_gamma(k, m, delta, t_change, S) = begin
+        local gamma = zeros(S)
         k_s = append_row(k, k + cumulative_sum(delta));
         
         m_pr = m; 
@@ -2448,7 +2448,7 @@ julia_implementation(::Val{:prophet};
       end
       
       logistic_trend(k, m, delta, t, cap, A, t_change, S) = begin
-        gamma = logistic_gamma(k, m, delta, t_change, S);
+        local gamma = logistic_gamma(k, m, delta, t_change, S);
         return cap .* inv_logit.((k .+ A * delta) .* (t .- m .- A * gamma));
       end
       

@@ -24,8 +24,8 @@ This page compares the performance of Julia's and Stan's log density and log den
 ```{julia}
 include("julia/common.jl")
 jdf = map(posterior_names) do posterior_name 
-    PosteriorEvaluation(posterior_name).df_row   
-end |> pad_missing |> DataFrame; 
+    PosteriorEvaluation(posterior_name).df_row
+end |> pad_missing |> DataFrame;  
 ```
 
 :::{.column-page}
@@ -118,10 +118,19 @@ The below table shows information about the implemented posteriors. Will elabora
 
 ```{julia}
 ternary(c, t, f) = c ? t : f 
+hl_best = HtmlHighlighter(
+    (data, i, j) -> (isa(data[i,j], UncertainStatistic) && isapprox(val(data[i,j]), 1.)),
+    HtmlDecoration(color = "blue")
+);
+hl_failed = HtmlHighlighter(
+    (data, i, j) -> ((data[i,j]==="FAILED")),
+    HtmlDecoration(color = "red")
+);
 pretty_table( 
     DataFrame(OrderedDict(  
         "posterior name"=>jdf.posterior_name,
         "dimension"=>jdf.dimension,
+        "remaining relative lpdf error"=>jdf.lpdf_accuracy,
         "relative mean primitive Julia runtime"=>jdf.julia_lpdf_times,
         "relative mean primitive Stan runtime"=>jdf.stan_lpdf_times,
         "relative mean Enzyme runtime"=>jdf.enzyme_times,
@@ -131,14 +140,16 @@ pretty_table(
         "mean Enzyme allocations"=>jdf.enzyme_allocs,
         "mean Mooncake allocations"=>jdf.mooncake_allocs,
         "constant lpdf difference"=>jdf.lpdf_difference,
-        "remaining relative lpdf error"=>jdf.lpdf_accuracy,
         "Enzyme relative gradient error"=>jdf.enzyme_accuracy,
         "Mooncake relative gradient error"=>jdf.mooncake_accuracy, 
         "Enzyme"=>jdf.ENZYME_VERSION,
         "Mooncake"=>jdf.MOONCAKE_VERSION,
         "implementations"=>implementations_string.(jdf.posterior_name)
     ));
-    backend=Val(:html), show_subheader=false, table_class="interactive"
+    backend=Val(:html),
+    highlighters=(hl_best,hl_failed), 
+    show_subheader=false, 
+    table_class="interactive"
 )
 ```
 :::

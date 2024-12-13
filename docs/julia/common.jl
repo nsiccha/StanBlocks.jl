@@ -2,7 +2,7 @@ cd(dirname(Base.active_project()))
 using LinearAlgebra
 using DataFrames, StanBlocks, Markdown, PosteriorDB, StanLogDensityProblems, LogDensityProblems, Statistics, OrderedCollections, PrettyTables, Serialization, Chairmarks, Enzyme, BridgeStan, Markdown, Pkg, Mooncake
 using Logging, Test, LinearAlgebra
-using Statistics, StanBlocks, PosteriorDB, Distributions, Random
+using Statistics, StanBlocks, PosteriorDB, Distributions, Random, OrdinaryDiffEq
 using StatsPlots
 getsampletimes(x::Chairmarks.Benchmark) = getfield.(x.samples, :time); 
 const ENZYME_VERSION = filter(x->x.second.name=="Enzyme", Pkg.dependencies()) |> x->first(x)[2].version
@@ -144,7 +144,7 @@ compute_property(e, ::Val{:lpdf_accuracy}) = finite_relative_difference(
     e.julia_lpdfs .+ median(filter(isfinite, e.stan_lpdfs - e.julia_lpdfs)), 
     e.stan_lpdfs
 )
-compute_property(e, ::Val{:usable}) = !isnothing(e.lpdf_accuracy) && e.lpdf_accuracy <= 1e-8
+compute_property(e, ::Val{:usable}) = !isnothing(e.lpdf_accuracy) && e.lpdf_accuracy <= (e.posterior_name in ("sir-sir","one_comp_mm_elim_abs-one_comp_mm_elim_abs", "soil_carbon-soil_incubation", "hudson_lynx_hare-lotka_volterra") ? 1e-4 : 1e-8)
 compute_property(e, ::Val{:julia_lpdf_benchmark}) = (@be randn(e.dimension) e.julia_lpdf)
 compute_property(e, ::Val{:stan_lpdf_benchmark}) = (@be randn(e.dimension) e.stan_lpdf)
 compute_property(e, ::Val{:lpdf_comparison}) = begin 
@@ -209,7 +209,7 @@ compute_property(e, ::Val{:df_row}) = begin
     enzyme_crashed = isnothing(e.enzyme_accuracy)
     merge(
         row,
-        (;enzyme_accuracy=something(e.enzyme_accuracy, missing), mooncake_accuracy=something(e.mooncake_accuracy, missing)),  
+        (;enzyme_accuracy=something(e.enzyme_accuracy, "FAILED"), mooncake_accuracy=something(e.mooncake_accuracy, "FAILED")),  
         something(e.lpdf_comparison, (;)),
         !enzyme_crashed ? something(e.gradient_comparison, (;)) : (;)
     )

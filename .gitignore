@@ -35,5 +35,6 @@ sys
 sysconfig
 cache
 *.ipynb
+*.quarto_ipynb
 *.sh
 .jupyter_cache

@@ -7,6 +7,7 @@
 # @inline bsum(x::Base.Broadcast.Broadcasted{Style,Axes,typeof(-),Tuple{T1,T2}}) where {Style,Axes,T1,T2} = flength(x) * (
 #     bsum(x.args[1]) / flength(x.args[1]) - bsum(x.args[2]) / flength(x.args[2])
 # )
+const loggamma = Distributions.SpecialFunctions.loggamma
 begin
     bsum_expr(::Type; x) = :(sum($x)/length($x))
     bsum_expr(::Type{Base.Broadcast.Broadcasted{Style,Axes,typeof(+),Args}}; x) where {Style,Axes,Args} = Expr(:call, :+, [
@@ -30,9 +31,9 @@ ternary(c,t,f) = c ? t : f
 # https://mc-stan.org/docs/functions-reference/real-valued_basic_functions.html#betafun
 @inline choose(x, y) = binomial(x, y)
 @inline lchoose(x, y) = (
-    + Distributions.SpecialFunctions.loggamma(x+1)
-    - Distributions.SpecialFunctions.loggamma(y+1)
-    - Distributions.SpecialFunctions.loggamma(x-y+1)
+    + loggamma(x+1)
+    - loggamma(y+1)
+    - loggamma(x-y+1)
 )
 # https://mc-stan.org/docs/functions-reference/unbounded_discrete_distributions.html#nbalt
 @inline neg_binomial_2_lpdf(n, mu, phi) = bsum(@broadcasted(
@@ -85,11 +86,12 @@ ternary(c,t,f) = c ? t : f
 @inline normal_lpdf(x, mu, sigma) = -bsum(@broadcasted(log(sigma)+.5*square((x-mu)/sigma)))
 # https://mc-stan.org/docs/2_21/functions-reference/normal-id-glm.html
 @inline normal_id_glm_lpdf(y,X,alpha,beta,sigma) = normal_lpdf(y, Base.broadcasted(+, alpha, X * beta), sigma)
+# https://mc-stan.org/docs/functions-reference/positive_continuous_distributions.html#lognormal
 @inline lognormal_lpdf(x, mu, sigma) = begin
-    bsum(@broadcasted(
-        -log(sigma)
-        -.5*log(x)
-        -.5*square((log(x)-mu)/sigma)
+    -bsum(@broadcasted(
+        log(sigma)
+        +log(x)
+        +.5*square((log(x)-mu)/sigma)
     ))
 end
 @inline weibull_lpdf(y, alpha, sigma) = bsum(@broadcasted(
@@ -100,9 +102,17 @@ end
 ))
 @inline StudentT(nu, mu, sigma) = mu + sigma * TDist(nu)
 @inline student_t_lpdf(x, args...) = bsum(@broadcasted(logpdf(StudentT(args...), x)))
+# https://mc-stan.org/docs/functions-reference/unbounded_continuous_distributions.html#student-t-distribution
+# @inline student_t_lpdf(y, nu, mu, sigma) = -bsum(@broadcasted(
+#     - loggamma((nu+1)/2)
+#     + loggamma(nu/2)
+#     + .5 * log(nu)
+#     + log(sigma)
+#     + .5 * (nu+1) * (log1p(square((y-mu)/sigma)/nu))
+# ))
 # https://mc-stan.org/docs/functions-reference/unbounded_continuous_distributions.html#cauchy-distribution
 @inline cauchy_lpdf(x, location, scale) = begin
-    -bsum(@broadcasted(log(scale) + log1p((x-location)/scale)))
+    -bsum(@broadcasted(log(scale) + log1p(((x-location)/scale)^2)))
 end
 # https://mc-stan.org/docs/functions-reference/unbounded_continuous_distributions.html#logistic-distribution
 @inline logistic_lpdf(y, location, scale) = begin
