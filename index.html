@@ -172,7 +172,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <li><a href="#some-models-may-have-been-implemented-suboptimally" id="toc-some-models-may-have-been-implemented-suboptimally" class="nav-link" data-scroll-target="#some-models-may-have-been-implemented-suboptimally">Some models may have been implemented suboptimally</a></li>
   </ul></li>
   <li><a href="#using-and-testing-the-implementations" id="toc-using-and-testing-the-implementations" class="nav-link" data-scroll-target="#using-and-testing-the-implementations">Using and testing the implementations</a></li>
-  <li><a href="#overview-of-implemented-posteriors" id="toc-overview-of-implemented-posteriors" class="nav-link" data-scroll-target="#overview-of-implemented-posteriors">Overview of implemented posteriors</a></li>
   </ul>
 </nav>
     </div>
@@ -256,12 +255,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="using-and-testing-the-implementations" class="level1">
 <h1>Using and testing the implementations</h1>
-<p>See <a href="https://nsiccha.github.io/StanBlocks.jl/#overview-of-posteriors">https://nsiccha.github.io/StanBlocks.jl/#overview-of-posteriors</a> for an overview of (hopefully) correctly implemented models.</p>
+<p>See <a href="https://nsiccha.github.io/StanBlocks.jl/performance.html#tabular-data">https://nsiccha.github.io/StanBlocks.jl/performance.html#tabular-data</a> for an overview of (hopefully) correctly implemented models.</p>
 <p>See <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/test/runtests.jl"><code>test/runtests.jl</code></a> for a way to run and check the models. After importing <code>PosteriorDB</code>, <code>StanLogDensityProblems</code> and <code>LogDensityProblems</code>, you should have access to reference Stan implementations of the log density and of its gradient, see the documentation of <code>StanLogDensityProblems.jl</code>. The Stan log density can then be compared to the Julia log density as is, and after loading Julia’s AD packages, you can also compare the Stan log density gradient to the Julia log density gradient.</p>
-</section>
-<section id="overview-of-implemented-posteriors" class="level1">
-<h1>Overview of implemented posteriors</h1>
-<p>Check out <a href="https://nsiccha.github.io/StanBlocks.jl/performance.html">https://nsiccha.github.io/StanBlocks.jl/performance.html</a> for an overview of implemented posteriors and their relative performances.</p>
 
 
 </section>
