@@ -20,14 +20,153 @@ This page compares the performance of Julia's and Stan's log density and log den
 ::: {.callout-warning}
 **In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as "A is X-times faster than B".**
 ::: 
-
 ```{julia}
+using Random, Chairmarks, Statistics, LinearAlgebra, Distributions, Plots
+import Plots, OnlineStats, StanBlocks
 include("julia/common.jl")
-jdf = map(posterior_names) do posterior_name 
-    PosteriorEvaluation(posterior_name).df_row
-end |> pad_missing |> DataFrame;  
-```
+struct RuntimeDistribution2{F}
+    f::F
+    n::Int64
+end
+RuntimeDistribution2(f) = RuntimeDistribution2(f, 1)
+RuntimeDistribution2(f::RuntimeDistribution2, n::Int64) = RuntimeDistribution2(f.f, n * f.n)
+@inline Random.rand(rng::AbstractRNG, d::RuntimeDistribution2) = begin
+    stats = @timed begin
+        rv = d.f(rng)
+        Base.donotdelete(rv)
+        for i in 1:d.n-1
+            rv = max(rv, d.f(rng))
+            Base.donotdelete(rv)
+        end
+    end
+    (stats.time - stats.gctime) / d.n
+end
 
+struct IterableDistribution{R,D}
+    rng::R
+    dist::D
+end
+@inline Base.iterate(d::IterableDistribution) = rand(d.rng, d.dist)
+struct UncertainMean{V,Q}
+    var::V
+    qmul::Q
+end
+round2(x) = round(x; sigdigits=2)
+Base.show(io::IO, s::UncertainMean) = print(io, "[", round2(lower(s)), " -- ", round2(upper(s)), "] (via ", OnlineStats.nobs(s), " evaluations)")
+Base.show(io::IO, ::MIME"text/plain", s::UncertainMean) = show(io, s)
+UncertainMean(q::Real) = UncertainMean(OnlineStats.Variance(), quantile(Normal(), 1-q))
+OnlineStats.fit!(s::UncertainMean, args...) = OnlineStats.fit!(s.var, args...)
+OnlineStats.nobs(s::UncertainMean) = OnlineStats.nobs(s.var)
+se(s::UncertainMean) = sqrt(var(s.var)/OnlineStats.nobs(s.var))
+Statistics.mean(s::UncertainMean) = mean(s.var)
+upper(s::UncertainMean) = mean(s) + atol(s)
+lower(s::UncertainMean) = mean(s) - atol(s)
+atol(s::UncertainMean) = s.qmul * se(s)
+rtol(s::UncertainMean) = atol(s) / abs(mean(s))
+Base.:isless(s1::UncertainMean, s2::UncertainMean) = upper(s1) < lower(s2) ? true : false#(upper(s2) < lower(s1) ? false : missing)
+adaptive_mean3(args...; q, kwargs...) = adaptive_mean3(args, [UncertainMean(q) for arg in args]; kwargs...)
+adaptive_mean3(args::Tuple, means::Vector; n_min=10, n_max=1_000_000, rtol=.01) = begin
+    N = length(args)
+    vmeans = map(mean, means)
+    perm = sortperm(vmeans)
+    draws = map(iterate, args)
+    n_start = 1+minimum(OnlineStats.nobs, means)
+    n_start > 1 && display("Resuming at $n_start")
+    for i in n_start:n_max
+        draws = map(iterate, args)
+        for (m, d) in zip(means, draws)
+            OnlineStats.fit!(m, d)
+        end
+        i < n_min && continue
+        map!(mean, vmeans, means)
+        sortperm!(perm, vmeans)
+        is_sorted = all(i->means[perm[i-1]] < means[perm[i]], 2:N)
+        is_precise = all(m->Main.rtol(m) < rtol, means)
+        if is_sorted && is_precise
+            display("Stopping early at i=$i")
+            break
+        end
+    end
+    means
+end
+firstfinite(f) = ff(args...) = while true
+    rv = f(args...)
+    isfinite(rv) && return rv
+end
+nonzero(x) = x == zero(x) ? one(x) : x
+adaptive_median(f::Function; n_min=100, n_max=1000, rtol=.001, q=.5) = begin 
+    ff = firstfinite(f)
+    vals = [ff()]
+    w = [1.]
+    qs = [0.]
+    rv = vals[1]
+    for i in 2:n_max
+        val = ff()
+        insert!(vals, searchsortedfirst(vals, val), val)
+        # @assert issorted(vals)
+        rv = quantile(vals, q; sorted=true)
+        push!(w, 0.)
+        push!(qs, 0.)
+        rand!(w)
+        @. w = -log1p(-w)
+        cumsum!(qs, w)
+        qm = q * qs[end]
+        ridx = searchsortedfirst(qs, qm)
+        rep = if ridx == 1
+            vals[1]
+        else
+            lidx = ridx-1
+            wl = (qm - qs[lidx]) / (qs[ridx] - qs[lidx])
+            wr = 1 - wl
+            wl * vals[lidx] + wr * vals[ridx]
+        end
+        rel_err = norm((rv - rep)/nonzero(max(norm(rv),norm(rep))))
+        i < n_min && continue
+        # Stopping criterion could be more sophisticated
+        if rel_err < rtol
+            display((;vals, rv, rep, rel_err))
+            display("Stopping early at i=$i")
+            break
+        end 
+    end
+    rv
+end
+
+skip_names = split("""
+uk_drivers-state_space_stochastic_level_stochastic_seasonal
+timssAusTwn_irt-gpcm_latent_reg_irt
+synthetic_grid_RBF_kernels-kronecker_gp
+state_wide_presidential_votes-hierarchical_gp	
+soil_carbon-soil_incubation	
+sir-sir	
+sat-hier_2pl	
+rstan_downloads-prophet	
+one_comp_mm_elim_abs-one_comp_mm_elim_abs	
+mnist_100-nn_rbm1bJ10	
+mnist-nn_rbm1bJ100	
+iohmm_reg_simulated-iohmm_reg	
+hudson_lynx_hare-lotka_volterra	
+fims_Aus_Jpn_irt-2pl_latent_reg_irt
+ecdc0501-covid19imperial_v3		
+ecdc0501-covid19imperial_v2	
+ecdc0401-covid19imperial_v3	
+ecdc0401-covid19imperial_v2	
+dogs-dogs_nonhierarchical	
+butterfly-multi_occupancy	
+""")
+jdf = map(posterior_names) do posterior_name
+    posterior_name in skip_names && return (;posterior_name)
+    try
+        e = PosteriorEvaluation(posterior_name)
+        e.df_row
+    catch e
+        isa(e, InterruptException) && rethrow()
+        @error posterior_name e
+        rethrow()
+        return (;posterior_name)
+    end
+end |> filter(!isnothing) |> pad_missing |> DataFrame;
+```
 :::{.column-page}
  
 # Visualization
@@ -56,47 +195,24 @@ hover_string(posterior_name, dimension, ptime, gtime, pallocs, gallocs; AD) = be
         "but"
     end
     descr = "Julia's primitive is ~$pdescr, $jdescr $AD's gradient is ~$gdescr."
-    "$(posterior_name) (D=$(dimension), #allocs=$(Int(pallocs))->$(Int(gallocs))) <br> $descr"
+    "$(posterior_name) (D=$(dimension), #allocs=$(round(pallocs))->$(round(gallocs))) <br> $descr"
 end
-pdf = DataFrame(filter(row->!ismissing(row.stan_gradient_times), eachrow(jdf)))
-pdf.ptime = val.(pdf.julia_lpdf_times) ./ val.(pdf.stan_lpdf_times)
-pdf.etime = val.(pdf.enzyme_times) ./ val.(pdf.stan_gradient_times) 
-pdf.mtime = val.(pdf.mooncake_times) ./ val.(pdf.stan_gradient_times)
-ptime_ci = mapreduce(hcat, pdf.julia_lpdf_times, pdf.stan_lpdf_times) do j, s
-    collect(ci(UncertainStatistic(ratio_of_means, (j.vals, s.vals))))
-end
-etime_ci = mapreduce(hcat, pdf.enzyme_times, pdf.stan_gradient_times) do j, s
-    collect(ci(UncertainStatistic(ratio_of_means, (j.vals, s.vals))))
-end
-mtime_ci = mapreduce(hcat, pdf.mooncake_times, pdf.stan_gradient_times) do j, s
-    collect(ci(UncertainStatistic(ratio_of_means, (j.vals, s.vals))))
-end
+pdf = jdf = DataFrame(filter(row->!ismissing(row.stan_gradient_times), eachrow(jdf)))
+pdf.ptime = mean.(pdf.julia_lpdf_times) ./ mean.(pdf.stan_lpdf_times)
+pdf.etime = mean.(pdf.enzyme_times) ./ mean.(pdf.stan_gradient_times) 
+pdf.mtime = mean.(pdf.mooncake_times) ./ mean.(pdf.stan_gradient_times)
 
 colors = palette(:tab10)[[1,2]]
 Plots.vline!(
 Plots.hline!(
-    Plots.scatter!(
-        Plots.plot(
-            [
-                [pdf.ptime pdf.ptime]
-                ptime_ci'
-                [pdf.ptime pdf.ptime]
-                ptime_ci'
-            ]',
-            [
-                etime_ci'
-                [pdf.etime pdf.etime]
-                mtime_ci'
-                [pdf.mtime pdf.mtime]
-            ]',
-            color=permutedims(vcat(fill(colors[1], 2*length(pdf.ptime)), fill(colors[2], 2*length(pdf.ptime)))), label="", hover=""
-        ),
+    Plots.scatter(
         pdf.ptime,
         [pdf.etime, pdf.mtime];
         label=["Enzyme" "Mooncake"],
         color=permutedims(colors),
         hover=hcat(
-            hover_string.(pdf.posterior_name, pdf.dimension, pdf.ptime, pdf.etime, pdf.julia_lpdf_allocs, pdf.enzyme_allocs; AD="Enzyme"), hover_string.(pdf.posterior_name, pdf.dimension, pdf.ptime, pdf.mtime, pdf.julia_lpdf_allocs, pdf.mooncake_allocs; AD="Mooncake") 
+            hover_string.(pdf.posterior_name, pdf.dimension, pdf.ptime, pdf.etime, pdf.julia_allocations, pdf.enzyme_allocations; AD="Enzyme"), 
+            hover_string.(pdf.posterior_name, pdf.dimension, pdf.ptime, pdf.mtime, pdf.julia_allocations, pdf.mooncake_allocations; AD="Mooncake") 
         ),
         xlabel="Relative primitive runtime\n(Julia vs Stan, left: Julia is faster)", 
         ylabel="Relative gradient runtime\n(Julia+X vs Stan, bottom: Julia+X is faster)",
@@ -119,35 +235,44 @@ The below table shows information about the implemented posteriors. Will elabora
 ```{julia}
 ternary(c, t, f) = c ? t : f 
 hl_best = HtmlHighlighter(
-    (data, i, j) -> (isa(data[i,j], UncertainStatistic) && isapprox(val(data[i,j]), 1.)),
-    HtmlDecoration(color = "blue")
+    (data, i, j) -> data[i,j] === 1.,
+    HtmlDecoration(color="blue", font_weight="bold")
 );
 hl_failed = HtmlHighlighter(
     (data, i, j) -> ((data[i,j]==="FAILED")),
     HtmlDecoration(color = "red")
 );
+relative!(args...) = begin
+    for i in eachindex(args[1])
+        setindex!.(args, getindex.(args, i) ./ minimum(getindex.(args, i)), i)
+    end
+    args
+end
+julia_lpdf_times, stan_lpdf_times = relative!(mean.(jdf.julia_lpdf_times), mean.(jdf.stan_lpdf_times))
+enzyme_times, mooncake_times, stan_gradient_times = relative!(mean.(jdf.enzyme_times), mean.(jdf.mooncake_times), mean.(jdf.stan_gradient_times))
 pretty_table( 
     DataFrame(OrderedDict(  
         "posterior name"=>jdf.posterior_name,
         "dimension"=>jdf.dimension,
-        "remaining relative lpdf error"=>jdf.lpdf_accuracy,
-        "relative mean primitive Julia runtime"=>jdf.julia_lpdf_times,
-        "relative mean primitive Stan runtime"=>jdf.stan_lpdf_times,
-        "relative mean Enzyme runtime"=>jdf.enzyme_times,
-        "relative mean Mooncake runtime"=>jdf.mooncake_times,
-        "relative mean Stan gradient runtime"=>jdf.stan_gradient_times,
-        "mean primitive Julia allocations"=>jdf.julia_lpdf_allocs,
-        "mean Enzyme allocations"=>jdf.enzyme_allocs,
-        "mean Mooncake allocations"=>jdf.mooncake_allocs,
-        "constant lpdf difference"=>jdf.lpdf_difference,
-        "Enzyme relative gradient error"=>jdf.enzyme_accuracy,
-        "Mooncake relative gradient error"=>jdf.mooncake_accuracy, 
+        "median relative ulpdf error"=>round2.(jdf.lpdf_accuracy),
+        "relative mean primitive Julia runtime"=>round2.(julia_lpdf_times),
+        "relative mean primitive Stan runtime"=>round2.(stan_lpdf_times),
+        "relative mean Enzyme runtime"=>round2.(enzyme_times),
+        "relative mean Mooncake runtime"=>round2.(mooncake_times),
+        "relative mean Stan gradient runtime"=>round2.(stan_gradient_times),
+        "primitive Julia allocations"=>jdf.julia_allocations,
+        "Enzyme allocations"=>jdf.enzyme_allocations,
+        "Mooncake allocations"=>jdf.mooncake_allocations,
+        "median lpdf difference"=>round2.(jdf.lpdf_difference),
+        "median Enzyme relative gradient error"=>round2.(jdf.enzyme_accuracy),
+        "median Mooncake relative gradient error"=>round2.(jdf.mooncake_accuracy), 
+        "Bridgestan"=>jdf.BRIDGESTAN_VERSION,
         "Enzyme"=>jdf.ENZYME_VERSION,
         "Mooncake"=>jdf.MOONCAKE_VERSION,
         "implementations"=>implementations_string.(jdf.posterior_name)
     ));
     backend=Val(:html),
-    highlighters=(hl_best,hl_failed), 
+    highlighters=(hl_best, hl_failed,), 
     show_subheader=false, 
     table_class="interactive"
 )

@@ -7,6 +7,7 @@ using StatsPlots
 getsampletimes(x::Chairmarks.Benchmark) = getfield.(x.samples, :time); 
 const ENZYME_VERSION = filter(x->x.second.name=="Enzyme", Pkg.dependencies()) |> x->first(x)[2].version
 const MOONCAKE_VERSION = filter(x->x.second.name=="Mooncake", Pkg.dependencies()) |> x->first(x)[2].version
+const BRIDGESTAN_VERSION = filter(x->x.second.name=="BridgeStan", Pkg.dependencies()) |> x->first(x)[2].version
 const VERSION_STRING = "Julia $VERSION + Enzyme $ENZYME_VERSION" 
 plotlyjs()
 BLAS.set_num_threads(1)
@@ -30,7 +31,6 @@ ci(s::UncertainStatistic{typeof(ratio_of_means)}; q=.05, n=round(Int, 10 / q)) =
     w1, w2 = zeros(m1), zeros(m2)
     hist = zeros(n)
     for i in eachindex(hist)
-        rand!(d1, w1)
         rand!(d2, w2)
         hist[i] = dot(w1, v1) / dot(w2, v2)
     end
@@ -85,7 +85,7 @@ mutable struct PosteriorEvaluation
     cache::NamedTuple
 end
 PosteriorEvaluation(posterior_name) = PosteriorEvaluation(posterior_name, (;))
-cache_on_disc(x) = x in (:lpdf_difference, :lpdf_accuracy, :lpdf_comparison, :enzyme_accuracy, :mooncake_accuracy, :gradient_comparison)#, :df_row)
+cache_on_disc(x) = x in (:lpdf_difference, :lpdf_accuracy, :n_evals, :lpdf_comparison, :enzyme_accuracy, :mooncake_accuracy, :gradient_comparison, :allocations)#, :df_row)
 Base.getproperty(e::PosteriorEvaluation, x::Symbol) = if hasfield(PosteriorEvaluation, x) 
     getfield(e, x)
 else
@@ -95,7 +95,14 @@ else
         rv = if cache_on_disc(x)
             path = joinpath("cache", "$(e.posterior_name)_$x.sjl")
             if isfile(path)
-                Serialization.deserialize(path)
+                old_rv = Serialization.deserialize(path)
+                rv = compute_property(e, Val(x), old_rv)
+                if isnothing(rv)
+                    old_rv
+                else
+                    Serialization.serialize(path, rv)
+                    rv
+                end
             else
                 Serialization.serialize(path, nothing)
                 rv = try
@@ -103,7 +110,7 @@ else
                     compute_property(e, Val(x))
                 catch err
                     @error err
-                    # rethrow()
+                    rethrow()
                     nothing
                 end
                 println(rv)
@@ -117,7 +124,7 @@ else
         rv
     end
 end 
-
+compute_property(e, ::Val, old_rv) = nothing 
 compute_property(e, ::Val{:posterior}) = PosteriorDB.posterior(pdb, e.posterior_name)
 compute_property(e, ::Val{:stan_path}) = PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(e.posterior), "stan"))
 compute_property(e, ::Val{:stan_problem}) = with_logger(ConsoleLogger(stderr, Logging.Error)) do 
@@ -132,75 +139,122 @@ compute_property(e, ::Val{:stan_lpdf}) = begin
     Base.Fix1(LogDensityProblems.logdensity, stan_problem)
 end
 compute_property(e, ::Val{:julia_lpdf}) = StanBlocks.julia_implementation(e.posterior)
-compute_property(e, ::Val{:dimension}) = LogDensityProblems.dimension(e.julia_lpdf)
-compute_property(e, ::Val{:positions}; m=200) = randn((e.dimension, m))
-compute_property(e, ::Val{:julia_lpdfs}) = map(e.julia_lpdf, eachcol(e.positions))
-compute_property(e, ::Val{:stan_lpdfs}) = map(e.stan_lpdf, eachcol(e.positions))
-compute_property(e, ::Val{:finite_idxs1}) = filter(i->isfinite(e.julia_lpdfs[i]) && isfinite(e.stan_lpdfs[i]), 1:size(e.positions, 2))
-finite_median_difference(x, y) = UncertainStatistic(median, (filter(isfinite, norm.(x.-y))))
-finite_relative_difference(x, y) = UncertainStatistic(median, (filter(isfinite, norm.(x.-y)./(max.(norm.(x), norm.(y))))))
-compute_property(e, ::Val{:lpdf_difference}) = finite_median_difference(e.julia_lpdfs, e.stan_lpdfs)
-compute_property(e, ::Val{:lpdf_accuracy}) = finite_relative_difference(
-    e.julia_lpdfs .+ median(filter(isfinite, e.stan_lpdfs - e.julia_lpdfs)), 
-    e.stan_lpdfs
-)
-compute_property(e, ::Val{:usable}) = !isnothing(e.lpdf_accuracy) && e.lpdf_accuracy <= (e.posterior_name in ("sir-sir","one_comp_mm_elim_abs-one_comp_mm_elim_abs", "soil_carbon-soil_incubation", "hudson_lynx_hare-lotka_volterra") ? 1e-4 : 1e-8)
-compute_property(e, ::Val{:julia_lpdf_benchmark}) = (@be randn(e.dimension) e.julia_lpdf)
-compute_property(e, ::Val{:stan_lpdf_benchmark}) = (@be randn(e.dimension) e.stan_lpdf)
-compute_property(e, ::Val{:lpdf_comparison}) = begin 
-    (;julia_lpdf_benchmark, stan_lpdf_benchmark) = e
-    min_time = min(mean(julia_lpdf_benchmark).time, mean(stan_lpdf_benchmark).time)
-    (;
-        julia_lpdf_times=UncertainStatistic(mean, getsampletimes(julia_lpdf_benchmark) ./ min_time), 
-        julia_lpdf_allocs=mean(julia_lpdf_benchmark).allocs, 
-        stan_lpdf_times=UncertainStatistic(mean, getsampletimes(stan_lpdf_benchmark) ./ min_time)
-    )
+compute_property(e, ::Val{:julia_blpdf}) = begin 
+    (;julia_lpdf) = e
+    x = zeros(e.dimension)
+    (rng) -> julia_lpdf(randn!(rng, x))
 end
+compute_property(e, ::Val{:stan_blpdf}) = begin 
+    (;stan_lpdf) = e
+    x = zeros(e.dimension)
+    (rng) -> stan_lpdf(randn!(rng, x))
+end
+compute_property(e, ::Val{:dimension}) = LogDensityProblems.dimension(e.julia_lpdf)
+compute_property(e, ::Val{:x}) = zeros(e.dimension)
+compute_property(e, ::Val{:g1}) = zeros(e.dimension)
+compute_property(e, ::Val{:g2}) = zeros(e.dimension)
+compute_property(e, ::Val{:lpdf_difference}) = adaptive_median() do 
+    x = randn!(e.x)
+    (e.julia_lpdf(x)-e.stan_lpdf(x))
+end
+compute_property(e, ::Val{:lpdf_accuracy}) = adaptive_median() do 
+    x = randn!(e.x)
+    norm(e.julia_lpdf(x)-e.stan_lpdf(x)-e.lpdf_difference)/nonzero(norm(e.stan_lpdf(x)))
+end
+compute_property(e, ::Val{:enzyme_accuracy}) = adaptive_median() do 
+    x = randn!(e.x)
+    e.stan_gradient!(x, e.g1)
+    e.enzyme!(x, e.g2)
+    norm(e.g1-e.g2)/nonzero(max(norm(e.g1),norm(e.g2)))
+end
+compute_property(e, ::Val{:mooncake_accuracy}) = adaptive_median() do 
+    x = randn!(e.x)
+    e.stan_gradient!(x, e.g1)
+    e.mooncake!(x, e.g2)
+    norm(e.g1-e.g2)/nonzero(max(norm(e.g1),norm(e.g2)))
+end
+compute_property(e, ::Val{:usable}) = !isnothing(e.lpdf_accuracy) && e.lpdf_accuracy <= (e.posterior_name in ("sir-sir","one_comp_mm_elim_abs-one_comp_mm_elim_abs", "soil_carbon-soil_incubation", "hudson_lynx_hare-lotka_volterra") ? 1e-4 : 1e-8)
+compute_property(e, ::Val{:n_evals}) = begin 
+    b = (@be Xoshiro(0) _ e.stan_blpdf _)
+    display(b)
+    trunc(Int, b.samples[1].evals)
+end
+compute_property(e, ::Val{:lpdf_comparison}) = begin 
+    (;means=adaptive_mean3(
+        IterableDistribution(Xoshiro(0), RuntimeDistribution2(e.julia_blpdf, e.n_evals)),
+        IterableDistribution(Xoshiro(0), RuntimeDistribution2(e.stan_blpdf, e.n_evals)),
+    ), BRIDGESTAN_VERSION)
+end
+compute_property(e, ::Val{:lpdf_comparison}, rv::NamedTuple) = begin 
+    all(m->Main.rtol(m) < .01, rv.means) && return
+    (;means=adaptive_mean3((
+        IterableDistribution(Xoshiro(0), RuntimeDistribution2(e.julia_blpdf, e.n_evals)),
+        IterableDistribution(Xoshiro(0), RuntimeDistribution2(e.stan_blpdf, e.n_evals)),
+    ), rv.means), BRIDGESTAN_VERSION)
+end
+compute_property(e, ::Val{:gradient_comparison}) = begin 
+    (;means=adaptive_mean3(
+        IterableDistribution(Xoshiro(0), RuntimeDistribution2(e.stan_bgradient!, e.n_evals)),
+        IterableDistribution(Xoshiro(0), RuntimeDistribution2(e.benzyme!, e.n_evals)),
+        IterableDistribution(Xoshiro(0), RuntimeDistribution2(e.bmooncake!, e.n_evals)),
+    ), BRIDGESTAN_VERSION, ENZYME_VERSION, MOONCAKE_VERSION)
+end
+compute_property(e, ::Val{:gradient_comparison}, rv::NamedTuple) = begin 
+    all(m->Main.rtol(m) < .01, rv.means) && return
+    (;means=adaptive_mean3((
+        IterableDistribution(Xoshiro(0), RuntimeDistribution2(e.stan_bgradient!, e.n_evals)),
+        IterableDistribution(Xoshiro(0), RuntimeDistribution2(e.benzyme!, e.n_evals)),
+        IterableDistribution(Xoshiro(0), RuntimeDistribution2(e.bmooncake!, e.n_evals)),
+    ), rv.means), BRIDGESTAN_VERSION, ENZYME_VERSION, MOONCAKE_VERSION)
+end
+compute_property(e, ::Val{:allocations}) = (;e.julia_allocations, e.stan_allocations, e.stan_gradient_allocations, e.enzyme_allocations, e.mooncake_allocations)
+allocations(f, x) = begin 
+    f(x)
+    @allocations f(x)
+end
+compute_property(e, ::Val{:julia_allocations}) = allocations(e.julia_blpdf, Xoshiro(0))
+compute_property(e, ::Val{:stan_allocations}) = allocations(e.stan_blpdf, Xoshiro(0))
+compute_property(e, ::Val{:stan_gradient_allocations}) = allocations(e.stan_bgradient!, Xoshiro(0))
+compute_property(e, ::Val{:enzyme_allocations}) = allocations(e.benzyme!, Xoshiro(0))
+compute_property(e, ::Val{:mooncake_allocations}) = allocations(e.bmooncake!, Xoshiro(0))
 
 compute_property(e, ::Val{:stan_gradient!}) = begin
     (;stan_problem) = e
-    ((g,x),)->(BridgeStan.log_density_gradient!(stan_problem.model, x, g))
+    (x, g)->(BridgeStan.log_density_gradient!(stan_problem.model, x, g))
 end
-compute_property(e, ::Val{:stan_gradient}) = x->e.stan_gradient!((zero(x), collect(x)))[2]
+# compute_property(e, ::Val{:stan_gradient}) = x->e.stan_gradient!((zero(x), collect(x)))[2]
 compute_property(e, ::Val{:enzyme!}) = begin
     (;julia_lpdf) = e
-    ((g,x),)->(Enzyme.autodiff(
+    (x,g)->(Enzyme.autodiff(
         Enzyme.set_runtime_activity(Enzyme.ReverseWithPrimal), Enzyme.Const(julia_lpdf), 
         Enzyme.Active, 
-        Enzyme.Duplicated(x, g)
+        Enzyme.Duplicated(x, (g .= 0.))
     )[2], g)
 end
-compute_property(e, ::Val{:enzyme}) = x->e.enzyme!((zero(x), collect(x)))[2]
+# compute_property(e, ::Val{:enzyme}) = x->e.enzyme!((zero(x), collect(x)))[2]
 compute_property(e, ::Val{:mooncake!}) = begin
     (;julia_lpdf) = e
     rule = Mooncake.build_rrule(julia_lpdf, randn(e.dimension))
     mooncake_lpdf = Mooncake.CoDual(julia_lpdf, zero_tangent(julia_lpdf))
-    ((g,x),)->(Mooncake.__value_and_gradient!!(
-        rule, mooncake_lpdf, Mooncake.CoDual(x, g)
+    (x,g)->(Mooncake.__value_and_gradient!!(
+        rule, mooncake_lpdf, Mooncake.CoDual(x, (g .= 0.))
     )[1], g)
 end
-compute_property(e, ::Val{:mooncake}) = x->e.mooncake!((zero(x), collect(x)))[2]
-compute_property(e, ::Val{:enzymes}) = mapreduce(e.enzyme, hcat, eachcol(e.positions))
-compute_property(e, ::Val{:stan_gradients}) = mapreduce(e.stan_gradient, hcat, eachcol(e.positions))
-compute_property(e, ::Val{:mooncakes}) = mapreduce(e.mooncake, hcat, eachcol(e.positions))
-compute_property(e, ::Val{:enzyme_accuracy}) = finite_relative_difference(eachcol(e.enzymes), eachcol(e.stan_gradients))
-compute_property(e, ::Val{:mooncake_accuracy}) = finite_relative_difference(eachcol(e.mooncakes), eachcol(e.stan_gradients))
-
-compute_property(e, ::Val{:enzyme_benchmark}) = (@be (randn(e.dimension),zeros(e.dimension)) e.enzyme!)
-compute_property(e, ::Val{:stan_gradient_benchmark}) = (@be (randn(e.dimension),zeros(e.dimension)) e.stan_gradient!)
-compute_property(e, ::Val{:mooncake_benchmark}) = (@be (randn(e.dimension),zeros(e.dimension)) e.mooncake!)
-compute_property(e, ::Val{:gradient_comparison}) = begin 
-    (;enzyme_benchmark, stan_gradient_benchmark, mooncake_benchmark) = e
-    min_time = minimum(b->mean(b).time, (enzyme_benchmark, stan_gradient_benchmark, mooncake_benchmark))
-    # min_time = min(mean(enzyme_benchmark).time, mean(stan_gradient_benchmark).time)
-    (;
-        enzyme_times=UncertainStatistic(mean, getsampletimes(enzyme_benchmark) ./ min_time), 
-        enzyme_allocs=mean(enzyme_benchmark).allocs, 
-        mooncake_times=UncertainStatistic(mean, getsampletimes(mooncake_benchmark) ./ min_time), 
-        mooncake_allocs=mean(mooncake_benchmark).allocs, 
-        stan_gradient_times=UncertainStatistic(mean, getsampletimes(stan_gradient_benchmark) ./ min_time),
-        ENZYME_VERSION, MOONCAKE_VERSION
-    )
+# compute_property(e, ::Val{:mooncake}) = x->e.mooncake!((zero(x), collect(x)))[2]
+compute_property(e, ::Val{:stan_bgradient!}) = begin 
+    (;stan_gradient!) = e
+    x, g = zeros(e.dimension), zeros(e.dimension)
+    (rng) -> stan_gradient!(randn!(rng, x), g)
+end
+compute_property(e, ::Val{:benzyme!}) = begin 
+    (;enzyme!) = e
+    x, g = zeros(e.dimension), zeros(e.dimension)
+    (rng) -> enzyme!(randn!(rng, x), g)
+end
+compute_property(e, ::Val{:bmooncake!}) = begin 
+    (;mooncake!) = e
+    x, g = zeros(e.dimension), zeros(e.dimension)
+    (rng) -> mooncake!(randn!(rng, x), g)
 end
 compute_property(e, ::Val{:df_row}) = begin 
     (;posterior_name, dimension, lpdf_difference, lpdf_accuracy, usable) = e
@@ -210,8 +264,9 @@ compute_property(e, ::Val{:df_row}) = begin
     merge(
         row,
         (;enzyme_accuracy=something(e.enzyme_accuracy, "FAILED"), mooncake_accuracy=something(e.mooncake_accuracy, "FAILED")),  
-        something(e.lpdf_comparison, (;)),
-        !enzyme_crashed ? something(e.gradient_comparison, (;)) : (;)
+        isnothing(e.lpdf_comparison) ? (;) : (;julia_lpdf_times=e.lpdf_comparison.means[1], stan_lpdf_times=e.lpdf_comparison.means[2], e.lpdf_comparison.BRIDGESTAN_VERSION),
+        (enzyme_crashed || isnothing(e.gradient_comparison)) ? (;) : (;stan_gradient_times=e.gradient_comparison.means[1], enzyme_times=e.gradient_comparison.means[2], mooncake_times=e.gradient_comparison.means[3], e.gradient_comparison.MOONCAKE_VERSION, e.gradient_comparison.ENZYME_VERSION),
+        e.allocations
     )
 end
 end

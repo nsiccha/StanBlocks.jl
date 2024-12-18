@@ -101,7 +101,7 @@ end
     - (y/sigma)^alpha
 ))
 @inline StudentT(nu, mu, sigma) = mu + sigma * TDist(nu)
-@inline student_t_lpdf(x, args...) = bsum(@broadcasted(logpdf(StudentT(args...), x)))
+@inline student_t_lpdf(y, nu, mu, sigma) = bsum(@broadcasted(logpdf(StudentT(nu, mu, sigma), y)))
 # https://mc-stan.org/docs/functions-reference/unbounded_continuous_distributions.html#student-t-distribution
 # @inline student_t_lpdf(y, nu, mu, sigma) = -bsum(@broadcasted(
 #     - loggamma((nu+1)/2)

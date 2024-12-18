@@ -1,4 +1,5 @@
 [deps]
+Bootstrap = "e28b5b4c-05e8-5b66-bc03-6f0c0a0a06e0"
 BridgeStan = "c88b6f0a-829e-4b0b-94b7-f06ab5908f5a"
 Chairmarks = "0ca39b1e-fe0b-4e98-acfc-b1656634c4de"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
@@ -10,6 +11,7 @@ Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 Markdown = "d6f4376e-aef5-505a-96c1-9c027394607a"
 Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 NaNStatistics = "b946abbf-3ea7-4610-9019-9858bfdeaf2d"
+OnlineStats = "a15396b6-48d5-5d58-9928-6d29437db91e"
 OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
 OrdinaryDiffEq = "1dea7af3-3e70-54e6-95c3-0bf5283fa5ed"
 PlotlyJS = "f0f68f2c-4968-5e81-91da-67840de0976a"
