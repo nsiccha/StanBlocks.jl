@@ -211,10 +211,10 @@ Warning
 <p><strong>In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as “A is X-times faster than B”.</strong></p>
 </div>
 </div>
-<p>The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+X vs Stan, bottom: Julia is faster) for the <code>posteriordb</code> models for which the <a href="#tabular-data">overview table</a> has a value less than <code>1e-8</code> in the <code>remaining relative lpdf error</code> column. <strong>The color of the points represents the Julia AD framework used</strong>, which currently includes <a href="https://github.com/EnzymeAD/Enzyme.jl">Enzyme.jl</a> and <a href="https://github.com/compintell/Mooncake.jl">Mooncake.jl</a>. Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive and gradient run and a short explanation, e.g.&nbsp;<code>mesquite-logmesquite_logvash (D=7, #allocs=0-&gt;70) - Julia's primitive is ~4.5 times faster, but Enzyme's gradient is ~16.0 times slower.</code> Horizontal and vertical lines around scatter points represent the 90% central credible interval of the ratio of the runtime means, estimated using 200 iterations of Bayesian Bootstrap. <strong>As those intervals are sometimes quite wide, I’m planning to rerun some or all of the benchmarks.</strong></p>
-<div id="2d890463" class="cell" data-execution_count="3">
-<div class="cell-output cell-output-display" data-execution_count="8">
-    <div id="a377706c-6c28-4a4b-96c5-2ef97ea577cd" style="width:1000px;height:600px;"></div>
+<p>The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+X vs Stan, bottom: Julia is faster) for the <code>posteriordb</code> models for which the <a href="#tabular-data">overview table</a> has a value less than <code>1e-8</code> in the <code>remaining relative lpdf error</code> column. <strong>The color of the points represents the Julia AD framework used</strong>, which currently includes <a href="https://github.com/EnzymeAD/Enzyme.jl">Enzyme.jl</a> and <a href="https://github.com/compintell/Mooncake.jl">Mooncake.jl</a>. Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive and gradient run and a short explanation, e.g.&nbsp;<code>mesquite-logmesquite_logvash (D=7, #allocs=0-&gt;70) - Julia's primitive is ~4.5 times faster, but Enzyme's gradient is ~16.0 times slower.</code> <strong>Any time spent on garbage collection has been subtracted from the measured wall times. All mean runtime estimates were run until the estimated standard error of the mean was smaller than roughly .5% of the estimated mean. Due to this, I have removed the credible intervals and standard errors from the plot and table.</strong></p>
+<div id="f41469c6" class="cell" data-execution_count="3">
+<div class="cell-output cell-output-display" data-execution_count="18">
+    <div id="251c1b9a-5f6f-419f-8fd7-6d9588134b89" style="width:1000px;height:600px;"></div>
     <script>
         requirejs.config({
         paths: {
@@ -223,15 +223,15 @@ Warning
     });
     require(['plotly'], function (Plotly) {
 
-    Plotly.newPlot('a377706c-6c28-4a4b-96c5-2ef97ea577cd', [
+    Plotly.newPlot('251c1b9a-5f6f-419f-8fd7-6d9588134b89', [
     {
         "showlegend": true,
         "mode": "markers",
         "xaxis": "x",
         "colorbar": {
-            "y": 0.5219907407407407,
+            "y": 0.505787037037037,
             "title": "",
-            "len": 0.942895158938466,
+            "len": 0.9104877515310585,
             "x": 0.9960629921259843
         },
         "name": "Enzyme",
@@ -638,9 +638,9 @@ Warning
         "mode": "markers",
         "xaxis": "x",
         "colorbar": {
-            "y": 0.5219907407407407,
+            "y": 0.505787037037037,
             "title": "",
-            "len": 0.942895158938466,
+            "len": 0.9104877515310585,
             "x": 0.9960629921259843
         },
         "name": "Mooncake",
@@ -1047,9 +1047,9 @@ Warning
         "mode": "lines",
         "xaxis": "x",
         "colorbar": {
-            "y": 0.5219907407407407,
+            "y": 0.505787037037037,
             "title": "",
-            "len": 0.942895158938466,
+            "len": 0.9104877515310585,
             "x": 0.9960629921259843
         },
         "name": "",
@@ -1081,9 +1081,9 @@ Warning
         "mode": "lines",
         "xaxis": "x",
         "colorbar": {
-            "y": 0.5219907407407407,
+            "y": 0.505787037037037,
             "title": "",
-            "len": 0.942895158938466,
+            "len": 0.9104877515310585,
             "x": 0.9960629921259843
         },
         "name": "",
@@ -1159,7 +1159,24 @@ Warning
         "type": "log"
     },
     "paper_bgcolor": "rgba(255, 255, 255, 1.000)",
-    "annotations": [],
+    "annotations": [
+        {
+            "yanchor": "top",
+            "xanchor": "center",
+            "rotation": -0.0,
+            "y": 1.0,
+            "font": {
+                "color": "rgba(0, 0, 0, 1.000)",
+                "family": "sans-serif",
+                "size": 20
+            },
+            "yref": "paper",
+            "showarrow": false,
+            "text": "Relative mean runtimes, EXCLUDING GARBAGE COLLECTION",
+            "xref": "paper",
+            "x": 0.5298611111111111
+        }
+    ],
     "height": 600,
     "margin": {
         "l": 0,
@@ -1182,7 +1199,7 @@ Warning
         ],
         "domain": [
             0.05054316127150776,
-            0.9934383202099737
+            0.9610309128025663
         ],
         "mirror": false,
         "tickangle": 0,
@@ -1251,7 +1268,7 @@ Warning
 <h1>Tabular data</h1>
 <p>The below table shows information about the implemented posteriors. Will elaborate on the exact meaning of columns.</p>
 <div class="column-screen">
-<div id="234c5da2" class="cell" data-execution_count="4">
+<div id="901f5506" class="cell" data-execution_count="4">
 <div class="cell-output cell-output-display">
 <table class="interactive caption-top table table-sm table-striped small" data-quarto-postprocess="true">
 <colgroup>
