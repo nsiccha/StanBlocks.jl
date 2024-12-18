@@ -176,7 +176,7 @@ end |> filter(!isnothing) |> pad_missing |> DataFrame;
 :::
 
 The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+X vs Stan, bottom: Julia is faster) for the `posteriordb` models for which the [overview table](#tabular-data) has a value less than `1e-8` in the `remaining relative lpdf error` column. **The color of the points represents the Julia AD framework used**, which currently includes [Enzyme.jl](https://github.com/EnzymeAD/Enzyme.jl) and [Mooncake.jl](https://github.com/compintell/Mooncake.jl).
-Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive and gradient run and a short explanation, e.g. `mesquite-logmesquite_logvash (D=7, #allocs=0->70) - Julia's primitive is ~4.5 times faster, but Enzyme's gradient is ~16.0 times slower.` Horizontal and vertical lines around scatter points represent the 90% central credible interval of the ratio of the runtime means, estimated using 200 iterations of Bayesian Bootstrap. **As those intervals are sometimes quite wide, I'm planning to rerun some or all of the benchmarks.**
+Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive and gradient run and a short explanation, e.g. `mesquite-logmesquite_logvash (D=7, #allocs=0->70) - Julia's primitive is ~4.5 times faster, but Enzyme's gradient is ~16.0 times slower.` **Any time spent on garbage collection has been subtracted from the measured wall times. All mean runtime estimates were run until the estimated standard error of the mean was smaller than roughly .5% of the estimated mean. Due to this, I have removed the credible intervals and standard errors from the plot and table.**
 ```{julia}
 hover_string(posterior_name, dimension, ptime, gtime, pallocs, gallocs; AD) = begin  
     pdescr = if ptime > 1
@@ -216,6 +216,7 @@ Plots.hline!(
         ),
         xlabel="Relative primitive runtime\n(Julia vs Stan, left: Julia is faster)", 
         ylabel="Relative gradient runtime\n(Julia+X vs Stan, bottom: Julia+X is faster)",
+        title="Relative mean runtimes, EXCLUDING GARBAGE COLLECTION",
         xscale=:log10, yscale=:log10, 
         size=(1000, 600)
     ),
