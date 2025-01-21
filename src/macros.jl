@@ -80,38 +80,69 @@ else
         :($dim($(dims...)))
     end
 end
+gq_symbols_lhs(e::Expr) = if e.head in (:(::), :(=))
+    gq_symbols_lhs(e.args[1])
+else
+    []
+end
+gq_symbols_lhs(e::Symbol) = [e]
+gq_symbols(e) = []
+gq_symbols(e::Expr) = if e.head in (:(::), :(=))
+    gq_symbols_lhs(e.args[1])
+elseif e.head in (:for,:while,:do)
+    []
+else
+    mapreduce(gq_symbols, vcat, e.args)
+end
+strip_gq_lhs(e::Symbol) = e == Symbol("@generated_quantities")
+strip_gq_lhs(e::QuoteNode) = strip_gq_lhs(e.value)
+strip_gq_lhs(e::Expr) = e.head == :(.) ? strip_gq_lhs(e.args[2]) : error("Something unforeseen: $e")
+strip_gq(e) = e
+strip_gq(e::Expr) = if e.head == :macrocall && strip_gq_lhs(e.args[1])
+    nothing
+else
+    Expr(e.head, strip_gq.(e.args)...)
+end
+
 macro_stan(x) = begin
-    fname = gensym("stan_lpdf") 
+    lpdf_fname = gensym("stan_lpdf") 
+    gq_fname = gensym("generate_quantities") 
     quote 
-        function $fname($X_NAME) 
+        function $lpdf_fname($X_NAME) 
             target = 0.
-            $x
+            $(strip_gq(x))
             return target
         end
-        StanBlocks.VectorPosterior($fname, $(compute_dimension(x)))
+        function $gq_fname($X_NAME) 
+            target = 0.
+            $x
+            return $(Expr(:tuple, Expr(:parameters, unique(vcat(:target, gq_symbols(x)))...)))
+        end
+        StanBlocks.VectorPosterior($lpdf_fname, missing, $gq_fname, $(compute_dimension(x)))
     end
 end
 end
 macro stan(x)
     esc(macro_stan(x))
 end
-function macro_parameters end
+macro_parameters(e) = e
 macro parameters(block)
     esc(macro_parameters(block))
 end
+macro_transformed_parameters(e) = e
 macro transformed_parameters(block)
-    esc(block)
+    esc(macro_transformed_parameters(block))
 end
-function macro_model end
+macro_model(e) = e
 macro model(block)
     esc(macro_model(block))
 end
 function macro_generated_quantities end
+macro_generated_quantities(e) = e
 macro generated_quantities(block)
     esc(macro_generated_quantities(block))
 end
 begin
-    macro_parameters(e) = e
     extract_kws(e::Symbol) = e, ()
     extract_kws(e::Expr) = begin 
         @assert e.head == :call
@@ -150,7 +181,6 @@ begin
             Expr(:block, stmts...)
         end
     end
-    macro_model(e) = e
     macro_model(e::Expr) = begin 
         if e.head == :call && e.args[1] == :(~)
             lhs = e.args[2]

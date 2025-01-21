@@ -122,7 +122,7 @@ adaptive_median(f::Function; n_min=100, n_max=1000, rtol=.001, q=.5) = begin
         end
         rel_err = norm((rv - rep)/nonzero(max(norm(rv),norm(rep))))
         i < n_min && continue
-        # Stopping criterion could be more sophisticated
+        # Stopping criterion should be more sophisticated
         if rel_err < rtol
             display((;vals, rv, rep, rel_err))
             display("Stopping early at i=$i")
@@ -175,7 +175,7 @@ end |> filter(!isnothing) |> pad_missing |> DataFrame;
 **In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as "A is X-times faster than B".**
 :::
 
-The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+X vs Stan, bottom: Julia is faster) for the `posteriordb` models for which the [overview table](#tabular-data) has a value less than `1e-8` in the `remaining relative lpdf error` column. **The color of the points represents the Julia AD framework used**, which currently includes [Enzyme.jl](https://github.com/EnzymeAD/Enzyme.jl) and [Mooncake.jl](https://github.com/compintell/Mooncake.jl).
+The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+X vs Stan, bottom: Julia is faster) for the `posteriordb` models for which the [overview table](#tabular-data) has a value less than `1e-8` in the `median relative ulpdf error` column. **The color of the points represents the Julia AD framework used**, which currently includes [Enzyme.jl](https://github.com/EnzymeAD/Enzyme.jl) and [Mooncake.jl](https://github.com/compintell/Mooncake.jl).
 Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive and gradient run and a short explanation, e.g. `mesquite-logmesquite_logvash (D=7, #allocs=0->70) - Julia's primitive is ~4.5 times faster, but Enzyme's gradient is ~16.0 times slower.` **Any time spent on garbage collection has been subtracted from the measured wall times. All mean runtime estimates were run until the estimated standard error of the mean was smaller than roughly .5% of the estimated mean. Due to this, I have removed the credible intervals and standard errors from the plot and table.**
 ```{julia}
 hover_string(posterior_name, dimension, ptime, gtime, pallocs, gallocs; AD) = begin  
