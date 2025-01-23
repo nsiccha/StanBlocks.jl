@@ -11,12 +11,21 @@ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 
 [weakdeps]
 LogDensityProblems = "6fdf6af0-433a-55f7-b3ed-c6c6e0b8df7c"
+Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 OrdinaryDiffEq = "1dea7af3-3e70-54e6-95c3-0bf5283fa5ed"
 PosteriorDB = "1c4bc282-d2f5-44f9-b6d1-8c4424a23ad4"
-Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 
 [extensions]
 LogDensityProblemsExt = "LogDensityProblems"
+MooncakeExt = "Mooncake"
 OrdinaryDiffEqExt = "OrdinaryDiffEq"
 PosteriorDBExt = "PosteriorDB"
-MooncakeExt = "Mooncake"
+
+[compat]
+Distributions = "0.25.117"
+LogDensityProblems = "2.1.2"
+LogExpFunctions = "0.3.29"
+Mooncake = "0.4.78"
+OrdinaryDiffEq = "6.90.1"
+PosteriorDB = "0.5.3"
+julia = "1.10"
