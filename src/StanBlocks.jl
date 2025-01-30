@@ -1,5 +1,7 @@
 module StanBlocks
 
+export @stan, @model, @parameters, @transformed_parameters, @generated_quantities, @bsum, with_gradient
+
 using LinearAlgebra, Statistics, Distributions, LogExpFunctions
 
 include("wrapper.jl")

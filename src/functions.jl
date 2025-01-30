@@ -1,12 +1,3 @@
-# @inline flength(x) = Float64(length(x))
-# @inline @generated bsum(x::Base.Broadcast.Broadcasted{Style,Axes,typeof(+),Args}) where {Style,Axes,Args} = :(
-#     flength(x) * +($([
-#         :(bsum(x.args[$i]) / flength(x.args[$i])) for i in 1:fieldcount(Args)
-#     ]...))
-# )
-# @inline bsum(x::Base.Broadcast.Broadcasted{Style,Axes,typeof(-),Tuple{T1,T2}}) where {Style,Axes,T1,T2} = flength(x) * (
-#     bsum(x.args[1]) / flength(x.args[1]) - bsum(x.args[2]) / flength(x.args[2])
-# )
 const loggamma = Distributions.SpecialFunctions.loggamma
 begin
     bsum_expr(::Type; x) = :(sum($x)/length($x))
@@ -36,7 +27,7 @@ ternary(c,t,f) = c ? t : f
     - loggamma(x-y+1)
 )
 # https://mc-stan.org/docs/functions-reference/unbounded_discrete_distributions.html#nbalt
-@inline neg_binomial_2_lpdf(n, mu, phi) = bsum(@broadcasted(
+@inline neg_binomial_2_lpdf(n, mu, phi) = (@bsum(
     lchoose(n+phi-1, n)
     + log(mu) * n
     - log(mu+phi) * n
@@ -45,15 +36,15 @@ ternary(c,t,f) = c ? t : f
 ))
 
 # https://mc-stan.org/docs/functions-reference/unbounded_discrete_distributions.html#poisson
-@inline poisson_lpdf(n, lambda) = bsum(@broadcasted(n * log(lambda) - lambda))
+@inline poisson_lpdf(n, lambda) = (@bsum(n * log(lambda) - lambda))
 # https://mc-stan.org/docs/functions-reference/unbounded_discrete_distributions.html#poisson-distribution-log-parameterization
-@inline poisson_log_lpdf(n, alpha) = bsum(@broadcasted(n * alpha - exp(alpha)))
+@inline poisson_log_lpdf(n, alpha) = (@bsum(n * alpha - exp(alpha)))
 # https://mc-stan.org/docs/functions-reference/bounded_discrete_distributions.html#binomial-distribution-logit-parameterization
 @inline binomial_logit_lpmf(args...) = binomial_logit_lpdf(args...)
-@inline binomial_logit_lpdf(n, N, alpha) = bsum(@broadcasted(n * loglogistic(alpha) + (N - n) * log1mlogistic(alpha)))
+@inline binomial_logit_lpdf(n, N, alpha) = (@bsum(n * loglogistic(alpha) + (N - n) * log1mlogistic(alpha)))
 # https://mc-stan.org/docs/2_21/functions-reference/binomial-distribution.html
 @inline binomial_lpmf(args...) = binomial_lpdf(args...)
-@inline binomial_lpdf(n, N, theta) = bsum(@broadcasted(
+@inline binomial_lpdf(n, N, theta) = (@bsum(
     lchoose(N, n)
     + n * log(theta) 
     + (N - n) * log1m(theta)
@@ -64,46 +55,46 @@ ternary(c,t,f) = c ? t : f
 @inline categorical_logit_lpdf(y::Integer, theta::AbstractVector) = log_softmax(theta)[y]
 # https://mc-stan.org/docs/2_21/functions-reference/bernoulli-distribution.html
 @inline bernoulli_lpmf(args...) = bernoulli_lpdf(args...)
-@inline bernoulli_lpdf(y, theta) = bsum(@broadcasted(bernoulli_lpdf(y, theta)))
+@inline bernoulli_lpdf(y, theta) = (@bsum(bernoulli_lpdf(y, theta)))
 @inline bernoulli_lpdf(y::Real, theta::Real) = y == 1 ? log(theta) : log1m(theta)
 @inline bernoulli_logit_lpmf(args...) = bernoulli_logit_lpdf(args...)
-@inline bernoulli_logit_lpdf(y, alpha) = bsum(@broadcasted(bernoulli_logit_lpdf(y, alpha)))
+@inline bernoulli_logit_lpdf(y, alpha) = (@bsum(bernoulli_logit_lpdf(y, alpha)))
 @inline bernoulli_logit_lpdf(y::Real, alpha::Real) = y == 1 ? loglogistic(alpha) : log1mlogistic(alpha)
 @inline bernoulli_logit_glm_lpdf(y, X, alpha, beta) = bernoulli_logit_lpdf(y, Base.broadcasted(+, alpha, X * beta))
 # @inline bernoulli_logit_glm_lpdf(y, X::AbstractVector, alpha, beta) = bernoulli_logit_lpdf(y, alpha .+ X * beta)
 # https://mc-stan.org/docs/2_21/functions-reference/beta-distribution.html
 @inline beta_lpmf(args...) = beta_lpdf(args...)
-@inline beta_lpdf(theta, alpha, beta) = bsum(@broadcasted((alpha-1)*log(theta) + log1m(theta)*(beta-1)))
+@inline beta_lpdf(theta, alpha, beta) = (@bsum((alpha-1)*log(theta) + log1m(theta)*(beta-1)))
 # https://mc-stan.org/docs/2_21/functions-reference/dirichlet-distribution.html
-@inline dirichlet_lpdf(theta, alpha) = bsum(@broadcasted(log(theta) * (alpha-1)))
+@inline dirichlet_lpdf(theta, alpha) = (@bsum(log(theta) * (alpha-1)))
 # https://mc-stan.org/docs/2_21/functions-reference/gamma-distribution.html
 # @ inline gamma_lpdf()
 # https://mc-stan.org/docs/functions-reference/matrix_operations.html#exponentiated-quadratic-kernel
 @inline gp_exp_quad_cov(x, sigma, length_scale) = @.(sigma^2 * exp(- .5 * square((x - x')/length_scale)))
 
 
-@inline std_normal_lpdf(x) = -.5 * bsum(@broadcasted(square(x)))
-@inline normal_lpdf(x, mu, sigma) = -bsum(@broadcasted(log(sigma)+.5*square((x-mu)/sigma)))
+@inline std_normal_lpdf(x) = -.5 * (@bsum(square(x)))
+@inline normal_lpdf(x, mu, sigma) = -(@bsum(log(sigma)+.5*square((x-mu)/sigma)))
 # https://mc-stan.org/docs/2_21/functions-reference/normal-id-glm.html
 @inline normal_id_glm_lpdf(y,X,alpha,beta,sigma) = normal_lpdf(y, Base.broadcasted(+, alpha, X * beta), sigma)
 # https://mc-stan.org/docs/functions-reference/positive_continuous_distributions.html#lognormal
 @inline lognormal_lpdf(x, mu, sigma) = begin
-    -bsum(@broadcasted(
+    -(@bsum(
         log(sigma)
         +log(x)
         +.5*square((log(x)-mu)/sigma)
     ))
 end
-@inline weibull_lpdf(y, alpha, sigma) = bsum(@broadcasted(
+@inline weibull_lpdf(y, alpha, sigma) = (@bsum(
     log(alpha) 
     - alpha * log(sigma)
     + (alpha-1) * log(y)
     - (y/sigma)^alpha
 ))
 @inline StudentT(nu, mu, sigma) = mu + sigma * TDist(nu)
-@inline student_t_lpdf(y, nu, mu, sigma) = bsum(@broadcasted(logpdf(StudentT(nu, mu, sigma), y)))
+@inline student_t_lpdf(y, nu, mu, sigma) = (@bsum(logpdf(StudentT(nu, mu, sigma), y)))
 # https://mc-stan.org/docs/functions-reference/unbounded_continuous_distributions.html#student-t-distribution
-# @inline student_t_lpdf(y, nu, mu, sigma) = -bsum(@broadcasted(
+# @inline student_t_lpdf(y, nu, mu, sigma) = -(@bsum(
 #     - loggamma((nu+1)/2)
 #     + loggamma(nu/2)
 #     + .5 * log(nu)
@@ -112,25 +103,32 @@ end
 # ))
 # https://mc-stan.org/docs/functions-reference/unbounded_continuous_distributions.html#cauchy-distribution
 @inline cauchy_lpdf(x, location, scale) = begin
-    -bsum(@broadcasted(log(scale) + log1p(((x-location)/scale)^2)))
+    -(@bsum(log(scale) + log1p(((x-location)/scale)^2)))
 end
 # https://mc-stan.org/docs/functions-reference/unbounded_continuous_distributions.html#logistic-distribution
 @inline logistic_lpdf(y, location, scale) = begin
-    -bsum(@broadcasted(log(scale) + (y-location)/scale + 2 * log1pexp(-(y-location)/scale)))
+    -(@bsum(log(scale) + (y-location)/scale + 2 * log1pexp(-(y-location)/scale)))
 end
 # https://mc-stan.org/docs/functions-reference/positive_continuous_distributions.html#exponential-distribution
-@inline exponential_lpdf(y, beta) = bsum(@broadcasted(log(beta) - beta * y))
-@inline double_exponential_lpdf(x, args...) = bsum(@broadcasted(logpdf(DoubleExponential(args...), x)))
+@inline exponential_lpdf(y, beta) = (@bsum(log(beta) - beta * y))
+@inline double_exponential_lpdf(x, args...) = (@bsum(logpdf(DoubleExponential(args...), x)))
 # https://mc-stan.org/docs/functions-reference/positive_continuous_distributions.html#gamma-distribution
-@inline gamma_lpdf(x, alpha, theta) = bsum(@broadcasted(logpdf(Gamma(alpha, 1/theta), x)))
+@inline gamma_lpdf(x, alpha, theta) = (@bsum(logpdf(Gamma(alpha, 1/theta), x)))
 # https://mc-stan.org/docs/2_21/functions-reference/inverse-gamma-distribution.html
 @inline inv_gamma_lpdf(x, alpha, theta) = sum(@broadcasted(logpdf(InverseGamma(alpha, theta), x)))
 @inline uniform_lpdf(x, a, b) = sum(@broadcasted(logpdf(Uniform(a, b), x)))
 @inline multi_normal_lpdf(x, mu, cov) = logpdf(MultivariateNormal(mu, cov), x)
 @inline multi_normal_lpdf(x::AbstractMatrix, mu::AbstractVector, cov::AbstractMatrix) = sum(multi_normal_lpdf.(eachrow(x), Ref(mu), Ref(cov)))
 @inline multi_normal_cholesky_lpdf(x::AbstractVector, mu::AbstractVector, L::AbstractMatrix) = begin
-    -2*bsum(@broadcasted(log($view(L, $diagind(L))))) -.5 * dot_self(L \ (mu - x))
+    -2*(@bsum(log($view(L, $diagind(L))))) -.5 * dot_self(L \ (mu - x))
 end
+@inline scaled_inv_chi_square_lpdf(y, nu, sigma) = @bsum(
+    +nu/2*log(nu/2)
+    -StanBlocks.loggamma(nu/2)
+    +nu * log(sigma)
+    -(nu/2+1)*log(y)
+    -.5 * nu * sigma^2/y
+)
 @inline log_sum_exp(args...) = logsumexp(args)
 @inline log_sum_exp(x) = logsumexp(x)
 @inline inv_logit(x) = logistic(x)
@@ -156,6 +154,7 @@ end
 @inline sd(x) = std(x)
 @inline cumulative_sum(x) = cumsum(x)
 @inline dot_product(x, y) = dot(x, y)
+@inline matrix_exp(x::AbstractMatrix) = exp(x)
 @inline dot_self(x) = sum(@broadcasted(square(x)))
 # https://mc-stan.org/docs/2_19/stan-users-guide/vectorizing-mixtures.html
 @inline log_mix(lambda, lpdf1, lpdf2) = log_sum_exp(
@@ -171,7 +170,7 @@ function integrate_ode_bdf end
 @inline constrain_reshape(y::AbstractVector, n1, n2) = reshape(y, (n2, n1))'
 @inline constrain_reshape(dty::Tuple, args...) = dty[1], constrain_reshape(dty[2], args...)
 @inline constrain(x, n=missing; lower=-Inf, upper=+Inf) = if isfinite(lower) && isfinite(upper)
-    bsum(@broadcasted(log(upper - lower) - x - 2 * log1pexp(-x))), @.(lower + logistic(x) * (upper - lower))
+    (@bsum(log(upper - lower) - x - 2 * log1pexp(-x))), @.(lower + logistic(x) * (upper - lower))
 elseif !isfinite(lower) && !isfinite(upper)
     0., x
 elseif isfinite(lower) && !isfinite(upper)
@@ -180,7 +179,7 @@ else
     sum(x), @.(upper - exp(x))
 end
 @inline constrain2(x, n=missing, lower=-Inf, upper=+Inf) = if isfinite(lower) && isfinite(upper)
-    bsum(@broadcasted(log(upper - lower) - x - 2 * log1pexp(-x))), @.(lower + logistic(x) * (upper - lower))
+    (@bsum(log(upper - lower) - x - 2 * log1pexp(-x))), @.(lower + logistic(x) * (upper - lower))
 elseif !isfinite(lower) && !isfinite(upper)
     0., x
 elseif isfinite(lower) && !isfinite(upper)

@@ -46,6 +46,10 @@ macro broadcasted(x)
     esc(__broadcasted__(x))
 end
 
+macro bsum(x)
+    :(bsum($(esc(__broadcasted__(x)))))
+end
+
 
 const X_NAME = gensym("x")
 const TMP = gensym("tmp")
