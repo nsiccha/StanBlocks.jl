@@ -1,7 +1,7 @@
 name = "StanBlocks"
 uuid = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
 authors = ["Nikolas Siccha <nikolassiccha@gmail.com>"]
-version = "0.1.0"
+version = "0.1.1"
 
 [deps]
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"

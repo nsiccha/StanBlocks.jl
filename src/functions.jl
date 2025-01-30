@@ -124,7 +124,7 @@ end
 end
 @inline scaled_inv_chi_square_lpdf(y, nu, sigma) = @bsum(
     +nu/2*log(nu/2)
-    -StanBlocks.loggamma(nu/2)
+    -loggamma(nu/2)
     +nu * log(sigma)
     -(nu/2+1)*log(y)
     -.5 * nu * sigma^2/y
