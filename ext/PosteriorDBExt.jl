@@ -255,13 +255,14 @@ julia_implementation(::Val{:radon_county}; N, J, county, y, kwargs...) = begin
         @parameters begin
             a::vector[J]
             mu_a::real
-            sigma_a::real(lower=0, upper=100)
-            sigma_y::real(lower=0, upper=100)
+            sigma_a::real(lower=0., upper=100.)
+            sigma_y::real(lower=0., upper=100.)
         end
         @model @views begin
-            y_hat = a[county]
+            # y_hat = a[county]
+            y_hat = StanBlocks.constview(a, county)
             
-            mu_a ~ normal(0, 1);
+            mu_a ~ normal(0., 1.);
             a ~ normal(mu_a, sigma_a);
             y ~ normal(y_hat, sigma_y);
         end

@@ -75,6 +75,10 @@ ternary(c,t,f) = c ? t : f
 
 @inline std_normal_lpdf(x) = -.5 * (@bsum(square(x)))
 @inline normal_lpdf(x, mu, sigma) = -(@bsum(log(sigma)+.5*square((x-mu)/sigma)))
+@inline normal_lpdf(y, loc, scale::Real) = begin
+    s2 = StanBlocks.@broadcasted square(y-loc)
+    return -(log(scale) * length(s2)+.5*sum(s2)/square(scale))
+end
 # https://mc-stan.org/docs/2_21/functions-reference/normal-id-glm.html
 @inline normal_id_glm_lpdf(y,X,alpha,beta,sigma) = normal_lpdf(y, Base.broadcasted(+, alpha, X * beta), sigma)
 # https://mc-stan.org/docs/functions-reference/positive_continuous_distributions.html#lognormal
@@ -256,3 +260,16 @@ end
     end
     rv
 end
+
+
+struct ConstView{T,I}
+    x::T
+    idxs::I
+end
+@inline Base.length(x::ConstView) = length(x.idxs)
+@inline Base.broadcastable(x::ConstView) = x
+@inline Base.ndims(::Type{<:ConstView}) = 1
+@inline Base.size(x::ConstView) = size(x.idxs)
+@inline Base.getindex(x::ConstView, i) = x.x[x.idxs[i]]
+@inline Base.setindex!(x::ConstView, rv, i) = x.x[x.idxs[i]] = rv
+@inline constview(x, idxs) = ConstView(x, idxs)
