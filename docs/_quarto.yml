@@ -18,6 +18,8 @@ format:
     html:
         page-layout: full
         toc: true
+        code-tools: true
+        code-overflow: wrap
         include-in-header:
             text: |
                 <link rel="stylesheet" href="https://cdn.datatables.net/v/dt/dt-2.1.8/cr-2.0.4/fc-5.0.4/fh-4.0.1/datatables.min.css" />

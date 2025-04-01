@@ -1,0 +1,76 @@
+---
+title: "The @slic macro"
+---
+
+```{julia}
+using StanBlocks  
+```
+
+# Motorcycle data case study
+
+Qualitatively reproduces [Aki's motorcycle case study](https://users.aalto.fi/~ave/casestudies/Motorcycle/motorcycle.html#GP_model_with_Hilbert_basis_functions).
+
+## HSGP building block (`hsgp` below)
+
+```{julia}
+hsgp = @slic begin 
+    xi = 2 * (x - min(x)) / (max(x) - min(x)) - 1.
+    L = 1.5
+    n_functions = 20
+    X = sin(pi/(2L) * (xi+L) * (1:n_functions)')/sqrt(L)
+    x_scale ~ uniform(0, 2)
+    y_scale ~ lognormal(0, 1)
+    scale = y_scale * sqrt(sqrt(2pi) * x_scale) * exp(-0.25*(x_scale*pi/2L)^2 * (1:n_functions)^2)
+    unit_weight ~ std_normal(;n=n_functions)
+    return (X * (scale .* unit_weight))
+end
+```
+
+## Homoskedastic model
+
+```{julia}
+homo = @slic begin 
+    y_intercept ~ std_normal()
+    dy ~ hsgp(;x)
+    sigma ~ lognormal(-2, 1)
+    obs ~ normal(y_intercept + dy, sigma)
+end
+```
+
+## Heteroskedastic model
+
+```{julia}
+hetero = @slic begin
+    y_intercept ~ std_normal()
+    dy ~ hsgp(;x)
+    log_sigma_intercept ~ std_normal()
+    dlog_sigma ~ hsgp(;x)
+    obs ~ normal(y_intercept + dy, exp(log_sigma_intercept + dlog_sigma))
+end
+```
+
+::: {.callout-note collapse="true"}
+
+## Alternative heteroskedastic model using subsubmodels
+
+### Submodel with submodel (`intercept_hsgp` below)
+
+```{julia}
+intercept_hsgp = @slic begin 
+    intercept ~ std_normal()
+    "Submodel uses `hsgp` as a submodel"
+    d ~ hsgp(;x)
+    return intercept + d
+end
+```
+
+### Final model
+
+```{julia}
+hetero2 = @slic begin 
+    y ~ intercept_hsgp(;x)
+    log_sigma ~ intercept_hsgp(;x)
+    obs ~ normal(y, exp(log_sigma))
+end
+```
+:::
