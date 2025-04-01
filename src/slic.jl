@@ -114,6 +114,19 @@ stan_data!(x::StanExpr, y::AbstractVector; stan_data) = begin
     stan_data!.(type(x).size, size(y); stan_data)
     stan_data[expr(x)] = y
 end
+stan_code(x::SlicModel; code_info=code(x)) = begin 
+    buf = IOBuffer()
+    print(buf, code_info)
+    String(take!(buf))
+end
+stan_data(x::SlicModel; code_info=code(x)) = begin 
+    rv = Dict()
+    for name in keys(code_info)
+        name in keys(x.data) || continue
+        stan_data!(code_info[name], x.data[name]; stan_data=rv)
+    end
+    rv
+end
 code(x::SlicModel) = begin 
     info = StanModel()
     for (name, value) in pairs(x.data)
@@ -201,7 +214,7 @@ trace(x::Symbol; info) = begin
     x in keys(info) && return info[x]
     isdefined(stan, x) && return comp(getproperty(stan, x))
     isdefined(Main, x) && isa(getproperty(Main, x), Union{Function,SlicModel}) && return comp(getproperty(Main, x)) 
-    @error "Could not find $x in info $((keys(info)...,)), in stan module, or in Main module."
+    # @error "Could not find $x in info $((keys(info)...,)), in stan module, or in Main module."
     error((;x, info))
 end
 trace(x::QuoteNode; info) = x.value

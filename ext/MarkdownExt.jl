@@ -16,6 +16,7 @@ module Quarto
         content
     end
     struct Code <: Object 
+        header
         content
     end
     struct Tabset <: Object
@@ -47,7 +48,7 @@ module Quarto
         print(io, x.content)
         print(io, "\n:::\n")
     end
-    Base.show(io::IO, x::Code) = prettyprint(io, "\n```julia\n", x.content, "\n```\n")
+    Base.show(io::IO, x::Code) = prettyprint(io, "\n```", x.header, "\n", x.content, "\n```\n")
     Base.show(io::IO, x::Tabset) = begin
         print(io, Div("{.panel-tabset}", Container([
             Container([
@@ -59,15 +60,30 @@ module Quarto
     end
 end
 
-
-Base.show(io::IO, m::MIME"text/markdown", x::StanBlocks.stan.SlicModel) = begin 
-    show(io, m, Quarto.Container([
+mapkv(f, x) = map(f, keys(x), values(x))
+quarto(x::StanBlocks.stan.SlicModel) = try 
+    Quarto.Container([
         Quarto.Heading(5, "SlicModel"),
         Quarto.Tabset((;
-            Specification=Quarto.Code(x.model),
-            Data="TBD",
-            Stan="TBD"
+            Specification=Quarto.Code("julia", x.model),
+            Data=Quarto.Code("", Quarto.Container(mapkv((k,v)->"$k:\t$(typeof(v))", StanBlocks.stan.stan_data(x)))),
+            Stan=Quarto.Code("stan", StanBlocks.stan.stan_code(x))
         ))
-    ]))
+    ])
+catch e
+    Quarto.Container([
+        Quarto.Heading(5, "SlicModel"),
+        Quarto.Tabset((;
+            Specification=Quarto.Code("julia", x.model),
+            Data=Quarto.Code("", "TBD"),
+            Stan=Quarto.Code("", "TBD"),
+        ))
+    ])
+end
+
+Base.show(io::IO, m::MIME"text/markdown", x::StanBlocks.stan.SlicModel) = begin 
+    show(io, m, quarto(x))
 end;
+
+Base.show(io::IO, x::StanBlocks.stan.SlicModel) = print(io, quarto(x))
 end
