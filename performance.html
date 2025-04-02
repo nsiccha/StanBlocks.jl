@@ -229,7 +229,7 @@ Warning
 <p><strong>In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as “A is X-times faster than B”.</strong></p>
 </div>
 </div>
-<div id="365cc295" class="cell" data-execution_count="1">
+<div id="365cc295" class="cell" data-execution_count="2">
 <div class="cell-output cell-output-display">
 <div style="padding: 1em; background-color: #f8d6da; border: 1px solid #f5c6cb; font-weight: bold;">
 <p>The WebIO Jupyter extension was not detected. See the
@@ -257,7 +257,7 @@ Warning
 </div>
 </div>
 <p>The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+X vs Stan, bottom: Julia is faster) for the <code>posteriordb</code> models for which the <a href="#tabular-data">overview table</a> has a value less than <code>1e-8</code> in the <code>median relative ulpdf error</code> column. <strong>The color of the points represents the Julia AD framework used</strong>, which currently includes <a href="https://github.com/EnzymeAD/Enzyme.jl">Enzyme.jl</a> and <a href="https://github.com/compintell/Mooncake.jl">Mooncake.jl</a>. Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive and gradient run and a short explanation, e.g.&nbsp;<code>mesquite-logmesquite_logvash (D=7, #allocs=0-&gt;70) - Julia's primitive is ~4.5 times faster, but Enzyme's gradient is ~16.0 times slower.</code> <strong>Any time spent on garbage collection has been subtracted from the measured wall times. All mean runtime estimates were run until the estimated standard error of the mean was smaller than roughly .5% of the estimated mean. Due to this, I have removed the credible intervals and standard errors from the plot and table.</strong></p>
-<div id="2dc41341" class="cell" data-execution_count="2">
+<div id="2dc41341" class="cell" data-execution_count="3">
 <div class="cell-output cell-output-stderr">
 <pre><code>┌ Warning: attempting to remove probably stale pidfile
 │   path = "/home/niko/.jlassetregistry.lock"
@@ -1318,7 +1318,7 @@ Warning
 <h1>Tabular data</h1>
 <p>The below table shows information about the implemented posteriors. Will elaborate on the exact meaning of columns.</p>
 <div class="column-screen">
-<div id="8ed9f70e" class="cell" data-execution_count="3">
+<div id="8ed9f70e" class="cell" data-execution_count="4">
 <div class="cell-output cell-output-display">
 <table class="interactive caption-top table table-sm table-striped small" data-quarto-postprocess="true">
 <colgroup>
