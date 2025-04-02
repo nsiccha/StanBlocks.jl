@@ -136,12 +136,15 @@ code(x::SlicModel) = begin
     info
 end
 code!(::LineNumberNode; kwargs...) = nothing
+code!(x::String; info) = nothing
 code!(x::Expr; info) = if x.head == :block
     code!.(x.args; info)
 elseif x.head == :(=)
     trace!(x.args...; info)
 elseif x.head == :return
     trace!(RV_SYMBOL, x.args[1]; info)
+elseif x.head == :macrocall
+    code!.(x.args[2:end]; info)
 else
     (;fargs) = xcanonical(x)
     @assert fargs[1] == :~

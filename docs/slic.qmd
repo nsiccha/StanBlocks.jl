@@ -3,22 +3,38 @@ title: "The @slic macro"
 ---
 
 ```{julia}
-using StanBlocks  
+using StanBlocks       
 ```
+# Features
+
+* Stan blocks, types, dimensions and constraints are inferred for each parameter from the combination of model and data.
+* Models can define default priors, which are not used when the corresponding parameter is provided.
+* Models can return expressions, with the return value assigned to the lhs of a sampling statement involving that model.
+
+## Missing features
+
+* Prettyfication of generated code
+* Control flow (loops, if-else-blocks)
+* User defined functions
+* Broadcasting
+* More
+
 
 # Case studies
 
-::: {.panel-tabset}
+The below case studies only use dummy data to generate the stan models. Some case studies are not functional yet, as in they use currently unimplemented features.
+
+::: {.panel-tabset} 
 
 {{< include case-studies/_motorcycle.qmd >}}
 
-{{< include case-studies/_golf.qmd >}}  
-
-{{< include case-studies/_school.qmd >}}  
-
-{{< include case-studies/_planets.qmd >}}  
+{{< include case-studies/_golf.qmd >}}   
 
 {{< include case-studies/_radon.qmd >}}  
+
+{{< include case-studies/_school.qmd >}}  
+ 
+{{< include case-studies/_planets.qmd >}}  
 
 {{< include case-studies/_species.qmd >}}  
 

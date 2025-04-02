@@ -61,6 +61,8 @@ module Quarto
 end
 
 mapkv(f, x) = map(f, keys(x), values(x))
+msg(e) = string(e)
+msg(e::ErrorException) = msg(e.msg)
 quarto(x::StanBlocks.stan.SlicModel) = try 
     Quarto.Container([
         Quarto.Heading(5, "SlicModel"),
@@ -75,8 +77,7 @@ catch e
         Quarto.Heading(5, "SlicModel"),
         Quarto.Tabset((;
             Specification=Quarto.Code("julia", x.model),
-            Data=Quarto.Code("", "TBD"),
-            Stan=Quarto.Code("", "TBD"),
+            ERROR=Quarto.Code("", msg(e)),
         ))
     ])
 end

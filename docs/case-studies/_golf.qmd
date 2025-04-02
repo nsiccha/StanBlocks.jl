@@ -4,12 +4,16 @@ Qualitatively reproduces [Andrew Gelman's golf putting case study](https://mc-st
 
 ## Logistic regression
 ```{julia}
+y = n = x = distance_tolerance = overshot = randn(10)
+R = r = 1.
+
 logistic = @slic begin 
     "Maybe alternatively `a, b .~ flat()` or a, b ~ flat(;n=2)?"
     a ~ flat()
-    b ~ flat()
+    b ~ flat() 
     y ~ binomial_logit(n, a + b * x)
 end
+logistic(;y,n,x)
 ```
 
 ## Modelling based on first principles
@@ -24,6 +28,7 @@ angle_submodel = @slic begin
     sigma_degrees = sigma * 180 / pi
     return 2 * Phi(threshold_angle / sigma) - 1
 end
+angle_submodel(;R,r,x)
 ```
 
 #### Distance submodel (`distance_submodel` below)
@@ -36,6 +41,7 @@ distance_submodel = @slic begin
         (-overshot)./ ((x + overshot) * sigma_distance)
     )
 end
+distance_submodel(;distance_tolerance, overshot, x)
 ```
 ### Angle model
 ```{julia}
@@ -43,6 +49,7 @@ angle = @slic begin
     p ~ angle_submodel(;R,r,x)
     y ~ binomial(n, p)
 end
+angle(;R,r,x,y,n)
 ```
 
 ### Angle + distance model
@@ -54,6 +61,7 @@ second_principles = @slic begin
     p = p_angle .* p_distance
     y ~ binomial(n, p)
 end
+second_principles(;R,r,x,distance_tolerance, overshot,y,n,)
 ```
 
 ## Adding a fudge factor
@@ -69,4 +77,5 @@ third_principles = @slic begin
     p = p_angle .* p_distance
     raw_proportions ~ normal(p, sqrt(p .* (1 - p) ./ to_vector(n) + sigma_y ^ 2))
 end
+third_principles(;R,r,x,distance_tolerance,overshot,y,n)
 ```

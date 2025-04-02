@@ -5,12 +5,15 @@ Qualitatively reproduces [Mitzi Morris' radon case study](https://mc-stan.org/le
 ## Complete pooling (`radon_cp` below)
 
 ```{julia}
+y = x = randn(10)
+county = rand(1:10, 10)
 radon_cp = @slic begin 
     alpha ~ normal(0, 10)
     beta ~ normal(0, 10)
     sigma ~ normal(0, 10; lower=0.)
     y ~ normal(alpha + beta * x, sigma)
 end
+radon_cp(;y,x)
 ```
 
 ## No pooling
@@ -25,6 +28,7 @@ radon_np = @slic begin
     "Would be nice to be able to reuse the previous model..."
     "Maybe `y ~ radon_cp(;alpha)` or `y ~ radon_cp(;alpha ~ normal(0, 10; n=n_counties))` , but the syntax of `radon_cp` would have to reflect the special role of `y` somehow."
 end
+radon_np(;y,x,county)
 ```
 
 ## Partial pooling
@@ -39,4 +43,5 @@ radon_pp = @slic begin
     sigma ~ normal(0, 10; lower=0.)
     y ~ normal(alpha[county] + beta * x, sigma)
 end
+radon_pp(;y,x,county)
 ```

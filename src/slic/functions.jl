@@ -6,6 +6,8 @@ function normal_rng end
 
 autotype(args...) = missing
 autocons(args...) = (;)
+# function binomial end
+function binomial_logit end
 function lognormal end
 function chi_square end
 function inv_chi_square end
@@ -66,6 +68,7 @@ function gp_exp_quad_cov end
 function inv_logit end
 function log_inv_logit end
 function log1m_exp end
+function Phi end
 
 
 traceutype(::StanExpr{typeof(linspaced_array)}, n, x, y) = (:real, (n, ))
@@ -113,7 +116,7 @@ macro defsig(x)
     esc(defsig_expr(x))
 end
 @defsig begin 
-    Union{typeof.((sqrt, exp, log, sin, cos, log1m, inv_logit, log_inv_logit, log1m_exp))...} => begin 
+    Union{typeof.((sqrt, exp, log, sin, cos, asin, acos, log1m, inv_logit, log_inv_logit, log1m_exp, Phi))...} => begin 
         (real,)=>real
         (vector[n],)=>vector[n]
         (real[n],)=>real[n]
@@ -166,6 +169,7 @@ end
         # (matrix[m,n], int) => row_vector[n]
     end
     typeof(to_vector) => begin 
+        (vector[n],) => vector[n]
         (real[n],) => vector[n]
         (matrix[m,n],) => vector[tracecall(trace(:*;info=(;)), m,n)]
     end
