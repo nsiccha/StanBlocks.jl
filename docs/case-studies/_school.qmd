@@ -1,0 +1,48 @@
+# Disease transmission
+
+Qualitatively reproduces [Léo Grinsztajn et al.'s disease transmissin case study](https://mc-stan.org/learn-stan/case-studies/boarding_school_case_study.html).
+
+```{julia}
+@slic begin 
+    beta ~ normal(2, 1; lower=0.)
+    gamma ~ normal(0.4, 0.5; lower=0.)
+    R0 = beta / gamma
+    recovery_time = 1 / gamma
+    phi_inv ~ exponential(5)
+    phi = 1. / phi_inv
+    y = integrate_ode_rk45(sir, y0, t0, ts, {beta, gamma}, x_r, x_i)
+    cases ~ neg_binomial_2(y[:,2], phi)
+end
+```
+
+```{julia}
+@slic begin 
+    beta ~ normal(2, 1; lower=0.)
+    gamma ~ normal(0.4, 0.5; lower=0.)
+    R0 = beta / gamma
+    recovery_time = 1 / gamma
+    phi_inv ~ exponential(5)
+    phi = 1. / phi_inv
+    y = integrate_ode_rk45(sir, y0, t0, ts, {beta, gamma}, x_r, x_i)
+    incidence = (y[i:end-1, 1] - y[2:end, 1])
+    cases[1:(n_days-1)] ~ neg_binomial_2(incidence, phi)
+end
+```
+
+```{julia}
+@slic begin 
+    beta ~ normal(2, 1; lower=0.)
+    gamma ~ normal(0.4, 0.5; lower=0.)
+    R0 = beta / gamma
+    recovery_time = 1 / gamma
+    phi_inv ~ exponential(5)
+    phi = 1. / phi_inv
+    y = integrate_ode_rk45(sir, y0, t0, ts, {beta, gamma}, x_r, x_i)
+    "It would again be nice to be able to reuse the previous model."
+    p_reported ~ beta(1, 2)
+    incidence = (y[i:end-1, 1] - y[2:end, 1]) * p_reported
+    cases[1:(n_days-1)] ~ neg_binomial_2(incidence, phi)
+end
+```
+
+More coming at a later point.

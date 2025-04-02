@@ -1,0 +1,41 @@
+# Multiple Species-Site Occupancy Model
+
+Qualitatively reproduces [Bob Carpenter's multiple species-site occupancy case study](https://mc-stan.org/learn-stan/case-studies/dorazio-royle-occupancy.html).
+
+```{julia}
+@slic begin 
+    logit_psi = uv[:,1] + alpha
+    logit_theta = uv[:,2] + beta
+    alpha ~ cauchy(0, 2.5)
+    beta ~ cauchy(0, 2.5)
+    sigma_uv ~ cauchy(0, 2.5)
+    rho_uv_beta ~ beta(2, 2)
+    rho_uv = 2 * rho_uv_beta - 1
+    uv ~ multi_normal(rep_vector(0, 2), cov_matrix_2d(sigma_uv, rho_uv))
+    Omega ~ beta(2, 2)
+    for i in 1:n
+        1 ~ bernoulli(Omega)
+        for j in 1:J
+            if x[i,j] > 0
+                target += lp_observed(x[i,j], K, logit_psi[i], logit_theta[i])
+            else
+                target += lp_unobserved(K, logit_psi[i], logit_theta[i])
+            end
+        end
+    end
+    for i in (n + 1):S
+        target += lp_never_observed(J, K, logit_psi[i], logit_theta[i], Omega)
+    end
+    E_N = S * Omega
+    E_N_2 = n
+    for i in (n + 2):S
+        lp_unavailable = bernoulli_lpmf(0, Omega)
+        lp_available = bernoulli_lpmf(1, Omega) + J * lp_unobserved(K, logit_psi[i], logit_theta[i])
+        Pr_available = exp(lp_available - log_sum_exp(lp_unavailable, lp_available))
+        E_N_2 = E_N_2 + bernoulli_rng(Pr_available)
+    end
+    sim_uv = multi_normal_rng(rep_vector(0,2), cov_matrix_2d(sigma_uv, rho_uv))
+    logit_psi_sim = alpha + sim_uv[1]
+    logit_theta_sim = beta + sim_uv[2]
+end
+```

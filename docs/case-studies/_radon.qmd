@@ -1,0 +1,42 @@
+# Multilevel regression modeling (Radon data)
+
+Qualitatively reproduces [Mitzi Morris' radon case study](https://mc-stan.org/learn-stan/case-studies/radon_cmdstanpy_plotnine.html).
+
+## Complete pooling (`radon_cp` below)
+
+```{julia}
+radon_cp = @slic begin 
+    alpha ~ normal(0, 10)
+    beta ~ normal(0, 10)
+    sigma ~ normal(0, 10; lower=0.)
+    y ~ normal(alpha + beta * x, sigma)
+end
+```
+
+## No pooling
+
+```{julia}
+radon_np = @slic begin 
+    n_counties = max(county)
+    alpha ~ normal(0, 10; n=n_counties)
+    beta ~ normal(0, 10)
+    sigma ~ normal(0, 10; lower=0.)
+    y ~ normal(alpha[county] + beta * x, sigma)
+    "Would be nice to be able to reuse the previous model..."
+    "Maybe `y ~ radon_cp(;alpha)` or `y ~ radon_cp(;alpha ~ normal(0, 10; n=n_counties))` , but the syntax of `radon_cp` would have to reflect the special role of `y` somehow."
+end
+```
+
+## Partial pooling
+
+```{julia}
+radon_pp = @slic begin 
+    n_counties = max(county)
+    mu_alpha ~ normal(0, 10)
+    sigma_alpha ~ normal(0, 10; lower=0)
+    alpha ~ normal(mu_alpha, sigma_alpha; n=n_counties)
+    beta ~ normal(0, 10)
+    sigma ~ normal(0, 10; lower=0.)
+    y ~ normal(alpha[county] + beta * x, sigma)
+end
+```
