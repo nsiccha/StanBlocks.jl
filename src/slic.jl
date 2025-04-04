@@ -164,7 +164,12 @@ sample!(name, x; info) = begin
             return
         end
         f = x.args[1]
-        f == rngname(f) || push!(block(info, :model), xcall(:~, info[name], trace(x; info)))
+        tx = try 
+            trace(x; info)
+        catch e
+            x
+        end
+        f == rngname(f) || push!(block(info, :model), xcall(:~, info[name], tx))
         # gen_expr = Expr(:(=), Symbol(name, "_gen"), Expr(:call, Symbol(x.args[1], "_rng"), x.args[2:end]...))
         trace!(
             Symbol(name, "_gen"), 
@@ -209,7 +214,7 @@ trace(x::Symbol; info) = begin
     isdefined(stan, x) && return comp(getproperty(stan, x))
     isdefined(Main, x) && isa(getproperty(Main, x), Union{Function,SlicModel}) && return comp(getproperty(Main, x)) 
     # @error "Could not find $x in info $((keys(info)...,)), in stan module, or in Main module."
-    error((;x, info))
+    error("Could not find $x in info $((keys(info)...,)), in stan module, or in Main module.")
 end
 trace(x::QuoteNode; info) = x.value
 trace(x::Number; info) = data(x)
