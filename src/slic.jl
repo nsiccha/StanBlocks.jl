@@ -18,6 +18,7 @@ struct StanExpr{E,T}
     expr::E
     type::T
 end
+StanExpr(e) = StanExpr(e, typeof(e))
 struct StanType{Q,T,S,C}
     size::NTuple{S,StanExpr}
     cons::C
@@ -31,16 +32,6 @@ Base.keys(x::StanModel) = keys(x.info)
 Base.setindex!(x::StanModel, xname, name) = setindex!(x.info, xname, name)
 Base.getindex(x::StanModel, name::Symbol) = x.info[name]
 block(x::StanModel, key::Symbol) = x.blocks[key]
-Base.show(io::IO, x::StanModel) = begin
-    for key in (:functions, :data, :transformed_data, :parameters, :transformed_parameters, :model, :generated_quantities)
-        length(block(x, key)) == 0 && continue
-        print(io, replace(string(key), "_"=>" "), " {\n")
-        for stmt in block(x, key)
-            top_print(io, stmt)
-        end
-        print(io, "\n}\n")
-    end
-end 
 Base.parent(x::SubModel) = x.parent
 block(x::SubModel, key::Symbol) = block(parent(x), key)
 supname(x::SubModel, key::Symbol) = key == RV_SYMBOL ? x.name : Symbol(x.name, "_", key)
@@ -173,9 +164,9 @@ sample!(name, x; info) = begin
             return
         end
         f = x.args[1]
-        f == rngname(f) || push!(block(info, :model), xcall(:~, info[name], x))
+        f == rngname(f) || push!(block(info, :model), xcall(:~, info[name], trace(x; info)))
         # gen_expr = Expr(:(=), Symbol(name, "_gen"), Expr(:call, Symbol(x.args[1], "_rng"), x.args[2:end]...))
-        (f == :normal || f == rngname(f)) && trace!(
+        trace!(
             Symbol(name, "_gen"), 
             Expr(:call, rngname(f), x.args[2:end]...); 
             info, block=:generated_quantities
