@@ -46,7 +46,8 @@ expr(x::StanExpr) = x.expr
 type(x::StanExpr) = x.type
 qual(x::StanExpr) = qual(type(x))
 qual(::StanType{Q}) where {Q} = Q
-qual(args...) = all(arg->qual(arg) == :data, args) ? :data : :parameters
+qual(args...) = maximum(qual, args)#all(arg->qual(arg) == :data, args) ? :data : :parameters
+qual() = :data
 utype(x::StanExpr) = utype(type(x))
 utype(x::StanType{<:Any,T}) where {T} = (T, x.size)
 StanExpr2{T,S,E,Q,C} = StanExpr{E,StanType{Q,T,S,C}}
@@ -66,37 +67,41 @@ comp(x::Function) = StanExpr(x, StanType(:comp, :function))
 comp(x::Irrational) = StanExpr(Dict(pi=>:(pi()))[x], StanType(:data, :real))
 comp(x::SlicModel) = x
 
-data!(x::StanType; info) = begin 
-    data!.(x.size; info)
+info!(x::StanType; info) = begin 
+    info!.(x.size; info)
 end
-data!(x::StanExpr; info) = begin 
-    data!(x.type; info)
+info!(x::StanExpr; info) = begin 
+    info!(x.type; info)
     info[x.expr] = x
-    push!(block(info, :data), info[x.expr])
+    # push!(block(info, :data), info[x.expr])
 end
-data!(name, x; info) = data!(data(name, x); info)
+info!(name, x; info) = info!(data(name, x); info)
+info!(name, x::Symbol; info) = info!(StanExpr(name, StanType(x, :auto)); info)
 
-data(x; kwargs...) = data(x, x; kwargs...)
-data(name, ::Int64) = StanExpr(name, StanType(:data, :int))
-data(name, ::Float64) = StanExpr(name, StanType(:data, :real))
-data(name, x::Vector{Int64}; n=Symbol(name, "_n")) = StanExpr(
+stan_expr(x; kwargs...) = stan_expr(x, x; kwargs...)
+stan_expr(name, ::Int64; qual) = StanExpr(name, StanType(qual, :int))
+stan_expr(name, ::Float64; qual) = StanExpr(name, StanType(qual, :real))
+stan_expr(name, x::Vector{Int64}; qual, n=Symbol(name, "_n")) = StanExpr(
     name, 
-    StanType(:data, :int, (data(n, length(x)), ))
+    StanType(qual, :int, (data(n, length(x)), ))
 )
-data(name, x::AbstractVector{Float64}; n=Symbol(name, "_n")) = StanExpr(
+stan_expr(name, x::AbstractVector{Float64}; qual, n=Symbol(name, "_n")) = StanExpr(
     name, 
-    StanType(:data, :vector, (data(n, length(x)), ))
+    StanType(qual, :vector, (data(n, length(x)), ))
 )
-data(name, x::Matrix{Float64}; m=Symbol(name, "_m"), n=Symbol(name, "_n")) = StanExpr(
+stan_expr(name, x::Matrix{Float64}; qual, m=Symbol(name, "_m"), n=Symbol(name, "_n")) = StanExpr(
     name, 
-    StanType(:data, :matrix, data.((m,n), size(x)))
+    StanType(qual, :matrix, data.((m,n), size(x)))
 )
-data(name, x::StanExpr) = StanExpr(name, type(x))
+stan_expr(name, x::StanExpr; kwargs...) = StanExpr(name, type(x))
+
+data(args...; kwargs...) = stan_expr(args...; qual=:data, kwargs...)
+param(args...; kwargs...) = stan_expr(args...; qual=:parameters, kwargs...)
+gen(args...; kwargs...) = stan_expr(args...; qual=:quantities, kwargs...)
 
 (x::SlicModel)(df=(;); kwargs...) = SlicModel(
     x.model, merge(x.data, Dict(pairs(df)), Dict(pairs(kwargs)))
 )
-# (x::SlicModel)
 function bridgestan_data end
 function instantiate end
 debug_instantiate(x; kwargs...) = instantiate(x; nan_on_error=false, kwargs...)
@@ -105,6 +110,7 @@ stan_data!(x::StanExpr, y::AbstractVector; stan_data) = begin
     stan_data!.(type(x).size, size(y); stan_data)
     stan_data[expr(x)] = y
 end
+stan_data!(x::StanExpr, y::StanExpr; stan_data) = nothing
 stan_code(x::SlicModel; code_info=code(x)) = begin 
     buf = IOBuffer()
     print(buf, code_info)
@@ -121,7 +127,7 @@ end
 code(x::SlicModel) = begin 
     info = StanModel()
     for (name, value) in pairs(x.data)
-        data!(name, value; info)
+        info!(name, value; info)
     end 
     code!(x.model; info)
     info
@@ -141,12 +147,19 @@ else
     @assert fargs[1] == :~
     sample!(fargs[2:end]...; info)
 end
+transformed_block(info, q) = if q == :quantities
+    block(info, Symbol("generated_", q))
+else
+    block(info, Symbol("transformed_", q))
+end
 trace!(name, x; info, kwargs...) = begin
     x = trace(x; info)
-    (name in keys(info) && !isa(info, StanModel)) && return
+    # (name in keys(info) && !isa(info, StanModel)) && return
+    (name in keys(info)) && return
+    # (name in keys(info) && qual(info[name]) != :quantities) && return
     info[name] = StanExpr(name, type(x))
     push!(
-        block(info, get(kwargs, :block, Symbol("transformed_", qual(x)))),
+        transformed_block(info, get(kwargs, :block, qual(x))),
         info[name],
         Expr(:(=), info[name], x)
     )
@@ -160,21 +173,28 @@ sample!(name, x; info) = begin
         samplecall!(fargs[1], name, fargs[2:end]...; info, kwargs...)
     elseif isa(info, StanModel)
         if isa(fargs[1], SlicModel) 
-            @warn "Skipping known param ~ ::SlicModel statement (not implemented yet)"
+            # @warn "Skipping known param ~ ::SlicModel statement (not implemented yet)"
             return
         end
         f = x.args[1]
-        tx = try 
-            trace(x; info)
-        catch e
-            x
+        tx = trace(x; info)
+        if qual(info[name], tx) == :quantities
+            if qual(info[name]) == :quantities
+                return push!(
+                    transformed_block(info, :quantities),
+                    info[name],
+                    Expr(:(=), info[name], trace(Expr(:call, rngname(f), x.args[2:end]...);info))
+                )
+            end
+        else
+            f == rngname(f) || push!(block(info, :model), xcall(:~, info[name], tx))
+            # push!(block(info, :model), xcall(:~, info[name], tx))
         end
-        f == rngname(f) || push!(block(info, :model), xcall(:~, info[name], tx))
         # gen_expr = Expr(:(=), Symbol(name, "_gen"), Expr(:call, Symbol(x.args[1], "_rng"), x.args[2:end]...))
         trace!(
-            Symbol(name, "_gen"), 
+            genname(name), 
             Expr(:call, rngname(f), x.args[2:end]...); 
-            info, block=:generated_quantities
+            info, block=:quantities
         )
         # push!(block(info, :generated_quantities), StanExpr(Symbol(name, "_generated"), :real))
     end
@@ -183,12 +203,18 @@ samplecall!(f::StanExpr, lhs::Expr, args...; info, kwargs...) = begin
     push!(block(info, :model), xcall(:~, trace(lhs; info), xcall(Symbol(expr(f)), args...)))
 
 end
-function flat end
-samplecall!(f::StanExpr{typeof(flat)}, name::Symbol, args...; info, kwargs...) = samplecall!(f, name, :real, args...; info, kwargs...)
-samplecall!(f::StanExpr{typeof(flat)}, name::Symbol, type::Symbol, size...; info, kwargs...) = begin 
-    info[name] = StanExpr(name, StanType(:parameters, type, size))
-    push!(block(info, :parameters), info[name])
+consmerge(cons, kwargs) = begin 
+    :lower in keys(kwargs) && (cons = merge(cons, (;kwargs.lower)))
+    :upper in keys(kwargs) && (cons = merge(cons, (;kwargs.upper)))
+    :offset in keys(kwargs) && (cons = merge(cons, (;kwargs.offset)))
+    :multiplier in keys(kwargs) && (cons = merge(cons, (;kwargs.multiplier)))
+    cons
 end
+# samplecall!(f::StanExpr{typeof(flat)}, name::Symbol, args...; info, kwargs...) = samplecall!(f, name, :real, args...; info, kwargs...)
+# samplecall!(f::StanExpr{typeof(flat)}, name::Symbol, type::Symbol, size...; info, kwargs...) = begin 
+#     info[name] = StanExpr(name, StanType(:parameters, type, size))
+#     push!(block(info, :parameters), info[name])
+# end
 samplecall!(f::StanExpr, name::Symbol, args...; info, kwargs...) = begin 
     type = get(kwargs, :type, autotype(f, args...))
     size = get(
@@ -198,19 +224,37 @@ samplecall!(f::StanExpr, name::Symbol, args...; info, kwargs...) = begin
     if ismissing(type)
         type = get(kwargs, :type, [:real, :vector, :matrix][1+length(size)])
     end
-    cons = autocons(f, args...)#Symbol(expr(f)) == :lognormal ? (;lower=0.) : (;)
+    cons = consmerge(autocons(f, args...), (;kwargs...))#Symbol(expr(f)) == :lognormal ? (;lower=0.) : (;)
+    # :lower in keys(kwargs) && (cons = merge(cons, (;kwargs.lower)))
+    # :upper in keys(kwargs) && (cons = merge(cons, (;kwargs.upper)))
+    # :offset in keys(kwargs) && (cons = merge(cons, (;kwargs.offset)))
+    # :multiplier in keys(kwargs) && (cons = merge(cons, (;kwargs.multiplier)))
     info[name] = StanExpr(name, StanType(:parameters, type, size; cons...))
     push!(block(info, :parameters), info[name])
-    push!(block(info, :model), xcall(:~, info[name], xcall(Symbol(expr(f)), args...)))
+    expr(f) == flat || push!(block(info, :model), xcall(:~, info[name], xcall(Symbol(expr(f)), args...)))
 end
 samplecall!(f::SlicModel, name::Symbol; info, kwargs...) = begin 
     code!(f.model; info=SubModel(name, Dict{Symbol,Any}(pairs(kwargs)), info))
 end
 trace(;info) = x->trace(x; info)
 trace(x::Union{Tuple,NamedTuple,Vector}; info) = map(trace(;info), x)
+# trace(x::Base.Pairs; info) = 
+trace(x::StanType; info) = begin 
+    trace(x.size; info) 
+    trace(values(x.cons); info)
+end
+trace(x::StanExpr; info) = begin
+    trace(x.type; info)
+    if qual(x) == :data && isa(expr(x), Symbol)
+        push!(block(info, :data), x)
+    end
+    return x
+end 
 trace(x::Symbol; info) = begin 
+    if x in keys(info)
+        return trace(info[x]::StanExpr; info)
+    end
     startswith(string(x), ".") && return comp(Base.BroadcastFunction(getproperty(stan, Symbol(string(x)[2:end]))))
-    x in keys(info) && return info[x]
     isdefined(stan, x) && return comp(getproperty(stan, x))
     isdefined(Main, x) && isa(getproperty(Main, x), Union{Function,SlicModel}) && return comp(getproperty(Main, x)) 
     # @error "Could not find $x in info $((keys(info)...,)), in stan module, or in Main module."

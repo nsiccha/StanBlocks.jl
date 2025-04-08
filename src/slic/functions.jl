@@ -1,6 +1,7 @@
 
 function flat end
 function std_normal end
+function std_normal_rng end
 function normal end
 function normal_rng end
 
@@ -259,6 +260,9 @@ end
         (real[m,n],) => real[tracecall(trace(:*;info=(;)), m,n)]
     end
     typeof(std_normal) => begin 
+        () => real
+    end
+    typeof(std_normal_rng) => begin 
         () => real
     end
     typeof(normal) => begin 

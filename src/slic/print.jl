@@ -1,3 +1,4 @@
+Base.show(io::IO, x::StanType{<:Any,:auto}) = print(io, "auto") 
 Base.show(io::IO, x::StanType) = begin 
     l, r = lr_size(x)
     length(l) > 0 && print(io, "array [", join(l, ", "), "] ")
