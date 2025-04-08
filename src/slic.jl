@@ -245,7 +245,7 @@ trace(x::StanType; info) = begin
 end
 trace(x::StanExpr; info) = begin
     trace(x.type; info)
-    if qual(x) == :data && isa(expr(x), Symbol)
+    if qual(x) == :data && isa(expr(x), Symbol) && x ∉ block(info, :transformed_data)
         push!(block(info, :data), x)
     end
     return x
