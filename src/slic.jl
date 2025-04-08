@@ -187,7 +187,7 @@ sample!(name, x; info) = begin
                 )
             end
         else
-            f == rngname(f) || push!(block(info, :model), xcall(:~, info[name], tx))
+            f == rngname(f) || push!(block(info, :model), xcall(:~, trace(info[name]; info), tx))
             # push!(block(info, :model), xcall(:~, info[name], tx))
         end
         # gen_expr = Expr(:(=), Symbol(name, "_gen"), Expr(:call, Symbol(x.args[1], "_rng"), x.args[2:end]...))
