@@ -250,7 +250,7 @@ trace(x::StanExpr; info) = begin
     end
     return x
 end 
-trace(x::Symbol; info) = begin 
+trace(x::Symbol; info=(;)) = begin 
     if x in keys(info)
         return trace(info[x]::StanExpr; info)
     end
@@ -284,9 +284,36 @@ end
 
 include("slic/functions.jl")
 
+slic_expr(x::Expr) = if x.head == :block
+    x
+else
+    @assert x.head == :call
+    (;fargs, kwargs) = xcanonical(x)
+    f = trace(fargs[1])::SlicModel
+    args = map(fargs[2:end]) do arg
+        @assert Meta.isexpr(arg, :call)
+        f_, name, rhs = arg.args
+        @assert f_ == :~
+        name=>arg
+    end
+    kwargs = map(keys(kwargs), values(kwargs)) do name, rhs
+        name=>Expr(:(=), name, rhs)
+    end
+    model_replace(f; rep=(;args..., kwargs...))
+end
+model_replace(x::SlicModel; rep) = model_replace(x.model; rep)
+model_replace(x::Expr; rep) = if (
+    x.head == :(=) && x.args[1] in keys(rep) || 
+    x.head == :call && x.args[1] == :~ && x.args[2] in keys(rep)
+)
+    rep[x.head == :(=) ? x.args[1] : x.args[2]]
+else
+    Expr(x.head, model_replace.(x.args; rep)...)
+end
+model_replace(x; rep) = x
+
 end
 
-
 macro slic(model)
-    stan.SlicModel(model, Dict())
+    stan.SlicModel(stan.slic_expr(model), Dict())
 end
