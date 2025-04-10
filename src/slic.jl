@@ -231,7 +231,10 @@ samplecall!(f::StanExpr, name::Symbol, args...; info, kwargs...) = begin
     # :multiplier in keys(kwargs) && (cons = merge(cons, (;kwargs.multiplier)))
     info[name] = StanExpr(name, StanType(:parameters, type, size; cons...))
     push!(block(info, :parameters), info[name])
-    expr(f) == flat || push!(block(info, :model), xcall(:~, info[name], xcall(Symbol(expr(f)), args...)))
+    expr(f) == flat || push!(
+        block(info, :model), 
+        xcall(:~, info[name], trace(xcall(f, args...); info))
+    )
 end
 samplecall!(f::SlicModel, name::Symbol; info, kwargs...) = begin 
     code!(f.model; info=SubModel(name, Dict{Symbol,Any}(pairs(kwargs)), info))

@@ -10,9 +10,14 @@ sigtype(x::StanType) = begin
     l = length(lr_size(x)[1])
     io = IOBuffer()
     l > 0 && print(io, "array [", join(fill("", l), ", "), "] ")
-    print(io, center_type(x))
+    print(io, sig_center_type(x))
     String(take!(io))
 end
+sig_center_type(x::StanType) = sig_center_type(center_type(x))
+sig_center_type(x::Symbol) =  get(
+    (;cholesky_factor_corr=:matrix, simplex=:vector), 
+    x, x
+)
 top_print(io::IO, x::StanExpr) = print(io, type(x), " ", x, ";\n")
 top_print(io::IO, x::Expr) = print(io, x, ";\n")
 top_print(io::IO, x::String) = print(io, x, "\n")

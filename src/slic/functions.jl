@@ -177,8 +177,10 @@ else
         fbase = Symbol(string(f)[1:end-length("_lpdf")])
         quote 
             function $fbase end
+            $mod.autotype(::$mod.StanExpr{typeof($fbase)}, $(sig[3:end]...)) = $(xutype(arg_types[1]).args[1])
             $mod.@defsig typeof($fbase) => begin 
-                ($(arg_types[2:end]...),) => $(arg_types[1])
+                ($(arg_types[2:end]...),) => undef
+                # ($(arg_types[2:end]...),) => $(arg_types[1])
             end
             $mod.fundef(::$mod.StanExpr{typeof($fbase)}, $(sig[3:end]...)) = $stan_fundef
         end
