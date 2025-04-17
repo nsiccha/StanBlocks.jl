@@ -1,25 +1,37 @@
 module types
     abstract type anything end
     abstract type matrix <: anything end
-    abstract type cholesky_factor_corr <: matrix end
+    abstract type square_matrix <: matrix end
+    abstract type cov_matrix <: square_matrix end
+    abstract type corr_matrix <: square_matrix end
+    abstract type cholesky_factor_cov <: square_matrix end
+    abstract type cholesky_factor_corr <: square_matrix end
     abstract type any_vector <: anything end
     abstract type vector <: any_vector end
     abstract type row_vector <: any_vector end
+    abstract type simplex <: vector end
     abstract type complex <: anything end
     abstract type real <: complex end
     abstract type int <: real end
 end
-Base.show(io::IO, ::Type{types.anything}) = print(io, "anything")
-Base.show(io::IO, ::Type{types.int}) = print(io, "int")
-Base.show(io::IO, ::Type{types.real}) = print(io, "real")
-Base.show(io::IO, ::Type{types.vector}) = print(io, "vector")
-Base.show(io::IO, ::Type{types.matrix}) = print(io, "matrix")
-Base.show(io::IO, ::Type{types.cholesky_factor_corr}) = print(io, "cholesky_factor_corr")
+Base.show(io::IO, ::Type{T}) where {T<:types.anything} = print(io, T.name.name)#.parameters[1].name.name)
+# Base.show(io::IO, ::Type{types.anything}) = print(io, "anything")
+# Base.show(io::IO, ::Type{types.matrix}) = print(io, "matrix")
+# Base.show(io::IO, ::Type{types.cov_matrix}) = print(io, "cov_matrix")
+# Base.show(io::IO, ::Type{types.corr_matrix}) = print(io, "corr_matrix")
+# Base.show(io::IO, ::Type{types.cholesky_factor_cov}) = print(io, "cholesky_factor_cov")
+# Base.show(io::IO, ::Type{types.cholesky_factor_corr}) = print(io, "cholesky_factor_corr")
+# Base.show(io::IO, ::Type{types.vector}) = print(io, "vector")
+# Base.show(io::IO, ::Type{types.simplex}) = print(io, "simplex")
+# Base.show(io::IO, ::Type{types.row_vector}) = print(io, "row_vector")
+# Base.show(io::IO, ::Type{types.int}) = print(io, "int")
+# Base.show(io::IO, ::Type{types.real}) = print(io, "real")
+# Base.show(io::IO, ::Type{types.complex}) = print(io, "complex")
 r_ndim(::Type{types.anything}) = 0
-r_ndim(::Type{<:types.complex}) = 0
-r_ndim(::Type{<:types.any_vector}) = 1
 r_ndim(::Type{types.matrix}) = 2
-r_ndim(::Type{types.cholesky_factor_corr}) = 1
+r_ndim(::Type{<:types.square_matrix}) = 1
+r_ndim(::Type{<:types.any_vector}) = 1
+r_ndim(::Type{<:types.complex}) = 0
 r_ndim(::StanType{T}) where {T} = r_ndim(T)
 l_ndim(x::StanType) = length(x.size) - r_ndim(x)
 lr_size(x::StanType) = x.size[1:l_ndim(x)], x.size[1+l_ndim(x):end]
@@ -57,10 +69,6 @@ tracetype(x::BracesExpr) = StanType(types.real, (stan_expr(length(x.args),length
 
 
 autokwargs(::CanonicalExpr) = (;)
-autokwargs(::CanonicalExpr{<:Union{typeof.((beta, beta_proportion))...}}) = (;lower=0, upper=1)
-autokwargs(::CanonicalExpr{typeof(von_mises)}) = (;lower=0, upper=2pi)
-autokwargs(x::CanonicalExpr{typeof(uniform)}) = (;lower=x.args[1], upper=x.args[2])
-autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,scaled_inv_chi_square,exponential,gamma,inv_gamma,weibull,frechet,rayleigh,loglogistic))...}}) = (;lower=0.)
 autotype(x::StanExpr) = autotype(type(x); merge(autokwargs(expr(x)), expr(x).kwargs)...)
 autotype(x::StanType; kwargs...) = begin 
     ct = get(kwargs, :type, center_type(x))
@@ -156,6 +164,7 @@ begin
     end
     sigtype(x::Type) = x
     sigtype(x::Type{types.cholesky_factor_corr}) = types.matrix
+    sigtype(x::Type{<:types.vector}) = types.vector
     sigarg(x::Expr) = begin 
         @assert x.head == :(::)
         "$(sigtype(x.args[2])) $(x.args[1])"

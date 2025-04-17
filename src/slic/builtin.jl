@@ -126,6 +126,11 @@ const append_array = builtin.append_array
 
 function vector_std_normal_rng end
 
+autokwargs(::CanonicalExpr{<:Union{typeof.((beta, beta_proportion))...}}) = (;lower=0, upper=1)
+autokwargs(::CanonicalExpr{typeof(von_mises)}) = (;lower=0, upper=2pi)
+autokwargs(x::CanonicalExpr{typeof(uniform)}) = (;lower=x.args[1], upper=x.args[2])
+autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,scaled_inv_chi_square,exponential,gamma,inv_gamma,weibull,frechet,rayleigh,loglogistic))...}}) = (;lower=0.)
+
 @deffun begin 
     Base.range(start::int, stop::int)::vector[stop]
     linspaced_array(n, x, y)::real[n]
@@ -158,7 +163,7 @@ function vector_std_normal_rng end
         }
         return rv;
     """
-    dirichlet_lpdf(w::dirichlet[n], alpha::vector[n])::real
+    dirichlet_lpdf(w::simplex[n], alpha::vector[n])::real
     lkj_corr_lpdf(L::corr_matrix, x::real)::real
     lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, x::real)::real
     wishart_lpdf(L::cov_matrix[m], x::real, sigma::matrix[m,m])::real
