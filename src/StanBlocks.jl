@@ -8,7 +8,7 @@ using LinearAlgebra, Statistics, Distributions, LogExpFunctions
 include("wrapper.jl")
 include("macros.jl")
 include("functions.jl")
-include("slic.jl")
+include("reslic.jl")
 
 julia_implementation(key; kwargs...) = missing
 stan_implementation(key; kwargs...) = missing

@@ -61,14 +61,18 @@ module Quarto
 end
 
 mapkv(f, x) = map(f, keys(x), values(x))
-msg(e) = string(e)
+msg(e) = try 
+    string(e)
+catch
+    "Something went wrong!"
+end
 msg(e::ErrorException) = msg(e.msg)
 quarto(x::StanBlocks.stan.SlicModel) = try 
     Quarto.Container([
         Quarto.Heading(5, "SlicModel"),
         Quarto.Tabset((;
             Specification=Quarto.Code("julia", x.model),
-            Data=Quarto.Code("", Quarto.Container(mapkv((k,v)->"$k:\t$(typeof(v))", StanBlocks.stan.stan_data(x)))),
+            # Data=Quarto.Code("", Quarto.Container(mapkv((k,v)->"$k:\t$(typeof(v))", StanBlocks.stan.stan_data(x)))),
             Stan=Quarto.Code("stan", StanBlocks.stan.stan_code(x))
         ))
     ])
@@ -82,9 +86,5 @@ catch e
     ])
 end
 
-Base.show(io::IO, m::MIME"text/markdown", x::StanBlocks.stan.SlicModel) = begin 
-    show(io, m, quarto(x))
-end;
-
-Base.show(io::IO, x::StanBlocks.stan.SlicModel) = print(io, quarto(x))
+Base.show(io::IO, m::MIME"text/markdown", x::StanBlocks.stan.SlicModel) = show(io, m, quarto(x))
 end
