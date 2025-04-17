@@ -369,7 +369,8 @@ end
 distribution_blocks(x::ReturnExpr; info) = (:generated_quantities,)
 distribution_blocks(x::DocumentExpr; info) = distribution_blocks(x.args[2]; info)
 distribution_blocks(::Union{Nothing}; info) = tuple()
-distribution_blocks(::Union{StanExpr{Symbol}}; info) = tuple()#(:data,)
+# I had removed this, I wonder why!
+distribution_blocks(x::StanExpr{Symbol}; info) = hasvalue(x) ? (:data,) : tuple()
 
 DeclarativeBlock{C} = Union{DataBlock{C},ParametersBlock{C}}
 ImperativeBlock{C} = Union{FunctionsBlock{C},TransformedDataBlock{C},TransformedParametersBlock{C},ModelBlock{C},GeneratedQuantitiesBlock{C}}
@@ -391,9 +392,11 @@ fetch_data!(x::CanonicalExpr; info) = begin
     # isnothing(fdef) || push!(block(info, :functions), fdef; info)
     fetch_data!(x.args; info)
 end
+# fetch_data!(x::DocumentExpr; info) = fetch_data!(x.args[2]; info=remake(x, x.args[1], info))
 fetch_data!(x; info) = error(x)
 
 Base.get!(b::DocumentExpr{<:Any,<:DeclarativeBlock}, k, x) = get!(content(b.args[2]), k, remake(b, b.args[1], x))
+# Base.get!(b::DocumentExpr{<:Any,<:DeclarativeBlock}, k, x) = content(b.args[2])[k] = remake(b, b.args[1], x)
 Base.push!(b::DocumentExpr{<:Any,<:ImperativeBlock}, x) = push!(content(b.args[2]), remake(b, b.args[1], x))
 
 Base.push!(b::StanBlock, x; info) = error("Block $(typeof(b)) does not know how to handle $(x)!")
@@ -404,6 +407,7 @@ end
 Base.push!(b::DeclarativeBlock, x::SamplingExpr; info) = push!(b, x.args[1]; info)
 Base.push!(b::DeclarativeBlock, x::StanExpr{Symbol}; info) = begin
     fetch_data!(type(x); info)
+    # @info name(b)=>expr(x)=>typeof(b)
     get!(content(b), expr(x), x)
 end
 Base.push!(b::ImperativeBlock, x; info) = begin 
