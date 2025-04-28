@@ -227,11 +227,11 @@ end
     typeof(to_vector) => begin 
         (vector[n],) => vector[n]
         (real[n],) => vector[n]
-        (matrix[m,n],) => vector[stan_expr(CanonicalExpr(*,m,n))]
+        (matrix[m,n],) => vector[m*n]
     end
     typeof(to_array_1d) => begin 
         (vector[n],)=>real[n]
-        (real[m,n],) => real[stan_expr(CanonicalExpr(*,m,n))]
+        (real[m,n],) => real[m*n]
     end
     typeof(std_normal_rng) => begin 
         () => real
