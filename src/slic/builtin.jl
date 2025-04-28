@@ -139,8 +139,8 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     rep_vector(v, n)::vector[n]
     rep_matrix(v::vector[m], n)::matrix[m, n]
     to_array_2d(v, m, n)::real[m,n]
-    append_array(lhs::anything[m],rhs::anything[n])::real[stan_call(+,m,n)]
-    append_array(lhs::anything[m],rhs::real)::real[stan_call(+,m,1)]
+    append_array(lhs::anything[m],rhs::anything[n])::real[m+n]
+    append_array(lhs::anything[m],rhs::real)::real[m+1]
     vector_std_normal_rng(n::int)::vector[n] = """
         vector[n] rv;
         for(i in 1:n){

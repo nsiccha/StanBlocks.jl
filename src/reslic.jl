@@ -161,6 +161,11 @@ stan_type(expr, value::Vector{Float64}; kwargs...) = StanType(
     stan_expr.((Symbol(expr, "_n"), ), size(value)); 
     value, kwargs...
 )
+stan_type(expr, value::Matrix{Float64}; kwargs...) = StanType(
+    types.matrix, 
+    stan_expr.((Symbol(expr, "_m"), Symbol(expr, "_n"), ), size(value)); 
+    value, kwargs...
+)
 stan_type(expr, value::Vector{Int64}; kwargs...) = StanType(
     types.int, 
     stan_expr.((Symbol(expr, "_n"), ), size(value)); 
@@ -239,6 +244,8 @@ forward!(x::Symbol; info) = begin
     isdefined(Main, x) && isa(getproperty(Main, x), Union{Function,SlicModel}) && return getproperty(Main, x) 
     error("Could not find $(x) in model, builtin or Main!")
 end
+forward!(x::StanExpr{Symbol}; info) = x
+forward!(x::StanExpr; info) = x
 forward!(x::CanonicalExpr; info) = begin
     stan_expr(CanonicalExpr(forward!(head(x); info), forward!(x.args; info)...; forward!(x.kwargs; info)...))
 end
@@ -432,7 +439,9 @@ Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
         ); info)
         lhs = StanExpr(Symbol(expr(lhs), "_gen"), remake(type(lhs); value=missing))
     end
-    push!(b, CanonicalExpr(:(=), lhs, rng_expr(lhs, rhs)); info)
+    rng_rhs = rng_expr(lhs, rhs)
+    lhs = StanExpr(expr(lhs), type(rng_rhs))
+    push!(b, CanonicalExpr(:(=), lhs, rng_rhs); info)
 end
     # if hasvalue(x.args[1])
     # push!(b, CanonicalExpr(:(=), rng_lhs(x.args[1]), rng_expr(x.args...)); info)
@@ -451,7 +460,7 @@ likelihood_expr(rhs) = dummy_likelihood
 rng_expr(lhs, rhs) = rng_expr(rhs)
 rng_expr(rhs::StanExpr) = rng_expr(expr(rhs))
 rng_expr(rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), rhs.args...)
-rng_expr(x) = error(x)
+rng_expr(x) = dummy_rng
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(std_normal)}}) = stan_call(vector_std_normal_rng, type(lhs).size...)
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal)}}) = stan_call(to_vector, stan_call(normal_rng, expr(rhs).args...))
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal),<:Tuple{<:StanExpr2{types.real, 0},<:StanExpr2{types.real, 0}}}}) = rng_expr(lhs, stan_call(normal, stan_call(rep_vector, expr(rhs).args[1], type(lhs).size[1]), expr(rhs).args[2]))
@@ -472,10 +481,11 @@ Base.write(io::StanIO3, arg::Array) = write(parent(io), arg)
 Base.write(io::StanIO3, arg::Union{SubString{String}, String}) = write(parent(io), arg)
 # print(io, args...) = error()#print(io, filter(!isnothing, args)...)
 
-Base.show(io::IO, x::SlicModel) = try
+Base.show(io::IO, x::SlicModel; mayfail=true) = try
     print(io, stan_model(x))
 catch e
-    print(io, "Something went wrong: $e")
+    mayfail && return print(io, "SlicModel: Something went wrong: $e")
+    # print(io, "Something went wrong: $e")
     rethrow(e)
 end
 Base.show(io::IO, x::StanModel) = show(StanIO3(io), x)
@@ -509,7 +519,7 @@ Base.show(io::IO, x::StanType) = begin
     length(r) > 0 && print(io, "[", Join(r, ", "), "]")
 end
 function maybetype end
-maybetype(x::StanExpr) = center_type(x) == types.anything ? "// Disabled because type inference failed\n// UNKNOWN" : type(x)
+maybetype(x::StanExpr) = center_type(x) == types.anything ? "// Disabled because type inference failed\n// $(type(x))" : type(x)
 Base.show(io::IO, x::AssignmentExpr) = print(io, maybetype(x.args[1]), " ", x.args[1], " = ", x.args[2])
 
 prettystring(f) = " $f "
@@ -530,7 +540,11 @@ for f in (Meta.quot(:(~)), Meta.quot(:(=)))
 end
     
 
-stan_code(x::SlicModel) = string(x)
+stan_code(x::SlicModel; mayfail=false) = begin 
+    buf = IOBuffer()
+    show(buf, x; mayfail)
+    String(take!(buf))
+end
 function bridgestan_data end
 function instantiate end
 debug_instantiate(x; kwargs...) = instantiate(x; nan_on_error=false, kwargs...)
