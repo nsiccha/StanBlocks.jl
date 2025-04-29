@@ -519,13 +519,13 @@ Base.show(io::IO, x::StanType) = begin
     length(r) > 0 && print(io, "[", Join(r, ", "), "]")
 end
 function maybetype end
-maybetype(x::StanExpr) = center_type(x) == types.anything ? "    // Disabled because type inference failed\n// $(type(x))" : type(x)
+maybetype(x::StanExpr) = center_type(x) == types.anything ? "    // Disabled because type inference failed\n    // $(type(x))" : type(x)
 Base.show(io::IO, x::AssignmentExpr) = print(io, maybetype(x.args[1]), " ", x.args[1], " = ", x.args[2])
 
 prettystring(f) = " $f "
 prettystring(f::Base.BroadcastFunction) = " .$(f.f) "
 Base.show(io::IO, x::CanonicalExpr) = print(io, head(x), "(", Join(x.args, ", "), ")")
-commentstring(x::String) = "    // " * replace(x, "\n"=>"\n    // ") * "\n"
+commentstring(x::String) = "// " * replace(x, "\n"=>"\n    // ") * "\n"
 Base.show(io::IO, x::DocumentExpr) = print(io, commentstring(x.args[1]), "    ", x.args[2])
 # Base.show(io::IO, x::CanonicalExpr{:document}) = print(io, commentstring(x.args[1]))
 Base.show(io::IO, x::CanonicalExpr{typeof(adjoint)}) = print(io, "(", x.args[1], "')")
