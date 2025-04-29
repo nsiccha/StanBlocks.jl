@@ -498,7 +498,7 @@ end
 block_print(io, ::StanBlock, x) = print(io, "    ", x, ";\n")
 block_print(io, ::DeclarativeBlock, x) = print(io, "    ", type(x), " ", expr(x), ";\n")
 block_print(io, b::DeclarativeBlock, x::DocumentExpr) = begin
-    print(io, commentstring(x.args[1]))
+    print(io, "    ", commentstring(x.args[1]))
     block_print(io, b, x.args[2])
 end
 block_print(io, ::FunctionsBlock, x) = print(io, x, "\n")
