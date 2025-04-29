@@ -254,7 +254,7 @@ begin
             sig_args_expr = :(join(map((x, name)->$mod.sigtype(x) * " $name", ($(arg_names...),), ($(Meta.quot.(arg_names)...),)), ", "))
             xstring("$sig_rv $f(", sig_args_expr, """){
                 $(funbody(collect(values(fun_sizes))))
-                $(funbody(body))
+                $(strip(funbody(body)))
             }
             """), subexprs
         end

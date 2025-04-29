@@ -495,13 +495,13 @@ Base.show(io::IO, x::StanBlock) = if length(content(x)) > 0
     map(stmt->block_print(io, x, stmt), collect(values(content(x))))
     print(io, "}\n\n")
 end
-block_print(io, b::StanBlock, x) = print(io, x, ";\n")
-block_print(io, b::DeclarativeBlock, x) = print(io, type(x), " ", expr(x), ";\n")
+block_print(io, ::StanBlock, x) = print(io, "    ", x, ";\n")
+block_print(io, ::DeclarativeBlock, x) = print(io, "    ", type(x), " ", expr(x), ";\n")
 block_print(io, b::DeclarativeBlock, x::DocumentExpr) = begin
     print(io, commentstring(x.args[1]))
     block_print(io, b, x.args[2])
 end
-block_print(io, b::FunctionsBlock, x) = print(io, x, "\n")
+block_print(io, ::FunctionsBlock, x) = print(io, x, "\n")
 Base.show(io::IO, x::StanExpr) = print(io, expr(x), "::", type(x))
 Base.show(io::StanIO3, x::StanExpr) = print(io, expr(x))
 Base.show(io::StanIO3, ::Colon) = print(io, ":")
