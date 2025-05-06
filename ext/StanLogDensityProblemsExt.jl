@@ -11,12 +11,12 @@ StanBlocks.stan.instantiate(x::StanBlocks.stan.SlicModel; nan_on_error=true, mak
             write(fd, stan_code)
         end
     end
-    if mtime(lib_path) < mtime(stan_path)
-        @info (stan_code) 
-        @info "Compiling $stan_path..."
-    else
-        @info "Not compiling $stan_path..."
-    end
+    # if mtime(lib_path) < mtime(stan_path)
+    #     @info (stan_code) 
+    #     @info "Compiling $stan_path..."
+    # else
+    #     @info "Not compiling $stan_path..."
+    # end
     StanLogDensityProblems.StanProblem(
         stan_path, 
         StanBlocks.stan.bridgestan_data(StanBlocks.stan.stan_data(x)); 
