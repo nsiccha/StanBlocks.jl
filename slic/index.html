@@ -305,7 +305,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb4-27"><a href="#cb4-27"></a>    covariates<span class="op">=</span>held_out_covariates, </span>
 <span id="cb4-28"><a href="#cb4-28"></a>    obs<span class="op">=</span>held_out_obs</span>
 <span id="cb4-29"><a href="#cb4-29"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<p>In the above example, the hierarchical parameters will be fixed and reused from <code>samples</code>, while the subject specific parameters will be automatically resampled inedependently for each draw to compute the likelihood. Determining which parameters get fixed/resued and which ones get resampled can be automatically determined by tracing through the model.</p>
+<p>In the above example, the hierarchical parameters will be fixed and reused from <code>samples</code>, while the subject specific parameters will be automatically resampled inedependently for each draw to compute the likelihood. Determining which parameters get fixed/resued and which get resampled is done by tracing through the model.</p>
 <p>Alternative syntax proposals are appreciated!</p>
 </section>
 </section>
@@ -373,6 +373,15 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="supports-tracing-through-a-lot-of-julia-syntax" class="level3">
 <h3 class="anchored" data-anchor-id="supports-tracing-through-a-lot-of-julia-syntax">Supports tracing through a lot of Julia syntax</h3>
 <p>We will support tracing through a lot of common Julia syntax, like broadcasting, generators, maps and do blocks.</p>
+<p>This is a big benefit compared to e.g.&nbsp;Stan. Julia</p>
+<ul>
+<li>has a unified way of handling higher-dimensional arrays - no funny <code>array [] vector</code> or <code>matrix</code> business,</li>
+<li>has a unified way of handling broadcasting - no “<code>.*</code> is the only broadcasted operation allowed, and only for specific pairs of arguments”,</li>
+<li>supports higher-order functions - <code>map</code>, <code>filter</code>, <code>reduce</code> are our friends,</li>
+<li>supports generators - <code>[f(i) for i in something if condition(i)]</code> is nice,</li>
+<li>has a richer type, template and dispatch system,</li>
+<li>allows easy interoperability and extendability.</li>
+</ul>
 </section>
 <section id="supports-opaquely-handling-arbitrary-julia-syntax" class="level3">
 <h3 class="anchored" data-anchor-id="supports-opaquely-handling-arbitrary-julia-syntax">Supports opaquely handling arbitrary Julia syntax</h3>
@@ -975,7 +984,7 @@ window.document.addEventListener("DOMContentLoaded", function (event) {
 <span id="cb8-110"><a href="#cb8-110"></a><span class="in">```</span></span>
 <span id="cb8-111"><a href="#cb8-111"></a></span>
 <span id="cb8-112"><a href="#cb8-112"></a>In the above example, the hierarchical parameters will be fixed and reused from <span class="in">`samples`</span>, while the subject specific parameters will be automatically resampled inedependently for each draw to compute the likelihood.</span>
-<span id="cb8-113"><a href="#cb8-113"></a>Determining which parameters get fixed/resued and which ones get resampled can be automatically determined by tracing through the model. </span>
+<span id="cb8-113"><a href="#cb8-113"></a>Determining which parameters get fixed/resued and which get resampled is done by tracing through the model. </span>
 <span id="cb8-114"><a href="#cb8-114"></a></span>
 <span id="cb8-115"><a href="#cb8-115"></a>Alternative syntax proposals are appreciated!</span>
 <span id="cb8-116"><a href="#cb8-116"></a></span>
@@ -1054,24 +1063,33 @@ window.document.addEventListener("DOMContentLoaded", function (event) {
 <span id="cb8-189"><a href="#cb8-189"></a></span>
 <span id="cb8-190"><a href="#cb8-190"></a>We will support tracing through a lot of common Julia syntax, like broadcasting, generators, maps and do blocks.</span>
 <span id="cb8-191"><a href="#cb8-191"></a></span>
-<span id="cb8-192"><a href="#cb8-192"></a><span class="fu">### Supports opaquely handling arbitrary Julia syntax</span></span>
+<span id="cb8-192"><a href="#cb8-192"></a>This is a big benefit compared to e.g. Stan. Julia</span>
 <span id="cb8-193"><a href="#cb8-193"></a></span>
-<span id="cb8-194"><a href="#cb8-194"></a>While tracing will be limited to a subset of Julia syntax, "unknown" user defined functions will simply not be traced recursively.</span>
-<span id="cb8-195"><a href="#cb8-195"></a>We will not allow these opaque functions to introduce model parameters, and we will "assume the worst" for the activity analysis.</span>
-<span id="cb8-196"><a href="#cb8-196"></a></span>
-<span id="cb8-197"><a href="#cb8-197"></a><span class="fu">## Extendability</span></span>
-<span id="cb8-198"><a href="#cb8-198"></a></span>
-<span id="cb8-199"><a href="#cb8-199"></a>The aim is to make it easy to extend <span class="in">`@slic`</span>'s functionality.</span>
+<span id="cb8-194"><a href="#cb8-194"></a><span class="ss">* </span>has a unified way of handling higher-dimensional arrays - no funny <span class="in">`array [] vector`</span> or <span class="in">`matrix`</span> business,</span>
+<span id="cb8-195"><a href="#cb8-195"></a><span class="ss">* </span>has a unified way of handling broadcasting - no "<span class="in">`.*`</span> is the only broadcasted operation allowed, and only for specific pairs of arguments",</span>
+<span id="cb8-196"><a href="#cb8-196"></a><span class="ss">* </span>supports higher-order functions - <span class="in">`map`</span>, <span class="in">`filter`</span>, <span class="in">`reduce`</span> are our friends,</span>
+<span id="cb8-197"><a href="#cb8-197"></a><span class="ss">* </span>supports generators - <span class="in">`[f(i) for i in something if condition(i)]`</span> is nice,</span>
+<span id="cb8-198"><a href="#cb8-198"></a><span class="ss">* </span>has a richer type, template and dispatch system,</span>
+<span id="cb8-199"><a href="#cb8-199"></a><span class="ss">* </span>allows easy interoperability and extendability.</span>
 <span id="cb8-200"><a href="#cb8-200"></a></span>
-<span id="cb8-201"><a href="#cb8-201"></a><span class="fu">### Custom tracing passes</span></span>
+<span id="cb8-201"><a href="#cb8-201"></a><span class="fu">### Supports opaquely handling arbitrary Julia syntax</span></span>
 <span id="cb8-202"><a href="#cb8-202"></a></span>
-<span id="cb8-203"><a href="#cb8-203"></a>The data/parameter/generated-quantities activity analysis comes out of two passes through the model (one forward, one reverse).</span>
-<span id="cb8-204"><a href="#cb8-204"></a></span>
-<span id="cb8-205"><a href="#cb8-205"></a>The cross-validation activity analysis comes out of another pass through the model.</span>
-<span id="cb8-206"><a href="#cb8-206"></a></span>
-<span id="cb8-207"><a href="#cb8-207"></a>There is nothing stopping us from allowing additional or alternative passes, and there should not be anything stopping you from implementing these custom passes.</span>
-<span id="cb8-208"><a href="#cb8-208"></a></span>
-<span id="cb8-209"><a href="#cb8-209"></a>One possible custom pass would e.g. translate the <span class="in">`@slic`</span> model to a Stan program.</span>
+<span id="cb8-203"><a href="#cb8-203"></a>While tracing will be limited to a subset of Julia syntax, "unknown" user defined functions will simply not be traced recursively.</span>
+<span id="cb8-204"><a href="#cb8-204"></a>We will not allow these opaque functions to introduce model parameters, and we will "assume the worst" for the activity analysis.</span>
+<span id="cb8-205"><a href="#cb8-205"></a></span>
+<span id="cb8-206"><a href="#cb8-206"></a><span class="fu">## Extendability</span></span>
+<span id="cb8-207"><a href="#cb8-207"></a></span>
+<span id="cb8-208"><a href="#cb8-208"></a>The aim is to make it easy to extend <span class="in">`@slic`</span>'s functionality.</span>
+<span id="cb8-209"><a href="#cb8-209"></a></span>
+<span id="cb8-210"><a href="#cb8-210"></a><span class="fu">### Custom tracing passes</span></span>
+<span id="cb8-211"><a href="#cb8-211"></a></span>
+<span id="cb8-212"><a href="#cb8-212"></a>The data/parameter/generated-quantities activity analysis comes out of two passes through the model (one forward, one reverse).</span>
+<span id="cb8-213"><a href="#cb8-213"></a></span>
+<span id="cb8-214"><a href="#cb8-214"></a>The cross-validation activity analysis comes out of another pass through the model.</span>
+<span id="cb8-215"><a href="#cb8-215"></a></span>
+<span id="cb8-216"><a href="#cb8-216"></a>There is nothing stopping us from allowing additional or alternative passes, and there should not be anything stopping you from implementing these custom passes.</span>
+<span id="cb8-217"><a href="#cb8-217"></a></span>
+<span id="cb8-218"><a href="#cb8-218"></a>One possible custom pass would e.g. translate the <span class="in">`@slic`</span> model to a Stan program.</span>
 </code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
 </div></div></div></div></div>
 </div> <!-- /content -->
