@@ -2,8 +2,12 @@
 
 Qualitatively reproduces [Bob Carpenter's multiple species-site occupancy case study](https://mc-stan.org/learn-stan/case-studies/dorazio-royle-occupancy.html).
 
-```{julia}
-@slic begin 
+```{.julia}
+data = (;
+    
+)
+
+@slic data begin 
     logit_psi = uv[:,1] + alpha
     logit_theta = uv[:,2] + beta
     alpha ~ cauchy(0, 2.5)

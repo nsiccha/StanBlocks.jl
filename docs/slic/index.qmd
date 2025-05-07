@@ -1,0 +1,207 @@
+---
+title: "The @slic macro"
+---
+
+```{julia}
+using StanBlocks, StanLogDensityProblems, JSON, Markdown
+```
+# Supporting Bayesian Workflow
+
+Code up your model once - simplify, extend and use in multiple contexts efficiently.
+
+## Modularity
+
+The aim is to make it easy to iterate on the statistical model.
+
+### Reuse model components
+
+Like Turing.jl's submodels ([where's the documentation for this?](https://duckduckgo.com/?q=Turing.jl+submodels)) or SlicStan's functions that declare parameters (first example in [the paper](https://dl.acm.org/doi/epdf/10.1145/3290348)).
+
+Getting tired of always coding up the same hierarchical priors? 
+`@slic` will support reusing model components:
+
+```julia
+hierarchical_prior = @slic begin
+    location ~ std_normal()
+    scale ~ std_lognormal()
+    x ~ normal(location, scale; n)
+    return x
+end
+hierarchical_model = @slic begin 
+    obs_location ~ hierarchical_prior(;n)
+    obs_scale ~ std_lognormal()
+    obs ~ normal(obs_location, obs_scale)
+end
+```
+
+Alternative syntax proposals are appreciated!
+
+### Post-hoc model component adjustment
+
+Ever wanted to switch out one prior for another, but didn't want to implement this functionality when coding up your first exploratory model? 
+`@slic` will support switching out arbitrary model components: 
+
+```julia
+"My first, exploratory model to check that things work"
+pooled_model = @slic begin 
+    obs_location ~ std_normal()
+    obs_scale ~ std_lognormal()
+    obs ~ normal(obs_location, obs_scale)
+end
+"Equivalent to the previous implementation of `hierarchical_model` above"
+hierarchical_model = pooled_model(quote 
+    obs_location ~ hierarchical_prior(;n)
+end)
+```
+
+Alternative syntax proposals are appreciated!
+
+### Post-hoc model component pinning
+
+Like Turing.jl's [Conditioning](https://turinglang.org/docs/usage/probability-interface/index.html#conditioning-and-deconditioning) or this [Stan PR](https://github.com/stan-dev/design-docs/pull/56).
+
+Ever wanted to pin hierarchical scale parameters?
+`@slic` will support pinning arbitrary model components: 
+
+```julia
+"The `hierarchical_model` with the hierarchical scale parameter fixed to 1."
+semihierarchical_model = hierarchical_model(;obs_location_scale=1.)
+```
+
+Turing's [Deconditioning](https://turinglang.org/docs/usage/probability-interface/index.html#conditioning-and-deconditioning) could also easily be supported, but as always syntax proposals are appreciated!
+
+### Leave-X-out cross-validation support
+
+Getting tired of reimplementing parts of your model to perform e.g. leave-one-subject-out cross-validation?
+`@slic` will support automatic model rewrites to perform e.g. automatic leave-one-subject-out cross-validation from the same model implementation that you have used to sample from the posterior:
+
+```julia
+hierarchical_prior = @slic begin
+    location ~ std_normal()
+    scale ~ std_lognormal()
+    x ~ normal(location, scale; n)
+    return x
+end
+hierarchical_model = @slic begin 
+    n = maximum(subject_idx)
+    obs_intercept ~ hierarchical_prior(;n)
+    obs_slope ~ hierarchical_prior(;n)
+    obs_location = obs_intercept + dot(covariates, obs_slope)
+    obs_scale ~ std_lognormal()
+    obs[subject_idx] ~ normal(obs_location, obs_scale)
+end
+samples = nuts_draws(hierarchical_model(;subject_idx, covariates, obs))
+"Alternative 1: Constructing just the CV model"
+cv_model = cv(
+    hierarchical_model; 
+    subject_idx=held_out_subject_idx, 
+    covariates=held_out_covariates, 
+    obs=held_out_obs
+)
+"Alternative 2: Constructing the CV model and computing the necessary quantities"
+cv_info = cv(
+    samples; 
+    subject_idx=held_out_subject_idx, 
+    covariates=held_out_covariates, 
+    obs=held_out_obs
+)
+```
+
+In the above example, the hierarchical parameters will be fixed and reused from `samples`, while the subject specific parameters will be automatically resampled inedependently for each draw to compute the likelihood.
+Determining which parameters get fixed/resued and which ones get resampled can be automatically determined by tracing through the model. 
+
+Alternative syntax proposals are appreciated!
+
+## Computational efficiency 
+
+The aim is to make it easy to write computationally efficient code.
+
+### Supports activity analysis to avoid redundant computation
+
+Like [SlicStan](https://github.com/mgorinova/SlicStan), `@slic` will support automatically determining whether model components are 
+
+* data - passed to the model,
+* transformed data - need to be computed only once per model instantiation/conditioning/deconditioning,
+* parameters - contribute to the posterior (MCMC-)dimension and potentially need to be transformed appropriately,
+* transformed parameters - have to be computed every gradient evaluation, because they **do** affect the likelihood,
+* generated quantities - have to be computed only once per sample and can be sampled independently, because they **do not** affect the likelihood.
+
+This allows for the natural model specification in a single place, while not sacrificing any performance.
+
+In the below model, 
+
+* if we do not specify anything, every model component will be sampled independently,
+* if we specify only `obs_location` or `obs_scale`, every other model component will still be sampled independently, and
+* if we specify only `obs`, both `obs_location` and `obs_scale` become parameters, and `obs_likelihood` and `obs_prediction` get automatically added as generated quantities. 
+
+```julia
+@slic begin 
+    obs_location ~ std_normal()
+    obs_scale ~ std_lognormal()
+    obs ~ normal(obs_location, obs_scale)
+end
+```
+
+### Provides efficient primitives
+
+The most efficient way to compute intermediate functional quantities will depend on the type, shape and potentially activity of the arguments passed to the function.
+We provide efficient primitives which explot this, e.g.:
+```julia
+normal_lpdf(y::AbstractVector, location::AbstractVector, scale::AbstractVector) = "Do something which requires computing log.(scale)."
+normal_lpdf(y::AbstractVector, location::AbstractVector, scale::Real) = "Do something which only requires computing log(scale) once."
+```
+
+### Avoids unnecessary allocations
+
+Like Stan, `@slic` models will use matrix expressions to keep the memory footprint low. 
+This will (should) be more efficient than using something like a bump allocator and just-allocate-and-reuse away.
+
+## Expressiveness
+
+The aim is to make it easy to write correct code.
+
+### Compound [declare-distribute statements](https://statmodeling.stat.columbia.edu/2018/02/01/stan-feature-declare-distribute/)
+
+Like Turing.jl's unified way of defining parameters, unlike Stan's split-across-blocks way of defining parameters.
+
+### Automatically inferred constraints
+
+Like Turing.jl: a parameter's constraints are automatically inferred from the support of its prior - but can of course be adjusted:
+```julia
+@slic begin 
+    "Unconstrained"
+    obs_intercept ~ std_normal()
+    "Constrained to be positive"
+    obs_scale ~ std_lognormal()
+    "Constrained to be positive"
+    obs_slope ~ std_normal(;lower=0.)
+    obs ~ normal(obs_intercept + obs_slope * x, obs_scale)
+end
+```
+
+### Automatically inferred - but optionally constrained - types 
+
+Like Turing.jl: the type of any model expression can be specified, but it need not be specified.
+
+### Supports tracing through a lot of Julia syntax
+
+We will support tracing through a lot of common Julia syntax, like broadcasting, generators, maps and do blocks.
+
+### Supports opaquely handling arbitrary Julia syntax
+
+While tracing will be limited to a subset of Julia syntax, "unknown" user defined functions will simply not be traced recursively.
+We will not allow these opaque functions to introduce model parameters, and we will "assume the worst" for the activity analysis.
+
+## Extendability
+
+The aim is to make it easy to extend `@slic`'s functionality.
+
+### Custom tracing passes
+
+The data/parameter/generated-quantities activity analysis comes out of two passes through the model (one forward, one reverse).
+
+The cross-validation activity analysis comes out of another pass through the model.
+
+There is nothing stopping us from allowing additional or alternative passes, and there should not be anything stopping you from implementing these custom passes.
+
+One possible custom pass would e.g. translate the `@slic` model to a Stan program.

@@ -5,18 +5,25 @@ Qualitatively reproduces [Aki Vehtari's motorcycle case study](https://users.aal
 ## HSGP building block (`hsgp` below)
 
 ```{julia}
+using StanBlocks, Markdown
 x = randn(10)
 obs = randn(10)
 
 hsgp = @slic begin 
+    "Transforms to [-2, 2]"
     xi = 2 * (x - min(x)) / (max(x) - min(x)) - 1.
     L = 1.5
     n_functions = 20
-    X = sin(pi/(2L) * (xi+L) * (1:n_functions)')/sqrt(L)
+    X = sin(pi/(2L) * (xi+L) * range(1,n_functions)')/sqrt(L)
+    "The GP lengthscale"
     x_scale ~ uniform(0, 2)
+    "The GP marginal standard deviation"
     y_scale ~ lognormal(0, 1)
-    scale = y_scale * sqrt(sqrt(2pi) * x_scale) * exp(-0.25*(x_scale*pi/2L)^2 * (1:n_functions)^2)
+    "The scales for the basis functions weights"
+    scale = y_scale * sqrt(sqrt(2pi) * x_scale) * exp(-0.25*(x_scale*pi/2L)^2 * range(1,n_functions)^2)
+    "The basis functions weights"
     unit_weight ~ std_normal(;n=n_functions)
+    "The final GP values"
     return (X * (scale .* unit_weight))
 end
 hsgp(;x)

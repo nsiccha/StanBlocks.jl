@@ -23,7 +23,7 @@ logistic(;y,n,x)
 #### Angle submodel (`angle_submodel` below)
 ```{julia}
 angle_submodel = @slic begin 
-    threshold_angle = asin((R - r) ./ x)
+    threshold_angle = asin((R - r) ./ x) 
     sigma ~ flat(;lower=0.)
     sigma_degrees = sigma * 180 / pi
     return 2 * Phi(threshold_angle / sigma) - 1
