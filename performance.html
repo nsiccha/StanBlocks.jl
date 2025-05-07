@@ -146,6 +146,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     <a class="nav-link" href="./implementations.html"> 
 <span class="menu-text">Implementations</span></a>
   </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./slic/"> 
+<span class="menu-text"><span class="citation" data-cites="slic">@slic</span></span></a>
+  </li>  
   <li class="nav-item compact">
     <a class="nav-link" href="https://github.com/nsiccha/StanBlocks.jl"> <i class="bi bi-github" role="img">
 </i> 
@@ -4616,288 +4620,288 @@ window.document.addEventListener("DOMContentLoaded", function (event) {
   }
 });
 </script><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
-<div class="sourceCode" id="cb2" data-shortcodes="false"><pre class="sourceCode markdown code-with-copy"><code class="sourceCode markdown"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
-<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> "Julia vs Stan performance comparison"</span></span>
-<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
-<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="fu"># Caveats</span></span>
-<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>This page compares the performance of Julia's and Stan's log density and log density gradient computations for the implemented posteriors. Several caveats apply:</span>
-<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="ss">* </span>The <span class="in">`posteriordb`</span> Stan implementations were never meant to represent "perfect and best-performant" practices.</span>
-<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="ss">* </span>The StanBlocks.jl implementations are not line-by-line translations of the Stan implementations. Sometimes small optimizations were applied, to make the implementation fall more in line with common Julia practices, or to make the code more friendly for Julia's AD packages, e.g. by avoiding mutation.</span>
-<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a><span class="ss">* </span>Stan often automatically drops constant terms (unless configured differently), see <span class="co">[</span><span class="ot">https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement</span><span class="co">](https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement)</span>, thus avoiding superfluous (for its purposes) computation, while the StanBlocks.jl implementations do not.</span>
-<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a><span class="ss">* </span>Stan implements a lot of custom AD rules, while StanBlocks.jl does not at all, and Enzyme.jl does rarely (if ever?). I suspect that adding AD rules for <span class="in">`_glm_`</span> type functions would further improve Julia's performance.</span>
-<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a><span class="ss">* </span>The StanBlocks.jl "sampling" statements try to be clever about avoiding repeated computations. While I am not sure whether Stan applies the same optimizations, in principle it could do that without extra work by the user. </span>
-<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a><span class="ss">* </span>While preliminary benchmark runs included "all" Julia AD packages, all of them are almost always much slower than Enzyme.jl for the implemented posteriors, which on top of that performance advantage also supports more Julia language features than some of the other AD packages. As such, I am only comparing Enzyme and Stan. Enzyme outperforming every other AD package for *these* posteriors/loss functions does of course not mean that it will necessarily do as well for other applications.</span>
-<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a><span class="ss">* </span>Enzyme's development is progressing quite quickly. While it currently sometimes crashes Julia, or it sometimes errors while trying to compute a gradient, in general Enzyme's performance and reliability are continuously and quickly improving.</span>
-<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a><span class="ss">* </span>Stan's benchmark is done from Julia via <span class="in">`BridgeStan.jl`</span>. While I think that any performance penalty should be extremely small, I am not 100% sure. BridgeStan uses the <span class="in">`-O3`</span> compiler flag by default, but no additional ones.</span>
-<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a><span class="ss">* </span>All benchmarks are happening with a single thread on my local machine.</span>
-<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a><span class="ss">* </span>**There are probably more caveats!**</span>
-<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning}</span>
-<span id="cb2-21"><a href="#cb2-21" aria-hidden="true" tabindex="-1"></a>**In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as "A is X-times faster than B".**</span>
-<span id="cb2-22"><a href="#cb2-22" aria-hidden="true" tabindex="-1"></a>::: </span>
-<span id="cb2-25"><a href="#cb2-25" aria-hidden="true" tabindex="-1"></a><span class="in">```{julia}</span></span>
-<span id="cb2-26"><a href="#cb2-26" aria-hidden="true" tabindex="-1"></a><span class="in">using Random, Chairmarks, Statistics, LinearAlgebra, Distributions, Plots </span></span>
-<span id="cb2-27"><a href="#cb2-27" aria-hidden="true" tabindex="-1"></a><span class="in">import Plots, OnlineStats, StanBlocks, PosteriorDB</span></span>
-<span id="cb2-28"><a href="#cb2-28" aria-hidden="true" tabindex="-1"></a><span class="in">include("julia/common.jl")</span></span>
-<span id="cb2-29"><a href="#cb2-29" aria-hidden="true" tabindex="-1"></a><span class="in">struct RuntimeDistribution2{F}</span></span>
-<span id="cb2-30"><a href="#cb2-30" aria-hidden="true" tabindex="-1"></a><span class="in">    f::F</span></span>
-<span id="cb2-31"><a href="#cb2-31" aria-hidden="true" tabindex="-1"></a><span class="in">    n::Int64</span></span>
-<span id="cb2-32"><a href="#cb2-32" aria-hidden="true" tabindex="-1"></a><span class="in">end</span></span>
-<span id="cb2-33"><a href="#cb2-33" aria-hidden="true" tabindex="-1"></a><span class="in">RuntimeDistribution2(f) = RuntimeDistribution2(f, 1)</span></span>
-<span id="cb2-34"><a href="#cb2-34" aria-hidden="true" tabindex="-1"></a><span class="in">RuntimeDistribution2(f::RuntimeDistribution2, n::Int64) = RuntimeDistribution2(f.f, n * f.n)</span></span>
-<span id="cb2-35"><a href="#cb2-35" aria-hidden="true" tabindex="-1"></a><span class="in">@inline Random.rand(rng::AbstractRNG, d::RuntimeDistribution2) = begin</span></span>
-<span id="cb2-36"><a href="#cb2-36" aria-hidden="true" tabindex="-1"></a><span class="in">    stats = @timed begin</span></span>
-<span id="cb2-37"><a href="#cb2-37" aria-hidden="true" tabindex="-1"></a><span class="in">        rv = d.f(rng)</span></span>
-<span id="cb2-38"><a href="#cb2-38" aria-hidden="true" tabindex="-1"></a><span class="in">        Base.donotdelete(rv)</span></span>
-<span id="cb2-39"><a href="#cb2-39" aria-hidden="true" tabindex="-1"></a><span class="in">        for i in 1:d.n-1</span></span>
-<span id="cb2-40"><a href="#cb2-40" aria-hidden="true" tabindex="-1"></a><span class="in">            rv = max(rv, d.f(rng))</span></span>
-<span id="cb2-41"><a href="#cb2-41" aria-hidden="true" tabindex="-1"></a><span class="in">            Base.donotdelete(rv)</span></span>
-<span id="cb2-42"><a href="#cb2-42" aria-hidden="true" tabindex="-1"></a><span class="in">        end</span></span>
-<span id="cb2-43"><a href="#cb2-43" aria-hidden="true" tabindex="-1"></a><span class="in">    end</span></span>
-<span id="cb2-44"><a href="#cb2-44" aria-hidden="true" tabindex="-1"></a><span class="in">    (stats.time - stats.gctime) / d.n</span></span>
-<span id="cb2-45"><a href="#cb2-45" aria-hidden="true" tabindex="-1"></a><span class="in">end</span></span>
-<span id="cb2-46"><a href="#cb2-46" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-47"><a href="#cb2-47" aria-hidden="true" tabindex="-1"></a><span class="in">struct IterableDistribution{R,D}</span></span>
-<span id="cb2-48"><a href="#cb2-48" aria-hidden="true" tabindex="-1"></a><span class="in">    rng::R</span></span>
-<span id="cb2-49"><a href="#cb2-49" aria-hidden="true" tabindex="-1"></a><span class="in">    dist::D</span></span>
-<span id="cb2-50"><a href="#cb2-50" aria-hidden="true" tabindex="-1"></a><span class="in">end</span></span>
-<span id="cb2-51"><a href="#cb2-51" aria-hidden="true" tabindex="-1"></a><span class="in">@inline Base.iterate(d::IterableDistribution) = rand(d.rng, d.dist)</span></span>
-<span id="cb2-52"><a href="#cb2-52" aria-hidden="true" tabindex="-1"></a><span class="in">struct UncertainMean{V,Q}</span></span>
-<span id="cb2-53"><a href="#cb2-53" aria-hidden="true" tabindex="-1"></a><span class="in">    var::V</span></span>
-<span id="cb2-54"><a href="#cb2-54" aria-hidden="true" tabindex="-1"></a><span class="in">    qmul::Q</span></span>
-<span id="cb2-55"><a href="#cb2-55" aria-hidden="true" tabindex="-1"></a><span class="in">end</span></span>
-<span id="cb2-56"><a href="#cb2-56" aria-hidden="true" tabindex="-1"></a><span class="in">round2(x) = round(x; sigdigits=2)</span></span>
-<span id="cb2-57"><a href="#cb2-57" aria-hidden="true" tabindex="-1"></a><span class="in">Base.show(io::IO, s::UncertainMean) = print(io, "[", round2(lower(s)), " -- ", round2(upper(s)), "] (via ", OnlineStats.nobs(s), " evaluations)")</span></span>
-<span id="cb2-58"><a href="#cb2-58" aria-hidden="true" tabindex="-1"></a><span class="in">Base.show(io::IO, ::MIME"text/plain", s::UncertainMean) = show(io, s)</span></span>
-<span id="cb2-59"><a href="#cb2-59" aria-hidden="true" tabindex="-1"></a><span class="in">UncertainMean(q::Real) = UncertainMean(OnlineStats.Variance(), quantile(Normal(), 1-q))</span></span>
-<span id="cb2-60"><a href="#cb2-60" aria-hidden="true" tabindex="-1"></a><span class="in">OnlineStats.fit!(s::UncertainMean, args...) = OnlineStats.fit!(s.var, args...)</span></span>
-<span id="cb2-61"><a href="#cb2-61" aria-hidden="true" tabindex="-1"></a><span class="in">OnlineStats.nobs(s::UncertainMean) = OnlineStats.nobs(s.var)</span></span>
-<span id="cb2-62"><a href="#cb2-62" aria-hidden="true" tabindex="-1"></a><span class="in">se(s::UncertainMean) = sqrt(var(s.var)/OnlineStats.nobs(s.var))</span></span>
-<span id="cb2-63"><a href="#cb2-63" aria-hidden="true" tabindex="-1"></a><span class="in">Statistics.mean(s::UncertainMean) = mean(s.var)</span></span>
-<span id="cb2-64"><a href="#cb2-64" aria-hidden="true" tabindex="-1"></a><span class="in">upper(s::UncertainMean) = mean(s) + atol(s)</span></span>
-<span id="cb2-65"><a href="#cb2-65" aria-hidden="true" tabindex="-1"></a><span class="in">lower(s::UncertainMean) = mean(s) - atol(s)</span></span>
-<span id="cb2-66"><a href="#cb2-66" aria-hidden="true" tabindex="-1"></a><span class="in">atol(s::UncertainMean) = s.qmul * se(s)</span></span>
-<span id="cb2-67"><a href="#cb2-67" aria-hidden="true" tabindex="-1"></a><span class="in">rtol(s::UncertainMean) = atol(s) / abs(mean(s))</span></span>
-<span id="cb2-68"><a href="#cb2-68" aria-hidden="true" tabindex="-1"></a><span class="in">Base.:isless(s1::UncertainMean, s2::UncertainMean) = upper(s1) &lt; lower(s2) ? true : false#(upper(s2) &lt; lower(s1) ? false : missing)</span></span>
-<span id="cb2-69"><a href="#cb2-69" aria-hidden="true" tabindex="-1"></a><span class="in">adaptive_mean3(args...; q=.025, kwargs...) = adaptive_mean3(args, [UncertainMean(q) for arg in args]; kwargs...)</span></span>
-<span id="cb2-70"><a href="#cb2-70" aria-hidden="true" tabindex="-1"></a><span class="in">adaptive_mean3(args::Tuple, means::Vector; n_min=10, n_max=1_000_000, rtol=.01) = begin</span></span>
-<span id="cb2-71"><a href="#cb2-71" aria-hidden="true" tabindex="-1"></a><span class="in">    N = length(args)</span></span>
-<span id="cb2-72"><a href="#cb2-72" aria-hidden="true" tabindex="-1"></a><span class="in">    vmeans = map(mean, means)</span></span>
-<span id="cb2-73"><a href="#cb2-73" aria-hidden="true" tabindex="-1"></a><span class="in">    perm = sortperm(vmeans)</span></span>
-<span id="cb2-74"><a href="#cb2-74" aria-hidden="true" tabindex="-1"></a><span class="in">    draws = map(iterate, args)</span></span>
-<span id="cb2-75"><a href="#cb2-75" aria-hidden="true" tabindex="-1"></a><span class="in">    n_start = 1+minimum(OnlineStats.nobs, means)</span></span>
-<span id="cb2-76"><a href="#cb2-76" aria-hidden="true" tabindex="-1"></a><span class="in">    n_start &gt; 1 &amp;&amp; display("Resuming at $n_start")</span></span>
-<span id="cb2-77"><a href="#cb2-77" aria-hidden="true" tabindex="-1"></a><span class="in">    for i in n_start:n_max</span></span>
-<span id="cb2-78"><a href="#cb2-78" aria-hidden="true" tabindex="-1"></a><span class="in">        draws = map(iterate, args)</span></span>
-<span id="cb2-79"><a href="#cb2-79" aria-hidden="true" tabindex="-1"></a><span class="in">        for (m, d) in zip(means, draws)</span></span>
-<span id="cb2-80"><a href="#cb2-80" aria-hidden="true" tabindex="-1"></a><span class="in">            OnlineStats.fit!(m, d)</span></span>
-<span id="cb2-81"><a href="#cb2-81" aria-hidden="true" tabindex="-1"></a><span class="in">        end</span></span>
-<span id="cb2-82"><a href="#cb2-82" aria-hidden="true" tabindex="-1"></a><span class="in">        i &lt; n_min &amp;&amp; continue</span></span>
-<span id="cb2-83"><a href="#cb2-83" aria-hidden="true" tabindex="-1"></a><span class="in">        map!(mean, vmeans, means)</span></span>
-<span id="cb2-84"><a href="#cb2-84" aria-hidden="true" tabindex="-1"></a><span class="in">        sortperm!(perm, vmeans)</span></span>
-<span id="cb2-85"><a href="#cb2-85" aria-hidden="true" tabindex="-1"></a><span class="in">        is_sorted = all(i-&gt;means[perm[i-1]] &lt; means[perm[i]], 2:N)</span></span>
-<span id="cb2-86"><a href="#cb2-86" aria-hidden="true" tabindex="-1"></a><span class="in">        is_precise = all(m-&gt;Main.rtol(m) &lt; rtol, means)</span></span>
-<span id="cb2-87"><a href="#cb2-87" aria-hidden="true" tabindex="-1"></a><span class="in">        if is_sorted &amp;&amp; is_precise</span></span>
-<span id="cb2-88"><a href="#cb2-88" aria-hidden="true" tabindex="-1"></a><span class="in">            display("Stopping early at i=$i")</span></span>
-<span id="cb2-89"><a href="#cb2-89" aria-hidden="true" tabindex="-1"></a><span class="in">            break</span></span>
-<span id="cb2-90"><a href="#cb2-90" aria-hidden="true" tabindex="-1"></a><span class="in">        end</span></span>
-<span id="cb2-91"><a href="#cb2-91" aria-hidden="true" tabindex="-1"></a><span class="in">    end</span></span>
-<span id="cb2-92"><a href="#cb2-92" aria-hidden="true" tabindex="-1"></a><span class="in">    means</span></span>
-<span id="cb2-93"><a href="#cb2-93" aria-hidden="true" tabindex="-1"></a><span class="in">end</span></span>
-<span id="cb2-94"><a href="#cb2-94" aria-hidden="true" tabindex="-1"></a><span class="in">firstfinite(f) = ff(args...) = while true</span></span>
-<span id="cb2-95"><a href="#cb2-95" aria-hidden="true" tabindex="-1"></a><span class="in">    rv = f(args...)</span></span>
-<span id="cb2-96"><a href="#cb2-96" aria-hidden="true" tabindex="-1"></a><span class="in">    isfinite(rv) &amp;&amp; return rv</span></span>
-<span id="cb2-97"><a href="#cb2-97" aria-hidden="true" tabindex="-1"></a><span class="in">end</span></span>
-<span id="cb2-98"><a href="#cb2-98" aria-hidden="true" tabindex="-1"></a><span class="in">nonzero(x) = x == zero(x) ? one(x) : x</span></span>
-<span id="cb2-99"><a href="#cb2-99" aria-hidden="true" tabindex="-1"></a><span class="in">adaptive_median(f::Function; n_min=100, n_max=1000, rtol=.001, q=.5) = begin </span></span>
-<span id="cb2-100"><a href="#cb2-100" aria-hidden="true" tabindex="-1"></a><span class="in">    ff = firstfinite(f)</span></span>
-<span id="cb2-101"><a href="#cb2-101" aria-hidden="true" tabindex="-1"></a><span class="in">    vals = [ff()]</span></span>
-<span id="cb2-102"><a href="#cb2-102" aria-hidden="true" tabindex="-1"></a><span class="in">    w = [1.]</span></span>
-<span id="cb2-103"><a href="#cb2-103" aria-hidden="true" tabindex="-1"></a><span class="in">    qs = [0.]</span></span>
-<span id="cb2-104"><a href="#cb2-104" aria-hidden="true" tabindex="-1"></a><span class="in">    rv = vals[1]</span></span>
-<span id="cb2-105"><a href="#cb2-105" aria-hidden="true" tabindex="-1"></a><span class="in">    for i in 2:n_max</span></span>
-<span id="cb2-106"><a href="#cb2-106" aria-hidden="true" tabindex="-1"></a><span class="in">        val = ff()</span></span>
-<span id="cb2-107"><a href="#cb2-107" aria-hidden="true" tabindex="-1"></a><span class="in">        insert!(vals, searchsortedfirst(vals, val), val)</span></span>
-<span id="cb2-108"><a href="#cb2-108" aria-hidden="true" tabindex="-1"></a><span class="in">        # @assert issorted(vals)</span></span>
-<span id="cb2-109"><a href="#cb2-109" aria-hidden="true" tabindex="-1"></a><span class="in">        rv = quantile(vals, q; sorted=true)</span></span>
-<span id="cb2-110"><a href="#cb2-110" aria-hidden="true" tabindex="-1"></a><span class="in">        push!(w, 0.)</span></span>
-<span id="cb2-111"><a href="#cb2-111" aria-hidden="true" tabindex="-1"></a><span class="in">        push!(qs, 0.)</span></span>
-<span id="cb2-112"><a href="#cb2-112" aria-hidden="true" tabindex="-1"></a><span class="in">        rand!(w)</span></span>
-<span id="cb2-113"><a href="#cb2-113" aria-hidden="true" tabindex="-1"></a><span class="in">        @. w = -log1p(-w)</span></span>
-<span id="cb2-114"><a href="#cb2-114" aria-hidden="true" tabindex="-1"></a><span class="in">        cumsum!(qs, w)</span></span>
-<span id="cb2-115"><a href="#cb2-115" aria-hidden="true" tabindex="-1"></a><span class="in">        qm = q * qs[end]</span></span>
-<span id="cb2-116"><a href="#cb2-116" aria-hidden="true" tabindex="-1"></a><span class="in">        ridx = searchsortedfirst(qs, qm)</span></span>
-<span id="cb2-117"><a href="#cb2-117" aria-hidden="true" tabindex="-1"></a><span class="in">        rep = if ridx == 1</span></span>
-<span id="cb2-118"><a href="#cb2-118" aria-hidden="true" tabindex="-1"></a><span class="in">            vals[1]</span></span>
-<span id="cb2-119"><a href="#cb2-119" aria-hidden="true" tabindex="-1"></a><span class="in">        else</span></span>
-<span id="cb2-120"><a href="#cb2-120" aria-hidden="true" tabindex="-1"></a><span class="in">            lidx = ridx-1</span></span>
-<span id="cb2-121"><a href="#cb2-121" aria-hidden="true" tabindex="-1"></a><span class="in">            wl = (qm - qs[lidx]) / (qs[ridx] - qs[lidx])</span></span>
-<span id="cb2-122"><a href="#cb2-122" aria-hidden="true" tabindex="-1"></a><span class="in">            wr = 1 - wl</span></span>
-<span id="cb2-123"><a href="#cb2-123" aria-hidden="true" tabindex="-1"></a><span class="in">            wl * vals[lidx] + wr * vals[ridx]</span></span>
-<span id="cb2-124"><a href="#cb2-124" aria-hidden="true" tabindex="-1"></a><span class="in">        end</span></span>
-<span id="cb2-125"><a href="#cb2-125" aria-hidden="true" tabindex="-1"></a><span class="in">        rel_err = norm((rv - rep)/nonzero(max(norm(rv),norm(rep))))</span></span>
-<span id="cb2-126"><a href="#cb2-126" aria-hidden="true" tabindex="-1"></a><span class="in">        i &lt; n_min &amp;&amp; continue</span></span>
-<span id="cb2-127"><a href="#cb2-127" aria-hidden="true" tabindex="-1"></a><span class="in">        # Stopping criterion should be more sophisticated</span></span>
-<span id="cb2-128"><a href="#cb2-128" aria-hidden="true" tabindex="-1"></a><span class="in">        if rel_err &lt; rtol</span></span>
-<span id="cb2-129"><a href="#cb2-129" aria-hidden="true" tabindex="-1"></a><span class="in">            display((;vals, rv, rep, rel_err))</span></span>
-<span id="cb2-130"><a href="#cb2-130" aria-hidden="true" tabindex="-1"></a><span class="in">            display("Stopping early at i=$i")</span></span>
-<span id="cb2-131"><a href="#cb2-131" aria-hidden="true" tabindex="-1"></a><span class="in">            break</span></span>
-<span id="cb2-132"><a href="#cb2-132" aria-hidden="true" tabindex="-1"></a><span class="in">        end </span></span>
-<span id="cb2-133"><a href="#cb2-133" aria-hidden="true" tabindex="-1"></a><span class="in">    end</span></span>
-<span id="cb2-134"><a href="#cb2-134" aria-hidden="true" tabindex="-1"></a><span class="in">    rv</span></span>
-<span id="cb2-135"><a href="#cb2-135" aria-hidden="true" tabindex="-1"></a><span class="in">end</span></span>
-<span id="cb2-136"><a href="#cb2-136" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-137"><a href="#cb2-137" aria-hidden="true" tabindex="-1"></a><span class="in">skip_names = split("""</span></span>
-<span id="cb2-138"><a href="#cb2-138" aria-hidden="true" tabindex="-1"></a><span class="in">uk_drivers-state_space_stochastic_level_stochastic_seasonal</span></span>
-<span id="cb2-139"><a href="#cb2-139" aria-hidden="true" tabindex="-1"></a><span class="in">timssAusTwn_irt-gpcm_latent_reg_irt</span></span>
-<span id="cb2-140"><a href="#cb2-140" aria-hidden="true" tabindex="-1"></a><span class="in">synthetic_grid_RBF_kernels-kronecker_gp</span></span>
-<span id="cb2-141"><a href="#cb2-141" aria-hidden="true" tabindex="-1"></a><span class="in">state_wide_presidential_votes-hierarchical_gp   </span></span>
-<span id="cb2-142"><a href="#cb2-142" aria-hidden="true" tabindex="-1"></a><span class="in">soil_carbon-soil_incubation </span></span>
-<span id="cb2-143"><a href="#cb2-143" aria-hidden="true" tabindex="-1"></a><span class="in">sir-sir </span></span>
-<span id="cb2-144"><a href="#cb2-144" aria-hidden="true" tabindex="-1"></a><span class="in">sat-hier_2pl    </span></span>
-<span id="cb2-145"><a href="#cb2-145" aria-hidden="true" tabindex="-1"></a><span class="in">rstan_downloads-prophet </span></span>
-<span id="cb2-146"><a href="#cb2-146" aria-hidden="true" tabindex="-1"></a><span class="in">one_comp_mm_elim_abs-one_comp_mm_elim_abs   </span></span>
-<span id="cb2-147"><a href="#cb2-147" aria-hidden="true" tabindex="-1"></a><span class="in">mnist_100-nn_rbm1bJ10   </span></span>
-<span id="cb2-148"><a href="#cb2-148" aria-hidden="true" tabindex="-1"></a><span class="in">mnist-nn_rbm1bJ100  </span></span>
-<span id="cb2-149"><a href="#cb2-149" aria-hidden="true" tabindex="-1"></a><span class="in">iohmm_reg_simulated-iohmm_reg   </span></span>
-<span id="cb2-150"><a href="#cb2-150" aria-hidden="true" tabindex="-1"></a><span class="in">hudson_lynx_hare-lotka_volterra </span></span>
-<span id="cb2-151"><a href="#cb2-151" aria-hidden="true" tabindex="-1"></a><span class="in">fims_Aus_Jpn_irt-2pl_latent_reg_irt</span></span>
-<span id="cb2-152"><a href="#cb2-152" aria-hidden="true" tabindex="-1"></a><span class="in">ecdc0501-covid19imperial_v3     </span></span>
-<span id="cb2-153"><a href="#cb2-153" aria-hidden="true" tabindex="-1"></a><span class="in">ecdc0501-covid19imperial_v2 </span></span>
-<span id="cb2-154"><a href="#cb2-154" aria-hidden="true" tabindex="-1"></a><span class="in">ecdc0401-covid19imperial_v3 </span></span>
-<span id="cb2-155"><a href="#cb2-155" aria-hidden="true" tabindex="-1"></a><span class="in">ecdc0401-covid19imperial_v2 </span></span>
-<span id="cb2-156"><a href="#cb2-156" aria-hidden="true" tabindex="-1"></a><span class="in">dogs-dogs_nonhierarchical   </span></span>
-<span id="cb2-157"><a href="#cb2-157" aria-hidden="true" tabindex="-1"></a><span class="in">butterfly-multi_occupancy   </span></span>
-<span id="cb2-158"><a href="#cb2-158" aria-hidden="true" tabindex="-1"></a><span class="in">""")</span></span>
-<span id="cb2-159"><a href="#cb2-159" aria-hidden="true" tabindex="-1"></a><span class="in">jdf = map(posterior_names) do posterior_name</span></span>
-<span id="cb2-160"><a href="#cb2-160" aria-hidden="true" tabindex="-1"></a><span class="in">    posterior_name in skip_names &amp;&amp; return (;posterior_name)</span></span>
-<span id="cb2-161"><a href="#cb2-161" aria-hidden="true" tabindex="-1"></a><span class="in">    try</span></span>
-<span id="cb2-162"><a href="#cb2-162" aria-hidden="true" tabindex="-1"></a><span class="in">        e = PosteriorEvaluation(posterior_name)</span></span>
-<span id="cb2-163"><a href="#cb2-163" aria-hidden="true" tabindex="-1"></a><span class="in">        e.df_row</span></span>
-<span id="cb2-164"><a href="#cb2-164" aria-hidden="true" tabindex="-1"></a><span class="in">    catch e</span></span>
-<span id="cb2-165"><a href="#cb2-165" aria-hidden="true" tabindex="-1"></a><span class="in">        isa(e, InterruptException) &amp;&amp; rethrow()</span></span>
-<span id="cb2-166"><a href="#cb2-166" aria-hidden="true" tabindex="-1"></a><span class="in">        @error posterior_name e</span></span>
-<span id="cb2-167"><a href="#cb2-167" aria-hidden="true" tabindex="-1"></a><span class="in">        rethrow()</span></span>
-<span id="cb2-168"><a href="#cb2-168" aria-hidden="true" tabindex="-1"></a><span class="in">        return (;posterior_name)</span></span>
-<span id="cb2-169"><a href="#cb2-169" aria-hidden="true" tabindex="-1"></a><span class="in">    end</span></span>
-<span id="cb2-170"><a href="#cb2-170" aria-hidden="true" tabindex="-1"></a><span class="in">end |&gt; filter(!isnothing) |&gt; pad_missing |&gt; DataFrame;</span></span>
-<span id="cb2-171"><a href="#cb2-171" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
-<span id="cb2-172"><a href="#cb2-172" aria-hidden="true" tabindex="-1"></a>:::{.column-page}</span>
-<span id="cb2-173"><a href="#cb2-173" aria-hidden="true" tabindex="-1"></a> </span>
-<span id="cb2-174"><a href="#cb2-174" aria-hidden="true" tabindex="-1"></a><span class="fu"># Visualization</span></span>
-<span id="cb2-175"><a href="#cb2-175" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-176"><a href="#cb2-176" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning}</span>
-<span id="cb2-177"><a href="#cb2-177" aria-hidden="true" tabindex="-1"></a>**In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as "A is X-times faster than B".**</span>
-<span id="cb2-178"><a href="#cb2-178" aria-hidden="true" tabindex="-1"></a>:::</span>
-<span id="cb2-179"><a href="#cb2-179" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-180"><a href="#cb2-180" aria-hidden="true" tabindex="-1"></a>The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+X vs Stan, bottom: Julia is faster) for the <span class="in">`posteriordb`</span> models for which the <span class="co">[</span><span class="ot">overview table</span><span class="co">](#tabular-data)</span> has a value less than <span class="in">`1e-8`</span> in the <span class="in">`median relative ulpdf error`</span> column. **The color of the points represents the Julia AD framework used**, which currently includes <span class="co">[</span><span class="ot">Enzyme.jl</span><span class="co">](https://github.com/EnzymeAD/Enzyme.jl)</span> and <span class="co">[</span><span class="ot">Mooncake.jl</span><span class="co">](https://github.com/compintell/Mooncake.jl)</span>.</span>
-<span id="cb2-181"><a href="#cb2-181" aria-hidden="true" tabindex="-1"></a>Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive and gradient run and a short explanation, e.g. <span class="in">`mesquite-logmesquite_logvash (D=7, #allocs=0-&gt;70) - Julia's primitive is ~4.5 times faster, but Enzyme's gradient is ~16.0 times slower.`</span> **Any time spent on garbage collection has been subtracted from the measured wall times. All mean runtime estimates were run until the estimated standard error of the mean was smaller than roughly .5% of the estimated mean. Due to this, I have removed the credible intervals and standard errors from the plot and table.**</span>
-<span id="cb2-184"><a href="#cb2-184" aria-hidden="true" tabindex="-1"></a><span class="in">```{julia}</span></span>
-<span id="cb2-185"><a href="#cb2-185" aria-hidden="true" tabindex="-1"></a><span class="in">hover_string(posterior_name, dimension, ptime, gtime, pallocs, gallocs; AD) = begin  </span></span>
-<span id="cb2-186"><a href="#cb2-186" aria-hidden="true" tabindex="-1"></a><span class="in">    pdescr = if ptime &gt; 1</span></span>
-<span id="cb2-187"><a href="#cb2-187" aria-hidden="true" tabindex="-1"></a><span class="in">        "$(round(ptime; sigdigits=2)) times slower" </span></span>
-<span id="cb2-188"><a href="#cb2-188" aria-hidden="true" tabindex="-1"></a><span class="in">    else</span></span>
-<span id="cb2-189"><a href="#cb2-189" aria-hidden="true" tabindex="-1"></a><span class="in">        "$(round(inv(ptime); sigdigits=2)) times faster"</span></span>
-<span id="cb2-190"><a href="#cb2-190" aria-hidden="true" tabindex="-1"></a><span class="in">    end</span></span>
-<span id="cb2-191"><a href="#cb2-191" aria-hidden="true" tabindex="-1"></a><span class="in">    gdescr = if gtime &gt; 1</span></span>
-<span id="cb2-192"><a href="#cb2-192" aria-hidden="true" tabindex="-1"></a><span class="in">        "$(round(gtime; sigdigits=2)) times slower"</span></span>
-<span id="cb2-193"><a href="#cb2-193" aria-hidden="true" tabindex="-1"></a><span class="in">    else</span></span>
-<span id="cb2-194"><a href="#cb2-194" aria-hidden="true" tabindex="-1"></a><span class="in">        "$(round(inv(gtime); sigdigits=2)) times faster"</span></span>
-<span id="cb2-195"><a href="#cb2-195" aria-hidden="true" tabindex="-1"></a><span class="in">    end</span></span>
-<span id="cb2-196"><a href="#cb2-196" aria-hidden="true" tabindex="-1"></a><span class="in">    jdescr = if (ptime &gt; 1) == (gtime &gt; 1) </span></span>
-<span id="cb2-197"><a href="#cb2-197" aria-hidden="true" tabindex="-1"></a><span class="in">        "and"</span></span>
-<span id="cb2-198"><a href="#cb2-198" aria-hidden="true" tabindex="-1"></a><span class="in">    else</span></span>
-<span id="cb2-199"><a href="#cb2-199" aria-hidden="true" tabindex="-1"></a><span class="in">        "but"</span></span>
-<span id="cb2-200"><a href="#cb2-200" aria-hidden="true" tabindex="-1"></a><span class="in">    end</span></span>
-<span id="cb2-201"><a href="#cb2-201" aria-hidden="true" tabindex="-1"></a><span class="in">    descr = "Julia's primitive is ~$pdescr, $jdescr $AD's gradient is ~$gdescr."</span></span>
-<span id="cb2-202"><a href="#cb2-202" aria-hidden="true" tabindex="-1"></a><span class="in">    "$(posterior_name) (D=$(dimension), #allocs=$(round(pallocs))-&gt;$(round(gallocs))) &lt;br&gt; $descr"</span></span>
-<span id="cb2-203"><a href="#cb2-203" aria-hidden="true" tabindex="-1"></a><span class="in">end</span></span>
-<span id="cb2-204"><a href="#cb2-204" aria-hidden="true" tabindex="-1"></a><span class="in">usable_row(row) = !any(ismissing, (row.stan_gradient_times, row.julia_lpdf_times, row.mooncake_times))</span></span>
-<span id="cb2-205"><a href="#cb2-205" aria-hidden="true" tabindex="-1"></a><span class="in">pdf = jdf = DataFrame(filter(usable_row, eachrow(jdf)))</span></span>
-<span id="cb2-206"><a href="#cb2-206" aria-hidden="true" tabindex="-1"></a><span class="in">pdf.ptime = mean.(pdf.julia_lpdf_times) ./ mean.(pdf.stan_lpdf_times)</span></span>
-<span id="cb2-207"><a href="#cb2-207" aria-hidden="true" tabindex="-1"></a><span class="in">pdf.etime = mean.(pdf.enzyme_times) ./ mean.(pdf.stan_gradient_times) </span></span>
-<span id="cb2-208"><a href="#cb2-208" aria-hidden="true" tabindex="-1"></a><span class="in">pdf.mtime = mean.(pdf.mooncake_times) ./ mean.(pdf.stan_gradient_times)</span></span>
-<span id="cb2-209"><a href="#cb2-209" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-210"><a href="#cb2-210" aria-hidden="true" tabindex="-1"></a><span class="in">colors = palette(:tab10)[[1,2]]</span></span>
-<span id="cb2-211"><a href="#cb2-211" aria-hidden="true" tabindex="-1"></a><span class="in">Plots.vline!(</span></span>
-<span id="cb2-212"><a href="#cb2-212" aria-hidden="true" tabindex="-1"></a><span class="in">Plots.hline!(</span></span>
-<span id="cb2-213"><a href="#cb2-213" aria-hidden="true" tabindex="-1"></a><span class="in">    Plots.scatter(</span></span>
-<span id="cb2-214"><a href="#cb2-214" aria-hidden="true" tabindex="-1"></a><span class="in">        pdf.ptime,</span></span>
-<span id="cb2-215"><a href="#cb2-215" aria-hidden="true" tabindex="-1"></a><span class="in">        [pdf.etime, pdf.mtime];</span></span>
-<span id="cb2-216"><a href="#cb2-216" aria-hidden="true" tabindex="-1"></a><span class="in">        label=["Enzyme" "Mooncake"],</span></span>
-<span id="cb2-217"><a href="#cb2-217" aria-hidden="true" tabindex="-1"></a><span class="in">        color=permutedims(colors),</span></span>
-<span id="cb2-218"><a href="#cb2-218" aria-hidden="true" tabindex="-1"></a><span class="in">        hover=hcat(</span></span>
-<span id="cb2-219"><a href="#cb2-219" aria-hidden="true" tabindex="-1"></a><span class="in">            hover_string.(pdf.posterior_name, pdf.dimension, pdf.ptime, pdf.etime, pdf.julia_allocations, pdf.enzyme_allocations; AD="Enzyme"), </span></span>
-<span id="cb2-220"><a href="#cb2-220" aria-hidden="true" tabindex="-1"></a><span class="in">            hover_string.(pdf.posterior_name, pdf.dimension, pdf.ptime, pdf.mtime, pdf.julia_allocations, pdf.mooncake_allocations; AD="Mooncake") </span></span>
-<span id="cb2-221"><a href="#cb2-221" aria-hidden="true" tabindex="-1"></a><span class="in">        ),</span></span>
-<span id="cb2-222"><a href="#cb2-222" aria-hidden="true" tabindex="-1"></a><span class="in">        xlabel="Relative primitive runtime\n(Julia vs Stan, left: Julia is faster)", </span></span>
-<span id="cb2-223"><a href="#cb2-223" aria-hidden="true" tabindex="-1"></a><span class="in">        ylabel="Relative gradient runtime\n(Julia+X vs Stan, bottom: Julia+X is faster)",</span></span>
-<span id="cb2-224"><a href="#cb2-224" aria-hidden="true" tabindex="-1"></a><span class="in">        title="Relative mean runtimes, EXCLUDING GARBAGE COLLECTION",</span></span>
-<span id="cb2-225"><a href="#cb2-225" aria-hidden="true" tabindex="-1"></a><span class="in">        xscale=:log10, yscale=:log10, </span></span>
-<span id="cb2-226"><a href="#cb2-226" aria-hidden="true" tabindex="-1"></a><span class="in">        size=(1000, 600)</span></span>
-<span id="cb2-227"><a href="#cb2-227" aria-hidden="true" tabindex="-1"></a><span class="in">    ),</span></span>
-<span id="cb2-228"><a href="#cb2-228" aria-hidden="true" tabindex="-1"></a><span class="in">    [1], color=:black, label="", hover=""</span></span>
-<span id="cb2-229"><a href="#cb2-229" aria-hidden="true" tabindex="-1"></a><span class="in">),</span></span>
-<span id="cb2-230"><a href="#cb2-230" aria-hidden="true" tabindex="-1"></a><span class="in">    [1], color=:black, label="", hover=""</span></span>
-<span id="cb2-231"><a href="#cb2-231" aria-hidden="true" tabindex="-1"></a><span class="in">)</span></span>
-<span id="cb2-232"><a href="#cb2-232" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
-<span id="cb2-233"><a href="#cb2-233" aria-hidden="true" tabindex="-1"></a>:::</span>
-<span id="cb2-234"><a href="#cb2-234" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-235"><a href="#cb2-235" aria-hidden="true" tabindex="-1"></a><span class="fu"># Tabular data</span></span>
-<span id="cb2-236"><a href="#cb2-236" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-237"><a href="#cb2-237" aria-hidden="true" tabindex="-1"></a>The below table shows information about the implemented posteriors. Will elaborate on the exact meaning of columns.</span>
-<span id="cb2-238"><a href="#cb2-238" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-239"><a href="#cb2-239" aria-hidden="true" tabindex="-1"></a>:::{.column-screen}</span>
-<span id="cb2-240"><a href="#cb2-240" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb2-243"><a href="#cb2-243" aria-hidden="true" tabindex="-1"></a><span class="in">```{julia}</span></span>
-<span id="cb2-244"><a href="#cb2-244" aria-hidden="true" tabindex="-1"></a><span class="in">ternary(c, t, f) = c ? t : f </span></span>
-<span id="cb2-245"><a href="#cb2-245" aria-hidden="true" tabindex="-1"></a><span class="in">hl_best = HtmlHighlighter(</span></span>
-<span id="cb2-246"><a href="#cb2-246" aria-hidden="true" tabindex="-1"></a><span class="in">    (data, i, j) -&gt; data[i,j] === 1.,</span></span>
-<span id="cb2-247"><a href="#cb2-247" aria-hidden="true" tabindex="-1"></a><span class="in">    HtmlDecoration(color="blue", font_weight="bold")</span></span>
-<span id="cb2-248"><a href="#cb2-248" aria-hidden="true" tabindex="-1"></a><span class="in">);</span></span>
-<span id="cb2-249"><a href="#cb2-249" aria-hidden="true" tabindex="-1"></a><span class="in">hl_failed = HtmlHighlighter(</span></span>
-<span id="cb2-250"><a href="#cb2-250" aria-hidden="true" tabindex="-1"></a><span class="in">    (data, i, j) -&gt; ((data[i,j]==="FAILED")),</span></span>
-<span id="cb2-251"><a href="#cb2-251" aria-hidden="true" tabindex="-1"></a><span class="in">    HtmlDecoration(color = "red")</span></span>
-<span id="cb2-252"><a href="#cb2-252" aria-hidden="true" tabindex="-1"></a><span class="in">);</span></span>
-<span id="cb2-253"><a href="#cb2-253" aria-hidden="true" tabindex="-1"></a><span class="in">relative!(args...) = begin</span></span>
-<span id="cb2-254"><a href="#cb2-254" aria-hidden="true" tabindex="-1"></a><span class="in">    for i in eachindex(args[1])</span></span>
-<span id="cb2-255"><a href="#cb2-255" aria-hidden="true" tabindex="-1"></a><span class="in">        setindex!.(args, getindex.(args, i) ./ minimum(getindex.(args, i)), i)</span></span>
-<span id="cb2-256"><a href="#cb2-256" aria-hidden="true" tabindex="-1"></a><span class="in">    end</span></span>
-<span id="cb2-257"><a href="#cb2-257" aria-hidden="true" tabindex="-1"></a><span class="in">    args</span></span>
-<span id="cb2-258"><a href="#cb2-258" aria-hidden="true" tabindex="-1"></a><span class="in">end</span></span>
-<span id="cb2-259"><a href="#cb2-259" aria-hidden="true" tabindex="-1"></a><span class="in">julia_lpdf_times, stan_lpdf_times = relative!(mean.(jdf.julia_lpdf_times), mean.(jdf.stan_lpdf_times))</span></span>
-<span id="cb2-260"><a href="#cb2-260" aria-hidden="true" tabindex="-1"></a><span class="in">enzyme_times, mooncake_times, stan_gradient_times = relative!(mean.(jdf.enzyme_times), mean.(jdf.mooncake_times), mean.(jdf.stan_gradient_times))</span></span>
-<span id="cb2-261"><a href="#cb2-261" aria-hidden="true" tabindex="-1"></a><span class="in">pretty_table( </span></span>
-<span id="cb2-262"><a href="#cb2-262" aria-hidden="true" tabindex="-1"></a><span class="in">    DataFrame(OrderedDict(  </span></span>
-<span id="cb2-263"><a href="#cb2-263" aria-hidden="true" tabindex="-1"></a><span class="in">        "posterior name"=&gt;jdf.posterior_name,</span></span>
-<span id="cb2-264"><a href="#cb2-264" aria-hidden="true" tabindex="-1"></a><span class="in">        "implementations"=&gt;implementations_string.(jdf.posterior_name),</span></span>
-<span id="cb2-265"><a href="#cb2-265" aria-hidden="true" tabindex="-1"></a><span class="in">        "dimension"=&gt;jdf.dimension,</span></span>
-<span id="cb2-266"><a href="#cb2-266" aria-hidden="true" tabindex="-1"></a><span class="in">        "median relative ulpdf error"=&gt;round2.(jdf.lpdf_accuracy),</span></span>
-<span id="cb2-267"><a href="#cb2-267" aria-hidden="true" tabindex="-1"></a><span class="in">        "relative mean primitive Julia runtime"=&gt;round2.(julia_lpdf_times),</span></span>
-<span id="cb2-268"><a href="#cb2-268" aria-hidden="true" tabindex="-1"></a><span class="in">        "relative mean primitive Stan runtime"=&gt;round2.(stan_lpdf_times),</span></span>
-<span id="cb2-269"><a href="#cb2-269" aria-hidden="true" tabindex="-1"></a><span class="in">        "relative mean Enzyme runtime"=&gt;round2.(enzyme_times),</span></span>
-<span id="cb2-270"><a href="#cb2-270" aria-hidden="true" tabindex="-1"></a><span class="in">        "relative mean Mooncake runtime"=&gt;round2.(mooncake_times),</span></span>
-<span id="cb2-271"><a href="#cb2-271" aria-hidden="true" tabindex="-1"></a><span class="in">        "relative mean Stan gradient runtime"=&gt;round2.(stan_gradient_times),</span></span>
-<span id="cb2-272"><a href="#cb2-272" aria-hidden="true" tabindex="-1"></a><span class="in">        "primitive Julia allocations"=&gt;jdf.julia_allocations,</span></span>
-<span id="cb2-273"><a href="#cb2-273" aria-hidden="true" tabindex="-1"></a><span class="in">        "Enzyme allocations"=&gt;jdf.enzyme_allocations,</span></span>
-<span id="cb2-274"><a href="#cb2-274" aria-hidden="true" tabindex="-1"></a><span class="in">        "Mooncake allocations"=&gt;jdf.mooncake_allocations,</span></span>
-<span id="cb2-275"><a href="#cb2-275" aria-hidden="true" tabindex="-1"></a><span class="in">        "median lpdf difference"=&gt;round2.(jdf.lpdf_difference),</span></span>
-<span id="cb2-276"><a href="#cb2-276" aria-hidden="true" tabindex="-1"></a><span class="in">        "median Enzyme relative gradient error"=&gt;round2.(jdf.enzyme_accuracy),</span></span>
-<span id="cb2-277"><a href="#cb2-277" aria-hidden="true" tabindex="-1"></a><span class="in">        "median Mooncake relative gradient error"=&gt;round2.(jdf.mooncake_accuracy), </span></span>
-<span id="cb2-278"><a href="#cb2-278" aria-hidden="true" tabindex="-1"></a><span class="in">        "Bridgestan"=&gt;jdf.BRIDGESTAN_VERSION,</span></span>
-<span id="cb2-279"><a href="#cb2-279" aria-hidden="true" tabindex="-1"></a><span class="in">        "Enzyme"=&gt;jdf.ENZYME_VERSION,</span></span>
-<span id="cb2-280"><a href="#cb2-280" aria-hidden="true" tabindex="-1"></a><span class="in">        "Mooncake"=&gt;jdf.MOONCAKE_VERSION,</span></span>
-<span id="cb2-281"><a href="#cb2-281" aria-hidden="true" tabindex="-1"></a><span class="in">    ));</span></span>
-<span id="cb2-282"><a href="#cb2-282" aria-hidden="true" tabindex="-1"></a><span class="in">    backend=Val(:html),</span></span>
-<span id="cb2-283"><a href="#cb2-283" aria-hidden="true" tabindex="-1"></a><span class="in">    highlighters=(hl_best, hl_failed,), </span></span>
-<span id="cb2-284"><a href="#cb2-284" aria-hidden="true" tabindex="-1"></a><span class="in">    show_subheader=false, </span></span>
-<span id="cb2-285"><a href="#cb2-285" aria-hidden="true" tabindex="-1"></a><span class="in">    table_class="interactive"</span></span>
-<span id="cb2-286"><a href="#cb2-286" aria-hidden="true" tabindex="-1"></a><span class="in">)</span></span>
-<span id="cb2-287"><a href="#cb2-287" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
-<span id="cb2-288"><a href="#cb2-288" aria-hidden="true" tabindex="-1"></a>:::</span>
+<div class="sourceCode" id="cb2" data-shortcodes="false"><pre class="sourceCode numberSource markdown number-lines code-with-copy"><code class="sourceCode markdown"><span id="cb2-1"><a href="#cb2-1"></a><span class="co">---</span></span>
+<span id="cb2-2"><a href="#cb2-2"></a><span class="an">title:</span><span class="co"> "Julia vs Stan performance comparison"</span></span>
+<span id="cb2-3"><a href="#cb2-3"></a><span class="co">---</span></span>
+<span id="cb2-4"><a href="#cb2-4"></a></span>
+<span id="cb2-5"><a href="#cb2-5"></a><span class="fu"># Caveats</span></span>
+<span id="cb2-6"><a href="#cb2-6"></a></span>
+<span id="cb2-7"><a href="#cb2-7"></a>This page compares the performance of Julia's and Stan's log density and log density gradient computations for the implemented posteriors. Several caveats apply:</span>
+<span id="cb2-8"><a href="#cb2-8"></a></span>
+<span id="cb2-9"><a href="#cb2-9"></a><span class="ss">* </span>The <span class="in">`posteriordb`</span> Stan implementations were never meant to represent "perfect and best-performant" practices.</span>
+<span id="cb2-10"><a href="#cb2-10"></a><span class="ss">* </span>The StanBlocks.jl implementations are not line-by-line translations of the Stan implementations. Sometimes small optimizations were applied, to make the implementation fall more in line with common Julia practices, or to make the code more friendly for Julia's AD packages, e.g. by avoiding mutation.</span>
+<span id="cb2-11"><a href="#cb2-11"></a><span class="ss">* </span>Stan often automatically drops constant terms (unless configured differently), see <span class="co">[</span><span class="ot">https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement</span><span class="co">](https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement)</span>, thus avoiding superfluous (for its purposes) computation, while the StanBlocks.jl implementations do not.</span>
+<span id="cb2-12"><a href="#cb2-12"></a><span class="ss">* </span>Stan implements a lot of custom AD rules, while StanBlocks.jl does not at all, and Enzyme.jl does rarely (if ever?). I suspect that adding AD rules for <span class="in">`_glm_`</span> type functions would further improve Julia's performance.</span>
+<span id="cb2-13"><a href="#cb2-13"></a><span class="ss">* </span>The StanBlocks.jl "sampling" statements try to be clever about avoiding repeated computations. While I am not sure whether Stan applies the same optimizations, in principle it could do that without extra work by the user. </span>
+<span id="cb2-14"><a href="#cb2-14"></a><span class="ss">* </span>While preliminary benchmark runs included "all" Julia AD packages, all of them are almost always much slower than Enzyme.jl for the implemented posteriors, which on top of that performance advantage also supports more Julia language features than some of the other AD packages. As such, I am only comparing Enzyme and Stan. Enzyme outperforming every other AD package for *these* posteriors/loss functions does of course not mean that it will necessarily do as well for other applications.</span>
+<span id="cb2-15"><a href="#cb2-15"></a><span class="ss">* </span>Enzyme's development is progressing quite quickly. While it currently sometimes crashes Julia, or it sometimes errors while trying to compute a gradient, in general Enzyme's performance and reliability are continuously and quickly improving.</span>
+<span id="cb2-16"><a href="#cb2-16"></a><span class="ss">* </span>Stan's benchmark is done from Julia via <span class="in">`BridgeStan.jl`</span>. While I think that any performance penalty should be extremely small, I am not 100% sure. BridgeStan uses the <span class="in">`-O3`</span> compiler flag by default, but no additional ones.</span>
+<span id="cb2-17"><a href="#cb2-17"></a><span class="ss">* </span>All benchmarks are happening with a single thread on my local machine.</span>
+<span id="cb2-18"><a href="#cb2-18"></a><span class="ss">* </span>**There are probably more caveats!**</span>
+<span id="cb2-19"><a href="#cb2-19"></a></span>
+<span id="cb2-20"><a href="#cb2-20"></a>::: {.callout-warning}</span>
+<span id="cb2-21"><a href="#cb2-21"></a>**In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as "A is X-times faster than B".**</span>
+<span id="cb2-22"><a href="#cb2-22"></a>::: </span>
+<span id="cb2-25"><a href="#cb2-25"></a><span class="in">```{julia}</span></span>
+<span id="cb2-26"><a href="#cb2-26"></a><span class="in">using Random, Chairmarks, Statistics, LinearAlgebra, Distributions, Plots </span></span>
+<span id="cb2-27"><a href="#cb2-27"></a><span class="in">import Plots, OnlineStats, StanBlocks, PosteriorDB</span></span>
+<span id="cb2-28"><a href="#cb2-28"></a><span class="in">include("julia/common.jl")</span></span>
+<span id="cb2-29"><a href="#cb2-29"></a><span class="in">struct RuntimeDistribution2{F}</span></span>
+<span id="cb2-30"><a href="#cb2-30"></a><span class="in">    f::F</span></span>
+<span id="cb2-31"><a href="#cb2-31"></a><span class="in">    n::Int64</span></span>
+<span id="cb2-32"><a href="#cb2-32"></a><span class="in">end</span></span>
+<span id="cb2-33"><a href="#cb2-33"></a><span class="in">RuntimeDistribution2(f) = RuntimeDistribution2(f, 1)</span></span>
+<span id="cb2-34"><a href="#cb2-34"></a><span class="in">RuntimeDistribution2(f::RuntimeDistribution2, n::Int64) = RuntimeDistribution2(f.f, n * f.n)</span></span>
+<span id="cb2-35"><a href="#cb2-35"></a><span class="in">@inline Random.rand(rng::AbstractRNG, d::RuntimeDistribution2) = begin</span></span>
+<span id="cb2-36"><a href="#cb2-36"></a><span class="in">    stats = @timed begin</span></span>
+<span id="cb2-37"><a href="#cb2-37"></a><span class="in">        rv = d.f(rng)</span></span>
+<span id="cb2-38"><a href="#cb2-38"></a><span class="in">        Base.donotdelete(rv)</span></span>
+<span id="cb2-39"><a href="#cb2-39"></a><span class="in">        for i in 1:d.n-1</span></span>
+<span id="cb2-40"><a href="#cb2-40"></a><span class="in">            rv = max(rv, d.f(rng))</span></span>
+<span id="cb2-41"><a href="#cb2-41"></a><span class="in">            Base.donotdelete(rv)</span></span>
+<span id="cb2-42"><a href="#cb2-42"></a><span class="in">        end</span></span>
+<span id="cb2-43"><a href="#cb2-43"></a><span class="in">    end</span></span>
+<span id="cb2-44"><a href="#cb2-44"></a><span class="in">    (stats.time - stats.gctime) / d.n</span></span>
+<span id="cb2-45"><a href="#cb2-45"></a><span class="in">end</span></span>
+<span id="cb2-46"><a href="#cb2-46"></a></span>
+<span id="cb2-47"><a href="#cb2-47"></a><span class="in">struct IterableDistribution{R,D}</span></span>
+<span id="cb2-48"><a href="#cb2-48"></a><span class="in">    rng::R</span></span>
+<span id="cb2-49"><a href="#cb2-49"></a><span class="in">    dist::D</span></span>
+<span id="cb2-50"><a href="#cb2-50"></a><span class="in">end</span></span>
+<span id="cb2-51"><a href="#cb2-51"></a><span class="in">@inline Base.iterate(d::IterableDistribution) = rand(d.rng, d.dist)</span></span>
+<span id="cb2-52"><a href="#cb2-52"></a><span class="in">struct UncertainMean{V,Q}</span></span>
+<span id="cb2-53"><a href="#cb2-53"></a><span class="in">    var::V</span></span>
+<span id="cb2-54"><a href="#cb2-54"></a><span class="in">    qmul::Q</span></span>
+<span id="cb2-55"><a href="#cb2-55"></a><span class="in">end</span></span>
+<span id="cb2-56"><a href="#cb2-56"></a><span class="in">round2(x) = round(x; sigdigits=2)</span></span>
+<span id="cb2-57"><a href="#cb2-57"></a><span class="in">Base.show(io::IO, s::UncertainMean) = print(io, "[", round2(lower(s)), " -- ", round2(upper(s)), "] (via ", OnlineStats.nobs(s), " evaluations)")</span></span>
+<span id="cb2-58"><a href="#cb2-58"></a><span class="in">Base.show(io::IO, ::MIME"text/plain", s::UncertainMean) = show(io, s)</span></span>
+<span id="cb2-59"><a href="#cb2-59"></a><span class="in">UncertainMean(q::Real) = UncertainMean(OnlineStats.Variance(), quantile(Normal(), 1-q))</span></span>
+<span id="cb2-60"><a href="#cb2-60"></a><span class="in">OnlineStats.fit!(s::UncertainMean, args...) = OnlineStats.fit!(s.var, args...)</span></span>
+<span id="cb2-61"><a href="#cb2-61"></a><span class="in">OnlineStats.nobs(s::UncertainMean) = OnlineStats.nobs(s.var)</span></span>
+<span id="cb2-62"><a href="#cb2-62"></a><span class="in">se(s::UncertainMean) = sqrt(var(s.var)/OnlineStats.nobs(s.var))</span></span>
+<span id="cb2-63"><a href="#cb2-63"></a><span class="in">Statistics.mean(s::UncertainMean) = mean(s.var)</span></span>
+<span id="cb2-64"><a href="#cb2-64"></a><span class="in">upper(s::UncertainMean) = mean(s) + atol(s)</span></span>
+<span id="cb2-65"><a href="#cb2-65"></a><span class="in">lower(s::UncertainMean) = mean(s) - atol(s)</span></span>
+<span id="cb2-66"><a href="#cb2-66"></a><span class="in">atol(s::UncertainMean) = s.qmul * se(s)</span></span>
+<span id="cb2-67"><a href="#cb2-67"></a><span class="in">rtol(s::UncertainMean) = atol(s) / abs(mean(s))</span></span>
+<span id="cb2-68"><a href="#cb2-68"></a><span class="in">Base.:isless(s1::UncertainMean, s2::UncertainMean) = upper(s1) &lt; lower(s2) ? true : false#(upper(s2) &lt; lower(s1) ? false : missing)</span></span>
+<span id="cb2-69"><a href="#cb2-69"></a><span class="in">adaptive_mean3(args...; q=.025, kwargs...) = adaptive_mean3(args, [UncertainMean(q) for arg in args]; kwargs...)</span></span>
+<span id="cb2-70"><a href="#cb2-70"></a><span class="in">adaptive_mean3(args::Tuple, means::Vector; n_min=10, n_max=1_000_000, rtol=.01) = begin</span></span>
+<span id="cb2-71"><a href="#cb2-71"></a><span class="in">    N = length(args)</span></span>
+<span id="cb2-72"><a href="#cb2-72"></a><span class="in">    vmeans = map(mean, means)</span></span>
+<span id="cb2-73"><a href="#cb2-73"></a><span class="in">    perm = sortperm(vmeans)</span></span>
+<span id="cb2-74"><a href="#cb2-74"></a><span class="in">    draws = map(iterate, args)</span></span>
+<span id="cb2-75"><a href="#cb2-75"></a><span class="in">    n_start = 1+minimum(OnlineStats.nobs, means)</span></span>
+<span id="cb2-76"><a href="#cb2-76"></a><span class="in">    n_start &gt; 1 &amp;&amp; display("Resuming at $n_start")</span></span>
+<span id="cb2-77"><a href="#cb2-77"></a><span class="in">    for i in n_start:n_max</span></span>
+<span id="cb2-78"><a href="#cb2-78"></a><span class="in">        draws = map(iterate, args)</span></span>
+<span id="cb2-79"><a href="#cb2-79"></a><span class="in">        for (m, d) in zip(means, draws)</span></span>
+<span id="cb2-80"><a href="#cb2-80"></a><span class="in">            OnlineStats.fit!(m, d)</span></span>
+<span id="cb2-81"><a href="#cb2-81"></a><span class="in">        end</span></span>
+<span id="cb2-82"><a href="#cb2-82"></a><span class="in">        i &lt; n_min &amp;&amp; continue</span></span>
+<span id="cb2-83"><a href="#cb2-83"></a><span class="in">        map!(mean, vmeans, means)</span></span>
+<span id="cb2-84"><a href="#cb2-84"></a><span class="in">        sortperm!(perm, vmeans)</span></span>
+<span id="cb2-85"><a href="#cb2-85"></a><span class="in">        is_sorted = all(i-&gt;means[perm[i-1]] &lt; means[perm[i]], 2:N)</span></span>
+<span id="cb2-86"><a href="#cb2-86"></a><span class="in">        is_precise = all(m-&gt;Main.rtol(m) &lt; rtol, means)</span></span>
+<span id="cb2-87"><a href="#cb2-87"></a><span class="in">        if is_sorted &amp;&amp; is_precise</span></span>
+<span id="cb2-88"><a href="#cb2-88"></a><span class="in">            display("Stopping early at i=$i")</span></span>
+<span id="cb2-89"><a href="#cb2-89"></a><span class="in">            break</span></span>
+<span id="cb2-90"><a href="#cb2-90"></a><span class="in">        end</span></span>
+<span id="cb2-91"><a href="#cb2-91"></a><span class="in">    end</span></span>
+<span id="cb2-92"><a href="#cb2-92"></a><span class="in">    means</span></span>
+<span id="cb2-93"><a href="#cb2-93"></a><span class="in">end</span></span>
+<span id="cb2-94"><a href="#cb2-94"></a><span class="in">firstfinite(f) = ff(args...) = while true</span></span>
+<span id="cb2-95"><a href="#cb2-95"></a><span class="in">    rv = f(args...)</span></span>
+<span id="cb2-96"><a href="#cb2-96"></a><span class="in">    isfinite(rv) &amp;&amp; return rv</span></span>
+<span id="cb2-97"><a href="#cb2-97"></a><span class="in">end</span></span>
+<span id="cb2-98"><a href="#cb2-98"></a><span class="in">nonzero(x) = x == zero(x) ? one(x) : x</span></span>
+<span id="cb2-99"><a href="#cb2-99"></a><span class="in">adaptive_median(f::Function; n_min=100, n_max=1000, rtol=.001, q=.5) = begin </span></span>
+<span id="cb2-100"><a href="#cb2-100"></a><span class="in">    ff = firstfinite(f)</span></span>
+<span id="cb2-101"><a href="#cb2-101"></a><span class="in">    vals = [ff()]</span></span>
+<span id="cb2-102"><a href="#cb2-102"></a><span class="in">    w = [1.]</span></span>
+<span id="cb2-103"><a href="#cb2-103"></a><span class="in">    qs = [0.]</span></span>
+<span id="cb2-104"><a href="#cb2-104"></a><span class="in">    rv = vals[1]</span></span>
+<span id="cb2-105"><a href="#cb2-105"></a><span class="in">    for i in 2:n_max</span></span>
+<span id="cb2-106"><a href="#cb2-106"></a><span class="in">        val = ff()</span></span>
+<span id="cb2-107"><a href="#cb2-107"></a><span class="in">        insert!(vals, searchsortedfirst(vals, val), val)</span></span>
+<span id="cb2-108"><a href="#cb2-108"></a><span class="in">        # @assert issorted(vals)</span></span>
+<span id="cb2-109"><a href="#cb2-109"></a><span class="in">        rv = quantile(vals, q; sorted=true)</span></span>
+<span id="cb2-110"><a href="#cb2-110"></a><span class="in">        push!(w, 0.)</span></span>
+<span id="cb2-111"><a href="#cb2-111"></a><span class="in">        push!(qs, 0.)</span></span>
+<span id="cb2-112"><a href="#cb2-112"></a><span class="in">        rand!(w)</span></span>
+<span id="cb2-113"><a href="#cb2-113"></a><span class="in">        @. w = -log1p(-w)</span></span>
+<span id="cb2-114"><a href="#cb2-114"></a><span class="in">        cumsum!(qs, w)</span></span>
+<span id="cb2-115"><a href="#cb2-115"></a><span class="in">        qm = q * qs[end]</span></span>
+<span id="cb2-116"><a href="#cb2-116"></a><span class="in">        ridx = searchsortedfirst(qs, qm)</span></span>
+<span id="cb2-117"><a href="#cb2-117"></a><span class="in">        rep = if ridx == 1</span></span>
+<span id="cb2-118"><a href="#cb2-118"></a><span class="in">            vals[1]</span></span>
+<span id="cb2-119"><a href="#cb2-119"></a><span class="in">        else</span></span>
+<span id="cb2-120"><a href="#cb2-120"></a><span class="in">            lidx = ridx-1</span></span>
+<span id="cb2-121"><a href="#cb2-121"></a><span class="in">            wl = (qm - qs[lidx]) / (qs[ridx] - qs[lidx])</span></span>
+<span id="cb2-122"><a href="#cb2-122"></a><span class="in">            wr = 1 - wl</span></span>
+<span id="cb2-123"><a href="#cb2-123"></a><span class="in">            wl * vals[lidx] + wr * vals[ridx]</span></span>
+<span id="cb2-124"><a href="#cb2-124"></a><span class="in">        end</span></span>
+<span id="cb2-125"><a href="#cb2-125"></a><span class="in">        rel_err = norm((rv - rep)/nonzero(max(norm(rv),norm(rep))))</span></span>
+<span id="cb2-126"><a href="#cb2-126"></a><span class="in">        i &lt; n_min &amp;&amp; continue</span></span>
+<span id="cb2-127"><a href="#cb2-127"></a><span class="in">        # Stopping criterion should be more sophisticated</span></span>
+<span id="cb2-128"><a href="#cb2-128"></a><span class="in">        if rel_err &lt; rtol</span></span>
+<span id="cb2-129"><a href="#cb2-129"></a><span class="in">            display((;vals, rv, rep, rel_err))</span></span>
+<span id="cb2-130"><a href="#cb2-130"></a><span class="in">            display("Stopping early at i=$i")</span></span>
+<span id="cb2-131"><a href="#cb2-131"></a><span class="in">            break</span></span>
+<span id="cb2-132"><a href="#cb2-132"></a><span class="in">        end </span></span>
+<span id="cb2-133"><a href="#cb2-133"></a><span class="in">    end</span></span>
+<span id="cb2-134"><a href="#cb2-134"></a><span class="in">    rv</span></span>
+<span id="cb2-135"><a href="#cb2-135"></a><span class="in">end</span></span>
+<span id="cb2-136"><a href="#cb2-136"></a></span>
+<span id="cb2-137"><a href="#cb2-137"></a><span class="in">skip_names = split("""</span></span>
+<span id="cb2-138"><a href="#cb2-138"></a><span class="in">uk_drivers-state_space_stochastic_level_stochastic_seasonal</span></span>
+<span id="cb2-139"><a href="#cb2-139"></a><span class="in">timssAusTwn_irt-gpcm_latent_reg_irt</span></span>
+<span id="cb2-140"><a href="#cb2-140"></a><span class="in">synthetic_grid_RBF_kernels-kronecker_gp</span></span>
+<span id="cb2-141"><a href="#cb2-141"></a><span class="in">state_wide_presidential_votes-hierarchical_gp   </span></span>
+<span id="cb2-142"><a href="#cb2-142"></a><span class="in">soil_carbon-soil_incubation </span></span>
+<span id="cb2-143"><a href="#cb2-143"></a><span class="in">sir-sir </span></span>
+<span id="cb2-144"><a href="#cb2-144"></a><span class="in">sat-hier_2pl    </span></span>
+<span id="cb2-145"><a href="#cb2-145"></a><span class="in">rstan_downloads-prophet </span></span>
+<span id="cb2-146"><a href="#cb2-146"></a><span class="in">one_comp_mm_elim_abs-one_comp_mm_elim_abs   </span></span>
+<span id="cb2-147"><a href="#cb2-147"></a><span class="in">mnist_100-nn_rbm1bJ10   </span></span>
+<span id="cb2-148"><a href="#cb2-148"></a><span class="in">mnist-nn_rbm1bJ100  </span></span>
+<span id="cb2-149"><a href="#cb2-149"></a><span class="in">iohmm_reg_simulated-iohmm_reg   </span></span>
+<span id="cb2-150"><a href="#cb2-150"></a><span class="in">hudson_lynx_hare-lotka_volterra </span></span>
+<span id="cb2-151"><a href="#cb2-151"></a><span class="in">fims_Aus_Jpn_irt-2pl_latent_reg_irt</span></span>
+<span id="cb2-152"><a href="#cb2-152"></a><span class="in">ecdc0501-covid19imperial_v3     </span></span>
+<span id="cb2-153"><a href="#cb2-153"></a><span class="in">ecdc0501-covid19imperial_v2 </span></span>
+<span id="cb2-154"><a href="#cb2-154"></a><span class="in">ecdc0401-covid19imperial_v3 </span></span>
+<span id="cb2-155"><a href="#cb2-155"></a><span class="in">ecdc0401-covid19imperial_v2 </span></span>
+<span id="cb2-156"><a href="#cb2-156"></a><span class="in">dogs-dogs_nonhierarchical   </span></span>
+<span id="cb2-157"><a href="#cb2-157"></a><span class="in">butterfly-multi_occupancy   </span></span>
+<span id="cb2-158"><a href="#cb2-158"></a><span class="in">""")</span></span>
+<span id="cb2-159"><a href="#cb2-159"></a><span class="in">jdf = map(posterior_names) do posterior_name</span></span>
+<span id="cb2-160"><a href="#cb2-160"></a><span class="in">    posterior_name in skip_names &amp;&amp; return (;posterior_name)</span></span>
+<span id="cb2-161"><a href="#cb2-161"></a><span class="in">    try</span></span>
+<span id="cb2-162"><a href="#cb2-162"></a><span class="in">        e = PosteriorEvaluation(posterior_name)</span></span>
+<span id="cb2-163"><a href="#cb2-163"></a><span class="in">        e.df_row</span></span>
+<span id="cb2-164"><a href="#cb2-164"></a><span class="in">    catch e</span></span>
+<span id="cb2-165"><a href="#cb2-165"></a><span class="in">        isa(e, InterruptException) &amp;&amp; rethrow()</span></span>
+<span id="cb2-166"><a href="#cb2-166"></a><span class="in">        @error posterior_name e</span></span>
+<span id="cb2-167"><a href="#cb2-167"></a><span class="in">        rethrow()</span></span>
+<span id="cb2-168"><a href="#cb2-168"></a><span class="in">        return (;posterior_name)</span></span>
+<span id="cb2-169"><a href="#cb2-169"></a><span class="in">    end</span></span>
+<span id="cb2-170"><a href="#cb2-170"></a><span class="in">end |&gt; filter(!isnothing) |&gt; pad_missing |&gt; DataFrame;</span></span>
+<span id="cb2-171"><a href="#cb2-171"></a><span class="in">```</span></span>
+<span id="cb2-172"><a href="#cb2-172"></a>:::{.column-page}</span>
+<span id="cb2-173"><a href="#cb2-173"></a> </span>
+<span id="cb2-174"><a href="#cb2-174"></a><span class="fu"># Visualization</span></span>
+<span id="cb2-175"><a href="#cb2-175"></a></span>
+<span id="cb2-176"><a href="#cb2-176"></a>::: {.callout-warning}</span>
+<span id="cb2-177"><a href="#cb2-177"></a>**In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as "A is X-times faster than B".**</span>
+<span id="cb2-178"><a href="#cb2-178"></a>:::</span>
+<span id="cb2-179"><a href="#cb2-179"></a></span>
+<span id="cb2-180"><a href="#cb2-180"></a>The below plot shows the relative primitive runtime (x-axis, Julia vs Stan, left: Julia is faster) and the relative gradient runtime (y-axis, Julia+X vs Stan, bottom: Julia is faster) for the <span class="in">`posteriordb`</span> models for which the <span class="co">[</span><span class="ot">overview table</span><span class="co">](#tabular-data)</span> has a value less than <span class="in">`1e-8`</span> in the <span class="in">`median relative ulpdf error`</span> column. **The color of the points represents the Julia AD framework used**, which currently includes <span class="co">[</span><span class="ot">Enzyme.jl</span><span class="co">](https://github.com/EnzymeAD/Enzyme.jl)</span> and <span class="co">[</span><span class="ot">Mooncake.jl</span><span class="co">](https://github.com/compintell/Mooncake.jl)</span>.</span>
+<span id="cb2-181"><a href="#cb2-181"></a>Hovering over the data points will show the posterior name, its dimension, the allocations required by Julia during the primitive and gradient run and a short explanation, e.g. <span class="in">`mesquite-logmesquite_logvash (D=7, #allocs=0-&gt;70) - Julia's primitive is ~4.5 times faster, but Enzyme's gradient is ~16.0 times slower.`</span> **Any time spent on garbage collection has been subtracted from the measured wall times. All mean runtime estimates were run until the estimated standard error of the mean was smaller than roughly .5% of the estimated mean. Due to this, I have removed the credible intervals and standard errors from the plot and table.**</span>
+<span id="cb2-184"><a href="#cb2-184"></a><span class="in">```{julia}</span></span>
+<span id="cb2-185"><a href="#cb2-185"></a><span class="in">hover_string(posterior_name, dimension, ptime, gtime, pallocs, gallocs; AD) = begin  </span></span>
+<span id="cb2-186"><a href="#cb2-186"></a><span class="in">    pdescr = if ptime &gt; 1</span></span>
+<span id="cb2-187"><a href="#cb2-187"></a><span class="in">        "$(round(ptime; sigdigits=2)) times slower" </span></span>
+<span id="cb2-188"><a href="#cb2-188"></a><span class="in">    else</span></span>
+<span id="cb2-189"><a href="#cb2-189"></a><span class="in">        "$(round(inv(ptime); sigdigits=2)) times faster"</span></span>
+<span id="cb2-190"><a href="#cb2-190"></a><span class="in">    end</span></span>
+<span id="cb2-191"><a href="#cb2-191"></a><span class="in">    gdescr = if gtime &gt; 1</span></span>
+<span id="cb2-192"><a href="#cb2-192"></a><span class="in">        "$(round(gtime; sigdigits=2)) times slower"</span></span>
+<span id="cb2-193"><a href="#cb2-193"></a><span class="in">    else</span></span>
+<span id="cb2-194"><a href="#cb2-194"></a><span class="in">        "$(round(inv(gtime); sigdigits=2)) times faster"</span></span>
+<span id="cb2-195"><a href="#cb2-195"></a><span class="in">    end</span></span>
+<span id="cb2-196"><a href="#cb2-196"></a><span class="in">    jdescr = if (ptime &gt; 1) == (gtime &gt; 1) </span></span>
+<span id="cb2-197"><a href="#cb2-197"></a><span class="in">        "and"</span></span>
+<span id="cb2-198"><a href="#cb2-198"></a><span class="in">    else</span></span>
+<span id="cb2-199"><a href="#cb2-199"></a><span class="in">        "but"</span></span>
+<span id="cb2-200"><a href="#cb2-200"></a><span class="in">    end</span></span>
+<span id="cb2-201"><a href="#cb2-201"></a><span class="in">    descr = "Julia's primitive is ~$pdescr, $jdescr $AD's gradient is ~$gdescr."</span></span>
+<span id="cb2-202"><a href="#cb2-202"></a><span class="in">    "$(posterior_name) (D=$(dimension), #allocs=$(round(pallocs))-&gt;$(round(gallocs))) &lt;br&gt; $descr"</span></span>
+<span id="cb2-203"><a href="#cb2-203"></a><span class="in">end</span></span>
+<span id="cb2-204"><a href="#cb2-204"></a><span class="in">usable_row(row) = !any(ismissing, (row.stan_gradient_times, row.julia_lpdf_times, row.mooncake_times))</span></span>
+<span id="cb2-205"><a href="#cb2-205"></a><span class="in">pdf = jdf = DataFrame(filter(usable_row, eachrow(jdf)))</span></span>
+<span id="cb2-206"><a href="#cb2-206"></a><span class="in">pdf.ptime = mean.(pdf.julia_lpdf_times) ./ mean.(pdf.stan_lpdf_times)</span></span>
+<span id="cb2-207"><a href="#cb2-207"></a><span class="in">pdf.etime = mean.(pdf.enzyme_times) ./ mean.(pdf.stan_gradient_times) </span></span>
+<span id="cb2-208"><a href="#cb2-208"></a><span class="in">pdf.mtime = mean.(pdf.mooncake_times) ./ mean.(pdf.stan_gradient_times)</span></span>
+<span id="cb2-209"><a href="#cb2-209"></a></span>
+<span id="cb2-210"><a href="#cb2-210"></a><span class="in">colors = palette(:tab10)[[1,2]]</span></span>
+<span id="cb2-211"><a href="#cb2-211"></a><span class="in">Plots.vline!(</span></span>
+<span id="cb2-212"><a href="#cb2-212"></a><span class="in">Plots.hline!(</span></span>
+<span id="cb2-213"><a href="#cb2-213"></a><span class="in">    Plots.scatter(</span></span>
+<span id="cb2-214"><a href="#cb2-214"></a><span class="in">        pdf.ptime,</span></span>
+<span id="cb2-215"><a href="#cb2-215"></a><span class="in">        [pdf.etime, pdf.mtime];</span></span>
+<span id="cb2-216"><a href="#cb2-216"></a><span class="in">        label=["Enzyme" "Mooncake"],</span></span>
+<span id="cb2-217"><a href="#cb2-217"></a><span class="in">        color=permutedims(colors),</span></span>
+<span id="cb2-218"><a href="#cb2-218"></a><span class="in">        hover=hcat(</span></span>
+<span id="cb2-219"><a href="#cb2-219"></a><span class="in">            hover_string.(pdf.posterior_name, pdf.dimension, pdf.ptime, pdf.etime, pdf.julia_allocations, pdf.enzyme_allocations; AD="Enzyme"), </span></span>
+<span id="cb2-220"><a href="#cb2-220"></a><span class="in">            hover_string.(pdf.posterior_name, pdf.dimension, pdf.ptime, pdf.mtime, pdf.julia_allocations, pdf.mooncake_allocations; AD="Mooncake") </span></span>
+<span id="cb2-221"><a href="#cb2-221"></a><span class="in">        ),</span></span>
+<span id="cb2-222"><a href="#cb2-222"></a><span class="in">        xlabel="Relative primitive runtime\n(Julia vs Stan, left: Julia is faster)", </span></span>
+<span id="cb2-223"><a href="#cb2-223"></a><span class="in">        ylabel="Relative gradient runtime\n(Julia+X vs Stan, bottom: Julia+X is faster)",</span></span>
+<span id="cb2-224"><a href="#cb2-224"></a><span class="in">        title="Relative mean runtimes, EXCLUDING GARBAGE COLLECTION",</span></span>
+<span id="cb2-225"><a href="#cb2-225"></a><span class="in">        xscale=:log10, yscale=:log10, </span></span>
+<span id="cb2-226"><a href="#cb2-226"></a><span class="in">        size=(1000, 600)</span></span>
+<span id="cb2-227"><a href="#cb2-227"></a><span class="in">    ),</span></span>
+<span id="cb2-228"><a href="#cb2-228"></a><span class="in">    [1], color=:black, label="", hover=""</span></span>
+<span id="cb2-229"><a href="#cb2-229"></a><span class="in">),</span></span>
+<span id="cb2-230"><a href="#cb2-230"></a><span class="in">    [1], color=:black, label="", hover=""</span></span>
+<span id="cb2-231"><a href="#cb2-231"></a><span class="in">)</span></span>
+<span id="cb2-232"><a href="#cb2-232"></a><span class="in">```</span></span>
+<span id="cb2-233"><a href="#cb2-233"></a>:::</span>
+<span id="cb2-234"><a href="#cb2-234"></a></span>
+<span id="cb2-235"><a href="#cb2-235"></a><span class="fu"># Tabular data</span></span>
+<span id="cb2-236"><a href="#cb2-236"></a></span>
+<span id="cb2-237"><a href="#cb2-237"></a>The below table shows information about the implemented posteriors. Will elaborate on the exact meaning of columns.</span>
+<span id="cb2-238"><a href="#cb2-238"></a></span>
+<span id="cb2-239"><a href="#cb2-239"></a>:::{.column-screen}</span>
+<span id="cb2-240"><a href="#cb2-240"></a></span>
+<span id="cb2-243"><a href="#cb2-243"></a><span class="in">```{julia}</span></span>
+<span id="cb2-244"><a href="#cb2-244"></a><span class="in">ternary(c, t, f) = c ? t : f </span></span>
+<span id="cb2-245"><a href="#cb2-245"></a><span class="in">hl_best = HtmlHighlighter(</span></span>
+<span id="cb2-246"><a href="#cb2-246"></a><span class="in">    (data, i, j) -&gt; data[i,j] === 1.,</span></span>
+<span id="cb2-247"><a href="#cb2-247"></a><span class="in">    HtmlDecoration(color="blue", font_weight="bold")</span></span>
+<span id="cb2-248"><a href="#cb2-248"></a><span class="in">);</span></span>
+<span id="cb2-249"><a href="#cb2-249"></a><span class="in">hl_failed = HtmlHighlighter(</span></span>
+<span id="cb2-250"><a href="#cb2-250"></a><span class="in">    (data, i, j) -&gt; ((data[i,j]==="FAILED")),</span></span>
+<span id="cb2-251"><a href="#cb2-251"></a><span class="in">    HtmlDecoration(color = "red")</span></span>
+<span id="cb2-252"><a href="#cb2-252"></a><span class="in">);</span></span>
+<span id="cb2-253"><a href="#cb2-253"></a><span class="in">relative!(args...) = begin</span></span>
+<span id="cb2-254"><a href="#cb2-254"></a><span class="in">    for i in eachindex(args[1])</span></span>
+<span id="cb2-255"><a href="#cb2-255"></a><span class="in">        setindex!.(args, getindex.(args, i) ./ minimum(getindex.(args, i)), i)</span></span>
+<span id="cb2-256"><a href="#cb2-256"></a><span class="in">    end</span></span>
+<span id="cb2-257"><a href="#cb2-257"></a><span class="in">    args</span></span>
+<span id="cb2-258"><a href="#cb2-258"></a><span class="in">end</span></span>
+<span id="cb2-259"><a href="#cb2-259"></a><span class="in">julia_lpdf_times, stan_lpdf_times = relative!(mean.(jdf.julia_lpdf_times), mean.(jdf.stan_lpdf_times))</span></span>
+<span id="cb2-260"><a href="#cb2-260"></a><span class="in">enzyme_times, mooncake_times, stan_gradient_times = relative!(mean.(jdf.enzyme_times), mean.(jdf.mooncake_times), mean.(jdf.stan_gradient_times))</span></span>
+<span id="cb2-261"><a href="#cb2-261"></a><span class="in">pretty_table( </span></span>
+<span id="cb2-262"><a href="#cb2-262"></a><span class="in">    DataFrame(OrderedDict(  </span></span>
+<span id="cb2-263"><a href="#cb2-263"></a><span class="in">        "posterior name"=&gt;jdf.posterior_name,</span></span>
+<span id="cb2-264"><a href="#cb2-264"></a><span class="in">        "implementations"=&gt;implementations_string.(jdf.posterior_name),</span></span>
+<span id="cb2-265"><a href="#cb2-265"></a><span class="in">        "dimension"=&gt;jdf.dimension,</span></span>
+<span id="cb2-266"><a href="#cb2-266"></a><span class="in">        "median relative ulpdf error"=&gt;round2.(jdf.lpdf_accuracy),</span></span>
+<span id="cb2-267"><a href="#cb2-267"></a><span class="in">        "relative mean primitive Julia runtime"=&gt;round2.(julia_lpdf_times),</span></span>
+<span id="cb2-268"><a href="#cb2-268"></a><span class="in">        "relative mean primitive Stan runtime"=&gt;round2.(stan_lpdf_times),</span></span>
+<span id="cb2-269"><a href="#cb2-269"></a><span class="in">        "relative mean Enzyme runtime"=&gt;round2.(enzyme_times),</span></span>
+<span id="cb2-270"><a href="#cb2-270"></a><span class="in">        "relative mean Mooncake runtime"=&gt;round2.(mooncake_times),</span></span>
+<span id="cb2-271"><a href="#cb2-271"></a><span class="in">        "relative mean Stan gradient runtime"=&gt;round2.(stan_gradient_times),</span></span>
+<span id="cb2-272"><a href="#cb2-272"></a><span class="in">        "primitive Julia allocations"=&gt;jdf.julia_allocations,</span></span>
+<span id="cb2-273"><a href="#cb2-273"></a><span class="in">        "Enzyme allocations"=&gt;jdf.enzyme_allocations,</span></span>
+<span id="cb2-274"><a href="#cb2-274"></a><span class="in">        "Mooncake allocations"=&gt;jdf.mooncake_allocations,</span></span>
+<span id="cb2-275"><a href="#cb2-275"></a><span class="in">        "median lpdf difference"=&gt;round2.(jdf.lpdf_difference),</span></span>
+<span id="cb2-276"><a href="#cb2-276"></a><span class="in">        "median Enzyme relative gradient error"=&gt;round2.(jdf.enzyme_accuracy),</span></span>
+<span id="cb2-277"><a href="#cb2-277"></a><span class="in">        "median Mooncake relative gradient error"=&gt;round2.(jdf.mooncake_accuracy), </span></span>
+<span id="cb2-278"><a href="#cb2-278"></a><span class="in">        "Bridgestan"=&gt;jdf.BRIDGESTAN_VERSION,</span></span>
+<span id="cb2-279"><a href="#cb2-279"></a><span class="in">        "Enzyme"=&gt;jdf.ENZYME_VERSION,</span></span>
+<span id="cb2-280"><a href="#cb2-280"></a><span class="in">        "Mooncake"=&gt;jdf.MOONCAKE_VERSION,</span></span>
+<span id="cb2-281"><a href="#cb2-281"></a><span class="in">    ));</span></span>
+<span id="cb2-282"><a href="#cb2-282"></a><span class="in">    backend=Val(:html),</span></span>
+<span id="cb2-283"><a href="#cb2-283"></a><span class="in">    highlighters=(hl_best, hl_failed,), </span></span>
+<span id="cb2-284"><a href="#cb2-284"></a><span class="in">    show_subheader=false, </span></span>
+<span id="cb2-285"><a href="#cb2-285"></a><span class="in">    table_class="interactive"</span></span>
+<span id="cb2-286"><a href="#cb2-286"></a><span class="in">)</span></span>
+<span id="cb2-287"><a href="#cb2-287"></a><span class="in">```</span></span>
+<span id="cb2-288"><a href="#cb2-288"></a>:::</span>
 </code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
 </div></div></div></div></div>
 </div> <!-- /content -->

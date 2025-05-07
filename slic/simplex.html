@@ -8,7 +8,7 @@
 
 <meta name="author" content="Nikolas Siccha">
 
-<title>StanBlocks.jl</title>
+<title>The @slic macro – StanBlocks.jl</title>
 <style>
 code{white-space: pre-wrap;}
 span.smallcaps{font-variant: small-caps;}
@@ -58,22 +58,22 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </style>
 
 
-<script src="site_libs/quarto-nav/quarto-nav.js"></script>
-<script src="site_libs/quarto-nav/headroom.min.js"></script>
-<script src="site_libs/clipboard/clipboard.min.js"></script>
-<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
-<script src="site_libs/quarto-search/fuse.min.js"></script>
-<script src="site_libs/quarto-search/quarto-search.js"></script>
-<meta name="quarto:offset" content="./">
-<script src="site_libs/quarto-html/quarto.js"></script>
-<script src="site_libs/quarto-html/popper.min.js"></script>
-<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
-<script src="site_libs/quarto-html/anchor.min.js"></script>
-<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
-<link href="site_libs/quarto-html/quarto-syntax-highlighting-2f5df379a58b258e96c21c0638c20c03.css" rel="stylesheet" id="quarto-text-highlighting-styles">
-<script src="site_libs/bootstrap/bootstrap.min.js"></script>
-<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="site_libs/bootstrap/bootstrap-2a67b84387989708a41ea7085f8a0f59.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<script src="../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../">
+<script src="../site_libs/quarto-html/quarto.js"></script>
+<script src="../site_libs/quarto-html/popper.min.js"></script>
+<script src="../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../site_libs/quarto-html/quarto-syntax-highlighting-2f5df379a58b258e96c21c0638c20c03.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../site_libs/bootstrap/bootstrap-2a67b84387989708a41ea7085f8a0f59.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -121,7 +121,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
       <div class="navbar-container container-fluid">
       <div class="navbar-brand-container mx-auto">
-    <a class="navbar-brand" href="./index.html">
+    <a class="navbar-brand" href="../index.html">
     <span class="navbar-title">StanBlocks.jl</span>
     </a>
   </div>
@@ -132,20 +132,16 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
           <div class="collapse navbar-collapse" id="navbarCollapse">
             <ul class="navbar-nav navbar-nav-scroll me-auto">
   <li class="nav-item">
-    <a class="nav-link active" href="./index.html" aria-current="page"> 
+    <a class="nav-link" href="../index.html"> 
 <span class="menu-text">Overview</span></a>
   </li>  
   <li class="nav-item">
-    <a class="nav-link" href="./performance.html"> 
+    <a class="nav-link" href="../performance.html"> 
 <span class="menu-text">Performance</span></a>
   </li>  
   <li class="nav-item">
-    <a class="nav-link" href="./implementations.html"> 
+    <a class="nav-link" href="../implementations.html"> 
 <span class="menu-text">Implementations</span></a>
-  </li>  
-  <li class="nav-item">
-    <a class="nav-link" href="./slic/"> 
-<span class="menu-text"><span class="citation" data-cites="slic">@slic</span></span></a>
   </li>  
   <li class="nav-item compact">
     <a class="nav-link" href="https://github.com/nsiccha/StanBlocks.jl"> <i class="bi bi-github" role="img">
@@ -163,32 +159,20 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-full page-navbar">
 <!-- sidebar -->
 <!-- margin-sidebar -->
-    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
-        <nav id="TOC" role="doc-toc" class="toc-active">
-    <h2 id="toc-title">On this page</h2>
-   
-  <ul>
-  <li><a href="#stanblocks.jl" id="toc-stanblocks.jl" class="nav-link active" data-scroll-target="#stanblocks.jl">StanBlocks.jl</a></li>
-  <li><a href="#caveats" id="toc-caveats" class="nav-link" data-scroll-target="#caveats">Caveats</a>
-  <ul class="collapse">
-  <li><a href="#differences-in-the-returned-log-density" id="toc-differences-in-the-returned-log-density" class="nav-link" data-scroll-target="#differences-in-the-returned-log-density">Differences in the returned log-density</a></li>
-  <li><a href="#some-models-are-not-implemented-yet-or-may-have-smaller-or-bigger-errors" id="toc-some-models-are-not-implemented-yet-or-may-have-smaller-or-bigger-errors" class="nav-link" data-scroll-target="#some-models-are-not-implemented-yet-or-may-have-smaller-or-bigger-errors">Some models are not implemented yet, or may have smaller or bigger errors</a></li>
-  <li><a href="#some-models-may-have-been-implemented-suboptimally" id="toc-some-models-may-have-been-implemented-suboptimally" class="nav-link" data-scroll-target="#some-models-may-have-been-implemented-suboptimally">Some models may have been implemented suboptimally</a></li>
-  </ul></li>
-  <li><a href="#using-and-testing-the-implementations" id="toc-using-and-testing-the-implementations" class="nav-link" data-scroll-target="#using-and-testing-the-implementations">Using and testing the implementations</a></li>
-  </ul>
-</nav>
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
+        
     </div>
 <!-- main -->
-<main class="content column-page-left" id="quarto-document-content"><div class="quarto-title-block"><div class="quarto-title-tools-only"><h1></h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
+<main class="content column-page" id="quarto-document-content">
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
+<div class="quarto-title-block"><div><h1 class="title">The <span class="citation" data-cites="slic">@slic</span> macro</h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
 </div>
 
 
 
-<div class="quarto-title-meta column-page-left">
+<div class="quarto-title-meta column-page">
 
     <div>
     <div class="quarto-title-meta-heading">Author</div>
@@ -206,66 +190,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </header>
 
 
-<section id="stanblocks.jl" class="level1">
-<h1>StanBlocks.jl</h1>
-<p>Implements many - but currently not all - of the Bayesian models in <a href="https://github.com/stan-dev/posteriordb"><code>posteriordb</code></a> by implementing Julia macros and functions which mimick Stan blocks and functions respectively, with relatively light dependencies. Using the macros and functions defined in this package, the “shortest” <code>posteriordb</code> model (<a href="https://github.com/stan-dev/posteriordb/blob/master/posterior_database/models/stan/earn_height.stan"><code>earn_height.stan</code></a>)</p>
-<div class="sourceCode" id="cb1"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb1-1"><a href="#cb1-1"></a><span class="kw">data</span> {</span>
-<span id="cb1-2"><a href="#cb1-2"></a>  <span class="dt">int</span>&lt;<span class="kw">lower</span>=<span class="dv">0</span>&gt; N;</span>
-<span id="cb1-3"><a href="#cb1-3"></a>  <span class="dt">vector</span>[N] earn;</span>
-<span id="cb1-4"><a href="#cb1-4"></a>  <span class="dt">vector</span>[N] height;</span>
-<span id="cb1-5"><a href="#cb1-5"></a>}</span>
-<span id="cb1-6"><a href="#cb1-6"></a><span class="kw">parameters</span> {</span>
-<span id="cb1-7"><a href="#cb1-7"></a>  <span class="dt">vector</span>[<span class="dv">2</span>] beta;</span>
-<span id="cb1-8"><a href="#cb1-8"></a>  <span class="dt">real</span>&lt;<span class="kw">lower</span>=<span class="dv">0</span>&gt; sigma;</span>
-<span id="cb1-9"><a href="#cb1-9"></a>}</span>
-<span id="cb1-10"><a href="#cb1-10"></a><span class="kw">model</span> {</span>
-<span id="cb1-11"><a href="#cb1-11"></a>  earn ~ normal(beta[<span class="dv">1</span>] + beta[<span class="dv">2</span>] * height, sigma);</span>
-<span id="cb1-12"><a href="#cb1-12"></a>}</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<p>becomes</p>
-<div class="sourceCode" id="cb2"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb2-1"><a href="#cb2-1"></a><span class="fu">julia_implementation</span>(<span class="op">::</span><span class="dt">Val{:earn_height}</span>; N, earn, height, kwargs<span class="op">...</span>) <span class="op">=</span> <span class="cf">begin</span> </span>
-<span id="cb2-2"><a href="#cb2-2"></a>    <span class="pp">@stan</span> <span class="cf">begin</span> </span>
-<span id="cb2-3"><a href="#cb2-3"></a>        <span class="pp">@parameters</span> <span class="cf">begin</span></span>
-<span id="cb2-4"><a href="#cb2-4"></a>            beta<span class="op">::</span><span class="dt">vector</span>[<span class="fl">2</span>]</span>
-<span id="cb2-5"><a href="#cb2-5"></a>            sigma<span class="op">::</span><span class="dt">real</span>(lower<span class="op">=</span><span class="fl">0</span>.)</span>
-<span id="cb2-6"><a href="#cb2-6"></a>        <span class="cf">end</span></span>
-<span id="cb2-7"><a href="#cb2-7"></a>        <span class="pp">@model</span> <span class="cf">begin</span></span>
-<span id="cb2-8"><a href="#cb2-8"></a>            earn <span class="op">~</span> <span class="fu">normal</span>(<span class="pp">@broadcasted</span>(beta[<span class="fl">1</span>] <span class="op">+</span> beta[<span class="fl">2</span>] <span class="op">*</span> height), sigma);</span>
-<span id="cb2-9"><a href="#cb2-9"></a>        <span class="cf">end</span></span>
-<span id="cb2-10"><a href="#cb2-10"></a>    <span class="cf">end</span></span>
-<span id="cb2-11"><a href="#cb2-11"></a><span class="cf">end</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<p>Instantiating the posterior (i.e.&nbsp;model + data) requires loading <a href="https://github.com/sethaxen/PosteriorDB.jl"><code>PosteriorDB.jl</code></a>, which provides access to the datasets, e.g.&nbsp;to load the <code>earnings-earn_height</code> posterior (<code>earn_height</code> model + <code>earning</code> data):</p>
-<div class="sourceCode" id="cb3"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb3-1"><a href="#cb3-1"></a><span class="im">import</span> <span class="bu">StanBlocks</span>, <span class="bu">PosteriorDB</span></span>
-<span id="cb3-2"><a href="#cb3-2"></a></span>
-<span id="cb3-3"><a href="#cb3-3"></a>pdb <span class="op">=</span> PosteriorDB.<span class="fu">database</span>()</span>
-<span id="cb3-4"><a href="#cb3-4"></a>post <span class="op">=</span> PosteriorDB.<span class="fu">posterior</span>(pdb, <span class="st">"earnings-earn_height"</span>)</span>
-<span id="cb3-5"><a href="#cb3-5"></a></span>
-<span id="cb3-6"><a href="#cb3-6"></a>jlpdf <span class="op">=</span> StanBlocks.<span class="fu">julia_implementation</span>(post)</span>
-<span id="cb3-7"><a href="#cb3-7"></a><span class="fu">jlpdf</span>(<span class="fu">randn</span>(StanBlocks.<span class="fu">dimension</span>(jlpdf))) <span class="co"># Returns some number</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-</section>
-<section id="caveats" class="level1">
-<h1>Caveats</h1>
-<section id="differences-in-the-returned-log-density" class="level2">
-<h2 class="anchored" data-anchor-id="differences-in-the-returned-log-density">Differences in the returned log-density</h2>
-<p>Stan’s default “sampling statement” (e.g.&nbsp;<code>y ~ normal(mu, sigma);</code>) automatically drops constant terms (unless configured differently), see <a href="https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement">https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement</a>. Constant terms are terms which do not depend on model parameters, and this package’s macros and functions currently do not try to figure out which terms do not depend on model parameters, and as such we never drop them. This may lead to (constant) differences in the computed log-densities from the Stan and Julia implementations.</p>
-</section>
-<section id="some-models-are-not-implemented-yet-or-may-have-smaller-or-bigger-errors" class="level2">
-<h2 class="anchored" data-anchor-id="some-models-are-not-implemented-yet-or-may-have-smaller-or-bigger-errors">Some models are not implemented yet, or may have smaller or bigger errors</h2>
-<p>I’ve implemented many of the models, but I haven’t implemented all of them, and I probably have made some mistakes in implementing some of them.</p>
-</section>
-<section id="some-models-may-have-been-implemented-suboptimally" class="level2">
-<h2 class="anchored" data-anchor-id="some-models-may-have-been-implemented-suboptimally">Some models may have been implemented suboptimally</h2>
-<p>Just that.</p>
-</section>
-</section>
-<section id="using-and-testing-the-implementations" class="level1">
-<h1>Using and testing the implementations</h1>
-<p>See <a href="https://nsiccha.github.io/StanBlocks.jl/performance.html#tabular-data">https://nsiccha.github.io/StanBlocks.jl/performance.html#tabular-data</a> for an overview of (hopefully) correctly implemented models.</p>
-<p>See <a href="https://github.com/nsiccha/StanBlocks.jl/blob/main/test/runtests.jl"><code>test/runtests.jl</code></a> for a way to run and check the models. After importing <code>PosteriorDB</code>, <code>StanLogDensityProblems</code> and <code>LogDensityProblems</code>, you should have access to reference Stan implementations of the log density and of its gradient, see the documentation of <code>StanLogDensityProblems.jl</code>. The Stan log density can then be compared to the Julia log density as is, and after loading Julia’s AD packages, you can also compare the Stan log density gradient to the Julia log density gradient.</p>
 
 
 <!-- -->
 
-</section>
 
 </main> <!-- /main -->
 <script id="quarto-html-after-body" type="application/javascript">
@@ -409,7 +337,7 @@ window.document.addEventListener("DOMContentLoaded", function (event) {
   }
     var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
     var mailtoRegex = new RegExp(/^mailto:/);
-      var filterRegex = new RegExp("https:\/\/nsiccha\.github\.io\/StanBlocks\.jl\/");
+      var filterRegex = new RegExp('/' + window.location.host + '/');
     var isInternal = (href) => {
         return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
     }
@@ -736,7 +664,14 @@ window.document.addEventListener("DOMContentLoaded", function (event) {
   }
 });
 </script><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
-<div class="sourceCode" id="cb4" data-shortcodes="false"><pre class="sourceCode numberSource markdown number-lines code-with-copy"><code class="sourceCode markdown"><span id="cb4-1"><a href="#cb4-1"></a>{{&lt; include _README.md &gt;}} </span></code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
+<div class="sourceCode" id="cb1" data-shortcodes="false"><pre class="sourceCode markdown code-with-copy"><code class="sourceCode markdown"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> "The @slic macro"</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="in">```{julia}</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="in">using StanBlocks, StanLogDensityProblems, JSON, Markdown</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+</code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
 </div></div></div></div></div>
 </div> <!-- /content -->
 

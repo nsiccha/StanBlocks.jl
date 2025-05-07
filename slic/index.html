@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.6.42">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+<meta name="author" content="Nikolas Siccha">
+
+<title>The @slic macro – StanBlocks.jl</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../">
+<script src="../site_libs/quarto-html/quarto.js"></script>
+<script src="../site_libs/quarto-html/popper.min.js"></script>
+<script src="../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../site_libs/quarto-html/quarto-syntax-highlighting-2f5df379a58b258e96c21c0638c20c03.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../site_libs/bootstrap/bootstrap-2a67b84387989708a41ea7085f8a0f59.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<link rel="stylesheet" href="https://cdn.datatables.net/v/dt/dt-2.1.8/cr-2.0.4/fc-5.0.4/fh-4.0.1/datatables.min.css">
+<script src="datatables.min.js"></script>
+<script>
+  $(document).ready( function () {
+      $('table.interactive').DataTable({
+        paging: false,
+        fixedHeader: true,
+        fixedColumns: true,
+        colReorder: true
+      });
+  } );
+</script>
+
+</head><body class="nav-fixed">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="../index.html">
+    <span class="navbar-title">StanBlocks.jl</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Search"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" role="menu" aria-expanded="false" aria-label="Toggle navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll me-auto">
+  <li class="nav-item">
+    <a class="nav-link" href="../index.html"> 
+<span class="menu-text">Overview</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="../performance.html"> 
+<span class="menu-text">Performance</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="../implementations.html"> 
+<span class="menu-text">Implementations</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="../slic/"> 
+<span class="menu-text"><span class="citation" data-cites="slic">@slic</span></span></a>
+  </li>  
+  <li class="nav-item compact">
+    <a class="nav-link" href="https://github.com/nsiccha/StanBlocks.jl"> <i class="bi bi-github" role="img">
+</i> 
+<span class="menu-text"></span></a>
+  </li>  
+</ul>
+          </div> <!-- /navcollapse -->
+            <div class="quarto-navbar-tools">
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-full page-navbar">
+<!-- sidebar -->
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#supporting-bayesian-workflow" id="toc-supporting-bayesian-workflow" class="nav-link active" data-scroll-target="#supporting-bayesian-workflow">Supporting Bayesian Workflow</a>
+  <ul class="collapse">
+  <li><a href="#modularity" id="toc-modularity" class="nav-link" data-scroll-target="#modularity">Modularity</a>
+  <ul class="collapse">
+  <li><a href="#reuse-model-components" id="toc-reuse-model-components" class="nav-link" data-scroll-target="#reuse-model-components">Reuse model components</a></li>
+  <li><a href="#post-hoc-model-component-adjustment" id="toc-post-hoc-model-component-adjustment" class="nav-link" data-scroll-target="#post-hoc-model-component-adjustment">Post-hoc model component adjustment</a></li>
+  <li><a href="#post-hoc-model-component-pinning" id="toc-post-hoc-model-component-pinning" class="nav-link" data-scroll-target="#post-hoc-model-component-pinning">Post-hoc model component pinning</a></li>
+  <li><a href="#leave-x-out-cross-validation-support" id="toc-leave-x-out-cross-validation-support" class="nav-link" data-scroll-target="#leave-x-out-cross-validation-support">Leave-X-out cross-validation support</a></li>
+  </ul></li>
+  <li><a href="#computational-efficiency" id="toc-computational-efficiency" class="nav-link" data-scroll-target="#computational-efficiency">Computational efficiency</a>
+  <ul class="collapse">
+  <li><a href="#supports-activity-analysis-to-avoid-redundant-computation" id="toc-supports-activity-analysis-to-avoid-redundant-computation" class="nav-link" data-scroll-target="#supports-activity-analysis-to-avoid-redundant-computation">Supports activity analysis to avoid redundant computation</a></li>
+  <li><a href="#provides-efficient-primitives" id="toc-provides-efficient-primitives" class="nav-link" data-scroll-target="#provides-efficient-primitives">Provides efficient primitives</a></li>
+  <li><a href="#avoids-unnecessary-allocations" id="toc-avoids-unnecessary-allocations" class="nav-link" data-scroll-target="#avoids-unnecessary-allocations">Avoids unnecessary allocations</a></li>
+  </ul></li>
+  <li><a href="#expressiveness" id="toc-expressiveness" class="nav-link" data-scroll-target="#expressiveness">Expressiveness</a>
+  <ul class="collapse">
+  <li><a href="#compound-declare-distribute-statements" id="toc-compound-declare-distribute-statements" class="nav-link" data-scroll-target="#compound-declare-distribute-statements">Compound declare-distribute statements</a></li>
+  <li><a href="#automatically-inferred-constraints" id="toc-automatically-inferred-constraints" class="nav-link" data-scroll-target="#automatically-inferred-constraints">Automatically inferred constraints</a></li>
+  <li><a href="#automatically-inferred---but-optionally-constrained---types" id="toc-automatically-inferred---but-optionally-constrained---types" class="nav-link" data-scroll-target="#automatically-inferred---but-optionally-constrained---types">Automatically inferred - but optionally constrained - types</a></li>
+  <li><a href="#supports-tracing-through-a-lot-of-julia-syntax" id="toc-supports-tracing-through-a-lot-of-julia-syntax" class="nav-link" data-scroll-target="#supports-tracing-through-a-lot-of-julia-syntax">Supports tracing through a lot of Julia syntax</a></li>
+  <li><a href="#supports-opaquely-handling-arbitrary-julia-syntax" id="toc-supports-opaquely-handling-arbitrary-julia-syntax" class="nav-link" data-scroll-target="#supports-opaquely-handling-arbitrary-julia-syntax">Supports opaquely handling arbitrary Julia syntax</a></li>
+  </ul></li>
+  <li><a href="#extendability" id="toc-extendability" class="nav-link" data-scroll-target="#extendability">Extendability</a>
+  <ul class="collapse">
+  <li><a href="#custom-tracing-passes" id="toc-custom-tracing-passes" class="nav-link" data-scroll-target="#custom-tracing-passes">Custom tracing passes</a></li>
+  </ul></li>
+  </ul></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content column-page-left" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<div class="quarto-title-block"><div><h1 class="title">The <span class="citation" data-cites="slic">@slic</span> macro</h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
+</div>
+
+
+
+<div class="quarto-title-meta column-page-left">
+
+    <div>
+    <div class="quarto-title-meta-heading">Author</div>
+    <div class="quarto-title-meta-contents">
+             <p>Nikolas Siccha </p>
+          </div>
+  </div>
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<section id="supporting-bayesian-workflow" class="level1">
+<h1>Supporting Bayesian Workflow</h1>
+<p>Code up your model once - simplify, extend and use in multiple contexts efficiently.</p>
+<section id="modularity" class="level2">
+<h2 class="anchored" data-anchor-id="modularity">Modularity</h2>
+<p>The aim is to make it easy to iterate on the statistical model.</p>
+<section id="reuse-model-components" class="level3">
+<h3 class="anchored" data-anchor-id="reuse-model-components">Reuse model components</h3>
+<p>Like Turing.jl’s submodels (<a href="https://duckduckgo.com/?q=Turing.jl+submodels">where’s the documentation for this?</a>) or SlicStan’s functions that declare parameters (first example in <a href="https://dl.acm.org/doi/epdf/10.1145/3290348">the paper</a>).</p>
+<p>Getting tired of always coding up the same hierarchical priors? <code>@slic</code> will support reusing model components:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb1-1"><a href="#cb1-1"></a>hierarchical_prior <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span></span>
+<span id="cb1-2"><a href="#cb1-2"></a>    location <span class="op">~</span> <span class="fu">std_normal</span>()</span>
+<span id="cb1-3"><a href="#cb1-3"></a>    scale <span class="op">~</span> <span class="fu">std_lognormal</span>()</span>
+<span id="cb1-4"><a href="#cb1-4"></a>    x <span class="op">~</span> <span class="fu">normal</span>(location, scale; n)</span>
+<span id="cb1-5"><a href="#cb1-5"></a>    <span class="cf">return</span> x</span>
+<span id="cb1-6"><a href="#cb1-6"></a><span class="cf">end</span></span>
+<span id="cb1-7"><a href="#cb1-7"></a>hierarchical_model <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb1-8"><a href="#cb1-8"></a>    obs_location <span class="op">~</span> <span class="fu">hierarchical_prior</span>(;n)</span>
+<span id="cb1-9"><a href="#cb1-9"></a>    obs_scale <span class="op">~</span> <span class="fu">std_lognormal</span>()</span>
+<span id="cb1-10"><a href="#cb1-10"></a>    obs <span class="op">~</span> <span class="fu">normal</span>(obs_location, obs_scale)</span>
+<span id="cb1-11"><a href="#cb1-11"></a><span class="cf">end</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Alternative syntax proposals are appreciated!</p>
+</section>
+<section id="post-hoc-model-component-adjustment" class="level3">
+<h3 class="anchored" data-anchor-id="post-hoc-model-component-adjustment">Post-hoc model component adjustment</h3>
+<p>Ever wanted to switch out one prior for another, but didn’t want to implement this functionality when coding up your first exploratory model? <code>@slic</code> will support switching out arbitrary model components:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb2-1"><a href="#cb2-1"></a><span class="st">"My first, exploratory model to check that things work"</span></span>
+<span id="cb2-2"><a href="#cb2-2"></a>pooled_model <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb2-3"><a href="#cb2-3"></a>    obs_location <span class="op">~</span> <span class="fu">std_normal</span>()</span>
+<span id="cb2-4"><a href="#cb2-4"></a>    obs_scale <span class="op">~</span> <span class="fu">std_lognormal</span>()</span>
+<span id="cb2-5"><a href="#cb2-5"></a>    obs <span class="op">~</span> <span class="fu">normal</span>(obs_location, obs_scale)</span>
+<span id="cb2-6"><a href="#cb2-6"></a><span class="cf">end</span></span>
+<span id="cb2-7"><a href="#cb2-7"></a><span class="st">"Equivalent to the previous implementation of `hierarchical_model` above"</span></span>
+<span id="cb2-8"><a href="#cb2-8"></a>hierarchical_model <span class="op">=</span> <span class="fu">pooled_model</span>(<span class="kw">quote</span> </span>
+<span id="cb2-9"><a href="#cb2-9"></a>    obs_location <span class="op">~</span> <span class="fu">hierarchical_prior</span>(;n)</span>
+<span id="cb2-10"><a href="#cb2-10"></a><span class="kw">end</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Alternative syntax proposals are appreciated!</p>
+</section>
+<section id="post-hoc-model-component-pinning" class="level3">
+<h3 class="anchored" data-anchor-id="post-hoc-model-component-pinning">Post-hoc model component pinning</h3>
+<p>Like Turing.jl’s <a href="https://turinglang.org/docs/usage/probability-interface/index.html#conditioning-and-deconditioning">Conditioning</a> or this <a href="https://github.com/stan-dev/design-docs/pull/56">Stan PR</a>.</p>
+<p>Ever wanted to pin hierarchical scale parameters? <code>@slic</code> will support pinning arbitrary model components:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb3-1"><a href="#cb3-1"></a><span class="st">"The `hierarchical_model` with the hierarchical scale parameter fixed to 1."</span></span>
+<span id="cb3-2"><a href="#cb3-2"></a>semihierarchical_model <span class="op">=</span> <span class="fu">hierarchical_model</span>(;obs_location_scale<span class="op">=</span><span class="fl">1</span>.)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Turing’s <a href="https://turinglang.org/docs/usage/probability-interface/index.html#conditioning-and-deconditioning">Deconditioning</a> could also easily be supported, but as always syntax proposals are appreciated!</p>
+</section>
+<section id="leave-x-out-cross-validation-support" class="level3">
+<h3 class="anchored" data-anchor-id="leave-x-out-cross-validation-support">Leave-X-out cross-validation support</h3>
+<p>Getting tired of reimplementing parts of your model to perform e.g.&nbsp;leave-one-subject-out cross-validation? <code>@slic</code> will support automatic model rewrites to perform e.g.&nbsp;automatic leave-one-subject-out cross-validation from the same model implementation that you have used to sample from the posterior:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb4-1"><a href="#cb4-1"></a>hierarchical_prior <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span></span>
+<span id="cb4-2"><a href="#cb4-2"></a>    location <span class="op">~</span> <span class="fu">std_normal</span>()</span>
+<span id="cb4-3"><a href="#cb4-3"></a>    scale <span class="op">~</span> <span class="fu">std_lognormal</span>()</span>
+<span id="cb4-4"><a href="#cb4-4"></a>    x <span class="op">~</span> <span class="fu">normal</span>(location, scale; n)</span>
+<span id="cb4-5"><a href="#cb4-5"></a>    <span class="cf">return</span> x</span>
+<span id="cb4-6"><a href="#cb4-6"></a><span class="cf">end</span></span>
+<span id="cb4-7"><a href="#cb4-7"></a>hierarchical_model <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb4-8"><a href="#cb4-8"></a>    n <span class="op">=</span> <span class="fu">maximum</span>(subject_idx)</span>
+<span id="cb4-9"><a href="#cb4-9"></a>    obs_intercept <span class="op">~</span> <span class="fu">hierarchical_prior</span>(;n)</span>
+<span id="cb4-10"><a href="#cb4-10"></a>    obs_slope <span class="op">~</span> <span class="fu">hierarchical_prior</span>(;n)</span>
+<span id="cb4-11"><a href="#cb4-11"></a>    obs_location <span class="op">=</span> obs_intercept <span class="op">+</span> <span class="fu">dot</span>(covariates, obs_slope)</span>
+<span id="cb4-12"><a href="#cb4-12"></a>    obs_scale <span class="op">~</span> <span class="fu">std_lognormal</span>()</span>
+<span id="cb4-13"><a href="#cb4-13"></a>    obs[subject_idx] <span class="op">~</span> <span class="fu">normal</span>(obs_location, obs_scale)</span>
+<span id="cb4-14"><a href="#cb4-14"></a><span class="cf">end</span></span>
+<span id="cb4-15"><a href="#cb4-15"></a>samples <span class="op">=</span> <span class="fu">nuts_draws</span>(<span class="fu">hierarchical_model</span>(;subject_idx, covariates, obs))</span>
+<span id="cb4-16"><a href="#cb4-16"></a><span class="st">"Alternative 1: Constructing just the CV model"</span></span>
+<span id="cb4-17"><a href="#cb4-17"></a>cv_model <span class="op">=</span> <span class="fu">cv</span>(</span>
+<span id="cb4-18"><a href="#cb4-18"></a>    hierarchical_model; </span>
+<span id="cb4-19"><a href="#cb4-19"></a>    subject_idx<span class="op">=</span>held_out_subject_idx, </span>
+<span id="cb4-20"><a href="#cb4-20"></a>    covariates<span class="op">=</span>held_out_covariates, </span>
+<span id="cb4-21"><a href="#cb4-21"></a>    obs<span class="op">=</span>held_out_obs</span>
+<span id="cb4-22"><a href="#cb4-22"></a>)</span>
+<span id="cb4-23"><a href="#cb4-23"></a><span class="st">"Alternative 2: Constructing the CV model and computing the necessary quantities"</span></span>
+<span id="cb4-24"><a href="#cb4-24"></a>cv_info <span class="op">=</span> <span class="fu">cv</span>(</span>
+<span id="cb4-25"><a href="#cb4-25"></a>    samples; </span>
+<span id="cb4-26"><a href="#cb4-26"></a>    subject_idx<span class="op">=</span>held_out_subject_idx, </span>
+<span id="cb4-27"><a href="#cb4-27"></a>    covariates<span class="op">=</span>held_out_covariates, </span>
+<span id="cb4-28"><a href="#cb4-28"></a>    obs<span class="op">=</span>held_out_obs</span>
+<span id="cb4-29"><a href="#cb4-29"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>In the above example, the hierarchical parameters will be fixed and reused from <code>samples</code>, while the subject specific parameters will be automatically resampled inedependently for each draw to compute the likelihood. Determining which parameters get fixed/resued and which ones get resampled can be automatically determined by tracing through the model.</p>
+<p>Alternative syntax proposals are appreciated!</p>
+</section>
+</section>
+<section id="computational-efficiency" class="level2">
+<h2 class="anchored" data-anchor-id="computational-efficiency">Computational efficiency</h2>
+<p>The aim is to make it easy to write computationally efficient code.</p>
+<section id="supports-activity-analysis-to-avoid-redundant-computation" class="level3">
+<h3 class="anchored" data-anchor-id="supports-activity-analysis-to-avoid-redundant-computation">Supports activity analysis to avoid redundant computation</h3>
+<p>Like <a href="https://github.com/mgorinova/SlicStan">SlicStan</a>, <code>@slic</code> will support automatically determining whether model components are</p>
+<ul>
+<li>data - passed to the model,</li>
+<li>transformed data - need to be computed only once per model instantiation/conditioning/deconditioning,</li>
+<li>parameters - contribute to the posterior (MCMC-)dimension and potentially need to be transformed appropriately,</li>
+<li>transformed parameters - have to be computed every gradient evaluation, because they <strong>do</strong> affect the likelihood,</li>
+<li>generated quantities - have to be computed only once per sample and can be sampled independently, because they <strong>do not</strong> affect the likelihood.</li>
+</ul>
+<p>This allows for the natural model specification in a single place, while not sacrificing any performance.</p>
+<p>In the below model,</p>
+<ul>
+<li>if we do not specify anything, every model component will be sampled independently,</li>
+<li>if we specify only <code>obs_location</code> or <code>obs_scale</code>, every other model component will still be sampled independently, and</li>
+<li>if we specify only <code>obs</code>, both <code>obs_location</code> and <code>obs_scale</code> become parameters, and <code>obs_likelihood</code> and <code>obs_prediction</code> get automatically added as generated quantities.</li>
+</ul>
+<div class="sourceCode" id="cb5"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb5-1"><a href="#cb5-1"></a><span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb5-2"><a href="#cb5-2"></a>    obs_location <span class="op">~</span> <span class="fu">std_normal</span>()</span>
+<span id="cb5-3"><a href="#cb5-3"></a>    obs_scale <span class="op">~</span> <span class="fu">std_lognormal</span>()</span>
+<span id="cb5-4"><a href="#cb5-4"></a>    obs <span class="op">~</span> <span class="fu">normal</span>(obs_location, obs_scale)</span>
+<span id="cb5-5"><a href="#cb5-5"></a><span class="cf">end</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</section>
+<section id="provides-efficient-primitives" class="level3">
+<h3 class="anchored" data-anchor-id="provides-efficient-primitives">Provides efficient primitives</h3>
+<p>The most efficient way to compute intermediate functional quantities will depend on the type, shape and potentially activity of the arguments passed to the function. We provide efficient primitives which explot this, e.g.:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb6-1"><a href="#cb6-1"></a><span class="fu">normal_lpdf</span>(y<span class="op">::</span><span class="dt">AbstractVector</span>, location<span class="op">::</span><span class="dt">AbstractVector</span>, scale<span class="op">::</span><span class="dt">AbstractVector</span>) <span class="op">=</span> <span class="st">"Do something which requires computing log.(scale)."</span></span>
+<span id="cb6-2"><a href="#cb6-2"></a><span class="fu">normal_lpdf</span>(y<span class="op">::</span><span class="dt">AbstractVector</span>, location<span class="op">::</span><span class="dt">AbstractVector</span>, scale<span class="op">::</span><span class="dt">Real</span>) <span class="op">=</span> <span class="st">"Do something which only requires computing log(scale) once."</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</section>
+<section id="avoids-unnecessary-allocations" class="level3">
+<h3 class="anchored" data-anchor-id="avoids-unnecessary-allocations">Avoids unnecessary allocations</h3>
+<p>Like Stan, <code>@slic</code> models will use matrix expressions to keep the memory footprint low. This will (should) be more efficient than using something like a bump allocator and just-allocate-and-reuse away.</p>
+</section>
+</section>
+<section id="expressiveness" class="level2">
+<h2 class="anchored" data-anchor-id="expressiveness">Expressiveness</h2>
+<p>The aim is to make it easy to write correct code.</p>
+<section id="compound-declare-distribute-statements" class="level3">
+<h3 class="anchored" data-anchor-id="compound-declare-distribute-statements">Compound <a href="https://statmodeling.stat.columbia.edu/2018/02/01/stan-feature-declare-distribute/">declare-distribute statements</a></h3>
+<p>Like Turing.jl’s unified way of defining parameters, unlike Stan’s split-across-blocks way of defining parameters.</p>
+</section>
+<section id="automatically-inferred-constraints" class="level3">
+<h3 class="anchored" data-anchor-id="automatically-inferred-constraints">Automatically inferred constraints</h3>
+<p>Like Turing.jl: a parameter’s constraints are automatically inferred from the support of its prior - but can of course be adjusted:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb7-1"><a href="#cb7-1"></a><span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb7-2"><a href="#cb7-2"></a>    <span class="st">"Unconstrained"</span></span>
+<span id="cb7-3"><a href="#cb7-3"></a>    obs_intercept <span class="op">~</span> <span class="fu">std_normal</span>()</span>
+<span id="cb7-4"><a href="#cb7-4"></a>    <span class="st">"Constrained to be positive"</span></span>
+<span id="cb7-5"><a href="#cb7-5"></a>    obs_scale <span class="op">~</span> <span class="fu">std_lognormal</span>()</span>
+<span id="cb7-6"><a href="#cb7-6"></a>    <span class="st">"Constrained to be positive"</span></span>
+<span id="cb7-7"><a href="#cb7-7"></a>    obs_slope <span class="op">~</span> <span class="fu">std_normal</span>(;lower<span class="op">=</span><span class="fl">0</span>.)</span>
+<span id="cb7-8"><a href="#cb7-8"></a>    obs <span class="op">~</span> <span class="fu">normal</span>(obs_intercept <span class="op">+</span> obs_slope <span class="op">*</span> x, obs_scale)</span>
+<span id="cb7-9"><a href="#cb7-9"></a><span class="cf">end</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</section>
+<section id="automatically-inferred---but-optionally-constrained---types" class="level3">
+<h3 class="anchored" data-anchor-id="automatically-inferred---but-optionally-constrained---types">Automatically inferred - but optionally constrained - types</h3>
+<p>Like Turing.jl: the type of any model expression can be specified, but it need not be specified.</p>
+</section>
+<section id="supports-tracing-through-a-lot-of-julia-syntax" class="level3">
+<h3 class="anchored" data-anchor-id="supports-tracing-through-a-lot-of-julia-syntax">Supports tracing through a lot of Julia syntax</h3>
+<p>We will support tracing through a lot of common Julia syntax, like broadcasting, generators, maps and do blocks.</p>
+</section>
+<section id="supports-opaquely-handling-arbitrary-julia-syntax" class="level3">
+<h3 class="anchored" data-anchor-id="supports-opaquely-handling-arbitrary-julia-syntax">Supports opaquely handling arbitrary Julia syntax</h3>
+<p>While tracing will be limited to a subset of Julia syntax, “unknown” user defined functions will simply not be traced recursively. We will not allow these opaque functions to introduce model parameters, and we will “assume the worst” for the activity analysis.</p>
+</section>
+</section>
+<section id="extendability" class="level2">
+<h2 class="anchored" data-anchor-id="extendability">Extendability</h2>
+<p>The aim is to make it easy to extend <code>@slic</code>’s functionality.</p>
+<section id="custom-tracing-passes" class="level3">
+<h3 class="anchored" data-anchor-id="custom-tracing-passes">Custom tracing passes</h3>
+<p>The data/parameter/generated-quantities activity analysis comes out of two passes through the model (one forward, one reverse).</p>
+<p>The cross-validation activity analysis comes out of another pass through the model.</p>
+<p>There is nothing stopping us from allowing additional or alternative passes, and there should not be anything stopping you from implementing these custom passes.</p>
+<p>One possible custom pass would e.g.&nbsp;translate the <code>@slic</code> model to a Stan program.</p>
+
+
+<!-- -->
+
+</section>
+</section>
+</section>
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const onCopySuccess = function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  }
+  const getTextToCopy = function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+    text: getTextToCopy
+  });
+  clipboard.on('success', onCopySuccess);
+  if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+    const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+      text: getTextToCopy,
+      container: window.document.getElementById('quarto-embedded-source-code-modal')
+    });
+    clipboardModal.on('success', onCopySuccess);
+  }
+  const viewSource = window.document.getElementById('quarto-view-source') ||
+                     window.document.getElementById('quarto-code-tools-source');
+  if (viewSource) {
+    const sourceUrl = viewSource.getAttribute("data-quarto-source-url");
+    viewSource.addEventListener("click", function(e) {
+      if (sourceUrl) {
+        // rstudio viewer pane
+        if (/\bcapabilities=\b/.test(window.location)) {
+          window.open(sourceUrl);
+        } else {
+          window.location.href = sourceUrl;
+        }
+      } else {
+        const modal = new bootstrap.Modal(document.getElementById('quarto-embedded-source-code-modal'));
+        modal.show();
+      }
+      return false;
+    });
+  }
+  function toggleCodeHandler(show) {
+    return function(e) {
+      const detailsSrc = window.document.querySelectorAll(".cell > details > .sourceCode");
+      for (let i=0; i<detailsSrc.length; i++) {
+        const details = detailsSrc[i].parentElement;
+        if (show) {
+          details.open = true;
+        } else {
+          details.removeAttribute("open");
+        }
+      }
+      const cellCodeDivs = window.document.querySelectorAll(".cell > .sourceCode");
+      const fromCls = show ? "hidden" : "unhidden";
+      const toCls = show ? "unhidden" : "hidden";
+      for (let i=0; i<cellCodeDivs.length; i++) {
+        const codeDiv = cellCodeDivs[i];
+        if (codeDiv.classList.contains(fromCls)) {
+          codeDiv.classList.remove(fromCls);
+          codeDiv.classList.add(toCls);
+        } 
+      }
+      return false;
+    }
+  }
+  const hideAllCode = window.document.getElementById("quarto-hide-all-code");
+  if (hideAllCode) {
+    hideAllCode.addEventListener("click", toggleCodeHandler(false));
+  }
+  const showAllCode = window.document.getElementById("quarto-show-all-code");
+  if (showAllCode) {
+    showAllCode.addEventListener("click", toggleCodeHandler(true));
+  }
+    var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+    var mailtoRegex = new RegExp(/^mailto:/);
+      var filterRegex = new RegExp("https:\/\/nsiccha\.github\.io\/StanBlocks\.jl\/");
+    var isInternal = (href) => {
+        return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+    }
+    // Inspect non-navigation links and adorn them if external
+ 	var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+    for (var i=0; i<links.length; i++) {
+      const link = links[i];
+      if (!isInternal(link.href)) {
+        // undo the damage that might have been done by quarto-nav.js in the case of
+        // links that we want to consider external
+        if (link.dataset.originalHref !== undefined) {
+          link.href = link.dataset.originalHref;
+        }
+      }
+    }
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      if (note) {
+        return note.innerHTML;
+      } else {
+        return "";
+      }
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(container);
+        }
+        return container.innerHTML
+      } else {
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      if (window.Quarto?.typesetMath) {
+        window.Quarto.typesetMath(note);
+      }
+      if (note.classList.contains("callout")) {
+        return note.outerHTML;
+      } else {
+        return note.innerHTML;
+      }
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
+<div class="sourceCode" id="cb8" data-shortcodes="false"><pre class="sourceCode numberSource markdown number-lines code-with-copy"><code class="sourceCode markdown"><span id="cb8-1"><a href="#cb8-1"></a><span class="co">---</span></span>
+<span id="cb8-2"><a href="#cb8-2"></a><span class="an">title:</span><span class="co"> "The @slic macro"</span></span>
+<span id="cb8-3"><a href="#cb8-3"></a><span class="co">---</span></span>
+<span id="cb8-4"><a href="#cb8-4"></a></span>
+<span id="cb8-7"><a href="#cb8-7"></a><span class="in">```{julia}</span></span>
+<span id="cb8-8"><a href="#cb8-8"></a><span class="in">using StanBlocks, StanLogDensityProblems, JSON, Markdown</span></span>
+<span id="cb8-9"><a href="#cb8-9"></a><span class="in">```</span></span>
+<span id="cb8-10"><a href="#cb8-10"></a><span class="fu"># Supporting Bayesian Workflow</span></span>
+<span id="cb8-11"><a href="#cb8-11"></a></span>
+<span id="cb8-12"><a href="#cb8-12"></a>Code up your model once - simplify, extend and use in multiple contexts efficiently.</span>
+<span id="cb8-13"><a href="#cb8-13"></a></span>
+<span id="cb8-14"><a href="#cb8-14"></a><span class="fu">## Modularity</span></span>
+<span id="cb8-15"><a href="#cb8-15"></a></span>
+<span id="cb8-16"><a href="#cb8-16"></a>The aim is to make it easy to iterate on the statistical model.</span>
+<span id="cb8-17"><a href="#cb8-17"></a></span>
+<span id="cb8-18"><a href="#cb8-18"></a><span class="fu">### Reuse model components</span></span>
+<span id="cb8-19"><a href="#cb8-19"></a></span>
+<span id="cb8-20"><a href="#cb8-20"></a>Like Turing.jl's submodels (<span class="co">[</span><span class="ot">where's the documentation for this?</span><span class="co">](https://duckduckgo.com/?q=Turing.jl+submodels)</span>) or SlicStan's functions that declare parameters (first example in <span class="co">[</span><span class="ot">the paper</span><span class="co">](https://dl.acm.org/doi/epdf/10.1145/3290348)</span>).</span>
+<span id="cb8-21"><a href="#cb8-21"></a></span>
+<span id="cb8-22"><a href="#cb8-22"></a>Getting tired of always coding up the same hierarchical priors? </span>
+<span id="cb8-23"><a href="#cb8-23"></a><span class="in">`@slic`</span> will support reusing model components:</span>
+<span id="cb8-24"><a href="#cb8-24"></a></span>
+<span id="cb8-25"><a href="#cb8-25"></a><span class="in">```julia</span></span>
+<span id="cb8-26"><a href="#cb8-26"></a><span class="in">hierarchical_prior = @slic begin</span></span>
+<span id="cb8-27"><a href="#cb8-27"></a><span class="in">    location ~ std_normal()</span></span>
+<span id="cb8-28"><a href="#cb8-28"></a><span class="in">    scale ~ std_lognormal()</span></span>
+<span id="cb8-29"><a href="#cb8-29"></a><span class="in">    x ~ normal(location, scale; n)</span></span>
+<span id="cb8-30"><a href="#cb8-30"></a><span class="in">    return x</span></span>
+<span id="cb8-31"><a href="#cb8-31"></a><span class="in">end</span></span>
+<span id="cb8-32"><a href="#cb8-32"></a><span class="in">hierarchical_model = @slic begin </span></span>
+<span id="cb8-33"><a href="#cb8-33"></a><span class="in">    obs_location ~ hierarchical_prior(;n)</span></span>
+<span id="cb8-34"><a href="#cb8-34"></a><span class="in">    obs_scale ~ std_lognormal()</span></span>
+<span id="cb8-35"><a href="#cb8-35"></a><span class="in">    obs ~ normal(obs_location, obs_scale)</span></span>
+<span id="cb8-36"><a href="#cb8-36"></a><span class="in">end</span></span>
+<span id="cb8-37"><a href="#cb8-37"></a><span class="in">```</span></span>
+<span id="cb8-38"><a href="#cb8-38"></a></span>
+<span id="cb8-39"><a href="#cb8-39"></a>Alternative syntax proposals are appreciated!</span>
+<span id="cb8-40"><a href="#cb8-40"></a></span>
+<span id="cb8-41"><a href="#cb8-41"></a><span class="fu">### Post-hoc model component adjustment</span></span>
+<span id="cb8-42"><a href="#cb8-42"></a></span>
+<span id="cb8-43"><a href="#cb8-43"></a>Ever wanted to switch out one prior for another, but didn't want to implement this functionality when coding up your first exploratory model? </span>
+<span id="cb8-44"><a href="#cb8-44"></a><span class="in">`@slic`</span> will support switching out arbitrary model components: </span>
+<span id="cb8-45"><a href="#cb8-45"></a></span>
+<span id="cb8-46"><a href="#cb8-46"></a><span class="in">```julia</span></span>
+<span id="cb8-47"><a href="#cb8-47"></a><span class="in">"My first, exploratory model to check that things work"</span></span>
+<span id="cb8-48"><a href="#cb8-48"></a><span class="in">pooled_model = @slic begin </span></span>
+<span id="cb8-49"><a href="#cb8-49"></a><span class="in">    obs_location ~ std_normal()</span></span>
+<span id="cb8-50"><a href="#cb8-50"></a><span class="in">    obs_scale ~ std_lognormal()</span></span>
+<span id="cb8-51"><a href="#cb8-51"></a><span class="in">    obs ~ normal(obs_location, obs_scale)</span></span>
+<span id="cb8-52"><a href="#cb8-52"></a><span class="in">end</span></span>
+<span id="cb8-53"><a href="#cb8-53"></a><span class="in">"Equivalent to the previous implementation of `hierarchical_model` above"</span></span>
+<span id="cb8-54"><a href="#cb8-54"></a><span class="in">hierarchical_model = pooled_model(quote </span></span>
+<span id="cb8-55"><a href="#cb8-55"></a><span class="in">    obs_location ~ hierarchical_prior(;n)</span></span>
+<span id="cb8-56"><a href="#cb8-56"></a><span class="in">end)</span></span>
+<span id="cb8-57"><a href="#cb8-57"></a><span class="in">```</span></span>
+<span id="cb8-58"><a href="#cb8-58"></a></span>
+<span id="cb8-59"><a href="#cb8-59"></a>Alternative syntax proposals are appreciated!</span>
+<span id="cb8-60"><a href="#cb8-60"></a></span>
+<span id="cb8-61"><a href="#cb8-61"></a><span class="fu">### Post-hoc model component pinning</span></span>
+<span id="cb8-62"><a href="#cb8-62"></a></span>
+<span id="cb8-63"><a href="#cb8-63"></a>Like Turing.jl's <span class="co">[</span><span class="ot">Conditioning</span><span class="co">](https://turinglang.org/docs/usage/probability-interface/index.html#conditioning-and-deconditioning)</span> or this <span class="co">[</span><span class="ot">Stan PR</span><span class="co">](https://github.com/stan-dev/design-docs/pull/56)</span>.</span>
+<span id="cb8-64"><a href="#cb8-64"></a></span>
+<span id="cb8-65"><a href="#cb8-65"></a>Ever wanted to pin hierarchical scale parameters?</span>
+<span id="cb8-66"><a href="#cb8-66"></a><span class="in">`@slic`</span> will support pinning arbitrary model components: </span>
+<span id="cb8-67"><a href="#cb8-67"></a></span>
+<span id="cb8-68"><a href="#cb8-68"></a><span class="in">```julia</span></span>
+<span id="cb8-69"><a href="#cb8-69"></a><span class="in">"The `hierarchical_model` with the hierarchical scale parameter fixed to 1."</span></span>
+<span id="cb8-70"><a href="#cb8-70"></a><span class="in">semihierarchical_model = hierarchical_model(;obs_location_scale=1.)</span></span>
+<span id="cb8-71"><a href="#cb8-71"></a><span class="in">```</span></span>
+<span id="cb8-72"><a href="#cb8-72"></a></span>
+<span id="cb8-73"><a href="#cb8-73"></a>Turing's <span class="co">[</span><span class="ot">Deconditioning</span><span class="co">](https://turinglang.org/docs/usage/probability-interface/index.html#conditioning-and-deconditioning)</span> could also easily be supported, but as always syntax proposals are appreciated!</span>
+<span id="cb8-74"><a href="#cb8-74"></a></span>
+<span id="cb8-75"><a href="#cb8-75"></a><span class="fu">### Leave-X-out cross-validation support</span></span>
+<span id="cb8-76"><a href="#cb8-76"></a></span>
+<span id="cb8-77"><a href="#cb8-77"></a>Getting tired of reimplementing parts of your model to perform e.g. leave-one-subject-out cross-validation?</span>
+<span id="cb8-78"><a href="#cb8-78"></a><span class="in">`@slic`</span> will support automatic model rewrites to perform e.g. automatic leave-one-subject-out cross-validation from the same model implementation that you have used to sample from the posterior:</span>
+<span id="cb8-79"><a href="#cb8-79"></a></span>
+<span id="cb8-80"><a href="#cb8-80"></a><span class="in">```julia</span></span>
+<span id="cb8-81"><a href="#cb8-81"></a><span class="in">hierarchical_prior = @slic begin</span></span>
+<span id="cb8-82"><a href="#cb8-82"></a><span class="in">    location ~ std_normal()</span></span>
+<span id="cb8-83"><a href="#cb8-83"></a><span class="in">    scale ~ std_lognormal()</span></span>
+<span id="cb8-84"><a href="#cb8-84"></a><span class="in">    x ~ normal(location, scale; n)</span></span>
+<span id="cb8-85"><a href="#cb8-85"></a><span class="in">    return x</span></span>
+<span id="cb8-86"><a href="#cb8-86"></a><span class="in">end</span></span>
+<span id="cb8-87"><a href="#cb8-87"></a><span class="in">hierarchical_model = @slic begin </span></span>
+<span id="cb8-88"><a href="#cb8-88"></a><span class="in">    n = maximum(subject_idx)</span></span>
+<span id="cb8-89"><a href="#cb8-89"></a><span class="in">    obs_intercept ~ hierarchical_prior(;n)</span></span>
+<span id="cb8-90"><a href="#cb8-90"></a><span class="in">    obs_slope ~ hierarchical_prior(;n)</span></span>
+<span id="cb8-91"><a href="#cb8-91"></a><span class="in">    obs_location = obs_intercept + dot(covariates, obs_slope)</span></span>
+<span id="cb8-92"><a href="#cb8-92"></a><span class="in">    obs_scale ~ std_lognormal()</span></span>
+<span id="cb8-93"><a href="#cb8-93"></a><span class="in">    obs[subject_idx] ~ normal(obs_location, obs_scale)</span></span>
+<span id="cb8-94"><a href="#cb8-94"></a><span class="in">end</span></span>
+<span id="cb8-95"><a href="#cb8-95"></a><span class="in">samples = nuts_draws(hierarchical_model(;subject_idx, covariates, obs))</span></span>
+<span id="cb8-96"><a href="#cb8-96"></a><span class="in">"Alternative 1: Constructing just the CV model"</span></span>
+<span id="cb8-97"><a href="#cb8-97"></a><span class="in">cv_model = cv(</span></span>
+<span id="cb8-98"><a href="#cb8-98"></a><span class="in">    hierarchical_model; </span></span>
+<span id="cb8-99"><a href="#cb8-99"></a><span class="in">    subject_idx=held_out_subject_idx, </span></span>
+<span id="cb8-100"><a href="#cb8-100"></a><span class="in">    covariates=held_out_covariates, </span></span>
+<span id="cb8-101"><a href="#cb8-101"></a><span class="in">    obs=held_out_obs</span></span>
+<span id="cb8-102"><a href="#cb8-102"></a><span class="in">)</span></span>
+<span id="cb8-103"><a href="#cb8-103"></a><span class="in">"Alternative 2: Constructing the CV model and computing the necessary quantities"</span></span>
+<span id="cb8-104"><a href="#cb8-104"></a><span class="in">cv_info = cv(</span></span>
+<span id="cb8-105"><a href="#cb8-105"></a><span class="in">    samples; </span></span>
+<span id="cb8-106"><a href="#cb8-106"></a><span class="in">    subject_idx=held_out_subject_idx, </span></span>
+<span id="cb8-107"><a href="#cb8-107"></a><span class="in">    covariates=held_out_covariates, </span></span>
+<span id="cb8-108"><a href="#cb8-108"></a><span class="in">    obs=held_out_obs</span></span>
+<span id="cb8-109"><a href="#cb8-109"></a><span class="in">)</span></span>
+<span id="cb8-110"><a href="#cb8-110"></a><span class="in">```</span></span>
+<span id="cb8-111"><a href="#cb8-111"></a></span>
+<span id="cb8-112"><a href="#cb8-112"></a>In the above example, the hierarchical parameters will be fixed and reused from <span class="in">`samples`</span>, while the subject specific parameters will be automatically resampled inedependently for each draw to compute the likelihood.</span>
+<span id="cb8-113"><a href="#cb8-113"></a>Determining which parameters get fixed/resued and which ones get resampled can be automatically determined by tracing through the model. </span>
+<span id="cb8-114"><a href="#cb8-114"></a></span>
+<span id="cb8-115"><a href="#cb8-115"></a>Alternative syntax proposals are appreciated!</span>
+<span id="cb8-116"><a href="#cb8-116"></a></span>
+<span id="cb8-117"><a href="#cb8-117"></a><span class="fu">## Computational efficiency </span></span>
+<span id="cb8-118"><a href="#cb8-118"></a></span>
+<span id="cb8-119"><a href="#cb8-119"></a>The aim is to make it easy to write computationally efficient code.</span>
+<span id="cb8-120"><a href="#cb8-120"></a></span>
+<span id="cb8-121"><a href="#cb8-121"></a><span class="fu">### Supports activity analysis to avoid redundant computation</span></span>
+<span id="cb8-122"><a href="#cb8-122"></a></span>
+<span id="cb8-123"><a href="#cb8-123"></a>Like <span class="co">[</span><span class="ot">SlicStan</span><span class="co">](https://github.com/mgorinova/SlicStan)</span>, <span class="in">`@slic`</span> will support automatically determining whether model components are </span>
+<span id="cb8-124"><a href="#cb8-124"></a></span>
+<span id="cb8-125"><a href="#cb8-125"></a><span class="ss">* </span>data - passed to the model,</span>
+<span id="cb8-126"><a href="#cb8-126"></a><span class="ss">* </span>transformed data - need to be computed only once per model instantiation/conditioning/deconditioning,</span>
+<span id="cb8-127"><a href="#cb8-127"></a><span class="ss">* </span>parameters - contribute to the posterior (MCMC-)dimension and potentially need to be transformed appropriately,</span>
+<span id="cb8-128"><a href="#cb8-128"></a><span class="ss">* </span>transformed parameters - have to be computed every gradient evaluation, because they **do** affect the likelihood,</span>
+<span id="cb8-129"><a href="#cb8-129"></a><span class="ss">* </span>generated quantities - have to be computed only once per sample and can be sampled independently, because they **do not** affect the likelihood.</span>
+<span id="cb8-130"><a href="#cb8-130"></a></span>
+<span id="cb8-131"><a href="#cb8-131"></a>This allows for the natural model specification in a single place, while not sacrificing any performance.</span>
+<span id="cb8-132"><a href="#cb8-132"></a></span>
+<span id="cb8-133"><a href="#cb8-133"></a>In the below model, </span>
+<span id="cb8-134"><a href="#cb8-134"></a></span>
+<span id="cb8-135"><a href="#cb8-135"></a><span class="ss">* </span>if we do not specify anything, every model component will be sampled independently,</span>
+<span id="cb8-136"><a href="#cb8-136"></a><span class="ss">* </span>if we specify only <span class="in">`obs_location`</span> or <span class="in">`obs_scale`</span>, every other model component will still be sampled independently, and</span>
+<span id="cb8-137"><a href="#cb8-137"></a><span class="ss">* </span>if we specify only <span class="in">`obs`</span>, both <span class="in">`obs_location`</span> and <span class="in">`obs_scale`</span> become parameters, and <span class="in">`obs_likelihood`</span> and <span class="in">`obs_prediction`</span> get automatically added as generated quantities. </span>
+<span id="cb8-138"><a href="#cb8-138"></a></span>
+<span id="cb8-139"><a href="#cb8-139"></a><span class="in">```julia</span></span>
+<span id="cb8-140"><a href="#cb8-140"></a><span class="in">@slic begin </span></span>
+<span id="cb8-141"><a href="#cb8-141"></a><span class="in">    obs_location ~ std_normal()</span></span>
+<span id="cb8-142"><a href="#cb8-142"></a><span class="in">    obs_scale ~ std_lognormal()</span></span>
+<span id="cb8-143"><a href="#cb8-143"></a><span class="in">    obs ~ normal(obs_location, obs_scale)</span></span>
+<span id="cb8-144"><a href="#cb8-144"></a><span class="in">end</span></span>
+<span id="cb8-145"><a href="#cb8-145"></a><span class="in">```</span></span>
+<span id="cb8-146"><a href="#cb8-146"></a></span>
+<span id="cb8-147"><a href="#cb8-147"></a><span class="fu">### Provides efficient primitives</span></span>
+<span id="cb8-148"><a href="#cb8-148"></a></span>
+<span id="cb8-149"><a href="#cb8-149"></a>The most efficient way to compute intermediate functional quantities will depend on the type, shape and potentially activity of the arguments passed to the function.</span>
+<span id="cb8-150"><a href="#cb8-150"></a>We provide efficient primitives which explot this, e.g.:</span>
+<span id="cb8-151"><a href="#cb8-151"></a><span class="in">```julia</span></span>
+<span id="cb8-152"><a href="#cb8-152"></a><span class="in">normal_lpdf(y::AbstractVector, location::AbstractVector, scale::AbstractVector) = "Do something which requires computing log.(scale)."</span></span>
+<span id="cb8-153"><a href="#cb8-153"></a><span class="in">normal_lpdf(y::AbstractVector, location::AbstractVector, scale::Real) = "Do something which only requires computing log(scale) once."</span></span>
+<span id="cb8-154"><a href="#cb8-154"></a><span class="in">```</span></span>
+<span id="cb8-155"><a href="#cb8-155"></a></span>
+<span id="cb8-156"><a href="#cb8-156"></a><span class="fu">### Avoids unnecessary allocations</span></span>
+<span id="cb8-157"><a href="#cb8-157"></a></span>
+<span id="cb8-158"><a href="#cb8-158"></a>Like Stan, <span class="in">`@slic`</span> models will use matrix expressions to keep the memory footprint low. </span>
+<span id="cb8-159"><a href="#cb8-159"></a>This will (should) be more efficient than using something like a bump allocator and just-allocate-and-reuse away.</span>
+<span id="cb8-160"><a href="#cb8-160"></a></span>
+<span id="cb8-161"><a href="#cb8-161"></a><span class="fu">## Expressiveness</span></span>
+<span id="cb8-162"><a href="#cb8-162"></a></span>
+<span id="cb8-163"><a href="#cb8-163"></a>The aim is to make it easy to write correct code.</span>
+<span id="cb8-164"><a href="#cb8-164"></a></span>
+<span id="cb8-165"><a href="#cb8-165"></a><span class="fu">### Compound [declare-distribute statements](https://statmodeling.stat.columbia.edu/2018/02/01/stan-feature-declare-distribute/)</span></span>
+<span id="cb8-166"><a href="#cb8-166"></a></span>
+<span id="cb8-167"><a href="#cb8-167"></a>Like Turing.jl's unified way of defining parameters, unlike Stan's split-across-blocks way of defining parameters.</span>
+<span id="cb8-168"><a href="#cb8-168"></a></span>
+<span id="cb8-169"><a href="#cb8-169"></a><span class="fu">### Automatically inferred constraints</span></span>
+<span id="cb8-170"><a href="#cb8-170"></a></span>
+<span id="cb8-171"><a href="#cb8-171"></a>Like Turing.jl: a parameter's constraints are automatically inferred from the support of its prior - but can of course be adjusted:</span>
+<span id="cb8-172"><a href="#cb8-172"></a><span class="in">```julia</span></span>
+<span id="cb8-173"><a href="#cb8-173"></a><span class="in">@slic begin </span></span>
+<span id="cb8-174"><a href="#cb8-174"></a><span class="in">    "Unconstrained"</span></span>
+<span id="cb8-175"><a href="#cb8-175"></a><span class="in">    obs_intercept ~ std_normal()</span></span>
+<span id="cb8-176"><a href="#cb8-176"></a><span class="in">    "Constrained to be positive"</span></span>
+<span id="cb8-177"><a href="#cb8-177"></a><span class="in">    obs_scale ~ std_lognormal()</span></span>
+<span id="cb8-178"><a href="#cb8-178"></a><span class="in">    "Constrained to be positive"</span></span>
+<span id="cb8-179"><a href="#cb8-179"></a><span class="in">    obs_slope ~ std_normal(;lower=0.)</span></span>
+<span id="cb8-180"><a href="#cb8-180"></a><span class="in">    obs ~ normal(obs_intercept + obs_slope * x, obs_scale)</span></span>
+<span id="cb8-181"><a href="#cb8-181"></a><span class="in">end</span></span>
+<span id="cb8-182"><a href="#cb8-182"></a><span class="in">```</span></span>
+<span id="cb8-183"><a href="#cb8-183"></a></span>
+<span id="cb8-184"><a href="#cb8-184"></a><span class="fu">### Automatically inferred - but optionally constrained - types </span></span>
+<span id="cb8-185"><a href="#cb8-185"></a></span>
+<span id="cb8-186"><a href="#cb8-186"></a>Like Turing.jl: the type of any model expression can be specified, but it need not be specified.</span>
+<span id="cb8-187"><a href="#cb8-187"></a></span>
+<span id="cb8-188"><a href="#cb8-188"></a><span class="fu">### Supports tracing through a lot of Julia syntax</span></span>
+<span id="cb8-189"><a href="#cb8-189"></a></span>
+<span id="cb8-190"><a href="#cb8-190"></a>We will support tracing through a lot of common Julia syntax, like broadcasting, generators, maps and do blocks.</span>
+<span id="cb8-191"><a href="#cb8-191"></a></span>
+<span id="cb8-192"><a href="#cb8-192"></a><span class="fu">### Supports opaquely handling arbitrary Julia syntax</span></span>
+<span id="cb8-193"><a href="#cb8-193"></a></span>
+<span id="cb8-194"><a href="#cb8-194"></a>While tracing will be limited to a subset of Julia syntax, "unknown" user defined functions will simply not be traced recursively.</span>
+<span id="cb8-195"><a href="#cb8-195"></a>We will not allow these opaque functions to introduce model parameters, and we will "assume the worst" for the activity analysis.</span>
+<span id="cb8-196"><a href="#cb8-196"></a></span>
+<span id="cb8-197"><a href="#cb8-197"></a><span class="fu">## Extendability</span></span>
+<span id="cb8-198"><a href="#cb8-198"></a></span>
+<span id="cb8-199"><a href="#cb8-199"></a>The aim is to make it easy to extend <span class="in">`@slic`</span>'s functionality.</span>
+<span id="cb8-200"><a href="#cb8-200"></a></span>
+<span id="cb8-201"><a href="#cb8-201"></a><span class="fu">### Custom tracing passes</span></span>
+<span id="cb8-202"><a href="#cb8-202"></a></span>
+<span id="cb8-203"><a href="#cb8-203"></a>The data/parameter/generated-quantities activity analysis comes out of two passes through the model (one forward, one reverse).</span>
+<span id="cb8-204"><a href="#cb8-204"></a></span>
+<span id="cb8-205"><a href="#cb8-205"></a>The cross-validation activity analysis comes out of another pass through the model.</span>
+<span id="cb8-206"><a href="#cb8-206"></a></span>
+<span id="cb8-207"><a href="#cb8-207"></a>There is nothing stopping us from allowing additional or alternative passes, and there should not be anything stopping you from implementing these custom passes.</span>
+<span id="cb8-208"><a href="#cb8-208"></a></span>
+<span id="cb8-209"><a href="#cb8-209"></a>One possible custom pass would e.g. translate the <span class="in">`@slic`</span> model to a Stan program.</span>
+</code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
+</div></div></div></div></div>
+</div> <!-- /content -->
+
+
+
+
+</body></html>
