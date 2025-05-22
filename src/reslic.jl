@@ -178,17 +178,22 @@ stan_expr(expr, value; kwargs...) = StanExpr(expr, stan_type(expr, value; kwargs
 stan_expr(x, value::StanExpr; kwargs...) = weak_remake(value; kwargs...)
 maybedata(expr, value; kwargs...) = stan_expr(expr, value; qual=:data, kwargs...)
 maybecv(expr, value) = stan_expr(expr, value; cv=true)
+cv(x::SlicModel; kwargs...) = x(;[
+    key=>maybecv(key, value) for (key, value) in pairs(kwargs)
+]...)
 stan_model(x::SlicModel; info=StanModel()) = begin 
     distribute!(backward!(forward!(x; info); info); info)
     info
 end
 maybedata!(x::StanModel, key, value) = x[key] = maybedata(key, value)
 maybedata!(x::SubModel, key, value) = locals(x)[key] = maybedata(key, value)
+model_block(x::SlicModel) = model_block(model(x))
+model_block(x::Expr) = x.head == :(=) ? x.args[2] : x
 forward!(x::SlicModel; info=StanModel()) = begin 
     for (key, value) in pairs(data(x))
         maybedata!(info, key, value)
     end
-    forward!(canonical(model(x)); info)
+    forward!(canonical(model_block(x)); info)
 end
 isexpr(x, h) = false
 isexpr(x::CanonicalExpr, h) = head(x) == h
@@ -571,7 +576,11 @@ stan_data(x::StanModel) = Dict([
 slic_expr(x::Expr) = x
 end
 macro slic(model)
-    stan.SlicModel(model, Dict())
+    if Meta.isexpr(model, :(=))
+        esc(Expr(model.head, model.args[1], stan.SlicModel(model, Dict())))
+    else
+        stan.SlicModel(model, Dict())
+    end
 end
 macro slic(data, model)
     mod = @__MODULE__

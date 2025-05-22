@@ -24,7 +24,7 @@ module Quarto
     end
     prettyprint(io, args...) = print(io, pretty(args)...)
     pretty(x::Expr) = if x.head == :macrocall
-        pretty(x.args[2:end])
+        Expr(x.head, x.args[1:2]..., pretty(x.args[3:end])...)
     else
         Expr(x.head, pretty(x.args)...)
     end
@@ -48,11 +48,18 @@ module Quarto
         print(io, x.content)
         print(io, "\n:::\n")
     end
-    Base.show(io::IO, x::Code) = prettyprint(io, "\n```", x.header, "\n", x.content, "\n```\n")
+    Base.show(io::IO, x::Code) = if x.header == "julia" 
+        buf = IOBuffer()
+        prettyprint(buf, "\n```", x.header, "\n", x.content, "\n```\n")
+        print(io, replace(String(take!(buf)), "\n    "=>"\n"))
+    else
+        prettyprint(io, "\n```", x.header, "\n", x.content, "\n```\n")
+    end
+    
     Base.show(io::IO, x::Tabset) = begin
         print(io, Div("{.panel-tabset}", Container([
             Container([
-                Heading(1, key),
+                Heading(5, key),
                 value
             ])
             for (key, value) in pairs(x.map)
@@ -87,4 +94,6 @@ catch e
 end
 
 Base.show(io::IO, m::MIME"text/markdown", x::StanBlocks.stan.SlicModel) = show(io, m, quarto(x))
+StanBlocks.Code(args...; kwargs...) = Quarto.Code(args...; kwargs...)
+StanBlocks.Tabset(args...; kwargs...) = Quarto.Tabset(args...; kwargs...)
 end
