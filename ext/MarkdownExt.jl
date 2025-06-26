@@ -1,5 +1,6 @@
 module MarkdownExt
 import Markdown, StanBlocks
+import StanBlocks: quarto
 
 module Quarto 
     using Markdown
@@ -52,7 +53,7 @@ module Quarto
     Base.show(io::IO, x::Tabset) = begin
         print(io, Div("{.panel-tabset}", Container([
             Container([
-                Heading(1, key),
+                Heading(5, key),
                 value
             ])
             for (key, value) in pairs(x.map)
@@ -87,4 +88,21 @@ catch e
 end
 
 Base.show(io::IO, m::MIME"text/markdown", x::StanBlocks.stan.SlicModel) = show(io, m, quarto(x))
+
+Base.show(io::IO, m::MIME"text/markdown", x::StanBlocks.SlicModel) = show(io, m, quarto(x))
+quarto(x::StanBlocks.SlicModel) = Quarto.Container([
+    Quarto.Heading(5, "SlicModel"),
+    Quarto.Tabset((;code=Quarto.Code("julia", x.model), [
+        key=>Quarto.Code("julia", join([
+            "$name: $(xi.meta[key])"
+            for (name, xi) in pairs(x.data) if key in keys(xi.meta) 
+        ], "\n"))
+        for key in mapreduce(xi->Set(keys(xi.meta)), union!, values(x.data); init=Set{Symbol}())
+    ]...))
+    # qual=Quarto.Code("julia", join([
+    #      for (key, value) in pairs(x.data)
+    # ], "\n"))))
+])
+
+
 end

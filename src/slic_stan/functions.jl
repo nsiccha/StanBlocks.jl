@@ -13,8 +13,11 @@ module types
     abstract type complex <: anything end
     abstract type real <: complex end
     abstract type int <: real end
+    abstract type func{T} <: anything end 
+    abstract type tup{T} <: anything end
 end
 Base.show(io::IO, ::Type{T}) where {T<:types.anything} = print(io, T.name.name)#.parameters[1].name.name)
+Base.show(io::IO, ::Type{types.tup{T}}) where {T} = print(io, "tuple(", Join(fieldtypes(T), ", "), ")")
 # Base.show(io::IO, ::Type{types.anything}) = print(io, "anything")
 # Base.show(io::IO, ::Type{types.matrix}) = print(io, "matrix")
 # Base.show(io::IO, ::Type{types.cov_matrix}) = print(io, "cov_matrix")
@@ -32,9 +35,14 @@ r_ndim(::Type{types.matrix}) = 2
 r_ndim(::Type{<:types.square_matrix}) = 1
 r_ndim(::Type{<:types.any_vector}) = 1
 r_ndim(::Type{<:types.complex}) = 0
+r_ndim(::Type{<:types.func}) = 0
+r_ndim(::Type{<:types.tup}) = 0
 r_ndim(::StanType{T}) where {T} = r_ndim(T)
 l_ndim(x::StanType) = length(x.size) - r_ndim(x)
 lr_size(x::StanType) = x.size[1:l_ndim(x)], x.size[1+l_ndim(x):end]
+canonical(x::CanonicalExpr{<:StanExpr2{<:types.func}}) = CanonicalExpr(type(x.head).info.value, x.args...; x.kwargs...)
+backward!(x::StanExpr2{<:types.func}; info) = x
+fetch_data!(::StanExpr2{<:types.func}; info) = nothing
 
 
 tracetype(x::CanonicalExpr) = begin
@@ -62,11 +70,19 @@ tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (type(x.args[1]).size[1],))), x.args[3])
 )
+tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Colon}}) = tracetype(
+    CanonicalExpr(head(x), x.args[1], x.args[2], StanExpr(missing, StanType(types.int, (type(x.args[1]).size[2],))))
+)
 tracetype(x::CanonicalExpr{Colon}) = StanType(types.int, (stan_call(+,stan_expr(1,1),stan_call(-,x.args[2],x.args[1])), ))
 # tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:Any,<:StanType{<:types.matrix}},<:Colon,<:StanExpr{<:Any,<:StanType{<:types.int,0}}}}) = StanType(types.vector, (type(x.args[1]).size[1],))
 # tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:Any,<:StanType{types.real,2}},<:Colon,<:StanExpr{<:Any,<:StanType{<:types.int,0}}}}) = StanType(types.real, (type(x.args[1]).size[1],))
 tracetype(x::BracesExpr) = StanType(types.real, (stan_expr(length(x.args),length(x.args)),))
-
+tracetype(x::VectExpr) = StanType(types.vector, (stan_expr(length(x.args),length(x.args)),))
+tracetype(x::TupleExpr) = StanType(types.tup{Tuple{center_type.(x.args)...}})
+tracetype(x::ForExpr) = StanType(types.anything)
+tracetype(x::IfExpr) = StanType(types.anything)
+tracetype(x::ElseIfExpr) = StanType(types.anything)
+tracetype(x::BlockExpr) = error(dump(x))#tracetype(expr(x.args[end]))
 
 autokwargs(::CanonicalExpr) = (;)
 autotype(x::StanExpr) = autotype(type(x); merge(autokwargs(expr(x)), expr(x).kwargs)...)
@@ -98,14 +114,27 @@ begin
     ensure_xassign(x, default=missing) = Meta.isexpr(x, :(=)) ? x : xassign(x, default)
     ensure_xtuple(x) = Meta.isexpr(x, :tuple) ? x : xtuple(x)
     ensure_xref(x) = Meta.isexpr(x, :ref) ? x : xref(x)
-    ensure_xtyped(x, default=:anything) = Meta.isexpr(x, :(::)) ? x : xtyped(x, default)
+    ensure_xtyped(x, default=:anything) = Meta.isexpr(x, :(::)) ? (length(x.args) == 2 ? x : xtyped(gensym("_"), x.args[1])) : xtyped(x, default)
     ensure_xpair(x, default) = xiscall(x, :(=>)) ? x : xpair(x, default)
     ensure_xvect(x) = Meta.isexpr(x, :vect) ? x : xvect(x)
+    ensure_xreturn(x::Expr) = if x.head in (:block, :macrocall)
+        Expr(x.head, x.args[1:end-1]..., ensure_xreturn(x.args[end]))
+    elseif x.head == :return
+        x
+    else
+        Expr(:return, x)
+    end
+    ensure_xreturn(x) = Expr(:return, x)
+
+    gettype(ct::Symbol) = getproperty(types, ct)
+    gettype(ct::Expr) = begin
+        return :($types.func{$ct})
+    end
 
     xsig_type(x::Expr; mod=@__MODULE__) = begin 
         @assert x.head == :ref
         ct, size... = x.args
-        ct = getproperty(types, ct)
+        ct = gettype(ct)
         ndims = length(size)
         if ct == types.anything && ndims == 0
             :(<:$mod.StanExpr2{<:$ct})
@@ -116,7 +145,7 @@ begin
     xsig_expr(x::Expr; mod=@__MODULE__) = begin 
         @assert x.head == :ref x
         ct, size... = x.args
-        ct = getproperty(types, ct)
+        ct = gettype(ct)
         size = xtuple([:($mod.forward!($arg; info)) for arg in canonical.(size)]...)
         :($mod.StanType($ct, $size))
     end
@@ -159,7 +188,8 @@ begin
     end
     funbody(x::AbstractVector) = join(map(funbody, x), "\n")
     funbody(x::LineNumberNode) = ""
-    funbody(x::String) = x
+    funbody(x::String) = strip(x)
+    # funbody_expr(x) = if x.head
     sigtype(x::Symbol) = sigtype(xref(x))
     sigtype(x::Expr; mod=@__MODULE__) = begin 
         @assert x.head == :ref x
@@ -167,7 +197,7 @@ begin
         ct = getproperty(types, ct)
         l = length(size) - r_ndim(ct)
         io = IOBuffer()
-        l > 0 && print(io, "array [", join(fill("", l), ", "), "] ")
+        l > 0 && print(io, "array[", join(fill("", l), ", "), "] ")
         print(io, sigtype(ct))
         String(take!(io))
     end
@@ -180,10 +210,15 @@ begin
         @assert ct != types.anything
         l = length(x.size) - r_ndim(ct)
         io = IOBuffer()
-        l > 0 && print(io, "array [", join(fill("", l), ", "), "] ")
+        l > 0 && print(io, "array[", join(fill("", l), ", "), "] ")
         print(io, sigtype(ct))
         String(take!(io))
     end
+    sigarg(x, name::Symbol) = sigtype(x) * " $name"
+    sigarg(::StanExpr2{<:types.func}, ::Symbol) = nothing
+    always_inline(x) = false
+    always_inline(::StanExpr2{<:types.func}) = true
+    # sigargs(x::Tuple) = filter(!isnothing, map(sigargs, x))
     sigarg(x::Expr) = begin 
         @assert x.head == :(::)
         "$(sigtype(x.args[2])) $(x.args[1])"
@@ -216,13 +251,13 @@ begin
         for (arg_name, arg_type) in zip(arg_names, arg_types)
             for (i, dim_name) in enumerate(arg_type.args[2:end])
                 isa(dim_name, Symbol) || continue
-                fun_sizes[dim_name] = "int $dim_name = dims($arg_name)[$i];"
+                fun_sizes[dim_name] = "int $dim_name = dims($arg_name)[$i]"
             end
         end
         deconstruct = Expr(:block, xassign(xtuple(arg_names...), :(x.args)), [
             xassign(xtuple(ensure_xlhs.(args_type.args[2:end])...), :($args_name.type.size))
             for (args_name, args_type) in zip(arg_names, arg_types)
-        ]..., :(info = (;$(arg_names...), $(keys(fun_sizes)...),)))
+        ]..., :(info = $mod.anon_info((;$(arg_names...), $(keys(fun_sizes)...),))))
 
         stmts = []
         # scope_names = vcat(arg_names)
@@ -231,32 +266,33 @@ begin
              "", nothing
         else
             @assert Meta.isexpr(body, :block)
-            _, body = body.args
-            _, body, subexprs = ensure_xpair(body, nothing).args
-            if !isnothing(subexprs)
-                # subexprs = ensure_vect(subexprs).args
-                # @assert Meta.isexpr(subexprs, (:vect, :vcat))
-                subexprs = Expr(:block, deconstruct, Expr(:vect, [
-                    # :($mod.expr($mod.stan_call($arg; $(arg_names...))))
+            _, sbody, subexprs = ensure_xpair(body.args[end], nothing).args
+            body, subexprs = if (isa(sbody, String) || Meta.isexpr(sbody, :string)) && length(body.args) == 2
+                sbody, isnothing(subexprs) ? subexprs : Expr(:vect, [
                     :($mod.expr($mod.forward!($arg; info)))
                     for arg in canonical.(ensure_xvect(subexprs).args)
-                ]...))
+                ]...)
+            else
+                ensure_xreturn(body), :($mod.allfundefexprs($mod.forward!($(canonical(body)); info)))
             end
             sig_rv = sigtype(rv)
-            sig_args = join(sigarg.(args), ", ")
-            
-
-            # """$sig_rv $f($sig_args){
-            #     $(funbody(collect(values(fun_sizes))))
-            #     $(funbody(body))
-            # }
-            # """
-            sig_args_expr = :(join(map((x, name)->$mod.sigtype(x) * " $name", ($(arg_names...),), ($(Meta.quot.(arg_names)...),)), ", "))
-            xstring("$sig_rv $f(", sig_args_expr, """){
-                $(funbody(collect(values(fun_sizes))))
-                $(strip(funbody(body)))
-            }
-            """), subexprs
+            f_expr = :(join(vcat($f, [
+                string($mod.type(x).info.value)
+                for (x, name) in zip(($(arg_names...),), ($(Meta.quot.(arg_names)...),))
+                if $mod.always_inline(x)
+            ]), "_"))
+            sig_args_expr = :(join([
+                $mod.sigarg(x, name)
+                for (x, name) in zip(($(arg_names...),), ($(Meta.quot.(arg_names)...),))
+                if !$mod.always_inline(x)
+            ], ", "))#filter(!isnothing, map($mod.sigarg, ($(arg_names...),), ($(Meta.quot.(arg_names)...),))), ", "))
+            funbody_expr = :($mod.forward!($(canonical(body)); info))
+            xstring(
+                sig_rv, " ", f_expr, "(", sig_args_expr, ")", :($mod.stan_code($mod.StanBlock(Symbol(), vcat(
+                    $(collect(values(fun_sizes))),
+                    $funbody_expr
+                ))))
+            ), subexprs
         end
 
         xexpr = :(x::$mod.CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
@@ -269,7 +305,7 @@ begin
             push!(stmts, :($mod.fundef($xexpr) = $(Expr(:block, deconstruct, stan_fundef))))
         end
         if !isnothing(subexprs)
-            push!(stmts, :($mod.fundefexprs($xexpr) = $subexprs))
+            push!(stmts, :($mod.fundefexprs($xexpr) = $(Expr(:block, deconstruct, subexprs))))
         end
         isa(f, Symbol) || return Expr(:block, stmts...)
         if is_lpxf
@@ -299,11 +335,6 @@ begin
         end
         Expr(:block, stmts...)
     end
-# @macroexpand @deffun begin 
-#     # log_dirichlet_lpdf(log_theta, alpha) = "return dot_product(alpha, log_theta) + lgamma(sum(alpha)) - sum(lgamma(alpha));"
-#     dummy2_lpdf(y, x) = "return 0.;"
-#     # dummy_rng(x::vector[n])::vector[n] = "return x;"
-# end
     
 end
 
@@ -314,7 +345,21 @@ macro deffun(x)
     esc(deffun(x))
 end
 
-
 fundef(x) = nothing
 fundefexprs(x) = []
 fundefs(x) = filter(!isnothing, vcat(fundef(x), mapreduce(fundefs, vcat, fundefexprs(x); init=[])))
+allfundefexprs(x) = error(typeof(x))
+allfundefexprs(x::Union{LineNumberNode,Symbol,String,Function,Float64,Int64}) = []
+allfundefexprs(x::CanonicalExpr) = begin
+    # @info x=>fundefexprs(x)
+    unique(vcat(mapreduce(allfundefexprs, vcat, x.args; init=[]), fundefexprs(x), x))
+end
+allfundefexprs(x::StanExpr) = allfundefexprs(expr(x))
+
+anon_info(x::NamedTuple) = OrderedDict{Symbol,Any}([
+    key=>anon_expr(key, value)
+    for (key, value) in pairs(x)
+])
+anon_expr(key, x) = error(typeof(x))
+anon_expr(key, x::StanExpr) = StanExpr(key, StanType(center_type(x), type(x).size))
+anon_expr(key, x::StanExpr2{<:types.func}) = StanExpr(type(x).info.value, type(x))

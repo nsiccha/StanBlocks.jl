@@ -39,6 +39,7 @@ function neg_binomial_2 end
 
 function std_normal_rng end
 function normal_rng end
+function exponential_rng end
 
 function log1m end
 function to_vector end
@@ -61,7 +62,18 @@ function log_inv_logit end
 function log1m_exp end
 function Phi end
 function integrate_ode_rk45 end
+function ode_rk45 end
+function ode_ckrk end
+function ode_adams end
+function ode_bdf end
 function append_array end
+function append_row end
+function append_col end
+
+function reduce_sum end
+function log_sum_exp end
+function lgamma end
+
 end
 const flat = builtin.flat
 const std_normal = builtin.std_normal
@@ -69,6 +81,7 @@ const normal = builtin.normal
 const cauchy = builtin.cauchy
 const std_normal_rng = builtin.std_normal_rng
 const normal_rng = builtin.normal_rng
+const exponential_rng = builtin.exponential_rng
 const binomial_logit = builtin.binomial_logit
 const lognormal = builtin.lognormal
 const chi_square = builtin.chi_square
@@ -122,7 +135,17 @@ const log_inv_logit = builtin.log_inv_logit
 const log1m_exp = builtin.log1m_exp
 const Phi = builtin.Phi
 const integrate_ode_rk45 = builtin.integrate_ode_rk45
+const ode_rk45 = builtin.ode_rk45
+const ode_ckrk = builtin.ode_ckrk
+const ode_adams = builtin.ode_adams
+const ode_bdf = builtin.ode_bdf
 const append_array = builtin.append_array
+const append_row = builtin.append_row
+const append_col = builtin.append_col
+
+const reduce_sum = builtin.reduce_sum
+const log_sum_exp = builtin.log_sum_exp
+const lgamma = builtin.lgamma
 
 function vector_std_normal_rng end
 
@@ -141,6 +164,7 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     to_array_2d(v, m, n)::real[m,n]
     append_array(lhs::anything[m],rhs::anything[n])::real[m+n]
     append_array(lhs::anything[m],rhs::real)::real[m+1]
+    append_row(lhs::vector[m],rhs::real)::vector[m+1]
     vector_std_normal_rng(n::int)::vector[n] = """
         vector[n] rv;
         for(i in 1:n){
@@ -163,6 +187,14 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
         }
         return rv;
     """
+    # exponential_lpdf(obs::anything, rate::anything)::real
+    vector_exponential_rng(rate::real, n::int)::vector[n] = """
+        vector[n] rv;
+        for(i in 1:n){
+            rv[i] = exponential_rng(rate);
+        }
+        return rv;
+    """
     dirichlet_lpdf(w::simplex[n], alpha::vector[n])::real
     lkj_corr_lpdf(L::corr_matrix, x::real)::real
     lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, x::real)::real
@@ -170,7 +202,7 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     wishart_cholesky_lpdf(L::cholesky_factor_cov[m], x::real, sigma::matrix[m,m])::real
 end
 @defsig begin 
-    Union{typeof.((sqrt, exp, log, sin, cos, asin, acos, log1m, inv_logit, log_inv_logit, log1m_exp, expm1, Phi))...} => begin 
+    Union{typeof.((sqrt, exp, log, sin, cos, asin, acos, log1m, inv_logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma))...} => begin 
         (real,)=>real
         (vector[n],)=>vector[n]
         (real[n],)=>real[n]
@@ -219,6 +251,10 @@ end
         (vector[m], int[n]) => vector[n]
         (vector[m], int) => real
         (vector[m,n], int) => vector[n]
+        (vector[m,n], int[o], int) => real[o]
+        (vector[m,n], int, int[o]) => vector[o]
+        (vector[m,n], int[p], int[q]) => vector[p, q]
+        (matrix[m,n], int, int) => real
         (matrix[m,n], int[o], int) => vector[o]
         (matrix[m,n], int, int[p]) => row_vector[p]
         (matrix[m,n], int[o], int[p]) => matrix[o, p]
@@ -251,6 +287,10 @@ end
         (vector[n], real) => real[n]
         (row_vector[n], real) => real[n]
         (vector[n], vector[n]) => real[n]
+    end
+    typeof(exponential_rng) => begin 
+        (real,)=>real 
+        (vector[n],)=>real[n]
     end
     Base.BroadcastFunction => begin 
         (real, real) => real
@@ -296,4 +336,21 @@ end
         (anything, real[m], real, real[n], real[p], anything, anything)=>real[m,n]
         (anything, real[m], real, real[n], real[p], anything, anything, real, real, int)=>real[m,n]
     end
+    typeof(log_sum_exp) => begin 
+        (real[n], ) => real
+        (matrix[m,n], ) => real
+        (row_vector[n], ) => real
+        (vector[n], ) => real
+    end
 end
+
+const ODESolver = Union{typeof.((ode_rk45, ode_ckrk, ode_adams, ode_bdf))...}
+
+tracetype(x::CanonicalExpr{<:ODESolver}) = StanType(
+    types.vector, (type(x.args[4]).size[1], type(x.args[2]).size[1])
+)
+
+fundefexprs(x::CanonicalExpr{<:ODESolver}) = allfundefexprs(
+    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[5:end]...)
+)
+# fundefexprs(::CanonicalExpr{<:StanExpr2{types.func}}) = error()

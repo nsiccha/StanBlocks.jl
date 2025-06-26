@@ -1,7 +1,6 @@
 module stan
 using OrderedCollections
 dumperror(x) = (dump(x); error(x))
-# include("slic/meta.jl")
 struct SlicModel{M,D}
     model::M
     data::D
@@ -48,8 +47,20 @@ SamplingExpr{L,R,K} = CanonicalExprV{:(~),Tuple{L,R},K}
 Colon2Expr{L,T,K} = CanonicalExpr{Colon,T,K} 
 ReturnExpr{V,K} = CanonicalExprV{:return,Tuple{V},K} 
 DocumentExpr{L,R,K} = CanonicalExprV{:document,Tuple{L,R},K} 
-QuoteExpr{L,T,K} = CanonicalExprV{:quote,T,K} 
-BracesExpr{L,T,K} = CanonicalExprV{:braces,T,K} 
+QuoteExpr{T,K} = CanonicalExprV{:quote,T,K} 
+TupleExpr{T,K} = CanonicalExprV{:tuple,T,K} 
+BracesExpr{T,K} = CanonicalExprV{:braces,T,K} 
+VectExpr{T,K} = CanonicalExprV{:vect,T,K} 
+DeclExpr{T,K} = CanonicalExprV{:(::),T,K} 
+ForExpr{T,K} = CanonicalExprV{:for,T,K}
+ColonExpr{T,K} = CanonicalExprV{:(:),T,K}
+IfExpr{T,K} = CanonicalExprV{:if,T,K}
+ElseIfExpr{T,K} = CanonicalExprV{:elseif,T,K}
+BreakExpr{T,K} = CanonicalExprV{:break,T,K}
+ContinueExpr{T,K} = CanonicalExprV{:continue,T,K}
+IfThenExpr2{I,T<:BlockExpr,K} = CanonicalExprV{:if,Tuple{I,T},K}
+IfThenElseExpr{I,T<:BlockExpr,E<:BlockExpr,K} = CanonicalExprV{:if,Tuple{I,T,E},K}
+StringExpr{T,K} = CanonicalExprV{:string,T,K}
 
 
 model(x::SlicModel) = x.model
@@ -76,6 +87,7 @@ supvalue(x::SubModel, value) = value
 supvalue(x::SubModel, value::StanExpr{Symbol}) = StanExpr(supname(x, expr(value)), type(value))
 expr(x::StanExpr) = x.expr
 type(x::StanExpr) = x.type
+type(x::Function) = StanType(types.func{typeof(x)})
 remake(x::StanExpr; kwargs...) = StanExpr(expr(x), remake(type(x); kwargs...))
 weak_remake(x::StanExpr; kwargs...) = StanExpr(expr(x), weak_remake(type(x); kwargs...))
 center_type(x::StanExpr) = center_type(type(x))
@@ -124,7 +136,7 @@ replace_components(x::Expr; rep::Dict) = if (
 else
     Expr(x.head, replace_components.(x.args; rep)...)
 end
-model(x::SlicModel, args::SamplingExpr...) = replace_components(model(x); rep=Dict([
+model(x::SlicModel, args::Union{SamplingExpr,AssignmentExpr}...) = replace_components(model(x); rep=Dict([
     arg.args[1]=>arg
     for arg in args
 ]))
@@ -156,27 +168,29 @@ cv(x::StanType) = get(info(x), :cv, false) || any(cv, x.size)
 stan_type(expr, value; kwargs...) = error(typeof(value))#StanType()
 stan_type(expr, value::Int64; kwargs...) = StanType(types.int; value, kwargs..., qual=:data)
 stan_type(expr, value::Float64; kwargs...) = StanType(types.real; value, kwargs...)
-stan_type(expr, value::Vector{Float64}; kwargs...) = StanType(
+stan_type(expr, value::AbstractVector{Float64}; kwargs...) = StanType(
     types.vector, 
     stan_expr.((Symbol(expr, "_n"), ), size(value)); 
     value, kwargs...
 )
-stan_type(expr, value::Matrix{Float64}; kwargs...) = StanType(
+stan_type(expr, value::AbstractMatrix{Float64}; kwargs...) = StanType(
     types.matrix, 
     stan_expr.((Symbol(expr, "_m"), Symbol(expr, "_n"), ), size(value)); 
     value, kwargs...
 )
-stan_type(expr, value::Vector{Int64}; kwargs...) = StanType(
+stan_type(expr, value::AbstractVector{Int64}; kwargs...) = StanType(
     types.int, 
     stan_expr.((Symbol(expr, "_n"), ), size(value)); 
     value, kwargs..., qual=:data
 )
+stan_type(expr, value::Function; kwargs...) = StanType(types.func{typeof(value)}; value, kwargs...)
 stan_call(f, args...) = stan_expr(CanonicalExpr(f, map(stan_expr, args)...))
 stan_expr(x::StanExpr; kwargs...) = weak_remake(x; kwargs...)
 stan_expr(x; kwargs...) = stan_expr(x, x; kwargs...)
 stan_expr(expr, value; kwargs...) = StanExpr(expr, stan_type(expr, value; kwargs...))
 stan_expr(x, value::StanExpr; kwargs...) = weak_remake(value; kwargs...)
 maybedata(expr, value; kwargs...) = stan_expr(expr, value; qual=:data, kwargs...)
+maybedata(expr, value::Function; kwargs...) = stan_expr(value, value; qual=:data, kwargs...)
 maybecv(expr, value) = stan_expr(expr, value; cv=true)
 stan_model(x::SlicModel; info=StanModel()) = begin 
     distribute!(backward!(forward!(x; info); info); info)
@@ -215,6 +229,7 @@ canonical(x::CanonicalExprV{:call}) = begin
             push!(args, arg)
         end
     end
+    # isa(f, StanExpr) && error()
     CanonicalExpr(f, args...; kwargs...)
 end
 # function document end 
@@ -228,7 +243,6 @@ canonical(x::CanonicalExprV{Symbol(".*")}) = CanonicalExpr(.*, x.args...)
 canonical(x::CanonicalExprV{Symbol("./")}) = CanonicalExpr(./, x.args...)
 # canonical(x::BlockExpr{<:Tuple}) = remake(x, collect(x.args))
 # canonical(x::BlockExpr{<:Tuple{<:Vector}}) = x
-
 
 forward!(x; info) = error(x)
 forward!(;info) = x->forward!(x; info)
@@ -266,6 +280,7 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(rhs)!"
     remake(x, info[name], rhs)
 end
+forward!(x::AssignmentExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::SamplingExpr{Symbol}; info) = begin
     name, rhs = x.args 
     (name in keys(info) && isa(info, SubModel)) && return nothing
@@ -308,8 +323,39 @@ else
     remake(x, forward!(x.args; info)...)
 end
 forward!(x::DocumentExpr; info) = remake(x, forward!(x.args; info)...)
+forward!(x::TupleExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::BracesExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+forward!(x::VectExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+forward!(x::DeclExpr; info) = begin
+    @assert length(x.args) == 2
+    name, type = x.args
+    @assert isa(name, Symbol)
+    @assert isa(type, CanonicalExprV{:getindex})
+    ct, s... = type.args
+    @assert isa(ct, Symbol)
+    ct = gettype(ct)
+    t = StanType(ct, forward!.(s; info))
+    info[name] = rv = StanExpr(name, t)
+    stan_expr(remake(x, rv))
+end
+forward!(x::ForExpr; info) = begin 
+    @assert length(x.args) == 2
+    head, body = x.args
+    @assert isa(head, CanonicalExprV{:(=)})
+    @assert isa(body, CanonicalExprV{:block})
+    idx = head.args[1]
+    @assert isa(idx, Symbol)
+    info[idx] = StanExpr(idx, StanType(types.int))
+    body = forward!(body; info)
+    pop!(info, idx)
+    stan_expr(remake(x, head, body))
+end
+forward!(x::IfExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+forward!(x::ElseIfExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+forward!(x::BreakExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+forward!(x::ContinueExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::QuoteExpr; info) = x.args[1]
+forward!(x::StringExpr; info) = join(map(stan_code2, forward!(x.args; info)))
 
 stan_expr(x::CanonicalExpr) = StanExpr(x, remake(tracetype(x); qual=maximum(qual, x.args; init=:data), cv=any(cv, x.args) || cv(tracetype(x))))
 stan_expr(x::CanonicalExpr{<:SlicModel}) = head(x)(x.args...;x.kwargs...)
@@ -450,8 +496,8 @@ end
 
 function rng_expr end
 function likelihood_expr end
-include("slic/refunctions.jl")
-include("slic/builtin.jl")
+include("functions.jl")
+include("builtin.jl")
 function dummy_likelihood end
 function dummy_rng end
 likelihood_expr(lhs, rhs::StanExpr) = likelihood_expr(lhs, expr(rhs))
@@ -464,6 +510,9 @@ rng_expr(x) = dummy_rng
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(std_normal)}}) = stan_call(vector_std_normal_rng, type(lhs).size...)
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal)}}) = stan_call(to_vector, stan_call(normal_rng, expr(rhs).args...))
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal),<:Tuple{<:StanExpr2{types.real, 0},<:StanExpr2{types.real, 0}}}}) = rng_expr(lhs, stan_call(normal, stan_call(rep_vector, expr(rhs).args[1], type(lhs).size[1]), expr(rhs).args[2]))
+
+rng_expr(lhs::StanExpr2{types.real}, rhs::StanExpr{<:CanonicalExpr{typeof(exponential)}}) = stan_call(exponential_rng, expr(rhs).args...)
+rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(exponential)}}) = stan_call(vector_exponential_rng, expr(rhs).args..., type(lhs).size...)
 
 struct Join
     iterator
@@ -479,6 +528,7 @@ Base.write(io::StanIO3, arg) = error(arg)#write(parent(io), arg)
 Base.write(io::StanIO3, arg::Symbol) = write(parent(io), arg)
 Base.write(io::StanIO3, arg::Array) = write(parent(io), arg)
 Base.write(io::StanIO3, arg::Union{SubString{String}, String}) = write(parent(io), arg)
+Base.write(io::StanIO3, arg::UInt8) = write(parent(io), arg)
 # print(io, args...) = error()#print(io, filter(!isnothing, args)...)
 
 Base.show(io::IO, x::SlicModel; mayfail=true) = try
@@ -495,8 +545,10 @@ Base.show(io::IO, x::StanBlock) = if length(content(x)) > 0
     map(stmt->block_print(io, x, stmt), collect(values(content(x))))
     print(io, "}\n\n")
 end
+block_print(io, ::StanBlock, ::LineNumberNode) = nothing
 block_print(io, ::StanBlock, x) = print(io, "    ", x, ";\n")
-block_print(io, ::DeclarativeBlock, x) = print(io, "    ", type(x), " ", expr(x), ";\n")
+block_print(io, b::StanBlock, x::BlockExpr) = map(stmt->block_print(io, b, stmt), x.args)
+block_print(io, ::DeclarativeBlock, x) = !always_inline(x) && print(io, "    ", type(x), " ", expr(x), ";\n")
 block_print(io, b::DeclarativeBlock, x::DocumentExpr) = begin
     print(io, "    ", commentstring(x.args[1]))
     block_print(io, b, x.args[2])
@@ -512,26 +564,64 @@ constraints(x::StanType) = (;[
 ]...)
 Base.show(io::IO, x::StanType) = begin 
     l, r = lr_size(x)
-    length(l) > 0 && print(io, "array [", Join(l, ", "), "] ")
+    length(l) > 0 && print(io, "array[", Join(l, ", "), "] ")
     print(io, center_type(x))
     cons = constraints(x)
     length(cons) > 0 && print(io, "<", Join(map((k,v)->Join((k,v), "="), keys(cons), values(cons)), ", "), ">")
     length(r) > 0 && print(io, "[", Join(r, ", "), "]")
 end
 function maybetype end
-maybetype(x::StanExpr) = center_type(x) == types.anything ? "    // Disabled because type inference failed\n    // $(type(x))" : type(x)
-Base.show(io::IO, x::AssignmentExpr) = print(io, maybetype(x.args[1]), " ", x.args[1], " = ", x.args[2])
+maybetype(x::StanExpr) = center_type(x) == types.anything ? "// Disabled because type inference failed\n    // $(type(x))" : type(x)
+Base.show(io::IO, x::AssignmentExpr{<:StanExpr{Symbol}}) = print(io, maybetype(x.args[1]), " ", x.args[1], " = ", x.args[2])
+Base.show(io::IO, x::AssignmentExpr) = print(io, x.args[1], " = ", x.args[2])
 
 prettystring(f) = " $f "
 prettystring(f::Base.BroadcastFunction) = " .$(f.f) "
-Base.show(io::IO, x::CanonicalExpr) = print(io, head(x), "(", Join(x.args, ", "), ")")
+# Base.show(io::IO, x::CanonicalExpr) = print(io, head(x), "(", Join(x.args, ", "), ")")
+Base.show(io::IO, x::CanonicalExpr) = print(io, Join((head(x), filter(always_inline, x.args)...), "_"), "(", Join(filter(!always_inline, x.args), ", "), ")")
+Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = print(io, Join((head(x), filter(always_inline, x.args[2:end])...), "_"), "(", Join(x.args, ", "), ")")
 commentstring(x::String) = "// " * replace(x, "\n"=>"\n    // ") * "\n"
 Base.show(io::IO, x::DocumentExpr) = print(io, commentstring(x.args[1]), "    ", x.args[2])
+Base.show(io::IO, x::ReturnExpr) = print(io, "return ", x.args[1])
+Base.show(io::IO, x::TupleExpr) = print(io, "(", Join(x.args, ", "), ")")
+Base.show(io::IO, x::VectExpr) = print(io, "[", Join(x.args, ", "), "]'")
+Base.show(io::IO, x::DeclExpr) = print(io, type(x.args[1]), " ", expr(x.args[1]))
+Base.show(io::IO, x::ColonExpr) = print(io, Join(x.args, ":"))
+Base.show(io::IO, ::BreakExpr) = print(io, "break")
+Base.show(io::IO, x::ContinueExpr) = print(io, "continue ", x.args[1])
+Base.show(io::IO, x::ForExpr) = begin
+    head, body = x.args
+    idx, rhs = head.args 
+    print(io, "for(", idx, " in ", rhs, ")", StanBlock(Symbol(), body.args))
+end
+Base.show(io::IO, x::IfExpr) = begin
+    print(io, "if(", x.args[1], ")", StanBlock(Symbol(), x.args[2].args))
+    if length(x.args) == 3
+        e = x.args[3]
+        print(io, "else", if isa(e, BlockExpr)
+            StanBlock(Symbol(), e.args)
+        else 
+            error(dump(x))#remake(x, e.args...)
+        end)
+    end
+    # for i in 3:2:length(x.args)
+    #     if i < length(x.args)
+    #         print(io, "else if(", x.args[i], ")", StanBlock(Symbol(), x.args[i+1].args))
+    #     else
+    #         print(io, "else", StanBlock(Symbol(), x.args[i].args))
+    #     end    
+    # end
+
+    # error(dump(x))
+    # head, body = x.args
+    # idx, rhs = head.args 
+    # print(io, "for(", idx, " in ", rhs, ")", StanBlock(Symbol(), body.args))
+end
 # Base.show(io::IO, x::CanonicalExpr{:document}) = print(io, commentstring(x.args[1]))
 Base.show(io::IO, x::CanonicalExpr{typeof(adjoint)}) = print(io, "(", x.args[1], "')")
 Base.show(io::IO, x::CanonicalExpr{typeof(range)}) = print(io, "linspaced_vector(", Join((x.args[end], x.args[1], x.args[2]), ", "), ")")
 Base.show(io::IO, x::CanonicalExpr{typeof(getindex)}) = print(io, x.args[1], "[", Join(x.args[2:end], ", "), "]")
-for f in (-,+,*,/,^,.*,./)
+for f in (-,+,*,/,^,.*,./,<,<=,==,!=,>=,>)
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f)}) = print(io, "(", Join(x.args, prettystring($f)), ")")
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f),Tuple{A}}) where {A} = print(io, "(", string($f), x.args[1], ")")
 end
@@ -543,6 +633,16 @@ end
 stan_code(x::SlicModel; mayfail=false) = begin 
     buf = IOBuffer()
     show(buf, x; mayfail)
+    String(take!(buf))
+end
+stan_code(x::StanBlock; mayfail=false) = begin 
+    buf = IOBuffer()
+    print(StanIO3(buf), x)
+    String(take!(buf))
+end
+stan_code2(x) = begin 
+    buf = IOBuffer()
+    print(StanIO3(buf), x)
     String(take!(buf))
 end
 function bridgestan_data end
@@ -558,6 +658,7 @@ passinstantiate(x; kwargs...) = (instantiate(x; kwargs...); x)
 stan_data(x::SlicModel) = stan_data(stan_model(x))
 stan_data(x::StanModel) = Dict([
     key=>getvalue(value) for (key, value) in pairs(content(block(x, :data)))
+    if !always_inline(value)
 ])
 # begin 
 #     rv = Dict()
