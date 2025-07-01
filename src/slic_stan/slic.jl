@@ -255,9 +255,16 @@ forward!(x::Number; info) = maybedata(x, x)
 forward!(x::Symbol; info) = begin 
     x in keys(info) && return info[x]
     isdefined(builtin, x) && return forward!(getproperty(builtin, x); info)
-    isdefined(Main, x) && isa(getproperty(Main, x), Union{Function,SlicModel}) && return getproperty(Main, x) 
+    if isdefined(Main, x)
+        Mx = getproperty(Main, x)
+        isa(Mx, Function)  && return forward!(Mx; info)
+        isa(Mx, SlicModel) && return Mx
+        error("Found $x in Main, but is of type $(typeof(Mx))!")
+    end
     error("Could not find $(x) in model, builtin or Main!")
 end
+forward!(x::Function; info) = stan_expr(x)
+forward!(x::Colon; info) = x
 forward!(x::StanExpr{Symbol}; info) = x
 forward!(x::StanExpr; info) = x
 forward!(x::CanonicalExpr; info) = begin
@@ -586,6 +593,7 @@ Base.show(io::IO, x::ReturnExpr) = print(io, "return ", x.args[1])
 Base.show(io::IO, x::TupleExpr) = print(io, "(", Join(x.args, ", "), ")")
 Base.show(io::IO, x::VectExpr) = print(io, "[", Join(x.args, ", "), "]'")
 Base.show(io::IO, x::DeclExpr) = print(io, type(x.args[1]), " ", expr(x.args[1]))
+Base.show(io::IO, x::Colon2Expr) = print(io, Join(x.args, ":"))
 Base.show(io::IO, x::ColonExpr) = print(io, Join(x.args, ":"))
 Base.show(io::IO, ::BreakExpr) = print(io, "break")
 Base.show(io::IO, x::ContinueExpr) = print(io, "continue ", x.args[1])
@@ -621,7 +629,7 @@ end
 Base.show(io::IO, x::CanonicalExpr{typeof(adjoint)}) = print(io, "(", x.args[1], "')")
 Base.show(io::IO, x::CanonicalExpr{typeof(range)}) = print(io, "linspaced_vector(", Join((x.args[end], x.args[1], x.args[2]), ", "), ")")
 Base.show(io::IO, x::CanonicalExpr{typeof(getindex)}) = print(io, x.args[1], "[", Join(x.args[2:end], ", "), "]")
-for f in (-,+,*,/,^,.*,./,<,<=,==,!=,>=,>)
+for f in (-,+,*,\,/,^,.*,./,<,<=,==,!=,>=,>)
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f)}) = print(io, "(", Join(x.args, prettystring($f)), ")")
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f),Tuple{A}}) where {A} = print(io, "(", string($f), x.args[1], ")")
 end

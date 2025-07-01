@@ -1,151 +1,93 @@
-module builtin
-function flat end
-function std_normal end
-function normal end
-function cauchy end
-# function binomial end
-function binomial_logit end
-function lognormal end
-function chi_square end
-function inv_chi_square end
-function scaled_inv_chi_square end
-function exponential end
-function gamma end
-function inv_gamma end
-function weibull end
-function frechet end
-function rayleigh end
-function loglogistic end
-function uniform end
-function beta end
-function beta_proportion end
-function von_mises end
-function multi_normal end
-function multi_normal_prec end
-function multi_normal_cholesky end
-function multi_gp end
-function multi_gp_cholesky end
-function multi_student_t end
-function multi_student_t_cholesky end
-function gaussian_dlm_obs end
-function dirichlet end
-function lkj_corr end
-function lkj_corr_cholesky end
-function wishart end
-function inv_wishart end
-function inv_wishart_cholesky end
-function wishart_cholesky end
-function neg_binomial_2 end
-
-function std_normal_rng end
-function normal_rng end
-function exponential_rng end
-
-function log1m end
-function to_vector end
-function to_row_vector end
-function to_matrix end
-function rep_vector end
-function rep_matrix end
-function linspaced_array end
-function linspaced_vector end
-function to_array_1d end
-function to_array_2d end
-function cholesky_decompose end
-function diag_pre_multiply end
-function diag_post_multiply end
-function mdivide_right_tri_low end
-function add_diag end 
-function gp_exp_quad_cov end 
-function inv_logit end
-function log_inv_logit end
-function log1m_exp end
-function Phi end
-function integrate_ode_rk45 end
-function ode_rk45 end
-function ode_ckrk end
-function ode_adams end
-function ode_bdf end
-function append_array end
-function append_row end
-function append_col end
-
-function reduce_sum end
-function log_sum_exp end
-function lgamma end
-
+builtin_module_names(x::Symbol) = x
+builtin_module_names(x::Expr) = mapreduce(builtin_module_names, vcat, x.args)
+macro builtin_module(x)
+    @assert Meta.isexpr(x, :vcat)
+    names = builtin_module_names(x)
+    esc(Expr(:block,
+        Expr(:toplevel,
+            Expr(:module, true, :builtin, Expr(:block, [
+                Expr(:function, name)
+                for name in names
+            ]...))
+        ),
+        [
+            Expr(:const, Expr(:(=), name, Expr(:(.), :builtin, QuoteNode(name))))
+            for name in names
+        ]...
+    ))
 end
-const flat = builtin.flat
-const std_normal = builtin.std_normal
-const normal = builtin.normal
-const cauchy = builtin.cauchy
-const std_normal_rng = builtin.std_normal_rng
-const normal_rng = builtin.normal_rng
-const exponential_rng = builtin.exponential_rng
-const binomial_logit = builtin.binomial_logit
-const lognormal = builtin.lognormal
-const chi_square = builtin.chi_square
-const inv_chi_square = builtin.inv_chi_square
-const scaled_inv_chi_square = builtin.scaled_inv_chi_square
-const exponential = builtin.exponential
-const gamma = builtin.gamma
-const inv_gamma = builtin.inv_gamma
-const weibull = builtin.weibull
-const frechet = builtin.frechet
-const rayleigh = builtin.rayleigh
-const loglogistic = builtin.loglogistic
-const uniform = builtin.uniform
-const beta = builtin.beta
-const beta_proportion = builtin.beta_proportion
-const von_mises = builtin.von_mises
-const multi_normal = builtin.multi_normal
-const multi_normal_prec = builtin.multi_normal_prec
-const multi_normal_cholesky = builtin.multi_normal_cholesky
-const multi_gp = builtin.multi_gp
-const multi_gp_cholesky = builtin.multi_gp_cholesky
-const multi_student_t = builtin.multi_student_t
-const multi_student_t_cholesky = builtin.multi_student_t_cholesky
-const gaussian_dlm_obs = builtin.gaussian_dlm_obs
-const dirichlet = builtin.dirichlet
-const lkj_corr = builtin.lkj_corr
-const lkj_corr_cholesky = builtin.lkj_corr_cholesky
-const wishart = builtin.wishart
-const inv_wishart = builtin.inv_wishart
-const inv_wishart_cholesky = builtin.inv_wishart_cholesky
-const wishart_cholesky = builtin.wishart_cholesky
-const neg_binomial_2 = builtin.neg_binomial_2
-const log1m = builtin.log1m
-const to_vector = builtin.to_vector
-const to_row_vector = builtin.to_row_vector
-const to_matrix = builtin.to_matrix
-const rep_vector = builtin.rep_vector
-const rep_matrix = builtin.rep_matrix
-const linspaced_array = builtin.linspaced_array
-const linspaced_vector = builtin.linspaced_vector
-const to_array_1d = builtin.to_array_1d
-const to_array_2d = builtin.to_array_2d
-const cholesky_decompose = builtin.cholesky_decompose
-const diag_pre_multiply = builtin.diag_pre_multiply
-const diag_post_multiply = builtin.diag_post_multiply
-const mdivide_right_tri_low = builtin.mdivide_right_tri_low
-const add_diag = builtin.add_diag 
-const gp_exp_quad_cov = builtin.gp_exp_quad_cov 
-const inv_logit = builtin.inv_logit
-const log_inv_logit = builtin.log_inv_logit
-const log1m_exp = builtin.log1m_exp
-const Phi = builtin.Phi
-const integrate_ode_rk45 = builtin.integrate_ode_rk45
-const ode_rk45 = builtin.ode_rk45
-const ode_ckrk = builtin.ode_ckrk
-const ode_adams = builtin.ode_adams
-const ode_bdf = builtin.ode_bdf
-const append_array = builtin.append_array
-const append_row = builtin.append_row
-const append_col = builtin.append_col
 
-const reduce_sum = builtin.reduce_sum
-const log_sum_exp = builtin.log_sum_exp
-const lgamma = builtin.lgamma
+@builtin_module [
+    flat
+    std_normal
+    normal
+    cauchy
+    binomial_logit
+    lognormal
+    chi_square
+    inv_chi_square
+    scaled_inv_chi_square
+    exponential
+    gamma
+    inv_gamma
+    weibull
+    frechet
+    rayleigh
+    loglogistic
+    uniform
+    beta
+    beta_proportion
+    von_mises
+    multi_normal
+    multi_normal_prec
+    multi_normal_cholesky
+    multi_gp
+    multi_gp_cholesky
+    multi_student_t
+    multi_student_t_cholesky
+    gaussian_dlm_obs
+    dirichlet
+    lkj_corr
+    lkj_corr_cholesky
+    wishart
+    inv_wishart
+    inv_wishart_cholesky
+    wishart_cholesky
+    neg_binomial_2
+    std_normal_rng
+    normal_rng
+    exponential_rng
+    log1m
+    to_vector
+    to_row_vector
+    to_matrix
+    rep_vector
+    rep_matrix
+    linspaced_array
+    linspaced_vector
+    to_array_1d
+    to_array_2d
+    cholesky_decompose
+    diag_pre_multiply
+    diag_post_multiply
+    mdivide_right_tri_low
+    add_diag 
+    gp_exp_quad_cov 
+    inv_logit
+    log_inv_logit
+    log1m_exp
+    Phi
+    ode_rk45 ode_rk45_tol
+    ode_ckrk ode_ckrk_tol
+    ode_adams ode_adams_tol
+    ode_bdf ode_bdf_tol
+    append_array
+    append_row
+    append_col
+    reduce_sum
+    log_sum_exp
+    lgamma
+] 
 
 function vector_std_normal_rng end
 
@@ -162,6 +104,11 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     rep_vector(v, n)::vector[n]
     rep_matrix(v::vector[m], n)::matrix[m, n]
     to_array_2d(v, m, n)::real[m,n]
+    rows_dot_product(x::matrix[m,n], y::matrix[m,n])::vector[m]
+    rep_matrix(x::real, m, n)::matrix[m,n]
+    append_col(x::vector[n], y::vector[n])::matrix[n,2]
+    Base.:\(A::matrix[m, m], b::vector[m])::vector[m]
+    matrix_exp(x::matrix[m,m])::matrix[m,m]
     append_array(lhs::anything[m],rhs::anything[n])::real[m+n]
     append_array(lhs::anything[m],rhs::real)::real[m+1]
     append_row(lhs::vector[m],rhs::real)::vector[m+1]
@@ -245,8 +192,9 @@ end
         (cholesky_factor_corr[m],) => matrix[m,m]
     end
     typeof(getindex) => begin 
-        (real[m,n], int) => real[n] 
+        (real[m], int) => real
         (real[m], int[n]) => real[n]
+        (real[m,n], int) => real[n] 
         (real[m,n], int[o], int) => real[o] 
         (vector[m], int[n]) => vector[n]
         (vector[m], int) => real
@@ -332,10 +280,6 @@ end
         (vector[n],)=>int
         (real[n],)=>int
     end
-    typeof(integrate_ode_rk45) => begin 
-        (anything, real[m], real, real[n], real[p], anything, anything)=>real[m,n]
-        (anything, real[m], real, real[n], real[p], anything, anything, real, real, int)=>real[m,n]
-    end
     typeof(log_sum_exp) => begin 
         (real[n], ) => real
         (matrix[m,n], ) => real
@@ -344,13 +288,19 @@ end
     end
 end
 
-const ODESolver = Union{typeof.((ode_rk45, ode_ckrk, ode_adams, ode_bdf))...}
+const TolODESolver = Union{typeof.((ode_rk45_tol, ode_ckrk_tol, ode_adams_tol, ode_bdf_tol))...}
+const NoTolODESolver = Union{typeof.((ode_rk45, ode_ckrk, ode_adams, ode_bdf))...}
+const ODESolver = Union{TolODESolver, NoTolODESolver}
 
 tracetype(x::CanonicalExpr{<:ODESolver}) = StanType(
     types.vector, (type(x.args[4]).size[1], type(x.args[2]).size[1])
 )
 
-fundefexprs(x::CanonicalExpr{<:ODESolver}) = allfundefexprs(
+fundefexprs(x::CanonicalExpr{<:TolODESolver}) = allfundefexprs(
+    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[8:end]...)
+)
+
+fundefexprs(x::CanonicalExpr{<:NoTolODESolver}) = allfundefexprs(
     CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[5:end]...)
 )
 # fundefexprs(::CanonicalExpr{<:StanExpr2{types.func}}) = error()

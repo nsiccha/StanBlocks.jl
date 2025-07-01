@@ -361,5 +361,8 @@ anon_info(x::NamedTuple) = OrderedDict{Symbol,Any}([
     for (key, value) in pairs(x)
 ])
 anon_expr(key, x) = error(typeof(x))
-anon_expr(key, x::StanExpr) = StanExpr(key, StanType(center_type(x), type(x).size))
+anon_expr(key, x::StanExpr) = StanExpr(key, StanType(center_type(x), ([
+    StanExpr("dims($key)[$i]", StanType(types.int))
+    for (i, s) in enumerate(type(x).size)
+]...,)))
 anon_expr(key, x::StanExpr2{<:types.func}) = StanExpr(type(x).info.value, type(x))
