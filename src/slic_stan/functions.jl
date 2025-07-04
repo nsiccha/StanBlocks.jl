@@ -80,6 +80,7 @@ tracetype(x::BracesExpr) = StanType(types.real, (stan_expr(length(x.args),length
 tracetype(x::VectExpr) = StanType(types.vector, (stan_expr(length(x.args),length(x.args)),))
 tracetype(x::TupleExpr) = StanType(types.tup{Tuple{center_type.(x.args)...}})
 tracetype(x::ForExpr) = StanType(types.anything)
+tracetype(x::WhileExpr) = StanType(types.anything)
 tracetype(x::IfExpr) = StanType(types.anything)
 tracetype(x::ElseIfExpr) = StanType(types.anything)
 tracetype(x::BlockExpr) = error(dump(x))#tracetype(expr(x.args[end]))
@@ -119,6 +120,8 @@ begin
     ensure_xvect(x) = Meta.isexpr(x, :vect) ? x : xvect(x)
     ensure_xreturn(x::Expr) = if x.head in (:block, :macrocall)
         Expr(x.head, x.args[1:end-1]..., ensure_xreturn(x.args[end]))
+    elseif x.head == :if
+        Expr(x.head, x.args[1], ensure_xreturn.(x.args[2:end])...)
     elseif x.head == :return
         x
     else
@@ -252,7 +255,7 @@ begin
             for (i, dim_name) in enumerate(arg_type.args[2:end])
                 isa(dim_name, Symbol) || continue
                 dim_name == :(_) && continue
-                fun_sizes[dim_name] = "int $dim_name = dims($arg_name)[$i]"
+                fun_sizes[dim_name] = "int $dim_name = dims($arg_name)[$i];"
             end
         end
         deconstruct = Expr(:block, xassign(xtuple(arg_names...), :(x.args)), [
@@ -277,7 +280,7 @@ begin
                 ensure_xreturn(body), :($mod.allfundefexprs($mod.forward!($(canonical(body)); info)))
             end
             sig_rv = sigtype(rv)
-            f_expr = :(join(vcat($f, [
+            f_expr = :(join(vcat($(func_name(f)), [
                 string($mod.type(x).info.value)
                 for (x, name) in zip(($(arg_names...),), ($(Meta.quot.(arg_names)...),))
                 if $mod.always_inline(x)
@@ -367,3 +370,10 @@ anon_expr(key, x::StanExpr) = StanExpr(key, StanType(center_type(x), ([
     for (i, s) in enumerate(type(x).size)
 ]...,)))
 anon_expr(key, x::StanExpr2{<:types.func}) = StanExpr(type(x).info.value, type(x))
+func_name(x::Symbol) = x
+func_name(x::QuoteNode) = func_name(x.value)
+func_name(x::Expr) = if x.head == :.
+    func_name(x.args[end])
+else
+    error(dump(x))
+end

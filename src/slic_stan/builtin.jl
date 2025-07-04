@@ -207,6 +207,7 @@ end
         (vector[m], int[n]) => vector[n]
         (vector[m], int) => real
         (vector[m,n], int) => vector[n]
+        (vector[m,n], int, int) => real
         (vector[m,n], int[o], int) => real[o]
         (vector[m,n], int, int[o]) => vector[o]
         (vector[m,n], int[p], int[q]) => vector[p, q]
@@ -299,6 +300,9 @@ end
     end
     Union{typeof.((sort_indices_asc, sort_indices_desc))...} => begin 
         (vector[n],)=>int[n]
+    end
+    typeof(!=) => begin 
+        (anything, anything) => int
     end
 end
 

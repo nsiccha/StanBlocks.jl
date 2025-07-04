@@ -43,6 +43,7 @@ CanonicalExprV{H,A,K} = CanonicalExpr{Val{H},A,K}
 # CanonicalExprT{H,A,K} = CanonicalExpr{typeof(H),A,K}
 BlockExpr{A,K} = CanonicalExprV{:block,A,K} 
 AssignmentExpr{L,R,K} = CanonicalExprV{:(=),Tuple{L,R},K} 
+# ReAssignmentExpr{L,R,K} = CanonicalExprV{:(reassign),Tuple{L,R},K} 
 SamplingExpr{L,R,K} = CanonicalExprV{:(~),Tuple{L,R},K} 
 Colon2Expr{L,T,K} = CanonicalExpr{Colon,T,K} 
 ReturnExpr{V,K} = CanonicalExprV{:return,Tuple{V},K} 
@@ -53,6 +54,7 @@ BracesExpr{T,K} = CanonicalExprV{:braces,T,K}
 VectExpr{T,K} = CanonicalExprV{:vect,T,K} 
 DeclExpr{T,K} = CanonicalExprV{:(::),T,K} 
 ForExpr{T,K} = CanonicalExprV{:for,T,K}
+WhileExpr{T,K} = CanonicalExprV{:while,T,K}
 ColonExpr{T,K} = CanonicalExprV{:(:),T,K}
 IfExpr{T,K} = CanonicalExprV{:if,T,K}
 ElseIfExpr{T,K} = CanonicalExprV{:elseif,T,K}
@@ -357,6 +359,14 @@ forward!(x::ForExpr; info) = begin
     pop!(info, idx)
     stan_expr(remake(x, head, body))
 end
+forward!(x::WhileExpr; info) = begin 
+    @assert length(x.args) == 2
+    head, body = x.args
+    # @assert isa(head, CanonicalExprV{:(=)})
+    @assert isa(body, CanonicalExprV{:block})
+    # body = forward!(body; info)
+    stan_expr(remake(x, forward!(x.args; info)...))
+end
 forward!(x::IfExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::ElseIfExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::BreakExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
@@ -546,16 +556,22 @@ catch e
     rethrow(e)
 end
 Base.show(io::IO, x::StanModel) = show(StanIO3(io), x)
-Base.show(io::StanIO3, x::StanModel) = map(block->print(io, block), blocks(x))
-Base.show(io::IO, x::StanBlock) = if length(content(x)) > 0
+Base.show(io::StanIO3, x::StanModel) = print(io, Join(blocks(x), "\n"))##map(block->print(io, block), blocks(x))
+Base.show(io::IO, x::StanBlock) = if true#length(content(x)) > 0
     print(io, name(x), " {\n")
     map(stmt->block_print(io, x, stmt), collect(values(content(x))))
-    print(io, "}\n\n")
+    print(io, "}")
 end
 block_print(io, ::StanBlock, ::LineNumberNode) = nothing
-block_print(io, ::StanBlock, x) = print(io, "    ", x, ";\n")
+line_terminator(x::StanExpr) = line_terminator(expr(x))
+line_terminator(x) = ";\n"
+line_terminator(x::String) = endswith(rstrip(x), ";") ? "\n" : ";\n"
+line_terminator(x::IfExpr) = "\n"
+line_terminator(x::WhileExpr) = "\n"
+line_terminator(x::ForExpr) = "\n"
+block_print(io, ::StanBlock, x) = print(io, "    ", x, line_terminator(x))
 block_print(io, b::StanBlock, x::BlockExpr) = map(stmt->block_print(io, b, stmt), x.args)
-block_print(io, ::DeclarativeBlock, x) = !always_inline(x) && print(io, "    ", type(x), " ", expr(x), ";\n")
+block_print(io, ::DeclarativeBlock, x) = !always_inline(x) && print(io, "    ", type(x), " ", expr(x), line_terminator(x))
 block_print(io, b::DeclarativeBlock, x::DocumentExpr) = begin
     print(io, "    ", commentstring(x.args[1]))
     block_print(io, b, x.args[2])
@@ -602,11 +618,15 @@ Base.show(io::IO, x::ForExpr) = begin
     idx, rhs = head.args 
     print(io, "for(", idx, " in ", rhs, ")", StanBlock(Symbol(), body.args))
 end
+Base.show(io::IO, x::WhileExpr) = begin
+    head, body = x.args
+    print(io, "while(", head, ")", StanBlock(Symbol(), body.args))
+end
 Base.show(io::IO, x::IfExpr) = begin
     print(io, "if(", x.args[1], ")", StanBlock(Symbol(), x.args[2].args))
     if length(x.args) == 3
         e = x.args[3]
-        print(io, "else", if isa(e, BlockExpr)
+        print(io, " else", if isa(e, BlockExpr)
             StanBlock(Symbol(), e.args)
         else 
             error(dump(x))#remake(x, e.args...)
@@ -642,6 +662,8 @@ for f in (:+=,:-=,:*=)
     @eval forward!(x::CanonicalExprV{$qf}; info) = stan_expr(remake(x, forward!(x.args; info)...))
     @eval Base.show(io::IO, x::CanonicalExprV{$qf}) = print(io, Join(x.args, prettystring($qf)))
 end
+@eval forward!(x::CanonicalExprV{:(.=)}; info) = stan_expr(remake(x, forward!(x.args; info)...))
+@eval Base.show(io::IO, x::CanonicalExprV{:(.=)}) = print(io, Join(x.args, " = "))
     
 
 stan_code(x::SlicModel; mayfail=false) = begin 
