@@ -251,6 +251,7 @@ begin
         for (arg_name, arg_type) in zip(arg_names, arg_types)
             for (i, dim_name) in enumerate(arg_type.args[2:end])
                 isa(dim_name, Symbol) || continue
+                dim_name == :(_) && continue
                 fun_sizes[dim_name] = "int $dim_name = dims($arg_name)[$i]"
             end
         end
@@ -329,7 +330,7 @@ begin
                 push!(stmts, :($mod.fundef($base_xexpr) = $(Expr(:block, reconstruct, deconstruct, stan_fundef))))
             end
             if !isnothing(subexprs)
-                base_subexprs = Expr(:block, reconstruct, subexprs)
+                base_subexprs = Expr(:block, reconstruct, deconstruct, subexprs)
                 push!(stmts, :($mod.fundefexprs($base_xexpr) = $base_subexprs))
             end
         end

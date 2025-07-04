@@ -87,6 +87,10 @@ end
     reduce_sum
     log_sum_exp
     lgamma
+    matrix_exp
+    log1p_exp log1m_exp
+    sort_asc sort_desc
+    sort_indices_asc sort_indices_desc
 ] 
 
 function vector_std_normal_rng end
@@ -149,7 +153,7 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     wishart_cholesky_lpdf(L::cholesky_factor_cov[m], x::real, sigma::matrix[m,m])::real
 end
 @defsig begin 
-    Union{typeof.((sqrt, exp, log, sin, cos, asin, acos, log1m, inv_logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma))...} => begin 
+    Union{typeof.((sqrt, exp, log, sin, cos, asin, acos, log1m, inv_logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs, log1p_exp, log1m_exp))...} => begin 
         (real,)=>real
         (vector[n],)=>vector[n]
         (real[n],)=>real[n]
@@ -192,6 +196,10 @@ end
         (cholesky_factor_corr[m],) => matrix[m,m]
     end
     typeof(getindex) => begin 
+        (int[m], int) => int
+        (int[m], int[n]) => int[n]
+        (int[m,n], int) => int[n] 
+        (int[m,n], int[o], int) => int[o] 
         (real[m], int) => real
         (real[m], int[n]) => real[n]
         (real[m,n], int) => real[n] 
@@ -285,6 +293,12 @@ end
         (matrix[m,n], ) => real
         (row_vector[n], ) => real
         (vector[n], ) => real
+    end
+    Union{typeof.((sort_asc, sort_desc))...} => begin 
+        (vector[n],)=>vector[n]
+    end
+    Union{typeof.((sort_indices_asc, sort_indices_desc))...} => begin 
+        (vector[n],)=>int[n]
     end
 end
 
