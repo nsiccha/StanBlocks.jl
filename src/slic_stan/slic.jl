@@ -63,6 +63,7 @@ ContinueExpr{T,K} = CanonicalExprV{:continue,T,K}
 IfThenExpr2{I,T<:BlockExpr,K} = CanonicalExprV{:if,Tuple{I,T},K}
 IfThenElseExpr{I,T<:BlockExpr,E<:BlockExpr,K} = CanonicalExprV{:if,Tuple{I,T,E},K}
 StringExpr{T,K} = CanonicalExprV{:string,T,K}
+SplatExpr{T,K} = CanonicalExprV{:...,T,K}
 
 
 model(x::SlicModel) = x.model
@@ -246,8 +247,12 @@ canonical(x::CanonicalExprV{Symbol("./")}) = CanonicalExpr(./, x.args...)
 # canonical(x::BlockExpr{<:Tuple}) = remake(x, collect(x.args))
 # canonical(x::BlockExpr{<:Tuple{<:Vector}}) = x
 
+forwards!(;info) = x->forwards!(x; info)
+forwards!(x; info) = [forward!(x; info)]
+forwards!(x::SplatExpr; info) = [forward!(x.args[1]; info)...]
 forward!(x; info) = error(x)
 forward!(;info) = x->forward!(x; info)
+forward!(x::Tuple; info) = (mapreduce(forwards!(;info), vcat, x; init=[])...,)
 forward!(x::Union{Tuple,NamedTuple,Vector,Base.Pairs}; info) = map(forward!(;info), x)
 forward!(x::Union{String,Number,LineNumberNode,Function,Nothing}; info) = x
 forward!(x::QuoteNode; info) = error()#x.value
@@ -653,6 +658,7 @@ for f in (-,+,*,\,/,^,.*,./,<,<=,==,!=,>=,>)
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f)}) = print(io, "(", Join(x.args, prettystring($f)), ")")
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f),Tuple{A}}) where {A} = print(io, "(", string($f), x.args[1], ")")
 end
+Base.show(io::IO, x::CanonicalExpr{typeof(÷)}) = print(io, "(", Join(x.args, " %/% "), ")")
 for f in (Meta.quot(:(~)), Meta.quot(:(=)))
     @eval Base.show(io::IO, x::CanonicalExprV{$f}) = print(io, Join(x.args, prettystring($f)))
 end
