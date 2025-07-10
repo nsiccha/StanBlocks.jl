@@ -225,9 +225,9 @@ begin
         print(io, sigtype(ct))
         String(take!(io))
     end
-    sigarg(x, name::Symbol) = sigtype(x) * " $name"
-    sigarg(::StanExpr2{<:types.func}, ::Symbol) = nothing
-    sigarg(x::Tuple, name::Symbol) = join(ntuple(i->sigarg(x[i], Symbol(name, i)), length(x)), ", ")
+    sigarg(x, name::Symbol) = error()#sigtype(x) * " $name"
+    sigarg(::StanExpr2{<:types.func}, ::Symbol) = error()#nothing
+    sigarg(x::Tuple, name::Symbol) = error()#join(ntuple(i->sigarg(x[i], Symbol(name, i)), length(x)), ", ")
     always_inline(x) = false
     always_inline(::StanExpr2{<:types.func}) = true
     # sigargs(x::Tuple) = filter(!isnothing, map(sigargs, x))
@@ -235,6 +235,8 @@ begin
         @assert x.head == :(::)
         "$(sigtype(x.args[2])) $(x.args[1])"
     end
+    # fname(x) = string(x)
+    # fname(::typeof(>=)) = "gte" 
     # stan_call(;kwargs...) = x->stan_call(x, ;kwargs...)
     # stan_call(x::Expr; kwargs...) = stan_expr()
     expr_replace(x; kwargs...) = get(kwargs, x, x) 
@@ -242,10 +244,17 @@ begin
 
     ensure_xlhs(arg::Symbol) = arg
     ensure_xlhs(::Expr) = Symbol("_")
+
     hasvararg(args) = length(args) > 0 && Meta.isexpr(args[end], :(...))
-    deffun(x::LineNumberNode) = x
-    deffun(x::Expr; mod=@__MODULE__) = if x.head == :block
-        Expr(:block, deffun.(x.args)...)
+    maybedoc(x::AbstractString) = length(strip(x)) == 0 ? "" : strip(replace("\n" * strip(x), "\n"=>"\n// ")) * "\n"
+    deffun(x::LineNumberNode; kwargs...) = x
+    deffun(x::Expr; mod=@__MODULE__, docstring="") = if x.head == :block
+        Expr(:block, deffun.(x.args; mod, docstring)...)
+    elseif x.head == :macrocall
+        @assert x.args[1] == GlobalRef(Core, Symbol("@doc"))
+        # @assert x.args[3] isa String
+        deffun(x.args[4]; mod, docstring=:($maybedoc($(x.args[3]))))
+        # deffun(x.args[4]; mod, docstring=strip(join(strip.((docstring, x.args[3])), "\n\n")))
     else
         # @assert x.head == :(=)
         fsig, body = ensure_xassign(x).args
@@ -303,18 +312,23 @@ begin
                 ensure_xreturn(body), :($mod.allfundefexprs($mod.forward!($(canonical(body)); info)))
             end
             sig_rv = sigtype(rv)
-            f_expr = :(join(vcat($(func_name(f)), [
-                string($mod.type(x).info.value)
-                for (x, name) in zip(($(sig_names...),), ($(Meta.quot.(sig_names)...),))
-                if $mod.always_inline(x)
-            ]), "_"))
-            sig_args_expr = :(join([
-                $mod.sigarg(x, name)
-                for (x, name) in zip(($(sig_names...),), ($(Meta.quot.(sig_names)...),))
-                if !$mod.always_inline(x)
-            ], ", "))
+            # f_expr = :(join(vcat($(func_name(f)), [
+            #     fname($mod.type(x).info.value)
+            #     # for (x, name) in zip(($(sig_names...),), ($(Meta.quot.(sig_names)...),))
+            #     for x in ($(sig_names...),)
+            #     if $mod.always_inline(x)
+            # ]), "_"))
+            # sig_args_expr = :(join([
+            #     $mod.sigarg(x, name)
+            #     for (x, name) in zip(($(sig_names...),), ($(Meta.quot.(sig_names)...),))
+            #     if !$mod.always_inline(x)
+            # ], ", "))
+            f_expr = :($func_name($f, (;$(sig_names...), )))
+            sig_args_expr = :($func_args((;$(sig_names...), )))
             funbody_expr = :($mod.forward!($(canonical(body)); info))
             xstring(
+                # maybedoc(docstring),
+                docstring,
                 sig_rv, " ", f_expr, "(", sig_args_expr, ")", :($mod.stan_code($mod.StanBlock(Symbol(), vcat(
                     $(collect(values(fun_sizes))),
                     $funbody_expr
@@ -388,7 +402,15 @@ anon_info(x::NamedTuple) = OrderedDict{Symbol,Any}([
     for (key, value) in pairs(x)
 ])
 anon_expr(key, x) = error(typeof(x))
-anon_expr(key, x::Tuple) = ntuple(i->anon_expr(Symbol(key, i), x[i]), length(x))
+anon_expr(key, x::Tuple) = begin
+    idxs = cumsum(map(!always_inline, x))
+    ([
+        anon_expr(Symbol(key, idx), xi)
+        for (idx, xi) in zip(idxs, x)
+    ]...,)
+    # xf = filter(!always_inline, x)
+    # ntuple(i->anon_expr(Symbol(key, i), xf[i]), length(xf))
+end
 anon_expr(key, x::StanExpr) = StanExpr(key, StanType(center_type(x), ([
     StanExpr("dims($key)[$i]", StanType(types.int))
     for (i, s) in enumerate(type(x).size)
@@ -401,3 +423,30 @@ func_name(x::Expr) = if x.head == :.
 else
     error(dump(x))
 end
+# infoandpass(x) = (@info(x); x)
+
+func_name(f, args) = join(vcat(func_name(f), func_name(args)...), "_")
+func_name(args::NamedTuple) = func_name(values(args))
+func_name(args::Tuple) = mapreduce(func_name, vcat, args; init=[])
+func_name(x) = begin
+    @assert isa(x, StanExpr)
+    always_inline(x) ? [func_name(type(x).info.value)] : []
+end
+func_name(x::Function) = string(x)
+func_name(::typeof(>=)) = "gte"
+func_name(::typeof(>)) = "gt"
+func_name(::typeof(<=)) = "lte"
+func_name(::typeof(<)) = "lt"
+func_name(::typeof(+)) = "add"
+func_name(::typeof(-)) = "sub"
+func_name(::typeof(*)) = "mul"
+func_name(::typeof(/)) = "div"
+func_args(args::NamedTuple) = join(mapreduce(func_args, vcat, pairs(args); init=[]), ", ")# |> infoandpass
+func_args(arg::Pair) = func_args(arg...)
+func_args(name, ::StanExpr2{<:types.func}) = []
+func_args(name, value::StanExpr2) = sigtype(value) * " $name"
+func_args(name, value::Tuple) = reduce(vcat, [
+    func_args(Symbol(name, i), vali)
+    for (i, vali) in enumerate(filter(!always_inline, value))
+]; init=[])
+# function func_args end

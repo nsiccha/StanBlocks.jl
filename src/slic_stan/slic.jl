@@ -607,7 +607,8 @@ prettystring(f) = " $f "
 prettystring(f::Base.BroadcastFunction) = " .$(f.f) "
 # Base.show(io::IO, x::CanonicalExpr) = print(io, head(x), "(", Join(x.args, ", "), ")")
 Base.show(io::IO, x::CanonicalExpr) = print(io, Join((head(x), filter(always_inline, x.args)...), "_"), "(", Join(filter(!always_inline, x.args), ", "), ")")
-Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = print(io, Join((head(x), filter(always_inline, x.args[2:end])...), "_"), "(", Join(x.args, ", "), ")")
+# Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = print(io, Join((head(x), filter(always_inline, x.args[2:end])...), "_"), "(", Join(x.args, ", "), ")")
+Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = print(io, head(x), "(", func_name(x.args[1], x.args[2:end]), ", ", Join(filter(!always_inline, x.args[2:end]), ", "), ")")
 commentstring(x::String) = "// " * replace(x, "\n"=>"\n    // ") * "\n"
 Base.show(io::IO, x::DocumentExpr) = print(io, commentstring(x.args[1]), "    ", x.args[2])
 Base.show(io::IO, x::ReturnExpr) = print(io, "return ", x.args[1])

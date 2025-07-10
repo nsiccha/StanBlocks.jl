@@ -91,6 +91,7 @@ end
     log1p_exp log1m_exp
     sort_asc sort_desc
     sort_indices_asc sort_indices_desc
+    dot_product rows_dot_product
 ] 
 
 function vector_std_normal_rng end
@@ -111,6 +112,9 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     rows_dot_product(x::matrix[m,n], y::matrix[m,n])::vector[m]
     rep_matrix(x::real, m, n)::matrix[m,n]
     append_col(x::vector[n], y::vector[n])::matrix[n,2]
+    append_col(x::matrix[m, n1], y::matrix[m, n2])::matrix[m, n1+n2]
+    append_col(x::vector[m], y::matrix[m, n2])::matrix[m, 1+n2]
+    dot_product(x::vector[n], y::vector[n])::real
     Base.:\(A::matrix[m, m], b::vector[m])::vector[m]
     matrix_exp(x::matrix[m,m])::matrix[m,m]
     append_array(lhs::anything[m],rhs::anything[n])::real[m+n]
@@ -205,9 +209,9 @@ end
         (real[m,n], int) => real[n] 
         (real[m,n], int[o], int) => real[o] 
         (vector[m], int[n]) => vector[n]
-        (vector[m], int) => real
+        (any_vector[m], int) => real
         (vector[m,n], int) => vector[n]
-        (vector[m,n], int, int) => real
+        (any_vector[m,n], int, int) => real
         (vector[m,n], int[o], int) => real[o]
         (vector[m,n], int, int[o]) => vector[o]
         (vector[m,n], int[p], int[q]) => vector[p, q]
