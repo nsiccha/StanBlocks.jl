@@ -15,11 +15,12 @@ struct SubModel{P,N,L}
     name::N
     locals::L
 end
-struct StanExpr{E,T}
+abstract type AbstractStanType end
+struct StanExpr{E,T<:AbstractStanType}
     expr::E
     type::T
 end
-struct StanType{T,S,I}
+struct StanType{T,S,I} <: AbstractStanType
     size::NTuple{S,StanExpr}
     info::I
     StanType(T,size=tuple(), info=(;); kwargs...) = new{T,length(size),typeof(merge(info, kwargs))}(size, merge(info, kwargs))
@@ -38,6 +39,7 @@ struct CanonicalExpr{H,A,K}
     CanonicalExpr(head::Symbol, args...; kwargs...) = CanonicalExpr(Val(head), args...; kwargs...)
     CanonicalExpr(head, args...; kwargs...) = canonical(new{typeof(head),typeof(args),typeof((;kwargs...))}(head, args, (;kwargs...)))
     CanonicalExpr(head::Val{:block}, args...; kwargs...) = new{Val{:block},typeof(collect(args)),typeof((;kwargs...))}(head, collect(args), (;kwargs...))
+    # CanonicalExpr(head::Val{:tuple})
 end
 CanonicalExprV{H,A,K} = CanonicalExpr{Val{H},A,K}
 # CanonicalExprT{H,A,K} = CanonicalExpr{typeof(H),A,K}
@@ -50,6 +52,8 @@ ReturnExpr{V,K} = CanonicalExprV{:return,Tuple{V},K}
 DocumentExpr{L,R,K} = CanonicalExprV{:document,Tuple{L,R},K} 
 QuoteExpr{T,K} = CanonicalExprV{:quote,T,K} 
 TupleExpr{T,K} = CanonicalExprV{:tuple,T,K} 
+KwExpr{T,K} = CanonicalExprV{:kw,T,K} 
+NamedTupleExpr{T,K} = CanonicalExprV{:nt,T,K} 
 BracesExpr{T,K} = CanonicalExprV{:braces,T,K} 
 VectExpr{T,K} = CanonicalExprV{:vect,T,K} 
 DeclExpr{T,K} = CanonicalExprV{:(::),T,K} 
@@ -90,11 +94,13 @@ supvalue(x::SubModel, value) = value
 supvalue(x::SubModel, value::StanExpr{Symbol}) = StanExpr(supname(x, expr(value)), type(value))
 expr(x::StanExpr) = x.expr
 type(x::StanExpr) = x.type
-type(x::Function) = StanType(types.func{typeof(x)})
+type(x::Function) = StanType(types.func{typeof(x)}; qual=:data)
 remake(x::StanExpr; kwargs...) = StanExpr(expr(x), remake(type(x); kwargs...))
 weak_remake(x::StanExpr; kwargs...) = StanExpr(expr(x), weak_remake(type(x); kwargs...))
 center_type(x::StanExpr) = center_type(type(x))
 center_type(::StanType{T}) where {T} = T
+stan_size(x::StanExpr) = stan_size(type(x))
+stan_size(x::StanType) = x.size
 info(x::StanType) = x.info
 remake(x::StanType; kwargs...) = StanType(center_type(x), x.size, info(x); kwargs...)
 weak_remake(x::StanType; kwargs...) = StanType(center_type(x), x.size, info(x); kwargs..., info(x)...)
@@ -186,7 +192,7 @@ stan_type(expr, value::AbstractVector{Int64}; kwargs...) = StanType(
     stan_expr.((Symbol(expr, "_n"), ), size(value)); 
     value, kwargs..., qual=:data
 )
-stan_type(expr, value::Function; kwargs...) = StanType(types.func{typeof(value)}; value, kwargs...)
+stan_type(expr, value::Function; kwargs...) = StanType(types.func{typeof(value)}; value, qual=:data, kwargs...)
 stan_call(f, args...) = stan_expr(CanonicalExpr(f, map(stan_expr, args)...))
 stan_expr(x::StanExpr; kwargs...) = weak_remake(x; kwargs...)
 stan_expr(x; kwargs...) = stan_expr(x, x; kwargs...)
@@ -207,25 +213,37 @@ forward!(x::SlicModel; info=StanModel()) = begin
     end
     forward!(canonical(model(x)); info)
 end
+isexpr(h) = Base.Fix2(isexpr, h)
 isexpr(x, h) = false
 isexpr(x::CanonicalExpr, h) = head(x) == h
 canonical(x) = x
 canonical(x::Expr) = CanonicalExpr(x.head, canonical.(x.args)...)
+ensure_kw(x::CanonicalExprV{:kw}) = x
+ensure_kw(x::Symbol) = CanonicalExpr(:kw, x, x)
+canonical(x::CanonicalExprV{:parameters}) = if all(isexpr(:kw), x.args)
+    x
+else
+    CanonicalExpr(x.head, ensure_kw.(x.args)...)
+end
 canonical(x::CanonicalExprV{:call}) = begin 
     f = x.args[1]
     args = []
     kwargs = []
     for arg in x.args[2:end]
         if isexpr(arg, :parameters)
+            @assert all(isexpr(:kw), arg.args)
             for argi in arg.args
-                if isexpr(argi, :kw)
-                    push!(kwargs, argi.args[1]=>argi.args[2])
-                elseif isa(argi, Symbol)
-                    push!(kwargs, argi=>argi)
-                else
-                    dumperror(argi)
-                end
+                push!(kwargs, argi.args[1]=>argi.args[2])
             end
+            # for argi in arg.args
+            #     if isexpr(argi, :kw)
+            #         push!(kwargs, argi.args[1]=>argi.args[2])
+            #     elseif isa(argi, Symbol)
+            #         push!(kwargs, argi=>argi)
+            #     else
+            #         dumperror(argi)
+            #     end
+            # end
         elseif isexpr(arg, :kw) 
             push!(kwargs, arg.args[1]=>arg.args[2])
         else
@@ -234,6 +252,24 @@ canonical(x::CanonicalExprV{:call}) = begin
     end
     # isa(f, StanExpr) && error()
     CanonicalExpr(f, args...; kwargs...)
+end
+canonical(x::CanonicalExprV{:tuple}) = begin 
+    @assert length(x.args) > 0
+    if any(Base.Fix2(isexpr, :parameters), x.args)
+        @assert length(x.args) == 1
+        @assert all(isexpr(:kw), x.args[1].args)
+        error("Unsure how to handle NamedTuples!")
+        CanonicalExpr(:nt, x.args[1].args...)
+        # CanonicalExpr(x.head, (;[
+        #     arg.args[1]=>arg.args[2]
+        #     for arg in x.args[1].args
+        # ]...))
+        # names = map(arg->arg.args[1], x.args[1].args)
+        # values = map(arg->arg.args[2], x.args[1].args)
+        # CanonicalExpr(:nt, values...; names)
+    else
+        x
+    end
 end
 # function document end 
 canonical(x::CanonicalExprV{:macrocall}) = begin 
@@ -338,6 +374,8 @@ else
 end
 forward!(x::DocumentExpr; info) = remake(x, forward!(x.args; info)...)
 forward!(x::TupleExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+forward!(x::KwExpr; info) = stan_expr(remake(x, x.args[1], forward!(x.args[2]; info)))
+forward!(x::NamedTupleExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::BracesExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::VectExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::DeclExpr; info) = begin
@@ -598,6 +636,10 @@ Base.show(io::IO, x::StanType) = begin
     length(cons) > 0 && print(io, "<", Join(map((k,v)->Join((k,v), "="), keys(cons), values(cons)), ", "), ">")
     length(r) > 0 && print(io, "[", Join(r, ", "), "]")
 end
+Base.show(io::IO, x::StanType{<:types.tup}) = begin 
+    length(x.size) > 0 && print(io, "array[", Join(x.size, ", "), "] ")
+    print(io, "tuple(", Join(x.info.arg_types, ", ") , ")")
+end
 function maybetype end
 maybetype(x::StanExpr) = center_type(x) == types.anything ? "// Disabled because type inference failed\n    // $(type(x))" : type(x)
 Base.show(io::IO, x::AssignmentExpr{<:StanExpr{Symbol}}) = print(io, maybetype(x.args[1]), " ", x.args[1], " = ", x.args[2])
@@ -606,7 +648,9 @@ Base.show(io::IO, x::AssignmentExpr) = print(io, x.args[1], " = ", x.args[2])
 prettystring(f) = " $f "
 prettystring(f::Base.BroadcastFunction) = " .$(f.f) "
 # Base.show(io::IO, x::CanonicalExpr) = print(io, head(x), "(", Join(x.args, ", "), ")")
-Base.show(io::IO, x::CanonicalExpr) = print(io, Join((head(x), filter(always_inline, x.args)...), "_"), "(", Join(filter(!always_inline, x.args), ", "), ")")
+# Base.show(io::IO, x::CanonicalExpr) = print(io, Join((head(x), filter(always_inline, x.args)...), "_"), "(", Join(filter(!always_inline, x.args), ", "), ")")
+Base.show(io::IO, x::CanonicalExpr) = print(io, func_name(head(x), x.args), "(", Join(filter(!always_inline, x.args), ", "), ")")
+# type(x::Function) = StanType(types.func{typeof(x)}; qual=:data)
 # Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = print(io, Join((head(x), filter(always_inline, x.args[2:end])...), "_"), "(", Join(x.args, ", "), ")")
 Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = print(io, head(x), "(", func_name(x.args[1], x.args[2:end]), ", ", Join(filter(!always_inline, x.args[2:end]), ", "), ")")
 commentstring(x::String) = "// " * replace(x, "\n"=>"\n    // ") * "\n"
@@ -655,6 +699,8 @@ end
 Base.show(io::IO, x::CanonicalExpr{typeof(adjoint)}) = print(io, "(", x.args[1], "')")
 Base.show(io::IO, x::CanonicalExpr{typeof(range)}) = print(io, "linspaced_vector(", Join((x.args[end], x.args[1], x.args[2]), ", "), ")")
 Base.show(io::IO, x::CanonicalExpr{typeof(getindex)}) = print(io, x.args[1], "[", Join(x.args[2:end], ", "), "]")
+Base.show(io::IO, x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = print(io, x.args[1], ".", x.args[2])
+# Base.show(io::IO, x::CanonicalExpr{typeof(getindex)}) = print(io, x.args[1], "[", Join(x.args[2:end], ", "), "]")
 for f in (-,+,*,\,/,^,.*,./,<,<=,==,!=,>=,>)
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f)}) = print(io, "(", Join(x.args, prettystring($f)), ")")
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f),Tuple{A}}) where {A} = print(io, "(", string($f), x.args[1], ")")

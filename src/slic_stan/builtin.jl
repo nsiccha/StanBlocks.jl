@@ -120,6 +120,7 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     append_array(lhs::anything[m],rhs::anything[n])::real[m+n]
     append_array(lhs::anything[m],rhs::real)::real[m+1]
     append_row(lhs::vector[m],rhs::real)::vector[m+1]
+    append_row(lhs::vector[m],rhs::vector[n])::vector[m+n]
     vector_std_normal_rng(n::int)::vector[n] = """
         vector[n] rv;
         for(i in 1:n){
