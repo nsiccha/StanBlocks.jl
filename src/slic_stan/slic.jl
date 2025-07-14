@@ -54,6 +54,7 @@ QuoteExpr{T,K} = CanonicalExprV{:quote,T,K}
 TupleExpr{T,K} = CanonicalExprV{:tuple,T,K} 
 KwExpr{T,K} = CanonicalExprV{:kw,T,K} 
 NamedTupleExpr{T,K} = CanonicalExprV{:nt,T,K} 
+GetPropertyExpr{T,K} = CanonicalExprV{:.,T,K} 
 BracesExpr{T,K} = CanonicalExprV{:braces,T,K} 
 VectExpr{T,K} = CanonicalExprV{:vect,T,K} 
 DeclExpr{T,K} = CanonicalExprV{:(::),T,K} 
@@ -220,6 +221,9 @@ canonical(x) = x
 canonical(x::Expr) = CanonicalExpr(x.head, canonical.(x.args)...)
 ensure_kw(x::CanonicalExprV{:kw}) = x
 ensure_kw(x::Symbol) = CanonicalExpr(:kw, x, x)
+ensure_kw(x::CanonicalExprV{:.}) = CanonicalExpr(:kw, kw_name(x), x)
+kw_name(x::CanonicalExprV{:.}) = kw_name(x.args[2])
+kw_name(x::QuoteNode) = x.value
 canonical(x::CanonicalExprV{:parameters}) = if all(isexpr(:kw), x.args)
     x
 else
@@ -258,7 +262,8 @@ canonical(x::CanonicalExprV{:tuple}) = begin
     if any(Base.Fix2(isexpr, :parameters), x.args)
         @assert length(x.args) == 1
         @assert all(isexpr(:kw), x.args[1].args)
-        error("Unsure how to handle NamedTuples!")
+        # error(dump(x.args[1]))
+        # error("Unsure how to handle NamedTuples!")
         CanonicalExpr(:nt, x.args[1].args...)
         # CanonicalExpr(x.head, (;[
         #     arg.args[1]=>arg.args[2]
@@ -291,7 +296,7 @@ forward!(;info) = x->forward!(x; info)
 forward!(x::Tuple; info) = (mapreduce(forwards!(;info), vcat, x; init=[])...,)
 forward!(x::Union{Tuple,NamedTuple,Vector,Base.Pairs}; info) = map(forward!(;info), x)
 forward!(x::Union{String,Number,LineNumberNode,Function,Nothing}; info) = x
-forward!(x::QuoteNode; info) = error()#x.value
+forward!(x::QuoteNode; info) = x.value
 forward!(x::Irrational; info) = error(x)
 forward!(x::Irrational{:π}; info) = forward!(Float64(pi); info)
 forward!(x::Number; info) = maybedata(x, x)
@@ -376,6 +381,15 @@ forward!(x::DocumentExpr; info) = remake(x, forward!(x.args; info)...)
 forward!(x::TupleExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::KwExpr; info) = stan_expr(remake(x, x.args[1], forward!(x.args[2]; info)))
 forward!(x::NamedTupleExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+forward!(x::GetPropertyExpr; info) = begin
+    @assert length(x.args) == 2
+    obj, name = forward!(x.args; info)
+    names = keys(obj.type.info.arg_types)
+    @assert name in names
+    return forward!(CanonicalExpr(:getindex, x.args[1], findfirst(==(name), names)); info)
+    error(dump((;obj, name)))
+    stan_expr(remake(x, forward!(x.args; info)...))
+end
 forward!(x::BracesExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::VectExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::DeclExpr; info) = begin
@@ -505,6 +519,8 @@ fetch_data!(x::CanonicalExpr; info) = begin
     # isnothing(fdef) || push!(block(info, :functions), fdef; info)
     fetch_data!(x.args; info)
 end
+fetch_data!(x::CanonicalExprV{:kw}; info) = fetch_data!(x.args[2]; info)
+
 # fetch_data!(x::DocumentExpr; info) = fetch_data!(x.args[2]; info=remake(x, x.args[1], info))
 fetch_data!(x; info) = error(x)
 
@@ -657,6 +673,7 @@ commentstring(x::String) = "// " * replace(x, "\n"=>"\n    // ") * "\n"
 Base.show(io::IO, x::DocumentExpr) = print(io, commentstring(x.args[1]), "    ", x.args[2])
 Base.show(io::IO, x::ReturnExpr) = print(io, "return ", x.args[1])
 Base.show(io::IO, x::TupleExpr) = print(io, "(", Join(x.args, ", "), ")")
+Base.show(io::IO, x::NamedTupleExpr) = print(io, "(", Join([arg.args[2] for arg in expr.(x.args)], ", "), ")")
 Base.show(io::IO, x::VectExpr) = print(io, "[", Join(x.args, ", "), "]'")
 Base.show(io::IO, x::DeclExpr) = print(io, type(x.args[1]), " ", expr(x.args[1]))
 Base.show(io::IO, x::Colon2Expr) = print(io, Join(x.args, ":"))

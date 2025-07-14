@@ -73,7 +73,10 @@ tracetype(x::BracesExpr) = StanType(types.real, (stan_expr(length(x.args),length
 tracetype(x::VectExpr) = StanType(types.vector, (stan_expr(length(x.args),length(x.args)),))
 tracetype(x::TupleExpr) = StanType(types.tup; arg_types=map(type, x.args))
 tracetype(x::KwExpr) = type(x.args[2])
-tracetype(x::NamedTupleExpr) = StanType(types.ntup; arg_types=map(type, x.args))
+# tracetype(x::NamedTupleExpr) = StanType(types.ntup; arg_types=map(type, x.args))
+tracetype(x::NamedTupleExpr) = StanType(types.ntup; arg_types=(;[
+    kw.args[1]=>type(kw.args[2]) for kw in map(expr, x.args)
+]...))
 tracetype(x::ForExpr) = StanType(types.anything)
 tracetype(x::WhileExpr) = StanType(types.anything)
 tracetype(x::IfExpr) = StanType(types.anything)
@@ -223,7 +226,7 @@ begin
     sigtype(x::StanType{<:types.tup}) = begin 
         io = IOBuffer()
         length(x.size) > 0 && print(io, "array[", join(fill("", x.size), ", "), "] ")
-        print(io, "tuple(", join(sigtype.(x.info.arg_types), ", "), ")")
+        print(io, "tuple(", join(map(sigtype, x.info.arg_types), ", "), ")")
         String(take!(io))
     end
     sigarg(x, name::Symbol) = error()#sigtype(x) * " $name"
@@ -421,9 +424,16 @@ anon_expr(key, x::StanExpr) = StanExpr(key, StanType(center_type(x), ([
 ]...,)))
 anon_expr(key, x::StanExpr2{<:types.func}) = StanExpr(type(x).info.value, type(x))
 anon_expr(key, x::StanExpr2{<:types.tup}) = begin
-    StanExpr(key, StanType(types.tup; arg_types=([
+    StanExpr(key, StanType(center_type(x); arg_types=([
         anon_expr(Symbol(key, ".", i), StanExpr(:_, arg_type)).type
         for (i, arg_type) in enumerate(x.type.info.arg_types)
+    ]...,)))
+end
+anon_expr(key, x::StanExpr2{<:types.ntup}) = begin
+    # arg_types = x.type.info.arg_types
+    StanExpr(key, StanType(center_type(x); arg_types=(;[
+        name=>anon_expr(Symbol(key, ".", i), StanExpr(:_, arg_type)).type
+        for (i, (name, arg_type)) in enumerate(pairs(x.type.info.arg_types))
     ]...,)))
 end
 func_name(x::Symbol) = x
