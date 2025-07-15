@@ -17,6 +17,7 @@ module types
     abstract type tup <: anything end
     abstract type ntup <: tup end
 end
+function stan_code end
 Base.show(io::IO, ::Type{T}) where {T<:types.anything} = print(io, T.name.name)#.parameters[1].name.name)
 Base.show(io::IO, ::Type{<:types.tup}) = print(io, "tuple(...)")
 r_ndim(::Type{types.anything}) = 0
@@ -189,7 +190,7 @@ begin
             xassign(xtuple(ensure_xlhs.(lhsi.args[2:end])...), :(stan_size(x.args[$i])))
             for (i, lhsi) in enumerate(lhs)
         ]..., :(info = (;$(dim_names...),)), xsig_expr(rv))
-        :($tracetype($xexpr) = $xbody)
+        :($stan.tracetype($xexpr) = $xbody)
     end
     funbody(x::Expr) = begin 
         @assert x.head == :block x
