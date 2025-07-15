@@ -27,8 +27,8 @@ r_ndim(::Type{<:types.complex}) = 0
 r_ndim(::Type{<:types.func}) = 0
 r_ndim(::Type{<:types.tup}) = 0
 r_ndim(::StanType{T}) where {T} = r_ndim(T)
-l_ndim(x::StanType) = length(x.size) - r_ndim(x)
-lr_size(x::StanType) = x.size[1:l_ndim(x)], x.size[1+l_ndim(x):end]
+l_ndim(x::StanType) = stan_ndim(x) - r_ndim(x)
+lr_size(x::StanType) = stan_size(x, 1:l_ndim(x)), stan_size(x, 1+l_ndim(x):stan_ndim(x))
 canonical(x::CanonicalExpr{<:StanExpr2{<:types.func}}) = CanonicalExpr(type(x.head).info.value, x.args...; x.kwargs...)
 backward!(x::StanExpr2{<:types.func}; info) = x
 fetch_data!(::StanExpr2{<:types.func}; info) = nothing
@@ -56,19 +56,19 @@ else
     StanType(types.anything)
 end
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype(
-    CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (type(x.args[1]).size[1],))))
+    CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 1),))))
 )
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any}}) = tracetype(
-    CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (type(x.args[1]).size[1],))), x.args[3])
+    CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 1),))), x.args[3])
 )
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Colon}}) = tracetype(
-    CanonicalExpr(head(x), x.args[1], x.args[2], StanExpr(missing, StanType(types.int, (type(x.args[1]).size[2],))))
+    CanonicalExpr(head(x), x.args[1], x.args[2], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 2),))))
 )
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = x.args[1].type.info.arg_types[x.args[2].type.info.value]
 
 tracetype(x::CanonicalExpr{Colon}) = StanType(types.int, (stan_call(+,stan_expr(1,1),stan_call(-,x.args[2],x.args[1])), ))
-# tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:Any,<:StanType{<:types.matrix}},<:Colon,<:StanExpr{<:Any,<:StanType{<:types.int,0}}}}) = StanType(types.vector, (type(x.args[1]).size[1],))
-# tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:Any,<:StanType{types.real,2}},<:Colon,<:StanExpr{<:Any,<:StanType{<:types.int,0}}}}) = StanType(types.real, (type(x.args[1]).size[1],))
+# tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:Any,<:StanType{<:types.matrix}},<:Colon,<:StanExpr{<:Any,<:StanType{<:types.int,0}}}}) = StanType(types.vector, (stan_size(x.args[1], 1),))
+# tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:Any,<:StanType{types.real,2}},<:Colon,<:StanExpr{<:Any,<:StanType{<:types.int,0}}}}) = StanType(types.real, (stan_size(x.args[1], 1),))
 tracetype(x::BracesExpr) = StanType(types.real, (stan_expr(length(x.args),length(x.args)),))
 tracetype(x::VectExpr) = StanType(types.vector, (stan_expr(length(x.args),length(x.args)),))
 tracetype(x::TupleExpr) = StanType(types.tup; arg_types=map(type, x.args))
@@ -91,7 +91,7 @@ autotype(x::StanType; kwargs...) = begin
         getindex(kwargs, key)
         for key in (:m, :n, :o) if key in keys(kwargs)
     ]
-    size = length(nsize) > 0 ? (nsize..., ) : get(kwargs, :size, x.size)
+    size = length(nsize) > 0 ? (nsize..., ) : get(kwargs, :size, stan_size(x))
     (ct == types.anything) && (ct = [types.real, types.vector, types.matrix][1+length(size)])
     cons = (;[
         key=>getindex(kwargs, key)
@@ -186,7 +186,7 @@ begin
 
         xexpr = :(x::$mod.CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
         xbody = Expr(:block, [
-            xassign(xtuple(ensure_xlhs.(lhsi.args[2:end])...), :(x.args[$i].type.size))
+            xassign(xtuple(ensure_xlhs.(lhsi.args[2:end])...), :(stan_size(x.args[$i])))
             for (i, lhsi) in enumerate(lhs)
         ]..., :(info = (;$(dim_names...),)), xsig_expr(rv))
         :($mod.tracetype($xexpr) = $xbody)
@@ -217,7 +217,7 @@ begin
     sigtype(x::StanType) = begin 
         ct = center_type(x)
         @assert ct != types.anything
-        l = length(x.size) - r_ndim(ct)
+        l = stan_ndim(x) - r_ndim(ct)
         io = IOBuffer()
         l > 0 && print(io, "array[", join(fill("", l), ", "), "] ")
         print(io, sigtype(ct))
@@ -225,7 +225,7 @@ begin
     end
     sigtype(x::StanType{<:types.tup}) = begin 
         io = IOBuffer()
-        length(x.size) > 0 && print(io, "array[", join(fill("", x.size), ", "), "] ")
+        stan_ndim(x) > 0 && print(io, "array[", join(fill("", stan_ndim(x)), ", "), "] ")
         print(io, "tuple(", join(map(sigtype, x.info.arg_types), ", "), ")")
         String(take!(io))
     end
@@ -295,7 +295,7 @@ begin
         deconstruct = Expr(:block, 
             xassign(xtuple(arg_names..., (isnothing(vararg) ? () : (vararg,))...), :(x.args)), 
             [
-                xassign(xtuple(ensure_xlhs.(args_type.args[2:end])...), :($args_name.type.size))
+                xassign(xtuple(ensure_xlhs.(args_type.args[2:end])...), :($stan_size($args_name)))
                 for (args_name, args_type) in zip(arg_names, arg_types)
             ]..., 
             :(info = (;$(sig_names...), $(keys(fun_sizes)...),))
@@ -420,7 +420,7 @@ anon_expr(key, x::Tuple) = begin
 end
 anon_expr(key, x::StanExpr) = StanExpr(key, StanType(center_type(x), ([
     StanExpr("dims($key)[$i]", StanType(types.int))
-    for (i, s) in enumerate(type(x).size)
+    for (i, s) in enumerate(stan_size(x))
 ]...,)))
 anon_expr(key, x::StanExpr2{<:types.func}) = StanExpr(type(x).info.value, type(x))
 anon_expr(key, x::StanExpr2{<:types.tup}) = begin

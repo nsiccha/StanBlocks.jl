@@ -1,74 +1,74 @@
 module stan
 using OrderedCollections
 dumperror(x) = (dump(x); error(x))
-struct SlicModel{M,D}
-    model::M
-    data::D
+struct SlicModel#{M,D}
+    model#::M
+    data#::D
 end
-struct StanModel{M,V,B}
-    meta::M
-    vars::V
-    blocks::B
+struct StanModel#{M,V,B}
+    meta#::M
+    vars#::V
+    blocks#::B
 end
-struct SubModel{P,N,L}
-    parent::P
-    name::N
-    locals::L
+struct SubModel#{P,N,L}
+    parent#::P
+    name#::N
+    locals#::L
 end
 abstract type AbstractStanType end
 struct StanExpr{E,T<:AbstractStanType}
     expr::E
     type::T
 end
-struct StanType{T,S,I} <: AbstractStanType
+struct StanType{T,S} <: AbstractStanType
     size::NTuple{S,StanExpr}
-    info::I
-    StanType(T,size=tuple(), info=(;); kwargs...) = new{T,length(size),typeof(merge(info, kwargs))}(size, merge(info, kwargs))
+    info#::I
+    StanType(T,size=tuple(), info=(;); kwargs...) = new{T,length(size)}(size, merge(info, kwargs))
 end
-StanExpr2{T,S,E,I} = StanExpr{E,StanType{T,S,I}}
-struct StanBlock{N,C}
-    content::C
-    StanBlock(N,content=[]) = new{N,typeof(content)}(content)
+StanExpr2{T,S,E} = StanExpr{E,StanType{T,S}}
+struct StanBlock{N}
+    content#::C
+    StanBlock(N,content=[]) = new{N}(content)
 end
 
-struct CanonicalExpr{H,A,K}
+struct CanonicalExpr{H,A}
     head::H
     args::A
-    kwargs::K
+    kwargs#::K
     # Maybe a bit dangerous
     CanonicalExpr(head::Symbol, args...; kwargs...) = CanonicalExpr(Val(head), args...; kwargs...)
-    CanonicalExpr(head, args...; kwargs...) = canonical(new{typeof(head),typeof(args),typeof((;kwargs...))}(head, args, (;kwargs...)))
-    CanonicalExpr(head::Val{:block}, args...; kwargs...) = new{Val{:block},typeof(collect(args)),typeof((;kwargs...))}(head, collect(args), (;kwargs...))
+    CanonicalExpr(head, args...; kwargs...) = canonical(new{typeof(head),typeof(args)}(head, args, (;kwargs...)))
+    CanonicalExpr(head::Val{:block}, args...; kwargs...) = new{Val{:block},typeof(collect(args))}(head, collect(args), (;kwargs...))
     # CanonicalExpr(head::Val{:tuple})
 end
-CanonicalExprV{H,A,K} = CanonicalExpr{Val{H},A,K}
-# CanonicalExprT{H,A,K} = CanonicalExpr{typeof(H),A,K}
-BlockExpr{A,K} = CanonicalExprV{:block,A,K} 
-AssignmentExpr{L,R,K} = CanonicalExprV{:(=),Tuple{L,R},K} 
-# ReAssignmentExpr{L,R,K} = CanonicalExprV{:(reassign),Tuple{L,R},K} 
-SamplingExpr{L,R,K} = CanonicalExprV{:(~),Tuple{L,R},K} 
-Colon2Expr{L,T,K} = CanonicalExpr{Colon,T,K} 
-ReturnExpr{V,K} = CanonicalExprV{:return,Tuple{V},K} 
-DocumentExpr{L,R,K} = CanonicalExprV{:document,Tuple{L,R},K} 
-QuoteExpr{T,K} = CanonicalExprV{:quote,T,K} 
-TupleExpr{T,K} = CanonicalExprV{:tuple,T,K} 
-KwExpr{T,K} = CanonicalExprV{:kw,T,K} 
-NamedTupleExpr{T,K} = CanonicalExprV{:nt,T,K} 
-GetPropertyExpr{T,K} = CanonicalExprV{:.,T,K} 
-BracesExpr{T,K} = CanonicalExprV{:braces,T,K} 
-VectExpr{T,K} = CanonicalExprV{:vect,T,K} 
-DeclExpr{T,K} = CanonicalExprV{:(::),T,K} 
-ForExpr{T,K} = CanonicalExprV{:for,T,K}
-WhileExpr{T,K} = CanonicalExprV{:while,T,K}
-ColonExpr{T,K} = CanonicalExprV{:(:),T,K}
-IfExpr{T,K} = CanonicalExprV{:if,T,K}
-ElseIfExpr{T,K} = CanonicalExprV{:elseif,T,K}
-BreakExpr{T,K} = CanonicalExprV{:break,T,K}
-ContinueExpr{T,K} = CanonicalExprV{:continue,T,K}
-IfThenExpr2{I,T<:BlockExpr,K} = CanonicalExprV{:if,Tuple{I,T},K}
-IfThenElseExpr{I,T<:BlockExpr,E<:BlockExpr,K} = CanonicalExprV{:if,Tuple{I,T,E},K}
-StringExpr{T,K} = CanonicalExprV{:string,T,K}
-SplatExpr{T,K} = CanonicalExprV{:...,T,K}
+CanonicalExprV{H,A} = CanonicalExpr{Val{H},A}
+# CanonicalExprT{H,A} = CanonicalExpr{typeof(H),A}
+BlockExpr{A} = CanonicalExprV{:block,A} 
+AssignmentExpr{L,R} = CanonicalExprV{:(=),Tuple{L,R}} 
+# ReAssignmentExpr{L,R} = CanonicalExprV{:(reassign),Tuple{L,R}} 
+SamplingExpr{L,R} = CanonicalExprV{:(~),Tuple{L,R}} 
+Colon2Expr{L,T} = CanonicalExpr{Colon,T} 
+ReturnExpr{V} = CanonicalExprV{:return,Tuple{V}} 
+DocumentExpr{L,R} = CanonicalExprV{:document,Tuple{L,R}} 
+QuoteExpr{T} = CanonicalExprV{:quote,T} 
+TupleExpr{T} = CanonicalExprV{:tuple,T} 
+KwExpr{T} = CanonicalExprV{:kw,T} 
+NamedTupleExpr{T} = CanonicalExprV{:nt,T} 
+GetPropertyExpr{T} = CanonicalExprV{:.,T} 
+BracesExpr{T} = CanonicalExprV{:braces,T} 
+VectExpr{T} = CanonicalExprV{:vect,T} 
+DeclExpr{T} = CanonicalExprV{:(::),T} 
+ForExpr{T} = CanonicalExprV{:for,T}
+WhileExpr{T} = CanonicalExprV{:while,T}
+ColonExpr{T} = CanonicalExprV{:(:),T}
+IfExpr{T} = CanonicalExprV{:if,T}
+ElseIfExpr{T} = CanonicalExprV{:elseif,T}
+BreakExpr{T} = CanonicalExprV{:break,T}
+ContinueExpr{T} = CanonicalExprV{:continue,T}
+IfThenExpr2{I,T<:BlockExpr} = CanonicalExprV{:if,Tuple{I,T}}
+IfThenElseExpr{I,T<:BlockExpr,E<:BlockExpr} = CanonicalExprV{:if,Tuple{I,T,E}}
+StringExpr{T} = CanonicalExprV{:string,T}
+SplatExpr{T} = CanonicalExprV{:...,T}
 
 
 model(x::SlicModel) = x.model
@@ -102,20 +102,23 @@ center_type(x::StanExpr) = center_type(type(x))
 center_type(::StanType{T}) where {T} = T
 stan_size(x::StanExpr) = stan_size(type(x))
 stan_size(x::StanType) = x.size
+stan_size(x, i) = stan_size(x)[i]
+stan_ndim(x) = length(stan_size(x))
 info(x::StanType) = x.info
-remake(x::StanType; kwargs...) = StanType(center_type(x), x.size, info(x); kwargs...)
-weak_remake(x::StanType; kwargs...) = StanType(center_type(x), x.size, info(x); kwargs..., info(x)...)
+remake(x::StanType, args...; kwargs...) = StanType(center_type(x), args, info(x); kwargs...)
+remake(x::StanType; kwargs...) = StanType(center_type(x), stan_size(x), info(x); kwargs...)
+weak_remake(x::StanType; kwargs...) = StanType(center_type(x), stan_size(x), info(x); kwargs..., info(x)...)
 # siz
 name(::StanBlock{N}) where {N} = replace(string(N), "_"=>" ")
 content(x::StanBlock) = x.content
 
-FunctionsBlock{C} = StanBlock{:functions, C}
-DataBlock{C} = StanBlock{:data, C}
-TransformedDataBlock{C} = StanBlock{:transformed_data, C}
-ParametersBlock{C} = StanBlock{:parameters, C}
-TransformedParametersBlock{C} = StanBlock{:transformed_parameters, C}
-ModelBlock{C} = StanBlock{:model, C}
-GeneratedQuantitiesBlock{C} = StanBlock{:generated_quantities, C}
+FunctionsBlock = StanBlock{:functions}
+DataBlock = StanBlock{:data}
+TransformedDataBlock = StanBlock{:transformed_data}
+ParametersBlock = StanBlock{:parameters}
+TransformedParametersBlock = StanBlock{:transformed_parameters}
+ModelBlock = StanBlock{:model}
+GeneratedQuantitiesBlock = StanBlock{:generated_quantities}
 remake(x::StanBlock{N}, c) where {N} = StanBlock(N, c)
 # Base.push!(x::StanBlock, args...) = error()#push!.(Ref(x), args)
 # Base.push!(x::StanBlock, arg; info) = errr()#push!(content(x), arg)
@@ -170,7 +173,7 @@ hasvalue(x::StanExpr) = !ismissing(getvalue(x))
 hasvalue(x::StanType) = !ismissing(getvalue(x))
 cv(x) = false
 cv(x::StanExpr) = cv(type(x))
-cv(x::StanType) = get(info(x), :cv, false) || any(cv, x.size)
+cv(x::StanType) = get(info(x), :cv, false) || any(cv, stan_size(x))
 # cv!(x::SlicModel, args...) = x(;[
 #     key=>remake(x[key]; cv=true) for key in args
 # ]...)
@@ -325,15 +328,19 @@ forward!(x::AssignmentExpr{Symbol}; info) = begin
     rhs = forward!(rhs; info)::Union{StanExpr}
     forward!(remake(x, name, rhs); info)
 end
+maybe_lazy_size(key::Symbol, i, sizei) = sizei
+maybe_lazy_size(key::Symbol, i, ::StanExpr{<:CanonicalExpr}) = StanExpr("dims($key)[$i]", StanType(types.int))
 forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args 
-    if name in keys(info)
-        # @assert false
-    else
-        info[name] = StanExpr(name, remake(type(rhs); value=missing))
-    end
+    @assert name ∉ keys(info)
+    info[name] = StanExpr(name, remake(type(rhs); value=missing))
     @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(rhs)!"
-    remake(x, info[name], rhs)
+    rv = remake(x, info[name], rhs)
+    info[name] = StanExpr(name, remake(type(rhs), [
+        maybe_lazy_size(name, i, sizei)
+        for (i, sizei) in enumerate(stan_size(type(rhs)))
+    ]...; value=missing))
+    rv 
 end
 forward!(x::AssignmentExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::SamplingExpr{Symbol}; info) = begin
@@ -351,7 +358,7 @@ forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
         # base = type(rhs)
         # @info expr(rhs).kwargs
         autotype = stan.autotype(rhs)
-        cv = stan.cv(autotype) || stan.cv(rhs)#any(stan.cv, autotype.size)
+        cv = stan.cv(autotype) || stan.cv(rhs)
         qual = cv ? :quantities : :parameter
         info[name] = StanExpr(name, remake(autotype; qual, cv))
     end
@@ -499,13 +506,13 @@ distribution_blocks(::Union{Nothing}; info) = tuple()
 # I had removed this, I wonder why!
 distribution_blocks(x::StanExpr{Symbol}; info) = hasvalue(x) ? (:data,) : tuple()
 
-DeclarativeBlock{C} = Union{DataBlock{C},ParametersBlock{C}}
-ImperativeBlock{C} = Union{FunctionsBlock{C},TransformedDataBlock{C},TransformedParametersBlock{C},ModelBlock{C},GeneratedQuantitiesBlock{C}}
+DeclarativeBlock = Union{DataBlock,ParametersBlock}
+ImperativeBlock = Union{FunctionsBlock,TransformedDataBlock,TransformedParametersBlock,ModelBlock,GeneratedQuantitiesBlock}
 fetch_data!(;info) = x->fetch_data!(x; info)
 fetch_data!(x::Union{Tuple}; info) = map(fetch_data!(;info), x)
 fetch_data!(x::Union{Function,String}; info) = nothing 
 fetch_data!(x::StanExpr{<:Union{Number,String,Missing}}; info) = nothing 
-fetch_data!(x::StanType; info) = fetch_data!(x.size; info) 
+fetch_data!(x::StanType; info) = fetch_data!(stan_size(x); info) 
 fetch_data!(x::StanExpr{Symbol}; info) = begin
     # fetch_data!(type(x); info)
     hasvalue(x) && push!(block(info, :data), x; info)
@@ -583,12 +590,12 @@ rng_expr(lhs, rhs) = rng_expr(rhs)
 rng_expr(rhs::StanExpr) = rng_expr(expr(rhs))
 rng_expr(rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), rhs.args...)
 rng_expr(x) = dummy_rng
-rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(std_normal)}}) = stan_call(vector_std_normal_rng, type(lhs).size...)
+rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(std_normal)}}) = stan_call(vector_std_normal_rng, stan_size(lhs)...)
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal)}}) = stan_call(to_vector, stan_call(normal_rng, expr(rhs).args...))
-rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal),<:Tuple{<:StanExpr2{types.real, 0},<:StanExpr2{types.real, 0}}}}) = rng_expr(lhs, stan_call(normal, stan_call(rep_vector, expr(rhs).args[1], type(lhs).size[1]), expr(rhs).args[2]))
+rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal),<:Tuple{<:StanExpr2{types.real, 0},<:StanExpr2{types.real, 0}}}}) = rng_expr(lhs, stan_call(normal, stan_call(rep_vector, expr(rhs).args[1], stan_size(lhs, 1)), expr(rhs).args[2]))
 
 rng_expr(lhs::StanExpr2{types.real}, rhs::StanExpr{<:CanonicalExpr{typeof(exponential)}}) = stan_call(exponential_rng, expr(rhs).args...)
-rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(exponential)}}) = stan_call(vector_exponential_rng, expr(rhs).args..., type(lhs).size...)
+rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(exponential)}}) = stan_call(vector_exponential_rng, expr(rhs).args..., stan_size(lhs)...)
 
 struct Join
     iterator
@@ -653,7 +660,7 @@ Base.show(io::IO, x::StanType) = begin
     length(r) > 0 && print(io, "[", Join(r, ", "), "]")
 end
 Base.show(io::IO, x::StanType{<:types.tup}) = begin 
-    length(x.size) > 0 && print(io, "array[", Join(x.size, ", "), "] ")
+    stan_ndim(x) > 0 && print(io, "array[", Join(stan_size(x), ", "), "] ")
     print(io, "tuple(", Join(x.info.arg_types, ", ") , ")")
 end
 function maybetype end

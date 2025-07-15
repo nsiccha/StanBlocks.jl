@@ -102,6 +102,9 @@ autokwargs(x::CanonicalExpr{typeof(uniform)}) = (;lower=x.args[1], upper=x.args[
 autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,scaled_inv_chi_square,exponential,gamma,inv_gamma,weibull,frechet,rayleigh,loglogistic))...}}) = (;lower=0.)
 
 @deffun begin 
+    Base.print(x)::anything
+    reject(x)::anything
+    Base.size(x)::int
     Base.range(start::int, stop::int)::vector[stop]
     linspaced_array(n, x, y)::real[n]
     linspaced_vector(n, x, y)::vector[n]
@@ -316,7 +319,7 @@ const NoTolODESolver = Union{typeof.((ode_rk45, ode_ckrk, ode_adams, ode_bdf))..
 const ODESolver = Union{TolODESolver, NoTolODESolver}
 
 tracetype(x::CanonicalExpr{<:ODESolver}) = StanType(
-    types.vector, (type(x.args[4]).size[1], type(x.args[2]).size[1])
+    types.vector, (stan_size(x.args[4], 1), stan_size(x.args[2], 1))
 )
 
 fundefexprs(x::CanonicalExpr{<:TolODESolver}) = allfundefexprs(
