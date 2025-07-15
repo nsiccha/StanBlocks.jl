@@ -21,6 +21,10 @@ struct StanExpr{E,T<:AbstractStanType}
     expr::E
     type::T
 end
+struct StringStanType <: AbstractStanType
+    val::AbstractString
+end
+Base.show(io::IO, x::StringStanType) = print(io, x.val)
 struct StanType{T,S} <: AbstractStanType
     size::NTuple{S,StanExpr}
     info#::I
@@ -109,7 +113,6 @@ info(x::StanType) = x.info
 remake(x::StanType, args...; kwargs...) = StanType(center_type(x), args, info(x); kwargs...)
 remake(x::StanType; kwargs...) = StanType(center_type(x), stan_size(x), info(x); kwargs...)
 weak_remake(x::StanType; kwargs...) = StanType(center_type(x), stan_size(x), info(x); kwargs..., info(x)...)
-# siz
 name(::StanBlock{N}) where {N} = replace(string(N), "_"=>" ")
 content(x::StanBlock) = x.content
 
@@ -121,8 +124,6 @@ TransformedParametersBlock = StanBlock{:transformed_parameters}
 ModelBlock = StanBlock{:model}
 GeneratedQuantitiesBlock = StanBlock{:generated_quantities}
 remake(x::StanBlock{N}, c) where {N} = StanBlock(N, c)
-# Base.push!(x::StanBlock, args...) = error()#push!.(Ref(x), args)
-# Base.push!(x::StanBlock, arg; info) = errr()#push!(content(x), arg)
 
 head(x::CanonicalExpr) = x.head
 head(::CanonicalExprV{H}) where {H} = H
@@ -175,9 +176,6 @@ hasvalue(x::StanType) = !ismissing(getvalue(x))
 cv(x) = false
 cv(x::StanExpr) = cv(type(x))
 cv(x::StanType) = get(info(x), :cv, false) || any(cv, stan_size(x))
-# cv!(x::SlicModel, args...) = x(;[
-#     key=>remake(x[key]; cv=true) for key in args
-# ]...)
 
 stan_type(expr, value; kwargs...) = error(typeof(value))#StanType()
 stan_type(expr, value::Int64; kwargs...) = StanType(types.int; value, kwargs..., qual=:data)
@@ -243,15 +241,6 @@ canonical(x::CanonicalExprV{:call}) = begin
             for argi in arg.args
                 push!(kwargs, argi.args[1]=>argi.args[2])
             end
-            # for argi in arg.args
-            #     if isexpr(argi, :kw)
-            #         push!(kwargs, argi.args[1]=>argi.args[2])
-            #     elseif isa(argi, Symbol)
-            #         push!(kwargs, argi=>argi)
-            #     else
-            #         dumperror(argi)
-            #     end
-            # end
         elseif isexpr(arg, :kw) 
             push!(kwargs, arg.args[1]=>arg.args[2])
         else
@@ -266,21 +255,11 @@ canonical(x::CanonicalExprV{:tuple}) = begin
     if any(Base.Fix2(isexpr, :parameters), x.args)
         @assert length(x.args) == 1
         @assert all(isexpr(:kw), x.args[1].args)
-        # error(dump(x.args[1]))
-        # error("Unsure how to handle NamedTuples!")
         CanonicalExpr(:nt, x.args[1].args...)
-        # CanonicalExpr(x.head, (;[
-        #     arg.args[1]=>arg.args[2]
-        #     for arg in x.args[1].args
-        # ]...))
-        # names = map(arg->arg.args[1], x.args[1].args)
-        # values = map(arg->arg.args[2], x.args[1].args)
-        # CanonicalExpr(:nt, values...; names)
     else
         x
     end
 end
-# function document end 
 canonical(x::CanonicalExprV{:macrocall}) = begin 
     @assert x.args[1] == GlobalRef(Core, Symbol("@doc"))
     CanonicalExpr(:document, x.args[3:4]...)
@@ -289,8 +268,6 @@ canonical(x::CanonicalExprV{Symbol("'")}) = CanonicalExpr(:adjoint, x.args...)
 canonical(x::CanonicalExprV{:ref}) = CanonicalExpr(:getindex, x.args...)
 canonical(x::CanonicalExprV{Symbol(".*")}) = CanonicalExpr(.*, x.args...)
 canonical(x::CanonicalExprV{Symbol("./")}) = CanonicalExpr(./, x.args...)
-# canonical(x::BlockExpr{<:Tuple}) = remake(x, collect(x.args))
-# canonical(x::BlockExpr{<:Tuple{<:Vector}}) = x
 
 forwards!(;info) = x->forwards!(x; info)
 forwards!(x; info) = [forward!(x; info)]

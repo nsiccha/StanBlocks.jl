@@ -61,6 +61,7 @@ end
     to_vector
     to_row_vector
     to_matrix
+    rep_array
     rep_vector
     rep_matrix
     linspaced_array
@@ -84,6 +85,7 @@ end
     append_array
     append_row
     append_col
+    cumulative_sum
     reduce_sum
     log_sum_exp
     lgamma
@@ -93,7 +95,6 @@ end
     sort_indices_asc sort_indices_desc
     dot_product rows_dot_product
 ] 
-
 function vector_std_normal_rng end
 
 autokwargs(::CanonicalExpr{<:Union{typeof.((beta, beta_proportion))...}}) = (;lower=0, upper=1)
@@ -106,14 +107,22 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     reject(x)::anything
     Base.size(x)::int
     Base.range(start::int, stop::int)::vector[stop]
+    Base.sum(x)::real
+    Base.sum(x::int[m])::int
+    Base.sum(x::int[m,n])::int
+    Base.sum(x::int[m,n,o])::int
+    cumulative_sum(x::int[m])::int[m]
+    cumulative_sum(x::real[m])::real[m]
+    cumulative_sum(x::vector[m])::vector[m]
     linspaced_array(n, x, y)::real[n]
     linspaced_vector(n, x, y)::vector[n]
     to_matrix(v::anything, m, n)::matrix[m,n]
+    rep_array(x::int, n)::int[n]
     rep_vector(v, n)::vector[n]
     rep_matrix(v::vector[m], n)::matrix[m, n]
+    rep_matrix(x::real, m, n)::matrix[m,n]
     to_array_2d(v, m, n)::real[m,n]
     rows_dot_product(x::matrix[m,n], y::matrix[m,n])::vector[m]
-    rep_matrix(x::real, m, n)::matrix[m,n]
     append_col(x::vector[n], y::vector[n])::matrix[n,2]
     append_col(x::matrix[m, n1], y::matrix[m, n2])::matrix[m, n1+n2]
     append_col(x::vector[m], y::matrix[m, n2])::matrix[m, 1+n2]
@@ -304,10 +313,12 @@ end
         (vector[n], ) => real
     end
     Union{typeof.((sort_asc, sort_desc))...} => begin 
+        (int[n],)=>int[n]
+        (real[n],)=>real[n]
         (vector[n],)=>vector[n]
     end
     Union{typeof.((sort_indices_asc, sort_indices_desc))...} => begin 
-        (vector[n],)=>int[n]
+        (anything[n],)=>int[n]
     end
     typeof(!=) => begin 
         (anything, anything) => int

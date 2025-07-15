@@ -35,7 +35,7 @@ backward!(x::StanExpr2{<:types.func}; info) = x
 fetch_data!(::StanExpr2{<:types.func}; info) = nothing
 
 short_expr(x::StanExpr2{types.anything}) = StanExpr(short_expr(expr(x)), type(x))
-short_expr(x::StanExpr) = StanExpr("", sigtype(x))
+short_expr(x::StanExpr) = StanExpr("", StringStanType(sigtype(x)))
 short_expr(x::CanonicalExpr) = CanonicalExpr(head(x), short_expr.(x.args)...)
 tracetype(x::CanonicalExpr) = begin
     map(x.args) do arg 
@@ -78,6 +78,7 @@ tracetype(x::KwExpr) = type(x.args[2])
 tracetype(x::NamedTupleExpr) = StanType(types.ntup; arg_types=(;[
     kw.args[1]=>type(kw.args[2]) for kw in map(expr, x.args)
 ]...))
+tracetype(x::DeclExpr) = x.args[1].type
 tracetype(x::ForExpr) = StanType(types.anything)
 tracetype(x::WhileExpr) = StanType(types.anything)
 tracetype(x::IfExpr) = StanType(types.anything)
@@ -329,7 +330,7 @@ begin
             sig_rv = sigtype(rv)
             if rv == :anything
                 rv_expr = rv = :($forward_return!($(canonical(body)); info).type)
-                sig_rv = :(sigtype($rv))
+                sig_rv = :($sigtype($rv))
             end
             # sig_rv = sigtype(rv)
             # f_expr = :(join(vcat($(func_name(f)), [
@@ -409,11 +410,14 @@ fundefexprs(x) = []
 fundefs(x) = filter(!isnothing, vcat(fundef(x), mapreduce(fundefs, vcat, fundefexprs(x); init=[])))
 allfundefexprs(x) = error(typeof(x))
 allfundefexprs(x::Union{LineNumberNode,Symbol,String,Function,Float64,Int64}) = []
+allfundefexprs(x::Union{Tuple,NamedTuple,Vector}) = unique(mapreduce(allfundefexprs, vcat, values(x); init=[]))
 allfundefexprs(x::CanonicalExpr) = begin
     # @info x=>fundefexprs(x)
-    unique(vcat(mapreduce(allfundefexprs, vcat, x.args; init=[]), fundefexprs(x), x))
+    unique(vcat(allfundefexprs(x.args), fundefexprs(x), x))
 end
-allfundefexprs(x::StanExpr) = allfundefexprs(expr(x))
+allfundefexprs(x::StanExpr) = allfundefexprs((expr(x), type(x)))
+allfundefexprs(x::StanType) = allfundefexprs(stan_size(x))
+allfundefexprs(x::StanType{<:types.tup}) = allfundefexprs((stan_size(x), x.info.arg_types))
 
 anon_info(x::NamedTuple) = OrderedDict{Symbol,Any}([
     key=>anon_expr(key, value)
