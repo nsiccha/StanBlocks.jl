@@ -140,23 +140,23 @@ begin
         return :($types.func{$ct})
     end
 
-    xsig_type(x::Expr; mod=@__MODULE__) = begin 
+    xsig_type(x::Expr) = begin 
         @assert x.head == :ref
         ct, size... = x.args
         ct = gettype(ct)
         ndims = length(size)
         if ct == types.anything && ndims == 0
-            :(<:$mod.StanExpr2{<:$ct})
+            :(<:$StanExpr2{<:$ct})
         else
-            :(<:$mod.StanExpr2{<:$ct, $ndims})
+            :(<:$StanExpr2{<:$ct, $ndims})
         end
     end
-    xsig_expr(x::Expr; mod=@__MODULE__) = begin 
+    xsig_expr(x::Expr) = begin 
         @assert x.head == :ref x
         ct, size... = x.args
         ct = gettype(ct)
-        size = xtuple([:($mod.forward!($arg; info)) for arg in canonical.(size)]...)
-        :($mod.StanType($ct, $size))
+        size = xtuple([:($forward!($arg; info)) for arg in canonical.(size)]...)
+        :($StanType($ct, $size))
     end
 
     defsig(x::LineNumberNode) = x
@@ -169,7 +169,7 @@ begin
         Expr(:block, map(sig->defsig(ftype, sig), rhs.args)...)
     end
     defsig(ftype, x::LineNumberNode) = x
-    defsig(ftype, sig::Expr; mod=@__MODULE__) = begin 
+    defsig(ftype, sig::Expr) = begin 
         @assert xiscall(sig, :(=>))
         _, lhs, rv = sig.args
         lhs = ensure_xref.(ensure_xtuple(lhs).args)
@@ -184,12 +184,12 @@ begin
             end
         end
 
-        xexpr = :(x::$mod.CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
+        xexpr = :(x::$CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
         xbody = Expr(:block, [
             xassign(xtuple(ensure_xlhs.(lhsi.args[2:end])...), :(stan_size(x.args[$i])))
             for (i, lhsi) in enumerate(lhs)
         ]..., :(info = (;$(dim_names...),)), xsig_expr(rv))
-        :($mod.tracetype($xexpr) = $xbody)
+        :($tracetype($xexpr) = $xbody)
     end
     funbody(x::Expr) = begin 
         @assert x.head == :block x
@@ -200,7 +200,7 @@ begin
     funbody(x::String) = strip(x)
     # funbody_expr(x) = if x.head
     sigtype(x::Symbol) = sigtype(xref(x))
-    sigtype(x::Expr; mod=@__MODULE__) = begin 
+    sigtype(x::Expr) = begin 
         @assert x.head == :ref x
         ct, size... = x.args
         ct = getproperty(types, ct)
@@ -251,14 +251,18 @@ begin
 
     hasvararg(args) = length(args) > 0 && Meta.isexpr(args[end], :(...))
     maybedoc(x::AbstractString) = length(strip(x)) == 0 ? "" : strip(replace("\n" * strip(x), "\n"=>"\n// ")) * "\n"
+    forward_return!(x; info) = begin
+        info = OrderedDict{Symbol,Any}(pairs(info))
+        forward!(x; info)
+        info[RV_NAME]
+    end
     deffun(x::LineNumberNode; kwargs...) = x
-    deffun(x::Expr; mod=@__MODULE__, docstring="") = if x.head == :block
-        Expr(:block, deffun.(x.args; mod, docstring)...)
+    deffun(x::Expr; docstring="") = if x.head == :block
+        Expr(:block, deffun.(x.args; docstring)...)
     elseif x.head == :macrocall
         @assert x.args[1] == GlobalRef(Core, Symbol("@doc"))
         # @assert x.args[3] isa String
-        deffun(x.args[4]; mod, docstring=:($maybedoc($(x.args[3]))))
-        # deffun(x.args[4]; mod, docstring=strip(join(strip.((docstring, x.args[3])), "\n\n")))
+        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))))
     else
         # @assert x.head == :(=)
         fsig, body = ensure_xassign(x).args
@@ -307,6 +311,7 @@ begin
         )
 
         stmts = []
+        rv_expr = xsig_expr(ensure_xref(rv))
         stan_fundef, subexprs = if ismissing(body) 
              "", nothing
         else
@@ -314,47 +319,52 @@ begin
             _, sbody, subexprs = ensure_xpair(body.args[end], nothing).args
             body, subexprs = if (isa(sbody, String) || Meta.isexpr(sbody, :string)) && length(body.args) == 2
                 sbody, isnothing(subexprs) ? subexprs : Expr(:vect, [
-                    :($mod.expr($mod.forward!($arg; info)))
+                    :($expr($forward!($arg; info)))
                     for arg in canonical.(ensure_xvect(subexprs).args)
                 ]...)
             else
-                ensure_xreturn(body), :($mod.allfundefexprs($mod.forward!($(canonical(body)); info)))
+                ensure_xreturn(body), :($allfundefexprs($forward!($(canonical(body)); info)))
             end
             sig_rv = sigtype(rv)
+            if rv == :anything
+                rv_expr = rv = :($forward_return!($(canonical(body)); info).type)
+                sig_rv = :(sigtype($rv))
+            end
+            # sig_rv = sigtype(rv)
             # f_expr = :(join(vcat($(func_name(f)), [
-            #     fname($mod.type(x).info.value)
+            #     fname($type(x).info.value)
             #     # for (x, name) in zip(($(sig_names...),), ($(Meta.quot.(sig_names)...),))
             #     for x in ($(sig_names...),)
-            #     if $mod.always_inline(x)
+            #     if $always_inline(x)
             # ]), "_"))
             # sig_args_expr = :(join([
-            #     $mod.sigarg(x, name)
+            #     $sigarg(x, name)
             #     for (x, name) in zip(($(sig_names...),), ($(Meta.quot.(sig_names)...),))
-            #     if !$mod.always_inline(x)
+            #     if !$always_inline(x)
             # ], ", "))
             f_expr = :($func_name($f, (;$(sig_names...), )))
             sig_args_expr = :($func_args((;$(sig_names...), )))
-            funbody_expr = :($mod.forward!($(canonical(body)); info))
+            funbody_expr = :($forward!($(canonical(body)); info))
             xstring(
                 # maybedoc(docstring),
                 docstring,
-                sig_rv, " ", f_expr, "(", sig_args_expr, ")", :($mod.stan_code($mod.StanBlock(Symbol(), vcat(
+                sig_rv, " ", f_expr, "(", sig_args_expr, ")", :($stan_code($StanBlock(Symbol(), vcat(
                     $(collect(values(fun_sizes))),
                     $funbody_expr
                 ))))
             ), subexprs
         end
 
-        xexpr = :(x::$mod.CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
+        xexpr = :(x::$CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
         isa(f, Symbol) && push!(stmts, :(function $f end))
         push!(stmts, quote
-            $mod.tracetype($xexpr) = $(Expr(:block, deconstruct, xsig_expr(ensure_xref(rv))))
+            $stan.tracetype($xexpr) = $(Expr(:block, deconstruct, rv_expr))
         end)
         if !ismissing(body)
-            push!(stmts, :($mod.fundef($xexpr) = $(Expr(:block, anon_deconstruct, stan_fundef))))
+            push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, anon_deconstruct, stan_fundef))))
         end
         if !isnothing(subexprs)
-            push!(stmts, :($mod.fundefexprs($xexpr) = $(Expr(:block, anon_deconstruct, subexprs))))
+            push!(stmts, :($stan.fundefexprs($xexpr) = $(Expr(:block, anon_deconstruct, subexprs))))
         end
         isa(f, Symbol) || return Expr(:block, stmts...)
         if is_lpxf
@@ -362,23 +372,23 @@ begin
             rng_f = Symbol(base_f, "_rng")
             lpdfs_f = Symbol(f, "s")
             base_ftype = :(typeof($base_f))
-            base_xexpr = :(_x::$mod.CanonicalExpr{<:$base_ftype,<:Tuple{$(lhs_type[2:end]...)}})
+            base_xexpr = :(_x::$CanonicalExpr{<:$base_ftype,<:Tuple{$(lhs_type[2:end]...)}})
             dummy1 = StanExpr(missing, StanType(getproperty(types, arg_types[1].args[1]), ntuple(i->StanExpr(missing, StanType(types.int)), length(arg_types[1].args)-1)))
-            reconstruct = :(x = $mod.CanonicalExpr($f, $dummy1, _x.args...))
+            reconstruct = :(x = $CanonicalExpr($f, $dummy1, _x.args...))
             push!(stmts, quote
                 function $base_f end
                 function $rng_f end
                 function $lpdfs_f end
-                $mod.tracetype($base_xexpr) = $(Expr(:block, reconstruct, deconstruct, xsig_expr(ensure_xref(arg_types[1]))))
-                $mod.rng_expr(::typeof($base_f)) = $rng_f
-                $mod.likelihood_expr(::typeof($base_f)) = $lpdfs_f
+                $stan.tracetype($base_xexpr) = $(Expr(:block, reconstruct, deconstruct, xsig_expr(ensure_xref(arg_types[1]))))
+                $stan.rng_expr(::typeof($base_f)) = $rng_f
+                $stan.likelihood_expr(::typeof($base_f)) = $lpdfs_f
             end)
             if !ismissing(body)
-                push!(stmts, :($mod.fundef($base_xexpr) = $(Expr(:block, reconstruct, anon_deconstruct, stan_fundef))))
+                push!(stmts, :($fundef($base_xexpr) = $(Expr(:block, reconstruct, anon_deconstruct, stan_fundef))))
             end
             if !isnothing(subexprs)
                 base_subexprs = Expr(:block, reconstruct, anon_deconstruct, subexprs)
-                push!(stmts, :($mod.fundefexprs($base_xexpr) = $base_subexprs))
+                push!(stmts, :($fundefexprs($base_xexpr) = $base_subexprs))
             end
         end
         Expr(:block, stmts...)

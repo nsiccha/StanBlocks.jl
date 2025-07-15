@@ -1,5 +1,6 @@
 module stan
 using OrderedCollections
+const RV_NAME = gensym("RV")
 dumperror(x) = (dump(x); error(x))
 struct SlicModel#{M,D}
     model#::M
@@ -382,7 +383,9 @@ forward!(x::ReturnExpr; info) = if isa(info, SubModel)
     rhs = forward!(x.args[1]; info)
     forward!(CanonicalExpr(:(=),name(info),rhs); info=parent(info))
 else
-    remake(x, forward!(x.args; info)...)
+    rv = forward!(x.args[1]; info)
+    info[RV_NAME] = rv
+    remake(x, rv)
 end
 forward!(x::DocumentExpr; info) = remake(x, forward!(x.args; info)...)
 forward!(x::TupleExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
