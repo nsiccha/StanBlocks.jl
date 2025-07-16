@@ -101,8 +101,21 @@ autotype(x::StanType; kwargs...) = begin
     ]...)
     StanType(ct, size; cons...)
 end
-# abstract type stan_typ
-# module SlicMeta
+
+struct StanFunction3
+    docstring::AbstractString
+    rv_type::StanType
+    parent::Function
+    args::NamedTuple
+    body::Vector
+end
+Base.show(io::IO, f::StanFunction3) = autoprint(
+    io,
+    f.docstring,
+    sigtype(f.rv_type), " ", func_name(f.parent, f.args), "(", func_args(f.args), ")",
+    StanBlock(Symbol(), f.body)
+)
+
 begin
     xiscall(x, f) = Meta.isexpr(x, :call) && x.args[1] == f
     xassign(args...) = Expr(:(=), args...)
@@ -201,6 +214,13 @@ begin
     funbody(x::LineNumberNode) = ""
     funbody(x::String) = strip(x)
     # funbody_expr(x) = if x.head
+    make_stan_type(x::Symbol) = make_stan_type(xref(x))
+    make_stan_type(x::Expr) = begin 
+        @assert x.head == :ref x
+        ct, size... = x.args
+        ct = getproperty(types, ct)
+        StanType(ct, StanExpr.((size..., ), Ref(StanType(types.int))))
+    end
     sigtype(x::Symbol) = sigtype(xref(x))
     sigtype(x::Expr) = begin 
         @assert x.head == :ref x
@@ -306,55 +326,35 @@ begin
             ]..., 
             :(info = (;$(sig_names...), $(keys(fun_sizes)...),))
         )
-        anon_deconstruct= Expr(
+        anon_deconstruct = Expr(
             :block, 
             deconstruct.args..., 
-            :(info = $anon_info(info))
+            :(info = $anon_info(info)),
+            :((;$(sig_names...), $(keys(fun_sizes)...),) = info),
+            :(info = $OrderedDict{Symbol,Any}(pairs(info)))
         )
 
         stmts = []
         rv_expr = xsig_expr(ensure_xref(rv))
-        stan_fundef, subexprs = if ismissing(body) 
-             "", nothing
-        else
+        stan_fundef = nothing
+        if !ismissing(body)
             @assert Meta.isexpr(body, :block)
-            _, sbody, subexprs = ensure_xpair(body.args[end], nothing).args
-            body, subexprs = if (isa(sbody, String) || Meta.isexpr(sbody, :string)) && length(body.args) == 2
-                sbody, isnothing(subexprs) ? subexprs : Expr(:vect, [
-                    :($expr($forward!($arg; info)))
-                    for arg in canonical.(ensure_xvect(subexprs).args)
-                ]...)
+            body = ensure_xreturn(body)
+            sig_rv = if rv == :anything
+                rv_expr = :($forward_return!($(canonical(body)); info).type)
+                :($rv_expr)
             else
-                ensure_xreturn(body), :($allfundefexprs($forward!($(canonical(body)); info)))
+                make_stan_type(rv)
             end
-            sig_rv = sigtype(rv)
-            if rv == :anything
-                rv_expr = rv = :($forward_return!($(canonical(body)); info).type)
-                sig_rv = :($sigtype($rv))
-            end
-            # sig_rv = sigtype(rv)
-            # f_expr = :(join(vcat($(func_name(f)), [
-            #     fname($type(x).info.value)
-            #     # for (x, name) in zip(($(sig_names...),), ($(Meta.quot.(sig_names)...),))
-            #     for x in ($(sig_names...),)
-            #     if $always_inline(x)
-            # ]), "_"))
-            # sig_args_expr = :(join([
-            #     $sigarg(x, name)
-            #     for (x, name) in zip(($(sig_names...),), ($(Meta.quot.(sig_names)...),))
-            #     if !$always_inline(x)
-            # ], ", "))
-            f_expr = :($func_name($f, (;$(sig_names...), )))
-            sig_args_expr = :($func_args((;$(sig_names...), )))
-            funbody_expr = :($forward!($(canonical(body)); info))
-            xstring(
-                # maybedoc(docstring),
-                docstring,
-                sig_rv, " ", f_expr, "(", sig_args_expr, ")", :($stan_code($StanBlock(Symbol(), vcat(
+            stan_fundef = :($StanFunction3(
+                $docstring,
+                $sig_rv,
+                $f,
+                (;$(sig_names...), ),vcat(
                     $(collect(values(fun_sizes))),
-                    $funbody_expr
-                ))))
-            ), subexprs
+                    $forward!($(canonical(body)); info)
+                )
+            ))
         end
 
         xexpr = :(x::$CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
@@ -364,9 +364,6 @@ begin
         end)
         if !ismissing(body)
             push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, anon_deconstruct, stan_fundef))))
-        end
-        if !isnothing(subexprs)
-            push!(stmts, :($stan.fundefexprs($xexpr) = $(Expr(:block, anon_deconstruct, subexprs))))
         end
         isa(f, Symbol) || return Expr(:block, stmts...)
         if is_lpxf
@@ -388,10 +385,6 @@ begin
             if !ismissing(body)
                 push!(stmts, :($fundef($base_xexpr) = $(Expr(:block, reconstruct, anon_deconstruct, stan_fundef))))
             end
-            if !isnothing(subexprs)
-                base_subexprs = Expr(:block, reconstruct, anon_deconstruct, subexprs)
-                push!(stmts, :($fundefexprs($base_xexpr) = $base_subexprs))
-            end
         end
         Expr(:block, stmts...)
     end
@@ -407,6 +400,30 @@ end
 
 fundef(x) = nothing
 fundefexprs(x) = []
+sig_expr(x) = x
+sig_expr(x::Union{Tuple,NamedTuple,Vector}) = map(sig_expr, x)
+sig_expr(x::CanonicalExpr) = remake(x, sig_expr(x.args)...)
+sig_expr(x::StanExpr) = StanExpr(:_, sig_expr(type(x)))
+sig_expr(x::StanType) = StanType(center_type(x), sig_expr(stan_size(x)))
+sig_expr(x::StanType{<:types.tup}) = StanType(center_type(x), sig_expr(stan_size(x)); arg_types=sig_expr(info(x).arg_types))
+sig_expr(x::StanType{<:types.func}) = StanType(center_type(x), sig_expr(stan_size(x)); value=sig_expr(info(x).value))
+fetch_functions!(x::CanonicalExpr; info) = begin 
+    sx = sig_expr(x)
+    sx in keys(info) && return
+    info[sx] = fundef(sx)
+    isnothing(info[sx]) && return
+    fetch_subfunctions!(info[sx].body; info)
+end
+fetch_subfunctions!(;info) = x->fetch_subfunctions!(x; info)
+fetch_subfunctions!(x; info) = nothing
+fetch_subfunctions!(x::Union{Tuple,NamedTuple,Vector}; info) = map(fetch_subfunctions!(;info), x)
+fetch_subfunctions!(x::StanExpr; info) = fetch_subfunctions!((expr(x), type(x)); info)
+fetch_subfunctions!(x::StanType; info) = fetch_subfunctions!((stan_size(x), x.info); info)
+fetch_subfunctions!(x::CanonicalExpr; info) = begin 
+    fetch_functions!(x; info)
+    fetch_subfunctions!((x.args, x.kwargs); info)
+end
+
 fundefs(x) = filter(!isnothing, vcat(fundef(x), mapreduce(fundefs, vcat, fundefexprs(x); init=[])))
 allfundefexprs(x) = error(typeof(x))
 allfundefexprs(x::Union{LineNumberNode,Symbol,String,Function,Float64,Int64}) = []
@@ -419,10 +436,14 @@ allfundefexprs(x::StanExpr) = allfundefexprs((expr(x), type(x)))
 allfundefexprs(x::StanType) = allfundefexprs(stan_size(x))
 allfundefexprs(x::StanType{<:types.tup}) = allfundefexprs((stan_size(x), x.info.arg_types))
 
-anon_info(x::NamedTuple) = OrderedDict{Symbol,Any}([
+# anon_info(x::NamedTuple) = OrderedDict{Symbol,Any}([
+#     key=>anon_expr(key, value)
+#     for (key, value) in pairs(x)
+# ])
+anon_info(x::NamedTuple) = (;[
     key=>anon_expr(key, value)
     for (key, value) in pairs(x)
-])
+]...)
 anon_expr(key, x) = error(typeof(x))
 anon_expr(key, x::Tuple) = begin
     idxs = cumsum(map(!always_inline, x))
@@ -475,7 +496,7 @@ func_name(::typeof(+)) = "add"
 func_name(::typeof(-)) = "sub"
 func_name(::typeof(*)) = "mul"
 func_name(::typeof(/)) = "div"
-func_args(args::NamedTuple) = join(mapreduce(func_args, vcat, pairs(args); init=[]), ", ")# |> infoandpass
+func_args(args::NamedTuple) = Join(mapreduce(func_args, vcat, pairs(args); init=[]), ", ")
 func_args(arg::Pair) = func_args(arg...)
 func_args(name, ::StanExpr2{<:types.func}) = []
 func_args(name, value::StanExpr2) = sigtype(value) * " $name"

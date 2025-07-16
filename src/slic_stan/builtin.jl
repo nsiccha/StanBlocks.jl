@@ -133,36 +133,35 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     append_array(lhs::anything[m],rhs::real)::real[m+1]
     append_row(lhs::vector[m],rhs::real)::vector[m+1]
     append_row(lhs::vector[m],rhs::vector[n])::vector[m+n]
-    vector_std_normal_rng(n::int)::vector[n] = """
-        vector[n] rv;
-        for(i in 1:n){
-            rv[i] = std_normal_rng();
-        }
-        return rv;
-    """
+    vector_std_normal_rng(n::int)::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = std_normal_rng()
+        end
+        rv
+    end
     normal_lpdf(obs::anything, loc::anything, scale::anything)::real
-    normal_lpdfs(obs::anything[n], loc::anything[n], scale::anything[n])::vector[n] = """
-        vector[n] rv;
-        for(i in 1:n){
-            rv[i] = normal_lpdf(obs[i] | loc[i], scale[i]);
-        }
-        return rv;
-    """
-    normal_lpdfs(obs::vector[n], loc::vector[n], scale::real)::vector[n] = """
-        vector[n] rv;
-        for(i in 1:n){
-            rv[i] = normal_lpdf(obs[i] | loc[i], scale);
-        }
-        return rv;
-    """
-    # exponential_lpdf(obs::anything, rate::anything)::real
-    vector_exponential_rng(rate::real, n::int)::vector[n] = """
-        vector[n] rv;
-        for(i in 1:n){
-            rv[i] = exponential_rng(rate);
-        }
-        return rv;
-    """
+    normal_lpdfs(obs::anything[n], loc::anything[n], scale::anything[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = normal_lpdf(obs[i], loc[i], scale[i])
+        end
+        rv
+    end
+    normal_lpdfs(obs::vector[n], loc::vector[n], scale::real)::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = normal_lpdf(obs[i], loc[i], scale)
+        end
+        rv
+    end
+    vector_exponential_rng(rate::real, n::int)::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = exponential_rng(rate)
+        end
+        rv
+    end
     dirichlet_lpdf(w::simplex[n], alpha::vector[n])::real
     lkj_corr_lpdf(L::corr_matrix, x::real)::real
     lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, x::real)::real
@@ -333,11 +332,11 @@ tracetype(x::CanonicalExpr{<:ODESolver}) = StanType(
     types.vector, (stan_size(x.args[4], 1), stan_size(x.args[2], 1))
 )
 
-fundefexprs(x::CanonicalExpr{<:TolODESolver}) = allfundefexprs(
-    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[8:end]...)
+fetch_functions!(x::CanonicalExpr{<:TolODESolver}; info) = fetch_functions!(
+    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[8:end]...); info
 )
 
-fundefexprs(x::CanonicalExpr{<:NoTolODESolver}) = allfundefexprs(
-    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[5:end]...)
+fetch_functions!(x::CanonicalExpr{<:NoTolODESolver}; info) = fetch_functions!(
+    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[5:end]...); info
 )
 # fundefexprs(::CanonicalExpr{<:StanExpr2{types.func}}) = error()
