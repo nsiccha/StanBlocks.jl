@@ -20,7 +20,9 @@ Current features include
 
 Upcoming features include, in order of priority and estimated arrival,
 
-* custom types (for method dispatch),
+* easy runtime assertions (like Julia's `@assert`) - and support for other macros,
+* model docstrings, 
+* custom types (for method dispatch - this would help with more "Julia-style" broadcasting, e.g. via `Ref`),
 * closures via Julia's [`Do-Block Syntax`](https://docs.julialang.org/en/v1/manual/functions/#Do-Block-Syntax-for-Function-Arguments) (to make within chain parallelization via [`reduce_sum`](https://mc-stan.org/docs/stan-users-guide/parallelization.html#reduce-sum) less painful),
 * a much better user experience,
 * more and better tests,

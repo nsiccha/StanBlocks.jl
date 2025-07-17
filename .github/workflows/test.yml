@@ -5,8 +5,8 @@ on:
     branches:
       - master
       - main
-      - slic
   pull_request:
+    types: [opened, ready_for_review]
 
 # needed to allow julia-actions/cache to delete old caches that it has created
 permissions:
