@@ -181,20 +181,20 @@ cv(x) = false
 cv(x::StanExpr) = cv(type(x))
 cv(x::StanType) = get(info(x), :cv, false) || any(cv, stan_size(x))
 
-stan_type(expr, value; kwargs...) = error(typeof(value))#StanType()
-stan_type(expr, value::Int64; kwargs...) = StanType(types.int; value, kwargs..., qual=:data)
-stan_type(expr, value::Float64; kwargs...) = StanType(types.real; value, kwargs...)
-stan_type(expr, value::AbstractVector{Float64}; kwargs...) = StanType(
+stan_type(expr, value; kwargs...) = error("Do not know how to handle `stan_type($expr, $value)`")
+stan_type(expr, value::Integer; kwargs...) = StanType(types.int; value, kwargs..., qual=:data)
+stan_type(expr, value::AbstractFloat; kwargs...) = StanType(types.real; value, kwargs...)
+stan_type(expr, value::AbstractVector{<:AbstractFloat}; kwargs...) = StanType(
     types.vector, 
     stan_expr.((Symbol(expr, "_n"), ), size(value)); 
     value, kwargs...
 )
-stan_type(expr, value::AbstractMatrix{Float64}; kwargs...) = StanType(
+stan_type(expr, value::AbstractMatrix{<:AbstractFloat}; kwargs...) = StanType(
     types.matrix, 
     stan_expr.((Symbol(expr, "_m"), Symbol(expr, "_n"), ), size(value)); 
     value, kwargs...
 )
-stan_type(expr, value::AbstractVector{Int64}; kwargs...) = StanType(
+stan_type(expr, value::AbstractVector{<:Integer}; kwargs...) = StanType(
     types.int, 
     stan_expr.((Symbol(expr, "_n"), ), size(value)); 
     value, kwargs..., qual=:data

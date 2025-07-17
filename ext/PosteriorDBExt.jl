@@ -1390,7 +1390,7 @@ julia_implementation(::Val{:logmesquite_logvas}; N, weight, diam1, diam2, canopy
     end
 end
 julia_implementation(::Val{:lsat_model}; N, R, T, culm, response, kwargs...) = begin 
-    r = zeros(Int64, (T, N))
+    r = zeros(Int, (T, N))
     for j in 1:culm[1], k in 1:T
         r[k, j] = response[1, k];
     end
@@ -1572,7 +1572,7 @@ end
 julia_implementation(::Val{:M0_model}; M, T, y, kwargs...) = begin
         @assert size(y) == (M, T) 
         C = 0
-        s = zeros(Int64, M)
+        s = zeros(Int, M)
         for i in 1:M
             s[i] = sum(y[i, :])
             if s[i] > 0
@@ -1624,7 +1624,7 @@ end
 julia_implementation(::Val{:Mt_model}; M, T, y, kwargs...) = begin 
         @assert size(y) == (M, T) 
         C = 0
-        s = zeros(Int64, M)
+        s = zeros(Int, M)
         for i in 1:M
             s[i] = sum(y[i, :])
             if s[i] > 0
@@ -2043,7 +2043,7 @@ end
 julia_implementation(::Val{:Mb_model}; M, T, y, kwargs...) = begin 
         @assert size(y) == (M, T) 
         C = 0
-        s = zeros(Int64, M)
+        s = zeros(Int, M)
         for i in 1:M
             s[i] = sum(y[i, :])
             if s[i] > 0
@@ -2106,7 +2106,7 @@ end
 julia_implementation(::Val{:Mth_model}; M, T, y, kwargs...) = begin 
         @assert size(y) == (M, T) 
         C = 0
-        s = zeros(Int64, M)
+        s = zeros(Int, M)
         for i in 1:M
             s[i] = sum(y[i, :])
             if s[i] > 0
@@ -2177,7 +2177,7 @@ end
 julia_implementation(::Val{:Mtbh_model}; M, T, y, kwargs...) = begin 
         @assert size(y) == (M, T) 
         C = 0
-        s = zeros(Int64, M)
+        s = zeros(Int, M)
         for i in 1:M
             s[i] = sum(y[i, :])
             if s[i] > 0

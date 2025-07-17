@@ -427,7 +427,7 @@ end
 
 fundefs(x) = filter(!isnothing, vcat(fundef(x), mapreduce(fundefs, vcat, fundefexprs(x); init=[])))
 allfundefexprs(x) = error(typeof(x))
-allfundefexprs(x::Union{LineNumberNode,Symbol,String,Function,Float64,Int64}) = []
+allfundefexprs(x::Union{LineNumberNode,Symbol,String,Function,AbstractFloat,Integer}) = []
 allfundefexprs(x::Union{Tuple,NamedTuple,Vector}) = unique(mapreduce(allfundefexprs, vcat, values(x); init=[]))
 allfundefexprs(x::CanonicalExpr) = begin
     # @info x=>fundefexprs(x)
