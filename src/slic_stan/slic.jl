@@ -81,6 +81,7 @@ data(x::SlicModel) = x.data
 meta(x::StanModel) = x.meta
 vars(x::StanModel) = x.vars
 blocks(x::StanModel) = x.blocks
+remake(x::StanModel; kwargs...) = StanModel((;x.meta..., kwargs...), x.vars, x.blocks)
 var(x::StanModel, name) = error()#vars(x)[name]
 block(x::StanModel, name) = blocks(x)[name]
 Base.getindex(x::StanModel, name) = getindex(vars(x), name)
@@ -210,9 +211,10 @@ maybedata(expr, value::Function; kwargs...) = stan_expr(value, value; qual=:data
 maybecv(expr, value) = stan_expr(expr, value; cv=true)
 stan_model(x::SlicModel; info=StanModel()) = begin 
     distribute!(backward!(forward!(x; info); info); info)
-    info
+    remake(info; docstring=get(x.data, :docstring, ""))
 end
 maybedata!(x::StanModel, key, value) = x[key] = maybedata(key, value)
+maybedata!(x::StanModel, key, value::AbstractString) = nothing
 maybedata!(x::SubModel, key, value) = locals(x)[key] = maybedata(key, value)
 forward!(x::SlicModel; info=StanModel()) = begin 
     for (key, value) in pairs(data(x))
@@ -639,7 +641,10 @@ autoprint(io, args...) = if maybreak(io)
 else
     print(io, args...)
 end
-Base.show(io::StanIO, x::StanModel) = print(io, Join(blocks(x), "\n"))
+Base.show(io::StanIO, x::StanModel) = begin
+    print(io, maybedoc(get(x.meta, :docstring, "")))
+    print(io, Join(blocks(x), "\n"))
+end
 Base.show(io::StanIO, x::StanExpr) = isa(type(x), StringStanType) ? print(io, expr(x), "::", type(x)) : print(io, expr(x))
 Base.show(io::StanIO, ::Colon) = print(io, ":")
 Base.show(io::IO, x::StanModel) = show(StanIO(io), x)
