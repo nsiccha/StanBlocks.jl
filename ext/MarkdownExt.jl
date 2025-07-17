@@ -68,29 +68,10 @@ catch
     "Something went wrong!"
 end
 msg(e::ErrorException) = msg(e.msg)
-quarto(x::StanBlocks.stan.SlicModel) = try 
-    Quarto.Container([
-        Quarto.Heading(5, "SlicModel"),
-        Quarto.Tabset((;
-            Specification=Quarto.Code("julia", x.model),
-            # Data=Quarto.Code("", Quarto.Container(mapkv((k,v)->"$k:\t$(typeof(v))", StanBlocks.stan.stan_data(x)))),
-            Stan=Quarto.Code("stan", StanBlocks.stan.stan_code(x))
-        ))
-    ])
-catch e
-    Quarto.Container([
-        Quarto.Heading(5, "SlicModel"),
-        Quarto.Tabset((;
-            Specification=Quarto.Code("julia", x.model),
-            ERROR=Quarto.Code("", msg(e)),
-        ))
-    ])
-end
 
 Base.show(io::IO, m::MIME"text/markdown", x::StanBlocks.stan.SlicModel) = show(io, m, quarto(x))
 
-Base.show(io::IO, m::MIME"text/markdown", x::StanBlocks.SlicModel) = show(io, m, quarto(x))
-quarto(x::StanBlocks.SlicModel) = Quarto.Container([
+quarto(x::StanBlocks.stan.SlicModel) = Quarto.Container([
     Quarto.Heading(5, "SlicModel"),
     Quarto.Tabset((;code=Quarto.Code("julia", x.model), [
         key=>Quarto.Code("julia", join([
@@ -99,9 +80,6 @@ quarto(x::StanBlocks.SlicModel) = Quarto.Container([
         ], "\n"))
         for key in mapreduce(xi->Set(keys(xi.meta)), union!, values(x.data); init=Set{Symbol}())
     ]...))
-    # qual=Quarto.Code("julia", join([
-    #      for (key, value) in pairs(x.data)
-    # ], "\n"))))
 ])
 
 

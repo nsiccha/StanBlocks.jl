@@ -1,4 +1,70 @@
-# StanBlocks.jl
+# StanBlocks.jl (Stan backend)
+
+Brings Julia syntax to Stan models by implementing a (limited) Julia to Stan transpilation with many caveats. 
+See [`test/slic.jl`](test/slic.jl) for implementations of a few simple [`posteriordb`](https://github.com/stan-dev/posteriordb) models
+and see [`src/slic_stan/builtin.jl`](src/slic_stan/builtin.jl) for a list of built-in functions and examples of user defined functions.
+
+Current features include
+
+* activity analysis (automatically determines what is `data`, `transformed_data`, `parameters`, `transformed parameters`, `model`, or `generated quantities`),
+* automatically inferred types, shapes and constraints - including for user defined functions (including the function arguments, function body, and function return type),
+* automatic posterior pointwise likelihood and predictive generation,
+* (variadic) user defined functions,
+* higher order (user defined) functions (such as `map`, `broadcasted`, `sum` and more),
+* sub models,
+* post-hoc model adjustment,
+* named tuples,
+* (approximate) automatic code formatting à la [Blue](https://github.com/JuliaDiff/BlueStyle),
+* and more.
+
+
+Upcoming features include, in order of priority and estimated arrival,
+
+* custom types (for method dispatch),
+* closures via Julia's [`Do-Block Syntax`](https://docs.julialang.org/en/v1/manual/functions/#Do-Block-Syntax-for-Function-Arguments) (to make within chain parallelization via [`reduce_sum`](https://mc-stan.org/docs/stan-users-guide/parallelization.html#reduce-sum) less painful),
+* a much better user experience,
+* more and better tests,
+* inlining (to reduce potential runtime overhead),
+* array comprehensions,
+* a more complete (and more correct) coverage of built-in Stan functions,
+* better name resolution (currently user defined functions or sub models have to be defined in `Main`),
+* and more.
+
+Almost anything that's possible in Julia should be possible to be transpiled to Stan. 
+Of course, unless Stan is much faster than Julia (+Mooncake or Enzyme) for the model in question, 
+just sticking to Julia comes with many advantages. 
+
+Features which are **NOT** planned:
+
+* (automatically) transpiling Julia functions which have not been defined via `@deffun`. 
+
+The `earn_height.stan` model below becomes 
+
+```julia
+using StanBlocks
+import PosteriorDB, StanLogDensityProblems, JSON
+
+# Get data from PosteriorDB
+pdb = PosteriorDB.database()
+post = PosteriorDB.posterior(pdb, "earnings-earn_height")
+(;earn, height) = (;Dict([Symbol(k)=>v for (k, v) in pairs(PosteriorDB.load(PosteriorDB.dataset(post)))])...)
+
+# Model definition
+earn_height_model = @slic begin 
+    beta ~ flat(;n=2)
+    sigma ~ flat(;lower=0.)
+    earn ~ normal(beta[1]+beta[2]*to_vector(height), sigma)
+end
+# Not compiled yet
+earn_height_posterior = earn_height_model(; earn, height)
+# Prints the Stan model code
+println(stan_code(earn_height_posterior))
+# Compiled (requires StanLogDensityProblems and JSON)
+earn_height_problem = stan_instantiate(earn_height_posterior)
+```
+
+
+# StanBlocks.jl (Julia backend - deprecated)
 
 Implements many - but currently not all - of the Bayesian models in [`posteriordb`](https://github.com/stan-dev/posteriordb)
 by implementing Julia macros and functions which mimick Stan blocks and functions respectively, with relatively light dependencies. 

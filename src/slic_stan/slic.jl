@@ -131,7 +131,7 @@ remake(x::CanonicalExpr, args...; kwargs...) = CanonicalExpr(head(x), args...; k
 
 StanModel(name=gensym("stan_model")) = StanModel(
     (;name), 
-    Dict(),
+    OrderedDict(),
     (;
         functions=StanBlock(:functions,OrderedDict()),
         data=StanBlock(:data,OrderedDict()),
@@ -151,6 +151,10 @@ replace_components(x::Expr; rep::Dict) = if (
 else
     Expr(x.head, replace_components.(x.args; rep)...)
 end
+model(x::SlicModel, args::SamplingExpr...) = replace_components(model(x); rep=Dict([
+    arg.args[1]=>arg
+    for arg in args
+]))
 model(x::SlicModel, args::Union{SamplingExpr,AssignmentExpr}...) = replace_components(model(x); rep=Dict([
     arg.args[1]=>arg
     for arg in args
@@ -312,12 +316,13 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args 
     @assert name ∉ keys(info)
     info[name] = StanExpr(name, remake(type(rhs); value=missing))
-    @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(rhs)!"
+    @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
     rv = remake(x, info[name], rhs)
     info[name] = StanExpr(name, remake(type(rhs), [
         maybe_lazy_size(name, i, sizei)
         for (i, sizei) in enumerate(stan_size(type(rhs)))
     ]...; value=missing))
+    # @info "$x \n=> $rv\n=> $(info[name])"
     rv 
 end
 forward!(x::AssignmentExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
@@ -540,7 +545,8 @@ Base.push!(b::ImperativeBlock, x::DocumentExpr; info) = begin
 end
 Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     lhs, rhs = x.args
-    if hasvalue(lhs)
+    # if hasvalue(lhs)
+    if qual(lhs) == :data
         likelihood_rhs = likelihood_expr(lhs, rhs)
         push!(b, CanonicalExpr(
             :(=), 
@@ -573,7 +579,9 @@ rng_expr(rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), rhs.args...)
 rng_expr(x) = dummy_rng
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(std_normal)}}) = stan_call(vector_std_normal_rng, stan_size(lhs)...)
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal)}}) = stan_call(to_vector, stan_call(normal_rng, expr(rhs).args...))
-rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal),<:Tuple{<:StanExpr2{types.real, 0},<:StanExpr2{types.real, 0}}}}) = rng_expr(lhs, stan_call(normal, stan_call(rep_vector, expr(rhs).args[1], stan_size(lhs, 1)), expr(rhs).args[2]))
+rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal),<:Tuple{<:StanExpr2{<:types.real, 0},<:StanExpr2{<:types.real, 0}}}}) = rng_expr(lhs, stan_call(normal, stan_call(rep_vector, expr(rhs).args[1], stan_size(lhs, 1)), expr(rhs).args[2]))
+rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(cauchy)}}) = stan_call(to_vector, stan_call(cauchy_rng, expr(rhs).args...))
+rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(cauchy),<:Tuple{<:StanExpr2{<:types.real, 0},<:StanExpr2{<:types.real, 0}}}}) = rng_expr(lhs, stan_call(cauchy, stan_call(rep_vector, expr(rhs).args[1], stan_size(lhs, 1)), expr(rhs).args[2]))
 
 rng_expr(lhs::StanExpr2{types.real}, rhs::StanExpr{<:CanonicalExpr{typeof(exponential)}}) = stan_call(exponential_rng, expr(rhs).args...)
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(exponential)}}) = stan_call(vector_exponential_rng, expr(rhs).args..., stan_size(lhs)...)
@@ -611,6 +619,8 @@ nobreak(io::StanIO) = remake(io; maybreak=false)
 maybreak(io) = true
 maybreak(io::StanIO) = get(io.info, :maybreak, true)
 line_limit(io) = 100
+
+
 autoprint(io, args...) = if maybreak(io)
     buf = IOBuffer()
     print(remake(nobreak(io), buf), args...)
@@ -630,7 +640,7 @@ else
     print(io, args...)
 end
 Base.show(io::StanIO, x::StanModel) = print(io, Join(blocks(x), "\n"))
-Base.show(io::StanIO, x::StanExpr) = print(io, expr(x))
+Base.show(io::StanIO, x::StanExpr) = isa(type(x), StringStanType) ? print(io, expr(x), "::", type(x)) : print(io, expr(x))
 Base.show(io::StanIO, ::Colon) = print(io, ":")
 Base.show(io::IO, x::StanModel) = show(StanIO(io), x)
 
@@ -653,6 +663,7 @@ line_terminator(x::WhileExpr) = "\n"
 line_terminator(x::ForExpr) = "\n"
 block_print(io, ::StanBlock, ::LineNumberNode) = nothing
 block_print(io, ::StanBlock, x) = print(io, current_indent(io), x, line_terminator(x))
+block_print(io, ::StanBlock, x::SamplingExpr{<:Any,<:StanExpr{<:CanonicalExpr{typeof(flat)}}}) = nothing
 block_print(io, b::StanBlock, x::BlockExpr) = map(stmt->block_print(io, b, stmt), x.args)
 block_print(io, ::DeclarativeBlock, x) = !always_inline(x) && print(io, current_indent(io), type(x), " ", expr(x), line_terminator(x))
 block_print(io, b::DeclarativeBlock, x::DocumentExpr) = begin
@@ -679,12 +690,26 @@ Base.show(io::IO, x::StanType{<:types.tup}) = begin
 end
 function maybetype end
 maybetype(x::StanExpr) = center_type(x) == types.anything ? "// Disabled because type inference failed\n    // $(type(x))" : type(x)
-Base.show(io::IO, x::AssignmentExpr{<:StanExpr{Symbol}}) = print(io, maybetype(x.args[1]), " ", x.args[1], " = ", x.args[2])
+Base.show(io::IO, x::AssignmentExpr{<:StanExpr{Symbol}}) = begin
+    name, rhs = x.args
+    @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
+    # @info "$(x.args[1]) = $(x.args[2])"
+    print(io, type(rhs), " ", name, " = ", rhs)
+end
 Base.show(io::IO, x::AssignmentExpr) = print(io, x.args[1], " = ", x.args[2])
 
 prettystring(f) = " $f "
 prettystring(f::Base.BroadcastFunction) = " .$(f.f) "
-Base.show(io::IO, x::CanonicalExpr) = autoprint(io, func_name(head(x), x.args), "(", Join(filter(!always_inline, x.args), ", "), ")")
+Base.show(io::IO, x::CanonicalExpr) = begin
+    fname = func_name(head(x), x.args)
+    fargs = filter(!always_inline, x.args)
+    is_lpxf = endswith(string(fname), r"_lp[md]f")
+    if is_lpxf 
+        autoprint(io, fname, "(", fargs[1], " | ", Join(fargs[2:end], ", "), ")")
+    else
+        autoprint(io, fname, "(", Join(fargs, ", "), ")")
+    end
+end
 Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = autoprint(io, head(x), "(", Join(
     (func_name(x.args[1], x.args[2:end]), filter(!always_inline, x.args[2:end])...), ", "
 ), ")")
@@ -731,6 +756,8 @@ Base.show(io::IO, x::CanonicalExpr{typeof(÷)}) = autoprint(io, "(", Join(x.args
 for f in (Meta.quot(:(~)), Meta.quot(:(=)))
     @eval Base.show(io::IO, x::CanonicalExprV{$f}) = print(io, Join(x.args, prettystring($f)))
 end
+Base.show(io::IO, x::SamplingExpr) = print(io, Join(x.args, " ~ "))
+# Base.show(io::IO, x::SamplingExpr{<:Any,<:StanExpr{<:CanonicalExpr{typeof(flat)}}}) = nothing
 
 for f in (:+=,:-=,:*=)
     qf = Meta.quot(f)
@@ -744,11 +771,6 @@ end
 stan_code(x::SlicModel; mayfail=false) = begin 
     buf = IOBuffer()
     show(buf, x; mayfail)
-    String(take!(buf))
-end
-stan_code(x::StanBlock; mayfail=false) = begin 
-    buf = IOBuffer()
-    print(StanIO(buf), x)
     String(take!(buf))
 end
 stan_code2(x) = begin 
@@ -767,6 +789,8 @@ stan_data(x::StanModel) = Dict([
 ])
 slic_expr(x::Expr) = x
 
+include("test.jl")
+
 end
 macro slic(model)
     stan.SlicModel(model, Dict())
@@ -776,3 +800,11 @@ macro slic(data, model)
     qmodel = Meta.quot(model)
     esc(:($mod.stan.SlicModel($qmodel, $data)))
 end
+macro defsig(x)
+    esc(stan.defsig(x))
+end
+macro deffun(x)
+    esc(stan.deffun(x))
+end
+stan_code(args...; kwargs...) = stan.stan_code(args...; kwargs...)
+stan_instantiate(args...; kwargs...) = stan.instantiate(args...; kwargs...)

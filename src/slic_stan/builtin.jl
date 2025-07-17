@@ -1,5 +1,10 @@
-builtin_module_names(x::Symbol) = x
-builtin_module_names(x::Expr) = mapreduce(builtin_module_names, vcat, x.args)
+builtin_module_names(x::Symbol) = endswith(string(x), r"_lp[md]f") ? [
+    x
+    Symbol(x, "s")
+    Symbol(string(x)[1:end-length("_lpdf")])
+    Symbol(string(x)[1:end-length("_lpdf")], "_rng")
+] : x
+builtin_module_names(x::Expr) = mapreduce(builtin_module_names, vcat, x.args; init=[])
 macro builtin_module(x)
     @assert Meta.isexpr(x, :vcat)
     names = builtin_module_names(x)
@@ -18,45 +23,49 @@ macro builtin_module(x)
 end
 
 @builtin_module [
-    flat
-    std_normal
-    normal
-    cauchy
-    binomial_logit
-    lognormal
-    chi_square
-    inv_chi_square
-    scaled_inv_chi_square
-    exponential
-    gamma
-    inv_gamma
-    weibull
-    frechet
-    rayleigh
-    loglogistic
-    uniform
-    beta
-    beta_proportion
-    von_mises
-    multi_normal
-    multi_normal_prec
-    multi_normal_cholesky
-    multi_gp
-    multi_gp_cholesky
-    multi_student_t
-    multi_student_t_cholesky
-    gaussian_dlm_obs
-    dirichlet
-    lkj_corr
-    lkj_corr_cholesky
-    wishart
-    inv_wishart
-    inv_wishart_cholesky
-    wishart_cholesky
-    neg_binomial_2
-    std_normal_rng
-    normal_rng
-    exponential_rng
+    flat_lpdf
+    std_normal_lpdf
+    normal_lpdf
+    student_t_lpdf
+    cauchy_lpdf
+    beta_lpdf
+    beta_proportion_lpdf
+    beta_binomial_lpmf
+    binomial_lpmf
+    binomial_logit_lpmf
+    lognormal_lpdf
+    chi_square_lpdf
+    inv_chi_square_lpdf
+    scaled_inv_chi_square_lpdf
+    exponential_lpdf
+    gamma_lpdf
+    inv_gamma_lpdf
+    weibull_lpdf
+    frechet_lpdf
+    rayleigh_lpdf
+    loglogistic_lpdf
+    uniform_lpdf
+    von_mises_lpdf
+    multi_normal_lpdf
+    multi_normal_prec_lpdf
+    multi_normal_cholesky_lpdf
+    multi_gp_lpdf
+    multi_gp_cholesky_lpdf
+    multi_student_t_lpdf
+    multi_student_t_cholesky_lpdf
+    gaussian_dlm_obs_lpdf
+    dirichlet_lpdf
+    lkj_corr_lpdf
+    lkj_corr_cholesky_lpdf
+    wishart_lpdf
+    inv_wishart_lpdf
+    inv_wishart_cholesky_lpdf
+    wishart_cholesky_lpdf
+    neg_binomial_2_lpdf
+    bernoulli_logit_lpmf 
+    bernoulli_logit_glm_lpmf
+
+    vector_std_normal_rng
     log1m
     to_vector
     to_row_vector
@@ -85,6 +94,7 @@ end
     append_array
     append_row
     append_col
+    diag_matrix
     cumulative_sum
     reduce_sum
     log_sum_exp
@@ -94,8 +104,12 @@ end
     sort_asc sort_desc
     sort_indices_asc sort_indices_desc
     dot_product rows_dot_product
+    dims rows cols
+    reject
+
+    broadcasted_getindex
+    jbroadcasted jmap jsum
 ] 
-function vector_std_normal_rng end
 
 autokwargs(::CanonicalExpr{<:Union{typeof.((beta, beta_proportion))...}}) = (;lower=0, upper=1)
 autokwargs(::CanonicalExpr{typeof(von_mises)}) = (;lower=0, upper=2pi)
@@ -103,73 +117,100 @@ autokwargs(x::CanonicalExpr{typeof(uniform)}) = (;lower=x.args[1], upper=x.args[
 autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,scaled_inv_chi_square,exponential,gamma,inv_gamma,weibull,frechet,rayleigh,loglogistic))...}}) = (;lower=0.)
 
 @deffun begin 
-    Base.print(x)::anything
     reject(x)::anything
+    Base.print(x)::anything
     Base.size(x)::int
     Base.range(start::int, stop::int)::vector[stop]
     Base.sum(x)::real
     Base.sum(x::int[m])::int
     Base.sum(x::int[m,n])::int
     Base.sum(x::int[m,n,o])::int
+    Base.:\(A::matrix[m, m], b::vector[m])::vector[m]
+    dims(x::anything[_])::int[1]
+    dims(x::anything[_, _])::int[2]
+    dims(x::anything[_, _, _])::int[3]
+    cols(::matrix[m,n])::int
+    rows(::matrix[m,n])::int
     cumulative_sum(x::int[m])::int[m]
     cumulative_sum(x::real[m])::real[m]
     cumulative_sum(x::vector[m])::vector[m]
+    diag_matrix(x::anything[n])::matrix[n,n]
     linspaced_array(n, x, y)::real[n]
     linspaced_vector(n, x, y)::vector[n]
-    to_matrix(v::anything, m, n)::matrix[m,n]
+    to_matrix(v, m, n)::matrix[m,n]
     rep_array(x::int, n)::int[n]
     rep_vector(v, n)::vector[n]
     rep_matrix(v::vector[m], n)::matrix[m, n]
     rep_matrix(x::real, m, n)::matrix[m,n]
     to_array_2d(v, m, n)::real[m,n]
-    rows_dot_product(x::matrix[m,n], y::matrix[m,n])::vector[m]
-    append_col(x::vector[n], y::vector[n])::matrix[n,2]
-    append_col(x::matrix[m, n1], y::matrix[m, n2])::matrix[m, n1+n2]
-    append_col(x::vector[m], y::matrix[m, n2])::matrix[m, 1+n2]
     dot_product(x::vector[n], y::vector[n])::real
-    Base.:\(A::matrix[m, m], b::vector[m])::vector[m]
     matrix_exp(x::matrix[m,m])::matrix[m,m]
+    rows_dot_product(x::matrix[m,n], y::matrix[m,n])::vector[m]
+    append_col(x::anything[n], y::anything[n])::matrix[n,2]
+    append_col(x::matrix[m, n1], y::matrix[m, n2])::matrix[m, n1+n2]
+    append_col(x::anything[m], y::matrix[m, n2])::matrix[m, 1+n2]
+    append_col(x::matrix[m, n1], y::anything[m])::matrix[m, n1+1]
     append_array(lhs::anything[m],rhs::anything[n])::real[m+n]
     append_array(lhs::anything[m],rhs::real)::real[m+1]
     append_row(lhs::vector[m],rhs::real)::vector[m+1]
     append_row(lhs::vector[m],rhs::vector[n])::vector[m+n]
-    vector_std_normal_rng(n::int)::vector[n] = begin
+    bernoulli_logit_lpmf(a, b)
+    bernoulli_logit_rng(::vector[n])::int[n]
+    bernoulli_logit_glm_lpmf(X, alpha, beta)
+    bernoulli_logit_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
+    bernoulli_logit_glm_rng(X::matrix[m,n], alpha::real, beta) = bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta)
+    beta_lpdf(theta, args...)
+    beta_rng(args...)::real
+    beta_binomial_lpmf(n, args...)
+    binomial_lpmf(n, args...)
+    binomial_rng(args...)::int
+    normal_lpdf(obs, loc, scale::anything)
+    multi_normal_lpdf(obs::vector[n], loc::vector[n], cov)
+    multi_normal_rng(obs::vector[n], args...)::vector[n]
+    dirichlet_lpdf(w::simplex[n], alpha::vector[n])
+    lkj_corr_lpdf(L::corr_matrix, x::real)
+    lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, x::real)
+    wishart_lpdf(L::cov_matrix[m], x::real, sigma::matrix[m,m])
+    wishart_cholesky_lpdf(L::cholesky_factor_cov[m], x::real, sigma::matrix[m,m])
+
+    broadcasted_getindex(x, i) = x
+    broadcasted_getindex(x::anything[m], i) = x[i]
+    jbroadcasted(f, x1::anything[n]) = begin 
         rv::vector[n]
         for i in 1:n
-            rv[i] = std_normal_rng()
+            rv[i] = f(x1[i])
         end
         rv
     end
-    normal_lpdf(obs::anything, loc::anything, scale::anything)::real
-    normal_lpdfs(obs::anything[n], loc::anything[n], scale::anything[n])::vector[n] = begin
+    jbroadcasted(f, x1::anything[n], x2) = begin 
         rv::vector[n]
         for i in 1:n
-            rv[i] = normal_lpdf(obs[i], loc[i], scale[i])
+            rv[i] = f(x1[i], broadcasted_getindex(x2, i))
         end
         rv
     end
-    normal_lpdfs(obs::vector[n], loc::vector[n], scale::real)::vector[n] = begin
+    jbroadcasted(f, x1::anything[n], x2, x3) = begin 
         rv::vector[n]
         for i in 1:n
-            rv[i] = normal_lpdf(obs[i], loc[i], scale)
+            rv[i] = f(x1[i], broadcasted_getindex(x2, i), broadcasted_getindex(x3, i))
         end
         rv
     end
-    vector_exponential_rng(rate::real, n::int)::vector[n] = begin
-        rv::vector[n]
-        for i in 1:n
-            rv[i] = exponential_rng(rate)
-        end
-        rv
-    end
-    dirichlet_lpdf(w::simplex[n], alpha::vector[n])::real
-    lkj_corr_lpdf(L::corr_matrix, x::real)::real
-    lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, x::real)::real
-    wishart_lpdf(L::cov_matrix[m], x::real, sigma::matrix[m,m])::real
-    wishart_cholesky_lpdf(L::cholesky_factor_cov[m], x::real, sigma::matrix[m,m])::real
+    vector_std_normal_rng(n::int)::vector[n] = normal_rng(rep_vector(0, n), 1)
+    bernoulli_logit_lpmfs(args...) = bernoulli_logit_lpmf(args...)
+    bernoulli_logit_lpmfs(obs::anything[n], args...) = jbroadcasted(bernoulli_logit_lpmfs, obs, args...)
+    bernoulli_logit_glm_lpmfs(y::int[n], X, alpha, beta) = bernoulli_logit_lpmfs(
+        y,
+        alpha + X * beta
+    ) 
+    binomial_lpmfs(n::int, args...) = binomial_lpmf(n, args...)
+    normal_lpdfs(args...) = normal_lpdf(args...)
+    normal_lpdfs(obs::anything[n], loc, scale) = jbroadcasted(normal_lpdfs, obs, loc, scale)
+    multi_normal_lpdfs(args...) = multi_normal_lpdf(args...)
+    vector_exponential_rng(rate::real, n::int)::vector[n] = exponential_rng(rep_vector(rate, n))
 end
 @defsig begin 
-    Union{typeof.((sqrt, exp, log, sin, cos, asin, acos, log1m, inv_logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs, log1p_exp, log1m_exp))...} => begin 
+    Union{typeof.((sqrt, exp, log, log10, sin, cos, asin, acos, log1m, inv_logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs, log1p_exp, log1m_exp))...} => begin 
         (real,)=>real
         (vector[n],)=>vector[n]
         (real[n],)=>real[n]
@@ -187,6 +228,8 @@ end
         (int[n], int[n]) => int[n]
         (int[n], int) => int[n]
         (int, vector[n]) => vector[n]
+        (int, int[n]) => int[n]
+        (real, real[n]) => real[n]
         (real, vector[n]) => vector[n]
         (real, matrix[m,n]) => matrix[m,n]
         (vector[n], real) => vector[n]
@@ -245,7 +288,7 @@ end
     typeof(std_normal_rng) => begin 
         () => real
     end
-    typeof(normal_rng) => begin 
+    Union{typeof.((normal_rng, cauchy_rng))...} => begin 
         (int, int) => real
         (int, real) => real
         (real, int) => real

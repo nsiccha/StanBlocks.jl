@@ -49,11 +49,12 @@ tracetype(x::CanonicalExpr) = begin
     end
     StanType(types.anything)
 end
+tracetype(x::CanonicalExpr{typeof(==)}) = StanType(types.int)
 tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = if length(x.args) > 2
     f = head(x)
     tracetype(CanonicalExpr(f, x.args[1], stan_expr(CanonicalExpr(f, x.args[2:end]...))))
 else 
-    error("tracetype not defined for $(x)!")
+    error("tracetype not defined for $(short_expr(x))!")
     StanType(types.anything)
 end
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype(
@@ -482,6 +483,7 @@ end
 # infoandpass(x) = (@info(x); x)
 
 func_name(f, args) = join(vcat(func_name(f), func_name(args)...), "_")
+# func_name(f, args, ::) = join(vcat(func_name(f), func_name(args)...), "_")
 func_name(args::NamedTuple) = func_name(values(args))
 func_name(args::Tuple) = mapreduce(func_name, vcat, args; init=[])
 func_name(x) = []
