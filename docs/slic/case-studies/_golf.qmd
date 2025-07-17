@@ -1,0 +1,81 @@
+# Golf putting 
+
+Qualitatively reproduces [Andrew Gelman's golf putting case study](https://mc-stan.org/learn-stan/case-studies/golf.html).
+
+## Logistic regression
+```{julia}
+y = n = x = distance_tolerance = overshot = randn(10)
+R = r = 1.
+
+logistic = @slic begin 
+    "Maybe alternatively `a, b .~ flat()` or a, b ~ flat(;n=2)?"
+    a ~ flat()
+    b ~ flat() 
+    y ~ binomial_logit(n, a + b * x)
+end
+logistic(;y,n,x)
+```
+
+## Modelling based on first principles
+
+### Submodels
+
+#### Angle submodel (`angle_submodel` below)
+```{julia}
+angle_submodel = @slic begin 
+    threshold_angle = asin((R - r) ./ x) 
+    sigma ~ flat(;lower=0.)
+    sigma_degrees = sigma * 180 / pi
+    return 2 * Phi(threshold_angle / sigma) - 1
+end
+angle_submodel(;R,r,x)
+```
+
+#### Distance submodel (`distance_submodel` below)
+```{julia}
+distance_submodel = @slic begin 
+    sigma_distance ~ std_normal(;lower=0.)
+    return Phi(
+        (distance_tolerance - overshot) ./ ((x + overshot) * sigma_distance)
+    ) - Phi(
+        (-overshot)./ ((x + overshot) * sigma_distance)
+    )
+end
+distance_submodel(;distance_tolerance, overshot, x)
+```
+### Angle model
+```{julia}
+angle = @slic begin 
+    p ~ angle_submodel(;R,r,x)
+    y ~ binomial(n, p)
+end
+angle(;R,r,x,y,n)
+```
+
+### Angle + distance model
+
+```{julia}
+second_principles = @slic begin 
+    p_angle ~ angle_submodel(;R,r,x)
+    p_distance ~ distance_submodel(;distance_tolerance, overshot, x)
+    p = p_angle .* p_distance
+    y ~ binomial(n, p)
+end
+second_principles(;R,r,x,distance_tolerance, overshot,y,n,)
+```
+
+## Adding a fudge factor
+
+```{julia}
+third_principles = @slic begin 
+    raw_proportions = to_vector(y) ./ to_vector(n)
+
+    p_angle ~ angle_submodel(;R,r,x)
+    p_distance ~ distance_submodel(;distance_tolerance, overshot, x)
+    sigma_y ~ std_normal(;lower=0.)
+
+    p = p_angle .* p_distance
+    raw_proportions ~ normal(p, sqrt(p .* (1 - p) ./ to_vector(n) + sigma_y ^ 2))
+end
+third_principles(;R,r,x,distance_tolerance,overshot,y,n)
+```

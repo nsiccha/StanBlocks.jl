@@ -1,0 +1,195 @@
+---
+title: "The @slic macro"
+---
+
+```{julia}
+using StanBlocks, StanLogDensityProblems, JSON, Markdown, WarmupHMC, Random, Term, MCMCDiagnosticTools, DataFrames, BridgeStan, DataFrames
+BridgeStan.set_bridgestan_path!("/home/niko/github/roualdes/bridgestan")
+
+maybedf(posterior, draws; seed=0, include_tp=true, include_gq=true) = begin
+    stan_rng = StanRNG(posterior.model, seed)
+    names = param_names(posterior.model; include_tp, include_gq)
+    d, n_draws = size(draws)
+    tmp_draw = zeros(d)
+    tmp_rv = zeros(length(names))
+    rv_matrix = zeros((length(names), n_draws))
+    for (i, draw) in enumerate(eachcol(draws))
+        tmp_draw .= draw
+        param_constrain!(posterior.model, tmp_draw, tmp_rv; include_tp, include_gq, rng=stan_rng)
+        rv_matrix[:, i] .= tmp_rv
+    end
+    DataFrame(rv_matrix', names)
+end
+
+StanBlocks.stan.@deffun begin 
+    dummy6_lpdf(y::real, x::vector[n]) = "return 0.;"
+    
+    normalized_exponential_simplex_dirichlet_lpdf(xi::vector[n], alpha::vector[n]) = """
+        return dirichlet_lpdf(normalized_exponential_simplex_from_sampler(xi) | alpha);
+    """ => normalized_exponential_simplex_from_sampler(xi)
+    normalized_exponential_simplex_from_sampler(xi::vector[n])::vector[n] = """
+        vector[n] rv;
+        for(i in 1:n){
+            rv[i] = -log1m_exp(std_normal_lcdf(xi[i]));
+        }
+        rv /= sum(rv);
+        return rv;
+    """
+    normalized_exponential_simplex_jacobian(xi::vector[n])::vector[n] = """
+        jacobian += std_normal_lpdf(xi) - lgamma(n);
+        return normalized_exponential_simplex_from_sampler(xi);
+    """ => normalized_exponential_simplex_from_sampler(xi)
+
+    ILR_simplex_dirichlet_lpdf(xi::vector[n-1], alpha::vector[n]) = """
+        return dirichlet_lpdf(ILR_simplex_from_sampler(xi) | alpha);
+    """ => ILR_simplex_from_sampler(xi)
+    ILR_simplex_from_sampler(xi::vector[n])::vector[n+1] = """
+        int N = n+1;
+        vector[n] ns = linspaced_vector(n, 1, n);
+        vector[n] w = xi ./ sqrt(ns .* (ns + 1));
+        vector[N] rv = append_row(reverse(cumulative_sum(reverse(w))), 0) - append_row(0, ns .* w);
+        rv = exp(rv - log_sum_exp(rv));
+        return rv;
+    """
+    ILR_simplex_jacobian(xi::vector[n])::vector[n+1] = """
+        int N = n+1;
+        vector[N] rv = ILR_simplex_from_sampler(xi);
+        jacobian += 0.5 * log(n+1) + sum(log(rv));
+        return rv;
+    """ => ILR_simplex_from_sampler(xi)
+
+    ALR_simplex_dirichlet_lpdf(xi::vector[n-1], alpha::vector[n]) = """
+        return dirichlet_lpdf(ALR_simplex_from_sampler(xi) | alpha);
+    """ => ALR_simplex_from_sampler(xi)
+    ALR_simplex_from_sampler(xi::vector[n])::vector[n+1] = """
+        real r = log1p_exp(log_sum_exp(xi));
+        return append_row(exp(xi - r), exp(-r));
+    """
+    ALR_simplex_jacobian(xi::vector[n])::vector[n+1] = """
+        int N = n+1;
+        jacobian += sum(xi) - N * log1p_exp(log_sum_exp(xi));
+        return ALR_simplex_from_sampler(xi);
+    """ => ALR_simplex_from_sampler(xi)
+
+    expanded_softmax_simplex_dirichlet_lpdf(xi::vector[n], alpha::vector[n]) = """
+        return dirichlet_lpdf(expanded_softmax_simplex_from_sampler(xi) | alpha);
+    """ => expanded_softmax_simplex_from_sampler(xi)
+    expanded_softmax_simplex_from_sampler(xi::vector[n])::vector[n] = """
+        return exp(xi - log_sum_exp(xi));
+    """
+    expanded_softmax_simplex_jacobian(xi::vector[n])::vector[n] = """
+        real r = log_sum_exp(xi);
+        vector[n] rv = expanded_softmax_simplex_from_sampler(xi);
+        jacobian += std_normal_lpdf(r - log(n)) + sum(xi) - n * r;
+        return rv;
+    """ => expanded_softmax_simplex_from_sampler(xi)
+
+    stickbreaking_normal_simplex_dirichlet_lpdf(xi::vector[n-1], alpha::vector[n]) = """
+        return dirichlet_lpdf(stickbreaking_normal_simplex_from_sampler(xi) | alpha);
+    """ => stickbreaking_normal_simplex_from_sampler(xi)
+    stickbreaking_normal_simplex_from_sampler(xi::vector[n])::vector[n+1] = """
+        int N = n+1;
+        vector[N - 1] w = xi - log(reverse(linspaced_vector(N - 1, 1, N - 1))) / 2;
+        vector[N - 1] log_z = std_normal_lcdf_vector(w);
+        vector[N] log_cum_prod = append_row(0, cumulative_sum(log1m_exp(log_z)));
+        vector[N] x = exp(append_row(log_z, 0) + log_cum_prod);
+        return x;
+    """
+    stickbreaking_normal_simplex_jacobian(xi::vector[n])::vector[n+1] = """
+        int N = n+1;
+        vector[N - 1] w = xi - log(reverse(linspaced_vector(N - 1, 1, N - 1))) / 2;
+        vector[N - 1] log_z = std_normal_lcdf_vector(w);
+        vector[N] log_cum_prod = append_row(0, cumulative_sum(log1m_exp(log_z)));
+        vector[N] x = exp(append_row(log_z, 0) + log_cum_prod);
+        jacobian += std_normal_lpdf(w);
+        jacobian += sum(log_cum_prod[2 : N - 1]);
+        return x;
+    """ => [stickbreaking_normal_simplex_from_sampler(xi), std_normal_lcdf_vector(xi)]
+    std_normal_lcdf_vector(x::vector[n])::vector[n] = """
+        vector[n] rv;
+        for (i in 1:n){
+            rv[i] = std_normal_lcdf(x[i]);
+        }
+        return rv;
+    """
+
+    dirichlet_likelihood_lpdf(alpha::vector[n], x::vector[n]) = "return dirichlet_lpdf(x | alpha);"
+    multi_logit_normal_likelihood_lpdf(alpha::vector[n], x::vector[n], mu::vector[m], L::matrix[m,m]) = """
+        vector[n] log_x = log(x);
+        return multi_normal_cholesky_lpdf(log_x[1 : n - 1] - log_x[n] | mu, L) - sum(log_x);
+    """
+end
+
+
+dirichlet_model = @slic begin
+    # "The mean of the multi-logit-normal distribution"
+    # mu
+    # "The Cholesky factor of the covariance of the multi-logit-normal distribution"
+    # L
+    "The vector of concentrations"
+    alpha
+    ones = rep_vector(1., size(alpha))
+    x ~ dirichlet(ones)
+    alpha ~ dirichlet_likelihood(x)
+end
+n = 100
+alpha = exp.(randn(n))
+mu = randn(n-1)
+L = zeros((n-1, n-1))
+for i in 1:(n-1), j in 1:i
+    L[i,j] = randn()
+    i == j && (L[i,i] = exp(L[i,i]))
+end
+simplex_posterior = dirichlet_model(;alpha)
+multi_logit_posterior = simplex_posterior(quote
+    alpha ~ multi_logit_normal_likelihood(x, mu, L)
+end;mu,L);
+ILR = @slic begin 
+    xi ~ ILR_simplex_dirichlet(alpha)
+    return ILR_simplex_jacobian(xi)
+end
+ALR = @slic begin 
+    xi ~ ALR_simplex_dirichlet(alpha)
+    return ALR_simplex_jacobian(xi)
+end
+expanded_softmax = @slic begin 
+    xi ~ expanded_softmax_simplex_dirichlet(alpha)
+    return expanded_softmax_simplex_jacobian(xi)
+end
+stickbreaking_normal = @slic begin 
+    xi ~ stickbreaking_normal_simplex_dirichlet(alpha)
+    return stickbreaking_normal_simplex_jacobian(xi)
+end
+
+map((;simplex_posterior, multi_logit_posterior)) do base_posterior
+
+normalized_exponential = @slic begin 
+    xi ~ normalized_exponential_simplex_dirichlet(alpha)
+    return normalized_exponential_simplex_jacobian(xi)
+end
+normalized_exponential_posterior = base_posterior(quote 
+    x ~ normalized_exponential(;alpha=ones)
+end)
+ILR_posterior = base_posterior(quote 
+    x ~ ILR(;alpha=ones)
+end)
+ALR_posterior = base_posterior(quote 
+    x ~ ALR(;alpha=ones)
+end)
+expanded_softmax_posterior = base_posterior(quote 
+    x ~ expanded_softmax(;alpha=ones)
+end)
+stickbreaking_normal_posterior = base_posterior(quote 
+    x ~ stickbreaking_normal(;alpha=ones)
+end)
+
+posteriors = (;base_posterior, stickbreaking_normal_posterior, ALR_posterior, expanded_softmax_posterior, ILR_posterior, normalized_exponential_posterior)
+rv = map(posteriors) do posterior
+    problem = StanBlocks.stan.instantiate(posterior)
+    fit = WarmupHMC.adaptive_warmup_mcmc(Xoshiro.(1:4), WarmupHMC.CountingPosterior(problem), progress=Term.ProgressBar)
+    return fit
+    df = maybedf(problem, fit.posterior_position)
+    minimum(MCMCDiagnosticTools.ess(reshape(Matrix(df[:, r"^x\."]), (1000, 1, :)))) / fit.posterior.count[]
+end
+end
+```

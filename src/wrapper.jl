@@ -9,3 +9,4 @@ end
 @inline generate_quantities(p::VectorPosterior, x) = p.gq(x)
 
 function with_gradient end
+function quarto end

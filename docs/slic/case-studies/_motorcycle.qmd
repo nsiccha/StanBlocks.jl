@@ -1,0 +1,83 @@
+# Motorcycle data
+
+Qualitatively reproduces [Aki Vehtari's motorcycle case study](https://users.aalto.fi/~ave/casestudies/Motorcycle/motorcycle.html#GP_model_with_Hilbert_basis_functions).
+
+## HSGP building block (`hsgp` below)
+
+```{julia}
+using StanBlocks, Markdown
+x = randn(10)
+obs = randn(10)
+
+hsgp = @slic begin 
+    "Transforms to [-2, 2]"
+    xi = 2 * (x - min(x)) / (max(x) - min(x)) - 1.
+    L = 1.5
+    n_functions = 20
+    X = sin(pi/(2L) * (xi+L) * range(1,n_functions)')/sqrt(L)
+    "The GP lengthscale"
+    x_scale ~ uniform(0, 2)
+    "The GP marginal standard deviation"
+    y_scale ~ lognormal(0, 1)
+    "The scales for the basis functions weights"
+    scale = y_scale * sqrt(sqrt(2pi) * x_scale) * exp(-0.25*(x_scale*pi/2L)^2 * range(1,n_functions)^2)
+    "The basis functions weights"
+    unit_weight ~ std_normal(;n=n_functions)
+    "The final GP values"
+    return (X * (scale .* unit_weight))
+end
+hsgp(;x)
+```
+
+## Homoskedastic model
+
+```{julia}
+homo = @slic begin 
+    y_intercept ~ std_normal()
+    dy ~ hsgp(;x)
+    sigma ~ lognormal(-2, 1)
+    obs ~ normal(y_intercept + dy, sigma)
+end
+homo(;x, obs)
+```
+
+## Heteroskedastic model
+
+```{julia}
+hetero = @slic begin
+    y_intercept ~ std_normal()
+    dy ~ hsgp(;x)
+    log_sigma_intercept ~ std_normal()
+    dlog_sigma ~ hsgp(;x)
+    obs ~ normal(y_intercept + dy, exp(log_sigma_intercept + dlog_sigma))
+end
+hetero(;x,obs)
+```
+
+::: {.callout-note collapse="true"}
+
+## Alternative heteroskedastic model using subsubmodels
+
+### Submodel with submodel (`intercept_hsgp` below)
+
+```{julia}
+intercept_hsgp = @slic begin 
+    intercept ~ std_normal()
+    "Submodel uses `hsgp` as a submodel"
+    d ~ hsgp(;x)
+    return intercept + d
+end  
+intercept_hsgp(;x)
+```
+
+### Final model
+
+```{julia}
+hetero2 = @slic begin 
+    y ~ intercept_hsgp(;x)
+    log_sigma ~ intercept_hsgp(;x)
+    obs ~ normal(y, exp(log_sigma))
+end
+hetero2(;x,obs) 
+```
+:::

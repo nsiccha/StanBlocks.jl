@@ -38,3 +38,5 @@ cache
 *.quarto_ipynb
 *.sh
 .jupyter_cache
+tmp
+*_files

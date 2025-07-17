@@ -21,8 +21,8 @@ This page compares the performance of Julia's and Stan's log density and log den
 **In general, doing performance comparisons is quite tricky, for more reasons than just the ones mentioned above. The below plot and tables should most definitely NOT be interpreted as "A is X-times faster than B".**
 ::: 
 ```{julia}
-using Random, Chairmarks, Statistics, LinearAlgebra, Distributions, Plots
-import Plots, OnlineStats, StanBlocks
+using Random, Chairmarks, Statistics, LinearAlgebra, Distributions, Plots 
+import Plots, OnlineStats, StanBlocks, PosteriorDB
 include("julia/common.jl")
 struct RuntimeDistribution2{F}
     f::F
@@ -64,7 +64,7 @@ lower(s::UncertainMean) = mean(s) - atol(s)
 atol(s::UncertainMean) = s.qmul * se(s)
 rtol(s::UncertainMean) = atol(s) / abs(mean(s))
 Base.:isless(s1::UncertainMean, s2::UncertainMean) = upper(s1) < lower(s2) ? true : false#(upper(s2) < lower(s1) ? false : missing)
-adaptive_mean3(args...; q, kwargs...) = adaptive_mean3(args, [UncertainMean(q) for arg in args]; kwargs...)
+adaptive_mean3(args...; q=.025, kwargs...) = adaptive_mean3(args, [UncertainMean(q) for arg in args]; kwargs...)
 adaptive_mean3(args::Tuple, means::Vector; n_min=10, n_max=1_000_000, rtol=.01) = begin
     N = length(args)
     vmeans = map(mean, means)
@@ -197,7 +197,8 @@ hover_string(posterior_name, dimension, ptime, gtime, pallocs, gallocs; AD) = be
     descr = "Julia's primitive is ~$pdescr, $jdescr $AD's gradient is ~$gdescr."
     "$(posterior_name) (D=$(dimension), #allocs=$(round(pallocs))->$(round(gallocs))) <br> $descr"
 end
-pdf = jdf = DataFrame(filter(row->!ismissing(row.stan_gradient_times), eachrow(jdf)))
+usable_row(row) = !any(ismissing, (row.stan_gradient_times, row.julia_lpdf_times, row.mooncake_times))
+pdf = jdf = DataFrame(filter(usable_row, eachrow(jdf)))
 pdf.ptime = mean.(pdf.julia_lpdf_times) ./ mean.(pdf.stan_lpdf_times)
 pdf.etime = mean.(pdf.enzyme_times) ./ mean.(pdf.stan_gradient_times) 
 pdf.mtime = mean.(pdf.mooncake_times) ./ mean.(pdf.stan_gradient_times)
@@ -254,6 +255,7 @@ enzyme_times, mooncake_times, stan_gradient_times = relative!(mean.(jdf.enzyme_t
 pretty_table( 
     DataFrame(OrderedDict(  
         "posterior name"=>jdf.posterior_name,
+        "implementations"=>implementations_string.(jdf.posterior_name),
         "dimension"=>jdf.dimension,
         "median relative ulpdf error"=>round2.(jdf.lpdf_accuracy),
         "relative mean primitive Julia runtime"=>round2.(julia_lpdf_times),
@@ -270,7 +272,6 @@ pretty_table(
         "Bridgestan"=>jdf.BRIDGESTAN_VERSION,
         "Enzyme"=>jdf.ENZYME_VERSION,
         "Mooncake"=>jdf.MOONCAKE_VERSION,
-        "implementations"=>implementations_string.(jdf.posterior_name)
     ));
     backend=Val(:html),
     highlighters=(hl_best, hl_failed,), 

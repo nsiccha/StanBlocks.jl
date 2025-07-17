@@ -12,12 +12,17 @@ website:
         href: performance.qmd
       - text: "Implementations"
         href: implementations.qmd
+      - text: "@slic"
+        href: slic/
       - icon: github
         href:  https://github.com/nsiccha/StanBlocks.jl
 format: 
     html:
         page-layout: full
         toc: true
+        code-tools: true
+        code-overflow: wrap
+        code-line-numbers: true
         include-in-header:
             text: |
                 <link rel="stylesheet" href="https://cdn.datatables.net/v/dt/dt-2.1.8/cr-2.0.4/fc-5.0.4/fh-4.0.1/datatables.min.css" />
