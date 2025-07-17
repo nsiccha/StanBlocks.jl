@@ -31,6 +31,7 @@ Upcoming features include, in order of priority and estimated arrival,
 * array comprehensions,
 * a more complete (and more correct) coverage of built-in Stan functions,
 * better name resolution (currently user defined functions or sub models have to be defined in `Main`),
+* functions that mutate their arguments (solved via inlining),
 * and more.
 
 Almost anything that's possible in Julia should be possible to be transpiled to Stan. 
