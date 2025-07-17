@@ -196,7 +196,7 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
         end
         rv
     end
-    vector_std_normal_rng(n::int)::vector[n] = normal_rng(rep_vector(0, n), 1)
+    vector_std_normal_rng(n::int)::vector[n] = to_vector(normal_rng(rep_vector(0, n), 1))
     bernoulli_logit_lpmfs(args...) = bernoulli_logit_lpmf(args...)
     bernoulli_logit_lpmfs(obs::anything[n], args...) = jbroadcasted(bernoulli_logit_lpmfs, obs, args...)
     bernoulli_logit_glm_lpmfs(y::int[n], X, alpha, beta) = bernoulli_logit_lpmfs(
