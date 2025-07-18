@@ -28,6 +28,7 @@ Upcoming features include, in order of priority and estimated arrival,
 * more and better tests,
 * keyword arguments,
 * inlining (to reduce potential runtime overhead),
+* easier custom parameter transformations (going from sampler parametrization to user parametrization - aka as constraining),
 * array comprehensions,
 * a more complete (and more correct) coverage of built-in Stan functions,
 * better name resolution (currently user defined functions or sub models have to be defined in `Main`),
@@ -37,6 +38,13 @@ Upcoming features include, in order of priority and estimated arrival,
 Almost anything that's possible in Julia should be possible to be transpiled to Stan. 
 Of course, unless Stan is much faster than Julia (+Mooncake or Enzyme) for the model in question, 
 just sticking to Julia comes with many advantages. 
+
+Features which I am on the fence about, but currently not planning to implement:
+
+* `target +=` statements,
+* top level control flow,
+* top level mutability,
+* getting rid of superfluous parentheses.
 
 Features which are **NOT** planned:
 
