@@ -46,6 +46,9 @@ end
     loglogistic_lpdf
     uniform_lpdf
     von_mises_lpdf
+    neg_binomial_2_lpdf
+    bernoulli_logit_lpmf 
+    bernoulli_logit_glm_lpmf
     multi_normal_lpdf
     multi_normal_prec_lpdf
     multi_normal_cholesky_lpdf
@@ -61,9 +64,6 @@ end
     inv_wishart_lpdf
     inv_wishart_cholesky_lpdf
     wishart_cholesky_lpdf
-    neg_binomial_2_lpdf
-    bernoulli_logit_lpmf 
-    bernoulli_logit_glm_lpmf
 
     vector_std_normal_rng
     log1m
@@ -96,7 +96,6 @@ end
     append_col
     diag_matrix
     cumulative_sum
-    reduce_sum
     log_sum_exp
     lgamma
     matrix_exp
@@ -106,6 +105,8 @@ end
     dot_product rows_dot_product
     dims rows cols
     reject
+
+    reduce_sum reduce_sum_static reduce_sum_reconstruct simple_reduce_sum simple_reduce_sum_helper
 
     broadcasted_getindex
     jbroadcasted jmap jsum
@@ -117,6 +118,16 @@ autokwargs(x::CanonicalExpr{typeof(uniform)}) = (;lower=x.args[1], upper=x.args[
 autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,scaled_inv_chi_square,exponential,gamma,inv_gamma,weibull,frechet,rayleigh,loglogistic))...}}) = (;lower=0.)
 
 @deffun begin 
+    reduce_sum(args...)::real
+    reduce_sum_static(args...)::real
+    simple_reduce_sum(f, x, args...)::real = reduce_sum(simple_reduce_sum_helper, x, 1, f, args...)
+    simple_reduce_sum_helper(x_slice::anything[n], slice_start, slice_end, f, args...)::real = begin 
+        rv = 0.
+        for i in 1:n
+            rv += f(x_slice[i], args...)
+        end
+        rv
+    end
     reject(x)::anything
     Base.print(x)::anything
     Base.size(x)::int
@@ -139,6 +150,7 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     linspaced_vector(n, x, y)::vector[n]
     to_matrix(v, m, n)::matrix[m,n]
     rep_array(x::int, n)::int[n]
+    rep_array(x::real, n)::real[n]
     rep_vector(v, n)::vector[n]
     rep_matrix(v::vector[m], n)::matrix[m, n]
     rep_matrix(x::real, m, n)::matrix[m,n]
@@ -154,49 +166,71 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     append_array(lhs::anything[m],rhs::real)::real[m+1]
     append_row(lhs::vector[m],rhs::real)::vector[m+1]
     append_row(lhs::vector[m],rhs::vector[n])::vector[m+n]
-    bernoulli_logit_lpmf(a, b)
-    bernoulli_logit_rng(::vector[n])::int[n]
-    bernoulli_logit_glm_lpmf(X, alpha, beta)
-    bernoulli_logit_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
-    bernoulli_logit_glm_rng(X::matrix[m,n], alpha::real, beta) = bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta)
-    beta_lpdf(theta, args...)
-    beta_rng(args...)::real
-    beta_binomial_lpmf(n, args...)
-    binomial_lpmf(n, args...)
-    binomial_rng(args...)::int
-    normal_lpdf(obs, loc, scale::anything)
+    flat_lpdf(args...)
+    std_normal_lpdf(args...)
+    normal_lpdf(args...)
+    student_t_lpdf(args...)
+    cauchy_lpdf(args...)
+    beta_lpdf(args...)
+    beta_proportion_lpdf(args...)
+    beta_binomial_lpmf(args...)
+    binomial_lpmf(args...)
+    binomial_logit_lpmf(args...)
+    lognormal_lpdf(args...)
+    chi_square_lpdf(args...)
+    inv_chi_square_lpdf(args...)
+    scaled_inv_chi_square_lpdf(args...)
+    scaled_inv_chi_square_rng(::real, ::real)::real
+    exponential_lpdf(args...)
+    gamma_lpdf(args...)
+    inv_gamma_lpdf(args...)
+    weibull_lpdf(args...)
+    frechet_lpdf(args...)
+    rayleigh_lpdf(args...)
+    loglogistic_lpdf(args...)
+    uniform_lpdf(args...)
+    von_mises_lpdf(args...)
+    neg_binomial_2_lpdf(args...)
+    bernoulli_logit_lpmf(args...)
+    bernoulli_logit_glm_lpmf(args...)
     multi_normal_lpdf(obs::vector[n], loc::vector[n], cov)
-    multi_normal_rng(obs::vector[n], args...)::vector[n]
     dirichlet_lpdf(w::simplex[n], alpha::vector[n])
     lkj_corr_lpdf(L::corr_matrix, x::real)
     lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, x::real)
     wishart_lpdf(L::cov_matrix[m], x::real, sigma::matrix[m,m])
     wishart_cholesky_lpdf(L::cholesky_factor_cov[m], x::real, sigma::matrix[m,m])
 
+    multi_normal_rng(loc::vector[n], args...)::vector[n]
+    bernoulli_logit_rng(::vector[n])::int[n]
+    bernoulli_logit_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
+    bernoulli_logit_glm_rng(X::matrix[m,n], alpha::real, beta) = bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta)
+    beta_rng(args...)::real
+    binomial_rng(args...)::int
+
     broadcasted_getindex(x, i) = x
     broadcasted_getindex(x::anything[m], i) = x[i]
     jbroadcasted(f, x1::anything[n]) = begin 
         rv::vector[n]
         for i in 1:n
-            rv[i] = f(x1[i])
+            rv[i] = f(broadcasted_getindex(x1, i))
         end
         rv
     end
     jbroadcasted(f, x1::anything[n], x2) = begin 
         rv::vector[n]
         for i in 1:n
-            rv[i] = f(x1[i], broadcasted_getindex(x2, i))
+            rv[i] = f(broadcasted_getindex(x1, i), broadcasted_getindex(x2, i))
         end
         rv
     end
     jbroadcasted(f, x1::anything[n], x2, x3) = begin 
         rv::vector[n]
         for i in 1:n
-            rv[i] = f(x1[i], broadcasted_getindex(x2, i), broadcasted_getindex(x3, i))
+            rv[i] = f(broadcasted_getindex(x1, i), broadcasted_getindex(x2, i), broadcasted_getindex(x3, i))
         end
         rv
     end
-    vector_std_normal_rng(n::int)::vector[n] = normal_rng(rep_vector(0, n), 1)
+    vector_std_normal_rng(n::int)::vector[n] = to_vector(normal_rng(rep_vector(0, n), 1))
     bernoulli_logit_lpmfs(args...) = bernoulli_logit_lpmf(args...)
     bernoulli_logit_lpmfs(obs::anything[n], args...) = jbroadcasted(bernoulli_logit_lpmfs, obs, args...)
     bernoulli_logit_glm_lpmfs(y::int[n], X, alpha, beta) = bernoulli_logit_lpmfs(
@@ -215,6 +249,9 @@ end
         (vector[n],)=>vector[n]
         (real[n],)=>real[n]
         (matrix[m,n],)=>matrix[m,n]
+    end
+    typeof(÷) => begin 
+        (int, int) => int
     end
     Union{typeof.((+, -, ^, *, /))...} => begin 
         (real,) => real
@@ -370,6 +407,7 @@ end
 const TolODESolver = Union{typeof.((ode_rk45_tol, ode_ckrk_tol, ode_adams_tol, ode_bdf_tol))...}
 const NoTolODESolver = Union{typeof.((ode_rk45, ode_ckrk, ode_adams, ode_bdf))...}
 const ODESolver = Union{TolODESolver, NoTolODESolver}
+const ReduceSumFunction = Union{typeof.((reduce_sum, reduce_sum_static))...}
 
 tracetype(x::CanonicalExpr{<:ODESolver}) = StanType(
     types.vector, (stan_size(x.args[4], 1), stan_size(x.args[2], 1))
@@ -382,4 +420,76 @@ fetch_functions!(x::CanonicalExpr{<:TolODESolver}; info) = fetch_functions!(
 fetch_functions!(x::CanonicalExpr{<:NoTolODESolver}; info) = fetch_functions!(
     CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[5:end]...); info
 )
-# fundefexprs(::CanonicalExpr{<:StanExpr2{types.func}}) = error()
+
+function reduce_sum_reconstruct end
+function reduce_sum_deconstruct end
+fetch_functions!(x::CanonicalExpr{<:ReduceSumFunction}; info) = begin
+    fetch_functions!(
+        CanonicalExpr(x.args[1], x.args[2], stan_expr(1), stan_expr(1), x.args[4:end]...); info
+    )
+    if any(arg->isa(arg, StanExpr2{<:types.tup}), x.args) 
+        fetch_functions!(
+            CanonicalExpr(reduce_sum_reconstruct, x.args[1], x.args[2], stan_expr(1), stan_expr(1), x.args[4:end]...); info
+        )
+        # Work around https://github.com/stan-dev/math/issues/3041
+        fetch_functions!(
+            CanonicalExpr(reduce_sum_deconstruct, stan_expr(reduce_sum_reconstruct), x.args[2], x.args[3], x.args[1], x.args[4:end]...); info
+        )
+    end
+end
+
+reduce_sum_args!(x::StanExpr2{<:types.tup}; d) = StanExpr(CanonicalExpr(
+    :tuple, [
+        reduce_sum_args!(StanExpr(:_, arg_type); d)
+        for arg_type in x.type.info.arg_types
+    ]...
+), type(x))
+reduce_sum_args!(x::StanExpr; d) = begin
+    name = Symbol("arg", 1+length(d))
+    push!(d, name=>anon_expr(name, x))
+    d[end][2]
+end
+reduce_sum_args!(x::Tuple; d) = reduce_sum_args!.(x; d)
+fundef(x::CanonicalExpr{typeof(reduce_sum_reconstruct)}) = if any(arg->isa(arg, StanExpr2{<:types.tup}), x.args) 
+    deconstructed_args = []
+    reconstructed_args = reduce_sum_args!(x.args; d=deconstructed_args)
+    StanFunction3(
+        "// Work around https://github.com/stan-dev/math/issues/3041\n", 
+        StanType(types.real),
+        reduce_sum_reconstruct,
+        (;deconstructed_args...),
+        [
+            CanonicalExpr(:return, stan_call(reconstructed_args...))
+        ]
+    )
+end
+
+reduce_sum_args2!(x::StanExpr2{<:types.tup}; d) = for (i, arg_type) in enumerate(x.type.info.arg_types)
+    reduce_sum_args2!(StanExpr(Symbol(expr(x), ".", i), arg_type); d)
+end
+reduce_sum_args2!(x::StanExpr; d) = push!(d, x)
+fundef(x::CanonicalExpr{typeof(reduce_sum_deconstruct)}) = begin 
+    deconstructed_args = []
+    original_args = [
+        Symbol("arg", i)=>anon_expr(Symbol("arg", i), x.args[i]) for i in eachindex(x.args)
+    ]
+    reduce_sum_args2!.(last.(original_args); d=deconstructed_args)
+    StanFunction3(
+        "// Work around https://github.com/stan-dev/math/issues/3041\n", 
+        StanType(types.real),
+        reduce_sum_deconstruct,
+        (;original_args...),
+        [
+            CanonicalExpr(:return, stan_call(reduce_sum, deconstructed_args...))
+        ]
+    )
+
+end
+Base.show(io::IO, x::CanonicalExpr{<:ReduceSumFunction}) = if any(arg->isa(arg, StanExpr2{<:types.tup}), x.args) 
+    # Work around https://github.com/stan-dev/math/issues/3041
+    print(io, CanonicalExpr(reduce_sum_deconstruct, stan_expr(reduce_sum_reconstruct), x.args[2], x.args[3], x.args[1], x.args[4:end]...))
+else
+    autoprint(io, head(x), "(", Join(
+        (func_name(x.args[1], x.args[2:end]), filter(!always_inline, x.args[2:end])...), ", "
+    ), ")")
+end

@@ -5,7 +5,6 @@ catch e
     re && rethrow()
     return false
 end
-cqual(x) = qual(x) == :data ? :d : lqual(x) == :undefined ? :g : :p
 full_cqual_eq(p; kwargs...) = begin
     rv = true
     for (key, value) in pairs(stan_model(p).vars)

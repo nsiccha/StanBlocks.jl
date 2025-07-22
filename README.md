@@ -20,19 +20,34 @@ Current features include
 
 Upcoming features include, in order of priority and estimated arrival,
 
-* custom types (for method dispatch),
+* easy runtime assertions (like Julia's `@assert`) - and support for other macros,
+* model docstrings, 
+* custom types (for method dispatch - this would help with more "Julia-style" broadcasting, e.g. via `Ref`),
 * closures via Julia's [`Do-Block Syntax`](https://docs.julialang.org/en/v1/manual/functions/#Do-Block-Syntax-for-Function-Arguments) (to make within chain parallelization via [`reduce_sum`](https://mc-stan.org/docs/stan-users-guide/parallelization.html#reduce-sum) less painful),
+* lower transpilation runtimes (currently, transpilation can sometimes take longer than compilation - there is currently at least one algorithmic inefficiency on top of the systemic implementation inefficiency),
 * a much better user experience,
 * more and better tests,
+* keyword arguments,
+* default arguments,
 * inlining (to reduce potential runtime overhead),
+* easier custom parameter transformations (going from sampler parametrization to user parametrization - aka as constraining),
 * array comprehensions,
 * a more complete (and more correct) coverage of built-in Stan functions,
 * better name resolution (currently user defined functions or sub models have to be defined in `Main`),
+* functions that mutate their arguments (solved via inlining),
 * and more.
 
 Almost anything that's possible in Julia should be possible to be transpiled to Stan. 
 Of course, unless Stan is much faster than Julia (+Mooncake or Enzyme) for the model in question, 
 just sticking to Julia comes with many advantages. 
+
+Features which I am on the fence about, but currently not planning to implement:
+
+* a Julia backend,
+* `target +=` statements,
+* top level control flow,
+* top level mutability,
+* getting rid of superfluous parentheses.
 
 Features which are **NOT** planned:
 
