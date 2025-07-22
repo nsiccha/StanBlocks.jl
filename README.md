@@ -27,6 +27,7 @@ Upcoming features include, in order of priority and estimated arrival,
 * a much better user experience,
 * more and better tests,
 * keyword arguments,
+* default arguments,
 * inlining (to reduce potential runtime overhead),
 * easier custom parameter transformations (going from sampler parametrization to user parametrization - aka as constraining),
 * array comprehensions,
@@ -41,6 +42,7 @@ just sticking to Julia comes with many advantages.
 
 Features which I am on the fence about, but currently not planning to implement:
 
+* a Julia backend,
 * `target +=` statements,
 * top level control flow,
 * top level mutability,

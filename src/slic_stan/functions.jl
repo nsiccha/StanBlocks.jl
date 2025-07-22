@@ -18,7 +18,8 @@ module types
     abstract type ntup <: tup end
 end
 function stan_code end
-Base.show(io::IO, ::Type{T}) where {T<:types.anything} = print(io, T.name.name)#.parameters[1].name.name)
+Base.show(io::IO, ::Type{T}) where {T<:types.anything} = print(io, T.name.name)
+Base.show(io::IO, ::Type{T}) where {T<:types.func} = print(io, "func")#.parameters[1].name.name)
 Base.show(io::IO, ::Type{<:types.tup}) = print(io, "tuple(...)")
 r_ndim(::Type{types.anything}) = 0
 r_ndim(::Type{types.matrix}) = 2
@@ -32,8 +33,13 @@ l_ndim(x::StanType) = stan_ndim(x) - r_ndim(x)
 lr_size(x::StanType) = stan_size(x, 1:l_ndim(x)), stan_size(x, 1+l_ndim(x):stan_ndim(x))
 canonical(x::CanonicalExpr{<:StanExpr2{<:types.func}}) = CanonicalExpr(type(x.head).info.value, x.args...; x.kwargs...)
 backward!(x::StanExpr2{<:types.func}; info) = x
-fetch_data!(::StanExpr2{<:types.func}; info) = nothing
+# fetch_data!(::StanExpr2{<:types.func}; info) = nothing
+# fetch_data!(::StanExpr{Symbol, StanType{<:types.func}}; info) = nothing
+# fetch_data!(::StanExpr{Symbol, StanType{types.func}}; info) = nothing
+# fetch_data!(::StanExpr{Symbol, StanType{types.func, 0}}; info) = nothing
+# fetch_data!(::StanExpr{Symbol, StanType{<:types.func, 0}}; info) = nothing
 
+short_expr(x::Symbol) = x
 short_expr(x::StanExpr2{types.anything}) = StanExpr(short_expr(expr(x)), type(x))
 short_expr(x::StanExpr) = StanExpr("", StringStanType(sigtype(x)))
 short_expr(x::CanonicalExpr) = CanonicalExpr(head(x), short_expr.(x.args)...)
@@ -239,7 +245,8 @@ begin
     sigtype(x::StanExpr) = sigtype(x.type)
     sigtype(x::StanType) = begin 
         ct = center_type(x)
-        @assert ct != types.anything
+        ct == types.anything && @error("Stan compilation will fail: `sigtype($x)` == anything")
+        # @assert ct != types.anything
         l = stan_ndim(x) - r_ndim(ct)
         io = IOBuffer()
         l > 0 && print(io, "array[", join(fill("", l), ", "), "] ")
@@ -380,12 +387,14 @@ begin
                 function $rng_f end
                 function $lpdfs_f end
                 $stan.tracetype($base_xexpr) = $(Expr(:block, reconstruct, deconstruct, xsig_expr(ensure_xref(arg_types[1]))))
+                $stan.lpxf_expr(::typeof($base_f)) = $f
                 $stan.rng_expr(::typeof($base_f)) = $rng_f
                 $stan.likelihood_expr(::typeof($base_f)) = $lpdfs_f
+                $stan.fundef($base_xexpr) = nothing
             end)
-            if !ismissing(body)
-                push!(stmts, :($fundef($base_xexpr) = $(Expr(:block, reconstruct, anon_deconstruct, stan_fundef))))
-            end
+            # if !ismissing(body)
+            #     push!(stmts, :($stan.fundef($base_xexpr) = nothing))#$(Expr(:block, reconstruct, anon_deconstruct, stan_fundef))))
+            # end
         end
         Expr(:block, stmts...)
     end
@@ -399,8 +408,13 @@ macro deffun(x)
     esc(deffun(x))
 end
 
-fundef(x) = nothing
-fundefexprs(x) = []
+fundef(x) = begin
+    # @assert isa(x, CanonicalExpr)
+    # if head(x) isa Function && parentmodule(head(x)) ∉ (builtin, Base)
+    #     @error "Stan compilation will fail: no function definition found for $x."
+    # end
+    nothing
+end
 sig_expr(x) = x
 sig_expr(x::Union{Tuple,NamedTuple,Vector}) = map(sig_expr, x)
 sig_expr(x::CanonicalExpr) = remake(x, sig_expr(x.args)...)
@@ -415,6 +429,14 @@ fetch_functions!(x::CanonicalExpr; info) = begin
     isnothing(info[sx]) && return
     fetch_subfunctions!(info[sx].body; info)
 end
+fetch_functions!(x::SamplingExpr; info) = begin 
+    lhs, rhs = x.args
+    fetch_functions!(expr(lpxf_expr(lhs, rhs)); info)
+    if qual(lhs) == :data || lqual(lhs) == :undefined
+        fetch_functions!(expr(likelihood_expr(lhs, rhs)); info)
+        fetch_functions!(expr(rng_expr(lhs, rhs)); info)
+    end
+end
 fetch_subfunctions!(;info) = x->fetch_subfunctions!(x; info)
 fetch_subfunctions!(x; info) = nothing
 fetch_subfunctions!(x::Union{Tuple,NamedTuple,Vector}; info) = map(fetch_subfunctions!(;info), x)
@@ -424,23 +446,6 @@ fetch_subfunctions!(x::CanonicalExpr; info) = begin
     fetch_functions!(x; info)
     fetch_subfunctions!((x.args, x.kwargs); info)
 end
-
-fundefs(x) = filter(!isnothing, vcat(fundef(x), mapreduce(fundefs, vcat, fundefexprs(x); init=[])))
-allfundefexprs(x) = error(typeof(x))
-allfundefexprs(x::Union{LineNumberNode,Symbol,String,Function,AbstractFloat,Integer}) = []
-allfundefexprs(x::Union{Tuple,NamedTuple,Vector}) = unique(mapreduce(allfundefexprs, vcat, values(x); init=[]))
-allfundefexprs(x::CanonicalExpr) = begin
-    # @info x=>fundefexprs(x)
-    unique(vcat(allfundefexprs(x.args), fundefexprs(x), x))
-end
-allfundefexprs(x::StanExpr) = allfundefexprs((expr(x), type(x)))
-allfundefexprs(x::StanType) = allfundefexprs(stan_size(x))
-allfundefexprs(x::StanType{<:types.tup}) = allfundefexprs((stan_size(x), x.info.arg_types))
-
-# anon_info(x::NamedTuple) = OrderedDict{Symbol,Any}([
-#     key=>anon_expr(key, value)
-#     for (key, value) in pairs(x)
-# ])
 anon_info(x::NamedTuple) = (;[
     key=>anon_expr(key, value)
     for (key, value) in pairs(x)
@@ -452,8 +457,6 @@ anon_expr(key, x::Tuple) = begin
         anon_expr(Symbol(key, idx), xi)
         for (idx, xi) in zip(idxs, x)
     ]...,)
-    # xf = filter(!always_inline, x)
-    # ntuple(i->anon_expr(Symbol(key, i), xf[i]), length(xf))
 end
 anon_expr(key, x::StanExpr) = StanExpr(key, StanType(center_type(x), ([
     StanExpr("dims($key)[$i]", StanType(types.int))
@@ -480,10 +483,22 @@ func_name(x::Expr) = if x.head == :.
 else
     error(dump(x))
 end
-# infoandpass(x) = (@info(x); x)
-
-func_name(f, args) = join(vcat(func_name(f), func_name(args)...), "_")
-# func_name(f, args, ::) = join(vcat(func_name(f), func_name(args)...), "_")
+func_name(f, args) = begin
+    rv = join(vcat(func_name(f), func_name(args)...), "_")
+    suffix_idxs = findfirst(r"_(rng|u?lp(m|d)fs?)_", rv)
+    if isnothing(suffix_idxs) 
+        rv
+    else
+        suffix = rv[suffix_idxs[1]:suffix_idxs[end]-1]
+        base = rv[1:suffix_idxs[1]-1] * rv[suffix_idxs[end]:end]
+        base * suffix
+        # if isnothing(match(r"u?lp(m|d)f$", suffix))
+        #     base * suffix
+        # else
+        #     replace(base, r"(_u?lp(m|d)f)+$"=>"") * suffix
+        # end
+    end
+end
 func_name(args::NamedTuple) = func_name(values(args))
 func_name(args::Tuple) = mapreduce(func_name, vcat, args; init=[])
 func_name(x) = []
@@ -506,4 +521,3 @@ func_args(name, value::Tuple) = reduce(vcat, [
     func_args(Symbol(name, i), vali)
     for (i, vali) in enumerate(filter(!always_inline, value))
 ]; init=[])
-# function func_args end

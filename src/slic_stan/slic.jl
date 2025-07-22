@@ -2,10 +2,19 @@ module stan
 using OrderedCollections
 const RV_NAME = gensym("RV")
 dumperror(x) = (dump(x); error(x))
+"""
+The AST and the data, pre-tracing. Can be instantiated via `stan_instantiate`.
+
+**Warning:**
+
+Repeatedly instantiating `SlicModel`s is inefficient, as the tracing is redone for every instantiation.
+Instead, get the `StanModel` first (via `model = stan_model(slic_model)`) and update its data (via `new_model = model(;x=new_x)`).
+"""
 struct SlicModel#{M,D}
     model#::M
     data#::D
 end
+"The inferred Stan model, post-tracing. Can be instantiated via `stan_instantiate`."
 struct StanModel#{M,V,B}
     meta#::M
     vars#::V
@@ -173,6 +182,7 @@ qual(x::StanType) = get(info(x), :qual, :undefined)
 lqual(x) = :undefined
 lqual(x::StanExpr) = lqual(type(x))
 lqual(x::StanType) = get(info(x), :lqual, :undefined) 
+cqual(x) = qual(x) == :data ? :d : lqual(x) == :undefined ? :g : :p
 getvalue(x::StanExpr) = getvalue(type(x))
 getvalue(x::StanType) = get(info(x), :value, missing)
 getvalue(x::DocumentExpr) = getvalue(x.args[2])
@@ -209,6 +219,9 @@ stan_expr(x, value::StanExpr; kwargs...) = weak_remake(value; kwargs...)
 maybedata(expr, value; kwargs...) = stan_expr(expr, value; qual=:data, kwargs...)
 maybedata(expr, value::Function; kwargs...) = stan_expr(value, value; qual=:data, kwargs...)
 maybecv(expr, value) = stan_expr(expr, value; cv=true)
+
+"Traces through its first argument (a `StanBlocks.SlicModel`) and returns the inferred `StanBlocks.StanModel`."
+function stan_model end
 stan_model(x::SlicModel; info=StanModel()) = begin 
     distribute!(backward!(forward!(x; info); info); info)
     remake(info; docstring=get(x.data, :docstring, ""))
@@ -378,6 +391,8 @@ forward!(x::NamedTupleExpr; info) = stan_expr(remake(x, forward!(x.args; info)..
 forward!(x::GetPropertyExpr; info) = begin
     @assert length(x.args) == 2
     obj, name = forward!(x.args; info)
+    @assert isa(obj, StanExpr2{<:types.ntup}) "Trying to access property `$name` of object of type without named properties ($(type(obj)))!"
+    # @assert isa(obj, )
     names = keys(obj.type.info.arg_types)
     @assert name in names
     return forward!(CanonicalExpr(:getindex, x.args[1], findfirst(==(name), names)); info)
@@ -423,7 +438,7 @@ forward!(x::ElseIfExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::BreakExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::ContinueExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::QuoteExpr; info) = x.args[1]
-forward!(x::StringExpr; info) = join(map(stan_code2, forward!(x.args; info)))
+forward!(x::StringExpr; info) = join(map(stan_code, forward!(x.args; info)))
 
 stan_expr(x::CanonicalExpr) = StanExpr(x, remake(tracetype(x); qual=maximum(qual, x.args; init=:data), cv=any(cv, x.args) || cv(tracetype(x))))
 stan_expr(x::CanonicalExpr{<:SlicModel}) = head(x)(x.args...;x.kwargs...)
@@ -490,33 +505,27 @@ end
 distribution_blocks(x::ReturnExpr; info) = (:generated_quantities,)
 distribution_blocks(x::DocumentExpr; info) = distribution_blocks(x.args[2]; info)
 distribution_blocks(::Union{Nothing}; info) = tuple()
-# I had removed this, I wonder why!
 distribution_blocks(x::StanExpr{Symbol}; info) = hasvalue(x) ? (:data,) : tuple()
 
 DeclarativeBlock = Union{DataBlock,ParametersBlock}
 ImperativeBlock = Union{FunctionsBlock,TransformedDataBlock,TransformedParametersBlock,ModelBlock,GeneratedQuantitiesBlock}
 fetch_data!(;info) = x->fetch_data!(x; info)
-fetch_data!(x::Union{Tuple}; info) = map(fetch_data!(;info), x)
+fetch_data!(x::Union{Tuple,NamedTuple,Vector}; info) = map(fetch_data!(;info), x)
 fetch_data!(x::Union{Function,String}; info) = nothing 
 fetch_data!(x::StanExpr{<:Union{Number,String,Missing}}; info) = nothing 
 fetch_data!(x::StanType; info) = fetch_data!(stan_size(x); info) 
 fetch_data!(x::StanExpr{Symbol}; info) = begin
     # fetch_data!(type(x); info)
+    # @info x => hasvalue(x) => getvalue(x)
     hasvalue(x) && push!(block(info, :data), x; info)
 end
+fetch_data!(x::StanExpr{<:Function}; info) = nothing
 fetch_data!(x::StanExpr{<:CanonicalExpr}; info) = fetch_data!((type(x), expr(x)); info)
 fetch_data!(x::CanonicalExpr; info) = begin
     fetch_functions!(x; info=block(info, :functions).content)
-    # fdef = fundef(x)
-    # map(fundefs(x)) do fdef
-    #     push!(block(info, :functions), fdef; info)
-    # end
-    # isnothing(fdef) || push!(block(info, :functions), fdef; info)
     fetch_data!(x.args; info)
 end
 fetch_data!(x::CanonicalExprV{:kw}; info) = fetch_data!(x.args[2]; info)
-
-# fetch_data!(x::DocumentExpr; info) = fetch_data!(x.args[2]; info=remake(x, x.args[1], info))
 fetch_data!(x; info) = error(x)
 
 Base.get!(b::DocumentExpr{<:Any,<:DeclarativeBlock}, k, x) = get!(content(b.args[2]), k, remake(b, b.args[1], x))
@@ -552,13 +561,13 @@ Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
         likelihood_rhs = likelihood_expr(lhs, rhs)
         push!(b, CanonicalExpr(
             :(=), 
-            StanExpr(Symbol(expr(lhs), "_likelihood"), type(likelihood_rhs)), 
+            StanExpr(Symbol(expr(lhs), "_likelihood"), remake(type(likelihood_rhs); value=missing)), 
             likelihood_rhs
         ); info)
         lhs = StanExpr(Symbol(expr(lhs), "_gen"), remake(type(lhs); value=missing))
     end
     rng_rhs = rng_expr(lhs, rhs)
-    lhs = StanExpr(expr(lhs), type(rng_rhs))
+    lhs = StanExpr(expr(lhs), remake(type(rng_rhs); value=missing))
     push!(b, CanonicalExpr(:(=), lhs, rng_rhs); info)
 end
     # if hasvalue(x.args[1])
@@ -566,19 +575,24 @@ end
 # end
 # likelihood_expr(lhs, rhs) = likelihood_expr(rhs)
 
+function lpxf_expr end
 function rng_expr end
 function likelihood_expr end
 include("functions.jl")
 include("builtin.jl")
 function dummy_likelihood end
 function dummy_rng end
+lpxf_expr(lhs, rhs::StanExpr) = lpxf_expr(lhs, expr(rhs))
+lpxf_expr(lhs, rhs::CanonicalExpr) = stan_call(lpxf_expr(head(rhs)), lhs, rhs.args...)
+# lpxf_expr(x::CanonicalExpr) = lpxf_expr(head(x))
+lpxf_expr(x) = error("$x is missing `lpxf_expr`")
 likelihood_expr(lhs, rhs::StanExpr) = likelihood_expr(lhs, expr(rhs))
 likelihood_expr(lhs, rhs::CanonicalExpr) = stan_call(likelihood_expr(head(rhs)), lhs, rhs.args...)
-likelihood_expr(rhs) = dummy_likelihood
+likelihood_expr(rhs) = error("$rhs is missing `likelihood_expr`")#dummy_likelihood
 rng_expr(lhs, rhs) = rng_expr(rhs)
 rng_expr(rhs::StanExpr) = rng_expr(expr(rhs))
 rng_expr(rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), rhs.args...)
-rng_expr(x) = dummy_rng
+rng_expr(x) = error("$x is missing `rng_expr`")#dummy_likelihood
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(std_normal)}}) = stan_call(vector_std_normal_rng, stan_size(lhs)...)
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal)}}) = stan_call(to_vector, stan_call(normal_rng, expr(rhs).args...))
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal),<:Tuple{<:StanExpr2{<:types.real, 0},<:StanExpr2{<:types.real, 0}}}}) = rng_expr(lhs, stan_call(normal, stan_call(rep_vector, expr(rhs).args[1], stan_size(lhs, 1)), expr(rhs).args[2]))
@@ -648,7 +662,6 @@ end
 Base.show(io::StanIO, x::StanExpr) = isa(type(x), StringStanType) ? print(io, expr(x), "::", type(x)) : print(io, expr(x))
 Base.show(io::StanIO, ::Colon) = print(io, ":")
 Base.show(io::IO, x::StanModel) = show(StanIO(io), x)
-
 Base.show(io::IO, x::SlicModel; mayfail=true) = try
     print(io, stan_model(x))
 catch e
@@ -709,7 +722,7 @@ Base.show(io::IO, x::CanonicalExpr) = begin
     fname = func_name(head(x), x.args)
     fargs = filter(!always_inline, x.args)
     is_lpxf = endswith(string(fname), r"_lp[md]f")
-    if is_lpxf 
+    if is_lpxf && length(fargs) > 1
         autoprint(io, fname, "(", fargs[1], " | ", Join(fargs[2:end], ", "), ")")
     else
         autoprint(io, fname, "(", Join(fargs, ", "), ")")
@@ -772,18 +785,23 @@ end
 @eval forward!(x::CanonicalExprV{:(.=)}; info) = stan_expr(remake(x, forward!(x.args; info)...))
 @eval Base.show(io::IO, x::CanonicalExprV{:(.=)}) = print(io, Join(x.args, " = "))
     
+"Return the stan code of its first argument (a `StanBlocks.SlicModel` or a `StanBlocks.StanModel`) as a string."
+function stan_code end
 
-stan_code(x::SlicModel; mayfail=false) = begin 
+stan_code(x::StanModel) = begin 
     buf = IOBuffer()
-    show(buf, x; mayfail)
+    show(buf, x)
     String(take!(buf))
 end
-stan_code2(x) = begin 
-    buf = IOBuffer()
-    print(StanIO(buf), x)
-    String(take!(buf))
-end
+stan_code(x::SlicModel) = stan_code(stan_model(x))
 function bridgestan_data end
+"""
+Returns the StanLogDensityProblem (a compiled posterior).
+
+**Warning:**
+
+Requires loading StanLogDensityProblems.jl and JSON.jl.
+"""
 function instantiate end
 debug_instantiate(x; kwargs...) = instantiate(x; nan_on_error=false, kwargs...)
 passinstantiate(x; kwargs...) = (instantiate(x; kwargs...); x)
@@ -792,11 +810,33 @@ stan_data(x::StanModel) = Dict([
     key=>getvalue(value) for (key, value) in pairs(content(block(x, :data)))
     if !always_inline(value)
 ])
+
+"StanModels can update the associated data (via `new_model = model(;x=new_x)`)."
+(x::StanModel)(;kwargs...) = begin
+    xkwargs = Dict{Symbol,Any}(pairs(kwargs))
+    for (key, value) in pairs(kwargs)
+        if isa(value, AbstractVector) 
+            xkwargs[Symbol(key, "_n")] = length(value)
+        elseif isa(value, AbstractMatrix) 
+            xkwargs[Symbol(key, "_m")], xkwargs[Symbol(key, "_n")] = size(value)
+        end
+    end
+    @info xkwargs
+    StanModel(x.meta, x.vars, merge(x.blocks, (;data=StanBlock(:data,OrderedDict([
+        key=>StanExpr(expr(x), remake(type(x); value=get(xkwargs, key, getvalue(x))))
+        for (key, x) in pairs(block(x, :data).content)
+    ])))))
+end
 slic_expr(x::Expr) = x
 
 include("test.jl")
 
 end
+"""
+Defines `SlicModel`s (see `test/slic.jl` for usage examples).
+
+Proper documentation will be incoming.
+"""
 macro slic(model)
     stan.SlicModel(model, Dict())
 end
@@ -805,11 +845,28 @@ macro slic(data, model)
     qmodel = Meta.quot(model)
     esc(:($mod.stan.SlicModel($qmodel, $data)))
 end
+"""
+Utility macro to define function signatures (see `src/slic_stan/builtin.jl` for usage examples).
+
+**Note:**
+
+This macro is mainly useful for bulk built-in function signature definitions. 
+StanBlocks.jl users should generally prefer using @deffun.
+"""
 macro defsig(x)
     esc(stan.defsig(x))
 end
+"""
+Defines function signatures (see `src/slic_stan/builtin.jl` or `test/slic.jl` for usage examples).
+
+Proper documentation will be incoming.
+"""
 macro deffun(x)
     esc(stan.deffun(x))
 end
-stan_code(args...; kwargs...) = stan.stan_code(args...; kwargs...)
-stan_instantiate(args...; kwargs...) = stan.instantiate(args...; kwargs...)
+const stan_model = stan.stan_model
+const stan_code = stan.stan_code
+const stan_data = stan.stan_data
+const stan_instantiate = stan.instantiate
+const StanModel = stan.StanModel
+const SlicModel = stan.SlicModel

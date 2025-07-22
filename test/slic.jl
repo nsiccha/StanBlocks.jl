@@ -1,4 +1,4 @@
-import StanBlocks.stan: @deffun, full_cqual_eq, transpiles, compiles
+import StanBlocks.stan: @deffun, full_cqual_eq, transpiles, compiles, stan_model
 import PosteriorDB
 
 msg(e::ErrorException) = e.msg
@@ -8,35 +8,63 @@ msg(e::MethodError) = e.msg
 const pdb = PosteriorDB.database()
 failed_posterior_names = Set(PosteriorDB.posterior_names(pdb))
 
-# @testset "glm" begin
-#     model = @slic begin
-#         n_covariates = cols(X)
-#         intercept ~ normal(0., 1.)
-#         beta ~ std_normal(; n=n_covariates)
-#         obs_loc = intercept + X * beta
-#         obs_scale ~ exponential(1.)
-#         obs ~ normal(obs_loc, obs_scale)
-#     end
-#     @testset "normal_glm" begin 
-#         prior = model(;X=randn((10, 10)))
-#         @test full_cqual_eq(prior; X = :d, n_covariates = :d, intercept = :g, beta = :g, obs_loc = :g, obs_scale = :g, obs = :g)
-#         @test transpiles(prior)
-#         @test compiles(prior)
-#         posterior = prior(;obs=randn(10))
-#         @test full_cqual_eq(posterior; obs = :d, X = :d, n_covariates = :d, intercept = :p, beta = :p, obs_loc = :p, obs_scale = :p)
-#     end
-#     @testset "cauchy_glm" begin 
-#         prior = model(quote 
-#             beta ~ cauchy(0., 1.; n=n_covariates)
-#             obs ~ cauchy(obs_loc, obs_scale)
-#         end; X=randn((10, 10)))
-#         @test full_cqual_eq(prior; X = :d, n_covariates = :d, intercept = :g, beta = :g, obs_loc = :g, obs_scale = :g, obs = :g)
-#         @test transpiles(prior)
-#         @test compiles(prior)
-#         posterior = prior(;obs=randn(10))
-#         @test full_cqual_eq(posterior; obs = :d, X = :d, n_covariates = :d, intercept = :p, beta = :p, obs_loc = :p, obs_scale = :p)
-#     end
-# end
+@deffun begin 
+    simple_lpdf(y, x) = 0.
+    simple_lpdfs(y, x) = 0.
+    simple_rng(x) = 0.
+    vararg_lpdf(y, args...) = 0.
+    vararg_lpdfs(y, args...) = 0.
+    vararg_rng(args...) = 0.
+
+    my_lpdf(y, fargs...) = reject(1)
+    my_lpdfs(args...) = reject(1)
+    my_rng(args...) = reject(1)
+    my_lpdf(y, ::typeof(simple), args...) = simple_lpdf(y, args...)
+    my_lpdfs(y, ::typeof(simple), args...) = simple_lpdfs(y, args...)
+    my_rng(::typeof(simple), args...) = simple_rng(args...)
+    my_lpdf(y, ::typeof(vararg), args...) = vararg_lpdf(y, args...)
+
+    fof_lpdf(y, f, args...) = my_lpdf(y, f, args...)
+    fof_lpdfs(y, f, args...) = my_lpdfs(y, f, args...)
+    fof_rng(f, args...) = my_rng(f, args...)
+    srs2_lpdf(y, f, args...) = simple_reduce_sum(srs2_helper, rep_array(y, 1), f, args...)
+    srs2_helper(y, f, args...) = my_lpdf(y, f, args...)
+    srs2_lpdfs(y, f, args...) = 0.
+    srs2_rng(f, args...) = 0.
+end
+
+@testset "compilation" begin
+    @test compiles(@slic (;obs=0.) begin
+        loc ~ std_normal()
+        scale ~ std_normal(;lower=0.) 
+        obs ~ normal(loc, scale)
+    end)  
+    @test compiles(@slic (;obs=0.) begin
+        loc ~ std_normal()
+        obs ~ simple(loc)
+    end)  
+    @test compiles(@slic (;obs=0.) begin
+        loc ~ std_normal()
+        obs ~ vararg(loc)
+    end)  
+    @test compiles(@slic (;obs=0.) begin
+        loc ~ std_normal()
+        obs ~ fof(simple, loc)
+    end)  
+    @test compiles(@slic (;obs=0.) begin
+        loc ~ std_normal()
+        obs ~ srs2(vararg, loc)
+    end)  
+    @test compiles(@slic (;obs=0.) begin
+        loc ~ std_normal()
+        obs ~ srs2(vararg, loc, (1, 2, 3))
+    end)  
+    @test compiles(stan_model(@slic (;obs=randn(5)) begin
+        loc ~ std_normal()
+        scale ~ std_normal(;lower=0.) 
+        obs ~ normal(loc, scale)
+    end)(;obs=randn(10)))  
+end
 
 
 
@@ -237,15 +265,6 @@ end
         isnothing(post) && return 
         @info "Testing $posterior_name"
         @test compiles(post)
-        # try 
-        #     compiles(post)
-        #     @test compiles(post)
-        #     delete!(failed_posterior_names, posterior_name)
-        # catch e
-        #     @error msg(e)
-        #     rethrow()
-        # end
-        
     end 
 end
 end

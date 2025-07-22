@@ -2,7 +2,7 @@ module StanBlocks
 
 export @stan, @model, @parameters, @transformed_parameters, @generated_quantities, @bsum, with_gradient
 export @slic, @defsig, @deffun
-export stan_code, stan_instantiate
+export stan_code, stan_model, stan_instantiate
 
 using LinearAlgebra, Statistics, Distributions, LogExpFunctions
 
