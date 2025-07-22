@@ -97,11 +97,11 @@ autotype(x::StanExpr) = autotype(type(x); merge(autokwargs(expr(x)), expr(x).kwa
 autotype(x::StanType; kwargs...) = begin 
     ct = get(kwargs, :type, center_type(x))
     nsize = [
-        getindex(kwargs, key)
+        kwargs[key]
         for key in (:m, :n, :o) if key in keys(kwargs)
     ]
     size = length(nsize) > 0 ? (nsize..., ) : get(kwargs, :size, stan_size(x))
-    (ct == types.anything) && (ct = [types.real, types.vector, types.matrix][1+length(size)])
+    (ct in (types.anything, types.real)) && (ct = [types.real, types.vector, types.matrix][1+length(size)])
     cons = (;[
         key=>getindex(kwargs, key)
         for key in (:lower, :upper, :offset, :multiplier) if key in keys(kwargs)
@@ -380,13 +380,17 @@ begin
             lpdfs_f = Symbol(f, "s")
             base_ftype = :(typeof($base_f))
             base_xexpr = :(_x::$CanonicalExpr{<:$base_ftype,<:Tuple{$(lhs_type[2:end]...)}})
-            dummy1 = StanExpr(missing, StanType(getproperty(types, arg_types[1].args[1]), ntuple(i->StanExpr(missing, StanType(types.int)), length(arg_types[1].args)-1)))
-            reconstruct = :(x = $CanonicalExpr($f, $dummy1, _x.args...))
+            y_type = length(arg_types) == 0 || arg_types[1] == :(anything[]) ? :(real[]) : arg_types[1]
+            y_expr = StanExpr(
+                missing, 
+                StanType(getproperty(types, y_type.args[1]), ntuple(i->StanExpr(missing, StanType(types.int)), length(y_type.args)-1))
+            )
+            reconstruct = :(x = $CanonicalExpr($f, $y_expr, _x.args...))
             push!(stmts, quote
                 function $base_f end
                 function $rng_f end
                 function $lpdfs_f end
-                $stan.tracetype($base_xexpr) = $(Expr(:block, reconstruct, deconstruct, xsig_expr(ensure_xref(arg_types[1]))))
+                $stan.tracetype($base_xexpr) = $(Expr(:block, reconstruct, deconstruct, xsig_expr(y_type)))
                 $stan.lpxf_expr(::typeof($base_f)) = $f
                 $stan.rng_expr(::typeof($base_f)) = $rng_f
                 $stan.likelihood_expr(::typeof($base_f)) = $lpdfs_f

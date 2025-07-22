@@ -821,7 +821,6 @@ stan_data(x::StanModel) = Dict([
             xkwargs[Symbol(key, "_m")], xkwargs[Symbol(key, "_n")] = size(value)
         end
     end
-    @info xkwargs
     StanModel(x.meta, x.vars, merge(x.blocks, (;data=StanBlock(:data,OrderedDict([
         key=>StanExpr(expr(x), remake(type(x); value=get(xkwargs, key, getvalue(x))))
         for (key, x) in pairs(block(x, :data).content)
