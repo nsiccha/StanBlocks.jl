@@ -258,6 +258,10 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     multi_normal_lpdfs(args...) = multi_normal_lpdf(args...)
     vector_exponential_rng(rate::real, n::int)::vector[n] = exponential_rng(rep_vector(rate, n))
     lkj_corr_cholesky_rng(n::int, eta::real)
+    
+    normal_cdf(args...)
+    normal_lcdf(args...)
+    normal_lccdf(args...)
 
 
     Base.invperm(x::int[n])::int[n] = begin 
