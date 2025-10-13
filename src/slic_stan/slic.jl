@@ -325,8 +325,10 @@ forward!(x::AssignmentExpr{Symbol}; info) = begin
     rhs = forward!(rhs; info)::Union{StanExpr}
     forward!(remake(x, name, rhs); info)
 end
-maybe_lazy_size(key::Symbol, i, sizei) = sizei
-maybe_lazy_size(key::Symbol, i, ::StanExpr{<:CanonicalExpr}) = StanExpr("dims($key)[$i]", StanType(types.int))
+maybe_lazy_size(key::Symbol, i, sizei; info) = sizei
+maybe_lazy_size(key::Symbol, i, ::StanExpr{<:CanonicalExpr}; info) = StanExpr(
+    forward!(CanonicalExpr(:getindex, CanonicalExpr(:dims, key), i); info), StanType(types.int)
+)
 forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args 
     @assert name ∉ keys(info)
@@ -334,7 +336,7 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
     rv = remake(x, info[name], rhs)
     info[name] = StanExpr(name, remake(type(rhs), [
-        maybe_lazy_size(name, i, sizei)
+        maybe_lazy_size(name, i, sizei; info)
         for (i, sizei) in enumerate(stan_size(type(rhs)))
     ]...; value=missing))
     # @info "$x \n=> $rv\n=> $(info[name])"
@@ -421,9 +423,10 @@ forward!(x::ForExpr; info) = begin
     idx = head.args[1]
     @assert isa(idx, Symbol)
     info[idx] = StanExpr(idx, StanType(types.int))
+    idx_range = forward!(head.args[2]; info)
     body = forward!(body; info)
     pop!(info, idx)
-    stan_expr(remake(x, head, body))
+    stan_expr(remake(x, remake(head, idx, idx_range), body))
 end
 forward!(x::WhileExpr; info) = begin 
     @assert length(x.args) == 2
@@ -721,8 +724,8 @@ prettystring(f::Base.BroadcastFunction) = " .$(f.f) "
 Base.show(io::IO, x::CanonicalExpr) = begin
     fname = func_name(head(x), x.args)
     fargs = filter(!always_inline, x.args)
-    is_lpxf = endswith(string(fname), r"_lp[md]f")
-    if is_lpxf && length(fargs) > 1
+    is_lxxf = endswith(string(fname), r"_lp[md]f|_l?c?cdf")
+    if is_lxxf && length(fargs) > 1
         autoprint(io, fname, "(", fargs[1], " | ", Join(fargs[2:end], ", "), ")")
     else
         autoprint(io, fname, "(", Join(fargs, ", "), ")")
@@ -766,7 +769,7 @@ Base.show(io::IO, x::CanonicalExpr{typeof(adjoint)}) = print(io, "(", x.args[1],
 Base.show(io::IO, x::CanonicalExpr{typeof(range)}) = autoprint(io, "linspaced_vector(", Join((x.args[end], x.args[1], x.args[2]), ", "), ")")
 Base.show(io::IO, x::CanonicalExpr{typeof(getindex)}) = autoprint(io, x.args[1], "[", Join(x.args[2:end], ", "), "]")
 Base.show(io::IO, x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = print(io, x.args[1], ".", x.args[2])
-for f in (-,+,*,\,/,^,.*,./,<,<=,==,!=,>=,>)
+for f in (-,+,*,\,/,^,.*,./,<,<=,==,!=,>=,>,&,|)
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f)}) = autoprint(io, "(", Join(x.args, prettystring($f)), ")")
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f),Tuple{A}}) where {A} = print(io, "(", string($f), x.args[1], ")")
 end

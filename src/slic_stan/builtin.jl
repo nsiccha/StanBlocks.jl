@@ -3,6 +3,9 @@ builtin_module_names(x::Symbol) = endswith(string(x), r"_lp[md]f") ? [
     Symbol(x, "s")
     Symbol(string(x)[1:end-length("_lpdf")])
     Symbol(string(x)[1:end-length("_lpdf")], "_rng")
+    Symbol(string(x)[1:end-length("_lpdf")], "_cdf")
+    Symbol(string(x)[1:end-length("_lpdf")], "_lccdf")
+    Symbol(string(x)[1:end-length("_lpdf")], "_lcdf")
 ] : x
 builtin_module_names(x::Expr) = mapreduce(builtin_module_names, vcat, x.args; init=[])
 macro builtin_module(x)
@@ -95,6 +98,7 @@ end
     append_row
     append_col
     diag_matrix
+    mdivide_left_tri_low
     cumulative_sum
     log_sum_exp
     lgamma
@@ -166,6 +170,10 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     append_array(lhs::anything[m],rhs::real)::real[m+1]
     append_row(lhs::vector[m],rhs::real)::vector[m+1]
     append_row(lhs::vector[m],rhs::vector[n])::vector[m+n]
+    append_row(::real, ::vector[n])::vector[n+1]
+    append_row(::matrix[m1,n], ::matrix[m2,n])::matrix[m1+m2,n]
+    append_row(x::row_vector[n], y::row_vector[n])::matrix[2, n]
+    append_row(x::matrix[m, n], y::row_vector[n])::matrix[m+1, n]
     flat_lpdf(args...)
     std_normal_lpdf(args...)
     normal_lpdf(args...)
@@ -200,12 +208,16 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     wishart_lpdf(L::cov_matrix[m], x::real, sigma::matrix[m,m])
     wishart_cholesky_lpdf(L::cholesky_factor_cov[m], x::real, sigma::matrix[m,m])
 
+    lognormal_rng(loc::real, scale::real)::real
+    student_t_rng(nu::real, loc::real, scale::real)::real
     multi_normal_rng(loc::vector[n], args...)::vector[n]
+    multi_normal_cholesky_rng(loc::vector[n], scale)::vector[n]
     bernoulli_logit_rng(::vector[n])::int[n]
     bernoulli_logit_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
     bernoulli_logit_glm_rng(X::matrix[m,n], alpha::real, beta) = bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta)
     beta_rng(args...)::real
     binomial_rng(args...)::int
+    binomial_logit_rng(n::int[m], p::vector[m])::int[m]
 
     broadcasted_getindex(x, i) = x
     broadcasted_getindex(x::anything[m], i) = x[i]
@@ -237,16 +249,35 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
         y,
         alpha + X * beta
     ) 
-    binomial_lpmfs(n::int, args...) = binomial_lpmf(n, args...)
+    binomial_lpmfs(args...) = binomial_lpmf(args...)
+    binomial_lpmfs(y::int[n], args...) = jbroadcasted(binomial_lpmfs, y, args...)
+    binomial_logit_lpmfs(args...) = binomial_logit_lpmf(args...)
+    binomial_logit_lpmfs(y::int[n], args...) = jbroadcasted(binomial_logit_lpmfs, y, args...)
     normal_lpdfs(args...) = normal_lpdf(args...)
     normal_lpdfs(obs::anything[n], loc, scale) = jbroadcasted(normal_lpdfs, obs, loc, scale)
     multi_normal_lpdfs(args...) = multi_normal_lpdf(args...)
     vector_exponential_rng(rate::real, n::int)::vector[n] = exponential_rng(rep_vector(rate, n))
+    lkj_corr_cholesky_rng(n::int, eta::real)
+
+
+    Base.invperm(x::int[n])::int[n] = begin 
+        rv = rep_array(0, n)
+        for i in 1:n
+            rv[x[i]] = i
+        end
+        rv
+    end
+    # Base.get(x::anything[n], i, d) = if 1 <= i <= n
+    #     x[i]
+    # else
+    #     d
+    # end
 end
 @defsig begin 
-    Union{typeof.((sqrt, exp, log, log10, sin, cos, asin, acos, log1m, inv_logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs, log1p_exp, log1m_exp))...} => begin 
+    Union{typeof.((sqrt, exp, log, log10, sin, cos, asin, acos, log1m, inv_logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs, log1p_exp, log1m_exp, Base.inv, Base.log1p))...} => begin 
         (real,)=>real
         (vector[n],)=>vector[n]
+        (row_vector[n],)=>row_vector[n]
         (real[n],)=>real[n]
         (matrix[m,n],)=>matrix[m,n]
     end
@@ -296,6 +327,7 @@ end
         (int[m], int[n]) => int[n]
         (int[m,n], int) => int[n] 
         (int[m,n], int[o], int) => int[o] 
+        (int[m,n], int, int) => int 
         (real[m], int) => real
         (real[m], int[n]) => real[n]
         (real[m,n], int) => real[n] 
@@ -321,6 +353,7 @@ end
     typeof(to_array_1d) => begin 
         (vector[n],)=>real[n]
         (real[m,n],) => real[m*n]
+        (int[m,n],) => int[m*n]
     end
     typeof(std_normal_rng) => begin 
         () => real
@@ -355,6 +388,7 @@ end
         (vector[n], real) => vector[n]
         (real, vector[n]) => vector[n]
         (vector[n], vector[n]) => vector[n]
+        (row_vector[n], row_vector[n]) => row_vector[n]
     end
     Union{typeof.((min,max))...} => begin 
         (int, int) => int
@@ -373,6 +407,7 @@ end
     end
     typeof(diag_post_multiply) => begin
         (matrix[m,n], vector[n]) => matrix[m,n] 
+        (matrix[m,n], row_vector[n]) => matrix[m,n] 
     end
     typeof(gp_exp_quad_cov) => begin 
         (real[n], real, real) => matrix[n,n]
@@ -399,7 +434,7 @@ end
     Union{typeof.((sort_indices_asc, sort_indices_desc))...} => begin 
         (anything[n],)=>int[n]
     end
-    typeof(!=) => begin 
+    Union{typeof.((|, &, ==, !=, <, <=, >, >=))...} => begin 
         (anything, anything) => int
     end
 end
@@ -483,7 +518,6 @@ fundef(x::CanonicalExpr{typeof(reduce_sum_deconstruct)}) = begin
             CanonicalExpr(:return, stan_call(reduce_sum, deconstructed_args...))
         ]
     )
-
 end
 Base.show(io::IO, x::CanonicalExpr{<:ReduceSumFunction}) = if any(arg->isa(arg, StanExpr2{<:types.tup}), x.args) 
     # Work around https://github.com/stan-dev/math/issues/3041

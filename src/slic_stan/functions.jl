@@ -135,11 +135,11 @@ begin
     ensure_xassign(x, default=missing) = Meta.isexpr(x, :(=)) ? x : xassign(x, default)
     ensure_xtuple(x) = Meta.isexpr(x, :tuple) ? x : xtuple(x)
     ensure_xref(x) = Meta.isexpr(x, :ref) ? x : xref(x)
-    ensure_xtyped(x, default=:anything) = if Meta.isexpr(x, :(::))
+    ensure_xtyped(x, default_symbol=missing; default=:anything) = if Meta.isexpr(x, :(::))
         if length(x.args) == 2
-            x
+            x.args[1] == Symbol("_") ? xtyped(default_symbol, x.args[2]) : x
         else
-            xtyped(gensym("_"), x.args[1])
+            xtyped(default_symbol, x.args[1])
         end
     else
         xtyped(x, default)
@@ -276,8 +276,8 @@ begin
     expr_replace(x; kwargs...) = get(kwargs, x, x) 
     expr_replace(x::Expr; kwargs...) = Expr(x.head, expr_replace.(x.args; kwargs...)...)
 
-    ensure_xlhs(arg::Symbol) = arg
-    ensure_xlhs(::Expr) = Symbol("_")
+    ensure_xlhs(arg::Symbol; hidden=()) = arg in hidden ? Symbol("_") : arg
+    ensure_xlhs(::Expr; kwargs...) = Symbol("_")
 
     hasvararg(args) = length(args) > 0 && Meta.isexpr(args[end], :(...))
     maybedoc(x::AbstractString) = length(strip(x)) == 0 ? "" : strip(replace("\n" * strip(x), "\n"=>"\n// ")) * "\n"
@@ -300,14 +300,14 @@ begin
         @assert Meta.isexpr(fcall, :call)
         f, args... = fcall.args
         is_lpxf = endswith(string(f), r"_lp[md]f")
-        is_lpxf && (rv = :real)
+        (is_lpxf || endswith(string(f), r"_l?c?cdf")) && (rv = :real)
         ftype = :(typeof($f))
         args, vararg = if hasvararg(args)
             args[1:end-1], args[end]
         else
             args, nothing
         end
-        args = ensure_xtyped.(args, :anything)
+        args = ensure_xtyped.(args, Symbol.("arg__" .* string.(eachindex(args))))
         arg_names = map(arg->arg.args[1], args)
         sig_names = copy(arg_names)
         arg_types = map(arg->ensure_xref(arg.args[2]), args)
@@ -323,13 +323,14 @@ begin
             for (i, dim_name) in enumerate(arg_type.args[2:end])
                 isa(dim_name, Symbol) || continue
                 dim_name == :(_) && continue
+                dim_name in arg_names && continue
                 fun_sizes[dim_name] = "int $dim_name = dims($arg_name)[$i];"
             end
         end
         deconstruct = Expr(:block, 
             xassign(xtuple(arg_names..., (isnothing(vararg) ? () : (vararg,))...), :(x.args)), 
             [
-                xassign(xtuple(ensure_xlhs.(args_type.args[2:end])...), :($stan_size($args_name)))
+                xassign(xtuple(ensure_xlhs.(args_type.args[2:end]; hidden=arg_names)...), :($stan_size($args_name)))
                 for (args_name, args_type) in zip(arg_names, arg_types)
             ]..., 
             :(info = (;$(sig_names...), $(keys(fun_sizes)...),))
@@ -508,6 +509,8 @@ func_name(args::Tuple) = mapreduce(func_name, vcat, args; init=[])
 func_name(x) = []
 func_name(x::StanExpr) = always_inline(x) ? [func_name(type(x).info.value)] : []
 func_name(x::Function) = string(x)
+func_name(::typeof(&)) = "and"
+func_name(::typeof(|)) = "or"
 func_name(::typeof(>=)) = "gte"
 func_name(::typeof(>)) = "gt"
 func_name(::typeof(==)) = "eq"
