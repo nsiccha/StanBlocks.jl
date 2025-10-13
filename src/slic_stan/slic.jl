@@ -152,15 +152,35 @@ StanModel(name=gensym("stan_model")) = StanModel(
         generated_quantities=StanBlock(:generated_quantities)
     ),
 )
-replace_components(x; rep) = x
-replace_components(x::Expr; rep::Dict) = get(rep, replace_name(x)) do 
-    Expr(x.head, replace_components.(x.args; rep)...)
-end
 replace_name(x::Expr) = replace_name(canonical(x))
 replace_name(x::Union{SamplingExpr,AssignmentExpr}) = x.args[1]
 replace_name(::ReturnExpr) = RV_NAME
 replace_name(::Any) = missing
-model(x::SlicModel, args::Union{SamplingExpr,AssignmentExpr,ReturnExpr}...) = replace_components(model(x); rep=Dict([
+usedin(s::Symbol) = Base.Fix1(usedin, s)
+usedin(s::Symbol, x::Expr) = any(usedin(s), x.args)
+usedin(s::Symbol, x::Symbol) = s == x
+usedin(s::Symbol, x::CanonicalExpr) = any(usedin(s), x.args)
+usedin(s::Symbol, x) = false
+top_replace_components(x::Expr; rep::OrderedDict) = begin 
+    @assert x.head == :block
+    args = []
+    for arg in x.args
+        push!(args, pop!(rep, replace_name(arg), arg))
+    end
+    i = 1
+    while i <= length(args)
+        for key in keys(rep)
+            usedin(key, args[i]) || continue
+            insert!(args, i, pop!(rep, key))
+            i -= 1
+            break
+        end
+        i += 1
+    end
+    append!(args, values(rep))
+    Expr(:block, args...)
+end
+model(x::SlicModel, args::Union{SamplingExpr,AssignmentExpr,ReturnExpr}...) = top_replace_components(model(x); rep=OrderedDict([
     replace_name(arg)=>arg for arg in args
 ]))
 unblock(x::BlockExpr) = mapreduce(unblock, vcat, x.args)
@@ -375,7 +395,11 @@ end
 forward!(x::ReturnExpr; info) = if isa(info, SubModel)
     rhs = forward!(x.args[1]; info)
     forward!(CanonicalExpr(:(=),name(info),rhs); info=parent(info))
+elseif isa(info, StanModel)
+    rhs = forward!(x.args[1]; info)
+    forward!(CanonicalExpr(:(=), :MODEL_RV, rhs); info)
 else
+    @info typeof(info)
     rv = forward!(x.args[1]; info)
     info[RV_NAME] = rv
     remake(x, rv)
