@@ -55,7 +55,6 @@ tracetype(x::CanonicalExpr) = begin
     end
     StanType(types.anything)
 end
-tracetype(x::CanonicalExpr{typeof(==)}) = StanType(types.int)
 tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = if length(x.args) > 2
     f = head(x)
     tracetype(CanonicalExpr(f, x.args[1], stan_expr(CanonicalExpr(f, x.args[2:end]...))))
