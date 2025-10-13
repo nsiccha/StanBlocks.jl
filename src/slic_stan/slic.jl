@@ -153,26 +153,20 @@ StanModel(name=gensym("stan_model")) = StanModel(
     ),
 )
 replace_components(x; rep) = x
-replace_components(x::Expr; rep::Dict) = if (
-    x.head == :(=) && x.args[1] in keys(rep) || 
-    x.head == :call && x.args[1] == :~ && x.args[2] in keys(rep)
-)
-    rep[x.head == :(=) ? x.args[1] : x.args[2]]
-else
+replace_components(x::Expr; rep::Dict) = get(rep, replace_name(x)) do 
     Expr(x.head, replace_components.(x.args; rep)...)
 end
-model(x::SlicModel, args::SamplingExpr...) = replace_components(model(x); rep=Dict([
-    arg.args[1]=>arg
-    for arg in args
-]))
-model(x::SlicModel, args::Union{SamplingExpr,AssignmentExpr}...) = replace_components(model(x); rep=Dict([
-    arg.args[1]=>arg
-    for arg in args
+replace_name(x::Expr) = replace_name(canonical(x))
+replace_name(x::Union{SamplingExpr,AssignmentExpr}) = x.args[1]
+replace_name(::ReturnExpr) = RV_NAME
+replace_name(::Any) = missing
+model(x::SlicModel, args::Union{SamplingExpr,AssignmentExpr,ReturnExpr}...) = replace_components(model(x); rep=Dict([
+    replace_name(arg)=>arg for arg in args
 ]))
 unblock(x::BlockExpr) = mapreduce(unblock, vcat, x.args)
 unblock(x::LineNumberNode) = []
 unblock(x) = [x]
-model(x::SlicModel, args::Union{BlockExpr,SamplingExpr}...) = model(x, mapreduce(unblock, vcat, args)...)
+model(x::SlicModel, args::Union{BlockExpr,SamplingExpr,AssignmentExpr,ReturnExpr}...) = model(x, mapreduce(unblock, vcat, args)...)
 model(x::SlicModel, args::Expr...) = model(x, canonical.(args)...)
 (x::SlicModel)(args...; kwargs...) = SlicModel(model(x, args...), merge(data(x), kwargs))
 
