@@ -399,7 +399,6 @@ elseif isa(info, StanModel)
     rhs = forward!(x.args[1]; info)
     forward!(CanonicalExpr(:(=), :MODEL_RV, rhs); info)
 else
-    @info typeof(info)
     rv = forward!(x.args[1]; info)
     info[RV_NAME] = rv
     remake(x, rv)
