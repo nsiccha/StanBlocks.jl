@@ -66,6 +66,7 @@ end
 include("issues/9.jl")
 include("issues/10.jl")
 include("issues/12.jl")
+include("issues/15.jl")
 include("issues/17.jl")
 include("issues/18.jl")
 include("issues/19.jl")
