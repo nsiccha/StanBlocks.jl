@@ -8,12 +8,14 @@ Current features include
 
 * activity analysis (automatically determines what is `data`, `transformed_data`, `parameters`, `transformed parameters`, `model`, or `generated quantities`),
 * automatically inferred types, shapes and constraints - including for user defined functions (including the function arguments, function body, and function return type),
-* automatic posterior pointwise likelihood and predictive generation,
-* (variadic) user defined functions,
 * higher order (user defined) functions (such as `map`, `broadcasted`, `sum` and more),
+* (limited) dynamic dispatch - it's currently possible to dispatch on type (base type + number of dimensions), just the number of dimensions, and function argument types for higher order functions à la `f(::typeof(g)) = x`,
+* automatic extraction of shapes for user defined functions - define a function like `f(x::vector[n]) = ...` and `n` will be available in the function body,
 * sub models,
 * post-hoc model adjustment,
+* (variadic) user defined functions,
 * named tuples,
+* automatic posterior pointwise likelihood and predictive generation,
 * (approximate) automatic code formatting à la [Blue](https://github.com/JuliaDiff/BlueStyle),
 * and more.
 
@@ -21,10 +23,14 @@ Current features include
 Upcoming features include, in order of priority and estimated arrival,
 
 * easy runtime assertions (like Julia's `@assert`) - and support for other macros,
+* "transpile-time functions" - by which I mean functions which return e.g. the return type of a function call,
+* generated functions - functions for which the function body depends (programmatically) on the number and types of the passed arguments (like `map(f, args...)`),
 * model docstrings, 
 * custom types (for method dispatch - this would help with more "Julia-style" broadcasting, e.g. via `Ref`),
 * closures via Julia's [`Do-Block Syntax`](https://docs.julialang.org/en/v1/manual/functions/#Do-Block-Syntax-for-Function-Arguments) (to make within chain parallelization via [`reduce_sum`](https://mc-stan.org/docs/stan-users-guide/parallelization.html#reduce-sum) less painful),
 * lower transpilation runtimes (currently, transpilation can sometimes take longer than compilation - there is currently at least one algorithmic inefficiency on top of the systemic implementation inefficiency),
+* type annotations (acting like transpile time assertions),
+* automatic (runtime) checking of shape compatibility - define a function like `f(x::vector[n], y::vector[n]) = ...` and throw if the lengths do not agree,
 * a much better user experience,
 * more and better tests,
 * keyword arguments,
@@ -35,6 +41,7 @@ Upcoming features include, in order of priority and estimated arrival,
 * a more complete (and more correct) coverage of built-in Stan functions,
 * better name resolution (currently user defined functions or sub models have to be defined in `Main`),
 * functions that mutate their arguments (solved via inlining),
+* elimination of unused (size) variables in UDFs,
 * and more.
 
 Almost anything that's possible in Julia should be possible to be transpiled to Stan. 
