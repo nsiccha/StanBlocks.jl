@@ -1,0 +1,66 @@
+```{julia}
+using StanBlocks, QuartoComponents
+
+"Downloads and preprocesses the golf datasets"
+golf_data(url) = begin 
+    x, n, y = eachcol(mapreduce(row->(parse.(Float64, split(row))), hcat, filter(startswith(r"[0-9]"), readlines(download(url))))')
+    (;x, n=Int.(n), y=Int.(y))
+end
+
+# Fetch the first dataset
+dataset1 = golf_data("https://gist.githubusercontent.com/nsiccha/553d6ce6a784142e87fbfd7aaf4c5e99/raw/668b86ddd84b45b707e594dd313f717bef1a553d/dataset1.txt")
+
+# Fetch the second dataset
+dataset2 = golf_data("https://gist.githubusercontent.com/nsiccha/13fd14e1cc5e1520aa688c1f4df2f9a7/raw/726764870b46c72911e89668eef48a22a6c13035/dataset2.txt")
+
+# Combine the two datasets
+dataset12 = map(vcat, dataset1, dataset2)
+
+
+golf_logistic = @slic begin 
+    a ~ flat()
+    b ~ flat()
+    y ~ binomial_logit(n, a + b * x)
+end
+golf_angle = @slic begin 
+    threshold_angle = asin((R - r) ./ x)
+    sigma ~ flat(;lower=0)
+    p = 2 * Phi(threshold_angle / sigma) - 1
+    y ~ binomial(n, p)
+    sigma_degrees = sigma * 180 / pi
+end
+r = (1.68/2)/12
+R = (4.25/2)/12
+golf_angle_distance_2 = golf_angle(quote 
+    sigma ~ normal(0, 1; n=2, lower=0.)
+    sigma_angle = sigma[1]
+    sigma_distance = sigma[2]
+    p_angle = 2 * Phi(threshold_angle / sigma_angle) - 1
+    p_distance = (
+        Phi((distance_tolerance - overshot) ./ ((x + overshot) * sigma_distance))
+         - Phi((-overshot) ./ ((x + overshot) * sigma_distance))
+    )
+    p = p_angle .* p_distance
+    sigma_degrees = sigma_angle * 180 / pi
+end)
+
+overshot = 1.
+distance_tolerance = 3.
+golf_angle_distance_3_with_resids = golf_angle_distance_2(quote
+    vec_n = to_vector(n)
+    sigma_y ~ normal(0, 1)
+    y ~ normal(vec_n .* p, vec_n .* sqrt(p .* (1 - p) ./ to_vector(n) + sigma_y ^ 2))
+end)
+golf_angle_distance_4 = golf_angle_distance_2(quote 
+    overshot ~ normal(1, 5; lower=0)
+    distance_tolerance ~ normal(3, 5; lower=0)
+end)
+
+map(stan_code, (;
+    golf_logistic=golf_logistic(;dataset1...),
+    golf_angle=golf_angle(;r, R, dataset1...),
+    golf_angle_distance_2=golf_angle_distance_2(;r, R, overshot, distance_tolerance, dataset12...),
+    golf_angle_distance_3_with_resids=golf_angle_distance_3_with_resids(;r, R, overshot, distance_tolerance, dataset12...),
+    golf_angle_distance_4=golf_angle_distance_4(;r, R, overshot, distance_tolerance, dataset12...),
+))|> QuartoComponents.Tabset 
+```
