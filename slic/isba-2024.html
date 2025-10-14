@@ -257,7 +257,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <p><strong>A slightly more complex example</strong> would be the following:</p>
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb4"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb4-1"><a href="#cb4-1"></a><span class="fu">my_bernoulli_lpmf</span>(y, <span class="op">::</span><span class="dt">typeof</span>(logit), theta) <span class="op">=</span> <span class="fu">bernoulli_logit_lpmf</span>(y, theta)</span>
 <span id="cb4-2"><a href="#cb4-2"></a><span class="fu">my_bernoulli_lpmf</span>(y, <span class="op">::</span><span class="dt">typeof</span>(log), theta) <span class="op">=</span> <span class="fu">bernoulli_lpmf</span>(y, <span class="fu">exp</span>(theta))</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
-<p>which gets used to make the likelihood implementation depend on the link function of the model, allowing us * to forward <code>y</code> and <code>theta</code> to <code>bernoulli_logit_lpmf(y, theta)</code>, or * to forward <code>y</code> and <code>theta</code> to <code>bernoulli_lpmf(y, exp(theta))</code>.</p>
+<p>which gets used to make the likelihood implementation depend on the link function of the model, allowing us</p>
+<ul>
+<li>to forward <code>y</code> and <code>theta</code> to <code>bernoulli_logit_lpmf(y, theta)</code>, or</li>
+<li>to forward <code>y</code> and <code>theta</code> to <code>bernoulli_lpmf(y, exp(theta))</code>.</li>
+</ul>
 </section>
 <section id="untyped-or-abstractly-typed-arguments" class="level3">
 <h3 class="anchored" data-anchor-id="untyped-or-abstractly-typed-arguments">Untyped or abstractly typed arguments</h3>
@@ -2050,294 +2054,295 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb21-66"><a href="#cb21-66"></a><span class="fu">my_bernoulli_lpmf</span>(y, <span class="op">::</span><span class="dt">typeof</span>(log), theta) <span class="op">=</span> <span class="fu">bernoulli_lpmf</span>(y, <span class="fu">exp</span>(theta))</span>
 <span id="cb21-67"><a href="#cb21-67"></a><span class="in">```</span></span>
 <span id="cb21-68"><a href="#cb21-68"></a>which gets used to make the likelihood implementation depend on the link function of the model, allowing us </span>
-<span id="cb21-69"><a href="#cb21-69"></a><span class="ss">* </span>to forward <span class="in">`y`</span> and <span class="in">`theta`</span> to <span class="in">`bernoulli_logit_lpmf(y, theta)`</span>, or</span>
-<span id="cb21-70"><a href="#cb21-70"></a><span class="ss">* </span>to forward <span class="in">`y`</span> and <span class="in">`theta`</span> to <span class="in">`bernoulli_lpmf(y, exp(theta))`</span>.</span>
-<span id="cb21-71"><a href="#cb21-71"></a></span>
-<span id="cb21-72"><a href="#cb21-72"></a><span class="fu">### Untyped or abstractly typed arguments</span></span>
-<span id="cb21-73"><a href="#cb21-73"></a></span>
-<span id="cb21-74"><a href="#cb21-74"></a>Untyped function arguments are simply arguments for which we don't specify the type beforehand, allowing it to match any passed in type.</span>
-<span id="cb21-75"><a href="#cb21-75"></a>Do note that this can lead to <span class="co">[</span><span class="ot">"Method Ambiguities"</span><span class="co">](https://docs.julialang.org/en/v1/manual/methods/#man-ambiguities)</span> - something that cannot happen in Stan because you always have to specify the **concrete** types of all function arguments.</span>
-<span id="cb21-76"><a href="#cb21-76"></a><span class="co">[</span><span class="ot">StanBlocks.jl implements a limited abstract type hierarchy</span><span class="co">](https://github.com/nsiccha/StanBlocks.jl/blob/ab181eba40b5d2b7bbcf30cc283470df95b7d4bd/src/slic_stan/functions.jl#L1-L21)</span>, starting at the top with <span class="in">`anything`</span>, and e.g. descending towards <span class="in">`ordered`</span> as <span class="in">`anything -&gt; any_vector -&gt; vector -&gt; ordered`</span>.</span>
-<span id="cb21-77"><a href="#cb21-77"></a></span>
-<span id="cb21-78"><a href="#cb21-78"></a><span class="fu">## Full Julia + StanBlocks.jl code to define the models</span></span>
-<span id="cb21-79"><a href="#cb21-79"></a></span>
-<span id="cb21-80"><a href="#cb21-80"></a>The following reproduces all of the code necessary to implement the 2x5 model matrix (printing excluded):</span>
-<span id="cb21-81"><a href="#cb21-81"></a></span>
-<span id="cb21-82"><a href="#cb21-82"></a><span class="in">```julia</span></span>
-<span id="cb21-83"><a href="#cb21-83"></a><span class="im">using</span> <span class="bu">StanBlocks</span></span>
-<span id="cb21-84"><a href="#cb21-84"></a></span>
-<span id="cb21-85"><a href="#cb21-85"></a><span class="pp">@deffun</span> <span class="cf">begin</span> </span>
-<span id="cb21-86"><a href="#cb21-86"></a>    <span class="st">"Needed for cross validation"</span></span>
-<span id="cb21-87"><a href="#cb21-87"></a>    <span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>[n], args<span class="op">...</span>) <span class="op">=</span> <span class="fu">jbroadcasted</span>(my_bernoulli_lpmfs, y, args<span class="op">...</span>)</span>
-<span id="cb21-88"><a href="#cb21-88"></a>    <span class="st">"Needed for cross validation"</span></span>
-<span id="cb21-89"><a href="#cb21-89"></a>    <span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>, args<span class="op">...</span>) <span class="op">=</span> <span class="fu">my_bernoulli_lpmf</span>(y, args<span class="op">...</span>)</span>
-<span id="cb21-90"><a href="#cb21-90"></a>    <span class="st">"Needed to compute the joint likelihood"</span></span>
-<span id="cb21-91"><a href="#cb21-91"></a>    <span class="fu">my_bernoulli_lpmf</span>(y, <span class="op">::</span><span class="dt">typeof</span>(logit), theta) <span class="op">=</span> <span class="fu">bernoulli_logit_lpmf</span>(y, theta)</span>
-<span id="cb21-92"><a href="#cb21-92"></a>    <span class="st">"Needed for posterior predictions"</span></span>
-<span id="cb21-93"><a href="#cb21-93"></a>    <span class="fu">my_bernoulli_rng</span>(<span class="op">::</span><span class="dt">typeof</span>(logit), theta) <span class="op">=</span> <span class="fu">bernoulli_logit_rng</span>(theta)</span>
-<span id="cb21-94"><a href="#cb21-94"></a>    <span class="st">"Needed to compute the joint likelihood"</span></span>
-<span id="cb21-95"><a href="#cb21-95"></a>    <span class="fu">my_bernoulli_lpmf</span>(y, <span class="op">::</span><span class="dt">typeof</span>(log), theta) <span class="op">=</span> <span class="fu">bernoulli_lpmf</span>(y, <span class="fu">exp</span>(theta))</span>
-<span id="cb21-96"><a href="#cb21-96"></a>    <span class="st">"Needed for posterior predictions"</span></span>
-<span id="cb21-97"><a href="#cb21-97"></a>    <span class="fu">my_bernoulli_rng</span>(<span class="op">::</span><span class="dt">typeof</span>(log), theta) <span class="op">=</span> <span class="fu">bernoulli_rng</span>(<span class="fu">exp</span>(theta))</span>
-<span id="cb21-98"><a href="#cb21-98"></a></span>
-<span id="cb21-99"><a href="#cb21-99"></a>    <span class="st">"The `Hetero` prior density after constraining - common to both link functions"</span></span>
-<span id="cb21-100"><a href="#cb21-100"></a>    <span class="fu">hetero_lpdf</span>(x<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="fu">normal_lpdf</span>(x, <span class="fl">0</span>, <span class="fl">3</span>)</span>
-<span id="cb21-101"><a href="#cb21-101"></a>    <span class="st">"The `Hetero` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the logit link"</span></span>
-<span id="cb21-102"><a href="#cb21-102"></a>    <span class="fu">hetero_lpdf</span>(x<span class="op">::</span><span class="dt">ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(logit), n) <span class="op">=</span> <span class="fu">hetero_lpdf</span>(x)</span>
-<span id="cb21-103"><a href="#cb21-103"></a>    <span class="st">"The `Hetero` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the log link"</span></span>
-<span id="cb21-104"><a href="#cb21-104"></a>    <span class="fu">hetero_lpdf</span>(x<span class="op">::</span><span class="dt">positive_ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(log), n) <span class="op">=</span> <span class="fu">hetero_lpdf</span>(x)</span>
-<span id="cb21-105"><a href="#cb21-105"></a>    <span class="st">"The `RW(1)` prior density after constraining - common to both link functions"</span></span>
-<span id="cb21-106"><a href="#cb21-106"></a>    <span class="fu">rw1_lpdf</span>(x<span class="op">::</span><span class="dt">vector</span>[n], sigma) <span class="op">=</span> <span class="fu">normal_lpdf</span>(x[<span class="fl">1</span>], <span class="fl">0</span>, sigma) <span class="op">+</span> <span class="fu">normal_lpdf</span>(x[<span class="fl">2</span><span class="op">:</span>n], x[<span class="fl">1</span><span class="op">:</span>n<span class="op">-</span><span class="fl">1</span>], sigma)</span>
-<span id="cb21-107"><a href="#cb21-107"></a>    <span class="st">"The `RW(1)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the logit link"</span></span>
-<span id="cb21-108"><a href="#cb21-108"></a>    <span class="fu">rw1_lpdf</span>(x<span class="op">::</span><span class="dt">ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(logit), sigma, n) <span class="op">=</span> <span class="fu">rw1_lpdf</span>(x, sigma)</span>
-<span id="cb21-109"><a href="#cb21-109"></a>    <span class="st">"The `RW(1)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the log link"</span></span>
-<span id="cb21-110"><a href="#cb21-110"></a>    <span class="fu">rw1_lpdf</span>(x<span class="op">::</span><span class="dt">positive_ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(log), sigma, n) <span class="op">=</span> <span class="fu">rw1_lpdf</span>(x, sigma)</span>
-<span id="cb21-111"><a href="#cb21-111"></a>    <span class="st">"The `RW(2)` prior density after constraining - common to both link functions"</span></span>
-<span id="cb21-112"><a href="#cb21-112"></a>    <span class="fu">rw2_lpdf</span>(x<span class="op">::</span><span class="dt">vector</span>[n], sigma) <span class="op">=</span> <span class="fu">rw1_lpdf</span>(x[<span class="fl">1</span><span class="op">:</span><span class="fl">2</span>], sigma) <span class="op">+</span> <span class="fu">normal_lpdf</span>(x[<span class="fl">3</span><span class="op">:</span>n], <span class="fl">2</span>x[<span class="fl">2</span><span class="op">:</span>n<span class="op">-</span><span class="fl">1</span>] <span class="op">-</span> x[<span class="fl">1</span><span class="op">:</span>n<span class="op">-</span><span class="fl">2</span>], sigma)</span>
-<span id="cb21-113"><a href="#cb21-113"></a>    <span class="st">"The `RW(2)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the logit link"</span></span>
-<span id="cb21-114"><a href="#cb21-114"></a>    <span class="fu">rw2_lpdf</span>(x<span class="op">::</span><span class="dt">ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(logit), sigma, n) <span class="op">=</span> <span class="fu">rw2_lpdf</span>(x, sigma)</span>
-<span id="cb21-115"><a href="#cb21-115"></a>    <span class="st">"The `RW(2)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the log link"</span></span>
-<span id="cb21-116"><a href="#cb21-116"></a>    <span class="fu">rw2_lpdf</span>(x<span class="op">::</span><span class="dt">positive_ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(log), sigma, n) <span class="op">=</span> <span class="fu">rw2_lpdf</span>(x, sigma)</span>
-<span id="cb21-117"><a href="#cb21-117"></a>    <span class="st">"The upper bound of the alpha parameter (for the logit link function)"</span></span>
-<span id="cb21-118"><a href="#cb21-118"></a>    <span class="fu">upper_alpha</span>(<span class="op">::</span><span class="dt">typeof</span>(logit)) <span class="op">=</span> <span class="fu">negative_infinity</span>()</span>
-<span id="cb21-119"><a href="#cb21-119"></a>    <span class="st">"The upper bound of the alpha parameter (for the log link function)"</span></span>
-<span id="cb21-120"><a href="#cb21-120"></a>    <span class="fu">upper_alpha</span>(<span class="op">::</span><span class="dt">typeof</span>(log)) <span class="op">=</span> <span class="fl">0</span></span>
-<span id="cb21-121"><a href="#cb21-121"></a><span class="cf">end</span></span>
-<span id="cb21-122"><a href="#cb21-122"></a><span class="co"># The main things that StanBlocks.jl has to know is that `y` is an array of `int`s, and `t` is a vector.</span></span>
-<span id="cb21-123"><a href="#cb21-123"></a>mock_data <span class="op">=</span> (;y<span class="op">=</span>[<span class="fl">1</span>], t<span class="op">=</span>[<span class="fl">1</span>.])</span>
-<span id="cb21-124"><a href="#cb21-124"></a></span>
-<span id="cb21-125"><a href="#cb21-125"></a><span class="co"># The base model with the mock data attached - this does not yet have an implementation for theta </span></span>
-<span id="cb21-126"><a href="#cb21-126"></a>base_model <span class="op">=</span> <span class="pp">@slic</span> mock_data <span class="cf">begin</span> </span>
-<span id="cb21-127"><a href="#cb21-127"></a>    n <span class="op">=</span> <span class="fu">dims</span>(y)[<span class="fl">1</span>]</span>
-<span id="cb21-128"><a href="#cb21-128"></a>    <span class="st">"The exact implementation of the likelihood depends on the passed link function `link_f`"</span></span>
-<span id="cb21-129"><a href="#cb21-129"></a>    y <span class="op">~</span> <span class="fu">my_bernoulli</span>(link_f, theta)</span>
-<span id="cb21-130"><a href="#cb21-130"></a><span class="cf">end</span></span>
-<span id="cb21-131"><a href="#cb21-131"></a><span class="co"># The submodel for the `Hetero` models</span></span>
-<span id="cb21-132"><a href="#cb21-132"></a>centered_hetero <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
-<span id="cb21-133"><a href="#cb21-133"></a>    <span class="st">"The type of the `xi` parameter depends on the passed link function `link_f`"</span></span>
-<span id="cb21-134"><a href="#cb21-134"></a>    xi <span class="op">~</span> <span class="fu">hetero</span>(link_f, n)</span>
-<span id="cb21-135"><a href="#cb21-135"></a>    <span class="st">"The negation is needed to ensure that `theta` is in descending order"</span></span>
-<span id="cb21-136"><a href="#cb21-136"></a>    <span class="cf">return</span> <span class="op">-</span>xi</span>
-<span id="cb21-137"><a href="#cb21-137"></a><span class="cf">end</span></span>
-<span id="cb21-138"><a href="#cb21-138"></a><span class="co"># The submodel for the `RW(1)` models</span></span>
-<span id="cb21-139"><a href="#cb21-139"></a>centered_rw1 <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
-<span id="cb21-140"><a href="#cb21-140"></a>    sigma <span class="op">~</span> <span class="fu">std_normal</span>(;lower<span class="op">=</span><span class="fl">0</span>)</span>
-<span id="cb21-141"><a href="#cb21-141"></a>    <span class="st">"The type of the `xi` parameter depends on the passed link function `link_f`"</span></span>
-<span id="cb21-142"><a href="#cb21-142"></a>    xi <span class="op">~</span> <span class="fu">rw1</span>(link_f, sigma, n)</span>
-<span id="cb21-143"><a href="#cb21-143"></a>    <span class="st">"The negation is needed to ensure that `theta` is in descending order"</span></span>
-<span id="cb21-144"><a href="#cb21-144"></a>    <span class="cf">return</span> <span class="op">-</span>xi</span>
-<span id="cb21-145"><a href="#cb21-145"></a><span class="cf">end</span></span>
-<span id="cb21-146"><a href="#cb21-146"></a><span class="co"># The submodel for the `RW(2)` models</span></span>
-<span id="cb21-147"><a href="#cb21-147"></a>centered_rw2 <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
-<span id="cb21-148"><a href="#cb21-148"></a>    sigma <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">.5</span>; lower<span class="op">=</span><span class="fl">0</span>)</span>
-<span id="cb21-149"><a href="#cb21-149"></a>    <span class="st">"The type of the `xi` parameter depends on the passed link function `link_f`"</span></span>
-<span id="cb21-150"><a href="#cb21-150"></a>    xi <span class="op">~</span> <span class="fu">rw2</span>(link_f, sigma, n)</span>
-<span id="cb21-151"><a href="#cb21-151"></a>    <span class="st">"The negation is needed to ensure that `theta` is in descending order"</span></span>
-<span id="cb21-152"><a href="#cb21-152"></a>    <span class="cf">return</span> <span class="op">-</span>xi</span>
-<span id="cb21-153"><a href="#cb21-153"></a><span class="cf">end</span></span>
-<span id="cb21-154"><a href="#cb21-154"></a><span class="co"># The submodel for the `regression` models - reused in the `regression_mix` models</span></span>
-<span id="cb21-155"><a href="#cb21-155"></a>regression <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
-<span id="cb21-156"><a href="#cb21-156"></a>    <span class="st">"The upper bound of alpha `alpha_upper` depends on the link function `link_f`"</span></span>
-<span id="cb21-157"><a href="#cb21-157"></a>    alpha_upper <span class="op">=</span> <span class="fu">upper_alpha</span>(link_f)</span>
-<span id="cb21-158"><a href="#cb21-158"></a>    <span class="co"># This could be `alpha ~ normal(0, .5; upper=upper_alpha(link_f))`, once https://github.com/nsiccha/StanBlocks.jl/issues/35 is fixed</span></span>
-<span id="cb21-159"><a href="#cb21-159"></a>    alpha <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">.5</span>; upper<span class="op">=</span>alpha_upper)</span>
-<span id="cb21-160"><a href="#cb21-160"></a>    beta <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">.5</span>; upper<span class="op">=</span><span class="fl">0</span>.)</span>
-<span id="cb21-161"><a href="#cb21-161"></a>    <span class="cf">return</span> alpha <span class="op">+</span> beta <span class="op">*</span> t</span>
-<span id="cb21-162"><a href="#cb21-162"></a><span class="cf">end</span></span>
-<span id="cb21-163"><a href="#cb21-163"></a><span class="co"># The submodel for the `regression_mix` models - reusing the `regression` submodel</span></span>
-<span id="cb21-164"><a href="#cb21-164"></a>regression_mix <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
-<span id="cb21-165"><a href="#cb21-165"></a>    c1 <span class="op">~</span> <span class="fu">regression</span>(;link_f, t) </span>
-<span id="cb21-166"><a href="#cb21-166"></a>    c2 <span class="op">~</span> <span class="fu">regression</span>(;link_f, t)</span>
-<span id="cb21-167"><a href="#cb21-167"></a>    lambda <span class="op">~</span> <span class="fu">beta</span>(<span class="fl">2</span>, <span class="fl">2</span>)</span>
-<span id="cb21-168"><a href="#cb21-168"></a>    <span class="cf">return</span> lambda <span class="op">*</span> <span class="fu">link_f</span>(c1) <span class="op">+</span> (<span class="fl">1</span><span class="op">-</span>lambda) <span class="op">*</span> <span class="fu">link_f</span>(c2)</span>
-<span id="cb21-169"><a href="#cb21-169"></a><span class="cf">end</span></span>
-<span id="cb21-170"><a href="#cb21-170"></a></span>
-<span id="cb21-171"><a href="#cb21-171"></a>bases <span class="op">=</span> (;</span>
-<span id="cb21-172"><a href="#cb21-172"></a>    hetero<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
-<span id="cb21-173"><a href="#cb21-173"></a>        theta <span class="op">~</span> <span class="fu">centered_hetero</span>(;link_f, n)</span>
-<span id="cb21-174"><a href="#cb21-174"></a>    <span class="kw">end</span>),</span>
-<span id="cb21-175"><a href="#cb21-175"></a>    rw1<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
-<span id="cb21-176"><a href="#cb21-176"></a>        theta <span class="op">~</span> <span class="fu">centered_rw1</span>(;link_f, n)</span>
-<span id="cb21-177"><a href="#cb21-177"></a>    <span class="kw">end</span>),</span>
-<span id="cb21-178"><a href="#cb21-178"></a>    rw2<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
-<span id="cb21-179"><a href="#cb21-179"></a>        theta <span class="op">~</span> <span class="fu">centered_rw2</span>(;link_f, n)</span>
-<span id="cb21-180"><a href="#cb21-180"></a>    <span class="kw">end</span>),</span>
-<span id="cb21-181"><a href="#cb21-181"></a>    regression<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
-<span id="cb21-182"><a href="#cb21-182"></a>        theta <span class="op">~</span> <span class="fu">regression</span>(;link_f, t)</span>
-<span id="cb21-183"><a href="#cb21-183"></a>    <span class="kw">end</span>),</span>
-<span id="cb21-184"><a href="#cb21-184"></a>    regression_mix<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
-<span id="cb21-185"><a href="#cb21-185"></a>        theta <span class="op">~</span> <span class="fu">regression</span>(;link_f, t)</span>
-<span id="cb21-186"><a href="#cb21-186"></a>        y <span class="op">~</span> <span class="fu">bernoulli</span>(theta)</span>
-<span id="cb21-187"><a href="#cb21-187"></a>    <span class="kw">end</span>)</span>
-<span id="cb21-188"><a href="#cb21-188"></a>)</span>
-<span id="cb21-189"><a href="#cb21-189"></a>link_fs <span class="op">=</span> (;logit, log)</span>
-<span id="cb21-190"><a href="#cb21-190"></a></span>
-<span id="cb21-191"><a href="#cb21-191"></a>posteriors <span class="op">=</span> <span class="fu">map</span>(bases) <span class="cf">do</span> base </span>
-<span id="cb21-192"><a href="#cb21-192"></a>    <span class="fu">map</span>(link_fs) <span class="cf">do</span> link_f </span>
-<span id="cb21-193"><a href="#cb21-193"></a>        <span class="fu">base</span>(;link_f)</span>
-<span id="cb21-194"><a href="#cb21-194"></a>    <span class="cf">end</span></span>
-<span id="cb21-195"><a href="#cb21-195"></a><span class="cf">end</span></span>
-<span id="cb21-196"><a href="#cb21-196"></a><span class="in">```</span></span>
-<span id="cb21-197"><a href="#cb21-197"></a></span>
-<span id="cb21-198"><a href="#cb21-198"></a><span class="fu">## Generated Stan code</span></span>
-<span id="cb21-199"><a href="#cb21-199"></a></span>
-<span id="cb21-200"><a href="#cb21-200"></a>The generated Stan code below is accessible via two nested tabsets. </span>
-<span id="cb21-201"><a href="#cb21-201"></a>The top level (with keys <span class="in">`hetero`</span>, <span class="in">`rw1`</span>, <span class="in">`rw2`</span>, <span class="in">`regression`</span>, and <span class="in">`regression_mix`</span>) </span>
-<span id="cb21-202"><a href="#cb21-202"></a>combines with the link function in the second level (with keys <span class="in">`logit`</span> and <span class="in">`log`</span>)</span>
-<span id="cb21-203"><a href="#cb21-203"></a>to give you access to the corresponding Stan models from the poster.</span>
-<span id="cb21-204"><a href="#cb21-204"></a></span>
-<span id="cb21-207"><a href="#cb21-207"></a><span class="in">```{julia}</span></span>
-<span id="cb21-208"><a href="#cb21-208"></a><span class="im">using</span> <span class="bu">StanBlocks</span>, <span class="bu">QuartoComponents</span></span>
-<span id="cb21-209"><a href="#cb21-209"></a></span>
-<span id="cb21-210"><a href="#cb21-210"></a><span class="pp">@deffun</span> <span class="cf">begin</span> </span>
-<span id="cb21-211"><a href="#cb21-211"></a>    <span class="st">"Needed for cross validation"</span></span>
-<span id="cb21-212"><a href="#cb21-212"></a>    <span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>[n], args<span class="op">...</span>) <span class="op">=</span> <span class="fu">jbroadcasted</span>(my_bernoulli_lpmfs, y, args<span class="op">...</span>)</span>
-<span id="cb21-213"><a href="#cb21-213"></a>    <span class="st">"Needed for cross validation"</span></span>
-<span id="cb21-214"><a href="#cb21-214"></a>    <span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>, args<span class="op">...</span>) <span class="op">=</span> <span class="fu">my_bernoulli_lpmf</span>(y, args<span class="op">...</span>)</span>
-<span id="cb21-215"><a href="#cb21-215"></a>    <span class="st">"Needed to compute the joint likelihood"</span></span>
-<span id="cb21-216"><a href="#cb21-216"></a>    <span class="fu">my_bernoulli_lpmf</span>(y, <span class="op">::</span><span class="dt">typeof</span>(logit), theta) <span class="op">=</span> <span class="fu">bernoulli_logit_lpmf</span>(y, theta)</span>
-<span id="cb21-217"><a href="#cb21-217"></a>    <span class="st">"Needed for posterior predictions"</span></span>
-<span id="cb21-218"><a href="#cb21-218"></a>    <span class="fu">my_bernoulli_rng</span>(<span class="op">::</span><span class="dt">typeof</span>(logit), theta) <span class="op">=</span> <span class="fu">bernoulli_logit_rng</span>(theta)</span>
-<span id="cb21-219"><a href="#cb21-219"></a>    <span class="st">"Needed to compute the joint likelihood"</span></span>
-<span id="cb21-220"><a href="#cb21-220"></a>    <span class="fu">my_bernoulli_lpmf</span>(y, <span class="op">::</span><span class="dt">typeof</span>(log), theta) <span class="op">=</span> <span class="fu">bernoulli_lpmf</span>(y, <span class="fu">exp</span>(theta))</span>
-<span id="cb21-221"><a href="#cb21-221"></a>    <span class="st">"Needed for posterior predictions"</span></span>
-<span id="cb21-222"><a href="#cb21-222"></a>    <span class="fu">my_bernoulli_rng</span>(<span class="op">::</span><span class="dt">typeof</span>(log), theta) <span class="op">=</span> <span class="fu">bernoulli_rng</span>(<span class="fu">exp</span>(theta))</span>
-<span id="cb21-223"><a href="#cb21-223"></a></span>
-<span id="cb21-224"><a href="#cb21-224"></a>    <span class="st">"The `Hetero` prior density after constraining - common to both link functions"</span></span>
-<span id="cb21-225"><a href="#cb21-225"></a>    <span class="fu">hetero_lpdf</span>(x<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="fu">normal_lpdf</span>(x, <span class="fl">0</span>, <span class="fl">3</span>)</span>
-<span id="cb21-226"><a href="#cb21-226"></a>    <span class="st">"The `Hetero` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the logit link"</span></span>
-<span id="cb21-227"><a href="#cb21-227"></a>    <span class="fu">hetero_lpdf</span>(x<span class="op">::</span><span class="dt">ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(logit), n) <span class="op">=</span> <span class="fu">hetero_lpdf</span>(x)</span>
-<span id="cb21-228"><a href="#cb21-228"></a>    <span class="st">"The `Hetero` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the log link"</span></span>
-<span id="cb21-229"><a href="#cb21-229"></a>    <span class="fu">hetero_lpdf</span>(x<span class="op">::</span><span class="dt">positive_ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(log), n) <span class="op">=</span> <span class="fu">hetero_lpdf</span>(x)</span>
-<span id="cb21-230"><a href="#cb21-230"></a>    <span class="st">"The `RW(1)` prior density after constraining - common to both link functions"</span></span>
-<span id="cb21-231"><a href="#cb21-231"></a>    <span class="fu">rw1_lpdf</span>(x<span class="op">::</span><span class="dt">vector</span>[n], sigma) <span class="op">=</span> <span class="fu">normal_lpdf</span>(x[<span class="fl">1</span>], <span class="fl">0</span>, sigma) <span class="op">+</span> <span class="fu">normal_lpdf</span>(x[<span class="fl">2</span><span class="op">:</span>n], x[<span class="fl">1</span><span class="op">:</span>n<span class="op">-</span><span class="fl">1</span>], sigma)</span>
-<span id="cb21-232"><a href="#cb21-232"></a>    <span class="st">"The `RW(1)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the logit link"</span></span>
-<span id="cb21-233"><a href="#cb21-233"></a>    <span class="fu">rw1_lpdf</span>(x<span class="op">::</span><span class="dt">ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(logit), sigma, n) <span class="op">=</span> <span class="fu">rw1_lpdf</span>(x, sigma)</span>
-<span id="cb21-234"><a href="#cb21-234"></a>    <span class="st">"The `RW(1)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the log link"</span></span>
-<span id="cb21-235"><a href="#cb21-235"></a>    <span class="fu">rw1_lpdf</span>(x<span class="op">::</span><span class="dt">positive_ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(log), sigma, n) <span class="op">=</span> <span class="fu">rw1_lpdf</span>(x, sigma)</span>
-<span id="cb21-236"><a href="#cb21-236"></a>    <span class="st">"The `RW(2)` prior density after constraining - common to both link functions"</span></span>
-<span id="cb21-237"><a href="#cb21-237"></a>    <span class="fu">rw2_lpdf</span>(x<span class="op">::</span><span class="dt">vector</span>[n], sigma) <span class="op">=</span> <span class="fu">rw1_lpdf</span>(x[<span class="fl">1</span><span class="op">:</span><span class="fl">2</span>], sigma) <span class="op">+</span> <span class="fu">normal_lpdf</span>(x[<span class="fl">3</span><span class="op">:</span>n], <span class="fl">2</span>x[<span class="fl">2</span><span class="op">:</span>n<span class="op">-</span><span class="fl">1</span>] <span class="op">-</span> x[<span class="fl">1</span><span class="op">:</span>n<span class="op">-</span><span class="fl">2</span>], sigma)</span>
-<span id="cb21-238"><a href="#cb21-238"></a>    <span class="st">"The `RW(2)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the logit link"</span></span>
-<span id="cb21-239"><a href="#cb21-239"></a>    <span class="fu">rw2_lpdf</span>(x<span class="op">::</span><span class="dt">ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(logit), sigma, n) <span class="op">=</span> <span class="fu">rw2_lpdf</span>(x, sigma)</span>
-<span id="cb21-240"><a href="#cb21-240"></a>    <span class="st">"The `RW(2)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the log link"</span></span>
-<span id="cb21-241"><a href="#cb21-241"></a>    <span class="fu">rw2_lpdf</span>(x<span class="op">::</span><span class="dt">positive_ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(log), sigma, n) <span class="op">=</span> <span class="fu">rw2_lpdf</span>(x, sigma)</span>
-<span id="cb21-242"><a href="#cb21-242"></a>    <span class="st">"The upper bound of the alpha parameter (for the logit link function)"</span></span>
-<span id="cb21-243"><a href="#cb21-243"></a>    <span class="fu">upper_alpha</span>(<span class="op">::</span><span class="dt">typeof</span>(logit)) <span class="op">=</span> <span class="fu">negative_infinity</span>()</span>
-<span id="cb21-244"><a href="#cb21-244"></a>    <span class="st">"The upper bound of the alpha parameter (for the log link function)"</span></span>
-<span id="cb21-245"><a href="#cb21-245"></a>    <span class="fu">upper_alpha</span>(<span class="op">::</span><span class="dt">typeof</span>(log)) <span class="op">=</span> <span class="fl">0</span></span>
-<span id="cb21-246"><a href="#cb21-246"></a><span class="cf">end</span></span>
-<span id="cb21-247"><a href="#cb21-247"></a><span class="co"># The main things that StanBlocks.jl has to know is that `y` is an array of `int`s, and `t` is a vector.</span></span>
-<span id="cb21-248"><a href="#cb21-248"></a>mock_data <span class="op">=</span> (;y<span class="op">=</span>[<span class="fl">1</span>], t<span class="op">=</span>[<span class="fl">1</span>.])</span>
-<span id="cb21-249"><a href="#cb21-249"></a></span>
-<span id="cb21-250"><a href="#cb21-250"></a><span class="co"># The base model with the mock data attached - this does not yet have an implementation for theta </span></span>
-<span id="cb21-251"><a href="#cb21-251"></a>base_model <span class="op">=</span> <span class="pp">@slic</span> mock_data <span class="cf">begin</span> </span>
-<span id="cb21-252"><a href="#cb21-252"></a>    n <span class="op">=</span> <span class="fu">dims</span>(y)[<span class="fl">1</span>]</span>
-<span id="cb21-253"><a href="#cb21-253"></a>    <span class="st">"The exact implementation of the likelihood depends on the passed link function `link_f`"</span></span>
-<span id="cb21-254"><a href="#cb21-254"></a>    y <span class="op">~</span> <span class="fu">my_bernoulli</span>(link_f, theta)</span>
-<span id="cb21-255"><a href="#cb21-255"></a><span class="cf">end</span></span>
-<span id="cb21-256"><a href="#cb21-256"></a><span class="co"># The submodel for the `Hetero` models</span></span>
-<span id="cb21-257"><a href="#cb21-257"></a>centered_hetero <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
-<span id="cb21-258"><a href="#cb21-258"></a>    <span class="st">"The type of the `xi` parameter depends on the passed link function `link_f`"</span></span>
-<span id="cb21-259"><a href="#cb21-259"></a>    xi <span class="op">~</span> <span class="fu">hetero</span>(link_f, n)</span>
-<span id="cb21-260"><a href="#cb21-260"></a>    <span class="st">"The negation is needed to ensure that `theta` is in descending order"</span></span>
-<span id="cb21-261"><a href="#cb21-261"></a>    <span class="cf">return</span> <span class="op">-</span>xi</span>
-<span id="cb21-262"><a href="#cb21-262"></a><span class="cf">end</span></span>
-<span id="cb21-263"><a href="#cb21-263"></a><span class="co"># The submodel for the `RW(1)` models</span></span>
-<span id="cb21-264"><a href="#cb21-264"></a>centered_rw1 <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
-<span id="cb21-265"><a href="#cb21-265"></a>    sigma <span class="op">~</span> <span class="fu">std_normal</span>(;lower<span class="op">=</span><span class="fl">0</span>)</span>
-<span id="cb21-266"><a href="#cb21-266"></a>    <span class="st">"The type of the `xi` parameter depends on the passed link function `link_f`"</span></span>
-<span id="cb21-267"><a href="#cb21-267"></a>    xi <span class="op">~</span> <span class="fu">rw1</span>(link_f, sigma, n)</span>
-<span id="cb21-268"><a href="#cb21-268"></a>    <span class="st">"The negation is needed to ensure that `theta` is in descending order"</span></span>
-<span id="cb21-269"><a href="#cb21-269"></a>    <span class="cf">return</span> <span class="op">-</span>xi</span>
-<span id="cb21-270"><a href="#cb21-270"></a><span class="cf">end</span></span>
-<span id="cb21-271"><a href="#cb21-271"></a><span class="co"># The submodel for the `RW(2)` models</span></span>
-<span id="cb21-272"><a href="#cb21-272"></a>centered_rw2 <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
-<span id="cb21-273"><a href="#cb21-273"></a>    sigma <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">.5</span>; lower<span class="op">=</span><span class="fl">0</span>)</span>
-<span id="cb21-274"><a href="#cb21-274"></a>    <span class="st">"The type of the `xi` parameter depends on the passed link function `link_f`"</span></span>
-<span id="cb21-275"><a href="#cb21-275"></a>    xi <span class="op">~</span> <span class="fu">rw2</span>(link_f, sigma, n)</span>
-<span id="cb21-276"><a href="#cb21-276"></a>    <span class="st">"The negation is needed to ensure that `theta` is in descending order"</span></span>
-<span id="cb21-277"><a href="#cb21-277"></a>    <span class="cf">return</span> <span class="op">-</span>xi</span>
-<span id="cb21-278"><a href="#cb21-278"></a><span class="cf">end</span></span>
-<span id="cb21-279"><a href="#cb21-279"></a><span class="co"># The submodel for the `regression` models - reused in the `regression_mix` models</span></span>
-<span id="cb21-280"><a href="#cb21-280"></a>regression <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
-<span id="cb21-281"><a href="#cb21-281"></a>    <span class="st">"The upper bound of alpha `alpha_upper` depends on the link function `link_f`"</span></span>
-<span id="cb21-282"><a href="#cb21-282"></a>    alpha_upper <span class="op">=</span> <span class="fu">upper_alpha</span>(link_f)</span>
-<span id="cb21-283"><a href="#cb21-283"></a>    <span class="co"># This could be `alpha ~ normal(0, .5; upper=upper_alpha(link_f))`, once https://github.com/nsiccha/StanBlocks.jl/issues/35 is fixed</span></span>
-<span id="cb21-284"><a href="#cb21-284"></a>    alpha <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">.5</span>; upper<span class="op">=</span>alpha_upper)</span>
-<span id="cb21-285"><a href="#cb21-285"></a>    beta <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">.5</span>; upper<span class="op">=</span><span class="fl">0</span>.)</span>
-<span id="cb21-286"><a href="#cb21-286"></a>    <span class="cf">return</span> alpha <span class="op">+</span> beta <span class="op">*</span> t</span>
-<span id="cb21-287"><a href="#cb21-287"></a><span class="cf">end</span></span>
-<span id="cb21-288"><a href="#cb21-288"></a><span class="co"># The submodel for the `regression_mix` models - reusing the `regression` submodel</span></span>
-<span id="cb21-289"><a href="#cb21-289"></a>regression_mix <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
-<span id="cb21-290"><a href="#cb21-290"></a>    c1 <span class="op">~</span> <span class="fu">regression</span>(;link_f, t) </span>
-<span id="cb21-291"><a href="#cb21-291"></a>    c2 <span class="op">~</span> <span class="fu">regression</span>(;link_f, t)</span>
-<span id="cb21-292"><a href="#cb21-292"></a>    lambda <span class="op">~</span> <span class="fu">beta</span>(<span class="fl">2</span>, <span class="fl">2</span>)</span>
-<span id="cb21-293"><a href="#cb21-293"></a>    <span class="cf">return</span> lambda <span class="op">*</span> <span class="fu">link_f</span>(c1) <span class="op">+</span> (<span class="fl">1</span><span class="op">-</span>lambda) <span class="op">*</span> <span class="fu">link_f</span>(c2)</span>
-<span id="cb21-294"><a href="#cb21-294"></a><span class="cf">end</span></span>
-<span id="cb21-295"><a href="#cb21-295"></a></span>
-<span id="cb21-296"><a href="#cb21-296"></a>bases <span class="op">=</span> (;</span>
-<span id="cb21-297"><a href="#cb21-297"></a>    hetero<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
-<span id="cb21-298"><a href="#cb21-298"></a>        theta <span class="op">~</span> <span class="fu">centered_hetero</span>(;link_f, n)</span>
-<span id="cb21-299"><a href="#cb21-299"></a>    <span class="kw">end</span>),</span>
-<span id="cb21-300"><a href="#cb21-300"></a>    rw1<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
-<span id="cb21-301"><a href="#cb21-301"></a>        theta <span class="op">~</span> <span class="fu">centered_rw1</span>(;link_f, n)</span>
-<span id="cb21-302"><a href="#cb21-302"></a>    <span class="kw">end</span>),</span>
-<span id="cb21-303"><a href="#cb21-303"></a>    rw2<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
-<span id="cb21-304"><a href="#cb21-304"></a>        theta <span class="op">~</span> <span class="fu">centered_rw2</span>(;link_f, n)</span>
-<span id="cb21-305"><a href="#cb21-305"></a>    <span class="kw">end</span>),</span>
-<span id="cb21-306"><a href="#cb21-306"></a>    regression<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
-<span id="cb21-307"><a href="#cb21-307"></a>        theta <span class="op">~</span> <span class="fu">regression</span>(;link_f, t)</span>
-<span id="cb21-308"><a href="#cb21-308"></a>    <span class="kw">end</span>),</span>
-<span id="cb21-309"><a href="#cb21-309"></a>    regression_mix<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
-<span id="cb21-310"><a href="#cb21-310"></a>        theta <span class="op">~</span> <span class="fu">regression</span>(;link_f, t)</span>
-<span id="cb21-311"><a href="#cb21-311"></a>        y <span class="op">~</span> <span class="fu">bernoulli</span>(theta)</span>
-<span id="cb21-312"><a href="#cb21-312"></a>    <span class="kw">end</span>)</span>
-<span id="cb21-313"><a href="#cb21-313"></a>)</span>
-<span id="cb21-314"><a href="#cb21-314"></a>link_fs <span class="op">=</span> (;logit, log)</span>
-<span id="cb21-315"><a href="#cb21-315"></a></span>
-<span id="cb21-316"><a href="#cb21-316"></a>posteriors <span class="op">=</span> <span class="fu">map</span>(bases) <span class="cf">do</span> base </span>
-<span id="cb21-317"><a href="#cb21-317"></a>    <span class="fu">map</span>(link_fs) <span class="cf">do</span> link_f </span>
-<span id="cb21-318"><a href="#cb21-318"></a>        <span class="fu">base</span>(;link_f)</span>
-<span id="cb21-319"><a href="#cb21-319"></a>    <span class="cf">end</span></span>
-<span id="cb21-320"><a href="#cb21-320"></a><span class="cf">end</span></span>
-<span id="cb21-321"><a href="#cb21-321"></a></span>
-<span id="cb21-322"><a href="#cb21-322"></a>tabsets <span class="op">=</span> <span class="fu">map</span>(posteriors) <span class="cf">do</span> subposteriors </span>
-<span id="cb21-323"><a href="#cb21-323"></a>    <span class="fu">map</span>(subposteriors) <span class="cf">do</span> posterior </span>
-<span id="cb21-324"><a href="#cb21-324"></a>        QuartoComponents.<span class="fu">Code</span>(<span class="st">"stan"</span>, <span class="fu">stan_code</span>(posterior))</span>
-<span id="cb21-325"><a href="#cb21-325"></a>    <span class="cf">end</span> <span class="op">|&gt;</span> QuartoComponents.Tabset</span>
-<span id="cb21-326"><a href="#cb21-326"></a><span class="cf">end</span> <span class="op">|&gt;</span> QuartoComponents.Tabset</span>
-<span id="cb21-327"><a href="#cb21-327"></a></span>
+<span id="cb21-69"><a href="#cb21-69"></a></span>
+<span id="cb21-70"><a href="#cb21-70"></a><span class="ss">* </span>to forward <span class="in">`y`</span> and <span class="in">`theta`</span> to <span class="in">`bernoulli_logit_lpmf(y, theta)`</span>, or</span>
+<span id="cb21-71"><a href="#cb21-71"></a><span class="ss">* </span>to forward <span class="in">`y`</span> and <span class="in">`theta`</span> to <span class="in">`bernoulli_lpmf(y, exp(theta))`</span>.</span>
+<span id="cb21-72"><a href="#cb21-72"></a></span>
+<span id="cb21-73"><a href="#cb21-73"></a><span class="fu">### Untyped or abstractly typed arguments</span></span>
+<span id="cb21-74"><a href="#cb21-74"></a></span>
+<span id="cb21-75"><a href="#cb21-75"></a>Untyped function arguments are simply arguments for which we don't specify the type beforehand, allowing it to match any passed in type.</span>
+<span id="cb21-76"><a href="#cb21-76"></a>Do note that this can lead to <span class="co">[</span><span class="ot">"Method Ambiguities"</span><span class="co">](https://docs.julialang.org/en/v1/manual/methods/#man-ambiguities)</span> - something that cannot happen in Stan because you always have to specify the **concrete** types of all function arguments.</span>
+<span id="cb21-77"><a href="#cb21-77"></a><span class="co">[</span><span class="ot">StanBlocks.jl implements a limited abstract type hierarchy</span><span class="co">](https://github.com/nsiccha/StanBlocks.jl/blob/ab181eba40b5d2b7bbcf30cc283470df95b7d4bd/src/slic_stan/functions.jl#L1-L21)</span>, starting at the top with <span class="in">`anything`</span>, and e.g. descending towards <span class="in">`ordered`</span> as <span class="in">`anything -&gt; any_vector -&gt; vector -&gt; ordered`</span>.</span>
+<span id="cb21-78"><a href="#cb21-78"></a></span>
+<span id="cb21-79"><a href="#cb21-79"></a><span class="fu">## Full Julia + StanBlocks.jl code to define the models</span></span>
+<span id="cb21-80"><a href="#cb21-80"></a></span>
+<span id="cb21-81"><a href="#cb21-81"></a>The following reproduces all of the code necessary to implement the 2x5 model matrix (printing excluded):</span>
+<span id="cb21-82"><a href="#cb21-82"></a></span>
+<span id="cb21-83"><a href="#cb21-83"></a><span class="in">```julia</span></span>
+<span id="cb21-84"><a href="#cb21-84"></a><span class="im">using</span> <span class="bu">StanBlocks</span></span>
+<span id="cb21-85"><a href="#cb21-85"></a></span>
+<span id="cb21-86"><a href="#cb21-86"></a><span class="pp">@deffun</span> <span class="cf">begin</span> </span>
+<span id="cb21-87"><a href="#cb21-87"></a>    <span class="st">"Needed for cross validation"</span></span>
+<span id="cb21-88"><a href="#cb21-88"></a>    <span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>[n], args<span class="op">...</span>) <span class="op">=</span> <span class="fu">jbroadcasted</span>(my_bernoulli_lpmfs, y, args<span class="op">...</span>)</span>
+<span id="cb21-89"><a href="#cb21-89"></a>    <span class="st">"Needed for cross validation"</span></span>
+<span id="cb21-90"><a href="#cb21-90"></a>    <span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>, args<span class="op">...</span>) <span class="op">=</span> <span class="fu">my_bernoulli_lpmf</span>(y, args<span class="op">...</span>)</span>
+<span id="cb21-91"><a href="#cb21-91"></a>    <span class="st">"Needed to compute the joint likelihood"</span></span>
+<span id="cb21-92"><a href="#cb21-92"></a>    <span class="fu">my_bernoulli_lpmf</span>(y, <span class="op">::</span><span class="dt">typeof</span>(logit), theta) <span class="op">=</span> <span class="fu">bernoulli_logit_lpmf</span>(y, theta)</span>
+<span id="cb21-93"><a href="#cb21-93"></a>    <span class="st">"Needed for posterior predictions"</span></span>
+<span id="cb21-94"><a href="#cb21-94"></a>    <span class="fu">my_bernoulli_rng</span>(<span class="op">::</span><span class="dt">typeof</span>(logit), theta) <span class="op">=</span> <span class="fu">bernoulli_logit_rng</span>(theta)</span>
+<span id="cb21-95"><a href="#cb21-95"></a>    <span class="st">"Needed to compute the joint likelihood"</span></span>
+<span id="cb21-96"><a href="#cb21-96"></a>    <span class="fu">my_bernoulli_lpmf</span>(y, <span class="op">::</span><span class="dt">typeof</span>(log), theta) <span class="op">=</span> <span class="fu">bernoulli_lpmf</span>(y, <span class="fu">exp</span>(theta))</span>
+<span id="cb21-97"><a href="#cb21-97"></a>    <span class="st">"Needed for posterior predictions"</span></span>
+<span id="cb21-98"><a href="#cb21-98"></a>    <span class="fu">my_bernoulli_rng</span>(<span class="op">::</span><span class="dt">typeof</span>(log), theta) <span class="op">=</span> <span class="fu">bernoulli_rng</span>(<span class="fu">exp</span>(theta))</span>
+<span id="cb21-99"><a href="#cb21-99"></a></span>
+<span id="cb21-100"><a href="#cb21-100"></a>    <span class="st">"The `Hetero` prior density after constraining - common to both link functions"</span></span>
+<span id="cb21-101"><a href="#cb21-101"></a>    <span class="fu">hetero_lpdf</span>(x<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="fu">normal_lpdf</span>(x, <span class="fl">0</span>, <span class="fl">3</span>)</span>
+<span id="cb21-102"><a href="#cb21-102"></a>    <span class="st">"The `Hetero` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the logit link"</span></span>
+<span id="cb21-103"><a href="#cb21-103"></a>    <span class="fu">hetero_lpdf</span>(x<span class="op">::</span><span class="dt">ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(logit), n) <span class="op">=</span> <span class="fu">hetero_lpdf</span>(x)</span>
+<span id="cb21-104"><a href="#cb21-104"></a>    <span class="st">"The `Hetero` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the log link"</span></span>
+<span id="cb21-105"><a href="#cb21-105"></a>    <span class="fu">hetero_lpdf</span>(x<span class="op">::</span><span class="dt">positive_ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(log), n) <span class="op">=</span> <span class="fu">hetero_lpdf</span>(x)</span>
+<span id="cb21-106"><a href="#cb21-106"></a>    <span class="st">"The `RW(1)` prior density after constraining - common to both link functions"</span></span>
+<span id="cb21-107"><a href="#cb21-107"></a>    <span class="fu">rw1_lpdf</span>(x<span class="op">::</span><span class="dt">vector</span>[n], sigma) <span class="op">=</span> <span class="fu">normal_lpdf</span>(x[<span class="fl">1</span>], <span class="fl">0</span>, sigma) <span class="op">+</span> <span class="fu">normal_lpdf</span>(x[<span class="fl">2</span><span class="op">:</span>n], x[<span class="fl">1</span><span class="op">:</span>n<span class="op">-</span><span class="fl">1</span>], sigma)</span>
+<span id="cb21-108"><a href="#cb21-108"></a>    <span class="st">"The `RW(1)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the logit link"</span></span>
+<span id="cb21-109"><a href="#cb21-109"></a>    <span class="fu">rw1_lpdf</span>(x<span class="op">::</span><span class="dt">ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(logit), sigma, n) <span class="op">=</span> <span class="fu">rw1_lpdf</span>(x, sigma)</span>
+<span id="cb21-110"><a href="#cb21-110"></a>    <span class="st">"The `RW(1)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the log link"</span></span>
+<span id="cb21-111"><a href="#cb21-111"></a>    <span class="fu">rw1_lpdf</span>(x<span class="op">::</span><span class="dt">positive_ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(log), sigma, n) <span class="op">=</span> <span class="fu">rw1_lpdf</span>(x, sigma)</span>
+<span id="cb21-112"><a href="#cb21-112"></a>    <span class="st">"The `RW(2)` prior density after constraining - common to both link functions"</span></span>
+<span id="cb21-113"><a href="#cb21-113"></a>    <span class="fu">rw2_lpdf</span>(x<span class="op">::</span><span class="dt">vector</span>[n], sigma) <span class="op">=</span> <span class="fu">rw1_lpdf</span>(x[<span class="fl">1</span><span class="op">:</span><span class="fl">2</span>], sigma) <span class="op">+</span> <span class="fu">normal_lpdf</span>(x[<span class="fl">3</span><span class="op">:</span>n], <span class="fl">2</span>x[<span class="fl">2</span><span class="op">:</span>n<span class="op">-</span><span class="fl">1</span>] <span class="op">-</span> x[<span class="fl">1</span><span class="op">:</span>n<span class="op">-</span><span class="fl">2</span>], sigma)</span>
+<span id="cb21-114"><a href="#cb21-114"></a>    <span class="st">"The `RW(2)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the logit link"</span></span>
+<span id="cb21-115"><a href="#cb21-115"></a>    <span class="fu">rw2_lpdf</span>(x<span class="op">::</span><span class="dt">ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(logit), sigma, n) <span class="op">=</span> <span class="fu">rw2_lpdf</span>(x, sigma)</span>
+<span id="cb21-116"><a href="#cb21-116"></a>    <span class="st">"The `RW(2)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the log link"</span></span>
+<span id="cb21-117"><a href="#cb21-117"></a>    <span class="fu">rw2_lpdf</span>(x<span class="op">::</span><span class="dt">positive_ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(log), sigma, n) <span class="op">=</span> <span class="fu">rw2_lpdf</span>(x, sigma)</span>
+<span id="cb21-118"><a href="#cb21-118"></a>    <span class="st">"The upper bound of the alpha parameter (for the logit link function)"</span></span>
+<span id="cb21-119"><a href="#cb21-119"></a>    <span class="fu">upper_alpha</span>(<span class="op">::</span><span class="dt">typeof</span>(logit)) <span class="op">=</span> <span class="fu">negative_infinity</span>()</span>
+<span id="cb21-120"><a href="#cb21-120"></a>    <span class="st">"The upper bound of the alpha parameter (for the log link function)"</span></span>
+<span id="cb21-121"><a href="#cb21-121"></a>    <span class="fu">upper_alpha</span>(<span class="op">::</span><span class="dt">typeof</span>(log)) <span class="op">=</span> <span class="fl">0</span></span>
+<span id="cb21-122"><a href="#cb21-122"></a><span class="cf">end</span></span>
+<span id="cb21-123"><a href="#cb21-123"></a><span class="co"># The main things that StanBlocks.jl has to know is that `y` is an array of `int`s, and `t` is a vector.</span></span>
+<span id="cb21-124"><a href="#cb21-124"></a>mock_data <span class="op">=</span> (;y<span class="op">=</span>[<span class="fl">1</span>], t<span class="op">=</span>[<span class="fl">1</span>.])</span>
+<span id="cb21-125"><a href="#cb21-125"></a></span>
+<span id="cb21-126"><a href="#cb21-126"></a><span class="co"># The base model with the mock data attached - this does not yet have an implementation for theta </span></span>
+<span id="cb21-127"><a href="#cb21-127"></a>base_model <span class="op">=</span> <span class="pp">@slic</span> mock_data <span class="cf">begin</span> </span>
+<span id="cb21-128"><a href="#cb21-128"></a>    n <span class="op">=</span> <span class="fu">dims</span>(y)[<span class="fl">1</span>]</span>
+<span id="cb21-129"><a href="#cb21-129"></a>    <span class="st">"The exact implementation of the likelihood depends on the passed link function `link_f`"</span></span>
+<span id="cb21-130"><a href="#cb21-130"></a>    y <span class="op">~</span> <span class="fu">my_bernoulli</span>(link_f, theta)</span>
+<span id="cb21-131"><a href="#cb21-131"></a><span class="cf">end</span></span>
+<span id="cb21-132"><a href="#cb21-132"></a><span class="co"># The submodel for the `Hetero` models</span></span>
+<span id="cb21-133"><a href="#cb21-133"></a>centered_hetero <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb21-134"><a href="#cb21-134"></a>    <span class="st">"The type of the `xi` parameter depends on the passed link function `link_f`"</span></span>
+<span id="cb21-135"><a href="#cb21-135"></a>    xi <span class="op">~</span> <span class="fu">hetero</span>(link_f, n)</span>
+<span id="cb21-136"><a href="#cb21-136"></a>    <span class="st">"The negation is needed to ensure that `theta` is in descending order"</span></span>
+<span id="cb21-137"><a href="#cb21-137"></a>    <span class="cf">return</span> <span class="op">-</span>xi</span>
+<span id="cb21-138"><a href="#cb21-138"></a><span class="cf">end</span></span>
+<span id="cb21-139"><a href="#cb21-139"></a><span class="co"># The submodel for the `RW(1)` models</span></span>
+<span id="cb21-140"><a href="#cb21-140"></a>centered_rw1 <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb21-141"><a href="#cb21-141"></a>    sigma <span class="op">~</span> <span class="fu">std_normal</span>(;lower<span class="op">=</span><span class="fl">0</span>)</span>
+<span id="cb21-142"><a href="#cb21-142"></a>    <span class="st">"The type of the `xi` parameter depends on the passed link function `link_f`"</span></span>
+<span id="cb21-143"><a href="#cb21-143"></a>    xi <span class="op">~</span> <span class="fu">rw1</span>(link_f, sigma, n)</span>
+<span id="cb21-144"><a href="#cb21-144"></a>    <span class="st">"The negation is needed to ensure that `theta` is in descending order"</span></span>
+<span id="cb21-145"><a href="#cb21-145"></a>    <span class="cf">return</span> <span class="op">-</span>xi</span>
+<span id="cb21-146"><a href="#cb21-146"></a><span class="cf">end</span></span>
+<span id="cb21-147"><a href="#cb21-147"></a><span class="co"># The submodel for the `RW(2)` models</span></span>
+<span id="cb21-148"><a href="#cb21-148"></a>centered_rw2 <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb21-149"><a href="#cb21-149"></a>    sigma <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">.5</span>; lower<span class="op">=</span><span class="fl">0</span>)</span>
+<span id="cb21-150"><a href="#cb21-150"></a>    <span class="st">"The type of the `xi` parameter depends on the passed link function `link_f`"</span></span>
+<span id="cb21-151"><a href="#cb21-151"></a>    xi <span class="op">~</span> <span class="fu">rw2</span>(link_f, sigma, n)</span>
+<span id="cb21-152"><a href="#cb21-152"></a>    <span class="st">"The negation is needed to ensure that `theta` is in descending order"</span></span>
+<span id="cb21-153"><a href="#cb21-153"></a>    <span class="cf">return</span> <span class="op">-</span>xi</span>
+<span id="cb21-154"><a href="#cb21-154"></a><span class="cf">end</span></span>
+<span id="cb21-155"><a href="#cb21-155"></a><span class="co"># The submodel for the `regression` models - reused in the `regression_mix` models</span></span>
+<span id="cb21-156"><a href="#cb21-156"></a>regression <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb21-157"><a href="#cb21-157"></a>    <span class="st">"The upper bound of alpha `alpha_upper` depends on the link function `link_f`"</span></span>
+<span id="cb21-158"><a href="#cb21-158"></a>    alpha_upper <span class="op">=</span> <span class="fu">upper_alpha</span>(link_f)</span>
+<span id="cb21-159"><a href="#cb21-159"></a>    <span class="co"># This could be `alpha ~ normal(0, .5; upper=upper_alpha(link_f))`, once https://github.com/nsiccha/StanBlocks.jl/issues/35 is fixed</span></span>
+<span id="cb21-160"><a href="#cb21-160"></a>    alpha <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">.5</span>; upper<span class="op">=</span>alpha_upper)</span>
+<span id="cb21-161"><a href="#cb21-161"></a>    beta <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">.5</span>; upper<span class="op">=</span><span class="fl">0</span>.)</span>
+<span id="cb21-162"><a href="#cb21-162"></a>    <span class="cf">return</span> alpha <span class="op">+</span> beta <span class="op">*</span> t</span>
+<span id="cb21-163"><a href="#cb21-163"></a><span class="cf">end</span></span>
+<span id="cb21-164"><a href="#cb21-164"></a><span class="co"># The submodel for the `regression_mix` models - reusing the `regression` submodel</span></span>
+<span id="cb21-165"><a href="#cb21-165"></a>regression_mix <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb21-166"><a href="#cb21-166"></a>    c1 <span class="op">~</span> <span class="fu">regression</span>(;link_f, t) </span>
+<span id="cb21-167"><a href="#cb21-167"></a>    c2 <span class="op">~</span> <span class="fu">regression</span>(;link_f, t)</span>
+<span id="cb21-168"><a href="#cb21-168"></a>    lambda <span class="op">~</span> <span class="fu">beta</span>(<span class="fl">2</span>, <span class="fl">2</span>)</span>
+<span id="cb21-169"><a href="#cb21-169"></a>    <span class="cf">return</span> lambda <span class="op">*</span> <span class="fu">link_f</span>(c1) <span class="op">+</span> (<span class="fl">1</span><span class="op">-</span>lambda) <span class="op">*</span> <span class="fu">link_f</span>(c2)</span>
+<span id="cb21-170"><a href="#cb21-170"></a><span class="cf">end</span></span>
+<span id="cb21-171"><a href="#cb21-171"></a></span>
+<span id="cb21-172"><a href="#cb21-172"></a>bases <span class="op">=</span> (;</span>
+<span id="cb21-173"><a href="#cb21-173"></a>    hetero<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
+<span id="cb21-174"><a href="#cb21-174"></a>        theta <span class="op">~</span> <span class="fu">centered_hetero</span>(;link_f, n)</span>
+<span id="cb21-175"><a href="#cb21-175"></a>    <span class="kw">end</span>),</span>
+<span id="cb21-176"><a href="#cb21-176"></a>    rw1<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
+<span id="cb21-177"><a href="#cb21-177"></a>        theta <span class="op">~</span> <span class="fu">centered_rw1</span>(;link_f, n)</span>
+<span id="cb21-178"><a href="#cb21-178"></a>    <span class="kw">end</span>),</span>
+<span id="cb21-179"><a href="#cb21-179"></a>    rw2<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
+<span id="cb21-180"><a href="#cb21-180"></a>        theta <span class="op">~</span> <span class="fu">centered_rw2</span>(;link_f, n)</span>
+<span id="cb21-181"><a href="#cb21-181"></a>    <span class="kw">end</span>),</span>
+<span id="cb21-182"><a href="#cb21-182"></a>    regression<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
+<span id="cb21-183"><a href="#cb21-183"></a>        theta <span class="op">~</span> <span class="fu">regression</span>(;link_f, t)</span>
+<span id="cb21-184"><a href="#cb21-184"></a>    <span class="kw">end</span>),</span>
+<span id="cb21-185"><a href="#cb21-185"></a>    regression_mix<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
+<span id="cb21-186"><a href="#cb21-186"></a>        theta <span class="op">~</span> <span class="fu">regression</span>(;link_f, t)</span>
+<span id="cb21-187"><a href="#cb21-187"></a>        y <span class="op">~</span> <span class="fu">bernoulli</span>(theta)</span>
+<span id="cb21-188"><a href="#cb21-188"></a>    <span class="kw">end</span>)</span>
+<span id="cb21-189"><a href="#cb21-189"></a>)</span>
+<span id="cb21-190"><a href="#cb21-190"></a>link_fs <span class="op">=</span> (;logit, log)</span>
+<span id="cb21-191"><a href="#cb21-191"></a></span>
+<span id="cb21-192"><a href="#cb21-192"></a>posteriors <span class="op">=</span> <span class="fu">map</span>(bases) <span class="cf">do</span> base </span>
+<span id="cb21-193"><a href="#cb21-193"></a>    <span class="fu">map</span>(link_fs) <span class="cf">do</span> link_f </span>
+<span id="cb21-194"><a href="#cb21-194"></a>        <span class="fu">base</span>(;link_f)</span>
+<span id="cb21-195"><a href="#cb21-195"></a>    <span class="cf">end</span></span>
+<span id="cb21-196"><a href="#cb21-196"></a><span class="cf">end</span></span>
+<span id="cb21-197"><a href="#cb21-197"></a><span class="in">```</span></span>
+<span id="cb21-198"><a href="#cb21-198"></a></span>
+<span id="cb21-199"><a href="#cb21-199"></a><span class="fu">## Generated Stan code</span></span>
+<span id="cb21-200"><a href="#cb21-200"></a></span>
+<span id="cb21-201"><a href="#cb21-201"></a>The generated Stan code below is accessible via two nested tabsets. </span>
+<span id="cb21-202"><a href="#cb21-202"></a>The top level (with keys <span class="in">`hetero`</span>, <span class="in">`rw1`</span>, <span class="in">`rw2`</span>, <span class="in">`regression`</span>, and <span class="in">`regression_mix`</span>) </span>
+<span id="cb21-203"><a href="#cb21-203"></a>combines with the link function in the second level (with keys <span class="in">`logit`</span> and <span class="in">`log`</span>)</span>
+<span id="cb21-204"><a href="#cb21-204"></a>to give you access to the corresponding Stan models from the poster.</span>
+<span id="cb21-205"><a href="#cb21-205"></a></span>
+<span id="cb21-208"><a href="#cb21-208"></a><span class="in">```{julia}</span></span>
+<span id="cb21-209"><a href="#cb21-209"></a><span class="im">using</span> <span class="bu">StanBlocks</span>, <span class="bu">QuartoComponents</span></span>
+<span id="cb21-210"><a href="#cb21-210"></a></span>
+<span id="cb21-211"><a href="#cb21-211"></a><span class="pp">@deffun</span> <span class="cf">begin</span> </span>
+<span id="cb21-212"><a href="#cb21-212"></a>    <span class="st">"Needed for cross validation"</span></span>
+<span id="cb21-213"><a href="#cb21-213"></a>    <span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>[n], args<span class="op">...</span>) <span class="op">=</span> <span class="fu">jbroadcasted</span>(my_bernoulli_lpmfs, y, args<span class="op">...</span>)</span>
+<span id="cb21-214"><a href="#cb21-214"></a>    <span class="st">"Needed for cross validation"</span></span>
+<span id="cb21-215"><a href="#cb21-215"></a>    <span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>, args<span class="op">...</span>) <span class="op">=</span> <span class="fu">my_bernoulli_lpmf</span>(y, args<span class="op">...</span>)</span>
+<span id="cb21-216"><a href="#cb21-216"></a>    <span class="st">"Needed to compute the joint likelihood"</span></span>
+<span id="cb21-217"><a href="#cb21-217"></a>    <span class="fu">my_bernoulli_lpmf</span>(y, <span class="op">::</span><span class="dt">typeof</span>(logit), theta) <span class="op">=</span> <span class="fu">bernoulli_logit_lpmf</span>(y, theta)</span>
+<span id="cb21-218"><a href="#cb21-218"></a>    <span class="st">"Needed for posterior predictions"</span></span>
+<span id="cb21-219"><a href="#cb21-219"></a>    <span class="fu">my_bernoulli_rng</span>(<span class="op">::</span><span class="dt">typeof</span>(logit), theta) <span class="op">=</span> <span class="fu">bernoulli_logit_rng</span>(theta)</span>
+<span id="cb21-220"><a href="#cb21-220"></a>    <span class="st">"Needed to compute the joint likelihood"</span></span>
+<span id="cb21-221"><a href="#cb21-221"></a>    <span class="fu">my_bernoulli_lpmf</span>(y, <span class="op">::</span><span class="dt">typeof</span>(log), theta) <span class="op">=</span> <span class="fu">bernoulli_lpmf</span>(y, <span class="fu">exp</span>(theta))</span>
+<span id="cb21-222"><a href="#cb21-222"></a>    <span class="st">"Needed for posterior predictions"</span></span>
+<span id="cb21-223"><a href="#cb21-223"></a>    <span class="fu">my_bernoulli_rng</span>(<span class="op">::</span><span class="dt">typeof</span>(log), theta) <span class="op">=</span> <span class="fu">bernoulli_rng</span>(<span class="fu">exp</span>(theta))</span>
+<span id="cb21-224"><a href="#cb21-224"></a></span>
+<span id="cb21-225"><a href="#cb21-225"></a>    <span class="st">"The `Hetero` prior density after constraining - common to both link functions"</span></span>
+<span id="cb21-226"><a href="#cb21-226"></a>    <span class="fu">hetero_lpdf</span>(x<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="fu">normal_lpdf</span>(x, <span class="fl">0</span>, <span class="fl">3</span>)</span>
+<span id="cb21-227"><a href="#cb21-227"></a>    <span class="st">"The `Hetero` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the logit link"</span></span>
+<span id="cb21-228"><a href="#cb21-228"></a>    <span class="fu">hetero_lpdf</span>(x<span class="op">::</span><span class="dt">ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(logit), n) <span class="op">=</span> <span class="fu">hetero_lpdf</span>(x)</span>
+<span id="cb21-229"><a href="#cb21-229"></a>    <span class="st">"The `Hetero` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the log link"</span></span>
+<span id="cb21-230"><a href="#cb21-230"></a>    <span class="fu">hetero_lpdf</span>(x<span class="op">::</span><span class="dt">positive_ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(log), n) <span class="op">=</span> <span class="fu">hetero_lpdf</span>(x)</span>
+<span id="cb21-231"><a href="#cb21-231"></a>    <span class="st">"The `RW(1)` prior density after constraining - common to both link functions"</span></span>
+<span id="cb21-232"><a href="#cb21-232"></a>    <span class="fu">rw1_lpdf</span>(x<span class="op">::</span><span class="dt">vector</span>[n], sigma) <span class="op">=</span> <span class="fu">normal_lpdf</span>(x[<span class="fl">1</span>], <span class="fl">0</span>, sigma) <span class="op">+</span> <span class="fu">normal_lpdf</span>(x[<span class="fl">2</span><span class="op">:</span>n], x[<span class="fl">1</span><span class="op">:</span>n<span class="op">-</span><span class="fl">1</span>], sigma)</span>
+<span id="cb21-233"><a href="#cb21-233"></a>    <span class="st">"The `RW(1)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the logit link"</span></span>
+<span id="cb21-234"><a href="#cb21-234"></a>    <span class="fu">rw1_lpdf</span>(x<span class="op">::</span><span class="dt">ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(logit), sigma, n) <span class="op">=</span> <span class="fu">rw1_lpdf</span>(x, sigma)</span>
+<span id="cb21-235"><a href="#cb21-235"></a>    <span class="st">"The `RW(1)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the log link"</span></span>
+<span id="cb21-236"><a href="#cb21-236"></a>    <span class="fu">rw1_lpdf</span>(x<span class="op">::</span><span class="dt">positive_ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(log), sigma, n) <span class="op">=</span> <span class="fu">rw1_lpdf</span>(x, sigma)</span>
+<span id="cb21-237"><a href="#cb21-237"></a>    <span class="st">"The `RW(2)` prior density after constraining - common to both link functions"</span></span>
+<span id="cb21-238"><a href="#cb21-238"></a>    <span class="fu">rw2_lpdf</span>(x<span class="op">::</span><span class="dt">vector</span>[n], sigma) <span class="op">=</span> <span class="fu">rw1_lpdf</span>(x[<span class="fl">1</span><span class="op">:</span><span class="fl">2</span>], sigma) <span class="op">+</span> <span class="fu">normal_lpdf</span>(x[<span class="fl">3</span><span class="op">:</span>n], <span class="fl">2</span>x[<span class="fl">2</span><span class="op">:</span>n<span class="op">-</span><span class="fl">1</span>] <span class="op">-</span> x[<span class="fl">1</span><span class="op">:</span>n<span class="op">-</span><span class="fl">2</span>], sigma)</span>
+<span id="cb21-239"><a href="#cb21-239"></a>    <span class="st">"The `RW(2)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the logit link"</span></span>
+<span id="cb21-240"><a href="#cb21-240"></a>    <span class="fu">rw2_lpdf</span>(x<span class="op">::</span><span class="dt">ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(logit), sigma, n) <span class="op">=</span> <span class="fu">rw2_lpdf</span>(x, sigma)</span>
+<span id="cb21-241"><a href="#cb21-241"></a>    <span class="st">"The `RW(2)` prior density after constraining - this function definition gets used to infer the type and shape of the parameter for the log link"</span></span>
+<span id="cb21-242"><a href="#cb21-242"></a>    <span class="fu">rw2_lpdf</span>(x<span class="op">::</span><span class="dt">positive_ordered</span>[n], <span class="op">::</span><span class="dt">typeof</span>(log), sigma, n) <span class="op">=</span> <span class="fu">rw2_lpdf</span>(x, sigma)</span>
+<span id="cb21-243"><a href="#cb21-243"></a>    <span class="st">"The upper bound of the alpha parameter (for the logit link function)"</span></span>
+<span id="cb21-244"><a href="#cb21-244"></a>    <span class="fu">upper_alpha</span>(<span class="op">::</span><span class="dt">typeof</span>(logit)) <span class="op">=</span> <span class="fu">negative_infinity</span>()</span>
+<span id="cb21-245"><a href="#cb21-245"></a>    <span class="st">"The upper bound of the alpha parameter (for the log link function)"</span></span>
+<span id="cb21-246"><a href="#cb21-246"></a>    <span class="fu">upper_alpha</span>(<span class="op">::</span><span class="dt">typeof</span>(log)) <span class="op">=</span> <span class="fl">0</span></span>
+<span id="cb21-247"><a href="#cb21-247"></a><span class="cf">end</span></span>
+<span id="cb21-248"><a href="#cb21-248"></a><span class="co"># The main things that StanBlocks.jl has to know is that `y` is an array of `int`s, and `t` is a vector.</span></span>
+<span id="cb21-249"><a href="#cb21-249"></a>mock_data <span class="op">=</span> (;y<span class="op">=</span>[<span class="fl">1</span>], t<span class="op">=</span>[<span class="fl">1</span>.])</span>
+<span id="cb21-250"><a href="#cb21-250"></a></span>
+<span id="cb21-251"><a href="#cb21-251"></a><span class="co"># The base model with the mock data attached - this does not yet have an implementation for theta </span></span>
+<span id="cb21-252"><a href="#cb21-252"></a>base_model <span class="op">=</span> <span class="pp">@slic</span> mock_data <span class="cf">begin</span> </span>
+<span id="cb21-253"><a href="#cb21-253"></a>    n <span class="op">=</span> <span class="fu">dims</span>(y)[<span class="fl">1</span>]</span>
+<span id="cb21-254"><a href="#cb21-254"></a>    <span class="st">"The exact implementation of the likelihood depends on the passed link function `link_f`"</span></span>
+<span id="cb21-255"><a href="#cb21-255"></a>    y <span class="op">~</span> <span class="fu">my_bernoulli</span>(link_f, theta)</span>
+<span id="cb21-256"><a href="#cb21-256"></a><span class="cf">end</span></span>
+<span id="cb21-257"><a href="#cb21-257"></a><span class="co"># The submodel for the `Hetero` models</span></span>
+<span id="cb21-258"><a href="#cb21-258"></a>centered_hetero <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb21-259"><a href="#cb21-259"></a>    <span class="st">"The type of the `xi` parameter depends on the passed link function `link_f`"</span></span>
+<span id="cb21-260"><a href="#cb21-260"></a>    xi <span class="op">~</span> <span class="fu">hetero</span>(link_f, n)</span>
+<span id="cb21-261"><a href="#cb21-261"></a>    <span class="st">"The negation is needed to ensure that `theta` is in descending order"</span></span>
+<span id="cb21-262"><a href="#cb21-262"></a>    <span class="cf">return</span> <span class="op">-</span>xi</span>
+<span id="cb21-263"><a href="#cb21-263"></a><span class="cf">end</span></span>
+<span id="cb21-264"><a href="#cb21-264"></a><span class="co"># The submodel for the `RW(1)` models</span></span>
+<span id="cb21-265"><a href="#cb21-265"></a>centered_rw1 <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb21-266"><a href="#cb21-266"></a>    sigma <span class="op">~</span> <span class="fu">std_normal</span>(;lower<span class="op">=</span><span class="fl">0</span>)</span>
+<span id="cb21-267"><a href="#cb21-267"></a>    <span class="st">"The type of the `xi` parameter depends on the passed link function `link_f`"</span></span>
+<span id="cb21-268"><a href="#cb21-268"></a>    xi <span class="op">~</span> <span class="fu">rw1</span>(link_f, sigma, n)</span>
+<span id="cb21-269"><a href="#cb21-269"></a>    <span class="st">"The negation is needed to ensure that `theta` is in descending order"</span></span>
+<span id="cb21-270"><a href="#cb21-270"></a>    <span class="cf">return</span> <span class="op">-</span>xi</span>
+<span id="cb21-271"><a href="#cb21-271"></a><span class="cf">end</span></span>
+<span id="cb21-272"><a href="#cb21-272"></a><span class="co"># The submodel for the `RW(2)` models</span></span>
+<span id="cb21-273"><a href="#cb21-273"></a>centered_rw2 <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb21-274"><a href="#cb21-274"></a>    sigma <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">.5</span>; lower<span class="op">=</span><span class="fl">0</span>)</span>
+<span id="cb21-275"><a href="#cb21-275"></a>    <span class="st">"The type of the `xi` parameter depends on the passed link function `link_f`"</span></span>
+<span id="cb21-276"><a href="#cb21-276"></a>    xi <span class="op">~</span> <span class="fu">rw2</span>(link_f, sigma, n)</span>
+<span id="cb21-277"><a href="#cb21-277"></a>    <span class="st">"The negation is needed to ensure that `theta` is in descending order"</span></span>
+<span id="cb21-278"><a href="#cb21-278"></a>    <span class="cf">return</span> <span class="op">-</span>xi</span>
+<span id="cb21-279"><a href="#cb21-279"></a><span class="cf">end</span></span>
+<span id="cb21-280"><a href="#cb21-280"></a><span class="co"># The submodel for the `regression` models - reused in the `regression_mix` models</span></span>
+<span id="cb21-281"><a href="#cb21-281"></a>regression <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb21-282"><a href="#cb21-282"></a>    <span class="st">"The upper bound of alpha `alpha_upper` depends on the link function `link_f`"</span></span>
+<span id="cb21-283"><a href="#cb21-283"></a>    alpha_upper <span class="op">=</span> <span class="fu">upper_alpha</span>(link_f)</span>
+<span id="cb21-284"><a href="#cb21-284"></a>    <span class="co"># This could be `alpha ~ normal(0, .5; upper=upper_alpha(link_f))`, once https://github.com/nsiccha/StanBlocks.jl/issues/35 is fixed</span></span>
+<span id="cb21-285"><a href="#cb21-285"></a>    alpha <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">.5</span>; upper<span class="op">=</span>alpha_upper)</span>
+<span id="cb21-286"><a href="#cb21-286"></a>    beta <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">.5</span>; upper<span class="op">=</span><span class="fl">0</span>.)</span>
+<span id="cb21-287"><a href="#cb21-287"></a>    <span class="cf">return</span> alpha <span class="op">+</span> beta <span class="op">*</span> t</span>
+<span id="cb21-288"><a href="#cb21-288"></a><span class="cf">end</span></span>
+<span id="cb21-289"><a href="#cb21-289"></a><span class="co"># The submodel for the `regression_mix` models - reusing the `regression` submodel</span></span>
+<span id="cb21-290"><a href="#cb21-290"></a>regression_mix <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb21-291"><a href="#cb21-291"></a>    c1 <span class="op">~</span> <span class="fu">regression</span>(;link_f, t) </span>
+<span id="cb21-292"><a href="#cb21-292"></a>    c2 <span class="op">~</span> <span class="fu">regression</span>(;link_f, t)</span>
+<span id="cb21-293"><a href="#cb21-293"></a>    lambda <span class="op">~</span> <span class="fu">beta</span>(<span class="fl">2</span>, <span class="fl">2</span>)</span>
+<span id="cb21-294"><a href="#cb21-294"></a>    <span class="cf">return</span> lambda <span class="op">*</span> <span class="fu">link_f</span>(c1) <span class="op">+</span> (<span class="fl">1</span><span class="op">-</span>lambda) <span class="op">*</span> <span class="fu">link_f</span>(c2)</span>
+<span id="cb21-295"><a href="#cb21-295"></a><span class="cf">end</span></span>
+<span id="cb21-296"><a href="#cb21-296"></a></span>
+<span id="cb21-297"><a href="#cb21-297"></a>bases <span class="op">=</span> (;</span>
+<span id="cb21-298"><a href="#cb21-298"></a>    hetero<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
+<span id="cb21-299"><a href="#cb21-299"></a>        theta <span class="op">~</span> <span class="fu">centered_hetero</span>(;link_f, n)</span>
+<span id="cb21-300"><a href="#cb21-300"></a>    <span class="kw">end</span>),</span>
+<span id="cb21-301"><a href="#cb21-301"></a>    rw1<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
+<span id="cb21-302"><a href="#cb21-302"></a>        theta <span class="op">~</span> <span class="fu">centered_rw1</span>(;link_f, n)</span>
+<span id="cb21-303"><a href="#cb21-303"></a>    <span class="kw">end</span>),</span>
+<span id="cb21-304"><a href="#cb21-304"></a>    rw2<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
+<span id="cb21-305"><a href="#cb21-305"></a>        theta <span class="op">~</span> <span class="fu">centered_rw2</span>(;link_f, n)</span>
+<span id="cb21-306"><a href="#cb21-306"></a>    <span class="kw">end</span>),</span>
+<span id="cb21-307"><a href="#cb21-307"></a>    regression<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
+<span id="cb21-308"><a href="#cb21-308"></a>        theta <span class="op">~</span> <span class="fu">regression</span>(;link_f, t)</span>
+<span id="cb21-309"><a href="#cb21-309"></a>    <span class="kw">end</span>),</span>
+<span id="cb21-310"><a href="#cb21-310"></a>    regression_mix<span class="op">=</span><span class="fu">base_model</span>(<span class="kw">quote</span> </span>
+<span id="cb21-311"><a href="#cb21-311"></a>        theta <span class="op">~</span> <span class="fu">regression</span>(;link_f, t)</span>
+<span id="cb21-312"><a href="#cb21-312"></a>        y <span class="op">~</span> <span class="fu">bernoulli</span>(theta)</span>
+<span id="cb21-313"><a href="#cb21-313"></a>    <span class="kw">end</span>)</span>
+<span id="cb21-314"><a href="#cb21-314"></a>)</span>
+<span id="cb21-315"><a href="#cb21-315"></a>link_fs <span class="op">=</span> (;logit, log)</span>
+<span id="cb21-316"><a href="#cb21-316"></a></span>
+<span id="cb21-317"><a href="#cb21-317"></a>posteriors <span class="op">=</span> <span class="fu">map</span>(bases) <span class="cf">do</span> base </span>
+<span id="cb21-318"><a href="#cb21-318"></a>    <span class="fu">map</span>(link_fs) <span class="cf">do</span> link_f </span>
+<span id="cb21-319"><a href="#cb21-319"></a>        <span class="fu">base</span>(;link_f)</span>
+<span id="cb21-320"><a href="#cb21-320"></a>    <span class="cf">end</span></span>
+<span id="cb21-321"><a href="#cb21-321"></a><span class="cf">end</span></span>
+<span id="cb21-322"><a href="#cb21-322"></a></span>
+<span id="cb21-323"><a href="#cb21-323"></a>tabsets <span class="op">=</span> <span class="fu">map</span>(posteriors) <span class="cf">do</span> subposteriors </span>
+<span id="cb21-324"><a href="#cb21-324"></a>    <span class="fu">map</span>(subposteriors) <span class="cf">do</span> posterior </span>
+<span id="cb21-325"><a href="#cb21-325"></a>        QuartoComponents.<span class="fu">Code</span>(<span class="st">"stan"</span>, <span class="fu">stan_code</span>(posterior))</span>
+<span id="cb21-326"><a href="#cb21-326"></a>    <span class="cf">end</span> <span class="op">|&gt;</span> QuartoComponents.Tabset</span>
+<span id="cb21-327"><a href="#cb21-327"></a><span class="cf">end</span> <span class="op">|&gt;</span> QuartoComponents.Tabset</span>
 <span id="cb21-328"><a href="#cb21-328"></a></span>
-<span id="cb21-329"><a href="#cb21-329"></a><span class="in">```</span></span>
-<span id="cb21-330"><a href="#cb21-330"></a></span>
-<span id="cb21-331"><a href="#cb21-331"></a><span class="fu">## How does StanBlocks.jl infer type and dimension?</span></span>
-<span id="cb21-332"><a href="#cb21-332"></a></span>
-<span id="cb21-333"><a href="#cb21-333"></a>The way StanBlocks.jl currently operates to figure out the type and dimension of a model parameter defined by </span>
-<span id="cb21-334"><a href="#cb21-334"></a><span class="in">```julia</span></span>
-<span id="cb21-335"><a href="#cb21-335"></a>theta <span class="op">~</span> <span class="fu">distribution</span>(foo, bar)</span>
-<span id="cb21-336"><a href="#cb21-336"></a><span class="in">```</span> </span>
-<span id="cb21-337"><a href="#cb21-337"></a>is via looking for a function definition </span>
-<span id="cb21-338"><a href="#cb21-338"></a><span class="in">```julia</span></span>
-<span id="cb21-339"><a href="#cb21-339"></a><span class="fu">distribution_lpdf</span>(theta<span class="op">::</span><span class="dt">theta_type</span>[theta_dim1, <span class="op">...</span>], foo<span class="op">::</span><span class="dt">foo_type</span>[<span class="op">...</span>], bar<span class="op">::</span><span class="dt">bar_type</span>[<span class="op">...</span>]) <span class="op">=</span> <span class="op">...</span></span>
-<span id="cb21-340"><a href="#cb21-340"></a><span class="in">```</span></span>
-<span id="cb21-341"><a href="#cb21-341"></a>matching the types of <span class="in">`foo`</span> and <span class="in">`bar`</span>. <span class="in">`theta_type`</span> then has to be one of Stan's built-in types, and <span class="in">`theta_dim, ...`</span> can be expressions depending on <span class="in">`foo`</span>, <span class="in">`foo_type[...]`</span>, <span class="in">`bar`</span>, and <span class="in">`bar_type[...]`</span>.</span>
-<span id="cb21-342"><a href="#cb21-342"></a></span>
-<span id="cb21-343"><a href="#cb21-343"></a>For example, <span class="co">[</span><span class="ot">the built-in definition</span><span class="co">](https://github.com/nsiccha/StanBlocks.jl/blob/e1145f528e423f6b46c89488bf25a18a51d0718a/src/slic_stan/builtin.jl#L204)</span> </span>
-<span id="cb21-344"><a href="#cb21-344"></a><span class="in">```julia</span></span>
-<span id="cb21-345"><a href="#cb21-345"></a><span class="fu">multi_normal_lpdf</span>(obs<span class="op">::</span><span class="dt">vector</span>[n], loc<span class="op">::</span><span class="dt">vector</span>[n], cov)</span>
-<span id="cb21-346"><a href="#cb21-346"></a><span class="in">```</span> </span>
-<span id="cb21-347"><a href="#cb21-347"></a>tells StanBlocks.jl that any parameter <span class="in">`theta`</span> initialized via </span>
-<span id="cb21-348"><a href="#cb21-348"></a><span class="in">```julia</span></span>
-<span id="cb21-349"><a href="#cb21-349"></a>theta <span class="op">~</span> <span class="fu">multi_normal</span>(loc, cov)</span>
-<span id="cb21-350"><a href="#cb21-350"></a><span class="in">```</span></span>
-<span id="cb21-351"><a href="#cb21-351"></a>will be a vector of the same shape as <span class="in">`loc`</span>.</span>
-<span id="cb21-352"><a href="#cb21-352"></a></span>
-<span id="cb21-353"><a href="#cb21-353"></a>Once I add <span class="co">[</span><span class="ot">this feature</span><span class="co">](https://github.com/nsiccha/StanBlocks.jl/issues/31)</span>, an alternative syntax to specify types and dimensions could be </span>
-<span id="cb21-354"><a href="#cb21-354"></a></span>
-<span id="cb21-355"><a href="#cb21-355"></a><span class="in">```julia</span></span>
-<span id="cb21-356"><a href="#cb21-356"></a>theta<span class="op">::</span><span class="dt">vector</span>[n] <span class="op">~</span> <span class="fu">distribution</span>(foo, bar)</span>
-<span id="cb21-357"><a href="#cb21-357"></a><span class="in">```</span></span>
-<span id="cb21-358"><a href="#cb21-358"></a>which would communicate intent more clearly, both to the programmer and the compiler.</span>
+<span id="cb21-329"><a href="#cb21-329"></a></span>
+<span id="cb21-330"><a href="#cb21-330"></a><span class="in">```</span></span>
+<span id="cb21-331"><a href="#cb21-331"></a></span>
+<span id="cb21-332"><a href="#cb21-332"></a><span class="fu">## How does StanBlocks.jl infer type and dimension?</span></span>
+<span id="cb21-333"><a href="#cb21-333"></a></span>
+<span id="cb21-334"><a href="#cb21-334"></a>The way StanBlocks.jl currently operates to figure out the type and dimension of a model parameter defined by </span>
+<span id="cb21-335"><a href="#cb21-335"></a><span class="in">```julia</span></span>
+<span id="cb21-336"><a href="#cb21-336"></a>theta <span class="op">~</span> <span class="fu">distribution</span>(foo, bar)</span>
+<span id="cb21-337"><a href="#cb21-337"></a><span class="in">```</span> </span>
+<span id="cb21-338"><a href="#cb21-338"></a>is via looking for a function definition </span>
+<span id="cb21-339"><a href="#cb21-339"></a><span class="in">```julia</span></span>
+<span id="cb21-340"><a href="#cb21-340"></a><span class="fu">distribution_lpdf</span>(theta<span class="op">::</span><span class="dt">theta_type</span>[theta_dim1, <span class="op">...</span>], foo<span class="op">::</span><span class="dt">foo_type</span>[<span class="op">...</span>], bar<span class="op">::</span><span class="dt">bar_type</span>[<span class="op">...</span>]) <span class="op">=</span> <span class="op">...</span></span>
+<span id="cb21-341"><a href="#cb21-341"></a><span class="in">```</span></span>
+<span id="cb21-342"><a href="#cb21-342"></a>matching the types of <span class="in">`foo`</span> and <span class="in">`bar`</span>. <span class="in">`theta_type`</span> then has to be one of Stan's built-in types, and <span class="in">`theta_dim, ...`</span> can be expressions depending on <span class="in">`foo`</span>, <span class="in">`foo_type[...]`</span>, <span class="in">`bar`</span>, and <span class="in">`bar_type[...]`</span>.</span>
+<span id="cb21-343"><a href="#cb21-343"></a></span>
+<span id="cb21-344"><a href="#cb21-344"></a>For example, <span class="co">[</span><span class="ot">the built-in definition</span><span class="co">](https://github.com/nsiccha/StanBlocks.jl/blob/e1145f528e423f6b46c89488bf25a18a51d0718a/src/slic_stan/builtin.jl#L204)</span> </span>
+<span id="cb21-345"><a href="#cb21-345"></a><span class="in">```julia</span></span>
+<span id="cb21-346"><a href="#cb21-346"></a><span class="fu">multi_normal_lpdf</span>(obs<span class="op">::</span><span class="dt">vector</span>[n], loc<span class="op">::</span><span class="dt">vector</span>[n], cov)</span>
+<span id="cb21-347"><a href="#cb21-347"></a><span class="in">```</span> </span>
+<span id="cb21-348"><a href="#cb21-348"></a>tells StanBlocks.jl that any parameter <span class="in">`theta`</span> initialized via </span>
+<span id="cb21-349"><a href="#cb21-349"></a><span class="in">```julia</span></span>
+<span id="cb21-350"><a href="#cb21-350"></a>theta <span class="op">~</span> <span class="fu">multi_normal</span>(loc, cov)</span>
+<span id="cb21-351"><a href="#cb21-351"></a><span class="in">```</span></span>
+<span id="cb21-352"><a href="#cb21-352"></a>will be a vector of the same shape as <span class="in">`loc`</span>.</span>
+<span id="cb21-353"><a href="#cb21-353"></a></span>
+<span id="cb21-354"><a href="#cb21-354"></a>Once I add <span class="co">[</span><span class="ot">this feature</span><span class="co">](https://github.com/nsiccha/StanBlocks.jl/issues/31)</span>, an alternative syntax to specify types and dimensions could be </span>
+<span id="cb21-355"><a href="#cb21-355"></a></span>
+<span id="cb21-356"><a href="#cb21-356"></a><span class="in">```julia</span></span>
+<span id="cb21-357"><a href="#cb21-357"></a>theta<span class="op">::</span><span class="dt">vector</span>[n] <span class="op">~</span> <span class="fu">distribution</span>(foo, bar)</span>
+<span id="cb21-358"><a href="#cb21-358"></a><span class="in">```</span></span>
+<span id="cb21-359"><a href="#cb21-359"></a>which would communicate intent more clearly, both to the programmer and the compiler.</span>
 </code></pre></div><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></div>
 </div></div></div></div></div>
 </div> <!-- /content -->
