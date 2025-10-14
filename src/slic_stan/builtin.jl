@@ -50,6 +50,7 @@ end
     uniform_lpdf
     von_mises_lpdf
     neg_binomial_2_lpdf
+    bernoulli_lpmf
     bernoulli_logit_lpmf 
     bernoulli_logit_glm_lpmf
     multi_normal_lpdf
@@ -86,7 +87,7 @@ end
     mdivide_right_tri_low
     add_diag 
     gp_exp_quad_cov 
-    inv_logit
+    inv_logit logit
     log_inv_logit
     log1m_exp
     Phi
@@ -109,6 +110,7 @@ end
     dot_product rows_dot_product
     dims rows cols
     reject
+    positive_infinity negative_infinity
 
     reduce_sum reduce_sum_static reduce_sum_reconstruct simple_reduce_sum simple_reduce_sum_helper
 
@@ -132,6 +134,8 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
         end
         rv
     end
+    positive_infinity()::real
+    negative_infinity()::real
     reject(x)::anything
     Base.print(x)::anything
     Base.size(x)::int
@@ -199,6 +203,7 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     uniform_lpdf(args...)
     von_mises_lpdf(args...)
     neg_binomial_2_lpdf(args...)
+    bernoulli_lpmf(args...)
     bernoulli_logit_lpmf(args...)
     bernoulli_logit_glm_lpmf(args...)
     multi_normal_lpdf(obs::vector[n], loc::vector[n], cov)
@@ -212,6 +217,7 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     student_t_rng(nu::real, loc::real, scale::real)::real
     multi_normal_rng(loc::vector[n], args...)::vector[n]
     multi_normal_cholesky_rng(loc::vector[n], scale)::vector[n]
+    bernoulli_rng(::vector[n])::int[n]
     bernoulli_logit_rng(::vector[n])::int[n]
     bernoulli_logit_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
     bernoulli_logit_glm_rng(X::matrix[m,n], alpha::real, beta) = bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta)
@@ -243,12 +249,11 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
         rv
     end
     vector_std_normal_rng(n::int)::vector[n] = to_vector(normal_rng(rep_vector(0, n), 1))
+    bernoulli_lpmfs(args...) = bernoulli_lpmf(args...)
+    bernoulli_lpmfs(obs::anything[n], args...) = jbroadcasted(bernoulli_lpmfs, obs, args...)
     bernoulli_logit_lpmfs(args...) = bernoulli_logit_lpmf(args...)
     bernoulli_logit_lpmfs(obs::anything[n], args...) = jbroadcasted(bernoulli_logit_lpmfs, obs, args...)
-    bernoulli_logit_glm_lpmfs(y::int[n], X, alpha, beta) = bernoulli_logit_lpmfs(
-        y,
-        alpha + X * beta
-    ) 
+    bernoulli_logit_glm_lpmfs(y::int[n], X, alpha, beta) = bernoulli_logit_lpmfs(y, alpha + X * beta) 
     binomial_lpmfs(args...) = binomial_lpmf(args...)
     binomial_lpmfs(y::int[n], args...) = jbroadcasted(binomial_lpmfs, y, args...)
     binomial_logit_lpmfs(args...) = binomial_logit_lpmf(args...)
