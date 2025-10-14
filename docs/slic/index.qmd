@@ -2,9 +2,6 @@
 title: "The @slic macro"
 ---
 
-```{julia}
-using StanBlocks, StanLogDensityProblems, JSON, Markdown
-```
 # Supporting Bayesian Workflow
 
 Code up your model once - simplify, extend and use in multiple contexts efficiently.
