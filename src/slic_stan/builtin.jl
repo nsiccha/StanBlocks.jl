@@ -134,6 +134,8 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
         end
         rv
     end
+    positive_infinity()::real
+    negative_infinity()::real
     reject(x)::anything
     Base.print(x)::anything
     Base.size(x)::int
