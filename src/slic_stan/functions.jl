@@ -10,6 +10,8 @@ module types
     abstract type vector <: any_vector end
     abstract type row_vector <: any_vector end
     abstract type simplex <: vector end
+    abstract type ordered <: vector end
+    abstract type positive_ordered <: vector end
     abstract type complex <: anything end
     abstract type real <: complex end
     abstract type int <: real end
