@@ -8,12 +8,16 @@ website:
     left:
       - text: "Overview"
         href: index.qmd
-      - text: "Performance"
-        href: performance.qmd
       - text: "Implementations"
         href: implementations.qmd
       - text: "@slic"
         href: slic/
+      - text: "Golf"
+        href: slic/golf.qmd
+      - text: "ISBA-2024"
+        href: slic/isba-2024.qmd
+      - text: "Crowdsourcing"
+        href: slic/crowdsource.qmd
       - icon: github
         href:  https://github.com/nsiccha/StanBlocks.jl
 format: 
@@ -21,7 +25,7 @@ format:
         page-layout: full
         toc: true
         code-tools: true
-        code-overflow: wrap
+        code-overflow: scroll
         code-line-numbers: true
         include-in-header:
             text: |
