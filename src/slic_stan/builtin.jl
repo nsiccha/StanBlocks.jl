@@ -283,12 +283,16 @@ autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,
     # end
 end
 @defsig begin 
-    Union{typeof.((sqrt, exp, log, log10, sin, cos, asin, acos, log1m, inv_logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs, log1p_exp, log1m_exp, Base.inv, Base.log1p))...} => begin 
+    Union{typeof.((sqrt, exp, log, log10, sin, cos, asin, acos, log1m, inv_logit, logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs, log1p_exp, log1m_exp, Base.inv, Base.log1p))...} => begin 
         (real,)=>real
         (vector[n],)=>vector[n]
         (row_vector[n],)=>row_vector[n]
         (real[n],)=>real[n]
         (matrix[m,n],)=>matrix[m,n]
+    end
+    Union{typeof.((log_sum_exp, ))...} => begin 
+        (real, real) => real
+        (vector[n], vector[n]) => vector[n]
     end
     typeof(÷) => begin 
         (int, int) => int
