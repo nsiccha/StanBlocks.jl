@@ -1,3 +1,15 @@
+---
+title: "Golf models reimplementation"
+---
+
+TO DO: elaborate
+
+## StanBlocks.jl implementation
+
+TO DO: elaborate
+
+## Generated Stan models
+
 ```{julia}
 using StanBlocks, QuartoComponents
 
@@ -56,7 +68,7 @@ golf_angle_distance_4 = golf_angle_distance_2(quote
     distance_tolerance ~ normal(3, 5; lower=0)
 end)
 
-map(stan_code, (;
+map(x->QuartoComponents.Code("stan", stan_code(x)), (;
     golf_logistic=golf_logistic(;dataset1...),
     golf_angle=golf_angle(;r, R, dataset1...),
     golf_angle_distance_2=golf_angle_distance_2(;r, R, overshot, distance_tolerance, dataset12...),

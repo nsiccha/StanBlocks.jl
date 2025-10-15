@@ -1,8 +1,5 @@
 ---
 title: "Reimplementing the Stan models from https://github.com/bob-carpenter/pcr-sensitivity-vs-time"
-format:
-  html:
-    code-overflow: scroll
 ---
 
 The full Julia code for this notebook can be accessed via the top right corner (`</> Code`).
@@ -41,8 +38,8 @@ In the below models, `my_bernoulli_lpmfs` will be called with the following sign
 ```julia
 my_bernoulli_lpmfs(y::int[n], f::typeof(logit), theta::vector[n])
 my_bernoulli_lpmfs(y::int[n], f::typeof(log), theta::vector[n])
-my_bernoulli_lpmfs(y::int, f::typeof(logit), theta::vector)
-my_bernoulli_lpmfs(y::int, f::typeof(log), theta::vector)
+my_bernoulli_lpmfs(y::int, f::typeof(logit), theta::real)
+my_bernoulli_lpmfs(y::int, f::typeof(log), theta::real)
 ```
 all of which will be covered by the variadic function definitions at the beginning of this section.
 
@@ -69,6 +66,7 @@ my_bernoulli_lpmf(y, ::typeof(logit), theta) = bernoulli_logit_lpmf(y, theta)
 my_bernoulli_lpmf(y, ::typeof(log), theta) = bernoulli_lpmf(y, exp(theta))
 ```
 which gets used to make the likelihood implementation depend on the link function of the model, allowing us 
+
 * to forward `y` and `theta` to `bernoulli_logit_lpmf(y, theta)`, or
 * to forward `y` and `theta` to `bernoulli_lpmf(y, exp(theta))`.
 
@@ -85,6 +83,8 @@ The following reproduces all of the code necessary to implement the 2x5 model ma
 ```julia
 using StanBlocks
 
+import StanBlocks.stan: logit
+
 @deffun begin 
     "Needed for cross validation"
     my_bernoulli_lpmfs(y::int[n], args...) = jbroadcasted(my_bernoulli_lpmfs, y, args...)
@@ -185,12 +185,13 @@ bases = (;
         theta ~ regression(;link_f, t)
     end),
     regression_mix=base_model(quote 
-        theta ~ regression(;link_f, t)
+        theta ~ regression_mix(;link_f, t)
         y ~ bernoulli(theta)
     end)
 )
 link_fs = (;logit, log)
 
+# `posteriors` will be a (nested) named tuple - accessing e.g. the `Hetero (log)` model works via `posteriors.hetero.log`
 posteriors = map(bases) do base 
     map(link_fs) do link_f 
         base(;link_f)
@@ -205,8 +206,18 @@ The top level (with keys `hetero`, `rw1`, `rw2`, `regression`, and `regression_m
 combines with the link function in the second level (with keys `logit` and `log`)
 to give you access to the corresponding Stan models from the poster.
 
+::: {.callout-warning}
+
+Due to [this issue](https://github.com/nsiccha/StanBlocks.jl/issues/38), the below Stan codes should not actually compile as they are.
+
+I think removing the offending UDF definitions should make compilation work.
+
+:::
+
 ```{julia}
 using StanBlocks, QuartoComponents
+
+import StanBlocks.stan: logit
 
 @deffun begin 
     "Needed for cross validation"
@@ -308,12 +319,13 @@ bases = (;
         theta ~ regression(;link_f, t)
     end),
     regression_mix=base_model(quote 
-        theta ~ regression(;link_f, t)
+        theta ~ regression_mix(;link_f, t)
         y ~ bernoulli(theta)
     end)
 )
-link_fs = (;logit, log)
+link_fs = (;logit, log)  
 
+# `posteriors` will be a (nested) named tuple - accessing e.g. the `Hetero (log)` model works via `posteriors.hetero.log`
 posteriors = map(bases) do base 
     map(link_fs) do link_f 
         base(;link_f)
