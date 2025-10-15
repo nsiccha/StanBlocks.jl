@@ -63,6 +63,34 @@
     "text": "How does StanBlocks.jl infer type and dimension?\nThe way StanBlocks.jl currently operates to figure out the type and dimension of a model parameter defined by\ntheta ~ distribution(foo, bar)\nis via looking for a function definition\ndistribution_lpdf(theta::theta_type[theta_dim1, ...], foo::foo_type[...], bar::bar_type[...]) = ...\nmatching the types of foo and bar. theta_type then has to be one of Stan’s built-in types, and theta_dim, ... can be expressions depending on foo, foo_type[...], bar, and bar_type[...].\nFor example, the built-in definition\nmulti_normal_lpdf(obs::vector[n], loc::vector[n], cov)\ntells StanBlocks.jl that any parameter theta initialized via\ntheta ~ multi_normal(loc, cov)\nwill be a vector of the same shape as loc.\nOnce I add this feature, an alternative syntax to specify types and dimensions could be\ntheta::vector[n] ~ distribution(foo, bar)\nwhich would communicate intent more clearly, both to the programmer and the compiler."
   },
   {
+    "objectID": "slic/constraints.html",
+    "href": "slic/constraints.html",
+    "title": "Currently: Generating a uniform distribution on a disk",
+    "section": "",
+    "text": "The full Julia code for this notebook can be accessed via the top right corner (&lt;/&gt; Code).\nThe Julia packages needed to reproduce this document are StanBlocks.jl (for the model generation) and QuartoComponents.jl (for the “pretty” printing). Both packages have to be installed from the latest main branch (as of Oct 14th 2025)."
+  },
+  {
+    "objectID": "slic/constraints.html#stanblocks.jl-implementation",
+    "href": "slic/constraints.html#stanblocks.jl-implementation",
+    "title": "Currently: Generating a uniform distribution on a disk",
+    "section": "StanBlocks.jl implementation",
+    "text": "StanBlocks.jl implementation\nThe function and model definitions below make use of\n\nJulia-style Named Tuples - allowing . syntax access to fields via names (instead of via numbers as in Stan)."
+  },
+  {
+    "objectID": "slic/constraints.html#full-julia-stanblocks.jl-code-to-define-the-models",
+    "href": "slic/constraints.html#full-julia-stanblocks.jl-code-to-define-the-models",
+    "title": "Currently: Generating a uniform distribution on a disk",
+    "section": "Full Julia + StanBlocks.jl code to define the models",
+    "text": "Full Julia + StanBlocks.jl code to define the models\n\nCurrent status\nCurrently, this is roughly how I’d add a custom constraining transform + prior on the constraint variables:\nusing StanBlocks\n\n@deffun begin \n    \"\"\"\n    This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform\n    (wrt to `x` and `y`) - I'll work it out another time.\n\n    This does the constraining - if you want to also put a prior on `x` and `y`, \n    you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.\n    It *would* be more convenient if there was an easier mechanism to combine (custom) \"constraining\" and \"putting a prior on the constrained parameters\"..\n    \"\"\"\n    uniform_disk_lpdf(xi::vector[n], n) = 0.\n    \"\"\"\n    This function returns a Named Tuple, which for Stan will look like a regular Tuple. \n    Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, \n    e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.\n    \"\"\"\n    uniform_disk_constrain(xi::vector[n]) = begin\n        radius = inv_logit(xi[1])\n        angle = 2pi * inv_logit(xi[2])\n        (;radius, angle, x=cos(angle) * radius, y=sin(angle) * radius)\n    end\nend\n\ndisk = @slic begin\n    xi ~ uniform_disk(2)\n    return uniform_disk_constrain(xi)\nend\n\n\nFuture status\nTO DO: figure out a syntax which would make custom constraints even easier."
+  },
+  {
+    "objectID": "slic/constraints.html#generated-stan-code",
+    "href": "slic/constraints.html#generated-stan-code",
+    "title": "Currently: Generating a uniform distribution on a disk",
+    "section": "Generated Stan code",
+    "text": "Generated Stan code\n\n\n\ndisk\n\n\nfunctions {\n// This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform\n// (wrt to `x` and `y`) - I'll work it out another time.\n// \n// This does the constraining - if you want to also put a prior on `x` and `y`, \n// you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.\n// It *would* be more convenient if there was an easier mechanism to combine (custom) \"constraining\" and \"putting a prior on the constrained parameters\".\nreal uniform_disk_lpdf(\n    vector xi,\n    int n\n) {\n    return 0.0;\n}\n// This function returns a Named Tuple, which for Stan will look like a regular Tuple. \n// Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, \n// e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.\ntuple(real, real, real, real) uniform_disk_constrain(\n    vector xi\n) {\n    int n = dims(xi)[1];\n    real radius = inv_logit(xi[1]);\n    real angle = ((2 * 3.141592653589793) * inv_logit(xi[2]));\n    return (radius, angle, (cos(angle) * radius), (sin(angle) * radius));\n}\nreal dummy_lpdf(real args1, tuple(real, real, real, real) args2) {\n    return 0.0;\n}\nreal dummy_lpdfs(real args1, tuple(real, real, real, real) args2) {\n    return 0.0;\n}\nreal dummy_rng(tuple(real, real, real, real) args1) {\n    return 0.0;\n}\n}\ndata {\n}\ntransformed data {\n    real dummy_obs = 1.0;\n}\nparameters {\n    vector[2] theta_xi;\n}\ntransformed parameters {\n    tuple(real, real, real, real) theta = uniform_disk_constrain(theta_xi);\n}\nmodel {\n    theta_xi ~ uniform_disk(2);\n    // Without this line StanBlocks.jl will try to move `theta` to generated quantities\n    dummy_obs ~ dummy(theta);\n}\ngenerated quantities {\n    // Without this line StanBlocks.jl will try to move `theta` to generated quantities\n    real dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);\n    // Without this line StanBlocks.jl will try to move `theta` to generated quantities\n    real dummy_obs_gen = dummy_rng(theta);\n}"
+  },
+  {
     "objectID": "slic/index.html",
     "href": "slic/index.html",
     "title": "The @slic macro",
