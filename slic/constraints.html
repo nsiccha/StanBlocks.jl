@@ -239,28 +239,35 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-4"><a href="#cb1-4"></a>    <span class="st">"""</span></span>
 <span id="cb1-5"><a href="#cb1-5"></a><span class="st">    This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform</span></span>
 <span id="cb1-6"><a href="#cb1-6"></a><span class="st">    (wrt to `x` and `y`) - I'll work it out another time.</span></span>
-<span id="cb1-7"><a href="#cb1-7"></a></span>
-<span id="cb1-8"><a href="#cb1-8"></a><span class="st">    This does the constraining - if you want to also put a prior on `x` and `y`, </span></span>
-<span id="cb1-9"><a href="#cb1-9"></a><span class="st">    you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
-<span id="cb1-10"><a href="#cb1-10"></a><span class="st">    It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..</span></span>
-<span id="cb1-11"><a href="#cb1-11"></a><span class="st">    """</span></span>
-<span id="cb1-12"><a href="#cb1-12"></a>    <span class="fu">uniform_disk_lpdf</span>(xi<span class="op">::</span><span class="dt">vector</span>[n], n) <span class="op">=</span> <span class="fl">0</span>.</span>
-<span id="cb1-13"><a href="#cb1-13"></a>    <span class="st">"""</span></span>
-<span id="cb1-14"><a href="#cb1-14"></a><span class="st">    This function returns a Named Tuple, which for Stan will look like a regular Tuple. </span></span>
-<span id="cb1-15"><a href="#cb1-15"></a><span class="st">    Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
-<span id="cb1-16"><a href="#cb1-16"></a><span class="st">    e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
-<span id="cb1-17"><a href="#cb1-17"></a><span class="st">    """</span></span>
-<span id="cb1-18"><a href="#cb1-18"></a>    <span class="fu">uniform_disk_constrain</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
-<span id="cb1-19"><a href="#cb1-19"></a>        radius <span class="op">=</span> <span class="fu">inv_logit</span>(xi[<span class="fl">1</span>])</span>
-<span id="cb1-20"><a href="#cb1-20"></a>        angle <span class="op">=</span> <span class="fl">2</span>pi <span class="op">*</span> <span class="fu">inv_logit</span>(xi[<span class="fl">2</span>])</span>
-<span id="cb1-21"><a href="#cb1-21"></a>        (;radius, angle, x<span class="op">=</span><span class="fu">cos</span>(angle) <span class="op">*</span> radius, y<span class="op">=</span><span class="fu">sin</span>(angle) <span class="op">*</span> radius)</span>
-<span id="cb1-22"><a href="#cb1-22"></a>    <span class="cf">end</span></span>
-<span id="cb1-23"><a href="#cb1-23"></a><span class="cf">end</span></span>
-<span id="cb1-24"><a href="#cb1-24"></a></span>
-<span id="cb1-25"><a href="#cb1-25"></a>disk <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span></span>
-<span id="cb1-26"><a href="#cb1-26"></a>    xi <span class="op">~</span> <span class="fu">uniform_disk</span>(<span class="fl">2</span>)</span>
-<span id="cb1-27"><a href="#cb1-27"></a>    <span class="cf">return</span> <span class="fu">uniform_disk_constrain</span>(xi)</span>
-<span id="cb1-28"><a href="#cb1-28"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<span id="cb1-7"><a href="#cb1-7"></a><span class="st">    """</span></span>
+<span id="cb1-8"><a href="#cb1-8"></a>    <span class="fu">uniform_disk_lpdf</span>(xi<span class="op">::</span><span class="dt">vector</span>[n], n) <span class="op">=</span> <span class="fl">0</span>.</span>
+<span id="cb1-9"><a href="#cb1-9"></a>    <span class="st">"""</span></span>
+<span id="cb1-10"><a href="#cb1-10"></a><span class="st">    This function returns the constrained parameters `x` and `y` together with the intermediate quantities `radius` and `angle` as a a Named Tuple, </span></span>
+<span id="cb1-11"><a href="#cb1-11"></a><span class="st">    which for Stan will look like a regular Tuple. </span></span>
+<span id="cb1-12"><a href="#cb1-12"></a><span class="st">    Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
+<span id="cb1-13"><a href="#cb1-13"></a><span class="st">    e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
+<span id="cb1-14"><a href="#cb1-14"></a><span class="st">    """</span></span>
+<span id="cb1-15"><a href="#cb1-15"></a>    <span class="fu">uniform_disk_constrain</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb1-16"><a href="#cb1-16"></a>        radius <span class="op">=</span> <span class="fu">inv_logit</span>(xi[<span class="fl">1</span>])</span>
+<span id="cb1-17"><a href="#cb1-17"></a>        angle <span class="op">=</span> <span class="fl">2</span>pi <span class="op">*</span> <span class="fu">inv_logit</span>(xi[<span class="fl">2</span>])</span>
+<span id="cb1-18"><a href="#cb1-18"></a>        (;radius, angle, x<span class="op">=</span><span class="fu">cos</span>(angle) <span class="op">*</span> radius, y<span class="op">=</span><span class="fu">sin</span>(angle) <span class="op">*</span> radius)</span>
+<span id="cb1-19"><a href="#cb1-19"></a>    <span class="cf">end</span></span>
+<span id="cb1-20"><a href="#cb1-20"></a><span class="cf">end</span></span>
+<span id="cb1-21"><a href="#cb1-21"></a></span>
+<span id="cb1-22"><a href="#cb1-22"></a>disk <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span></span>
+<span id="cb1-23"><a href="#cb1-23"></a>    <span class="st">"""</span></span>
+<span id="cb1-24"><a href="#cb1-24"></a><span class="st">    This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).</span></span>
+<span id="cb1-25"><a href="#cb1-25"></a></span>
+<span id="cb1-26"><a href="#cb1-26"></a><span class="st">    If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
+<span id="cb1-27"><a href="#cb1-27"></a><span class="st">    """</span></span>
+<span id="cb1-28"><a href="#cb1-28"></a>    xi <span class="op">~</span> <span class="fu">uniform_disk</span>(<span class="fl">2</span>)</span>
+<span id="cb1-29"><a href="#cb1-29"></a>    <span class="st">"""</span></span>
+<span id="cb1-30"><a href="#cb1-30"></a><span class="st">    This does the constraining.</span></span>
+<span id="cb1-31"><a href="#cb1-31"></a></span>
+<span id="cb1-32"><a href="#cb1-32"></a><span class="st">    It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..</span></span>
+<span id="cb1-33"><a href="#cb1-33"></a><span class="st">    """</span></span>
+<span id="cb1-34"><a href="#cb1-34"></a>    <span class="cf">return</span> <span class="fu">uniform_disk_constrain</span>(xi)</span>
+<span id="cb1-35"><a href="#cb1-35"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </section>
 <section id="future-status" class="level3">
 <h3 class="anchored" data-anchor-id="future-status">Future status</h3>
@@ -269,8 +276,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="generated-stan-code" class="level2">
 <h2 class="anchored" data-anchor-id="generated-stan-code">Generated Stan code</h2>
-<div id="0726dfb5" class="cell" data-execution_count="2">
-<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="11">
+<div id="6b472ae3" class="cell" data-execution_count="1">
+<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="2">
 <div class="tabset-margin-container"></div><div class="panel-tabset">
 <ul class="nav nav-tabs" role="tablist"><li class="nav-item" role="presentation"><a class="nav-link active" id="tabset-1-1-tab" data-bs-toggle="tab" data-bs-target="#tabset-1-1" role="tab" aria-controls="tabset-1-1" aria-selected="true" href=""><code>disk</code></a></li></ul>
 <div class="tab-content">
@@ -278,59 +285,68 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb2-1"><a href="#cb2-1"></a><span class="kw">functions</span> {</span>
 <span id="cb2-2"><a href="#cb2-2"></a><span class="co">// This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform</span></span>
 <span id="cb2-3"><a href="#cb2-3"></a><span class="co">// (wrt to `x` and `y`) - I'll work it out another time.</span></span>
-<span id="cb2-4"><a href="#cb2-4"></a><span class="co">// </span></span>
-<span id="cb2-5"><a href="#cb2-5"></a><span class="co">// This does the constraining - if you want to also put a prior on `x` and `y`, </span></span>
-<span id="cb2-6"><a href="#cb2-6"></a><span class="co">// you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
-<span id="cb2-7"><a href="#cb2-7"></a><span class="co">// It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters".</span></span>
-<span id="cb2-8"><a href="#cb2-8"></a><span class="dt">real</span> uniform_disk_lpdf(</span>
-<span id="cb2-9"><a href="#cb2-9"></a>    <span class="dt">vector</span> xi,</span>
-<span id="cb2-10"><a href="#cb2-10"></a>    <span class="dt">int</span> n</span>
-<span id="cb2-11"><a href="#cb2-11"></a>) {</span>
-<span id="cb2-12"><a href="#cb2-12"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
-<span id="cb2-13"><a href="#cb2-13"></a>}</span>
-<span id="cb2-14"><a href="#cb2-14"></a><span class="co">// This function returns a Named Tuple, which for Stan will look like a regular Tuple. </span></span>
-<span id="cb2-15"><a href="#cb2-15"></a><span class="co">// Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
-<span id="cb2-16"><a href="#cb2-16"></a><span class="co">// e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
-<span id="cb2-17"><a href="#cb2-17"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) uniform_disk_constrain(</span>
-<span id="cb2-18"><a href="#cb2-18"></a>    <span class="dt">vector</span> xi</span>
-<span id="cb2-19"><a href="#cb2-19"></a>) {</span>
-<span id="cb2-20"><a href="#cb2-20"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
-<span id="cb2-21"><a href="#cb2-21"></a>    <span class="dt">real</span> radius = inv_logit(xi[<span class="dv">1</span>]);</span>
-<span id="cb2-22"><a href="#cb2-22"></a>    <span class="dt">real</span> angle = ((<span class="dv">2</span> * <span class="fl">3.141592653589793</span>) * inv_logit(xi[<span class="dv">2</span>]));</span>
-<span id="cb2-23"><a href="#cb2-23"></a>    <span class="cf">return</span> (radius, angle, (cos(angle) * radius), (sin(angle) * radius));</span>
+<span id="cb2-4"><a href="#cb2-4"></a><span class="dt">real</span> uniform_disk_lpdf(</span>
+<span id="cb2-5"><a href="#cb2-5"></a>    <span class="dt">vector</span> xi,</span>
+<span id="cb2-6"><a href="#cb2-6"></a>    <span class="dt">int</span> n</span>
+<span id="cb2-7"><a href="#cb2-7"></a>) {</span>
+<span id="cb2-8"><a href="#cb2-8"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb2-9"><a href="#cb2-9"></a>}</span>
+<span id="cb2-10"><a href="#cb2-10"></a><span class="co">// This function returns the constrained parameters `x` and `y` together with the intermediate quantities `radius` and `angle` as a a Named Tuple, </span></span>
+<span id="cb2-11"><a href="#cb2-11"></a><span class="co">// which for Stan will look like a regular Tuple. </span></span>
+<span id="cb2-12"><a href="#cb2-12"></a><span class="co">// Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
+<span id="cb2-13"><a href="#cb2-13"></a><span class="co">// e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
+<span id="cb2-14"><a href="#cb2-14"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) uniform_disk_constrain(</span>
+<span id="cb2-15"><a href="#cb2-15"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb2-16"><a href="#cb2-16"></a>) {</span>
+<span id="cb2-17"><a href="#cb2-17"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
+<span id="cb2-18"><a href="#cb2-18"></a>    <span class="dt">real</span> radius = inv_logit(xi[<span class="dv">1</span>]);</span>
+<span id="cb2-19"><a href="#cb2-19"></a>    <span class="dt">real</span> angle = ((<span class="dv">2</span> * <span class="fl">3.141592653589793</span>) * inv_logit(xi[<span class="dv">2</span>]));</span>
+<span id="cb2-20"><a href="#cb2-20"></a>    <span class="cf">return</span> (radius, angle, (cos(angle) * radius), (sin(angle) * radius));</span>
+<span id="cb2-21"><a href="#cb2-21"></a>}</span>
+<span id="cb2-22"><a href="#cb2-22"></a><span class="dt">real</span> dummy_lpdf(<span class="dt">real</span> args1, <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) args2) {</span>
+<span id="cb2-23"><a href="#cb2-23"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
 <span id="cb2-24"><a href="#cb2-24"></a>}</span>
-<span id="cb2-25"><a href="#cb2-25"></a><span class="dt">real</span> dummy_lpdf(<span class="dt">real</span> args1, <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) args2) {</span>
+<span id="cb2-25"><a href="#cb2-25"></a><span class="dt">real</span> dummy_lpdfs(<span class="dt">real</span> args1, <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) args2) {</span>
 <span id="cb2-26"><a href="#cb2-26"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
 <span id="cb2-27"><a href="#cb2-27"></a>}</span>
-<span id="cb2-28"><a href="#cb2-28"></a><span class="dt">real</span> dummy_lpdfs(<span class="dt">real</span> args1, <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) args2) {</span>
+<span id="cb2-28"><a href="#cb2-28"></a><span class="dt">real</span> dummy_rng(<span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) args1) {</span>
 <span id="cb2-29"><a href="#cb2-29"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
 <span id="cb2-30"><a href="#cb2-30"></a>}</span>
-<span id="cb2-31"><a href="#cb2-31"></a><span class="dt">real</span> dummy_rng(<span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) args1) {</span>
-<span id="cb2-32"><a href="#cb2-32"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb2-31"><a href="#cb2-31"></a>}</span>
+<span id="cb2-32"><a href="#cb2-32"></a><span class="kw">data</span> {</span>
 <span id="cb2-33"><a href="#cb2-33"></a>}</span>
-<span id="cb2-34"><a href="#cb2-34"></a>}</span>
-<span id="cb2-35"><a href="#cb2-35"></a><span class="kw">data</span> {</span>
+<span id="cb2-34"><a href="#cb2-34"></a><span class="kw">transformed data</span> {</span>
+<span id="cb2-35"><a href="#cb2-35"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
 <span id="cb2-36"><a href="#cb2-36"></a>}</span>
-<span id="cb2-37"><a href="#cb2-37"></a><span class="kw">transformed data</span> {</span>
-<span id="cb2-38"><a href="#cb2-38"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
-<span id="cb2-39"><a href="#cb2-39"></a>}</span>
-<span id="cb2-40"><a href="#cb2-40"></a><span class="kw">parameters</span> {</span>
-<span id="cb2-41"><a href="#cb2-41"></a>    <span class="dt">vector</span>[<span class="dv">2</span>] theta_xi;</span>
-<span id="cb2-42"><a href="#cb2-42"></a>}</span>
-<span id="cb2-43"><a href="#cb2-43"></a><span class="kw">transformed parameters</span> {</span>
-<span id="cb2-44"><a href="#cb2-44"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) theta = uniform_disk_constrain(theta_xi);</span>
-<span id="cb2-45"><a href="#cb2-45"></a>}</span>
-<span id="cb2-46"><a href="#cb2-46"></a><span class="kw">model</span> {</span>
-<span id="cb2-47"><a href="#cb2-47"></a>    theta_xi ~ uniform_disk(<span class="dv">2</span>);</span>
-<span id="cb2-48"><a href="#cb2-48"></a>    <span class="co">// Without this line StanBlocks.jl will try to move `theta` to generated quantities</span></span>
-<span id="cb2-49"><a href="#cb2-49"></a>    dummy_obs ~ dummy(theta);</span>
+<span id="cb2-37"><a href="#cb2-37"></a><span class="kw">parameters</span> {</span>
+<span id="cb2-38"><a href="#cb2-38"></a>    <span class="co">// This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).</span></span>
+<span id="cb2-39"><a href="#cb2-39"></a>    <span class="co">// </span></span>
+<span id="cb2-40"><a href="#cb2-40"></a>    <span class="co">// If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
+<span id="cb2-41"><a href="#cb2-41"></a>    <span class="co">// </span></span>
+<span id="cb2-42"><a href="#cb2-42"></a>    <span class="dt">vector</span>[<span class="dv">2</span>] theta_xi;</span>
+<span id="cb2-43"><a href="#cb2-43"></a>}</span>
+<span id="cb2-44"><a href="#cb2-44"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb2-45"><a href="#cb2-45"></a>    <span class="co">// This does the constraining.</span></span>
+<span id="cb2-46"><a href="#cb2-46"></a>    <span class="co">// </span></span>
+<span id="cb2-47"><a href="#cb2-47"></a>    <span class="co">// It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..</span></span>
+<span id="cb2-48"><a href="#cb2-48"></a>    <span class="co">// </span></span>
+<span id="cb2-49"><a href="#cb2-49"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) theta = uniform_disk_constrain(theta_xi);</span>
 <span id="cb2-50"><a href="#cb2-50"></a>}</span>
-<span id="cb2-51"><a href="#cb2-51"></a><span class="kw">generated quantities</span> {</span>
-<span id="cb2-52"><a href="#cb2-52"></a>    <span class="co">// Without this line StanBlocks.jl will try to move `theta` to generated quantities</span></span>
-<span id="cb2-53"><a href="#cb2-53"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
-<span id="cb2-54"><a href="#cb2-54"></a>    <span class="co">// Without this line StanBlocks.jl will try to move `theta` to generated quantities</span></span>
-<span id="cb2-55"><a href="#cb2-55"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
-<span id="cb2-56"><a href="#cb2-56"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<span id="cb2-51"><a href="#cb2-51"></a><span class="kw">model</span> {</span>
+<span id="cb2-52"><a href="#cb2-52"></a>    <span class="co">// This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).</span></span>
+<span id="cb2-53"><a href="#cb2-53"></a>    <span class="co">// </span></span>
+<span id="cb2-54"><a href="#cb2-54"></a>    <span class="co">// If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
+<span id="cb2-55"><a href="#cb2-55"></a>    <span class="co">// </span></span>
+<span id="cb2-56"><a href="#cb2-56"></a>    theta_xi ~ uniform_disk(<span class="dv">2</span>);</span>
+<span id="cb2-57"><a href="#cb2-57"></a>    <span class="co">// Without this line StanBlocks.jl will try to move `theta` to generated quantities</span></span>
+<span id="cb2-58"><a href="#cb2-58"></a>    dummy_obs ~ dummy(theta);</span>
+<span id="cb2-59"><a href="#cb2-59"></a>}</span>
+<span id="cb2-60"><a href="#cb2-60"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb2-61"><a href="#cb2-61"></a>    <span class="co">// Without this line StanBlocks.jl will try to move `theta` to generated quantities</span></span>
+<span id="cb2-62"><a href="#cb2-62"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
+<span id="cb2-63"><a href="#cb2-63"></a>    <span class="co">// Without this line StanBlocks.jl will try to move `theta` to generated quantities</span></span>
+<span id="cb2-64"><a href="#cb2-64"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
+<span id="cb2-65"><a href="#cb2-65"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </div>
 </div>
 </div>
@@ -822,86 +838,101 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb3-26"><a href="#cb3-26"></a>    <span class="st">"""</span></span>
 <span id="cb3-27"><a href="#cb3-27"></a><span class="st">    This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform</span></span>
 <span id="cb3-28"><a href="#cb3-28"></a><span class="st">    (wrt to `x` and `y`) - I'll work it out another time.</span></span>
-<span id="cb3-29"><a href="#cb3-29"></a></span>
-<span id="cb3-30"><a href="#cb3-30"></a><span class="st">    This does the constraining - if you want to also put a prior on `x` and `y`, </span></span>
-<span id="cb3-31"><a href="#cb3-31"></a><span class="st">    you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
-<span id="cb3-32"><a href="#cb3-32"></a><span class="st">    It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..</span></span>
-<span id="cb3-33"><a href="#cb3-33"></a><span class="st">    """</span></span>
-<span id="cb3-34"><a href="#cb3-34"></a>    <span class="fu">uniform_disk_lpdf</span>(xi<span class="op">::</span><span class="dt">vector</span>[n], n) <span class="op">=</span> <span class="fl">0</span>.</span>
-<span id="cb3-35"><a href="#cb3-35"></a>    <span class="st">"""</span></span>
-<span id="cb3-36"><a href="#cb3-36"></a><span class="st">    This function returns a Named Tuple, which for Stan will look like a regular Tuple. </span></span>
-<span id="cb3-37"><a href="#cb3-37"></a><span class="st">    Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
-<span id="cb3-38"><a href="#cb3-38"></a><span class="st">    e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
-<span id="cb3-39"><a href="#cb3-39"></a><span class="st">    """</span></span>
-<span id="cb3-40"><a href="#cb3-40"></a>    <span class="fu">uniform_disk_constrain</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
-<span id="cb3-41"><a href="#cb3-41"></a>        radius <span class="op">=</span> <span class="fu">inv_logit</span>(xi[<span class="fl">1</span>])</span>
-<span id="cb3-42"><a href="#cb3-42"></a>        angle <span class="op">=</span> <span class="fl">2</span>pi <span class="op">*</span> <span class="fu">inv_logit</span>(xi[<span class="fl">2</span>])</span>
-<span id="cb3-43"><a href="#cb3-43"></a>        (;radius, angle, x<span class="op">=</span><span class="fu">cos</span>(angle) <span class="op">*</span> radius, y<span class="op">=</span><span class="fu">sin</span>(angle) <span class="op">*</span> radius)</span>
-<span id="cb3-44"><a href="#cb3-44"></a>    <span class="cf">end</span></span>
-<span id="cb3-45"><a href="#cb3-45"></a><span class="cf">end</span></span>
-<span id="cb3-46"><a href="#cb3-46"></a></span>
-<span id="cb3-47"><a href="#cb3-47"></a>disk <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span></span>
-<span id="cb3-48"><a href="#cb3-48"></a>    xi <span class="op">~</span> <span class="fu">uniform_disk</span>(<span class="fl">2</span>)</span>
-<span id="cb3-49"><a href="#cb3-49"></a>    <span class="cf">return</span> <span class="fu">uniform_disk_constrain</span>(xi)</span>
-<span id="cb3-50"><a href="#cb3-50"></a><span class="cf">end</span></span>
-<span id="cb3-51"><a href="#cb3-51"></a><span class="in">```</span></span>
-<span id="cb3-52"><a href="#cb3-52"></a></span>
-<span id="cb3-53"><a href="#cb3-53"></a><span class="fu">### Future status</span></span>
-<span id="cb3-54"><a href="#cb3-54"></a></span>
-<span id="cb3-55"><a href="#cb3-55"></a>TO DO: figure out a syntax which would make custom constraints even easier.</span>
-<span id="cb3-56"><a href="#cb3-56"></a></span>
-<span id="cb3-57"><a href="#cb3-57"></a><span class="fu">## Generated Stan code</span></span>
-<span id="cb3-58"><a href="#cb3-58"></a></span>
+<span id="cb3-29"><a href="#cb3-29"></a><span class="st">    """</span></span>
+<span id="cb3-30"><a href="#cb3-30"></a>    <span class="fu">uniform_disk_lpdf</span>(xi<span class="op">::</span><span class="dt">vector</span>[n], n) <span class="op">=</span> <span class="fl">0</span>.</span>
+<span id="cb3-31"><a href="#cb3-31"></a>    <span class="st">"""</span></span>
+<span id="cb3-32"><a href="#cb3-32"></a><span class="st">    This function returns the constrained parameters `x` and `y` together with the intermediate quantities `radius` and `angle` as a a Named Tuple, </span></span>
+<span id="cb3-33"><a href="#cb3-33"></a><span class="st">    which for Stan will look like a regular Tuple. </span></span>
+<span id="cb3-34"><a href="#cb3-34"></a><span class="st">    Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
+<span id="cb3-35"><a href="#cb3-35"></a><span class="st">    e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
+<span id="cb3-36"><a href="#cb3-36"></a><span class="st">    """</span></span>
+<span id="cb3-37"><a href="#cb3-37"></a>    <span class="fu">uniform_disk_constrain</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb3-38"><a href="#cb3-38"></a>        radius <span class="op">=</span> <span class="fu">inv_logit</span>(xi[<span class="fl">1</span>])</span>
+<span id="cb3-39"><a href="#cb3-39"></a>        angle <span class="op">=</span> <span class="fl">2</span>pi <span class="op">*</span> <span class="fu">inv_logit</span>(xi[<span class="fl">2</span>])</span>
+<span id="cb3-40"><a href="#cb3-40"></a>        (;radius, angle, x<span class="op">=</span><span class="fu">cos</span>(angle) <span class="op">*</span> radius, y<span class="op">=</span><span class="fu">sin</span>(angle) <span class="op">*</span> radius)</span>
+<span id="cb3-41"><a href="#cb3-41"></a>    <span class="cf">end</span></span>
+<span id="cb3-42"><a href="#cb3-42"></a><span class="cf">end</span></span>
+<span id="cb3-43"><a href="#cb3-43"></a></span>
+<span id="cb3-44"><a href="#cb3-44"></a>disk <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span></span>
+<span id="cb3-45"><a href="#cb3-45"></a>    <span class="st">"""</span></span>
+<span id="cb3-46"><a href="#cb3-46"></a><span class="st">    This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).</span></span>
+<span id="cb3-47"><a href="#cb3-47"></a></span>
+<span id="cb3-48"><a href="#cb3-48"></a><span class="st">    If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
+<span id="cb3-49"><a href="#cb3-49"></a><span class="st">    """</span></span>
+<span id="cb3-50"><a href="#cb3-50"></a>    xi <span class="op">~</span> <span class="fu">uniform_disk</span>(<span class="fl">2</span>)</span>
+<span id="cb3-51"><a href="#cb3-51"></a>    <span class="st">"""</span></span>
+<span id="cb3-52"><a href="#cb3-52"></a><span class="st">    This does the constraining.</span></span>
+<span id="cb3-53"><a href="#cb3-53"></a></span>
+<span id="cb3-54"><a href="#cb3-54"></a><span class="st">    It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..</span></span>
+<span id="cb3-55"><a href="#cb3-55"></a><span class="st">    """</span></span>
+<span id="cb3-56"><a href="#cb3-56"></a>    <span class="cf">return</span> <span class="fu">uniform_disk_constrain</span>(xi)</span>
+<span id="cb3-57"><a href="#cb3-57"></a><span class="cf">end</span></span>
+<span id="cb3-58"><a href="#cb3-58"></a><span class="in">```</span></span>
 <span id="cb3-59"><a href="#cb3-59"></a></span>
-<span id="cb3-62"><a href="#cb3-62"></a><span class="in">```{julia}</span></span>
-<span id="cb3-63"><a href="#cb3-63"></a><span class="im">using</span> <span class="bu">StanBlocks</span>, <span class="bu">QuartoComponents</span></span>
-<span id="cb3-64"><a href="#cb3-64"></a></span>
-<span id="cb3-65"><a href="#cb3-65"></a><span class="pp">@deffun</span> <span class="cf">begin</span> </span>
-<span id="cb3-66"><a href="#cb3-66"></a>    <span class="st">"""</span></span>
-<span id="cb3-67"><a href="#cb3-67"></a><span class="st">    This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform</span></span>
-<span id="cb3-68"><a href="#cb3-68"></a><span class="st">    (wrt to `x` and `y`) - I'll work it out another time.</span></span>
-<span id="cb3-69"><a href="#cb3-69"></a></span>
-<span id="cb3-70"><a href="#cb3-70"></a><span class="st">    This does the constraining - if you want to also put a prior on `x` and `y`, </span></span>
-<span id="cb3-71"><a href="#cb3-71"></a><span class="st">    you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
-<span id="cb3-72"><a href="#cb3-72"></a><span class="st">    It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters".</span></span>
-<span id="cb3-73"><a href="#cb3-73"></a><span class="st">    """</span></span>
-<span id="cb3-74"><a href="#cb3-74"></a>    <span class="fu">uniform_disk_lpdf</span>(xi<span class="op">::</span><span class="dt">vector</span>[n], n) <span class="op">=</span> <span class="fl">0</span>.</span>
-<span id="cb3-75"><a href="#cb3-75"></a>    <span class="st">"""</span></span>
-<span id="cb3-76"><a href="#cb3-76"></a><span class="st">    This function returns a Named Tuple, which for Stan will look like a regular Tuple. </span></span>
-<span id="cb3-77"><a href="#cb3-77"></a><span class="st">    Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
-<span id="cb3-78"><a href="#cb3-78"></a><span class="st">    e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
-<span id="cb3-79"><a href="#cb3-79"></a><span class="st">    """</span></span>
-<span id="cb3-80"><a href="#cb3-80"></a>    <span class="fu">uniform_disk_constrain</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
-<span id="cb3-81"><a href="#cb3-81"></a>        radius <span class="op">=</span> <span class="fu">inv_logit</span>(xi[<span class="fl">1</span>])</span>
-<span id="cb3-82"><a href="#cb3-82"></a>        angle <span class="op">=</span> <span class="fl">2</span>pi <span class="op">*</span> <span class="fu">inv_logit</span>(xi[<span class="fl">2</span>])</span>
-<span id="cb3-83"><a href="#cb3-83"></a>        (;radius, angle, x<span class="op">=</span><span class="fu">cos</span>(angle) <span class="op">*</span> radius, y<span class="op">=</span><span class="fu">sin</span>(angle) <span class="op">*</span> radius)</span>
-<span id="cb3-84"><a href="#cb3-84"></a>    <span class="cf">end</span></span>
-<span id="cb3-85"><a href="#cb3-85"></a>    <span class="fu">dummy_lpdf</span>(args<span class="op">...</span>) <span class="op">=</span> <span class="fl">0</span>.</span>
-<span id="cb3-86"><a href="#cb3-86"></a>    <span class="fu">dummy_lpdfs</span>(args<span class="op">...</span>) <span class="op">=</span> <span class="fl">0</span>.</span>
-<span id="cb3-87"><a href="#cb3-87"></a>    <span class="fu">dummy_rng</span>(args<span class="op">...</span>) <span class="op">=</span> <span class="fl">0</span>.</span>
-<span id="cb3-88"><a href="#cb3-88"></a><span class="cf">end</span></span>
-<span id="cb3-89"><a href="#cb3-89"></a></span>
-<span id="cb3-90"><a href="#cb3-90"></a>disk <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span></span>
-<span id="cb3-91"><a href="#cb3-91"></a>    xi <span class="op">~</span> <span class="fu">uniform_disk</span>(<span class="fl">2</span>)</span>
-<span id="cb3-92"><a href="#cb3-92"></a>    <span class="cf">return</span> <span class="fu">uniform_disk_constrain</span>(xi)</span>
-<span id="cb3-93"><a href="#cb3-93"></a><span class="cf">end</span></span>
+<span id="cb3-60"><a href="#cb3-60"></a><span class="fu">### Future status</span></span>
+<span id="cb3-61"><a href="#cb3-61"></a></span>
+<span id="cb3-62"><a href="#cb3-62"></a>TO DO: figure out a syntax which would make custom constraints even easier.</span>
+<span id="cb3-63"><a href="#cb3-63"></a></span>
+<span id="cb3-64"><a href="#cb3-64"></a><span class="fu">## Generated Stan code</span></span>
+<span id="cb3-65"><a href="#cb3-65"></a></span>
+<span id="cb3-66"><a href="#cb3-66"></a></span>
+<span id="cb3-69"><a href="#cb3-69"></a><span class="in">```{julia}</span></span>
+<span id="cb3-70"><a href="#cb3-70"></a><span class="im">using</span> <span class="bu">StanBlocks</span>, <span class="bu">QuartoComponents</span></span>
+<span id="cb3-71"><a href="#cb3-71"></a></span>
+<span id="cb3-72"><a href="#cb3-72"></a><span class="pp">@deffun</span> <span class="cf">begin</span> </span>
+<span id="cb3-73"><a href="#cb3-73"></a>    <span class="st">"""</span></span>
+<span id="cb3-74"><a href="#cb3-74"></a><span class="st">    This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform</span></span>
+<span id="cb3-75"><a href="#cb3-75"></a><span class="st">    (wrt to `x` and `y`) - I'll work it out another time.</span></span>
+<span id="cb3-76"><a href="#cb3-76"></a><span class="st">    """</span></span>
+<span id="cb3-77"><a href="#cb3-77"></a>    <span class="fu">uniform_disk_lpdf</span>(xi<span class="op">::</span><span class="dt">vector</span>[n], n) <span class="op">=</span> <span class="fl">0</span>.</span>
+<span id="cb3-78"><a href="#cb3-78"></a>    <span class="st">"""</span></span>
+<span id="cb3-79"><a href="#cb3-79"></a><span class="st">    This function returns the constrained parameters `x` and `y` together with the intermediate quantities `radius` and `angle` as a a Named Tuple, </span></span>
+<span id="cb3-80"><a href="#cb3-80"></a><span class="st">    which for Stan will look like a regular Tuple. </span></span>
+<span id="cb3-81"><a href="#cb3-81"></a><span class="st">    Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
+<span id="cb3-82"><a href="#cb3-82"></a><span class="st">    e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
+<span id="cb3-83"><a href="#cb3-83"></a><span class="st">    """</span></span>
+<span id="cb3-84"><a href="#cb3-84"></a>    <span class="fu">uniform_disk_constrain</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb3-85"><a href="#cb3-85"></a>        radius <span class="op">=</span> <span class="fu">inv_logit</span>(xi[<span class="fl">1</span>])</span>
+<span id="cb3-86"><a href="#cb3-86"></a>        angle <span class="op">=</span> <span class="fl">2</span>pi <span class="op">*</span> <span class="fu">inv_logit</span>(xi[<span class="fl">2</span>])</span>
+<span id="cb3-87"><a href="#cb3-87"></a>        (;radius, angle, x<span class="op">=</span><span class="fu">cos</span>(angle) <span class="op">*</span> radius, y<span class="op">=</span><span class="fu">sin</span>(angle) <span class="op">*</span> radius)</span>
+<span id="cb3-88"><a href="#cb3-88"></a>    <span class="cf">end</span></span>
+<span id="cb3-89"><a href="#cb3-89"></a>    <span class="fu">dummy_lpdf</span>(args<span class="op">...</span>) <span class="op">=</span> <span class="fl">0</span>.</span>
+<span id="cb3-90"><a href="#cb3-90"></a>    <span class="fu">dummy_lpdfs</span>(args<span class="op">...</span>) <span class="op">=</span> <span class="fl">0</span>.</span>
+<span id="cb3-91"><a href="#cb3-91"></a>    <span class="fu">dummy_rng</span>(args<span class="op">...</span>) <span class="op">=</span> <span class="fl">0</span>.</span>
+<span id="cb3-92"><a href="#cb3-92"></a><span class="cf">end</span></span>
+<span id="cb3-93"><a href="#cb3-93"></a></span>
 <span id="cb3-94"><a href="#cb3-94"></a></span>
-<span id="cb3-95"><a href="#cb3-95"></a>dummy_model <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
-<span id="cb3-96"><a href="#cb3-96"></a>    dummy_obs <span class="op">=</span> <span class="fl">1</span>. </span>
-<span id="cb3-97"><a href="#cb3-97"></a>    <span class="st">"Without this line StanBlocks.jl will try to move `theta` to generated quantities"</span></span>
-<span id="cb3-98"><a href="#cb3-98"></a>    dummy_obs <span class="op">~</span> <span class="fu">dummy</span>(theta)</span>
-<span id="cb3-99"><a href="#cb3-99"></a><span class="cf">end</span></span>
-<span id="cb3-100"><a href="#cb3-100"></a></span>
-<span id="cb3-101"><a href="#cb3-101"></a>posteriors <span class="op">=</span> (;</span>
-<span id="cb3-102"><a href="#cb3-102"></a>    disk<span class="op">=</span><span class="fu">dummy_model</span>(<span class="kw">quote</span> </span>
-<span id="cb3-103"><a href="#cb3-103"></a>        theta <span class="op">~</span> <span class="fu">disk</span>()</span>
-<span id="cb3-104"><a href="#cb3-104"></a>    <span class="kw">end</span>)</span>
-<span id="cb3-105"><a href="#cb3-105"></a>)</span>
-<span id="cb3-106"><a href="#cb3-106"></a></span>
-<span id="cb3-107"><a href="#cb3-107"></a> <span class="fu">map</span>(posteriors) <span class="cf">do</span> posterior </span>
-<span id="cb3-108"><a href="#cb3-108"></a>    QuartoComponents.<span class="fu">Code</span>(<span class="st">"stan"</span>, <span class="fu">stan_code</span>(posterior))</span>
-<span id="cb3-109"><a href="#cb3-109"></a><span class="cf">end</span> <span class="op">|&gt;</span> QuartoComponents.Tabset</span>
-<span id="cb3-110"><a href="#cb3-110"></a><span class="in">```</span></span>
+<span id="cb3-95"><a href="#cb3-95"></a>disk <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span></span>
+<span id="cb3-96"><a href="#cb3-96"></a>    <span class="st">"""</span></span>
+<span id="cb3-97"><a href="#cb3-97"></a><span class="st">    This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).</span></span>
+<span id="cb3-98"><a href="#cb3-98"></a></span>
+<span id="cb3-99"><a href="#cb3-99"></a><span class="st">    If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
+<span id="cb3-100"><a href="#cb3-100"></a><span class="st">    """</span></span>
+<span id="cb3-101"><a href="#cb3-101"></a>    xi <span class="op">~</span> <span class="fu">uniform_disk</span>(<span class="fl">2</span>)</span>
+<span id="cb3-102"><a href="#cb3-102"></a>    <span class="st">"""</span></span>
+<span id="cb3-103"><a href="#cb3-103"></a><span class="st">    This does the constraining.</span></span>
+<span id="cb3-104"><a href="#cb3-104"></a></span>
+<span id="cb3-105"><a href="#cb3-105"></a><span class="st">    It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..</span></span>
+<span id="cb3-106"><a href="#cb3-106"></a><span class="st">    """</span></span>
+<span id="cb3-107"><a href="#cb3-107"></a>    <span class="cf">return</span> <span class="fu">uniform_disk_constrain</span>(xi)</span>
+<span id="cb3-108"><a href="#cb3-108"></a><span class="cf">end</span></span>
+<span id="cb3-109"><a href="#cb3-109"></a></span>
+<span id="cb3-110"><a href="#cb3-110"></a>dummy_model <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb3-111"><a href="#cb3-111"></a>    dummy_obs <span class="op">=</span> <span class="fl">1</span>. </span>
+<span id="cb3-112"><a href="#cb3-112"></a>    <span class="st">"Without this line StanBlocks.jl will try to move `theta` to generated quantities"</span></span>
+<span id="cb3-113"><a href="#cb3-113"></a>    dummy_obs <span class="op">~</span> <span class="fu">dummy</span>(theta)</span>
+<span id="cb3-114"><a href="#cb3-114"></a><span class="cf">end</span></span>
+<span id="cb3-115"><a href="#cb3-115"></a></span>
+<span id="cb3-116"><a href="#cb3-116"></a>posteriors <span class="op">=</span> (;</span>
+<span id="cb3-117"><a href="#cb3-117"></a>    disk<span class="op">=</span><span class="fu">dummy_model</span>(<span class="kw">quote</span> </span>
+<span id="cb3-118"><a href="#cb3-118"></a>        theta <span class="op">~</span> <span class="fu">disk</span>()</span>
+<span id="cb3-119"><a href="#cb3-119"></a>    <span class="kw">end</span>)</span>
+<span id="cb3-120"><a href="#cb3-120"></a>)</span>
+<span id="cb3-121"><a href="#cb3-121"></a></span>
+<span id="cb3-122"><a href="#cb3-122"></a> <span class="fu">map</span>(posteriors) <span class="cf">do</span> posterior </span>
+<span id="cb3-123"><a href="#cb3-123"></a>    QuartoComponents.<span class="fu">Code</span>(<span class="st">"stan"</span>, <span class="fu">stan_code</span>(posterior))</span>
+<span id="cb3-124"><a href="#cb3-124"></a><span class="cf">end</span> <span class="op">|&gt;</span> QuartoComponents.Tabset</span>
+<span id="cb3-125"><a href="#cb3-125"></a><span class="in">```</span></span>
 </code></pre></div><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></div>
 </div></div></div></div></div>
 </div> <!-- /content -->
