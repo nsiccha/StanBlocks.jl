@@ -156,6 +156,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     <a class="nav-link active" href="../slic/isba-2024.html" aria-current="page"> 
 <span class="menu-text">ISBA-2024</span></a>
   </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="../slic/crowdsource.html"> 
+<span class="menu-text">Crowdsourcing</span></a>
+  </li>  
   <li class="nav-item compact">
     <a class="nav-link" href="https://github.com/nsiccha/StanBlocks.jl"> <i class="bi bi-github" role="img">
 </i> 
@@ -239,8 +243,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <p>In the below models, <code>my_bernoulli_lpmfs</code> will be called with the following signatures:</p>
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb2-1"><a href="#cb2-1"></a><span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>[n], f<span class="op">::</span><span class="dt">typeof</span>(logit), theta<span class="op">::</span><span class="dt">vector</span>[n])</span>
 <span id="cb2-2"><a href="#cb2-2"></a><span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>[n], f<span class="op">::</span><span class="dt">typeof</span>(log), theta<span class="op">::</span><span class="dt">vector</span>[n])</span>
-<span id="cb2-3"><a href="#cb2-3"></a><span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>, f<span class="op">::</span><span class="dt">typeof</span>(logit), theta<span class="op">::</span><span class="dt">vector</span>)</span>
-<span id="cb2-4"><a href="#cb2-4"></a><span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>, f<span class="op">::</span><span class="dt">typeof</span>(log), theta<span class="op">::</span><span class="dt">vector</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<span id="cb2-3"><a href="#cb2-3"></a><span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>, f<span class="op">::</span><span class="dt">typeof</span>(logit), theta<span class="op">::</span><span class="dt">real</span>)</span>
+<span id="cb2-4"><a href="#cb2-4"></a><span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>, f<span class="op">::</span><span class="dt">typeof</span>(log), theta<span class="op">::</span><span class="dt">real</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <p>all of which will be covered by the variadic function definitions at the beginning of this section.</p>
 </section>
 <section id="function-type-arguments-and-method-selection-via-their-type" class="level3">
@@ -2063,8 +2067,8 @@ Warning
 <span id="cb21-38"><a href="#cb21-38"></a><span class="in">```julia</span></span>
 <span id="cb21-39"><a href="#cb21-39"></a><span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>[n], f<span class="op">::</span><span class="dt">typeof</span>(logit), theta<span class="op">::</span><span class="dt">vector</span>[n])</span>
 <span id="cb21-40"><a href="#cb21-40"></a><span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>[n], f<span class="op">::</span><span class="dt">typeof</span>(log), theta<span class="op">::</span><span class="dt">vector</span>[n])</span>
-<span id="cb21-41"><a href="#cb21-41"></a><span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>, f<span class="op">::</span><span class="dt">typeof</span>(logit), theta<span class="op">::</span><span class="dt">vector</span>)</span>
-<span id="cb21-42"><a href="#cb21-42"></a><span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>, f<span class="op">::</span><span class="dt">typeof</span>(log), theta<span class="op">::</span><span class="dt">vector</span>)</span>
+<span id="cb21-41"><a href="#cb21-41"></a><span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>, f<span class="op">::</span><span class="dt">typeof</span>(logit), theta<span class="op">::</span><span class="dt">real</span>)</span>
+<span id="cb21-42"><a href="#cb21-42"></a><span class="fu">my_bernoulli_lpmfs</span>(y<span class="op">::</span><span class="dt">int</span>, f<span class="op">::</span><span class="dt">typeof</span>(log), theta<span class="op">::</span><span class="dt">real</span>)</span>
 <span id="cb21-43"><a href="#cb21-43"></a><span class="in">```</span></span>
 <span id="cb21-44"><a href="#cb21-44"></a>all of which will be covered by the variadic function definitions at the beginning of this section.</span>
 <span id="cb21-45"><a href="#cb21-45"></a></span>
