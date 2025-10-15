@@ -290,6 +290,10 @@ end
         (real[n],)=>real[n]
         (matrix[m,n],)=>matrix[m,n]
     end
+    Union{typeof.((log_sum_exp, ))...} => begin 
+        (real, real) => real
+        (vector[n], vector[n]) => vector[n]
+    end
     typeof(÷) => begin 
         (int, int) => int
     end
