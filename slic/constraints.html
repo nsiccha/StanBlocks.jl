@@ -8,7 +8,7 @@
 
 <meta name="author" content="Nikolas Siccha">
 
-<title>Currently: Generating a uniform distribution on a disk – StanBlocks.jl</title>
+<title>User defined reusable constraints – StanBlocks.jl</title>
 <style>
 code{white-space: pre-wrap;}
 span.smallcaps{font-variant: small-caps;}
@@ -182,12 +182,26 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
    
   <ul>
   <li><a href="#stanblocks.jl-implementation" id="toc-stanblocks.jl-implementation" class="nav-link active" data-scroll-target="#stanblocks.jl-implementation">StanBlocks.jl implementation</a></li>
+  <li><a href="#a-uniform-prior-on-a-disk" id="toc-a-uniform-prior-on-a-disk" class="nav-link" data-scroll-target="#a-uniform-prior-on-a-disk">A uniform prior on a disk</a>
+  <ul class="collapse">
   <li><a href="#full-julia-stanblocks.jl-code-to-define-the-models" id="toc-full-julia-stanblocks.jl-code-to-define-the-models" class="nav-link" data-scroll-target="#full-julia-stanblocks.jl-code-to-define-the-models">Full Julia + StanBlocks.jl code to define the models</a>
   <ul class="collapse">
   <li><a href="#current-status" id="toc-current-status" class="nav-link" data-scroll-target="#current-status">Current status</a></li>
   <li><a href="#future-status" id="toc-future-status" class="nav-link" data-scroll-target="#future-status">Future status</a></li>
   </ul></li>
   <li><a href="#generated-stan-code" id="toc-generated-stan-code" class="nav-link" data-scroll-target="#generated-stan-code">Generated Stan code</a></li>
+  </ul></li>
+  <li><a href="#adaptive-centering-for-hierarchical-models" id="toc-adaptive-centering-for-hierarchical-models" class="nav-link" data-scroll-target="#adaptive-centering-for-hierarchical-models">(Adaptive?) centering for hierarchical models</a></li>
+  <li><a href="#various-simplex-constraining-transformations" id="toc-various-simplex-constraining-transformations" class="nav-link" data-scroll-target="#various-simplex-constraining-transformations">Various simplex constraining transformations</a>
+  <ul class="collapse">
+  <li><a href="#example-julia-stanblocks.jl-code-to-define-the-models" id="toc-example-julia-stanblocks.jl-code-to-define-the-models" class="nav-link" data-scroll-target="#example-julia-stanblocks.jl-code-to-define-the-models">Example Julia + StanBlocks.jl code to define the models</a>
+  <ul class="collapse">
+  <li><a href="#current-status-1" id="toc-current-status-1" class="nav-link" data-scroll-target="#current-status-1">Current status</a></li>
+  <li><a href="#current-limitations" id="toc-current-limitations" class="nav-link" data-scroll-target="#current-limitations">Current limitations</a></li>
+  <li><a href="#future-status-1" id="toc-future-status-1" class="nav-link" data-scroll-target="#future-status-1">Future status</a></li>
+  </ul></li>
+  <li><a href="#generated-stan-code-1" id="toc-generated-stan-code-1" class="nav-link" data-scroll-target="#generated-stan-code-1">Generated Stan code</a></li>
+  </ul></li>
   </ul>
 </nav>
     </div>
@@ -196,7 +210,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
-<div class="quarto-title-block"><div><h1 class="title">Currently: Generating a uniform distribution on a disk</h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
+<div class="quarto-title-block"><div><h1 class="title">User defined reusable constraints</h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
 </div>
 
 
@@ -228,6 +242,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <li><a href="https://docs.julialang.org/en/v1/base/base/#Core.NamedTuple">Julia-style Named Tuples</a> - allowing <code>.</code> syntax access to fields via names (instead of <a href="https://mc-stan.org/docs/reference-manual/types.html#assigning-tuple-elements">via numbers as in Stan</a>).</li>
 </ul>
 </section>
+<section id="a-uniform-prior-on-a-disk" class="level1">
+<h1>A uniform prior on a disk</h1>
 <section id="full-julia-stanblocks.jl-code-to-define-the-models" class="level2">
 <h2 class="anchored" data-anchor-id="full-julia-stanblocks.jl-code-to-define-the-models">Full Julia + StanBlocks.jl code to define the models</h2>
 <section id="current-status" class="level3">
@@ -268,6 +284,16 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-33"><a href="#cb1-33"></a><span class="st">    """</span></span>
 <span id="cb1-34"><a href="#cb1-34"></a>    <span class="cf">return</span> <span class="fu">uniform_disk_constrain</span>(xi)</span>
 <span id="cb1-35"><a href="#cb1-35"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>With the <code>disk</code> model defined (<strong>by the user in this notebook - not in the back end</strong>) as above, usage would look like this, where <code>obs</code> and <code>obs_scale</code> come from somewhere else in this example:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb2-1"><a href="#cb2-1"></a>model_using_disk <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb2-2"><a href="#cb2-2"></a>    disk_parameters <span class="op">~</span> <span class="fu">disk</span>()</span>
+<span id="cb2-3"><a href="#cb2-3"></a>    obs <span class="op">~</span> <span class="fu">normal</span>(</span>
+<span id="cb2-4"><a href="#cb2-4"></a>        <span class="fu">some_binary_function_working_on_disk_coordinates</span>(</span>
+<span id="cb2-5"><a href="#cb2-5"></a>            disk_parameters.x, disk_parameters.y</span>
+<span id="cb2-6"><a href="#cb2-6"></a>        ), </span>
+<span id="cb2-7"><a href="#cb2-7"></a>        obs_scale</span>
+<span id="cb2-8"><a href="#cb2-8"></a>    )</span>
+<span id="cb2-9"><a href="#cb2-9"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </section>
 <section id="future-status" class="level3">
 <h3 class="anchored" data-anchor-id="future-status">Future status</h3>
@@ -276,77 +302,990 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="generated-stan-code" class="level2">
 <h2 class="anchored" data-anchor-id="generated-stan-code">Generated Stan code</h2>
-<div id="6b472ae3" class="cell" data-execution_count="1">
-<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="2">
+<p>For the generated Stan code, the disk model has been spliced into a dummy model, resulting in a model definition equivalent to</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb3-1"><a href="#cb3-1"></a>dummy_model <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb3-2"><a href="#cb3-2"></a>    <span class="st">"Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"</span></span>
+<span id="cb3-3"><a href="#cb3-3"></a>    dummy_obs <span class="op">=</span> <span class="fl">1</span>. </span>
+<span id="cb3-4"><a href="#cb3-4"></a>    theta <span class="op">~</span> <span class="fu">disk</span>()</span>
+<span id="cb3-5"><a href="#cb3-5"></a>    <span class="st">"Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"</span></span>
+<span id="cb3-6"><a href="#cb3-6"></a>    dummy_obs <span class="op">~</span> <span class="fu">dummy</span>(theta)</span>
+<span id="cb3-7"><a href="#cb3-7"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Without the dummy likelihood term, StanBlocks.jl would move <code>theta</code> to generated quantities, because it wouldn’t affect the likelihood.</p>
+<div id="c5e8fca4" class="cell" data-execution_count="2">
+<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="73">
 <div class="tabset-margin-container"></div><div class="panel-tabset">
 <ul class="nav nav-tabs" role="tablist"><li class="nav-item" role="presentation"><a class="nav-link active" id="tabset-1-1-tab" data-bs-toggle="tab" data-bs-target="#tabset-1-1" role="tab" aria-controls="tabset-1-1" aria-selected="true" href=""><code>disk</code></a></li></ul>
 <div class="tab-content">
 <div id="tabset-1-1" class="tab-pane active" role="tabpanel" aria-labelledby="tabset-1-1-tab">
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb2-1"><a href="#cb2-1"></a><span class="kw">functions</span> {</span>
-<span id="cb2-2"><a href="#cb2-2"></a><span class="co">// This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform</span></span>
-<span id="cb2-3"><a href="#cb2-3"></a><span class="co">// (wrt to `x` and `y`) - I'll work it out another time.</span></span>
-<span id="cb2-4"><a href="#cb2-4"></a><span class="dt">real</span> uniform_disk_lpdf(</span>
-<span id="cb2-5"><a href="#cb2-5"></a>    <span class="dt">vector</span> xi,</span>
-<span id="cb2-6"><a href="#cb2-6"></a>    <span class="dt">int</span> n</span>
-<span id="cb2-7"><a href="#cb2-7"></a>) {</span>
-<span id="cb2-8"><a href="#cb2-8"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
-<span id="cb2-9"><a href="#cb2-9"></a>}</span>
-<span id="cb2-10"><a href="#cb2-10"></a><span class="co">// This function returns the constrained parameters `x` and `y` together with the intermediate quantities `radius` and `angle` as a a Named Tuple, </span></span>
-<span id="cb2-11"><a href="#cb2-11"></a><span class="co">// which for Stan will look like a regular Tuple. </span></span>
-<span id="cb2-12"><a href="#cb2-12"></a><span class="co">// Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
-<span id="cb2-13"><a href="#cb2-13"></a><span class="co">// e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
-<span id="cb2-14"><a href="#cb2-14"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) uniform_disk_constrain(</span>
-<span id="cb2-15"><a href="#cb2-15"></a>    <span class="dt">vector</span> xi</span>
-<span id="cb2-16"><a href="#cb2-16"></a>) {</span>
-<span id="cb2-17"><a href="#cb2-17"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
-<span id="cb2-18"><a href="#cb2-18"></a>    <span class="dt">real</span> radius = inv_logit(xi[<span class="dv">1</span>]);</span>
-<span id="cb2-19"><a href="#cb2-19"></a>    <span class="dt">real</span> angle = ((<span class="dv">2</span> * <span class="fl">3.141592653589793</span>) * inv_logit(xi[<span class="dv">2</span>]));</span>
-<span id="cb2-20"><a href="#cb2-20"></a>    <span class="cf">return</span> (radius, angle, (cos(angle) * radius), (sin(angle) * radius));</span>
-<span id="cb2-21"><a href="#cb2-21"></a>}</span>
-<span id="cb2-22"><a href="#cb2-22"></a><span class="dt">real</span> dummy_lpdf(<span class="dt">real</span> args1, <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) args2) {</span>
-<span id="cb2-23"><a href="#cb2-23"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
-<span id="cb2-24"><a href="#cb2-24"></a>}</span>
-<span id="cb2-25"><a href="#cb2-25"></a><span class="dt">real</span> dummy_lpdfs(<span class="dt">real</span> args1, <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) args2) {</span>
-<span id="cb2-26"><a href="#cb2-26"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
-<span id="cb2-27"><a href="#cb2-27"></a>}</span>
-<span id="cb2-28"><a href="#cb2-28"></a><span class="dt">real</span> dummy_rng(<span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) args1) {</span>
-<span id="cb2-29"><a href="#cb2-29"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
-<span id="cb2-30"><a href="#cb2-30"></a>}</span>
-<span id="cb2-31"><a href="#cb2-31"></a>}</span>
-<span id="cb2-32"><a href="#cb2-32"></a><span class="kw">data</span> {</span>
-<span id="cb2-33"><a href="#cb2-33"></a>}</span>
-<span id="cb2-34"><a href="#cb2-34"></a><span class="kw">transformed data</span> {</span>
-<span id="cb2-35"><a href="#cb2-35"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
-<span id="cb2-36"><a href="#cb2-36"></a>}</span>
-<span id="cb2-37"><a href="#cb2-37"></a><span class="kw">parameters</span> {</span>
-<span id="cb2-38"><a href="#cb2-38"></a>    <span class="co">// This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).</span></span>
-<span id="cb2-39"><a href="#cb2-39"></a>    <span class="co">// </span></span>
-<span id="cb2-40"><a href="#cb2-40"></a>    <span class="co">// If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
-<span id="cb2-41"><a href="#cb2-41"></a>    <span class="co">// </span></span>
-<span id="cb2-42"><a href="#cb2-42"></a>    <span class="dt">vector</span>[<span class="dv">2</span>] theta_xi;</span>
-<span id="cb2-43"><a href="#cb2-43"></a>}</span>
-<span id="cb2-44"><a href="#cb2-44"></a><span class="kw">transformed parameters</span> {</span>
-<span id="cb2-45"><a href="#cb2-45"></a>    <span class="co">// This does the constraining.</span></span>
-<span id="cb2-46"><a href="#cb2-46"></a>    <span class="co">// </span></span>
-<span id="cb2-47"><a href="#cb2-47"></a>    <span class="co">// It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..</span></span>
-<span id="cb2-48"><a href="#cb2-48"></a>    <span class="co">// </span></span>
-<span id="cb2-49"><a href="#cb2-49"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) theta = uniform_disk_constrain(theta_xi);</span>
-<span id="cb2-50"><a href="#cb2-50"></a>}</span>
-<span id="cb2-51"><a href="#cb2-51"></a><span class="kw">model</span> {</span>
-<span id="cb2-52"><a href="#cb2-52"></a>    <span class="co">// This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).</span></span>
-<span id="cb2-53"><a href="#cb2-53"></a>    <span class="co">// </span></span>
-<span id="cb2-54"><a href="#cb2-54"></a>    <span class="co">// If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
-<span id="cb2-55"><a href="#cb2-55"></a>    <span class="co">// </span></span>
-<span id="cb2-56"><a href="#cb2-56"></a>    theta_xi ~ uniform_disk(<span class="dv">2</span>);</span>
-<span id="cb2-57"><a href="#cb2-57"></a>    <span class="co">// Without this line StanBlocks.jl will try to move `theta` to generated quantities</span></span>
-<span id="cb2-58"><a href="#cb2-58"></a>    dummy_obs ~ dummy(theta);</span>
-<span id="cb2-59"><a href="#cb2-59"></a>}</span>
-<span id="cb2-60"><a href="#cb2-60"></a><span class="kw">generated quantities</span> {</span>
-<span id="cb2-61"><a href="#cb2-61"></a>    <span class="co">// Without this line StanBlocks.jl will try to move `theta` to generated quantities</span></span>
-<span id="cb2-62"><a href="#cb2-62"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
-<span id="cb2-63"><a href="#cb2-63"></a>    <span class="co">// Without this line StanBlocks.jl will try to move `theta` to generated quantities</span></span>
-<span id="cb2-64"><a href="#cb2-64"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
-<span id="cb2-65"><a href="#cb2-65"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb4"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb4-1"><a href="#cb4-1"></a><span class="kw">functions</span> {</span>
+<span id="cb4-2"><a href="#cb4-2"></a><span class="co">// This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform</span></span>
+<span id="cb4-3"><a href="#cb4-3"></a><span class="co">// (wrt to `x` and `y`) - I'll work it out another time.</span></span>
+<span id="cb4-4"><a href="#cb4-4"></a><span class="dt">real</span> uniform_disk_lpdf(</span>
+<span id="cb4-5"><a href="#cb4-5"></a>    <span class="dt">vector</span> xi,</span>
+<span id="cb4-6"><a href="#cb4-6"></a>    <span class="dt">int</span> n</span>
+<span id="cb4-7"><a href="#cb4-7"></a>) {</span>
+<span id="cb4-8"><a href="#cb4-8"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb4-9"><a href="#cb4-9"></a>}</span>
+<span id="cb4-10"><a href="#cb4-10"></a><span class="co">// This function returns the constrained parameters `x` and `y` together with the intermediate quantities `radius` and `angle` as a a Named Tuple, </span></span>
+<span id="cb4-11"><a href="#cb4-11"></a><span class="co">// which for Stan will look like a regular Tuple. </span></span>
+<span id="cb4-12"><a href="#cb4-12"></a><span class="co">// Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
+<span id="cb4-13"><a href="#cb4-13"></a><span class="co">// e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
+<span id="cb4-14"><a href="#cb4-14"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) uniform_disk_constrain(</span>
+<span id="cb4-15"><a href="#cb4-15"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb4-16"><a href="#cb4-16"></a>) {</span>
+<span id="cb4-17"><a href="#cb4-17"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
+<span id="cb4-18"><a href="#cb4-18"></a>    <span class="dt">real</span> radius = inv_logit(xi[<span class="dv">1</span>]);</span>
+<span id="cb4-19"><a href="#cb4-19"></a>    <span class="dt">real</span> angle = ((<span class="dv">2</span> * <span class="fl">3.141592653589793</span>) * inv_logit(xi[<span class="dv">2</span>]));</span>
+<span id="cb4-20"><a href="#cb4-20"></a>    <span class="cf">return</span> (radius, angle, (cos(angle) * radius), (sin(angle) * radius));</span>
+<span id="cb4-21"><a href="#cb4-21"></a>}</span>
+<span id="cb4-22"><a href="#cb4-22"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb4-23"><a href="#cb4-23"></a><span class="dt">real</span> dummy_lpdf(</span>
+<span id="cb4-24"><a href="#cb4-24"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb4-25"><a href="#cb4-25"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) args2</span>
+<span id="cb4-26"><a href="#cb4-26"></a>) {</span>
+<span id="cb4-27"><a href="#cb4-27"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb4-28"><a href="#cb4-28"></a>}</span>
+<span id="cb4-29"><a href="#cb4-29"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb4-30"><a href="#cb4-30"></a><span class="dt">real</span> dummy_lpdfs(</span>
+<span id="cb4-31"><a href="#cb4-31"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb4-32"><a href="#cb4-32"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) args2</span>
+<span id="cb4-33"><a href="#cb4-33"></a>) {</span>
+<span id="cb4-34"><a href="#cb4-34"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb4-35"><a href="#cb4-35"></a>}</span>
+<span id="cb4-36"><a href="#cb4-36"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb4-37"><a href="#cb4-37"></a><span class="dt">real</span> dummy_rng(</span>
+<span id="cb4-38"><a href="#cb4-38"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) args1</span>
+<span id="cb4-39"><a href="#cb4-39"></a>) {</span>
+<span id="cb4-40"><a href="#cb4-40"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb4-41"><a href="#cb4-41"></a>}</span>
+<span id="cb4-42"><a href="#cb4-42"></a>}</span>
+<span id="cb4-43"><a href="#cb4-43"></a><span class="kw">data</span> {</span>
+<span id="cb4-44"><a href="#cb4-44"></a>}</span>
+<span id="cb4-45"><a href="#cb4-45"></a><span class="kw">transformed data</span> {</span>
+<span id="cb4-46"><a href="#cb4-46"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb4-47"><a href="#cb4-47"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
+<span id="cb4-48"><a href="#cb4-48"></a>}</span>
+<span id="cb4-49"><a href="#cb4-49"></a><span class="kw">parameters</span> {</span>
+<span id="cb4-50"><a href="#cb4-50"></a>    <span class="co">// This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).</span></span>
+<span id="cb4-51"><a href="#cb4-51"></a>    <span class="co">// </span></span>
+<span id="cb4-52"><a href="#cb4-52"></a>    <span class="co">// If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
+<span id="cb4-53"><a href="#cb4-53"></a>    <span class="co">// </span></span>
+<span id="cb4-54"><a href="#cb4-54"></a>    <span class="dt">vector</span>[<span class="dv">2</span>] theta_xi;</span>
+<span id="cb4-55"><a href="#cb4-55"></a>}</span>
+<span id="cb4-56"><a href="#cb4-56"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb4-57"><a href="#cb4-57"></a>    <span class="co">// This does the constraining.</span></span>
+<span id="cb4-58"><a href="#cb4-58"></a>    <span class="co">// </span></span>
+<span id="cb4-59"><a href="#cb4-59"></a>    <span class="co">// It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..</span></span>
+<span id="cb4-60"><a href="#cb4-60"></a>    <span class="co">// </span></span>
+<span id="cb4-61"><a href="#cb4-61"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>, <span class="dt">real</span>) theta = uniform_disk_constrain(theta_xi);</span>
+<span id="cb4-62"><a href="#cb4-62"></a>}</span>
+<span id="cb4-63"><a href="#cb4-63"></a><span class="kw">model</span> {</span>
+<span id="cb4-64"><a href="#cb4-64"></a>    <span class="co">// This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).</span></span>
+<span id="cb4-65"><a href="#cb4-65"></a>    <span class="co">// </span></span>
+<span id="cb4-66"><a href="#cb4-66"></a>    <span class="co">// If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
+<span id="cb4-67"><a href="#cb4-67"></a>    <span class="co">// </span></span>
+<span id="cb4-68"><a href="#cb4-68"></a>    theta_xi ~ uniform_disk(<span class="dv">2</span>);</span>
+<span id="cb4-69"><a href="#cb4-69"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb4-70"><a href="#cb4-70"></a>    dummy_obs ~ dummy(theta);</span>
+<span id="cb4-71"><a href="#cb4-71"></a>}</span>
+<span id="cb4-72"><a href="#cb4-72"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb4-73"><a href="#cb4-73"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb4-74"><a href="#cb4-74"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
+<span id="cb4-75"><a href="#cb4-75"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb4-76"><a href="#cb4-76"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
+<span id="cb4-77"><a href="#cb4-77"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+</section>
+<section id="adaptive-centering-for-hierarchical-models" class="level1">
+<h1>(Adaptive?) centering for hierarchical models</h1>
+<p>If <a href="https://discourse.mc-stan.org/t/offset-multiplier-initialization/20712/20">this discourse thread</a> is any indication, it looks like generally, it might be preferable to be able compute the Jacobian adjustment and the prior density together for the sake of numerical stability. This is something that Stan’s lack of compound declare-distribute statements “prevents” - see also <a href="https://statmodeling.stat.columbia.edu/2018/02/01/stan-feature-declare-distribute/">When to add a feature to Stan? The recurring issue of the compound declare-distribute statement</a>.</p>
+<p>Furthermore, it’s probably a good idea to be able to parametrize the constraining transformations, allowing to vary e.g.&nbsp;the centeredness after defining the model via <code>data</code> arguments.</p>
+<p>TO DO: elaborate</p>
+</section>
+<section id="various-simplex-constraining-transformations" class="level1">
+<h1>Various simplex constraining transformations</h1>
+<p>The underlying code reproduces all transformations from <a href="https://github.com/bob-carpenter/transforms">https://github.com/bob-carpenter/transforms</a>.</p>
+<section id="example-julia-stanblocks.jl-code-to-define-the-models" class="level2">
+<h2 class="anchored" data-anchor-id="example-julia-stanblocks.jl-code-to-define-the-models">Example Julia + StanBlocks.jl code to define the models</h2>
+<section id="current-status-1" class="level3">
+<h3 class="anchored" data-anchor-id="current-status-1">Current status</h3>
+<p>It does so by first defining (<strong>by the user in this notebook - not in the back end</strong>) a general model</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb5"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb5-1"><a href="#cb5-1"></a>any_simplex <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb5-2"><a href="#cb5-2"></a>    xi <span class="op">~</span> <span class="fu">simplex_prior</span>(constrain_f, prior_f, n)</span>
+<span id="cb5-3"><a href="#cb5-3"></a>    <span class="cf">return</span> <span class="fu">simplex_constrain</span>(xi, constrain_f)</span>
+<span id="cb5-4"><a href="#cb5-4"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>where <code>n</code> is the dimension of the simplex and <code>constrain_f</code> and <code>prior_f</code> can be used to change the used constraining transform or the imposed prior.</p>
+<p>Defining a custom simplex constraining transform is then as easy as defining two functions,</p>
+<ul>
+<li>a function <code>f</code> accepting the vector of unconstrained parameters and returning a Named Tuple with fields <code>jac</code> (the jacobian adjustment) and <code>x</code> (the constrained parameters) (to be passed as the <code>constrain_f</code> argument),</li>
+<li>and an overload of <code>unconstrained_dim(::typeof(f), n)</code> returning the dimension of the unconstrained parameters accepted by <code>f</code>.</li>
+</ul>
+<p>See below for an example implementation for the ALR constraining transform:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb6"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb6-1"><a href="#cb6-1"></a><span class="fu">constrain_alr</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb6-2"><a href="#cb6-2"></a>    r <span class="op">=</span> <span class="fu">log1p_exp</span>(<span class="fu">log_sum_exp</span>(xi))</span>
+<span id="cb6-3"><a href="#cb6-3"></a>    (;</span>
+<span id="cb6-4"><a href="#cb6-4"></a>        jac<span class="op">=</span><span class="fu">sum</span>(xi)<span class="fu">-</span>(n<span class="op">+</span><span class="fl">1</span>)<span class="op">*</span>r, </span>
+<span id="cb6-5"><a href="#cb6-5"></a>        x<span class="op">=</span><span class="fu">exp</span>(<span class="fu">append_row</span>(xi <span class="op">-</span> r, <span class="op">-</span>r))</span>
+<span id="cb6-6"><a href="#cb6-6"></a>    )</span>
+<span id="cb6-7"><a href="#cb6-7"></a><span class="cf">end</span></span>
+<span id="cb6-8"><a href="#cb6-8"></a><span class="fu">unconstrained_dim</span>(<span class="op">::</span><span class="dt">typeof</span>(constrain_alr), n) <span class="op">=</span> n<span class="op">-</span><span class="fl">1</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>The two functions used in the <code>any_simplex</code> model, <code>simplex_prior_lpdf</code> and <code>simplex_constrain</code> are defined (<strong>by the user in this notebook - not in the back end</strong>) as</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb7"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb7-1"><a href="#cb7-1"></a><span class="fu">simplex_prior_lpdf</span>(xi<span class="op">::</span><span class="dt">vector</span>[<span class="fu">unconstrained_dim</span>(constrain_f, n)], constrain_f, prior_f, n) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb7-2"><a href="#cb7-2"></a>    tmp <span class="op">=</span> <span class="fu">constrain_f</span>(xi)</span>
+<span id="cb7-3"><a href="#cb7-3"></a>    tmp.jac <span class="op">+</span> <span class="fu">prior_f</span>(tmp.x)</span>
+<span id="cb7-4"><a href="#cb7-4"></a><span class="cf">end</span></span>
+<span id="cb7-5"><a href="#cb7-5"></a><span class="fu">simplex_constrain</span>(xi, constrain_f) <span class="op">=</span> <span class="fu">constrain_f</span>(xi).x</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</section>
+<section id="current-limitations" class="level3">
+<h3 class="anchored" data-anchor-id="current-limitations">Current limitations</h3>
+<p>Currently, both the jacobian adjustment have to be computed twice - once in <code>simplex_prior_lpdf</code> and once in <code>simplex_constrain</code>. Ideally, this could be avoided.</p>
+</section>
+<section id="future-status-1" class="level3">
+<h3 class="anchored" data-anchor-id="future-status-1">Future status</h3>
+<p>TO DO: Think about how to best prevent the double work. The main work would be to think about appropriate syntax signalling to StanBlocks.jl that these functions work together to compute the constraining and the jacobian adjustment.</p>
+</section>
+</section>
+<section id="generated-stan-code-1" class="level2">
+<h2 class="anchored" data-anchor-id="generated-stan-code-1">Generated Stan code</h2>
+<p>For the generated Stan code, the <code>any_simplex</code> model has been spliced into a dummy model, resulting in a model definition equivalent to</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb8"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb8-1"><a href="#cb8-1"></a>dummy_simplex_model <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb8-2"><a href="#cb8-2"></a>    <span class="st">"Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"</span></span>
+<span id="cb8-3"><a href="#cb8-3"></a>    dummy_obs <span class="op">=</span> <span class="fl">1</span>. </span>
+<span id="cb8-4"><a href="#cb8-4"></a>    theta <span class="op">~</span> <span class="fu">any_simplex</span>(;constrain_f, prior_f, n<span class="op">=</span><span class="fl">10</span>)</span>
+<span id="cb8-5"><a href="#cb8-5"></a>    <span class="st">"Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"</span></span>
+<span id="cb8-6"><a href="#cb8-6"></a>    dummy_obs <span class="op">~</span> <span class="fu">dummy</span>(theta)</span>
+<span id="cb8-7"><a href="#cb8-7"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>where again without the dummy likelihood StanBlocks.jl would move <code>theta</code> to generated quantities, because it wouldn’t affect the likelihood.</p>
+<div id="3ab2189e" class="cell" data-execution_count="3">
+<div class="cell-output cell-output-display cell-output-markdown" data-execution_count="74">
+<div class="tabset-margin-container"></div><div class="panel-tabset">
+<ul class="nav nav-tabs" role="tablist"><li class="nav-item" role="presentation"><a class="nav-link active" id="tabset-2-1-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-1" role="tab" aria-controls="tabset-2-1" aria-selected="true" href=""><code>constrain_alr</code></a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-2-2-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-2" role="tab" aria-controls="tabset-2-2" aria-selected="false" href=""><code>constrain_expanded_softmax</code></a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-2-3-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-3" role="tab" aria-controls="tabset-2-3" aria-selected="false" href=""><code>constrain_ilr</code></a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-2-4-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-4" role="tab" aria-controls="tabset-2-4" aria-selected="false" href=""><code>constrain_ilr_reflector</code></a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-2-5-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-5" role="tab" aria-controls="tabset-2-5" aria-selected="false" href=""><code>constrain_normalized_exponential</code></a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-2-6-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-6" role="tab" aria-controls="tabset-2-6" aria-selected="false" href=""><code>constrain_stickbreaking_angular</code></a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-2-7-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-7" role="tab" aria-controls="tabset-2-7" aria-selected="false" href=""><code>constrain_stickbreaking_logistic</code></a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-2-8-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-8" role="tab" aria-controls="tabset-2-8" aria-selected="false" href=""><code>constrain_stickbreaking_normal</code></a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-2-9-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-9" role="tab" aria-controls="tabset-2-9" aria-selected="false" href=""><code>constrain_stickbreaking_power_logistic</code></a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-2-10-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-10" role="tab" aria-controls="tabset-2-10" aria-selected="false" href=""><code>constrain_stickbreaking_power_normal</code></a></li></ul>
+<div class="tab-content">
+<div id="tabset-2-1" class="tab-pane active" role="tabpanel" aria-labelledby="tabset-2-1-tab">
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb9"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb9-1"><a href="#cb9-1"></a><span class="kw">functions</span> {</span>
+<span id="cb9-2"><a href="#cb9-2"></a><span class="dt">int</span> unconstrained_dim_constrain_alr(<span class="dt">int</span> n) {</span>
+<span id="cb9-3"><a href="#cb9-3"></a>    <span class="cf">return</span> (n - <span class="dv">1</span>);</span>
+<span id="cb9-4"><a href="#cb9-4"></a>}</span>
+<span id="cb9-5"><a href="#cb9-5"></a><span class="dt">real</span> simplex_prior_constrain_alr_uniform_simplex_lpdf_lpdf(</span>
+<span id="cb9-6"><a href="#cb9-6"></a>    <span class="dt">vector</span> xi,</span>
+<span id="cb9-7"><a href="#cb9-7"></a>    <span class="dt">int</span> n</span>
+<span id="cb9-8"><a href="#cb9-8"></a>) {</span>
+<span id="cb9-9"><a href="#cb9-9"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>[(dims(xi)[<span class="dv">1</span>] + <span class="dv">1</span>)]) tmp = constrain_alr(xi);</span>
+<span id="cb9-10"><a href="#cb9-10"></a>    <span class="cf">return</span> (tmp<span class="fl">.1</span> + uniform_simplex_lpdf(tmp<span class="fl">.2</span>));</span>
+<span id="cb9-11"><a href="#cb9-11"></a>}</span>
+<span id="cb9-12"><a href="#cb9-12"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>) constrain_alr(</span>
+<span id="cb9-13"><a href="#cb9-13"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb9-14"><a href="#cb9-14"></a>) {</span>
+<span id="cb9-15"><a href="#cb9-15"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
+<span id="cb9-16"><a href="#cb9-16"></a>    <span class="dt">real</span> r = log1p_exp(log_sum_exp(xi));</span>
+<span id="cb9-17"><a href="#cb9-17"></a>    <span class="cf">return</span> ((sum(xi) - ((n + <span class="dv">1</span>) * r)), exp(append_row((xi - r), (-r))));</span>
+<span id="cb9-18"><a href="#cb9-18"></a>}</span>
+<span id="cb9-19"><a href="#cb9-19"></a><span class="dt">real</span> uniform_simplex_lpdf(<span class="dt">vector</span> xi) {</span>
+<span id="cb9-20"><a href="#cb9-20"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb9-21"><a href="#cb9-21"></a>}</span>
+<span id="cb9-22"><a href="#cb9-22"></a><span class="dt">vector</span> simplex_constrain_constrain_alr(<span class="dt">vector</span> xi) {</span>
+<span id="cb9-23"><a href="#cb9-23"></a>    <span class="cf">return</span> constrain_alr(xi).<span class="dv">2</span>;</span>
+<span id="cb9-24"><a href="#cb9-24"></a>}</span>
+<span id="cb9-25"><a href="#cb9-25"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb9-26"><a href="#cb9-26"></a><span class="dt">real</span> dummy_lpdf(</span>
+<span id="cb9-27"><a href="#cb9-27"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb9-28"><a href="#cb9-28"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb9-29"><a href="#cb9-29"></a>) {</span>
+<span id="cb9-30"><a href="#cb9-30"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb9-31"><a href="#cb9-31"></a>}</span>
+<span id="cb9-32"><a href="#cb9-32"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb9-33"><a href="#cb9-33"></a><span class="dt">real</span> dummy_lpdfs(</span>
+<span id="cb9-34"><a href="#cb9-34"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb9-35"><a href="#cb9-35"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb9-36"><a href="#cb9-36"></a>) {</span>
+<span id="cb9-37"><a href="#cb9-37"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb9-38"><a href="#cb9-38"></a>}</span>
+<span id="cb9-39"><a href="#cb9-39"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb9-40"><a href="#cb9-40"></a><span class="dt">real</span> dummy_rng(</span>
+<span id="cb9-41"><a href="#cb9-41"></a>    <span class="dt">vector</span> args1</span>
+<span id="cb9-42"><a href="#cb9-42"></a>) {</span>
+<span id="cb9-43"><a href="#cb9-43"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb9-44"><a href="#cb9-44"></a>}</span>
+<span id="cb9-45"><a href="#cb9-45"></a>}</span>
+<span id="cb9-46"><a href="#cb9-46"></a><span class="kw">data</span> {</span>
+<span id="cb9-47"><a href="#cb9-47"></a>}</span>
+<span id="cb9-48"><a href="#cb9-48"></a><span class="kw">transformed data</span> {</span>
+<span id="cb9-49"><a href="#cb9-49"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb9-50"><a href="#cb9-50"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
+<span id="cb9-51"><a href="#cb9-51"></a>}</span>
+<span id="cb9-52"><a href="#cb9-52"></a><span class="kw">parameters</span> {</span>
+<span id="cb9-53"><a href="#cb9-53"></a>    <span class="dt">vector</span>[unconstrained_dim_constrain_alr(<span class="dv">10</span>)] theta_xi;</span>
+<span id="cb9-54"><a href="#cb9-54"></a>}</span>
+<span id="cb9-55"><a href="#cb9-55"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb9-56"><a href="#cb9-56"></a>    <span class="dt">vector</span>[(unconstrained_dim_constrain_alr(<span class="dv">10</span>) + <span class="dv">1</span>)] theta = simplex_constrain_constrain_alr(theta_xi);</span>
+<span id="cb9-57"><a href="#cb9-57"></a>}</span>
+<span id="cb9-58"><a href="#cb9-58"></a><span class="kw">model</span> {</span>
+<span id="cb9-59"><a href="#cb9-59"></a>    theta_xi ~ simplex_prior_constrain_alr_uniform_simplex_lpdf(<span class="dv">10</span>);</span>
+<span id="cb9-60"><a href="#cb9-60"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb9-61"><a href="#cb9-61"></a>    dummy_obs ~ dummy(theta);</span>
+<span id="cb9-62"><a href="#cb9-62"></a>}</span>
+<span id="cb9-63"><a href="#cb9-63"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb9-64"><a href="#cb9-64"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb9-65"><a href="#cb9-65"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
+<span id="cb9-66"><a href="#cb9-66"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb9-67"><a href="#cb9-67"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
+<span id="cb9-68"><a href="#cb9-68"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+<div id="tabset-2-2" class="tab-pane" role="tabpanel" aria-labelledby="tabset-2-2-tab">
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb10"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb10-1"><a href="#cb10-1"></a><span class="kw">functions</span> {</span>
+<span id="cb10-2"><a href="#cb10-2"></a><span class="dt">int</span> unconstrained_dim_constrain_expanded_softmax(<span class="dt">int</span> n) {</span>
+<span id="cb10-3"><a href="#cb10-3"></a>    <span class="cf">return</span> n;</span>
+<span id="cb10-4"><a href="#cb10-4"></a>}</span>
+<span id="cb10-5"><a href="#cb10-5"></a><span class="dt">real</span> simplex_prior_constrain_expanded_softmax_uniform_simplex_lpdf_lpdf(</span>
+<span id="cb10-6"><a href="#cb10-6"></a>    <span class="dt">vector</span> xi,</span>
+<span id="cb10-7"><a href="#cb10-7"></a>    <span class="dt">int</span> n</span>
+<span id="cb10-8"><a href="#cb10-8"></a>) {</span>
+<span id="cb10-9"><a href="#cb10-9"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>[dims(xi)[<span class="dv">1</span>]]) tmp = constrain_expanded_softmax(xi);</span>
+<span id="cb10-10"><a href="#cb10-10"></a>    <span class="cf">return</span> (tmp<span class="fl">.1</span> + uniform_simplex_lpdf(tmp<span class="fl">.2</span>));</span>
+<span id="cb10-11"><a href="#cb10-11"></a>}</span>
+<span id="cb10-12"><a href="#cb10-12"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>) constrain_expanded_softmax(</span>
+<span id="cb10-13"><a href="#cb10-13"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb10-14"><a href="#cb10-14"></a>) {</span>
+<span id="cb10-15"><a href="#cb10-15"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
+<span id="cb10-16"><a href="#cb10-16"></a>    <span class="dt">real</span> r = log_sum_exp(xi);</span>
+<span id="cb10-17"><a href="#cb10-17"></a>    <span class="cf">return</span> (((std_normal_lpdf((r - log(n))) + sum(xi)) - (n * r)), exp((xi - r)));</span>
+<span id="cb10-18"><a href="#cb10-18"></a>}</span>
+<span id="cb10-19"><a href="#cb10-19"></a><span class="dt">real</span> uniform_simplex_lpdf(<span class="dt">vector</span> xi) {</span>
+<span id="cb10-20"><a href="#cb10-20"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb10-21"><a href="#cb10-21"></a>}</span>
+<span id="cb10-22"><a href="#cb10-22"></a><span class="dt">vector</span> simplex_constrain_constrain_expanded_softmax(</span>
+<span id="cb10-23"><a href="#cb10-23"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb10-24"><a href="#cb10-24"></a>) {</span>
+<span id="cb10-25"><a href="#cb10-25"></a>    <span class="cf">return</span> constrain_expanded_softmax(xi).<span class="dv">2</span>;</span>
+<span id="cb10-26"><a href="#cb10-26"></a>}</span>
+<span id="cb10-27"><a href="#cb10-27"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb10-28"><a href="#cb10-28"></a><span class="dt">real</span> dummy_lpdf(</span>
+<span id="cb10-29"><a href="#cb10-29"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb10-30"><a href="#cb10-30"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb10-31"><a href="#cb10-31"></a>) {</span>
+<span id="cb10-32"><a href="#cb10-32"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb10-33"><a href="#cb10-33"></a>}</span>
+<span id="cb10-34"><a href="#cb10-34"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb10-35"><a href="#cb10-35"></a><span class="dt">real</span> dummy_lpdfs(</span>
+<span id="cb10-36"><a href="#cb10-36"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb10-37"><a href="#cb10-37"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb10-38"><a href="#cb10-38"></a>) {</span>
+<span id="cb10-39"><a href="#cb10-39"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb10-40"><a href="#cb10-40"></a>}</span>
+<span id="cb10-41"><a href="#cb10-41"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb10-42"><a href="#cb10-42"></a><span class="dt">real</span> dummy_rng(</span>
+<span id="cb10-43"><a href="#cb10-43"></a>    <span class="dt">vector</span> args1</span>
+<span id="cb10-44"><a href="#cb10-44"></a>) {</span>
+<span id="cb10-45"><a href="#cb10-45"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb10-46"><a href="#cb10-46"></a>}</span>
+<span id="cb10-47"><a href="#cb10-47"></a>}</span>
+<span id="cb10-48"><a href="#cb10-48"></a><span class="kw">data</span> {</span>
+<span id="cb10-49"><a href="#cb10-49"></a>}</span>
+<span id="cb10-50"><a href="#cb10-50"></a><span class="kw">transformed data</span> {</span>
+<span id="cb10-51"><a href="#cb10-51"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb10-52"><a href="#cb10-52"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
+<span id="cb10-53"><a href="#cb10-53"></a>}</span>
+<span id="cb10-54"><a href="#cb10-54"></a><span class="kw">parameters</span> {</span>
+<span id="cb10-55"><a href="#cb10-55"></a>    <span class="dt">vector</span>[unconstrained_dim_constrain_expanded_softmax(<span class="dv">10</span>)] theta_xi;</span>
+<span id="cb10-56"><a href="#cb10-56"></a>}</span>
+<span id="cb10-57"><a href="#cb10-57"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb10-58"><a href="#cb10-58"></a>    <span class="dt">vector</span>[unconstrained_dim_constrain_expanded_softmax(<span class="dv">10</span>)] theta = simplex_constrain_constrain_expanded_softmax(theta_xi);</span>
+<span id="cb10-59"><a href="#cb10-59"></a>}</span>
+<span id="cb10-60"><a href="#cb10-60"></a><span class="kw">model</span> {</span>
+<span id="cb10-61"><a href="#cb10-61"></a>    theta_xi ~ simplex_prior_constrain_expanded_softmax_uniform_simplex_lpdf(<span class="dv">10</span>);</span>
+<span id="cb10-62"><a href="#cb10-62"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb10-63"><a href="#cb10-63"></a>    dummy_obs ~ dummy(theta);</span>
+<span id="cb10-64"><a href="#cb10-64"></a>}</span>
+<span id="cb10-65"><a href="#cb10-65"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb10-66"><a href="#cb10-66"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb10-67"><a href="#cb10-67"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
+<span id="cb10-68"><a href="#cb10-68"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb10-69"><a href="#cb10-69"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
+<span id="cb10-70"><a href="#cb10-70"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+<div id="tabset-2-3" class="tab-pane" role="tabpanel" aria-labelledby="tabset-2-3-tab">
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb11"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb11-1"><a href="#cb11-1"></a><span class="kw">functions</span> {</span>
+<span id="cb11-2"><a href="#cb11-2"></a><span class="dt">int</span> unconstrained_dim_constrain_ilr(<span class="dt">int</span> n) {</span>
+<span id="cb11-3"><a href="#cb11-3"></a>    <span class="cf">return</span> (n - <span class="dv">1</span>);</span>
+<span id="cb11-4"><a href="#cb11-4"></a>}</span>
+<span id="cb11-5"><a href="#cb11-5"></a><span class="dt">real</span> simplex_prior_constrain_ilr_uniform_simplex_lpdf_lpdf(</span>
+<span id="cb11-6"><a href="#cb11-6"></a>    <span class="dt">vector</span> xi,</span>
+<span id="cb11-7"><a href="#cb11-7"></a>    <span class="dt">int</span> n</span>
+<span id="cb11-8"><a href="#cb11-8"></a>) {</span>
+<span id="cb11-9"><a href="#cb11-9"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>[dims(z)[<span class="dv">1</span>]]) tmp = constrain_ilr(xi);</span>
+<span id="cb11-10"><a href="#cb11-10"></a>    <span class="cf">return</span> (tmp<span class="fl">.1</span> + uniform_simplex_lpdf(tmp<span class="fl">.2</span>));</span>
+<span id="cb11-11"><a href="#cb11-11"></a>}</span>
+<span id="cb11-12"><a href="#cb11-12"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>) constrain_ilr(</span>
+<span id="cb11-13"><a href="#cb11-13"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb11-14"><a href="#cb11-14"></a>) {</span>
+<span id="cb11-15"><a href="#cb11-15"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
+<span id="cb11-16"><a href="#cb11-16"></a>    <span class="dt">vector</span>[n] ns = linspaced_vector(n, <span class="dv">1</span>, n);</span>
+<span id="cb11-17"><a href="#cb11-17"></a>    <span class="dt">vector</span>[n] w = (xi ./ sqrt((ns .* (ns + <span class="dv">1</span>))));</span>
+<span id="cb11-18"><a href="#cb11-18"></a>    <span class="dt">vector</span>[(n + <span class="dv">1</span>)] z = (append_row(reverse(cumulative_sum(reverse(w))), <span class="dv">0</span>) - append_row(<span class="dv">0</span>, (ns .* w)));</span>
+<span id="cb11-19"><a href="#cb11-19"></a>    <span class="dt">real</span> r = log_sum_exp(z);</span>
+<span id="cb11-20"><a href="#cb11-20"></a>    <span class="cf">return</span> ((((<span class="fl">0.5</span> * log((n + <span class="dv">1</span>))) + sum(z)) - ((n + <span class="dv">1</span>) * r)), exp((z - r)));</span>
+<span id="cb11-21"><a href="#cb11-21"></a>}</span>
+<span id="cb11-22"><a href="#cb11-22"></a><span class="dt">real</span> uniform_simplex_lpdf(<span class="dt">vector</span> xi) {</span>
+<span id="cb11-23"><a href="#cb11-23"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb11-24"><a href="#cb11-24"></a>}</span>
+<span id="cb11-25"><a href="#cb11-25"></a><span class="dt">vector</span> simplex_constrain_constrain_ilr(<span class="dt">vector</span> xi) {</span>
+<span id="cb11-26"><a href="#cb11-26"></a>    <span class="cf">return</span> constrain_ilr(xi).<span class="dv">2</span>;</span>
+<span id="cb11-27"><a href="#cb11-27"></a>}</span>
+<span id="cb11-28"><a href="#cb11-28"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb11-29"><a href="#cb11-29"></a><span class="dt">real</span> dummy_lpdf(</span>
+<span id="cb11-30"><a href="#cb11-30"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb11-31"><a href="#cb11-31"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb11-32"><a href="#cb11-32"></a>) {</span>
+<span id="cb11-33"><a href="#cb11-33"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb11-34"><a href="#cb11-34"></a>}</span>
+<span id="cb11-35"><a href="#cb11-35"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb11-36"><a href="#cb11-36"></a><span class="dt">real</span> dummy_lpdfs(</span>
+<span id="cb11-37"><a href="#cb11-37"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb11-38"><a href="#cb11-38"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb11-39"><a href="#cb11-39"></a>) {</span>
+<span id="cb11-40"><a href="#cb11-40"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb11-41"><a href="#cb11-41"></a>}</span>
+<span id="cb11-42"><a href="#cb11-42"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb11-43"><a href="#cb11-43"></a><span class="dt">real</span> dummy_rng(</span>
+<span id="cb11-44"><a href="#cb11-44"></a>    <span class="dt">vector</span> args1</span>
+<span id="cb11-45"><a href="#cb11-45"></a>) {</span>
+<span id="cb11-46"><a href="#cb11-46"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb11-47"><a href="#cb11-47"></a>}</span>
+<span id="cb11-48"><a href="#cb11-48"></a>}</span>
+<span id="cb11-49"><a href="#cb11-49"></a><span class="kw">data</span> {</span>
+<span id="cb11-50"><a href="#cb11-50"></a>}</span>
+<span id="cb11-51"><a href="#cb11-51"></a><span class="kw">transformed data</span> {</span>
+<span id="cb11-52"><a href="#cb11-52"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb11-53"><a href="#cb11-53"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
+<span id="cb11-54"><a href="#cb11-54"></a>}</span>
+<span id="cb11-55"><a href="#cb11-55"></a><span class="kw">parameters</span> {</span>
+<span id="cb11-56"><a href="#cb11-56"></a>    <span class="dt">vector</span>[unconstrained_dim_constrain_ilr(<span class="dv">10</span>)] theta_xi;</span>
+<span id="cb11-57"><a href="#cb11-57"></a>}</span>
+<span id="cb11-58"><a href="#cb11-58"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb11-59"><a href="#cb11-59"></a>    <span class="dt">vector</span>[dims(z)[<span class="dv">1</span>]] theta = simplex_constrain_constrain_ilr(theta_xi);</span>
+<span id="cb11-60"><a href="#cb11-60"></a>}</span>
+<span id="cb11-61"><a href="#cb11-61"></a><span class="kw">model</span> {</span>
+<span id="cb11-62"><a href="#cb11-62"></a>    theta_xi ~ simplex_prior_constrain_ilr_uniform_simplex_lpdf(<span class="dv">10</span>);</span>
+<span id="cb11-63"><a href="#cb11-63"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb11-64"><a href="#cb11-64"></a>    dummy_obs ~ dummy(theta);</span>
+<span id="cb11-65"><a href="#cb11-65"></a>}</span>
+<span id="cb11-66"><a href="#cb11-66"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb11-67"><a href="#cb11-67"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb11-68"><a href="#cb11-68"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
+<span id="cb11-69"><a href="#cb11-69"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb11-70"><a href="#cb11-70"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
+<span id="cb11-71"><a href="#cb11-71"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+<div id="tabset-2-4" class="tab-pane" role="tabpanel" aria-labelledby="tabset-2-4-tab">
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb12"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb12-1"><a href="#cb12-1"></a><span class="kw">functions</span> {</span>
+<span id="cb12-2"><a href="#cb12-2"></a><span class="dt">int</span> unconstrained_dim_constrain_ilr_reflector(<span class="dt">int</span> n) {</span>
+<span id="cb12-3"><a href="#cb12-3"></a>    <span class="cf">return</span> (n - <span class="dv">1</span>);</span>
+<span id="cb12-4"><a href="#cb12-4"></a>}</span>
+<span id="cb12-5"><a href="#cb12-5"></a><span class="dt">real</span> simplex_prior_constrain_ilr_reflector_uniform_simplex_lpdf_lpdf(</span>
+<span id="cb12-6"><a href="#cb12-6"></a>    <span class="dt">vector</span> xi,</span>
+<span id="cb12-7"><a href="#cb12-7"></a>    <span class="dt">int</span> n</span>
+<span id="cb12-8"><a href="#cb12-8"></a>) {</span>
+<span id="cb12-9"><a href="#cb12-9"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>[dims(z)[<span class="dv">1</span>]]) tmp = constrain_ilr_reflector(xi);</span>
+<span id="cb12-10"><a href="#cb12-10"></a>    <span class="cf">return</span> (tmp<span class="fl">.1</span> + uniform_simplex_lpdf(tmp<span class="fl">.2</span>));</span>
+<span id="cb12-11"><a href="#cb12-11"></a>}</span>
+<span id="cb12-12"><a href="#cb12-12"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>) constrain_ilr_reflector(</span>
+<span id="cb12-13"><a href="#cb12-13"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb12-14"><a href="#cb12-14"></a>) {</span>
+<span id="cb12-15"><a href="#cb12-15"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
+<span id="cb12-16"><a href="#cb12-16"></a>    <span class="dt">real</span> sqrtN = sqrt((n + <span class="dv">1</span>));</span>
+<span id="cb12-17"><a href="#cb12-17"></a>    <span class="dt">real</span> zN = (sum(xi) / sqrtN);</span>
+<span id="cb12-18"><a href="#cb12-18"></a>    <span class="dt">vector</span>[(dims(xi)[<span class="dv">1</span>] + <span class="dv">1</span>)] z = append_row((xi - (zN ./ (sqrtN - <span class="dv">1</span>))), zN);</span>
+<span id="cb12-19"><a href="#cb12-19"></a>    <span class="dt">real</span> r = log_sum_exp(z);</span>
+<span id="cb12-20"><a href="#cb12-20"></a>    <span class="cf">return</span> ((((<span class="fl">0.5</span> * log((n + <span class="dv">1</span>))) + sum(z)) - ((n + <span class="dv">1</span>) * r)), exp((z - r)));</span>
+<span id="cb12-21"><a href="#cb12-21"></a>}</span>
+<span id="cb12-22"><a href="#cb12-22"></a><span class="dt">real</span> uniform_simplex_lpdf(<span class="dt">vector</span> xi) {</span>
+<span id="cb12-23"><a href="#cb12-23"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb12-24"><a href="#cb12-24"></a>}</span>
+<span id="cb12-25"><a href="#cb12-25"></a><span class="dt">vector</span> simplex_constrain_constrain_ilr_reflector(</span>
+<span id="cb12-26"><a href="#cb12-26"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb12-27"><a href="#cb12-27"></a>) {</span>
+<span id="cb12-28"><a href="#cb12-28"></a>    <span class="cf">return</span> constrain_ilr_reflector(xi).<span class="dv">2</span>;</span>
+<span id="cb12-29"><a href="#cb12-29"></a>}</span>
+<span id="cb12-30"><a href="#cb12-30"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb12-31"><a href="#cb12-31"></a><span class="dt">real</span> dummy_lpdf(</span>
+<span id="cb12-32"><a href="#cb12-32"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb12-33"><a href="#cb12-33"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb12-34"><a href="#cb12-34"></a>) {</span>
+<span id="cb12-35"><a href="#cb12-35"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb12-36"><a href="#cb12-36"></a>}</span>
+<span id="cb12-37"><a href="#cb12-37"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb12-38"><a href="#cb12-38"></a><span class="dt">real</span> dummy_lpdfs(</span>
+<span id="cb12-39"><a href="#cb12-39"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb12-40"><a href="#cb12-40"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb12-41"><a href="#cb12-41"></a>) {</span>
+<span id="cb12-42"><a href="#cb12-42"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb12-43"><a href="#cb12-43"></a>}</span>
+<span id="cb12-44"><a href="#cb12-44"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb12-45"><a href="#cb12-45"></a><span class="dt">real</span> dummy_rng(</span>
+<span id="cb12-46"><a href="#cb12-46"></a>    <span class="dt">vector</span> args1</span>
+<span id="cb12-47"><a href="#cb12-47"></a>) {</span>
+<span id="cb12-48"><a href="#cb12-48"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb12-49"><a href="#cb12-49"></a>}</span>
+<span id="cb12-50"><a href="#cb12-50"></a>}</span>
+<span id="cb12-51"><a href="#cb12-51"></a><span class="kw">data</span> {</span>
+<span id="cb12-52"><a href="#cb12-52"></a>}</span>
+<span id="cb12-53"><a href="#cb12-53"></a><span class="kw">transformed data</span> {</span>
+<span id="cb12-54"><a href="#cb12-54"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb12-55"><a href="#cb12-55"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
+<span id="cb12-56"><a href="#cb12-56"></a>}</span>
+<span id="cb12-57"><a href="#cb12-57"></a><span class="kw">parameters</span> {</span>
+<span id="cb12-58"><a href="#cb12-58"></a>    <span class="dt">vector</span>[unconstrained_dim_constrain_ilr_reflector(<span class="dv">10</span>)] theta_xi;</span>
+<span id="cb12-59"><a href="#cb12-59"></a>}</span>
+<span id="cb12-60"><a href="#cb12-60"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb12-61"><a href="#cb12-61"></a>    <span class="dt">vector</span>[dims(z)[<span class="dv">1</span>]] theta = simplex_constrain_constrain_ilr_reflector(theta_xi);</span>
+<span id="cb12-62"><a href="#cb12-62"></a>}</span>
+<span id="cb12-63"><a href="#cb12-63"></a><span class="kw">model</span> {</span>
+<span id="cb12-64"><a href="#cb12-64"></a>    theta_xi ~ simplex_prior_constrain_ilr_reflector_uniform_simplex_lpdf(<span class="dv">10</span>);</span>
+<span id="cb12-65"><a href="#cb12-65"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb12-66"><a href="#cb12-66"></a>    dummy_obs ~ dummy(theta);</span>
+<span id="cb12-67"><a href="#cb12-67"></a>}</span>
+<span id="cb12-68"><a href="#cb12-68"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb12-69"><a href="#cb12-69"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb12-70"><a href="#cb12-70"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
+<span id="cb12-71"><a href="#cb12-71"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb12-72"><a href="#cb12-72"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
+<span id="cb12-73"><a href="#cb12-73"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+<div id="tabset-2-5" class="tab-pane" role="tabpanel" aria-labelledby="tabset-2-5-tab">
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb13"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb13-1"><a href="#cb13-1"></a><span class="kw">functions</span> {</span>
+<span id="cb13-2"><a href="#cb13-2"></a><span class="dt">int</span> unconstrained_dim_constrain_normalized_exponential(<span class="dt">int</span> n) {</span>
+<span id="cb13-3"><a href="#cb13-3"></a>    <span class="cf">return</span> n;</span>
+<span id="cb13-4"><a href="#cb13-4"></a>}</span>
+<span id="cb13-5"><a href="#cb13-5"></a><span class="dt">real</span> simplex_prior_constrain_normalized_exponential_uniform_simplex_lpdf_lpdf(</span>
+<span id="cb13-6"><a href="#cb13-6"></a>    <span class="dt">vector</span> xi,</span>
+<span id="cb13-7"><a href="#cb13-7"></a>    <span class="dt">int</span> n</span>
+<span id="cb13-8"><a href="#cb13-8"></a>) {</span>
+<span id="cb13-9"><a href="#cb13-9"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>[dims(xi)[<span class="dv">1</span>]]) tmp = constrain_normalized_exponential(xi);</span>
+<span id="cb13-10"><a href="#cb13-10"></a>    <span class="cf">return</span> (tmp<span class="fl">.1</span> + uniform_simplex_lpdf(tmp<span class="fl">.2</span>));</span>
+<span id="cb13-11"><a href="#cb13-11"></a>}</span>
+<span id="cb13-12"><a href="#cb13-12"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>) constrain_normalized_exponential(</span>
+<span id="cb13-13"><a href="#cb13-13"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb13-14"><a href="#cb13-14"></a>) {</span>
+<span id="cb13-15"><a href="#cb13-15"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
+<span id="cb13-16"><a href="#cb13-16"></a>    <span class="dt">vector</span>[dims(xi)[<span class="dv">1</span>]] z = log(exponential_log_qf(std_normal_lcdfs(xi)));</span>
+<span id="cb13-17"><a href="#cb13-17"></a>    <span class="dt">real</span> r = log_sum_exp(z);</span>
+<span id="cb13-18"><a href="#cb13-18"></a>    <span class="cf">return</span> ((std_normal_lpdf(xi) - lgamma(n)), exp((z - r)));</span>
+<span id="cb13-19"><a href="#cb13-19"></a>}</span>
+<span id="cb13-20"><a href="#cb13-20"></a><span class="dt">vector</span> exponential_log_qf(<span class="dt">vector</span> x) {</span>
+<span id="cb13-21"><a href="#cb13-21"></a>    <span class="cf">return</span> (-log1m_exp(x));</span>
+<span id="cb13-22"><a href="#cb13-22"></a>}</span>
+<span id="cb13-23"><a href="#cb13-23"></a><span class="dt">vector</span> std_normal_lcdfs(</span>
+<span id="cb13-24"><a href="#cb13-24"></a>    <span class="dt">vector</span> x</span>
+<span id="cb13-25"><a href="#cb13-25"></a>) {</span>
+<span id="cb13-26"><a href="#cb13-26"></a>    <span class="dt">int</span> n = dims(x)[<span class="dv">1</span>];</span>
+<span id="cb13-27"><a href="#cb13-27"></a>    <span class="cf">return</span> jbroadcasted_std_normal_lcdfs(x);</span>
+<span id="cb13-28"><a href="#cb13-28"></a>}</span>
+<span id="cb13-29"><a href="#cb13-29"></a><span class="dt">vector</span> jbroadcasted_std_normal_lcdfs(</span>
+<span id="cb13-30"><a href="#cb13-30"></a>    <span class="dt">vector</span> x1</span>
+<span id="cb13-31"><a href="#cb13-31"></a>) {</span>
+<span id="cb13-32"><a href="#cb13-32"></a>    <span class="dt">int</span> n = dims(x1)[<span class="dv">1</span>];</span>
+<span id="cb13-33"><a href="#cb13-33"></a>    <span class="dt">vector</span>[n] rv;</span>
+<span id="cb13-34"><a href="#cb13-34"></a>    <span class="cf">for</span>(i <span class="cf">in</span> <span class="dv">1</span>:n) {</span>
+<span id="cb13-35"><a href="#cb13-35"></a>        rv[i] = std_normal_lcdfs(broadcasted_getindex(x1, i));</span>
+<span id="cb13-36"><a href="#cb13-36"></a>    }</span>
+<span id="cb13-37"><a href="#cb13-37"></a>    <span class="cf">return</span> rv;</span>
+<span id="cb13-38"><a href="#cb13-38"></a>}</span>
+<span id="cb13-39"><a href="#cb13-39"></a><span class="dt">real</span> std_normal_lcdfs(<span class="dt">real</span> x) {</span>
+<span id="cb13-40"><a href="#cb13-40"></a>    <span class="cf">return</span> std_normal_lcdf(x);</span>
+<span id="cb13-41"><a href="#cb13-41"></a>}</span>
+<span id="cb13-42"><a href="#cb13-42"></a><span class="dt">real</span> broadcasted_getindex(<span class="dt">vector</span> x, <span class="dt">int</span> i) {</span>
+<span id="cb13-43"><a href="#cb13-43"></a>    <span class="dt">int</span> m = dims(x)[<span class="dv">1</span>];</span>
+<span id="cb13-44"><a href="#cb13-44"></a>    <span class="cf">return</span> x[i];</span>
+<span id="cb13-45"><a href="#cb13-45"></a>}</span>
+<span id="cb13-46"><a href="#cb13-46"></a><span class="dt">real</span> uniform_simplex_lpdf(<span class="dt">vector</span> xi) {</span>
+<span id="cb13-47"><a href="#cb13-47"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb13-48"><a href="#cb13-48"></a>}</span>
+<span id="cb13-49"><a href="#cb13-49"></a><span class="dt">vector</span> simplex_constrain_constrain_normalized_exponential(</span>
+<span id="cb13-50"><a href="#cb13-50"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb13-51"><a href="#cb13-51"></a>) {</span>
+<span id="cb13-52"><a href="#cb13-52"></a>    <span class="cf">return</span> constrain_normalized_exponential(xi).<span class="dv">2</span>;</span>
+<span id="cb13-53"><a href="#cb13-53"></a>}</span>
+<span id="cb13-54"><a href="#cb13-54"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb13-55"><a href="#cb13-55"></a><span class="dt">real</span> dummy_lpdf(</span>
+<span id="cb13-56"><a href="#cb13-56"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb13-57"><a href="#cb13-57"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb13-58"><a href="#cb13-58"></a>) {</span>
+<span id="cb13-59"><a href="#cb13-59"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb13-60"><a href="#cb13-60"></a>}</span>
+<span id="cb13-61"><a href="#cb13-61"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb13-62"><a href="#cb13-62"></a><span class="dt">real</span> dummy_lpdfs(</span>
+<span id="cb13-63"><a href="#cb13-63"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb13-64"><a href="#cb13-64"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb13-65"><a href="#cb13-65"></a>) {</span>
+<span id="cb13-66"><a href="#cb13-66"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb13-67"><a href="#cb13-67"></a>}</span>
+<span id="cb13-68"><a href="#cb13-68"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb13-69"><a href="#cb13-69"></a><span class="dt">real</span> dummy_rng(</span>
+<span id="cb13-70"><a href="#cb13-70"></a>    <span class="dt">vector</span> args1</span>
+<span id="cb13-71"><a href="#cb13-71"></a>) {</span>
+<span id="cb13-72"><a href="#cb13-72"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb13-73"><a href="#cb13-73"></a>}</span>
+<span id="cb13-74"><a href="#cb13-74"></a>}</span>
+<span id="cb13-75"><a href="#cb13-75"></a><span class="kw">data</span> {</span>
+<span id="cb13-76"><a href="#cb13-76"></a>}</span>
+<span id="cb13-77"><a href="#cb13-77"></a><span class="kw">transformed data</span> {</span>
+<span id="cb13-78"><a href="#cb13-78"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb13-79"><a href="#cb13-79"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
+<span id="cb13-80"><a href="#cb13-80"></a>}</span>
+<span id="cb13-81"><a href="#cb13-81"></a><span class="kw">parameters</span> {</span>
+<span id="cb13-82"><a href="#cb13-82"></a>    <span class="dt">vector</span>[unconstrained_dim_constrain_normalized_exponential(<span class="dv">10</span>)] theta_xi;</span>
+<span id="cb13-83"><a href="#cb13-83"></a>}</span>
+<span id="cb13-84"><a href="#cb13-84"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb13-85"><a href="#cb13-85"></a>    <span class="dt">vector</span>[dims(z)[<span class="dv">1</span>]] theta = simplex_constrain_constrain_normalized_exponential(theta_xi);</span>
+<span id="cb13-86"><a href="#cb13-86"></a>}</span>
+<span id="cb13-87"><a href="#cb13-87"></a><span class="kw">model</span> {</span>
+<span id="cb13-88"><a href="#cb13-88"></a>    theta_xi ~ simplex_prior_constrain_normalized_exponential_uniform_simplex_lpdf(<span class="dv">10</span>);</span>
+<span id="cb13-89"><a href="#cb13-89"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb13-90"><a href="#cb13-90"></a>    dummy_obs ~ dummy(theta);</span>
+<span id="cb13-91"><a href="#cb13-91"></a>}</span>
+<span id="cb13-92"><a href="#cb13-92"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb13-93"><a href="#cb13-93"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb13-94"><a href="#cb13-94"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
+<span id="cb13-95"><a href="#cb13-95"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb13-96"><a href="#cb13-96"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
+<span id="cb13-97"><a href="#cb13-97"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+<div id="tabset-2-6" class="tab-pane" role="tabpanel" aria-labelledby="tabset-2-6-tab">
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb14"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb14-1"><a href="#cb14-1"></a><span class="kw">functions</span> {</span>
+<span id="cb14-2"><a href="#cb14-2"></a><span class="dt">int</span> unconstrained_dim_constrain_stickbreaking_angular(<span class="dt">int</span> n) {</span>
+<span id="cb14-3"><a href="#cb14-3"></a>    <span class="cf">return</span> (n - <span class="dv">1</span>);</span>
+<span id="cb14-4"><a href="#cb14-4"></a>}</span>
+<span id="cb14-5"><a href="#cb14-5"></a><span class="dt">real</span> simplex_prior_constrain_stickbreaking_angular_uniform_simplex_lpdf_lpdf(</span>
+<span id="cb14-6"><a href="#cb14-6"></a>    <span class="dt">vector</span> xi,</span>
+<span id="cb14-7"><a href="#cb14-7"></a>    <span class="dt">int</span> n</span>
+<span id="cb14-8"><a href="#cb14-8"></a>) {</span>
+<span id="cb14-9"><a href="#cb14-9"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>[dims(log_s2_prod)[<span class="dv">1</span>]]) tmp = constrain_stickbreaking_angular(xi);</span>
+<span id="cb14-10"><a href="#cb14-10"></a>    <span class="cf">return</span> (tmp<span class="fl">.1</span> + uniform_simplex_lpdf(tmp<span class="fl">.2</span>));</span>
+<span id="cb14-11"><a href="#cb14-11"></a>}</span>
+<span id="cb14-12"><a href="#cb14-12"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>) constrain_stickbreaking_angular(</span>
+<span id="cb14-13"><a href="#cb14-13"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb14-14"><a href="#cb14-14"></a>) {</span>
+<span id="cb14-15"><a href="#cb14-15"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
+<span id="cb14-16"><a href="#cb14-16"></a>    <span class="dt">vector</span>[dims(xi)[<span class="dv">1</span>]] log_u = log_inv_logit(xi);</span>
+<span id="cb14-17"><a href="#cb14-17"></a>    <span class="dt">vector</span>[dims(xi)[<span class="dv">1</span>]] log_phi = (log_u + (log(<span class="fl">3.141592653589793</span>) - log2()));</span>
+<span id="cb14-18"><a href="#cb14-18"></a>    <span class="dt">vector</span>[dims(xi)[<span class="dv">1</span>]] phi = exp(log_phi);</span>
+<span id="cb14-19"><a href="#cb14-19"></a>    <span class="dt">vector</span>[dims(xi)[<span class="dv">1</span>]] log_s = log(sin(phi));</span>
+<span id="cb14-20"><a href="#cb14-20"></a>    <span class="dt">vector</span>[dims(xi)[<span class="dv">1</span>]] log_c = log(cos(phi));</span>
+<span id="cb14-21"><a href="#cb14-21"></a>    <span class="dt">vector</span>[(dims(xi)[<span class="dv">1</span>] + <span class="dv">1</span>)] log_s2_prod = append_row(<span class="dv">0</span>, (<span class="dv">2</span> * cumulative_sum(log_s)));</span>
+<span id="cb14-22"><a href="#cb14-22"></a>    <span class="cf">return</span> (</span>
+<span id="cb14-23"><a href="#cb14-23"></a>        (</span>
+<span id="cb14-24"><a href="#cb14-24"></a>            (n * log2()) +</span>
+<span id="cb14-25"><a href="#cb14-25"></a>            sum(log1m_exp(log_u)) +</span>
+<span id="cb14-26"><a href="#cb14-26"></a>            sum(log_s) +</span>
+<span id="cb14-27"><a href="#cb14-27"></a>            sum(log_phi) +</span>
+<span id="cb14-28"><a href="#cb14-28"></a>            sum(log_s2_prod[<span class="dv">2</span>:n]) +</span>
+<span id="cb14-29"><a href="#cb14-29"></a>            sum(log_c)</span>
+<span id="cb14-30"><a href="#cb14-30"></a>        ),</span>
+<span id="cb14-31"><a href="#cb14-31"></a>        exp((log_s2_prod + append_row((<span class="dv">2</span> * log_c), <span class="dv">0</span>)))</span>
+<span id="cb14-32"><a href="#cb14-32"></a>    );</span>
+<span id="cb14-33"><a href="#cb14-33"></a>}</span>
+<span id="cb14-34"><a href="#cb14-34"></a><span class="dt">real</span> uniform_simplex_lpdf(<span class="dt">vector</span> xi) {</span>
+<span id="cb14-35"><a href="#cb14-35"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb14-36"><a href="#cb14-36"></a>}</span>
+<span id="cb14-37"><a href="#cb14-37"></a><span class="dt">vector</span> simplex_constrain_constrain_stickbreaking_angular(</span>
+<span id="cb14-38"><a href="#cb14-38"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb14-39"><a href="#cb14-39"></a>) {</span>
+<span id="cb14-40"><a href="#cb14-40"></a>    <span class="cf">return</span> constrain_stickbreaking_angular(xi).<span class="dv">2</span>;</span>
+<span id="cb14-41"><a href="#cb14-41"></a>}</span>
+<span id="cb14-42"><a href="#cb14-42"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb14-43"><a href="#cb14-43"></a><span class="dt">real</span> dummy_lpdf(</span>
+<span id="cb14-44"><a href="#cb14-44"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb14-45"><a href="#cb14-45"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb14-46"><a href="#cb14-46"></a>) {</span>
+<span id="cb14-47"><a href="#cb14-47"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb14-48"><a href="#cb14-48"></a>}</span>
+<span id="cb14-49"><a href="#cb14-49"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb14-50"><a href="#cb14-50"></a><span class="dt">real</span> dummy_lpdfs(</span>
+<span id="cb14-51"><a href="#cb14-51"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb14-52"><a href="#cb14-52"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb14-53"><a href="#cb14-53"></a>) {</span>
+<span id="cb14-54"><a href="#cb14-54"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb14-55"><a href="#cb14-55"></a>}</span>
+<span id="cb14-56"><a href="#cb14-56"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb14-57"><a href="#cb14-57"></a><span class="dt">real</span> dummy_rng(</span>
+<span id="cb14-58"><a href="#cb14-58"></a>    <span class="dt">vector</span> args1</span>
+<span id="cb14-59"><a href="#cb14-59"></a>) {</span>
+<span id="cb14-60"><a href="#cb14-60"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb14-61"><a href="#cb14-61"></a>}</span>
+<span id="cb14-62"><a href="#cb14-62"></a>}</span>
+<span id="cb14-63"><a href="#cb14-63"></a><span class="kw">data</span> {</span>
+<span id="cb14-64"><a href="#cb14-64"></a>}</span>
+<span id="cb14-65"><a href="#cb14-65"></a><span class="kw">transformed data</span> {</span>
+<span id="cb14-66"><a href="#cb14-66"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb14-67"><a href="#cb14-67"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
+<span id="cb14-68"><a href="#cb14-68"></a>}</span>
+<span id="cb14-69"><a href="#cb14-69"></a><span class="kw">parameters</span> {</span>
+<span id="cb14-70"><a href="#cb14-70"></a>    <span class="dt">vector</span>[unconstrained_dim_constrain_stickbreaking_angular(<span class="dv">10</span>)] theta_xi;</span>
+<span id="cb14-71"><a href="#cb14-71"></a>}</span>
+<span id="cb14-72"><a href="#cb14-72"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb14-73"><a href="#cb14-73"></a>    <span class="dt">vector</span>[dims(log_s2_prod)[<span class="dv">1</span>]] theta = simplex_constrain_constrain_stickbreaking_angular(theta_xi);</span>
+<span id="cb14-74"><a href="#cb14-74"></a>}</span>
+<span id="cb14-75"><a href="#cb14-75"></a><span class="kw">model</span> {</span>
+<span id="cb14-76"><a href="#cb14-76"></a>    theta_xi ~ simplex_prior_constrain_stickbreaking_angular_uniform_simplex_lpdf(<span class="dv">10</span>);</span>
+<span id="cb14-77"><a href="#cb14-77"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb14-78"><a href="#cb14-78"></a>    dummy_obs ~ dummy(theta);</span>
+<span id="cb14-79"><a href="#cb14-79"></a>}</span>
+<span id="cb14-80"><a href="#cb14-80"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb14-81"><a href="#cb14-81"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb14-82"><a href="#cb14-82"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
+<span id="cb14-83"><a href="#cb14-83"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb14-84"><a href="#cb14-84"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
+<span id="cb14-85"><a href="#cb14-85"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+<div id="tabset-2-7" class="tab-pane" role="tabpanel" aria-labelledby="tabset-2-7-tab">
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb15"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb15-1"><a href="#cb15-1"></a><span class="kw">functions</span> {</span>
+<span id="cb15-2"><a href="#cb15-2"></a><span class="dt">int</span> unconstrained_dim_constrain_stickbreaking_logistic(<span class="dt">int</span> n) {</span>
+<span id="cb15-3"><a href="#cb15-3"></a>    <span class="cf">return</span> (n - <span class="dv">1</span>);</span>
+<span id="cb15-4"><a href="#cb15-4"></a>}</span>
+<span id="cb15-5"><a href="#cb15-5"></a><span class="dt">real</span> simplex_prior_constrain_stickbreaking_logistic_uniform_simplex_lpdf_lpdf(</span>
+<span id="cb15-6"><a href="#cb15-6"></a>    <span class="dt">vector</span> xi,</span>
+<span id="cb15-7"><a href="#cb15-7"></a>    <span class="dt">int</span> n</span>
+<span id="cb15-8"><a href="#cb15-8"></a>) {</span>
+<span id="cb15-9"><a href="#cb15-9"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>[(dims(xi)[<span class="dv">1</span>] + <span class="dv">1</span>)]) tmp = constrain_stickbreaking_logistic(xi);</span>
+<span id="cb15-10"><a href="#cb15-10"></a>    <span class="cf">return</span> (tmp<span class="fl">.1</span> + uniform_simplex_lpdf(tmp<span class="fl">.2</span>));</span>
+<span id="cb15-11"><a href="#cb15-11"></a>}</span>
+<span id="cb15-12"><a href="#cb15-12"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>) constrain_stickbreaking_logistic(</span>
+<span id="cb15-13"><a href="#cb15-13"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb15-14"><a href="#cb15-14"></a>) {</span>
+<span id="cb15-15"><a href="#cb15-15"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
+<span id="cb15-16"><a href="#cb15-16"></a>    <span class="dt">vector</span>[dims(xi)[<span class="dv">1</span>]] log_z = log_inv_logit((xi - log(reverse(linspaced_vector(n, <span class="dv">1</span>, n)))));</span>
+<span id="cb15-17"><a href="#cb15-17"></a>    <span class="dt">vector</span>[(dims(xi)[<span class="dv">1</span>] + <span class="dv">1</span>)] log_cum_prod = append_row(<span class="dv">0</span>, cumulative_sum(log1m_exp(log_z)));</span>
+<span id="cb15-18"><a href="#cb15-18"></a>    <span class="cf">return</span> ((sum(log_cum_prod) + sum(log_z)), exp((append_row(log_z, <span class="dv">0</span>) + log_cum_prod)));</span>
+<span id="cb15-19"><a href="#cb15-19"></a>}</span>
+<span id="cb15-20"><a href="#cb15-20"></a><span class="dt">real</span> uniform_simplex_lpdf(<span class="dt">vector</span> xi) {</span>
+<span id="cb15-21"><a href="#cb15-21"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb15-22"><a href="#cb15-22"></a>}</span>
+<span id="cb15-23"><a href="#cb15-23"></a><span class="dt">vector</span> simplex_constrain_constrain_stickbreaking_logistic(</span>
+<span id="cb15-24"><a href="#cb15-24"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb15-25"><a href="#cb15-25"></a>) {</span>
+<span id="cb15-26"><a href="#cb15-26"></a>    <span class="cf">return</span> constrain_stickbreaking_logistic(xi).<span class="dv">2</span>;</span>
+<span id="cb15-27"><a href="#cb15-27"></a>}</span>
+<span id="cb15-28"><a href="#cb15-28"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb15-29"><a href="#cb15-29"></a><span class="dt">real</span> dummy_lpdf(</span>
+<span id="cb15-30"><a href="#cb15-30"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb15-31"><a href="#cb15-31"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb15-32"><a href="#cb15-32"></a>) {</span>
+<span id="cb15-33"><a href="#cb15-33"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb15-34"><a href="#cb15-34"></a>}</span>
+<span id="cb15-35"><a href="#cb15-35"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb15-36"><a href="#cb15-36"></a><span class="dt">real</span> dummy_lpdfs(</span>
+<span id="cb15-37"><a href="#cb15-37"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb15-38"><a href="#cb15-38"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb15-39"><a href="#cb15-39"></a>) {</span>
+<span id="cb15-40"><a href="#cb15-40"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb15-41"><a href="#cb15-41"></a>}</span>
+<span id="cb15-42"><a href="#cb15-42"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb15-43"><a href="#cb15-43"></a><span class="dt">real</span> dummy_rng(</span>
+<span id="cb15-44"><a href="#cb15-44"></a>    <span class="dt">vector</span> args1</span>
+<span id="cb15-45"><a href="#cb15-45"></a>) {</span>
+<span id="cb15-46"><a href="#cb15-46"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb15-47"><a href="#cb15-47"></a>}</span>
+<span id="cb15-48"><a href="#cb15-48"></a>}</span>
+<span id="cb15-49"><a href="#cb15-49"></a><span class="kw">data</span> {</span>
+<span id="cb15-50"><a href="#cb15-50"></a>}</span>
+<span id="cb15-51"><a href="#cb15-51"></a><span class="kw">transformed data</span> {</span>
+<span id="cb15-52"><a href="#cb15-52"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb15-53"><a href="#cb15-53"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
+<span id="cb15-54"><a href="#cb15-54"></a>}</span>
+<span id="cb15-55"><a href="#cb15-55"></a><span class="kw">parameters</span> {</span>
+<span id="cb15-56"><a href="#cb15-56"></a>    <span class="dt">vector</span>[unconstrained_dim_constrain_stickbreaking_logistic(<span class="dv">10</span>)] theta_xi;</span>
+<span id="cb15-57"><a href="#cb15-57"></a>}</span>
+<span id="cb15-58"><a href="#cb15-58"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb15-59"><a href="#cb15-59"></a>    <span class="dt">vector</span>[(dims(log_z)[<span class="dv">1</span>] + <span class="dv">1</span>)] theta = simplex_constrain_constrain_stickbreaking_logistic(theta_xi);</span>
+<span id="cb15-60"><a href="#cb15-60"></a>}</span>
+<span id="cb15-61"><a href="#cb15-61"></a><span class="kw">model</span> {</span>
+<span id="cb15-62"><a href="#cb15-62"></a>    theta_xi ~ simplex_prior_constrain_stickbreaking_logistic_uniform_simplex_lpdf(<span class="dv">10</span>);</span>
+<span id="cb15-63"><a href="#cb15-63"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb15-64"><a href="#cb15-64"></a>    dummy_obs ~ dummy(theta);</span>
+<span id="cb15-65"><a href="#cb15-65"></a>}</span>
+<span id="cb15-66"><a href="#cb15-66"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb15-67"><a href="#cb15-67"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb15-68"><a href="#cb15-68"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
+<span id="cb15-69"><a href="#cb15-69"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb15-70"><a href="#cb15-70"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
+<span id="cb15-71"><a href="#cb15-71"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+<div id="tabset-2-8" class="tab-pane" role="tabpanel" aria-labelledby="tabset-2-8-tab">
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb16"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb16-1"><a href="#cb16-1"></a><span class="kw">functions</span> {</span>
+<span id="cb16-2"><a href="#cb16-2"></a><span class="dt">int</span> unconstrained_dim_constrain_stickbreaking_normal(<span class="dt">int</span> n) {</span>
+<span id="cb16-3"><a href="#cb16-3"></a>    <span class="cf">return</span> (n - <span class="dv">1</span>);</span>
+<span id="cb16-4"><a href="#cb16-4"></a>}</span>
+<span id="cb16-5"><a href="#cb16-5"></a><span class="dt">real</span> simplex_prior_constrain_stickbreaking_normal_uniform_simplex_lpdf_lpdf(</span>
+<span id="cb16-6"><a href="#cb16-6"></a>    <span class="dt">vector</span> xi,</span>
+<span id="cb16-7"><a href="#cb16-7"></a>    <span class="dt">int</span> n</span>
+<span id="cb16-8"><a href="#cb16-8"></a>) {</span>
+<span id="cb16-9"><a href="#cb16-9"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>[(dims(xi)[<span class="dv">1</span>] + <span class="dv">1</span>)]) tmp = constrain_stickbreaking_normal(xi);</span>
+<span id="cb16-10"><a href="#cb16-10"></a>    <span class="cf">return</span> (tmp<span class="fl">.1</span> + uniform_simplex_lpdf(tmp<span class="fl">.2</span>));</span>
+<span id="cb16-11"><a href="#cb16-11"></a>}</span>
+<span id="cb16-12"><a href="#cb16-12"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>) constrain_stickbreaking_normal(</span>
+<span id="cb16-13"><a href="#cb16-13"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb16-14"><a href="#cb16-14"></a>) {</span>
+<span id="cb16-15"><a href="#cb16-15"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
+<span id="cb16-16"><a href="#cb16-16"></a>    <span class="dt">vector</span>[dims(xi)[<span class="dv">1</span>]] w = (xi - (log(reverse(linspaced_vector(n, <span class="dv">1</span>, n))) / <span class="dv">2</span>));</span>
+<span id="cb16-17"><a href="#cb16-17"></a>    <span class="dt">vector</span>[dims(xi)[<span class="dv">1</span>]] log_z = std_normal_lcdfs(w);</span>
+<span id="cb16-18"><a href="#cb16-18"></a>    <span class="dt">vector</span>[(dims(xi)[<span class="dv">1</span>] + <span class="dv">1</span>)] log_cum_prod = append_row(<span class="dv">0</span>, cumulative_sum(log1m_exp(log_z)));</span>
+<span id="cb16-19"><a href="#cb16-19"></a>    <span class="cf">return</span> ((std_normal_lpdf(w) + sum(log_cum_prod[<span class="dv">2</span>:n])), exp((append_row(log_z, <span class="dv">0</span>) + log_cum_prod)));</span>
+<span id="cb16-20"><a href="#cb16-20"></a>}</span>
+<span id="cb16-21"><a href="#cb16-21"></a><span class="dt">vector</span> std_normal_lcdfs(</span>
+<span id="cb16-22"><a href="#cb16-22"></a>    <span class="dt">vector</span> x</span>
+<span id="cb16-23"><a href="#cb16-23"></a>) {</span>
+<span id="cb16-24"><a href="#cb16-24"></a>    <span class="dt">int</span> n = dims(x)[<span class="dv">1</span>];</span>
+<span id="cb16-25"><a href="#cb16-25"></a>    <span class="cf">return</span> jbroadcasted_std_normal_lcdfs(x);</span>
+<span id="cb16-26"><a href="#cb16-26"></a>}</span>
+<span id="cb16-27"><a href="#cb16-27"></a><span class="dt">vector</span> jbroadcasted_std_normal_lcdfs(</span>
+<span id="cb16-28"><a href="#cb16-28"></a>    <span class="dt">vector</span> x1</span>
+<span id="cb16-29"><a href="#cb16-29"></a>) {</span>
+<span id="cb16-30"><a href="#cb16-30"></a>    <span class="dt">int</span> n = dims(x1)[<span class="dv">1</span>];</span>
+<span id="cb16-31"><a href="#cb16-31"></a>    <span class="dt">vector</span>[n] rv;</span>
+<span id="cb16-32"><a href="#cb16-32"></a>    <span class="cf">for</span>(i <span class="cf">in</span> <span class="dv">1</span>:n) {</span>
+<span id="cb16-33"><a href="#cb16-33"></a>        rv[i] = std_normal_lcdfs(broadcasted_getindex(x1, i));</span>
+<span id="cb16-34"><a href="#cb16-34"></a>    }</span>
+<span id="cb16-35"><a href="#cb16-35"></a>    <span class="cf">return</span> rv;</span>
+<span id="cb16-36"><a href="#cb16-36"></a>}</span>
+<span id="cb16-37"><a href="#cb16-37"></a><span class="dt">real</span> std_normal_lcdfs(<span class="dt">real</span> x) {</span>
+<span id="cb16-38"><a href="#cb16-38"></a>    <span class="cf">return</span> std_normal_lcdf(x);</span>
+<span id="cb16-39"><a href="#cb16-39"></a>}</span>
+<span id="cb16-40"><a href="#cb16-40"></a><span class="dt">real</span> broadcasted_getindex(<span class="dt">vector</span> x, <span class="dt">int</span> i) {</span>
+<span id="cb16-41"><a href="#cb16-41"></a>    <span class="dt">int</span> m = dims(x)[<span class="dv">1</span>];</span>
+<span id="cb16-42"><a href="#cb16-42"></a>    <span class="cf">return</span> x[i];</span>
+<span id="cb16-43"><a href="#cb16-43"></a>}</span>
+<span id="cb16-44"><a href="#cb16-44"></a><span class="dt">real</span> uniform_simplex_lpdf(<span class="dt">vector</span> xi) {</span>
+<span id="cb16-45"><a href="#cb16-45"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb16-46"><a href="#cb16-46"></a>}</span>
+<span id="cb16-47"><a href="#cb16-47"></a><span class="dt">vector</span> simplex_constrain_constrain_stickbreaking_normal(</span>
+<span id="cb16-48"><a href="#cb16-48"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb16-49"><a href="#cb16-49"></a>) {</span>
+<span id="cb16-50"><a href="#cb16-50"></a>    <span class="cf">return</span> constrain_stickbreaking_normal(xi).<span class="dv">2</span>;</span>
+<span id="cb16-51"><a href="#cb16-51"></a>}</span>
+<span id="cb16-52"><a href="#cb16-52"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb16-53"><a href="#cb16-53"></a><span class="dt">real</span> dummy_lpdf(</span>
+<span id="cb16-54"><a href="#cb16-54"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb16-55"><a href="#cb16-55"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb16-56"><a href="#cb16-56"></a>) {</span>
+<span id="cb16-57"><a href="#cb16-57"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb16-58"><a href="#cb16-58"></a>}</span>
+<span id="cb16-59"><a href="#cb16-59"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb16-60"><a href="#cb16-60"></a><span class="dt">real</span> dummy_lpdfs(</span>
+<span id="cb16-61"><a href="#cb16-61"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb16-62"><a href="#cb16-62"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb16-63"><a href="#cb16-63"></a>) {</span>
+<span id="cb16-64"><a href="#cb16-64"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb16-65"><a href="#cb16-65"></a>}</span>
+<span id="cb16-66"><a href="#cb16-66"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb16-67"><a href="#cb16-67"></a><span class="dt">real</span> dummy_rng(</span>
+<span id="cb16-68"><a href="#cb16-68"></a>    <span class="dt">vector</span> args1</span>
+<span id="cb16-69"><a href="#cb16-69"></a>) {</span>
+<span id="cb16-70"><a href="#cb16-70"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb16-71"><a href="#cb16-71"></a>}</span>
+<span id="cb16-72"><a href="#cb16-72"></a>}</span>
+<span id="cb16-73"><a href="#cb16-73"></a><span class="kw">data</span> {</span>
+<span id="cb16-74"><a href="#cb16-74"></a>}</span>
+<span id="cb16-75"><a href="#cb16-75"></a><span class="kw">transformed data</span> {</span>
+<span id="cb16-76"><a href="#cb16-76"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb16-77"><a href="#cb16-77"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
+<span id="cb16-78"><a href="#cb16-78"></a>}</span>
+<span id="cb16-79"><a href="#cb16-79"></a><span class="kw">parameters</span> {</span>
+<span id="cb16-80"><a href="#cb16-80"></a>    <span class="dt">vector</span>[unconstrained_dim_constrain_stickbreaking_normal(<span class="dv">10</span>)] theta_xi;</span>
+<span id="cb16-81"><a href="#cb16-81"></a>}</span>
+<span id="cb16-82"><a href="#cb16-82"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb16-83"><a href="#cb16-83"></a>    <span class="dt">vector</span>[(dims(log_z)[<span class="dv">1</span>] + <span class="dv">1</span>)] theta = simplex_constrain_constrain_stickbreaking_normal(theta_xi);</span>
+<span id="cb16-84"><a href="#cb16-84"></a>}</span>
+<span id="cb16-85"><a href="#cb16-85"></a><span class="kw">model</span> {</span>
+<span id="cb16-86"><a href="#cb16-86"></a>    theta_xi ~ simplex_prior_constrain_stickbreaking_normal_uniform_simplex_lpdf(<span class="dv">10</span>);</span>
+<span id="cb16-87"><a href="#cb16-87"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb16-88"><a href="#cb16-88"></a>    dummy_obs ~ dummy(theta);</span>
+<span id="cb16-89"><a href="#cb16-89"></a>}</span>
+<span id="cb16-90"><a href="#cb16-90"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb16-91"><a href="#cb16-91"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb16-92"><a href="#cb16-92"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
+<span id="cb16-93"><a href="#cb16-93"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb16-94"><a href="#cb16-94"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
+<span id="cb16-95"><a href="#cb16-95"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+<div id="tabset-2-9" class="tab-pane" role="tabpanel" aria-labelledby="tabset-2-9-tab">
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb17"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb17-1"><a href="#cb17-1"></a><span class="kw">functions</span> {</span>
+<span id="cb17-2"><a href="#cb17-2"></a><span class="dt">int</span> unconstrained_dim_constrain_stickbreaking_power_logistic(<span class="dt">int</span> n) {</span>
+<span id="cb17-3"><a href="#cb17-3"></a>    <span class="cf">return</span> (n - <span class="dv">1</span>);</span>
+<span id="cb17-4"><a href="#cb17-4"></a>}</span>
+<span id="cb17-5"><a href="#cb17-5"></a><span class="dt">real</span> simplex_prior_constrain_stickbreaking_power_logistic_uniform_simplex_lpdf_lpdf(</span>
+<span id="cb17-6"><a href="#cb17-6"></a>    <span class="dt">vector</span> xi,</span>
+<span id="cb17-7"><a href="#cb17-7"></a>    <span class="dt">int</span> n</span>
+<span id="cb17-8"><a href="#cb17-8"></a>) {</span>
+<span id="cb17-9"><a href="#cb17-9"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>[(dims(xi)[<span class="dv">1</span>] + <span class="dv">1</span>)]) tmp = constrain_stickbreaking_power_logistic(xi);</span>
+<span id="cb17-10"><a href="#cb17-10"></a>    <span class="cf">return</span> (tmp<span class="fl">.1</span> + uniform_simplex_lpdf(tmp<span class="fl">.2</span>));</span>
+<span id="cb17-11"><a href="#cb17-11"></a>}</span>
+<span id="cb17-12"><a href="#cb17-12"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>) constrain_stickbreaking_power_logistic(</span>
+<span id="cb17-13"><a href="#cb17-13"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb17-14"><a href="#cb17-14"></a>) {</span>
+<span id="cb17-15"><a href="#cb17-15"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
+<span id="cb17-16"><a href="#cb17-16"></a>    <span class="dt">vector</span>[dims(xi)[<span class="dv">1</span>]] log_u = log_inv_logit(xi);</span>
+<span id="cb17-17"><a href="#cb17-17"></a>    <span class="dt">vector</span>[n] log_w = (log_u ./ reverse(linspaced_vector(n, <span class="dv">1</span>, n)));</span>
+<span id="cb17-18"><a href="#cb17-18"></a>    <span class="cf">return</span> (</span>
+<span id="cb17-19"><a href="#cb17-19"></a>        (((<span class="dv">2</span> * sum(log_u)) - sum(xi)) - lgamma((n + <span class="dv">1</span>))),</span>
+<span id="cb17-20"><a href="#cb17-20"></a>        exp((append_row(log1m_exp(log_w), <span class="dv">0</span>) + append_row(<span class="dv">0</span>, cumulative_sum(log_w))))</span>
+<span id="cb17-21"><a href="#cb17-21"></a>    );</span>
+<span id="cb17-22"><a href="#cb17-22"></a>}</span>
+<span id="cb17-23"><a href="#cb17-23"></a><span class="dt">real</span> uniform_simplex_lpdf(<span class="dt">vector</span> xi) {</span>
+<span id="cb17-24"><a href="#cb17-24"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb17-25"><a href="#cb17-25"></a>}</span>
+<span id="cb17-26"><a href="#cb17-26"></a><span class="dt">vector</span> simplex_constrain_constrain_stickbreaking_power_logistic(</span>
+<span id="cb17-27"><a href="#cb17-27"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb17-28"><a href="#cb17-28"></a>) {</span>
+<span id="cb17-29"><a href="#cb17-29"></a>    <span class="cf">return</span> constrain_stickbreaking_power_logistic(xi).<span class="dv">2</span>;</span>
+<span id="cb17-30"><a href="#cb17-30"></a>}</span>
+<span id="cb17-31"><a href="#cb17-31"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb17-32"><a href="#cb17-32"></a><span class="dt">real</span> dummy_lpdf(</span>
+<span id="cb17-33"><a href="#cb17-33"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb17-34"><a href="#cb17-34"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb17-35"><a href="#cb17-35"></a>) {</span>
+<span id="cb17-36"><a href="#cb17-36"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb17-37"><a href="#cb17-37"></a>}</span>
+<span id="cb17-38"><a href="#cb17-38"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb17-39"><a href="#cb17-39"></a><span class="dt">real</span> dummy_lpdfs(</span>
+<span id="cb17-40"><a href="#cb17-40"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb17-41"><a href="#cb17-41"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb17-42"><a href="#cb17-42"></a>) {</span>
+<span id="cb17-43"><a href="#cb17-43"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb17-44"><a href="#cb17-44"></a>}</span>
+<span id="cb17-45"><a href="#cb17-45"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb17-46"><a href="#cb17-46"></a><span class="dt">real</span> dummy_rng(</span>
+<span id="cb17-47"><a href="#cb17-47"></a>    <span class="dt">vector</span> args1</span>
+<span id="cb17-48"><a href="#cb17-48"></a>) {</span>
+<span id="cb17-49"><a href="#cb17-49"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb17-50"><a href="#cb17-50"></a>}</span>
+<span id="cb17-51"><a href="#cb17-51"></a>}</span>
+<span id="cb17-52"><a href="#cb17-52"></a><span class="kw">data</span> {</span>
+<span id="cb17-53"><a href="#cb17-53"></a>}</span>
+<span id="cb17-54"><a href="#cb17-54"></a><span class="kw">transformed data</span> {</span>
+<span id="cb17-55"><a href="#cb17-55"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb17-56"><a href="#cb17-56"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
+<span id="cb17-57"><a href="#cb17-57"></a>}</span>
+<span id="cb17-58"><a href="#cb17-58"></a><span class="kw">parameters</span> {</span>
+<span id="cb17-59"><a href="#cb17-59"></a>    <span class="dt">vector</span>[unconstrained_dim_constrain_stickbreaking_power_logistic(<span class="dv">10</span>)] theta_xi;</span>
+<span id="cb17-60"><a href="#cb17-60"></a>}</span>
+<span id="cb17-61"><a href="#cb17-61"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb17-62"><a href="#cb17-62"></a>    <span class="dt">vector</span>[(dims(log_w)[<span class="dv">1</span>] + <span class="dv">1</span>)] theta = simplex_constrain_constrain_stickbreaking_power_logistic(theta_xi);</span>
+<span id="cb17-63"><a href="#cb17-63"></a>}</span>
+<span id="cb17-64"><a href="#cb17-64"></a><span class="kw">model</span> {</span>
+<span id="cb17-65"><a href="#cb17-65"></a>    theta_xi ~ simplex_prior_constrain_stickbreaking_power_logistic_uniform_simplex_lpdf(<span class="dv">10</span>);</span>
+<span id="cb17-66"><a href="#cb17-66"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb17-67"><a href="#cb17-67"></a>    dummy_obs ~ dummy(theta);</span>
+<span id="cb17-68"><a href="#cb17-68"></a>}</span>
+<span id="cb17-69"><a href="#cb17-69"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb17-70"><a href="#cb17-70"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb17-71"><a href="#cb17-71"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
+<span id="cb17-72"><a href="#cb17-72"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb17-73"><a href="#cb17-73"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
+<span id="cb17-74"><a href="#cb17-74"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+<div id="tabset-2-10" class="tab-pane" role="tabpanel" aria-labelledby="tabset-2-10-tab">
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb18"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb18-1"><a href="#cb18-1"></a><span class="kw">functions</span> {</span>
+<span id="cb18-2"><a href="#cb18-2"></a><span class="dt">int</span> unconstrained_dim_constrain_stickbreaking_power_normal(<span class="dt">int</span> n) {</span>
+<span id="cb18-3"><a href="#cb18-3"></a>    <span class="cf">return</span> (n - <span class="dv">1</span>);</span>
+<span id="cb18-4"><a href="#cb18-4"></a>}</span>
+<span id="cb18-5"><a href="#cb18-5"></a><span class="dt">real</span> simplex_prior_constrain_stickbreaking_power_normal_uniform_simplex_lpdf_lpdf(</span>
+<span id="cb18-6"><a href="#cb18-6"></a>    <span class="dt">vector</span> xi,</span>
+<span id="cb18-7"><a href="#cb18-7"></a>    <span class="dt">int</span> n</span>
+<span id="cb18-8"><a href="#cb18-8"></a>) {</span>
+<span id="cb18-9"><a href="#cb18-9"></a>    <span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>[(dims(xi)[<span class="dv">1</span>] + <span class="dv">1</span>)]) tmp = constrain_stickbreaking_power_normal(xi);</span>
+<span id="cb18-10"><a href="#cb18-10"></a>    <span class="cf">return</span> (tmp<span class="fl">.1</span> + uniform_simplex_lpdf(tmp<span class="fl">.2</span>));</span>
+<span id="cb18-11"><a href="#cb18-11"></a>}</span>
+<span id="cb18-12"><a href="#cb18-12"></a><span class="dt">tuple</span>(<span class="dt">real</span>, <span class="dt">vector</span>) constrain_stickbreaking_power_normal(</span>
+<span id="cb18-13"><a href="#cb18-13"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb18-14"><a href="#cb18-14"></a>) {</span>
+<span id="cb18-15"><a href="#cb18-15"></a>    <span class="dt">int</span> n = dims(xi)[<span class="dv">1</span>];</span>
+<span id="cb18-16"><a href="#cb18-16"></a>    <span class="dt">vector</span>[dims(xi)[<span class="dv">1</span>]] log_u = std_normal_lcdfs(xi);</span>
+<span id="cb18-17"><a href="#cb18-17"></a>    <span class="dt">vector</span>[n] log_w = (log_u ./ reverse(linspaced_vector(n, <span class="dv">1</span>, n)));</span>
+<span id="cb18-18"><a href="#cb18-18"></a>    <span class="cf">return</span> (</span>
+<span id="cb18-19"><a href="#cb18-19"></a>        (std_normal_lpdf(xi) - lgamma((n + <span class="dv">1</span>))),</span>
+<span id="cb18-20"><a href="#cb18-20"></a>        exp((append_row(log1m_exp(log_w), <span class="dv">0</span>) + append_row(<span class="dv">0</span>, cumulative_sum(log_w))))</span>
+<span id="cb18-21"><a href="#cb18-21"></a>    );</span>
+<span id="cb18-22"><a href="#cb18-22"></a>}</span>
+<span id="cb18-23"><a href="#cb18-23"></a><span class="dt">vector</span> std_normal_lcdfs(</span>
+<span id="cb18-24"><a href="#cb18-24"></a>    <span class="dt">vector</span> x</span>
+<span id="cb18-25"><a href="#cb18-25"></a>) {</span>
+<span id="cb18-26"><a href="#cb18-26"></a>    <span class="dt">int</span> n = dims(x)[<span class="dv">1</span>];</span>
+<span id="cb18-27"><a href="#cb18-27"></a>    <span class="cf">return</span> jbroadcasted_std_normal_lcdfs(x);</span>
+<span id="cb18-28"><a href="#cb18-28"></a>}</span>
+<span id="cb18-29"><a href="#cb18-29"></a><span class="dt">vector</span> jbroadcasted_std_normal_lcdfs(</span>
+<span id="cb18-30"><a href="#cb18-30"></a>    <span class="dt">vector</span> x1</span>
+<span id="cb18-31"><a href="#cb18-31"></a>) {</span>
+<span id="cb18-32"><a href="#cb18-32"></a>    <span class="dt">int</span> n = dims(x1)[<span class="dv">1</span>];</span>
+<span id="cb18-33"><a href="#cb18-33"></a>    <span class="dt">vector</span>[n] rv;</span>
+<span id="cb18-34"><a href="#cb18-34"></a>    <span class="cf">for</span>(i <span class="cf">in</span> <span class="dv">1</span>:n) {</span>
+<span id="cb18-35"><a href="#cb18-35"></a>        rv[i] = std_normal_lcdfs(broadcasted_getindex(x1, i));</span>
+<span id="cb18-36"><a href="#cb18-36"></a>    }</span>
+<span id="cb18-37"><a href="#cb18-37"></a>    <span class="cf">return</span> rv;</span>
+<span id="cb18-38"><a href="#cb18-38"></a>}</span>
+<span id="cb18-39"><a href="#cb18-39"></a><span class="dt">real</span> std_normal_lcdfs(<span class="dt">real</span> x) {</span>
+<span id="cb18-40"><a href="#cb18-40"></a>    <span class="cf">return</span> std_normal_lcdf(x);</span>
+<span id="cb18-41"><a href="#cb18-41"></a>}</span>
+<span id="cb18-42"><a href="#cb18-42"></a><span class="dt">real</span> broadcasted_getindex(<span class="dt">vector</span> x, <span class="dt">int</span> i) {</span>
+<span id="cb18-43"><a href="#cb18-43"></a>    <span class="dt">int</span> m = dims(x)[<span class="dv">1</span>];</span>
+<span id="cb18-44"><a href="#cb18-44"></a>    <span class="cf">return</span> x[i];</span>
+<span id="cb18-45"><a href="#cb18-45"></a>}</span>
+<span id="cb18-46"><a href="#cb18-46"></a><span class="dt">real</span> uniform_simplex_lpdf(<span class="dt">vector</span> xi) {</span>
+<span id="cb18-47"><a href="#cb18-47"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb18-48"><a href="#cb18-48"></a>}</span>
+<span id="cb18-49"><a href="#cb18-49"></a><span class="dt">vector</span> simplex_constrain_constrain_stickbreaking_power_normal(</span>
+<span id="cb18-50"><a href="#cb18-50"></a>    <span class="dt">vector</span> xi</span>
+<span id="cb18-51"><a href="#cb18-51"></a>) {</span>
+<span id="cb18-52"><a href="#cb18-52"></a>    <span class="cf">return</span> constrain_stickbreaking_power_normal(xi).<span class="dv">2</span>;</span>
+<span id="cb18-53"><a href="#cb18-53"></a>}</span>
+<span id="cb18-54"><a href="#cb18-54"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb18-55"><a href="#cb18-55"></a><span class="dt">real</span> dummy_lpdf(</span>
+<span id="cb18-56"><a href="#cb18-56"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb18-57"><a href="#cb18-57"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb18-58"><a href="#cb18-58"></a>) {</span>
+<span id="cb18-59"><a href="#cb18-59"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb18-60"><a href="#cb18-60"></a>}</span>
+<span id="cb18-61"><a href="#cb18-61"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb18-62"><a href="#cb18-62"></a><span class="dt">real</span> dummy_lpdfs(</span>
+<span id="cb18-63"><a href="#cb18-63"></a>    <span class="dt">real</span> args1,</span>
+<span id="cb18-64"><a href="#cb18-64"></a>    <span class="dt">vector</span> args2</span>
+<span id="cb18-65"><a href="#cb18-65"></a>) {</span>
+<span id="cb18-66"><a href="#cb18-66"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb18-67"><a href="#cb18-67"></a>}</span>
+<span id="cb18-68"><a href="#cb18-68"></a><span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb18-69"><a href="#cb18-69"></a><span class="dt">real</span> dummy_rng(</span>
+<span id="cb18-70"><a href="#cb18-70"></a>    <span class="dt">vector</span> args1</span>
+<span id="cb18-71"><a href="#cb18-71"></a>) {</span>
+<span id="cb18-72"><a href="#cb18-72"></a>    <span class="cf">return</span> <span class="fl">0.0</span>;</span>
+<span id="cb18-73"><a href="#cb18-73"></a>}</span>
+<span id="cb18-74"><a href="#cb18-74"></a>}</span>
+<span id="cb18-75"><a href="#cb18-75"></a><span class="kw">data</span> {</span>
+<span id="cb18-76"><a href="#cb18-76"></a>}</span>
+<span id="cb18-77"><a href="#cb18-77"></a><span class="kw">transformed data</span> {</span>
+<span id="cb18-78"><a href="#cb18-78"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb18-79"><a href="#cb18-79"></a>    <span class="dt">real</span> dummy_obs = <span class="fl">1.0</span>;</span>
+<span id="cb18-80"><a href="#cb18-80"></a>}</span>
+<span id="cb18-81"><a href="#cb18-81"></a><span class="kw">parameters</span> {</span>
+<span id="cb18-82"><a href="#cb18-82"></a>    <span class="dt">vector</span>[unconstrained_dim_constrain_stickbreaking_power_normal(<span class="dv">10</span>)] theta_xi;</span>
+<span id="cb18-83"><a href="#cb18-83"></a>}</span>
+<span id="cb18-84"><a href="#cb18-84"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb18-85"><a href="#cb18-85"></a>    <span class="dt">vector</span>[(dims(log_w)[<span class="dv">1</span>] + <span class="dv">1</span>)] theta = simplex_constrain_constrain_stickbreaking_power_normal(theta_xi);</span>
+<span id="cb18-86"><a href="#cb18-86"></a>}</span>
+<span id="cb18-87"><a href="#cb18-87"></a><span class="kw">model</span> {</span>
+<span id="cb18-88"><a href="#cb18-88"></a>    theta_xi ~ simplex_prior_constrain_stickbreaking_power_normal_uniform_simplex_lpdf(<span class="dv">10</span>);</span>
+<span id="cb18-89"><a href="#cb18-89"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb18-90"><a href="#cb18-90"></a>    dummy_obs ~ dummy(theta);</span>
+<span id="cb18-91"><a href="#cb18-91"></a>}</span>
+<span id="cb18-92"><a href="#cb18-92"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb18-93"><a href="#cb18-93"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb18-94"><a href="#cb18-94"></a>    <span class="dt">real</span> dummy_obs_likelihood = dummy_lpdfs(dummy_obs, theta);</span>
+<span id="cb18-95"><a href="#cb18-95"></a>    <span class="co">// Needed to prevent StanBlocks.jl from moving `theta` to generated quantities</span></span>
+<span id="cb18-96"><a href="#cb18-96"></a>    <span class="dt">real</span> dummy_obs_gen = dummy_rng(theta);</span>
+<span id="cb18-97"><a href="#cb18-97"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </div>
 </div>
 </div>
@@ -356,6 +1295,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 <!-- -->
 
+</section>
 </section>
 
 </main> <!-- /main -->
@@ -810,129 +1750,382 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     }
   });
   </script><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3" data-shortcodes="false"><pre class="sourceCode numberSource markdown number-lines code-with-copy"><code class="sourceCode markdown"><span id="cb3-1"><a href="#cb3-1"></a><span class="co">---</span></span>
-<span id="cb3-2"><a href="#cb3-2"></a><span class="an">title:</span><span class="co"> "Currently: Generating a uniform distribution on a disk"</span></span>
-<span id="cb3-3"><a href="#cb3-3"></a><span class="co">---</span></span>
-<span id="cb3-4"><a href="#cb3-4"></a></span>
-<span id="cb3-5"><a href="#cb3-5"></a>The full Julia code for this notebook can be accessed via the top right corner (<span class="in">`&lt;/&gt; Code`</span>).</span>
-<span id="cb3-6"><a href="#cb3-6"></a></span>
-<span id="cb3-7"><a href="#cb3-7"></a>The Julia packages needed to reproduce this document are <span class="co">[</span><span class="ot">`StanBlocks.jl`</span><span class="co">](https://github.com/nsiccha/StanBlocks.jl)</span> (for the model generation) and <span class="co">[</span><span class="ot">`QuartoComponents.jl`</span><span class="co">](https://github.com/nsiccha/QuartoComponents.jl)</span> (for the "pretty" printing). </span>
-<span id="cb3-8"><a href="#cb3-8"></a>Both packages have to be installed from the latest <span class="in">`main`</span> branch (as of Oct 14th 2025).</span>
-<span id="cb3-9"><a href="#cb3-9"></a></span>
-<span id="cb3-10"><a href="#cb3-10"></a><span class="fu">## StanBlocks.jl implementation</span></span>
-<span id="cb3-11"><a href="#cb3-11"></a></span>
-<span id="cb3-12"><a href="#cb3-12"></a>The function and model definitions below make use of</span>
-<span id="cb3-13"><a href="#cb3-13"></a></span>
-<span id="cb3-14"><a href="#cb3-14"></a><span class="ss">* </span><span class="co">[</span><span class="ot">Julia-style Named Tuples</span><span class="co">](https://docs.julialang.org/en/v1/base/base/#Core.NamedTuple)</span> - allowing <span class="in">`.`</span> syntax access to fields via names (instead of <span class="co">[</span><span class="ot">via numbers as in Stan</span><span class="co">](https://mc-stan.org/docs/reference-manual/types.html#assigning-tuple-elements)</span>).</span>
-<span id="cb3-15"><a href="#cb3-15"></a></span>
-<span id="cb3-16"><a href="#cb3-16"></a><span class="fu">## Full Julia + StanBlocks.jl code to define the models</span></span>
-<span id="cb3-17"><a href="#cb3-17"></a></span>
-<span id="cb3-18"><a href="#cb3-18"></a><span class="fu">### Current status</span></span>
-<span id="cb3-19"><a href="#cb3-19"></a></span>
-<span id="cb3-20"><a href="#cb3-20"></a>Currently, this is roughly how I'd add a custom constraining transform + prior on the constraint variables:</span>
-<span id="cb3-21"><a href="#cb3-21"></a></span>
-<span id="cb3-22"><a href="#cb3-22"></a><span class="in">```julia</span></span>
-<span id="cb3-23"><a href="#cb3-23"></a><span class="im">using</span> <span class="bu">StanBlocks</span></span>
-<span id="cb3-24"><a href="#cb3-24"></a></span>
-<span id="cb3-25"><a href="#cb3-25"></a><span class="pp">@deffun</span> <span class="cf">begin</span> </span>
-<span id="cb3-26"><a href="#cb3-26"></a>    <span class="st">"""</span></span>
-<span id="cb3-27"><a href="#cb3-27"></a><span class="st">    This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform</span></span>
-<span id="cb3-28"><a href="#cb3-28"></a><span class="st">    (wrt to `x` and `y`) - I'll work it out another time.</span></span>
-<span id="cb3-29"><a href="#cb3-29"></a><span class="st">    """</span></span>
-<span id="cb3-30"><a href="#cb3-30"></a>    <span class="fu">uniform_disk_lpdf</span>(xi<span class="op">::</span><span class="dt">vector</span>[n], n) <span class="op">=</span> <span class="fl">0</span>.</span>
-<span id="cb3-31"><a href="#cb3-31"></a>    <span class="st">"""</span></span>
-<span id="cb3-32"><a href="#cb3-32"></a><span class="st">    This function returns the constrained parameters `x` and `y` together with the intermediate quantities `radius` and `angle` as a a Named Tuple, </span></span>
-<span id="cb3-33"><a href="#cb3-33"></a><span class="st">    which for Stan will look like a regular Tuple. </span></span>
-<span id="cb3-34"><a href="#cb3-34"></a><span class="st">    Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
-<span id="cb3-35"><a href="#cb3-35"></a><span class="st">    e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
-<span id="cb3-36"><a href="#cb3-36"></a><span class="st">    """</span></span>
-<span id="cb3-37"><a href="#cb3-37"></a>    <span class="fu">uniform_disk_constrain</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
-<span id="cb3-38"><a href="#cb3-38"></a>        radius <span class="op">=</span> <span class="fu">inv_logit</span>(xi[<span class="fl">1</span>])</span>
-<span id="cb3-39"><a href="#cb3-39"></a>        angle <span class="op">=</span> <span class="fl">2</span>pi <span class="op">*</span> <span class="fu">inv_logit</span>(xi[<span class="fl">2</span>])</span>
-<span id="cb3-40"><a href="#cb3-40"></a>        (;radius, angle, x<span class="op">=</span><span class="fu">cos</span>(angle) <span class="op">*</span> radius, y<span class="op">=</span><span class="fu">sin</span>(angle) <span class="op">*</span> radius)</span>
-<span id="cb3-41"><a href="#cb3-41"></a>    <span class="cf">end</span></span>
-<span id="cb3-42"><a href="#cb3-42"></a><span class="cf">end</span></span>
-<span id="cb3-43"><a href="#cb3-43"></a></span>
-<span id="cb3-44"><a href="#cb3-44"></a>disk <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span></span>
-<span id="cb3-45"><a href="#cb3-45"></a>    <span class="st">"""</span></span>
-<span id="cb3-46"><a href="#cb3-46"></a><span class="st">    This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).</span></span>
-<span id="cb3-47"><a href="#cb3-47"></a></span>
-<span id="cb3-48"><a href="#cb3-48"></a><span class="st">    If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
-<span id="cb3-49"><a href="#cb3-49"></a><span class="st">    """</span></span>
-<span id="cb3-50"><a href="#cb3-50"></a>    xi <span class="op">~</span> <span class="fu">uniform_disk</span>(<span class="fl">2</span>)</span>
-<span id="cb3-51"><a href="#cb3-51"></a>    <span class="st">"""</span></span>
-<span id="cb3-52"><a href="#cb3-52"></a><span class="st">    This does the constraining.</span></span>
-<span id="cb3-53"><a href="#cb3-53"></a></span>
-<span id="cb3-54"><a href="#cb3-54"></a><span class="st">    It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..</span></span>
-<span id="cb3-55"><a href="#cb3-55"></a><span class="st">    """</span></span>
-<span id="cb3-56"><a href="#cb3-56"></a>    <span class="cf">return</span> <span class="fu">uniform_disk_constrain</span>(xi)</span>
-<span id="cb3-57"><a href="#cb3-57"></a><span class="cf">end</span></span>
-<span id="cb3-58"><a href="#cb3-58"></a><span class="in">```</span></span>
-<span id="cb3-59"><a href="#cb3-59"></a></span>
-<span id="cb3-60"><a href="#cb3-60"></a><span class="fu">### Future status</span></span>
-<span id="cb3-61"><a href="#cb3-61"></a></span>
-<span id="cb3-62"><a href="#cb3-62"></a>TO DO: figure out a syntax which would make custom constraints even easier.</span>
-<span id="cb3-63"><a href="#cb3-63"></a></span>
-<span id="cb3-64"><a href="#cb3-64"></a><span class="fu">## Generated Stan code</span></span>
-<span id="cb3-65"><a href="#cb3-65"></a></span>
-<span id="cb3-66"><a href="#cb3-66"></a></span>
-<span id="cb3-69"><a href="#cb3-69"></a><span class="in">```{julia}</span></span>
-<span id="cb3-70"><a href="#cb3-70"></a><span class="im">using</span> <span class="bu">StanBlocks</span>, <span class="bu">QuartoComponents</span></span>
-<span id="cb3-71"><a href="#cb3-71"></a></span>
-<span id="cb3-72"><a href="#cb3-72"></a><span class="pp">@deffun</span> <span class="cf">begin</span> </span>
-<span id="cb3-73"><a href="#cb3-73"></a>    <span class="st">"""</span></span>
-<span id="cb3-74"><a href="#cb3-74"></a><span class="st">    This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform</span></span>
-<span id="cb3-75"><a href="#cb3-75"></a><span class="st">    (wrt to `x` and `y`) - I'll work it out another time.</span></span>
-<span id="cb3-76"><a href="#cb3-76"></a><span class="st">    """</span></span>
-<span id="cb3-77"><a href="#cb3-77"></a>    <span class="fu">uniform_disk_lpdf</span>(xi<span class="op">::</span><span class="dt">vector</span>[n], n) <span class="op">=</span> <span class="fl">0</span>.</span>
-<span id="cb3-78"><a href="#cb3-78"></a>    <span class="st">"""</span></span>
-<span id="cb3-79"><a href="#cb3-79"></a><span class="st">    This function returns the constrained parameters `x` and `y` together with the intermediate quantities `radius` and `angle` as a a Named Tuple, </span></span>
-<span id="cb3-80"><a href="#cb3-80"></a><span class="st">    which for Stan will look like a regular Tuple. </span></span>
-<span id="cb3-81"><a href="#cb3-81"></a><span class="st">    Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
-<span id="cb3-82"><a href="#cb3-82"></a><span class="st">    e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
-<span id="cb3-83"><a href="#cb3-83"></a><span class="st">    """</span></span>
-<span id="cb3-84"><a href="#cb3-84"></a>    <span class="fu">uniform_disk_constrain</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
-<span id="cb3-85"><a href="#cb3-85"></a>        radius <span class="op">=</span> <span class="fu">inv_logit</span>(xi[<span class="fl">1</span>])</span>
-<span id="cb3-86"><a href="#cb3-86"></a>        angle <span class="op">=</span> <span class="fl">2</span>pi <span class="op">*</span> <span class="fu">inv_logit</span>(xi[<span class="fl">2</span>])</span>
-<span id="cb3-87"><a href="#cb3-87"></a>        (;radius, angle, x<span class="op">=</span><span class="fu">cos</span>(angle) <span class="op">*</span> radius, y<span class="op">=</span><span class="fu">sin</span>(angle) <span class="op">*</span> radius)</span>
-<span id="cb3-88"><a href="#cb3-88"></a>    <span class="cf">end</span></span>
-<span id="cb3-89"><a href="#cb3-89"></a>    <span class="fu">dummy_lpdf</span>(args<span class="op">...</span>) <span class="op">=</span> <span class="fl">0</span>.</span>
-<span id="cb3-90"><a href="#cb3-90"></a>    <span class="fu">dummy_lpdfs</span>(args<span class="op">...</span>) <span class="op">=</span> <span class="fl">0</span>.</span>
-<span id="cb3-91"><a href="#cb3-91"></a>    <span class="fu">dummy_rng</span>(args<span class="op">...</span>) <span class="op">=</span> <span class="fl">0</span>.</span>
-<span id="cb3-92"><a href="#cb3-92"></a><span class="cf">end</span></span>
-<span id="cb3-93"><a href="#cb3-93"></a></span>
-<span id="cb3-94"><a href="#cb3-94"></a></span>
-<span id="cb3-95"><a href="#cb3-95"></a>disk <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span></span>
-<span id="cb3-96"><a href="#cb3-96"></a>    <span class="st">"""</span></span>
-<span id="cb3-97"><a href="#cb3-97"></a><span class="st">    This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).</span></span>
-<span id="cb3-98"><a href="#cb3-98"></a></span>
-<span id="cb3-99"><a href="#cb3-99"></a><span class="st">    If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
-<span id="cb3-100"><a href="#cb3-100"></a><span class="st">    """</span></span>
-<span id="cb3-101"><a href="#cb3-101"></a>    xi <span class="op">~</span> <span class="fu">uniform_disk</span>(<span class="fl">2</span>)</span>
-<span id="cb3-102"><a href="#cb3-102"></a>    <span class="st">"""</span></span>
-<span id="cb3-103"><a href="#cb3-103"></a><span class="st">    This does the constraining.</span></span>
-<span id="cb3-104"><a href="#cb3-104"></a></span>
-<span id="cb3-105"><a href="#cb3-105"></a><span class="st">    It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..</span></span>
-<span id="cb3-106"><a href="#cb3-106"></a><span class="st">    """</span></span>
-<span id="cb3-107"><a href="#cb3-107"></a>    <span class="cf">return</span> <span class="fu">uniform_disk_constrain</span>(xi)</span>
-<span id="cb3-108"><a href="#cb3-108"></a><span class="cf">end</span></span>
-<span id="cb3-109"><a href="#cb3-109"></a></span>
-<span id="cb3-110"><a href="#cb3-110"></a>dummy_model <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
-<span id="cb3-111"><a href="#cb3-111"></a>    dummy_obs <span class="op">=</span> <span class="fl">1</span>. </span>
-<span id="cb3-112"><a href="#cb3-112"></a>    <span class="st">"Without this line StanBlocks.jl will try to move `theta` to generated quantities"</span></span>
-<span id="cb3-113"><a href="#cb3-113"></a>    dummy_obs <span class="op">~</span> <span class="fu">dummy</span>(theta)</span>
-<span id="cb3-114"><a href="#cb3-114"></a><span class="cf">end</span></span>
-<span id="cb3-115"><a href="#cb3-115"></a></span>
-<span id="cb3-116"><a href="#cb3-116"></a>posteriors <span class="op">=</span> (;</span>
-<span id="cb3-117"><a href="#cb3-117"></a>    disk<span class="op">=</span><span class="fu">dummy_model</span>(<span class="kw">quote</span> </span>
-<span id="cb3-118"><a href="#cb3-118"></a>        theta <span class="op">~</span> <span class="fu">disk</span>()</span>
-<span id="cb3-119"><a href="#cb3-119"></a>    <span class="kw">end</span>)</span>
-<span id="cb3-120"><a href="#cb3-120"></a>)</span>
-<span id="cb3-121"><a href="#cb3-121"></a></span>
-<span id="cb3-122"><a href="#cb3-122"></a> <span class="fu">map</span>(posteriors) <span class="cf">do</span> posterior </span>
-<span id="cb3-123"><a href="#cb3-123"></a>    QuartoComponents.<span class="fu">Code</span>(<span class="st">"stan"</span>, <span class="fu">stan_code</span>(posterior))</span>
-<span id="cb3-124"><a href="#cb3-124"></a><span class="cf">end</span> <span class="op">|&gt;</span> QuartoComponents.Tabset</span>
-<span id="cb3-125"><a href="#cb3-125"></a><span class="in">```</span></span>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb19" data-shortcodes="false"><pre class="sourceCode numberSource markdown number-lines code-with-copy"><code class="sourceCode markdown"><span id="cb19-1"><a href="#cb19-1"></a><span class="co">---</span></span>
+<span id="cb19-2"><a href="#cb19-2"></a><span class="an">title:</span><span class="co"> "User defined reusable constraints"</span></span>
+<span id="cb19-3"><a href="#cb19-3"></a><span class="co">---</span></span>
+<span id="cb19-4"><a href="#cb19-4"></a></span>
+<span id="cb19-5"><a href="#cb19-5"></a>The full Julia code for this notebook can be accessed via the top right corner (<span class="in">`&lt;/&gt; Code`</span>).</span>
+<span id="cb19-6"><a href="#cb19-6"></a></span>
+<span id="cb19-7"><a href="#cb19-7"></a>The Julia packages needed to reproduce this document are <span class="co">[</span><span class="ot">`StanBlocks.jl`</span><span class="co">](https://github.com/nsiccha/StanBlocks.jl)</span> (for the model generation) and <span class="co">[</span><span class="ot">`QuartoComponents.jl`</span><span class="co">](https://github.com/nsiccha/QuartoComponents.jl)</span> (for the "pretty" printing). </span>
+<span id="cb19-8"><a href="#cb19-8"></a>Both packages have to be installed from the latest <span class="in">`main`</span> branch (as of Oct 14th 2025).</span>
+<span id="cb19-9"><a href="#cb19-9"></a></span>
+<span id="cb19-10"><a href="#cb19-10"></a><span class="fu">## StanBlocks.jl implementation</span></span>
+<span id="cb19-11"><a href="#cb19-11"></a></span>
+<span id="cb19-12"><a href="#cb19-12"></a>The function and model definitions below make use of</span>
+<span id="cb19-13"><a href="#cb19-13"></a></span>
+<span id="cb19-14"><a href="#cb19-14"></a><span class="ss">* </span><span class="co">[</span><span class="ot">Julia-style Named Tuples</span><span class="co">](https://docs.julialang.org/en/v1/base/base/#Core.NamedTuple)</span> - allowing <span class="in">`.`</span> syntax access to fields via names (instead of <span class="co">[</span><span class="ot">via numbers as in Stan</span><span class="co">](https://mc-stan.org/docs/reference-manual/types.html#assigning-tuple-elements)</span>).</span>
+<span id="cb19-15"><a href="#cb19-15"></a></span>
+<span id="cb19-16"><a href="#cb19-16"></a><span class="fu"># A uniform prior on a disk</span></span>
+<span id="cb19-17"><a href="#cb19-17"></a></span>
+<span id="cb19-18"><a href="#cb19-18"></a><span class="fu">## Full Julia + StanBlocks.jl code to define the models</span></span>
+<span id="cb19-19"><a href="#cb19-19"></a></span>
+<span id="cb19-20"><a href="#cb19-20"></a><span class="fu">### Current status</span></span>
+<span id="cb19-21"><a href="#cb19-21"></a></span>
+<span id="cb19-22"><a href="#cb19-22"></a>Currently, this is roughly how I'd add a custom constraining transform + prior on the constraint variables:</span>
+<span id="cb19-23"><a href="#cb19-23"></a></span>
+<span id="cb19-24"><a href="#cb19-24"></a><span class="in">```julia</span></span>
+<span id="cb19-25"><a href="#cb19-25"></a><span class="im">using</span> <span class="bu">StanBlocks</span></span>
+<span id="cb19-26"><a href="#cb19-26"></a></span>
+<span id="cb19-27"><a href="#cb19-27"></a><span class="pp">@deffun</span> <span class="cf">begin</span> </span>
+<span id="cb19-28"><a href="#cb19-28"></a>    <span class="st">"""</span></span>
+<span id="cb19-29"><a href="#cb19-29"></a><span class="st">    This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform</span></span>
+<span id="cb19-30"><a href="#cb19-30"></a><span class="st">    (wrt to `x` and `y`) - I'll work it out another time.</span></span>
+<span id="cb19-31"><a href="#cb19-31"></a><span class="st">    """</span></span>
+<span id="cb19-32"><a href="#cb19-32"></a>    <span class="fu">uniform_disk_lpdf</span>(xi<span class="op">::</span><span class="dt">vector</span>[n], n) <span class="op">=</span> <span class="fl">0</span>.</span>
+<span id="cb19-33"><a href="#cb19-33"></a>    <span class="st">"""</span></span>
+<span id="cb19-34"><a href="#cb19-34"></a><span class="st">    This function returns the constrained parameters `x` and `y` together with the intermediate quantities `radius` and `angle` as a a Named Tuple, </span></span>
+<span id="cb19-35"><a href="#cb19-35"></a><span class="st">    which for Stan will look like a regular Tuple. </span></span>
+<span id="cb19-36"><a href="#cb19-36"></a><span class="st">    Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
+<span id="cb19-37"><a href="#cb19-37"></a><span class="st">    e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
+<span id="cb19-38"><a href="#cb19-38"></a><span class="st">    """</span></span>
+<span id="cb19-39"><a href="#cb19-39"></a>    <span class="fu">uniform_disk_constrain</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb19-40"><a href="#cb19-40"></a>        radius <span class="op">=</span> <span class="fu">inv_logit</span>(xi[<span class="fl">1</span>])</span>
+<span id="cb19-41"><a href="#cb19-41"></a>        angle <span class="op">=</span> <span class="fl">2</span>pi <span class="op">*</span> <span class="fu">inv_logit</span>(xi[<span class="fl">2</span>])</span>
+<span id="cb19-42"><a href="#cb19-42"></a>        (;radius, angle, x<span class="op">=</span><span class="fu">cos</span>(angle) <span class="op">*</span> radius, y<span class="op">=</span><span class="fu">sin</span>(angle) <span class="op">*</span> radius)</span>
+<span id="cb19-43"><a href="#cb19-43"></a>    <span class="cf">end</span></span>
+<span id="cb19-44"><a href="#cb19-44"></a><span class="cf">end</span></span>
+<span id="cb19-45"><a href="#cb19-45"></a></span>
+<span id="cb19-46"><a href="#cb19-46"></a>disk <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span></span>
+<span id="cb19-47"><a href="#cb19-47"></a>    <span class="st">"""</span></span>
+<span id="cb19-48"><a href="#cb19-48"></a><span class="st">    This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).</span></span>
+<span id="cb19-49"><a href="#cb19-49"></a></span>
+<span id="cb19-50"><a href="#cb19-50"></a><span class="st">    If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
+<span id="cb19-51"><a href="#cb19-51"></a><span class="st">    """</span></span>
+<span id="cb19-52"><a href="#cb19-52"></a>    xi <span class="op">~</span> <span class="fu">uniform_disk</span>(<span class="fl">2</span>)</span>
+<span id="cb19-53"><a href="#cb19-53"></a>    <span class="st">"""</span></span>
+<span id="cb19-54"><a href="#cb19-54"></a><span class="st">    This does the constraining.</span></span>
+<span id="cb19-55"><a href="#cb19-55"></a></span>
+<span id="cb19-56"><a href="#cb19-56"></a><span class="st">    It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..</span></span>
+<span id="cb19-57"><a href="#cb19-57"></a><span class="st">    """</span></span>
+<span id="cb19-58"><a href="#cb19-58"></a>    <span class="cf">return</span> <span class="fu">uniform_disk_constrain</span>(xi)</span>
+<span id="cb19-59"><a href="#cb19-59"></a><span class="cf">end</span></span>
+<span id="cb19-60"><a href="#cb19-60"></a><span class="in">```</span></span>
+<span id="cb19-61"><a href="#cb19-61"></a></span>
+<span id="cb19-62"><a href="#cb19-62"></a>With the <span class="in">`disk`</span> model defined (**by the user in this notebook - not in the back end**) as above, usage would look like this, </span>
+<span id="cb19-63"><a href="#cb19-63"></a>where <span class="in">`obs`</span> and <span class="in">`obs_scale`</span> come from somewhere else in this example:</span>
+<span id="cb19-64"><a href="#cb19-64"></a></span>
+<span id="cb19-65"><a href="#cb19-65"></a><span class="in">```julia</span></span>
+<span id="cb19-66"><a href="#cb19-66"></a>model_using_disk <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb19-67"><a href="#cb19-67"></a>    disk_parameters <span class="op">~</span> <span class="fu">disk</span>()</span>
+<span id="cb19-68"><a href="#cb19-68"></a>    obs <span class="op">~</span> <span class="fu">normal</span>(</span>
+<span id="cb19-69"><a href="#cb19-69"></a>        <span class="fu">some_binary_function_working_on_disk_coordinates</span>(</span>
+<span id="cb19-70"><a href="#cb19-70"></a>            disk_parameters.x, disk_parameters.y</span>
+<span id="cb19-71"><a href="#cb19-71"></a>        ), </span>
+<span id="cb19-72"><a href="#cb19-72"></a>        obs_scale</span>
+<span id="cb19-73"><a href="#cb19-73"></a>    )</span>
+<span id="cb19-74"><a href="#cb19-74"></a><span class="cf">end</span></span>
+<span id="cb19-75"><a href="#cb19-75"></a><span class="in">```</span></span>
+<span id="cb19-76"><a href="#cb19-76"></a></span>
+<span id="cb19-77"><a href="#cb19-77"></a><span class="fu">### Future status</span></span>
+<span id="cb19-78"><a href="#cb19-78"></a></span>
+<span id="cb19-79"><a href="#cb19-79"></a>TO DO: figure out a syntax which would make custom constraints even easier.</span>
+<span id="cb19-80"><a href="#cb19-80"></a></span>
+<span id="cb19-81"><a href="#cb19-81"></a><span class="fu">## Generated Stan code</span></span>
+<span id="cb19-82"><a href="#cb19-82"></a></span>
+<span id="cb19-83"><a href="#cb19-83"></a>For the generated Stan code, the disk model has been spliced into a dummy model, resulting in a model definition equivalent to </span>
+<span id="cb19-84"><a href="#cb19-84"></a></span>
+<span id="cb19-85"><a href="#cb19-85"></a><span class="in">```julia</span></span>
+<span id="cb19-86"><a href="#cb19-86"></a>dummy_model <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb19-87"><a href="#cb19-87"></a>    <span class="st">"Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"</span></span>
+<span id="cb19-88"><a href="#cb19-88"></a>    dummy_obs <span class="op">=</span> <span class="fl">1</span>. </span>
+<span id="cb19-89"><a href="#cb19-89"></a>    theta <span class="op">~</span> <span class="fu">disk</span>()</span>
+<span id="cb19-90"><a href="#cb19-90"></a>    <span class="st">"Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"</span></span>
+<span id="cb19-91"><a href="#cb19-91"></a>    dummy_obs <span class="op">~</span> <span class="fu">dummy</span>(theta)</span>
+<span id="cb19-92"><a href="#cb19-92"></a><span class="cf">end</span></span>
+<span id="cb19-93"><a href="#cb19-93"></a><span class="in">```</span></span>
+<span id="cb19-94"><a href="#cb19-94"></a></span>
+<span id="cb19-95"><a href="#cb19-95"></a>Without the dummy likelihood term, StanBlocks.jl would move <span class="in">`theta`</span> to generated quantities, because it wouldn't affect the likelihood.</span>
+<span id="cb19-96"><a href="#cb19-96"></a></span>
+<span id="cb19-99"><a href="#cb19-99"></a><span class="in">```{julia}</span></span>
+<span id="cb19-100"><a href="#cb19-100"></a><span class="im">using</span> <span class="bu">StanBlocks</span>, <span class="bu">QuartoComponents</span></span>
+<span id="cb19-101"><a href="#cb19-101"></a></span>
+<span id="cb19-102"><a href="#cb19-102"></a><span class="pp">@deffun</span> <span class="cf">begin</span> </span>
+<span id="cb19-103"><a href="#cb19-103"></a>    <span class="st">"""</span></span>
+<span id="cb19-104"><a href="#cb19-104"></a><span class="st">    This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform</span></span>
+<span id="cb19-105"><a href="#cb19-105"></a><span class="st">    (wrt to `x` and `y`) - I'll work it out another time.</span></span>
+<span id="cb19-106"><a href="#cb19-106"></a><span class="st">    """</span></span>
+<span id="cb19-107"><a href="#cb19-107"></a>    <span class="fu">uniform_disk_lpdf</span>(xi<span class="op">::</span><span class="dt">vector</span>[n], n) <span class="op">=</span> <span class="fl">0</span>.</span>
+<span id="cb19-108"><a href="#cb19-108"></a>    <span class="st">"""</span></span>
+<span id="cb19-109"><a href="#cb19-109"></a><span class="st">    This function returns the constrained parameters `x` and `y` together with the intermediate quantities `radius` and `angle` as a a Named Tuple, </span></span>
+<span id="cb19-110"><a href="#cb19-110"></a><span class="st">    which for Stan will look like a regular Tuple. </span></span>
+<span id="cb19-111"><a href="#cb19-111"></a><span class="st">    Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, </span></span>
+<span id="cb19-112"><a href="#cb19-112"></a><span class="st">    e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.</span></span>
+<span id="cb19-113"><a href="#cb19-113"></a><span class="st">    """</span></span>
+<span id="cb19-114"><a href="#cb19-114"></a>    <span class="fu">uniform_disk_constrain</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb19-115"><a href="#cb19-115"></a>        radius <span class="op">=</span> <span class="fu">inv_logit</span>(xi[<span class="fl">1</span>])</span>
+<span id="cb19-116"><a href="#cb19-116"></a>        angle <span class="op">=</span> <span class="fl">2</span>pi <span class="op">*</span> <span class="fu">inv_logit</span>(xi[<span class="fl">2</span>])</span>
+<span id="cb19-117"><a href="#cb19-117"></a>        (;radius, angle, x<span class="op">=</span><span class="fu">cos</span>(angle) <span class="op">*</span> radius, y<span class="op">=</span><span class="fu">sin</span>(angle) <span class="op">*</span> radius)</span>
+<span id="cb19-118"><a href="#cb19-118"></a>    <span class="cf">end</span></span>
+<span id="cb19-119"><a href="#cb19-119"></a>    <span class="st">"Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"</span></span>
+<span id="cb19-120"><a href="#cb19-120"></a>    <span class="fu">dummy_lpdf</span>(args<span class="op">...</span>) <span class="op">=</span> <span class="fl">0</span>.</span>
+<span id="cb19-121"><a href="#cb19-121"></a>    <span class="st">"Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"</span></span>
+<span id="cb19-122"><a href="#cb19-122"></a>    <span class="fu">dummy_lpdfs</span>(args<span class="op">...</span>) <span class="op">=</span> <span class="fl">0</span>.</span>
+<span id="cb19-123"><a href="#cb19-123"></a>    <span class="st">"Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"</span></span>
+<span id="cb19-124"><a href="#cb19-124"></a>    <span class="fu">dummy_rng</span>(args<span class="op">...</span>) <span class="op">=</span> <span class="fl">0</span>.</span>
+<span id="cb19-125"><a href="#cb19-125"></a><span class="cf">end</span></span>
+<span id="cb19-126"><a href="#cb19-126"></a></span>
+<span id="cb19-127"><a href="#cb19-127"></a></span>
+<span id="cb19-128"><a href="#cb19-128"></a>disk <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span></span>
+<span id="cb19-129"><a href="#cb19-129"></a>    <span class="st">"""</span></span>
+<span id="cb19-130"><a href="#cb19-130"></a><span class="st">    This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).</span></span>
+<span id="cb19-131"><a href="#cb19-131"></a></span>
+<span id="cb19-132"><a href="#cb19-132"></a><span class="st">    If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.</span></span>
+<span id="cb19-133"><a href="#cb19-133"></a><span class="st">    """</span></span>
+<span id="cb19-134"><a href="#cb19-134"></a>    xi <span class="op">~</span> <span class="fu">uniform_disk</span>(<span class="fl">2</span>)</span>
+<span id="cb19-135"><a href="#cb19-135"></a>    <span class="st">"""</span></span>
+<span id="cb19-136"><a href="#cb19-136"></a><span class="st">    This does the constraining.</span></span>
+<span id="cb19-137"><a href="#cb19-137"></a></span>
+<span id="cb19-138"><a href="#cb19-138"></a><span class="st">    It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..</span></span>
+<span id="cb19-139"><a href="#cb19-139"></a><span class="st">    """</span></span>
+<span id="cb19-140"><a href="#cb19-140"></a>    <span class="cf">return</span> <span class="fu">uniform_disk_constrain</span>(xi)</span>
+<span id="cb19-141"><a href="#cb19-141"></a><span class="cf">end</span></span>
+<span id="cb19-142"><a href="#cb19-142"></a></span>
+<span id="cb19-143"><a href="#cb19-143"></a>dummy_model <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb19-144"><a href="#cb19-144"></a>    <span class="st">"Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"</span></span>
+<span id="cb19-145"><a href="#cb19-145"></a>    dummy_obs <span class="op">=</span> <span class="fl">1</span>. </span>
+<span id="cb19-146"><a href="#cb19-146"></a>    <span class="st">"Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"</span></span>
+<span id="cb19-147"><a href="#cb19-147"></a>    dummy_obs <span class="op">~</span> <span class="fu">dummy</span>(theta)</span>
+<span id="cb19-148"><a href="#cb19-148"></a><span class="cf">end</span></span>
+<span id="cb19-149"><a href="#cb19-149"></a></span>
+<span id="cb19-150"><a href="#cb19-150"></a>disk_posteriors <span class="op">=</span> (;</span>
+<span id="cb19-151"><a href="#cb19-151"></a>    disk<span class="op">=</span><span class="fu">dummy_model</span>(<span class="kw">quote</span> </span>
+<span id="cb19-152"><a href="#cb19-152"></a>        theta <span class="op">~</span> <span class="fu">disk</span>()</span>
+<span id="cb19-153"><a href="#cb19-153"></a>    <span class="kw">end</span>)</span>
+<span id="cb19-154"><a href="#cb19-154"></a>)</span>
+<span id="cb19-155"><a href="#cb19-155"></a></span>
+<span id="cb19-156"><a href="#cb19-156"></a><span class="fu">map</span>(disk_posteriors) <span class="cf">do</span> posterior </span>
+<span id="cb19-157"><a href="#cb19-157"></a>    QuartoComponents.<span class="fu">Code</span>(<span class="st">"stan"</span>, <span class="fu">stan_code</span>(posterior))</span>
+<span id="cb19-158"><a href="#cb19-158"></a><span class="cf">end</span> <span class="op">|&gt;</span> QuartoComponents.Tabset</span>
+<span id="cb19-159"><a href="#cb19-159"></a><span class="in">```</span></span>
+<span id="cb19-160"><a href="#cb19-160"></a></span>
+<span id="cb19-161"><a href="#cb19-161"></a><span class="fu"># (Adaptive?) centering for hierarchical models</span></span>
+<span id="cb19-162"><a href="#cb19-162"></a></span>
+<span id="cb19-163"><a href="#cb19-163"></a>If <span class="co">[</span><span class="ot">this discourse thread</span><span class="co">](https://discourse.mc-stan.org/t/offset-multiplier-initialization/20712/20)</span> is any indication, it looks like generally, it might be preferable to be able compute the Jacobian adjustment and the prior density together for the sake of numerical stability. </span>
+<span id="cb19-164"><a href="#cb19-164"></a>This is something that Stan's lack of compound declare-distribute statements "prevents" - see also <span class="co">[</span><span class="ot">When to add a feature to Stan? The recurring issue of the compound declare-distribute statement</span><span class="co">](https://statmodeling.stat.columbia.edu/2018/02/01/stan-feature-declare-distribute/)</span>.</span>
+<span id="cb19-165"><a href="#cb19-165"></a></span>
+<span id="cb19-166"><a href="#cb19-166"></a>Furthermore, it's probably a good idea to be able to parametrize the constraining transformations, allowing to vary e.g. the centeredness after defining the model via <span class="in">`data`</span> arguments.</span>
+<span id="cb19-167"><a href="#cb19-167"></a></span>
+<span id="cb19-168"><a href="#cb19-168"></a>TO DO: elaborate</span>
+<span id="cb19-169"><a href="#cb19-169"></a></span>
+<span id="cb19-170"><a href="#cb19-170"></a></span>
+<span id="cb19-171"><a href="#cb19-171"></a><span class="fu"># Various simplex constraining transformations</span></span>
+<span id="cb19-172"><a href="#cb19-172"></a></span>
+<span id="cb19-173"><a href="#cb19-173"></a>The underlying code reproduces all transformations from <span class="co">[</span><span class="ot">https://github.com/bob-carpenter/transforms</span><span class="co">](https://github.com/bob-carpenter/transforms)</span>.</span>
+<span id="cb19-174"><a href="#cb19-174"></a></span>
+<span id="cb19-175"><a href="#cb19-175"></a><span class="fu">## Example Julia + StanBlocks.jl code to define the models</span></span>
+<span id="cb19-176"><a href="#cb19-176"></a></span>
+<span id="cb19-177"><a href="#cb19-177"></a><span class="fu">### Current status</span></span>
+<span id="cb19-178"><a href="#cb19-178"></a></span>
+<span id="cb19-179"><a href="#cb19-179"></a>It does so by first defining (**by the user in this notebook - not in the back end**) a general model</span>
+<span id="cb19-180"><a href="#cb19-180"></a></span>
+<span id="cb19-181"><a href="#cb19-181"></a><span class="in">```julia</span></span>
+<span id="cb19-182"><a href="#cb19-182"></a>any_simplex <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb19-183"><a href="#cb19-183"></a>    xi <span class="op">~</span> <span class="fu">simplex_prior</span>(constrain_f, prior_f, n)</span>
+<span id="cb19-184"><a href="#cb19-184"></a>    <span class="cf">return</span> <span class="fu">simplex_constrain</span>(xi, constrain_f)</span>
+<span id="cb19-185"><a href="#cb19-185"></a><span class="cf">end</span></span>
+<span id="cb19-186"><a href="#cb19-186"></a><span class="in">```</span></span>
+<span id="cb19-187"><a href="#cb19-187"></a></span>
+<span id="cb19-188"><a href="#cb19-188"></a>where <span class="in">`n`</span> is the dimension of the simplex and <span class="in">`constrain_f`</span> and <span class="in">`prior_f`</span> can be used to change the used constraining transform or the imposed prior.</span>
+<span id="cb19-189"><a href="#cb19-189"></a></span>
+<span id="cb19-190"><a href="#cb19-190"></a>Defining a custom simplex constraining transform is then as easy as defining two functions,</span>
+<span id="cb19-191"><a href="#cb19-191"></a></span>
+<span id="cb19-192"><a href="#cb19-192"></a><span class="ss">* </span>a function <span class="in">`f`</span> accepting the vector of unconstrained parameters and returning a Named Tuple with fields <span class="in">`jac`</span> (the jacobian adjustment) and <span class="in">`x`</span> (the constrained parameters) </span>
+<span id="cb19-193"><a href="#cb19-193"></a>(to be passed as the <span class="in">`constrain_f`</span> argument),</span>
+<span id="cb19-194"><a href="#cb19-194"></a><span class="ss">* </span>and an overload of <span class="in">`unconstrained_dim(::typeof(f), n)`</span> returning the dimension of the unconstrained parameters accepted by <span class="in">`f`</span>.</span>
+<span id="cb19-195"><a href="#cb19-195"></a></span>
+<span id="cb19-196"><a href="#cb19-196"></a>See below for an example implementation for the ALR constraining transform:</span>
+<span id="cb19-197"><a href="#cb19-197"></a></span>
+<span id="cb19-198"><a href="#cb19-198"></a><span class="in">```julia</span></span>
+<span id="cb19-199"><a href="#cb19-199"></a><span class="fu">constrain_alr</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb19-200"><a href="#cb19-200"></a>    r <span class="op">=</span> <span class="fu">log1p_exp</span>(<span class="fu">log_sum_exp</span>(xi))</span>
+<span id="cb19-201"><a href="#cb19-201"></a>    (;</span>
+<span id="cb19-202"><a href="#cb19-202"></a>        jac<span class="op">=</span><span class="fu">sum</span>(xi)<span class="fu">-</span>(n<span class="op">+</span><span class="fl">1</span>)<span class="op">*</span>r, </span>
+<span id="cb19-203"><a href="#cb19-203"></a>        x<span class="op">=</span><span class="fu">exp</span>(<span class="fu">append_row</span>(xi <span class="op">-</span> r, <span class="op">-</span>r))</span>
+<span id="cb19-204"><a href="#cb19-204"></a>    )</span>
+<span id="cb19-205"><a href="#cb19-205"></a><span class="cf">end</span></span>
+<span id="cb19-206"><a href="#cb19-206"></a><span class="fu">unconstrained_dim</span>(<span class="op">::</span><span class="dt">typeof</span>(constrain_alr), n) <span class="op">=</span> n<span class="op">-</span><span class="fl">1</span></span>
+<span id="cb19-207"><a href="#cb19-207"></a><span class="in">```</span></span>
+<span id="cb19-208"><a href="#cb19-208"></a></span>
+<span id="cb19-209"><a href="#cb19-209"></a>The two functions used in the <span class="in">`any_simplex`</span> model, <span class="in">`simplex_prior_lpdf`</span> and <span class="in">`simplex_constrain`</span> are defined (**by the user in this notebook - not in the back end**) as </span>
+<span id="cb19-210"><a href="#cb19-210"></a></span>
+<span id="cb19-211"><a href="#cb19-211"></a><span class="in">```julia</span></span>
+<span id="cb19-212"><a href="#cb19-212"></a><span class="fu">simplex_prior_lpdf</span>(xi<span class="op">::</span><span class="dt">vector</span>[<span class="fu">unconstrained_dim</span>(constrain_f, n)], constrain_f, prior_f, n) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb19-213"><a href="#cb19-213"></a>    tmp <span class="op">=</span> <span class="fu">constrain_f</span>(xi)</span>
+<span id="cb19-214"><a href="#cb19-214"></a>    tmp.jac <span class="op">+</span> <span class="fu">prior_f</span>(tmp.x)</span>
+<span id="cb19-215"><a href="#cb19-215"></a><span class="cf">end</span></span>
+<span id="cb19-216"><a href="#cb19-216"></a><span class="fu">simplex_constrain</span>(xi, constrain_f) <span class="op">=</span> <span class="fu">constrain_f</span>(xi).x</span>
+<span id="cb19-217"><a href="#cb19-217"></a><span class="in">```</span></span>
+<span id="cb19-218"><a href="#cb19-218"></a></span>
+<span id="cb19-219"><a href="#cb19-219"></a><span class="fu">### Current limitations</span></span>
+<span id="cb19-220"><a href="#cb19-220"></a></span>
+<span id="cb19-221"><a href="#cb19-221"></a>Currently, both the jacobian adjustment have to be computed twice - once in <span class="in">`simplex_prior_lpdf`</span> and once in <span class="in">`simplex_constrain`</span>.</span>
+<span id="cb19-222"><a href="#cb19-222"></a>Ideally, this could be avoided.</span>
+<span id="cb19-223"><a href="#cb19-223"></a></span>
+<span id="cb19-224"><a href="#cb19-224"></a><span class="fu">### Future status</span></span>
+<span id="cb19-225"><a href="#cb19-225"></a></span>
+<span id="cb19-226"><a href="#cb19-226"></a>TO DO: Think about how to best prevent the double work. The main work would be to think about appropriate syntax signalling to StanBlocks.jl that these functions work together to compute the constraining and the jacobian adjustment.</span>
+<span id="cb19-227"><a href="#cb19-227"></a></span>
+<span id="cb19-228"><a href="#cb19-228"></a><span class="fu">## Generated Stan code</span></span>
+<span id="cb19-229"><a href="#cb19-229"></a></span>
+<span id="cb19-230"><a href="#cb19-230"></a>For the generated Stan code, the <span class="in">`any_simplex`</span> model has been spliced into a dummy model, resulting in a model definition equivalent to </span>
+<span id="cb19-231"><a href="#cb19-231"></a></span>
+<span id="cb19-232"><a href="#cb19-232"></a><span class="in">```julia</span></span>
+<span id="cb19-233"><a href="#cb19-233"></a>dummy_simplex_model <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb19-234"><a href="#cb19-234"></a>    <span class="st">"Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"</span></span>
+<span id="cb19-235"><a href="#cb19-235"></a>    dummy_obs <span class="op">=</span> <span class="fl">1</span>. </span>
+<span id="cb19-236"><a href="#cb19-236"></a>    theta <span class="op">~</span> <span class="fu">any_simplex</span>(;constrain_f, prior_f, n<span class="op">=</span><span class="fl">10</span>)</span>
+<span id="cb19-237"><a href="#cb19-237"></a>    <span class="st">"Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"</span></span>
+<span id="cb19-238"><a href="#cb19-238"></a>    dummy_obs <span class="op">~</span> <span class="fu">dummy</span>(theta)</span>
+<span id="cb19-239"><a href="#cb19-239"></a><span class="cf">end</span></span>
+<span id="cb19-240"><a href="#cb19-240"></a><span class="in">```</span></span>
+<span id="cb19-241"><a href="#cb19-241"></a></span>
+<span id="cb19-242"><a href="#cb19-242"></a>where again without the dummy likelihood StanBlocks.jl would move <span class="in">`theta`</span> to generated quantities, because it wouldn't affect the likelihood.</span>
+<span id="cb19-243"><a href="#cb19-243"></a></span>
+<span id="cb19-246"><a href="#cb19-246"></a><span class="in">```{julia}</span></span>
+<span id="cb19-247"><a href="#cb19-247"></a><span class="pp">@deffun</span> <span class="cf">begin</span> </span>
+<span id="cb19-248"><a href="#cb19-248"></a>    <span class="bu">Base</span>.<span class="fu">reverse</span>(x<span class="op">::</span><span class="dt">vector</span>[n])<span class="op">::</span><span class="dt">vector</span>[n]</span>
+<span id="cb19-249"><a href="#cb19-249"></a>    StanBlocks.stan.<span class="fu">std_normal_lcdf</span>(x)<span class="op">::</span><span class="dt">real</span></span>
+<span id="cb19-250"><a href="#cb19-250"></a>    <span class="bu">Base</span>.<span class="fu">log2</span>()<span class="op">::</span><span class="dt">real</span></span>
+<span id="cb19-251"><a href="#cb19-251"></a>    <span class="fu">std_normal_lcdfs</span>(x<span class="op">::</span><span class="dt">real</span>) <span class="op">=</span> <span class="fu">std_normal_lcdf</span>(x)</span>
+<span id="cb19-252"><a href="#cb19-252"></a>    <span class="fu">std_normal_lcdfs</span>(x<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="fu">jbroadcasted</span>(std_normal_lcdfs, x)</span>
+<span id="cb19-253"><a href="#cb19-253"></a></span>
+<span id="cb19-254"><a href="#cb19-254"></a>    <span class="fu">unconstrained_dim</span>(constrain_f, n) <span class="op">=</span> <span class="fu">reject</span>(n)</span>
+<span id="cb19-255"><a href="#cb19-255"></a>    <span class="fu">simplex_prior_lpdf</span>(xi<span class="op">::</span><span class="dt">vector</span>[<span class="fu">unconstrained_dim</span>(constrain_f, n)], constrain_f, prior_f, n) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb19-256"><a href="#cb19-256"></a>        tmp <span class="op">=</span> <span class="fu">constrain_f</span>(xi)</span>
+<span id="cb19-257"><a href="#cb19-257"></a>        tmp.jac <span class="op">+</span> <span class="fu">prior_f</span>(tmp.x)</span>
+<span id="cb19-258"><a href="#cb19-258"></a>    <span class="cf">end</span></span>
+<span id="cb19-259"><a href="#cb19-259"></a>    <span class="fu">simplex_constrain</span>(xi, constrain_f) <span class="op">=</span> <span class="fu">constrain_f</span>(xi).x</span>
+<span id="cb19-260"><a href="#cb19-260"></a>    <span class="fu">uniform_simplex_lpdf</span>(xi) <span class="op">=</span> <span class="fl">0</span>.</span>
+<span id="cb19-261"><a href="#cb19-261"></a>    </span>
+<span id="cb19-262"><a href="#cb19-262"></a>    <span class="fu">constrain_alr</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb19-263"><a href="#cb19-263"></a>        r <span class="op">=</span> <span class="fu">log1p_exp</span>(<span class="fu">log_sum_exp</span>(xi))</span>
+<span id="cb19-264"><a href="#cb19-264"></a>        (;</span>
+<span id="cb19-265"><a href="#cb19-265"></a>            jac<span class="op">=</span><span class="fu">sum</span>(xi)<span class="fu">-</span>(n<span class="op">+</span><span class="fl">1</span>)<span class="op">*</span>r, </span>
+<span id="cb19-266"><a href="#cb19-266"></a>            x<span class="op">=</span><span class="fu">exp</span>(<span class="fu">append_row</span>(xi <span class="op">-</span> r, <span class="op">-</span>r))</span>
+<span id="cb19-267"><a href="#cb19-267"></a>        )</span>
+<span id="cb19-268"><a href="#cb19-268"></a>    <span class="cf">end</span></span>
+<span id="cb19-269"><a href="#cb19-269"></a>    <span class="fu">unconstrained_dim</span>(<span class="op">::</span><span class="dt">typeof</span>(constrain_alr), n) <span class="op">=</span> n<span class="op">-</span><span class="fl">1</span></span>
+<span id="cb19-270"><a href="#cb19-270"></a>    <span class="fu">constrain_expanded_softmax</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb19-271"><a href="#cb19-271"></a>        r <span class="op">=</span> <span class="fu">log_sum_exp</span>(xi)</span>
+<span id="cb19-272"><a href="#cb19-272"></a>        (;</span>
+<span id="cb19-273"><a href="#cb19-273"></a>        jac<span class="op">=</span><span class="fu">std_normal_lpdf</span>(r <span class="op">-</span> <span class="fu">log</span>(n)) <span class="op">+</span> <span class="fu">sum</span>(xi) <span class="op">-</span> n <span class="op">*</span> r, x<span class="op">=</span><span class="fu">exp</span>(xi <span class="op">-</span> r))</span>
+<span id="cb19-274"><a href="#cb19-274"></a>    <span class="cf">end</span></span>
+<span id="cb19-275"><a href="#cb19-275"></a>    <span class="fu">unconstrained_dim</span>(<span class="op">::</span><span class="dt">typeof</span>(constrain_expanded_softmax), n) <span class="op">=</span> n</span>
+<span id="cb19-276"><a href="#cb19-276"></a>    <span class="fu">constrain_ilr</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span> </span>
+<span id="cb19-277"><a href="#cb19-277"></a>        ns <span class="op">=</span> <span class="fu">linspaced_vector</span>(n, <span class="fl">1</span>, n)</span>
+<span id="cb19-278"><a href="#cb19-278"></a>        w <span class="op">=</span> xi <span class="op">./</span> <span class="fu">sqrt</span>(ns <span class="op">.*</span> (ns <span class="op">+</span> <span class="fl">1</span>))</span>
+<span id="cb19-279"><a href="#cb19-279"></a>        z <span class="op">=</span> <span class="fu">append_row</span>(<span class="fu">reverse</span>(<span class="fu">cumulative_sum</span>(<span class="fu">reverse</span>(w))), <span class="fl">0</span>) <span class="op">-</span> <span class="fu">append_row</span>(<span class="fl">0</span>, ns <span class="op">.*</span> w)</span>
+<span id="cb19-280"><a href="#cb19-280"></a>        r <span class="op">=</span> <span class="fu">log_sum_exp</span>(z)</span>
+<span id="cb19-281"><a href="#cb19-281"></a>        (;</span>
+<span id="cb19-282"><a href="#cb19-282"></a>            jac<span class="op">=</span><span class="fl">0.5</span> <span class="op">*</span> <span class="fu">log</span>(n<span class="op">+</span><span class="fl">1</span>)<span class="fu">+sum</span>(z) <span class="op">-</span> (n<span class="op">+</span><span class="fl">1</span>) <span class="op">*</span> r, </span>
+<span id="cb19-283"><a href="#cb19-283"></a>            x<span class="op">=</span><span class="fu">exp</span>(z <span class="op">-</span> r)</span>
+<span id="cb19-284"><a href="#cb19-284"></a>        )</span>
+<span id="cb19-285"><a href="#cb19-285"></a>    <span class="cf">end</span></span>
+<span id="cb19-286"><a href="#cb19-286"></a>    <span class="fu">unconstrained_dim</span>(<span class="op">::</span><span class="dt">typeof</span>(constrain_ilr), n) <span class="op">=</span> n<span class="op">-</span><span class="fl">1</span></span>
+<span id="cb19-287"><a href="#cb19-287"></a>    <span class="fu">constrain_ilr_reflector</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span> </span>
+<span id="cb19-288"><a href="#cb19-288"></a>        sqrtN <span class="op">=</span> <span class="fu">sqrt</span>((n<span class="op">+</span><span class="fl">1</span>))</span>
+<span id="cb19-289"><a href="#cb19-289"></a>        zN <span class="op">=</span> <span class="fu">sum</span>(xi) <span class="op">/</span> sqrtN</span>
+<span id="cb19-290"><a href="#cb19-290"></a>        z <span class="op">=</span> <span class="fu">append_row</span>(xi <span class="op">-</span> zN <span class="op">./</span> (sqrtN <span class="op">-</span> <span class="fl">1</span>), zN)</span>
+<span id="cb19-291"><a href="#cb19-291"></a>        r <span class="op">=</span> <span class="fu">log_sum_exp</span>(z)</span>
+<span id="cb19-292"><a href="#cb19-292"></a>        (;</span>
+<span id="cb19-293"><a href="#cb19-293"></a>            jac<span class="op">=</span><span class="fl">0.5</span> <span class="op">*</span> <span class="fu">log</span>(n<span class="op">+</span><span class="fl">1</span>)<span class="fu">+sum</span>(z) <span class="op">-</span> (n<span class="op">+</span><span class="fl">1</span>) <span class="op">*</span> r, </span>
+<span id="cb19-294"><a href="#cb19-294"></a>            x<span class="op">=</span><span class="fu">exp</span>(z <span class="op">-</span> r)</span>
+<span id="cb19-295"><a href="#cb19-295"></a>        )</span>
+<span id="cb19-296"><a href="#cb19-296"></a>    <span class="cf">end</span></span>
+<span id="cb19-297"><a href="#cb19-297"></a>    <span class="fu">unconstrained_dim</span>(<span class="op">::</span><span class="dt">typeof</span>(constrain_ilr_reflector), n) <span class="op">=</span> n<span class="op">-</span><span class="fl">1</span></span>
+<span id="cb19-298"><a href="#cb19-298"></a>    <span class="fu">exponential_log_qf</span>(x) <span class="op">=</span> <span class="fu">-log1m_exp</span>(x)</span>
+<span id="cb19-299"><a href="#cb19-299"></a>    <span class="fu">constrain_normalized_exponential</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span> </span>
+<span id="cb19-300"><a href="#cb19-300"></a>        z <span class="op">=</span> <span class="fu">log</span>(<span class="fu">exponential_log_qf</span>(<span class="fu">std_normal_lcdfs</span>(xi)))</span>
+<span id="cb19-301"><a href="#cb19-301"></a>        r <span class="op">=</span> <span class="fu">log_sum_exp</span>(z)</span>
+<span id="cb19-302"><a href="#cb19-302"></a>        (;</span>
+<span id="cb19-303"><a href="#cb19-303"></a>            jac<span class="op">=</span><span class="fu">std_normal_lpdf</span>(xi) <span class="op">-</span> <span class="fu">lgamma</span>(n), </span>
+<span id="cb19-304"><a href="#cb19-304"></a>            x<span class="op">=</span><span class="fu">exp</span>(z <span class="op">-</span> r)</span>
+<span id="cb19-305"><a href="#cb19-305"></a>        )</span>
+<span id="cb19-306"><a href="#cb19-306"></a>    <span class="cf">end</span></span>
+<span id="cb19-307"><a href="#cb19-307"></a>    <span class="fu">unconstrained_dim</span>(<span class="op">::</span><span class="dt">typeof</span>(constrain_normalized_exponential), n) <span class="op">=</span> n</span>
+<span id="cb19-308"><a href="#cb19-308"></a>    <span class="fu">constrain_stickbreaking_angular</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span> </span>
+<span id="cb19-309"><a href="#cb19-309"></a>        log_u <span class="op">=</span> <span class="fu">log_inv_logit</span>(xi)</span>
+<span id="cb19-310"><a href="#cb19-310"></a>        log_phi <span class="op">=</span> log_u <span class="op">+</span> (<span class="fu">log</span>(<span class="cn">pi</span>) <span class="op">-</span> <span class="fu">log2</span>())</span>
+<span id="cb19-311"><a href="#cb19-311"></a>        phi <span class="op">=</span> <span class="fu">exp</span>(log_phi)</span>
+<span id="cb19-312"><a href="#cb19-312"></a>        log_s <span class="op">=</span> <span class="fu">log</span>(<span class="fu">sin</span>(phi))</span>
+<span id="cb19-313"><a href="#cb19-313"></a>        log_c <span class="op">=</span> <span class="fu">log</span>(<span class="fu">cos</span>(phi))</span>
+<span id="cb19-314"><a href="#cb19-314"></a>        log_s2_prod <span class="op">=</span> <span class="fu">append_row</span>(<span class="fl">0</span>, <span class="fl">2</span> <span class="op">*</span> <span class="fu">cumulative_sum</span>(log_s))</span>
+<span id="cb19-315"><a href="#cb19-315"></a>        (;</span>
+<span id="cb19-316"><a href="#cb19-316"></a>            jac<span class="op">=</span>n <span class="op">*</span> <span class="fu">log2</span>() <span class="op">+</span> <span class="fu">sum</span>(<span class="fu">log1m_exp</span>(log_u)) <span class="op">+</span> <span class="fu">sum</span>(log_s) <span class="op">+</span> <span class="fu">sum</span>(log_phi)<span class="fu">+sum</span>(log_s2_prod[<span class="fl">2</span><span class="op">:</span>n]) <span class="op">+</span> <span class="fu">sum</span>(log_c), </span>
+<span id="cb19-317"><a href="#cb19-317"></a>            x<span class="op">=</span><span class="fu">exp</span>(log_s2_prod <span class="op">+</span> <span class="fu">append_row</span>(<span class="fl">2</span> <span class="op">*</span> log_c, <span class="fl">0</span>))</span>
+<span id="cb19-318"><a href="#cb19-318"></a>        )</span>
+<span id="cb19-319"><a href="#cb19-319"></a>    <span class="cf">end</span></span>
+<span id="cb19-320"><a href="#cb19-320"></a>    <span class="fu">unconstrained_dim</span>(<span class="op">::</span><span class="dt">typeof</span>(constrain_stickbreaking_angular), n) <span class="op">=</span> n<span class="op">-</span><span class="fl">1</span></span>
+<span id="cb19-321"><a href="#cb19-321"></a>    <span class="fu">constrain_stickbreaking_logistic</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span> </span>
+<span id="cb19-322"><a href="#cb19-322"></a>        log_z <span class="op">=</span> <span class="fu">log_inv_logit</span>(xi <span class="op">-</span> <span class="fu">log</span>(<span class="fu">reverse</span>(<span class="fu">linspaced_vector</span>(n, <span class="fl">1</span>, n))))</span>
+<span id="cb19-323"><a href="#cb19-323"></a>        log_cum_prod <span class="op">=</span> <span class="fu">append_row</span>(<span class="fl">0</span>, <span class="fu">cumulative_sum</span>(<span class="fu">log1m_exp</span>(log_z)))</span>
+<span id="cb19-324"><a href="#cb19-324"></a>        (;</span>
+<span id="cb19-325"><a href="#cb19-325"></a>            jac<span class="op">=</span><span class="fu">sum</span>(log_cum_prod) <span class="op">+</span> <span class="fu">sum</span>(log_z), </span>
+<span id="cb19-326"><a href="#cb19-326"></a>            x<span class="op">=</span><span class="fu">exp</span>(<span class="fu">append_row</span>(log_z, <span class="fl">0</span>) <span class="op">+</span> log_cum_prod)</span>
+<span id="cb19-327"><a href="#cb19-327"></a>        )</span>
+<span id="cb19-328"><a href="#cb19-328"></a>    <span class="cf">end</span></span>
+<span id="cb19-329"><a href="#cb19-329"></a>    <span class="fu">unconstrained_dim</span>(<span class="op">::</span><span class="dt">typeof</span>(constrain_stickbreaking_logistic), n) <span class="op">=</span> n<span class="op">-</span><span class="fl">1</span></span>
+<span id="cb19-330"><a href="#cb19-330"></a>    <span class="fu">constrain_stickbreaking_normal</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span> </span>
+<span id="cb19-331"><a href="#cb19-331"></a>        w <span class="op">=</span> xi <span class="op">-</span> <span class="fu">log</span>(<span class="fu">reverse</span>(<span class="fu">linspaced_vector</span>(n, <span class="fl">1</span>, n))) <span class="op">/</span> <span class="fl">2</span></span>
+<span id="cb19-332"><a href="#cb19-332"></a>        log_z <span class="op">=</span> <span class="fu">std_normal_lcdfs</span>(w)</span>
+<span id="cb19-333"><a href="#cb19-333"></a>        log_cum_prod <span class="op">=</span> <span class="fu">append_row</span>(<span class="fl">0</span>, <span class="fu">cumulative_sum</span>(<span class="fu">log1m_exp</span>(log_z)))</span>
+<span id="cb19-334"><a href="#cb19-334"></a>        (;</span>
+<span id="cb19-335"><a href="#cb19-335"></a>            jac<span class="op">=</span><span class="fu">std_normal_lpdf</span>(w) <span class="op">+</span> <span class="fu">sum</span>(log_cum_prod[<span class="fl">2</span><span class="op">:</span>n]), </span>
+<span id="cb19-336"><a href="#cb19-336"></a>            x<span class="op">=</span><span class="fu">exp</span>(<span class="fu">append_row</span>(log_z, <span class="fl">0</span>) <span class="op">+</span> log_cum_prod)</span>
+<span id="cb19-337"><a href="#cb19-337"></a>        )</span>
+<span id="cb19-338"><a href="#cb19-338"></a>    <span class="cf">end</span></span>
+<span id="cb19-339"><a href="#cb19-339"></a>    <span class="fu">unconstrained_dim</span>(<span class="op">::</span><span class="dt">typeof</span>(constrain_stickbreaking_normal), n) <span class="op">=</span> n<span class="op">-</span><span class="fl">1</span></span>
+<span id="cb19-340"><a href="#cb19-340"></a>    <span class="fu">constrain_stickbreaking_power_logistic</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span> </span>
+<span id="cb19-341"><a href="#cb19-341"></a>        log_u <span class="op">=</span> <span class="fu">log_inv_logit</span>(xi)</span>
+<span id="cb19-342"><a href="#cb19-342"></a>        log_w <span class="op">=</span> log_u <span class="op">./</span> <span class="fu">reverse</span>(<span class="fu">linspaced_vector</span>(n, <span class="fl">1</span>, n))</span>
+<span id="cb19-343"><a href="#cb19-343"></a>        (;</span>
+<span id="cb19-344"><a href="#cb19-344"></a>            jac<span class="op">=</span><span class="fl">2</span> <span class="op">*</span> <span class="fu">sum</span>(log_u) <span class="op">-</span> <span class="fu">sum</span>(xi) <span class="op">-</span> <span class="fu">lgamma</span>(n<span class="op">+</span><span class="fl">1</span>), </span>
+<span id="cb19-345"><a href="#cb19-345"></a>            x<span class="op">=</span><span class="fu">exp</span>(<span class="fu">append_row</span>(<span class="fu">log1m_exp</span>(log_w), <span class="fl">0</span>) <span class="op">+</span> <span class="fu">append_row</span>(<span class="fl">0</span>, <span class="fu">cumulative_sum</span>(log_w)))</span>
+<span id="cb19-346"><a href="#cb19-346"></a>        )</span>
+<span id="cb19-347"><a href="#cb19-347"></a>    <span class="cf">end</span></span>
+<span id="cb19-348"><a href="#cb19-348"></a>    <span class="fu">unconstrained_dim</span>(<span class="op">::</span><span class="dt">typeof</span>(constrain_stickbreaking_power_logistic), n) <span class="op">=</span> n<span class="op">-</span><span class="fl">1</span></span>
+<span id="cb19-349"><a href="#cb19-349"></a>    <span class="fu">constrain_stickbreaking_power_normal</span>(xi<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span> </span>
+<span id="cb19-350"><a href="#cb19-350"></a>        log_u <span class="op">=</span> <span class="fu">std_normal_lcdfs</span>(xi)</span>
+<span id="cb19-351"><a href="#cb19-351"></a>        log_w <span class="op">=</span> log_u <span class="op">./</span> <span class="fu">reverse</span>(<span class="fu">linspaced_vector</span>(n, <span class="fl">1</span>, n))</span>
+<span id="cb19-352"><a href="#cb19-352"></a>        (;</span>
+<span id="cb19-353"><a href="#cb19-353"></a>            jac<span class="op">=</span><span class="fu">std_normal_lpdf</span>(xi) <span class="op">-</span> <span class="fu">lgamma</span>(n<span class="op">+</span><span class="fl">1</span>), </span>
+<span id="cb19-354"><a href="#cb19-354"></a>            x<span class="op">=</span><span class="fu">exp</span>(<span class="fu">append_row</span>(<span class="fu">log1m_exp</span>(log_w), <span class="fl">0</span>) <span class="op">+</span> <span class="fu">append_row</span>(<span class="fl">0</span>, <span class="fu">cumulative_sum</span>(log_w)))</span>
+<span id="cb19-355"><a href="#cb19-355"></a>        )</span>
+<span id="cb19-356"><a href="#cb19-356"></a>    <span class="cf">end</span></span>
+<span id="cb19-357"><a href="#cb19-357"></a>    <span class="fu">unconstrained_dim</span>(<span class="op">::</span><span class="dt">typeof</span>(constrain_stickbreaking_power_normal), n) <span class="op">=</span> n<span class="op">-</span><span class="fl">1</span></span>
+<span id="cb19-358"><a href="#cb19-358"></a><span class="cf">end</span></span>
+<span id="cb19-359"><a href="#cb19-359"></a></span>
+<span id="cb19-360"><a href="#cb19-360"></a>any_simplex <span class="op">=</span> <span class="pp">@slic</span> <span class="cf">begin</span> </span>
+<span id="cb19-361"><a href="#cb19-361"></a>    xi <span class="op">~</span> <span class="fu">simplex_prior</span>(constrain_f, prior_f, n)</span>
+<span id="cb19-362"><a href="#cb19-362"></a>    <span class="cf">return</span> <span class="fu">simplex_constrain</span>(xi, constrain_f)</span>
+<span id="cb19-363"><a href="#cb19-363"></a><span class="cf">end</span></span>
+<span id="cb19-364"><a href="#cb19-364"></a>dummy_simplex_model <span class="op">=</span> <span class="fu">dummy_model</span>(<span class="kw">quote</span> </span>
+<span id="cb19-365"><a href="#cb19-365"></a>    theta <span class="op">~</span> <span class="fu">any_simplex</span>(;constrain_f, prior_f, n<span class="op">=</span><span class="fl">10</span>)</span>
+<span id="cb19-366"><a href="#cb19-366"></a><span class="kw">end</span>)</span>
+<span id="cb19-367"><a href="#cb19-367"></a></span>
+<span id="cb19-368"><a href="#cb19-368"></a>simplex_posteriors <span class="op">=</span> <span class="fu">map</span>((;</span>
+<span id="cb19-369"><a href="#cb19-369"></a>        constrain_alr, constrain_expanded_softmax, constrain_ilr, constrain_ilr_reflector, </span>
+<span id="cb19-370"><a href="#cb19-370"></a>        constrain_normalized_exponential, </span>
+<span id="cb19-371"><a href="#cb19-371"></a>        constrain_stickbreaking_angular, constrain_stickbreaking_logistic, constrain_stickbreaking_normal, </span>
+<span id="cb19-372"><a href="#cb19-372"></a>        constrain_stickbreaking_power_logistic, constrain_stickbreaking_power_normal</span>
+<span id="cb19-373"><a href="#cb19-373"></a>    )) <span class="cf">do</span> constrain_f </span>
+<span id="cb19-374"><a href="#cb19-374"></a>    <span class="fu">dummy_simplex_model</span>(;constrain_f, prior_f<span class="op">=</span>uniform_simplex_lpdf)</span>
+<span id="cb19-375"><a href="#cb19-375"></a><span class="cf">end</span></span>
+<span id="cb19-376"><a href="#cb19-376"></a></span>
+<span id="cb19-377"><a href="#cb19-377"></a><span class="fu">map</span>(simplex_posteriors) <span class="cf">do</span> posterior </span>
+<span id="cb19-378"><a href="#cb19-378"></a>    QuartoComponents.<span class="fu">Code</span>(<span class="st">"stan"</span>, <span class="fu">stan_code</span>(posterior))</span>
+<span id="cb19-379"><a href="#cb19-379"></a><span class="cf">end</span> <span class="op">|&gt;</span> QuartoComponents.Tabset</span>
+<span id="cb19-380"><a href="#cb19-380"></a><span class="in">```</span></span>
 </code></pre></div><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></div>
 </div></div></div></div></div>
 </div> <!-- /content -->
