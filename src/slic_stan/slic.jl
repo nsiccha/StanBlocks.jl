@@ -159,7 +159,7 @@ replace_name(::Any) = missing
 usedin(s::Symbol) = Base.Fix1(usedin, s)
 usedin(s::Symbol, x::Expr) = any(usedin(s), x.args)
 usedin(s::Symbol, x::Symbol) = s == x
-usedin(s::Symbol, x::CanonicalExpr) = any(usedin(s), x.args)
+usedin(s::Symbol, x::CanonicalExpr) = any(usedin(s), x.args) || any(usedin(s), values(x.kwargs))
 usedin(s::Symbol, x) = false
 top_replace_components(x::Expr; rep::OrderedDict) = begin 
     @assert x.head == :block
