@@ -73,13 +73,7 @@ Base.show(io::IO, m::MIME"text/markdown", x::StanBlocks.stan.SlicModel) = show(i
 
 quarto(x::StanBlocks.stan.SlicModel) = Quarto.Container([
     Quarto.Heading(5, "SlicModel"),
-    Quarto.Tabset((;code=Quarto.Code("julia", x.model), [
-        key=>Quarto.Code("julia", join([
-            "$name: $(xi.meta[key])"
-            for (name, xi) in pairs(x.data) if key in keys(xi.meta) 
-        ], "\n"))
-        for key in mapreduce(xi->Set(keys(xi.meta)), union!, values(x.data); init=Set{Symbol}())
-    ]...))
+    Quarto.Tabset((;stan=Quarto.Code("stan", StanBlocks.stan_code(x)), julia=Quarto.Code("julia", x.model)))
 ])
 
 
