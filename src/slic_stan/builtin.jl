@@ -458,7 +458,6 @@ end
         (real[n],)=>int
     end
     typeof(log_sum_exp) => begin 
-        (real, real) => real
         (real[n], ) => real
         (matrix[m,n], ) => real
         (row_vector[n], ) => real
