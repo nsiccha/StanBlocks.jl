@@ -91,7 +91,7 @@ meta(x::StanModel) = x.meta
 vars(x::StanModel) = x.vars
 blocks(x::StanModel) = x.blocks
 remake(x::StanModel; kwargs...) = StanModel((;x.meta..., kwargs...), x.vars, x.blocks)
-var(x::StanModel, name) = error()#vars(x)[name]
+# var(x::StanModel, name) = error()#vars(x)[name]
 block(x::StanModel, name) = blocks(x)[name]
 Base.getindex(x::StanModel, name) = getindex(vars(x), name)
 Base.setindex!(x::StanModel, value, name) = setindex!(vars(x), value, name)
@@ -222,6 +222,11 @@ stan_type(expr, value::AbstractMatrix{<:AbstractFloat}; kwargs...) = StanType(
 stan_type(expr, value::AbstractVector{<:Integer}; kwargs...) = StanType(
     types.int, 
     stan_expr.((Symbol(expr, "_n"), ), size(value)); 
+    value, kwargs..., qual=:data
+)
+stan_type(expr, value::AbstractMatrix{<:Integer}; kwargs...) = StanType(
+    types.int, 
+    stan_expr.((Symbol(expr, "_m"), Symbol(expr, "_n"), ), size(value)); 
     value, kwargs..., qual=:data
 )
 stan_type(expr, value::Function; kwargs...) = StanType(types.func{typeof(value)}; value, qual=:data, kwargs...)
