@@ -33,32 +33,32 @@ end
 @testset "compilation" begin
     @test compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
-        scale ~ std_normal(;lower=0.) 
+        scale ~ std_normal(;lower=0.)
         obs ~ normal(loc, scale)
-    end)  
+    end)
     @test compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ simple(loc)
-    end)  
+    end)
     @test compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ vararg(loc)
-    end)  
+    end)
     @test compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ fof(simple, loc)
-    end)  
+    end)
     @test compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ srs2(vararg, loc)
-    end)  
+    end)
     @test compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ srs2(vararg, loc, (1, 2, 3))
-    end)  
+    end)
     @test compiles(stan_model(@slic (;obs=randn(5)) begin
         loc ~ std_normal()
-        scale ~ std_normal(;lower=0.) 
+        scale ~ std_normal(;lower=0.)
         obs ~ normal(loc, scale)
     end)(;obs=randn(10)))
 end
@@ -70,4 +70,3 @@ include("issues/15.jl")
 include("issues/17.jl")
 include("issues/18.jl")
 include("issues/19.jl")
-include("posteriordb.jl")

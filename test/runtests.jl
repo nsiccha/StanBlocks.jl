@@ -1,8 +1,12 @@
 # using Pkg
 # Pkg.activate("test")
-using StanBlocks, Test, BridgeStan, StanLogDensityProblems, JSON
+using Statistics
+using StanBlocks, Test, BridgeStan, StanLogDensityProblems, LogDensityProblems, JSON
 
 include("slic.jl")
+include("logdensity.jl")
+include("builtin_shapes.jl")
+include("posteriordb.jl")
 # import StanBlocks, PosteriorDB
 
 # import Test, StanLogDensityProblems, LogDensityProblems

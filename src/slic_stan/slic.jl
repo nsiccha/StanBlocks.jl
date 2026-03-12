@@ -5,6 +5,10 @@ dumperror(x) = (dump(x); error(x))
 """
 The AST and the data, pre-tracing. Can be instantiated via `stan_instantiate`.
 
+The `mod` field stores the defining module (set automatically by `@slic`), used for
+symbol resolution during tracing — functions defined via `@deffun` in package extensions
+are found by checking `mod` before falling back to `Main`.
+
 **Warning:**
 
 Repeatedly instantiating `SlicModel`s is inefficient, as the tracing is redone for every instantiation.
@@ -13,7 +17,9 @@ Instead, get the `StanModel` first (via `model = stan_model(slic_model)`) and up
 struct SlicModel#{M,D}
     model#::M
     data#::D
+    mod::Module
 end
+SlicModel(model, data) = SlicModel(model, data, Main)
 "The inferred Stan model, post-tracing. Can be instantiated via `stan_instantiate`."
 struct StanModel#{M,V,B}
     meta#::M
@@ -188,7 +194,7 @@ unblock(x::LineNumberNode) = []
 unblock(x) = [x]
 model(x::SlicModel, args::Union{BlockExpr,SamplingExpr,AssignmentExpr,ReturnExpr}...) = model(x, mapreduce(unblock, vcat, args)...)
 model(x::SlicModel, args::Expr...) = model(x, canonical.(args)...)
-(x::SlicModel)(args...; kwargs...) = SlicModel(model(x, args...), merge(data(x), kwargs))
+(x::SlicModel)(args...; kwargs...) = SlicModel(model(x, args...), merge(data(x), kwargs), x.mod)
 
 qual(x) = :data
 qual(x::StanExpr) = qual(type(x))
@@ -209,14 +215,14 @@ cv(x::StanType) = get(info(x), :cv, false) || any(cv, stan_size(x))
 stan_type(expr, value; kwargs...) = error("Do not know how to handle `stan_type($expr, $value)`")
 stan_type(expr, value::Integer; kwargs...) = StanType(types.int; value, kwargs..., qual=:data)
 stan_type(expr, value::AbstractFloat; kwargs...) = StanType(types.real; value, kwargs...)
-stan_type(expr, value::AbstractVector{<:AbstractFloat}; kwargs...) = StanType(
-    types.vector, 
-    stan_expr.((Symbol(expr, "_n"), ), size(value)); 
+stan_type(expr, value::AbstractVector{<:Real}; kwargs...) = StanType(
+    types.vector,
+    stan_expr.((Symbol(expr, "_n"), ), size(value));
     value, kwargs...
 )
-stan_type(expr, value::AbstractMatrix{<:AbstractFloat}; kwargs...) = StanType(
-    types.matrix, 
-    stan_expr.((Symbol(expr, "_m"), Symbol(expr, "_n"), ), size(value)); 
+stan_type(expr, value::AbstractMatrix{<:Real}; kwargs...) = StanType(
+    types.matrix,
+    stan_expr.((Symbol(expr, "_m"), Symbol(expr, "_n"), ), size(value));
     value, kwargs...
 )
 stan_type(expr, value::AbstractVector{<:Integer}; kwargs...) = StanType(
@@ -248,7 +254,8 @@ end
 maybedata!(x::StanModel, key, value) = x[key] = maybedata(key, value)
 maybedata!(x::StanModel, key, value::AbstractString) = nothing
 maybedata!(x::SubModel, key, value) = locals(x)[key] = maybedata(key, value)
-forward!(x::SlicModel; info=StanModel()) = begin 
+forward!(x::SlicModel; info=StanModel()) = begin
+    info = remake(info; mod=x.mod)
     for (key, value) in pairs(data(x))
         maybedata!(info, key, value)
     end
@@ -319,16 +326,27 @@ forward!(x::QuoteNode; info) = x.value
 forward!(x::Irrational; info) = error(x)
 forward!(x::Irrational{:π}; info) = forward!(Float64(pi); info)
 forward!(x::Number; info) = maybedata(x, x)
-forward!(x::Symbol; info) = begin 
+forward!(x::Symbol; info) = begin
     x in keys(info) && return info[x]
     isdefined(builtin, x) && return forward!(getproperty(builtin, x); info)
-    if isdefined(Main, x)
+    mod = if info isa StanModel
+        get(info.meta, :mod, Main)
+    else
+        get(info, :__mod__, Main)
+    end
+    if isdefined(mod, x)
+        Mx = getproperty(mod, x)
+        isa(Mx, Function)  && return forward!(Mx; info)
+        isa(Mx, SlicModel) && return Mx
+        error("Found $x in $(mod), but is of type $(typeof(Mx))!")
+    end
+    if mod !== Main && isdefined(Main, x)
         Mx = getproperty(Main, x)
         isa(Mx, Function)  && return forward!(Mx; info)
         isa(Mx, SlicModel) && return Mx
         error("Found $x in Main, but is of type $(typeof(Mx))!")
     end
-    error("Could not find $(x) in model, builtin or Main!")
+    error("Could not find $(x) in model, builtin, $(mod) or Main!")
 end
 forward!(x::Function; info) = stan_expr(x)
 forward!(x::Colon; info) = x
@@ -827,7 +845,7 @@ stan_code(x::StanModel) = begin
     String(take!(buf))
 end
 stan_code(x::SlicModel) = stan_code(stan_model(x))
-function bridgestan_data end
+bridgestan_data(args...; kwargs...) = error("Using bridgestan_data requires loading JSON.jl!")
 """
 Returns the StanLogDensityProblem (a compiled posterior).
 
@@ -835,7 +853,7 @@ Returns the StanLogDensityProblem (a compiled posterior).
 
 Requires loading StanLogDensityProblems.jl and JSON.jl.
 """
-function instantiate end
+instantiate(args...; kwargs...) = error("Using instantiate requires loading StanLogDensityProblems.jl and JSON.jl!")
 debug_instantiate(x; kwargs...) = instantiate(x; nan_on_error=false, kwargs...)
 passinstantiate(x; kwargs...) = (instantiate(x; kwargs...); x)
 stan_data(x::SlicModel) = stan_data(stan_model(x))
@@ -867,15 +885,16 @@ end
 """
 Defines `SlicModel`s (see `test/slic.jl` for usage examples).
 
-Proper documentation will be incoming.
+The defining module is captured automatically via `__module__`, so that `@deffun` functions
+defined in the same module (e.g. a package extension) are found during symbol resolution.
 """
 macro slic(model)
-    stan.SlicModel(model, Dict())
+    stan.SlicModel(model, Dict(), __module__)
 end
 macro slic(data, model)
     mod = @__MODULE__
     qmodel = Meta.quot(model)
-    esc(:($mod.stan.SlicModel($qmodel, $data)))
+    esc(:($mod.stan.SlicModel($qmodel, $data, $(__module__))))
 end
 """
 Utility macro to define function signatures (see `src/slic_stan/builtin.jl` for usage examples).

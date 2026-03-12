@@ -26,10 +26,10 @@ import Plots, OnlineStats, StanBlocks, PosteriorDB
 include("julia/common.jl")
 struct RuntimeDistribution2{F}
     f::F
-    n::Int64
+    n::Int
 end
 RuntimeDistribution2(f) = RuntimeDistribution2(f, 1)
-RuntimeDistribution2(f::RuntimeDistribution2, n::Int64) = RuntimeDistribution2(f.f, n * f.n)
+RuntimeDistribution2(f::RuntimeDistribution2, n::Int) = RuntimeDistribution2(f.f, n * f.n)
 @inline Random.rand(rng::AbstractRNG, d::RuntimeDistribution2) = begin
     stats = @timed begin
         rv = d.f(rng)

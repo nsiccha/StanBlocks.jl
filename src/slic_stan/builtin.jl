@@ -49,7 +49,7 @@ end
     loglogistic_lpdf
     uniform_lpdf
     von_mises_lpdf
-    neg_binomial_2_lpdf
+    neg_binomial_2_lpmf
     bernoulli_lpmf
     bernoulli_logit_lpmf 
     bernoulli_logit_glm_lpmf
@@ -104,6 +104,7 @@ end
     mdivide_left_tri_low
     one_hot_vector
     sd
+    mean
     cumulative_sum
     log_sum_exp
     lgamma
@@ -120,12 +121,62 @@ end
 
     broadcasted_getindex
     jbroadcasted jmap jsum
-] 
+
+    # Unary math (Stan-specific, not Julia builtins)
+    square log_diff_exp log_mix atan2
+    is_inf is_nan
+    Phi_approx inv_Phi
+    erf erfc tgamma digamma trigamma
+    lbeta inc_beta gamma_p gamma_q
+    bessel_first_kind bessel_second_kind
+    modified_bessel_first_kind modified_bessel_second_kind
+    owens_t binary_log_loss
+    fma fmin fmax fdim fmod cbrt
+
+    # Array/vector operations
+    norm1 norm2 distance squared_distance
+    quantile num_elements segment variance
+
+    # Matrix operations
+    col row
+    sub_col sub_row
+    trace determinant log_determinant log_determinant_spd
+    inverse inverse_spd chol2inv generalized_inverse
+    eigenvalues_sym eigenvectors_sym
+    crossprod tcrossprod
+    quad_form quad_form_diag quad_form_sym
+    trace_quad_form trace_gen_quad_form
+    multiply_lower_tri_self_transpose
+    dot_self columns_dot_product columns_dot_self rows_dot_self
+    softmax log_softmax diagonal
+    rep_row_vector linspaced_row_vector
+    identity_matrix symmetrize_from_lower_tri
+    mdivide_left_spd mdivide_right_spd
+    matrix_power matrix_exp_multiply scale_matrix_exp_multiply
+
+    # Additional GP covariance functions
+    gp_exponential_cov gp_matern32_cov gp_matern52_cov
+    gp_periodic_cov gp_dot_prod_cov
+
+    # Additional distributions
+    double_exponential_lpdf logistic_lpdf gumbel_lpdf
+    skew_normal_lpdf exp_mod_normal_lpdf
+    pareto_lpdf pareto_type_2_lpdf
+    wiener_lpdf
+    discrete_range_lpmf
+    hypergeometric_lpmf
+    multinomial_lpmf
+    categorical_lpmf categorical_logit_lpmf
+    poisson_lpmf poisson_log_lpmf
+    neg_binomial_lpdf neg_binomial_2_log_lpdf
+    skew_double_exponential_lpdf
+]
 
 autokwargs(::CanonicalExpr{<:Union{typeof.((beta, beta_proportion))...}}) = (;lower=0, upper=1)
 autokwargs(::CanonicalExpr{typeof(von_mises)}) = (;lower=0, upper=2pi)
 autokwargs(x::CanonicalExpr{typeof(uniform)}) = (;lower=x.args[1], upper=x.args[2])
-autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,scaled_inv_chi_square,exponential,gamma,inv_gamma,weibull,frechet,rayleigh,loglogistic))...}}) = (;lower=0.)
+autokwargs(::CanonicalExpr{<:Union{typeof.((lognormal,chi_square,inv_chi_square,scaled_inv_chi_square,exponential,gamma,inv_gamma,weibull,frechet,rayleigh,loglogistic,pareto,pareto_type_2))...}}) = (;lower=0.)
+autokwargs(::CanonicalExpr{<:Union{typeof.((logistic,gumbel,skew_normal,exp_mod_normal,double_exponential,skew_double_exponential))...}}) = (;)
 
 import Statistics
 
@@ -153,15 +204,13 @@ import Statistics
     Base.sum(x::int[m,n])::int
     Base.sum(x::int[m,n,o])::int
     Base.:\(A::matrix[m, m], b::vector[m])::vector[m]
-    Statistics.mean(x)::real
+    mean(x)::real
     dims(x::anything[_])::int[1]
     dims(x::anything[_, _])::int[2]
     dims(x::anything[_, _, _])::int[3]
     cols(::matrix[m,n])::int
     rows(::matrix[m,n])::int
-    cumulative_sum(x::int[m])::int[m]
-    cumulative_sum(x::real[m])::real[m]
-    cumulative_sum(x::vector[m])::vector[m]
+    # cumulative_sum moved to @defsig (see below) to include row_vector form
     diag_matrix(x::anything[n])::matrix[n,n]
     sd(x)::real
     one_hot_vector(n, k)::vector[n]
@@ -224,7 +273,7 @@ import Statistics
     loglogistic_lpdf(args...)
     uniform_lpdf(args...)
     von_mises_lpdf(args...)
-    neg_binomial_2_lpdf(args...)
+    neg_binomial_2_lpmf(args...)
     bernoulli_lpmf(args...)
     bernoulli_logit_lpmf(args...)
     bernoulli_logit_glm_lpmf(args...)
@@ -240,13 +289,14 @@ import Statistics
     multi_normal_rng(loc::vector[n], args...)::vector[n]
     multi_normal_cholesky_rng(loc::vector[n], scale)::vector[n]
     bernoulli_rng(::vector[n])::int[n]
+    bernoulli_logit_rng(::real)::int
     bernoulli_logit_rng(::vector[n])::int[n]
     bernoulli_logit_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
     bernoulli_logit_glm_rng(X::matrix[m,n], alpha::real, beta) = bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta)
     beta_rng(args...)::real
     binomial_rng(args...)::int
     binomial_logit_rng(n::int[m], p::vector[m])::int[m]
-
+    binomial_logit_rng(n::vector[m], p::vector[m])::int[m]
     broadcasted_getindex(x, i) = x
     broadcasted_getindex(x::anything[m], i) = x[i]
     jbroadcasted(f, x1::anything[n]) = begin 
@@ -283,6 +333,35 @@ import Statistics
     normal_lpdfs(args...) = normal_lpdf(args...)
     normal_lpdfs(obs::anything[n], loc, scale) = jbroadcasted(normal_lpdfs, obs, loc, scale)
     multi_normal_lpdfs(args...) = multi_normal_lpdf(args...)
+    # Scalar-fallback _lpdfs for distributions missing vectorized forms.
+    # The args... variant handles scalar obs; array broadcasting is left for future work.
+    cauchy_lpdfs(args...) = cauchy_lpdf(args...)
+    cauchy_lpdfs(obs::anything[n], loc, scale) = jbroadcasted(cauchy_lpdfs, obs, loc, scale)
+    student_t_lpdfs(args...) = student_t_lpdf(args...)
+    lognormal_lpdfs(args...) = lognormal_lpdf(args...)
+    lognormal_lpdfs(obs::anything[n], loc, scale) = jbroadcasted(lognormal_lpdfs, obs, loc, scale)
+    gamma_lpdfs(args...) = gamma_lpdf(args...)
+    gamma_lpdfs(obs::anything[n], alpha, beta) = jbroadcasted(gamma_lpdfs, obs, alpha, beta)
+    beta_lpdfs(args...) = beta_lpdf(args...)
+    beta_lpdfs(obs::anything[n], alpha, beta) = jbroadcasted(beta_lpdfs, obs, alpha, beta)
+    exponential_lpdfs(args...) = exponential_lpdf(args...)
+    exponential_lpdfs(obs::anything[n], rate) = jbroadcasted(exponential_lpdfs, obs, rate)
+    uniform_lpdfs(args...) = uniform_lpdf(args...)
+    uniform_lpdfs(obs::anything[n], lo, hi) = jbroadcasted(uniform_lpdfs, obs, lo, hi)
+    neg_binomial_2_lpmfs(args...) = neg_binomial_2_lpmf(args...)
+    neg_binomial_2_lpmfs(obs::anything[n], mu, phi) = jbroadcasted(neg_binomial_2_lpmfs, obs, mu, phi)
+    poisson_lpmfs(args...) = poisson_lpmf(args...)
+    poisson_lpmfs(obs::anything[n], lambda) = jbroadcasted(poisson_lpmfs, obs, lambda)
+    poisson_log_lpmfs(args...) = poisson_log_lpmf(args...)
+    poisson_log_lpmfs(obs::anything[n], alpha) = jbroadcasted(poisson_log_lpmfs, obs, alpha)
+    inv_gamma_lpdfs(args...) = inv_gamma_lpdf(args...)
+    inv_gamma_lpdfs(obs::anything[n], alpha, beta) = jbroadcasted(inv_gamma_lpdfs, obs, alpha, beta)
+    double_exponential_lpdfs(args...) = double_exponential_lpdf(args...)
+    double_exponential_lpdfs(obs::anything[n], mu, sigma) = jbroadcasted(double_exponential_lpdfs, obs, mu, sigma)
+    logistic_lpdfs(args...) = logistic_lpdf(args...)
+    logistic_lpdfs(obs::anything[n], mu, sigma) = jbroadcasted(logistic_lpdfs, obs, mu, sigma)
+    weibull_lpdfs(args...) = weibull_lpdf(args...)
+    weibull_lpdfs(obs::anything[n], alpha, sigma) = jbroadcasted(weibull_lpdfs, obs, alpha, sigma)
     vector_exponential_rng(rate::real, n::int)::vector[n] = exponential_rng(rep_vector(rate, n))
     lkj_corr_cholesky_rng(n::int, eta::real)
     
@@ -290,8 +369,128 @@ import Statistics
     normal_lcdf(args...)
     normal_lccdf(args...)
 
-    append_row(x, y, z, args...) = append_row(append_row(x, y), z, args...) 
-    append_col(x, y, z, args...) = append_col(append_col(x, y), z, args...) 
+    append_row(x, y, z, args...) = append_row(append_row(x, y), z, args...)
+    append_col(x, y, z, args...) = append_col(append_col(x, y), z, args...)
+
+    # New distribution lpdf/lpmf stubs
+    double_exponential_lpdf(args...)
+    logistic_lpdf(args...)
+    gumbel_lpdf(args...)
+    skew_normal_lpdf(args...)
+    exp_mod_normal_lpdf(args...)
+    pareto_lpdf(args...)
+    pareto_type_2_lpdf(args...)
+    wiener_lpdf(args...)
+    discrete_range_lpmf(args...)
+    hypergeometric_lpmf(args...)
+    multinomial_lpmf(args...)
+    categorical_lpmf(args...)
+    categorical_logit_lpmf(args...)
+    poisson_lpmf(args...)
+    poisson_log_lpmf(args...)
+    neg_binomial_lpdf(args...)
+    neg_binomial_2_log_lpdf(args...)
+    skew_double_exponential_lpdf(args...)
+
+    # RNG signatures for distributions already in @builtin_module
+    gamma_rng(::real, ::real)::real
+    inv_gamma_rng(::real, ::real)::real
+    chi_square_rng(::real)::real
+    inv_chi_square_rng(::real)::real
+    weibull_rng(::real, ::real)::real
+    frechet_rng(::real, ::real)::real
+    rayleigh_rng(::real)::real
+    loglogistic_rng(::real, ::real)::real
+    uniform_rng(::real, ::real)::real
+    von_mises_rng(::real, ::real)::real
+    neg_binomial_2_rng(::real, ::real)::int
+    beta_binomial_rng(::int, ::real, ::real)::int
+    binomial_rng(::int, ::real)::int
+    bernoulli_rng(::real)::int
+
+    # New distribution RNG signatures
+    double_exponential_rng(::real, ::real)::real
+    logistic_rng(::real, ::real)::real
+    gumbel_rng(::real, ::real)::real
+    skew_normal_rng(::real, ::real, ::real)::real
+    exp_mod_normal_rng(::real, ::real, ::real)::real
+    pareto_rng(::real, ::real)::real
+    pareto_type_2_rng(::real, ::real, ::real)::real
+    categorical_rng(::vector[n])::int
+    categorical_logit_rng(::vector[n])::int
+    poisson_rng(::real)::int
+    poisson_log_rng(::real)::int
+    poisson_log_rng(::vector[n])::int[n]
+    neg_binomial_rng(::real, ::real)::int
+    discrete_range_rng(::int, ::int)::int
+    dirichlet_rng(::vector[n])::vector[n]
+    multinomial_rng(::vector[n], ::int)::int[n]
+
+    # Matrix construction
+    rep_row_vector(x, n)::row_vector[n]
+    linspaced_row_vector(n, x, y)::row_vector[n]
+    identity_matrix(n::int)::matrix[n,n]
+    symmetrize_from_lower_tri(::matrix[n,n])::matrix[n,n]
+
+    # Matrix slicing
+    col(A::matrix[m,n], j)::vector[m]
+    row(A::matrix[m,n], i)::row_vector[n]
+    sub_col(A::matrix[m,n], i, j, nrow)::vector[nrow]
+    sub_row(A::matrix[m,n], i, j, ncol)::row_vector[ncol]
+    segment(v::vector[m], i::int, n)::vector[n]
+    segment(v::row_vector[m], i::int, n)::row_vector[n]
+    segment(v::anything[m], i::int, n)::real[n]
+
+    # num_elements
+    num_elements(::vector[n])::int
+    num_elements(::row_vector[n])::int
+    num_elements(::matrix[m,n])::int
+    num_elements(::anything[n])::int
+
+    # rows/cols for vectors
+    rows(::vector[n])::int
+    rows(::row_vector[n])::int
+    cols(::vector[n])::int
+    cols(::row_vector[n])::int
+
+    # Softmax (in @builtin_module, so @deffun can reference builtin.softmax)
+    softmax(v::vector[n])::vector[n]
+    log_softmax(v::vector[n])::vector[n]
+
+    # Scalar math
+    square(x::real)::real
+    log_diff_exp(x::real, y::real)::real
+    log_mix(theta::real, lp1::real, lp2::real)::real
+    atan2(y::real, x::real)::real
+    fma(x::real, y::real, z::real)::real
+    fmin(x::real, y::real)::real
+    fmax(x::real, y::real)::real
+    fdim(x::real, y::real)::real
+    fmod(x::real, y::real)::real
+    binary_log_loss(y::int, y_hat::real)::real
+    lbeta(a::real, b::real)::real
+    inc_beta(a::real, b::real, x::real)::real
+    gamma_p(a::real, x::real)::real
+    gamma_q(a::real, x::real)::real
+    owens_t(h::real, a::real)::real
+    bessel_first_kind(v::int, x::real)::real
+    bessel_second_kind(v::int, x::real)::real
+    modified_bessel_first_kind(v::int, x::real)::real
+    modified_bessel_second_kind(v::int, x::real)::real
+    is_inf(x::real)::int
+    is_nan(x::real)::int
+
+    # GP covariance functions
+    gp_exponential_cov(x::real[n], sigma::real, l::real)::matrix[n,n]
+    gp_exponential_cov(x1::real[m], x2::real[n], sigma::real, l::real)::matrix[m,n]
+    gp_matern32_cov(x::real[n], sigma::real, l::real)::matrix[n,n]
+    gp_matern32_cov(x1::real[m], x2::real[n], sigma::real, l::real)::matrix[m,n]
+    gp_matern52_cov(x::real[n], sigma::real, l::real)::matrix[n,n]
+    gp_matern52_cov(x1::real[m], x2::real[n], sigma::real, l::real)::matrix[m,n]
+    gp_periodic_cov(x::real[n], sigma::real, l::real, p::real)::matrix[n,n]
+    gp_periodic_cov(x1::real[m], x2::real[n], sigma::real, l::real, p::real)::matrix[m,n]
+    gp_dot_prod_cov(x::real[n], sigma::real)::matrix[n,n]
+    gp_dot_prod_cov(x1::real[m], x2::real[n], sigma::real)::matrix[m,n]
 
     Base.invperm(x::int[n])::int[n] = begin 
         rv = rep_array(0, n)
@@ -307,16 +506,137 @@ import Statistics
     # end
 end
 @defsig begin 
-    Union{typeof.((sqrt, exp, log, log10, sin, cos, asin, acos, log1m, inv_logit, logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs, log1p_exp, log1m_exp, Base.inv, Base.log1p))...} => begin 
+    Union{typeof.((sqrt, exp, log, log10, sin, cos, asin, acos, tan, atan,
+        cosh, sinh, tanh, acosh, asinh, atanh,
+        log1m, inv_logit, logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs,
+        log1p_exp, log1m_exp, Base.inv, Base.log1p,
+        exp2, log2, cbrt, ceil, floor, round, trunc,
+        square, erf, erfc, tgamma, digamma, trigamma,
+        Phi_approx, inv_Phi))...} => begin
         (real,)=>real
         (vector[n],)=>vector[n]
         (row_vector[n],)=>row_vector[n]
         (real[n],)=>real[n]
         (matrix[m,n],)=>matrix[m,n]
     end
-    Union{typeof.((log_sum_exp, ))...} => begin 
+    Union{typeof.((log_sum_exp, ))...} => begin
         (real, real) => real
         (vector[n], vector[n]) => vector[n]
+    end
+    # Matrix reductions returning real
+    Union{typeof.((trace, determinant, log_determinant, log_determinant_spd))...} => begin
+        (matrix[m,n],) => real
+    end
+    # Square-matrix-in, square-matrix-out
+    Union{typeof.((inverse, inverse_spd, chol2inv, symmetrize_from_lower_tri))...} => begin
+        (matrix[n,n],) => matrix[n,n]
+    end
+    typeof(generalized_inverse) => begin
+        (matrix[m,n],) => matrix[n,m]
+    end
+    typeof(eigenvalues_sym) => begin
+        (matrix[n,n],) => vector[n]
+    end
+    typeof(eigenvectors_sym) => begin
+        (matrix[n,n],) => matrix[n,n]
+    end
+    typeof(crossprod) => begin
+        (matrix[m,n],) => matrix[n,n]
+    end
+    typeof(tcrossprod) => begin
+        (matrix[m,n],) => matrix[m,m]
+    end
+    typeof(multiply_lower_tri_self_transpose) => begin
+        (matrix[m,n],) => matrix[m,m]
+    end
+    typeof(matrix_power) => begin
+        (matrix[n,n], int[]) => matrix[n,n]
+    end
+    typeof(matrix_exp_multiply) => begin
+        (matrix[m,m], matrix[m,n]) => matrix[m,n]
+    end
+    typeof(scale_matrix_exp_multiply) => begin
+        (real[], matrix[m,m], matrix[m,n]) => matrix[m,n]
+    end
+    typeof(mdivide_left_spd) => begin
+        (matrix[m,m], vector[m]) => vector[m]
+        (matrix[m,m], matrix[m,n]) => matrix[m,n]
+    end
+    typeof(mdivide_right_spd) => begin
+        (row_vector[m], matrix[m,m]) => row_vector[m]
+        (matrix[m,n], matrix[n,n]) => matrix[m,n]
+    end
+    Union{typeof.((dot_self,))...} => begin
+        (vector[n],) => real
+        (row_vector[n],) => real
+    end
+    typeof(columns_dot_product) => begin
+        (matrix[m,n], matrix[m,n]) => row_vector[n]
+    end
+    typeof(columns_dot_self) => begin
+        (matrix[m,n],) => row_vector[n]
+    end
+    typeof(rows_dot_self) => begin
+        (matrix[m,n],) => vector[m]
+    end
+    Union{typeof.((sort_asc, sort_desc))...} => begin
+        (int[n],)=>int[n]
+        (real[n],)=>real[n]
+        (vector[n],)=>vector[n]
+        (row_vector[n],)=>row_vector[n]
+    end
+    Union{typeof.((sort_indices_asc, sort_indices_desc))...} => begin
+        (anything[n],)=>int[n]
+        (vector[n],)=>int[n]
+        (row_vector[n],)=>int[n]
+    end
+    # Quad forms: B'*A*B
+    typeof(quad_form) => begin
+        (matrix[m,m], vector[m]) => real
+        (matrix[m,m], matrix[m,n]) => matrix[n,n]
+    end
+    typeof(quad_form_diag) => begin
+        (matrix[m,m], vector[m]) => matrix[m,m]
+        (matrix[m,m], row_vector[m]) => matrix[m,m]
+    end
+    typeof(quad_form_sym) => begin
+        (matrix[m,m], vector[m]) => real
+        (matrix[m,m], matrix[m,n]) => matrix[n,n]
+    end
+    Union{typeof.((trace_quad_form,))...} => begin
+        (matrix[m,m], matrix[m,n]) => real
+        (matrix[m,m], vector[m]) => real
+    end
+    typeof(trace_gen_quad_form) => begin
+        (matrix[n,n], matrix[m,m], matrix[m,n]) => real
+    end
+    # diagonal
+    typeof(diagonal) => begin
+        (matrix[n,n],) => vector[n]
+    end
+    # row/col
+    typeof(col) => begin
+        (matrix[m,n], int[]) => vector[m]
+    end
+    typeof(row) => begin
+        (matrix[m,n], int[]) => row_vector[n]
+    end
+    # norm / distance
+    Union{typeof.((norm1, norm2))...} => begin
+        (vector[n],) => real
+        (row_vector[n],) => real
+        (real[n],) => real
+    end
+    Union{typeof.((distance, squared_distance))...} => begin
+        (vector[n], vector[n]) => real
+        (row_vector[n], row_vector[n]) => real
+    end
+    # cumulative_sum for row_vector (already has vector, add row_vector)
+    typeof(cumulative_sum) => begin
+        (int[m],)=>int[m]
+        (real[m],)=>real[m]
+        (vector[m],)=>vector[m]
+        (row_vector[m],)=>row_vector[m]
     end
     typeof(÷) => begin 
         (int, int) => int
@@ -382,16 +702,6 @@ end
         (matrix[m,n], int[o], int[p]) => matrix[o, p]
         # (matrix[m,n], int) => row_vector[n]
     end
-    typeof(to_vector) => begin 
-        (vector[n],) => vector[n]
-        (real[n],) => vector[n]
-        (matrix[m,n],) => vector[m*n]
-    end
-    typeof(to_array_1d) => begin 
-        (vector[n],)=>real[n]
-        (real[m,n],) => real[m*n]
-        (int[m,n],) => int[m*n]
-    end
     typeof(std_normal_rng) => begin 
         () => real
     end
@@ -427,12 +737,7 @@ end
         (vector[n], vector[n]) => vector[n]
         (row_vector[n], row_vector[n]) => row_vector[n]
     end
-    Union{typeof.((min,max))...} => begin 
-        (int, int) => int
-        (int[n],)=>int
-        (vector[n],)=>real
-    end
-    typeof(cholesky_decompose) => begin 
+    typeof(cholesky_decompose) => begin
         (matrix[n,n],) => matrix[n,n]
     end
     typeof(mdivide_right_tri_low) => begin
@@ -450,10 +755,7 @@ end
         (real[n], real, real) => matrix[n,n]
         (real[m], real[n], real, real) => matrix[m,n]
     end
-    typeof(add_diag) => begin 
-        (matrix[n,n], real) => matrix[n,n]
-    end
-    typeof(size) => begin 
+    typeof(size) => begin
         (vector[n],)=>int
         (real[n],)=>int
     end
@@ -463,16 +765,96 @@ end
         (row_vector[n], ) => real
         (vector[n], ) => real
     end
-    Union{typeof.((sort_asc, sort_desc))...} => begin 
-        (int[n],)=>int[n]
-        (real[n],)=>real[n]
-        (vector[n],)=>vector[n]
-    end
-    Union{typeof.((sort_indices_asc, sort_indices_desc))...} => begin 
-        (anything[n],)=>int[n]
-    end
-    Union{typeof.((|, &, ==, !=, <, <=, >, >=))...} => begin 
+    Union{typeof.((|, &, ==, !=, <, <=, >, >=))...} => begin
         (anything, anything) => int
+    end
+    # step: Base.step is exported; Stan's step(real)->int dispatches on it
+    typeof(step) => begin
+        (real,) => int
+        (int,) => int
+    end
+    # Julia functions with different Stan names (func_name overrides in functions.jl):
+    #   length → num_elements,  minimum/maximum → min/max,
+    #   LinearAlgebra.dot → dot_product,  abs2 → square
+    typeof(length) => begin
+        (vector[n],) => int
+        (row_vector[n],) => int
+        (matrix[m,n],) => int
+        (real[n],) => int
+        (int[n],) => int
+    end
+    Union{typeof.((minimum, maximum))...} => begin
+        (real[n],) => real
+        (int[n],) => int
+        (vector[n],) => real
+        (row_vector[n],) => real
+    end
+    typeof(abs2) => begin
+        (real,) => real
+        (int,) => real
+        (vector[n],) => vector[n]
+        (row_vector[n],) => row_vector[n]
+        (matrix[m,n],) => matrix[m,n]
+    end
+    # prod/variance: Base.prod and Statistics.var are exported; must use @defsig not @deffun
+    typeof(prod) => begin
+        (real[n],) => real
+        (int[n],) => real
+        (vector[n],) => real
+        (row_vector[n],) => real
+        (matrix[m,n],) => real
+    end
+    typeof(variance) => begin
+        (real[n],) => real
+        (vector[n],) => real
+        (row_vector[n],) => real
+        (matrix[m,n],) => real
+    end
+    # quantile: Base function
+    typeof(quantile) => begin
+        (real[n], real) => real
+        (vector[n], real) => real
+        (row_vector[n], real) => real
+    end
+    # add_diag with vector/row_vector diagonal
+    typeof(add_diag) => begin
+        (matrix[n,n], real) => matrix[n,n]
+        (matrix[n,n], vector[n]) => matrix[n,n]
+        (matrix[n,n], row_vector[n]) => matrix[n,n]
+    end
+    # to_vector for row_vector and int array
+    typeof(to_vector) => begin
+        (vector[n],) => vector[n]
+        (row_vector[n],) => vector[n]
+        (real[n],) => vector[n]
+        (int[n],) => vector[n]
+        (matrix[m,n],) => vector[m*n]
+    end
+    typeof(to_row_vector) => begin
+        (vector[n],) => row_vector[n]
+        (row_vector[n],) => row_vector[n]
+        (real[n],) => row_vector[n]
+        (int[n],) => row_vector[n]
+        (matrix[m,n],) => row_vector[m*n]
+    end
+    typeof(to_array_1d) => begin
+        (vector[n],) => real[n]
+        (row_vector[n],) => real[n]
+        (int[n],) => int[n]
+        (real[m,n],) => real[m*n]
+        (int[m,n],) => int[m*n]
+    end
+    # min/max for more types
+    Union{typeof.((min, max))...} => begin
+        (int, int) => int
+        (real, real) => real
+        (int, real) => real
+        (real, int) => real
+        (int[n],) => int
+        (real[n],) => real
+        (vector[n],) => real
+        (row_vector[n],) => real
+        (matrix[m,n],) => real
     end
 end
 

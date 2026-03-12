@@ -12,6 +12,7 @@ include("functions.jl")
 include("slic_stan/slic.jl")
 
 julia_implementation(key; kwargs...) = missing
+slic_implementation(key; kwargs...) = nothing
 stan_implementation(key; kwargs...) = missing
 include("check.jl")
 

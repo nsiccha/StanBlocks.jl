@@ -373,7 +373,9 @@ begin
             $stan.tracetype($xexpr) = $(Expr(:block, deconstruct, rv_expr))
         end)
         if !ismissing(body)
-            push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, anon_deconstruct, stan_fundef))))
+            capture_mod = :(__fundef_mod__ = $parentmodule(typeof($head(x))))
+            inject_mod = :(info[$(QuoteNode(:__mod__))] = __fundef_mod__)
+            push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, capture_mod, anon_deconstruct, inject_mod, stan_fundef))))
         end
         isa(f, Symbol) || return Expr(:block, stmts...)
         if is_lpxf
@@ -521,6 +523,11 @@ func_name(::typeof(+)) = "add"
 func_name(::typeof(-)) = "sub"
 func_name(::typeof(*)) = "mul"
 func_name(::typeof(/)) = "div"
+# Julia functions with different Stan names
+func_name(::typeof(length)) = "num_elements"
+func_name(::typeof(minimum)) = "min"
+func_name(::typeof(maximum)) = "max"
+func_name(::typeof(abs2)) = "square"
 func_args(args::NamedTuple) = Join(mapreduce(func_args, vcat, pairs(args); init=[]), ", ")
 func_args(arg::Pair) = func_args(arg...)
 func_args(name, ::StanExpr2{<:types.func}) = []
