@@ -105,6 +105,7 @@ Base.keys(x::StanModel) = keys(vars(x))
 Base.parent(x::SubModel) = x.parent
 name(x::SubModel) = x.name
 locals(x::SubModel) = x.locals
+remake(x::SubModel; kwargs...) = SubModel(remake(parent(x); kwargs...), name(x), locals(x))
 Base.getindex(x::SubModel, name) = getindex(locals(x), name)
 Base.setindex!(x::SubModel, value, name) = begin
     setindex!(parent(x), supvalue(x, value), supname(x, name))
