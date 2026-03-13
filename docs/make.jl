@@ -1,22 +1,33 @@
-using Documenter
-using StanBlocks
+using Documenter, DocumenterVitepress, StanBlocks
 
-makedocs(;
-    modules=[StanBlocks],
-    sitename="StanBlocks.jl",
-    authors="Nikolas Siccha",
-    format=Documenter.HTML(;
-        prettyurls=get(ENV, "CI", "false") == "true",
-        canonical="https://nsiccha.github.io/StanBlocks.jl",
+makedocs(
+    sitename = "StanBlocks.jl",
+    modules  = [StanBlocks],
+    format   = DocumenterVitepress.MarkdownVitepress(
+        repo = "github.com/nsiccha/StanBlocks.jl",
+        devurl = "dev",
+        devbranch = "dev",
     ),
-    pages=[
-        "Home" => "index.md",
-        "API Reference" => "api.md",
+    pages = [
+        "Home"      => "index.md",
+        "API"       => "api.md",
     ],
-    checkdocs=:none,
+    checkdocs = :none,
+    warnonly = true,
 )
 
-deploydocs(;
-    repo="github.com/nsiccha/StanBlocks.jl",
-    devbranch="main",
+# Ensure a root index.html redirect exists for when no stable version is deployed
+let redirect = joinpath(@__DIR__, "build", "index.html")
+    isfile(redirect) || write(redirect, """
+    <!DOCTYPE html>
+    <html><head>
+    <meta http-equiv="refresh" content="0; url=dev/">
+    </head><body>Redirecting to <a href="dev/">dev</a>...</body></html>
+    """)
+end
+
+DocumenterVitepress.deploydocs(
+    repo = "github.com/nsiccha/StanBlocks.jl",
+    devbranch = "dev",
+    push_preview = true,
 )

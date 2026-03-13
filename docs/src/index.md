@@ -2,8 +2,9 @@
 
 StanBlocks.jl is a (limited) Julia-to-Stan transpiler: write probabilistic models in Julia syntax and automatically generate compilable [Stan](https://mc-stan.org/) code.
 
-!!! warning "Caveats"
-    This transpiler has many caveats. See [Caveats](@ref) below.
+::: warning Caveats
+This transpiler has many caveats. See [Caveats](#caveats) below.
+:::
 
 ## Quick Start
 
@@ -48,7 +49,7 @@ Stan requires explicit types and shapes. StanBlocks infers them automatically fr
 
 ### User-Defined Functions
 
-The [`@deffun`](@ref) macro extends the Stan function library with variadic signatures and limited dynamic dispatch:
+The [`@deffun`](api#StanBlocks.@deffun) macro extends the Stan function library with variadic signatures and limited dynamic dispatch:
 
 ```julia
 @deffun begin
@@ -104,7 +105,7 @@ User-defined functions and sub-models currently need to be defined in `Main`.
 
 ## See Also
 
-- [API Reference](@ref) – full list of exported functions and macros
+- [API Reference](api) – full list of exported functions and macros
 - [Case Studies](https://nsiccha.github.io/StanBlocks.jl/slic/) – golf, radon, crowdsourcing, and more
 - [Stan Documentation](https://mc-stan.org/docs/stan-users-guide/)
 - [BridgeStan](https://github.com/roualdes/bridgestan) – Stan–Julia bridge used for compilation

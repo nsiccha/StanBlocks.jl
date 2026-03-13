@@ -1,3 +1,11 @@
+build/
+node_modules/
+package-lock.json
+Manifest.toml
+site/
+cache
 /.quarto/
-
 **/*.quarto_ipynb
+.jupyter_cache/
+_site/
+_qprivate_files/

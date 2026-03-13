@@ -40,3 +40,4 @@ cache
 .jupyter_cache
 tmp
 *_files
+CLAUDE.md
