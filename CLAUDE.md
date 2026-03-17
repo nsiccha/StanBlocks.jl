@@ -1,1 +1,1 @@
-Please check out /home/niko/github/nsiccha/Claude
+/home/niko/github/nsiccha/Claude/CLAUDE.md

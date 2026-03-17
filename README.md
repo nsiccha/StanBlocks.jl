@@ -1,5 +1,8 @@
 # StanBlocks.jl (Stan backend)
 
+[![Dev Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://nsiccha.github.io/StanBlocks.jl/dev/)
+[![CI](https://github.com/nsiccha/StanBlocks.jl/actions/workflows/test.yml/badge.svg)](https://github.com/nsiccha/StanBlocks.jl/actions/workflows/test.yml)
+
 Brings Julia syntax to Stan models by implementing a (limited) Julia to Stan transpilation with many caveats. 
 See [`test/slic.jl`](test/slic.jl) for implementations of a few simple [`posteriordb`](https://github.com/stan-dev/posteriordb) models
 and see [`src/slic_stan/builtin.jl`](src/slic_stan/builtin.jl) for a list of built-in functions and examples of user defined functions.
