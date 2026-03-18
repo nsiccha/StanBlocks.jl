@@ -30,12 +30,10 @@ jobs:
         with:
           version: '1'
       - uses: julia-actions/cache@v2
-      - name: Dev unregistered dependencies
+      - name: Install dependencies
         run: |
           git clone https://github.com/nsiccha/TestModules.jl.git
-          julia --project=docs -e 'using Pkg; Pkg.develop(path="TestModules.jl")'
-      - name: Install dependencies
-        run: julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
+          julia --project=docs -e 'using Pkg; Pkg.develop([PackageSpec(path=pwd()), PackageSpec(path="TestModules.jl")]); Pkg.instantiate()'
       - name: Build and deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
