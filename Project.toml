@@ -5,6 +5,7 @@ version = "0.1.5"
 
 [deps]
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 LogExpFunctions = "2ab3a3ac-af41-5b50-aa03-7779005ae688"
 OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
@@ -13,7 +14,6 @@ TestModules = "63c02187-99fd-4e5c-aaf0-4d6bfebc181c"
 
 [weakdeps]
 DifferentiationInterface = "a0c0ee7d-e4b9-4e03-894e-1c5f64a51d63"
-JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 LogDensityProblems = "6fdf6af0-433a-55f7-b3ed-c6c6e0b8df7c"
 Markdown = "d6f4376e-aef5-505a-96c1-9c027394607a"
 Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
@@ -23,7 +23,6 @@ StanLogDensityProblems = "a545de4d-8dba-46db-9d34-4e41d3f07807"
 
 [extensions]
 DifferentiationInterfaceExt = "DifferentiationInterface"
-JSONExt = "JSON"
 LogDensityProblemsExt = "LogDensityProblems"
 MarkdownExt = "Markdown"
 MooncakeExt = "Mooncake"

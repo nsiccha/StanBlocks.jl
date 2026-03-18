@@ -862,7 +862,7 @@ prepare_for_stan(x::AbstractVector{<:Number}) = x
 prepare_for_stan(x::AbstractMatrix{<:Number}) = x'
 prepare_for_stan(x::NamedTuple) = prepare_for_stan(values(x))
 prepare_for_stan(x::Tuple) = prepare_for_stan(Dict(enumerate(x)))
-bridgestan_data(args...; kwargs...) = error("Using bridgestan_data requires loading JSON.jl!")
+bridgestan_data(x::Dict) = JSON.json(prepare_for_stan(x))
 """
 Returns the StanLogDensityProblem (a compiled posterior).
 
