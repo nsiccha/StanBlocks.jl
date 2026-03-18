@@ -35,12 +35,14 @@ jobs:
           version: ${{ matrix.julia-version }}
           arch: ${{ matrix.julia-arch }}
       - uses: julia-actions/cache@v2
-      - name: Dev unregistered dependencies
+      - name: Install dependencies and run tests
         run: |
           git clone https://github.com/nsiccha/TestModules.jl.git
-          julia --project=. -e 'using Pkg; Pkg.develop(path="TestModules.jl")'
-      - uses: julia-actions/julia-buildpkg@v1
-      - name: Run tests
-        run: julia --project=. -e 'include("test/runtests.jl")'
-        # with:
-        #   annotate: true
+          julia --project=. -e '
+            using Pkg
+            Pkg.develop(path="TestModules.jl")
+            Pkg.add(["LogDensityProblems", "PosteriorDB", "StanLogDensityProblems"])
+            Pkg.instantiate()
+            Pkg.precompile()
+          '
+          julia --project=. -e 'include("test/runtests.jl")'
