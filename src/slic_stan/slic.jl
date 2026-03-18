@@ -575,7 +575,6 @@ fetch_data!(x::Union{Tuple,NamedTuple,Vector}; info) = map(fetch_data!(;info), x
 fetch_data!(x::Union{Function,String}; info) = nothing 
 fetch_data!(x::StanExpr{<:Union{Number,String,Missing}}; info) = nothing 
 fetch_data!(x::StanType; info) = fetch_data!(stan_size(x); info)
-fetch_data!(x::StanType{<:types.tup}; info) = fetch_data!((stan_size(x), x.info.arg_types); info)
 fetch_data!(x::StanExpr{Symbol}; info) = begin
     # fetch_data!(type(x); info)
     # @info x => hasvalue(x) => getvalue(x)
@@ -642,6 +641,7 @@ function rng_expr end
 function likelihood_expr end
 include("functions.jl")
 include("builtin.jl")
+fetch_data!(x::StanType{<:types.tup}; info) = fetch_data!((stan_size(x), x.info.arg_types); info)
 function dummy_likelihood end
 function dummy_rng end
 lpxf_expr(lhs, rhs::StanExpr) = lpxf_expr(lhs, expr(rhs))
