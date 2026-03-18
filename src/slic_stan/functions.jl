@@ -391,13 +391,15 @@ begin
             )
             reconstruct = :(x = $CanonicalExpr($f, $y_expr, _x.args...))
             push!(stmts, quote
-                function $base_f end
-                function $rng_f end
-                function $lpdfs_f end
+                if !@isdefined($base_f)
+                    function $base_f end
+                    function $rng_f end
+                    function $lpdfs_f end
+                    $stan.lpxf_expr(::typeof($base_f)) = $f
+                    $stan.rng_expr(::typeof($base_f)) = $rng_f
+                    $stan.likelihood_expr(::typeof($base_f)) = $lpdfs_f
+                end
                 $stan.tracetype($base_xexpr) = $(Expr(:block, reconstruct, deconstruct, xsig_expr(y_type)))
-                $stan.lpxf_expr(::typeof($base_f)) = $f
-                $stan.rng_expr(::typeof($base_f)) = $rng_f
-                $stan.likelihood_expr(::typeof($base_f)) = $lpdfs_f
                 $stan.fundef($base_xexpr) = nothing
             end)
             # if !ismissing(body)
