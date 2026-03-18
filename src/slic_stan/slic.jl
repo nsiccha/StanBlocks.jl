@@ -237,6 +237,15 @@ stan_type(expr, value::AbstractMatrix{<:Integer}; kwargs...) = StanType(
     value, kwargs..., qual=:data
 )
 stan_type(expr, value::Function; kwargs...) = StanType(types.func{typeof(value)}; value, qual=:data, kwargs...)
+stan_type(expr, value::Tuple; kwargs...) = StanType(
+    types.tup, tuple();
+    arg_types=ntuple(i->stan_type(Symbol(expr, "_", i), value[i]), length(value)), value, kwargs...
+)
+stan_type(expr, value::NamedTuple; kwargs...) = StanType(
+    types.ntup, tuple();
+    arg_types=(;[key=>stan_type(Symbol(expr, "_", key), val) for (key, val) in pairs(value)]...),
+    value, kwargs...
+)
 stan_call(f, args...) = stan_expr(CanonicalExpr(f, map(stan_expr, args)...))
 stan_expr(x::StanExpr; kwargs...) = weak_remake(x; kwargs...)
 stan_expr(x; kwargs...) = stan_expr(x, x; kwargs...)
@@ -565,7 +574,8 @@ fetch_data!(;info) = x->fetch_data!(x; info)
 fetch_data!(x::Union{Tuple,NamedTuple,Vector}; info) = map(fetch_data!(;info), x)
 fetch_data!(x::Union{Function,String}; info) = nothing 
 fetch_data!(x::StanExpr{<:Union{Number,String,Missing}}; info) = nothing 
-fetch_data!(x::StanType; info) = fetch_data!(stan_size(x); info) 
+fetch_data!(x::StanType; info) = fetch_data!(stan_size(x); info)
+fetch_data!(x::StanType{<:types.tup}; info) = fetch_data!((stan_size(x), x.info.arg_types); info)
 fetch_data!(x::StanExpr{Symbol}; info) = begin
     # fetch_data!(type(x); info)
     # @info x => hasvalue(x) => getvalue(x)
@@ -846,6 +856,12 @@ stan_code(x::StanModel) = begin
     String(take!(buf))
 end
 stan_code(x::SlicModel) = stan_code(stan_model(x))
+prepare_for_stan(x::Dict) = Dict(key => prepare_for_stan(value) for (key, value) in x)
+prepare_for_stan(x::Number) = x
+prepare_for_stan(x::AbstractVector{<:Number}) = x
+prepare_for_stan(x::AbstractMatrix{<:Number}) = x'
+prepare_for_stan(x::NamedTuple) = prepare_for_stan(values(x))
+prepare_for_stan(x::Tuple) = prepare_for_stan(Dict(enumerate(x)))
 bridgestan_data(args...; kwargs...) = error("Using bridgestan_data requires loading JSON.jl!")
 """
 Returns the StanLogDensityProblem (a compiled posterior).
