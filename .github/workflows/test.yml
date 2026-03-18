@@ -41,7 +41,7 @@ jobs:
           julia --project=. -e '
             using Pkg
             Pkg.develop(path="TestModules.jl")
-            Pkg.add(["LogDensityProblems", "PosteriorDB", "StanLogDensityProblems"])
+            Pkg.add(["LogDensityProblems", "PosteriorDB", "StanLogDensityProblems", "JSON"])
             Pkg.instantiate()
             Pkg.precompile()
           '
