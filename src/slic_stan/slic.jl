@@ -257,9 +257,16 @@ maybecv(expr, value) = stan_expr(expr, value; cv=true)
 
 "Traces through its first argument (a `StanBlocks.SlicModel`) and returns the inferred `StanBlocks.StanModel`."
 function stan_model end
-stan_model(x::SlicModel; info=StanModel()) = begin 
-    distribute!(backward!(forward!(x; info); info); info)
-    remake(info; docstring=get(x.data, :docstring, ""))
+const _StanBlocksError = parentmodule(@__MODULE__).StanBlocksError
+stan_model(x::SlicModel; info=StanModel()) = begin
+    try
+        distribute!(backward!(forward!(x; info); info); info)
+        remake(info; docstring=get(x.data, :docstring, ""))
+    catch e
+        e isa _StanBlocksError && rethrow()
+        bt = catch_backtrace()
+        throw(_StanBlocksError(:transpile, "model: $(get(x.data, :docstring, string(typeof(x.model))))", (e, bt)))
+    end
 end
 maybedata!(x::StanModel, key, value) = x[key] = maybedata(key, value)
 maybedata!(x::StanModel, key, value::AbstractString) = nothing
@@ -922,7 +929,7 @@ This macro is mainly useful for bulk built-in function signature definitions.
 StanBlocks.jl users should generally prefer using @deffun.
 """
 macro defsig(x)
-    esc(stan.defsig(x))
+    esc(stan.defsig(x; source=__source__))
 end
 """
 Defines function signatures (see `src/slic_stan/builtin.jl` or `test/slic.jl` for usage examples).
@@ -930,7 +937,7 @@ Defines function signatures (see `src/slic_stan/builtin.jl` or `test/slic.jl` fo
 Proper documentation will be incoming.
 """
 macro deffun(x)
-    esc(stan.deffun(x))
+    esc(stan.deffun(x; source=__source__))
 end
 const stan_model = stan.stan_model
 const stan_code = stan.stan_code

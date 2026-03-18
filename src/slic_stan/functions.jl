@@ -182,17 +182,17 @@ begin
         :($StanType($ct, $size))
     end
 
-    defsig(x::LineNumberNode) = x
-    defsig(x::Expr) = if x.head == :block
-        Expr(:block, defsig.(x.args)...)
+    defsig(x::LineNumberNode; kwargs...) = x
+    defsig(x::Expr; source=LineNumberNode(0, :none)) = if x.head == :block
+        Expr(:block, defsig.(x.args; source)...)
     else
         @assert xiscall(x, :(=>))
         _, ftype, rhs = x.args
         @assert Meta.isexpr(rhs, :block)
-        Expr(:block, map(sig->defsig(ftype, sig), rhs.args)...)
+        Expr(:block, map(sig->defsig(ftype, sig; source), rhs.args)...)
     end
-    defsig(ftype, x::LineNumberNode) = x
-    defsig(ftype, sig::Expr) = begin 
+    defsig(ftype, x::LineNumberNode; kwargs...) = x
+    defsig(ftype, sig::Expr; source=LineNumberNode(0, :none)) = begin
         @assert xiscall(sig, :(=>))
         _, lhs, rv = sig.args
         lhs = ensure_xref.(ensure_xtuple(lhs).args)
@@ -208,7 +208,7 @@ begin
         end
 
         xexpr = :(x::$CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
-        xbody = Expr(:block, [
+        xbody = Expr(:block, source, [
             xassign(xtuple(ensure_xlhs.(lhsi.args[2:end])...), :(stan_size(x.args[$i])))
             for (i, lhsi) in enumerate(lhs)
         ]..., :(info = (;$(dim_names...),)), xsig_expr(rv))
@@ -288,12 +288,12 @@ begin
         info[RV_NAME]
     end
     deffun(x::LineNumberNode; kwargs...) = x
-    deffun(x::Expr; docstring="") = if x.head == :block
-        Expr(:block, deffun.(x.args; docstring)...)
+    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none)) = if x.head == :block
+        Expr(:block, deffun.(x.args; docstring, source)...)
     elseif x.head == :macrocall
         @assert x.args[1] == GlobalRef(Core, Symbol("@doc"))
         # @assert x.args[3] isa String
-        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))))
+        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source)
     else
         # @assert x.head == :(=)
         fsig, body = ensure_xassign(x).args
@@ -370,12 +370,12 @@ begin
         xexpr = :(x::$CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
         isa(f, Symbol) && push!(stmts, :(function $f end))
         push!(stmts, quote
-            $stan.tracetype($xexpr) = $(Expr(:block, deconstruct, rv_expr))
+            $stan.tracetype($xexpr) = $(Expr(:block, source, deconstruct, rv_expr))
         end)
         if !ismissing(body)
             capture_mod = :(__fundef_mod__ = $parentmodule(typeof($head(x))))
             inject_mod = :(info[$(QuoteNode(:__mod__))] = __fundef_mod__)
-            push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, capture_mod, anon_deconstruct, inject_mod, stan_fundef))))
+            push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, source, capture_mod, anon_deconstruct, inject_mod, stan_fundef))))
         end
         isa(f, Symbol) || return Expr(:block, stmts...)
         if is_lpxf
@@ -399,7 +399,7 @@ begin
                     $stan.rng_expr(::typeof($base_f)) = $rng_f
                     $stan.likelihood_expr(::typeof($base_f)) = $lpdfs_f
                 end
-                $stan.tracetype($base_xexpr) = $(Expr(:block, reconstruct, deconstruct, xsig_expr(y_type)))
+                $stan.tracetype($base_xexpr) = $(Expr(:block, source, reconstruct, deconstruct, xsig_expr(y_type)))
                 $stan.fundef($base_xexpr) = nothing
             end)
             # if !ismissing(body)
@@ -412,10 +412,10 @@ begin
 end
 
 macro defsig(x)
-    esc(defsig(x))
+    esc(defsig(x; source=__source__))
 end
 macro deffun(x)
-    esc(deffun(x))
+    esc(deffun(x; source=__source__))
 end
 
 fundef(x) = begin
