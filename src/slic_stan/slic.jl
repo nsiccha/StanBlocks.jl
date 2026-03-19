@@ -62,10 +62,8 @@ struct CanonicalExpr{H,A}
     # CanonicalExpr(head::Val{:tuple})
 end
 CanonicalExprV{H,A} = CanonicalExpr{Val{H},A}
-# CanonicalExprT{H,A} = CanonicalExpr{typeof(H),A}
-BlockExpr{A} = CanonicalExprV{:block,A} 
-AssignmentExpr{L,R} = CanonicalExprV{:(=),Tuple{L,R}} 
-# ReAssignmentExpr{L,R} = CanonicalExprV{:(reassign),Tuple{L,R}} 
+BlockExpr{A} = CanonicalExprV{:block,A}
+AssignmentExpr{L,R} = CanonicalExprV{:(=),Tuple{L,R}}
 SamplingExpr{L,R} = CanonicalExprV{:(~),Tuple{L,R}} 
 Colon2Expr{L,T} = CanonicalExpr{Colon,T} 
 ReturnExpr{V} = CanonicalExprV{:return,Tuple{V}} 
@@ -97,7 +95,6 @@ meta(x::StanModel) = x.meta
 vars(x::StanModel) = x.vars
 blocks(x::StanModel) = x.blocks
 remake(x::StanModel; kwargs...) = StanModel((;x.meta..., kwargs...), x.vars, x.blocks)
-# var(x::StanModel, name) = error()#vars(x)[name]
 block(x::StanModel, name) = blocks(x)[name]
 Base.getindex(x::StanModel, name) = getindex(vars(x), name)
 Base.setindex!(x::StanModel, value, name) = setindex!(vars(x), value, name)
@@ -597,11 +594,9 @@ fetch_data!(x::CanonicalExprV{:kw}; info) = fetch_data!(x.args[2]; info)
 fetch_data!(x; info) = error(x)
 
 Base.get!(b::DocumentExpr{<:Any,<:DeclarativeBlock}, k, x) = get!(content(b.args[2]), k, remake(b, b.args[1], x))
-# Base.get!(b::DocumentExpr{<:Any,<:DeclarativeBlock}, k, x) = content(b.args[2])[k] = remake(b, b.args[1], x)
 Base.push!(b::DocumentExpr{<:Any,<:ImperativeBlock}, x) = push!(content(b.args[2]), remake(b, b.args[1], x))
 
 Base.push!(b::StanBlock, x; info) = error("Block $(typeof(b)) does not know how to handle $(x)!")
-# Base.push!(b::StanBlock, x::String; info) = push!()
 Base.push!(b::StanBlock, x::DocumentExpr; info) = begin
     push!(remake(b, remake(x, x.args[1], b)), x.args[2]; info)
 end
@@ -844,7 +839,6 @@ for f in (Meta.quot(:(~)), Meta.quot(:(=)))
     @eval Base.show(io::IO, x::CanonicalExprV{$f}) = print(io, Join(x.args, prettystring($f)))
 end
 Base.show(io::IO, x::SamplingExpr) = print(io, Join(x.args, " ~ "))
-# Base.show(io::IO, x::SamplingExpr{<:Any,<:StanExpr{<:CanonicalExpr{typeof(flat)}}}) = nothing
 
 for f in (:+=,:-=,:*=)
     qf = Meta.quot(f)
@@ -932,9 +926,32 @@ macro defsig(x)
     esc(stan.defsig(x; source=__source__))
 end
 """
-Defines function signatures (see `src/slic_stan/builtin.jl` or `test/slic.jl` for usage examples).
+    @deffun function_definition
 
-Proper documentation will be incoming.
+Define a Stan-compatible function with type inference and code generation.
+
+Parses a Julia-style function definition (with type-annotated arguments and return type),
+generates the corresponding Stan function, and registers type-inference signatures so the
+transpiler can propagate types through calls to this function.
+
+For functions ending in `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf`, the return type is automatically
+set to `real` and companion `_lpdfs`/`_rng` stubs are generated for use in `generated_quantities`.
+
+# Example
+
+```julia
+@deffun garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
+    sigma2 = alpha0
+    rv = 0.
+    for t in 1:T
+        rv += normal_lpdf(y[t], mu, sqrt(sigma2))
+        sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
+    end
+    return rv
+end
+```
+
+See `src/slic_stan/builtin.jl` for many more examples.
 """
 macro deffun(x)
     esc(stan.deffun(x; source=__source__))

@@ -22,3 +22,9 @@ StanBlocks.stan_instantiate
 StanBlocks.SlicModel
 StanBlocks.StanModel
 ```
+
+## Errors
+
+```@docs
+StanBlocks.StanBlocksError
+```

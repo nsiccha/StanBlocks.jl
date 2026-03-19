@@ -221,7 +221,6 @@ begin
     funbody(x::AbstractVector) = join(map(funbody, x), "\n")
     funbody(x::LineNumberNode) = ""
     funbody(x::String) = strip(x)
-    # funbody_expr(x) = if x.head
     make_stan_type(x::Symbol) = make_stan_type(xref(x))
     make_stan_type(x::Expr) = begin 
         @assert x.head == :ref x
@@ -402,9 +401,6 @@ begin
                 $stan.tracetype($base_xexpr) = $(Expr(:block, source, reconstruct, deconstruct, xsig_expr(y_type)))
                 $stan.fundef($base_xexpr) = nothing
             end)
-            # if !ismissing(body)
-            #     push!(stmts, :($stan.fundef($base_xexpr) = nothing))#$(Expr(:block, reconstruct, anon_deconstruct, stan_fundef))))
-            # end
         end
         Expr(:block, stmts...)
     end
@@ -418,13 +414,7 @@ macro deffun(x)
     esc(deffun(x; source=__source__))
 end
 
-fundef(x) = begin
-    # @assert isa(x, CanonicalExpr)
-    # if head(x) isa Function && parentmodule(head(x)) ∉ (builtin, Base)
-    #     @error "Stan compilation will fail: no function definition found for $x."
-    # end
-    nothing
-end
+fundef(x) = nothing
 sig_expr(x) = x
 sig_expr(x::Union{Tuple,NamedTuple,Vector}) = map(sig_expr, x)
 sig_expr(x::CanonicalExpr) = remake(x, sig_expr(x.args)...)

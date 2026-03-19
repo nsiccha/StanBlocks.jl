@@ -9,6 +9,16 @@ using LinearAlgebra, Statistics, Distributions, LogExpFunctions, JSON
 
 # --- Error type for StanBlocks computations (defined early so submodules can use it) ---
 
+"""
+    StanBlocksError <: Exception
+
+Wraps errors that occur during transpilation, compilation, or evaluation of Stan models.
+
+# Fields
+- `phase::Symbol`: the pipeline stage where the error occurred (`:transpile`, `:compile`, or `:evaluate`)
+- `context::String`: a description of what was being processed (e.g. `"model: eight_schools"`)
+- `cause::Any`: the underlying error, typically an `(exception, backtrace)` tuple
+"""
 struct StanBlocksError <: Exception
     phase::Symbol        # :transpile, :compile, :evaluate
     context::String      # e.g. "model: eight_schools"
