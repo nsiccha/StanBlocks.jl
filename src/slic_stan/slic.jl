@@ -340,14 +340,14 @@ forward!(x::QuoteNode; info) = x.value
 forward!(x::Irrational; info) = error(x)
 forward!(x::Irrational{:π}; info) = forward!(Float64(pi); info)
 forward!(x::Number; info) = maybedata(x, x)
+get_module(info::StanModel) = get(info.meta, :mod, Main)
+get_module(info::AbstractDict) = get(info, :__mod__, Main)
+get_module(info::NamedTuple) = get(info, :__mod__, Main)
+get_module(info::SubModel) = get_module(parent(info))
 forward!(x::Symbol; info) = begin
     x in keys(info) && return info[x]
     isdefined(builtin, x) && return forward!(getproperty(builtin, x); info)
-    mod = if info isa StanModel
-        get(info.meta, :mod, Main)
-    else
-        get(info, :__mod__, Main)
-    end
+    mod = get_module(info)
     if isdefined(mod, x)
         Mx = getproperty(mod, x)
         isa(Mx, Function)  && return forward!(Mx; info)
