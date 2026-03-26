@@ -683,13 +683,26 @@ function dummy_rng end
 lpxf_expr(lhs, rhs::StanExpr) = lpxf_expr(lhs, expr(rhs))
 lpxf_expr(lhs, rhs::CanonicalExpr) = stan_call(lpxf_expr(head(rhs)), lhs, rhs.args...)
 for lpxf_rhs in (
-    :std_normal_lpdf, :normal_lpdf, :student_t_lpdf, :cauchy_lpdf,
-    :beta_lpdf, :lognormal_lpdf, :exponential_lpdf, :gamma_lpdf,
+    :flat_lpdf, :std_normal_lpdf, :normal_lpdf, :student_t_lpdf, :cauchy_lpdf,
+    :beta_lpdf, :beta_proportion_lpdf, :lognormal_lpdf, :exponential_lpdf, :gamma_lpdf,
     :inv_gamma_lpdf, :weibull_lpdf, :uniform_lpdf,
-    :double_exponential_lpdf, :logistic_lpdf,
-    :dirichlet_lpdf, :multi_normal_lpdf,
-    :bernoulli_lpmf, :bernoulli_logit_lpmf, :binomial_lpmf, :binomial_logit_lpmf,
-    :neg_binomial_2_lpmf, :poisson_lpmf, :poisson_log_lpmf,
+    :chi_square_lpdf, :inv_chi_square_lpdf, :scaled_inv_chi_square_lpdf,
+    :frechet_lpdf, :rayleigh_lpdf, :loglogistic_lpdf, :von_mises_lpdf,
+    :double_exponential_lpdf, :logistic_lpdf, :gumbel_lpdf,
+    :skew_normal_lpdf, :exp_mod_normal_lpdf, :skew_double_exponential_lpdf,
+    :pareto_lpdf, :pareto_type_2_lpdf, :wiener_lpdf,
+    :dirichlet_lpdf, :multi_normal_lpdf, :multi_normal_prec_lpdf, :multi_normal_cholesky_lpdf,
+    :multi_gp_lpdf, :multi_gp_cholesky_lpdf,
+    :multi_student_t_lpdf, :multi_student_t_cholesky_lpdf,
+    :gaussian_dlm_obs_lpdf,
+    :lkj_corr_lpdf, :lkj_corr_cholesky_lpdf,
+    :wishart_lpdf, :inv_wishart_lpdf, :inv_wishart_cholesky_lpdf, :wishart_cholesky_lpdf,
+    :bernoulli_lpmf, :bernoulli_logit_lpmf, :bernoulli_logit_glm_lpmf,
+    :binomial_lpmf, :binomial_logit_lpmf, :beta_binomial_lpmf,
+    :neg_binomial_lpdf, :neg_binomial_2_lpmf, :neg_binomial_2_log_lpdf,
+    :poisson_lpmf, :poisson_log_lpmf,
+    :discrete_range_lpmf, :hypergeometric_lpmf, :multinomial_lpmf,
+    :categorical_lpmf, :categorical_logit_lpmf,
 )
     base_rhs = Symbol(string(lpxf_rhs)[1:end-5])
     rng_rhs = Symbol(base_rhs, "_rng")
