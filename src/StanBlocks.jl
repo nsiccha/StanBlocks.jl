@@ -135,17 +135,7 @@ function _showerror_header(io::IO, e::StanBlocksError)
     showerror(io, unwrap_error(e))
 end
 
-# 2-arg: full vanilla backtrace
-function Base.showerror(io::IO, e::StanBlocksError)
-    _showerror_header(io, e)
-    orig_bt = _cause_backtrace(e)
-    isempty(orig_bt) || Base.show_backtrace(io, orig_bt)
-end
-
-# 3-arg: compact expression trace + filtered stacktrace
-function Base.showerror(io::IO, e::StanBlocksError, bt)
-    _showerror_header(io, e)
-    # Expression stack (from push/pop during forward!)
+function _showerror_traces(io::IO, e::StanBlocksError)
     expr_stack = _cause_expr_stack(e)
     if !isempty(expr_stack)
         println(io, "\n\n  While processing:")
@@ -153,7 +143,6 @@ function Base.showerror(io::IO, e::StanBlocksError, bt)
             println(io, "   [$i] $x")
         end
     end
-    # Type-based expression trace (from stacktrace type parameters)
     orig_bt = _cause_backtrace(e)
     isempty(orig_bt) && return
     frames = Base.stacktrace(orig_bt)
@@ -172,5 +161,16 @@ function Base.showerror(io::IO, e::StanBlocksError, bt)
         end
     end
 end
+
+# 2-arg: expression traces + full vanilla backtrace
+function Base.showerror(io::IO, e::StanBlocksError)
+    _showerror_header(io, e)
+    _showerror_traces(io, e)
+    orig_bt = _cause_backtrace(e)
+    isempty(orig_bt) || Base.show_backtrace(io, orig_bt)
+end
+
+# 3-arg: expression traces + suppress Julia's default backtrace
+Base.showerror(io::IO, e::StanBlocksError, bt) = (_showerror_header(io, e); _showerror_traces(io, e))
 
 end # module StanBlocks
