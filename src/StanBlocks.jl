@@ -126,6 +126,8 @@ function _expr_trace(frames)
     trace
 end
 
+Base.show(io::IO, e::StanBlocksError) = showerror(io, e)
+
 function _showerror_header(io::IO, e::StanBlocksError)
     print(io, "StanBlocksError [$(e.phase)]: $(e.context)\n")
     print(io, "  Caused by: ")
