@@ -47,15 +47,15 @@ unwrap_error(e) = e
 
 function _format_cause(phase, context, cause_error, expr_stack)
     sprint() do io
-        print(io, "StanBlocksError [$(phase)]: $(context)\n")
+        print(io, "StanBlocksError [", phase, "]: ", context, "\n")
         print(io, "  Caused by: ")
         showerror(io, cause_error)
         if !isempty(expr_stack)
             println(io, "\n\n  While processing:")
             for (i, item) in enumerate(reverse(expr_stack))
                 x, lnn = item isa Tuple ? item : (item, nothing)
-                loc = lnn isa LineNumberNode ? " at $(lnn.file):$(lnn.line)" : ""
-                println(io, "   [$i] $x$loc")
+                loc = lnn isa LineNumberNode ? (" at ", lnn.file, ":", lnn.line) : ()
+                print(io, "   [", i, "] ", x, loc..., "\n")
             end
         end
     end
@@ -72,7 +72,7 @@ function Base.showerror(io::IO, e::StanBlocksError, bt; kwargs...)
     try
         showerror(io, e)
     catch internal_err
-        print(io, "StanBlocksError [$(e.phase)]: $(e.context)")
+        print(io, "StanBlocksError [", e.phase, "]: ", e.context)
         print(io, "\n  (internal error in showerror: ")
         showerror(io, internal_err)
         print(io, ")")

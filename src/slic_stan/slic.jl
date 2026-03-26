@@ -687,6 +687,7 @@ for lpxf_rhs in (
     :beta_lpdf, :lognormal_lpdf, :exponential_lpdf, :gamma_lpdf,
     :inv_gamma_lpdf, :weibull_lpdf, :uniform_lpdf,
     :double_exponential_lpdf, :logistic_lpdf,
+    :dirichlet_lpdf, :multi_normal_lpdf,
     :bernoulli_lpmf, :bernoulli_logit_lpmf, :binomial_lpmf, :binomial_logit_lpmf,
     :neg_binomial_2_lpmf, :poisson_lpmf, :poisson_log_lpmf,
 )
@@ -781,7 +782,7 @@ Base.show(io::IO, x::StanModel) = show(StanIO(io), x)
 Base.show(io::IO, x::SlicModel; mayfail=true) = try
     print(io, stan_model(x))
 catch e
-    mayfail && return print(io, "SlicModel: Something went wrong: $e")
+    mayfail && return print(io, "SlicModel: Something went wrong:", e)
     rethrow(e)
 end
 Base.show(io::IO, x::StanBlock) = if true#length(content(x)) > 0
