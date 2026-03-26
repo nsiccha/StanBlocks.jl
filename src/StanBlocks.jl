@@ -45,29 +45,32 @@ unwrap_error(e::CompositeException) = unwrap_error(first(e.exceptions))
 unwrap_error(e::StanBlocksError) = unwrap_error(_cause_error(e))
 unwrap_error(e) = e
 
-Base.show(io::IO, e::StanBlocksError) = showerror(io, e)
-Base.show(io::IO, ::MIME"text/plain", e::StanBlocksError) = showerror(io, e)
-
-function _showerror_body(io::IO, e::StanBlocksError)
-    print(io, "StanBlocksError [$(e.phase)]: $(e.context)\n")
-    print(io, "  Caused by: ")
-    showerror(io, unwrap_error(e))
-    expr_stack = _cause_expr_stack(e)
-    if !isempty(expr_stack)
-        println(io, "\n\n  While processing:")
-        for (i, item) in enumerate(reverse(expr_stack))
-            x, lnn = item isa Tuple ? item : (item, nothing)
-            loc = lnn isa LineNumberNode ? " at $(lnn.file):$(lnn.line)" : ""
-            println(io, "   [$i] $x$loc")
+function _format_cause(phase, context, cause_error, expr_stack)
+    sprint() do io
+        print(io, "StanBlocksError [$(phase)]: $(context)\n")
+        print(io, "  Caused by: ")
+        showerror(io, cause_error)
+        if !isempty(expr_stack)
+            println(io, "\n\n  While processing:")
+            for (i, item) in enumerate(reverse(expr_stack))
+                x, lnn = item isa Tuple ? item : (item, nothing)
+                loc = lnn isa LineNumberNode ? " at $(lnn.file):$(lnn.line)" : ""
+                println(io, "   [$i] $x$loc")
+            end
         end
     end
 end
 
-Base.showerror(io::IO, e::StanBlocksError) = _showerror_body(io, e)
+Base.show(io::IO, e::StanBlocksError) = showerror(io, e)
+Base.show(io::IO, ::MIME"text/plain", e::StanBlocksError) = showerror(io, e)
+
+function Base.showerror(io::IO, e::StanBlocksError)
+    print(io, e.cause isa String ? e.cause : _format_cause(e.phase, e.context, unwrap_error(e), _cause_expr_stack(e)))
+end
 
 function Base.showerror(io::IO, e::StanBlocksError, bt; kwargs...)
     try
-        _showerror_body(io, e)
+        showerror(io, e)
     catch internal_err
         print(io, "StanBlocksError [$(e.phase)]: $(e.context)")
         print(io, "\n  (internal error in showerror: ")

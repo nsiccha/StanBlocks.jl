@@ -273,7 +273,12 @@ stan_model(x::SlicModel; info=StanModel()) = begin
             catch e
                 e isa _StanBlocksError && rethrow()
                 bt = catch_backtrace()
-                throw(_StanBlocksError(:transpile, "model", (e, bt, _expr_stack)))
+                msg = try
+                    parentmodule(@__MODULE__)._format_cause(:transpile, "model", e, _expr_stack)
+                catch
+                    (e, bt, _expr_stack)
+                end
+                throw(_StanBlocksError(:transpile, "model", msg))
             end
         end
     end
