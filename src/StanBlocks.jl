@@ -107,8 +107,10 @@ function _showerror_body(io::IO, e::StanBlocksError)
     expr_stack = _cause_expr_stack(e)
     if !isempty(expr_stack)
         println(io, "\n\n  While processing:")
-        for (i, x) in enumerate(reverse(expr_stack))
-            println(io, "   [$i] $x")
+        for (i, item) in enumerate(reverse(expr_stack))
+            x, lnn = item isa Tuple ? item : (item, nothing)
+            loc = lnn isa LineNumberNode ? " at $(lnn.file):$(lnn.line)" : ""
+            println(io, "   [$i] $x$loc")
         end
     end
     orig_bt = _cause_backtrace(e)

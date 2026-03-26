@@ -95,6 +95,9 @@ meta(x::StanModel) = x.meta
 _expr_stack(x::StanModel) = get(x.meta, :_expr_stack, nothing)
 _expr_stack(x::SubModel) = _expr_stack(parent(x))
 _expr_stack(x) = nothing
+_current_lnn(x::StanModel) = get(x.meta, :_current_lnn, nothing)
+_current_lnn(x::SubModel) = _current_lnn(parent(x))
+_current_lnn(x) = nothing
 vars(x::StanModel) = x.vars
 blocks(x::StanModel) = x.blocks
 remake(x::StanModel; kwargs...) = StanModel((;x.meta..., kwargs...), x.vars, x.blocks)
@@ -260,7 +263,8 @@ function stan_model end
 const _StanBlocksError = parentmodule(@__MODULE__).StanBlocksError
 stan_model(x::SlicModel; info=StanModel()) = begin
     _expr_stack = Any[]
-    info = remake(info; _expr_stack)
+    _current_lnn = Ref{Any}(nothing)
+    info = remake(info; _expr_stack, _current_lnn)
     try
         distribute!(backward!(forward!(x; info); info); info)
         remake(info; docstring=get(x.data, :docstring, ""))
@@ -334,8 +338,9 @@ canonical(x::CanonicalExprV{:ref}) = CanonicalExpr(:getindex, x.args...)
 canonical(x::CanonicalExprV{Symbol(".*")}) = CanonicalExpr(.*, x.args...)
 canonical(x::CanonicalExprV{Symbol("./")}) = CanonicalExpr(./, x.args...)
 
-_push_expr!(info, x) = (s = _expr_stack(info); isnothing(s) || push!(s, x); nothing)
+_push_expr!(info, x) = (s = _expr_stack(info); isnothing(s) || push!(s, (x, _get_lnn(info))); nothing)
 _pop_expr!(info) = (s = _expr_stack(info); isnothing(s) || pop!(s); nothing)
+_get_lnn(info) = (lnn = _current_lnn(info); lnn isa Ref ? lnn[] : nothing)
 
 forwards!(;info) = x->forwards!(x; info)
 forwards!(x; info) = [forward!(x; info)]
@@ -344,7 +349,8 @@ forward!(x; info) = error(x)
 forward!(;info) = x->forward!(x; info)
 forward!(x::Tuple; info) = (mapreduce(forwards!(;info), vcat, x; init=[])...,)
 forward!(x::Union{Tuple,NamedTuple,Vector,Base.Pairs}; info) = map(forward!(;info), x)
-forward!(x::Union{String,Number,LineNumberNode,Function,Nothing}; info) = x
+forward!(x::Union{String,Number,Function,Nothing}; info) = x
+forward!(x::LineNumberNode; info) = (lnn = _current_lnn(info); lnn isa Ref && (lnn[] = x); x)
 forward!(x::QuoteNode; info) = x.value
 forward!(x::Irrational; info) = error(x)
 forward!(x::Irrational{:π}; info) = forward!(Float64(pi); info)
