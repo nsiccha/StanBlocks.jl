@@ -648,6 +648,22 @@ function dummy_likelihood end
 function dummy_rng end
 lpxf_expr(lhs, rhs::StanExpr) = lpxf_expr(lhs, expr(rhs))
 lpxf_expr(lhs, rhs::CanonicalExpr) = stan_call(lpxf_expr(head(rhs)), lhs, rhs.args...)
+for lpxf_rhs in (
+    :std_normal_lpdf, :normal_lpdf, :student_t_lpdf, :cauchy_lpdf,
+    :beta_lpdf, :lognormal_lpdf, :exponential_lpdf, :gamma_lpdf,
+    :inv_gamma_lpdf, :weibull_lpdf, :uniform_lpdf,
+    :double_exponential_lpdf, :logistic_lpdf,
+    :bernoulli_lpmf, :bernoulli_logit_lpmf, :binomial_lpmf, :binomial_logit_lpmf,
+    :neg_binomial_2_lpmf, :poisson_lpmf, :poisson_log_lpmf,
+)
+    base_rhs = Symbol(string(lpxf_rhs)[1:end-5])
+    rng_rhs = Symbol(base_rhs, "_rng")
+    lpxfs_rhs = Symbol(lpxf_rhs, "s")
+
+    @eval lpxf_expr(::typeof(builtin.$base_rhs)) = builtin.$lpxf_rhs
+    @eval rng_expr(::typeof(builtin.$base_rhs)) = builtin.$rng_rhs
+    @eval likelihood_expr(::typeof(builtin.$base_rhs)) = builtin.$lpxfs_rhs
+end
 # lpxf_expr(x::CanonicalExpr) = lpxf_expr(head(x))
 lpxf_expr(x) = error("$x is missing `lpxf_expr`")
 likelihood_expr(lhs, rhs::StanExpr) = likelihood_expr(lhs, expr(rhs))
