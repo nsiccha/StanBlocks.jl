@@ -267,7 +267,7 @@ stan_model(x::SlicModel; info=StanModel()) = begin
     catch e
         e isa _StanBlocksError && rethrow()
         bt = catch_backtrace()
-        throw(_StanBlocksError(:transpile, "model: $(get(x.data, :docstring, string(typeof(x.model))))", (e, bt, _expr_stack)))
+        throw(_StanBlocksError(:transpile, "model", (e, bt, _expr_stack)))
     end
 end
 maybedata!(x::StanModel, key, value) = x[key] = maybedata(key, value)
