@@ -45,11 +45,6 @@ unwrap_error(e::CompositeException) = unwrap_error(first(e.exceptions))
 unwrap_error(e::StanBlocksError) = unwrap_error(_cause_error(e))
 unwrap_error(e) = e
 
-function _short_repr(x, limit=200)
-    s = try sprint(show, x; context=:limit=>true) catch e; "<display error>" end
-    length(s) > limit ? s[1:prevind(s, limit)] * "…" : s
-end
-
 function _format_cause(phase, context, cause_error, expr_stack)
     sprint() do io
         print(io, "StanBlocksError [$(phase)]: $(context)\n")
@@ -60,7 +55,7 @@ function _format_cause(phase, context, cause_error, expr_stack)
             for (i, item) in enumerate(reverse(expr_stack))
                 x, lnn = item isa Tuple ? item : (item, nothing)
                 loc = lnn isa LineNumberNode ? " at $(lnn.file):$(lnn.line)" : ""
-                println(io, "   [$i] $(_short_repr(x))$loc")
+                println(io, "   [$i] $x$loc")
             end
         end
     end
