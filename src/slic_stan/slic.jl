@@ -265,13 +265,17 @@ stan_model(x::SlicModel; info=StanModel()) = begin
     _expr_stack = Any[]
     _current_lnn = Ref{Any}(nothing)
     info = remake(info; _expr_stack, _current_lnn)
-    try
-        distribute!(backward!(forward!(x; info); info); info)
-        remake(info; docstring=get(x.data, :docstring, ""))
-    catch e
-        e isa _StanBlocksError && rethrow()
-        bt = catch_backtrace()
-        throw(_StanBlocksError(:transpile, "model", (e, bt, _expr_stack)))
+    task_local_storage(:_slic_expr_stack, _expr_stack) do
+        task_local_storage(:_slic_current_lnn, _current_lnn) do
+            try
+                distribute!(backward!(forward!(x; info); info); info)
+                remake(info; docstring=get(x.data, :docstring, ""))
+            catch e
+                e isa _StanBlocksError && rethrow()
+                bt = catch_backtrace()
+                throw(_StanBlocksError(:transpile, "model", (e, bt, _expr_stack)))
+            end
+        end
     end
 end
 maybedata!(x::StanModel, key, value) = x[key] = maybedata(key, value)
@@ -338,9 +342,11 @@ canonical(x::CanonicalExprV{:ref}) = CanonicalExpr(:getindex, x.args...)
 canonical(x::CanonicalExprV{Symbol(".*")}) = CanonicalExpr(.*, x.args...)
 canonical(x::CanonicalExprV{Symbol("./")}) = CanonicalExpr(./, x.args...)
 
-_push_expr!(info, x) = (s = _expr_stack(info); isnothing(s) || push!(s, (x, _get_lnn(info))); nothing)
-_pop_expr!(info) = (s = _expr_stack(info); isnothing(s) || pop!(s); nothing)
-_get_lnn(info) = (lnn = _current_lnn(info); lnn isa Ref ? lnn[] : nothing)
+_get_expr_stack(info) = something(_expr_stack(info), get(task_local_storage(), :_slic_expr_stack, nothing), Some(nothing))
+_get_lnn_ref(info) = something(_current_lnn(info), get(task_local_storage(), :_slic_current_lnn, nothing), Some(nothing))
+_get_lnn(info) = (lnn = _get_lnn_ref(info); lnn isa Ref ? lnn[] : nothing)
+_push_expr!(info, x) = (s = _get_expr_stack(info); isnothing(s) || push!(s, (x, _get_lnn(info))); nothing)
+_pop_expr!(info) = (s = _get_expr_stack(info); isnothing(s) || pop!(s); nothing)
 
 forwards!(;info) = x->forwards!(x; info)
 forwards!(x; info) = [forward!(x; info)]
@@ -350,7 +356,7 @@ forward!(;info) = x->forward!(x; info)
 forward!(x::Tuple; info) = (mapreduce(forwards!(;info), vcat, x; init=[])...,)
 forward!(x::Union{Tuple,NamedTuple,Vector,Base.Pairs}; info) = map(forward!(;info), x)
 forward!(x::Union{String,Number,Function,Nothing}; info) = x
-forward!(x::LineNumberNode; info) = (lnn = _current_lnn(info); lnn isa Ref && (lnn[] = x); x)
+forward!(x::LineNumberNode; info) = (lnn = _get_lnn_ref(info); lnn isa Ref && (lnn[] = x); x)
 forward!(x::QuoteNode; info) = x.value
 forward!(x::Irrational; info) = error(x)
 forward!(x::Irrational{:π}; info) = forward!(Float64(pi); info)
