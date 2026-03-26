@@ -342,6 +342,10 @@ canonical(x::CanonicalExprV{:ref}) = CanonicalExpr(:getindex, x.args...)
 canonical(x::CanonicalExprV{Symbol(".*")}) = CanonicalExpr(.*, x.args...)
 canonical(x::CanonicalExprV{Symbol("./")}) = CanonicalExpr(./, x.args...)
 
+# TODO: task-local storage is used here to propagate _expr_stack/_current_lnn through
+# @deffun calls, which rebuild `info` from scratch. Cleaner alternatives:
+# - Thread info through stan_expr (invasive: changes signature everywhere + codegen)
+# - Carry refs as CanonicalExpr kwargs (requires codegen changes in functions.jl)
 _get_expr_stack(info) = something(_expr_stack(info), get(task_local_storage(), :_slic_expr_stack, nothing), Some(nothing))
 _get_lnn_ref(info) = something(_current_lnn(info), get(task_local_storage(), :_slic_current_lnn, nothing), Some(nothing))
 _get_lnn(info) = (lnn = _get_lnn_ref(info); lnn isa Ref ? lnn[] : nothing)
