@@ -397,8 +397,10 @@ forward!(x::Colon; info) = x
 forward!(x::StanExpr{Symbol}; info) = x
 forward!(x::StanExpr; info) = x
 forward!(x::CanonicalExpr; info) = begin
+    _push_expr!(info, x)
     resolved = CanonicalExpr(forward!(head(x); info), forward!(x.args; info)...; forward!(x.kwargs; info)...)
-    _push_expr!(info, resolved)
+    s = _get_expr_stack(info)
+    isnothing(s) || (s[end] = (resolved, s[end][2]))
     rv = stan_expr(resolved)
     _pop_expr!(info)
     rv
@@ -578,8 +580,12 @@ backward!(x::StanType; info) = remake(x; lqual=:affects_likelihood)
 distribute!(x::BlockExpr; info) = distribute!.(x.args; info)
 distribute!(x::Union{LineNumberNode,Nothing}; info) = nothing
 distribute!(x::DocumentExpr{<:Any,<:BlockExpr}; info) = distribute!(x.args[2]; info)
-distribute!(x; info) = for b in distribution_blocks(x; info)
-    push!(block(info, b), x; info)
+distribute!(x; info) = begin
+    _push_expr!(info, x)
+    for b in distribution_blocks(x; info)
+        push!(block(info, b), x; info)
+    end
+    _pop_expr!(info)
 end
 qual(x::AssignmentExpr) = qual(x.args[1])
 qual(x::SamplingExpr) = qual(x.args[1])
