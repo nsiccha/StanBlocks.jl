@@ -732,10 +732,10 @@ struct StanIO{P} <: WrappedIO
     StanIO(parent; kwargs...) = new{typeof(parent)}(parent, kwargs)
 end
 remake(io::StanIO, p=parent(io); kwargs...) = StanIO(p; io.info..., kwargs...)
-current_indent(io) = ""
+current_indent(io) = repeat("    ", get(io, :_autoprint_indent, 0))
 current_indent(io::StanIO) = repeat("    ", current_indent_level(io))
 current_indent_level(io::StanIO) = get(io.info, :current_indent_level, 0)
-indent(io) = StanIO(io; current_indent_level=1)
+indent(io) = IOContext(io, :_autoprint_indent => 1 + get(io, :_autoprint_indent, 0))
 indent(io::StanIO) = remake(io; current_indent_level=1+current_indent_level(io))
 maybe_indent(io, x::StanBlock) = indent(io)
 maybe_indent(io, x::FunctionsBlock) = io
