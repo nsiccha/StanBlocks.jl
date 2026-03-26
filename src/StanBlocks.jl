@@ -37,8 +37,9 @@ include("check.jl")
 
 # --- Error display for StanBlocks computations ---
 
-_cause_error(e::StanBlocksError) = e.cause isa Tuple ? first(e.cause) : e.cause
-_cause_backtrace(e::StanBlocksError) = e.cause isa Tuple ? last(e.cause) : []
+_cause_error(e::StanBlocksError) = e.cause isa Tuple ? e.cause[1] : e.cause
+_cause_backtrace(e::StanBlocksError) = e.cause isa Tuple ? e.cause[2] : []
+_cause_expr_stack(e::StanBlocksError) = e.cause isa Tuple && length(e.cause) >= 3 ? e.cause[3] : []
 
 unwrap_error(e::Base.TaskFailedException) = unwrap_error(e.task.exception)
 unwrap_error(e::CompositeException) = unwrap_error(first(e.exceptions))
@@ -141,12 +142,21 @@ end
 # 3-arg: compact expression trace + filtered stacktrace
 function Base.showerror(io::IO, e::StanBlocksError, bt)
     _showerror_header(io, e)
+    # Expression stack (from push/pop during forward!)
+    expr_stack = _cause_expr_stack(e)
+    if !isempty(expr_stack)
+        println(io, "\n\n  While processing:")
+        for (i, x) in enumerate(reverse(expr_stack))
+            println(io, "   [$i] $x")
+        end
+    end
+    # Type-based expression trace (from stacktrace type parameters)
     orig_bt = _cause_backtrace(e)
     isempty(orig_bt) && return
     frames = Base.stacktrace(orig_bt)
     etrace = _expr_trace(frames)
     if !isempty(etrace)
-        println(io, "\n\n  While processing:")
+        println(io, "\n  Type trace:")
         for (i, s) in enumerate(etrace)
             println(io, "   [$i] $s")
         end

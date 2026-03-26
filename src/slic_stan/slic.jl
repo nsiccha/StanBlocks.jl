@@ -92,6 +92,9 @@ SplatExpr{T} = CanonicalExprV{:...,T}
 model(x::SlicModel) = x.model
 data(x::SlicModel) = x.data
 meta(x::StanModel) = x.meta
+_expr_stack(x::StanModel) = get(x.meta, :_expr_stack, nothing)
+_expr_stack(x::SubModel) = _expr_stack(parent(x))
+_expr_stack(x) = nothing
 vars(x::StanModel) = x.vars
 blocks(x::StanModel) = x.blocks
 remake(x::StanModel; kwargs...) = StanModel((;x.meta..., kwargs...), x.vars, x.blocks)
@@ -144,7 +147,7 @@ head(::CanonicalExprV{H}) where {H} = H
 remake(x::CanonicalExpr, args...; kwargs...) = CanonicalExpr(head(x), args...; kwargs...)
 
 StanModel(name=gensym("stan_model")) = StanModel(
-    (;name), 
+    (;name),
     OrderedDict(),
     (;
         functions=StanBlock(:functions,OrderedDict()),
@@ -256,13 +259,15 @@ maybecv(expr, value) = stan_expr(expr, value; cv=true)
 function stan_model end
 const _StanBlocksError = parentmodule(@__MODULE__).StanBlocksError
 stan_model(x::SlicModel; info=StanModel()) = begin
+    _expr_stack = Any[]
+    info = remake(info; _expr_stack)
     try
         distribute!(backward!(forward!(x; info); info); info)
         remake(info; docstring=get(x.data, :docstring, ""))
     catch e
         e isa _StanBlocksError && rethrow()
         bt = catch_backtrace()
-        throw(_StanBlocksError(:transpile, "model: $(get(x.data, :docstring, string(typeof(x.model))))", (e, bt)))
+        throw(_StanBlocksError(:transpile, "model: $(get(x.data, :docstring, string(typeof(x.model))))", (e, bt, _expr_stack)))
     end
 end
 maybedata!(x::StanModel, key, value) = x[key] = maybedata(key, value)
@@ -275,6 +280,7 @@ forward!(x::SlicModel; info=StanModel()) = begin
     end
     forward!(canonical(model(x)); info)
 end
+
 isexpr(h) = Base.Fix2(isexpr, h)
 isexpr(x, h) = false
 isexpr(x::CanonicalExpr, h) = head(x) == h
@@ -328,6 +334,9 @@ canonical(x::CanonicalExprV{:ref}) = CanonicalExpr(:getindex, x.args...)
 canonical(x::CanonicalExprV{Symbol(".*")}) = CanonicalExpr(.*, x.args...)
 canonical(x::CanonicalExprV{Symbol("./")}) = CanonicalExpr(./, x.args...)
 
+_push_expr!(info, x) = (s = _expr_stack(info); isnothing(s) || push!(s, x); nothing)
+_pop_expr!(info) = (s = _expr_stack(info); isnothing(s) || pop!(s); nothing)
+
 forwards!(;info) = x->forwards!(x; info)
 forwards!(x; info) = [forward!(x; info)]
 forwards!(x::SplatExpr; info) = [forward!(x.args[1]; info)...]
@@ -367,7 +376,11 @@ forward!(x::Colon; info) = x
 forward!(x::StanExpr{Symbol}; info) = x
 forward!(x::StanExpr; info) = x
 forward!(x::CanonicalExpr; info) = begin
-    stan_expr(CanonicalExpr(forward!(head(x); info), forward!(x.args; info)...; forward!(x.kwargs; info)...))
+    resolved = CanonicalExpr(forward!(head(x); info), forward!(x.args; info)...; forward!(x.kwargs; info)...)
+    _push_expr!(info, resolved)
+    rv = stan_expr(resolved)
+    _pop_expr!(info)
+    rv
 end
 forward!(x::BlockExpr; info) = remake(x, forward!(x.args; info)...)
 forward!(x::AssignmentExpr{Symbol}; info) = begin
@@ -717,9 +730,11 @@ maybreak(io::StanIO) = get(io.info, :maybreak, true)
 line_limit(io) = 100
 
 
+_autoprint_buf(io::StanIO) = (buf = IOBuffer(); (remake(nobreak(io), buf), buf))
+_autoprint_buf(io) = (buf = IOBuffer(); (buf, buf))
 autoprint(io, args...) = if maybreak(io)
-    buf = IOBuffer()
-    print(remake(nobreak(io), buf), args...)
+    bufio, buf = _autoprint_buf(io)
+    print(bufio, args...)
     rv = String(take!(buf))
     if length(rv) <= line_limit(io)
         print(io, rv)
@@ -730,7 +745,7 @@ autoprint(io, args...) = if maybreak(io)
         print(io, "\n", current_indent(iio))
         print(iio, Join(args[idx].iterator, rstrip(args[idx].delim) * "\n" * current_indent(iio)))
         print(io, "\n", current_indent(io))
-        print(io, args[idx+1:end]...) 
+        print(io, args[idx+1:end]...)
     end
 else
     print(io, args...)
