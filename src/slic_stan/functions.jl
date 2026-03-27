@@ -446,6 +446,12 @@ fetch_subfunctions!(x::CanonicalExpr; info) = begin
     fetch_functions!(x; info)
     fetch_subfunctions!((x.args, x.kwargs); info)
 end
+anon_arg(x::StanExpr, i::Int) = StanExpr(Symbol(:_arg, i), type(x))
+anon_arg(x, i::Int) = x
+anon_canonical(x::CanonicalExpr) = remake(x, ntuple(i -> anon_arg(x.args[i], i), length(x.args))...)
+anon_canonical(x::CanonicalExpr{Colon}) = x   # needs real args for range size
+anon_canonical(x::BlockExpr) = x               # args is Vector, not Tuple
+anon_canonical(x::CanonicalExprV{:nt}) = x     # preserve named tuple structure
 anon_info(x::NamedTuple) = (;[
     key=>anon_expr(key, value)
     for (key, value) in pairs(x)

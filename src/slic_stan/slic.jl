@@ -541,7 +541,24 @@ forward!(x::ContinueExpr; info) = stan_expr(remake(x, forward!(x.args; info)...)
 forward!(x::QuoteExpr; info) = x.args[1]
 forward!(x::StringExpr; info) = join(map(stan_code, forward!(x.args; info)))
 
-stan_expr(x::CanonicalExpr) = StanExpr(x, remake(tracetype(x); qual=maximum(qual, x.args; init=:data), cv=any(cv, x.args) || cv(tracetype(x))))
+deanon_size(s, x) = s
+deanon_size(s::StanExpr, x::CanonicalExpr) = begin
+    e = expr(s)
+    isa(e, Symbol) || return s
+    m = match(r"^_arg(\d+)$", string(e))
+    isnothing(m) && return s
+    i = parse(Int, m[1])
+    i <= length(x.args) ? x.args[i] : s
+end
+deanon_type(tt::StanType, x::CanonicalExpr) = begin
+    sz = stan_size(tt)
+    nsz = map(s -> deanon_size(s, x), sz)
+    sz == nsz ? tt : StanType(center_type(tt), nsz; [k => v for (k, v) in pairs(info(tt)) if k != :size]...)
+end
+stan_expr(x::CanonicalExpr) = begin
+    tt = deanon_type(tracetype(anon_canonical(x)), x)
+    StanExpr(x, remake(tt; qual=maximum(qual, x.args; init=:data), cv=any(cv, x.args) || cv(tt)))
+end
 stan_expr(x::CanonicalExpr{<:SlicModel}) = head(x)(x.args...;x.kwargs...)
 
 backward!(x; info) = error(x)
@@ -703,10 +720,12 @@ for lpxf_rhs in (
     :gaussian_dlm_obs_lpdf,
     :lkj_corr_lpdf, :lkj_corr_cholesky_lpdf,
     :wishart_lpdf, :inv_wishart_lpdf, :inv_wishart_cholesky_lpdf, :wishart_cholesky_lpdf,
+    :normal_id_glm_lpdf,
     :bernoulli_lpmf, :bernoulli_logit_lpmf, :bernoulli_logit_glm_lpmf,
     :binomial_lpmf, :binomial_logit_lpmf, :beta_binomial_lpmf,
     :neg_binomial_lpdf, :neg_binomial_2_lpmf, :neg_binomial_2_log_lpdf,
-    :poisson_lpmf, :poisson_log_lpmf,
+    :neg_binomial_2_log_glm_lpmf,
+    :poisson_lpmf, :poisson_log_lpmf, :poisson_log_glm_lpmf,
     :discrete_range_lpmf, :hypergeometric_lpmf, :multinomial_lpmf,
     :categorical_lpmf, :categorical_logit_lpmf,
 )
@@ -735,6 +754,44 @@ rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(cauc
 
 rng_expr(lhs::StanExpr2{types.real}, rhs::StanExpr{<:CanonicalExpr{typeof(exponential)}}) = stan_call(exponential_rng, expr(rhs).args...)
 rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(exponential)}}) = stan_call(vector_exponential_rng, expr(rhs).args..., stan_size(lhs)...)
+
+# Vector rng_expr for continuous distributions with vector LHS
+# to_vector(dist_rng(args...)) when at least one arg is vector
+# scalar-only promotion: rep_vector first arg to vector size, then recurse
+for dist in (:student_t, :lognormal, :gamma, :inv_gamma, :beta, :uniform,
+             :weibull, :frechet, :loglogistic, :von_mises,
+             :double_exponential, :logistic, :gumbel,
+             :skew_normal, :exp_mod_normal,
+             :pareto, :pareto_type_2,
+             :chi_square, :inv_chi_square, :scaled_inv_chi_square, :rayleigh,
+             :neg_binomial_2)
+    dist_fn = getproperty(builtin, dist)
+    dist_rng_fn = getproperty(builtin, Symbol(dist, :_rng))
+    # General case: at least one arg is already a vector
+    @eval rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof($dist_fn)}}) = stan_call(to_vector, stan_call($dist_rng_fn, expr(rhs).args...))
+end
+# 2-arg: all scalar → promote first arg
+for dist in (:lognormal, :gamma, :inv_gamma, :beta, :uniform,
+             :weibull, :frechet, :loglogistic, :von_mises,
+             :double_exponential, :logistic, :gumbel,
+             :pareto, :scaled_inv_chi_square,
+             :neg_binomial_2)
+    dist_fn = getproperty(builtin, dist)
+    @eval rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof($dist_fn),<:Tuple{<:StanExpr2{<:types.real,0},<:StanExpr2{<:types.real,0}}}}) =
+        rng_expr(lhs, stan_call($dist_fn, stan_call(rep_vector, expr(rhs).args[1], stan_size(lhs, 1)), expr(rhs).args[2]))
+end
+# 1-arg: scalar → promote
+for dist in (:chi_square, :inv_chi_square, :rayleigh)
+    dist_fn = getproperty(builtin, dist)
+    @eval rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof($dist_fn),<:Tuple{<:StanExpr2{<:types.real,0}}}}) =
+        rng_expr(lhs, stan_call($dist_fn, stan_call(rep_vector, expr(rhs).args[1], stan_size(lhs, 1))))
+end
+# 3-arg: all scalar → promote second arg (loc)
+for dist in (:student_t, :skew_normal, :exp_mod_normal, :pareto_type_2)
+    dist_fn = getproperty(builtin, dist)
+    @eval rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof($dist_fn),<:Tuple{<:StanExpr2{<:types.real,0},<:StanExpr2{<:types.real,0},<:StanExpr2{<:types.real,0}}}}) =
+        rng_expr(lhs, stan_call($dist_fn, expr(rhs).args[1], stan_call(rep_vector, expr(rhs).args[2], stan_size(lhs, 1)), expr(rhs).args[3]))
+end
 
 
 struct Join

@@ -172,6 +172,20 @@ end
     skew_double_exponential_lpdf
 ]
 
+# GLM distributions — defined outside @builtin_module to avoid Revise conflicts
+for name in builtin_module_names(:normal_id_glm_lpdf)
+    @eval builtin function $name end
+    @eval const $name = builtin.$name
+end
+for name in builtin_module_names(:poisson_log_glm_lpmf)
+    @eval builtin function $name end
+    @eval const $name = builtin.$name
+end
+for name in builtin_module_names(:neg_binomial_2_log_glm_lpmf)
+    @eval builtin function $name end
+    @eval const $name = builtin.$name
+end
+
 autokwargs(::CanonicalExpr{<:Union{typeof.((beta, beta_proportion))...}}) = (;lower=0, upper=1)
 autokwargs(::CanonicalExpr{typeof(von_mises)}) = (;lower=0, upper=2pi)
 autokwargs(x::CanonicalExpr{typeof(uniform)}) = (;lower=x.args[1], upper=x.args[2])
@@ -277,6 +291,9 @@ import Statistics
     bernoulli_lpmf(args...)
     bernoulli_logit_lpmf(args...)
     bernoulli_logit_glm_lpmf(args...)
+    normal_id_glm_lpdf(args...)
+    poisson_log_glm_lpmf(args...)
+    neg_binomial_2_log_glm_lpmf(args...)
     multi_normal_lpdf(obs::vector[n], loc::vector[n], cov)
     dirichlet_lpdf(w::simplex[n], alpha::vector[n])
     lkj_corr_lpdf(L::corr_matrix, x::real)
@@ -293,6 +310,12 @@ import Statistics
     bernoulli_logit_rng(::vector[n])::int[n]
     bernoulli_logit_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
     bernoulli_logit_glm_rng(X::matrix[m,n], alpha::real, beta) = bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta)
+    normal_id_glm_rng(X::matrix[m,n], alpha, beta, sigma)::vector[m]
+    normal_id_glm_rng(X::matrix[m,n], alpha::real, beta, sigma) = normal_id_glm_rng(X, rep_vector(alpha, m), beta, sigma)
+    poisson_log_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
+    poisson_log_glm_rng(X::matrix[m,n], alpha::real, beta) = poisson_log_glm_rng(X, rep_vector(alpha, m), beta)
+    neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha, beta, phi)::int[m]
+    neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::real, beta, phi) = neg_binomial_2_log_glm_rng(X, rep_vector(alpha, m), beta, phi)
     beta_rng(args...)::real
     binomial_rng(args...)::int
     binomial_logit_rng(n::int[m], p::vector[m])::int[m]
@@ -313,10 +336,17 @@ import Statistics
         end
         rv
     end
-    jbroadcasted(f, x1::anything[n], x2, x3) = begin 
+    jbroadcasted(f, x1::anything[n], x2, x3) = begin
         rv::vector[n]
         for i in 1:n
             rv[i] = f(broadcasted_getindex(x1, i), broadcasted_getindex(x2, i), broadcasted_getindex(x3, i))
+        end
+        rv
+    end
+    jbroadcasted(f, x1::anything[n], x2, x3, x4) = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = f(broadcasted_getindex(x1, i), broadcasted_getindex(x2, i), broadcasted_getindex(x3, i), broadcasted_getindex(x4, i))
         end
         rv
     end
@@ -325,7 +355,10 @@ import Statistics
     bernoulli_lpmfs(obs::anything[n], args...) = jbroadcasted(bernoulli_lpmfs, obs, args...)
     bernoulli_logit_lpmfs(args...) = bernoulli_logit_lpmf(args...)
     bernoulli_logit_lpmfs(obs::anything[n], args...) = jbroadcasted(bernoulli_logit_lpmfs, obs, args...)
-    bernoulli_logit_glm_lpmfs(y::int[n], X, alpha, beta) = bernoulli_logit_lpmfs(y, alpha + X * beta) 
+    bernoulli_logit_glm_lpmfs(y::int[n], X, alpha, beta) = bernoulli_logit_lpmfs(y, alpha + X * beta)
+    normal_id_glm_lpdfs(y::anything[n], X, alpha, beta, sigma) = normal_lpdfs(y, alpha + X * beta, sigma)
+    poisson_log_glm_lpmfs(y::int[n], X, alpha, beta) = poisson_log_lpmfs(y, alpha + X * beta)
+    neg_binomial_2_log_glm_lpmfs(y::int[n], X, alpha, beta, phi) = neg_binomial_2_lpmfs(y, exp(alpha + X * beta), phi)
     binomial_lpmfs(args...) = binomial_lpmf(args...)
     binomial_lpmfs(y::int[n], args...) = jbroadcasted(binomial_lpmfs, y, args...)
     binomial_logit_lpmfs(args...) = binomial_logit_lpmf(args...)
@@ -363,6 +396,33 @@ import Statistics
     logistic_lpdfs(obs::anything[n], mu, sigma) = jbroadcasted(logistic_lpdfs, obs, mu, sigma)
     weibull_lpdfs(args...) = weibull_lpdf(args...)
     weibull_lpdfs(obs::anything[n], alpha, sigma) = jbroadcasted(weibull_lpdfs, obs, alpha, sigma)
+    gumbel_lpdfs(args...) = gumbel_lpdf(args...)
+    gumbel_lpdfs(obs::anything[n], mu, beta) = jbroadcasted(gumbel_lpdfs, obs, mu, beta)
+    chi_square_lpdfs(args...) = chi_square_lpdf(args...)
+    chi_square_lpdfs(obs::anything[n], nu) = jbroadcasted(chi_square_lpdfs, obs, nu)
+    skew_normal_lpdfs(args...) = skew_normal_lpdf(args...)
+    skew_normal_lpdfs(obs::anything[n], mu, sigma, alpha) = jbroadcasted(skew_normal_lpdfs, obs, mu, sigma, alpha)
+    frechet_lpdfs(args...) = frechet_lpdf(args...)
+    frechet_lpdfs(obs::anything[n], alpha, sigma) = jbroadcasted(frechet_lpdfs, obs, alpha, sigma)
+    rayleigh_lpdfs(args...) = rayleigh_lpdf(args...)
+    rayleigh_lpdfs(obs::anything[n], sigma) = jbroadcasted(rayleigh_lpdfs, obs, sigma)
+    loglogistic_lpdfs(args...) = loglogistic_lpdf(args...)
+    loglogistic_lpdfs(obs::anything[n], alpha, beta) = jbroadcasted(loglogistic_lpdfs, obs, alpha, beta)
+    von_mises_lpdfs(args...) = von_mises_lpdf(args...)
+    von_mises_lpdfs(obs::anything[n], mu, kappa) = jbroadcasted(von_mises_lpdfs, obs, mu, kappa)
+    inv_chi_square_lpdfs(args...) = inv_chi_square_lpdf(args...)
+    inv_chi_square_lpdfs(obs::anything[n], nu) = jbroadcasted(inv_chi_square_lpdfs, obs, nu)
+    scaled_inv_chi_square_lpdfs(args...) = scaled_inv_chi_square_lpdf(args...)
+    scaled_inv_chi_square_lpdfs(obs::anything[n], nu, sigma) = jbroadcasted(scaled_inv_chi_square_lpdfs, obs, nu, sigma)
+    exp_mod_normal_lpdfs(args...) = exp_mod_normal_lpdf(args...)
+    exp_mod_normal_lpdfs(obs::anything[n], mu, sigma, lambda) = jbroadcasted(exp_mod_normal_lpdfs, obs, mu, sigma, lambda)
+    pareto_lpdfs(args...) = pareto_lpdf(args...)
+    pareto_lpdfs(obs::anything[n], y_min, alpha) = jbroadcasted(pareto_lpdfs, obs, y_min, alpha)
+    pareto_type_2_lpdfs(args...) = pareto_type_2_lpdf(args...)
+    pareto_type_2_lpdfs(obs::anything[n], mu, lambda, alpha) = jbroadcasted(pareto_type_2_lpdfs, obs, mu, lambda, alpha)
+    beta_binomial_lpmfs(args...) = beta_binomial_lpmf(args...)
+    beta_binomial_lpmfs(obs::anything[n], trials, alpha, beta) = jbroadcasted(beta_binomial_lpmfs, obs, trials, alpha, beta)
+    student_t_lpdfs(obs::anything[n], nu, loc, scale) = jbroadcasted(student_t_lpdfs, obs, nu, loc, scale)
     vector_exponential_rng(rate::real, n::int)::vector[n] = exponential_rng(rep_vector(rate, n))
     lkj_corr_cholesky_rng(n::int, eta::real)
     
@@ -722,9 +782,34 @@ end
         (row_vector[n], real) => real[n]
         (vector[n], vector[n]) => real[n]
     end
-    typeof(exponential_rng) => begin 
-        (real,)=>real 
+    typeof(exponential_rng) => begin
+        (real,)=>real
         (vector[n],)=>real[n]
+    end
+    Union{typeof.((lognormal_rng, gamma_rng, inv_gamma_rng, beta_rng, uniform_rng,
+                    weibull_rng, frechet_rng, loglogistic_rng, von_mises_rng,
+                    double_exponential_rng, logistic_rng, gumbel_rng,
+                    pareto_rng, scaled_inv_chi_square_rng, neg_binomial_2_rng))...} => begin
+        (real, real) => real
+        (real, vector[n]) => real[n]
+        (real, row_vector[n]) => real[n]
+        (vector[n], real) => real[n]
+        (vector[n], vector[n]) => real[n]
+    end
+    Union{typeof.((chi_square_rng, inv_chi_square_rng, rayleigh_rng))...} => begin
+        (real,) => real
+        (vector[n],) => real[n]
+    end
+    Union{typeof.((student_t_rng, skew_normal_rng, exp_mod_normal_rng, pareto_type_2_rng))...} => begin
+        (real, real, real) => real
+        (real, vector[n], real) => real[n]
+        (real, vector[n], vector[n]) => real[n]
+        (vector[n], vector[n], real) => real[n]
+        (vector[n], vector[n], vector[n]) => real[n]
+    end
+    typeof(beta_binomial_rng) => begin
+        (int[n], real, real) => int[n]
+        (int[n], vector[n], vector[n]) => int[n]
     end
     Base.BroadcastFunction => begin 
         (real, real) => real
