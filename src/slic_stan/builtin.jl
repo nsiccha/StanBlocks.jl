@@ -355,10 +355,34 @@ import Statistics
     bernoulli_lpmfs(obs::anything[n], args...) = jbroadcasted(bernoulli_lpmfs, obs, args...)
     bernoulli_logit_lpmfs(args...) = bernoulli_logit_lpmf(args...)
     bernoulli_logit_lpmfs(obs::anything[n], args...) = jbroadcasted(bernoulli_logit_lpmfs, obs, args...)
-    bernoulli_logit_glm_lpmfs(y::int[n], X, alpha, beta) = bernoulli_logit_lpmfs(y, alpha + X * beta)
-    normal_id_glm_lpdfs(y::anything[n], X, alpha, beta, sigma) = normal_lpdfs(y, alpha + X * beta, sigma)
-    poisson_log_glm_lpmfs(y::int[n], X, alpha, beta) = poisson_log_lpmfs(y, alpha + X * beta)
-    neg_binomial_2_log_glm_lpmfs(y::int[n], X, alpha, beta, phi) = neg_binomial_2_lpmfs(y, exp(alpha + X * beta), phi)
+    bernoulli_logit_glm_lpmfs(y::int[n], X::matrix[n,k], alpha, beta) = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = bernoulli_logit_lpmf(y[i], alpha + X[i, :] * beta)
+        end
+        rv
+    end
+    normal_id_glm_lpdfs(y::anything[n], X::matrix[n,k], alpha, beta, sigma) = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = normal_lpdf(y[i], alpha + X[i, :] * beta, sigma)
+        end
+        rv
+    end
+    poisson_log_glm_lpmfs(y::int[n], X::matrix[n,k], alpha, beta) = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = poisson_log_lpmf(y[i], alpha + X[i, :] * beta)
+        end
+        rv
+    end
+    neg_binomial_2_log_glm_lpmfs(y::int[n], X::matrix[n,k], alpha, beta, phi) = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = neg_binomial_2_lpmf(y[i], exp(alpha + X[i, :] * beta), phi)
+        end
+        rv
+    end
     binomial_lpmfs(args...) = binomial_lpmf(args...)
     binomial_lpmfs(y::int[n], args...) = jbroadcasted(binomial_lpmfs, y, args...)
     binomial_logit_lpmfs(args...) = binomial_logit_lpmf(args...)
@@ -728,8 +752,9 @@ end
     Union{typeof.((+, -))...} => begin 
         (matrix[m,n],matrix[m,n]) => matrix[m,n]
     end
-    Union{typeof.((*, ))...} => begin 
+    Union{typeof.((*, ))...} => begin
         (vector[m], row_vector[n]) => matrix[m,n]
+        (row_vector[n], vector[n]) => real
         (matrix[m,n], vector[n]) => vector[m]
         (matrix[m,n], matrix[n,o]) => matrix[m,o]
         (cholesky_factor_corr[m],matrix[m,n]) => matrix[m,n]
