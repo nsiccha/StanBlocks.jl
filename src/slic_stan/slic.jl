@@ -1,5 +1,5 @@
 module stan
-using OrderedCollections
+using OrderedCollections, JSON, StanLogDensityProblems
 const RV_NAME = gensym("RV")
 dumperror(x) = (dump(x); error(x))
 """
@@ -544,11 +544,17 @@ forward!(x::StringExpr; info) = join(map(stan_code, forward!(x.args; info)))
 deanon_size(s, x) = s
 deanon_size(s::StanExpr, x::CanonicalExpr) = begin
     e = expr(s)
-    isa(e, Symbol) || return s
-    m = match(r"^_arg(\d+)$", string(e))
-    isnothing(m) && return s
-    i = parse(Int, m[1])
-    i <= length(x.args) ? x.args[i] : s
+    if isa(e, Symbol)
+        m = match(r"^_arg(\d+)$", string(e))
+        isnothing(m) && return s
+        i = parse(Int, m[1])
+        return i <= length(x.args) ? x.args[i] : s
+    elseif isa(e, CanonicalExpr)
+        new_args = map(a -> deanon_size(a, x), e.args)
+        new_args == e.args && return s
+        return StanExpr(remake(e, new_args...), type(s))
+    end
+    s
 end
 deanon_type(tt::StanType, x::CanonicalExpr) = begin
     sz = stan_size(tt)
@@ -995,12 +1001,24 @@ prepare_for_stan(x::Tuple) = prepare_for_stan(Dict(enumerate(x)))
 bridgestan_data(x::Dict) = JSON.json(prepare_for_stan(x))
 """
 Returns the StanLogDensityProblem (a compiled posterior).
-
-**Warning:**
-
-Requires loading StanLogDensityProblems.jl and JSON.jl.
 """
-instantiate(args...; kwargs...) = error("Using instantiate requires loading StanLogDensityProblems.jl and JSON.jl!")
+instantiate(x::Union{SlicModel,StanModel}; nan_on_error=true, make_args=["STAN_THREADS=true"], warn=false, kwargs...) = begin
+    sc = stan_code(x)
+    stan_path = get(kwargs, :path, joinpath("tmp", string(hash(sc)) * ".stan"))
+    mkpath(dirname(stan_path))
+    if !isfile(stan_path)
+        open(stan_path, "w") do fd
+            write(fd, sc)
+        end
+    end
+    StanLogDensityProblems.StanProblem(
+        stan_path,
+        bridgestan_data(stan_data(x));
+        nan_on_error,
+        make_args,
+        warn
+    )
+end
 debug_instantiate(x; kwargs...) = instantiate(x; nan_on_error=false, kwargs...)
 passinstantiate(x; kwargs...) = (instantiate(x; kwargs...); x)
 stan_data(x::SlicModel) = stan_data(stan_model(x))

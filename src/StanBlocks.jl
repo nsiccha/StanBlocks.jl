@@ -5,7 +5,7 @@ export @slic, @defsig, @deffun
 export stan_code, stan_model, stan_instantiate
 export StanBlocksError
 
-using LinearAlgebra, Statistics, Distributions, LogExpFunctions, JSON
+using LinearAlgebra, Statistics, Distributions, LogExpFunctions, JSON, StanLogDensityProblems
 
 # --- Error type for StanBlocks computations (defined early so submodules can use it) ---
 
