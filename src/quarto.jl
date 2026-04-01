@@ -1,14 +1,10 @@
-module MarkdownExt
-import Markdown, StanBlocks
-import StanBlocks: quarto
-
-module Quarto 
+module Quarto
     using Markdown
     abstract type Object end
     struct Container <: Object
         children
     end
-    struct Heading <: Object 
+    struct Heading <: Object
         level
         obj
     end
@@ -16,7 +12,7 @@ module Quarto
         header
         content
     end
-    struct Code <: Object 
+    struct Code <: Object
         header
         content
     end
@@ -44,7 +40,7 @@ module Quarto
         print(io, child, "\n")
     end
     Base.show(io::IO, x::Heading) = print(io, repeat("#", x.level), " ", x.obj, "\n")
-    Base.show(io::IO, x::Div) = begin 
+    Base.show(io::IO, x::Div) = begin
         print(io, "\n::: ", x.header, "\n\n")
         print(io, x.content)
         print(io, "\n:::\n")
@@ -61,20 +57,9 @@ module Quarto
     end
 end
 
-mapkv(f, x) = map(f, keys(x), values(x))
-msg(e) = try 
-    string(e)
-catch
-    "Something went wrong!"
-end
-msg(e::ErrorException) = msg(e.msg)
+Base.show(io::IO, m::MIME"text/markdown", x::stan.SlicModel) = show(io, m, quarto(x))
 
-Base.show(io::IO, m::MIME"text/markdown", x::StanBlocks.stan.SlicModel) = show(io, m, quarto(x))
-
-quarto(x::StanBlocks.stan.SlicModel) = Quarto.Container([
+quarto(x::stan.SlicModel) = Quarto.Container([
     Quarto.Heading(5, "SlicModel"),
-    Quarto.Tabset((;stan=Quarto.Code("stan", StanBlocks.stan_code(x)), julia=Quarto.Code("julia", x.model)))
+    Quarto.Tabset((;stan=Quarto.Code("stan", stan_code(x)), julia=Quarto.Code("julia", x.model)))
 ])
-
-
-end
