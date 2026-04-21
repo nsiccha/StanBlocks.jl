@@ -394,6 +394,8 @@ import Statistics
     normal_lpdfs(obs::anything[n], loc, scale) = jbroadcasted(normal_lpdfs, obs, loc, scale)
     multi_normal_lpdfs(args...) = multi_normal_lpdf(args...)
     dirichlet_lpdfs(args...) = dirichlet_lpdf(args...)
+    lkj_corr_cholesky_lpdfs(args...) = lkj_corr_cholesky_lpdf(args...)
+    lkj_corr_cholesky_lpdfs(L::anything[n], x) = jbroadcasted(lkj_corr_cholesky_lpdfs, L, x)
     # Scalar-fallback _lpdfs for distributions missing vectorized forms.
     # The args... variant handles scalar obs; array broadcasting is left for future work.
     cauchy_lpdfs(args...) = cauchy_lpdf(args...)
