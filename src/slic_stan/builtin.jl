@@ -100,6 +100,9 @@ end
     append_array
     append_row
     append_col
+    hcat
+    reshape
+    ragged_n ragged_start ragged_end ragged_length
     diag_matrix
     mdivide_left_tri_low
     one_hot_vector
@@ -457,6 +460,33 @@ import Statistics
     append_row(x, y, z, args...) = append_row(append_row(x, y), z, args...)
     append_col(x, y, z, args...) = append_col(append_col(x, y), z, args...)
 
+    # hcat for building a design matrix from column vectors. Narrow on purpose:
+    # Stan's matrix / array-of-vectors / array-of-ints are distinct types, so
+    # add more signatures only as sbimpl (or other callers) actually need them.
+    hcat(x::vector[n])::matrix[n,1] = to_matrix(x, n, 1)
+    hcat(x::vector[n], y::vector[n])::matrix[n,2] = append_col(x, y)
+    hcat(x::matrix[m, n], y::vector[m])::matrix[m, n+1] = append_col(x, y)
+    hcat(x, y, z, args...) = hcat(hcat(x, y), z, args...)
+
+    # reshape: vector -> matrix only, matching Base.reshape(v, m, k) with fully
+    # specified dims. Grow as needed.
+    reshape(v::vector[n], m::int, k::int)::matrix[m, k] = to_matrix(v, m, k)
+
+    # Ragged-vector accessors. A ragged vector is a named tuple with fields
+    #   mem::vector[total]        — concatenation of all subvectors
+    #   ends::int[n_groups]       — inclusive 1-based end index of each subvector in `mem`
+    # Construct with `StanBlocks.stan.to_ragged(::Vector{<:AbstractVector{<:Real}})`,
+    # or simply pass a `Vector{<:AbstractVector{<:Real}}` as a data kwarg (auto-encoded).
+    # Convention matches bruno/src/pkpd_models.jl.
+    ragged_n(x::ntup)::int = size(x.ends)
+    ragged_start(x::ntup, i::int)::int = if i == 1
+        1
+    else
+        1 + x.ends[i-1]
+    end
+    ragged_end(x::ntup, i::int)::int = x.ends[i]
+    ragged_length(x::ntup, i::int)::int = ragged_end(x, i) - ragged_start(x, i) + 1
+
     # New distribution lpdf/lpmf stubs
     double_exponential_lpdf(args...)
     logistic_lpdf(args...)
@@ -759,7 +789,13 @@ end
         (matrix[m,n], matrix[n,o]) => matrix[m,o]
         (cholesky_factor_corr[m],matrix[m,n]) => matrix[m,n]
     end
-    typeof(adjoint) => begin 
+    typeof(adjoint) => begin
+        (vector[n],) => row_vector[n]
+        (row_vector[n],) => vector[n]
+        (matrix[m,n],) => matrix[n,m]
+        (cholesky_factor_corr[m],) => matrix[m,m]
+    end
+    typeof(transpose) => begin
         (vector[n],) => row_vector[n]
         (row_vector[n],) => vector[n]
         (matrix[m,n],) => matrix[n,m]

@@ -249,6 +249,19 @@ stan_type(expr, value::NamedTuple; kwargs...) = StanType(
     arg_types=(;[key=>stan_type(Symbol(expr, "_", key), val) for (key, val) in pairs(value)]...),
     value, kwargs...
 )
+"""
+Encode a vector of real-valued subvectors as a ragged vector: a `NamedTuple` with
+`mem::Vector` (concatenation of all subvectors) and `ends::Vector{Int}` (inclusive
+1-based end indices of each subvector in `mem`).
+
+Passing a `Vector{<:AbstractVector{<:Real}}` directly as a data kwarg to a `SlicModel`
+applies this transformation automatically.
+"""
+to_ragged(x::AbstractVector{<:AbstractVector{T}}) where {T<:Real} = (;
+    mem=reduce(vcat, x; init=T[]),
+    ends=cumsum(length.(x)),
+)
+stan_type(expr, value::AbstractVector{<:AbstractVector{<:Real}}; kwargs...) = stan_type(expr, to_ragged(value); kwargs...)
 stan_call(f, args...) = stan_expr(CanonicalExpr(f, map(stan_expr, args)...))
 stan_expr(x::StanExpr; kwargs...) = weak_remake(x; kwargs...)
 stan_expr(x; kwargs...) = stan_expr(x, x; kwargs...)
