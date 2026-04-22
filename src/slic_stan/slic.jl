@@ -432,11 +432,11 @@ is_simple_size(x::CanonicalExpr) = false
 is_simple_size(x::Symbol) = true
 is_simple_size(x::Number) = true
 is_simple_size(x) = false#error(typeof(x))
-maybe_lazy_size(key::Symbol, i, sizei::StanExpr{<:CanonicalExpr}; info) = if is_simple_size(sizei)
+maybe_lazy_size(key::Symbol, i, sizei::StanExpr{<:CanonicalExpr}; info) = if is_simple_size(sizei) || qual(sizei) == :data
     sizei
 else
     forward!(canonical(:(dims($key)[$i])); info)
-end 
+end
 forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args 
     @assert name ∉ keys(info)
