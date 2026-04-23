@@ -454,15 +454,15 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
 end
 forward!(x::AssignmentExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::SamplingExpr{Symbol}; info) = begin
-    name, rhs = x.args 
-    (name in keys(info) && isa(info, SubModel)) && return nothing
+    name, rhs = x.args
     rhs = forward!(rhs; info)::Union{StanExpr,SlicModel}
     forward!(remake(x, name, rhs); info)
 end
 forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
-    name, rhs = x.args 
+    name, rhs = x.args
     if name in keys(info)
-        @assert stan.qual(info[name]) == :data
+        q = stan.qual(info[name])
+        q == :data || error("Sampling statement `$name ~ ...` has LHS bound to a $q-qualified value — only data-qualified LHS is supported here (submodel kwargs typically refer to caller-provided data).")
         stan.cv(rhs) && (info[name] = remake(info[name]; cv=true))
     else
         # base = type(rhs)
