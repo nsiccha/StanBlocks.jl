@@ -419,9 +419,10 @@ sig_expr(x) = x
 sig_expr(x::Union{Tuple,NamedTuple,Vector}) = map(sig_expr, x)
 sig_expr(x::CanonicalExpr) = remake(x, sig_expr(x.args)...)
 sig_expr(x::StanExpr) = StanExpr(:_, sig_expr(type(x)))
-sig_expr(x::StanType) = StanType(center_type(x), sig_expr(stan_size(x)))
-sig_expr(x::StanType{<:types.tup}) = StanType(center_type(x), sig_expr(stan_size(x)); arg_types=sig_expr(info(x).arg_types))
-sig_expr(x::StanType{<:types.func}) = StanType(center_type(x), sig_expr(stan_size(x)); value=sig_expr(info(x).value))
+sig_expr_size(x::StanExpr) = StanExpr(:_, StanType(types.int, ()))
+sig_expr(x::StanType) = StanType(center_type(x), map(sig_expr_size, stan_size(x)))
+sig_expr(x::StanType{<:types.tup}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); arg_types=sig_expr(info(x).arg_types))
+sig_expr(x::StanType{<:types.func}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); value=sig_expr(info(x).value))
 fetch_functions!(x::CanonicalExpr; info) = begin 
     sx = sig_expr(x)
     sx in keys(info) && return
