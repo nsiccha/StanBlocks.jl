@@ -190,6 +190,11 @@ for name in builtin_module_names(:neg_binomial_2_log_glm_lpmf)
     @eval const $name = builtin.$name
 end
 
+for name in (:real, :int, :vector, :row_vector, :matrix, :ordered, :simplex, :positive_ordered, :cov_matrix, :corr_matrix, :cholesky_factor_cov, :cholesky_factor_corr)
+    T = getproperty(types, name)
+    @eval builtin const $name = $T
+end
+
 autokwargs(::CanonicalExpr{<:Union{typeof.((beta, beta_proportion))...}}) = (;lower=0, upper=1)
 autokwargs(::CanonicalExpr{typeof(von_mises)}) = (;lower=0, upper=2pi)
 autokwargs(x::CanonicalExpr{typeof(uniform)}) = (;lower=x.args[1], upper=x.args[2])

@@ -20,6 +20,7 @@ module types
     abstract type ntup <: tup end
 end
 function stan_code end
+forward!(x::Type{<:types.anything}; info) = x
 Base.show(io::IO, ::Type{T}) where {T<:types.anything} = print(io, T.name.name)
 Base.show(io::IO, ::Type{T}) where {T<:types.func} = print(io, "func")#.parameters[1].name.name)
 Base.show(io::IO, ::Type{<:types.tup}) = print(io, "tuple(...)")
@@ -420,7 +421,7 @@ sig_expr(x::Union{Tuple,NamedTuple,Vector}) = map(sig_expr, x)
 sig_expr(x::CanonicalExpr) = remake(x, sig_expr(x.args)...)
 sig_expr(x::StanExpr) = StanExpr(:_, sig_expr(type(x)))
 sig_expr_size(x::StanExpr) = StanExpr(:_, StanType(types.int, ()))
-sig_expr(x::StanType) = StanType(center_type(x), map(sig_expr_size, stan_size(x)))
+sig_expr(x::StanType) = StanType(sigtype(center_type(x)), map(sig_expr_size, stan_size(x)))
 sig_expr(x::StanType{<:types.tup}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); arg_types=sig_expr(info(x).arg_types))
 sig_expr(x::StanType{<:types.func}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); value=sig_expr(info(x).value))
 fetch_functions!(x::CanonicalExpr; info) = begin 
