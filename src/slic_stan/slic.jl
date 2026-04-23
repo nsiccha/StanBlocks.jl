@@ -761,6 +761,7 @@ for lpxf_rhs in (
     :poisson_lpmf, :poisson_log_lpmf, :poisson_log_glm_lpmf,
     :discrete_range_lpmf, :hypergeometric_lpmf, :multinomial_lpmf,
     :categorical_lpmf, :categorical_logit_lpmf,
+    :ordered_logistic_lpmf,
 )
     base_rhs = Symbol(string(lpxf_rhs)[1:end-5])
     rng_rhs = Symbol(base_rhs, "_rng")

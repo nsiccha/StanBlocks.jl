@@ -51,8 +51,9 @@ end
     von_mises_lpdf
     neg_binomial_2_lpmf
     bernoulli_lpmf
-    bernoulli_logit_lpmf 
+    bernoulli_logit_lpmf
     bernoulli_logit_glm_lpmf
+    ordered_logistic_lpmf
     multi_normal_lpdf
     multi_normal_prec_lpdf
     multi_normal_cholesky_lpdf
@@ -417,6 +418,21 @@ import Statistics
     poisson_lpmfs(obs::anything[n], lambda) = jbroadcasted(poisson_lpmfs, obs, lambda)
     poisson_log_lpmfs(args...) = poisson_log_lpmf(args...)
     poisson_log_lpmfs(obs::anything[n], alpha) = jbroadcasted(poisson_log_lpmfs, obs, alpha)
+    ordered_logistic_lpmfs(args...) = ordered_logistic_lpmf(args...)
+    ordered_logistic_lpmfs(y::int[n], eta::vector[n], c::vector[m]) = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = ordered_logistic_lpmf(y[i], eta[i], c)
+        end
+        rv
+    end
+    ordered_logistic_rng(eta::vector[n], c::vector[m])::int[n] = begin
+        rv::int[n]
+        for i in 1:n
+            rv[i] = ordered_logistic_rng(eta[i], c)
+        end
+        rv
+    end
     inv_gamma_lpdfs(args...) = inv_gamma_lpdf(args...)
     inv_gamma_lpdfs(obs::anything[n], alpha, beta) = jbroadcasted(inv_gamma_lpdfs, obs, alpha, beta)
     double_exponential_lpdfs(args...) = double_exponential_lpdf(args...)
@@ -504,6 +520,7 @@ import Statistics
     multinomial_lpmf(args...)
     categorical_lpmf(args...)
     categorical_logit_lpmf(args...)
+    ordered_logistic_lpmf(args...)
     poisson_lpmf(args...)
     poisson_log_lpmf(args...)
     neg_binomial_lpdf(args...)
@@ -536,6 +553,7 @@ import Statistics
     pareto_type_2_rng(::real, ::real, ::real)::real
     categorical_rng(::vector[n])::int
     categorical_logit_rng(::vector[n])::int
+    ordered_logistic_rng(::real, ::vector[m])::int
     poisson_rng(::real)::int
     poisson_log_rng(::real)::int
     poisson_log_rng(::vector[n])::int[n]
