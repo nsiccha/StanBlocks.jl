@@ -102,7 +102,7 @@ end
     append_col
     hcat
     reshape
-    ragged_n ragged_start ragged_end ragged_length
+    ragged_n ragged_total ragged_start ragged_end ragged_length
     diag_matrix
     mdivide_left_tri_low
     one_hot_vector
@@ -481,6 +481,7 @@ import Statistics
     # or simply pass a `Vector{<:AbstractVector{<:Real}}` as a data kwarg (auto-encoded).
     # Convention matches bruno/src/pkpd_models.jl.
     ragged_n(x::ntup)::int = size(x.ends)
+    ragged_total(x::ntup)::int = num_elements(x.mem)
     ragged_start(x::ntup, i::int)::int = if i == 1
         1
     else
