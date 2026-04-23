@@ -424,10 +424,10 @@ sig_expr_size(x::StanExpr) = StanExpr(:_, StanType(types.int, ()))
 sig_expr(x::StanType) = StanType(sigtype(center_type(x)), map(sig_expr_size, stan_size(x)))
 sig_expr(x::StanType{<:types.tup}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); arg_types=sig_expr(info(x).arg_types))
 sig_expr(x::StanType{<:types.func}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); value=sig_expr(info(x).value))
-fetch_functions!(x::CanonicalExpr; info) = begin 
+fetch_functions!(x::CanonicalExpr; info) = begin
     sx = sig_expr(x)
     sx in keys(info) && return
-    info[sx] = fundef(sx)
+    info[sx] = fundef(x)
     isnothing(info[sx]) && return
     fetch_subfunctions!(info[sx].body; info)
 end
