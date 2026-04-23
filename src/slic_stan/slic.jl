@@ -359,6 +359,35 @@ canonical(x::CanonicalExprV{Symbol("'")}) = CanonicalExpr(:adjoint, x.args...)
 canonical(x::CanonicalExprV{:ref}) = CanonicalExpr(:getindex, x.args...)
 canonical(x::CanonicalExprV{Symbol(".*")}) = CanonicalExpr(.*, x.args...)
 canonical(x::CanonicalExprV{Symbol("./")}) = CanonicalExpr(./, x.args...)
+canonical(x::SamplingExpr{<:CanonicalExprV{:(::)}}) = begin
+    ann, rhs = x.args
+    name = ann.args[1]::Symbol
+    type_expr = ann.args[2]
+    isa(rhs, CanonicalExpr) || error("Typed-LHS sampling `$name::$(pretty_type_expr(type_expr)) ~ rhs` requires rhs to be a distribution call")
+    tkw = typed_lhs_kwargs(type_expr)
+    for k in keys(tkw)
+        (k in keys(rhs.kwargs) || (k !== :type && any(sk in keys(rhs.kwargs) for sk in (:m, :n, :o)))) &&
+            error("`$name::$(pretty_type_expr(type_expr)) ~ ...`: LHS type annotation conflicts with rhs kwarg (LHS sets `$k`, rhs has kwargs $(keys(rhs.kwargs)))")
+    end
+    CanonicalExpr(:(~), name, CanonicalExpr(rhs.head, rhs.args...; rhs.kwargs..., tkw...))
+end
+pretty_type_expr(T::Symbol) = string(T)
+pretty_type_expr(ref::CanonicalExprV{:getindex}) = string(ref.args[1], "[", join(ref.args[2:end], ", "), "]")
+typed_lhs_kwargs(T::Symbol) = (;type=T)
+typed_lhs_kwargs(ref::CanonicalExprV{:getindex}) = begin
+    T = ref.args[1]::Symbol
+    sizes = ref.args[2:end]
+    size_keys = if length(sizes) == 1
+        (:n,)
+    elseif length(sizes) == 2
+        (:m, :n)
+    elseif length(sizes) == 3
+        (:m, :n, :o)
+    else
+        error("Typed-LHS with $(length(sizes)) size dimensions not supported (max 3)")
+    end
+    (;type=T, NamedTuple{size_keys}(Tuple(sizes))...)
+end
 
 # TODO: task-local storage is used here to propagate _expr_stack/_current_lnn through
 # @deffun calls, which rebuild `info` from scratch. Cleaner alternatives:
