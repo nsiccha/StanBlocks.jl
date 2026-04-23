@@ -420,18 +420,6 @@ forward!(x::CanonicalExpr; info) = begin
 end
 fold_shape_query(x) = x
 fold_shape_query(x::StanExpr) = x
-fold_shape_query(x::StanExpr{<:CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:CanonicalExpr{typeof(builtin.dims)}},<:StanExpr{<:Integer}}}}) = begin
-    inner = expr(expr(x).args[1])
-    arg = inner.args[1]::StanExpr
-    i = expr(expr(x).args[2])::Integer
-    sz = stan_size(arg)
-    if 1 <= i <= length(sz)
-        candidate = sz[i]
-        qual(candidate) == :data ? fold_shape_query(candidate) : x
-    else
-        x
-    end
-end
 forward!(x::BlockExpr; info) = remake(x, forward!(x.args; info)...)
 forward!(x::AssignmentExpr{Symbol}; info) = begin
     name, rhs = x.args 
@@ -733,6 +721,18 @@ function rng_expr end
 function likelihood_expr end
 include("functions.jl")
 include("builtin.jl")
+fold_shape_query(x::StanExpr{<:CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:CanonicalExpr{typeof(builtin.dims)}},<:StanExpr{<:Integer}}}}) = begin
+    inner = expr(expr(x).args[1])
+    arg = inner.args[1]::StanExpr
+    i = expr(expr(x).args[2])::Integer
+    sz = stan_size(arg)
+    if 1 <= i <= length(sz)
+        candidate = sz[i]
+        qual(candidate) == :data ? fold_shape_query(candidate) : x
+    else
+        x
+    end
+end
 fetch_data!(x::StanType{<:types.tup}; info) = fetch_data!((stan_size(x), x.info.arg_types); info)
 function dummy_likelihood end
 function dummy_rng end
