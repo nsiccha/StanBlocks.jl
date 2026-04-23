@@ -414,9 +414,23 @@ forward!(x::CanonicalExpr; info) = begin
     resolved = CanonicalExpr(forward!(head(x); info), forward!(x.args; info)...; forward!(x.kwargs; info)...)
     s = _get_expr_stack(info)
     isnothing(s) || (s[end] = (resolved, s[end][2]))
-    rv = stan_expr(resolved)
+    rv = fold_shape_query(stan_expr(resolved))
     _pop_expr!(info)
     rv
+end
+fold_shape_query(x) = x
+fold_shape_query(x::StanExpr) = x
+fold_shape_query(x::StanExpr{<:CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:CanonicalExpr{typeof(builtin.dims)}},<:StanExpr{<:Integer}}}}) = begin
+    inner = expr(expr(x).args[1])
+    arg = inner.args[1]::StanExpr
+    i = expr(expr(x).args[2])::Integer
+    sz = stan_size(arg)
+    if 1 <= i <= length(sz)
+        candidate = sz[i]
+        qual(candidate) == :data ? fold_shape_query(candidate) : x
+    else
+        x
+    end
 end
 forward!(x::BlockExpr; info) = remake(x, forward!(x.args; info)...)
 forward!(x::AssignmentExpr{Symbol}; info) = begin
