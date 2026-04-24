@@ -303,12 +303,12 @@ import Statistics
     normal_id_glm_lpdf(args...)
     poisson_log_glm_lpmf(args...)
     neg_binomial_2_log_glm_lpmf(args...)
-    multi_normal_lpdf(obs::vector[n], loc::vector[n], cov)
-    dirichlet_lpdf(w::simplex[n], alpha::vector[n])
-    lkj_corr_lpdf(L::corr_matrix, x::real)
-    lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, x::real)
-    wishart_lpdf(L::cov_matrix[m], x::real, sigma::matrix[m,m])
-    wishart_cholesky_lpdf(L::cholesky_factor_cov[m], x::real, sigma::matrix[m,m])
+    @lhs multi_normal_lpdf(obs::vector[n], loc::vector[n], cov)
+    @lhs dirichlet_lpdf(w::simplex[n], alpha::vector[n])
+    @lhs lkj_corr_lpdf(L::corr_matrix, x::real)
+    @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, x::real)
+    @lhs wishart_lpdf(L::cov_matrix[m], x::real, sigma::matrix[m,m])
+    @lhs wishart_cholesky_lpdf(L::cholesky_factor_cov[m], x::real, sigma::matrix[m,m])
 
     lognormal_rng(loc::real, scale::real)::real
     student_t_rng(nu::real, loc::real, scale::real)::real
@@ -400,7 +400,7 @@ import Statistics
     normal_lpdfs(obs::anything[n], loc, scale) = jbroadcasted(normal_lpdfs, obs, loc, scale)
     multi_normal_lpdfs(args...) = multi_normal_lpdf(args...)
     dirichlet_lpdfs(args...) = dirichlet_lpdf(args...)
-    lkj_corr_cholesky_lpdf(L::cholesky_factor_corr[m,n], x::real, m::int, n::int)::real = begin
+    @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr[m,n], x::real, m::int, n::int)::real = begin
         rv = 0.0
         for i in 1:m
             rv += lkj_corr_cholesky_lpdf(L[i, :, :], x)

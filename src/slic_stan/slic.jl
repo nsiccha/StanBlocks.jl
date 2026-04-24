@@ -373,35 +373,8 @@ canonical(x::CanonicalExprV{Symbol("'")}) = CanonicalExpr(:adjoint, x.args...)
 canonical(x::CanonicalExprV{:ref}) = CanonicalExpr(:getindex, x.args...)
 canonical(x::CanonicalExprV{Symbol(".*")}) = CanonicalExpr(.*, x.args...)
 canonical(x::CanonicalExprV{Symbol("./")}) = CanonicalExpr(./, x.args...)
-canonical(x::SamplingExpr{<:CanonicalExprV{:(::)}}) = begin
-    ann, rhs = x.args
-    name = ann.args[1]::Symbol
-    type_expr = ann.args[2]
-    isa(rhs, CanonicalExpr) || error("Typed-LHS sampling `$name::$(pretty_type_expr(type_expr)) ~ rhs` requires rhs to be a distribution call")
-    tkw = typed_lhs_kwargs(type_expr)
-    for k in keys(tkw)
-        (k in keys(rhs.kwargs) || (k !== :type && any(sk in keys(rhs.kwargs) for sk in (:m, :n, :o)))) &&
-            error("`$name::$(pretty_type_expr(type_expr)) ~ ...`: LHS type annotation conflicts with rhs kwarg (LHS sets `$k`, rhs has kwargs $(keys(rhs.kwargs)))")
-    end
-    CanonicalExpr(:(~), name, CanonicalExpr(rhs.head, rhs.args...; rhs.kwargs..., tkw...))
-end
 pretty_type_expr(T::Symbol) = string(T)
 pretty_type_expr(ref::CanonicalExprV{:getindex}) = string(ref.args[1], "[", join(ref.args[2:end], ", "), "]")
-typed_lhs_kwargs(T::Symbol) = (;type=T)
-typed_lhs_kwargs(ref::CanonicalExprV{:getindex}) = begin
-    T = ref.args[1]::Symbol
-    sizes = ref.args[2:end]
-    size_keys = if length(sizes) == 1
-        (:n,)
-    elseif length(sizes) == 2
-        (:m, :n)
-    elseif length(sizes) == 3
-        (:m, :n, :o)
-    else
-        error("Typed-LHS with $(length(sizes)) size dimensions not supported (max 3)")
-    end
-    (;type=T, NamedTuple{size_keys}(Tuple(sizes))...)
-end
 
 # TODO: task-local storage is used here to propagate _expr_stack/_current_lnn through
 # @deffun calls, which rebuild `info` from scratch. Cleaner alternatives:
@@ -520,6 +493,36 @@ end
 forward!(x::SamplingExpr{Symbol,<:SlicModel}; info) = begin
     name, rhs = x.args
     forward!(rhs; info=SubModel(info, name, Dict()))
+end
+forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
+    decl, rhs_raw = x.args
+    name = decl.args[1]
+    isa(name, Symbol) || error(
+        "Typed-LHS sampling currently requires a Symbol LHS, got `$name`. ",
+        "For more complex LHS shapes, use a bare assignment + sampling pair."
+    )
+    type_expr = decl.args[2]
+    ct, sizes... = if isa(type_expr, CanonicalExprV{:getindex})
+        type_expr.args
+    else
+        (type_expr,)
+    end
+    isa(ct, Symbol) || error("Typed-LHS sampling: type center must be a Symbol, got `$ct`")
+    ct_resolved = gettype(ct)
+    sizes_forwarded = isempty(sizes) ? () : Tuple(forward!(collect(sizes); info))
+    base_lhs_type = StanType(ct_resolved, sizes_forwarded)
+    isa(rhs_raw, CanonicalExpr) || error(
+        "Typed-LHS sampling `$name::$(pretty_type_expr(type_expr)) ~ rhs` requires rhs to be a distribution call"
+    )
+    head_resolved = forward!(head(rhs_raw); info)
+    args_resolved = collect(forward!(rhs_raw.args; info))
+    kwargs_resolved = forward!(rhs_raw.kwargs; info)
+    rhs_canonical = CanonicalExpr(head_resolved, args_resolved...; kwargs_resolved...)
+    cv_args = any(stan.cv, args_resolved)
+    qual = cv_args ? :quantities : :parameter
+    info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args))
+    rhs_stan = StanExpr(rhs_canonical, info[name].type)
+    remake(x, info[name], rhs_stan)
 end
 forward!(x::SamplingExpr; info) = begin
     lhs, rhs = forward!(x.args; info)
@@ -768,6 +771,43 @@ end
 function lpxf_expr end
 function rng_expr end
 function likelihood_expr end
+
+const _LPXF_SUFFIXES = ("_lpdf", "_lpmf", "_lcdf", "_lccdf")
+_lpxf_base(name::Symbol) = begin
+    s = string(name)
+    suffix_idx = findfirst(suf -> endswith(s, suf), _LPXF_SUFFIXES)
+    isnothing(suffix_idx) && error(
+        "@lpxf/@lhs: `$name` does not end in one of $(_LPXF_SUFFIXES). ",
+        "Pass the `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf` function name itself."
+    )
+    Symbol(s[1:end-length(_LPXF_SUFFIXES[suffix_idx])])
+end
+
+lpxf_register(x::LineNumberNode; source=x) = x
+lpxf_register(x::Expr; source=LineNumberNode(0, :none)) = if x.head === :block
+    Expr(:block, [lpxf_register(arg; source) for arg in x.args]...)
+else
+    error("@lpxf expects a bare symbol or a `begin … end` block of bare symbols, got `$x`")
+end
+lpxf_register(x; source=LineNumberNode(0, :none)) = error(
+    "@lpxf expects a bare symbol or a `begin … end` block of bare symbols, got `$x`"
+)
+lpxf_register(name::Symbol; source=LineNumberNode(0, :none)) = begin
+    base = _lpxf_base(name)
+    rng = Symbol(base, "_rng")
+    lpxfs = Symbol(name, "s")
+    M = @__MODULE__
+    quote
+        $source
+        function $(esc(base)) end
+        function $(esc(rng)) end
+        function $(esc(lpxfs)) end
+        $M.lpxf_expr(::typeof($(esc(base)))) = $(esc(name))
+        $M.rng_expr(::typeof($(esc(base)))) = $(esc(rng))
+        $M.likelihood_expr(::typeof($(esc(base)))) = $(esc(lpxfs))
+    end
+end
+
 include("functions.jl")
 include("builtin.jl")
 fold_shape_query(x::StanExpr{<:CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:CanonicalExpr{typeof(builtin.dims)}},<:StanExpr{<:Integer}}}}) = begin
@@ -821,37 +861,6 @@ for lpxf_rhs in (
     @eval likelihood_expr(::typeof(builtin.$base_rhs)) = builtin.$lpxfs_rhs
 end
 
-const _LPXF_SUFFIXES = ("_lpdf", "_lpmf", "_lcdf", "_lccdf")
-_lpxf_base(name::Symbol) = begin
-    s = string(name)
-    suffix_idx = findfirst(suf -> endswith(s, suf), _LPXF_SUFFIXES)
-    isnothing(suffix_idx) && error(
-        "@lpxf: `$name` does not end in one of $(_LPXF_SUFFIXES). ",
-        "Pass the `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf` function name itself."
-    )
-    Symbol(s[1:end-length(_LPXF_SUFFIXES[suffix_idx])])
-end
-lpxf_register(x::LineNumberNode; source=x) = x
-lpxf_register(x::Expr; source=LineNumberNode(0, :none)) = if x.head === :block
-    Expr(:block, [lpxf_register(arg; source) for arg in x.args]...)
-else
-    error("@lpxf expects a bare symbol or a `begin … end` block of bare symbols, got `$x`")
-end
-lpxf_register(x; source=LineNumberNode(0, :none)) = error(
-    "@lpxf expects a bare symbol or a `begin … end` block of bare symbols, got `$x`"
-)
-lpxf_register(name::Symbol; source=LineNumberNode(0, :none)) = begin
-    base = _lpxf_base(name)
-    rng = Symbol(base, "_rng")
-    lpxfs = Symbol(name, "s")
-    M = @__MODULE__
-    quote
-        $source
-        $M.lpxf_expr(::typeof($(esc(base)))) = $(esc(name))
-        $M.rng_expr(::typeof($(esc(base)))) = $(esc(rng))
-        $M.likelihood_expr(::typeof($(esc(base)))) = $(esc(lpxfs))
-    end
-end
 # lpxf_expr(x::CanonicalExpr) = lpxf_expr(head(x))
 lpxf_expr(x) = error("$x is missing `lpxf_expr`")
 likelihood_expr(lhs, rhs::StanExpr) = likelihood_expr(lhs, expr(rhs))
@@ -1232,6 +1241,25 @@ function bodies and does not wrap `@deffun`.
 """
 macro lpxf(x)
     stan.lpxf_register(x; source=__source__)
+end
+
+"""
+    @lhs foo_lpdf(y::T, args...) = body
+
+Inside a `@deffun` block, opt this method into base-level LHS inference. Without
+`@lhs`, only the `_lpdf`-keyed tracetype is registered (so the method dispatches
+when called explicitly), but `lhs ~ foo(args...)` cannot trace because the base
+`foo` has no tracetype keyed on its argument signature. `@lhs` registers
+`tracetype(::CanonicalExpr{<:typeof(foo), <:Tuple{lhs_type[2:end]...}})` so the
+sampling form works.
+
+Compose with `@lpxf` (any order — `@lhs @lpxf …` or `@lpxf @lhs …`) to also
+register the dispatch hooks for `foo`/`foo_rng`/`foo_lpdfs`.
+
+Standalone `@lhs` (outside `@deffun`) is not supported and errors immediately.
+"""
+macro lhs(x)
+    error("@lhs may only appear inside a @deffun block")
 end
 const stan_model = stan.stan_model
 const stan_code = stan.stan_code

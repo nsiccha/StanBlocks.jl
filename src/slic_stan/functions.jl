@@ -310,31 +310,44 @@ begin
         info[RV_NAME]
     end
     deffun(x::LineNumberNode; kwargs...) = x
-    _is_lpxf_macrocall(x) = Meta.isexpr(x, :macrocall) && (
-        x.args[1] === Symbol("@lpxf") ||
+    _is_inline_macrocall(x, sym::Symbol) = Meta.isexpr(x, :macrocall) && (
+        x.args[1] === sym ||
         (Meta.isexpr(x.args[1], :.) && length(x.args[1].args) == 2 &&
-         x.args[1].args[2] isa QuoteNode && x.args[1].args[2].value === Symbol("@lpxf"))
+         x.args[1].args[2] isa QuoteNode && x.args[1].args[2].value === sym)
     )
-    _lpxf_inline_fname(inner) = begin
-        Meta.isexpr(inner, :(=)) || error(
-            "@deffun: inline @lpxf annotation must precede a function definition (`name(...) = body`), got $inner"
-        )
-        fsig = inner.args[1]
+    _is_lpxf_macrocall(x) = _is_inline_macrocall(x, Symbol("@lpxf"))
+    _is_lhs_macrocall(x) = _is_inline_macrocall(x, Symbol("@lhs"))
+    _peel_macros(x) = begin
+        is_lhs = false
+        is_lpxf = false
+        cur = x
+        while Meta.isexpr(cur, :macrocall) && (_is_lhs_macrocall(cur) || _is_lpxf_macrocall(cur))
+            is_lhs |= _is_lhs_macrocall(cur)
+            is_lpxf |= _is_lpxf_macrocall(cur)
+            cur = cur.args[3]
+        end
+        (cur, is_lhs, is_lpxf)
+    end
+    _inline_fname(inner, kind::AbstractString) = begin
+        fsig = Meta.isexpr(inner, :(=)) ? inner.args[1] : inner
         fcall = Meta.isexpr(fsig, :(::)) ? fsig.args[1] : fsig
         Meta.isexpr(fcall, :call) || error(
-            "@deffun: inline @lpxf annotation must precede a function definition with a `call` head, got $fsig"
+            "@deffun: inline @$kind annotation must precede a function call or definition, got $inner"
         )
         f = fcall.args[1]
         f isa Symbol || error(
-            "@deffun: inline @lpxf annotation requires a bare-Symbol function name, got `$f`"
+            "@deffun: inline @$kind annotation requires a bare-Symbol function name, got `$f`"
         )
         f
     end
-    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none)) = if x.head == :block
+    _lpxf_inline_fname(inner) = _inline_fname(inner, "lpxf")
+    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false) = if x.head == :block
         seen_lpxf_bases = Set{Symbol}()
         for arg in x.args
-            _is_lpxf_macrocall(arg) || continue
-            f = _lpxf_inline_fname(arg.args[3])
+            isa(arg, Expr) || continue
+            inner, _, arg_is_lpxf = _peel_macros(arg)
+            arg_is_lpxf || continue
+            f = _lpxf_inline_fname(inner)
             base = _lpxf_base(f)
             base in seen_lpxf_bases && error(
                 "@deffun: duplicate inline @lpxf annotation for base name `$base`. ",
@@ -342,28 +355,29 @@ begin
             )
             push!(seen_lpxf_bases, base)
         end
-        Expr(:block, deffun.(x.args; docstring, source)...)
-    elseif x.head == :macrocall && _is_lpxf_macrocall(x)
-        inner = x.args[3]
+        Expr(:block, deffun.(x.args; docstring, source, is_lhs, is_lpxf)...)
+    elseif x.head == :macrocall && (_is_lpxf_macrocall(x) || _is_lhs_macrocall(x))
         inner_source = x.args[2] isa LineNumberNode ? x.args[2] : source
-        f = _lpxf_inline_fname(inner)
-        Expr(:block,
-            inner_source,
-            deffun(inner; docstring, source=inner_source),
-            lpxf_register(f; source=inner_source),
-        )
+        new_is_lhs = is_lhs || _is_lhs_macrocall(x)
+        new_is_lpxf = is_lpxf || _is_lpxf_macrocall(x)
+        deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf)
     elseif x.head == :macrocall
         @assert x.args[1] == GlobalRef(Core, Symbol("@doc"))
         # @assert x.args[3] isa String
-        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source)
+        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf)
     else
         # @assert x.head == :(=)
         fsig, body = ensure_xassign(x).args
         fcall, rv = ensure_xtyped(fsig).args
         @assert Meta.isexpr(fcall, :call)
         f, args... = fcall.args
-        is_lpxf = endswith(string(f), r"_lp[md]f")
-        (is_lpxf || endswith(string(f), r"_l?c?cdf")) && (rv = :real)
+        f_is_lpxf_named = isa(f, Symbol) && endswith(string(f), r"_lp[md]f")
+        (f_is_lpxf_named || (isa(f, Symbol) && endswith(string(f), r"_l?c?cdf"))) && (rv = :real)
+        if (is_lhs || is_lpxf) && !f_is_lpxf_named
+            error(
+                "@deffun: @lhs/@lpxf annotation requires a `_lpdf`/`_lpmf`-suffixed function name, got `$f`"
+            )
+        end
         ftype = :(typeof($f))
         args, vararg = if hasvararg(args)
             args[1:end-1], args[end]
@@ -440,30 +454,31 @@ begin
             push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, source, capture_mod, anon_deconstruct, inject_mod, stan_fundef))))
         end
         isa(f, Symbol) || return Expr(:block, stmts...)
-        if is_lpxf
-            base_f = Symbol(string(f)[1:end-length("_lpdf")])
-            rng_f = Symbol(base_f, "_rng")
-            lpdfs_f = Symbol(f, "s")
+        if is_lhs
+            isempty(arg_types) && error(
+                "@deffun: @lhs requires an explicit observation argument so the base ",
+                "tracetype can infer the sampled value's type. ",
+                "`@lhs $f(args...)` has no signature info to drive the inference — ",
+                "either drop the `@lhs` annotation or pin the obs type, e.g. ",
+                "`@lhs $f(y::vector[n], ...)`."
+            )
+            base_f = _lpxf_base(f)
             base_ftype = :(typeof($base_f))
             base_xexpr = :(_x::$CanonicalExpr{<:$base_ftype,<:Tuple{$(lhs_type[2:end]...)}})
-            y_type = length(arg_types) == 0 || arg_types[1] == :(anything[]) ? :(real[]) : arg_types[1]
+            y_type = arg_types[1] == :(anything[]) ? :(real[]) : arg_types[1]
             y_expr = StanExpr(
-                missing, 
+                missing,
                 StanType(getproperty(types, y_type.args[1]), ntuple(i->StanExpr(missing, StanType(types.int)), length(y_type.args)-1))
             )
             reconstruct = :(x = $CanonicalExpr($f, $y_expr, _x.args...))
+            push!(stmts, :(function $base_f end))
             push!(stmts, quote
-                if !@isdefined($base_f)
-                    function $base_f end
-                    function $rng_f end
-                    function $lpdfs_f end
-                    $stan.lpxf_expr(::typeof($base_f)) = $f
-                    $stan.rng_expr(::typeof($base_f)) = $rng_f
-                    $stan.likelihood_expr(::typeof($base_f)) = $lpdfs_f
-                end
                 $stan.tracetype($base_xexpr) = $(Expr(:block, source, reconstruct, deconstruct, xsig_expr(y_type)))
                 $stan.fundef($base_xexpr) = nothing
             end)
+        end
+        if is_lpxf
+            push!(stmts, lpxf_register(f; source))
         end
         Expr(:block, stmts...)
     end
