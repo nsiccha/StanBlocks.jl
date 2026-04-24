@@ -299,12 +299,26 @@ end
 maybedata!(x::StanModel, key, value) = x[key] = maybedata(key, value)
 maybedata!(x::StanModel, key, value::AbstractString) = nothing
 maybedata!(x::SubModel, key, value) = locals(x)[key] = maybedata(key, value)
+_control_flow_kind(::ForExpr) = "for"
+_control_flow_kind(::WhileExpr) = "while"
+_control_flow_kind(::IfExpr) = "if"
+_control_flow_kind(::ElseIfExpr) = "elseif"
+_control_flow_kind(::BreakExpr) = "break"
+_control_flow_kind(::ContinueExpr) = "continue"
+_reject_model_control_flow(x) = x
+_reject_model_control_flow(x::CanonicalExpr) = (foreach(_reject_model_control_flow, x.args); x)
+_reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,ElseIfExpr,BreakExpr,ContinueExpr}) = error(
+    "`$(_control_flow_kind(x))` control flow is not supported in @slic model bodies — ",
+    "move the logic into an @deffun function body, or use a vectorised form."
+)
 forward!(x::SlicModel; info=StanModel()) = begin
     info = remake(info; mod=x.mod)
     for (key, value) in pairs(data(x))
         maybedata!(info, key, value)
     end
-    forward!(canonical(model(x)); info)
+    body = canonical(model(x))
+    _reject_model_control_flow(body)
+    forward!(body; info)
 end
 
 isexpr(h) = Base.Fix2(isexpr, h)
@@ -547,17 +561,23 @@ forward!(x::BracesExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::VectExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::DeclExpr; info) = begin
     @assert length(x.args) == 2
-    name, type = x.args
-    @assert isa(name, Symbol)
-    @assert isa(type, CanonicalExprV{:getindex})
-    ct, s... = type.args
+    lhs, type = x.args
+    # @assert isa(lhs, Symbol)
+    ct, s... = if isa(type, CanonicalExprV{:getindex})
+        type.args
+    else 
+        (type, )
+    end
+    # @assert isa(type, CanonicalExprV{:getindex})
     @assert isa(ct, Symbol)
     ct = gettype(ct)
     t = StanType(ct, forward!.(s; info))
-    info[name] = rv = StanExpr(name, t)
+    rv = StanExpr(lhs, t)
+    isa(lhs, Symbol) || return StanExpr(expr(forward!(lhs; info)), t)
+    info[lhs] = rv 
     stan_expr(remake(x, rv))
 end
-forward!(x::ForExpr; info) = begin 
+forward!(x::ForExpr; info) = begin
     @assert length(x.args) == 2
     head, body = x.args
     @assert isa(head, CanonicalExprV{:(=)})
@@ -570,7 +590,7 @@ forward!(x::ForExpr; info) = begin
     pop!(info, idx)
     stan_expr(remake(x, remake(head, idx, idx_range), body))
 end
-forward!(x::WhileExpr; info) = begin 
+forward!(x::WhileExpr; info) = begin
     @assert length(x.args) == 2
     head, body = x.args
     # @assert isa(head, CanonicalExprV{:(=)})
