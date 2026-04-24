@@ -977,6 +977,8 @@ Base.show(io::StanIO, x::StanModel) = begin
     print(io, Join(blocks(x), "\n"))
 end
 Base.show(io::StanIO, x::StanExpr) = isa(type(x), StringStanType) ? print(io, expr(x), "::", type(x)) : print(io, expr(x))
+Base.show(io::StanIO, x::TypeTokenExpr{T,1}) where {T} = autoprint(io, "(", x.size[1], ",)")
+Base.show(io::StanIO, x::TypeTokenExpr) = autoprint(io, "(", Join(x.size, ", "), ")")
 Base.show(io::StanIO, ::Colon) = print(io, ":")
 Base.show(io::IO, x::StanModel) = show(StanIO(io), x)
 Base.show(io::IO, x::SlicModel; mayfail=true) = try

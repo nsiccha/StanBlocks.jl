@@ -140,6 +140,35 @@ struct StanFunction3
     args::NamedTuple
     body::Vector
 end
+
+"""
+    TypeTokenExpr{T,S}
+
+Marker passed in `CanonicalExpr.args` for type-token positional arguments to
+`@deffun`-defined functions (e.g. `foo_rng(real[n], …)`). Carries the `S` dim
+StanExprs of the LHS shape so:
+
+  - Julia method dispatch keys off `TypeTokenExpr{<:T_t,S}`.
+  - The center type `T` participates in the Stan function's mangled name.
+  - At Stan call sites the dims render as a tuple literal `(d1, …, dS)`.
+  - At Stan function definition sites the slot becomes a `tuple(int, …)` arg.
+
+Zero-dim type tokens (`T` with `S=0`) are dropped from rendered Stan args; only
+the name contribution survives.
+"""
+struct TypeTokenExpr{T,S}
+    size::NTuple{S,StanExpr}
+end
+TypeTokenExpr(t::StanType{T,S}) where {T,S} = TypeTokenExpr{T,S}(t.size)
+center_type(::TypeTokenExpr{T}) where {T} = T
+center_type(::Type{<:TypeTokenExpr{T}}) where {T} = T
+stan_size(x::TypeTokenExpr) = x.size
+stan_ndim(::TypeTokenExpr{T,S}) where {T,S} = S
+always_inline(::TypeTokenExpr{T,0}) where {T} = true
+always_inline(::TypeTokenExpr) = false
+func_name(x::TypeTokenExpr) = [sprint(show, center_type(x))]
+func_args(name, x::TypeTokenExpr{T,0}) where {T} = []
+func_args(name, x::TypeTokenExpr{T,S}) where {T,S} = "tuple(" * join(fill("int", S), ", ") * ") $name"
 Base.show(io::IO, f::StanFunction3) = autoprint(
     io,
     f.docstring,
@@ -186,7 +215,7 @@ begin
         return :($types.func{$ct})
     end
 
-    xsig_type(x::Expr) = begin 
+    xsig_type(x::Expr) = begin
         @assert x.head == :ref
         ct, size... = x.args
         ct = gettype(ct)
@@ -196,6 +225,19 @@ begin
         else
             :(<:$StanExpr2{<:$ct, $ndims})
         end
+    end
+    # Type-token positional args: bare `T` or `T[dims...]` where `T` is a Stan type.
+    # Dispatched via `<:TypeTokenExpr{<:T_t, S}` rather than the value-arg `<:StanExpr2{...}`.
+    _is_type_token_sym(x) = isa(x, Symbol) && isdefined(types, x) && getproperty(types, x) isa Type{<:types.anything}
+    _is_type_token(x) = _is_type_token_sym(x) ||
+        (Meta.isexpr(x, :ref) && length(x.args) >= 1 && _is_type_token_sym(x.args[1]))
+    _type_token_ref(x::Symbol) = xref(x)
+    _type_token_ref(x::Expr) = x
+    xsig_type_token(x::Expr) = begin
+        @assert x.head == :ref
+        ct, size... = x.args
+        ct = gettype(ct)
+        :(<:$TypeTokenExpr{<:$ct, $(length(size))})
     end
     xsig_expr(x::Expr) = begin 
         @assert x.head == :ref x
@@ -384,24 +426,37 @@ begin
         else
             args, nothing
         end
-        args = ensure_xtyped.(args, Symbol.("arg__" .* string.(eachindex(args))))
+        is_token = Bool[_is_type_token(arg) for arg in args]
+        args = map(zip(args, is_token, eachindex(args))) do (arg, tok, i)
+            if tok
+                xtyped(Symbol("_anontok__", i), _type_token_ref(arg))
+            else
+                ensure_xtyped(arg, Symbol("arg__", i))
+            end
+        end
         arg_names = map(arg->arg.args[1], args)
         sig_names = copy(arg_names)
         arg_types = map(arg->ensure_xref(arg.args[2]), args)
-        lhs_type = xsig_type.(arg_types)
+        lhs_type = map(zip(arg_types, is_token)) do (at, tok)
+            tok ? xsig_type_token(at) : xsig_type(at)
+        end
         if !isnothing(vararg)
             push!(sig_names, vararg.args[1])
-            # push!(arg_types, vararg.args[1]) 
+            # push!(arg_types, vararg.args[1])
             push!(lhs_type, :(Vararg{Any}))
         end
 
         fun_sizes = OrderedDict()
-        for (arg_name, arg_type) in zip(arg_names, arg_types)
+        for (arg_name, arg_type, tok) in zip(arg_names, arg_types, is_token)
             for (i, dim_name) in enumerate(arg_type.args[2:end])
                 isa(dim_name, Symbol) || continue
                 dim_name == :(_) && continue
                 dim_name in arg_names && continue
-                fun_sizes[dim_name] = "int $dim_name = dims($arg_name)[$i];"
+                fun_sizes[dim_name] = if tok
+                    "int $dim_name = $arg_name.$i;"
+                else
+                    "int $dim_name = dims($arg_name)[$i];"
+                end
             end
         end
         deconstruct = Expr(:block, 
@@ -548,6 +603,10 @@ anon_expr(key, x::StanExpr) = StanExpr(key, StanType(center_type(x), ([
     for (i, s) in enumerate(stan_size(x))
 ]...,)))
 anon_expr(key, x::StanExpr2{<:types.func}) = StanExpr(type(x).info.value, type(x))
+anon_expr(key, x::TypeTokenExpr{T,S}) where {T,S} = TypeTokenExpr{T,S}(([
+    StanExpr(string(key, ".", i), StanType(types.int))
+    for i in 1:S
+]...,))
 anon_expr(key, x::StanExpr2{<:types.tup}) = begin
     StanExpr(key, StanType(center_type(x); arg_types=([
         anon_expr(Symbol(key, ".", i), StanExpr(:_, arg_type)).type
