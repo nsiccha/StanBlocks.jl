@@ -759,13 +759,19 @@ Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     if qual(lhs) == :data
         likelihood_rhs = likelihood_expr(lhs, rhs)
         push!(b, CanonicalExpr(
-            :(=), 
-            StanExpr(Symbol(expr(lhs), "_likelihood"), remake(type(likelihood_rhs); value=missing)), 
+            :(=),
+            StanExpr(Symbol(expr(lhs), "_likelihood"), remake(type(likelihood_rhs); value=missing)),
             likelihood_rhs
         ); info)
         lhs = StanExpr(Symbol(expr(lhs), "_gen"), remake(type(lhs); value=missing))
     end
-    rng_rhs = rng_expr(lhs, rhs)
+    # Build a type token carrying the wanted output shape (from lhs, which is
+    # either explicitly declared via typed-LHS or inferred by autotype). This
+    # token becomes the leading arg to the rng call, letting each `*_rng`
+    # @deffun dispatch on the shape.
+    lhs_ct = center_type(lhs)
+    token = StanExpr(lhs_ct, StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
+    rng_rhs = rng_expr(token, rhs)
     lhs = StanExpr(expr(lhs), remake(type(rng_rhs); value=missing))
     push!(b, CanonicalExpr(:(=), lhs, rng_rhs); info)
 end
@@ -872,56 +878,16 @@ lpxf_expr(x) = error("$x is missing `lpxf_expr`")
 likelihood_expr(lhs, rhs::StanExpr) = likelihood_expr(lhs, expr(rhs))
 likelihood_expr(lhs, rhs::CanonicalExpr) = stan_call(likelihood_expr(head(rhs)), lhs, rhs.args...)
 likelihood_expr(rhs) = error("$rhs is missing `likelihood_expr`")#dummy_likelihood
-rng_expr(lhs, rhs) = rng_expr(rhs)
-rng_expr(rhs::StanExpr) = rng_expr(expr(rhs))
-rng_expr(rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), rhs.args...)
+# gq `~` synthesis: `rng_expr(token, rhs)` builds either `rng_fn(args...)` (for
+# scalar tokens — matches Stan's native rng signatures) or `rng_fn(token, args...)`
+# (for sized tokens — dispatched into per-shape `*_rng` @deffun overloads).
+# The token is a `tokenof{T}` StanExpr carrying the wanted output shape.
+rng_expr(token, rhs::StanExpr) = rng_expr(token, expr(rhs))
+# Scalar token path: native Stan rng, no token forwarding.
+rng_expr(token::StanExpr2{<:types.tokenof,0}, rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), rhs.args...)
+# Sized token path: prepend token so per-shape @deffun overloads dispatch.
+rng_expr(token::StanExpr2{<:types.tokenof}, rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), token, rhs.args...)
 rng_expr(x) = error("$x is missing `rng_expr`")#dummy_likelihood
-rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(std_normal)}}) = stan_call(vector_std_normal_rng, stan_size(lhs)...)
-rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal)}}) = stan_call(to_vector, stan_call(normal_rng, expr(rhs).args...))
-rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(normal),<:Tuple{<:StanExpr2{<:types.real, 0},<:StanExpr2{<:types.real, 0}}}}) = rng_expr(lhs, stan_call(normal, stan_call(rep_vector, expr(rhs).args[1], stan_size(lhs, 1)), expr(rhs).args[2]))
-rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(cauchy)}}) = stan_call(to_vector, stan_call(cauchy_rng, expr(rhs).args...))
-rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(cauchy),<:Tuple{<:StanExpr2{<:types.real, 0},<:StanExpr2{<:types.real, 0}}}}) = rng_expr(lhs, stan_call(cauchy, stan_call(rep_vector, expr(rhs).args[1], stan_size(lhs, 1)), expr(rhs).args[2]))
-
-rng_expr(lhs::StanExpr2{types.real}, rhs::StanExpr{<:CanonicalExpr{typeof(exponential)}}) = stan_call(exponential_rng, expr(rhs).args...)
-rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof(exponential)}}) = stan_call(vector_exponential_rng, expr(rhs).args..., stan_size(lhs)...)
-
-# Vector rng_expr for continuous distributions with vector LHS
-# to_vector(dist_rng(args...)) when at least one arg is vector
-# scalar-only promotion: rep_vector first arg to vector size, then recurse
-for dist in (:student_t, :lognormal, :gamma, :inv_gamma, :beta, :uniform,
-             :weibull, :frechet, :loglogistic, :von_mises,
-             :double_exponential, :logistic, :gumbel,
-             :skew_normal, :exp_mod_normal,
-             :pareto, :pareto_type_2,
-             :chi_square, :inv_chi_square, :scaled_inv_chi_square, :rayleigh,
-             :neg_binomial_2)
-    dist_fn = getproperty(builtin, dist)
-    dist_rng_fn = getproperty(builtin, Symbol(dist, :_rng))
-    # General case: at least one arg is already a vector
-    @eval rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof($dist_fn)}}) = stan_call(to_vector, stan_call($dist_rng_fn, expr(rhs).args...))
-end
-# 2-arg: all scalar → promote first arg
-for dist in (:lognormal, :gamma, :inv_gamma, :beta, :uniform,
-             :weibull, :frechet, :loglogistic, :von_mises,
-             :double_exponential, :logistic, :gumbel,
-             :pareto, :scaled_inv_chi_square,
-             :neg_binomial_2)
-    dist_fn = getproperty(builtin, dist)
-    @eval rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof($dist_fn),<:Tuple{<:StanExpr2{<:types.real,0},<:StanExpr2{<:types.real,0}}}}) =
-        rng_expr(lhs, stan_call($dist_fn, stan_call(rep_vector, expr(rhs).args[1], stan_size(lhs, 1)), expr(rhs).args[2]))
-end
-# 1-arg: scalar → promote
-for dist in (:chi_square, :inv_chi_square, :rayleigh)
-    dist_fn = getproperty(builtin, dist)
-    @eval rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof($dist_fn),<:Tuple{<:StanExpr2{<:types.real,0}}}}) =
-        rng_expr(lhs, stan_call($dist_fn, stan_call(rep_vector, expr(rhs).args[1], stan_size(lhs, 1))))
-end
-# 3-arg: all scalar → promote second arg (loc)
-for dist in (:student_t, :skew_normal, :exp_mod_normal, :pareto_type_2)
-    dist_fn = getproperty(builtin, dist)
-    @eval rng_expr(lhs::StanExpr2{types.vector}, rhs::StanExpr{<:CanonicalExpr{typeof($dist_fn),<:Tuple{<:StanExpr2{<:types.real,0},<:StanExpr2{<:types.real,0},<:StanExpr2{<:types.real,0}}}}) =
-        rng_expr(lhs, stan_call($dist_fn, expr(rhs).args[1], stan_call(rep_vector, expr(rhs).args[2], stan_size(lhs, 1)), expr(rhs).args[3]))
-end
 
 
 struct Join
