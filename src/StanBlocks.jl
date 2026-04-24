@@ -1,7 +1,7 @@
 module StanBlocks
 
 export @stan, @model, @parameters, @transformed_parameters, @generated_quantities, @bsum, with_gradient
-export @slic, @defsig, @deffun
+export @slic, @defsig, @deffun, @lpxf
 export stan_code, stan_model, stan_instantiate
 export StanBlocksError
 

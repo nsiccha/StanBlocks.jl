@@ -310,8 +310,48 @@ begin
         info[RV_NAME]
     end
     deffun(x::LineNumberNode; kwargs...) = x
+    _is_lpxf_macrocall(x) = Meta.isexpr(x, :macrocall) && (
+        x.args[1] === Symbol("@lpxf") ||
+        (Meta.isexpr(x.args[1], :.) && length(x.args[1].args) == 2 &&
+         x.args[1].args[2] isa QuoteNode && x.args[1].args[2].value === Symbol("@lpxf"))
+    )
+    _lpxf_inline_fname(inner) = begin
+        Meta.isexpr(inner, :(=)) || error(
+            "@deffun: inline @lpxf annotation must precede a function definition (`name(...) = body`), got $inner"
+        )
+        fsig = inner.args[1]
+        fcall = Meta.isexpr(fsig, :(::)) ? fsig.args[1] : fsig
+        Meta.isexpr(fcall, :call) || error(
+            "@deffun: inline @lpxf annotation must precede a function definition with a `call` head, got $fsig"
+        )
+        f = fcall.args[1]
+        f isa Symbol || error(
+            "@deffun: inline @lpxf annotation requires a bare-Symbol function name, got `$f`"
+        )
+        f
+    end
     deffun(x::Expr; docstring="", source=LineNumberNode(0, :none)) = if x.head == :block
+        seen_lpxf_bases = Set{Symbol}()
+        for arg in x.args
+            _is_lpxf_macrocall(arg) || continue
+            f = _lpxf_inline_fname(arg.args[3])
+            base = _lpxf_base(f)
+            base in seen_lpxf_bases && error(
+                "@deffun: duplicate inline @lpxf annotation for base name `$base`. ",
+                "At most one @lpxf-annotated method may register hooks per base function."
+            )
+            push!(seen_lpxf_bases, base)
+        end
         Expr(:block, deffun.(x.args; docstring, source)...)
+    elseif x.head == :macrocall && _is_lpxf_macrocall(x)
+        inner = x.args[3]
+        inner_source = x.args[2] isa LineNumberNode ? x.args[2] : source
+        f = _lpxf_inline_fname(inner)
+        Expr(:block,
+            inner_source,
+            deffun(inner; docstring, source=inner_source),
+            lpxf_register(f; source=inner_source),
+        )
     elseif x.head == :macrocall
         @assert x.args[1] == GlobalRef(Core, Symbol("@doc"))
         # @assert x.args[3] isa String

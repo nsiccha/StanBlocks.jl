@@ -820,6 +820,38 @@ for lpxf_rhs in (
     @eval rng_expr(::typeof(builtin.$base_rhs)) = builtin.$rng_rhs
     @eval likelihood_expr(::typeof(builtin.$base_rhs)) = builtin.$lpxfs_rhs
 end
+
+const _LPXF_SUFFIXES = ("_lpdf", "_lpmf", "_lcdf", "_lccdf")
+_lpxf_base(name::Symbol) = begin
+    s = string(name)
+    suffix_idx = findfirst(suf -> endswith(s, suf), _LPXF_SUFFIXES)
+    isnothing(suffix_idx) && error(
+        "@lpxf: `$name` does not end in one of $(_LPXF_SUFFIXES). ",
+        "Pass the `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf` function name itself."
+    )
+    Symbol(s[1:end-length(_LPXF_SUFFIXES[suffix_idx])])
+end
+lpxf_register(x::LineNumberNode; source=x) = x
+lpxf_register(x::Expr; source=LineNumberNode(0, :none)) = if x.head === :block
+    Expr(:block, [lpxf_register(arg; source) for arg in x.args]...)
+else
+    error("@lpxf expects a bare symbol or a `begin … end` block of bare symbols, got `$x`")
+end
+lpxf_register(x; source=LineNumberNode(0, :none)) = error(
+    "@lpxf expects a bare symbol or a `begin … end` block of bare symbols, got `$x`"
+)
+lpxf_register(name::Symbol; source=LineNumberNode(0, :none)) = begin
+    base = _lpxf_base(name)
+    rng = Symbol(base, "_rng")
+    lpxfs = Symbol(name, "s")
+    M = @__MODULE__
+    quote
+        $source
+        $M.lpxf_expr(::typeof($(esc(base)))) = $(esc(name))
+        $M.rng_expr(::typeof($(esc(base)))) = $(esc(rng))
+        $M.likelihood_expr(::typeof($(esc(base)))) = $(esc(lpxfs))
+    end
+end
 # lpxf_expr(x::CanonicalExpr) = lpxf_expr(head(x))
 lpxf_expr(x) = error("$x is missing `lpxf_expr`")
 likelihood_expr(lhs, rhs::StanExpr) = likelihood_expr(lhs, expr(rhs))
@@ -1179,6 +1211,27 @@ See `src/slic_stan/builtin.jl` for many more examples.
 """
 macro deffun(x)
     esc(stan.deffun(x; source=__source__))
+end
+"""
+    @lpxf foo_lpdf
+    @lpxf begin foo_lpdf; bar_lpmf end
+
+Register the three SLIC dispatch hooks (`lpxf_expr`, `rng_expr`, `likelihood_expr`)
+for one or more user-defined log-probability functions.
+
+The argument(s) must be bare symbols ending in `_lpdf`, `_lpmf`, `_lcdf`, or `_lccdf`.
+For each `foo_lpdf` (or `_lpmf`/etc.), the macro emits the registrations:
+
+    StanBlocks.stan.lpxf_expr(::typeof(foo))       = foo_lpdf
+    StanBlocks.stan.rng_expr(::typeof(foo))        = foo_rng
+    StanBlocks.stan.likelihood_expr(::typeof(foo)) = foo_lpdfs
+
+The companion `foo_rng` and `foo_lpdfs` (resp. `_lpmfs`/`_lcdfs`/`_lccdfs`) names
+must already exist when the registrations execute. This macro does not parse
+function bodies and does not wrap `@deffun`.
+"""
+macro lpxf(x)
+    stan.lpxf_register(x; source=__source__)
 end
 const stan_model = stan.stan_model
 const stan_code = stan.stan_code
