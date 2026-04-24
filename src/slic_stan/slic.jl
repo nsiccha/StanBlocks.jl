@@ -799,12 +799,12 @@ lpxf_register(name::Symbol; source=LineNumberNode(0, :none)) = begin
     M = @__MODULE__
     quote
         $source
-        function $(esc(base)) end
-        function $(esc(rng)) end
-        function $(esc(lpxfs)) end
-        $M.lpxf_expr(::typeof($(esc(base)))) = $(esc(name))
-        $M.rng_expr(::typeof($(esc(base)))) = $(esc(rng))
-        $M.likelihood_expr(::typeof($(esc(base)))) = $(esc(lpxfs))
+        function $base end
+        function $rng end
+        function $lpxfs end
+        $M.lpxf_expr(::typeof($base)) = $name
+        $M.rng_expr(::typeof($base)) = $rng
+        $M.likelihood_expr(::typeof($base)) = $lpxfs
     end
 end
 
