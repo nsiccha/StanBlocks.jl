@@ -400,6 +400,13 @@ import Statistics
     normal_lpdfs(obs::anything[n], loc, scale) = jbroadcasted(normal_lpdfs, obs, loc, scale)
     multi_normal_lpdfs(args...) = multi_normal_lpdf(args...)
     dirichlet_lpdfs(args...) = dirichlet_lpdf(args...)
+    lkj_corr_cholesky_lpdf(L::cholesky_factor_corr[m,n], x::real, m::int, n::int)::real = begin
+        rv = 0.0
+        for i in 1:m
+            rv += lkj_corr_cholesky_lpdf(L[i, :, :], x)
+        end
+        rv
+    end
     lkj_corr_cholesky_lpdfs(args...) = lkj_corr_cholesky_lpdf(args...)
     lkj_corr_cholesky_lpdfs(L::anything[n], x) = jbroadcasted(lkj_corr_cholesky_lpdfs, L, x)
     # Scalar-fallback _lpdfs for distributions missing vectorized forms.
@@ -849,6 +856,14 @@ end
         (matrix[m,n], int, int[p]) => row_vector[p]
         (matrix[m,n], int[o], int[p]) => matrix[o, p]
         # (matrix[m,n], int) => row_vector[n]
+        (matrix[m,n,k], int, int, int) => real
+        (matrix[m,n,k], int, int[o], int) => vector[o]
+        (matrix[m,n,k], int, int, int[p]) => row_vector[p]
+        (matrix[m,n,k], int, int[o], int[p]) => matrix[o,p]
+        (cholesky_factor_corr[m,n], int, int, int) => real
+        (cholesky_factor_corr[m,n], int, int[o], int) => vector[o]
+        (cholesky_factor_corr[m,n], int, int, int[p]) => row_vector[p]
+        (cholesky_factor_corr[m,n], int, int[o], int[p]) => cholesky_factor_corr[o]
     end
     typeof(std_normal_rng) => begin 
         () => real
