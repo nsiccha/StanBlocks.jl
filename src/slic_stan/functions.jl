@@ -15,12 +15,24 @@ module types
     abstract type complex <: anything end
     abstract type real <: complex end
     abstract type int <: real end
-    abstract type func{T} <: anything end 
+    abstract type func{T} <: anything end
+    # `tokenof{T}` wraps a Stan type as a SLIC value, so `real` / `real[n]` /
+    # `typeof(x)` can flow through tracing as StanExprs (mirroring how
+    # `func{T}` lets functions flow). Stan doesn't support types as
+    # parameters — these tokens participate purely in Julia-side dispatch and
+    # in Stan-function-name mangling.
+    abstract type tokenof{T} <: anything end
     abstract type tup <: anything end
     abstract type ntup <: tup end
 end
 function stan_code end
-forward!(x::Type{<:types.anything}; info) = x
+# Types flow through SLIC like functions: wrap once on entry, then dispatch
+# via the resulting StanExpr's `tokenof{T}` center type. Sized forms and
+# `typeof(x)` hit their own tracetype rules (see below).
+forward!(x::Type{<:types.anything}; info) = stan_expr(x)
+stan_type(expr, value::Type{T}; kwargs...) where {T<:types.anything} = StanType(
+    types.tokenof{T}; value=T, qual=:data, kwargs...
+)
 Base.show(io::IO, ::Type{T}) where {T<:types.anything} = print(io, T.name.name)
 Base.show(io::IO, ::Type{T}) where {T<:types.func} = print(io, "func")#.parameters[1].name.name)
 Base.show(io::IO, ::Type{<:types.tup}) = print(io, "tuple(...)")
@@ -30,12 +42,16 @@ r_ndim(::Type{<:types.square_matrix}) = 1
 r_ndim(::Type{<:types.any_vector}) = 1
 r_ndim(::Type{<:types.complex}) = 0
 r_ndim(::Type{<:types.func}) = 0
+r_ndim(::Type{<:types.tokenof}) = 0
 r_ndim(::Type{<:types.tup}) = 0
 r_ndim(::StanType{T}) where {T} = r_ndim(T)
 l_ndim(x::StanType) = stan_ndim(x) - r_ndim(x)
 lr_size(x::StanType) = stan_size(x, 1:l_ndim(x)), stan_size(x, 1+l_ndim(x):stan_ndim(x))
 canonical(x::CanonicalExpr{<:StanExpr2{<:types.func}}) = CanonicalExpr(type(x.head).info.value, x.args...; x.kwargs...)
 backward!(x::StanExpr2{<:types.func}; info) = x
+# tokenof StanExprs carry a raw Stan type as `expr`; skip recursing into the
+# bare `Type{...}` which would hit the generic backward! fallback.
+backward!(x::StanExpr2{<:types.tokenof}; info) = x
 # fetch_data!(::StanExpr2{<:types.func}; info) = nothing
 # fetch_data!(::StanExpr{Symbol, StanType{<:types.func}}; info) = nothing
 # fetch_data!(::StanExpr{Symbol, StanType{types.func}}; info) = nothing
@@ -97,6 +113,16 @@ tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any,<:Any}})
     CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1), x.args[3], x.args[4])
 )
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = x.args[1].type.info.arg_types[x.args[2].type.info.value]
+# `T[d1, …, dS]`: getindex on a 0-dim type token upgrades it to a sized token.
+# Retained `value = T` carries the center Stan type across resizings.
+tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tokenof{T},0},Vararg{Any}}}) where {T} = StanType(
+    types.tokenof{T}, x.args[2:end]; value=T
+)
+# `typeof(x)` wraps x's inferred Stan type into a token of the same shape.
+tracetype(x::CanonicalExpr{typeof(Base.typeof),<:Tuple{<:StanExpr}}) = begin
+    xt = type(x.args[1])
+    StanType(types.tokenof{center_type(xt)}, stan_size(xt); value=center_type(xt))
+end
 
 tracetype(x::CanonicalExpr{Colon}) = StanType(types.int, (stan_call(+,stan_expr(1,1),stan_call(-,x.args[2],x.args[1])), ))
 # tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:Any,<:StanType{<:types.matrix}},<:Colon,<:StanExpr{<:Any,<:StanType{<:types.int,0}}}}) = StanType(types.vector, (stan_size(x.args[1], 1),))
@@ -114,7 +140,7 @@ tracetype(x::ForExpr) = StanType(types.anything)
 tracetype(x::WhileExpr) = StanType(types.anything)
 tracetype(x::IfExpr) = StanType(types.anything)
 tracetype(x::ElseIfExpr) = StanType(types.anything)
-tracetype(x::BlockExpr) = error(dump(x))#tracetype(expr(x.args[end]))
+tracetype(x::BlockExpr) = error("tracetype(::BlockExpr) not implemented — block expressions don't carry a result type; refactor the caller to trace the final expression instead.")#tracetype(expr(x.args[end]))
 
 autokwargs(::CanonicalExpr) = (;)
 autotype(x::StanExpr) = autotype(type(x); merge(autokwargs(expr(x)), expr(x).kwargs)...)
@@ -141,34 +167,6 @@ struct StanFunction3
     body::Vector
 end
 
-"""
-    TypeTokenExpr{T,S}
-
-Marker passed in `CanonicalExpr.args` for type-token positional arguments to
-`@deffun`-defined functions (e.g. `foo_rng(real[n], …)`). Carries the `S` dim
-StanExprs of the LHS shape so:
-
-  - Julia method dispatch keys off `TypeTokenExpr{<:T_t,S}`.
-  - The center type `T` participates in the Stan function's mangled name.
-  - At Stan call sites the dims render as a tuple literal `(d1, …, dS)`.
-  - At Stan function definition sites the slot becomes a `tuple(int, …)` arg.
-
-Zero-dim type tokens (`T` with `S=0`) are dropped from rendered Stan args; only
-the name contribution survives.
-"""
-struct TypeTokenExpr{T,S}
-    size::NTuple{S,StanExpr}
-end
-TypeTokenExpr(t::StanType{T,S}) where {T,S} = TypeTokenExpr{T,S}(t.size)
-center_type(::TypeTokenExpr{T}) where {T} = T
-center_type(::Type{<:TypeTokenExpr{T}}) where {T} = T
-stan_size(x::TypeTokenExpr) = x.size
-stan_ndim(::TypeTokenExpr{T,S}) where {T,S} = S
-always_inline(::TypeTokenExpr{T,0}) where {T} = true
-always_inline(::TypeTokenExpr) = false
-func_name(x::TypeTokenExpr) = [sprint(show, center_type(x))]
-func_args(name, x::TypeTokenExpr{T,0}) where {T} = []
-func_args(name, x::TypeTokenExpr{T,S}) where {T,S} = "tuple(" * join(fill("int", S), ", ") * ") $name"
 Base.show(io::IO, f::StanFunction3) = autoprint(
     io,
     f.docstring,
@@ -216,7 +214,7 @@ begin
     end
 
     xsig_type(x::Expr) = begin
-        @assert x.head == :ref
+        @assert x.head == :ref "xsig_type expects a `T` or `T[dims...]` `:ref` expression, got `$x` (head `$(x.head)`)."
         ct, size... = x.args
         ct = gettype(ct)
         ndims = length(size)
@@ -226,21 +224,21 @@ begin
             :(<:$StanExpr2{<:$ct, $ndims})
         end
     end
-    # Type-token positional args: bare `T` or `T[dims...]` where `T` is a Stan type.
-    # Dispatched via `<:TypeTokenExpr{<:T_t, S}` rather than the value-arg `<:StanExpr2{...}`.
+    # Type-token positional args: bare `T` or `T[dims...]` where `T` is a Stan
+    # type. Dispatched via `<:StanExpr2{<:types.tokenof{<:T_t}, S}`.
     _is_type_token_sym(x) = isa(x, Symbol) && isdefined(types, x) && getproperty(types, x) isa Type{<:types.anything}
     _is_type_token(x) = _is_type_token_sym(x) ||
         (Meta.isexpr(x, :ref) && length(x.args) >= 1 && _is_type_token_sym(x.args[1]))
     _type_token_ref(x::Symbol) = xref(x)
     _type_token_ref(x::Expr) = x
     xsig_type_token(x::Expr) = begin
-        @assert x.head == :ref
+        @assert x.head == :ref "xsig_type_token expects a `T[dims...]` `:ref` expression, got `$x` (head `$(x.head)`)."
         ct, size... = x.args
         ct = gettype(ct)
-        :(<:$TypeTokenExpr{<:$ct, $(length(size))})
+        :(<:$StanExpr2{<:$types.tokenof{<:$ct},$(length(size))})
     end
-    xsig_expr(x::Expr) = begin 
-        @assert x.head == :ref x
+    xsig_expr(x::Expr) = begin
+        @assert x.head == :ref "xsig_expr expects a `T[dims...]` `:ref` expression, got `$x` (head `$(x.head)`)."
         ct, size... = x.args
         ct = gettype(ct)
         size = xtuple([:($forward!($arg; info)) for arg in canonical.(size)]...)
@@ -251,14 +249,14 @@ begin
     defsig(x::Expr; source=LineNumberNode(0, :none)) = if x.head == :block
         Expr(:block, defsig.(x.args; source)...)
     else
-        @assert xiscall(x, :(=>))
+        @assert xiscall(x, :(=>)) "@defsig expects `ftype => begin ... end`, got `$x`."
         _, ftype, rhs = x.args
-        @assert Meta.isexpr(rhs, :block)
+        @assert Meta.isexpr(rhs, :block) "@defsig RHS must be a `begin ... end` block of `args => rv` signatures, got `$rhs`."
         Expr(:block, map(sig->defsig(ftype, sig; source), rhs.args)...)
     end
     defsig(ftype, x::LineNumberNode; kwargs...) = x
     defsig(ftype, sig::Expr; source=LineNumberNode(0, :none)) = begin
-        @assert xiscall(sig, :(=>))
+        @assert xiscall(sig, :(=>)) "@defsig each line of the block must be `(args...) => rv`, got `$sig` for ftype `$ftype`."
         _, lhs, rv = sig.args
         lhs = ensure_xref.(ensure_xtuple(lhs).args)
         rv = ensure_xref(rv)
@@ -279,23 +277,23 @@ begin
         ]..., :(info = (;$(dim_names...),)), xsig_expr(rv))
         :($stan.tracetype($xexpr) = $xbody)
     end
-    funbody(x::Expr) = begin 
-        @assert x.head == :block x
+    funbody(x::Expr) = begin
+        @assert x.head == :block "funbody expects a `begin ... end` block, got `$x` (head `$(x.head)`)."
         funbody(x.args)
     end
     funbody(x::AbstractVector) = join(map(funbody, x), "\n")
     funbody(x::LineNumberNode) = ""
     funbody(x::String) = strip(x)
     make_stan_type(x::Symbol) = make_stan_type(xref(x))
-    make_stan_type(x::Expr) = begin 
-        @assert x.head == :ref x
+    make_stan_type(x::Expr) = begin
+        @assert x.head == :ref "make_stan_type expects a `T[dims...]` `:ref` expression, got `$x` (head `$(x.head)`)."
         ct, size... = x.args
         ct = getproperty(types, ct)
         StanType(ct, StanExpr.((size..., ), Ref(StanType(types.int))))
     end
     sigtype(x::Symbol) = sigtype(xref(x))
-    sigtype(x::Expr) = begin 
-        @assert x.head == :ref x
+    sigtype(x::Expr) = begin
+        @assert x.head == :ref "sigtype expects a `T[dims...]` `:ref` expression, got `$x` (head `$(x.head)`)."
         ct, size... = x.args
         ct = getproperty(types, ct)
         l = length(size) - r_ndim(ct)
@@ -324,14 +322,18 @@ begin
         print(io, "tuple(", join(map(sigtype, x.info.arg_types), ", "), ")")
         String(take!(io))
     end
-    sigarg(x, name::Symbol) = error()#sigtype(x) * " $name"
-    sigarg(::StanExpr2{<:types.func}, ::Symbol) = error()#nothing
-    sigarg(x::Tuple, name::Symbol) = error()#join(ntuple(i->sigarg(x[i], Symbol(name, i)), length(x)), ", ")
+    sigarg(x, name::Symbol) = error("sigarg deprecated fallback hit for `$name` of type `$(typeof(x))`; use func_args instead.")#sigtype(x) * " $name"
+    sigarg(::StanExpr2{<:types.func}, ::Symbol) = error("sigarg(::types.func) deprecated; use func_args.")#nothing
+    sigarg(x::Tuple, name::Symbol) = error("sigarg(::Tuple) deprecated; use func_args.")#join(ntuple(i->sigarg(x[i], Symbol(name, i)), length(x)), ", ")
     always_inline(x) = false
     always_inline(::StanExpr2{<:types.func}) = true
+    # 0-dim type tokens carry no runtime value — they only contribute a name
+    # mangle component to the Stan function name. Sized tokens (`real[n]`)
+    # _do_ render, as a Stan `tuple(int, ...)` literal at the call site.
+    always_inline(::StanExpr2{<:types.tokenof,0}) = true
     # sigargs(x::Tuple) = filter(!isnothing, map(sigargs, x))
-    sigarg(x::Expr) = begin 
-        @assert x.head == :(::)
+    sigarg(x::Expr) = begin
+        @assert x.head == :(::) "sigarg expects a `name::T` expression, got `$x` (head `$(x.head)`)."
         "$(sigtype(x.args[2])) $(x.args[1])"
     end
     # fname(x) = string(x)
@@ -404,14 +406,14 @@ begin
         new_is_lpxf = is_lpxf || _is_lpxf_macrocall(x)
         deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf)
     elseif x.head == :macrocall
-        @assert x.args[1] == GlobalRef(Core, Symbol("@doc"))
+        @assert x.args[1] == GlobalRef(Core, Symbol("@doc")) "@deffun: unexpected macrocall head `$(x.args[1])` (expected a `@doc` docstring)."
         # @assert x.args[3] isa String
         deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf)
     else
         # @assert x.head == :(=)
         fsig, body = ensure_xassign(x).args
         fcall, rv = ensure_xtyped(fsig).args
-        @assert Meta.isexpr(fcall, :call)
+        @assert Meta.isexpr(fcall, :call) "@deffun: function signature must be a `:call` expression like `f(args...)::T`, got `$fcall`."
         f, args... = fcall.args
         f_is_lpxf_named = isa(f, Symbol) && endswith(string(f), r"_lp[md]f")
         (f_is_lpxf_named || (isa(f, Symbol) && endswith(string(f), r"_l?c?cdf"))) && (rv = :real)
@@ -429,7 +431,7 @@ begin
         is_token = Bool[_is_type_token(arg) for arg in args]
         args = map(zip(args, is_token, eachindex(args))) do (arg, tok, i)
             if tok
-                xtyped(Symbol("_anontok__", i), _type_token_ref(arg))
+                xtyped(Symbol("anontok__", i), _type_token_ref(arg))
             else
                 ensure_xtyped(arg, Symbol("arg__", i))
             end
@@ -453,7 +455,10 @@ begin
                 dim_name == :(_) && continue
                 dim_name in arg_names && continue
                 fun_sizes[dim_name] = if tok
-                    "int $dim_name = $arg_name.$i;"
+                    # Stan has no 1-element tuple type — single-dim tokens are passed
+                    # as a plain `int`, so unpack without `.1` indexing.
+                    ndims = length(arg_type.args) - 1
+                    ndims == 1 ? "int $dim_name = $arg_name;" : "int $dim_name = $arg_name.$i;"
                 else
                     "int $dim_name = dims($arg_name)[$i];"
                 end
@@ -479,7 +484,7 @@ begin
         rv_expr = xsig_expr(ensure_xref(rv))
         stan_fundef = nothing
         if !ismissing(body)
-            @assert Meta.isexpr(body, :block)
+            @assert Meta.isexpr(body, :block) "@deffun: function body must be a `begin ... end` block, got `$body`."
             body = ensure_xreturn(body)
             sig_rv = if rv == :anything
                 rv_expr = :($forward_return!($(canonical(body)); info).type)
@@ -590,7 +595,7 @@ anon_info(x::NamedTuple) = (;[
     key=>anon_expr(key, value)
     for (key, value) in pairs(x)
 ]...)
-anon_expr(key, x) = error(typeof(x))
+anon_expr(key, x) = error("anon_expr not defined for key `$key` with value of type `$(typeof(x))` — add a specialization if this type needs an anon representation.")
 anon_expr(key, x::Tuple) = begin
     idxs = cumsum(map(!always_inline, x))
     ([
@@ -603,10 +608,16 @@ anon_expr(key, x::StanExpr) = StanExpr(key, StanType(center_type(x), ([
     for (i, s) in enumerate(stan_size(x))
 ]...,)))
 anon_expr(key, x::StanExpr2{<:types.func}) = StanExpr(type(x).info.value, type(x))
-anon_expr(key, x::TypeTokenExpr{T,S}) where {T,S} = TypeTokenExpr{T,S}(([
-    StanExpr(string(key, ".", i), StanType(types.int))
-    for i in 1:S
-]...,))
+# Sized type tokens expose their dims as tuple fields of the Stan arg (e.g.
+# `name.1`, `name.2`) so the function body can reference them by the original
+# Julia name via `int n = name.1;` preamble (see @deffun `fun_sizes`).
+anon_expr(key, x::StanExpr2{<:types.tokenof,S}) where {S} = StanExpr(
+    key,
+    StanType(center_type(x), ([
+        StanExpr(string(key, ".", i), StanType(types.int))
+        for i in 1:S
+    ]...,); value=type(x).info.value),
+)
 anon_expr(key, x::StanExpr2{<:types.tup}) = begin
     StanExpr(key, StanType(center_type(x); arg_types=([
         anon_expr(Symbol(key, ".", i), StanExpr(:_, arg_type)).type
@@ -625,7 +636,7 @@ func_name(x::QuoteNode) = func_name(x.value)
 func_name(x::Expr) = if x.head == :.
     func_name(x.args[end])
 else
-    error(dump(x))
+    error("func_name(::Expr) only handles `:.` heads (module-qualified refs), got head `$(x.head)` in `$x`.")
 end
 func_name(f, args) = begin
     rv = join(vcat(func_name(f), func_name(args)...), "_")
@@ -647,6 +658,10 @@ func_name(args::NamedTuple) = func_name(values(args))
 func_name(args::Tuple) = mapreduce(func_name, vcat, args; init=[])
 func_name(x) = []
 func_name(x::StanExpr) = always_inline(x) ? [func_name(type(x).info.value)] : []
+# Type tokens always contribute their center type to the mangled Stan name,
+# including sized tokens that are rendered at the call site.
+func_name(x::StanExpr2{<:types.tokenof}) = [func_name(type(x).info.value)]
+func_name(::Type{T}) where {T<:types.anything} = string(T.name.name)
 func_name(x::Function) = string(x)
 func_name(::typeof(&)) = "and"
 func_name(::typeof(|)) = "or"
@@ -667,6 +682,12 @@ func_name(::typeof(abs2)) = "square"
 func_args(args::NamedTuple) = Join(mapreduce(func_args, vcat, pairs(args); init=[]), ", ")
 func_args(arg::Pair) = func_args(arg...)
 func_args(name, ::StanExpr2{<:types.func}) = []
+# 0-dim tokens: no Stan-side arg. 1-dim tokens: a plain `int` (Stan has no
+# 1-element tuple type). N>1-dim tokens: pack dims into a single
+# `tuple(int, …)` parameter; the function body then unpacks fields via `.i`.
+func_args(name, ::StanExpr2{<:types.tokenof,0}) = []
+func_args(name, ::StanExpr2{<:types.tokenof,1}) = "int $name"
+func_args(name, ::StanExpr2{<:types.tokenof,S}) where {S} = "tuple(" * join(fill("int", S), ", ") * ") $name"
 func_args(name, value::StanExpr2) = sigtype(value) * " $name"
 func_args(name, value::Tuple) = reduce(vcat, [
     func_args(Symbol(name, i), vali)

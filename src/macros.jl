@@ -19,7 +19,7 @@ function __broadcasted__(x::Expr)
     return if x.head === :call && broadcastable(x.args[1])
         Expr(:call, broadcasted, broadcastargs...)
     elseif x.head === :comparison
-        error()
+        error("__broadcasted__: comparison-style expressions (`a < b < c`) aren't supported — rewrite as explicit `&&` chains.")
         Expr(:comparison, (iseven(i) && broadcastable(arg) && arg isa Symbol && Base.isoperator(arg) ?
                                Symbol('.', arg) : arg for (i, arg) in pairs(broadcastargs))...)
     elseif x.head === :$

@@ -9,7 +9,7 @@ builtin_module_names(x::Symbol) = endswith(string(x), r"_lp[md]f") ? [
 ] : x
 builtin_module_names(x::Expr) = mapreduce(builtin_module_names, vcat, x.args; init=[])
 macro builtin_module(x)
-    @assert Meta.isexpr(x, :vcat)
+    @assert Meta.isexpr(x, :vcat) "@builtin_module expects a `[names...]` vector literal, got `$x` (head `$(x isa Expr ? x.head : typeof(x))`)."
     names = builtin_module_names(x)
     esc(Expr(:block,
         Expr(:toplevel,

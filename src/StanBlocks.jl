@@ -51,6 +51,7 @@ include("quarto.jl")
 # --- Error display for StanBlocks computations ---
 
 _cause_error(e::StanBlocksError) = e.cause isa Tuple ? e.cause[1] : e.cause
+_cause_bt(e::StanBlocksError) = e.cause isa Tuple && length(e.cause) >= 2 ? e.cause[2] : nothing
 _cause_expr_stack(e::StanBlocksError) = e.cause isa Tuple && length(e.cause) >= 3 ? e.cause[3] : []
 
 unwrap_error(e::Base.TaskFailedException) = unwrap_error(e.task.exception)
@@ -58,18 +59,23 @@ unwrap_error(e::CompositeException) = unwrap_error(first(e.exceptions))
 unwrap_error(e::StanBlocksError) = unwrap_error(_cause_error(e))
 unwrap_error(e) = e
 
-function _format_cause(phase, context, cause_error, expr_stack)
-    sprint() do io
-        print(io, "StanBlocksError [", phase, "]: ", context, "\n")
-        print(io, "  Caused by: ")
+function _format_cause(io::IO, phase, context, cause_error, expr_stack, bt)
+    print(io, "StanBlocksError [", phase, "]: ", context, "\n")
+    print(io, "  Caused by: ")
+    # Delegate to the underlying error's own showerror(io, e, bt) when we have
+    # a backtrace — that path prints the Julia traceback. Fall back to the
+    # 2-arg form when bt is missing.
+    if bt === nothing
         showerror(io, cause_error)
-        if !isempty(expr_stack)
-            println(io, "\n\n  While processing:")
-            for (i, item) in enumerate(reverse(expr_stack))
-                x, lnn = item isa Tuple ? item : (item, nothing)
-                loc = lnn isa LineNumberNode ? (" at ", lnn.file, ":", lnn.line) : ()
-                print(io, "   [", i, "] ", x, loc..., "\n")
-            end
+    else
+        showerror(io, cause_error, bt)
+    end
+    if !isempty(expr_stack)
+        println(io, "\n\n  While processing:")
+        for (i, item) in enumerate(reverse(expr_stack))
+            x, lnn = item isa Tuple ? item : (item, nothing)
+            loc = lnn isa LineNumberNode ? (" at ", lnn.file, ":", lnn.line) : ()
+            print(io, "   [", i, "] ", x, loc..., "\n")
         end
     end
 end
@@ -78,17 +84,22 @@ Base.show(io::IO, e::StanBlocksError) = showerror(io, e)
 Base.show(io::IO, ::MIME"text/plain", e::StanBlocksError) = showerror(io, e)
 
 function Base.showerror(io::IO, e::StanBlocksError)
-    print(io, e.cause isa String ? e.cause : _format_cause(e.phase, e.context, unwrap_error(e), _cause_expr_stack(e)))
+    if e.cause isa String
+        print(io, e.cause)
+    else
+        _format_cause(io, e.phase, e.context, unwrap_error(e), _cause_expr_stack(e), _cause_bt(e))
+    end
 end
 
 function Base.showerror(io::IO, e::StanBlocksError, bt; kwargs...)
-    try
-        showerror(io, e)
-    catch internal_err
-        print(io, "StanBlocksError [", e.phase, "]: ", e.context)
-        print(io, "\n  (internal error in showerror: ")
-        showerror(io, internal_err)
-        print(io, ")")
+    # Prefer the stored backtrace (captured at the original throw site); fall
+    # back to the bt handed in by Julia's top-level error printer.
+    stored = _cause_bt(e)
+    effective_bt = stored === nothing ? bt : stored
+    if e.cause isa String
+        print(io, e.cause)
+    else
+        _format_cause(io, e.phase, e.context, unwrap_error(e), _cause_expr_stack(e), effective_bt)
     end
 end
 

@@ -1,7 +1,7 @@
 module stan
 using OrderedCollections, JSON, StanLogDensityProblems
 const RV_NAME = gensym("RV")
-dumperror(x) = (dump(x); error(x))
+dumperror(x) = (dump(x); error("dumperror (see dump above): value of type `$(typeof(x))` hit an unhandled code path."))
 """
 The AST and the data, pre-tracing. Can be instantiated via `stan_instantiate`.
 
@@ -171,8 +171,8 @@ usedin(s::Symbol, x::Expr) = any(usedin(s), x.args)
 usedin(s::Symbol, x::Symbol) = s == x
 usedin(s::Symbol, x::CanonicalExpr) = any(usedin(s), x.args)
 usedin(s::Symbol, x) = false
-top_replace_components(x::Expr; rep::OrderedDict) = begin 
-    @assert x.head == :block
+top_replace_components(x::Expr; rep::OrderedDict) = begin
+    @assert x.head == :block "top_replace_components expects a `begin ... end` block, got `$x` (head `$(x.head)`)."
     args = []
     for arg in x.args
         push!(args, pop!(rep, replace_name(arg), arg))
@@ -263,6 +263,9 @@ to_ragged(x::AbstractVector{<:AbstractVector{T}}) where {T<:Real} = (;
 )
 stan_type(expr, value::AbstractVector{<:AbstractVector{<:Real}}; kwargs...) = stan_type(expr, to_ragged(value); kwargs...)
 stan_call(f, args...) = stan_expr(CanonicalExpr(f, map(stan_expr, args)...))
+"""
+"""
+function stan_expr end
 stan_expr(x::StanExpr; kwargs...) = weak_remake(x; kwargs...)
 stan_expr(x; kwargs...) = stan_expr(x, x; kwargs...)
 stan_expr(expr, value; kwargs...) = StanExpr(expr, stan_type(expr, value; kwargs...))
@@ -286,12 +289,10 @@ stan_model(x::SlicModel; info=StanModel()) = begin
             catch e
                 e isa _StanBlocksError && rethrow()
                 bt = catch_backtrace()
-                msg = try
-                    parentmodule(@__MODULE__)._format_cause(:transpile, "model", e, _expr_stack)
-                catch
-                    (e, bt, _expr_stack)
-                end
-                throw(_StanBlocksError(:transpile, "model", msg))
+                # Keep the raw (exception, backtrace, expr_stack) tuple so the
+                # display layer can show the Julia traceback alongside the
+                # SLIC-level expression trace.
+                throw(_StanBlocksError(:transpile, "model", (e, bt, copy(_expr_stack))))
             end
         end
     end
@@ -311,6 +312,10 @@ _reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,ElseIfExpr,BreakExp
     "`$(_control_flow_kind(x))` control flow is not supported in @slic model bodies — ",
     "move the logic into an @deffun function body, or use a vectorised form."
 )
+"""
+Descends forwards through the expression tree. Basically _always_ returns a StanExpr.
+"""
+function forward! end
 forward!(x::SlicModel; info=StanModel()) = begin
     info = remake(info; mod=x.mod)
     for (key, value) in pairs(data(x))
@@ -342,7 +347,7 @@ canonical(x::CanonicalExprV{:call}) = begin
     kwargs = []
     for arg in x.args[2:end]
         if isexpr(arg, :parameters)
-            @assert all(isexpr(:kw), arg.args)
+            @assert all(isexpr(:kw), arg.args) "canonical(:call): `:parameters` block must contain only `:kw` entries, got `$(arg.args)`."
             for argi in arg.args
                 push!(kwargs, argi.args[1]=>argi.args[2])
             end
@@ -355,18 +360,18 @@ canonical(x::CanonicalExprV{:call}) = begin
     # isa(f, StanExpr) && error()
     CanonicalExpr(f, args...; kwargs...)
 end
-canonical(x::CanonicalExprV{:tuple}) = begin 
-    @assert length(x.args) > 0
+canonical(x::CanonicalExprV{:tuple}) = begin
+    @assert length(x.args) > 0 "canonical(:tuple): empty tuple expression `$x`."
     if any(Base.Fix2(isexpr, :parameters), x.args)
-        @assert length(x.args) == 1
-        @assert all(isexpr(:kw), x.args[1].args)
+        @assert length(x.args) == 1 "canonical(:tuple): a `:parameters`-bearing tuple must have exactly one arg (the parameters block), got $(length(x.args)) in `$x`."
+        @assert all(isexpr(:kw), x.args[1].args) "canonical(:tuple): named-tuple parameters block must contain only `:kw` entries, got `$(x.args[1].args)`."
         CanonicalExpr(:nt, x.args[1].args...)
     else
         x
     end
 end
-canonical(x::CanonicalExprV{:macrocall}) = begin 
-    @assert x.args[1] == GlobalRef(Core, Symbol("@doc"))
+canonical(x::CanonicalExprV{:macrocall}) = begin
+    @assert x.args[1] == GlobalRef(Core, Symbol("@doc")) "canonical(:macrocall): only `@doc` macrocalls are supported in SLIC bodies, got `$(x.args[1])`."
     CanonicalExpr(:document, x.args[3:4]...)
 end
 canonical(x::CanonicalExprV{Symbol("'")}) = CanonicalExpr(:adjoint, x.args...)
@@ -389,14 +394,14 @@ _pop_expr!(info) = (s = _get_expr_stack(info); isnothing(s) || pop!(s); nothing)
 forwards!(;info) = x->forwards!(x; info)
 forwards!(x; info) = [forward!(x; info)]
 forwards!(x::SplatExpr; info) = [forward!(x.args[1]; info)...]
-forward!(x; info) = error(x)
+forward!(x; info) = error("forward! not defined for value `$x` of type `$(typeof(x))` — no method matches a more specific signature.")
 forward!(;info) = x->forward!(x; info)
 forward!(x::Tuple; info) = (mapreduce(forwards!(;info), vcat, x; init=[])...,)
 forward!(x::Union{Tuple,NamedTuple,Vector,Base.Pairs}; info) = map(forward!(;info), x)
 forward!(x::Union{String,Number,Function,Nothing}; info) = x
 forward!(x::LineNumberNode; info) = (lnn = _get_lnn_ref(info); lnn isa Ref && (lnn[] = x); x)
 forward!(x::QuoteNode; info) = x.value
-forward!(x::Irrational; info) = error(x)
+forward!(x::Irrational; info) = error("forward! not defined for irrational `$x` — only `π` is handled; convert to a concrete numeric value first.")
 forward!(x::Irrational{:π}; info) = forward!(Float64(pi); info)
 forward!(x::Number; info) = maybedata(x, x)
 get_module(info::StanModel) = get(info.meta, :mod, Main)
@@ -557,7 +562,7 @@ forward!(x::GetPropertyExpr; info) = begin
     names = keys(obj.type.info.arg_types)
     @assert name in names
     return forward!(CanonicalExpr(:getindex, x.args[1], findfirst(==(name), names)); info)
-    error(dump((;obj, name)))
+    error("getproperty fallback: unable to resolve `$obj.$name` (type $(typeof(obj))).")
     stan_expr(remake(x, forward!(x.args; info)...))
 end
 forward!(x::BracesExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
@@ -634,7 +639,7 @@ stan_expr(x::CanonicalExpr) = begin
 end
 stan_expr(x::CanonicalExpr{<:SlicModel}) = head(x)(x.args...;x.kwargs...)
 
-backward!(x; info) = error(x)
+backward!(x; info) = error("backward! not defined for value `$x` of type `$(typeof(x))` — no method matches a more specific signature.")
 backward!(;info) = x->backward!(x; info)
 backward!(x::Union{Tuple,NamedTuple,Vector,Base.Pairs}; info) = map(backward!(;info), x)
 backward!(x::Union{String,Number,LineNumberNode,Symbol,Nothing,Colon}; info) = x
@@ -715,13 +720,14 @@ fetch_data!(x::StanExpr{Symbol}; info) = begin
     hasvalue(x) && push!(block(info, :data), x; info)
 end
 fetch_data!(x::StanExpr{<:Function}; info) = nothing
+fetch_data!(x::StanExpr{<:DataType}; info) = nothing
 fetch_data!(x::StanExpr{<:CanonicalExpr}; info) = fetch_data!((type(x), expr(x)); info)
 fetch_data!(x::CanonicalExpr; info) = begin
     fetch_functions!(x; info=block(info, :functions).content)
     fetch_data!(x.args; info)
 end
 fetch_data!(x::CanonicalExprV{:kw}; info) = fetch_data!(x.args[2]; info)
-fetch_data!(x; info) = error(x)
+fetch_data!(x; info) = error("fetch_data! not defined for value `$x` of type `$(typeof(x))`.")
 
 Base.get!(b::DocumentExpr{<:Any,<:DeclarativeBlock}, k, x) = get!(content(b.args[2]), k, remake(b, b.args[1], x))
 Base.push!(b::DocumentExpr{<:Any,<:ImperativeBlock}, x) = push!(content(b.args[2]), remake(b, b.args[1], x))
@@ -926,7 +932,7 @@ Base.show(io::IO, x::Join) = join(io, x.iterator, x.delim)
 
 abstract type WrappedIO <: IO end
 Base.parent(io::WrappedIO) = io.parent
-Base.write(io::WrappedIO, arg) = error(arg)#write(parent(io), arg)
+Base.write(io::WrappedIO, arg) = error("WrappedIO `write` not defined for argument of type `$(typeof(arg))`; add a specialized Base.write method.")#write(parent(io), arg)
 Base.write(io::WrappedIO, arg::Char) = write(parent(io), arg)
 Base.write(io::WrappedIO, arg::Symbol) = write(parent(io), arg)
 Base.write(io::WrappedIO, arg::Array) = write(parent(io), arg)
@@ -977,8 +983,11 @@ Base.show(io::StanIO, x::StanModel) = begin
     print(io, Join(blocks(x), "\n"))
 end
 Base.show(io::StanIO, x::StanExpr) = isa(type(x), StringStanType) ? print(io, expr(x), "::", type(x)) : print(io, expr(x))
-Base.show(io::StanIO, x::TypeTokenExpr{T,1}) where {T} = autoprint(io, "(", x.size[1], ",)")
-Base.show(io::StanIO, x::TypeTokenExpr) = autoprint(io, "(", Join(x.size, ", "), ")")
+# Sized type tokens render as Stan tuple literals at the call site. 0-dim
+# tokens are always_inline'd away, so no call-site form is needed for them.
+# 1-dim tokens render as a bare int (Stan has no 1-element tuple type).
+Base.show(io::StanIO, x::StanExpr2{<:types.tokenof,1}) = autoprint(io, stan_size(x)[1])
+Base.show(io::StanIO, x::StanExpr2{<:types.tokenof}) = autoprint(io, "(", Join(stan_size(x), ", "), ")")
 Base.show(io::StanIO, ::Colon) = print(io, ":")
 Base.show(io::IO, x::StanModel) = show(StanIO(io), x)
 Base.show(io::IO, x::SlicModel; mayfail=true) = try
@@ -1077,7 +1086,7 @@ Base.show(io::IO, x::IfExpr) = begin
         print(io, " else", if isa(e, BlockExpr)
             StanBlock(Symbol(), e.args)
         else 
-            error(dump(x))#remake(x, e.args...)
+            error("if/elseif rendering: else branch is not a BlockExpr (got `$(typeof(e))` from `$x`).")#remake(x, e.args...)
         end)
     end
 end
