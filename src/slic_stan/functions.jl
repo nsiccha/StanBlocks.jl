@@ -74,6 +74,28 @@ tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any}}) = tra
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Colon}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], x.args[2], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 2),))))
 )
+_colon_range_expr(x, j) = StanExpr(missing, StanType(types.int, (stan_size(x, min(j, stan_ndim(x))),)))
+tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Colon}}) = tracetype(
+    CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1), x.args[3])
+)
+tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Colon,<:Colon}}) = tracetype(
+    CanonicalExpr(head(x), x.args[1], x.args[2], _colon_range_expr(x.args[1], 2), x.args[4])
+)
+tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any,<:Colon}}) = tracetype(
+    CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1), x.args[3], x.args[4])
+)
+tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Colon,<:Any}}) = tracetype(
+    CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1), x.args[3], x.args[4])
+)
+tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Any,<:Colon}}) = tracetype(
+    CanonicalExpr(head(x), x.args[1], x.args[2], x.args[3], _colon_range_expr(x.args[1], 3))
+)
+tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Colon,<:Any}}) = tracetype(
+    CanonicalExpr(head(x), x.args[1], x.args[2], _colon_range_expr(x.args[1], 2), x.args[4])
+)
+tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any,<:Any}}) = tracetype(
+    CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1), x.args[3], x.args[4])
+)
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = x.args[1].type.info.arg_types[x.args[2].type.info.value]
 
 tracetype(x::CanonicalExpr{Colon}) = StanType(types.int, (stan_call(+,stan_expr(1,1),stan_call(-,x.args[2],x.args[1])), ))
