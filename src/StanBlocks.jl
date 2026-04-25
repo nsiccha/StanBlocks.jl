@@ -59,17 +59,22 @@ unwrap_error(e::CompositeException) = unwrap_error(first(e.exceptions))
 unwrap_error(e::StanBlocksError) = unwrap_error(_cause_error(e))
 unwrap_error(e) = e
 
+_safe_showerror(io, e, bt) = try
+    bt === nothing ? showerror(io, e) : showerror(io, e, bt)
+catch err
+    @warn "showerror threw; falling back to repr" cause_type=typeof(e) inner=typeof(err) inner_msg=sprint(showerror, err)
+    try
+        print(io, sprint(show, e))
+    catch err2
+        print(io, "<error rendering ", typeof(e), ": showerror threw ", typeof(err),
+              " (", sprint(showerror, err), "); repr threw ", typeof(err2), ">")
+    end
+end
+
 function _format_cause(io::IO, phase, context, cause_error, expr_stack, bt)
     print(io, "StanBlocksError [", phase, "]: ", context, "\n")
     print(io, "  Caused by: ")
-    # Delegate to the underlying error's own showerror(io, e, bt) when we have
-    # a backtrace — that path prints the Julia traceback. Fall back to the
-    # 2-arg form when bt is missing.
-    if bt === nothing
-        showerror(io, cause_error)
-    else
-        showerror(io, cause_error, bt)
-    end
+    _safe_showerror(io, cause_error, bt)
     if !isempty(expr_stack)
         println(io, "\n\n  While processing:")
         for (i, item) in enumerate(reverse(expr_stack))
