@@ -360,54 +360,8 @@ import Statistics
         rv
     end
     vector_std_normal_rng(n::int)::vector[n] = to_vector(normal_rng(rep_vector(0, n), 1))
-    # Sized-token rng overloads: gq `x::T[n] ~ dist(args...)` synthesizes
-    # `dist_rng(T[n], args...)` which dispatches here on the token's shape.
-    # Stan's native `*_rng(vector, ...)` already returns `real[n]`; only the
-    # `vector[n]` token path needs an outer `to_vector` wrap.
-    std_normal_rng(real[n])::real[n] = normal_rng(rep_vector(0, n), 1)
-    std_normal_rng(vector[n])::vector[n] = to_vector(normal_rng(rep_vector(0, n), 1))
-    normal_rng(real[n], mu::real, sigma::real)::real[n] = normal_rng(rep_vector(mu, n), sigma)
-    normal_rng(vector[n], mu::real, sigma::real)::vector[n] = to_vector(normal_rng(rep_vector(mu, n), sigma))
-    cauchy_rng(real[n], a::real, b::real)::real[n] = cauchy_rng(rep_vector(a, n), b)
-    cauchy_rng(vector[n], a::real, b::real)::vector[n] = to_vector(cauchy_rng(rep_vector(a, n), b))
-    lognormal_rng(real[n], a::real, b::real)::real[n] = lognormal_rng(rep_vector(a, n), b)
-    lognormal_rng(vector[n], a::real, b::real)::vector[n] = to_vector(lognormal_rng(rep_vector(a, n), b))
-    gamma_rng(real[n], a::real, b::real)::real[n] = gamma_rng(rep_vector(a, n), b)
-    gamma_rng(vector[n], a::real, b::real)::vector[n] = to_vector(gamma_rng(rep_vector(a, n), b))
-    inv_gamma_rng(real[n], a::real, b::real)::real[n] = inv_gamma_rng(rep_vector(a, n), b)
-    inv_gamma_rng(vector[n], a::real, b::real)::vector[n] = to_vector(inv_gamma_rng(rep_vector(a, n), b))
-    beta_rng(real[n], a::real, b::real)::real[n] = beta_rng(rep_vector(a, n), b)
-    beta_rng(vector[n], a::real, b::real)::vector[n] = to_vector(beta_rng(rep_vector(a, n), b))
-    uniform_rng(real[n], a::real, b::real)::real[n] = uniform_rng(rep_vector(a, n), b)
-    uniform_rng(vector[n], a::real, b::real)::vector[n] = to_vector(uniform_rng(rep_vector(a, n), b))
-    weibull_rng(real[n], a::real, b::real)::real[n] = weibull_rng(rep_vector(a, n), b)
-    weibull_rng(vector[n], a::real, b::real)::vector[n] = to_vector(weibull_rng(rep_vector(a, n), b))
-    frechet_rng(real[n], a::real, b::real)::real[n] = frechet_rng(rep_vector(a, n), b)
-    frechet_rng(vector[n], a::real, b::real)::vector[n] = to_vector(frechet_rng(rep_vector(a, n), b))
-    double_exponential_rng(real[n], a::real, b::real)::real[n] = double_exponential_rng(rep_vector(a, n), b)
-    double_exponential_rng(vector[n], a::real, b::real)::vector[n] = to_vector(double_exponential_rng(rep_vector(a, n), b))
-    logistic_rng(real[n], a::real, b::real)::real[n] = logistic_rng(rep_vector(a, n), b)
-    logistic_rng(vector[n], a::real, b::real)::vector[n] = to_vector(logistic_rng(rep_vector(a, n), b))
-    gumbel_rng(real[n], a::real, b::real)::real[n] = gumbel_rng(rep_vector(a, n), b)
-    gumbel_rng(vector[n], a::real, b::real)::vector[n] = to_vector(gumbel_rng(rep_vector(a, n), b))
-    pareto_rng(real[n], a::real, b::real)::real[n] = pareto_rng(rep_vector(a, n), b)
-    pareto_rng(vector[n], a::real, b::real)::vector[n] = to_vector(pareto_rng(rep_vector(a, n), b))
-    scaled_inv_chi_square_rng(real[n], a::real, b::real)::real[n] = scaled_inv_chi_square_rng(rep_vector(a, n), b)
-    scaled_inv_chi_square_rng(vector[n], a::real, b::real)::vector[n] = to_vector(scaled_inv_chi_square_rng(rep_vector(a, n), b))
-    exponential_rng(real[n], r::real)::real[n] = exponential_rng(rep_vector(r, n))
-    exponential_rng(vector[n], r::real)::vector[n] = to_vector(exponential_rng(rep_vector(r, n)))
-    chi_square_rng(real[n], nu::real)::real[n] = chi_square_rng(rep_vector(nu, n))
-    chi_square_rng(vector[n], nu::real)::vector[n] = to_vector(chi_square_rng(rep_vector(nu, n)))
-    inv_chi_square_rng(real[n], nu::real)::real[n] = inv_chi_square_rng(rep_vector(nu, n))
-    inv_chi_square_rng(vector[n], nu::real)::vector[n] = to_vector(inv_chi_square_rng(rep_vector(nu, n)))
-    rayleigh_rng(real[n], s::real)::real[n] = rayleigh_rng(rep_vector(s, n))
-    rayleigh_rng(vector[n], s::real)::vector[n] = to_vector(rayleigh_rng(rep_vector(s, n)))
-    student_t_rng(real[n], nu::real, a::real, b::real)::real[n] = student_t_rng(nu, rep_vector(a, n), b)
-    student_t_rng(vector[n], nu::real, a::real, b::real)::vector[n] = to_vector(student_t_rng(nu, rep_vector(a, n), b))
-    skew_normal_rng(real[n], a::real, b::real, c::real)::real[n] = skew_normal_rng(rep_vector(a, n), b, c)
-    skew_normal_rng(vector[n], a::real, b::real, c::real)::vector[n] = to_vector(skew_normal_rng(rep_vector(a, n), b, c))
-    exp_mod_normal_rng(real[n], a::real, b::real, c::real)::real[n] = exp_mod_normal_rng(rep_vector(a, n), b, c)
-    exp_mod_normal_rng(vector[n], a::real, b::real, c::real)::vector[n] = to_vector(exp_mod_normal_rng(rep_vector(a, n), b, c))
+    # Sized-token rng overloads are generated via `@eval @deffun` loops below
+    # (after the block closes). See comment at the @eval block.
     bernoulli_lpmfs(args...) = bernoulli_lpmf(args...)
     bernoulli_lpmfs(obs::anything[n], args...) = jbroadcasted(bernoulli_lpmfs, obs, args...)
     bernoulli_logit_lpmfs(args...) = bernoulli_logit_lpmf(args...)
@@ -493,6 +447,7 @@ import Statistics
         end
         rv
     end
+    ordered_logistic_rng(int[n], eta::vector[n], c::vector[m])::int[n] = ordered_logistic_rng(eta, c)
     inv_gamma_lpdfs(args...) = inv_gamma_lpdf(args...)
     inv_gamma_lpdfs(obs::anything[n], alpha, beta) = jbroadcasted(inv_gamma_lpdfs, obs, alpha, beta)
     double_exponential_lpdfs(args...) = double_exponential_lpdf(args...)
@@ -599,8 +554,13 @@ import Statistics
     uniform_rng(::real, ::real)::real
     von_mises_rng(::real, ::real)::real
     neg_binomial_2_rng(::real, ::real)::int
+    neg_binomial_2_rng(::vector[n], ::real)::int[n]
+    neg_binomial_2_rng(::real, ::vector[n])::int[n]
+    neg_binomial_2_rng(::vector[n], ::vector[n])::int[n]
     beta_binomial_rng(::int, ::real, ::real)::int
     binomial_rng(::int, ::real)::int
+    binomial_rng(::int[n], ::real)::int[n]
+    binomial_rng(::int[n], ::vector[n])::int[n]
     bernoulli_rng(::real)::int
 
     # New distribution RNG signatures
@@ -615,9 +575,13 @@ import Statistics
     categorical_logit_rng(::vector[n])::int
     ordered_logistic_rng(::real, ::vector[m])::int
     poisson_rng(::real)::int
+    poisson_rng(::vector[n])::int[n]
     poisson_log_rng(::real)::int
     poisson_log_rng(::vector[n])::int[n]
     neg_binomial_rng(::real, ::real)::int
+    neg_binomial_rng(::vector[n], ::real)::int[n]
+    neg_binomial_rng(::real, ::vector[n])::int[n]
+    neg_binomial_rng(::vector[n], ::vector[n])::int[n]
     discrete_range_rng(::int, ::int)::int
     dirichlet_rng(::vector[n])::vector[n]
     multinomial_rng(::vector[n], ::int)::int[n]
@@ -701,7 +665,96 @@ import Statistics
     #     d
     # end
 end
-@defsig begin 
+
+# --- Sized-token rng overloads (generated via @eval @deffun) -----------------
+# gq `x::T[n] ~ dist(args...)` synthesizes `dist_rng(T[n], args...)` which
+# dispatches here on the token's shape. Stan's native `*_rng` broadcasts scalars
+# against vector args natively, so we only need `rep_vector` in the all-scalar
+# case (to give Stan a shape to work with). Our convention: output is always
+# `vector[n]` / `int[n]` (not Stan's native `real[n]`), so the vector-token
+# path wraps continuous rngs in `to_vector`.
+
+# std_normal token (0-arg)
+@deffun std_normal_rng(real[n])::real[n] = normal_rng(rep_vector(0, n), 1)
+@deffun std_normal_rng(vector[n])::vector[n] = to_vector(normal_rng(rep_vector(0, n), 1))
+
+# 2-arg continuous families. Two semantic cases:
+#   - all scalar: need `rep_vector` so Stan produces a shaped output
+#   - catch-all (at least one shape-[n] container): Stan native broadcasts
+# Julia dispatch picks the more-specific `(a::real, b::real)` when both scalar.
+for dist in (:normal, :cauchy, :lognormal, :gamma, :inv_gamma, :beta, :uniform,
+             :weibull, :frechet, :double_exponential, :logistic, :gumbel,
+             :pareto, :scaled_inv_chi_square, :von_mises, :loglogistic)
+    drng = Symbol(dist, :_rng)
+    @eval @deffun $drng(real[n],   a::real, b::real)::real[n]   = $drng(rep_vector(a, n), b)
+    @eval @deffun $drng(vector[n], a::real, b::real)::vector[n] = to_vector($drng(rep_vector(a, n), b))
+    @eval @deffun $drng(real[n],   a, b)::real[n]   = $drng(a, b)
+    @eval @deffun $drng(vector[n], a, b)::vector[n] = to_vector($drng(a, b))
+end
+
+# 1-arg continuous families
+for dist in (:exponential, :chi_square, :inv_chi_square, :rayleigh)
+    drng = Symbol(dist, :_rng)
+    @eval @deffun $drng(real[n],   a::real)::real[n]   = $drng(rep_vector(a, n))
+    @eval @deffun $drng(vector[n], a::real)::vector[n] = to_vector($drng(rep_vector(a, n)))
+    @eval @deffun $drng(real[n],   a)::real[n]   = $drng(a)
+    @eval @deffun $drng(vector[n], a)::vector[n] = to_vector($drng(a))
+end
+
+# 3-arg continuous (leading arg — nu / alpha — is always scalar in practice)
+for dist in (:student_t, :skew_normal, :exp_mod_normal, :pareto_type_2)
+    drng = Symbol(dist, :_rng)
+    @eval @deffun $drng(real[n],   nu::real, a::real, b::real)::real[n]   = $drng(nu, rep_vector(a, n), b)
+    @eval @deffun $drng(vector[n], nu::real, a::real, b::real)::vector[n] = to_vector($drng(nu, rep_vector(a, n), b))
+    @eval @deffun $drng(real[n],   nu::real, a, b)::real[n]   = $drng(nu, a, b)
+    @eval @deffun $drng(vector[n], nu::real, a, b)::vector[n] = to_vector($drng(nu, a, b))
+end
+
+# 1-arg discrete families (output is int[n]; no to_vector wrap)
+for dist in (:bernoulli, :bernoulli_logit, :poisson, :poisson_log)
+    drng = Symbol(dist, :_rng)
+    @eval @deffun $drng(int[n], p::real)::int[n] = $drng(rep_vector(p, n))
+    @eval @deffun $drng(int[n], p)::int[n]       = $drng(p)
+end
+
+# 2-arg discrete families
+for dist in (:neg_binomial, :neg_binomial_2)
+    drng = Symbol(dist, :_rng)
+    @eval @deffun $drng(int[n], a::real, b::real)::int[n] = $drng(rep_vector(a, n), b)
+    @eval @deffun $drng(int[n], a, b)::int[n]             = $drng(a, b)
+end
+
+# binomial: N::int[n] is already a container, so Stan broadcasts scalar p natively
+@deffun binomial_rng(int[n], N::int[n], p)::int[n] = binomial_rng(N, p)
+
+# beta_binomial: (trials, alpha, beta); trials always int[n]
+@deffun beta_binomial_rng(int[n], N::int[n], a::real, b::real)::int[n] = beta_binomial_rng(N, a, b)
+@deffun beta_binomial_rng(int[n], N::int[n], a, b)::int[n] = beta_binomial_rng(N, a, b)
+
+# dirichlet: native already returns vector[n]; token path just unwraps
+@deffun dirichlet_rng(vector[n], alpha::vector[n])::vector[n] = dirichlet_rng(alpha)
+
+# categorical / categorical_logit: per-row loop (same prob vector reused each row)
+@deffun categorical_rng(int[n], p::vector[k])::int[n] = begin
+    rv::int[n]
+    for i in 1:n
+        rv[i] = categorical_rng(p)
+    end
+    rv
+end
+@deffun categorical_logit_rng(int[n], eta::vector[k])::int[n] = begin
+    rv::int[n]
+    for i in 1:n
+        rv[i] = categorical_logit_rng(eta)
+    end
+    rv
+end
+
+# multi_normal / multi_normal_cholesky: native already returns vector[n]
+@deffun multi_normal_rng(vector[n], loc::vector[n], cov)::vector[n]          = multi_normal_rng(loc, cov)
+@deffun multi_normal_cholesky_rng(vector[n], loc::vector[n], scale)::vector[n] = multi_normal_cholesky_rng(loc, scale)
+
+@defsig begin
     Union{typeof.((sqrt, exp, log, log10, sin, cos, asin, acos, tan, atan,
         cosh, sinh, tanh, acosh, asinh, atanh,
         log1m, inv_logit, logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs,
@@ -959,6 +1012,8 @@ end
     end
     typeof(beta_binomial_rng) => begin
         (int[n], real, real) => int[n]
+        (int[n], vector[n], real) => int[n]
+        (int[n], real, vector[n]) => int[n]
         (int[n], vector[n], vector[n]) => int[n]
     end
     Base.BroadcastFunction => begin 

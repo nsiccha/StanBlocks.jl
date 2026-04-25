@@ -143,9 +143,14 @@ tracetype(x::ElseIfExpr) = StanType(types.anything)
 tracetype(x::BlockExpr) = error("tracetype(::BlockExpr) not implemented — block expressions don't carry a result type; refactor the caller to trace the final expression instead.")#tracetype(expr(x.args[end]))
 
 autokwargs(::CanonicalExpr) = (;)
+# `type=T` kwarg: `forward!(::Type{<:types.anything})` wraps the symbol as a
+# `tokenof{T}` StanExpr whose `.value` carries the raw Type. Unwrap so
+# `StanType(ct, size; …)` receives a bare Type as it expects.
+_unwrap_type_kwarg(ct::StanExpr2{<:types.tokenof,0}) = type(ct).info.value
+_unwrap_type_kwarg(ct) = ct
 autotype(x::StanExpr) = autotype(type(x); merge(autokwargs(expr(x)), expr(x).kwargs)...)
-autotype(x::StanType; kwargs...) = begin 
-    ct = get(kwargs, :type, center_type(x))
+autotype(x::StanType; kwargs...) = begin
+    ct = _unwrap_type_kwarg(get(kwargs, :type, center_type(x)))
     nsize = [
         kwargs[key]
         for key in (:m, :n, :o) if key in keys(kwargs)
@@ -568,12 +573,17 @@ fetch_functions!(x::CanonicalExpr; info) = begin
     isnothing(info[sx]) && return
     fetch_subfunctions!(info[sx].body; info)
 end
-fetch_functions!(x::SamplingExpr; info) = begin 
+fetch_functions!(x::SamplingExpr; info) = begin
     lhs, rhs = x.args
     fetch_functions!(expr(lpxf_expr(lhs, rhs)); info)
     if qual(lhs) == :data || lqual(lhs) == :undefined
         fetch_functions!(expr(likelihood_expr(lhs, rhs)); info)
-        fetch_functions!(expr(rng_expr(lhs, rhs)); info)
+        # Mirror the gq push: wrap `lhs` into a tokenof token so the per-shape
+        # `*_rng` @deffun overloads dispatch. Without this, `rng_expr` misses
+        # entirely — it no longer accepts plain StanExprs as the first arg.
+        lhs_ct = center_type(lhs)
+        token = StanExpr(lhs_ct, StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
+        fetch_functions!(expr(rng_expr(token, rhs)); info)
     end
 end
 fetch_subfunctions!(;info) = x->fetch_subfunctions!(x; info)
