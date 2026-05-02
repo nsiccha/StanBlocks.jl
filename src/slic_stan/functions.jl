@@ -353,7 +353,11 @@ begin
 
     hasvararg(args) = length(args) > 0 && Meta.isexpr(args[end], :(...))
     maybedoc(x::AbstractString) = length(strip(x)) == 0 ? "" : strip(replace("\n" * strip(x), "\n"=>"\n// ")) * "\n"
-    forward_return!(x; info) = begin
+    forward_return!(x; info) = task_local_storage(:_slic_inline_pending, Any[]) do
+        # Isolate any inline-call pending statements from this throwaway
+        # type-inference trace — they'd otherwise leak into the caller's
+        # block (for non-inline UDFs whose tracetype evaluates an inlined
+        # call as part of return-type inference).
         info = OrderedDict{Symbol,Any}(pairs(info))
         forward!(x; info)
         info[RV_NAME]

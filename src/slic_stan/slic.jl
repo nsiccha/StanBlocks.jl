@@ -283,16 +283,18 @@ stan_model(x::SlicModel; info=StanModel()) = begin
     info = remake(info; _expr_stack, _current_lnn)
     task_local_storage(:_slic_expr_stack, _expr_stack) do
         task_local_storage(:_slic_current_lnn, _current_lnn) do
-            try
-                distribute!(backward!(forward!(x; info); info); info)
-                remake(info; docstring=get(x.data, :docstring, ""))
-            catch e
-                e isa _StanBlocksError && rethrow()
-                bt = catch_backtrace()
-                # Keep the raw (exception, backtrace, expr_stack) tuple so the
-                # display layer can show the Julia traceback alongside the
-                # SLIC-level expression trace.
-                throw(_StanBlocksError(:transpile, "model", (e, bt, copy(_expr_stack))))
+            task_local_storage(:_slic_inline_pending, Any[]) do
+                try
+                    distribute!(backward!(forward!(x; info); info); info)
+                    remake(info; docstring=get(x.data, :docstring, ""))
+                catch e
+                    e isa _StanBlocksError && rethrow()
+                    bt = catch_backtrace()
+                    # Keep the raw (exception, backtrace, expr_stack) tuple so the
+                    # display layer can show the Julia traceback alongside the
+                    # SLIC-level expression trace.
+                    throw(_StanBlocksError(:transpile, "model", (e, bt, copy(_expr_stack))))
+                end
             end
         end
     end
@@ -481,7 +483,7 @@ expand_inline_or_trace(x::CanonicalExpr; info) = begin
     expand_inline!(x, meta; info)
 end
 expand_inline!(x::CanonicalExpr, meta; info) = begin
-    arg_names = meta.arg_names
+    arg_names = collect(meta.arg_names)
     n_pos = length(arg_names)
     @assert length(x.args) >= n_pos "@inline: call to $(head(x)) has $(length(x.args)) args, expected ≥ $n_pos."
     subst = Dict{Symbol,Any}()
@@ -493,30 +495,92 @@ expand_inline!(x::CanonicalExpr, meta; info) = begin
     elseif length(x.args) > n_pos
         error("@inline: call to $(head(x)) has $(length(x.args)) args but the UDF takes exactly $n_pos.")
     end
-    body = inline_unwrap_single(meta.body, head(x))
-    substituted = inline_substitute(body, subst, meta.vararg_name)
-    forward!(canonical(substituted); info)
+    stmts = inline_unwrap_block(meta.body, head(x))
+    isempty(stmts) && error("@inline UDF $(head(x)): empty body.")
+    # Collect names introduced inside the body so each call site gets fresh
+    # locals that can't collide with the caller's vars or with sibling
+    # expansions of the same UDF.
+    locals = Set{Symbol}()
+    for s in stmts; _collect_locals!(s, locals); end
+    arg_set = Set{Symbol}(arg_names)
+    meta.vararg_name !== nothing && push!(arg_set, meta.vararg_name)
+    rename = Dict{Symbol,Symbol}()
+    if !isempty(locals)
+        id = _next_inline_id()
+        for name in locals
+            name in arg_set && continue
+            rename[name] = Symbol(name, "__il_", id)
+        end
+    end
+    rewritten = [inline_substitute(s, subst, rename, meta.vararg_name) for s in stmts]
+    pending = _get_inline_pending()
+    for s in rewritten[1:end-1]
+        result = forward!(canonical(s); info)
+        pending !== nothing && push!(pending, result)
+    end
+    forward!(canonical(rewritten[end]); info)
 end
-# Phase A2: only single-expression bodies. A `:block` body must contain
-# exactly one non-`LineNumberNode` arg; multi-statement support comes next.
-inline_unwrap_single(body, fname) = body
-inline_unwrap_single(body::Expr, fname) = if body.head === :block
+
+# Per-callsite counter for locals; uniqueness is the only requirement.
+const _INLINE_CALLSITE_COUNTER = Ref(0)
+_next_inline_id() = (_INLINE_CALLSITE_COUNTER[] += 1)
+
+_get_inline_pending() = get(task_local_storage(), :_slic_inline_pending, nothing)
+
+# Unwrap an inline-UDF body into a vector of effective statements. A `:return`
+# in the final position is unwrapped to its value; an empty/all-LNN body
+# signals the caller to error.
+inline_unwrap_block(body, fname) = [body]
+inline_unwrap_block(body::Expr, fname) = if body.head === :block
     real = filter(a -> !isa(a, LineNumberNode), body.args)
-    length(real) == 1 || error(
-        "@inline / `!` UDF $fname: only single-expression bodies are supported in this version (multi-statement support coming next)."
-    )
-    inline_unwrap_single(real[1], fname)
+    isempty(real) && return Any[]
+    if Meta.isexpr(real[end], :return)
+        real[end] = real[end].args[1]
+    end
+    real
 elseif body.head === :return
-    inline_unwrap_single(body.args[1], fname)
+    [body.args[1]]
 else
-    body
+    [body]
 end
-# Walk the (un-canonicalised) body AST replacing parameter Symbols with
-# their call-site StanExprs. Splat positions referencing the vararg name
-# (`args...`) expand into separate arguments at the parent call.
-inline_substitute(x, subst, vararg_name) = x
-inline_substitute(x::Symbol, subst, vararg_name) = get(subst, x, x)
-inline_substitute(x::Expr, subst, vararg_name) = begin
+
+# Walk the un-canonicalised body collecting names introduced as new bindings
+# (LHS of `=`, `for` indices, `::`-decls, tuple destructuring). Indexed LHSes
+# (`a[i] = ...`) and field LHSes don't introduce new names — skip those.
+_collect_locals!(x, locals) = nothing
+_collect_locals!(x::Expr, locals) = begin
+    if x.head === :(=)
+        _collect_lhs!(x.args[1], locals)
+        _collect_locals!(x.args[2], locals)
+    elseif x.head === :for && length(x.args) >= 1 && Meta.isexpr(x.args[1], :(=))
+        _collect_lhs!(x.args[1].args[1], locals)
+        for a in x.args[2:end]; _collect_locals!(a, locals); end
+    elseif x.head === :(::)
+        _collect_lhs!(x.args[1], locals)
+    else
+        for a in x.args; _collect_locals!(a, locals); end
+    end
+end
+_collect_lhs!(x, locals) = nothing
+_collect_lhs!(x::Symbol, locals) = push!(locals, x)
+_collect_lhs!(x::Expr, locals) = if x.head === :tuple
+    for a in x.args; _collect_lhs!(a, locals); end
+elseif x.head === :(::)
+    _collect_lhs!(x.args[1], locals)
+end
+
+# Walk the body AST replacing parameter Symbols with call-site StanExprs and
+# local names with their renamed forms. Splat positions referencing the
+# vararg name (`args...`) expand into separate arguments at the parent call.
+inline_substitute(x, subst, rename, vararg_name) = x
+inline_substitute(x::Symbol, subst, rename, vararg_name) = if haskey(subst, x)
+    subst[x]
+elseif haskey(rename, x)
+    rename[x]
+else
+    x
+end
+inline_substitute(x::Expr, subst, rename, vararg_name) = begin
     new_args = []
     for arg in x.args
         if vararg_name !== nothing && Meta.isexpr(arg, :...) &&
@@ -525,14 +589,30 @@ inline_substitute(x::Expr, subst, vararg_name) = begin
                 push!(new_args, v)
             end
         else
-            push!(new_args, inline_substitute(arg, subst, vararg_name))
+            push!(new_args, inline_substitute(arg, subst, rename, vararg_name))
         end
     end
     Expr(x.head, new_args...)
 end
 fold_shape_query(x) = x
 fold_shape_query(x::StanExpr) = x
-forward!(x::BlockExpr; info) = remake(x, forward!(x.args; info)...)
+# `forward!(::BlockExpr)` pushes a fresh pending-statements buffer for its
+# scope, drains it between args, then pops on exit. This is what lets inline
+# UDFs hoist multi-statement bodies into the enclosing block without leaking
+# into sibling sub-blocks (for / while / if branches, nested blocks).
+forward!(x::BlockExpr; info) = task_local_storage(:_slic_inline_pending, Any[]) do
+    new_args = Any[]
+    pending = task_local_storage(:_slic_inline_pending)
+    for arg in x.args
+        resolved = forward!(arg; info)
+        if !isempty(pending)
+            append!(new_args, pending)
+            empty!(pending)
+        end
+        push!(new_args, resolved)
+    end
+    remake(x, new_args...)
+end
 forward!(x::AssignmentExpr{Symbol}; info) = begin
     name, rhs = x.args 
     (name in keys(info) && isa(info, SubModel)) && return nothing 
