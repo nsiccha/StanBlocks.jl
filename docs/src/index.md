@@ -448,20 +448,22 @@ You generally don't call these — they're applied automatically when type/shape
 A `Vector{<:AbstractVector{<:Real}}` data kwarg is automatically converted by `to_ragged` to a `(; mem, ends)` named tuple — `mem` is the concatenated memory, `ends` are inclusive 1-based end offsets per subvector. Use `ragged_n`, `ragged_total`, `ragged_start`, `ragged_end`, `ragged_length` to access subvectors:
 
 ```julia
-@deffun reduce_ragged_lpdf(y, mem::vector, ends::int[n_groups], n_groups::int)::real = begin
+@deffun reduce_ragged_lpdf(rag, n_groups::int)::real = begin
     rv = 0.
     for g in 1:n_groups
-        s, e = ragged_start(ends, g), ragged_end(ends, g)
-        rv += normal_lpdf(mem[s:e], 0., 1.)
+        s, e = ragged_start(rag, g), ragged_end(rag, g)
+        rv += normal_lpdf(rag.mem[s:e], 0., 1.)
     end
     rv
 end
 
 @slic (;y=[randn(3), randn(5), randn(2)]) begin
     n_groups = ragged_n(y)
-    y ~ reduce_ragged(y.mem, y.ends, n_groups)
+    y ~ reduce_ragged(n_groups)     # `y` itself (the (mem, ends) ntup) is used as the LHS
 end
 ```
+
+`ragged_start(x, i)` and `ragged_end(x, i)` take the whole `(; mem, ends)` named tuple as their first argument — not `ends` separately. See `src/slic_stan/builtin.jl` for the full set.
 
 ## Caveats
 
