@@ -510,12 +510,26 @@ begin
 
         xexpr = :(x::$CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
         isa(f, Symbol) && push!(stmts, :(function $f end))
+        # Capture + inject the user function's defining module into
+        # `info[:__mod__]` so nested `forward!`s inside the body (e.g.
+        # `rv_expr = forward_return!(body; info)` when `rv == :anything`)
+        # resolve names against the user's module rather than the
+        # default `Main`. Without this, a user-side @deffun whose body
+        # recurses into another user-side function (e.g.
+        # `_lpmfs(...) = ... _lpmf(...)`) fails the inner symbol lookup
+        # because the lookup falls back to `Main` and only checks
+        # `StanBlocks.builtin` first. `fundef` already does this below;
+        # tracetype needs it for the same reason.
+        capture_mod = :(__fundef_mod__ = $parentmodule(typeof($head(x))))
+        inject_mod = :(info[$(QuoteNode(:__mod__))] = __fundef_mod__)
+        # `tracetype`'s `info` is typically a NamedTuple (immutable), so
+        # convert to OrderedDict before injecting `:__mod__`. (`fundef`
+        # uses `anon_deconstruct` which already does the conversion.)
+        promote_info = :(info = $OrderedDict{Symbol,Any}(pairs(info)))
         push!(stmts, quote
-            $stan.tracetype($xexpr) = $(Expr(:block, source, deconstruct, rv_expr))
+            $stan.tracetype($xexpr) = $(Expr(:block, source, capture_mod, deconstruct, promote_info, inject_mod, rv_expr))
         end)
         if !ismissing(body)
-            capture_mod = :(__fundef_mod__ = $parentmodule(typeof($head(x))))
-            inject_mod = :(info[$(QuoteNode(:__mod__))] = __fundef_mod__)
             push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, source, capture_mod, anon_deconstruct, inject_mod, stan_fundef))))
         end
         isa(f, Symbol) || return Expr(:block, stmts...)
