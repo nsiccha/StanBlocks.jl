@@ -371,7 +371,9 @@ canonical(x::CanonicalExprV{:tuple}) = begin
     end
 end
 canonical(x::CanonicalExprV{:macrocall}) = begin
-    @assert x.args[1] == GlobalRef(Core, Symbol("@doc")) "canonical(:macrocall): only `@doc` macrocalls are supported in SLIC bodies, got `$(x.args[1])`."
+    head = x.args[1]
+    is_doc = head == GlobalRef(Core, Symbol("@doc")) || head == Symbol("@doc")
+    @assert is_doc "canonical(:macrocall): only `@doc` macrocalls are supported in SLIC bodies, got `$(head)`."
     CanonicalExpr(:document, x.args[3:4]...)
 end
 canonical(x::CanonicalExprV{Symbol("'")}) = CanonicalExpr(:adjoint, x.args...)
@@ -427,6 +429,35 @@ forward!(x::Symbol; info) = begin
     error("Could not find $(x) in model, builtin, $(mod) or Main!")
 end
 forward!(x::Function; info) = stan_expr(x)
+# `macroexpand` (used by `slic_macroexpand`) hygienically resolves all free
+# names — including model-scope SLIC variables and SLIC builtins like
+# `mean`/`length` — to `GlobalRef(mod, :name)`. Always try SLIC's own
+# resolution chain (model → builtin → mod → Main) first so that e.g.
+# `mean` resolves to `stan.builtin.mean` (with a registered tracetype),
+# not `Statistics.mean` (which lacks one). Fall back to the GlobalRef's
+# native module only when nothing else matches.
+forward!(x::GlobalRef; info) = begin
+    rv = _try_symbol_lookup(x.name; info)
+    rv === nothing || return forward!(rv; info)
+    isdefined(x.mod, x.name) || error(
+        "Could not resolve $x — not in SLIC scope (model/builtin/mod/Main) and not defined in $(x.mod)."
+    )
+    forward!(getproperty(x.mod, x.name); info)
+end
+_try_symbol_lookup(x::Symbol; info) = begin
+    x in keys(info) && return info[x]
+    isdefined(builtin, x) && return getproperty(builtin, x)
+    mod = get_module(info)
+    if isdefined(mod, x)
+        v = getproperty(mod, x)
+        (isa(v, Function) || isa(v, SlicModel)) && return v
+    end
+    if mod !== Main && isdefined(Main, x)
+        v = getproperty(Main, x)
+        (isa(v, Function) || isa(v, SlicModel)) && return v
+    end
+    nothing
+end
 forward!(x::Colon; info) = x
 forward!(x::StanExpr{Symbol}; info) = x
 forward!(x::StanExpr; info) = x
@@ -1139,6 +1170,32 @@ stan_data(x::StanModel) = Dict([
 end
 slic_expr(x::Expr) = x
 
+# Macro names handled structurally by SLIC's own parser. Macrocalls with these
+# heads are preserved verbatim during `slic_macroexpand`; everything else is
+# expanded against the user's module so standard Julia macros (`@views`, `@.`,
+# `@inbounds`, user-defined macros) work transparently inside `@slic` /
+# `@deffun` bodies.
+const _SLIC_RESERVED_MACROS = (Symbol("@doc"), Symbol("@lpxf"), Symbol("@lhs"), Symbol("@inline"))
+
+_is_reserved_slic_macro(::Any) = false
+_is_reserved_slic_macro(head::Symbol) = head in _SLIC_RESERVED_MACROS
+_is_reserved_slic_macro(head::GlobalRef) = head.name in _SLIC_RESERVED_MACROS
+_is_reserved_slic_macro(head::Expr) = head.head === :. &&
+    length(head.args) == 2 && head.args[2] isa QuoteNode &&
+    head.args[2].value in _SLIC_RESERVED_MACROS
+
+slic_macroexpand(mod::Module, x) = x
+slic_macroexpand(mod::Module, x::Expr) = if x.head === :macrocall
+    head = x.args[1]
+    if _is_reserved_slic_macro(head)
+        Expr(:macrocall, head, x.args[2], (slic_macroexpand(mod, a) for a in x.args[3:end])...)
+    else
+        slic_macroexpand(mod, macroexpand(mod, x; recursive=false))
+    end
+else
+    Expr(x.head, (slic_macroexpand(mod, a) for a in x.args)...)
+end
+
 include("test.jl")
 
 end
@@ -1149,11 +1206,11 @@ The defining module is captured automatically via `__module__`, so that `@deffun
 defined in the same module (e.g. a package extension) are found during symbol resolution.
 """
 macro slic(model)
-    stan.SlicModel(model, Dict(), __module__)
+    stan.SlicModel(stan.slic_macroexpand(__module__, model), Dict(), __module__)
 end
 macro slic(data, model)
     mod = @__MODULE__
-    qmodel = Meta.quot(model)
+    qmodel = Meta.quot(stan.slic_macroexpand(__module__, model))
     esc(:($mod.stan.SlicModel($qmodel, $data, $(__module__))))
 end
 """
@@ -1196,7 +1253,7 @@ end
 See `src/slic_stan/builtin.jl` for many more examples.
 """
 macro deffun(x)
-    esc(stan.deffun(x; source=__source__))
+    esc(stan.deffun(stan.slic_macroexpand(__module__, x); source=__source__))
 end
 """
     @lpxf foo_lpdf
