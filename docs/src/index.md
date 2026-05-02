@@ -251,31 +251,26 @@ end
 
 ## Sub-models
 
-A `SlicModel` defined elsewhere can be embedded in two ways:
+A `SlicModel` defined elsewhere can be embedded as if it were a distribution. Use `~ submodel(;…)` — assignment (`=`) doesn't work for sub-models, only for `StanExpr`-valued RHSs:
 
 ```julia
 # Re-usable population effects sub-model
 popefs = @slic begin
     n_covariates = dims(X)[2]
     beta_pop ~ std_normal(;n=n_covariates)
-    return X * beta_pop                       # what the sub-model "produces"
+    return X * beta_pop                  # what the sub-model "produces"
 end
 
-# Sample form: `eta ~ popefs(;X)` makes `eta` a (transformed) parameter,
-# and the sub-model's parameters land under `eta_*` in the generated Stan
+# `eta ~ popefs(;X)` traces the sub-model's body in a fresh sub-scope.
+# `eta` becomes a (transformed) parameter holding the sub-model's return
+# value; the sub-model's free parameters land under `eta_*` in the
+# generated Stan (`eta_beta_pop` here), so multiple instantiations don't
+# collide.
 @slic (;y, X) begin
     eta ~ popefs(;X)
     y   ~ normal(eta, 1.)
 end
-
-# Assignment form: just inject the value
-@slic (;y, X) begin
-    eta = popefs(;X)
-    y   ~ normal(eta, 1.)
-end
 ```
-
-Each `~ submodel(;…)` namespaces the sub-model's free parameters under the LHS name (`eta_beta_pop`, etc.) so multiple instantiations don't collide.
 
 ## Posterior pointwise likelihood and predictive draws
 
