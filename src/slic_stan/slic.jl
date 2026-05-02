@@ -414,7 +414,7 @@ get_module(info::NamedTuple) = get(info, :__mod__, Main)
 get_module(info::SubModel) = get_module(parent(info))
 forward!(x::Symbol; info) = begin
     x in keys(info) && return info[x]
-    isdefined(builtin, x) && return forward!(getproperty(builtin, x); info)
+    _is_builtin_name(x) && return forward!(getproperty(builtin, x); info)
     mod = get_module(info)
     if isdefined(mod, x)
         Mx = getproperty(mod, x)
@@ -448,7 +448,7 @@ forward!(x::GlobalRef; info) = begin
 end
 _try_symbol_lookup(x::Symbol; info) = begin
     x in keys(info) && return info[x]
-    isdefined(builtin, x) && return getproperty(builtin, x)
+    _is_builtin_name(x) && return getproperty(builtin, x)
     mod = get_module(info)
     if isdefined(mod, x)
         v = getproperty(mod, x)
@@ -482,6 +482,10 @@ expand_inline_or_trace(x::CanonicalExpr; info) = begin
     isnothing(meta) && return fold_shape_query(stan_expr(x))
     expand_inline!(x, meta; info)
 end
+# `isdefined(builtin, x)` returns true even for names inherited from Base
+# (e.g. `accumulate!`), which would mask user-defined SLIC UDFs that share
+# Base's name. Restrict to bindings actually owned by the `builtin` module.
+_is_builtin_name(x::Symbol) = isdefined(builtin, x) && Base.which(builtin, x) === builtin
 expand_inline!(x::CanonicalExpr, meta; info) = begin
     arg_names = collect(meta.arg_names)
     n_pos = length(arg_names)
@@ -609,10 +613,16 @@ forward!(x::BlockExpr; info) = task_local_storage(:_slic_inline_pending, Any[]) 
             append!(new_args, pending)
             empty!(pending)
         end
-        push!(new_args, resolved)
+        # Bare-symbol/number/string StanExprs at statement position have no
+        # Stan-side meaning — they arise e.g. when an inline UDF whose final
+        # expression is just one of its args (`f!(buf) = (mutate; buf)`) is
+        # called at statement position. Skip them so we don't emit `name;`.
+        _is_inert_block_stmt(resolved) || push!(new_args, resolved)
     end
     remake(x, new_args...)
 end
+_is_inert_block_stmt(x) = false
+_is_inert_block_stmt(x::StanExpr) = expr(x) isa Symbol || expr(x) isa Number || expr(x) isa AbstractString
 forward!(x::AssignmentExpr{Symbol}; info) = begin
     name, rhs = x.args 
     (name in keys(info) && isa(info, SubModel)) && return nothing 
