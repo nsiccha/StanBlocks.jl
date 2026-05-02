@@ -395,16 +395,21 @@ begin
     )
     _is_lpxf_macrocall(x) = _is_inline_macrocall(x, Symbol("@lpxf"))
     _is_lhs_macrocall(x) = _is_inline_macrocall(x, Symbol("@lhs"))
+    _is_at_inline_macrocall(x) = _is_inline_macrocall(x, Symbol("@inline"))
     _peel_macros(x) = begin
         is_lhs = false
         is_lpxf = false
+        is_inline = false
         cur = x
-        while Meta.isexpr(cur, :macrocall) && (_is_lhs_macrocall(cur) || _is_lpxf_macrocall(cur))
-            is_lhs |= _is_lhs_macrocall(cur)
-            is_lpxf |= _is_lpxf_macrocall(cur)
+        while Meta.isexpr(cur, :macrocall) && (
+                _is_lhs_macrocall(cur) || _is_lpxf_macrocall(cur) || _is_at_inline_macrocall(cur)
+            )
+            is_lhs    |= _is_lhs_macrocall(cur)
+            is_lpxf   |= _is_lpxf_macrocall(cur)
+            is_inline |= _is_at_inline_macrocall(cur)
             cur = cur.args[3]
         end
-        (cur, is_lhs, is_lpxf)
+        (cur, is_lhs, is_lpxf, is_inline)
     end
     _inline_fname(inner, kind::AbstractString) = begin
         fsig = Meta.isexpr(inner, :(=)) ? inner.args[1] : inner
@@ -419,11 +424,11 @@ begin
         f
     end
     _lpxf_inline_fname(inner) = _inline_fname(inner, "lpxf")
-    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false) = if x.head == :block
+    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false) = if x.head == :block
         seen_lpxf_bases = Set{Symbol}()
         for arg in x.args
             isa(arg, Expr) || continue
-            inner, _, arg_is_lpxf = _peel_macros(arg)
+            inner, _, arg_is_lpxf, _ = _peel_macros(arg)
             arg_is_lpxf || continue
             f = _lpxf_inline_fname(inner)
             base = _lpxf_base(f)
@@ -433,28 +438,45 @@ begin
             )
             push!(seen_lpxf_bases, base)
         end
-        Expr(:block, deffun.(x.args; docstring, source, is_lhs, is_lpxf)...)
-    elseif x.head == :macrocall && (_is_lpxf_macrocall(x) || _is_lhs_macrocall(x))
+        Expr(:block, deffun.(x.args; docstring, source, is_lhs, is_lpxf, is_inline)...)
+    elseif x.head == :macrocall && (_is_lpxf_macrocall(x) || _is_lhs_macrocall(x) || _is_at_inline_macrocall(x))
         inner_source = x.args[2] isa LineNumberNode ? x.args[2] : source
-        new_is_lhs = is_lhs || _is_lhs_macrocall(x)
-        new_is_lpxf = is_lpxf || _is_lpxf_macrocall(x)
-        deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf)
+        new_is_lhs    = is_lhs    || _is_lhs_macrocall(x)
+        new_is_lpxf   = is_lpxf   || _is_lpxf_macrocall(x)
+        new_is_inline = is_inline || _is_at_inline_macrocall(x)
+        deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf, is_inline=new_is_inline)
     elseif x.head == :macrocall
         @assert x.args[1] == GlobalRef(Core, Symbol("@doc")) "@deffun: unexpected macrocall head `$(x.args[1])` (expected a `@doc` docstring)."
         # @assert x.args[3] isa String
-        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf)
+        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf, is_inline)
     else
         # @assert x.head == :(=)
         fsig, body = ensure_xassign(x).args
         fcall, rv = ensure_xtyped(fsig).args
         @assert Meta.isexpr(fcall, :call) "@deffun: function signature must be a `:call` expression like `f(args...)::T`, got `$fcall`."
         f, args... = fcall.args
+        # Trailing `!` in the function name is a synonym for `@inline`.
+        # The Julia mutation-convention name is preserved verbatim — the only
+        # actionable thing for SLIC is "inline this UDF at every call site."
+        f_via_bang = isa(f, Symbol) && endswith(string(f), "!")
+        f_via_bang && (is_inline = true)
         f_is_lpxf_named = isa(f, Symbol) && endswith(string(f), r"_lp[md]f")
         (f_is_lpxf_named || (isa(f, Symbol) && endswith(string(f), r"_l?c?cdf"))) && (rv = :real)
         if (is_lhs || is_lpxf) && !f_is_lpxf_named
             error(
                 "@deffun: @lhs/@lpxf annotation requires a `_lpdf`/`_lpmf`-suffixed function name, got `$f`"
             )
+        end
+        if is_inline && (is_lhs || is_lpxf)
+            error(
+                "@deffun: @inline / `!` cannot be combined with @lhs / @lpxf — inlined UDFs do not register the lpxf/likelihood/rng triad."
+            )
+        end
+        if is_inline && !isa(f, Symbol)
+            error("@deffun @inline / `!`: function name must be a bare Symbol, got `$f`.")
+        end
+        if is_inline && ismissing(body)
+            error("@deffun @inline / `!`: inline UDFs require a body, not a signature stub.")
         end
         ftype = :(typeof($f))
         args, vararg = if hasvararg(args)
@@ -517,6 +539,10 @@ begin
         stmts = []
         rv_expr = xsig_expr(ensure_xref(rv))
         stan_fundef = nothing
+        # For inline UDFs we keep the original (un-`ensure_xreturn`'d) body
+        # for substitution; the canonicalized + return-wrapped form is only
+        # needed for the regular fundef path.
+        original_body = body
         if !ismissing(body)
             @assert Meta.isexpr(body, :block) "@deffun: function body must be a `begin ... end` block, got `$body`."
             _reject_udf_forms!(body, f)
@@ -556,11 +582,28 @@ begin
         # convert to OrderedDict before injecting `:__mod__`. (`fundef`
         # uses `anon_deconstruct` which already does the conversion.)
         promote_info = :(info = $OrderedDict{Symbol,Any}(pairs(info)))
-        push!(stmts, quote
-            $stan.tracetype($xexpr) = $(Expr(:block, source, capture_mod, deconstruct, promote_info, inject_mod, rv_expr))
-        end)
-        if !ismissing(body)
-            push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, source, capture_mod, anon_deconstruct, inject_mod, stan_fundef))))
+        if is_inline
+            # Inline UDFs do not produce a Stan function (no `functions {}`
+            # entry) and do not register `tracetype` — the call site fully
+            # substitutes the body and re-traces it in the caller's scope, so
+            # neither tracetype-based dispatch nor the fundef payload is ever
+            # consulted. We do register `inline_body` keyed on the same arg
+            # signature so the call-site lookup picks the right method.
+            arg_names_tuple = Expr(:tuple, [QuoteNode(n) for n in arg_names]...)
+            vararg_qn = isnothing(vararg) ? :(nothing) : QuoteNode(vararg.args[1])
+            push!(stmts, :($stan.inline_body($xexpr) = (
+                arg_names = $arg_names_tuple,
+                vararg_name = $vararg_qn,
+                body = $(QuoteNode(original_body)),
+                source = $source,
+            )))
+        else
+            push!(stmts, quote
+                $stan.tracetype($xexpr) = $(Expr(:block, source, capture_mod, deconstruct, promote_info, inject_mod, rv_expr))
+            end)
+            if !ismissing(body)
+                push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, source, capture_mod, anon_deconstruct, inject_mod, stan_fundef))))
+            end
         end
         isa(f, Symbol) || return Expr(:block, stmts...)
         if is_lhs

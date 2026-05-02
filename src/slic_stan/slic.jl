@@ -466,9 +466,69 @@ forward!(x::CanonicalExpr; info) = begin
     resolved = CanonicalExpr(forward!(head(x); info), forward!(x.args; info)...; forward!(x.kwargs; info)...)
     s = _get_expr_stack(info)
     isnothing(s) || (s[end] = (resolved, s[end][2]))
-    rv = fold_shape_query(stan_expr(resolved))
+    rv = expand_inline_or_trace(resolved; info)
     _pop_expr!(info)
     rv
+end
+# `inline_body` is the dispatch hook populated by `@deffun @inline f(...)`
+# and `@deffun f!(...)`. A non-`nothing` return signals the call site should
+# substitute its args into the stored body AST and re-trace in the caller's
+# scope rather than emitting a Stan-function call.
+inline_body(::Any) = nothing
+expand_inline_or_trace(x::CanonicalExpr; info) = begin
+    meta = inline_body(x)
+    isnothing(meta) && return fold_shape_query(stan_expr(x))
+    expand_inline!(x, meta; info)
+end
+expand_inline!(x::CanonicalExpr, meta; info) = begin
+    arg_names = meta.arg_names
+    n_pos = length(arg_names)
+    @assert length(x.args) >= n_pos "@inline: call to $(head(x)) has $(length(x.args)) args, expected ≥ $n_pos."
+    subst = Dict{Symbol,Any}()
+    for (i, name) in enumerate(arg_names)
+        subst[name] = x.args[i]
+    end
+    if meta.vararg_name !== nothing
+        subst[meta.vararg_name] = collect(x.args[n_pos+1:end])
+    elseif length(x.args) > n_pos
+        error("@inline: call to $(head(x)) has $(length(x.args)) args but the UDF takes exactly $n_pos.")
+    end
+    body = inline_unwrap_single(meta.body, head(x))
+    substituted = inline_substitute(body, subst, meta.vararg_name)
+    forward!(canonical(substituted); info)
+end
+# Phase A2: only single-expression bodies. A `:block` body must contain
+# exactly one non-`LineNumberNode` arg; multi-statement support comes next.
+inline_unwrap_single(body, fname) = body
+inline_unwrap_single(body::Expr, fname) = if body.head === :block
+    real = filter(a -> !isa(a, LineNumberNode), body.args)
+    length(real) == 1 || error(
+        "@inline / `!` UDF $fname: only single-expression bodies are supported in this version (multi-statement support coming next)."
+    )
+    inline_unwrap_single(real[1], fname)
+elseif body.head === :return
+    inline_unwrap_single(body.args[1], fname)
+else
+    body
+end
+# Walk the (un-canonicalised) body AST replacing parameter Symbols with
+# their call-site StanExprs. Splat positions referencing the vararg name
+# (`args...`) expand into separate arguments at the parent call.
+inline_substitute(x, subst, vararg_name) = x
+inline_substitute(x::Symbol, subst, vararg_name) = get(subst, x, x)
+inline_substitute(x::Expr, subst, vararg_name) = begin
+    new_args = []
+    for arg in x.args
+        if vararg_name !== nothing && Meta.isexpr(arg, :...) &&
+            length(arg.args) == 1 && arg.args[1] === vararg_name
+            for v in subst[vararg_name]
+                push!(new_args, v)
+            end
+        else
+            push!(new_args, inline_substitute(arg, subst, vararg_name))
+        end
+    end
+    Expr(x.head, new_args...)
 end
 fold_shape_query(x) = x
 fold_shape_query(x::StanExpr) = x
