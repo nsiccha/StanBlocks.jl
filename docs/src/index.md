@@ -1,58 +1,56 @@
 # StanBlocks.jl
 
-StanBlocks.jl is a Julia → Stan transpiler. You write a probabilistic model in (a restricted subset of) Julia syntax, and StanBlocks generates the equivalent compilable [Stan](https://mc-stan.org/) program — including automatic block placement (`data`/`transformed_data`/`parameters`/`transformed_parameters`/`model`/`generated_quantities`), automatic type/shape/constraint inference, automatic posterior pointwise likelihoods and predictive draws, and (limited) higher-order user-defined functions.
+A Julia → Stan transpiler. You write a probabilistic model in (a restricted subset of) Julia syntax; StanBlocks generates the corresponding compilable [Stan](https://mc-stan.org/) program. Out of the box you get:
 
-::: warning Caveats
-The transpiler is intentionally restricted: `@slic` model bodies are straight-line declarative blocks (no `for`/`while`/`if`/`&&`/`||`/comprehensions — put those in [`@deffun`](#user-defined-functions-deffun) bodies) and not all Julia constructs map to Stan. See [Caveats](#caveats) below.
+- automatic **block placement** — variables are routed to `data` / `transformed_data` / `parameters` / `transformed_parameters` / `model` / `generated_quantities` based on what they depend on
+- automatic **type, shape and constraint inference** — including for user-defined functions
+- automatic **posterior pointwise log-likelihoods** and **predictive draws** for every `~` statement
+- (limited) **higher-order user-defined functions** — `map`-, `reduce_sum`-, and `broadcast`-style patterns
+- full **Stan toolchain** — `stan_code(model)` to inspect, `stan_instantiate(model)` to compile via [BridgeStan](https://github.com/roualdes/bridgestan), then sample/score with anything that consumes [`LogDensityProblems`](https://github.com/tpapp/LogDensityProblems.jl)
+
+::: warning Restricted syntax
+A `@slic` body is a **flat declarative block**: `~` and `=` statements only. No `for`/`while`/`if`/`&&`/`||`/ternary/comprehension at the model level — put those in [`@deffun`](#user-defined-functions-with-deffun) bodies. The transpiler errors with a pointer if you forget. See [Caveats](#caveats).
 :::
 
 ## Quick Start
 
 ```julia
 using StanBlocks
-import StanLogDensityProblems, JSON
+import StanLogDensityProblems, JSON, LogDensityProblems
 
-# Model definition (no data bound yet)
+# 1. Define the model (no data bound yet — just an AST + defining module)
 earn_height_model = @slic begin
     beta  ~ flat(;n=2)
     sigma ~ flat(;lower=0.)
     earn  ~ normal(beta[1] + beta[2] * to_vector(height), sigma)
 end
 
-# Bind data
+# 2. Bind data — `;earn, height` is shorthand for `;earn=earn, height=height`
 earn_height_posterior = earn_height_model(; earn, height)
 
-# Inspect the generated Stan code
+# 3. Inspect the generated Stan code
 println(stan_code(earn_height_posterior))
 
-# Compile and instantiate (needs StanLogDensityProblems.jl + JSON.jl)
-earn_height_problem = stan_instantiate(earn_height_posterior)
-```
-
-`stan_instantiate` returns a `LogDensityProblems`-compatible posterior:
-
-```julia
-using LogDensityProblems
-LogDensityProblems.dimension(earn_height_problem)               # → number of unconstrained parameters
-LogDensityProblems.logdensity(earn_height_problem, theta)       # log target
-LogDensityProblems.logdensity_and_gradient(earn_height_problem, theta)
+# 4. Compile (BridgeStan + JSON in scope) and use as a LogDensityProblem
+problem = stan_instantiate(earn_height_posterior)
+LogDensityProblems.dimension(problem)                       # # of unconstrained params
+LogDensityProblems.logdensity(problem, theta)               # log target
+LogDensityProblems.logdensity_and_gradient(problem, theta)  # log target + ∇
 ```
 
 ## Defining models with `@slic`
 
-`@slic` captures a `begin … end` block as an unevaluated AST plus a defining module:
+`@slic` captures a `begin … end` block as an unevaluated AST plus a defining module. Two forms:
 
 ```julia
+# AST only — bind data later
 m = @slic begin
     mu    ~ std_normal()
     sigma ~ std_normal(;lower=0.)
     y     ~ normal(mu, sigma)
 end
-```
 
-Two-arg form binds data inline (handy for one-shot models):
-
-```julia
+# AST + data inline (handy for one-shot models)
 m = @slic (;y=randn(20)) begin
     mu    ~ std_normal()
     sigma ~ std_normal(;lower=0.)
@@ -60,27 +58,54 @@ m = @slic (;y=randn(20)) begin
 end
 ```
 
-Calling a `SlicModel` (or a traced `StanModel`) with kwargs **binds or replaces** its data:
-
-```julia
-m1 = m(;y=randn(50))     # rebind to fresh data
-m2 = stan_model(m)(;y=randn(100))  # update data on a pre-traced model (cheaper)
-```
-
-For each `Vector` data kwarg `x`, an `Int` `x_n = length(x)` is added automatically; for each `Matrix`, both `x_m` and `x_n` are added (so you can refer to those names inside the model). `Vector{<:AbstractVector{<:Real}}` data is automatically [encoded as a ragged vector](#ragged-vectors).
-
-### Allowed statements in a `@slic` body
+### Allowed statements
 
 A `@slic` body is a flat sequence of:
 
-| Form              | Meaning                                                          |
-|-------------------|------------------------------------------------------------------|
-| `lhs ~ rhs(args…)` | Sample / observe (registers `lhs` as a parameter or observation) |
-| `lhs = expr`      | Deterministic assignment                                         |
-| `lhs::T = expr`   | Typed-LHS sugar — see below                                      |
-| `lhs ~ submodel(;…)` | Embed a [sub-model](#sub-models)                              |
+| Form                       | Meaning                                                          |
+|----------------------------|------------------------------------------------------------------|
+| `lhs ~ rhs(args…)`         | Sample / observe (registers `lhs` as a parameter or observation) |
+| `lhs::T[size…] ~ rhs(args…)` | Same, but with explicit type and shape — see [Typed-LHS](#typed-lhs) |
+| `lhs = expr`               | Deterministic assignment                                         |
+| `lhs::T[size…] = expr`     | Typed-LHS assignment                                             |
+| `lhs ~ submodel(;…)`       | Embed a [sub-model](#sub-models) (its parameters land under `lhs_*`) |
+| `return expr`              | (Sub-models only) declare what value the sub-model produces      |
 
-Control flow (`for`, `while`, `if`, `&&`, `||`, ternary, comprehensions) is **not** allowed at model level — move it into an `@deffun` body. The transpiler emits an explicit error pointing this out.
+Control flow at the model level is **not** allowed — push it into a [`@deffun`](#user-defined-functions-with-deffun).
+
+### Typed-LHS
+
+Stan needs an explicit type and shape for any non-scalar parameter. When inference can't figure it out, declare it on the LHS:
+
+```julia
+@slic begin
+    L::cholesky_factor_corr[n_strata, n_terms] ~ multi_lkj_corr_cholesky(1.)
+    tau::vector[n_strata, n_terms] ~ multi_std_normal(;lower=0.)
+    z::vector[n_strata, n_terms]   ~ multi_std_normal()
+end
+```
+
+This works for both `~` (sampling) and `=` (assignment). The size arguments inside `[…]` may reference any data-qualified name.
+
+### Data binding
+
+Calling a `SlicModel` (or a traced `StanModel`) with kwargs **binds or replaces** its data:
+
+```julia
+m1 = m(;y=randn(50))                # SlicModel call: re-bind data
+sm = stan_model(m)                  # trace once (expensive)
+m2 = sm(;y=randn(100))              # StanModel call: re-data only (cheap)
+```
+
+For each `Vector` data kwarg `x`, an `Int` `x_n = length(x)` is added automatically; for each `Matrix`, both `x_m` and `x_n` are added. So you can refer to those names inside the model without ceremony. `Vector{<:AbstractVector{<:Real}}` data is automatically [encoded as a ragged vector](#ragged-vectors).
+
+You can also append/replace statements on a model after the fact by passing AST snippets:
+
+```julia
+extended = base_model(:( y_pred = normal_rng(mu, sigma) ))
+```
+
+If a passed snippet has the same LHS as an existing statement, it replaces that statement; otherwise it's appended.
 
 ### Activity analysis
 
@@ -95,15 +120,15 @@ StanBlocks decides for each variable which Stan block it belongs to:
 | `model`                     | Likelihood / target contributions                                 |
 | `generated_quantities`      | Computed per sample, do not enter the likelihood                  |
 
-Shapes that come from data are exposed automatically as integer `data` (e.g. `n`, `m`).
+Shapes derived from data (the auto-added `_n`, `_m` integers, the result of [`dims(X)[i]`](#dynamic-shape-handling), etc.) land in `transformed_data` automatically.
 
 ### Constraints
 
-Constraints are passed as keyword arguments to the prior and turn into Stan-level constraint declarations:
+Constraints are passed as keyword arguments to the prior and lower to Stan-level constraint declarations:
 
 ```julia
 @slic (;y) begin
-    sigma ~ std_normal(;lower=0.)         # sigma in [0, ∞)
+    sigma ~ std_normal(;lower=0.)         # σ ∈ [0, ∞)
     theta ~ uniform(0., 1.)               # bounds inferred from arguments
     rho   ~ beta(2., 2.)                  # [0,1] bounds inferred automatically
     mu    ~ normal(0., 1.; n=length(y))   # vector parameter, size from data
@@ -120,11 +145,11 @@ Many priors auto-add their natural bounds (so you don't repeat yourself):
 | `uniform(a, b)`                                                                             | `lower=a, upper=b`     |
 | `lognormal`, `chi_square`, `inv_chi_square`, `scaled_inv_chi_square`, `exponential`, `gamma`, `inv_gamma`, `weibull`, `frechet`, `rayleigh`, `loglogistic`, `pareto`, `pareto_type_2` | `lower=0`              |
 
-You can additionally pass `n=…` or `m=…, n=…` on any prior to make the parameter a vector or matrix (with the size taken from any constant or any data-qualified expression — see [`maybe_lazy_size`](#dynamic-shape-handling)).
+You can additionally pass `n=…` or `m=…, n=…` on any prior to make the parameter a vector or matrix. The size arguments may reference constants or any data-qualified expression — see [Dynamic shape handling](#dynamic-shape-handling) for the runtime fallback.
 
-## User-defined functions: `@deffun`
+## User-defined functions with `@deffun`
 
-`@deffun` registers a Stan-compatible function with type-annotated arguments. The body is real Julia — it may use `for`/`while`/`if`/comprehensions/etc. — and is also transpiled to Stan.
+`@deffun` registers a Stan-compatible function with type-annotated arguments. Its body is real Julia and may use `for`/`while`/`if`/comprehensions. The body is also transpiled to Stan.
 
 ```julia
 @deffun garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
@@ -150,13 +175,22 @@ Then in a `@slic` block:
 end
 ```
 
+Multiple definitions in one block:
+
+```julia
+@deffun begin
+    mean_real_vector(x::vector[n])::real = sum(x) / n
+    mean_matrix(A::matrix[m, n])::real   = sum(A) / (m * n)
+end
+```
+
 ### Type/shape annotations
 
 Annotations follow the pattern `name::type[size_args…]`. Size arguments introduced this way are **available as locals inside the function body**:
 
 ```julia
 @deffun mean_real_vector(x::vector[n])::real = sum(x) / n
-@deffun mean_matrix(A::matrix[m, n])::real = sum(A) / (m * n)
+@deffun mean_matrix(A::matrix[m, n])::real   = sum(A) / (m * n)
 ```
 
 Underscored names mean "I take this argument but ignore the value, just use its shape":
@@ -165,17 +199,19 @@ Underscored names mean "I take this argument but ignore the value, just use its 
 @deffun pad_zero(_::vector[n])::vector[n+1] = append_row(rep_vector(0., n), 0.)
 ```
 
-For functions ending in `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf`:
+### `_lpdf` / `_lpmf` / `_lcdf` / `_lccdf` companions
+
+For functions whose name ends in one of `_lpdf` / `_lpmf` / `_lcdf` / `_lccdf`:
 
 - the return type is automatically `real`
-- companion `_lpdfs`/`_lpmfs`/`_lcdfs`/`_lccdfs` (pointwise) and `_rng` (predictive) stubs are generated automatically and used by [posterior pointwise likelihood / predictive generation](#posterior-pointwise-likelihood-and-predictive-draws)
+- companion `_lpdfs` / `_lpmfs` / `_lcdfs` / `_lccdfs` (pointwise) and `_rng` (predictive) stubs are generated automatically and used by [posterior pointwise likelihood / predictive generation](#posterior-pointwise-likelihood-and-predictive-draws)
 
 ```julia
 @deffun my_normal_lpdf(y, mu, sigma) = normal_lpdf(y, mu, sigma)
 @deffun my_normal_rng(mu, sigma)::real = normal_rng(mu, sigma)
 ```
 
-### Variadic and higher-order
+### Variadic and higher-order functions
 
 `args...` is supported, including dispatching on the **type of a function argument** (the `::typeof(g)` pattern):
 
@@ -184,22 +220,24 @@ For functions ending in `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf`:
     simple_lpdf(y, x) = 0.
     simple_rng(x)     = 0.
 
-    my_lpdf(y, args...) = reject(1)              # default
+    my_lpdf(y, args...) = reject(1)               # default branch
     my_lpdf(y, ::typeof(simple), args...) = simple_lpdf(y, args...)
 
-    fof_lpdf(y, f, args...) = my_lpdf(y, f, args...)
+    fof_lpdf(y, f, args...) = my_lpdf(y, f, args...)   # passes f through
 end
 
 @slic (;obs=0.) begin
     loc ~ std_normal()
-    obs ~ fof(simple, loc)            # dispatched to simple_lpdf
+    obs ~ fof(simple, loc)         # dispatched to simple_lpdf via my_lpdf
 end
 ```
 
-### Opt-in dispatch hooks
+### `@lpxf` and `@lhs` — opt-in dispatch hooks
 
-- [`@lpxf`](api#StanBlocks.@lpxf) — register the three SLIC dispatch hooks (`lpxf_expr`, `rng_expr`, `likelihood_expr`) for one or more `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf` symbols. The companion `_rng` and `_lpdfs` (or `_lpmfs`/etc.) names must already exist.
-- [`@lhs`](api#StanBlocks.@lhs) — used **inside** a `@deffun` block, registers a method for base-level LHS inference (so `lhs ~ foo(args…)` works for that method). Without it, only the `_lpdf`-keyed tracetype is registered (so the method dispatches when called explicitly, but not via `~`). Compose with `@lpxf` in either order.
+For UDFs that you want to use via `~` (or whose pointwise/predictive companions need to be discoverable), opt in with these markers:
+
+- **[`@lpxf`](api#StanBlocks.@lpxf)** — register the three SLIC dispatch hooks (`lpxf_expr`, `rng_expr`, `likelihood_expr`) for one or more `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf` symbols. The companion `_rng` and `_lpdfs` (or `_lpmfs`/etc.) names must already exist.
+- **[`@lhs`](api#StanBlocks.@lhs)** — used **inside** a `@deffun` block, registers a method for base-level LHS inference (so `lhs ~ foo(args…)` works for that method). Without it, only the `_lpdf`-keyed tracetype is registered (so the method dispatches when called explicitly, but not via `~`). Compose with `@lpxf` in either order.
 
 ```julia
 @deffun begin
@@ -209,37 +247,39 @@ end
 
 ### `@defsig`
 
-`@defsig` is the lower-level signature-only macro used for bulk definitions (mostly internal — see `src/slic_stan/builtin.jl`). End users should usually prefer `@deffun`.
+`@defsig` is the lower-level signature-only macro used for bulk built-in registrations (see `src/slic_stan/builtin.jl`). End users should usually prefer `@deffun`.
 
 ## Sub-models
 
-A `SlicModel` defined elsewhere can be embedded as if it were a distribution:
+A `SlicModel` defined elsewhere can be embedded in two ways:
 
 ```julia
-prior = @slic begin
-    mu  ~ std_normal()
-    tau ~ std_normal(;lower=0.)
-    return mu, tau          # what the sub-model "produces"
+# Re-usable population effects sub-model
+popefs = @slic begin
+    n_covariates = dims(X)[2]
+    beta_pop ~ std_normal(;n=n_covariates)
+    return X * beta_pop                       # what the sub-model "produces"
 end
 
-hierarchical = @slic (;y) begin
-    (mu, tau) = prior()
-    theta     ~ normal(mu, tau; n=length(y))
-    y         ~ normal(theta, 1.)
+# Sample form: `eta ~ popefs(;X)` makes `eta` a (transformed) parameter,
+# and the sub-model's parameters land under `eta_*` in the generated Stan
+@slic (;y, X) begin
+    eta ~ popefs(;X)
+    y   ~ normal(eta, 1.)
+end
+
+# Assignment form: just inject the value
+@slic (;y, X) begin
+    eta = popefs(;X)
+    y   ~ normal(eta, 1.)
 end
 ```
 
-Sub-models can also be sampled from (`x ~ submodel(;…)`); the sub-model's parameters are namespaced under `x_*` in the generated Stan code.
-
-You can also append/replace statements on a model after the fact:
-
-```julia
-extended = base_model(:( y_pred = normal_rng(mu, sigma) ))
-```
+Each `~ submodel(;…)` namespaces the sub-model's free parameters under the LHS name (`eta_beta_pop`, etc.) so multiple instantiations don't collide.
 
 ## Posterior pointwise likelihood and predictive draws
 
-For each `~` statement, StanBlocks automatically emits the corresponding pointwise log-likelihood and a predictive RNG draw into `generated_quantities`, using the `_lpdfs`/`_lpmfs`/`_rng` companions. So given:
+For each `~` statement, StanBlocks automatically emits the corresponding pointwise log-likelihood and a predictive RNG draw into `generated_quantities`, using the `_lpdfs`/`_lpmfs`/`_rng` companions:
 
 ```julia
 m = @slic (;y=randn(10)) begin
@@ -249,13 +289,15 @@ m = @slic (;y=randn(10)) begin
 end
 ```
 
-…the generated Stan exposes `log_lik_y[i]` and `y_pred[i]` per draw, ready for PSIS-LOO / posterior predictive checks. See [`stan_code(model)`](api#StanBlocks.stan_code) to inspect.
+The generated Stan exposes per-draw `log_lik_y[i]` and `y_pred[i]` — ready for PSIS-LOO / posterior predictive checks. Inspect via `stan_code(m)`.
+
+For your own UDFs, the same machinery activates as soon as you provide the `_lpdfs` and `_rng` companions (manually or via `@lpxf`).
 
 ## Built-in Stan functions
 
-Several hundred built-in Stan functions and distributions are pre-registered with their type/shape signatures (see [`src/slic_stan/builtin.jl`](https://github.com/nsiccha/StanBlocks.jl/blob/dev/src/slic_stan/builtin.jl)). Highlights:
+Several hundred built-in Stan functions and distributions are pre-registered with their type/shape signatures. The full list lives in [`src/slic_stan/builtin.jl`](https://github.com/nsiccha/StanBlocks.jl/blob/dev/src/slic_stan/builtin.jl). Highlights:
 
-- **Vector/matrix construction**: `rep_vector`, `rep_matrix`, `rep_array`, `linspaced_vector`, `linspaced_array`, `to_vector`, `to_row_vector`, `to_matrix`, `to_array_1d`, `diag_matrix`, `one_hot_vector`, `identity_matrix`
+- **Vector / matrix construction**: `rep_vector`, `rep_matrix`, `rep_array`, `linspaced_vector`, `linspaced_array`, `to_vector`, `to_row_vector`, `to_matrix`, `to_array_1d`, `diag_matrix`, `one_hot_vector`, `identity_matrix`
 - **Append / reshape**: `append_row`, `append_col`, `append_array`, `reshape`
 - **Linear algebra**: `dot_product`, `rows_dot_product`, `cumulative_sum`, `mdivide_left_tri_low`, `mdivide_right_tri_low`, `diag_pre_multiply`, `diag_post_multiply`, `cholesky_decompose`, `quad_form`, `crossprod`, `inverse`, `determinant`, `eigenvalues_sym`, …
 - **Introspection**: `dims(X)`, `rows(X)`, `cols(X)`, `num_elements(X)`
@@ -266,7 +308,7 @@ Several hundred built-in Stan functions and distributions are pre-registered wit
 - **GP covariances**: `gp_exp_quad_cov`, `gp_exponential_cov`, `gp_matern32_cov`, `gp_matern52_cov`, `gp_periodic_cov`, `gp_dot_prod_cov`
 - **Distributions**: `normal`, `student_t`, `cauchy`, `lognormal`, `gamma`, `beta`, `exponential`, `uniform`, `bernoulli`, `bernoulli_logit`, `binomial`, `binomial_logit`, `neg_binomial_2`, `multi_normal`, `multi_normal_cholesky`, `dirichlet`, `lkj_corr`, `lkj_corr_cholesky`, `wishart`, … (each with `_lpdf`/`_lpmf`, `_lpdfs`/`_lpmfs` and `_rng` variants where appropriate)
 
-A few short examples (all from the test suite, which doubles as an executable spec):
+A few short examples (drawn from the test suite, which doubles as an executable spec):
 
 ```julia
 # rep_vector → vector
@@ -296,9 +338,110 @@ end
 end
 ```
 
+## Cookbook
+
+A few common patterns, end-to-end:
+
+### Linear regression
+
+```julia
+@slic (;y, x) begin
+    alpha ~ flat()
+    beta  ~ flat()
+    sigma ~ flat(;lower=0.)
+    y     ~ normal(alpha + beta * to_vector(x), sigma)
+end
+```
+
+### Hierarchical (normal–normal)
+
+```julia
+@slic (;y) begin
+    mu    ~ std_normal()
+    sigma ~ std_normal(;lower=0.)
+    theta ~ normal(mu, sigma; n=length(y))
+    y     ~ normal(theta, 1.)
+end
+```
+
+### Logistic regression
+
+```julia
+@slic (;y, X) begin
+    alpha ~ std_normal()
+    beta  ~ std_normal(;n=cols(X))
+    y     ~ bernoulli_logit(alpha + X * beta)
+end
+```
+
+### Time series with a `@deffun` recurrence
+
+```julia
+@deffun ar1_recurse(phi::real, epsilon::vector[n], n::int)::vector[n] = begin
+    u = rep_vector(0., n)
+    u[1] = epsilon[1]
+    for t in 2:n
+        u[t] = phi * u[t-1] + epsilon[t]
+    end
+    u
+end
+
+@slic (;y, time) begin
+    n_obs = num_elements(time)
+    phi_raw ~ std_normal()
+    phi     = tanh(phi_raw)                  # phi ∈ (-1, 1)
+    epsilon ~ std_normal(;n=n_obs)
+    y       ~ normal(ar1_recurse(phi, epsilon, n_obs), 1.)
+end
+```
+
+### LKJ-Cholesky correlation prior
+
+```julia
+@slic (;y) begin
+    L::cholesky_factor_corr[2] ~ lkj_corr_cholesky(1.)
+    tau ~ std_normal(;n=2, lower=0.)
+    Sigma_chol = diag_pre_multiply(tau, L)
+    mu  ~ std_normal(;n=2)
+    for_i_in_eachcol(y, mu, Sigma_chol)      # define this loop in @deffun
+end
+```
+
+## Inspection and compilation
+
+| API                                                          | Use                                                                                  |
+|--------------------------------------------------------------|--------------------------------------------------------------------------------------|
+| [`stan_code(model)`](api#StanBlocks.stan_code)               | Returns the generated Stan source as a `String`                                      |
+| [`stan_model(slic)`](api#StanBlocks.stan_model)              | Performs the trace once, returns a [`StanModel`](api#StanBlocks.StanModel) you can re-data via `model(; new_kwargs…)` |
+| `StanBlocks.stan_data(model)`                                | The data dictionary that will be passed to BridgeStan                                |
+| [`stan_instantiate(model)`](api#StanBlocks.stan_instantiate) | Compiles via BridgeStan and returns a `StanLogDensityProblems.StanProblem`           |
+
+A `StanModel` returned by `stan_model` is **cheap to re-data**: `model(; y=new_y)` returns a new model that reuses the trace.
+
+`stan_instantiate` accepts a few kwargs:
+
+| kwarg            | Default                       | Meaning                                                                               |
+|------------------|-------------------------------|---------------------------------------------------------------------------------------|
+| `path=…`         | `tmp/<hash>.stan`             | Where to write the `.stan` file. Hash-based by default, so identical code is cached.  |
+| `nan_on_error`   | `true`                        | Make BridgeStan return `NaN` instead of throwing on evaluation failures               |
+| `make_args`      | `["STAN_THREADS=true"]`       | Extra arguments forwarded to Stan's `make`                                            |
+| `warn`           | `false`                       | Forwarded to BridgeStan                                                               |
+
+## Errors
+
+Anything that goes wrong during transpilation, compilation, or evaluation is wrapped in a [`StanBlocksError`](api#StanBlocks.StanBlocksError):
+
+- `phase::Symbol` — `:transpile`, `:compile`, or `:evaluate`
+- `context::String` — short description (e.g. `"model: eight_schools"`)
+- `cause` — the underlying exception (and, when applicable, a backtrace and a stack of `@slic`/`@deffun` expressions being processed at the time)
+
+The default `showerror` prints the cause **and** the SLIC expression stack — so you see both the Julia traceback and the model-level location of the failure.
+
+## Advanced topics
+
 ### Dynamic shape handling
 
-When the size of a value depends on parameters, StanBlocks can fall back to runtime queries (`dims(X)[i]`) instead of a static expression. Two helpers govern this:
+When the size of a value depends on parameters, StanBlocks falls back to runtime queries (`dims(X)[i]`) instead of a static expression. Two helpers govern this:
 
 - `maybe_lazy_size` — keeps a size expression if it is structurally simple **or** fully data-qualified; otherwise replaces it with `dims(var)[i]`
 - `fold_shape_query` — constant-folds `dims(X)[i]` to `X`'s known size when fully data-qualified, so shape-derived sizes still land in `transformed_data`
@@ -310,30 +453,20 @@ You generally don't call these — they're applied automatically when type/shape
 A `Vector{<:AbstractVector{<:Real}}` data kwarg is automatically converted by `to_ragged` to a `(; mem, ends)` named tuple — `mem` is the concatenated memory, `ends` are inclusive 1-based end offsets per subvector. Use `ragged_n`, `ragged_total`, `ragged_start`, `ragged_end`, `ragged_length` to access subvectors:
 
 ```julia
+@deffun reduce_ragged_lpdf(y, mem::vector, ends::int[n_groups], n_groups::int)::real = begin
+    rv = 0.
+    for g in 1:n_groups
+        s, e = ragged_start(ends, g), ragged_end(ends, g)
+        rv += normal_lpdf(mem[s:e], 0., 1.)
+    end
+    rv
+end
+
 @slic (;y=[randn(3), randn(5), randn(2)]) begin
-    mu ~ std_normal(;n=ragged_n(y))
-    for_each_ragged_obs(y, mu)   # define this in a @deffun, since loops aren't allowed in @slic
+    n_groups = ragged_n(y)
+    y ~ reduce_ragged(y.mem, y.ends, n_groups)
 end
 ```
-
-## Inspection and compilation
-
-| API                                              | Use                                                |
-|--------------------------------------------------|----------------------------------------------------|
-| [`stan_code(model)`](api#StanBlocks.stan_code)   | Returns the generated Stan source as a `String`    |
-| [`stan_model(slic)`](api#StanBlocks.stan_model)  | Performs the trace once, returns a [`StanModel`](api#StanBlocks.StanModel) you can re-data via `model(; new_kwargs…)` |
-| [`stan_data(model)`](api#StanBlocks.stan_data)   | Returns the data dictionary that will be passed to BridgeStan |
-| [`stan_instantiate(model)`](api#StanBlocks.stan_instantiate) | Compiles via BridgeStan and returns a `StanLogDensityProblems.StanProblem` |
-
-A `StanModel` returned by `stan_model` is **cheap to re-data**: `model(; y=new_y)` returns a new model that reuses the trace.
-
-## Errors
-
-Anything that goes wrong during transpilation, compilation, or evaluation is wrapped in a [`StanBlocksError`](api#StanBlocks.StanBlocksError). The display includes:
-
-- the pipeline `phase` (`:transpile`, `:compile`, `:evaluate`)
-- a short `context` string
-- the underlying cause and (when applicable) the stack of `@slic`/`@deffun` expressions being processed at the time
 
 ## Caveats
 
@@ -347,7 +480,7 @@ Only Julia constructs that map to Stan are supported. Arbitrary Julia functions 
 
 ### No control flow at model level
 
-`for`/`while`/`if`/`&&`/`||`/ternary/comprehensions are not allowed in `@slic` bodies. Move that logic into an `@deffun` body or use a vectorised form.
+`for`/`while`/`if`/`&&`/`||`/ternary/comprehensions are not allowed in `@slic` bodies. Move that logic into a `@deffun` body or use a vectorised form. The transpiler emits an explicit error pointing you at the offending statement.
 
 ### Dotted operators
 
@@ -355,11 +488,7 @@ Don't use `.+`/`.*` in `@slic` bodies — Stan uses `+`/`*` for scalar–vector 
 
 ### Name resolution
 
-`@slic` captures `__module__`, so `@deffun` functions defined in the same module (including a package extension) are found automatically. The lookup order is: model scope → `builtin` → defining module → `Main`.
-
-## Legacy Julia backend
-
-The original `@stan`/`@parameters`/`@transformed_parameters`/`@generated_quantities`/`@bsum` macros (the pre-Stan, pure-Julia backend) are still exported but **deprecated**. New code should use `@slic` + `@deffun`.
+`@slic` captures `__module__`, so `@deffun` functions defined in the same module (including a package extension) are found automatically. The lookup order is: model scope → built-in registry → defining module → `Main`.
 
 ## Real-world example: BayesianRegressionModels.jl
 
@@ -370,7 +499,7 @@ log_odds_bin ~ 1 + c2 + (1 | g1)
 bin_succ     ~ BinomialLogit(bin_n, log_odds_bin)
 ```
 
-into a fully-traced Stan model via StanBlocks. If you want to see how `@slic` and `@deffun` are used in anger — typed-LHS sugar, sub-models composed across multiple regressions, `@lhs @lpxf` UDFs, ragged data, control-flow-in-`@deffun`, etc. — read `src/sbimpl.jl` and the catalog of ~50 worked examples under `web-macro/examples/`.
+into a fully-traced Stan model via StanBlocks. If you want to see how `@slic` and `@deffun` are used in anger — typed-LHS sugar, sub-models composed across multiple regressions, `@lhs @lpxf` UDFs, ragged data, control-flow-in-`@deffun`, etc. — read [`src/sbimpl.jl`](https://github.com/nsiccha/BayesianRegressionModels.jl/blob/main/src/sbimpl.jl) and the catalog of ~50 worked examples under [`web-macro/examples/`](https://github.com/nsiccha/BayesianRegressionModels.jl/tree/main/web-macro/examples).
 
 A few patterns worth lifting:
 
@@ -378,7 +507,7 @@ A few patterns worth lifting:
 # Sub-model returning a value, used as `~` rhs from another model
 popefs = StanBlocks.@slic begin
     n_covariates = dims(X)[2]
-    beta_pop ~ std_normal(; n=n_covariates)
+    beta_pop ~ std_normal(;n=n_covariates)
     return X * beta_pop
 end
 
@@ -395,34 +524,18 @@ end
 
 ranef_correlated_by = StanBlocks.@slic begin
     L::cholesky_factor_corr[n_strata, n_terms] ~ multi_lkj_corr_cholesky(1.)
-    tau::vector[n_strata, n_terms] ~ multi_std_normal(; lower=0.)
+    tau::vector[n_strata, n_terms] ~ multi_std_normal(;lower=0.)
     z::vector[n_strata, n_terms]   ~ multi_std_normal()
     b = stratified_correlated_b(L, tau, z, stratum_idx, n_groups, n_terms)
     return rows_dot_product(Z, b[group_idx, :])
 end
-
-# Loop hoisted into a @deffun helper because @slic forbids control flow
-StanBlocks.@deffun begin
-    ar1_recurse(phi::real, epsilon::vector[n], n::int)::vector[n] = begin
-        u = rep_vector(0., n)
-        u[1] = epsilon[1]
-        for t in 2:n
-            u[t] = phi * u[t-1] + epsilon[t]
-        end
-        u
-    end
-end
-
-_sb_ar1 = StanBlocks.@slic begin
-    n_obs = num_elements(time)
-    phi_raw ~ std_normal()
-    phi     = tanh(phi_raw)
-    epsilon ~ std_normal(; n=n_obs)
-    return ar1_recurse(phi, epsilon, n_obs)
-end
 ```
 
-The deployed catalog lives at <https://nsiccha.github.io/BayesianRegressionModels.jl/> — each entry is a small formula, the resulting `@slic` body, and the generated Stan code, side by side. For coverage of distributions, link functions, interactions, splines, AR processes, measurement-error covariates, hurdle / zero-inflated likelihoods, multi-membership / stratified random effects, etc., this is the most thorough working bibliography of the macro surface.
+The deployed catalog lives at <https://nsiccha.github.io/BayesianRegressionModels.jl/> — each entry pairs a small formula, the resulting `@slic` body, and the generated Stan code side by side. For coverage of distributions, link functions, interactions, splines, AR processes, measurement-error covariates, hurdle / zero-inflated likelihoods, multi-membership / stratified random effects, etc., this is the most thorough working bibliography of the `@slic` macro surface.
+
+## Legacy Julia backend
+
+The original `@stan` / `@parameters` / `@transformed_parameters` / `@generated_quantities` / `@bsum` macros (the pre-Stan, pure-Julia backend) are still exported but **deprecated**. New code should use `@slic` + `@deffun`.
 
 ## See also
 
