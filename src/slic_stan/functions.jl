@@ -358,6 +358,35 @@ begin
         forward!(x; info)
         info[RV_NAME]
     end
+    # Walk a UDF body looking for forms StanBlocks deliberately does not
+    # support inside `@deffun` definitions: sampling (`~`) and `target +=`
+    # (and its variants). The user-facing rule: UDFs must not introduce
+    # parameters or directly manipulate the log density. Errors here surface
+    # at macro-expansion time with a clear message rather than later as a
+    # downstream symbol-resolution or tracing failure.
+    _is_target_compound_assign(x::Expr) = begin
+        s = string(x.head)
+        # any compound assignment to `target` — `+=`, `.-=`, etc.
+        length(s) >= 2 && s[end] == '=' && s != "==" && s != "!=" &&
+            s != "<=" && s != ">=" && s != "===" && s != "=>" &&
+            length(x.args) >= 1 && x.args[1] === :target
+    end
+    _reject_udf_forms!(::Any, fname) = nothing
+    _reject_udf_forms!(x::Expr, fname) = begin
+        if Meta.isexpr(x, :call) && length(x.args) >= 1 && x.args[1] === :~
+            error(
+                "@deffun ($fname): `~` sampling statements are not allowed in UDF bodies. ",
+                "UDFs must not introduce parameters or define likelihoods — keep `~` to `@slic` model bodies."
+            )
+        end
+        if _is_target_compound_assign(x)
+            error(
+                "@deffun ($fname): `target +=` (and variants) is not allowed — StanBlocks does not support direct log-density manipulation in UDFs."
+            )
+        end
+        foreach(a -> _reject_udf_forms!(a, fname), x.args)
+    end
+
     deffun(x::LineNumberNode; kwargs...) = x
     _is_inline_macrocall(x, sym::Symbol) = Meta.isexpr(x, :macrocall) && (
         x.args[1] === sym ||
@@ -490,6 +519,7 @@ begin
         stan_fundef = nothing
         if !ismissing(body)
             @assert Meta.isexpr(body, :block) "@deffun: function body must be a `begin ... end` block, got `$body`."
+            _reject_udf_forms!(body, f)
             body = ensure_xreturn(body)
             sig_rv = if rv == :anything
                 rv_expr = :($forward_return!($(canonical(body)); info).type)
