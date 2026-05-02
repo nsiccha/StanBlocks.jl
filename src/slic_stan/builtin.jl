@@ -727,6 +727,13 @@ end
 # binomial: N::int[n] is already a container, so Stan broadcasts scalar p natively
 @deffun binomial_rng(int[n], N::int[n], p)::int[n] = binomial_rng(N, p)
 
+# binomial_logit: Stan ships `binomial_logit_lpmf` but NOT a matching
+# `binomial_logit_rng` (only the GLM-flavoured variant exists). Lower
+# the token-path call to `binomial_rng(N, inv_logit(eta))` so SBBRMI's
+# generated_quantities for a `BinomialLogit(N, eta)` likelihood compile
+# under stanc.
+@deffun binomial_logit_rng(int[n], N::int[n], eta)::int[n] = binomial_rng(N, inv_logit(eta))
+
 # beta_binomial: (trials, alpha, beta); trials always int[n]
 @deffun beta_binomial_rng(int[n], N::int[n], a::real, b::real)::int[n] = beta_binomial_rng(N, a, b)
 @deffun beta_binomial_rng(int[n], N::int[n], a, b)::int[n] = beta_binomial_rng(N, a, b)
