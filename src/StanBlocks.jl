@@ -1,11 +1,10 @@
 module StanBlocks
 
-export @stan, @model, @parameters, @transformed_parameters, @generated_quantities, @bsum, with_gradient
 export @slic, @defsig, @deffun, @lpxf, @lhs
 export stan_code, stan_model, stan_instantiate
 export StanBlocksError
 
-using LinearAlgebra, Statistics, Distributions, LogExpFunctions, JSON, StanLogDensityProblems, LogDensityProblems, Markdown
+using JSON, StanLogDensityProblems, LogDensityProblems, Markdown
 
 # --- Error type for StanBlocks computations (defined early so submodules can use it) ---
 
@@ -25,25 +24,9 @@ struct StanBlocksError <: Exception
     cause::Any           # (exception, backtrace) tuple
 end
 
-include("wrapper.jl")
-include("macros.jl")
-include("functions.jl")
 include("slic_stan/slic.jl")
 
-julia_implementation(key; kwargs...) = missing
 slic_implementation(key; kwargs...) = nothing
-stan_implementation(key; kwargs...) = missing
-include("check.jl")
-
-# --- LogDensityProblems interface ---
-LogDensityProblems.capabilities(::Type{VectorPosterior{F,G,GQ,N}}) where{F,G,GQ,N} = if G == Missing
-    LogDensityProblems.LogDensityOrder{0}()
-else
-    LogDensityProblems.LogDensityOrder{1}()
-end
-LogDensityProblems.dimension(p::VectorPosterior) = dimension(p)
-LogDensityProblems.logdensity(p::VectorPosterior, x) = p(x)
-LogDensityProblems.logdensity_and_gradient(p::VectorPosterior, x) = p.g(x)
 
 # --- Markdown/Quarto display ---
 include("quarto.jl")

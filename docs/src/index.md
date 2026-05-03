@@ -597,10 +597,6 @@ end
 
 The deployed catalog lives at <https://nsiccha.github.io/BayesianRegressionModels.jl/> — each entry pairs a small formula, the resulting `@slic` body, and the generated Stan code side by side. For coverage of distributions, link functions, interactions, splines, AR processes, measurement-error covariates, hurdle / zero-inflated likelihoods, multi-membership / stratified random effects, etc., this is the most thorough working bibliography of the `@slic` macro surface.
 
-## Legacy Julia backend
-
-The original `@stan` / `@parameters` / `@transformed_parameters` / `@generated_quantities` / `@bsum` macros (the pre-Stan, pure-Julia backend) are still exported but **deprecated**. New code should use `@slic` + `@deffun`.
-
 ## See also
 
 - [API Reference](api) — full list of exported functions and macros

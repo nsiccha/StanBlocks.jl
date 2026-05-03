@@ -88,77 +88,14 @@ println(stan_code(earn_height_posterior))
 earn_height_problem = stan_instantiate(earn_height_posterior)
 ```
 
-
-# StanBlocks.jl (Julia backend - deprecated)
-
-Implements many - but currently not all - of the Bayesian models in [`posteriordb`](https://github.com/stan-dev/posteriordb)
-by implementing Julia macros and functions which mimick Stan blocks and functions respectively, with relatively light dependencies. 
-Using the macros and functions defined in this package, the "shortest" `posteriordb` model ([`earn_height.stan`](https://github.com/stan-dev/posteriordb/blob/master/posterior_database/models/stan/earn_height.stan))
-
-```stan
-data {
-  int<lower=0> N;
-  vector[N] earn;
-  vector[N] height;
-}
-parameters {
-  vector[2] beta;
-  real<lower=0> sigma;
-}
-model {
-  earn ~ normal(beta[1] + beta[2] * height, sigma);
-}
-```
-
-becomes
-
-```julia
-julia_implementation(::Val{:earn_height}; N, earn, height, kwargs...) = begin 
-    @stan begin 
-        @parameters begin
-            beta::vector[2]
-            sigma::real(lower=0.)
-        end
-        @model begin
-            earn ~ normal(@broadcasted(beta[1] + beta[2] * height), sigma);
-        end
-    end
-end
-```
-
-Instantiating the posterior (i.e. model + data) requires loading [`PosteriorDB.jl`](https://github.com/sethaxen/PosteriorDB.jl),
-which provides access to the datasets, e.g. to load the `earnings-earn_height` posterior (`earn_height` model + `earning` data):
-
-```julia
-import StanBlocks, PosteriorDB
-
-pdb = PosteriorDB.database()
-post = PosteriorDB.posterior(pdb, "earnings-earn_height")
-
-jlpdf = StanBlocks.julia_implementation(post)
-jlpdf(randn(StanBlocks.dimension(jlpdf))) # Returns some number
-```
+See the [user guide](https://nsiccha.github.io/StanBlocks.jl/dev/) for `@deffun`, `@inline` UDFs, sub-models, posterior pointwise likelihood / predictive draws, the full built-in catalog, and a Bruno- / BRM-scale example.
 
 # Caveats
 
-## Differences in the returned log-density
+## Constant terms in the log density
 
-Stan's default "sampling statement" (e.g. `y ~ normal(mu, sigma);`) automatically drops constant terms (unless configured differently), see [https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement](https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement). 
-Constant terms are terms which do not depend on model parameters, and this package's macros and functions currently do not try to figure out which terms do not depend on model parameters, and as such we never drop them.
-This may lead to (constant) differences in the computed log-densities from the Stan and Julia implementations.
+Stan's `~` statement [drops constants](https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement). StanBlocks does **not** — it always emits the full log density. The absolute value differs from a hand-written Stan model, but the posterior geometry is identical and sampling is unaffected.
 
-## Some models are not implemented yet, or may have smaller or bigger errors
+## No control flow at the model level
 
-I've implemented many of the models, but I haven't implemented all of them, and I probably have made some mistakes in implementing some of them.
-
-## Some models may have been implemented suboptimally
-
-Just that.
-
-# Using and testing the implementations
-
-See [https://nsiccha.github.io/StanBlocks.jl/performance.html#tabular-data](https://nsiccha.github.io/StanBlocks.jl/performance.html#tabular-data) for an overview of (hopefully) correctly implemented models.
-
-See [`test/runtests.jl`](https://github.com/nsiccha/StanBlocks.jl/blob/main/test/runtests.jl) for a way to run and check the models. 
-After importing `PosteriorDB`, `StanLogDensityProblems` and `LogDensityProblems`, you should have access to reference Stan implementations of the log density and of its gradient, see the documentation of `StanLogDensityProblems.jl`.
-The Stan log density can then be compared to the Julia log density as is, and after loading Julia's AD packages, you can also compare the Stan log density gradient to the Julia log density gradient.
+`for`/`while`/`if`/`&&`/`||`/ternary/comprehensions are not allowed in `@slic` bodies. Move that logic into a `@deffun` body, or use a vectorised form.
