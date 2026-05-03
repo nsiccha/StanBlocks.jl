@@ -1100,19 +1100,68 @@ else
     Expr(x.head, [lower_string_interp(a) for a in x.args]...)
 end
 
+# A leading string literal inside the `@slic begin ... end` block is the
+# model docstring. We split it out here and stash it in the data dict
+# under `:docstring` — the existing `stan_model` / `Base.show(::StanIO,
+# ::StanModel)` path already renders it as a leading `// ...` comment in
+# the generated Stan source. (For Julia-side `?m` lookup, users still
+# write the standard `\"\"\"docstring\"\"\" m = @slic …` form, which
+# `Core.@doc` attaches to the binding independently.)
+_is_doc_macro_head(head) = head == GlobalRef(Core, Symbol("@doc")) ||
+    head == Symbol("@doc") ||
+    (head isa Expr && head.head === :. && length(head.args) == 2 &&
+        head.args[2] isa QuoteNode && head.args[2].value === Symbol("@doc"))
+
+extract_leading_docstring(model) = ("", model)
+extract_leading_docstring(model::Expr) = if model.head === :block
+    real_idx = findfirst(a -> !isa(a, LineNumberNode), model.args)
+    real_idx === nothing && return ("", model)
+    real = model.args[real_idx]
+    if real isa AbstractString
+        # Bare leading string literal in the block.
+        new_args = copy(model.args)
+        deleteat!(new_args, real_idx)
+        return (real, Expr(:block, new_args...))
+    elseif Meta.isexpr(real, :macrocall) && length(real.args) >= 4 &&
+            _is_doc_macro_head(real.args[1]) && real.args[3] isa AbstractString
+        # Julia auto-wraps `"""..."""` followed by an expr as
+        # `Core.@doc(lnn, "...", expr)`. Peel the docstring, restore the
+        # bare expr in its slot.
+        doc = real.args[3]
+        next_stmt = real.args[4]
+        new_args = copy(model.args)
+        new_args[real_idx] = next_stmt
+        return (doc, Expr(:block, new_args...))
+    end
+    return ("", model)
+else
+    ("", model)
+end
+
 """
 Defines `SlicModel`s (see `test/slic.jl` for usage examples).
 
 The defining module is captured automatically via `__module__`, so that `@deffun` functions
 defined in the same module (e.g. a package extension) are found during symbol resolution.
+
+A leading string literal inside the `begin ... end` block is captured as the model
+docstring and rendered as a `// ...` comment header in the generated Stan code.
 """
 macro slic(model)
-    SlicModel(lower_string_interp(slic_macroexpand(__module__, model)), Dict(), __module__)
+    expanded = lower_string_interp(slic_macroexpand(__module__, model))
+    doc, stripped = extract_leading_docstring(expanded)
+    SlicModel(stripped, Dict{Symbol,Any}(:docstring => doc), __module__)
 end
 macro slic(data, model)
     mod = @__MODULE__
-    qmodel = Meta.quot(lower_string_interp(slic_macroexpand(__module__, model)))
-    esc(:($mod.SlicModel($qmodel, $data, $(__module__))))
+    expanded = lower_string_interp(slic_macroexpand(__module__, model))
+    doc, stripped = extract_leading_docstring(expanded)
+    qmodel = Meta.quot(stripped)
+    if isempty(doc)
+        esc(:($mod.SlicModel($qmodel, $data, $(__module__))))
+    else
+        esc(:($mod.SlicModel($qmodel, merge((;docstring=$doc), $data), $(__module__))))
+    end
 end
 
 """
