@@ -233,10 +233,13 @@ stan_type(expr, value::AbstractVector{<:Integer}; kwargs...) = StanType(
     value, kwargs..., qual=:data
 )
 stan_type(expr, value::AbstractMatrix{<:Integer}; kwargs...) = StanType(
-    types.int, 
-    stan_expr.((Symbol(expr, "_m"), Symbol(expr, "_n"), ), size(value)); 
+    types.int,
+    stan_expr.((Symbol(expr, "_m"), Symbol(expr, "_n"), ), size(value));
     value, kwargs..., qual=:data
 )
+# String literals — used as messages for `reject` / `print`. The
+# `value` carries the raw text; the rendered form quotes it.
+stan_type(expr, value::AbstractString; kwargs...) = StanType(types.anything; value, kwargs..., qual=:data)
 stan_type(expr, value::Function; kwargs...) = StanType(types.func{typeof(value)}; value, qual=:data, kwargs...)
 stan_type(expr, value::Tuple; kwargs...) = StanType(
     types.tup, tuple();
@@ -400,7 +403,11 @@ forward!(x; info) = error("forward! not defined for value `$x` of type `$(typeof
 forward!(;info) = x->forward!(x; info)
 forward!(x::Tuple; info) = (mapreduce(forwards!(;info), vcat, x; init=[])...,)
 forward!(x::Union{Tuple,NamedTuple,Vector,Base.Pairs}; info) = map(forward!(;info), x)
-forward!(x::Union{String,Number,Function,Nothing}; info) = x
+forward!(x::Union{Number,Function,Nothing}; info) = x
+# Wrap string literals as StanExprs so they can be passed as args to
+# Stan functions like `reject` / `print` and survive `tracetype`'s
+# `center_type(type(arg))` walk. Renders quoted at emission time.
+forward!(x::AbstractString; info) = stan_expr(x, x; qual=:data)
 forward!(x::LineNumberNode; info) = (lnn = _get_lnn_ref(info); lnn isa Ref && (lnn[] = x); x)
 forward!(x::QuoteNode; info) = x.value
 forward!(x::Irrational; info) = error("forward! not defined for irrational `$x` — only `π` is handled; convert to a concrete numeric value first.")
@@ -1174,6 +1181,31 @@ macro lhs(x)
     error("@lhs may only appear inside a @deffun block")
 end
 
+"""
+    @stan_assert cond
+    @stan_assert cond message
+
+Stan-compatible runtime assertion. Expands to `if !cond; reject(msg); end`,
+where Stan's `reject` aborts the current MCMC proposal with the message.
+Without an explicit message, a default `"assertion failed: <cond>"` is used.
+
+Use inside `@deffun` bodies (control flow is not allowed in `@slic` model
+bodies — wrap the check in a helper if needed at the model level).
+
+# Example
+
+```julia
+@deffun safe_log(x::real)::real = begin
+    @stan_assert x > 0 "safe_log: argument must be positive"
+    return log(x)
+end
+```
+"""
+macro stan_assert(cond, msg=nothing)
+    msg_expr = msg === nothing ? string("assertion failed: ", cond) : msg
+    esc(:(if !($cond); reject($msg_expr); end))
+end
+
 include("builtin.jl")
 fold_shape_query(x::StanExpr{<:CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:CanonicalExpr{typeof(builtin.dims)}},<:StanExpr{<:Integer}}}}) = begin
     inner = expr(expr(x).args[1])
@@ -1302,6 +1334,8 @@ Base.show(io::StanIO, x::StanModel) = begin
     print(io, Join(blocks(x), "\n"))
 end
 Base.show(io::StanIO, x::StanExpr) = isa(type(x), StringStanType) ? print(io, expr(x), "::", type(x)) : print(io, expr(x))
+# String-literal StanExprs render as a quoted Stan string.
+Base.show(io::StanIO, x::StanExpr{<:AbstractString}) = print(io, '"', expr(x), '"')
 # Sized type tokens render as Stan tuple literals at the call site. 0-dim
 # tokens are always_inline'd away, so no call-site form is needed for them.
 # 1-dim tokens render as a bare int (Stan has no 1-element tuple type).

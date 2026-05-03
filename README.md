@@ -23,27 +23,30 @@ Current features include
 * and more.
 
 
-Upcoming features include, in order of priority and estimated arrival,
+Recently shipped:
 
-* easy runtime assertions (like Julia's `@assert`) - and support for other macros,
-* "transpile-time functions" - by which I mean functions which return e.g. the return type of a function call,
-* generated functions - functions for which the function body depends (programmatically) on the number and types of the passed arguments (like `map(f, args...)`),
-* model docstrings, 
-* custom types (for method dispatch - this would help with more "Julia-style" broadcasting, e.g. via `Ref`),
-* closures via Julia's [`Do-Block Syntax`](https://docs.julialang.org/en/v1/manual/functions/#Do-Block-Syntax-for-Function-Arguments) (to make within chain parallelization via [`reduce_sum`](https://mc-stan.org/docs/stan-users-guide/parallelization.html#reduce-sum) less painful),
-* lower transpilation runtimes (currently, transpilation can sometimes take longer than compilation - there is currently at least one algorithmic inefficiency on top of the systemic implementation inefficiency),
-* type annotations (acting like transpile time assertions),
-* automatic (runtime) checking of shape compatibility - define a function like `f(x::vector[n], y::vector[n]) = ...` and throw if the lengths do not agree,
+* user-defined Julia macros expand transparently inside `@slic` / `@deffun` bodies (`@views`, `@.`, `@inbounds`, anything),
+* `@stan_assert cond [msg]` — runtime assertion that lowers to `if !cond reject(msg)`,
+* `@inline` UDFs / trailing `!`: every call expands at the call site, no Stan `functions {}` entry — supports multi-statement bodies, varargs, higher-order arguments, and caller-scope mutation through `f!(buf, …)`-style helpers,
+* module-aware name resolution: `@deffun`s defined in package extensions are found automatically.
+
+Upcoming features, in rough priority order:
+
+* "transpile-time functions" — exposing the existing `tracetype` machinery as a user-facing `return_type_of(f, …)`,
+* generated functions — already implicit (every call site re-traces with concrete arg types) but no compile-once cache,
+* model docstrings (top-level `@slic` doc-prefix propagation),
+* custom types (for method dispatch — would help "Julia-style" broadcasting, e.g. via `Ref`),
+* closures via Julia's [`Do-Block Syntax`](https://docs.julialang.org/en/v1/manual/functions/#Do-Block-Syntax-for-Function-Arguments) (to make within-chain parallelization via [`reduce_sum`](https://mc-stan.org/docs/stan-users-guide/parallelization.html#reduce-sum) less painful),
+* lower transpilation runtimes,
+* type annotations as transpile-time assertions,
+* automatic (runtime) shape-compatibility checks — auto-emit `if (rows(x) != rows(y)) reject(…)` at function entry,
 * a much better user experience,
 * more and better tests,
-* keyword arguments,
-* default arguments,
-* inlining (to reduce potential runtime overhead),
-* easier custom parameter transformations (going from sampler parametrization to user parametrization - aka as constraining),
+* keyword + default arguments to `@deffun`,
+* `void` UDFs (side-effect-only functions),
+* easier custom parameter transformations (sampler parametrization ↔ user parametrization),
 * array comprehensions,
 * a more complete (and more correct) coverage of built-in Stan functions,
-* better name resolution (currently user defined functions or sub models have to be defined in `Main`),
-* functions that mutate their arguments (solved via inlining),
 * elimination of unused (size) variables in UDFs,
 * and more.
 
