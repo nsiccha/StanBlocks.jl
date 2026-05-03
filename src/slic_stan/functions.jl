@@ -462,7 +462,61 @@ begin
         fsig, body = ensure_xassign(x).args
         fcall, rv = ensure_xtyped(fsig).args
         @assert Meta.isexpr(fcall, :call) "@deffun: function signature must be a `:call` expression like `f(args...)::T`, got `$fcall`."
-        f, args... = fcall.args
+        f, all_args... = fcall.args
+
+        # Default positional args (`f(x, y=1.0)`): emit one `@inline`
+        # trampoline per omitted-suffix arity that fills the default(s),
+        # then fall through to register the full method below. This mirrors
+        # Julia's "default args = sugar for multiple methods" semantics.
+        default_idxs = findall(a -> Meta.isexpr(a, :kw), all_args)
+        if !isempty(default_idxs)
+            ismissing(body) && error("@deffun: default positional args require a body.")
+            first_default = minimum(default_idxs)
+            all(i -> Meta.isexpr(all_args[i], :kw), first_default:length(all_args)) ||
+                error("@deffun: default positional args must be trailing — got `$fcall`.")
+            isa(f, Symbol) || error("@deffun: defaults require a bare-Symbol fname, got `$f`.")
+            n = length(all_args)
+            stripped = [Meta.isexpr(a, :kw) ? a.args[1] : a for a in all_args]
+            # Argument *names* (no type/decl wrapping) for the call-position
+            # of the trampoline body — `f(x::real, 2.0)` would be a syntax
+            # error in call position, we need `f(x, 2.0)`.
+            _name_of(a::Symbol) = a
+            _name_of(a::Expr) = if a.head === :(::)
+                _name_of(a.args[1])
+            elseif a.head === :kw
+                _name_of(a.args[1])
+            else
+                a
+            end
+            arg_names_only = [_name_of(s) for s in stripped]
+            rv_part = rv === :anything ? () : (rv,)
+            defs = []
+            # Trampolines: `f(x, ...)` for each k in [first_default-1, n-1].
+            for k in (first_default - 1):(n - 1)
+                tramp_args = stripped[1:k]
+                full_call_args = Any[arg_names_only[1:k]...]
+                for i in (k+1):n
+                    push!(full_call_args, all_args[i].args[2])
+                end
+                tramp_call = Expr(:call, f, tramp_args...)
+                tramp_sig = isempty(rv_part) ? tramp_call : Expr(:(::), tramp_call, rv_part[1])
+                # `@deffun` expects bodies to be `begin ... end` blocks.
+                tramp_body = Expr(:block, source, Expr(:call, f, full_call_args...))
+                tramp_def = Expr(:(=), tramp_sig, tramp_body)
+                # `@inline` so the trampoline doesn't emit a Stan function;
+                # the call to `f` with defaults filled goes straight through.
+                push!(defs, Expr(:macrocall, Symbol("@inline"), source, tramp_def))
+            end
+            # The full method, with defaults stripped to plain args.
+            full_call = Expr(:call, f, stripped...)
+            full_sig = isempty(rv_part) ? full_call : Expr(:(::), full_call, rv_part[1])
+            push!(defs, Expr(:(=), full_sig, body))
+            return Expr(:block, [
+                deffun(d; docstring, source, is_lhs, is_lpxf, is_inline) for d in defs
+            ]...)
+        end
+
+        args = all_args
         # Trailing `!` in the function name is a synonym for `@inline`.
         # The Julia mutation-convention name is preserved verbatim — the only
         # actionable thing for SLIC is "inline this UDF at every call site."
