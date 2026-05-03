@@ -622,10 +622,17 @@ end
 _is_inert_block_stmt(x) = false
 _is_inert_block_stmt(x::StanExpr) = expr(x) isa Symbol || expr(x) isa Number || expr(x) isa AbstractString
 forward!(x::AssignmentExpr{Symbol}; info) = begin
-    name, rhs = x.args 
-    (name in keys(info) && isa(info, SubModel)) && return nothing 
-    rhs = forward!(rhs; info)::Union{StanExpr}
-    forward!(remake(x, name, rhs); info)
+    name, rhs = x.args
+    (name in keys(info) && isa(info, SubModel)) && return nothing
+    resolved = forward!(rhs; info)
+    isa(resolved, SlicModel) && error(
+        "`$name = <submodel>(...)` is not supported — sub-models can only be embedded via `~`. ",
+        "Use `$name ~ <submodel>(...)` instead."
+    )
+    isa(resolved, StanExpr) || error(
+        "`$name = <rhs>`: rhs forwarded to a value of type `$(typeof(resolved))`, expected `StanExpr`."
+    )
+    forward!(remake(x, name, resolved); info)
 end
 maybe_lazy_size(key::Symbol, i, sizei; info) = sizei
 is_simple_size(x::StanExpr) = is_simple_size(expr(x))
@@ -816,7 +823,24 @@ stan_expr(x::CanonicalExpr) = begin
     tt = deanon_type(tracetype(anon_canonical(x)), x)
     StanExpr(x, remake(tt; qual=maximum(qual, x.args; init=:data), cv=any(cv, x.args) || cv(tt)))
 end
-stan_expr(x::CanonicalExpr{<:SlicModel}) = head(x)(x.args...;x.kwargs...)
+stan_expr(x::CanonicalExpr{<:SlicModel}) = begin
+    # Sub-models accept data via kwargs and (optionally) quoted body
+    # extensions as positional args. Regular call-style positional args —
+    # whose forwarding produced a `StanExpr` or another `SlicModel` —
+    # are not supported, and would otherwise die in a deep `MethodError`
+    # for `model(::SlicModel, ::StanExpr)`.
+    for arg in x.args
+        if isa(arg, StanExpr) || isa(arg, SlicModel)
+            error(
+                "SLIC sub-model was passed a regular positional argument `$arg`. ",
+                "Sub-models accept data only via kwargs (e.g. `submodel(;X=X)`); ",
+                "positional args are reserved for quoted body extensions ",
+                "(e.g. `submodel(quote ... end; X=X)`)."
+            )
+        end
+    end
+    head(x)(x.args...; x.kwargs...)
+end
 
 backward!(x; info) = error("backward! not defined for value `$x` of type `$(typeof(x))` — no method matches a more specific signature.")
 backward!(;info) = x->backward!(x; info)
