@@ -639,6 +639,10 @@ forward!(x::AssignmentExpr{Symbol}; info) = begin
     isa(resolved, StanExpr) || error(
         "`$name = <rhs>`: rhs forwarded to a value of type `$(typeof(resolved))`, expected `StanExpr`."
     )
+    center_type(resolved) === types.void && error(
+        "`$name = <void-call>(...)`: cannot bind the return value of a void UDF. ",
+        "Drop the `$name = ` and call as a statement."
+    )
     forward!(remake(x, name, resolved); info)
 end
 maybe_lazy_size(key::Symbol, i, sizei; info) = sizei
@@ -916,6 +920,22 @@ distribution_blocks(x::ReturnExpr; info) = (:generated_quantities,)
 distribution_blocks(x::DocumentExpr; info) = distribution_blocks(x.args[2]; info)
 distribution_blocks(::Union{Nothing}; info) = tuple()
 distribution_blocks(x::StanExpr{Symbol}; info) = hasvalue(x) ? (:data,) : tuple()
+# Void-typed StanExprs (calls to `::void` UDFs at statement position) follow
+# their args' qualifier — same as an assignment statement would. Implemented
+# via a runtime `center_type` check rather than dispatch on `<:types.void`
+# because the `types` submodule is defined later in `functions.jl` and isn't
+# in scope when this method's signature is parsed.
+distribution_blocks(x::StanExpr; info) = if center_type(x) === types.void
+    if qual(x) == :data
+        (:transformed_data,)
+    elseif qual(x) == :parameter
+        (:transformed_parameters,)
+    else
+        (:generated_quantities,)
+    end
+else
+    error("distribution_blocks not defined for non-void StanExpr at statement position: $x")
+end
 
 DeclarativeBlock = Union{DataBlock,ParametersBlock}
 ImperativeBlock = Union{FunctionsBlock,TransformedDataBlock,TransformedParametersBlock,ModelBlock,GeneratedQuantitiesBlock}

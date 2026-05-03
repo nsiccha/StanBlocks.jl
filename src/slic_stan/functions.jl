@@ -24,6 +24,9 @@ module types
     abstract type tokenof{T} <: anything end
     abstract type tup <: anything end
     abstract type ntup <: tup end
+    # Side-effect-only return type for `@deffun foo(...)::void = …`.
+    # Calls are statements; binding their result is rejected at trace time.
+    abstract type void <: anything end
 end
 function stan_code end
 # Types flow through SLIC like functions: wrap once on entry, then dispatch
@@ -44,6 +47,7 @@ r_ndim(::Type{<:types.complex}) = 0
 r_ndim(::Type{<:types.func}) = 0
 r_ndim(::Type{<:types.tokenof}) = 0
 r_ndim(::Type{<:types.tup}) = 0
+r_ndim(::Type{types.void}) = 0
 r_ndim(::StanType{T}) where {T} = r_ndim(T)
 l_ndim(x::StanType) = stan_ndim(x) - r_ndim(x)
 lr_size(x::StanType) = stan_size(x, 1:l_ndim(x)), stan_size(x, 1+l_ndim(x):stan_ndim(x))
@@ -550,7 +554,11 @@ begin
         if !ismissing(body)
             @assert Meta.isexpr(body, :block) "@deffun: function body must be a `begin ... end` block, got `$body`."
             _reject_udf_forms!(body, f)
-            body = ensure_xreturn(body)
+            # `void` UDFs run for side effects only — don't wrap the trailing
+            # expression in a `return`, and force the inferred return type.
+            if rv != :void
+                body = ensure_xreturn(body)
+            end
             sig_rv = if rv == :anything
                 rv_expr = :($forward_return!($(canonical(body)); info).type)
                 :($rv_expr)
