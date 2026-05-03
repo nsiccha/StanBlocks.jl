@@ -216,10 +216,10 @@ import Statistics
     end
     positive_infinity()::real
     negative_infinity()::real
-    reject(x)::anything
+    reject(args...)::anything
     Base.log1p(x::real)::real
     Base.inv(::vector[n])::vector[n]
-    Base.print(x)::anything
+    Base.print(args...)::anything
     Base.size(x)::int
     Base.range(start::int, stop::int)::vector[stop]
     Base.sum(x)::real

@@ -1075,6 +1075,31 @@ else
     Expr(x.head, (slic_macroexpand(mod, a) for a in x.args)...)
 end
 
+# `reject` and `print` are the natural home for Julia-style string
+# interpolation (`"x = $x"`). Stan's variadic argument list is the
+# right Stan-side surface, so we lower a single interpolated-string arg
+# into multiple positional args at AST level: `reject("x = $x")` →
+# `reject("x = ", x)`.
+_is_reject_or_print(x) = false
+_is_reject_or_print(x::Symbol) = x === :reject || x === :print
+_is_reject_or_print(x::Expr) = x.head === :. && length(x.args) == 2 &&
+    x.args[2] isa QuoteNode && x.args[2].value in (:reject, :print)
+
+lower_string_interp(x) = x
+lower_string_interp(x::Expr) = if x.head === :call && length(x.args) >= 2 && _is_reject_or_print(x.args[1])
+    new_args = Any[x.args[1]]
+    for a in x.args[2:end]
+        if Meta.isexpr(a, :string)
+            append!(new_args, [lower_string_interp(p) for p in a.args])
+        else
+            push!(new_args, lower_string_interp(a))
+        end
+    end
+    Expr(:call, new_args...)
+else
+    Expr(x.head, [lower_string_interp(a) for a in x.args]...)
+end
+
 """
 Defines `SlicModel`s (see `test/slic.jl` for usage examples).
 
@@ -1082,11 +1107,11 @@ The defining module is captured automatically via `__module__`, so that `@deffun
 defined in the same module (e.g. a package extension) are found during symbol resolution.
 """
 macro slic(model)
-    SlicModel(slic_macroexpand(__module__, model), Dict(), __module__)
+    SlicModel(lower_string_interp(slic_macroexpand(__module__, model)), Dict(), __module__)
 end
 macro slic(data, model)
     mod = @__MODULE__
-    qmodel = Meta.quot(slic_macroexpand(__module__, model))
+    qmodel = Meta.quot(lower_string_interp(slic_macroexpand(__module__, model)))
     esc(:($mod.SlicModel($qmodel, $data, $(__module__))))
 end
 
@@ -1157,7 +1182,7 @@ end
 See `src/slic_stan/builtin.jl` for many more examples.
 """
 macro deffun(x)
-    esc(deffun(slic_macroexpand(__module__, x); source=__source__))
+    esc(deffun(lower_string_interp(slic_macroexpand(__module__, x)); source=__source__))
 end
 
 """
