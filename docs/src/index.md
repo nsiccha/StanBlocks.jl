@@ -151,6 +151,8 @@ You can additionally pass `n=…` or `m=…, n=…` on any prior to make the par
 
 `@deffun` registers a Stan-compatible function with type-annotated arguments. Its body is real Julia and may use `for`/`while`/`if`/comprehensions. The body is also transpiled to Stan.
 
+UDF bodies must not contain `~` sampling statements or `target +=` increments — UDFs cannot introduce parameters or directly manipulate the log density. The macro errors at expansion time if either is found.
+
 ```julia
 @deffun garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
     sigma2 = alpha0
@@ -242,6 +244,71 @@ For UDFs that you want to use via `~` (or whose pointwise/predictive companions 
 ```julia
 @deffun begin
     @lhs @lpxf my_normal_lpdf(y::real, mu::real, sigma::real) = normal_lpdf(y, mu, sigma)
+end
+```
+
+### `@inline` UDFs (and the trailing `!` synonym)
+
+Annotate a `@deffun` with `@inline` — or give the function a Julia-convention
+trailing `!` in its name — to expand every call **at the call site** instead
+of emitting a Stan function. Use this for small structured helpers and for
+mutation patterns.
+
+```julia
+@deffun @inline scale(x::vector[n], s::real)::vector[n] = x * s
+
+@deffun set_first!(buf::vector[n])::vector[n] = begin
+    buf[1] = 42.
+    return buf
+end
+```
+
+The trailing `!` is purely a Julia naming convention (no special mutation
+flag); the only actionable thing for SLIC is "inline this UDF." Mutation
+falls out naturally — substituting the call-site argument means subsequent
+assignments (`buf .= …`, `buf[i] = …`, `buf += …`) act on the caller's
+variable. Any post-substitution assignment errors surface via SLIC's normal
+rules.
+
+What inline UDFs support:
+
+- **Single-expression and multi-statement bodies** — pre-statements hoist
+  into the enclosing block; locals get a per-callsite `__il_<n>` suffix so
+  they don't collide with the caller's vars or with sibling expansions.
+- **Varargs** — `args...` splats through to the inner call: `@inline
+  wrap(args...)::real = three(args...)`.
+- **Higher-order arguments** — function values flow through normally:
+  `@inline twice(f, x)::real = f(f(x))`.
+- **Calls inside non-inline UDFs** — the inlined body lands in the
+  enclosing function's body; per-block scoping keeps `for`/`while`/`if`
+  branches from leaking hoisted statements outside their scope.
+
+Restrictions:
+
+- Inline UDFs **cannot** introduce parameters or directly manipulate the
+  log density (no `~`, no `target +=` — same rule as any UDF).
+- `@inline` cannot combine with `@lhs` / `@lpxf` (no triad registration
+  for inlined log-density UDFs).
+- Recursion is not detected (a self-recursive inline UDF would loop
+  forever during tracing).
+- Early `return` inside control flow is not specially handled — the body's
+  final-position expression is the call's value.
+
+### Julia macros inside `@slic` and `@deffun` bodies
+
+Standard Julia macros (`@views`, `@.`, `@inbounds`, user-defined macros) are
+expanded against the calling module before tracing, so they work
+transparently. SLIC-internal markers (`@doc`, `@lpxf`, `@lhs`, `@inline`) are
+preserved verbatim and handled structurally by the parser.
+
+```julia
+macro center(x); :($x - mean($x)); end
+
+@slic (;y=randn(20), x=randn(20)) begin
+    alpha ~ std_normal()
+    beta  ~ std_normal()
+    sigma ~ std_normal(;lower=0.)
+    y ~ normal(alpha + beta * @center(x), sigma)
 end
 ```
 

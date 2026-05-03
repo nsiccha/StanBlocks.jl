@@ -1386,6 +1386,32 @@ transpiler can propagate types through calls to this function.
 For functions ending in `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf`, the return type is automatically
 set to `real` and companion `_lpdfs`/`_rng` stubs are generated for use in `generated_quantities`.
 
+UDF bodies must not contain `~` sampling statements or `target +=` increments
+— UDFs cannot introduce parameters or directly manipulate the log density.
+The macro errors at expansion time if either is found.
+
+Standard Julia macros inside the body are expanded against the calling module
+before tracing, so `@views`, `@.`, `@inbounds`, and user-defined macros work
+transparently.
+
+# Inlining
+
+Annotating with `@inline` (or giving the function a Julia-convention trailing `!`
+in its name) causes every call to be expanded at the call site instead of
+producing a Stan function:
+
+```julia
+@deffun @inline scale(x::vector[n], s::real)::vector[n] = x * s
+@deffun set_first!(buf::vector[n])::vector[n] = (buf[1] = 42.; buf)
+```
+
+Inline UDFs do not appear in Stan's `functions {}` block. Multi-statement
+bodies, vararg parameters, and higher-order function arguments are all
+supported. Locals are renamed per call site, and pre-statements hoist into
+the enclosing block.
+
+`@inline` cannot be combined with `@lhs` / `@lpxf`.
+
 # Example
 
 ```julia
