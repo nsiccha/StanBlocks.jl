@@ -513,18 +513,35 @@ begin
         end
 
         fun_sizes = OrderedDict()
+        # When a dim name appears in multiple args (e.g.
+        # `f(x::vector[n], y::vector[n])`), the first occurrence binds it
+        # via `int n = dims(x)[1];` and each subsequent occurrence becomes
+        # a runtime shape check that aborts with a `reject` message
+        # naming the offending arg / dim.
+        fun_checks = String[]
         for (arg_name, arg_type, tok) in zip(arg_names, arg_types, is_token)
             for (i, dim_name) in enumerate(arg_type.args[2:end])
                 isa(dim_name, Symbol) || continue
                 dim_name == :(_) && continue
                 dim_name in arg_names && continue
-                fun_sizes[dim_name] = if tok
-                    # Stan has no 1-element tuple type — single-dim tokens are passed
-                    # as a plain `int`, so unpack without `.1` indexing.
-                    ndims = length(arg_type.args) - 1
-                    ndims == 1 ? "int $dim_name = $arg_name;" : "int $dim_name = $arg_name.$i;"
+                if haskey(fun_sizes, dim_name)
+                    # Token-arg dims are encoded differently; skip the
+                    # check for those — usually internal dispatch glue.
+                    tok && continue
+                    access = string("dims(", arg_name, ")[", i, "]")
+                    msg = string("\"", f, ": dim mismatch — `", arg_name,
+                                 "` dim ", i, " (= \", ", access,
+                                 ", \") does not match `", dim_name, "` (= \", ", dim_name, ", \")\"")
+                    push!(fun_checks, string("if (", access, " != ", dim_name, ") reject(", msg, ");"))
                 else
-                    "int $dim_name = dims($arg_name)[$i];"
+                    fun_sizes[dim_name] = if tok
+                        # Stan has no 1-element tuple type — single-dim tokens are passed
+                        # as a plain `int`, so unpack without `.1` indexing.
+                        ndims = length(arg_type.args) - 1
+                        ndims == 1 ? "int $dim_name = $arg_name;" : "int $dim_name = $arg_name.$i;"
+                    else
+                        "int $dim_name = dims($arg_name)[$i];"
+                    end
                 end
             end
         end
@@ -571,6 +588,7 @@ begin
                 $f,
                 (;$(sig_names...), ),vcat(
                     $(collect(values(fun_sizes))),
+                    $(fun_checks),
                     $forward!($(canonical(body)); info)
                 )
             ))
