@@ -4,7 +4,7 @@ export @slic, @defsig, @deffun, @lpxf, @lhs
 export stan_code, stan_model, stan_instantiate
 export StanBlocksError
 
-using JSON, StanLogDensityProblems, LogDensityProblems, Markdown
+using OrderedCollections, JSON, StanLogDensityProblems, LogDensityProblems, Markdown
 
 # --- Error type for StanBlocks computations (defined early so submodules can use it) ---
 
@@ -23,6 +23,14 @@ struct StanBlocksError <: Exception
     context::String      # e.g. "model: eight_schools"
     cause::Any           # (exception, backtrace) tuple
 end
+
+# Back-compat alias: SLIC internals used to live in `module stan` (so
+# downstream code referenced `StanBlocks.stan.X`). The submodule was
+# hoisted; this self-alias keeps `StanBlocks.stan.X === StanBlocks.X`
+# so existing call sites keep working. Defined before `include` so
+# that `@deffun` blocks inside `slic_stan/builtin.jl` (which expand
+# `$stan.tracetype` etc. at quote-eval time) see the binding.
+const stan = @__MODULE__
 
 include("slic_stan/slic.jl")
 

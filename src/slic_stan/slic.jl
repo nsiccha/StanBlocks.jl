@@ -1,5 +1,3 @@
-module stan
-using OrderedCollections, JSON, StanLogDensityProblems
 const RV_NAME = gensym("RV")
 dumperror(x) = (dump(x); error("dumperror (see dump above): value of type `$(typeof(x))` hit an unhandled code path."))
 """
@@ -1002,6 +1000,156 @@ lpxf_register(name::Symbol; source=LineNumberNode(0, :none)) = begin
 end
 
 include("functions.jl")
+
+# `slic_macroexpand` and the user-facing macros must exist before
+# `include("builtin.jl")`, which uses `@deffun` extensively at load time.
+const _SLIC_RESERVED_MACROS = (Symbol("@doc"), Symbol("@lpxf"), Symbol("@lhs"), Symbol("@inline"))
+
+_is_reserved_slic_macro(::Any) = false
+_is_reserved_slic_macro(head::Symbol) = head in _SLIC_RESERVED_MACROS
+_is_reserved_slic_macro(head::GlobalRef) = head.name in _SLIC_RESERVED_MACROS
+_is_reserved_slic_macro(head::Expr) = head.head === :. &&
+    length(head.args) == 2 && head.args[2] isa QuoteNode &&
+    head.args[2].value in _SLIC_RESERVED_MACROS
+
+slic_macroexpand(mod::Module, x) = x
+slic_macroexpand(mod::Module, x::Expr) = if x.head === :macrocall
+    head = x.args[1]
+    if _is_reserved_slic_macro(head)
+        Expr(:macrocall, head, x.args[2], (slic_macroexpand(mod, a) for a in x.args[3:end])...)
+    else
+        slic_macroexpand(mod, macroexpand(mod, x; recursive=false))
+    end
+else
+    Expr(x.head, (slic_macroexpand(mod, a) for a in x.args)...)
+end
+
+"""
+Defines `SlicModel`s (see `test/slic.jl` for usage examples).
+
+The defining module is captured automatically via `__module__`, so that `@deffun` functions
+defined in the same module (e.g. a package extension) are found during symbol resolution.
+"""
+macro slic(model)
+    SlicModel(slic_macroexpand(__module__, model), Dict(), __module__)
+end
+macro slic(data, model)
+    mod = @__MODULE__
+    qmodel = Meta.quot(slic_macroexpand(__module__, model))
+    esc(:($mod.SlicModel($qmodel, $data, $(__module__))))
+end
+
+"""
+Utility macro to define function signatures (see `src/slic_stan/builtin.jl` for usage examples).
+
+**Note:**
+
+This macro is mainly useful for bulk built-in function signature definitions.
+StanBlocks.jl users should generally prefer using @deffun.
+"""
+macro defsig(x)
+    esc(defsig(x; source=__source__))
+end
+
+"""
+    @deffun function_definition
+
+Define a Stan-compatible function with type inference and code generation.
+
+Parses a Julia-style function definition (with type-annotated arguments and return type),
+generates the corresponding Stan function, and registers type-inference signatures so the
+transpiler can propagate types through calls to this function.
+
+For functions ending in `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf`, the return type is automatically
+set to `real` and companion `_lpdfs`/`_rng` stubs are generated for use in `generated_quantities`.
+
+UDF bodies must not contain `~` sampling statements or `target +=` increments
+— UDFs cannot introduce parameters or directly manipulate the log density.
+The macro errors at expansion time if either is found.
+
+Standard Julia macros inside the body are expanded against the calling module
+before tracing, so `@views`, `@.`, `@inbounds`, and user-defined macros work
+transparently.
+
+# Inlining
+
+Annotating with `@inline` (or giving the function a Julia-convention trailing `!`
+in its name) causes every call to be expanded at the call site instead of
+producing a Stan function:
+
+```julia
+@deffun @inline scale(x::vector[n], s::real)::vector[n] = x * s
+@deffun set_first!(buf::vector[n])::vector[n] = (buf[1] = 42.; buf)
+```
+
+Inline UDFs do not appear in Stan's `functions {}` block. Multi-statement
+bodies, vararg parameters, and higher-order function arguments are all
+supported. Locals are renamed per call site, and pre-statements hoist into
+the enclosing block.
+
+`@inline` cannot be combined with `@lhs` / `@lpxf`.
+
+# Example
+
+```julia
+@deffun garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
+    sigma2 = alpha0
+    rv = 0.
+    for t in 1:T
+        rv += normal_lpdf(y[t], mu, sqrt(sigma2))
+        sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
+    end
+    return rv
+end
+```
+
+See `src/slic_stan/builtin.jl` for many more examples.
+"""
+macro deffun(x)
+    esc(deffun(slic_macroexpand(__module__, x); source=__source__))
+end
+
+"""
+    @lpxf foo_lpdf
+    @lpxf begin foo_lpdf; bar_lpmf end
+
+Register the three SLIC dispatch hooks (`lpxf_expr`, `rng_expr`, `likelihood_expr`)
+for one or more user-defined log-probability functions.
+
+The argument(s) must be bare symbols ending in `_lpdf`, `_lpmf`, `_lcdf`, or `_lccdf`.
+For each `foo_lpdf` (or `_lpmf`/etc.), the macro emits the registrations:
+
+    StanBlocks.lpxf_expr(::typeof(foo))       = foo_lpdf
+    StanBlocks.rng_expr(::typeof(foo))        = foo_rng
+    StanBlocks.likelihood_expr(::typeof(foo)) = foo_lpdfs
+
+The companion `foo_rng` and `foo_lpdfs` (resp. `_lpmfs`/`_lcdfs`/`_lccdfs`) names
+must already exist when the registrations execute. This macro does not parse
+function bodies and does not wrap `@deffun`.
+"""
+macro lpxf(x)
+    lpxf_register(x; source=__source__)
+end
+
+"""
+    @lhs foo_lpdf(y::T, args...) = body
+
+Inside a `@deffun` block, opt this method into base-level LHS inference. Without
+`@lhs`, only the `_lpdf`-keyed tracetype is registered (so the method dispatches
+when called explicitly), but `lhs ~ foo(args...)` cannot trace because the base
+`foo` has no tracetype keyed on its argument signature. `@lhs` registers
+`tracetype(::CanonicalExpr{<:typeof(foo), <:Tuple{lhs_type[2:end]...}})` so the
+sampling form works.
+
+Compose with `@lpxf` (any order — `@lhs @lpxf …` or `@lpxf @lhs …`) to also
+register the dispatch hooks for `foo`/`foo_rng`/`foo_lpdfs`.
+
+Standalone `@lhs` (outside `@deffun`) is not supported and errors immediately.
+"""
+macro lhs(x)
+    error("@lhs may only appear inside a @deffun block")
+end
+
 include("builtin.jl")
 fold_shape_query(x::StanExpr{<:CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:CanonicalExpr{typeof(builtin.dims)}},<:StanExpr{<:Integer}}}}) = begin
     inner = expr(expr(x).args[1])
@@ -1320,160 +1468,6 @@ stan_data(x::StanModel) = Dict([
 end
 slic_expr(x::Expr) = x
 
-# Macro names handled structurally by SLIC's own parser. Macrocalls with these
-# heads are preserved verbatim during `slic_macroexpand`; everything else is
-# expanded against the user's module so standard Julia macros (`@views`, `@.`,
-# `@inbounds`, user-defined macros) work transparently inside `@slic` /
-# `@deffun` bodies.
-const _SLIC_RESERVED_MACROS = (Symbol("@doc"), Symbol("@lpxf"), Symbol("@lhs"), Symbol("@inline"))
-
-_is_reserved_slic_macro(::Any) = false
-_is_reserved_slic_macro(head::Symbol) = head in _SLIC_RESERVED_MACROS
-_is_reserved_slic_macro(head::GlobalRef) = head.name in _SLIC_RESERVED_MACROS
-_is_reserved_slic_macro(head::Expr) = head.head === :. &&
-    length(head.args) == 2 && head.args[2] isa QuoteNode &&
-    head.args[2].value in _SLIC_RESERVED_MACROS
-
-slic_macroexpand(mod::Module, x) = x
-slic_macroexpand(mod::Module, x::Expr) = if x.head === :macrocall
-    head = x.args[1]
-    if _is_reserved_slic_macro(head)
-        Expr(:macrocall, head, x.args[2], (slic_macroexpand(mod, a) for a in x.args[3:end])...)
-    else
-        slic_macroexpand(mod, macroexpand(mod, x; recursive=false))
-    end
-else
-    Expr(x.head, (slic_macroexpand(mod, a) for a in x.args)...)
-end
-
 include("test.jl")
 
-end
-"""
-Defines `SlicModel`s (see `test/slic.jl` for usage examples).
-
-The defining module is captured automatically via `__module__`, so that `@deffun` functions
-defined in the same module (e.g. a package extension) are found during symbol resolution.
-"""
-macro slic(model)
-    stan.SlicModel(stan.slic_macroexpand(__module__, model), Dict(), __module__)
-end
-macro slic(data, model)
-    mod = @__MODULE__
-    qmodel = Meta.quot(stan.slic_macroexpand(__module__, model))
-    esc(:($mod.stan.SlicModel($qmodel, $data, $(__module__))))
-end
-"""
-Utility macro to define function signatures (see `src/slic_stan/builtin.jl` for usage examples).
-
-**Note:**
-
-This macro is mainly useful for bulk built-in function signature definitions. 
-StanBlocks.jl users should generally prefer using @deffun.
-"""
-macro defsig(x)
-    esc(stan.defsig(x; source=__source__))
-end
-"""
-    @deffun function_definition
-
-Define a Stan-compatible function with type inference and code generation.
-
-Parses a Julia-style function definition (with type-annotated arguments and return type),
-generates the corresponding Stan function, and registers type-inference signatures so the
-transpiler can propagate types through calls to this function.
-
-For functions ending in `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf`, the return type is automatically
-set to `real` and companion `_lpdfs`/`_rng` stubs are generated for use in `generated_quantities`.
-
-UDF bodies must not contain `~` sampling statements or `target +=` increments
-— UDFs cannot introduce parameters or directly manipulate the log density.
-The macro errors at expansion time if either is found.
-
-Standard Julia macros inside the body are expanded against the calling module
-before tracing, so `@views`, `@.`, `@inbounds`, and user-defined macros work
-transparently.
-
-# Inlining
-
-Annotating with `@inline` (or giving the function a Julia-convention trailing `!`
-in its name) causes every call to be expanded at the call site instead of
-producing a Stan function:
-
-```julia
-@deffun @inline scale(x::vector[n], s::real)::vector[n] = x * s
-@deffun set_first!(buf::vector[n])::vector[n] = (buf[1] = 42.; buf)
-```
-
-Inline UDFs do not appear in Stan's `functions {}` block. Multi-statement
-bodies, vararg parameters, and higher-order function arguments are all
-supported. Locals are renamed per call site, and pre-statements hoist into
-the enclosing block.
-
-`@inline` cannot be combined with `@lhs` / `@lpxf`.
-
-# Example
-
-```julia
-@deffun garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
-    sigma2 = alpha0
-    rv = 0.
-    for t in 1:T
-        rv += normal_lpdf(y[t], mu, sqrt(sigma2))
-        sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
-    end
-    return rv
-end
-```
-
-See `src/slic_stan/builtin.jl` for many more examples.
-"""
-macro deffun(x)
-    esc(stan.deffun(stan.slic_macroexpand(__module__, x); source=__source__))
-end
-"""
-    @lpxf foo_lpdf
-    @lpxf begin foo_lpdf; bar_lpmf end
-
-Register the three SLIC dispatch hooks (`lpxf_expr`, `rng_expr`, `likelihood_expr`)
-for one or more user-defined log-probability functions.
-
-The argument(s) must be bare symbols ending in `_lpdf`, `_lpmf`, `_lcdf`, or `_lccdf`.
-For each `foo_lpdf` (or `_lpmf`/etc.), the macro emits the registrations:
-
-    StanBlocks.stan.lpxf_expr(::typeof(foo))       = foo_lpdf
-    StanBlocks.stan.rng_expr(::typeof(foo))        = foo_rng
-    StanBlocks.stan.likelihood_expr(::typeof(foo)) = foo_lpdfs
-
-The companion `foo_rng` and `foo_lpdfs` (resp. `_lpmfs`/`_lcdfs`/`_lccdfs`) names
-must already exist when the registrations execute. This macro does not parse
-function bodies and does not wrap `@deffun`.
-"""
-macro lpxf(x)
-    stan.lpxf_register(x; source=__source__)
-end
-
-"""
-    @lhs foo_lpdf(y::T, args...) = body
-
-Inside a `@deffun` block, opt this method into base-level LHS inference. Without
-`@lhs`, only the `_lpdf`-keyed tracetype is registered (so the method dispatches
-when called explicitly), but `lhs ~ foo(args...)` cannot trace because the base
-`foo` has no tracetype keyed on its argument signature. `@lhs` registers
-`tracetype(::CanonicalExpr{<:typeof(foo), <:Tuple{lhs_type[2:end]...}})` so the
-sampling form works.
-
-Compose with `@lpxf` (any order — `@lhs @lpxf …` or `@lpxf @lhs …`) to also
-register the dispatch hooks for `foo`/`foo_rng`/`foo_lpdfs`.
-
-Standalone `@lhs` (outside `@deffun`) is not supported and errors immediately.
-"""
-macro lhs(x)
-    error("@lhs may only appear inside a @deffun block")
-end
-const stan_model = stan.stan_model
-const stan_code = stan.stan_code
-const stan_data = stan.stan_data
-const stan_instantiate = stan.instantiate
-const StanModel = stan.StanModel
-const SlicModel = stan.SlicModel
+const stan_instantiate = instantiate

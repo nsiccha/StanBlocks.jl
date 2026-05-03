@@ -641,13 +641,6 @@ begin
     
 end
 
-macro defsig(x)
-    esc(defsig(x; source=__source__))
-end
-macro deffun(x)
-    esc(deffun(x; source=__source__))
-end
-
 fundef(x) = nothing
 sig_expr(x) = x
 sig_expr(x::Union{Tuple,NamedTuple,Vector}) = map(sig_expr, x)
