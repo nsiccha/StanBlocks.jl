@@ -339,6 +339,16 @@ canonical(x::Expr) = if x.head === :->
     # later substitution — `inline_substitute` walks Expr/Symbol, not
     # CanonicalExpr.
     CanonicalExpr(x.head, x.args...)
+elseif x.head === :do
+    # `f(args) do x; body end` parses to `Expr(:do, Expr(:call, f, args...),
+    # Expr(:->, Expr(:tuple, x), body))`. Desugar to the equivalent
+    # `f((x) -> body, args...)` by injecting the lambda as the call's first
+    # positional arg, then re-canonicalise.
+    @assert length(x.args) == 2 "canonical(:do): expected 2 args (call, lambda), got $(length(x.args))."
+    call_expr, lambda = x.args
+    @assert Meta.isexpr(call_expr, :call) "canonical(:do): first arg must be a `:call` Expr, got `$call_expr`."
+    @assert Meta.isexpr(lambda, :->) "canonical(:do): second arg must be a `:->` lambda Expr, got `$lambda`."
+    canonical(Expr(:call, call_expr.args[1], lambda, call_expr.args[2:end]...))
 else
     CanonicalExpr(x.head, canonical.(x.args)...)
 end
