@@ -1,0 +1,81 @@
+<div id="snippet-pdb_sesame" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'pdb_sesame' fetch /sandbox_rename/pdb_sesame?to=${my.textContent.trim()} then put the result into #snippet-pdb_sesame.outerHTML">pdb_sesame</strong><span style="color:green">PASS</span><span style="color:green;font-size:0.8em" title="Stan compiler (stanc) accepted the generated code">stanc ✓</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/pdb_sesame" hx-target="#snippet-pdb_sesame" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/pdb_sesame" hx-target="#snippet-pdb_sesame" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-pdb_sesame" hx-swap="outerHTML" hx-confirm="Delete snippet 'pdb_sesame'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/pdb_sesame" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia">@slic (;N=30, encouraged=Float64.(rand(0:1, 30)), watched=randn(30)) begin
+    beta ~ normal(0, 10)
+    beta2 ~ normal(0, 10)
+    sigma ~ gamma(2, 1)
+    watched ~ normal(beta + beta2 * encouraged, sigma)
+end
+</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-pdb_sesame" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="pdb_sesame"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor">@slic (;N=30, encouraged=Float64.(rand(0:1, 30)), watched=randn(30)) begin
+    beta ~ normal(0, 10)
+    beta2 ~ normal(0, 10)
+    sigma ~ gamma(2, 1)
+    watched ~ normal(beta + beta2 * encouraged, sigma)
+end
+</textarea></form></div></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+vector normal_lpdfs(
+    vector obs,
+    vector loc,
+    real scale
+) {
+    int n = dims(obs)[1];
+    return jbroadcasted_normal_lpdfs(obs, loc, scale);
+}
+vector jbroadcasted_normal_lpdfs(
+    vector x1,
+    vector x2,
+    real x3
+) {
+    int n = dims(x1)[1];
+    vector[n] rv;
+    for(i in 1:n) {
+        rv[i] = normal_lpdfs(broadcasted_getindex(x1, i), broadcasted_getindex(x2, i), broadcasted_getindex(x3, i));
+    }
+    return rv;
+}
+real normal_lpdfs(
+    real args1,
+    real args2,
+    real args3
+) {
+    return normal_lpdf(args1 | args2, args3);
+}
+real broadcasted_getindex(vector x, int i) {
+    int m = dims(x)[1];
+    return x[i];
+}
+real broadcasted_getindex(real x, int i) {
+    return x;
+}
+vector normal_vector_rng(
+    int anontok__1,
+    vector a,
+    real b
+) {
+    int n = anontok__1;
+    return to_vector(normal_rng(a, b));
+}
+}
+data {
+    int watched_n;
+    vector[watched_n] watched;
+    int encouraged_n;
+    vector[encouraged_n] encouraged;
+}
+transformed data {
+}
+parameters {
+    real beta;
+    real beta2;
+    real<lower=0.0> sigma;
+}
+transformed parameters {
+}
+model {
+    beta ~ normal(0, 10);
+    beta2 ~ normal(0, 10);
+    sigma ~ gamma(2, 1);
+    watched ~ normal((beta + (beta2 * encouraged)), sigma);
+}
+generated quantities {
+    vector[watched_n] watched_likelihood = normal_lpdfs(watched, (beta + (beta2 * encouraged)), sigma);
+    vector[watched_n] watched_gen = normal_vector_rng(watched_n, (beta + (beta2 * encouraged)), sigma);
+}</code></pre></div></div></div>

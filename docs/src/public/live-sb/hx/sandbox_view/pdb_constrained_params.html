@@ -1,0 +1,88 @@
+<div id="snippet-pdb_constrained_params" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'pdb_constrained_params' fetch /sandbox_rename/pdb_constrained_params?to=${my.textContent.trim()} then put the result into #snippet-pdb_constrained_params.outerHTML">pdb_constrained_params</strong><span style="color:green">PASS</span><span style="color:green;font-size:0.8em" title="Stan compiler (stanc) accepted the generated code">stanc ✓</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/pdb_constrained_params" hx-target="#snippet-pdb_constrained_params" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/pdb_constrained_params" hx-target="#snippet-pdb_constrained_params" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-pdb_constrained_params" hx-swap="outerHTML" hx-confirm="Delete snippet 'pdb_constrained_params'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/pdb_constrained_params" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia">@slic (;y=randn(10)) begin
+    mu ~ normal(0, 10)
+    sigma ~ gamma(2, 1)
+    nu ~ gamma(2, 0.1)
+    y ~ student_t(nu, mu, sigma)
+end
+</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-pdb_constrained_params" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="pdb_constrained_params"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor">@slic (;y=randn(10)) begin
+    mu ~ normal(0, 10)
+    sigma ~ gamma(2, 1)
+    nu ~ gamma(2, 0.1)
+    y ~ student_t(nu, mu, sigma)
+end
+</textarea></form></div></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+vector student_t_lpdfs(
+    vector obs,
+    real nu,
+    real loc,
+    real scale
+) {
+    int n = dims(obs)[1];
+    return jbroadcasted_student_t_lpdfs(obs, nu, loc, scale);
+}
+vector jbroadcasted_student_t_lpdfs(
+    vector x1,
+    real x2,
+    real x3,
+    real x4
+) {
+    int n = dims(x1)[1];
+    vector[n] rv;
+    for(i in 1:n) {
+        rv[i] = student_t_lpdfs(
+            broadcasted_getindex(x1, i),
+            broadcasted_getindex(x2, i),
+            broadcasted_getindex(x3, i),
+            broadcasted_getindex(x4, i)
+        );
+    }
+    return rv;
+}
+real student_t_lpdfs(
+    real args1,
+    real args2,
+    real args3,
+    real args4
+) {
+    return student_t_lpdf(args1 | args2, args3, args4);
+}
+real broadcasted_getindex(vector x, int i) {
+    int m = dims(x)[1];
+    return x[i];
+}
+real broadcasted_getindex(real x, int i) {
+    return x;
+}
+vector student_t_vector_rng(
+    int anontok__1,
+    real nu,
+    real a,
+    real b
+) {
+    int n = anontok__1;
+    return to_vector(student_t_rng(nu, rep_vector(a, n), b));
+}
+}
+data {
+    int y_n;
+    vector[y_n] y;
+}
+transformed data {
+}
+parameters {
+    real mu;
+    real<lower=0.0> sigma;
+    real<lower=0.0> nu;
+}
+transformed parameters {
+}
+model {
+    mu ~ normal(0, 10);
+    sigma ~ gamma(2, 1);
+    nu ~ gamma(2, 0.1);
+    y ~ student_t(nu, mu, sigma);
+}
+generated quantities {
+    vector[y_n] y_likelihood = student_t_lpdfs(y, nu, mu, sigma);
+    vector[y_n] y_gen = student_t_vector_rng(y_n, nu, mu, sigma);
+}</code></pre></div></div></div>

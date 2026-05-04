@@ -1,0 +1,117 @@
+<div id="snippet-void_udf" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'void_udf' fetch /sandbox_rename/void_udf?to=${my.textContent.trim()} then put the result into #snippet-void_udf.outerHTML">void_udf</strong><span style="color:green">PASS</span><span style="color:green;font-size:0.8em" title="Stan compiler (stanc) accepted the generated code">stanc ✓</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/void_udf" hx-target="#snippet-void_udf" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/void_udf" hx-target="#snippet-void_udf" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-void_udf" hx-swap="outerHTML" hx-confirm="Delete snippet 'void_udf'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/void_udf" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia"># Void UDF: side-effect-only function. Calls are statements; binding the
+# result is rejected at trace time. Stan-side, the function emits as
+# `void foo(...)` with no `return`.
+@deffun debug_print(label::real, x::real)::void = begin
+    print(label)
+    print(x)
+end
+
+@deffun shape_check(x::vector[n], y::vector[n])::void = begin
+    @stan_assert n > 0 "shape_check: empty input"
+end
+
+@slic (;y=randn(4)) begin
+    mu    ~ std_normal()
+    sigma ~ std_normal(;lower=0.)
+    debug_print(mu, sigma)              # statement-position call: OK
+    shape_check(rep_vector(0., 4), y)
+    y ~ normal(mu, sigma)
+end</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-void_udf" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="void_udf"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor"># Void UDF: side-effect-only function. Calls are statements; binding the
+# result is rejected at trace time. Stan-side, the function emits as
+# `void foo(...)` with no `return`.
+@deffun debug_print(label::real, x::real)::void = begin
+    print(label)
+    print(x)
+end
+
+@deffun shape_check(x::vector[n], y::vector[n])::void = begin
+    @stan_assert n > 0 "shape_check: empty input"
+end
+
+@slic (;y=randn(4)) begin
+    mu    ~ std_normal()
+    sigma ~ std_normal(;lower=0.)
+    debug_print(mu, sigma)              # statement-position call: OK
+    shape_check(rep_vector(0., 4), y)
+    y ~ normal(mu, sigma)
+end</textarea></form></div></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+void debug_print(real label, real x) {
+    print(label);
+    print(x);
+}
+void shape_check(
+    vector x,
+    vector y
+) {
+    int n = dims(x)[1];
+    if (dims(y)[1] != n) reject("shape_check: dim mismatch — `y` dim 1 (= ", dims(y)[1], ") does not match `n` (= ", n, ")");
+    if(!((n > 0))) {
+        reject("shape_check: empty input");
+    }
+}
+vector normal_lpdfs(
+    vector obs,
+    real loc,
+    real scale
+) {
+    int n = dims(obs)[1];
+    return jbroadcasted_normal_lpdfs(obs, loc, scale);
+}
+vector jbroadcasted_normal_lpdfs(
+    vector x1,
+    real x2,
+    real x3
+) {
+    int n = dims(x1)[1];
+    vector[n] rv;
+    for(i in 1:n) {
+        rv[i] = normal_lpdfs(broadcasted_getindex(x1, i), broadcasted_getindex(x2, i), broadcasted_getindex(x3, i));
+    }
+    return rv;
+}
+real normal_lpdfs(
+    real args1,
+    real args2,
+    real args3
+) {
+    return normal_lpdf(args1 | args2, args3);
+}
+real broadcasted_getindex(vector x, int i) {
+    int m = dims(x)[1];
+    return x[i];
+}
+real broadcasted_getindex(real x, int i) {
+    return x;
+}
+vector normal_vector_rng(
+    int anontok__1,
+    real a,
+    real b
+) {
+    int n = anontok__1;
+    return to_vector(normal_rng(rep_vector(a, n), b));
+}
+}
+data {
+    int y_n;
+    vector[y_n] y;
+}
+transformed data {
+    shape_check(rep_vector(0.0, 4), y);
+}
+parameters {
+    real mu;
+    real<lower=0.0> sigma;
+}
+transformed parameters {
+    debug_print(mu, sigma);
+}
+model {
+    mu ~ std_normal();
+    sigma ~ std_normal();
+    y ~ normal(mu, sigma);
+}
+generated quantities {
+    vector[y_n] y_likelihood = normal_lpdfs(y, mu, sigma);
+    vector[y_n] y_gen = normal_vector_rng(y_n, mu, sigma);
+}</code></pre></div></div></div>

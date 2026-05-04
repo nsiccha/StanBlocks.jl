@@ -1,0 +1,47 @@
+<div id="snippet-pdb_rate2_twoparams" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'pdb_rate2_twoparams' fetch /sandbox_rename/pdb_rate2_twoparams?to=${my.textContent.trim()} then put the result into #snippet-pdb_rate2_twoparams.outerHTML">pdb_rate2_twoparams</strong><span style="color:green">PASS</span><span style="color:green;font-size:0.8em" title="Stan compiler (stanc) accepted the generated code">stanc ✓</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/pdb_rate2_twoparams" hx-target="#snippet-pdb_rate2_twoparams" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/pdb_rate2_twoparams" hx-target="#snippet-pdb_rate2_twoparams" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-pdb_rate2_twoparams" hx-swap="outerHTML" hx-confirm="Delete snippet 'pdb_rate2_twoparams'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/pdb_rate2_twoparams" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia">@slic (;n1=10, n2=15, k1=3, k2=7) begin
+    theta1 ~ beta(1, 1)
+    theta2 ~ beta(1, 1)
+    k1 ~ binomial(n1, theta1)
+    k2 ~ binomial(n2, theta2)
+end
+</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-pdb_rate2_twoparams" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="pdb_rate2_twoparams"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor">@slic (;n1=10, n2=15, k1=3, k2=7) begin
+    theta1 ~ beta(1, 1)
+    theta2 ~ beta(1, 1)
+    k1 ~ binomial(n1, theta1)
+    k2 ~ binomial(n2, theta2)
+end
+</textarea></form></div></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+real binomial_lpmfs(
+    int args1,
+    int args2,
+    real args3
+) {
+    return binomial_lpmf(args1 | args2, args3);
+}
+}
+data {
+    int k1;
+    int n1;
+    int k2;
+    int n2;
+}
+transformed data {
+}
+parameters {
+    real<lower=0, upper=1> theta1;
+    real<lower=0, upper=1> theta2;
+}
+transformed parameters {
+}
+model {
+    theta1 ~ beta(1, 1);
+    theta2 ~ beta(1, 1);
+    k1 ~ binomial(n1, theta1);
+    k2 ~ binomial(n2, theta2);
+}
+generated quantities {
+    real k1_likelihood = binomial_lpmfs(k1, n1, theta1);
+    int k1_gen = binomial_rng(n1, theta1);
+    real k2_likelihood = binomial_lpmfs(k2, n2, theta2);
+    int k2_gen = binomial_rng(n2, theta2);
+}</code></pre></div></div></div>

@@ -1,0 +1,118 @@
+<div id="snippet-inline_mutation" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'inline_mutation' fetch /sandbox_rename/inline_mutation?to=${my.textContent.trim()} then put the result into #snippet-inline_mutation.outerHTML">inline_mutation</strong><span style="color:green">PASS</span><span style="color:red;font-size:0.8em" title="Stan compiler (stanc) rejected the generated code — see error below">stanc ✗</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/inline_mutation" hx-target="#snippet-inline_mutation" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/inline_mutation" hx-target="#snippet-inline_mutation" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-inline_mutation" hx-swap="outerHTML" hx-confirm="Delete snippet 'inline_mutation'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/inline_mutation" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia"># `f!` mutation. The trailing `!` only triggers inlining; nothing about
+# mutation is special-cased — substitution + the existing assignment-form
+# rules carry the rest. After inlining, `set_first!(out)` rewrites to the
+# inline body acting on `out` directly, no Stan UDF emitted.
+@deffun @inline set_first!(buf::vector[n])::vector[n] = begin
+    buf[1] = 42.
+    return buf
+end
+
+# Compound-assign mutation through a vector.
+@deffun @inline accumulate!(rv::real, x::vector[n])::real = begin
+    for i in 1:n
+        rv += x[i]
+    end
+    return rv
+end
+
+@deffun build(seed::vector[n])::vector[n] = begin
+    out = seed
+    set_first!(out)            # mutates `out` in place
+    return out
+end
+
+@deffun loopsum(x::vector[n])::real = begin
+    s = 0.
+    accumulate!(s, x)          # mutates `s` via compound assignment
+    return s
+end
+
+@slic (;) begin
+    mu  ~ std_normal(;n=4)
+    arr = build(mu)
+    s   = loopsum(mu)
+end</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-inline_mutation" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="inline_mutation"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor"># `f!` mutation. The trailing `!` only triggers inlining; nothing about
+# mutation is special-cased — substitution + the existing assignment-form
+# rules carry the rest. After inlining, `set_first!(out)` rewrites to the
+# inline body acting on `out` directly, no Stan UDF emitted.
+@deffun @inline set_first!(buf::vector[n])::vector[n] = begin
+    buf[1] = 42.
+    return buf
+end
+
+# Compound-assign mutation through a vector.
+@deffun @inline accumulate!(rv::real, x::vector[n])::real = begin
+    for i in 1:n
+        rv += x[i]
+    end
+    return rv
+end
+
+@deffun build(seed::vector[n])::vector[n] = begin
+    out = seed
+    set_first!(out)            # mutates `out` in place
+    return out
+end
+
+@deffun loopsum(x::vector[n])::real = begin
+    s = 0.
+    accumulate!(s, x)          # mutates `s` via compound assignment
+    return s
+end
+
+@slic (;) begin
+    mu  ~ std_normal(;n=4)
+    arr = build(mu)
+    s   = loopsum(mu)
+end</textarea></form></div></div><div style="margin:0.4rem 0"><div style="color:red;font-size:0.85em;font-weight:bold;margin-bottom:0.2rem">stanc rejected the generated Stan code:</div><pre style="white-space:pre-wrap;max-height:200px;overflow:auto;font-size:0.85em;margin:0;padding:0.3rem 0.5rem;border-left:2px solid red;background:var(--pico-code-background-color,#f6f6f6)">Syntax error in '/tmp/jl_PCNi121W1i.stan', line 12, column 11 to column 26, parsing error:
+   -------------------------------------------------
+    10:  ) {
+    11:      int n = dims(seed)[1];
+    12:      vector["dims(seed)[1]"] out = seed;
+                    ^
+    13:      out[1] = 42.0;
+    14:      return out;
+   -------------------------------------------------
+
+Expected "[" expression "]" for vector size.
+</pre></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+vector std_normal_vector_rng(
+    int anontok__1
+) {
+    int n = anontok__1;
+    return to_vector(normal_rng(rep_vector(0, n), 1));
+}
+vector build(
+    vector seed
+) {
+    int n = dims(seed)[1];
+    vector["dims(seed)[1]"] out = seed;
+    out[1] = 42.0;
+    return out;
+}
+real loopsum(
+    vector x
+) {
+    int n = dims(x)[1];
+    real s = 0.0;
+    for(i__il_10 in 1:n) {
+        s += x[i__il_10];
+    }
+    return s;
+}
+}
+data {
+}
+transformed data {
+}
+parameters {
+}
+transformed parameters {
+}
+model {
+}
+generated quantities {
+    vector[4] mu = std_normal_vector_rng(4);
+    vector[4] arr = build(mu);
+    real s = loopsum(mu);
+}</code></pre></div></div></div>

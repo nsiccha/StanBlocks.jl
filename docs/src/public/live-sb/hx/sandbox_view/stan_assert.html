@@ -1,0 +1,124 @@
+<div id="snippet-stan_assert" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'stan_assert' fetch /sandbox_rename/stan_assert?to=${my.textContent.trim()} then put the result into #snippet-stan_assert.outerHTML">stan_assert</strong><span style="color:green">PASS</span><span style="color:green;font-size:0.8em" title="Stan compiler (stanc) accepted the generated code">stanc ✓</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/stan_assert" hx-target="#snippet-stan_assert" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/stan_assert" hx-target="#snippet-stan_assert" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-stan_assert" hx-swap="outerHTML" hx-confirm="Delete snippet 'stan_assert'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/stan_assert" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia"># `@stan_assert cond [msg]` expands to `if !cond reject(msg) end` — a
+# Stan-native runtime assertion. Use inside `@deffun` bodies (control
+# flow is not allowed in `@slic` model bodies). Without an explicit
+# message a default `"assertion failed: <cond>"` is used.
+@deffun safe_log(x::real)::real = begin
+    @stan_assert x > 0 "safe_log: argument must be positive"
+    return log(x)
+end
+
+@deffun safe_div(a::real, b::real)::real = begin
+    @stan_assert b != 0
+    return a / b
+end
+
+@slic (;y=randn(5)) begin
+    mu ~ std_normal(;lower=0.)
+    nu ~ std_normal()
+    foo = safe_log(mu)
+    bar = safe_div(mu, nu)
+    y ~ normal(foo + bar, 1.)
+end</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-stan_assert" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="stan_assert"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor"># `@stan_assert cond [msg]` expands to `if !cond reject(msg) end` — a
+# Stan-native runtime assertion. Use inside `@deffun` bodies (control
+# flow is not allowed in `@slic` model bodies). Without an explicit
+# message a default `"assertion failed: <cond>"` is used.
+@deffun safe_log(x::real)::real = begin
+    @stan_assert x > 0 "safe_log: argument must be positive"
+    return log(x)
+end
+
+@deffun safe_div(a::real, b::real)::real = begin
+    @stan_assert b != 0
+    return a / b
+end
+
+@slic (;y=randn(5)) begin
+    mu ~ std_normal(;lower=0.)
+    nu ~ std_normal()
+    foo = safe_log(mu)
+    bar = safe_div(mu, nu)
+    y ~ normal(foo + bar, 1.)
+end</textarea></form></div></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+real safe_log(
+    real x
+) {
+    if(!((x > 0))) {
+        reject("safe_log: argument must be positive");
+    }
+    return log(x);
+}
+real safe_div(
+    real a,
+    real b
+) {
+    if(!((b != 0))) {
+        reject("assertion failed: b != 0");
+    }
+    return (a / b);
+}
+vector normal_lpdfs(
+    vector obs,
+    real loc,
+    real scale
+) {
+    int n = dims(obs)[1];
+    return jbroadcasted_normal_lpdfs(obs, loc, scale);
+}
+vector jbroadcasted_normal_lpdfs(
+    vector x1,
+    real x2,
+    real x3
+) {
+    int n = dims(x1)[1];
+    vector[n] rv;
+    for(i in 1:n) {
+        rv[i] = normal_lpdfs(broadcasted_getindex(x1, i), broadcasted_getindex(x2, i), broadcasted_getindex(x3, i));
+    }
+    return rv;
+}
+real normal_lpdfs(
+    real args1,
+    real args2,
+    real args3
+) {
+    return normal_lpdf(args1 | args2, args3);
+}
+real broadcasted_getindex(vector x, int i) {
+    int m = dims(x)[1];
+    return x[i];
+}
+real broadcasted_getindex(real x, int i) {
+    return x;
+}
+vector normal_vector_rng(
+    int anontok__1,
+    real a,
+    real b
+) {
+    int n = anontok__1;
+    return to_vector(normal_rng(rep_vector(a, n), b));
+}
+}
+data {
+    int y_n;
+    vector[y_n] y;
+}
+transformed data {
+}
+parameters {
+    real<lower=0.0> mu;
+    real nu;
+}
+transformed parameters {
+    real foo = safe_log(mu);
+    real bar = safe_div(mu, nu);
+}
+model {
+    mu ~ std_normal();
+    nu ~ std_normal();
+    y ~ normal((foo + bar), 1.0);
+}
+generated quantities {
+    vector[y_n] y_likelihood = normal_lpdfs(y, (foo + bar), 1.0);
+    vector[y_n] y_gen = normal_vector_rng(y_n, (foo + bar), 1.0);
+}</code></pre></div></div></div>

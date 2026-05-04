@@ -1,0 +1,113 @@
+<div id="snippet-typetoken_smoke" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'typetoken_smoke' fetch /sandbox_rename/typetoken_smoke?to=${my.textContent.trim()} then put the result into #snippet-typetoken_smoke.outerHTML">typetoken_smoke</strong><span style="color:green">PASS</span><span style="color:green;font-size:0.8em" title="Stan compiler (stanc) accepted the generated code">stanc ✓</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/typetoken_smoke" hx-target="#snippet-typetoken_smoke" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/typetoken_smoke" hx-target="#snippet-typetoken_smoke" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-typetoken_smoke" hx-swap="outerHTML" hx-confirm="Delete snippet 'typetoken_smoke'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/typetoken_smoke" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia"># Smoke test for TypeTokenExpr creation paths:
+#  - bare Stan type at call site                       `type_demo(real)`
+#  - `T[dims...]` at call site (sized token via getindex) `type_demo(real[n])`
+#  - `typeof(x)` at call site (derived token)            `type_demo(typeof(y))`
+#
+# `type_demo` is a no-op returning 0 of the requested shape. The intent here is
+# purely to verify that each type-token form parses, traces, and renders; the
+# Stan function body should reference the token's dims via the tuple-packed arg.
+
+@deffun type_demo(real) = 0.0
+@deffun type_demo(real[n]) = rep_vector(0.0, n)
+@deffun type_demo(vector[n]) = rep_vector(0.0, n)
+
+@slic (; y = randn(5)) begin
+    a = type_demo(real)
+    v = type_demo(real[5])
+    w = type_demo(typeof(y))
+    y ~ normal(a + v + w, 1.0)
+end
+</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-typetoken_smoke" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="typetoken_smoke"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor"># Smoke test for TypeTokenExpr creation paths:
+#  - bare Stan type at call site                       `type_demo(real)`
+#  - `T[dims...]` at call site (sized token via getindex) `type_demo(real[n])`
+#  - `typeof(x)` at call site (derived token)            `type_demo(typeof(y))`
+#
+# `type_demo` is a no-op returning 0 of the requested shape. The intent here is
+# purely to verify that each type-token form parses, traces, and renders; the
+# Stan function body should reference the token's dims via the tuple-packed arg.
+
+@deffun type_demo(real) = 0.0
+@deffun type_demo(real[n]) = rep_vector(0.0, n)
+@deffun type_demo(vector[n]) = rep_vector(0.0, n)
+
+@slic (; y = randn(5)) begin
+    a = type_demo(real)
+    v = type_demo(real[5])
+    w = type_demo(typeof(y))
+    y ~ normal(a + v + w, 1.0)
+end
+</textarea></form></div></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+real type_demo_real() {
+    return 0.0;
+}
+vector type_demo_real(int anontok__1) {
+    int n = anontok__1;
+    return rep_vector(0.0, n);
+}
+vector type_demo_vector(int anontok__1) {
+    int n = anontok__1;
+    return rep_vector(0.0, n);
+}
+vector normal_lpdfs(
+    vector obs,
+    vector loc,
+    real scale
+) {
+    int n = dims(obs)[1];
+    return jbroadcasted_normal_lpdfs(obs, loc, scale);
+}
+vector jbroadcasted_normal_lpdfs(
+    vector x1,
+    vector x2,
+    real x3
+) {
+    int n = dims(x1)[1];
+    vector[n] rv;
+    for(i in 1:n) {
+        rv[i] = normal_lpdfs(broadcasted_getindex(x1, i), broadcasted_getindex(x2, i), broadcasted_getindex(x3, i));
+    }
+    return rv;
+}
+real normal_lpdfs(
+    real args1,
+    real args2,
+    real args3
+) {
+    return normal_lpdf(args1 | args2, args3);
+}
+real broadcasted_getindex(vector x, int i) {
+    int m = dims(x)[1];
+    return x[i];
+}
+real broadcasted_getindex(real x, int i) {
+    return x;
+}
+vector normal_vector_rng(
+    int anontok__1,
+    vector a,
+    real b
+) {
+    int n = anontok__1;
+    return to_vector(normal_rng(a, b));
+}
+}
+data {
+    int y_n;
+    vector[y_n] y;
+}
+transformed data {
+    real a = type_demo_real();
+    vector[5] v = type_demo_real(5);
+    vector[y_n] w = type_demo_vector(y_n);
+}
+parameters {
+}
+transformed parameters {
+}
+model {
+    y ~ normal((a + v + w), 1.0);
+}
+generated quantities {
+    vector[y_n] y_likelihood = normal_lpdfs(y, (a + v + w), 1.0);
+    vector[y_n] y_gen = normal_vector_rng(y_n, (a + v + w), 1.0);
+}</code></pre></div></div></div>

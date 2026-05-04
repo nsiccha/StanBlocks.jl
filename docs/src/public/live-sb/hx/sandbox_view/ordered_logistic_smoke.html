@@ -1,0 +1,75 @@
+<div id="snippet-ordered_logistic_smoke" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'ordered_logistic_smoke' fetch /sandbox_rename/ordered_logistic_smoke?to=${my.textContent.trim()} then put the result into #snippet-ordered_logistic_smoke.outerHTML">ordered_logistic_smoke</strong><span style="color:green">PASS</span><span style="color:green;font-size:0.8em" title="Stan compiler (stanc) accepted the generated code">stanc ✓</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/ordered_logistic_smoke" hx-target="#snippet-ordered_logistic_smoke" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/ordered_logistic_smoke" hx-target="#snippet-ordered_logistic_smoke" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-ordered_logistic_smoke" hx-swap="outerHTML" hx-confirm="Delete snippet 'ordered_logistic_smoke'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/ordered_logistic_smoke" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia">@slic (;y=rand(1:3, 20), n_cuts=2) begin
+    eta ~ std_normal(; n=num_elements(y))
+    c_base ~ std_normal()
+    c_log_incr ~ std_normal(; n=n_cuts-1)
+    cuts = c_base + cumulative_sum(append_row(0.0, exp(c_log_incr)))
+    y ~ ordered_logistic(eta, cuts)
+end</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-ordered_logistic_smoke" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="ordered_logistic_smoke"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor">@slic (;y=rand(1:3, 20), n_cuts=2) begin
+    eta ~ std_normal(; n=num_elements(y))
+    c_base ~ std_normal()
+    c_log_incr ~ std_normal(; n=n_cuts-1)
+    cuts = c_base + cumulative_sum(append_row(0.0, exp(c_log_incr)))
+    y ~ ordered_logistic(eta, cuts)
+end</textarea></form></div></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+vector ordered_logistic_lpmfs(
+    array[] int y,
+    vector eta,
+    vector c
+) {
+    int n = dims(y)[1];
+    int m = dims(c)[1];
+    if (dims(eta)[1] != n) reject("ordered_logistic_lpmfs: dim mismatch — `eta` dim 1 (= ", dims(eta)[1], ") does not match `n` (= ", n, ")");
+    vector[n] rv;
+    for(i in 1:n) {
+        rv[i] = ordered_logistic_lpmf(y[i] | eta[i], c);
+    }
+    return rv;
+}
+array[] int ordered_logistic_int_rng(
+    int anontok__1,
+    vector eta,
+    vector c
+) {
+    int n = anontok__1;
+    int m = dims(c)[1];
+    if (dims(eta)[1] != n) reject("ordered_logistic_rng: dim mismatch — `eta` dim 1 (= ", dims(eta)[1], ") does not match `n` (= ", n, ")");
+    return ordered_logistic_rng(eta, c);
+}
+array[] int ordered_logistic_rng(
+    vector eta,
+    vector c
+) {
+    int n = dims(eta)[1];
+    int m = dims(c)[1];
+    array[n] int rv;
+    for(i in 1:n) {
+        rv[i] = ordered_logistic_rng(eta[i], c);
+    }
+    return rv;
+}
+}
+data {
+    int y_n;
+    array[y_n] int y;
+    int n_cuts;
+}
+transformed data {
+}
+parameters {
+    vector[num_elements(y)] eta;
+    real c_base;
+    vector[(n_cuts - 1)] c_log_incr;
+}
+transformed parameters {
+    vector[((n_cuts - 1) + 1)] cuts = (c_base + cumulative_sum(append_row(0.0, exp(c_log_incr))));
+}
+model {
+    eta ~ std_normal();
+    c_base ~ std_normal();
+    c_log_incr ~ std_normal();
+    y ~ ordered_logistic(eta, cuts);
+}
+generated quantities {
+    vector[num_elements(y)] y_likelihood = ordered_logistic_lpmfs(y, eta, cuts);
+    array[num_elements(y)] int y_gen = ordered_logistic_int_rng(y_n, eta, cuts);
+}</code></pre></div></div></div>

@@ -1,0 +1,69 @@
+<div id="snippet-gap3_conflict_probe" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'gap3_conflict_probe' fetch /sandbox_rename/gap3_conflict_probe?to=${my.textContent.trim()} then put the result into #snippet-gap3_conflict_probe.outerHTML">gap3_conflict_probe</strong><span style="color:green">PASS</span><span style="color:green;font-size:0.8em" title="Stan compiler (stanc) accepted the generated code">stanc ✓</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/gap3_conflict_probe" hx-target="#snippet-gap3_conflict_probe" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/gap3_conflict_probe" hx-target="#snippet-gap3_conflict_probe" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-gap3_conflict_probe" hx-swap="outerHTML" hx-confirm="Delete snippet 'gap3_conflict_probe'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/gap3_conflict_probe" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia">@slic (;y=randn(5)) begin
+    x::vector[5] ~ std_normal(; n=5)
+    y ~ normal(x, 1.0)
+end</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-gap3_conflict_probe" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="gap3_conflict_probe"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor">@slic (;y=randn(5)) begin
+    x::vector[5] ~ std_normal(; n=5)
+    y ~ normal(x, 1.0)
+end</textarea></form></div></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+vector normal_lpdfs(
+    vector obs,
+    vector loc,
+    real scale
+) {
+    int n = dims(obs)[1];
+    return jbroadcasted_normal_lpdfs(obs, loc, scale);
+}
+vector jbroadcasted_normal_lpdfs(
+    vector x1,
+    vector x2,
+    real x3
+) {
+    int n = dims(x1)[1];
+    vector[n] rv;
+    for(i in 1:n) {
+        rv[i] = normal_lpdfs(broadcasted_getindex(x1, i), broadcasted_getindex(x2, i), broadcasted_getindex(x3, i));
+    }
+    return rv;
+}
+real normal_lpdfs(
+    real args1,
+    real args2,
+    real args3
+) {
+    return normal_lpdf(args1 | args2, args3);
+}
+real broadcasted_getindex(vector x, int i) {
+    int m = dims(x)[1];
+    return x[i];
+}
+real broadcasted_getindex(real x, int i) {
+    return x;
+}
+vector normal_vector_rng(
+    int anontok__1,
+    vector a,
+    real b
+) {
+    int n = anontok__1;
+    return to_vector(normal_rng(a, b));
+}
+}
+data {
+    int y_n;
+    vector[y_n] y;
+}
+transformed data {
+}
+parameters {
+    vector[5] x;
+}
+transformed parameters {
+}
+model {
+    x ~ std_normal();
+    y ~ normal(x, 1.0);
+}
+generated quantities {
+    vector[y_n] y_likelihood = normal_lpdfs(y, x, 1.0);
+    vector[y_n] y_gen = normal_vector_rng(y_n, x, 1.0);
+}</code></pre></div></div></div>

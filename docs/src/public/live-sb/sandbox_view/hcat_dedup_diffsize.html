@@ -1,0 +1,218 @@
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script><script src="https://unpkg.com/hyperscript.org@0.9.14"></script><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css"><style>@layer htmxo {
+    :where(:root) {
+        --htmxo-accent:  #4a90d9;
+        --htmxo-success: #2a9d8f;
+        --htmxo-warning: #e9a23b;
+        --htmxo-error:   #e76f51;
+        --htmxo-border:  currentColor;
+        --htmxo-muted:   color-mix(in srgb, currentColor 60%, transparent);
+    }
+}
+</style><style>:root {
+    --htmxo-accent:  var(--pico-primary, #4a90d9);
+    --htmxo-success: var(--pico-color-green-550, #2a9d8f);
+    --htmxo-warning: var(--pico-color-amber-550, #e9a23b);
+    --htmxo-error:   var(--pico-color-red-550, #e76f51);
+    --htmxo-border:  var(--pico-border-color, currentColor);
+    --htmxo-muted:   var(--pico-muted-color, color-mix(in srgb, currentColor 60%, transparent));
+}
+</style><style>@layer htmxo {
+@keyframes htmx-pulse {
+    0%, 100% { outline-color: color-mix(in srgb, var(--htmxo-accent) 30%, transparent); }
+    50% { outline-color: var(--htmxo-accent); }
+}
+.htmx-request-active {
+    outline: 2px solid var(--htmxo-accent);
+    outline-offset: -2px;
+    animation: htmx-pulse 1s ease-in-out infinite;
+}
+.htmx-request-success {
+    outline: 2px solid var(--htmxo-success);
+    outline-offset: -2px;
+    animation: htmx-fade-success 1s ease-out forwards;
+}
+.htmx-request-error {
+    outline: 2px solid var(--htmxo-error);
+    outline-offset: -2px;
+    animation: htmx-fade-error 2s ease-out forwards;
+}
+@keyframes htmx-fade-success {
+    0% { outline-color: var(--htmxo-success); }
+    100% { outline-color: transparent; }
+}
+@keyframes htmx-fade-error {
+    0% { outline-color: var(--htmxo-error); }
+    100% { outline-color: transparent; }
+}
+}
+</style><script>document.addEventListener('DOMContentLoaded', function() {
+    function getTarget(evt) {
+        var elt = evt.detail.elt;
+        var targetSel = elt.getAttribute('hx-target');
+        if (targetSel) {
+            if (targetSel === 'this') return elt;
+            var found = document.querySelector(targetSel);
+            if (found) return found;
+        }
+        return elt;
+    }
+    function isPolling(elt) {
+        var trigger = elt.getAttribute('hx-trigger') || '';
+        return trigger.indexOf('every') !== -1;
+    }
+    function isPollingRelated(elt) {
+        return isPolling(elt) || (elt.querySelector && !!elt.querySelector('[hx-trigger*="every"]'));
+    }
+    function clearFeedback(el) {
+        el.classList.remove('htmx-request-active', 'htmx-request-success', 'htmx-request-error');
+    }
+    document.body.addEventListener('htmx:beforeRequest', function(e) {
+        var elt = e.detail.elt;
+        if (isPolling(elt)) return;
+        var t = getTarget(e);
+        clearFeedback(t);
+        t.classList.add('htmx-request-active');
+        if (t !== elt) {
+            clearFeedback(elt);
+            elt.classList.add('htmx-request-active');
+        }
+    });
+    document.body.addEventListener('htmx:oobAfterSwap', function(e) {
+        var t = e.detail.target || e.detail.elt;
+        if (!t) return;
+        clearFeedback(t);
+        t.classList.add('htmx-request-success');
+        setTimeout(function() { clearFeedback(t); }, 1000);
+    });
+    document.body.addEventListener('htmx:afterRequest', function(e) {
+        var elt = e.detail.elt;
+        if (isPollingRelated(elt)) return;
+        var t = getTarget(e);
+        t.classList.remove('htmx-request-active');
+        if (e.detail.successful) {
+            t.classList.add('htmx-request-success');
+            setTimeout(function() { clearFeedback(t); }, 1000);
+            if (t !== elt) {
+                elt.classList.remove('htmx-request-active');
+                elt.classList.add('htmx-request-success');
+                setTimeout(function() { clearFeedback(elt); }, 1000);
+            }
+        } else {
+            t.classList.add('htmx-request-error');
+            setTimeout(function() { clearFeedback(t); }, 2000);
+            if (t !== elt) {
+                elt.classList.add('htmx-request-error');
+                setTimeout(function() { clearFeedback(elt); }, 2000);
+            }
+        }
+    });
+});
+</script><style>@layer htmxo {
+.tabset > nav {
+    margin: 0;
+    padding: 0 0 0 1rem;
+    border-bottom: 2px solid var(--htmxo-border);
+}
+.tabset > nav ul {
+    align-self: flex-end;
+    gap: 0.25rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.tabset > nav ul li {
+    padding: 0;
+    margin: 0;
+}
+.tabset > nav ul li a {
+    display: block;
+    padding: 0.5rem 1rem;
+    border: 2px solid transparent;
+    border-bottom: none;
+    border-radius: 0.35rem 0.35rem 0 0;
+    background: transparent;
+    text-decoration: none;
+}
+.tabset > nav ul li a.contrast {
+    border-color: var(--htmxo-border);
+    background: transparent;
+}
+.tabset > .tab-panel {
+    padding: 1rem;
+    border: 2px solid var(--htmxo-border);
+    border-top: none;
+    border-radius: 0 0 0.35rem 0.35rem;
+}
+}
+</style><style>@layer htmxo {
+.htmxo-editor-input {
+    font-family: monospace;
+    font-size: 0.85em;
+    width: 100%;
+}
+.htmxo-editor-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+}
+</style><style>:root { --pico-font-size: 100%; } .hidden { display: none; } .full-width { max-width: 100%; padding: 0 1rem; }</style><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1/themes/prism-tomorrow.min.css"><script src="https://cdn.jsdelivr.net/npm/prismjs@1/prism.min.js"></script><script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-julia.min.js"></script><script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-stan.min.js"></script><script>document.addEventListener('DOMContentLoaded',function(){document.body.addEventListener('htmx:afterSettle',function(){document.querySelectorAll('code[class*="language-"]').forEach(function(el){if(!el.querySelector('span.token')){Prism.highlightElement(el);}});});});</script><script>function sortTable(col, th) {
+    const tbody = th.closest('table').querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const asc = th.dataset.sortDir !== 'asc';
+    th.dataset.sortDir = asc ? 'asc' : 'desc';
+    th.closest('tr').querySelectorAll('th').forEach(h => { if (h !== th) delete h.dataset.sortDir; });
+    rows.sort((a, b) => {
+        const av = a.cells[col].textContent.trim();
+        const bv = b.cells[col].textContent.trim();
+        const an = parseFloat(av), bn = parseFloat(bv);
+        if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
+        return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+    });
+    rows.forEach(r => tbody.appendChild(r));
+    th.closest('tr').querySelectorAll('th').forEach(h => {
+        h.textContent = h.textContent.replace(/ [▲▼]$/, '');
+    });
+    th.textContent += asc ? ' ▲' : ' ▼';
+}
+</script><style>[data-static-disabled]{opacity:.45;pointer-events:none;cursor:not-allowed}</style></head><body><body><header class="container"><h1>StanBlocks.jl PosteriorDB Dashboard</h1><nav><a href="/StanBlocks.jl/dev/live-sb/">PosteriorDB</a> | <a href="/StanBlocks.jl/dev/live-sb/tests">Tests</a> | <a href="/StanBlocks.jl/dev/live-sb/sandbox">Sandbox</a> | <a href="/StanBlocks.jl/dev/live-sb/gallery">Gallery</a></nav></header><main class="container"><div id="content"><div id="snippet-hcat_dedup_diffsize" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'hcat_dedup_diffsize' fetch /sandbox_rename/hcat_dedup_diffsize?to=${my.textContent.trim()} then put the result into #snippet-hcat_dedup_diffsize.outerHTML">hcat_dedup_diffsize</strong><span style="color:green">PASS</span><span style="color:green;font-size:0.8em" title="Stan compiler (stanc) accepted the generated code">stanc ✓</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/hcat_dedup_diffsize" hx-target="#snippet-hcat_dedup_diffsize" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/hcat_dedup_diffsize" hx-target="#snippet-hcat_dedup_diffsize" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-hcat_dedup_diffsize" hx-swap="outerHTML" hx-confirm="Delete snippet 'hcat_dedup_diffsize'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/hcat_dedup_diffsize" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia">@slic (;a=randn(3), b=randn(5), c=randn(3), d=randn(5)) begin
+    X1 = hcat(a, c)
+    X2 = hcat(b, d)
+    y = X1
+end</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-hcat_dedup_diffsize" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="hcat_dedup_diffsize"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor">@slic (;a=randn(3), b=randn(5), c=randn(3), d=randn(5)) begin
+    X1 = hcat(a, c)
+    X2 = hcat(b, d)
+    y = X1
+end</textarea></form></div></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+matrix hcat(
+    vector x,
+    vector y
+) {
+    int n = dims(x)[1];
+    if (dims(y)[1] != n) reject("hcat: dim mismatch — `y` dim 1 (= ", dims(y)[1], ") does not match `n` (= ", n, ")");
+    return append_col(x, y);
+}
+}
+data {
+    int c_n;
+    int a_n;
+    vector[a_n] a;
+    vector[c_n] c;
+    int d_n;
+    int b_n;
+    vector[b_n] b;
+    vector[d_n] d;
+}
+transformed data {
+    matrix[c_n, 2] X1 = hcat(a, c);
+    matrix[d_n, 2] X2 = hcat(b, d);
+    matrix[c_n, 2] y = X1;
+}
+parameters {
+}
+transformed parameters {
+}
+model {
+}
+generated quantities {
+}</code></pre></div></div></div></div></main></body></body></html>

@@ -1,0 +1,57 @@
+<div id="snippet-ragged_num_elements" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'ragged_num_elements' fetch /sandbox_rename/ragged_num_elements?to=${my.textContent.trim()} then put the result into #snippet-ragged_num_elements.outerHTML">ragged_num_elements</strong><span style="color:green">PASS</span><span style="color:red;font-size:0.8em" title="Stan compiler (stanc) rejected the generated code — see error below">stanc ✗</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/ragged_num_elements" hx-target="#snippet-ragged_num_elements" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/ragged_num_elements" hx-target="#snippet-ragged_num_elements" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-ragged_num_elements" hx-swap="outerHTML" hx-confirm="Delete snippet 'ragged_num_elements'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/ragged_num_elements" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia">@slic (;dose_times=[[0.0, 1.0], [2.0, 3.0, 4.0]]) begin
+    x ~ std_normal(; n=num_elements(dose_times))
+end</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-ragged_num_elements" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="ragged_num_elements"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor">@slic (;dose_times=[[0.0, 1.0], [2.0, 3.0, 4.0]]) begin
+    x ~ std_normal(; n=num_elements(dose_times))
+end</textarea></form></div></div><div style="margin:0.4rem 0"><div style="color:red;font-size:0.85em;font-weight:bold;margin-bottom:0.2rem">stanc rejected the generated Stan code:</div><pre style="white-space:pre-wrap;max-height:200px;overflow:auto;font-size:0.85em;margin:0;padding:0.3rem 0.5rem;border-left:2px solid red;background:var(--pico-code-background-color,#f6f6f6)">Semantic error in '/tmp/jl_dCVwrWl6PG.stan', line 23, column 11 to column 35:
+   -------------------------------------------------
+    21:  }
+    22:  generated quantities {
+    23:      vector[num_elements(dose_times)] x = std_normal_vector_rng(num_elements(dose_times));
+                    ^
+    24:  }
+   -------------------------------------------------
+
+Ill-typed arguments supplied to function 'num_elements':
+(tuple(vector, array[] int))
+Available signatures:
+(vector) => int
+  The first argument must be vector but got tuple(vector, array[] int)
+(row_vector) => int
+  The first argument must be row_vector but got tuple(vector, array[] int)
+(matrix) => int
+  The first argument must be matrix but got tuple(vector, array[] int)
+(complex_vector) => int
+  The first argument must be
+   complex_vector
+  but got
+   tuple(vector, array[] int)
+(complex_row_vector) => int
+  The first argument must be
+   complex_row_vector
+  but got
+   tuple(vector, array[] int)
+(Additional signatures omitted)
+</pre></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+vector std_normal_vector_rng(
+    int anontok__1
+) {
+    int n = anontok__1;
+    return to_vector(normal_rng(rep_vector(0, n), 1));
+}
+}
+data {
+    int dose_times_mem_n;
+    int dose_times_ends_n;
+    tuple(vector[dose_times_mem_n], array[dose_times_ends_n] int) dose_times;
+}
+transformed data {
+}
+parameters {
+}
+transformed parameters {
+}
+model {
+}
+generated quantities {
+    vector[num_elements(dose_times)] x = std_normal_vector_rng(num_elements(dose_times));
+}</code></pre></div></div></div>

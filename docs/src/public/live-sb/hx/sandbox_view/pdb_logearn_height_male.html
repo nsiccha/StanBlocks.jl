@@ -1,0 +1,87 @@
+<div id="snippet-pdb_logearn_height_male" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'pdb_logearn_height_male' fetch /sandbox_rename/pdb_logearn_height_male?to=${my.textContent.trim()} then put the result into #snippet-pdb_logearn_height_male.outerHTML">pdb_logearn_height_male</strong><span style="color:green">PASS</span><span style="color:green;font-size:0.8em" title="Stan compiler (stanc) accepted the generated code">stanc ✓</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/pdb_logearn_height_male" hx-target="#snippet-pdb_logearn_height_male" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/pdb_logearn_height_male" hx-target="#snippet-pdb_logearn_height_male" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-pdb_logearn_height_male" hx-swap="outerHTML" hx-confirm="Delete snippet 'pdb_logearn_height_male'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/pdb_logearn_height_male" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia">@slic (;N=20, log_earn=randn(20), height=randn(20).+170.0, male=Float64.(rand(0:1, 20))) begin
+    beta ~ normal(0, 10)
+    beta2 ~ normal(0, 10)
+    beta3 ~ normal(0, 10)
+    sigma ~ gamma(2, 1)
+    log_earn ~ normal(beta + beta2 * height + beta3 * male, sigma)
+end
+</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-pdb_logearn_height_male" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="pdb_logearn_height_male"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor">@slic (;N=20, log_earn=randn(20), height=randn(20).+170.0, male=Float64.(rand(0:1, 20))) begin
+    beta ~ normal(0, 10)
+    beta2 ~ normal(0, 10)
+    beta3 ~ normal(0, 10)
+    sigma ~ gamma(2, 1)
+    log_earn ~ normal(beta + beta2 * height + beta3 * male, sigma)
+end
+</textarea></form></div></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+vector normal_lpdfs(
+    vector obs,
+    vector loc,
+    real scale
+) {
+    int n = dims(obs)[1];
+    return jbroadcasted_normal_lpdfs(obs, loc, scale);
+}
+vector jbroadcasted_normal_lpdfs(
+    vector x1,
+    vector x2,
+    real x3
+) {
+    int n = dims(x1)[1];
+    vector[n] rv;
+    for(i in 1:n) {
+        rv[i] = normal_lpdfs(broadcasted_getindex(x1, i), broadcasted_getindex(x2, i), broadcasted_getindex(x3, i));
+    }
+    return rv;
+}
+real normal_lpdfs(
+    real args1,
+    real args2,
+    real args3
+) {
+    return normal_lpdf(args1 | args2, args3);
+}
+real broadcasted_getindex(vector x, int i) {
+    int m = dims(x)[1];
+    return x[i];
+}
+real broadcasted_getindex(real x, int i) {
+    return x;
+}
+vector normal_vector_rng(
+    int anontok__1,
+    vector a,
+    real b
+) {
+    int n = anontok__1;
+    return to_vector(normal_rng(a, b));
+}
+}
+data {
+    int log_earn_n;
+    vector[log_earn_n] log_earn;
+    int height_n;
+    vector[height_n] height;
+    int male_n;
+    vector[male_n] male;
+}
+transformed data {
+}
+parameters {
+    real beta;
+    real beta2;
+    real beta3;
+    real<lower=0.0> sigma;
+}
+transformed parameters {
+}
+model {
+    beta ~ normal(0, 10);
+    beta2 ~ normal(0, 10);
+    beta3 ~ normal(0, 10);
+    sigma ~ gamma(2, 1);
+    log_earn ~ normal((beta + (beta2 * height) + (beta3 * male)), sigma);
+}
+generated quantities {
+    vector[log_earn_n] log_earn_likelihood = normal_lpdfs(log_earn, (beta + (beta2 * height) + (beta3 * male)), sigma);
+    vector[log_earn_n] log_earn_gen = normal_vector_rng(log_earn_n, (beta + (beta2 * height) + (beta3 * male)), sigma);
+}</code></pre></div></div></div>

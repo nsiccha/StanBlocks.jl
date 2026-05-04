@@ -1,0 +1,49 @@
+<div id="snippet-hcat_dedup_brm_mimic" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'hcat_dedup_brm_mimic' fetch /sandbox_rename/hcat_dedup_brm_mimic?to=${my.textContent.trim()} then put the result into #snippet-hcat_dedup_brm_mimic.outerHTML">hcat_dedup_brm_mimic</strong><span style="color:green">PASS</span><span style="color:green;font-size:0.8em" title="Stan compiler (stanc) accepted the generated code">stanc ✓</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/hcat_dedup_brm_mimic" hx-target="#snippet-hcat_dedup_brm_mimic" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/hcat_dedup_brm_mimic" hx-target="#snippet-hcat_dedup_brm_mimic" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-hcat_dedup_brm_mimic" hx-swap="outerHTML" hx-confirm="Delete snippet 'hcat_dedup_brm_mimic'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/hcat_dedup_brm_mimic" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia">@slic (;ztime=randn(3), assay_idx=[1,2,1,2,3,1]) begin
+    raw ~ std_normal(; n=num_elements(ztime))
+    ftime = raw * 2.0
+    X_loc_loc = hcat(rep_vector(1.0, num_elements(ztime)), ftime)
+    Z_loc_loc = hcat(rep_vector(1.0, num_elements(assay_idx)), ftime)
+    y = X_loc_loc
+end</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-hcat_dedup_brm_mimic" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="hcat_dedup_brm_mimic"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor">@slic (;ztime=randn(3), assay_idx=[1,2,1,2,3,1]) begin
+    raw ~ std_normal(; n=num_elements(ztime))
+    ftime = raw * 2.0
+    X_loc_loc = hcat(rep_vector(1.0, num_elements(ztime)), ftime)
+    Z_loc_loc = hcat(rep_vector(1.0, num_elements(assay_idx)), ftime)
+    y = X_loc_loc
+end</textarea></form></div></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+vector std_normal_vector_rng(
+    int anontok__1
+) {
+    int n = anontok__1;
+    return to_vector(normal_rng(rep_vector(0, n), 1));
+}
+matrix hcat(
+    vector x,
+    vector y
+) {
+    int n = dims(x)[1];
+    if (dims(y)[1] != n) reject("hcat: dim mismatch — `y` dim 1 (= ", dims(y)[1], ") does not match `n` (= ", n, ")");
+    return append_col(x, y);
+}
+}
+data {
+    int ztime_n;
+    vector[ztime_n] ztime;
+    int assay_idx_n;
+    array[assay_idx_n] int assay_idx;
+}
+transformed data {
+}
+parameters {
+}
+transformed parameters {
+}
+model {
+}
+generated quantities {
+    vector[num_elements(ztime)] raw = std_normal_vector_rng(num_elements(ztime));
+    vector[num_elements(ztime)] ftime = (raw * 2.0);
+    matrix[num_elements(ztime), 2] X_loc_loc = hcat(rep_vector(1.0, num_elements(ztime)), ftime);
+    matrix[num_elements(ztime), 2] Z_loc_loc = hcat(rep_vector(1.0, num_elements(assay_idx)), ftime);
+    matrix[num_elements(ztime), 2] y = X_loc_loc;
+}</code></pre></div></div></div>

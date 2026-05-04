@@ -1,0 +1,41 @@
+<div id="snippet-hcat_dedup_diffsize" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'hcat_dedup_diffsize' fetch /sandbox_rename/hcat_dedup_diffsize?to=${my.textContent.trim()} then put the result into #snippet-hcat_dedup_diffsize.outerHTML">hcat_dedup_diffsize</strong><span style="color:green">PASS</span><span style="color:green;font-size:0.8em" title="Stan compiler (stanc) accepted the generated code">stanc ✓</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/hcat_dedup_diffsize" hx-target="#snippet-hcat_dedup_diffsize" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/hcat_dedup_diffsize" hx-target="#snippet-hcat_dedup_diffsize" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-hcat_dedup_diffsize" hx-swap="outerHTML" hx-confirm="Delete snippet 'hcat_dedup_diffsize'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/hcat_dedup_diffsize" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia">@slic (;a=randn(3), b=randn(5), c=randn(3), d=randn(5)) begin
+    X1 = hcat(a, c)
+    X2 = hcat(b, d)
+    y = X1
+end</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-hcat_dedup_diffsize" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="hcat_dedup_diffsize"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor">@slic (;a=randn(3), b=randn(5), c=randn(3), d=randn(5)) begin
+    X1 = hcat(a, c)
+    X2 = hcat(b, d)
+    y = X1
+end</textarea></form></div></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+matrix hcat(
+    vector x,
+    vector y
+) {
+    int n = dims(x)[1];
+    if (dims(y)[1] != n) reject("hcat: dim mismatch — `y` dim 1 (= ", dims(y)[1], ") does not match `n` (= ", n, ")");
+    return append_col(x, y);
+}
+}
+data {
+    int c_n;
+    int a_n;
+    vector[a_n] a;
+    vector[c_n] c;
+    int d_n;
+    int b_n;
+    vector[b_n] b;
+    vector[d_n] d;
+}
+transformed data {
+    matrix[c_n, 2] X1 = hcat(a, c);
+    matrix[d_n, 2] X2 = hcat(b, d);
+    matrix[c_n, 2] y = X1;
+}
+parameters {
+}
+transformed parameters {
+}
+model {
+}
+generated quantities {
+}</code></pre></div></div></div>

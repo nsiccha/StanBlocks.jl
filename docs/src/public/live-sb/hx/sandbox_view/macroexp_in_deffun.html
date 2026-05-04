@@ -1,0 +1,89 @@
+<div id="snippet-macroexp_in_deffun" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'macroexp_in_deffun' fetch /sandbox_rename/macroexp_in_deffun?to=${my.textContent.trim()} then put the result into #snippet-macroexp_in_deffun.outerHTML">macroexp_in_deffun</strong><span style="color:green">PASS</span><span style="color:red;font-size:0.8em" title="Stan compiler (stanc) rejected the generated code — see error below">stanc ✗</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/macroexp_in_deffun" hx-target="#snippet-macroexp_in_deffun" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/macroexp_in_deffun" hx-target="#snippet-macroexp_in_deffun" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-macroexp_in_deffun" hx-swap="outerHTML" hx-confirm="Delete snippet 'macroexp_in_deffun'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/macroexp_in_deffun" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia"># Demo: user-defined macros expand inside `@deffun` bodies as well.
+# `@sumprod(a, b)` becomes `a*a + b*b`.
+macro sumprod(args...)
+    products = [Expr(:call, :*, a, a) for a in args]
+    foldl((a,b) -> Expr(:call, :+, a, b), products)
+end
+
+@deffun mymetric(x::vector[n], y::vector[n])::real = @sumprod(x, y)
+
+@slic (;y=randn(5), x=randn(5)) begin
+    mu ~ std_normal()
+    obs = mymetric(x + mu, y)
+end</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-macroexp_in_deffun" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="macroexp_in_deffun"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor"># Demo: user-defined macros expand inside `@deffun` bodies as well.
+# `@sumprod(a, b)` becomes `a*a + b*b`.
+macro sumprod(args...)
+    products = [Expr(:call, :*, a, a) for a in args]
+    foldl((a,b) -> Expr(:call, :+, a, b), products)
+end
+
+@deffun mymetric(x::vector[n], y::vector[n])::real = @sumprod(x, y)
+
+@slic (;y=randn(5), x=randn(5)) begin
+    mu ~ std_normal()
+    obs = mymetric(x + mu, y)
+end</textarea></form></div></div><div style="margin:0.4rem 0"><div style="color:red;font-size:0.85em;font-weight:bold;margin-bottom:0.2rem">stanc rejected the generated Stan code:</div><pre style="white-space:pre-wrap;max-height:200px;overflow:auto;font-size:0.85em;margin:0;padding:0.3rem 0.5rem;border-left:2px solid red;background:var(--pico-code-background-color,#f6f6f6)">Semantic error in '/tmp/jl_rO3UBULQPQ.stan', line 8, column 13 to column 18:
+   -------------------------------------------------
+     6:      int n = dims(x)[1];
+     7:      if (dims(y)[1] != n) reject("mymetric: dim mismatch — `y` dim 1 (= ", dims(y)[1], ") does not match `n` (= ", n, ")");
+     8:      return ((x * x) + (y * y));
+                      ^
+     9:  }
+    10:  }
+   -------------------------------------------------
+
+Ill-typed arguments supplied to infix operator *. Available signatures: 
+(int, int) => int
+(real, real) => real
+(real, vector) => vector
+(real, row_vector) => row_vector
+(real, matrix) => matrix
+(vector, real) => vector
+(vector, row_vector) => matrix
+(complex, complex) => complex
+(complex, complex_vector) => complex_vector
+(complex, complex_row_vector) => complex_row_vector
+(complex, complex_matrix) => complex_matrix
+(row_vector, real) => row_vector
+(row_vector, vector) => real
+(row_vector, matrix) => row_vector
+(matrix, real) => matrix
+(matrix, vector) => vector
+(matrix, matrix) => matrix
+(complex_vector, complex) => complex_vector
+(complex_vector, complex_row_vector) => complex_matrix
+(complex_row_vector, complex) => complex_row_vector
+(complex_row_vector, complex_vector) => complex
+(complex_row_vector, complex_matrix) => complex_row_vector
+(complex_matrix, complex) => complex_matrix
+(complex_matrix, complex_vector) => complex_vector
+(complex_matrix, complex_matrix) => complex_matrix
+Instead supplied arguments of incompatible type: vector, vector.
+</pre></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+real mymetric(
+    vector x,
+    vector y
+) {
+    int n = dims(x)[1];
+    if (dims(y)[1] != n) reject("mymetric: dim mismatch — `y` dim 1 (= ", dims(y)[1], ") does not match `n` (= ", n, ")");
+    return ((x * x) + (y * y));
+}
+}
+data {
+    int x_n;
+    vector[x_n] x;
+    int y_n;
+    vector[y_n] y;
+}
+transformed data {
+}
+parameters {
+}
+transformed parameters {
+}
+model {
+}
+generated quantities {
+    real mu = std_normal_rng();
+    real obs = mymetric((x + mu), y);
+}</code></pre></div></div></div>

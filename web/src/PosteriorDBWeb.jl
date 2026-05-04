@@ -10,7 +10,7 @@ using LogDensityProblems
 using Statistics, Random
 using BridgeStan, StanLogDensityProblems, JSON
 using TestModules
-using Treebars: prepare_progress!, with_prepared_progress, polling_fetchindex
+using Treebars: prepare_progress!, with_prepared_progress, polling_fetchindex, initialize_progress!
 
 # include("test/runtests.jl")
 
@@ -132,6 +132,12 @@ const _sandbox_gallery = Gallery(_SANDBOX_GALLERY_DIR)
 # `@htmx` instances polling for `record_gallery` progress (see AoV's
 # `GalleryAppData` for the canonical shape).
 @dynamicstruct struct SbAppData
+    # `polling_fetchindex` renders progress via `htmx_render(__status__)`;
+    # without an initialized tree the rendering callback hits
+    # `htmx_render(::Nothing)` on the first call. `:state` selects the
+    # text-tree backend used by the polling progress UI.
+    __status__ = initialize_progress!(:state; description="StanBlocks sandbox")
+
     """
     `record_gallery(record_dir, record_base)` — IP. Drives
     `HTMXObjects.record!` against a fresh `AppContext()` to dump every

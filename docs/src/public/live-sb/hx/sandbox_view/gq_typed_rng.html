@@ -1,0 +1,142 @@
+<div id="snippet-gq_typed_rng" style="border-left:4px solid var(--pico-ins-color);padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden"><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap"><strong contenteditable style="outline:none;min-width:3em" -="on blur if my textContent.trim() is not 'gq_typed_rng' fetch /sandbox_rename/gq_typed_rng?to=${my.textContent.trim()} then put the result into #snippet-gq_typed_rng.outerHTML">gq_typed_rng</strong><span style="color:green">PASS</span><span style="color:green;font-size:0.8em" title="Stan compiler (stanc) accepted the generated code">stanc ✓</span><button type="button" style="margin:0;padding:0.1rem 0.4rem" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_view/gq_typed_rng" hx-target="#snippet-gq_typed_rng" hx-swap="outerHTML">↻</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em" hx-get="/StanBlocks.jl/dev/live-sb/hx/sandbox_toggle_expect/gq_typed_rng" hx-target="#snippet-gq_typed_rng" hx-swap="outerHTML">should pass</button><button type="button" style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)" hx-target="#snippet-gq_typed_rng" hx-swap="outerHTML" hx-confirm="Delete snippet 'gq_typed_rng'?" data-static-disabled disabled>✕</button><a href="/StanBlocks.jl/dev/live-sb/sandbox_macroexpand/gq_typed_rng" target="_blank" style="margin:0;padding:0.1rem 0.4rem;text-decoration:none" title="Show macroexpanded code">macro</a></div><div><pre style="max-height:200px;overflow:auto;cursor:default" title="Ctrl+click to edit" -="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"><code class="language-julia"># Smoke test for gq typed-LHS `~` rng synthesis via the tokenof machinery.
+#
+# The gq push wraps lhs shape into a `tokenof{T}` StanExpr and hands it to the
+# rng call. Scalar (S=0) tokens drop through to Stan's native rng; sized (S>=1)
+# tokens dispatch into per-shape `*_rng` @deffun overloads that know how to
+# shape the output (e.g. `std_normal_rng(real[n]) = to_vector(normal_rng(...))`).
+
+@slic begin
+    x::real ~ std_normal()              # scalar: std_normal_rng()
+    y::real[5] ~ std_normal()           # sized:  std_normal_rng(real[5])
+    z::vector[3] ~ normal(0.0, 1.0)     # sized:  normal_rng(vector[3], 0.0, 1.0)
+    a::real[4] ~ cauchy(0.0, 1.0)
+    b::vector[4] ~ lognormal(0.0, 1.0)
+    c::real[4] ~ gamma(2.0, 1.0)
+    d::vector[4] ~ exponential(1.0)
+    e::real[4] ~ student_t(3.0, 0.0, 1.0)
+    f::vector[4] ~ beta(2.0, 2.0)
+    g::real[4] ~ uniform(0.0, 1.0)
+    h::vector[4] ~ chi_square(3.0)
+end
+</code></pre><div class="hidden snippet-editor"><form hx-target="#snippet-gq_typed_rng" hx-swap="outerHTML" data-static-disabled disabled><input name="name" type="hidden" value="gq_typed_rng"><input name="standalone" type="hidden" value="1"><textarea name="code" rows="15" style="font-family:monospace;width:100%;resize:vertical;margin:0" -="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor"># Smoke test for gq typed-LHS `~` rng synthesis via the tokenof machinery.
+#
+# The gq push wraps lhs shape into a `tokenof{T}` StanExpr and hands it to the
+# rng call. Scalar (S=0) tokens drop through to Stan's native rng; sized (S>=1)
+# tokens dispatch into per-shape `*_rng` @deffun overloads that know how to
+# shape the output (e.g. `std_normal_rng(real[n]) = to_vector(normal_rng(...))`).
+
+@slic begin
+    x::real ~ std_normal()              # scalar: std_normal_rng()
+    y::real[5] ~ std_normal()           # sized:  std_normal_rng(real[5])
+    z::vector[3] ~ normal(0.0, 1.0)     # sized:  normal_rng(vector[3], 0.0, 1.0)
+    a::real[4] ~ cauchy(0.0, 1.0)
+    b::vector[4] ~ lognormal(0.0, 1.0)
+    c::real[4] ~ gamma(2.0, 1.0)
+    d::vector[4] ~ exponential(1.0)
+    e::real[4] ~ student_t(3.0, 0.0, 1.0)
+    f::vector[4] ~ beta(2.0, 2.0)
+    g::real[4] ~ uniform(0.0, 1.0)
+    h::vector[4] ~ chi_square(3.0)
+end
+</textarea></form></div></div><div id="sandbox-output"><div><p><strong>Transpilation: </strong><span style="color:green;font-weight:bold">PASS</span></p><pre style="max-height:600px;overflow:auto"><code class="language-stan">functions {
+array[] real std_normal_real_rng(
+    int anontok__1
+) {
+    int n = anontok__1;
+    return normal_rng(rep_vector(0, n), 1);
+}
+vector normal_vector_rng(
+    int anontok__1,
+    real a,
+    real b
+) {
+    int n = anontok__1;
+    return to_vector(normal_rng(rep_vector(a, n), b));
+}
+array[] real cauchy_real_rng(
+    int anontok__1,
+    real a,
+    real b
+) {
+    int n = anontok__1;
+    return cauchy_rng(rep_vector(a, n), b);
+}
+vector lognormal_vector_rng(
+    int anontok__1,
+    real a,
+    real b
+) {
+    int n = anontok__1;
+    return to_vector(lognormal_rng(rep_vector(a, n), b));
+}
+array[] real gamma_real_rng(
+    int anontok__1,
+    real a,
+    real b
+) {
+    int n = anontok__1;
+    return gamma_rng(rep_vector(a, n), b);
+}
+vector exponential_vector_rng(
+    int anontok__1,
+    real a
+) {
+    int n = anontok__1;
+    return to_vector(exponential_rng(rep_vector(a, n)));
+}
+array[] real student_t_real_rng(
+    int anontok__1,
+    real nu,
+    real a,
+    real b
+) {
+    int n = anontok__1;
+    return student_t_rng(nu, rep_vector(a, n), b);
+}
+vector beta_vector_rng(
+    int anontok__1,
+    real a,
+    real b
+) {
+    int n = anontok__1;
+    return to_vector(beta_rng(rep_vector(a, n), b));
+}
+array[] real uniform_real_rng(
+    int anontok__1,
+    real a,
+    real b
+) {
+    int n = anontok__1;
+    return uniform_rng(rep_vector(a, n), b);
+}
+vector chi_square_vector_rng(
+    int anontok__1,
+    real a
+) {
+    int n = anontok__1;
+    return to_vector(chi_square_rng(rep_vector(a, n)));
+}
+}
+data {
+}
+transformed data {
+}
+parameters {
+}
+transformed parameters {
+}
+model {
+}
+generated quantities {
+    real x = std_normal_rng();
+    array[5] real y = std_normal_real_rng(5);
+    vector[3] z = normal_vector_rng(3, 0.0, 1.0);
+    array[4] real a = cauchy_real_rng(4, 0.0, 1.0);
+    vector[4] b = lognormal_vector_rng(4, 0.0, 1.0);
+    array[4] real c = gamma_real_rng(4, 2.0, 1.0);
+    vector[4] d = exponential_vector_rng(4, 1.0);
+    array[4] real e = student_t_real_rng(4, 3.0, 0.0, 1.0);
+    vector[4] f = beta_vector_rng(4, 2.0, 2.0);
+    array[4] real g = uniform_real_rng(4, 0.0, 1.0);
+    vector[4] h = chi_square_vector_rng(4, 3.0);
+}</code></pre></div></div></div>
