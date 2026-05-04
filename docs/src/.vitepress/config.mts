@@ -39,7 +39,48 @@ export default defineConfig({
     ['link', { rel: 'icon', href: 'REPLACE_ME_DOCUMENTER_VITEPRESS_FAVICON' }],
     ['script', {src: `${getBaseRepository(baseTemp.base)}versions.js`}],
     // ['script', {src: '/versions.js'], for custom domains, I guess if deploy_url is available.
-    ['script', {src: `${baseTemp.base}siteinfo.js`}]
+    ['script', {src: `${baseTemp.base}siteinfo.js`}],
+    // HTMX runtime — for inlining live StanBlocks sandbox-gallery
+    // fragments via `<div hx-get="…" hx-trigger="load">` placeholders.
+    // HTMX requests carry HX-Request: true automatically, so the web
+    // app's routes return the bare body fragment that drops into the
+    // docs page directly.
+    ['script', {src: 'https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js'}],
+    // Map HTMXObjects' --htmxo-* theme variables to VitePress's
+    // brand/state tokens so embedded gallery components match the docs
+    // theme automatically. HTMXO defaults remain as fallback.
+    ['style', {}, `
+:root {
+    --htmxo-accent:  var(--vp-c-brand-1, #4a90d9);
+    --htmxo-success: var(--vp-c-success-1, #2a9d8f);
+    --htmxo-warning: var(--vp-c-warning-1, #e9a23b);
+    --htmxo-error:   var(--vp-c-danger-1, #e76f51);
+    --htmxo-border:  var(--vp-c-divider, currentColor);
+    --htmxo-muted:   var(--vp-c-text-3, color-mix(in srgb, currentColor 60%, transparent));
+}
+.htmxo-embed {
+    border: 1px solid var(--vp-c-divider);
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+    background: var(--vp-c-bg-soft);
+}
+/* Pages with the htmxo-embed-fullwidth class (or a wrapper carrying it)
+ * escape VitePress's narrow content column. The gallery embed wants
+ * real width to lay out its 2-col card grid. */
+.htmxo-embed-fullwidth .htmxo-embed,
+.VPDoc:has(.htmxo-embed-fullwidth) .htmxo-embed {
+    width: calc(100vw - 2rem);
+    max-width: calc(100vw - 2rem);
+    margin-left: calc(-50vw + 50% + 1rem);
+}
+@media (min-width: 960px) {
+    .VPDoc.has-sidebar .htmxo-embed-fullwidth .htmxo-embed {
+        width: calc(100vw - 272px - 2rem);
+        margin-left: calc(-50vw + 50% + 136px + 1rem);
+    }
+}
+    `]
   ],
   
   markdown: {
@@ -65,13 +106,30 @@ export default defineConfig({
         '@': path.resolve(__dirname, '../components')
       }
     },
+    server: {
+      // Bind to all interfaces so the dev server is reachable from
+      // other devices on the local network. Override via `--host`.
+      host: true,
+      proxy: {
+        // Live StanBlocks sandbox-gallery embedding (dev only).
+        // `<div hx-get="/live-sb/…">` forwards to the running web app
+        // on :8091 so the docs page shows live state. In production,
+        // point the same path at recordings produced by `record!` —
+        // same markdown source. Override target via `SB_DEV_TARGET`.
+        '/live-sb': {
+          target: process.env.SB_DEV_TARGET || 'http://localhost:8091',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/live-sb/, ''),
+        }
+      }
+    },
     optimizeDeps: {
-      exclude: [ 
+      exclude: [
         '@nolebase/vitepress-plugin-enhanced-readabilities/client',
         'vitepress',
         '@nolebase/ui',
-      ], 
-    }, 
+      ],
+    },
     ssr: { 
       noExternal: [ 
         // If there are other packages that need to be processed by Vite, you can add them here.
