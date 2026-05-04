@@ -31,6 +31,12 @@ module types
     abstract type tokenof{T} <: anything end
     abstract type tup <: anything end
     abstract type ntup <: tup end
+    # Marker for `@usertype`-declared bundles. A user type is a named
+    # `ntup` with a Julia abstract type tag (defined in the user's module
+    # by `@usertype`), enabling normal Julia method dispatch on
+    # `<:StanExpr2{<:RaggedVector}` etc. Field bundling, Stan rendering,
+    # and `r.mem` access all reuse the existing `ntup` machinery.
+    abstract type usertype <: ntup end
     # Side-effect-only return type for `@deffun foo(...)::void = …`.
     # Calls are statements; binding their result is rejected at trace time.
     abstract type void <: anything end
@@ -56,6 +62,9 @@ r_ndim(::Type{<:types.func}) = 0
 r_ndim(::Type{<:types.closure}) = 0
 r_ndim(::Type{<:types.tokenof}) = 0
 r_ndim(::Type{<:types.tup}) = 0
+# `usertype <: ntup`, so `r_ndim` already resolves to 0 via the `tup`
+# rule. Field access (`r.mem`) routes through `forward!(::GetPropertyExpr)`
+# unchanged because the dispatch is on `<:types.ntup`.
 r_ndim(::Type{types.void}) = 0
 r_ndim(::StanType{T}) where {T} = r_ndim(T)
 l_ndim(x::StanType) = stan_ndim(x) - r_ndim(x)
@@ -137,7 +146,12 @@ tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Colon,<:Any}})
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any,<:Any}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1), x.args[3], x.args[4])
 )
-tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = x.args[1].type.info.arg_types[x.args[2].type.info.value]
+# Field access via `Base.getfield(obj, position)` — `forward!(::GetPropertyExpr)`
+# lowers `obj.name` to `getfield(obj, find_field_position(name))`. Kept on
+# its own dispatch lane (rather than reusing `getindex`) so user-defined
+# `Base.getindex(::usertype, ::int)` methods don't accidentally catch
+# field accesses on usertypes.
+tracetype(x::CanonicalExpr{<:typeof(Base.getfield),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = x.args[1].type.info.arg_types[x.args[2].type.info.value]
 # `T[d1, …, dS]`: getindex on a 0-dim type token upgrades it to a sized token.
 # Retained `value = T` carries the center Stan type across resizings.
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tokenof{T},0},Vararg{Any}}}) where {T} = StanType(
@@ -255,7 +269,13 @@ begin
         a
     end
 
-    gettype(ct::Symbol) = getproperty(types, ct)
+    # Resolve a type name from a `@deffun`-style signature. Builtin Stan
+    # types live in `types` and are spliced as Type *values* (so the
+    # generated code doesn't need any user-side import). `@usertype`-
+    # declared names aren't in `types`; leave them as the bare Symbol so
+    # the surrounding `esc()` resolves them in the user's module via
+    # standard Julia scope rules — no registry, no name-leak into `types`.
+    gettype(ct::Symbol) = isdefined(types, ct) ? getproperty(types, ct) : ct
     gettype(ct::Expr) = begin
         return :($types.func{$ct})
     end
@@ -628,9 +648,6 @@ begin
                 "@deffun: @inline / `!` cannot be combined with @lhs / @lpxf — inlined UDFs do not register the lpxf/likelihood/rng triad."
             )
         end
-        if is_inline && !isa(f, Symbol)
-            error("@deffun @inline / `!`: function name must be a bare Symbol, got `$f`.")
-        end
         if is_inline && ismissing(body)
             error("@deffun @inline / `!`: inline UDFs require a body, not a signature stub.")
         end
@@ -950,6 +967,12 @@ func_name(x::StanExpr) = always_inline(x) ? [func_name(type(x).info.value)] : []
 # so HOF receivers (`simple_reduce_sum_helper`, etc.) get distinct mangled
 # Stan names per closure they are specialised against.
 func_name(x::StanExpr2{<:types.closure}) = ["closure", string(type(x).info.value.id)]
+# Usertype StanExprs contribute their nominal tag to the mangled receiver
+# name (e.g. `getindex_RaggedVector`), so a `Base.getindex(rv::RaggedVector,
+# i::int)` UDF gets a distinct Stan helper name from the generic
+# tup-getindex tracetype rule. The argument *itself* is still emitted as
+# a regular Stan-side function arg (it's not `always_inline`).
+func_name(x::StanExpr2{<:types.usertype}) = [string(center_type(x).name.name)]
 # Type tokens always contribute their center type to the mangled Stan name,
 # including sized tokens that are rendered at the call site.
 func_name(x::StanExpr2{<:types.tokenof}) = [func_name(type(x).info.value)]

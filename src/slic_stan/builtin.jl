@@ -511,12 +511,10 @@ import Statistics
     # specified dims. Grow as needed.
     reshape(v::vector[n], m::int, k::int)::matrix[m, k] = to_matrix(v, m, k)
 
-    # Ragged-vector accessors. A ragged vector is a named tuple with fields
-    #   mem::vector[total]        — concatenation of all subvectors
-    #   ends::int[n_groups]       — inclusive 1-based end index of each subvector in `mem`
-    # Construct with `StanBlocks.stan.to_ragged(::Vector{<:AbstractVector{<:Real}})`,
-    # or simply pass a `Vector{<:AbstractVector{<:Real}}` as a data kwarg (auto-encoded).
-    # Convention matches bruno/src/pkpd_models.jl.
+    # Legacy ragged-vector accessors operating on bare `ntup` values. Kept
+    # for back-compat with existing models; new code should prefer the
+    # `RaggedVector` usertype + Julia-dispatched `Base.length` /
+    # `Base.getindex` methods declared below.
     ragged_n(x::ntup)::int = size(x.ends)
     ragged_total(x::ntup)::int = num_elements(x.mem)
     ragged_start(x::ntup, i::int)::int = if i == 1
@@ -670,6 +668,35 @@ import Statistics
     # else
     #     d
     # end
+end
+
+# --- RaggedVector usertype + Julia-dispatched accessors ---------------------
+# A ragged vector is conceptually `Vector{<:AbstractVector{<:Real}}` — a
+# variable-length collection of real subvectors. SLIC encodes one as a
+# tagged ntup with fields:
+#   mem  :: vector[total]   — concatenation of all subvectors
+#   ends :: int[n_groups]   — inclusive 1-based end index of each subvector
+# Standard Julia dispatch on the `RaggedVector` tag drives `length(rv)`
+# / `rv[i]` so users don't need bespoke `ragged_*` accessors.
+@usertype struct RaggedVector
+    mem  :: vector
+    ends :: int[]
+end
+# Built-in usertypes get aliased into the `builtin` submodule so SLIC's
+# `_is_builtin_name` lookup picks them up at any user `@slic` site —
+# same convention used for `vector`/`real`/etc. above.
+@eval builtin const RaggedVector = $RaggedVector
+
+@deffun begin
+    Base.length(rv::RaggedVector)::int = size(rv.ends)
+    Base.lastindex(rv::RaggedVector)::int = size(rv.ends)
+    # The slice's runtime length is named *exactly* via `ragged_length`,
+    # so the return-type annotation is `vector[ragged_length(rv, i)]`
+    # (matching Stan's call-site declarations). Legacy `ragged_start` /
+    # `ragged_end` / `ragged_length` are `::ntup`-typed and dispatch
+    # on `RaggedVector <: ntup` automatically.
+    Base.getindex(rv::RaggedVector, i::int)::vector[ragged_length(rv, i)] =
+        rv.mem[ragged_start(rv, i):ragged_end(rv, i)]
 end
 
 # --- Sized-token rng overloads (generated via @eval @deffun) -----------------

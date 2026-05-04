@@ -443,12 +443,19 @@ forward!(x::Symbol; info) = begin
         Mx = getproperty(mod, x)
         isa(Mx, Function)  && return forward!(Mx; info)
         isa(Mx, SlicModel) && return Mx
+        # `@usertype`-declared types live in the user's module as abstract
+        # types `<: types.anything`. Treat them like SLIC type tokens
+        # (which is how `vector` / `real` already flow): wrap as a
+        # `tokenof` StanExpr so the constructor call dispatches via
+        # `tracetype(::CanonicalExpr{<:StanExpr2{<:tokenof{<:usertype}}})`.
+        isa(Mx, Type) && Mx <: types.anything && return forward!(Mx; info)
         error("Found $x in $(mod), but is of type $(typeof(Mx))!")
     end
     if mod !== Main && isdefined(Main, x)
         Mx = getproperty(Main, x)
         isa(Mx, Function)  && return forward!(Mx; info)
         isa(Mx, SlicModel) && return Mx
+        isa(Mx, Type) && Mx <: types.anything && return forward!(Mx; info)
         error("Found $x in Main, but is of type $(typeof(Mx))!")
     end
     error("Could not find $(x) in model, builtin, $(mod) or Main!")
@@ -476,10 +483,12 @@ _try_symbol_lookup(x::Symbol; info) = begin
     if isdefined(mod, x)
         v = getproperty(mod, x)
         (isa(v, Function) || isa(v, SlicModel)) && return v
+        (isa(v, Type) && v <: types.anything) && return v
     end
     if mod !== Main && isdefined(Main, x)
         v = getproperty(Main, x)
         (isa(v, Function) || isa(v, SlicModel)) && return v
+        (isa(v, Type) && v <: types.anything) && return v
     end
     nothing
 end
@@ -809,12 +818,13 @@ forward!(x::GetPropertyExpr; info) = begin
     @assert length(x.args) == 2
     obj, name = forward!(x.args; info)
     @assert isa(obj, StanExpr2{<:types.ntup}) "Trying to access property `$name` of object of type without named properties ($(type(obj)))!"
-    # @assert isa(obj, )
     names = keys(obj.type.info.arg_types)
     @assert name in names
-    return forward!(CanonicalExpr(:getindex, x.args[1], findfirst(==(name), names)); info)
-    error("getproperty fallback: unable to resolve `$obj.$name` (type $(typeof(obj))).")
-    stan_expr(remake(x, forward!(x.args; info)...))
+    # Field access lowers to `Base.getfield(obj, position)` so it stays
+    # *distinct* from user-defined `Base.getindex(::usertype, ::int)`.
+    # Both end up routing to "obj.N" Stan-side via specialised rules
+    # below — but the tracetype and method-dispatch lanes don't conflict.
+    return forward!(CanonicalExpr(:getfield, x.args[1], findfirst(==(name), names)); info)
 end
 forward!(x::BracesExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::VectExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
@@ -1220,6 +1230,77 @@ end
 # `@deffun @inline` UDFs — the closure record just lives in the StanExpr
 # rather than in a `inline_body(::CanonicalExpr{<:typeof(f)})` method.
 inline_body(x::CanonicalExpr{<:StanExpr2{<:types.closure}}) = type(head(x)).info.value
+
+# --- Custom types via `@usertype` (tagged ntups) ---
+
+# `Foo(field_values...)`: dispatch on `tokenof{<:usertype}` head. Build a
+# tagged ntup-shaped StanType whose `arg_types` named tuple matches the
+# Julia struct's `fieldnames` paired with the call args' types.
+tracetype(x::CanonicalExpr{<:StanExpr2{<:types.tokenof{<:types.usertype}}}) = begin
+    T = type(head(x)).info.value
+    fields = fieldnames(T)
+    length(fields) == length(x.args) || error(
+        "$T constructor expects $(length(fields)) field(s) " *
+        "($(join(fields, ", "))), got $(length(x.args))."
+    )
+    StanType(T; arg_types=(;[fields[i] => type(x.args[i]) for i in eachindex(fields)]...))
+end
+
+# Stan-side render of a usertype constructor call: emit a positional Stan
+# tuple literal, mirroring how `(;a, b)` named-tuple literals render. The
+# usertype's nominal tag is *Julia-side only* — Stan sees a plain
+# `tuple(T1, T2, ...)` value.
+Base.show(io::IO, x::CanonicalExpr{<:StanExpr2{<:types.tokenof{<:types.usertype}}}) =
+    autoprint(io, "(", Join(x.args, ", "), ")")
+
+"""
+    @usertype struct RaggedVector
+        mem  :: vector
+        ends :: int[]
+    end
+
+Declare a custom Stan-renderable record type. Lowers to a real Julia
+`struct` whose abstract supertype is
+`StanBlocks.stan.types.usertype` (added automatically); field type
+annotations are SLIC types and are kept only for documentation —
+fields are stored as `Any` so plain Julia construction works for
+data plumbing. Method dispatch on the type tag (`Base.length(r::RaggedVector)`)
+works via standard Julia. Stan-side, values render as positional
+tuples; field access (`r.mem`) reuses the existing `ntup` machinery.
+"""
+macro usertype(struct_def)
+    Meta.isexpr(struct_def, :struct) || error(
+        "@usertype: expected `struct ... end`, got `\$struct_def`."
+    )
+    is_mutable, sig, body = struct_def.args
+    is_mutable && error("@usertype: mutable structs not supported.")
+
+    typename, supertype = if sig isa Symbol
+        (sig, :($StanBlocks.stan.types.usertype))
+    elseif Meta.isexpr(sig, :<:) && sig.args[1] isa Symbol
+        (sig.args[1], sig.args[2])
+    else
+        error("@usertype: type signature must be `Foo` or `Foo <: SomeType`, got `\$sig`.")
+    end
+
+    # SLIC field type annotations are not real Julia types — strip them so
+    # the lowered struct accepts any Julia value at those slots (we only
+    # construct via SLIC tracing, which never hits the real constructor).
+    new_body_args = Any[]
+    for stmt in body.args
+        stmt isa LineNumberNode && (push!(new_body_args, stmt); continue)
+        if Meta.isexpr(stmt, :(::)) && stmt.args[1] isa Symbol
+            push!(new_body_args, stmt.args[1])
+        elseif stmt isa Symbol
+            push!(new_body_args, stmt)
+        else
+            error("@usertype $typename: each field must be `name :: type` or `name`, got `\$stmt`.")
+        end
+    end
+    new_body = Expr(:block, new_body_args...)
+    new_sig  = :($typename <: $supertype)
+    esc(Expr(:block, Expr(:struct, false, new_sig, new_body), typename))
+end
 
 # Phase 2-deeper: closure passed directly to a Stan builtin (no SLIC UDF
 # to inline into) gets lifted to a top-level Stan function. The builtin's
@@ -1780,7 +1861,19 @@ end
 Base.show(io::IO, x::CanonicalExpr{typeof(adjoint)}) = print(io, "(", x.args[1], "')")
 Base.show(io::IO, x::CanonicalExpr{typeof(range)}) = autoprint(io, "linspaced_vector(", Join((x.args[end], x.args[1], x.args[2]), ", "), ")")
 Base.show(io::IO, x::CanonicalExpr{typeof(getindex)}) = autoprint(io, x.args[1], "[", Join(x.args[2:end], ", "), "]")
-Base.show(io::IO, x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = print(io, x.args[1], ".", x.args[2])
+# Field access (`obj.name`, lowered via `forward!(::GetPropertyExpr)` to
+# `Base.getfield(obj, position)`) renders as Stan's positional tuple
+# access `obj.N`.
+Base.show(io::IO, x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = print(io, x.args[1], ".", x.args[2])
+# User-defined `Base.getindex(::usertype, ::int)` methods (e.g.
+# `RaggedVector` group access) route through a real Stan helper function
+# rather than Stan's native `r[i]` (which on a tuple-rendered usertype
+# would mean positional field access — the wrong semantics). The mangled
+# helper name is produced by `func_name` with the usertype tag
+# contributing.
+Base.show(io::IO, x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.usertype}, <:StanExpr2{<:types.int}}}) = autoprint(io,
+    func_name(getindex, x.args), "(", Join(stan_call_args(x.args), ", "), ")"
+)
 for f in (-,+,*,\,/,^,.*,./,<,<=,==,!=,>=,>,&,|)
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f)}) = autoprint(io, "(", Join(x.args, prettystring($f)), ")")
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f),Tuple{A}}) where {A} = print(io, "(", string($f), x.args[1], ")")
