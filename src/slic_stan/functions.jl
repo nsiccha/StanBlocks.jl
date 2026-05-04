@@ -16,6 +16,13 @@ module types
     abstract type real <: complex end
     abstract type int <: real end
     abstract type func{T} <: anything end
+    # Anonymous lambdas (`(x) -> body`) flow through tracing as values of
+    # type `types.closure`. They are *sibling* to `types.func` (not a subtype)
+    # because `canonical(::CanonicalExpr{<:StanExpr2{<:types.func}})` rewrites
+    # the call head to `info.value` (the bare Function), and we instead want
+    # closure dispatch to keep the StanExpr-at-head shape so `inline_body`
+    # can pull the closure record off `type(head(x)).info.value`.
+    abstract type closure <: anything end
     # `tokenof{T}` wraps a Stan type as a SLIC value, so `real` / `real[n]` /
     # `typeof(x)` can flow through tracing as StanExprs (mirroring how
     # `func{T}` lets functions flow). Stan doesn't support types as
@@ -38,6 +45,7 @@ stan_type(expr, value::Type{T}; kwargs...) where {T<:types.anything} = StanType(
 )
 Base.show(io::IO, ::Type{T}) where {T<:types.anything} = print(io, T.name.name)
 Base.show(io::IO, ::Type{T}) where {T<:types.func} = print(io, "func")#.parameters[1].name.name)
+Base.show(io::IO, ::Type{<:types.closure}) = print(io, "closure")
 Base.show(io::IO, ::Type{<:types.tup}) = print(io, "tuple(...)")
 r_ndim(::Type{types.anything}) = 0
 r_ndim(::Type{types.matrix}) = 2
@@ -45,6 +53,7 @@ r_ndim(::Type{<:types.square_matrix}) = 1
 r_ndim(::Type{<:types.any_vector}) = 1
 r_ndim(::Type{<:types.complex}) = 0
 r_ndim(::Type{<:types.func}) = 0
+r_ndim(::Type{<:types.closure}) = 0
 r_ndim(::Type{<:types.tokenof}) = 0
 r_ndim(::Type{<:types.tup}) = 0
 r_ndim(::Type{types.void}) = 0
@@ -53,6 +62,18 @@ l_ndim(x::StanType) = stan_ndim(x) - r_ndim(x)
 lr_size(x::StanType) = stan_size(x, 1:l_ndim(x)), stan_size(x, 1+l_ndim(x):stan_ndim(x))
 canonical(x::CanonicalExpr{<:StanExpr2{<:types.func}}) = CanonicalExpr(type(x.head).info.value, x.args...; x.kwargs...)
 backward!(x::StanExpr2{<:types.func}; info) = x
+# Closures: pass through `forward!`/`backward!` like `types.func` does, but
+# crucially do NOT rewrite the call head via `canonical` — `expand_inline!`
+# pulls the closure record off `type(head(x)).info.value` and substitutes
+# captures + args into the stored body Expr.
+forward!(x::StanExpr2{<:types.closure}; info) = x
+backward!(x::StanExpr2{<:types.closure}; info) = x
+# A closure StanExpr's `expr` field carries the closure record (a
+# NamedTuple). Without a specialisation, `fetch_data!`'s NamedTuple
+# fallback would iterate the record and trip on its `body::Expr` field.
+# Closures contribute nothing data-side — captured StanExprs are already
+# traversed via their original bindings.
+fetch_data!(x::StanExpr2{<:types.closure}; info) = nothing
 # tokenof StanExprs carry a raw Stan type as `expr`; skip recursing into the
 # bare `Type{...}` which would hit the generic backward! fallback.
 backward!(x::StanExpr2{<:types.tokenof}; info) = x
@@ -217,6 +238,18 @@ begin
     end
     ensure_xreturn(x) = Expr(:return, x)
 
+    # Strip type/decl/kw wrapping to recover the bare argument *name* —
+    # used wherever we need a call-position arg (typed forms are syntax
+    # errors at call position).
+    _name_of(a::Symbol) = a
+    _name_of(a::Expr) = if a.head === :(::)
+        _name_of(a.args[1])
+    elseif a.head === :kw
+        _name_of(a.args[1])
+    else
+        a
+    end
+
     gettype(ct::Symbol) = getproperty(types, ct)
     gettype(ct::Expr) = begin
         return :($types.func{$ct})
@@ -336,6 +369,7 @@ begin
     sigarg(x::Tuple, name::Symbol) = error("sigarg(::Tuple) deprecated; use func_args.")#join(ntuple(i->sigarg(x[i], Symbol(name, i)), length(x)), ", ")
     always_inline(x) = false
     always_inline(::StanExpr2{<:types.func}) = true
+    always_inline(::StanExpr2{<:types.closure}) = true
     # 0-dim type tokens carry no runtime value — they only contribute a name
     # mangle component to the Stan function name. Sized tokens (`real[n]`)
     # _do_ render, as a Stan `tuple(int, ...)` literal at the call site.
@@ -432,7 +466,7 @@ begin
         f
     end
     _lpxf_inline_fname(inner) = _inline_fname(inner, "lpxf")
-    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false) = if x.head == :block
+    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, _shim_kwarg_specs=nothing) = if x.head == :block
         seen_lpxf_bases = Set{Symbol}()
         for arg in x.args
             isa(arg, Expr) || continue
@@ -452,17 +486,83 @@ begin
         new_is_lhs    = is_lhs    || _is_lhs_macrocall(x)
         new_is_lpxf   = is_lpxf   || _is_lpxf_macrocall(x)
         new_is_inline = is_inline || _is_at_inline_macrocall(x)
-        deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf, is_inline=new_is_inline)
+        deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf, is_inline=new_is_inline, _shim_kwarg_specs)
     elseif x.head == :macrocall
         @assert x.args[1] == GlobalRef(Core, Symbol("@doc")) "@deffun: unexpected macrocall head `$(x.args[1])` (expected a `@doc` docstring)."
         # @assert x.args[3] isa String
-        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf, is_inline)
+        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf, is_inline, _shim_kwarg_specs)
     else
         # @assert x.head == :(=)
         fsig, body = ensure_xassign(x).args
         fcall, rv = ensure_xtyped(fsig).args
         @assert Meta.isexpr(fcall, :call) "@deffun: function signature must be a `:call` expression like `f(args...)::T`, got `$fcall`."
         f, all_args... = fcall.args
+
+        # Kwargs (`f(x; sigma=1.0, alpha=2.0) = body`) mirror Julia's own
+        # lowering: emit a canonical body method
+        # `Core.kwcall(kw::ntup, ::typeof(f), x)::T = begin sigma=kw.sigma; …; body end`
+        # plus an `@inline` shim `f(x) = Core.kwcall((;sigma=sigma, alpha=alpha), f, x)`
+        # whose inline_body carries the kwarg names + defaults so call-site
+        # expansion fills them from call-site kwargs or the registered
+        # defaults. The shim's positional signature (no `:parameters` block)
+        # is what gets registered for dispatch; kwargs don't participate in
+        # dispatch (Julia's rule). Stan-side the canonical name auto-mangles
+        # to `kwcall_f` via `func_name` since the function arg is
+        # `always_inline`.
+        if !isempty(all_args) && Meta.isexpr(all_args[1], :parameters)
+            isa(f, Symbol) || error("@deffun: kwargs require a bare-Symbol fname, got `$f`.")
+            ismissing(body) && error("@deffun: kwargs require a body.")
+            params = all_args[1]
+            positional = all_args[2:end]
+            kwarg_specs = []
+            for p in params.args
+                Meta.isexpr(p, :kw) || error(
+                    "@deffun: kwargs must have defaults — got `$p`. ",
+                    "Write `f(x; sigma=1.0)` not `f(x; sigma)`."
+                )
+                nt = p.args[1]
+                kw_name = Meta.isexpr(nt, :(::)) ? nt.args[1] : nt
+                push!(kwarg_specs, (name=kw_name, default=p.args[2]))
+            end
+
+            positional_names = [_name_of(p) for p in positional]
+            rv_part = rv === :anything ? () : (rv,)
+
+            # Canonical body method: `Core.kwcall(kw::ntup, ::typeof(f), positional...) = begin (unpack); body end`.
+            # `Core.kwcall` is spliced as a bare Function value at args[1] of
+            # the inner `:call` Expr; SLIC resolves it via `forward!(::Function)`.
+            # Stan-side `func_name(::typeof(Core.kwcall))` mangles call sites
+            # to `kwcall_<f>` via the type-token of `f`.
+            kw_unpacks = [Expr(:(=), s.name, Expr(:., :kw, QuoteNode(s.name))) for s in kwarg_specs]
+            canonical_body = Expr(:block, source, kw_unpacks..., body.args...)
+            canonical_call = Expr(:call, Core.kwcall,
+                Expr(:(::), :kw, :ntup),
+                Expr(:(::), Expr(:call, :typeof, f)),
+                positional...)
+            canonical_sig = isempty(rv_part) ? canonical_call : Expr(:(::), canonical_call, rv_part[1])
+            canonical_def = Expr(:(=), canonical_sig, canonical_body)
+
+            # Inline shim: positional-only signature; kwargs live in the
+            # inline_body metadata. Body constructs the kwcall NT and
+            # delegates.
+            shim_call = Expr(:call, f, positional...)
+            shim_sig = isempty(rv_part) ? shim_call : Expr(:(::), shim_call, rv_part[1])
+            nt_construct = Expr(:tuple, Expr(:parameters,
+                [Expr(:kw, s.name, s.name) for s in kwarg_specs]...))
+            shim_body = Expr(:block, source,
+                Expr(:call, Core.kwcall, nt_construct, f, positional_names...))
+            shim_def = Expr(:(=), shim_sig, shim_body)
+            inline_shim = Expr(:macrocall, Symbol("@inline"), source, shim_def)
+
+            return Expr(:block,
+                # `function f end` first so the canonical method's
+                # `::typeof(f)` dispatch can reference it.
+                Expr(:function, f),
+                deffun(canonical_def; docstring, source, is_lhs=false, is_lpxf=false, is_inline=false),
+                deffun(inline_shim; docstring, source, is_lhs, is_lpxf, is_inline=true,
+                    _shim_kwarg_specs=kwarg_specs),
+            )
+        end
 
         # Default positional args (`f(x, y=1.0)`): emit one `@inline`
         # trampoline per omitted-suffix arity that fills the default(s),
@@ -477,17 +577,6 @@ begin
             isa(f, Symbol) || error("@deffun: defaults require a bare-Symbol fname, got `$f`.")
             n = length(all_args)
             stripped = [Meta.isexpr(a, :kw) ? a.args[1] : a for a in all_args]
-            # Argument *names* (no type/decl wrapping) for the call-position
-            # of the trampoline body — `f(x::real, 2.0)` would be a syntax
-            # error in call position, we need `f(x, 2.0)`.
-            _name_of(a::Symbol) = a
-            _name_of(a::Expr) = if a.head === :(::)
-                _name_of(a.args[1])
-            elseif a.head === :kw
-                _name_of(a.args[1])
-            else
-                a
-            end
             arg_names_only = [_name_of(s) for s in stripped]
             rv_part = rv === :anything ? () : (rv,)
             defs = []
@@ -675,10 +764,22 @@ begin
             # signature so the call-site lookup picks the right method.
             arg_names_tuple = Expr(:tuple, [QuoteNode(n) for n in arg_names]...)
             vararg_qn = isnothing(vararg) ? :(nothing) : QuoteNode(vararg.args[1])
+            kwarg_meta = if _shim_kwarg_specs === nothing
+                :(())
+            else
+                # Pair each kwarg name (Symbol) with its default value Expr
+                # — defaults are quoted as AST so they can be canonicalised
+                # and forwarded at the call site.
+                Expr(:tuple, [
+                    Expr(:tuple, QuoteNode(s.name), QuoteNode(s.default))
+                    for s in _shim_kwarg_specs
+                ]...)
+            end
             push!(stmts, :($stan.inline_body($xexpr) = (
                 arg_names = $arg_names_tuple,
                 vararg_name = $vararg_qn,
                 body = $(QuoteNode(original_body)),
+                kwargs = $kwarg_meta,
                 source = $source,
             )))
         else
@@ -782,6 +883,12 @@ anon_expr(key, x::StanExpr) = StanExpr(key, StanType(center_type(x), ([
     for (i, s) in enumerate(stan_size(x))
 ]...,)))
 anon_expr(key, x::StanExpr2{<:types.func}) = StanExpr(type(x).info.value, type(x))
+# Closures have no Stan-side existence (always_inline), but their full
+# `StanType{<:types.closure}` — including `info.value = closure_record` —
+# must reach the receiver UDF body so `inline_body` dispatch can pull the
+# record off and substitute. The anon `expr` is the param name as a
+# Symbol; the type is preserved verbatim.
+anon_expr(key, x::StanExpr2{<:types.closure}) = StanExpr(key, type(x))
 # Sized type tokens expose their dims as tuple fields of the Stan arg (e.g.
 # `name.1`, `name.2`) so the function body can reference them by the original
 # Julia name via `int n = name.1;` preamble (see @deffun `fun_sizes`).
@@ -832,6 +939,12 @@ func_name(args::NamedTuple) = func_name(values(args))
 func_name(args::Tuple) = mapreduce(func_name, vcat, args; init=[])
 func_name(x) = []
 func_name(x::StanExpr) = always_inline(x) ? [func_name(type(x).info.value)] : []
+# Closures: each `(x) -> body` site gets a fresh monotonic id at construction
+# time (see `_make_closure` in slic.jl). The id alone is enough — two
+# textually-distinct lambdas at the same site already have distinct ids,
+# so HOF receivers (`simple_reduce_sum_helper`, etc.) get distinct mangled
+# Stan names per closure they are specialised against.
+func_name(x::StanExpr2{<:types.closure}) = ["closure", string(type(x).info.value.id)]
 # Type tokens always contribute their center type to the mangled Stan name,
 # including sized tokens that are rendered at the call site.
 func_name(x::StanExpr2{<:types.tokenof}) = [func_name(type(x).info.value)]
@@ -856,6 +969,10 @@ func_name(::typeof(abs2)) = "square"
 func_args(args::NamedTuple) = Join(mapreduce(func_args, vcat, pairs(args); init=[]), ", ")
 func_args(arg::Pair) = func_args(arg...)
 func_args(name, ::StanExpr2{<:types.func}) = []
+# Closures are always inlined at the call site — they produce no Stan-side
+# argument when passed as a UDF parameter (their captures are substituted
+# into the receiver's specialised body).
+func_args(name, ::StanExpr2{<:types.closure}) = []
 # 0-dim tokens: no Stan-side arg. 1-dim tokens: a plain `int` (Stan has no
 # 1-element tuple type). N>1-dim tokens: pack dims into a single
 # `tuple(int, …)` parameter; the function body then unpacks fields via `.i`.

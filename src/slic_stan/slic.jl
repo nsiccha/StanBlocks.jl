@@ -333,7 +333,15 @@ isexpr(h) = Base.Fix2(isexpr, h)
 isexpr(x, h) = false
 isexpr(x::CanonicalExpr, h) = head(x) == h
 canonical(x) = x
-canonical(x::Expr) = CanonicalExpr(x.head, canonical.(x.args)...)
+canonical(x::Expr) = if x.head === :->
+    # Lambdas (`(x) -> body`): keep `lhs` and `body` as raw, un-canonicalised
+    # AST. `forward!(::CanonicalExprV{:->, ...})` snapshots the raw body for
+    # later substitution — `inline_substitute` walks Expr/Symbol, not
+    # CanonicalExpr.
+    CanonicalExpr(x.head, x.args...)
+else
+    CanonicalExpr(x.head, canonical.(x.args)...)
+end
 ensure_kw(x::CanonicalExprV{:kw}) = x
 ensure_kw(x::Symbol) = CanonicalExpr(:kw, x, x)
 ensure_kw(x::CanonicalExprV{:.}) = CanonicalExpr(:kw, kw_name(x), x)
@@ -504,6 +512,29 @@ expand_inline!(x::CanonicalExpr, meta; info) = begin
     elseif length(x.args) > n_pos
         error("@inline: call to $(head(x)) has $(length(x.args)) args but the UDF takes exactly $n_pos.")
     end
+    # Kwargs (kwarg-shim case): bind each declared kwarg name to either the
+    # call-site value or the registered default. Unknown call-site kwargs
+    # are an error — there's no schema to dispatch them to.
+    kwarg_meta = get(meta, :kwargs, ())
+    if !isempty(kwarg_meta)
+        callsite_kw = Dict(pairs(x.kwargs))
+        declared = Set{Symbol}(s[1] for s in kwarg_meta)
+        for (kn, _) in pairs(x.kwargs)
+            kn in declared || error(
+                "@inline kwcall shim for `$(head(x))`: unknown kwarg `$kn`. ",
+                "Declared kwargs: $(join(string.(collect(declared)), ", "))."
+            )
+        end
+        for (kn, default_expr) in kwarg_meta
+            subst[kn] = if haskey(callsite_kw, kn)
+                callsite_kw[kn]
+            else
+                forward!(canonical(default_expr); info)
+            end
+        end
+    elseif !isempty(x.kwargs)
+        error("@inline call to `$(head(x))` got unexpected kwargs: $(collect(keys(x.kwargs))).")
+    end
     stmts = inline_unwrap_block(meta.body, head(x))
     isempty(stmts) && error("@inline UDF $(head(x)): empty body.")
     # Collect names introduced inside the body so each call site gets fresh
@@ -520,6 +551,14 @@ expand_inline!(x::CanonicalExpr, meta; info) = begin
             name in arg_set && continue
             rename[name] = Symbol(name, "__il_", id)
         end
+    end
+    # Captures (closure case): each pre-resolved definition-site StanExpr
+    # gets substituted into the body just like a positional arg. Skip names
+    # the body locally shadows — those land in `rename` and the literal
+    # `name = ...` LHS keeps its meaning.
+    for (k, v) in get(meta, :captures, ())
+        k in locals && continue
+        subst[k] = v
     end
     rewritten = [inline_substitute(s, subst, rename, meta.vararg_name) for s in stmts]
     pending = _get_inline_pending()
@@ -590,6 +629,11 @@ else
     x
 end
 inline_substitute(x::Expr, subst, rename, vararg_name) = begin
+    # `:kw` exprs (e.g. `(;sigma=sigma)` shorthand) have a LHS *name* that
+    # must stay literal — only the RHS *value* gets substituted.
+    if x.head === :kw && length(x.args) == 2
+        return Expr(:kw, x.args[1], inline_substitute(x.args[2], subst, rename, vararg_name))
+    end
     new_args = []
     for arg in x.args
         if vararg_name !== nothing && Meta.isexpr(arg, :...) &&
@@ -1051,6 +1095,130 @@ lpxf_register(name::Symbol; source=LineNumberNode(0, :none)) = begin
 end
 
 include("functions.jl")
+
+# --- Closures (`(x) -> body`) ---
+# Defined here, after `functions.jl`, because the dispatch and constructor
+# both reference `types.closure` in method signatures / type-parameter
+# positions, which the load-order in StanBlocks.jl resolves only once
+# `functions.jl` has registered the `types` module.
+
+# Per-`:->` counter so each `(x) -> body` site gets a stable id used both
+# for `func_name` mangling (so HOF receivers specialise per closure) and for
+# debugging closure flow through the tracer.
+const _CLOSURE_ID_COUNTER = Ref(0)
+_next_closure_id() = (_CLOSURE_ID_COUNTER[] += 1)
+
+# Walk the un-canonicalised body collecting *all* Symbols that appear (as
+# uses or definitions). The closure builder subtracts bound names (params
+# + locals) and intersects with the current `info` scope to produce the
+# captures dict.
+_collect_all_syms!(x, syms) = nothing
+_collect_all_syms!(x::Symbol, syms) = (push!(syms, x); nothing)
+_collect_all_syms!(x::Expr, syms) = (foreach(a -> _collect_all_syms!(a, syms), x.args); nothing)
+
+# Parse the LHS of `(args) -> body` into (arg_names, vararg_name).
+# Phase 1 handles bare `Symbol`, `Expr(:tuple, syms...)`, and a trailing
+# `args...`. Typed params and kwargs are out of scope.
+_parse_lambda_lhs(lhs::Symbol) = ([lhs], nothing)
+_parse_lambda_lhs(lhs::Expr) = if lhs.head === :tuple
+    arg_names = Symbol[]
+    vararg = nothing
+    for (i, a) in enumerate(lhs.args)
+        if Meta.isexpr(a, :...) && length(a.args) == 1 && a.args[1] isa Symbol
+            i == length(lhs.args) || error(
+                "closure: vararg `$(a.args[1])...` must be the last parameter, got $lhs."
+            )
+            vararg = a.args[1]
+        elseif a isa Symbol
+            push!(arg_names, a)
+        else
+            error("closure: only bare-Symbol params (and a trailing `args...`) are supported in phase 1, got `$a` in `$lhs`.")
+        end
+    end
+    (arg_names, vararg)
+elseif lhs.head === :(...)  && length(lhs.args) == 1 && lhs.args[1] isa Symbol
+    (Symbol[], lhs.args[1])
+else
+    error("closure: unsupported lambda LHS `$lhs` (head `$(lhs.head)`). Phase 1 supports `x -> ...`, `(x, y) -> ...`, and `(args...) -> ...`.")
+end
+
+# Trace-time entry point for `(x) -> body`. Snapshots free vars in `body`
+# that resolve in the current `info` scope and packages them with the raw
+# body Expr as a `types.closure` StanExpr. The receiver UDF (or
+# `inline_body` dispatch on the closure StanExpr at head) substitutes
+# captures + call-site args and re-traces.
+forward!(x::CanonicalExprV{:->,A}; info) where {A} = begin
+    length(x.args) == 2 || error(
+        "closure: malformed lambda — expected 2 args (lhs, body), got $(length(x.args)): $x."
+    )
+    lhs, body = x.args
+    isa(body, Expr) || error(
+        "closure: lambda body must be an Expr (a `:block`), got `$(typeof(body))`. Make sure `canonical(::Expr)` is preserving `:->` args raw."
+    )
+    arg_names, vararg_name = _parse_lambda_lhs(lhs)
+
+    bound = Set{Symbol}(arg_names)
+    vararg_name !== nothing && push!(bound, vararg_name)
+    locals = Set{Symbol}()
+    _collect_locals!(body, locals)
+    union!(bound, locals)
+
+    all_syms = Set{Symbol}()
+    _collect_all_syms!(body, all_syms)
+    free = setdiff(all_syms, bound)
+
+    # Snapshot every free var that's already in scope. Names that aren't in
+    # `info` (e.g. builtin function refs like `sin`) stay as Symbols so they
+    # re-resolve at the closure's call site through the regular SLIC path.
+    captures = Dict{Symbol,Any}()
+    for s in free
+        if s in keys(info)
+            captures[s] = info[s]
+        end
+    end
+
+    id = _next_closure_id()
+    source = something(_get_lnn(info), LineNumberNode(0, :none))
+    record = (
+        arg_names  = Tuple(arg_names),
+        vararg_name = vararg_name,
+        body       = body,
+        captures   = captures,
+        kwargs     = (),
+        source     = source,
+        id         = id,
+    )
+    StanExpr(record, StanType(types.closure; value=record, qual=:data))
+end
+
+# A call whose head is a closure StanExpr: pull the record off the head's
+# StanType and feed `expand_inline!` directly. Same machinery as
+# `@deffun @inline` UDFs — the closure record just lives in the StanExpr
+# rather than in a `inline_body(::CanonicalExpr{<:typeof(f)})` method.
+inline_body(x::CanonicalExpr{<:StanExpr2{<:types.closure}}) = type(head(x)).info.value
+
+# `f = (x) -> body` binds the *closure StanExpr verbatim* into `info` —
+# the regular `AssignmentExpr{Symbol,<:StanExpr}` path replaces `expr` with
+# the bound name and wipes `info.value=missing`, which would destroy the
+# closure record. Closures live entirely in trace state; emit no Stan-side
+# statement (returning `nothing` makes `forward!(::BlockExpr)` skip it via
+# `_is_inert_block_stmt`).
+forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:types.closure}}; info) = begin
+    name, rhs = x.args
+    name in keys(info) && isa(info, SubModel) && return nothing
+    name in keys(info) && error(
+        "closure: rebinding `$name` is not supported — closures are SLIC-side compile-time aliases for an anonymous lambda."
+    )
+    info[name] = rhs
+    nothing
+end
+_is_inert_block_stmt(::Nothing) = true
+
+# Defensive: if a closure StanExpr ever ends up with `expr::Symbol` (e.g.
+# from a code path that reuses the regular assignment shape), the generic
+# `forward!(::StanExpr{Symbol})` clashes with `forward!(::StanExpr2{<:types.closure})`.
+# This more-specific method removes the ambiguity. Same passthrough behaviour.
+forward!(x::StanExpr{Symbol,<:StanType{<:types.closure}}; info) = x
 
 # `slic_macroexpand` and the user-facing macros must exist before
 # `include("builtin.jl")`, which uses `@deffun` extensively at load time.
