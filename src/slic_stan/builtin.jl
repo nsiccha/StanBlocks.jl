@@ -207,6 +207,12 @@ import Statistics
     reduce_sum(args...)::real
     reduce_sum_static(args...)::real
     simple_reduce_sum(f, x, args...)::real = reduce_sum(simple_reduce_sum_helper, x, 1, f, args...)
+    # Stan's `reduce_sum` only accepts `T[]` arrays as its data argument, not
+    # `vector` (or its `simplex`/`ordered`/`positive_ordered` subtypes, or
+    # `row_vector`). Auto-convert via `to_array_1d` so users can call
+    # `simple_reduce_sum(f, ::any_vector, ...)` directly. `any_vector` covers
+    # all 1-d vector-like Stan types in the SLIC hierarchy.
+    simple_reduce_sum(f, x::any_vector[n], args...)::real = reduce_sum(simple_reduce_sum_helper, to_array_1d(x), 1, f, args...)
     simple_reduce_sum_helper(x_slice::anything[n], slice_start, slice_end, f, args...)::real = begin 
         rv = 0.
         for i in 1:n
