@@ -1672,11 +1672,11 @@ prettystring(f) = " $f "
 prettystring(f::Base.BroadcastFunction) = " .$(f.f) "
 Base.show(io::IO, x::CanonicalExpr) = begin
     fname = func_name(head(x), x.args)
-    # Phase-2 closure lifting: a closure arg expands in place to its captures,
-    # which travel as ordinary positional args. The unexpanded `x.args` still
-    # drives `func_name` so the mangled receiver name reflects the closure's
-    # identity (id), not just the captures.
-    fargs = filter(!always_inline, expand_call_args(x.args))
+    # `stan_call_args` expands closure args to their captures and drops
+    # always_inline args (functions, 0-dim tokens, capture-free closures).
+    # `func_name` still operates on the *unexpanded* args so the mangled
+    # receiver name reflects the closure's identity, not just its captures.
+    fargs = stan_call_args(x.args)
     is_lxxf = endswith(string(fname), r"_lp[md]f|_l?c?cdf")
     if is_lxxf && length(fargs) > 1
         autoprint(io, fname, "(", fargs[1], " | ", Join(fargs[2:end], ", "), ")")
@@ -1685,7 +1685,7 @@ Base.show(io::IO, x::CanonicalExpr) = begin
     end
 end
 Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = autoprint(io, head(x), "(", Join(
-    (func_name(x.args[1], x.args[2:end]), filter(!always_inline, expand_call_args(x.args[2:end]))...), ", "
+    (func_name(x.args[1], x.args[2:end]), stan_call_args(x.args[2:end])...), ", "
 ), ")")
 commentstring(x::String) = "// " * replace(x, "\n"=>"\n    // ") * "\n"
 Base.show(io::IO, x::DocumentExpr) = print(io, commentstring(x.args[1]), current_indent(io), x.args[2])

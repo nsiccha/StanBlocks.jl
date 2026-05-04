@@ -996,6 +996,12 @@ expand_call_args(args) = begin
     end
     rv
 end
+# What `Base.show(::CanonicalExpr)` (and its `<:ODESolver` / `<:ReduceSumFunction`
+# specialisations) want as the rendered Stan-side arg list: closures expanded
+# to their capture values, then `always_inline`-typed StanExprs (functions,
+# 0-dim tokens, capture-free closures) filtered out. Single helper so each
+# show specialisation stays a one-liner.
+stan_call_args(args) = filter(!always_inline, expand_call_args(args))
 # 0-dim tokens: no Stan-side arg. 1-dim tokens: a plain `int` (Stan has no
 # 1-element tuple type). N>1-dim tokens: pack dims into a single
 # `tuple(int, …)` parameter; the function body then unpacks fields via `.i`.

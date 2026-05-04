@@ -1250,6 +1250,6 @@ else
     # `f, args...` forwarded to the helper) expand to their capture values
     # so Stan's `reduce_sum` receives them as the trailing s1,s2,... args.
     autoprint(io, head(x), "(", Join(
-        (func_name(x.args[1], x.args[2:end]), filter(!always_inline, expand_call_args(x.args[2:end]))...), ", "
+        (func_name(x.args[1], x.args[2:end]), stan_call_args(x.args[2:end])...), ", "
     ), ")")
 end
