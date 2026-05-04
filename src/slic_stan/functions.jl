@@ -192,7 +192,12 @@ end
 struct StanFunction3
     docstring::AbstractString
     rv_type::StanType
-    parent::Function
+    # `parent` identifies the function for `func_name` mangling. For
+    # @deffun UDFs it's the bare `Function` value; for lifted closures
+    # (phase 2-deeper) it's the closure StanExpr, whose `func_name`
+    # specialisation produces `closure_<id>` so the synthesised Stan
+    # function name matches what call sites already emit.
+    parent
     args::NamedTuple
     body::Vector
 end
@@ -1002,6 +1007,12 @@ end
 # 0-dim tokens, capture-free closures) filtered out. Single helper so each
 # show specialisation stays a one-liner.
 stan_call_args(args) = filter(!always_inline, expand_call_args(args))
+# Captures of a function-position closure (used by ODE-solver fetch/show:
+# closures at args[1] must thread their captures into the builtin's
+# trailing args, since `expand_call_args` only operates on the rendered
+# args list and the function-position arg gets folded into the receiver
+# name instead).
+_closure_captures(f) = f isa StanExpr2{<:types.closure} ? Tuple(values(type(f).info.value.captures)) : ()
 # 0-dim tokens: no Stan-side arg. 1-dim tokens: a plain `int` (Stan has no
 # 1-element tuple type). N>1-dim tokens: pack dims into a single
 # `tuple(int, …)` parameter; the function body then unpacks fields via `.i`.

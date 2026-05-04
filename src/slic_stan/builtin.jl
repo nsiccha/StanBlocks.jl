@@ -1172,11 +1172,11 @@ tracetype(x::CanonicalExpr{<:ODESolver}) = StanType(
 )
 
 fetch_functions!(x::CanonicalExpr{<:TolODESolver}; info) = fetch_functions!(
-    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[8:end]...); info
+    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[8:end]..., _closure_captures(x.args[1])...); info
 )
 
 fetch_functions!(x::CanonicalExpr{<:NoTolODESolver}; info) = fetch_functions!(
-    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[5:end]...); info
+    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[5:end]..., _closure_captures(x.args[1])...); info
 )
 
 function reduce_sum_reconstruct end

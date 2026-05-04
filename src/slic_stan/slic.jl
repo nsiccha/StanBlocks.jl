@@ -1198,6 +1198,11 @@ forward!(x::CanonicalExprV{:->,A}; info) where {A} = begin
         kwargs     = (),
         source     = source,
         id         = id,
+        # Snapshot the model's module so the lifted-closure `fundef` path
+        # (phase 2-deeper, used when a closure flows directly to a Stan
+        # builtin like `ode_rk45`) can resolve user-module names while
+        # tracing the closure body in a fresh `info` scope.
+        mod        = get_module(info),
     )
     # The closure's qual must reflect its captures' quals — at any HOF
     # call site, `stan_expr(::CanonicalExpr)` computes its qual via
@@ -1215,6 +1220,43 @@ end
 # `@deffun @inline` UDFs — the closure record just lives in the StanExpr
 # rather than in a `inline_body(::CanonicalExpr{<:typeof(f)})` method.
 inline_body(x::CanonicalExpr{<:StanExpr2{<:types.closure}}) = type(head(x)).info.value
+
+# Phase 2-deeper: closure passed directly to a Stan builtin (no SLIC UDF
+# to inline into) gets lifted to a top-level Stan function. The builtin's
+# `fetch_functions!` specialisation builds a `CanonicalExpr(closure, params...,
+# captures...)` shape that this `fundef` consumes — matching what a
+# `@deffun` UDF would consume but with the closure StanExpr at head and
+# the captures appended as trailing positional args.
+fundef(x::CanonicalExpr{<:StanExpr2{<:types.closure}}) = begin
+    cl = type(head(x)).info.value
+    arg_names = collect(cl.arg_names)
+    n_params = length(arg_names)
+    capture_names = collect(keys(cl.captures))
+    sig_names = vcat(arg_names, capture_names)
+    n_total = length(sig_names)
+    @assert length(x.args) >= n_total "fundef(closure): expected ≥ $n_total args (params + captures), got $(length(x.args))."
+
+    # Anonymise the call args (mirrors the `anon_deconstruct` path used
+    # by `@deffun`-registered fundefs) so the body emits Stan code with
+    # the function's parameter names rather than caller-side expressions.
+    info_nt = (;[name => x.args[i] for (i, name) in enumerate(sig_names)]...)
+    info = OrderedDict{Symbol,Any}(pairs(anon_info(info_nt)))
+    info[:__mod__] = cl.mod
+
+    body_with_return = ensure_xreturn(cl.body)
+    body_block = forward!(canonical(body_with_return); info)
+    rv_type = type(info[RV_NAME])
+
+    args_nt = (;[name => info[name] for name in sig_names]...)
+
+    StanFunction3(
+        "// lifted closure (id $(cl.id))\n",
+        rv_type,
+        head(x),
+        args_nt,
+        [body_block],
+    )
+end
 
 # `f = (x) -> body` binds the *closure StanExpr verbatim* into `info` —
 # the regular `AssignmentExpr{Symbol,<:StanExpr}` path replaces `expr` with
@@ -1695,7 +1737,14 @@ Base.show(io::IO, x::CanonicalExpr) = begin
     end
 end
 Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = autoprint(io, head(x), "(", Join(
-    (func_name(x.args[1], x.args[2:end]), stan_call_args(x.args[2:end])...), ", "
+    # ODE solvers fold the function arg into the receiver name (mangled
+    # via `func_name(args[1], rest)`), then emit the remaining args. If
+    # `args[1]` is a closure, its captures must *also* be threaded as
+    # trailing args so Stan's ODE solver forwards them to the lifted
+    # function — `expand_call_args` only catches closures in the args
+    # being rendered, not the function-position arg.
+    (func_name(x.args[1], x.args[2:end]), stan_call_args(x.args[2:end])...,
+     _closure_captures(x.args[1])...), ", "
 ), ")")
 commentstring(x::String) = "// " * replace(x, "\n"=>"\n    // ") * "\n"
 Base.show(io::IO, x::DocumentExpr) = print(io, commentstring(x.args[1]), current_indent(io), x.args[2])
