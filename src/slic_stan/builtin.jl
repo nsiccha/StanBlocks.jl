@@ -1236,11 +1236,14 @@ fundef(x::CanonicalExpr{typeof(reduce_sum_deconstruct)}) = begin
         ]
     )
 end
-Base.show(io::IO, x::CanonicalExpr{<:ReduceSumFunction}) = if any(arg->isa(arg, StanExpr2{<:types.tup}), x.args) 
+Base.show(io::IO, x::CanonicalExpr{<:ReduceSumFunction}) = if any(arg->isa(arg, StanExpr2{<:types.tup}), x.args)
     # Work around https://github.com/stan-dev/math/issues/3041
     print(io, CanonicalExpr(reduce_sum_deconstruct, stan_expr(reduce_sum_reconstruct), x.args[2], x.args[3], x.args[1], x.args[4:end]...))
 else
+    # Phase-2 closure lifting: closures in args (typically the trailing
+    # `f, args...` forwarded to the helper) expand to their capture values
+    # so Stan's `reduce_sum` receives them as the trailing s1,s2,... args.
     autoprint(io, head(x), "(", Join(
-        (func_name(x.args[1], x.args[2:end]), filter(!always_inline, x.args[2:end])...), ", "
+        (func_name(x.args[1], x.args[2:end]), filter(!always_inline, expand_call_args(x.args[2:end]))...), ", "
     ), ")")
 end

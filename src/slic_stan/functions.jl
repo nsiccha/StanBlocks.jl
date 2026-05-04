@@ -969,10 +969,33 @@ func_name(::typeof(abs2)) = "square"
 func_args(args::NamedTuple) = Join(mapreduce(func_args, vcat, pairs(args); init=[]), ", ")
 func_args(arg::Pair) = func_args(arg...)
 func_args(name, ::StanExpr2{<:types.func}) = []
-# Closures are always inlined at the call site — they produce no Stan-side
-# argument when passed as a UDF parameter (their captures are substituted
-# into the receiver's specialised body).
-func_args(name, ::StanExpr2{<:types.closure}) = []
+# Closure phase 2: a closure passed to a Stan-emitted UDF lifts its
+# captures into positional args appended to the receiver's signature.
+# Each captured StanExpr's `expr` is a Symbol (e.g. `:shift`) that already
+# matches the body's reference (the capture was substituted verbatim into
+# the body), so naming the new Stan arg by the same Symbol makes the body
+# resolve naturally inside the function scope.
+func_args(name, x::StanExpr2{<:types.closure}) = [
+    sigtype(v) * " " * string(k)
+    for (k, v) in pairs(type(x).info.value.captures)
+]
+# Call-site arg expansion: when a closure flows into a `:call` CanonicalExpr's
+# args, render its captures in place. Stan-side, the receiver's signature
+# already absorbs the captures via `func_args` above; call-site arg lists
+# need to thread the actual capture values at matching positions. Closures
+# with no captures expand to zero args (transparent); closures with captures
+# splice each capture value as a positional arg.
+expand_call_args(args) = begin
+    rv = Any[]
+    for a in args
+        if a isa StanExpr2{<:types.closure}
+            append!(rv, values(type(a).info.value.captures))
+        else
+            push!(rv, a)
+        end
+    end
+    rv
+end
 # 0-dim tokens: no Stan-side arg. 1-dim tokens: a plain `int` (Stan has no
 # 1-element tuple type). N>1-dim tokens: pack dims into a single
 # `tuple(int, …)` parameter; the function body then unpacks fields via `.i`.

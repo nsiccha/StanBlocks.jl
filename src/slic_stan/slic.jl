@@ -1170,11 +1170,12 @@ forward!(x::CanonicalExprV{:->,A}; info) where {A} = begin
     # Snapshot every free var that's already in scope. Names that aren't in
     # `info` (e.g. builtin function refs like `sin`) stay as Symbols so they
     # re-resolve at the closure's call site through the regular SLIC path.
-    captures = Dict{Symbol,Any}()
-    for s in free
-        if s in keys(info)
-            captures[s] = info[s]
-        end
+    # Iterate `info` (an OrderedDict) so capture ordering is deterministic —
+    # matters for phase 2 where captures become positional Stan args.
+    captures = OrderedDict{Symbol,Any}()
+    for k in keys(info)
+        k in free || continue
+        captures[k] = info[k]
     end
 
     id = _next_closure_id()
@@ -1663,7 +1664,11 @@ prettystring(f) = " $f "
 prettystring(f::Base.BroadcastFunction) = " .$(f.f) "
 Base.show(io::IO, x::CanonicalExpr) = begin
     fname = func_name(head(x), x.args)
-    fargs = filter(!always_inline, x.args)
+    # Phase-2 closure lifting: a closure arg expands in place to its captures,
+    # which travel as ordinary positional args. The unexpanded `x.args` still
+    # drives `func_name` so the mangled receiver name reflects the closure's
+    # identity (id), not just the captures.
+    fargs = filter(!always_inline, expand_call_args(x.args))
     is_lxxf = endswith(string(fname), r"_lp[md]f|_l?c?cdf")
     if is_lxxf && length(fargs) > 1
         autoprint(io, fname, "(", fargs[1], " | ", Join(fargs[2:end], ", "), ")")
@@ -1672,7 +1677,7 @@ Base.show(io::IO, x::CanonicalExpr) = begin
     end
 end
 Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = autoprint(io, head(x), "(", Join(
-    (func_name(x.args[1], x.args[2:end]), filter(!always_inline, x.args[2:end])...), ", "
+    (func_name(x.args[1], x.args[2:end]), filter(!always_inline, expand_call_args(x.args[2:end]))...), ", "
 ), ")")
 commentstring(x::String) = "// " * replace(x, "\n"=>"\n    // ") * "\n"
 Base.show(io::IO, x::DocumentExpr) = print(io, commentstring(x.args[1]), current_indent(io), x.args[2])
