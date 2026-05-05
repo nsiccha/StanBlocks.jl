@@ -38,15 +38,54 @@ export const Theme: ThemeConfig = {
     app.component('AuthorBadge', AuthorBadge)
     app.component('Authors', Authors)
 
-    // VitePress is an SPA: `<div hx-trigger="load">` placeholders only
-    // fire on initial mount. After client-side navigation, new HTMX
-    // placeholders need a manual `htmx.process(document.body)` to be
-    // picked up. Hook the after-route-change event for that.
+    // VitePress strips raw `<script>` blocks from markdown (they get
+    // hoisted as Vue SFC scripts, not executed at the embed location).
+    // So the `data-hx-base` → `hx-get` rewrite has to live here, where
+    // it actually runs in the SPA lifecycle. We wire two triggers:
+    //
+    //   1. Route change (SPA navigation): re-scan the new page.
+    //   2. Initial mount: poll briefly until the embed exists in the
+    //      DOM (Vue renders it after enhanceApp runs).
+    //
+    // Each scan finds `[data-hx-base]:not([hx-get])` elements, sets
+    // `hx-get` to `<deploy-base>/<data-hx-base>gallery`, then calls
+    // `htmx.process(el)` to fire its `hx-trigger="load"`.
     if (typeof window !== 'undefined' && router) {
-      router.onAfterRouteChanged = () => {
+      const processEmbeds = () => {
         // @ts-ignore - htmx loaded via head <script>; no types.
-        if ((window as any).htmx) (window as any).htmx.process(document.body);
+        const htmx = (window as any).htmx;
+        // siteData.value.base is `/` in dev, `/StanBlocks.jl/dev/` in prod.
+        const base = (siteData?.value?.base || '/').replace(/\/$/, '');
+        document.querySelectorAll('[data-hx-base]:not([hx-get])').forEach((el) => {
+          const tail = el.getAttribute('data-hx-base') || '';
+          const url = base + '/' + tail + 'gallery';
+          el.setAttribute('hx-get', url);
+          // Explicit ajax — htmx.process(el) doesn't reliably re-fire
+          // `hx-trigger="load"` on an already-scanned element.
+          if (htmx) htmx.ajax('GET', url, { target: el as HTMLElement, swap: 'innerHTML' });
+        });
       };
+      router.onAfterRouteChanged = processEmbeds;
+      // Initial-mount: enhanceApp runs before Vue's first render, so
+      // poll briefly until the embed appears (or htmx loads).
+      let tries = 0;
+      const tick = () => {
+        if (tries++ > 200) return; // ~10s ceiling
+        const pending = document.querySelector('[data-hx-base]:not([hx-get])');
+        // @ts-ignore
+        if (!pending || !(window as any).htmx) {
+          setTimeout(tick, 50);
+          return;
+        }
+        processEmbeds();
+      };
+      if (typeof document !== 'undefined') {
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', tick);
+        } else {
+          tick();
+        }
+      }
 
       // Embedded HTMXO fragments contain root-absolute links like
       // `<a href="/sandbox_view/foo">` that point at the StanBlocks

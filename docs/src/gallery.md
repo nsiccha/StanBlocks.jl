@@ -54,32 +54,14 @@ that drops into this page). VitePress proxies `/live-sb/*` to the
 running web app (`SB_DEV_TARGET=http://localhost:8091` by default) in
 dev, and to recordings in production.
 
-<div class="htmxo-embed htmxo-embed-fullwidth" data-hx-base="live-sb/" hx-trigger="load" hx-swap="innerHTML">
+<!-- The `data-hx-base` → `hx-get` rewrite + `htmx.ajax` swap lives in
+     `theme/index.ts` (VitePress strips raw <script> blocks from
+     markdown — they get hoisted as Vue SFC scripts and never run at
+     the embed location). The theme hook polls until both htmx is
+     loaded *and* this element exists, then fires the fetch. -->
+<div class="htmxo-embed htmxo-embed-fullwidth" data-hx-base="live-sb/" hx-swap="innerHTML">
   <em>Loading sandbox gallery…</em>
 </div>
-
-<script>
-// Make the embed URL base-aware. In dev `import.meta.env.BASE_URL` is
-// `/`, so `data-hx-base="live-sb/"` becomes `/live-sb/` (matches the
-// Vite proxy). In prod the base is `/StanBlocks.jl/dev/`, so it
-// becomes `/StanBlocks.jl/dev/live-sb/` (matches the committed
-// recordings). Same markdown works in both deploys.
-(function () {
-  function rewrite() {
-    const base = (typeof __DEPLOY_ABSPATH__ !== "undefined" && __DEPLOY_ABSPATH__) || "/";
-    document.querySelectorAll("[data-hx-base]").forEach((el) => {
-      if (el.hasAttribute("hx-get")) return;
-      el.setAttribute("hx-get", base.replace(/\/$/, "") + "/" + el.getAttribute("data-hx-base") + "gallery");
-      if (window.htmx) window.htmx.process(el);
-    });
-  }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", rewrite);
-  } else {
-    rewrite();
-  }
-})();
-</script>
 
 ## Endpoints
 
