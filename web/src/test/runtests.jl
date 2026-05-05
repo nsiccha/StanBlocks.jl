@@ -135,11 +135,7 @@ _stan_binomial(k, n, p) = k*log(p) + (n-k)*log(1.0-p)
 # --- builtin_shapes.jl helpers ---
 
 function run_model(model)
-    problem = try
-        instantiate(model)
-    catch
-        return false
-    end
+    problem = instantiate(model)
     theta = zeros(LogDensityProblems.dimension(problem))
     ld = LogDensityProblems.logdensity(problem, theta)
     return isfinite(ld)
@@ -149,14 +145,6 @@ function check_type(model, var::Symbol, expected_sigtype::AbstractString)
     code = stan_code(model)
     pat = Regex("\\b$(expected_sigtype)(?:\\[[^\\]]*\\])+ (?:\\w+ )?$var\\b")
     occursin(pat, code)
-end
-
-# --- posteriordb helpers ---
-
-_pdb() = try
-    PosteriorDB.database()
-catch
-    nothing
 end
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -754,17 +742,15 @@ end
 # === posteriordb.jl tests ===
 
 # Generate per-model test functions for PosteriorDB
-let pdb = try PosteriorDB.database() catch; nothing end
-    if !isnothing(pdb)
-        for posterior_name in PosteriorDB.posterior_names(pdb)
-            post = StanBlocks.slic_implementation(PosteriorDB.posterior(pdb, posterior_name))
-            isnothing(post) && continue
-            fn_name = Symbol("test_pdb_", replace(posterior_name, "-" => "_", "." => "_"))
-            @eval function $(fn_name)()
-                @testset $posterior_name begin
-                    post = StanBlocks.slic_implementation(PosteriorDB.posterior(PosteriorDB.database(), $posterior_name))
-                    @test compiles(post)
-                end
+let pdb = PosteriorDB.database()
+    for posterior_name in PosteriorDB.posterior_names(pdb)
+        post = StanBlocks.slic_implementation(PosteriorDB.posterior(pdb, posterior_name))
+        isnothing(post) && continue
+        fn_name = Symbol("test_pdb_", replace(posterior_name, "-" => "_", "." => "_"))
+        @eval function $(fn_name)()
+            @testset $posterior_name begin
+                post = StanBlocks.slic_implementation(PosteriorDB.posterior(PosteriorDB.database(), $posterior_name))
+                @test compiles(post)
             end
         end
     end
