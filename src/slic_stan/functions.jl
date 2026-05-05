@@ -942,7 +942,7 @@ else
     error("func_name(::Expr) only handles `:.` heads (module-qualified refs), got head `$(x.head)` in `$x`.")
 end
 func_name(f, args) = begin
-    rv = join(vcat(func_name(f), func_name(args)...), "_")
+    rv = join(vcat(func_name(f), func_name(args)), "_")
     suffix_idxs = findfirst(r"_(rng|u?lp(m|d)fs?)_", rv)
     if isnothing(suffix_idxs) 
         rv

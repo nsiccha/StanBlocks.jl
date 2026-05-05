@@ -672,10 +672,10 @@ slic_implementation(::Val{:diamonds}; N, Y, K, X, kwargs...) = begin
 end
 slic_implementation(::Val{:accel_splines}; N, Y, Ks, Xs, knots_1, Zs_1_1,
         Ks_sigma, Xs_sigma, knots_sigma_1, Zs_sigma_1_1, kwargs...) = begin
-    Xs_m        = reshape(vcat(Xs...), N, Ks)
-    Zs_1_1_m    = reshape(vcat(Zs_1_1...), N, knots_1)
-    Xs_sigma_m  = reshape(vcat(Xs_sigma...), N, Ks_sigma)
-    Zs_s_m      = reshape(vcat(Zs_sigma_1_1...), N, knots_sigma_1)
+    Xs_m        = reshape(reduce(vcat, Xs), N, Ks)
+    Zs_1_1_m    = reshape(reduce(vcat, Zs_1_1), N, knots_1)
+    Xs_sigma_m  = reshape(reduce(vcat, Xs_sigma), N, Ks_sigma)
+    Zs_s_m      = reshape(reduce(vcat, Zs_sigma_1_1), N, knots_sigma_1)
     @slic (;N, Y, Ks, Xs=Xs_m, knots_1, Zs_1_1=Zs_1_1_m,
             Ks_sigma, Xs_sigma=Xs_sigma_m, knots_sigma_1, Zs_sigma_1_1=Zs_s_m) begin
         Intercept       ~ student_t(3, -13, 36)

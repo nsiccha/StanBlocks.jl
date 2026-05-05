@@ -290,7 +290,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                     h.th("Correct"; _="on click call sortTable(5, me)", style="cursor:pointer"),
                 )
             ),
-            h.tbody(vcat([overview_row[pn] for pn in posterior_names]...)...; id="posterior-tbody")
+            h.tbody(reduce(vcat, [overview_row[pn] for pn in posterior_names]; init=[])...; id="posterior-tbody")
         ),
         h.style(".hidden { display: none; } tr[id^=row-]:hover { background: var(--pico-table-row-stripped-background-color); } details summary { cursor: pointer; font-weight: 600; margin-bottom: 0.5rem; }"),
     )
