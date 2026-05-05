@@ -92,23 +92,22 @@ function status_str(cached, ok)
 end
 
 function status_cell(cached, ok)
-    !cached && return h.td("-"; style="color:gray")
-    ok ? h.td("PASS"; style="color:green;font-weight:bold") :
-         h.td("FAIL"; style="color:red;font-weight:bold")
+    !cached && return h.td("-"; class="u-text-muted")
+    ok ? h.td("PASS"; class="u-text-success u-text-bold") :
+         h.td("FAIL"; class="u-text-error u-text-bold")
 end
 
 function status_cell_clickable(cached, ok, check_url, detail_id)
-    base_style = "cursor:pointer;"
     if !cached
-        return h.td("-"; class="check-cell", style=base_style * "color:gray",
+        return h.td("-"; class="check-cell u-pointer u-text-muted",
             hx_get=check_url, hx_target="#$detail_id", hx_swap="innerHTML",
             _="on htmx:afterOnLoad if not me.classList.contains('batch') then remove .hidden from #$detail_id end remove .batch from me")
     elseif !ok
-        return h.td("FAIL"; class="check-cell", style=base_style * "color:red;font-weight:bold",
+        return h.td("FAIL"; class="check-cell u-pointer u-text-error u-text-bold",
             hx_get=check_url, hx_target="#$detail_id", hx_swap="innerHTML",
             _="on htmx:afterOnLoad if not me.classList.contains('batch') then remove .hidden from #$detail_id end remove .batch from me")
     else
-        return h.td("PASS"; class="check-cell", style=base_style * "color:green;font-weight:bold",
+        return h.td("PASS"; class="check-cell u-pointer u-text-success u-text-bold",
             _="on click toggle .hidden on #$detail_id")
     end
 end
@@ -259,9 +258,9 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         detail_id = "detail-$pn"
         toggle = "on click toggle .hidden on #$detail_id"
         [h.tr(
-            h.td(pn; style="cursor:pointer", _=toggle),
-            h.td(dataset; style="cursor:pointer", _=toggle),
-            h.td(model; style="cursor:pointer", _=toggle),
+            h.td(pn; class="u-pointer", _=toggle),
+            h.td(dataset; class="u-pointer", _=toggle),
+            h.td(model; class="u-pointer", _=toggle),
             status_cell_clickable(t_cached, t_ok, "/check_transpile/$pn", detail_id),
             status_cell_clickable(c_cached, c_ok, "/check_compile/$pn", detail_id),
             status_cell_clickable(r_cached, r_ok, "/check_correct/$pn", detail_id);
@@ -277,17 +276,17 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             id="search",
             placeholder="Filter posteriors...",
             _="on input set query to my value.toLowerCase() for row in <tr/> in #posterior-tbody if row.textContent.toLowerCase() contains query remove .hidden from row else add .hidden to row end end on keydown[key is 'Enter'] halt the event for row in <tr[id^='row-']/> in #posterior-tbody if row matches ':not(.hidden)' set target to null for cell in <td.check-cell/> in row if target is null and cell.textContent.trim() is not 'PASS' set target to cell end end if target is not null add .batch to target send click to target end end end",
-            style="margin-bottom:1rem;width:100%;",
+            class="pdb-search",
         ),
         h.table(class="striped"; role="grid")(
             h.thead(
                 h.tr(
-                    h.th("Posterior"; _="on click call sortTable(0, me)", style="cursor:pointer"),
-                    h.th("Dataset"; _="on click call sortTable(1, me)", style="cursor:pointer"),
-                    h.th("Model"; _="on click call sortTable(2, me)", style="cursor:pointer"),
-                    h.th("Transpiles"; _="on click call sortTable(3, me)", style="cursor:pointer"),
-                    h.th("Compiles"; _="on click call sortTable(4, me)", style="cursor:pointer"),
-                    h.th("Correct"; _="on click call sortTable(5, me)", style="cursor:pointer"),
+                    h.th("Posterior"; _="on click call sortTable(0, me)", class="u-pointer"),
+                    h.th("Dataset"; _="on click call sortTable(1, me)", class="u-pointer"),
+                    h.th("Model"; _="on click call sortTable(2, me)", class="u-pointer"),
+                    h.th("Transpiles"; _="on click call sortTable(3, me)", class="u-pointer"),
+                    h.th("Compiles"; _="on click call sortTable(4, me)", class="u-pointer"),
+                    h.th("Correct"; _="on click call sortTable(5, me)", class="u-pointer"),
                 )
             ),
             h.tbody(reduce(vcat, [overview_row[pn] for pn in posterior_names]; init=[])...; id="posterior-tbody")
@@ -297,16 +296,16 @@ const APPDATA = SbAppData(; cache_type=:parallel)
 
     result_section(label, result) = begin
         isnothing(result) && return ""
-        h.div(; style="margin-bottom:0.5rem")(
+        h.div(; class="u-mb-2")(
             h.p(h.strong(label, ": "), status_badge(result.ok ? :done : :failed; label=result.ok ? "PASS" : "FAIL")),
             isnothing(result.error) ? "" : h.p(h.strong("Error: "), h.code(result.error)),
             isnothing(result.stacktrace) ? "" : h.details(
                 h.summary("Full stacktrace"),
-                h.pre(result.stacktrace; style="white-space:pre-wrap;max-height:300px;overflow:auto;font-size:0.8em")
+                h.pre(result.stacktrace; class="pdb-stack-pre")
             ),
             hasproperty(result, :code) && !isnothing(result.code) ? h.details(
                 h.summary("Generated Stan code"),
-                h.pre(result.code; style="white-space:pre-wrap;max-height:400px;overflow:auto;font-size:0.85em");
+                h.pre(result.code; class="pdb-code-pre");
                 open=""
             ) : "",
             hasproperty(result, :stats) && !isnothing(result.stats) ? h.p(
@@ -326,9 +325,9 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         # Pick worst color for border
         all_ok = all(r -> isnothing(r) || r.ok, [t_result, c_result, r_result])
         any_fail = any(r -> !isnothing(r) && !r.ok, [t_result, c_result, r_result])
-        border_color = any_fail ? "var(--pico-del-color)" : all_ok ? "var(--pico-ins-color)" : "var(--pico-muted-border-color)"
-        h.td(; colspan="6", style="padding:0;border:none")(
-            h.div(; style="padding:1rem 1.5rem;background:var(--pico-card-background-color);border-left:4px solid $border_color;margin:0.25rem 0")(
+        status_class = any_fail ? "pdb-detail-card pdb-status-fail" : all_ok ? "pdb-detail-card pdb-status-pass" : "pdb-detail-card"
+        h.td(; colspan="6", class="pdb-detail-cell")(
+            h.div(; class=status_class)(
                 h.h4(pn),
                 result_section["Transpiles", t_result],
                 result_section["Compiles", c_result],
@@ -388,7 +387,34 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         );
         pico_version="2",
         extra_head=(
-            h.style(":root { --pico-font-size: 100%; } .hidden { display: none; } .full-width { max-width: 100%; padding: 0 1rem; }"),
+            h.style("""
+                :root { --pico-font-size: 100%; }
+                .hidden { display: none; }
+                .full-width { max-width: 100%; padding: 0 1rem; }
+                .pdb-search { margin-bottom: 1rem; width: 100%; }
+                .pdb-stack-pre { white-space: pre-wrap; max-height: 300px; overflow: auto; font-size: 0.8em; }
+                .pdb-code-pre { white-space: pre-wrap; max-height: 400px; overflow: auto; font-size: 0.85em; }
+                .pdb-code-large { max-height: 600px; overflow: auto; }
+                .pdb-stack-300 { white-space: pre-wrap; max-height: 300px; overflow: auto; }
+                .pdb-stack-400 { white-space: pre-wrap; max-height: 400px; overflow: auto; }
+                .pdb-detail-cell { padding: 0; border: none; }
+                .pdb-detail-card { padding: 1rem 1.5rem; background: var(--pico-card-background-color); border-left: 4px solid var(--pico-muted-border-color); margin: 0.25rem 0; }
+                .pdb-detail-card.pdb-status-pass { border-left-color: var(--pico-ins-color); }
+                .pdb-detail-card.pdb-status-fail { border-left-color: var(--pico-del-color); }
+                .pdb-snippet-input { font-family: monospace; width: 100%; resize: vertical; margin: 0; }
+                .pdb-snippet-output { max-height: 200px; overflow: auto; cursor: default; }
+                .pdb-snippet-card { border-left: 4px solid var(--pico-muted-border-color); padding: 0.5rem 1rem; margin-bottom: 0.5rem; background: var(--pico-card-background-color); min-width: 0; overflow: hidden; }
+                .pdb-snippet-card.pdb-status-pass { border-left-color: var(--pico-ins-color); }
+                .pdb-snippet-card.pdb-status-fail { border-left-color: var(--pico-del-color); }
+                .pdb-snippet-card.pdb-status-xfail { border-left-color: orange; }
+                .pdb-snippet-header { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+                .pdb-name-input { outline: none; min-width: 3em; }
+                .pdb-icon-btn { margin: 0; padding: 0.1rem 0.4rem; }
+                .pdb-icon-del { color: var(--pico-del-color); }
+                .pdb-snippet-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
+                .pdb-snippet-result-row { padding: 0.1rem 0; font-family: monospace; font-size: 0.85em; }
+                .pdb-stanc-out { font-size: 0.85em; max-height: 200px; overflow: auto; }
+            """),
             h.link(rel="stylesheet", href="https://cdn.jsdelivr.net/npm/prismjs@1/themes/prism-tomorrow.min.css"),
             h.script(src="https://cdn.jsdelivr.net/npm/prismjs@1/prism.min.js"),
             h.script(src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-julia.min.js"),
@@ -441,9 +467,9 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         detail_id = "detail-$pn"
         toggle = "on click toggle .hidden on #$detail_id"
         h.tr(
-            h.td(pn; style="cursor:pointer", _=toggle),
-            h.td(dataset; style="cursor:pointer", _=toggle),
-            h.td(model; style="cursor:pointer", _=toggle),
+            h.td(pn; class="u-pointer", _=toggle),
+            h.td(dataset; class="u-pointer", _=toggle),
+            h.td(model; class="u-pointer", _=toggle),
             status_cell_clickable(t_cached, t_ok, "/check_transpile/$pn", detail_id),
             status_cell_clickable(c_cached, c_ok, "/check_compile/$pn", detail_id),
             status_cell_clickable(r_cached, r_ok, "/check_correct/$pn", detail_id);
@@ -613,17 +639,17 @@ const APPDATA = SbAppData(; cache_type=:parallel)
     sandbox_output(name, result) = h.div(; id="sandbox-output")(
         if result.ok
             h.div(
-                h.p(h.strong("Transpilation: "), h.span("PASS"; style="color:green;font-weight:bold")),
-                h.pre(h.code(result.code; class="language-stan"); style="max-height:600px;overflow:auto"),
+                h.p(h.strong("Transpilation: "), h.span("PASS"; class="u-text-success u-text-bold")),
+                h.pre(h.code(result.code; class="language-stan"); class="pdb-code-large"),
             )
         else
             e.div(
-                h.p(h.strong("Transpilation: "), h.span("FAIL"; style="color:red;font-weight:bold")),
+                h.p(h.strong("Transpilation: "), h.span("FAIL"; class="u-text-error u-text-bold")),
                 h.p(h.strong("Error: "), h.code(result.error)),
-                isnothing(result.stacktrace) ? "" : h.pre(result.stacktrace; style="white-space:pre-wrap;max-height:300px;overflow:auto"),
+                isnothing(result.stacktrace) ? "" : h.pre(result.stacktrace; class="pdb-stack-300"),
                 hasproperty(result, :full_stacktrace) && !isnothing(result.full_stacktrace) ? h.details(
                     h.summary("Full stacktrace (internal)"),
-                    h.pre(result.full_stacktrace; style="white-space:pre-wrap;max-height:400px;overflow:auto"),
+                    h.pre(result.full_stacktrace; class="pdb-stack-400"),
                 ) : "",
             )
         end,
@@ -635,13 +661,13 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         name == "" ? "" : h.input(; name="name", type="hidden", value=name),
         standalone ? h.input(; name="standalone", type="hidden", value="1") : "",
         h.textarea(code; name="code", rows="15",
-            style="font-family:monospace;width:100%;resize:vertical;margin:0",
+            class="pdb-snippet-input",
             _="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .snippet-editor add .hidden to editor remove .hidden from previous <pre/> from editor"),
     )
 
     snippet_code_block(name, code, card_id; standalone=false) = h.div(
         h.pre(h.code(code; class="language-julia");
-            style="max-height:200px;overflow:auto;cursor:default",
+            class="pdb-snippet-output",
             title="Ctrl+click to edit",
             _="on click[ctrlKey or shiftKey] halt the event set editor to the next .snippet-editor add .hidden to me remove .hidden from editor focus() the first <textarea/> in editor"),
         h.div(; class="hidden snippet-editor")(
@@ -658,20 +684,25 @@ const APPDATA = SbAppData(; cache_type=:parallel)
     end
     sandbox_read_stanc(name) = sandbox_read_sidecar(name, "stanc")
     sandbox_read_status(name) = sandbox_read_sidecar(name, "status")
+    sandbox_read_stan(name) = sandbox_read_sidecar(name, "stan")
+
 
     stanc_badge(name) = begin
         sc = sandbox_read_stanc(name)
         isnothing(sc) && return ""
-        sc == "OK" ? h.span("stanc ✓"; style="color:green;font-size:0.8em", title="Stan compiler (stanc) accepted the generated code") :
-            h.span("stanc ✗"; style="color:red;font-size:0.8em", title="Stan compiler (stanc) rejected the generated code — see error below")
+        sc == "OK" ?
+            h.span("stanc ✓"; class="htmxo-gallery-card-status is-ok",
+                title="Stan compiler (stanc) accepted the generated code") :
+            h.span("stanc ✗"; class="htmxo-gallery-card-status is-error",
+                title="Stan compiler (stanc) rejected the generated code — see error below")
     end
 
     stanc_error_block(name) = begin
         sc = sandbox_read_stanc(name)
         (isnothing(sc) || sc == "OK") && return ""
-        h.div(; style="margin:0.4rem 0")(
-            h.div("stanc rejected the generated Stan code:"; style="color:red;font-size:0.85em;font-weight:bold;margin-bottom:0.2rem"),
-            h.pre(sc; style="white-space:pre-wrap;max-height:200px;overflow:auto;font-size:0.85em;margin:0;padding:0.3rem 0.5rem;border-left:2px solid red;background:var(--pico-code-background-color,#f6f6f6)"),
+        h.div(class="htmxo-gallery-card-error")(
+            h.strong("stanc rejected the generated Stan code:"),
+            h.pre(h.code(sc); class="htmxo-gallery-card-code"),
         )
     end
 
@@ -679,32 +710,33 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         result = sandbox_result(code)
         write(joinpath(sandbox_path, name * ".jl.status"), result.ok ? "PASS" : result.error)
         if result.ok
+            write(joinpath(sandbox_path, name * ".jl.stan"), result.code)
             sc = stanc_check(result.code)
             write(joinpath(sandbox_path, name * ".jl.stanc"), sc.ok ? "OK" : sc.output)
         end
         should_fail = sandbox_should_fail(name)
-        border_color = result.ok ? "var(--pico-ins-color)" :
-            should_fail ? "orange" : "var(--pico-del-color)"
+        status_class = result.ok ? "pdb-snippet-card pdb-status-pass" :
+            should_fail ? "pdb-snippet-card pdb-status-xfail" : "pdb-snippet-card pdb-status-fail"
         card_id = "snippet-$name"
         refresh_url = standalone ? __self__/"sandbox_view/$name" : __self__/"sandbox_refresh/$name"
-        status_badge = result.ok ? h.span("PASS"; style="color:green") :
-            should_fail ? h.span("XFAIL"; style="color:orange") :
-            h.span("FAIL"; style="color:red")
+        status_badge = result.ok ? h.span("PASS"; class="u-text-success") :
+            should_fail ? h.span("XFAIL"; class="u-text-warning") :
+            h.span("FAIL"; class="u-text-error")
         expect_label = should_fail ? "xfail" : "should pass"
-        h.div(; id=card_id, style="border-left:4px solid $border_color;padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden")(
-            h.div(; style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap")(
-                h.strong(name; contenteditable="true", style="outline:none;min-width:3em",
+        h.div(; id=card_id, class=status_class)(
+            h.div(; class="pdb-snippet-header")(
+                h.strong(name; contenteditable="true", class="pdb-name-input",
                     _="on blur if my textContent.trim() is not '$name' fetch /sandbox_rename/$name?to=\${my.textContent.trim()} then put the result into #$card_id.outerHTML"),
                 status_badge, stanc_badge(name),
-                h.button("↻"; type="button", style="margin:0;padding:0.1rem 0.4rem",
+                h.button("↻"; type="button", class="pdb-icon-btn",
                     hx_get=refresh_url, hx_target="#$card_id", hx_swap="outerHTML"),
-                h.button(expect_label; type="button", style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em",
+                h.button(expect_label; type="button", class="pdb-icon-btn u-text-xs",
                     hx_get=__self__/"sandbox_toggle_expect/$name", hx_target="#$card_id", hx_swap="outerHTML"),
-                h.button("✕"; type="button", style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)",
+                h.button("✕"; type="button", class="pdb-icon-btn pdb-icon-del",
                     hx_delete=__self__/"sandbox_delete/$name", hx_target="#$card_id", hx_swap="outerHTML",
                     hx_confirm="Delete snippet '$name'?"),
-                standalone ? "" : h.a("⧉"; href=__self__/"sandbox_view/$name", target="_blank", style="margin:0;padding:0.1rem 0.4rem;text-decoration:none"),
-                h.a("macro"; href=__self__/"sandbox_macroexpand/$name", target="_blank", style="margin:0;padding:0.1rem 0.4rem;text-decoration:none", title="Show macroexpanded code"),
+                standalone ? "" : h.a("⧉"; href=__self__/"sandbox_view/$name", target="_blank", class="pdb-icon-btn u-link-plain"),
+                h.a("macro"; href=__self__/"sandbox_macroexpand/$name", target="_blank", class="pdb-icon-btn u-link-plain", title="Show macroexpanded code"),
             ),
             snippet_code_block(name, code, card_id; standalone),
             stanc_error_block(name),
@@ -746,33 +778,33 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         card_id = "snippet-$name"
         status = sandbox_read_status(name)
         should_fail = sandbox_should_fail(name)
-        border_color = isnothing(status) ? "gray" :
-            status == "PASS" ? "var(--pico-ins-color)" :
-            should_fail ? "orange" : "var(--pico-del-color)"
+        status_class = isnothing(status) ? "pdb-snippet-card" :
+            status == "PASS" ? "pdb-snippet-card pdb-status-pass" :
+            should_fail ? "pdb-snippet-card pdb-status-xfail" : "pdb-snippet-card pdb-status-fail"
         status_badge = isnothing(status) ? "" :
-            status == "PASS" ? h.span("PASS"; style="color:green") :
-            should_fail ? h.span("XFAIL"; style="color:orange") :
-            h.span("FAIL"; style="color:red", title=status)
+            status == "PASS" ? h.span("PASS"; class="u-text-success") :
+            should_fail ? h.span("XFAIL"; class="u-text-warning") :
+            h.span("FAIL"; class="u-text-error", title=status)
         expect_label = should_fail ? "xfail" : "should pass"
-        h.div(; id=card_id, style="border-left:4px solid $border_color;padding:0.5rem 1rem;margin-bottom:0.5rem;background:var(--pico-card-background-color);min-width:0;overflow:hidden")(
-            h.div(; style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap")(
+        h.div(; id=card_id, class=status_class)(
+            h.div(; class="pdb-snippet-header")(
                 h.strong(name),
                 status_badge, stanc_badge(name),
-                h.button("↻"; type="button", style="margin:0;padding:0.1rem 0.4rem",
+                h.button("↻"; type="button", class="pdb-icon-btn",
                     hx_get=__self__/"sandbox_refresh/$name", hx_target="#$card_id", hx_swap="outerHTML"),
-                h.button(expect_label; type="button", style="margin:0;padding:0.1rem 0.4rem;font-size:0.8em",
+                h.button(expect_label; type="button", class="pdb-icon-btn u-text-xs",
                     hx_get=__self__/"sandbox_toggle_expect/$name", hx_target="#$card_id", hx_swap="outerHTML"),
-                h.button("✕"; type="button", style="margin:0;padding:0.1rem 0.4rem;color:var(--pico-del-color)",
+                h.button("✕"; type="button", class="pdb-icon-btn pdb-icon-del",
                     hx_delete=__self__/"sandbox_delete/$name", hx_target="#$card_id", hx_swap="outerHTML",
                     hx_confirm="Delete snippet '$name'?"),
-                h.a("⧉"; href=__self__/"sandbox_view/$name", target="_blank", style="margin:0;padding:0.1rem 0.4rem;text-decoration:none"),
+                h.a("⧉"; href=__self__/"sandbox_view/$name", target="_blank", class="pdb-icon-btn u-link-plain"),
             ),
             snippet_code_block(name, code, card_id),
             stanc_error_block(name),
         )
     end
 
-    snippet_list() = h.div(; id="snippet-list", style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem")(
+    snippet_list() = h.div(; id="snippet-list", class="pdb-snippet-grid")(
         [snippet_card_lazy(name, code) for (name, code) in sort(sandbox_snippets(), by=p -> (sandbox_sort_key(first(p)), first(p)))]...
     )
 
@@ -786,52 +818,46 @@ end"""
     # `HTMXObjects.gallery_grid`. Same files as `/sandbox` but no editor /
     # CRUD; this is what the docs `record_gallery` flow ships as static
     # recordings.
-    sandbox_gallery_card(item) = let code = item.code_string
-        status = sandbox_read_status(item.id)
-        ok_pass = status == "PASS"
-        h.article(; class="htmxo-gallery-card", id=item.id,
-                    style="margin:0; padding:0.5rem; min-width:0; overflow:hidden;")(
-            h.header(; class="htmxo-gallery-card-header",
-                       style="padding:0 0 0.25rem; margin:0; display:flex; align-items:baseline; gap:0.5rem; flex-wrap:wrap;")(
-                h.a(item.title; class="htmxo-gallery-card-title",
-                    href=__self__/"sandbox_view/$(item.id)", target="_blank",
-                    style="font-weight:bold; font-size:0.9em;"),
-                isnothing(status) ?
-                    h.span("?"; style="color:gray;font-size:0.75em") :
-                ok_pass ?
-                    h.span("PASS"; style="color:green;font-size:0.75em;font-weight:bold") :
-                    h.span("FAIL"; style="color:red;font-size:0.75em;font-weight:bold"),
+    sandbox_gallery_card(item) = safely(; obj=__self__, req=__req__) do
+        code        = item.code_string
+        status      = sandbox_read_status(item.id)
+        ok_pass     = status == "PASS"
+        status_class = isnothing(status) ? "is-unknown" :
+                       ok_pass ? "is-ok" : "is-error"
+        status_text = isnothing(status) ? "?" :
+                      ok_pass ? "PASS" : "FAIL"
+        # Stan source is shown only when cached (`.jl.stan` written by
+        # `snippet_card` on editor view, or by the recording flow).
+        # Eval-into-`Main` is too expensive + state-polluting to run
+        # 132× on every gallery render.
+        stan_src = sandbox_read_stan(item.id)
+        h.article(; class="htmxo-gallery-card", id=item.id)(
+            h.h4(; class="htmxo-gallery-card-title")(
+                h.a(item.title; href=__self__/"sandbox_view/$(item.id)", target="_blank"),
+                h.span(status_text; class="htmxo-gallery-card-status $status_class"),
                 stanc_badge(item.id),
             ),
             isempty(item.description) ? h.span() :
-                h.p(item.description; class="htmxo-gallery-card-description",
-                    style="font-size:0.8em;color:var(--pico-muted-color);margin:0 0 0.25rem;"),
-            h.details(; class="htmxo-gallery-card-code")(
-                h.summary("Julia"; style="font-size:0.8em;"),
-                h.pre(h.code(code; class="language-julia");
-                      style="background:var(--pico-code-background-color); padding:0.5rem; border-radius:0.25rem; overflow-x:auto; font-size:0.75em; max-height:200px;"),
+                h.p(item.description; class="htmxo-gallery-card-description"),
+            h.h5("SLIC source"; class="htmxo-gallery-card-subheading"),
+            h.pre(h.code(code; class="language-julia"); class="htmxo-gallery-card-code"),
+            isnothing(stan_src) ? h.span() : h.div(
+                h.h5("Generated Stan"; class="htmxo-gallery-card-subheading"),
+                h.pre(h.code(stan_src; class="language-stan"); class="htmxo-gallery-card-code"),
             ),
             (!isnothing(status) && !ok_pass) ?
-                h.div(; style="font-size:0.8em;color:var(--pico-del-color);margin-top:0.25rem")(
-                    h.code(strip(status))) : h.span(),
+                h.p(; class="htmxo-gallery-card-error")(h.code(strip(status))) : h.span(),
             stanc_error_block(item.id),
         )
     end
 
     @get gallery = htmx(
-        h.main(; class="container-fluid", style="padding:1rem 2rem;")(
-            h.h2("StanBlocks Sandbox Gallery"),
-            h.p("Read-only view of ", h.code("web/sandbox/"),
-                " — same snippets the ", h.a("editor"; href=__self__/"sandbox"),
-                " serves, rendered as a flat gallery grid for the docs deploy."),
+        h.main(; class="container-fluid")(
             gallery_grid(_sandbox_gallery.items;
                 section_titles=_sandbox_gallery.section_titles,
-                card_renderer=sandbox_gallery_card, columns=2),
+                card_renderer=sandbox_gallery_card),
         );
-        extra_head=(h.script(; src="https://cdn.jsdelivr.net/npm/prismjs@1/prism.min.js"),
-                    h.script(; src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-julia.min.js"),
-                    h.script(; src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-stan.min.js"),
-                    h.link(; rel="stylesheet", href="https://cdn.jsdelivr.net/npm/prismjs@1/themes/prism-tomorrow.min.css")),
+        extra_head=(htmxo_gallery_styles(), htmxo_syntax_head()...),
     )
 
     # `/record_gallery` — drive the AppData IP `record_gallery` to dump
@@ -875,15 +901,15 @@ end"""
     @get sandbox = h.div(
         h.style("#content { max-width: 100%; } main.container { max-width: 100%; padding: 0 1rem; }"),
         h.h2("SLIC Sandbox"),
-        h.div(; style="display:flex;align-items:center;gap:1rem")(
-            h.h3("Saved Snippets"; style="margin:0"),
-            h.button("Compile Failures"; type="button", style="padding:0.2rem 0.6rem",
+        h.div(; class="u-flex-wide")(
+            h.h3("Saved Snippets"; class="u-m-0"),
+            h.button("Compile Failures"; type="button", class="u-btn-xs",
                 hx_get=__self__/"sandbox_compile_failures", hx_target="#compile-all-output", hx_swap="innerHTML"),
-            h.button("Spot Check (5)"; type="button", style="padding:0.2rem 0.6rem",
+            h.button("Spot Check (5)"; type="button", class="u-btn-xs",
                 hx_get=__self__/"sandbox_spot_check", hx_target="#compile-all-output", hx_swap="innerHTML"),
-            h.button("Compile All"; type="button", style="padding:0.2rem 0.6rem",
+            h.button("Compile All"; type="button", class="u-btn-xs",
                 hx_get=__self__/"sandbox_compile_all", hx_target="#compile-all-output", hx_swap="innerHTML"),
-            h.button("Verify stanc"; type="button", style="padding:0.2rem 0.6rem",
+            h.button("Verify stanc"; type="button", class="u-btn-xs",
                 hx_get=__self__/"sandbox_stanc_all", hx_target="#compile-all-output", hx_swap="innerHTML"),
         ),
         snippet_list(),
@@ -962,14 +988,14 @@ end"""
         h.div(
             h.p(
                 h.strong("$(n_pass)/$(length(results)) passed"),
-                n_fail > 0 ? h.span(" ($n_fail failed)"; style="color:red") : "",
-                h.span(" in $(round(total_time; digits=2))s"; style="color:gray"),
+                n_fail > 0 ? h.span(" ($n_fail failed)"; class="u-text-error") : "",
+                h.span(" in $(round(total_time; digits=2))s"; class="u-text-muted"),
             ),
-            [h.div(; style="padding:0.1rem 0;font-family:monospace;font-size:0.85em")(
-                r.ok ? h.span("PASS"; style="color:green") : h.span("FAIL"; style="color:red"),
+            [h.div(; class="pdb-snippet-result-row")(
+                r.ok ? h.span("PASS"; class="u-text-success") : h.span("FAIL"; class="u-text-error"),
                 " ", r.name,
-                h.span(" $(round(r.time*1000; digits=0))ms"; style="color:gray"),
-                r.ok ? "" : h.span(" - ", r.error; style="color:red;font-size:0.9em"),
+                h.span(" $(round(r.time*1000; digits=0))ms"; class="u-text-muted"),
+                r.ok ? "" : h.span(" - ", r.error; class="u-text-error u-text-sm"),
             ) for r in results]...,
         )
     end
@@ -999,15 +1025,15 @@ end"""
         code = read(joinpath(sandbox_path, name * ".jl"), String)
         result = sandbox_result(code)
         if !result.ok
-            h.div(h.span("Cannot check: transpilation failed"; style="color:red"))
+            h.div(h.span("Cannot check: transpilation failed"; class="u-text-error"))
         else
             sc = stanc_check(result.code)
             if sc.ok
-                h.div(h.span("stanc: OK"; style="color:green"),
-                    isempty(sc.output) ? "" : h.pre(sc.output; style="font-size:0.85em;max-height:200px;overflow:auto"))
+                h.div(h.span("stanc: OK"; class="u-text-success"),
+                    isempty(sc.output) ? "" : h.pre(sc.output; class="pdb-stanc-out"))
             else
-                h.div(h.span("stanc: FAIL"; style="color:red"),
-                    h.pre(sc.output; style="font-size:0.85em;max-height:200px;overflow:auto;white-space:pre-wrap"))
+                h.div(h.span("stanc: FAIL"; class="u-text-error"),
+                    h.pre(sc.output; class="pdb-stanc-out u-pre-wrap"))
             end
         end
     end
@@ -1029,14 +1055,14 @@ end"""
         h.div(
             h.p(
                 h.strong("stanc: $verified verified"),
-                failed > 0 ? h.span(", $failed failed"; style="color:red") : "",
-                skipped > 0 ? h.span(", $skipped skipped"; style="color:gray") : "",
+                failed > 0 ? h.span(", $failed failed"; class="u-text-error") : "",
+                skipped > 0 ? h.span(", $skipped skipped"; class="u-text-muted") : "",
             ),
-            [h.div(; style="padding:0.1rem 0;font-family:monospace;font-size:0.85em")(
-                isnothing(r.ok) ? h.span("SKIP"; style="color:gray") :
-                r.ok ? h.span("OK"; style="color:green") : h.span("FAIL"; style="color:red"),
+            [h.div(; class="pdb-snippet-result-row")(
+                isnothing(r.ok) ? h.span("SKIP"; class="u-text-muted") :
+                r.ok ? h.span("OK"; class="u-text-success") : h.span("FAIL"; class="u-text-error"),
                 " ", r.name,
-                (!isnothing(r.ok) && !r.ok) ? h.span(" - ", r.output; style="color:red;font-size:0.9em") : "",
+                (!isnothing(r.ok) && !r.ok) ? h.span(" - ", r.output; class="u-text-error u-text-sm") : "",
             ) for r in results]...,
         )
     end
