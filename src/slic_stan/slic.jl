@@ -1728,6 +1728,8 @@ line_limit(io) = 100
 
 _autoprint_buf(io::StanIO) = (buf = IOBuffer(); (remake(nobreak(io), buf), buf))
 _autoprint_buf(io) = (buf = IOBuffer(); (buf, buf))
+_is_join(::Join) = true
+_is_join(_) = false
 autoprint(io, args...) = if maybreak(io)
     bufio, buf = _autoprint_buf(io)
     print(bufio, args...)
@@ -1735,7 +1737,7 @@ autoprint(io, args...) = if maybreak(io)
     if length(rv) <= line_limit(io)
         print(io, rv)
     else
-        idx = findfirst(x->isa(x, Join), args)
+        idx = findfirst(_is_join, args)
         iio = indent(io)
         print(io, args[1:idx-1]...)
         print(io, "\n", current_indent(iio))
