@@ -455,6 +455,10 @@ begin
     end
 
     deffun(x::LineNumberNode; kwargs...) = x
+    # Macrocall args may start with a LineNumberNode carrying the call site;
+    # otherwise the surrounding source is propagated.
+    _macrocall_source(arg::LineNumberNode, source) = arg
+    _macrocall_source(_, source) = source
     _is_inline_macrocall(x, sym::Symbol) = Meta.isexpr(x, :macrocall) && (
         x.args[1] === sym ||
         (Meta.isexpr(x.args[1], :.) && length(x.args[1].args) == 2 &&
@@ -507,7 +511,7 @@ begin
         end
         Expr(:block, deffun.(x.args; docstring, source, is_lhs, is_lpxf, is_inline)...)
     elseif x.head == :macrocall && (_is_lpxf_macrocall(x) || _is_lhs_macrocall(x) || _is_at_inline_macrocall(x))
-        inner_source = x.args[2] isa LineNumberNode ? x.args[2] : source
+        inner_source = _macrocall_source(x.args[2], source)
         new_is_lhs    = is_lhs    || _is_lhs_macrocall(x)
         new_is_lpxf   = is_lpxf   || _is_lpxf_macrocall(x)
         new_is_inline = is_inline || _is_at_inline_macrocall(x)
