@@ -441,25 +441,26 @@ forward!(x::Symbol; info) = begin
     mod = get_module(info)
     if isdefined(mod, x)
         Mx = getproperty(mod, x)
-        isa(Mx, Function)  && return forward!(Mx; info)
-        isa(Mx, SlicModel) && return Mx
-        # `@usertype`-declared types live in the user's module as abstract
-        # types `<: types.anything`. Treat them like SLIC type tokens
-        # (which is how `vector` / `real` already flow): wrap as a
-        # `tokenof` StanExpr so the constructor call dispatches via
-        # `tracetype(::CanonicalExpr{<:StanExpr2{<:tokenof{<:usertype}}})`.
-        isa(Mx, Type) && Mx <: types.anything && return forward!(Mx; info)
-        error("Found $x in $(mod), but is of type $(typeof(Mx))!")
+        rv = _forward_module_value(Mx, info)
+        rv === nothing && error("Found $x in $(mod), but is of type $(typeof(Mx))!")
+        return rv
     end
     if mod !== Main && isdefined(Main, x)
         Mx = getproperty(Main, x)
-        isa(Mx, Function)  && return forward!(Mx; info)
-        isa(Mx, SlicModel) && return Mx
-        isa(Mx, Type) && Mx <: types.anything && return forward!(Mx; info)
-        error("Found $x in Main, but is of type $(typeof(Mx))!")
+        rv = _forward_module_value(Mx, info)
+        rv === nothing && error("Found $x in Main, but is of type $(typeof(Mx))!")
+        return rv
     end
     error("Could not find $(x) in model, builtin, $(mod) or Main!")
 end
+# Resolve a module-level binding to a SLIC value. `@usertype`-declared types
+# live in the user's module as abstract types `<: types.anything`; treat
+# them like SLIC type tokens (same path as `vector` / `real`) so the
+# constructor call dispatches via the usertype tracetype.
+_forward_module_value(v::Function, info) = forward!(v; info)
+_forward_module_value(v::SlicModel, info) = v
+_forward_module_value(v::Type{<:types.anything}, info) = forward!(v; info)
+_forward_module_value(_, _) = nothing
 forward!(x::Function; info) = stan_expr(x)
 # `macroexpand` (used by `slic_macroexpand`) hygienically resolves all free
 # names — including model-scope SLIC variables and SLIC builtins like
@@ -481,17 +482,19 @@ _try_symbol_lookup(x::Symbol; info) = begin
     _is_builtin_name(x) && return getproperty(builtin, x)
     mod = get_module(info)
     if isdefined(mod, x)
-        v = getproperty(mod, x)
-        (isa(v, Function) || isa(v, SlicModel)) && return v
-        (isa(v, Type) && v <: types.anything) && return v
+        rv = _resolve_module_value(getproperty(mod, x))
+        rv === nothing || return rv
     end
     if mod !== Main && isdefined(Main, x)
-        v = getproperty(Main, x)
-        (isa(v, Function) || isa(v, SlicModel)) && return v
-        (isa(v, Type) && v <: types.anything) && return v
+        rv = _resolve_module_value(getproperty(Main, x))
+        rv === nothing || return rv
     end
     nothing
 end
+_resolve_module_value(v::Function) = v
+_resolve_module_value(v::SlicModel) = v
+_resolve_module_value(v::Type{<:types.anything}) = v
+_resolve_module_value(_) = nothing
 forward!(x::Colon; info) = x
 forward!(x::StanExpr{Symbol}; info) = x
 forward!(x::StanExpr; info) = x
