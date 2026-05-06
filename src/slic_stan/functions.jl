@@ -244,6 +244,12 @@ begin
     else
         xtyped(x, default)
     end
+    _is_symbol(::Symbol) = true
+    _is_symbol(_) = false
+    _is_expr(::Expr) = true
+    _is_expr(_) = false
+    _is_quotenode(::QuoteNode) = true
+    _is_quotenode(_) = false
     ensure_xpair(x, default) = xiscall(x, :(=>)) ? x : xpair(x, default)
     ensure_xvect(x) = Meta.isexpr(x, :vect) ? x : xvect(x)
     ensure_xreturn(x::Expr) = if x.head in (:block, :macrocall)
@@ -293,7 +299,7 @@ begin
     end
     # Type-token positional args: bare `T` or `T[dims...]` where `T` is a Stan
     # type. Dispatched via `<:StanExpr2{<:types.tokenof{<:T_t}, S}`.
-    _is_type_token_sym(x) = isa(x, Symbol) && isdefined(types, x) && getproperty(types, x) isa Type{<:types.anything}
+    _is_type_token_sym(x) = _is_symbol(x) && isdefined(types, x) && getproperty(types, x) isa Type{<:types.anything}
     _is_type_token(x) = _is_type_token_sym(x) ||
         (Meta.isexpr(x, :ref) && length(x.args) >= 1 && _is_type_token_sym(x.args[1]))
     _type_token_ref(x::Symbol) = xref(x)
@@ -332,7 +338,7 @@ begin
         dim_names = OrderedSet()
         for arg_type in arg_types
             for dim_name in arg_type.args[2:end]
-                isa(dim_name, Symbol) || continue
+                _is_symbol(dim_name) || continue
                 push!(dim_names, dim_name)
             end
         end
@@ -462,7 +468,7 @@ begin
     _is_inline_macrocall(x, sym::Symbol) = Meta.isexpr(x, :macrocall) && (
         x.args[1] === sym ||
         (Meta.isexpr(x.args[1], :.) && length(x.args[1].args) == 2 &&
-         x.args[1].args[2] isa QuoteNode && x.args[1].args[2].value === sym)
+         _is_quotenode(x.args[1].args[2]) && x.args[1].args[2].value === sym)
     )
     _is_lpxf_macrocall(x) = _is_inline_macrocall(x, Symbol("@lpxf"))
     _is_lhs_macrocall(x) = _is_inline_macrocall(x, Symbol("@lhs"))
@@ -489,7 +495,7 @@ begin
             "@deffun: inline @$kind annotation must precede a function call or definition, got $inner"
         )
         f = fcall.args[1]
-        f isa Symbol || error(
+        _is_symbol(f) || error(
             "@deffun: inline @$kind annotation requires a bare-Symbol function name, got `$f`"
         )
         f
@@ -498,7 +504,7 @@ begin
     deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, _shim_kwarg_specs=nothing) = if x.head == :block
         seen_lpxf_bases = Set{Symbol}()
         for arg in x.args
-            isa(arg, Expr) || continue
+            _is_expr(arg) || continue
             inner, _, arg_is_lpxf, _ = _peel_macros(arg)
             arg_is_lpxf || continue
             f = _lpxf_inline_fname(inner)
@@ -539,7 +545,7 @@ begin
         # to `kwcall_f` via `func_name` since the function arg is
         # `always_inline`.
         if !isempty(all_args) && Meta.isexpr(all_args[1], :parameters)
-            isa(f, Symbol) || error("@deffun: kwargs require a bare-Symbol fname, got `$f`.")
+            _is_symbol(f) || error("@deffun: kwargs require a bare-Symbol fname, got `$f`.")
             ismissing(body) && error("@deffun: kwargs require a body.")
             params = all_args[1]
             positional = all_args[2:end]
@@ -603,7 +609,7 @@ begin
             first_default = minimum(default_idxs)
             all(i -> Meta.isexpr(all_args[i], :kw), first_default:length(all_args)) ||
                 error("@deffun: default positional args must be trailing — got `$fcall`.")
-            isa(f, Symbol) || error("@deffun: defaults require a bare-Symbol fname, got `$f`.")
+            _is_symbol(f) || error("@deffun: defaults require a bare-Symbol fname, got `$f`.")
             n = length(all_args)
             stripped = [Meta.isexpr(a, :kw) ? a.args[1] : a for a in all_args]
             arg_names_only = [_name_of(s) for s in stripped]
@@ -638,10 +644,10 @@ begin
         # Trailing `!` in the function name is a synonym for `@inline`.
         # The Julia mutation-convention name is preserved verbatim — the only
         # actionable thing for SLIC is "inline this UDF at every call site."
-        f_via_bang = isa(f, Symbol) && endswith(string(f), "!")
+        f_via_bang = _is_symbol(f) && endswith(string(f), "!")
         f_via_bang && (is_inline = true)
-        f_is_lpxf_named = isa(f, Symbol) && endswith(string(f), r"_lp[md]f")
-        (f_is_lpxf_named || (isa(f, Symbol) && endswith(string(f), r"_l?c?cdf"))) && (rv = :real)
+        f_is_lpxf_named = _is_symbol(f) && endswith(string(f), r"_lp[md]f")
+        (f_is_lpxf_named || (_is_symbol(f) && endswith(string(f), r"_l?c?cdf"))) && (rv = :real)
         if (is_lhs || is_lpxf) && !f_is_lpxf_named
             error(
                 "@deffun: @lhs/@lpxf annotation requires a `_lpdf`/`_lpmf`-suffixed function name, got `$f`"
@@ -690,7 +696,7 @@ begin
         fun_checks = String[]
         for (arg_name, arg_type, tok) in zip(arg_names, arg_types, is_token)
             for (i, dim_name) in enumerate(arg_type.args[2:end])
-                isa(dim_name, Symbol) || continue
+                _is_symbol(dim_name) || continue
                 dim_name == :(_) && continue
                 dim_name in arg_names && continue
                 if haskey(fun_sizes, dim_name)
@@ -764,7 +770,7 @@ begin
         end
 
         xexpr = :(x::$CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
-        isa(f, Symbol) && push!(stmts, :(function $f end))
+        _is_symbol(f) && push!(stmts, :(function $f end))
         # Capture + inject the user function's defining module into
         # `info[:__mod__]` so nested `forward!`s inside the body (e.g.
         # `rv_expr = forward_return!(body; info)` when `rv == :anything`)
@@ -816,7 +822,7 @@ begin
                 push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, source, capture_mod, anon_deconstruct, inject_mod, stan_fundef))))
             end
         end
-        isa(f, Symbol) || return Expr(:block, stmts...)
+        _is_symbol(f) || return Expr(:block, stmts...)
         if is_lhs
             isempty(arg_types) && error(
                 "@deffun: @lhs requires an explicit observation argument so the base ",
