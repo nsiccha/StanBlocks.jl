@@ -712,7 +712,9 @@ _is_getindex_expr(::CanonicalExprV{:getindex}) = true
 _is_getindex_expr(_) = false
 _is_canonical_expr(::CanonicalExpr) = true
 _is_canonical_expr(_) = false
-_is_ntup_stan_expr(::StanExpr2{<:types.ntup}) = true
+# `_is_ntup_stan_expr(::StanExpr2{<:types.ntup})` is defined after
+# `include("functions.jl")` for the same load-order reason as
+# `_forward_module_value(::Type{<:types.anything}, _)` above.
 _is_ntup_stan_expr(_) = false
 _is_assign_canonical(::CanonicalExprV{:(=)}) = true
 _is_assign_canonical(_) = false
@@ -1146,6 +1148,7 @@ include("functions.jl")
 # resolution of the type parameter requires `types` to already exist.
 _forward_module_value(v::Type{<:types.anything}, info) = forward!(v; info)
 _resolve_module_value(v::Type{<:types.anything}) = v
+_is_ntup_stan_expr(::StanExpr2{<:types.ntup}) = true
 
 # --- Closures (`(x) -> body`) ---
 # Defined here, after `functions.jl`, because the dispatch and constructor
