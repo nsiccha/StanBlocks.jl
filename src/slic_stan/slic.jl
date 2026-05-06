@@ -878,20 +878,19 @@ forward!(x::QuoteExpr; info) = x.args[1]
 forward!(x::StringExpr; info) = join(map(stan_code, forward!(x.args; info)))
 
 deanon_size(s, x) = s
-deanon_size(s::StanExpr, x::CanonicalExpr) = begin
-    e = expr(s)
-    if isa(e, Symbol)
-        m = match(r"^_arg(\d+)$", string(e))
-        isnothing(m) && return s
-        i = parse(Int, m[1])
-        return i <= length(x.args) ? x.args[i] : s
-    elseif isa(e, CanonicalExpr)
-        new_args = map(a -> deanon_size(a, x), e.args)
-        new_args == e.args && return s
-        return StanExpr(remake(e, new_args...), type(s))
-    end
-    s
+deanon_size(s::StanExpr, x::CanonicalExpr) = _deanon_size_expr(expr(s), s, x)
+_deanon_size_expr(e::Symbol, s, x) = begin
+    m = match(r"^_arg(\d+)$", string(e))
+    isnothing(m) && return s
+    i = parse(Int, m[1])
+    i <= length(x.args) ? x.args[i] : s
 end
+_deanon_size_expr(e::CanonicalExpr, s, x) = begin
+    new_args = map(a -> deanon_size(a, x), e.args)
+    new_args == e.args && return s
+    StanExpr(remake(e, new_args...), type(s))
+end
+_deanon_size_expr(_, s, _) = s
 deanon_type(tt::StanType, x::CanonicalExpr) = begin
     sz = stan_size(tt)
     nsz = map(s -> deanon_size(s, x), sz)
@@ -901,6 +900,13 @@ stan_expr(x::CanonicalExpr) = begin
     tt = deanon_type(tracetype(anon_canonical(x)), x)
     StanExpr(x, remake(tt; qual=maximum(qual, x.args; init=:data), cv=any(cv, x.args) || cv(tt)))
 end
+_check_submodel_arg(arg) = nothing
+_check_submodel_arg(arg::Union{StanExpr,SlicModel}) = error(
+    "SLIC sub-model was passed a regular positional argument `$arg`. ",
+    "Sub-models accept data only via kwargs (e.g. `submodel(;X=X)`); ",
+    "positional args are reserved for quoted body extensions ",
+    "(e.g. `submodel(quote ... end; X=X)`).")
+
 stan_expr(x::CanonicalExpr{<:SlicModel}) = begin
     # Sub-models accept data via kwargs and (optionally) quoted body
     # extensions as positional args. Regular call-style positional args —
@@ -908,14 +914,7 @@ stan_expr(x::CanonicalExpr{<:SlicModel}) = begin
     # are not supported, and would otherwise die in a deep `MethodError`
     # for `model(::SlicModel, ::StanExpr)`.
     for arg in x.args
-        if isa(arg, StanExpr) || isa(arg, SlicModel)
-            error(
-                "SLIC sub-model was passed a regular positional argument `$arg`. ",
-                "Sub-models accept data only via kwargs (e.g. `submodel(;X=X)`); ",
-                "positional args are reserved for quoted body extensions ",
-                "(e.g. `submodel(quote ... end; X=X)`)."
-            )
-        end
+        _check_submodel_arg(arg)
     end
     head(x)(x.args...; x.kwargs...)
 end
