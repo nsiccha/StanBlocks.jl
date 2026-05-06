@@ -1299,21 +1299,22 @@ macro usertype(struct_def)
     # SLIC field type annotations are not real Julia types — strip them so
     # the lowered struct accepts any Julia value at those slots (we only
     # construct via SLIC tracing, which never hits the real constructor).
-    new_body_args = Any[]
-    for stmt in body.args
-        stmt isa LineNumberNode && (push!(new_body_args, stmt); continue)
-        if Meta.isexpr(stmt, :(::)) && stmt.args[1] isa Symbol
-            push!(new_body_args, stmt.args[1])
-        elseif stmt isa Symbol
-            push!(new_body_args, stmt)
-        else
-            error("@usertype $typename: each field must be `name :: type` or `name`, got `\$stmt`.")
-        end
-    end
+    new_body_args = Any[_usertype_field(stmt, typename) for stmt in body.args]
     new_body = Expr(:block, new_body_args...)
     new_sig  = :($typename <: $supertype)
     esc(Expr(:block, Expr(:struct, false, new_sig, new_body), typename))
 end
+
+# `@usertype` field statement → bare field name (or LineNumberNode passed through).
+_usertype_field(stmt::LineNumberNode, _) = stmt
+_usertype_field(stmt::Symbol, _) = stmt
+function _usertype_field(stmt::Expr, typename)
+    Meta.isexpr(stmt, :(::)) && stmt.args[1] isa Symbol ||
+        error("@usertype $typename: each field must be `name :: type` or `name`, got `$stmt`.")
+    stmt.args[1]
+end
+_usertype_field(stmt, typename) =
+    error("@usertype $typename: each field must be `name :: type` or `name`, got `$stmt`.")
 
 # Phase 2-deeper: closure passed directly to a Stan builtin (no SLIC UDF
 # to inline into) gets lifted to a top-level Stan function. The builtin's
