@@ -1288,13 +1288,7 @@ macro usertype(struct_def)
     is_mutable, sig, body = struct_def.args
     is_mutable && error("@usertype: mutable structs not supported.")
 
-    typename, supertype = if sig isa Symbol
-        (sig, :($StanBlocks.stan.types.usertype))
-    elseif Meta.isexpr(sig, :<:) && sig.args[1] isa Symbol
-        (sig.args[1], sig.args[2])
-    else
-        error("@usertype: type signature must be `Foo` or `Foo <: SomeType`, got `\$sig`.")
-    end
+    typename, supertype = _usertype_sig(sig)
 
     # SLIC field type annotations are not real Julia types — strip them so
     # the lowered struct accepts any Julia value at those slots (we only
@@ -1304,6 +1298,17 @@ macro usertype(struct_def)
     new_sig  = :($typename <: $supertype)
     esc(Expr(:block, Expr(:struct, false, new_sig, new_body), typename))
 end
+
+# `@usertype` type signature → (typename, supertype). Default supertype is the
+# generic SLIC `usertype` tag.
+_usertype_sig(sig::Symbol) = (sig, :($StanBlocks.stan.types.usertype))
+function _usertype_sig(sig::Expr)
+    Meta.isexpr(sig, :<:) && sig.args[1] isa Symbol ||
+        error("@usertype: type signature must be `Foo` or `Foo <: SomeType`, got `$sig`.")
+    (sig.args[1], sig.args[2])
+end
+_usertype_sig(sig) =
+    error("@usertype: type signature must be `Foo` or `Foo <: SomeType`, got `$sig`.")
 
 # `@usertype` field statement → bare field name (or LineNumberNode passed through).
 _usertype_field(stmt::LineNumberNode, _) = stmt
