@@ -14,6 +14,9 @@ using Treebars: prepare_progress!, with_prepared_progress, polling_fetchindex, i
 
 # include("test/runtests.jl")
 
+_is_lnn(::LineNumberNode) = true
+_is_lnn(_) = false
+
 pdb() = PosteriorDB.database()
 
 
@@ -484,7 +487,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         exprs = Meta.parseall(code).args
         rv = nothing
         for expr in exprs
-            expr isa LineNumberNode && continue
+            _is_lnn(expr) && continue
             rv = Base.eval(Main, expr)
         end
         m = rv::StanBlocks.stan.SlicModel
@@ -812,7 +815,7 @@ end"""
         exprs = Meta.parseall(code).args
         expanded = String[]
         for expr in exprs
-            expr isa LineNumberNode && continue
+            _is_lnn(expr) && continue
             ex = Base.eval(mod, :(macroexpand($mod, $(QuoteNode(expr)))))
             push!(expanded, sprint(Base.show_unquoted, ex))
         end
