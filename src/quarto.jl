@@ -25,11 +25,12 @@ module Quarto
     else
         Expr(x.head, pretty(x.args)...)
     end
+    _push_pretty!(rv, rvi::Vector) = (append!(rv, rvi); rv)
+    _push_pretty!(rv, rvi) = (push!(rv, rvi); rv)
     pretty(x::Union{Vector,Tuple}) = begin
         rv = []
         for xi in x
-            rvi = pretty(xi)
-            isa(rvi, Vector) ? append!(rv, rvi) : push!(rv, rvi)
+            _push_pretty!(rv, pretty(xi))
         end
         rv
     end
