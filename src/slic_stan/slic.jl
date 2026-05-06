@@ -465,7 +465,9 @@ end
 # constructor call dispatches via the usertype tracetype.
 _forward_module_value(v::Function, info) = forward!(v; info)
 _forward_module_value(v::SlicModel, info) = v
-_forward_module_value(v::Type{<:types.anything}, info) = forward!(v; info)
+# `_forward_module_value(::Type{<:types.anything}, _)` is defined after
+# `include("functions.jl")` (which defines `module types`); placing it
+# here would error at module-load time with `UndefVarError: types`.
 _forward_module_value(_, _) = nothing
 forward!(x::Function; info) = stan_expr(x)
 # `macroexpand` (used by `slic_macroexpand`) hygienically resolves all free
@@ -499,7 +501,7 @@ _try_symbol_lookup(x::Symbol; info) = begin
 end
 _resolve_module_value(v::Function) = v
 _resolve_module_value(v::SlicModel) = v
-_resolve_module_value(v::Type{<:types.anything}) = v
+# Type{<:types.anything} method defined after `include("functions.jl")`.
 _resolve_module_value(_) = nothing
 forward!(x::Colon; info) = x
 forward!(x::StanExpr{Symbol}; info) = x
@@ -608,7 +610,7 @@ _get_inline_pending() = get(task_local_storage(), :_slic_inline_pending, nothing
 # signals the caller to error.
 inline_unwrap_block(body, fname) = [body]
 inline_unwrap_block(body::Expr, fname) = if body.head === :block
-    real = filter(a -> !_is_lnn(a), body.args)
+    real = filter(a -> !(a isa LineNumberNode), body.args)
     isempty(real) && return Any[]
     if Meta.isexpr(real[end], :return)
         real[end] = real[end].args[1]
@@ -706,14 +708,6 @@ _is_inert_expr(::AbstractString) = true
 _is_inert_expr(_) = false
 _is_submodel_info(::SubModel) = true
 _is_submodel_info(_) = false
-_is_symbol(::Symbol) = true
-_is_symbol(_) = false
-_is_expr(::Expr) = true
-_is_expr(_) = false
-_is_lnn(::LineNumberNode) = true
-_is_lnn(_) = false
-_is_quotenode(::QuoteNode) = true
-_is_quotenode(_) = false
 _is_getindex_expr(::CanonicalExprV{:getindex}) = true
 _is_getindex_expr(_) = false
 _is_canonical_expr(::CanonicalExpr) = true
@@ -724,8 +718,6 @@ _is_assign_canonical(::CanonicalExprV{:(=)}) = true
 _is_assign_canonical(_) = false
 _is_block_canonical(::CanonicalExprV{:block}) = true
 _is_block_canonical(_) = false
-_is_abstractstring(::AbstractString) = true
-_is_abstractstring(_) = false
 _check_assignment_rhs(name, ::SlicModel) = error(
     "`$name = <submodel>(...)` is not supported — sub-models can only be embedded via `~`. ",
     "Use `$name ~ <submodel>(...)` instead.")
@@ -798,7 +790,7 @@ end
 forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     decl, rhs_raw = x.args
     name = decl.args[1]
-    _is_symbol(name) || error(
+    name isa Symbol || error(
         "Typed-LHS sampling currently requires a Symbol LHS, got `$name`. ",
         "For more complex LHS shapes, use a bare assignment + sampling pair."
     )
@@ -808,7 +800,7 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     else
         (type_expr,)
     end
-    _is_symbol(ct) || error("Typed-LHS sampling: type center must be a Symbol, got `$ct`")
+    ct isa Symbol || error("Typed-LHS sampling: type center must be a Symbol, got `$ct`")
     ct_resolved = gettype(ct)
     sizes_forwarded = isempty(sizes) ? () : Tuple(forward!(collect(sizes); info))
     base_lhs_type = StanType(ct_resolved, sizes_forwarded)
@@ -872,11 +864,11 @@ forward!(x::DeclExpr; info) = begin
         (type, )
     end
     # @assert isa(type, CanonicalExprV{:getindex})
-    @assert _is_symbol(ct)
+    @assert ct isa Symbol
     ct = gettype(ct)
     t = StanType(ct, forward!.(s; info))
     rv = StanExpr(lhs, t)
-    _is_symbol(lhs) || return StanExpr(expr(forward!(lhs; info)), t)
+    lhs isa Symbol || return StanExpr(expr(forward!(lhs; info)), t)
     info[lhs] = rv 
     stan_expr(remake(x, rv))
 end
@@ -886,7 +878,7 @@ forward!(x::ForExpr; info) = begin
     @assert _is_assign_canonical(head)
     @assert _is_block_canonical(body)
     idx = head.args[1]
-    @assert _is_symbol(idx)
+    @assert idx isa Symbol
     info[idx] = StanExpr(idx, StanType(types.int))
     idx_range = forward!(head.args[2]; info)
     body = forward!(body; info)
@@ -1149,6 +1141,12 @@ end
 
 include("functions.jl")
 
+# Methods that reference `types.anything` (defined inside `functions.jl`'s
+# `module types` block) live here, AFTER the include — module-load-time
+# resolution of the type parameter requires `types` to already exist.
+_forward_module_value(v::Type{<:types.anything}, info) = forward!(v; info)
+_resolve_module_value(v::Type{<:types.anything}) = v
+
 # --- Closures (`(x) -> body`) ---
 # Defined here, after `functions.jl`, because the dispatch and constructor
 # both reference `types.closure` in method signatures / type-parameter
@@ -1177,19 +1175,19 @@ _parse_lambda_lhs(lhs::Expr) = if lhs.head === :tuple
     arg_names = Symbol[]
     vararg = nothing
     for (i, a) in enumerate(lhs.args)
-        if Meta.isexpr(a, :...) && length(a.args) == 1 && _is_symbol(a.args[1])
+        if Meta.isexpr(a, :...) && length(a.args) == 1 && a.args[1] isa Symbol
             i == length(lhs.args) || error(
                 "closure: vararg `$(a.args[1])...` must be the last parameter, got $lhs."
             )
             vararg = a.args[1]
-        elseif _is_symbol(a)
+        elseif a isa Symbol
             push!(arg_names, a)
         else
             error("closure: only bare-Symbol params (and a trailing `args...`) are supported in phase 1, got `$a` in `$lhs`.")
         end
     end
     (arg_names, vararg)
-elseif lhs.head === :(...)  && length(lhs.args) == 1 && _is_symbol(lhs.args[1])
+elseif lhs.head === :(...)  && length(lhs.args) == 1 && lhs.args[1] isa Symbol
     (Symbol[], lhs.args[1])
 else
     error("closure: unsupported lambda LHS `$lhs` (head `$(lhs.head)`). Phase 1 supports `x -> ...`, `(x, y) -> ...`, and `(args...) -> ...`.")
@@ -1205,7 +1203,7 @@ forward!(x::CanonicalExprV{:->,A}; info) where {A} = begin
         "closure: malformed lambda — expected 2 args (lhs, body), got $(length(x.args)): $x."
     )
     lhs, body = x.args
-    _is_expr(body) || error(
+    body isa Expr || error(
         "closure: lambda body must be an Expr (a `:block`), got `$(typeof(body))`. Make sure `canonical(::Expr)` is preserving `:->` args raw."
     )
     arg_names, vararg_name = _parse_lambda_lhs(lhs)
@@ -1323,7 +1321,7 @@ end
 # generic SLIC `usertype` tag.
 _usertype_sig(sig::Symbol) = (sig, :($StanBlocks.stan.types.usertype))
 function _usertype_sig(sig::Expr)
-    Meta.isexpr(sig, :<:) && _is_symbol(sig.args[1]) ||
+    Meta.isexpr(sig, :<:) && sig.args[1] isa Symbol ||
         error("@usertype: type signature must be `Foo` or `Foo <: SomeType`, got `$sig`.")
     (sig.args[1], sig.args[2])
 end
@@ -1334,7 +1332,7 @@ _usertype_sig(sig) =
 _usertype_field(stmt::LineNumberNode, _) = stmt
 _usertype_field(stmt::Symbol, _) = stmt
 function _usertype_field(stmt::Expr, typename)
-    Meta.isexpr(stmt, :(::)) && _is_symbol(stmt.args[1]) ||
+    Meta.isexpr(stmt, :(::)) && stmt.args[1] isa Symbol ||
         error("@usertype $typename: each field must be `name :: type` or `name`, got `$stmt`.")
     stmt.args[1]
 end
@@ -1409,7 +1407,7 @@ _is_reserved_slic_macro(::Any) = false
 _is_reserved_slic_macro(head::Symbol) = head in _SLIC_RESERVED_MACROS
 _is_reserved_slic_macro(head::GlobalRef) = head.name in _SLIC_RESERVED_MACROS
 _is_reserved_slic_macro(head::Expr) = head.head === :. &&
-    length(head.args) == 2 && _is_quotenode(head.args[2]) &&
+    length(head.args) == 2 && head.args[2] isa QuoteNode &&
     head.args[2].value in _SLIC_RESERVED_MACROS
 
 slic_macroexpand(mod::Module, x) = x
@@ -1432,7 +1430,7 @@ end
 _is_reject_or_print(x) = false
 _is_reject_or_print(x::Symbol) = x === :reject || x === :print
 _is_reject_or_print(x::Expr) = x.head === :. && length(x.args) == 2 &&
-    _is_quotenode(x.args[2]) && x.args[2].value in (:reject, :print)
+    x.args[2] isa QuoteNode && x.args[2].value in (:reject, :print)
 
 lower_string_interp(x) = x
 lower_string_interp(x::Expr) = if x.head === :call && length(x.args) >= 2 && _is_reject_or_print(x.args[1])
@@ -1458,21 +1456,21 @@ end
 # `Core.@doc` attaches to the binding independently.)
 _is_doc_macro_head(head) = head == GlobalRef(Core, Symbol("@doc")) ||
     head == Symbol("@doc") ||
-    (_is_expr(head) && head.head === :. && length(head.args) == 2 &&
-        _is_quotenode(head.args[2]) && head.args[2].value === Symbol("@doc"))
+    (head isa Expr && head.head === :. && length(head.args) == 2 &&
+        head.args[2] isa QuoteNode && head.args[2].value === Symbol("@doc"))
 
 extract_leading_docstring(model) = ("", model)
 extract_leading_docstring(model::Expr) = if model.head === :block
-    real_idx = findfirst(a -> !_is_lnn(a), model.args)
+    real_idx = findfirst(a -> !(a isa LineNumberNode), model.args)
     real_idx === nothing && return ("", model)
     real = model.args[real_idx]
-    if _is_abstractstring(real)
+    if real isa AbstractString
         # Bare leading string literal in the block.
         new_args = copy(model.args)
         deleteat!(new_args, real_idx)
         return (real, Expr(:block, new_args...))
     elseif Meta.isexpr(real, :macrocall) && length(real.args) >= 4 &&
-            _is_doc_macro_head(real.args[1]) && _is_abstractstring(real.args[3])
+            _is_doc_macro_head(real.args[1]) && real.args[3] isa AbstractString
         # Julia auto-wraps `"""..."""` followed by an expr as
         # `Core.@doc(lnn, "...", expr)`. Peel the docstring, restore the
         # bare expr in its slot.
