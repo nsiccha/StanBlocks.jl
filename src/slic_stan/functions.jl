@@ -1016,14 +1016,13 @@ func_args(name, x::StanExpr2{<:types.closure}) = [
 expand_call_args(args) = begin
     rv = Any[]
     for a in args
-        if a isa StanExpr2{<:types.closure}
-            append!(rv, values(type(a).info.value.captures))
-        else
-            push!(rv, a)
-        end
+        _splat_or_keep!(rv, a)
     end
     rv
 end
+_splat_or_keep!(rv, a::StanExpr2{<:types.closure}) =
+    (append!(rv, values(type(a).info.value.captures)); nothing)
+_splat_or_keep!(rv, a) = (push!(rv, a); nothing)
 # What `Base.show(::CanonicalExpr)` (and its `<:ODESolver` / `<:ReduceSumFunction`
 # specialisations) want as the rendered Stan-side arg list: closures expanded
 # to their capture values, then `always_inline`-typed StanExprs (functions,
@@ -1035,7 +1034,8 @@ stan_call_args(args) = filter(!always_inline, expand_call_args(args))
 # trailing args, since `expand_call_args` only operates on the rendered
 # args list and the function-position arg gets folded into the receiver
 # name instead).
-_closure_captures(f) = f isa StanExpr2{<:types.closure} ? Tuple(values(type(f).info.value.captures)) : ()
+_closure_captures(f::StanExpr2{<:types.closure}) = Tuple(values(type(f).info.value.captures))
+_closure_captures(_) = ()
 # 0-dim tokens: no Stan-side arg. 1-dim tokens: a plain `int` (Stan has no
 # 1-element tuple type). N>1-dim tokens: pack dims into a single
 # `tuple(int, …)` parameter; the function body then unpacks fields via `.i`.

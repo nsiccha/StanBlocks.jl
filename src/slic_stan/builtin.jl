@@ -1208,11 +1208,13 @@ fetch_functions!(x::CanonicalExpr{<:NoTolODESolver}; info) = fetch_functions!(
 
 function reduce_sum_reconstruct end
 function reduce_sum_deconstruct end
+_is_tup_arg(arg::StanExpr2{<:types.tup}) = true
+_is_tup_arg(_) = false
 fetch_functions!(x::CanonicalExpr{<:ReduceSumFunction}; info) = begin
     fetch_functions!(
         CanonicalExpr(x.args[1], x.args[2], stan_expr(1), stan_expr(1), x.args[4:end]...); info
     )
-    if any(arg->isa(arg, StanExpr2{<:types.tup}), x.args) 
+    if any(_is_tup_arg, x.args) 
         fetch_functions!(
             CanonicalExpr(reduce_sum_reconstruct, x.args[1], x.args[2], stan_expr(1), stan_expr(1), x.args[4:end]...); info
         )
@@ -1235,7 +1237,7 @@ reduce_sum_args!(x::StanExpr; d) = begin
     d[end][2]
 end
 reduce_sum_args!(x::Tuple; d) = reduce_sum_args!.(x; d)
-fundef(x::CanonicalExpr{typeof(reduce_sum_reconstruct)}) = if any(arg->isa(arg, StanExpr2{<:types.tup}), x.args) 
+fundef(x::CanonicalExpr{typeof(reduce_sum_reconstruct)}) = if any(_is_tup_arg, x.args) 
     deconstructed_args = []
     reconstructed_args = reduce_sum_args!(x.args; d=deconstructed_args)
     StanFunction3(
@@ -1269,7 +1271,7 @@ fundef(x::CanonicalExpr{typeof(reduce_sum_deconstruct)}) = begin
         ]
     )
 end
-Base.show(io::IO, x::CanonicalExpr{<:ReduceSumFunction}) = if any(arg->isa(arg, StanExpr2{<:types.tup}), x.args)
+Base.show(io::IO, x::CanonicalExpr{<:ReduceSumFunction}) = if any(_is_tup_arg, x.args)
     # Work around https://github.com/stan-dev/math/issues/3041
     print(io, CanonicalExpr(reduce_sum_deconstruct, stan_expr(reduce_sum_reconstruct), x.args[2], x.args[3], x.args[1], x.args[4:end]...))
 else

@@ -41,9 +41,18 @@ include("quarto.jl")
 
 # --- Error display for StanBlocks computations ---
 
-_cause_error(e::StanBlocksError) = e.cause isa Tuple ? e.cause[1] : e.cause
-_cause_bt(e::StanBlocksError) = e.cause isa Tuple && length(e.cause) >= 2 ? e.cause[2] : nothing
-_cause_expr_stack(e::StanBlocksError) = e.cause isa Tuple && length(e.cause) >= 3 ? e.cause[3] : []
+# `StanBlocksError.cause` is either a 3-tuple `(err, bt, expr_stack)`
+# (transpile-time errors capture all three) or a bare exception/string
+# (everything else). Three small accessors with a Tuple-typed fast path.
+_cause_error(e::StanBlocksError) = _cause_error_inner(e.cause)
+_cause_bt(e::StanBlocksError) = _cause_bt_inner(e.cause)
+_cause_expr_stack(e::StanBlocksError) = _cause_expr_stack_inner(e.cause)
+_cause_error_inner(c::Tuple) = c[1]
+_cause_error_inner(c) = c
+_cause_bt_inner(c::Tuple) = length(c) >= 2 ? c[2] : nothing
+_cause_bt_inner(_) = nothing
+_cause_expr_stack_inner(c::Tuple) = length(c) >= 3 ? c[3] : []
+_cause_expr_stack_inner(_) = []
 
 unwrap_error(e::Base.TaskFailedException) = unwrap_error(e.task.exception)
 unwrap_error(e::CompositeException) = unwrap_error(first(e.exceptions))
@@ -62,6 +71,11 @@ catch err
     end
 end
 
+_split_stack_item(t::Tuple) = t
+_split_stack_item(x) = (x, nothing)
+_stack_loc(lnn::LineNumberNode) = (" at ", lnn.file, ":", lnn.line)
+_stack_loc(_) = ()
+
 function _format_cause(io::IO, phase, context, cause_error, expr_stack, bt)
     print(io, "StanBlocksError [", phase, "]: ", context, "\n")
     print(io, "  Caused by: ")
@@ -69,9 +83,8 @@ function _format_cause(io::IO, phase, context, cause_error, expr_stack, bt)
     if !isempty(expr_stack)
         println(io, "\n\n  While processing:")
         for (i, item) in enumerate(reverse(expr_stack))
-            x, lnn = item isa Tuple ? item : (item, nothing)
-            loc = lnn isa LineNumberNode ? (" at ", lnn.file, ":", lnn.line) : ()
-            print(io, "   [", i, "] ", x, loc..., "\n")
+            x, lnn = _split_stack_item(item)
+            print(io, "   [", i, "] ", x, _stack_loc(lnn)..., "\n")
         end
     end
 end
@@ -80,11 +93,7 @@ Base.show(io::IO, e::StanBlocksError) = showerror(io, e)
 Base.show(io::IO, ::MIME"text/plain", e::StanBlocksError) = showerror(io, e)
 
 function Base.showerror(io::IO, e::StanBlocksError)
-    if e.cause isa String
-        print(io, e.cause)
-    else
-        _format_cause(io, e.phase, e.context, unwrap_error(e), _cause_expr_stack(e), _cause_bt(e))
-    end
+    _showerror_cause(io, e, e.cause, _cause_bt(e))
 end
 
 function Base.showerror(io::IO, e::StanBlocksError, bt; kwargs...)
@@ -92,11 +101,13 @@ function Base.showerror(io::IO, e::StanBlocksError, bt; kwargs...)
     # back to the bt handed in by Julia's top-level error printer.
     stored = _cause_bt(e)
     effective_bt = stored === nothing ? bt : stored
-    if e.cause isa String
-        print(io, e.cause)
-    else
-        _format_cause(io, e.phase, e.context, unwrap_error(e), _cause_expr_stack(e), effective_bt)
-    end
+    _showerror_cause(io, e, e.cause, effective_bt)
 end
+
+# Bare-string cause: print the message verbatim. Anything else: format the
+# full cause/expression-stack trace.
+_showerror_cause(io, _e, cause::AbstractString, _bt) = print(io, cause)
+_showerror_cause(io, e, _cause, bt) =
+    _format_cause(io, e.phase, e.context, unwrap_error(e), _cause_expr_stack(e), bt)
 
 end # module StanBlocks
