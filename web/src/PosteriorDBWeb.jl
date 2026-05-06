@@ -17,42 +17,17 @@ using Treebars: prepare_progress!, with_prepared_progress, polling_fetchindex, i
 pdb() = PosteriorDB.database()
 
 
-# --- Test helpers ---
+# --- Test helpers (throw on failure; route safety wrapper renders the error article) ---
 
-function try_transpile(post)
-    # try
-        code = stan_code(post)
-        (ok=true, error=nothing, stacktrace=nothing, code=code)
-    # catch e
-    #     error()
-    #     bt = catch_backtrace()
-    #     wrapped = e isa StanBlocksError ? e : StanBlocksError(:transpile, string(post), (e, bt))
-    #     error_msg = first(split(sprint(showerror, wrapped), "\n"))
-    #     full_trace = sprint(showerror, wrapped)
-    #     (ok=false, error=error_msg, stacktrace=full_trace, code=nothing)
-    # end
-end
+transpile_check(post) = (code=stan_code(post),)
 
-function try_compile(post)
-    # try
-        problem = instantiate(post)
-        (ok=true, error=nothing, stacktrace=nothing, dimension=LogDensityProblems.dimension(problem))
-    # catch e
-    #     error()
-    #     bt = catch_backtrace()
-    #     wrapped = e isa StanBlocksError ? e : StanBlocksError(:compile, string(post), (e, bt))
-    #     error_msg = first(split(sprint(showerror, wrapped), "\n"))
-    #     full_trace = sprint(showerror, wrapped)
-    #     (ok=false, error=error_msg, stacktrace=full_trace, dimension=nothing)
-    # end
-end
+compile_check(post) = (dimension=LogDensityProblems.dimension(instantiate(post)),)
 
 function compare_logdensities(reference, test; stat_f=median, m=200)
     n = LogDensityProblems.dimension(test)
     X = randn((n, m))
-    eval_safe(problem, x) = LogDensityProblems.logdensity(problem, x) # try ... catch; NaN end
-    reference_lpdfs = [eval_safe(reference, x) for x in eachcol(X)]
-    test_lpdfs = [eval_safe(test, x) for x in eachcol(X)]
+    reference_lpdfs = [LogDensityProblems.logdensity(reference, x) for x in eachcol(X)]
+    test_lpdfs = [LogDensityProblems.logdensity(test, x) for x in eachcol(X)]
     finite_idxs = filter(i -> isfinite(reference_lpdfs[i] + test_lpdfs[i]), 1:m)
     length(finite_idxs) == 0 && return nothing
     ref = reference_lpdfs[finite_idxs]
@@ -64,45 +39,31 @@ function compare_logdensities(reference, test; stat_f=median, m=200)
     )
 end
 
-function try_correct(posterior)
-    # try
-        post = slic_implementation(posterior)
-        problem = instantiate(post)
-        ref_stan_path = PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(posterior), "stan"))
-        ref_data = PosteriorDB.load(PosteriorDB.dataset(posterior), String)
-        ref_problem = StanLogDensityProblems.StanProblem(ref_stan_path, ref_data; nan_on_error=true, make_args=["STAN_THREADS=true"])
-        result = compare_logdensities(ref_problem, problem)
-        isnothing(result) && return (ok=false, error="No finite evaluations", stacktrace=nothing, stats=nothing)
-        ok = result.relative_remaining_difference < 1e-6
-        (ok=ok, error=ok ? nothing : "Relative difference: $(result.relative_remaining_difference)", stacktrace=nothing, stats=result)
-    # catch e
-    #     error()
-    #     bt = catch_backtrace()
-    #     wrapped = e isa StanBlocksError ? e : StanBlocksError(:evaluate, string(posterior), (e, bt))
-    #     error_msg = first(split(sprint(showerror, wrapped), "\n"))
-    #     full_trace = sprint(showerror, wrapped)
-    #     (ok=false, error=error_msg, stacktrace=full_trace, stats=nothing)
-    # end
+function correct_check(posterior)
+    post = slic_implementation(posterior)
+    problem = instantiate(post)
+    ref_stan_path = PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(posterior), "stan"))
+    ref_data = PosteriorDB.load(PosteriorDB.dataset(posterior), String)
+    ref_problem = StanLogDensityProblems.StanProblem(ref_stan_path, ref_data; nan_on_error=true, make_args=["STAN_THREADS=true"])
+    result = compare_logdensities(ref_problem, problem)
+    isnothing(result) && error("No finite evaluations")
+    result.relative_remaining_difference < 1e-6 ||
+        error("Relative difference: $(result.relative_remaining_difference)")
+    (stats=result,)
 end
 
 # --- Web app ---
 
-function status_str(cached, ok)
-    !cached ? "-" : ok ? "PASS" : "FAIL"
+function status_str(status::Symbol)
+    status == :ready ? "PASS" : status == :started ? "FAIL" : "-"
 end
 
-function status_cell(cached, ok)
-    !cached && return h.td("-"; class="u-text-muted")
-    ok ? h.td("PASS"; class="u-text-success u-text-bold") :
-         h.td("FAIL"; class="u-text-error u-text-bold")
-end
-
-function status_cell_clickable(cached, ok, check_url, detail_id)
-    if !cached
+function status_cell_clickable(status::Symbol, check_url, detail_id)
+    if status == :unstarted
         return h.td("-"; class="check-cell u-pointer u-text-muted",
             hx_get=check_url, hx_target="#$detail_id", hx_swap="innerHTML",
             _="on htmx:afterOnLoad if not me.classList.contains('batch') then remove .u-hidden from #$detail_id end remove .batch from me")
-    elseif !ok
+    elseif status == :started
         return h.td("FAIL"; class="check-cell u-pointer u-text-error u-text-bold",
             hx_get=check_url, hx_target="#$detail_id", hx_swap="innerHTML",
             _="on htmx:afterOnLoad if not me.classList.contains('batch') then remove .u-hidden from #$detail_id end remove .batch from me")
@@ -205,65 +166,40 @@ const APPDATA = SbAppData(; cache_type=:parallel)
     __appdata__ = APPDATA
 
     cache_path = joinpath(dirname(dirname(@__DIR__)), "web", "cache")
-    status_path = joinpath(dirname(dirname(@__DIR__)), "web", "status")
-
-    status_file(check, pn) = joinpath(status_path, "$(check)_$(pn).status")
-    write_status(check, pn, ok::Bool) = begin
-        isdir(status_path) || mkpath(status_path)
-        write(status_file[check, pn], ok ? "PASS" : "FAIL")
-    end
 
     @cached posterior_names = sort([
         pn for pn in PosteriorDB.posterior_names(pdb())
         if !isnothing(slic_implementation(PosteriorDB.posterior(pdb(), pn)))
     ])
 
-    @cached transpile_result(pn) = begin
-        post = slic_implementation(PosteriorDB.posterior(pdb(), pn))
-        r = try_transpile(post)
-        write_status["transpile", pn, r.ok]
-        r
-    end
+    @cached transpile_result(pn) = transpile_check(slic_implementation(PosteriorDB.posterior(pdb(), pn)))
+    @cached compile_result(pn)   = compile_check(slic_implementation(PosteriorDB.posterior(pdb(), pn)))
+    @cached correct_result(pn)   = correct_check(PosteriorDB.posterior(pdb(), pn))
 
-    @cached compile_result(pn) = begin
-        post = slic_implementation(PosteriorDB.posterior(pdb(), pn))
-        r = try_compile(post)
-        write_status["compile", pn, r.ok]
-        r
-    end
+    # `@cache_status` inspects the `.sjl` file presence/size — `:unstarted` if
+    # absent, `:started` if empty (touched at compute start, left empty when
+    # the body throws), `:ready` if successfully serialized. Drives the
+    # dashboard without deserializing the full result tuple.
+    transpile_status(pn) = @cache_status transpile_result[pn]
+    compile_status(pn)   = @cache_status compile_result[pn]
+    correct_status(pn)   = @cache_status correct_result[pn]
 
-    @cached correct_result(pn) = begin
-        posterior = PosteriorDB.posterior(pdb(), pn)
-        r = try_correct(posterior)
-        write_status["correct", pn, r.ok]
-        r
-    end
-
-    # Disk-only status read for the overview: avoids deserializing full result
-    # NamedTuples (with stacktrace + code). Sidecars are written whenever a
-    # `@cached` result body runs. For pre-existing `.sjl` caches with no sidecar,
-    # call `/backfill_status` once to populate them.
-    disk_status(check, pn) = begin
-        sp = status_file[check, pn]
-        isfile(sp) || return (false, false)
-        (true, read(sp, String) == "PASS")
-    end
+    check_status_sym(check, pn) = check == "transpile" ? transpile_status[pn] :
+                                  check == "compile"   ? compile_status[pn] :
+                                  check == "correct"   ? correct_status[pn] : :unstarted
 
     overview_row(pn) = begin
         local dataset, model
         dataset, model = split_posterior_name(pn)
-        t_cached, t_ok = disk_status["transpile", pn]
-        c_cached, c_ok = disk_status["compile", pn]
-        r_cached, r_ok = disk_status["correct", pn]
         detail_id = "detail-$pn"
         toggle = "on click toggle .u-hidden on #$detail_id"
         [h.tr(
             h.td(pn; class="u-pointer", _=toggle),
             h.td(dataset; class="u-pointer", _=toggle),
             h.td(model; class="u-pointer", _=toggle),
-            status_cell_clickable(t_cached, t_ok, "/check_transpile/$pn", detail_id),
-            status_cell_clickable(c_cached, c_ok, "/check_compile/$pn", detail_id),
-            status_cell_clickable(r_cached, r_ok, "/check_correct/$pn", detail_id);
+            status_cell_clickable(transpile_status[pn], "/check_transpile/$pn", detail_id),
+            status_cell_clickable(compile_status[pn], "/check_compile/$pn", detail_id),
+            status_cell_clickable(correct_status[pn], "/check_correct/$pn", detail_id);
             id="row-$pn",
         ),
         h.tr(; id=detail_id, class="u-hidden")]
@@ -294,21 +230,28 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         h.style("tr[id^=row-]:hover { background: var(--pico-table-row-stripped-background-color); } details summary { cursor: pointer; font-weight: 600; margin-bottom: 0.5rem; }"),
     )
 
-    result_section(label, result) = begin
-        isnothing(result) && return ""
+    # `:ready` → render success info; `:started` → "FAIL" with re-run link
+    # (clicking surfaces the underlying error via the route safety wrapper);
+    # `:unstarted` → empty (overview cell already provides the run link).
+    result_section(label, status::Symbol, result_url, retry_url) = begin
+        status == :unstarted && return ""
+        if status == :started
+            return h.div(; class="u-mb-2")(
+                h.p(h.strong(label, ": "), status_badge(:failed; label="FAIL"), " ",
+                    h.a("Re-run to view error"; hx_get=retry_url, hx_target="closest tr", hx_swap="outerHTML")),
+            )
+        end
+        result = if label == "Transpiles"; transpile_result[result_url]
+                 elseif label == "Compiles"; compile_result[result_url]
+                 else; correct_result[result_url] end
         h.div(; class="u-mb-2")(
-            h.p(h.strong(label, ": "), status_badge(result.ok ? :done : :failed; label=result.ok ? "PASS" : "FAIL")),
-            isnothing(result.error) ? "" : h.p(h.strong("Error: "), h.code(result.error)),
-            isnothing(result.stacktrace) ? "" : h.details(
-                h.summary("Full stacktrace"),
-                h.pre(result.stacktrace; class="u-pre-wrap u-scroll-y u-text-xs")
-            ),
-            hasproperty(result, :code) && !isnothing(result.code) ? h.details(
+            h.p(h.strong(label, ": "), status_badge(:done; label="PASS")),
+            hasproperty(result, :code) ? h.details(
                 h.summary("Generated Stan code"),
                 h.pre(result.code; class="u-pre-wrap u-scroll-y-lg u-text-sm");
                 open=""
             ) : "",
-            hasproperty(result, :stats) && !isnothing(result.stats) ? h.p(
+            hasproperty(result, :stats) ? h.p(
                 h.strong("Stats: "),
                 "abs diff = $(result.stats.absolute_constant_difference), rel diff = $(result.stats.relative_remaining_difference)"
             ) : "",
@@ -316,22 +259,20 @@ const APPDATA = SbAppData(; cache_type=:parallel)
     end
 
     model_detail_content(pn) = begin
-        t_cached = @is_cached transpile_result[pn]
-        c_cached = @is_cached compile_result[pn]
-        r_cached = @is_cached correct_result[pn]
-        t_result = t_cached ? transpile_result[pn] : nothing
-        c_result = c_cached ? compile_result[pn] : nothing
-        r_result = r_cached ? correct_result[pn] : nothing
-        # Pick worst color for border
-        all_ok = all(r -> isnothing(r) || r.ok, [t_result, c_result, r_result])
-        any_fail = any(r -> !isnothing(r) && !r.ok, [t_result, c_result, r_result])
-        status_class = any_fail ? "u-status-callout u-status-error" : all_ok ? "u-status-callout u-status-success" : "u-status-callout"
+        ts = transpile_status[pn]
+        cs = compile_status[pn]
+        rs = correct_status[pn]
+        any_fail = ts == :started || cs == :started || rs == :started
+        all_ready = ts != :started && cs != :started && rs != :started
+        status_class = any_fail ? "u-status-callout u-status-error" :
+                       all_ready ? "u-status-callout u-status-success" :
+                       "u-status-callout"
         h.td(; colspan="6", class="pdb-detail-cell")(
             h.div(; class=status_class)(
                 h.h4(pn),
-                result_section["Transpiles", t_result],
-                result_section["Compiles", c_result],
-                result_section["Correct", r_result],
+                result_section["Transpiles", ts, pn, "/check_transpile/$pn"],
+                result_section["Compiles", cs, pn, "/check_compile/$pn"],
+                result_section["Correct", rs, pn, "/check_correct/$pn"],
             )
         )
     end
@@ -340,42 +281,32 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         header = rpad("Posterior", 60) * rpad("Transpiles", 12) * rpad("Compiles", 12) * "Correct"
         lines = [header, "-"^length(header)]
         for pn in posterior_names
-            t_cached = @is_cached transpile_result[pn]
-            t_ok = t_cached ? transpile_result[pn].ok : false
-            c_cached = @is_cached compile_result[pn]
-            c_ok = c_cached ? compile_result[pn].ok : false
-            r_cached = @is_cached correct_result[pn]
-            r_ok = r_cached ? correct_result[pn].ok : false
-            push!(lines, rpad(pn, 60) * rpad(status_str(t_cached, t_ok), 12) * rpad(status_str(c_cached, c_ok), 12) * status_str(r_cached, r_ok))
+            push!(lines, rpad(pn, 60) *
+                rpad(status_str(transpile_status[pn]), 12) *
+                rpad(status_str(compile_status[pn]),   12) *
+                         status_str(correct_status[pn]))
         end
         join(lines, "\n")
     end
 
-    plain_result_section(label, result) = begin
-        isnothing(result) && return "$label: -"
-        parts = ["$label: $(result.ok ? "PASS" : "FAIL")"]
-        isnothing(result.error) || push!(parts, "  Error: $(result.error)")
-        hasproperty(result, :stacktrace) && !isnothing(result.stacktrace) && push!(parts, "", "  --- Stacktrace ---", result.stacktrace)
-        hasproperty(result, :code) && !isnothing(result.code) && push!(parts, "", "  --- Stan code ---", result.code)
-        hasproperty(result, :stats) && !isnothing(result.stats) && push!(parts, "  Stats: abs_diff=$(result.stats.absolute_constant_difference), rel_diff=$(result.stats.relative_remaining_difference)")
-        hasproperty(result, :dimension) && !isnothing(result.dimension) && push!(parts, "  Dimension: $(result.dimension)")
+    plain_result_section(label, status::Symbol, pn) = begin
+        status == :unstarted && return "$label: -"
+        status == :started && return "$label: FAIL (re-run /check_$(lowercase(label))/$pn for error)"
+        parts = ["$label: PASS"]
+        result = label == "Transpiles" ? transpile_result[pn] :
+                 label == "Compiles" ? compile_result[pn] : correct_result[pn]
+        hasproperty(result, :code) && push!(parts, "", "  --- Stan code ---", result.code)
+        hasproperty(result, :stats) && push!(parts, "  Stats: abs_diff=$(result.stats.absolute_constant_difference), rel_diff=$(result.stats.relative_remaining_difference)")
+        hasproperty(result, :dimension) && push!(parts, "  Dimension: $(result.dimension)")
         join(parts, "\n")
     end
 
-    plain_model(pn) = begin
-        t_cached = @is_cached transpile_result[pn]
-        c_cached = @is_cached compile_result[pn]
-        r_cached = @is_cached correct_result[pn]
-        t_result = t_cached ? transpile_result[pn] : nothing
-        c_result = c_cached ? compile_result[pn] : nothing
-        r_result = r_cached ? correct_result[pn] : nothing
-        parts = ["# $pn", "",
-            plain_result_section["Transpiles", t_result], "",
-            plain_result_section["Compiles", c_result], "",
-            plain_result_section["Correct", r_result],
-        ]
-        join(parts, "\n")
-    end
+    plain_model(pn) = join([
+        "# $pn", "",
+        plain_result_section["Transpiles", transpile_status[pn], pn], "",
+        plain_result_section["Compiles",   compile_status[pn],   pn], "",
+        plain_result_section["Correct",    correct_status[pn],   pn],
+    ], "\n")
 
     __page__(content) = htmx(
         h.body(
@@ -418,47 +349,25 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         h.p("Cache cleared")
     end
 
-    # Backfill status sidecars from existing `.sjl` caches. Only touches
-    # already-cached results — never triggers a fresh computation.
-    @get backfill_status = begin
-        n = 0
-        for pn in posterior_names
-            if !isfile(status_file["transpile", pn]) && @is_cached(transpile_result[pn])
-                write_status["transpile", pn, transpile_result[pn].ok]; n += 1
-            end
-            if !isfile(status_file["compile", pn]) && @is_cached(compile_result[pn])
-                write_status["compile", pn, compile_result[pn].ok]; n += 1
-            end
-            if !isfile(status_file["correct", pn]) && @is_cached(correct_result[pn])
-                write_status["correct", pn, correct_result[pn].ok]; n += 1
-            end
-        end
-        h.p("Backfilled $n sidecar(s)")
-    end
-
     @get clear_cache_model(pn) = begin
         @clear_cache! transpile_result[pn]
+        @clear_cache! compile_result[pn]
+        @clear_cache! correct_result[pn]
         h.p("Cache cleared for $pn")
     end
 
     updated_summary_row(pn) = begin
         local dataset, model
         dataset, model = split_posterior_name(pn)
-        t_cached = @is_cached transpile_result[pn]
-        t_ok = t_cached ? transpile_result[pn].ok : false
-        c_cached = @is_cached compile_result[pn]
-        c_ok = c_cached ? compile_result[pn].ok : false
-        r_cached = @is_cached correct_result[pn]
-        r_ok = r_cached ? correct_result[pn].ok : false
         detail_id = "detail-$pn"
         toggle = "on click toggle .u-hidden on #$detail_id"
         h.tr(
             h.td(pn; class="u-pointer", _=toggle),
             h.td(dataset; class="u-pointer", _=toggle),
             h.td(model; class="u-pointer", _=toggle),
-            status_cell_clickable(t_cached, t_ok, "/check_transpile/$pn", detail_id),
-            status_cell_clickable(c_cached, c_ok, "/check_compile/$pn", detail_id),
-            status_cell_clickable(r_cached, r_ok, "/check_correct/$pn", detail_id);
+            status_cell_clickable(transpile_status[pn], "/check_transpile/$pn", detail_id),
+            status_cell_clickable(compile_status[pn], "/check_compile/$pn", detail_id),
+            status_cell_clickable(correct_status[pn], "/check_correct/$pn", detail_id);
             id="row-$pn",
             hx_swap_oob="outerHTML:#row-$pn",
         )
@@ -487,28 +396,13 @@ const APPDATA = SbAppData(; cache_type=:parallel)
 
     @get ref(pn) = reference_stan[pn]
 
-    check_status(check, pn) = if check == "transpile"
-        c = @is_cached transpile_result[pn]
-        (c, c ? transpile_result[pn].ok : false)
-    elseif check == "compile"
-        c = @is_cached compile_result[pn]
-        (c, c ? compile_result[pn].ok : false)
-    elseif check == "correct"
-        c = @is_cached correct_result[pn]
-        (c, c ? correct_result[pn].ok : false)
-    else
-        (false, false)
-    end
-
     filtered_names(check, status) = begin
         names = String[]
         for pn in posterior_names
-            cached, ok = check_status[check, pn]
-            show = if status == "pass"; cached && ok
-            elseif status == "fail"; cached && !ok
-            elseif status == "unchecked"; !cached
-            else; true
-            end
+            s = check_status_sym[check, pn]
+            show = status == "pass" ? s == :ready :
+                   status == "fail" ? s == :started :
+                   status == "unchecked" ? s == :unstarted : true
             show && push!(names, pn)
         end
         names
@@ -516,26 +410,28 @@ const APPDATA = SbAppData(; cache_type=:parallel)
 
     @get filter(check, status="all") = join(filtered_names[check, status], "\n")
 
-    # Force (re)compute a single check, clearing failed cache first
-    force_check(check, pn) = if check == "transpile"
-        @is_cached(transpile_result[pn]) && !transpile_result[pn].ok && @clear_cache! transpile_result[pn]
-        transpile_result[pn]
-    elseif check == "compile"
-        @is_cached(compile_result[pn]) && !compile_result[pn].ok && @clear_cache! compile_result[pn]
-        compile_result[pn]
-    elseif check == "correct"
-        @is_cached(correct_result[pn]) && !correct_result[pn].ok && @clear_cache! correct_result[pn]
-        correct_result[pn]
+    # Force (re)compute a single check, clearing the empty `:started` marker
+    # left behind by a previously-failed run so the next access recomputes.
+    force_check(check, pn) = begin
+        if check == "transpile"
+            transpile_status[pn] == :started && @clear_cache! transpile_result[pn]
+            transpile_result[pn]
+        elseif check == "compile"
+            compile_status[pn] == :started && @clear_cache! compile_result[pn]
+            compile_result[pn]
+        elseif check == "correct"
+            correct_status[pn] == :started && @clear_cache! correct_result[pn]
+            correct_result[pn]
+        end
     end
 
-    # Batch recheck: /recheck/{check}/{status}
-    # Clears failed caches and retriggers computation for all matching models
+    # Batch recheck: /recheck/{check}/{status}. Errors bubble through the
+    # route safety wrapper; PASSes are reported in the response body.
     @get recheck(check, status="fail") = begin
-        targets = filtered_names[check, status]
         results = String[]
-        for pn in targets
-            r = force_check[check, pn]
-            push!(results, "$(r.ok ? "PASS" : "FAIL") $pn$(r.ok ? "" : " -- $(r.error)")")
+        for pn in filtered_names[check, status]
+            force_check[check, pn]
+            push!(results, "PASS $pn")
         end
         join(results, "\n")
     end
@@ -577,68 +473,39 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         name
     end
 
+    # Eval user-typed SLIC code and transpile. Throws on parse / transpile
+    # failure — the per-card render wraps this in `safely(; obj=__self__)`
+    # so the error is contained to the failing card.
     sandbox_result(code) = begin
-        result = begin # try
-            if !isdefined(Main, :StanBlocks)
-                Core.eval(Main, :(const StanBlocks = $StanBlocks))
-                Base.eval(Main, :(using .StanBlocks))
-            end
-            exprs = Meta.parseall(code).args
-            rv = nothing
-            for expr in exprs
-                expr isa LineNumberNode && continue
-                rv = Base.eval(Main, expr)
-            end
-            m = rv::StanBlocks.stan.SlicModel
-            sc = Base.invokelatest(stan_code, m)
-            (ok=true, error=nothing, stacktrace=nothing, code=sc)
-        # catch e
-        #     error()
-        #     bt = catch_backtrace()
-        #     wrapped = e isa StanBlocksError ? e : StanBlocksError(:transpile, "sandbox", (e, bt))
-        #     error_msg = first(split(sprint(showerror, wrapped), "\n"))
-        #     trace = sprint(showerror, wrapped, nothing)
-        #     full_trace = sprint(showerror, wrapped)
-        #     (ok=false, error=error_msg, stacktrace=trace, full_stacktrace=full_trace, code=nothing)
+        if !isdefined(Main, :StanBlocks)
+            Core.eval(Main, :(const StanBlocks = $StanBlocks))
+            Base.eval(Main, :(using .StanBlocks))
         end
-        result
+        exprs = Meta.parseall(code).args
+        rv = nothing
+        for expr in exprs
+            expr isa LineNumberNode && continue
+            rv = Base.eval(Main, expr)
+        end
+        m = rv::StanBlocks.stan.SlicModel
+        (code=Base.invokelatest(stan_code, m),)
     end
 
     stanc_check(stan_code_str) = begin
         stanc = "/home/niko/.cmdstan/cmdstan-2.37.0/bin/stanc"
         tmpfile = tempname() * ".stan"
-        # try
-            write(tmpfile, stan_code_str)
-            io = IOBuffer()
-            ok = success(pipeline(`$stanc --warn-pedantic $tmpfile`; stderr=io, stdout=io))
-            rv = (ok=ok, output=String(take!(io)))
-            isfile(tmpfile) && rm(tmpfile)
-            rv
-        # catch e
-        #     error()
-        #     (ok=false, output=sprint(showerror, e))
-        # finally
-        #     isfile(tmpfile) && rm(tmpfile)
-        # end
+        write(tmpfile, stan_code_str)
+        io = IOBuffer()
+        ok = success(pipeline(`$stanc --warn-pedantic $tmpfile`; stderr=io, stdout=io))
+        rm(tmpfile; force=true)
+        (ok=ok, output=String(take!(io)))
     end
 
-    sandbox_output(name, result) = h.div(; id="sandbox-output")(
-        if result.ok
-            h.div(
-                h.p(h.strong("Transpilation: "), h.span("PASS"; class="u-text-success u-text-bold")),
-                h.pre(h.code(result.code; class="language-stan"); class="pdb-code-large"),
-            )
-        else
-            e.div(
-                h.p(h.strong("Transpilation: "), h.span("FAIL"; class="u-text-error u-text-bold")),
-                h.p(h.strong("Error: "), h.code(result.error)),
-                isnothing(result.stacktrace) ? "" : h.pre(result.stacktrace; class="u-pre-wrap u-scroll-y"),
-                hasproperty(result, :full_stacktrace) && !isnothing(result.full_stacktrace) ? h.details(
-                    h.summary("Full stacktrace (internal)"),
-                    h.pre(result.full_stacktrace; class="u-pre-wrap u-scroll-y-lg"),
-                ) : "",
-            )
-        end,
+    sandbox_output(result) = h.div(; id="sandbox-output")(
+        h.div(
+            h.p(h.strong("Transpilation: "), h.span("PASS"; class="u-text-success u-text-bold")),
+            h.pre(h.code(result.code; class="language-stan"); class="pdb-code-large"),
+        ),
     )
 
     sandbox_editor(code; name="", target="#sandbox-output", standalone=false) = h.form(;
@@ -692,22 +559,19 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         )
     end
 
-    snippet_card(name, code; standalone=false) = begin
+    snippet_card(name, code; standalone=false) = safely(; obj=__self__) do
         result = sandbox_result(code)
-        write(joinpath(sandbox_path, name * ".jl.status"), result.ok ? "PASS" : result.error)
-        if result.ok
-            write(joinpath(sandbox_path, name * ".jl.stan"), result.code)
-            sc = stanc_check(result.code)
-            write(joinpath(sandbox_path, name * ".jl.stanc"), sc.ok ? "OK" : sc.output)
-        end
+        write(joinpath(sandbox_path, name * ".jl.status"), "PASS")
+        write(joinpath(sandbox_path, name * ".jl.stan"), result.code)
+        sc = stanc_check(result.code)
+        write(joinpath(sandbox_path, name * ".jl.stanc"), sc.ok ? "OK" : sc.output)
         should_fail = sandbox_should_fail(name)
-        status_class = result.ok ? "u-status-callout u-status-success" :
-            should_fail ? "u-status-callout u-status-warning" : "u-status-callout u-status-error"
+        status_class = "u-status-callout u-status-success"
         card_id = "snippet-$name"
         refresh_url = standalone ? __self__/"sandbox_view/$name" : __self__/"sandbox_refresh/$name"
-        status_badge = result.ok ? h.span("PASS"; class="u-text-success") :
-            should_fail ? h.span("XFAIL"; class="u-text-warning") :
-            h.span("FAIL"; class="u-text-error")
+        status_badge = should_fail ? h.span("XPASS"; class="u-text-warning",
+                                            title="Expected failure but transpiled — toggle 'should pass' if intentional") :
+                                     h.span("PASS"; class="u-text-success")
         expect_label = should_fail ? "xfail" : "should pass"
         h.div(; id=card_id, class=status_class)(
             h.div(; class="pdb-snippet-header")(
@@ -726,10 +590,10 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             ),
             snippet_code_block(name, code, card_id; standalone),
             stanc_error_block(name),
-            standalone ? sandbox_output(name, result) :
+            standalone ? sandbox_output(result) :
             h.details(
-                h.summary(result.ok ? "Stan code" : "Error"),
-                sandbox_output(name, result),
+                h.summary("Stan code"),
+                sandbox_output(result),
             ),
         )
     end
@@ -914,7 +778,7 @@ end"""
             snippet_card(name, code; standalone=standalone=="1")
         else
             result = sandbox_result(code)
-            [sandbox_output(name, result), h.template(snippet_list)]
+            [sandbox_output(result), h.template(snippet_list)]
         end
     end
 
@@ -949,28 +813,35 @@ end"""
         expanded = String[]
         for expr in exprs
             expr isa LineNumberNode && continue
-            ex = # try
-                Base.eval(mod, :(macroexpand($mod, $(QuoteNode(expr)))))
-            # catch e
-            #     error()
-            #     expr
-            # end
+            ex = Base.eval(mod, :(macroexpand($mod, $(QuoteNode(expr)))))
             push!(expanded, sprint(Base.show_unquoted, ex))
         end
         h.pre(h.code(join(expanded, "\n\n"); class="language-julia"))
     end
 
-    compile_snippets(snippets) = begin
-        results = map(snippets) do (name, code)
-            t0 = time()
-            result = sandbox_result(code)
-            write(joinpath(sandbox_path, name * ".jl.status"), result.ok ? "PASS" : result.error)
-            dt = time() - t0
-            (name=name, ok=result.ok, error=result.ok ? nothing : result.error, time=dt)
+    # Per-snippet: returns (name, ok::Bool, msg::String, dt::Float64). On
+    # success writes the PASS sidecar; on failure stores the one-line error
+    # message in the FAIL sidecar (so the read-only gallery can still flag
+    # which snippets are broken). The route safety wrapper isn't a fit here
+    # because we want the BATCH summary to render even if some entries fail.
+    _compile_one(name, code) = begin
+        t0 = time()
+        ok, msg = try
+            r = sandbox_result(code)
+            write(joinpath(sandbox_path, name * ".jl.stan"), r.code)
+            true, ""
+        catch e
+            first(split(sprint(showerror, e), "\n"))::String |> m -> (false, m)
         end
+        write(joinpath(sandbox_path, name * ".jl.status"), ok ? "PASS" : msg)
+        (name=name, ok=ok, msg=msg, dt=time() - t0)
+    end
+
+    compile_snippets(snippets) = begin
+        results = [_compile_one(name, code) for (name, code) in snippets]
         n_pass = count(r -> r.ok, results)
         n_fail = length(results) - n_pass
-        total_time = sum(r -> r.time, results)
+        total_time = sum(r -> r.dt, results; init=0.0)
         h.div(
             h.p(
                 h.strong("$(n_pass)/$(length(results)) passed"),
@@ -980,8 +851,8 @@ end"""
             [h.div(; class="pdb-snippet-result-row")(
                 r.ok ? h.span("PASS"; class="u-text-success") : h.span("FAIL"; class="u-text-error"),
                 " ", r.name,
-                h.span(" $(round(r.time*1000; digits=0))ms"; class="u-text-muted"),
-                r.ok ? "" : h.span(" - ", r.error; class="u-text-error u-text-sm"),
+                h.span(" $(round(r.dt*1000; digits=0))ms"; class="u-text-muted"),
+                r.ok ? "" : h.span(" - ", r.msg; class="u-text-error u-text-sm"),
             ) for r in results]...,
         )
     end
@@ -1010,28 +881,27 @@ end"""
     @get sandbox_stanc_check(name) = begin
         code = read(joinpath(sandbox_path, name * ".jl"), String)
         result = sandbox_result(code)
-        if !result.ok
-            h.div(h.span("Cannot check: transpilation failed"; class="u-text-error"))
+        sc = stanc_check(result.code)
+        if sc.ok
+            h.div(h.span("stanc: OK"; class="u-text-success"),
+                isempty(sc.output) ? "" : h.pre(sc.output; class="u-text-sm u-scroll-y"))
         else
-            sc = stanc_check(result.code)
-            if sc.ok
-                h.div(h.span("stanc: OK"; class="u-text-success"),
-                    isempty(sc.output) ? "" : h.pre(sc.output; class="u-text-sm u-scroll-y"))
-            else
-                h.div(h.span("stanc: FAIL"; class="u-text-error"),
-                    h.pre(sc.output; class="u-text-sm u-scroll-y u-pre-wrap"))
-            end
+            h.div(h.span("stanc: FAIL"; class="u-text-error"),
+                h.pre(sc.output; class="u-text-sm u-scroll-y u-pre-wrap"))
         end
     end
 
+    # Batch stanc check: relies on the cached `.jl.stan` sidecar from a prior
+    # compile run to avoid re-transpiling. Snippets without a cached `.stan`
+    # are skipped (run "Compile All" / "Compile Failures" first).
     @get sandbox_stanc_all = begin
         snippets = sandbox_snippets()
-        results = map(snippets) do (name, code)
-            result = sandbox_result(code)
-            if !result.ok
-                (name=name, ok=nothing, output="transpile failed")
+        results = map(snippets) do (name, _)
+            stan_src = sandbox_read_stan(name)
+            if isnothing(stan_src)
+                (name=name, ok=nothing, output="no cached .stan — compile first")
             else
-                sc = stanc_check(result.code)
+                sc = stanc_check(stan_src)
                 (name=name, ok=sc.ok, output=sc.output)
             end
         end
