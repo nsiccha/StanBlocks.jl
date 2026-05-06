@@ -278,6 +278,8 @@ maybecv(expr, value) = stan_expr(expr, value; cv=true)
 "Traces through its first argument (a `StanBlocks.SlicModel`) and returns the inferred `StanBlocks.StanModel`."
 function stan_model end
 const _StanBlocksError = parentmodule(@__MODULE__).StanBlocksError
+_is_stanblocks_error(e::_StanBlocksError) = true
+_is_stanblocks_error(_) = false
 stan_model(x::SlicModel; info=StanModel()) = begin
     _expr_stack = Any[]
     _current_lnn = Ref{Any}(nothing)
@@ -289,7 +291,7 @@ stan_model(x::SlicModel; info=StanModel()) = begin
                     distribute!(backward!(forward!(x; info); info); info)
                     remake(info; docstring=get(x.data, :docstring, ""))
                 catch e
-                    e isa _StanBlocksError && rethrow()
+                    _is_stanblocks_error(e) && rethrow()
                     bt = catch_backtrace()
                     # Keep the raw (exception, backtrace, expr_stack) tuple so the
                     # display layer can show the Julia traceback alongside the
@@ -410,7 +412,9 @@ pretty_type_expr(ref::CanonicalExprV{:getindex}) = string(ref.args[1], "[", join
 # - Carry refs as CanonicalExpr kwargs (requires codegen changes in functions.jl)
 _get_expr_stack(info) = something(_expr_stack(info), get(task_local_storage(), :_slic_expr_stack, nothing), Some(nothing))
 _get_lnn_ref(info) = something(_current_lnn(info), get(task_local_storage(), :_slic_current_lnn, nothing), Some(nothing))
-_get_lnn(info) = (lnn = _get_lnn_ref(info); lnn isa Ref ? lnn[] : nothing)
+_get_lnn(info) = _deref_lnn(_get_lnn_ref(info))
+_deref_lnn(r::Ref) = r[]
+_deref_lnn(_) = nothing
 _push_expr!(info, x) = (s = _get_expr_stack(info); isnothing(s) || push!(s, (x, _get_lnn(info))); nothing)
 _pop_expr!(info) = (s = _get_expr_stack(info); isnothing(s) || pop!(s); nothing)
 
@@ -426,7 +430,9 @@ forward!(x::Union{Number,Function,Nothing}; info) = x
 # Stan functions like `reject` / `print` and survive `tracetype`'s
 # `center_type(type(arg))` walk. Renders quoted at emission time.
 forward!(x::AbstractString; info) = stan_expr(x, x; qual=:data)
-forward!(x::LineNumberNode; info) = (lnn = _get_lnn_ref(info); lnn isa Ref && (lnn[] = x); x)
+forward!(x::LineNumberNode; info) = (_set_lnn!(_get_lnn_ref(info), x); x)
+_set_lnn!(r::Ref, x) = (r[] = x; nothing)
+_set_lnn!(_, _) = nothing
 forward!(x::QuoteNode; info) = x.value
 forward!(x::Irrational; info) = error("forward! not defined for irrational `$x` — only `π` is handled; convert to a concrete numeric value first.")
 forward!(x::Irrational{:π}; info) = forward!(Float64(pi); info)
@@ -693,18 +699,25 @@ forward!(x::BlockExpr; info) = task_local_storage(:_slic_inline_pending, Any[]) 
     remake(x, new_args...)
 end
 _is_inert_block_stmt(x) = false
-_is_inert_block_stmt(x::StanExpr) = expr(x) isa Symbol || expr(x) isa Number || expr(x) isa AbstractString
+_is_inert_block_stmt(x::StanExpr) = _is_inert_expr(expr(x))
+_is_inert_expr(::Symbol) = true
+_is_inert_expr(::Number) = true
+_is_inert_expr(::AbstractString) = true
+_is_inert_expr(_) = false
+_is_submodel_info(::SubModel) = true
+_is_submodel_info(_) = false
+_check_assignment_rhs(name, ::SlicModel) = error(
+    "`$name = <submodel>(...)` is not supported — sub-models can only be embedded via `~`. ",
+    "Use `$name ~ <submodel>(...)` instead.")
+_check_assignment_rhs(_name, ::StanExpr) = nothing
+_check_assignment_rhs(name, resolved) = error(
+    "`$name = <rhs>`: rhs forwarded to a value of type `$(typeof(resolved))`, expected `StanExpr`.")
+
 forward!(x::AssignmentExpr{Symbol}; info) = begin
     name, rhs = x.args
-    (name in keys(info) && isa(info, SubModel)) && return nothing
+    name in keys(info) && _is_submodel_info(info) && return nothing
     resolved = forward!(rhs; info)
-    isa(resolved, SlicModel) && error(
-        "`$name = <submodel>(...)` is not supported — sub-models can only be embedded via `~`. ",
-        "Use `$name ~ <submodel>(...)` instead."
-    )
-    isa(resolved, StanExpr) || error(
-        "`$name = <rhs>`: rhs forwarded to a value of type `$(typeof(resolved))`, expected `StanExpr`."
-    )
+    _check_assignment_rhs(name, resolved)
     center_type(resolved) === types.void && error(
         "`$name = <void-call>(...)`: cannot bind the return value of a void UDF. ",
         "Drop the `$name = ` and call as a statement."
@@ -802,14 +815,12 @@ forward!(x::SamplingExpr{<:Any,<:StanExpr}; info) = begin
     @assert stan.qual(lhs) == :data
     remake(x, lhs, rhs)
 end
-forward!(x::ReturnExpr; info) = if isa(info, SubModel)
-    rhs = forward!(x.args[1]; info)
-    forward!(CanonicalExpr(:(=),name(info),rhs); info=parent(info))
-elseif isa(info, StanModel)
-    rhs = forward!(x.args[1]; info)
-    forward!(CanonicalExpr(:(=), :MODEL_RV, rhs); info)
-else
-    rv = forward!(x.args[1]; info)
+forward!(x::ReturnExpr; info) = _forward_return!(x, info)
+_forward_return!(x::ReturnExpr, info::SubModel) =
+    forward!(CanonicalExpr(:(=), name(info), forward!(x.args[1]; info)); info=parent(info))
+_forward_return!(x::ReturnExpr, info::StanModel) =
+    forward!(CanonicalExpr(:(=), :MODEL_RV, forward!(x.args[1]; info)); info)
+_forward_return!(x::ReturnExpr, info) = let rv = forward!(x.args[1]; info)
     info[RV_NAME] = rv
     remake(x, rv)
 end
@@ -1739,7 +1750,9 @@ Base.show(io::StanIO, x::StanModel) = begin
     print(io, maybedoc(get(x.meta, :docstring, "")))
     print(io, Join(blocks(x), "\n"))
 end
-Base.show(io::StanIO, x::StanExpr) = isa(type(x), StringStanType) ? print(io, expr(x), "::", type(x)) : print(io, expr(x))
+Base.show(io::StanIO, x::StanExpr) = _show_stan_expr(io, type(x), x)
+_show_stan_expr(io, ::StringStanType, x) = print(io, expr(x), "::", type(x))
+_show_stan_expr(io, _t, x) = print(io, expr(x))
 # String-literal StanExprs render as a quoted Stan string.
 Base.show(io::StanIO, x::StanExpr{<:AbstractString}) = print(io, '"', expr(x), '"')
 # Sized type tokens render as Stan tuple literals at the call site. 0-dim
@@ -1849,15 +1862,13 @@ Base.show(io::IO, x::WhileExpr) = begin
     head, body = x.args
     print(io, "while(", head, ")", StanBlock(Symbol(), body.args))
 end
+_else_branch(_x, e::BlockExpr) = StanBlock(Symbol(), e.args)
+_else_branch(x, e) = error("if/elseif rendering: else branch is not a BlockExpr (got `$(typeof(e))` from `$x`).")
+
 Base.show(io::IO, x::IfExpr) = begin
     print(io, "if(", x.args[1], ")", StanBlock(Symbol(), x.args[2].args))
     if length(x.args) == 3
-        e = x.args[3]
-        print(io, " else", if isa(e, BlockExpr)
-            StanBlock(Symbol(), e.args)
-        else 
-            error("if/elseif rendering: else branch is not a BlockExpr (got `$(typeof(e))` from `$x`).")#remake(x, e.args...)
-        end)
+        print(io, " else", _else_branch(x, x.args[3]))
     end
 end
 Base.show(io::IO, x::CanonicalExpr{typeof(adjoint)}) = print(io, "(", x.args[1], "')")
@@ -1938,15 +1949,16 @@ stan_data(x::StanModel) = Dict([
     if !always_inline(value)
 ])
 
+_record_size_kwargs!(d, key, v::AbstractVector) = (d[Symbol(key, "_n")] = length(v); nothing)
+_record_size_kwargs!(d, key, v::AbstractMatrix) =
+    ((d[Symbol(key, "_m")], d[Symbol(key, "_n")]) = size(v); nothing)
+_record_size_kwargs!(args...) = nothing
+
 "StanModels can update the associated data (via `new_model = model(;x=new_x)`)."
 (x::StanModel)(;kwargs...) = begin
     xkwargs = Dict{Symbol,Any}(pairs(kwargs))
     for (key, value) in pairs(kwargs)
-        if isa(value, AbstractVector) 
-            xkwargs[Symbol(key, "_n")] = length(value)
-        elseif isa(value, AbstractMatrix) 
-            xkwargs[Symbol(key, "_m")], xkwargs[Symbol(key, "_n")] = size(value)
-        end
+        _record_size_kwargs!(xkwargs, key, value)
     end
     StanModel(x.meta, x.vars, merge(x.blocks, (;data=StanBlock(:data,OrderedDict([
         key=>StanExpr(expr(x), remake(type(x); value=get(xkwargs, key, getvalue(x))))
