@@ -250,6 +250,8 @@ begin
     _is_expr(_) = false
     _is_quotenode(::QuoteNode) = true
     _is_quotenode(_) = false
+    _is_anything_type(::Type{<:types.anything}) = true
+    _is_anything_type(_) = false
     ensure_xpair(x, default) = xiscall(x, :(=>)) ? x : xpair(x, default)
     ensure_xvect(x) = Meta.isexpr(x, :vect) ? x : xvect(x)
     ensure_xreturn(x::Expr) = if x.head in (:block, :macrocall)
@@ -299,7 +301,7 @@ begin
     end
     # Type-token positional args: bare `T` or `T[dims...]` where `T` is a Stan
     # type. Dispatched via `<:StanExpr2{<:types.tokenof{<:T_t}, S}`.
-    _is_type_token_sym(x) = _is_symbol(x) && isdefined(types, x) && getproperty(types, x) isa Type{<:types.anything}
+    _is_type_token_sym(x) = _is_symbol(x) && isdefined(types, x) && _is_anything_type(getproperty(types, x))
     _is_type_token(x) = _is_type_token_sym(x) ||
         (Meta.isexpr(x, :ref) && length(x.args) >= 1 && _is_type_token_sym(x.args[1]))
     _type_token_ref(x::Symbol) = xref(x)

@@ -1205,7 +1205,7 @@ forward!(x::CanonicalExprV{:->,A}; info) where {A} = begin
         "closure: malformed lambda — expected 2 args (lhs, body), got $(length(x.args)): $x."
     )
     lhs, body = x.args
-    isa(body, Expr) || error(
+    _is_expr(body) || error(
         "closure: lambda body must be an Expr (a `:block`), got `$(typeof(body))`. Make sure `canonical(::Expr)` is preserving `:->` args raw."
     )
     arg_names, vararg_name = _parse_lambda_lhs(lhs)
@@ -1386,7 +1386,7 @@ end
 # `_is_inert_block_stmt`).
 forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:types.closure}}; info) = begin
     name, rhs = x.args
-    name in keys(info) && isa(info, SubModel) && return nothing
+    name in keys(info) && _is_submodel_info(info) && return nothing
     name in keys(info) && error(
         "closure: rebinding `$name` is not supported — closures are SLIC-side compile-time aliases for an anonymous lambda."
     )
