@@ -286,13 +286,6 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(pdb_posterior), "stan")),
             String)
 
-        clear_cache!() = begin
-            @clear_cache! transpile.result
-            @clear_cache! compile.result
-            @clear_cache! correct.result
-            nothing
-        end
-
         # Per-check route bundle: /posterior/<pn>/check/<kind>. The IP
         # cache makes repeated requests idempotent (the underlying
         # `@cached result` re-runs only when the on-disk cache is cleared).
@@ -307,7 +300,9 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         end
 
         @get clear_cache = begin
-            clear_cache!()
+            @clear_cache! transpile.result
+            @clear_cache! compile.result
+            @clear_cache! correct.result
             h.p("Cache cleared for $pn")
         end
 
@@ -499,15 +494,46 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                 isfile(p) ? read(p, String) : default
             end
             status = read_sidecar("status")
-            stanc_sidecar = read_sidecar("stanc")
             stan_sidecar = read_sidecar("stan")
             expect = read_sidecar("expect"; default="pass")
             should_fail = expect == "fail"
 
+            # Stanc verification: cached sidecar (read at construction), the
+            # render fragments that depend on it, and the live re-run route.
+            # Mounted at `/sandbox/snippet/<name>/stanc`.
+            @include stanc = begin
+                sidecar = read_sidecar("stanc")
+
+                badge = isnothing(sidecar) ? "" :
+                    sidecar == "OK" ?
+                        h.span("stanc ✓"; data_status="success",
+                            title="Stan compiler (stanc) accepted the generated code") :
+                        h.span("stanc ✗"; data_status="error",
+                            title="Stan compiler (stanc) rejected the generated code — see error below")
+
+                error_block = (isnothing(sidecar) || sidecar == "OK") ? "" :
+                    h.div(class="htmxo-card-error")(
+                        h.strong("stanc rejected the generated Stan code:"),
+                        h.pre(h.code(sidecar)),
+                    )
+
+                @get index = begin
+                    r = __parent__.draft(code).result
+                    sc = stanc_check(r.code)
+                    if sc.ok
+                        h.div(h.span("stanc: OK"; data_status="success"),
+                            isempty(sc.output) ? "" : h.pre(sc.output; class="pdb-stanc-output"))
+                    else
+                        h.div(h.span("stanc: FAIL"; data_status="error"),
+                            h.pre(sc.output; class="pdb-stanc-output"))
+                    end
+                end
+            end
+
             # Sort key: 0 unexpected fail, 1 untried, 2 stanc fails, 3 pass, 4 xfail.
             sort_key = begin
                 ok = isnothing(status) ? nothing : status == "PASS"
-                stanc_ok = isnothing(stanc_sidecar) ? nothing : stanc_sidecar == "OK"
+                stanc_ok = isnothing(stanc.sidecar) ? nothing : stanc.sidecar == "OK"
                 if !isnothing(ok) && !ok && !should_fail
                     0
                 elseif isnothing(ok)
@@ -521,112 +547,106 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                 end
             end
 
-            stanc_badge = isnothing(stanc_sidecar) ? "" :
-                stanc_sidecar == "OK" ?
-                    h.span("stanc ✓"; data_status="success",
-                        title="Stan compiler (stanc) accepted the generated code") :
-                    h.span("stanc ✗"; data_status="error",
-                        title="Stan compiler (stanc) rejected the generated code — see error below")
+            # Card rendering: id (DOM id), the cheap `lazy` variant (cached
+            # sidecar state, no re-eval), the heavy `full` variant
+            # (re-evaluates, writes status/stan/stanc sidecars). Both
+            # variants share `id`, `header_buttons`, and the editor block.
+            @struct card = begin
+                id = "snippet-$name"
+                snippet_url = __parent__   # the snippet's URL (parent-prefix)
 
-            stanc_error_block = (isnothing(stanc_sidecar) || stanc_sidecar == "OK") ? "" :
-                h.div(class="htmxo-card-error")(
-                    h.strong("stanc rejected the generated Stan code:"),
-                    h.pre(h.code(stanc_sidecar)),
+                code_block(; standalone=false) = h.div(
+                    h.pre(h.code(code; class="language-julia");
+                        class="pdb-snippet-output",
+                        title="Ctrl+click to edit",
+                        _="on click[ctrlKey or shiftKey] halt the event set editor to the next .pdb-snippet-editor add @hidden to me remove @hidden from editor focus() the first <textarea/> in editor"),
+                    h.div(; class="pdb-snippet-editor", hidden="")(
+                        __parent__.__parent__.draft(code).editor(; name, target="#$id", standalone),
+                    ),
                 )
 
-            card_id = "snippet-$name"
-
-            code_block(; standalone=false) = h.div(
-                h.pre(h.code(code; class="language-julia");
-                    class="pdb-snippet-output",
-                    title="Ctrl+click to edit",
-                    _="on click[ctrlKey or shiftKey] halt the event set editor to the next .pdb-snippet-editor add @hidden to me remove @hidden from editor focus() the first <textarea/> in editor"),
-                h.div(; class="pdb-snippet-editor", hidden="")(
-                    __parent__.draft(code).editor(; name, target="#$card_id", standalone),
-                ),
-            )
-
-            # Heavy: re-evaluates code, writes status/stan/stanc sidecars,
-            # renders the full card. Wraps eval in `safely` so transpile
-            # errors render as a contained error article.
-            card(; standalone=false) = safely(; obj=__self__) do
-                d = __parent__.draft(code)
-                write("$file_path.status", "PASS")
-                write("$file_path.stan", d.result.code)
-                sc = stanc_check(d.result.code)
-                write("$file_path.stanc", sc.ok ? "OK" : sc.output)
-                refresh_url = standalone ? __self__ : __self__/"refresh"
-                badge = should_fail ?
-                    h.span("XPASS"; data_status="warning",
-                        title="Expected failure but transpiled — toggle 'should pass' if intentional") :
-                    h.span("PASS"; data_status="success")
-                expect_label = should_fail ? "xfail" : "should pass"
-                stanc_b = sc.ok ?
-                    h.span("stanc ✓"; data_status="success",
-                        title="Stan compiler (stanc) accepted the generated code") :
-                    h.span("stanc ✗"; data_status="error",
-                        title="Stan compiler (stanc) rejected the generated code — see error below")
-                stanc_err = sc.ok ? "" :
-                    h.div(class="htmxo-card-error")(
-                        h.strong("stanc rejected the generated Stan code:"),
-                        h.pre(h.code(sc.output)),
+                # Heavy: re-evaluates code, writes status/stan/stanc sidecars,
+                # renders the full card. Wraps eval in `safely` so transpile
+                # errors render as a contained error article.
+                index(; standalone=false) = safely(; obj=__parent__) do
+                    d = __parent__.__parent__.draft(code)
+                    write("$file_path.status", "PASS")
+                    write("$file_path.stan", d.result.code)
+                    sc = stanc_check(d.result.code)
+                    write("$file_path.stanc", sc.ok ? "OK" : sc.output)
+                    refresh_url = standalone ? snippet_url : snippet_url/"refresh"
+                    badge = should_fail ?
+                        h.span("XPASS"; data_status="warning",
+                            title="Expected failure but transpiled — toggle 'should pass' if intentional") :
+                        h.span("PASS"; data_status="success")
+                    expect_label = should_fail ? "xfail" : "should pass"
+                    stanc_b = sc.ok ?
+                        h.span("stanc ✓"; data_status="success",
+                            title="Stan compiler (stanc) accepted the generated code") :
+                        h.span("stanc ✗"; data_status="error",
+                            title="Stan compiler (stanc) rejected the generated code — see error below")
+                    stanc_err = sc.ok ? "" :
+                        h.div(class="htmxo-card-error")(
+                            h.strong("stanc rejected the generated Stan code:"),
+                            h.pre(h.code(sc.output)),
+                        )
+                    h.div(; id, class="htmxo-status-banner", data_status="success")(
+                        h.div(; class="pdb-snippet-header")(
+                            h.strong(name; contenteditable="true", class="pdb-name-input",
+                                _="on blur if my textContent.trim() is not '$name' fetch $(snippet_url/"rename")?to=\${my.textContent.trim()} then put the result into #$id.outerHTML"),
+                            badge, stanc_b,
+                            h.button("↻"; type="button", class="pdb-icon-btn",
+                                hx_get=refresh_url, hx_target="#$id", hx_swap="outerHTML"),
+                            h.button(expect_label; type="button", class="pdb-icon-btn", data_variant="text",
+                                hx_get=snippet_url/"toggle_expect", hx_target="#$id", hx_swap="outerHTML"),
+                            h.button("✕"; type="button", class="pdb-icon-btn", data_variant="del",
+                                hx_delete=snippet_url/"delete", hx_target="#$id", hx_swap="outerHTML",
+                                hx_confirm="Delete snippet '$name'?"),
+                            standalone ? "" : h.a("⧉"; href=snippet_url, target="_blank", class="pdb-icon-link"),
+                            h.a("macro"; href=snippet_url/"macroexpand", target="_blank", class="pdb-icon-link", title="Show macroexpanded code"),
+                        ),
+                        code_block(; standalone),
+                        stanc_err,
+                        standalone ? d.output :
+                        h.details(
+                            h.summary("Stan code"),
+                            d.output,
+                        ),
                     )
-                h.div(; id=card_id, class="htmxo-status-banner", data_status="success")(
-                    h.div(; class="pdb-snippet-header")(
-                        h.strong(name; contenteditable="true", class="pdb-name-input",
-                            _="on blur if my textContent.trim() is not '$name' fetch $(__self__/"rename")?to=\${my.textContent.trim()} then put the result into #$card_id.outerHTML"),
-                        badge, stanc_b,
-                        h.button("↻"; type="button", class="pdb-icon-btn",
-                            hx_get=refresh_url, hx_target="#$card_id", hx_swap="outerHTML"),
-                        h.button(expect_label; type="button", class="pdb-icon-btn", data_variant="text",
-                            hx_get=__self__/"toggle_expect", hx_target="#$card_id", hx_swap="outerHTML"),
-                        h.button("✕"; type="button", class="pdb-icon-btn", data_variant="del",
-                            hx_delete=__self__/"delete", hx_target="#$card_id", hx_swap="outerHTML",
-                            hx_confirm="Delete snippet '$name'?"),
-                        standalone ? "" : h.a("⧉"; href=__self__, target="_blank", class="pdb-icon-link"),
-                        h.a("macro"; href=__self__/"macroexpand", target="_blank", class="pdb-icon-link", title="Show macroexpanded code"),
-                    ),
-                    code_block(; standalone),
-                    stanc_err,
-                    standalone ? d.output :
-                    h.details(
-                        h.summary("Stan code"),
-                        d.output,
-                    ),
-                )
+                end
+
+                # Cheap: renders cached sidecar state, no re-eval. Used by
+                # the gallery grid and the editor's snippet list.
+                lazy = begin
+                    banner_status = isnothing(status) ? "accent" :
+                        status == "PASS" ? "success" :
+                        should_fail ? "warning" : "error"
+                    badge = isnothing(status) ? "" :
+                        status == "PASS" ? h.span("PASS"; data_status="success") :
+                        should_fail ? h.span("XFAIL"; data_status="warning") :
+                        h.span("FAIL"; data_status="error", title=status)
+                    expect_label = should_fail ? "xfail" : "should pass"
+                    h.div(; id, class="htmxo-status-banner", data_status=banner_status)(
+                        h.div(; class="pdb-snippet-header")(
+                            h.strong(name),
+                            badge, stanc.badge,
+                            h.button("↻"; type="button", class="pdb-icon-btn",
+                                hx_get=snippet_url/"refresh", hx_target="#$id", hx_swap="outerHTML"),
+                            h.button(expect_label; type="button", class="pdb-icon-btn", data_variant="text",
+                                hx_get=snippet_url/"toggle_expect", hx_target="#$id", hx_swap="outerHTML"),
+                            h.button("✕"; type="button", class="pdb-icon-btn", data_variant="del",
+                                hx_delete=snippet_url/"delete", hx_target="#$id", hx_swap="outerHTML",
+                                hx_confirm="Delete snippet '$name'?"),
+                            h.a("⧉"; href=snippet_url, target="_blank", class="pdb-icon-link"),
+                        ),
+                        code_block(),
+                        stanc.error_block,
+                    )
+                end
             end
 
-            # Cheap: renders cached sidecar state, no re-eval. Used by the
-            # gallery grid and the editor's snippet list.
-            card_lazy = begin
-                banner_status = isnothing(status) ? "accent" :
-                    status == "PASS" ? "success" :
-                    should_fail ? "warning" : "error"
-                badge = isnothing(status) ? "" :
-                    status == "PASS" ? h.span("PASS"; data_status="success") :
-                    should_fail ? h.span("XFAIL"; data_status="warning") :
-                    h.span("FAIL"; data_status="error", title=status)
-                expect_label = should_fail ? "xfail" : "should pass"
-                h.div(; id=card_id, class="htmxo-status-banner", data_status=banner_status)(
-                    h.div(; class="pdb-snippet-header")(
-                        h.strong(name),
-                        badge, stanc_badge,
-                        h.button("↻"; type="button", class="pdb-icon-btn",
-                            hx_get=__self__/"refresh", hx_target="#$card_id", hx_swap="outerHTML"),
-                        h.button(expect_label; type="button", class="pdb-icon-btn", data_variant="text",
-                            hx_get=__self__/"toggle_expect", hx_target="#$card_id", hx_swap="outerHTML"),
-                        h.button("✕"; type="button", class="pdb-icon-btn", data_variant="del",
-                            hx_delete=__self__/"delete", hx_target="#$card_id", hx_swap="outerHTML",
-                            hx_confirm="Delete snippet '$name'?"),
-                        h.a("⧉"; href=__self__, target="_blank", class="pdb-icon-link"),
-                    ),
-                    code_block(),
-                    stanc_error_block,
-                )
-            end
-
-            @get index = card(standalone=true)
-            @get refresh = card()
+            @get index = card.index(standalone=true)
+            @get refresh = card.index()
 
             @get macroexpand = begin
                 mod = Module(:Sandbox)
@@ -642,30 +662,18 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                 h.pre(h.code(join(expanded, "\n\n"); class="language-julia"))
             end
 
-            @get stanc = begin
-                r = __parent__.draft(code).result
-                sc = stanc_check(r.code)
-                if sc.ok
-                    h.div(h.span("stanc: OK"; data_status="success"),
-                        isempty(sc.output) ? "" : h.pre(sc.output; class="pdb-stanc-output"))
-                else
-                    h.div(h.span("stanc: FAIL"; data_status="error"),
-                        h.pre(sc.output; class="pdb-stanc-output"))
-                end
-            end
-
             @get rename(; to="") = begin
                 to = strip(to)
-                isempty(to) && return card()
+                isempty(to) && return card.index()
                 new_path = joinpath(__parent__.path, to * ".jl")
                 isfile(file_path) && mv(file_path, new_path; force=true)
-                __parent__.snippet(String(to)).card()
+                __parent__.snippet(String(to)).card.index()
             end
 
             @get toggle_expect = begin
                 ep = "$file_path.expect"
                 write(ep, expect == "fail" ? "pass" : "fail")
-                __parent__.snippet(name).card_lazy
+                __parent__.snippet(name).card.lazy
             end
 
             @delete delete = begin
@@ -693,7 +701,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                 h.h4(
                     h.a(item.title; href=__self__/"snippet/$(item.id)", target="_blank"),
                     h.span(status_text; data_status=status_data),
-                    s.stanc_badge,
+                    s.stanc.badge,
                 ),
                 isempty(item.description) ? h.span() : h.p(item.description),
                 h.h5("SLIC source"),
@@ -704,51 +712,63 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                 ),
                 (!isnothing(s.status) && !ok_pass) ?
                     h.p(; class="htmxo-card-error")(h.code(strip(s.status))) : h.span(),
-                s.stanc_error_block,
+                s.stanc.error_block,
             )
         end
 
         list() = h.div(; id="snippet-list", class="pdb-snippet-grid")(
-            [snippet(name).card_lazy for (name, _) in sort(snippets(), by=p -> (snippet(first(p)).sort_key, first(p)))]...
+            [snippet(name).card.lazy for (name, _) in sort(snippets(), by=p -> (snippet(first(p)).sort_key, first(p)))]...
         )
 
-        # Per-snippet: returns (name, ok::Bool, msg::String, dt::Float64). On
-        # success writes the PASS sidecar; on failure stores the one-line
-        # error message in the FAIL sidecar (so the read-only gallery can
-        # still flag broken snippets). The route safety wrapper isn't a fit
-        # here because we want the BATCH summary to render even if some
-        # entries fail.
-        compile_one(name, code) = begin
-            t0 = time()
-            ok, msg = try
-                r = draft(code).result
-                write(joinpath(path, name * ".jl.stan"), r.code)
-                true, ""
-            catch e
-                false, String(first(split(sprint(showerror, e), "\n")))
+        # Batch compile bundle. Mounted at `/sandbox/compile/...`.
+        # `one(name, code)` writes the PASS sidecar on success or the
+        # one-line error message in the FAIL sidecar; `summary(items)`
+        # renders the batch summary (the route safety wrapper isn't a fit
+        # for individual entries — we want the summary to render even if
+        # some entries fail).
+        @include compile = begin
+            one(name, code) = begin
+                t0 = time()
+                ok, msg = try
+                    r = __parent__.draft(code).result
+                    write(joinpath(__parent__.path, name * ".jl.stan"), r.code)
+                    true, ""
+                catch e
+                    false, String(first(split(sprint(showerror, e), "\n")))
+                end
+                write(joinpath(__parent__.path, name * ".jl.status"), ok ? "PASS" : msg)
+                (name=name, ok=ok, msg=msg, dt=time() - t0)
             end
-            write(joinpath(path, name * ".jl.status"), ok ? "PASS" : msg)
-            (name=name, ok=ok, msg=msg, dt=time() - t0)
-        end
 
-        compile_summary(items) = begin
-            results = [compile_one(n, c) for (n, c) in items]
-            n_pass = count(r -> r.ok, results)
-            n_fail = length(results) - n_pass
-            total_time = sum(r -> r.dt, results; init=0.0)
-            h.div(
-                h.p(
-                    h.strong("$(n_pass)/$(length(results)) passed"),
-                    n_fail > 0 ? h.span(" ($n_fail failed)"; data_status="error") : "",
-                    h.small(" in $(round(total_time; digits=2))s"),
-                ),
-                [h.div(; class="pdb-snippet-result-row")(
-                    h.span(r.ok ? "PASS" : "FAIL"; data_status=r.ok ? "success" : "error"),
-                    " ", r.name,
-                    h.small(" $(round(r.dt*1000; digits=0))ms"),
-                    r.ok ? "" : h.small(" - ", r.msg; data_status="error"),
-                ) for r in results]...,
-            )
+            summary(items) = begin
+                results = [one(n, c) for (n, c) in items]
+                n_pass = count(r -> r.ok, results)
+                n_fail = length(results) - n_pass
+                total_time = sum(r -> r.dt, results; init=0.0)
+                h.div(
+                    h.p(
+                        h.strong("$(n_pass)/$(length(results)) passed"),
+                        n_fail > 0 ? h.span(" ($n_fail failed)"; data_status="error") : "",
+                        h.small(" in $(round(total_time; digits=2))s"),
+                    ),
+                    [h.div(; class="pdb-snippet-result-row")(
+                        h.span(r.ok ? "PASS" : "FAIL"; data_status=r.ok ? "success" : "error"),
+                        " ", r.name,
+                        h.small(" $(round(r.dt*1000; digits=0))ms"),
+                        r.ok ? "" : h.small(" - ", r.msg; data_status="error"),
+                    ) for r in results]...,
+                )
+            end
+
+            @get all = summary(__parent__.snippets())
+
+            @get failures = begin
+                to_compile = Base.filter(__parent__.snippets()) do (n, _)
+                    s = __parent__.snippet(n)
+                    isnothing(s.status) || (s.status != "PASS" && !s.should_fail)
+                end
+                isempty(to_compile) ? h.p("No unexpected failures or untried snippets") : summary(to_compile)
+            end
         end
 
         @get index = h.div(; data_layout="wide")(
@@ -756,11 +776,11 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             h.div(; class="pdb-sandbox-toolbar")(
                 h.h3("Saved Snippets"),
                 h.button("Compile Failures"; type="button",
-                    hx_get=__self__/"compile_failures", hx_target="#compile-all-output", hx_swap="innerHTML"),
+                    hx_get=__self__/"compile/failures", hx_target="#compile-all-output", hx_swap="innerHTML"),
                 h.button("Spot Check (5)"; type="button",
                     hx_get=__self__/"spot_check", hx_target="#compile-all-output", hx_swap="innerHTML"),
                 h.button("Compile All"; type="button",
-                    hx_get=__self__/"compile_all", hx_target="#compile-all-output", hx_swap="innerHTML"),
+                    hx_get=__self__/"compile/all", hx_target="#compile-all-output", hx_swap="innerHTML"),
                 h.button("Verify stanc"; type="button",
                     hx_get=__self__/"stanc_all", hx_target="#compile-all-output", hx_swap="innerHTML"),
             ),
@@ -788,23 +808,13 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             isdir(path) || mkpath(path)
             write(joinpath(path, name * ".jl"), code)
             if from_card
-                snippet(name).card(standalone=standalone=="1")
+                snippet(name).card.index(standalone=standalone=="1")
             else
                 [draft(code).output, h.template(list())]
             end
         end
 
         @get refresh_all = list()
-
-        @get compile_all = compile_summary(snippets())
-
-        @get compile_failures = begin
-            to_compile = Base.filter(snippets()) do (n, _)
-                s = snippet(n)
-                isnothing(s.status) || (s.status != "PASS" && !s.should_fail)
-            end
-            isempty(to_compile) ? h.p("No unexpected failures or untried snippets") : compile_summary(to_compile)
-        end
 
         @get spot_check(; n="5") = begin
             num = parse(Int, n)
@@ -813,7 +823,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                 !isnothing(s) && s == "PASS"
             end
             sample = passes[Random.randperm(length(passes))[1:min(num, length(passes))]]
-            isempty(sample) ? h.p("No passing snippets to spot check") : compile_summary(sample)
+            isempty(sample) ? h.p("No passing snippets to spot check") : compile.summary(sample)
         end
 
         @get stanc_all = begin
