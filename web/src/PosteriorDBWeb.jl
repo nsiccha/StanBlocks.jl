@@ -22,6 +22,21 @@ pdb() = PosteriorDB.database()
 
 transpile_check(post) = (code=stan_code(post),)
 
+# Run `stanc --warn-pedantic` on a stan source string and return
+# `(ok::Bool, output::String)`. Pure utility on a string arg — used by
+# multiple sandbox sites (live editor card, batch verification) where the
+# stan source comes from different identities (live transpile vs cached
+# sidecar), so it has no natural single-owner to attach to.
+function stanc_check(stan_code_str::AbstractString)
+    stanc = "/home/niko/.cmdstan/cmdstan-2.37.0/bin/stanc"
+    tmpfile = tempname() * ".stan"
+    write(tmpfile, stan_code_str)
+    io = IOBuffer()
+    ok = success(pipeline(`$stanc --warn-pedantic $tmpfile`; stderr=io, stdout=io))
+    rm(tmpfile; force=true)
+    (ok=ok, output=String(take!(io)))
+end
+
 compile_check(post) = (dimension=LogDensityProblems.dimension(instantiate(post)),)
 
 function compare_logdensities(reference, test; stat_f=median, m=200)
@@ -52,14 +67,6 @@ function correct_check(posterior)
         error("Relative difference: $(result.relative_remaining_difference)")
     (stats=result,)
 end
-
-# --- Web app ---
-
-function split_posterior_name(pn)
-    parts = split(pn, "-"; limit=2)
-    length(parts) == 2 ? (parts[1], parts[2]) : (pn, "")
-end
-
 
 # --- Sandbox gallery (read-only view of `web/sandbox/`) ----------------------
 #
@@ -154,48 +161,51 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         if !isnothing(slic_implementation(PosteriorDB.posterior(pdb(), pn)))
     ])
 
-    # All per-posterior data + rendering. Three sibling sub-DOs (transpile,
-    # compile, correct) share shape (label, check_url, @cached result, status)
-    # but have distinct check bodies. The indexed `view(kind)` dispatches via
-    # `__parent__` for shared rendering (cell, section) — keeps the render
+    # All per-posterior data, rendering, and routes. Mounted at
+    # `/posterior/<pn>/...`. Three sibling sub-DOs (transpile, compile,
+    # correct) share shape (label, check_url, @cached result, status) but
+    # have distinct check bodies. `check_action(kind)` dispatches via
+    # `__self__` for shared cell/section/force rendering — keeps the render
     # logic in one place without losing per-check identity on the data side.
-    @struct posterior(pn) = begin
-        # `pn` arrives as `SubString` from URL routing; PosteriorDB rejects
-        # that. Cast once here and use `pn_s` everywhere PosteriorDB sees it.
-        pn_s = String(pn)
-        pdb_posterior = PosteriorDB.posterior(pdb(), pn_s)
+    @include posterior(pn::String) = begin
+        # `_convert_param(::AbstractString, ::Type{<:AbstractString})` is a
+        # no-op in HTMXObjects, so `pn::String` only affects dispatch — the
+        # value still arrives as `SubString`. PosteriorDB requires `String`.
+        pdb_posterior = PosteriorDB.posterior(pdb(), String(pn))
 
         detail_id = "detail-$pn"
         toggle    = "on click toggle @hidden on #$detail_id"
 
-        dataset_name, model_name = split_posterior_name(pn)
+        dataset_name, model_name = let parts = split(pn, "-"; limit=2)
+            length(parts) == 2 ? (parts[1], parts[2]) : (pn, "")
+        end
 
         @struct transpile = begin
             label     = "Transpiles"
-            check_url = "/check/$pn/transpile"
+            check_url = "/posterior/$pn/check/transpile"
             @cached result = transpile_check(slic_implementation(pdb_posterior))
             status = @cache_status result
         end
 
         @struct compile = begin
             label     = "Compiles"
-            check_url = "/check/$pn/compile"
+            check_url = "/posterior/$pn/check/compile"
             @cached result = compile_check(slic_implementation(pdb_posterior))
             status = @cache_status result
         end
 
         @struct correct = begin
             label     = "Correct"
-            check_url = "/check/$pn/correct"
+            check_url = "/posterior/$pn/check/correct"
             @cached result = correct_check(pdb_posterior)
             status = @cache_status result
         end
 
-        # Rendering for one check kind (`:transpile` | `:compile` | `:correct`).
-        # Dispatches via `__parent__` so cell + section live in one place. The
-        # check sub-DOs (above) own the data identity; this IP owns the view
-        # derivations.
-        @struct view(kind::Symbol) = begin
+        # Per-kind derivations: cell + section rendering, plus the
+        # side-effecting `force` (clears stale `:started` cache, returns
+        # result). All three share `(kind)` so they live in one bundle
+        # instead of as flat siblings on the posterior.
+        @struct check_action(kind::Symbol) = begin
             c        = getproperty(__parent__, kind)
             target   = "#$(__parent__.detail_id)"
             on_load  = "on htmx:afterOnLoad if not me.hasAttribute('data-batch') then remove @hidden from $target end remove @data-batch from me"
@@ -233,6 +243,10 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                 )
             end
 
+            force = begin
+                c.status == :started && @clear_cache! c.result
+                c.result
+            end
         end
 
         # Dashboard banner color: red if any check has actually failed; green
@@ -246,9 +260,9 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             h.td(pn; _=toggle),
             h.td(dataset_name; _=toggle),
             h.td(model_name; _=toggle),
-            view(:transpile).cell,
-            view(:compile).cell,
-            view(:correct).cell,
+            check_action(:transpile).cell,
+            check_action(:compile).cell,
+            check_action(:correct).cell,
         ]
 
         row = [
@@ -262,9 +276,9 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         detail = h.td(; colspan="6")(
             h.div(; class="htmxo-status-banner", data_status=banner_status)(
                 h.h4(pn),
-                view(:transpile).section,
-                view(:compile).section,
-                view(:correct).section,
+                check_action(:transpile).section,
+                check_action(:compile).section,
+                check_action(:correct).section,
             )
         )
 
@@ -272,20 +286,34 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(pdb_posterior), "stan")),
             String)
 
-        # Force (re)compute one check, clearing the empty `:started` marker
-        # left behind by a previously-failed run so the next access recomputes.
-        force_check(kind::Symbol) = begin
-            c = getproperty(__self__, kind)
-            c.status == :started && @clear_cache! c.result
-            c.result
-        end
-
         clear_cache!() = begin
             @clear_cache! transpile.result
             @clear_cache! compile.result
             @clear_cache! correct.result
             nothing
         end
+
+        # Per-check route bundle: /posterior/<pn>/check/<kind>. The IP
+        # cache makes repeated requests idempotent (the underlying
+        # `@cached result` re-runs only when the on-disk cache is cleared).
+        @include check = begin
+            do_check(kind::Symbol) = begin
+                __parent__.check_action(kind).force
+                [__parent__.detail, h.template(__parent__.updated_summary)]
+            end
+            @get transpile = do_check(:transpile)
+            @get compile   = do_check(:compile)
+            @get correct   = do_check(:correct)
+        end
+
+        @get clear_cache = begin
+            clear_cache!()
+            h.p("Cache cleared for $pn")
+        end
+
+        @get ref = reference_stan
+
+        @get model = h.div(detail)
     end
 
     @get index = h.div(
@@ -360,61 +388,40 @@ const APPDATA = SbAppData(; cache_type=:parallel)
     @include tests = TestRoutes(; __req__, test_module=@__MODULE__)
 
     @get clear_cache = begin
-        foreach(rm, filter(f -> endswith(f, ".sjl"), readdir(cache_path; join=true)))
+        foreach(rm, Base.filter(f -> endswith(f, ".sjl"), readdir(cache_path; join=true)))
         h.p("Cache cleared")
     end
 
-    @get clear_cache_model(pn) = begin
-        posterior(pn).clear_cache!()
-        h.p("Cache cleared for $pn")
-    end
-
-    # Per-check routes for one posterior, mounted at `/check/<pn>/<kind>`.
-    # `force_check` runs once per (posterior, kind) — the IP cache makes
-    # repeated /check requests idempotent (the underlying `@cached result`
-    # is what re-runs when the on-disk cache is cleared).
-    @include check(pn::String) = begin
-        do_check(kind::Symbol) = begin
-            p = __parent__.posterior(pn)
-            p.force_check(kind)
-            [p.detail, h.template(p.updated_summary)]
-        end
-
-        @get transpile = do_check(:transpile)
-        @get compile   = do_check(:compile)
-        @get correct   = do_check(:correct)
-    end
-
-    @get ref(pn) = posterior(pn).reference_stan
-
-    filtered_names(check, status) = begin
+    # Per-check-kind routes for batch operations across all posteriors.
+    # Mounted at `/checks/<check>/{filter|recheck}[/<status>]`.
+    @include checks(check::String) = begin
         kind = Symbol(check)
-        names = String[]
-        for pn in posterior_names
-            s = getproperty(posterior(pn), kind).status
-            show = status == "pass" ? s == :ready :
-                   status == "fail" ? s == :started :
-                   status == "unchecked" ? s == :unstarted : true
-            show && push!(names, pn)
+
+        names_with(status::String) = begin
+            out = String[]
+            for pn in __parent__.posterior_names
+                s = getproperty(__parent__.posterior(pn), kind).status
+                show = status == "pass"      ? s == :ready    :
+                       status == "fail"      ? s == :started  :
+                       status == "unchecked" ? s == :unstarted : true
+                show && push!(out, pn)
+            end
+            out
         end
-        names
-    end
 
-    @get filter(check, status="all") = join(filtered_names(check, status), "\n")
+        @get filter(status::String="all") = join(names_with(status), "\n")
 
-    # Batch recheck: /recheck/{check}/{status}. Errors bubble through the
-    # route safety wrapper; PASSes are reported in the response body.
-    @get recheck(check, status="fail") = begin
-        kind = Symbol(check)
-        results = String[]
-        for pn in filtered_names(check, status)
-            posterior(pn).force_check(kind)
-            push!(results, "PASS $pn")
+        # Batch recheck. Errors bubble through the route safety wrapper;
+        # PASSes are reported in the response body.
+        @get recheck(status::String="fail") = begin
+            results = String[]
+            for pn in names_with(status)
+                __parent__.posterior(pn).check_action(kind).force
+                push!(results, "PASS $pn")
+            end
+            join(results, "\n")
         end
-        join(results, "\n")
     end
-
-    @get model(pn) = h.div(posterior(pn).detail)
 
     # --- Sandbox: interactive SLIC editor + read-only gallery ---
     #
@@ -438,68 +445,43 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             out
         end
 
-        save(name, code) = begin
-            isdir(path) || mkpath(path)
-            write(joinpath(path, name * ".jl"), code)
-        end
-
-        auto_name(code) = begin
-            m = match(r"@slic\s+(?:\([^)]*\)\s+)?begin\s*\n\s*(\w+)", code)
-            base = isnothing(m) ? "snippet" : m[1]
-            existing = first.(snippets())
-            name = base
-            i = 1
-            while name in existing
-                i += 1
-                name = "$(base)_$i"
+        # Per-`code` derivations: transpile, render the result, render the
+        # editor form. `result` evaluates user-typed SLIC source (throws on
+        # parse / transpile failure — `snippet(name).card` wraps this in
+        # `safely(; obj=__self__)` to contain errors).
+        @struct draft(code) = begin
+            result = begin
+                if !isdefined(Main, :StanBlocks)
+                    Core.eval(Main, :(const StanBlocks = $StanBlocks))
+                    Base.eval(Main, :(using .StanBlocks))
+                end
+                exprs = Meta.parseall(code).args
+                rv = nothing
+                for expr in exprs
+                    expr isa LineNumberNode && continue
+                    rv = Base.eval(Main, expr)
+                end
+                m = rv::StanBlocks.stan.SlicModel
+                (code=Base.invokelatest(stan_code, m),)
             end
-            name
+
+            output = h.div(; id="sandbox-output")(
+                h.div(
+                    h.p(h.strong("Transpilation: "), h.span("PASS"; data_status="success")),
+                    h.pre(h.code(result.code; class="language-stan"); class="pdb-code-large"),
+                ),
+            )
+
+            editor(; name="", target="#sandbox-output", standalone=false) = h.form(;
+                hx_post=__parent__/"run", hx_target=target, hx_swap="outerHTML",
+            )(
+                name == "" ? "" : h.input(; name="name", type="hidden", value=name),
+                standalone ? h.input(; name="standalone", type="hidden", value="1") : "",
+                h.textarea(code; name="code", rows="15",
+                    class="pdb-snippet-input",
+                    _="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .pdb-snippet-editor add @hidden to editor remove @hidden from previous <pre/> from editor"),
+            )
         end
-
-        # Eval user-typed SLIC code and transpile. Throws on parse / transpile
-        # failure — `snippet(name).card` wraps this in `safely(; obj=__self__)`
-        # so the error is contained to the failing card.
-        result(code) = begin
-            if !isdefined(Main, :StanBlocks)
-                Core.eval(Main, :(const StanBlocks = $StanBlocks))
-                Base.eval(Main, :(using .StanBlocks))
-            end
-            exprs = Meta.parseall(code).args
-            rv = nothing
-            for expr in exprs
-                expr isa LineNumberNode && continue
-                rv = Base.eval(Main, expr)
-            end
-            m = rv::StanBlocks.stan.SlicModel
-            (code=Base.invokelatest(stan_code, m),)
-        end
-
-        stanc_check(stan_code_str) = begin
-            stanc = "/home/niko/.cmdstan/cmdstan-2.37.0/bin/stanc"
-            tmpfile = tempname() * ".stan"
-            write(tmpfile, stan_code_str)
-            io = IOBuffer()
-            ok = success(pipeline(`$stanc --warn-pedantic $tmpfile`; stderr=io, stdout=io))
-            rm(tmpfile; force=true)
-            (ok=ok, output=String(take!(io)))
-        end
-
-        output(result) = h.div(; id="sandbox-output")(
-            h.div(
-                h.p(h.strong("Transpilation: "), h.span("PASS"; data_status="success")),
-                h.pre(h.code(result.code; class="language-stan"); class="pdb-code-large"),
-            ),
-        )
-
-        editor(code; name="", target="#sandbox-output", standalone=false) = h.form(;
-            hx_post=__self__/"run", hx_target=target, hx_swap="outerHTML",
-        )(
-            name == "" ? "" : h.input(; name="name", type="hidden", value=name),
-            standalone ? h.input(; name="standalone", type="hidden", value="1") : "",
-            h.textarea(code; name="code", rows="15",
-                class="pdb-snippet-input",
-                _="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .pdb-snippet-editor add @hidden to editor remove @hidden from previous <pre/> from editor"),
-        )
 
         default_slic_code = """@slic (;y=randn(10)) begin
         mu ~ normal(0, 1)
@@ -560,7 +542,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                     title="Ctrl+click to edit",
                     _="on click[ctrlKey or shiftKey] halt the event set editor to the next .pdb-snippet-editor add @hidden to me remove @hidden from editor focus() the first <textarea/> in editor"),
                 h.div(; class="pdb-snippet-editor", hidden="")(
-                    __parent__.editor(code; name, target="#$card_id", standalone),
+                    __parent__.draft(code).editor(; name, target="#$card_id", standalone),
                 ),
             )
 
@@ -568,10 +550,10 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             # renders the full card. Wraps eval in `safely` so transpile
             # errors render as a contained error article.
             card(; standalone=false) = safely(; obj=__self__) do
-                r = __parent__.result(code)
+                d = __parent__.draft(code)
                 write("$file_path.status", "PASS")
-                write("$file_path.stan", r.code)
-                sc = __parent__.stanc_check(r.code)
+                write("$file_path.stan", d.result.code)
+                sc = stanc_check(d.result.code)
                 write("$file_path.stanc", sc.ok ? "OK" : sc.output)
                 refresh_url = standalone ? __self__ : __self__/"refresh"
                 badge = should_fail ?
@@ -606,10 +588,10 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                     ),
                     code_block(; standalone),
                     stanc_err,
-                    standalone ? __parent__.output(r) :
+                    standalone ? d.output :
                     h.details(
                         h.summary("Stan code"),
-                        __parent__.output(r),
+                        d.output,
                     ),
                 )
             end
@@ -661,8 +643,8 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             end
 
             @get stanc = begin
-                r = __parent__.result(code)
-                sc = __parent__.stanc_check(r.code)
+                r = __parent__.draft(code).result
+                sc = stanc_check(r.code)
                 if sc.ok
                     h.div(h.span("stanc: OK"; data_status="success"),
                         isempty(sc.output) ? "" : h.pre(sc.output; class="pdb-stanc-output"))
@@ -739,7 +721,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         compile_one(name, code) = begin
             t0 = time()
             ok, msg = try
-                r = result(code)
+                r = draft(code).result
                 write(joinpath(path, name * ".jl.stan"), r.code)
                 true, ""
             catch e
@@ -785,20 +767,30 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             list(),
             h.div(; id="compile-all-output")(""),
             h.h3("New"),
-            editor(default_slic_code),
+            draft(default_slic_code).editor(),
             h.div(; id="sandbox-output")(""),
         )
 
         @post run(; code="", name="", standalone="") = begin
             from_card = !isempty(strip(name))
             name = String(strip(name))
-            isempty(name) && (name = auto_name(code))
-            save(name, code)
+            if isempty(name)
+                m = match(r"@slic\s+(?:\([^)]*\)\s+)?begin\s*\n\s*(\w+)", code)
+                base = isnothing(m) ? "snippet" : m[1]
+                existing = first.(snippets())
+                name = base
+                i = 1
+                while name in existing
+                    i += 1
+                    name = "$(base)_$i"
+                end
+            end
+            isdir(path) || mkpath(path)
+            write(joinpath(path, name * ".jl"), code)
             if from_card
                 snippet(name).card(standalone=standalone=="1")
             else
-                r = result(code)
-                [output(r), h.template(list())]
+                [draft(code).output, h.template(list())]
             end
         end
 
