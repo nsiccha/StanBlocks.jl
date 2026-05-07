@@ -446,15 +446,11 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         # `safely(; obj=__self__)` to contain errors).
         @struct draft(code) = begin
             result = begin
-                if !isdefined(Main, :StanBlocks)
-                    Core.eval(Main, :(const StanBlocks = $StanBlocks))
-                    Base.eval(Main, :(using .StanBlocks))
-                end
                 exprs = Meta.parseall(code).args
                 rv = nothing
                 for expr in exprs
                     expr isa LineNumberNode && continue
-                    rv = Base.eval(Main, expr)
+                    rv = Base.eval(@__MODULE__, expr)
                 end
                 m = rv::StanBlocks.stan.SlicModel
                 (code=Base.invokelatest(stan_code, m),)
@@ -649,14 +645,12 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             @get refresh = card.index()
 
             @get macroexpand = begin
-                mod = Module(:Sandbox)
-                Core.eval(mod, :(const StanBlocks = $StanBlocks))
-                Base.eval(mod, :(using .StanBlocks))
                 exprs = Meta.parseall(code).args
+                mod = @__MODULE__
                 expanded = String[]
                 for expr in exprs
                     expr isa LineNumberNode && continue
-                    ex = Base.eval(mod, :(macroexpand($mod, $(QuoteNode(expr)))))
+                    ex = macroexpand(mod, expr)
                     push!(expanded, sprint(Base.show_unquoted, ex))
                 end
                 h.pre(h.code(join(expanded, "\n\n"); class="language-julia"))
