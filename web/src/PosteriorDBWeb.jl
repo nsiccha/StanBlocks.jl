@@ -91,8 +91,8 @@ const _sandbox_gallery = Gallery(_SANDBOX_GALLERY_DIR)
     record_gallery(record_dir::String, record_base::String) = begin
         ids = [it.id for it in _sandbox_gallery.items]
         paths = vcat(
-            ["/gallery"],
-            ["/sandbox_view/$id" for id in ids],
+            ["/sandbox/gallery"],
+            ["/sandbox/snippet/$id" for id in ids],
         )
 
         phases = [prepare_progress!(__status__; description=p) for p in paths]
@@ -312,7 +312,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         h.body(
             h.header(class="container")(
                 h.h1("StanBlocks.jl PosteriorDB Dashboard"),
-                h.nav(h.a("PosteriorDB"; href=__self__), " | ", h.a("Tests"; href=__self__/"tests"), " | ", h.a("Sandbox"; href=__self__/"sandbox"), " | ", h.a("Gallery"; href=__self__/"gallery")),
+                h.nav(h.a("PosteriorDB"; href=__self__), " | ", h.a("Tests"; href=__self__/"tests"), " | ", h.a("Sandbox"; href=__self__/"sandbox"), " | ", h.a("Gallery"; href=__self__/"sandbox/gallery")),
             ),
             h.main(class="container")(h.div(content; id="content"))
         );
@@ -413,278 +413,460 @@ const APPDATA = SbAppData(; cache_type=:parallel)
 
     @get model(pn) = h.div(posterior(pn).detail)
 
-    # --- Sandbox: interactive SLIC editor ---
+    # --- Sandbox: interactive SLIC editor + read-only gallery ---
+    #
+    # All sandbox-related state, helpers, and routes live in this `@include`
+    # bundle. URLs mount under `/sandbox/...`; per-snippet routes live under
+    # `/sandbox/snippet/<name>/...` via the indexed `@include snippet(name)`
+    # sub-bundle. See `SbAppData.record_gallery` for the recording driver,
+    # which hardcodes the public URL list.
+    @include sandbox = begin
+        path = joinpath(dirname(dirname(@__DIR__)), "web", "sandbox")
 
-    sandbox_path = joinpath(dirname(dirname(@__DIR__)), "web", "sandbox")
-
-    sandbox_snippets() = begin
-        isdir(sandbox_path) || mkpath(sandbox_path)
-        snippets = Pair{String,String}[]
-        for f in sort(readdir(sandbox_path))
-            endswith(f, ".jl") || continue
-            name = f[1:end-3]
-            code = read(joinpath(sandbox_path, f), String)
-            push!(snippets, name => code)
+        snippets() = begin
+            isdir(path) || mkpath(path)
+            out = Pair{String,String}[]
+            for f in sort(readdir(path))
+                endswith(f, ".jl") || continue
+                name = f[1:end-3]
+                code = read(joinpath(path, f), String)
+                push!(out, name => code)
+            end
+            out
         end
-        snippets
-    end
 
-    sandbox_save(name, code) = begin
-        isdir(sandbox_path) || mkpath(sandbox_path)
-        write(joinpath(sandbox_path, name * ".jl"), code)
-    end
-
-    sandbox_auto_name(code) = begin
-        # Try to extract a meaningful name from the code
-        m = match(r"@slic\s+(?:\([^)]*\)\s+)?begin\s*\n\s*(\w+)", code)
-        base = isnothing(m) ? "snippet" : m[1]
-        existing = first.(sandbox_snippets())
-        name = base
-        i = 1
-        while name in existing
-            i += 1
-            name = "$(base)_$i"
+        save(name, code) = begin
+            isdir(path) || mkpath(path)
+            write(joinpath(path, name * ".jl"), code)
         end
-        name
-    end
 
-    # Eval user-typed SLIC code and transpile. Throws on parse / transpile
-    # failure — the per-card render wraps this in `safely(; obj=__self__)`
-    # so the error is contained to the failing card.
-    sandbox_result(code) = begin
-        if !isdefined(Main, :StanBlocks)
-            Core.eval(Main, :(const StanBlocks = $StanBlocks))
-            Base.eval(Main, :(using .StanBlocks))
+        auto_name(code) = begin
+            m = match(r"@slic\s+(?:\([^)]*\)\s+)?begin\s*\n\s*(\w+)", code)
+            base = isnothing(m) ? "snippet" : m[1]
+            existing = first.(snippets())
+            name = base
+            i = 1
+            while name in existing
+                i += 1
+                name = "$(base)_$i"
+            end
+            name
         end
-        exprs = Meta.parseall(code).args
-        rv = nothing
-        for expr in exprs
-            expr isa LineNumberNode && continue
-            rv = Base.eval(Main, expr)
+
+        # Eval user-typed SLIC code and transpile. Throws on parse / transpile
+        # failure — `snippet(name).card` wraps this in `safely(; obj=__self__)`
+        # so the error is contained to the failing card.
+        result(code) = begin
+            if !isdefined(Main, :StanBlocks)
+                Core.eval(Main, :(const StanBlocks = $StanBlocks))
+                Base.eval(Main, :(using .StanBlocks))
+            end
+            exprs = Meta.parseall(code).args
+            rv = nothing
+            for expr in exprs
+                expr isa LineNumberNode && continue
+                rv = Base.eval(Main, expr)
+            end
+            m = rv::StanBlocks.stan.SlicModel
+            (code=Base.invokelatest(stan_code, m),)
         end
-        m = rv::StanBlocks.stan.SlicModel
-        (code=Base.invokelatest(stan_code, m),)
-    end
 
-    stanc_check(stan_code_str) = begin
-        stanc = "/home/niko/.cmdstan/cmdstan-2.37.0/bin/stanc"
-        tmpfile = tempname() * ".stan"
-        write(tmpfile, stan_code_str)
-        io = IOBuffer()
-        ok = success(pipeline(`$stanc --warn-pedantic $tmpfile`; stderr=io, stdout=io))
-        rm(tmpfile; force=true)
-        (ok=ok, output=String(take!(io)))
-    end
+        stanc_check(stan_code_str) = begin
+            stanc = "/home/niko/.cmdstan/cmdstan-2.37.0/bin/stanc"
+            tmpfile = tempname() * ".stan"
+            write(tmpfile, stan_code_str)
+            io = IOBuffer()
+            ok = success(pipeline(`$stanc --warn-pedantic $tmpfile`; stderr=io, stdout=io))
+            rm(tmpfile; force=true)
+            (ok=ok, output=String(take!(io)))
+        end
 
-    sandbox_output(result) = h.div(; id="sandbox-output")(
-        h.div(
-            h.p(h.strong("Transpilation: "), h.span("PASS"; data_status="success")),
-            h.pre(h.code(result.code; class="language-stan"); class="pdb-code-large"),
-        ),
-    )
-
-    sandbox_editor(code; name="", target="#sandbox-output", standalone=false) = h.form(;
-        hx_post=__self__/"sandbox_run", hx_target=target, hx_swap="outerHTML",
-    )(
-        name == "" ? "" : h.input(; name="name", type="hidden", value=name),
-        standalone ? h.input(; name="standalone", type="hidden", value="1") : "",
-        h.textarea(code; name="code", rows="15",
-            class="pdb-snippet-input",
-            _="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .pdb-snippet-editor add @hidden to editor remove @hidden from previous <pre/> from editor"),
-    )
-
-    snippet_code_block(name, code, card_id; standalone=false) = h.div(
-        h.pre(h.code(code; class="language-julia");
-            class="pdb-snippet-output",
-            title="Ctrl+click to edit",
-            _="on click[ctrlKey or shiftKey] halt the event set editor to the next .pdb-snippet-editor add @hidden to me remove @hidden from editor focus() the first <textarea/> in editor"),
-        h.div(; class="pdb-snippet-editor", hidden="")(
-            sandbox_editor(code; name, target="#$card_id", standalone),
-        ),
-    )
-
-    # Read a sidecar file `<name>.jl.<suffix>` (PASS/FAIL status, stanc
-    # output, …) from `sandbox_path`. Used by both the live editor flow
-    # and the read-only `/gallery` view to surface cached results
-    # without re-evaluating snippets.
-    sandbox_read_sidecar(name, suffix) = let p = joinpath(sandbox_path, "$name.jl.$suffix")
-        isfile(p) ? read(p, String) : nothing
-    end
-    sandbox_read_stanc(name) = sandbox_read_sidecar(name, "stanc")
-    sandbox_read_status(name) = sandbox_read_sidecar(name, "status")
-    sandbox_read_stan(name) = sandbox_read_sidecar(name, "stan")
-
-
-    stanc_badge(name) = begin
-        sc = sandbox_read_stanc(name)
-        isnothing(sc) && return ""
-        sc == "OK" ?
-            h.span("stanc ✓"; data_status="success",
-                title="Stan compiler (stanc) accepted the generated code") :
-            h.span("stanc ✗"; data_status="error",
-                title="Stan compiler (stanc) rejected the generated code — see error below")
-    end
-
-    stanc_error_block(name) = begin
-        sc = sandbox_read_stanc(name)
-        (isnothing(sc) || sc == "OK") && return ""
-        h.div(class="htmxo-card-error")(
-            h.strong("stanc rejected the generated Stan code:"),
-            h.pre(h.code(sc)),
-        )
-    end
-
-    snippet_card(name, code; standalone=false) = safely(; obj=__self__) do
-        result = sandbox_result(code)
-        write(joinpath(sandbox_path, name * ".jl.status"), "PASS")
-        write(joinpath(sandbox_path, name * ".jl.stan"), result.code)
-        sc = stanc_check(result.code)
-        write(joinpath(sandbox_path, name * ".jl.stanc"), sc.ok ? "OK" : sc.output)
-        should_fail = sandbox_should_fail(name)
-        card_id = "snippet-$name"
-        refresh_url = standalone ? __self__/"sandbox_view/$name" : __self__/"sandbox_refresh/$name"
-        badge = should_fail ? h.span("XPASS"; data_status="warning",
-                                            title="Expected failure but transpiled — toggle 'should pass' if intentional") :
-                                     h.span("PASS"; data_status="success")
-        expect_label = should_fail ? "xfail" : "should pass"
-        h.div(; id=card_id, class="htmxo-status-banner", data_status="success")(
-            h.div(; class="pdb-snippet-header")(
-                h.strong(name; contenteditable="true", class="pdb-name-input",
-                    _="on blur if my textContent.trim() is not '$name' fetch /sandbox_rename/$name?to=\${my.textContent.trim()} then put the result into #$card_id.outerHTML"),
-                badge, stanc_badge(name),
-                h.button("↻"; type="button", class="pdb-icon-btn",
-                    hx_get=refresh_url, hx_target="#$card_id", hx_swap="outerHTML"),
-                h.button(expect_label; type="button", class="pdb-icon-btn", data_variant="text",
-                    hx_get=__self__/"sandbox_toggle_expect/$name", hx_target="#$card_id", hx_swap="outerHTML"),
-                h.button("✕"; type="button", class="pdb-icon-btn", data_variant="del",
-                    hx_delete=__self__/"sandbox_delete/$name", hx_target="#$card_id", hx_swap="outerHTML",
-                    hx_confirm="Delete snippet '$name'?"),
-                standalone ? "" : h.a("⧉"; href=__self__/"sandbox_view/$name", target="_blank", class="pdb-icon-link"),
-                h.a("macro"; href=__self__/"sandbox_macroexpand/$name", target="_blank", class="pdb-icon-link", title="Show macroexpanded code"),
-            ),
-            snippet_code_block(name, code, card_id; standalone),
-            stanc_error_block(name),
-            standalone ? sandbox_output(result) :
-            h.details(
-                h.summary("Stan code"),
-                sandbox_output(result),
+        output(result) = h.div(; id="sandbox-output")(
+            h.div(
+                h.p(h.strong("Transpilation: "), h.span("PASS"; data_status="success")),
+                h.pre(h.code(result.code; class="language-stan"); class="pdb-code-large"),
             ),
         )
-    end
 
-    sandbox_read_expect(name) = begin
-        ep = joinpath(sandbox_path, name * ".jl.expect")
-        isfile(ep) ? read(ep, String) : "pass"
-    end
+        editor(code; name="", target="#sandbox-output", standalone=false) = h.form(;
+            hx_post=__self__/"run", hx_target=target, hx_swap="outerHTML",
+        )(
+            name == "" ? "" : h.input(; name="name", type="hidden", value=name),
+            standalone ? h.input(; name="standalone", type="hidden", value="1") : "",
+            h.textarea(code; name="code", rows="15",
+                class="pdb-snippet-input",
+                _="on keydown[(shiftKey or ctrlKey) and key is 'Enter'] halt the event send submit to closest <form/> on keydown[key is 'Escape'] halt the event set editor to closest .pdb-snippet-editor add @hidden to editor remove @hidden from previous <pre/> from editor"),
+        )
 
-    sandbox_should_fail(name) = sandbox_read_expect(name) == "fail"
+        default_slic_code = """@slic (;y=randn(10)) begin
+        mu ~ normal(0, 1)
+        sigma ~ gamma(1, 1)
+        y ~ normal(mu, sigma)
+    end"""
 
-    sandbox_sort_key(name) = begin
-        status = sandbox_read_status(name)
-        should_fail = sandbox_should_fail(name)
-        stanc = sandbox_read_stanc(name)
-        ok = isnothing(status) ? nothing : status == "PASS"
-        stanc_ok = isnothing(stanc) ? nothing : stanc == "OK"
-        if !isnothing(ok) && !ok && !should_fail
-            0  # unexpected transpile failure — first
-        elseif isnothing(ok)
-            1  # untried — second
-        elseif ok && !isnothing(stanc_ok) && !stanc_ok
-            2  # transpiles but stanc fails — third
-        elseif ok
-            3  # fully passing — middle
-        else
-            4  # expected failure — last
+        # Per-snippet bundle. Owns ALL per-name derivations and per-snippet
+        # routes (mounted at `/sandbox/snippet/<name>/...`).
+        @include snippet(name::String) = begin
+            file_path = joinpath(__parent__.path, name * ".jl")
+            code = read(file_path, String)
+
+            read_sidecar(suffix; default=nothing) = let p = "$file_path.$suffix"
+                isfile(p) ? read(p, String) : default
+            end
+            status = read_sidecar("status")
+            stanc_sidecar = read_sidecar("stanc")
+            stan_sidecar = read_sidecar("stan")
+            expect = read_sidecar("expect"; default="pass")
+            should_fail = expect == "fail"
+
+            # Sort key: 0 unexpected fail, 1 untried, 2 stanc fails, 3 pass, 4 xfail.
+            sort_key = begin
+                ok = isnothing(status) ? nothing : status == "PASS"
+                stanc_ok = isnothing(stanc_sidecar) ? nothing : stanc_sidecar == "OK"
+                if !isnothing(ok) && !ok && !should_fail
+                    0
+                elseif isnothing(ok)
+                    1
+                elseif ok && !isnothing(stanc_ok) && !stanc_ok
+                    2
+                elseif ok
+                    3
+                else
+                    4
+                end
+            end
+
+            stanc_badge = isnothing(stanc_sidecar) ? "" :
+                stanc_sidecar == "OK" ?
+                    h.span("stanc ✓"; data_status="success",
+                        title="Stan compiler (stanc) accepted the generated code") :
+                    h.span("stanc ✗"; data_status="error",
+                        title="Stan compiler (stanc) rejected the generated code — see error below")
+
+            stanc_error_block = (isnothing(stanc_sidecar) || stanc_sidecar == "OK") ? "" :
+                h.div(class="htmxo-card-error")(
+                    h.strong("stanc rejected the generated Stan code:"),
+                    h.pre(h.code(stanc_sidecar)),
+                )
+
+            card_id = "snippet-$name"
+
+            code_block(; standalone=false) = h.div(
+                h.pre(h.code(code; class="language-julia");
+                    class="pdb-snippet-output",
+                    title="Ctrl+click to edit",
+                    _="on click[ctrlKey or shiftKey] halt the event set editor to the next .pdb-snippet-editor add @hidden to me remove @hidden from editor focus() the first <textarea/> in editor"),
+                h.div(; class="pdb-snippet-editor", hidden="")(
+                    __parent__.editor(code; name, target="#$card_id", standalone),
+                ),
+            )
+
+            # Heavy: re-evaluates code, writes status/stan/stanc sidecars,
+            # renders the full card. Wraps eval in `safely` so transpile
+            # errors render as a contained error article.
+            card(; standalone=false) = safely(; obj=__self__) do
+                r = __parent__.result(code)
+                write("$file_path.status", "PASS")
+                write("$file_path.stan", r.code)
+                sc = __parent__.stanc_check(r.code)
+                write("$file_path.stanc", sc.ok ? "OK" : sc.output)
+                refresh_url = standalone ? __self__ : __self__/"refresh"
+                badge = should_fail ?
+                    h.span("XPASS"; data_status="warning",
+                        title="Expected failure but transpiled — toggle 'should pass' if intentional") :
+                    h.span("PASS"; data_status="success")
+                expect_label = should_fail ? "xfail" : "should pass"
+                stanc_b = sc.ok ?
+                    h.span("stanc ✓"; data_status="success",
+                        title="Stan compiler (stanc) accepted the generated code") :
+                    h.span("stanc ✗"; data_status="error",
+                        title="Stan compiler (stanc) rejected the generated code — see error below")
+                stanc_err = sc.ok ? "" :
+                    h.div(class="htmxo-card-error")(
+                        h.strong("stanc rejected the generated Stan code:"),
+                        h.pre(h.code(sc.output)),
+                    )
+                h.div(; id=card_id, class="htmxo-status-banner", data_status="success")(
+                    h.div(; class="pdb-snippet-header")(
+                        h.strong(name; contenteditable="true", class="pdb-name-input",
+                            _="on blur if my textContent.trim() is not '$name' fetch $(__self__/"rename")?to=\${my.textContent.trim()} then put the result into #$card_id.outerHTML"),
+                        badge, stanc_b,
+                        h.button("↻"; type="button", class="pdb-icon-btn",
+                            hx_get=refresh_url, hx_target="#$card_id", hx_swap="outerHTML"),
+                        h.button(expect_label; type="button", class="pdb-icon-btn", data_variant="text",
+                            hx_get=__self__/"toggle_expect", hx_target="#$card_id", hx_swap="outerHTML"),
+                        h.button("✕"; type="button", class="pdb-icon-btn", data_variant="del",
+                            hx_delete=__self__/"delete", hx_target="#$card_id", hx_swap="outerHTML",
+                            hx_confirm="Delete snippet '$name'?"),
+                        standalone ? "" : h.a("⧉"; href=__self__, target="_blank", class="pdb-icon-link"),
+                        h.a("macro"; href=__self__/"macroexpand", target="_blank", class="pdb-icon-link", title="Show macroexpanded code"),
+                    ),
+                    code_block(; standalone),
+                    stanc_err,
+                    standalone ? __parent__.output(r) :
+                    h.details(
+                        h.summary("Stan code"),
+                        __parent__.output(r),
+                    ),
+                )
+            end
+
+            # Cheap: renders cached sidecar state, no re-eval. Used by the
+            # gallery grid and the editor's snippet list.
+            card_lazy = begin
+                banner_status = isnothing(status) ? "accent" :
+                    status == "PASS" ? "success" :
+                    should_fail ? "warning" : "error"
+                badge = isnothing(status) ? "" :
+                    status == "PASS" ? h.span("PASS"; data_status="success") :
+                    should_fail ? h.span("XFAIL"; data_status="warning") :
+                    h.span("FAIL"; data_status="error", title=status)
+                expect_label = should_fail ? "xfail" : "should pass"
+                h.div(; id=card_id, class="htmxo-status-banner", data_status=banner_status)(
+                    h.div(; class="pdb-snippet-header")(
+                        h.strong(name),
+                        badge, stanc_badge,
+                        h.button("↻"; type="button", class="pdb-icon-btn",
+                            hx_get=__self__/"refresh", hx_target="#$card_id", hx_swap="outerHTML"),
+                        h.button(expect_label; type="button", class="pdb-icon-btn", data_variant="text",
+                            hx_get=__self__/"toggle_expect", hx_target="#$card_id", hx_swap="outerHTML"),
+                        h.button("✕"; type="button", class="pdb-icon-btn", data_variant="del",
+                            hx_delete=__self__/"delete", hx_target="#$card_id", hx_swap="outerHTML",
+                            hx_confirm="Delete snippet '$name'?"),
+                        h.a("⧉"; href=__self__, target="_blank", class="pdb-icon-link"),
+                    ),
+                    code_block(),
+                    stanc_error_block,
+                )
+            end
+
+            @get index = card(standalone=true)
+            @get refresh = card()
+
+            @get macroexpand = begin
+                mod = Module(:Sandbox)
+                Core.eval(mod, :(const StanBlocks = $StanBlocks))
+                Base.eval(mod, :(using .StanBlocks))
+                exprs = Meta.parseall(code).args
+                expanded = String[]
+                for expr in exprs
+                    expr isa LineNumberNode && continue
+                    ex = Base.eval(mod, :(macroexpand($mod, $(QuoteNode(expr)))))
+                    push!(expanded, sprint(Base.show_unquoted, ex))
+                end
+                h.pre(h.code(join(expanded, "\n\n"); class="language-julia"))
+            end
+
+            @get stanc = begin
+                r = __parent__.result(code)
+                sc = __parent__.stanc_check(r.code)
+                if sc.ok
+                    h.div(h.span("stanc: OK"; data_status="success"),
+                        isempty(sc.output) ? "" : h.pre(sc.output; class="pdb-stanc-output"))
+                else
+                    h.div(h.span("stanc: FAIL"; data_status="error"),
+                        h.pre(sc.output; class="pdb-stanc-output"))
+                end
+            end
+
+            @get rename(; to="") = begin
+                to = strip(to)
+                isempty(to) && return card()
+                new_path = joinpath(__parent__.path, to * ".jl")
+                isfile(file_path) && mv(file_path, new_path; force=true)
+                __parent__.snippet(String(to)).card()
+            end
+
+            @get toggle_expect = begin
+                ep = "$file_path.expect"
+                write(ep, expect == "fail" ? "pass" : "fail")
+                __parent__.snippet(name).card_lazy
+            end
+
+            @delete delete = begin
+                for suffix in ("", ".status", ".expect", ".stanc")
+                    fp = file_path * suffix
+                    isfile(fp) && rm(fp)
+                end
+                ""
+            end
         end
-    end
 
-    snippet_card_lazy(name, code) = begin
-        card_id = "snippet-$name"
-        status = sandbox_read_status(name)
-        should_fail = sandbox_should_fail(name)
-        banner_status = isnothing(status) ? "accent" :
-            status == "PASS" ? "success" :
-            should_fail ? "warning" : "error"
-        badge = isnothing(status) ? "" :
-            status == "PASS" ? h.span("PASS"; data_status="success") :
-            should_fail ? h.span("XFAIL"; data_status="warning") :
-            h.span("FAIL"; data_status="error", title=status)
-        expect_label = should_fail ? "xfail" : "should pass"
-        h.div(; id=card_id, class="htmxo-status-banner", data_status=banner_status)(
-            h.div(; class="pdb-snippet-header")(
-                h.strong(name),
-                badge, stanc_badge(name),
-                h.button("↻"; type="button", class="pdb-icon-btn",
-                    hx_get=__self__/"sandbox_refresh/$name", hx_target="#$card_id", hx_swap="outerHTML"),
-                h.button(expect_label; type="button", class="pdb-icon-btn", data_variant="text",
-                    hx_get=__self__/"sandbox_toggle_expect/$name", hx_target="#$card_id", hx_swap="outerHTML"),
-                h.button("✕"; type="button", class="pdb-icon-btn", data_variant="del",
-                    hx_delete=__self__/"sandbox_delete/$name", hx_target="#$card_id", hx_swap="outerHTML",
-                    hx_confirm="Delete snippet '$name'?"),
-                h.a("⧉"; href=__self__/"sandbox_view/$name", target="_blank", class="pdb-icon-link"),
+        # Read-only gallery card renderer — reads sidecar state via the
+        # per-snippet bundle. Stan source is shown only when cached
+        # (`.jl.stan` written by `snippet(name).card` on editor view, or by
+        # the recording flow). Eval-into-`Main` is too expensive +
+        # state-polluting to run 132× on every gallery render.
+        gallery_card(item) = safely(; obj=__self__, req=__req__) do
+            s = snippet(item.id)
+            ok_pass = s.status == "PASS"
+            status_data = isnothing(s.status) ? "muted" :
+                          ok_pass ? "success" : "error"
+            status_text = isnothing(s.status) ? "?" :
+                          ok_pass ? "PASS" : "FAIL"
+            h.article(; id=item.id)(
+                h.h4(
+                    h.a(item.title; href=__self__/"snippet/$(item.id)", target="_blank"),
+                    h.span(status_text; data_status=status_data),
+                    s.stanc_badge,
+                ),
+                isempty(item.description) ? h.span() : h.p(item.description),
+                h.h5("SLIC source"),
+                h.pre(h.code(s.code; class="language-julia")),
+                isnothing(s.stan_sidecar) ? h.span() : h.div(
+                    h.h5("Generated Stan"),
+                    h.pre(h.code(s.stan_sidecar; class="language-stan")),
+                ),
+                (!isnothing(s.status) && !ok_pass) ?
+                    h.p(; class="htmxo-card-error")(h.code(strip(s.status))) : h.span(),
+                s.stanc_error_block,
+            )
+        end
+
+        list() = h.div(; id="snippet-list", class="pdb-snippet-grid")(
+            [snippet(name).card_lazy for (name, _) in sort(snippets(), by=p -> (snippet(first(p)).sort_key, first(p)))]...
+        )
+
+        # Per-snippet: returns (name, ok::Bool, msg::String, dt::Float64). On
+        # success writes the PASS sidecar; on failure stores the one-line
+        # error message in the FAIL sidecar (so the read-only gallery can
+        # still flag broken snippets). The route safety wrapper isn't a fit
+        # here because we want the BATCH summary to render even if some
+        # entries fail.
+        compile_one(name, code) = begin
+            t0 = time()
+            ok, msg = try
+                r = result(code)
+                write(joinpath(path, name * ".jl.stan"), r.code)
+                true, ""
+            catch e
+                first(split(sprint(showerror, e), "\n"))::String |> m -> (false, m)
+            end
+            write(joinpath(path, name * ".jl.status"), ok ? "PASS" : msg)
+            (name=name, ok=ok, msg=msg, dt=time() - t0)
+        end
+
+        compile_summary(items) = begin
+            results = [compile_one(n, c) for (n, c) in items]
+            n_pass = count(r -> r.ok, results)
+            n_fail = length(results) - n_pass
+            total_time = sum(r -> r.dt, results; init=0.0)
+            h.div(
+                h.p(
+                    h.strong("$(n_pass)/$(length(results)) passed"),
+                    n_fail > 0 ? h.span(" ($n_fail failed)"; data_status="error") : "",
+                    h.small(" in $(round(total_time; digits=2))s"),
+                ),
+                [h.div(; class="pdb-snippet-result-row")(
+                    h.span(r.ok ? "PASS" : "FAIL"; data_status=r.ok ? "success" : "error"),
+                    " ", r.name,
+                    h.small(" $(round(r.dt*1000; digits=0))ms"),
+                    r.ok ? "" : h.small(" - ", r.msg; data_status="error"),
+                ) for r in results]...,
+            )
+        end
+
+        @get index = h.div(
+            h.style("#content { max-width: 100%; } main.container { max-width: 100%; padding: 0 1rem; }"),
+            h.h2("SLIC Sandbox"),
+            h.div(; class="pdb-sandbox-toolbar")(
+                h.h3("Saved Snippets"),
+                h.button("Compile Failures"; type="button",
+                    hx_get=__self__/"compile_failures", hx_target="#compile-all-output", hx_swap="innerHTML"),
+                h.button("Spot Check (5)"; type="button",
+                    hx_get=__self__/"spot_check", hx_target="#compile-all-output", hx_swap="innerHTML"),
+                h.button("Compile All"; type="button",
+                    hx_get=__self__/"compile_all", hx_target="#compile-all-output", hx_swap="innerHTML"),
+                h.button("Verify stanc"; type="button",
+                    hx_get=__self__/"stanc_all", hx_target="#compile-all-output", hx_swap="innerHTML"),
             ),
-            snippet_code_block(name, code, card_id),
-            stanc_error_block(name),
+            list(),
+            h.div(; id="compile-all-output")(""),
+            h.h3("New"),
+            editor(default_slic_code),
+            h.div(; id="sandbox-output")(""),
+        )
+
+        @post run(; code="", name="", standalone="") = begin
+            from_card = !isempty(strip(name))
+            name = String(strip(name))
+            isempty(name) && (name = auto_name(code))
+            save(name, code)
+            if from_card
+                snippet(name).card(standalone=standalone=="1")
+            else
+                r = result(code)
+                [output(r), h.template(list())]
+            end
+        end
+
+        @get refresh_all = list()
+
+        @get compile_all = compile_summary(snippets())
+
+        @get compile_failures = begin
+            to_compile = Base.filter(snippets()) do (n, _)
+                s = snippet(n)
+                isnothing(s.status) || (s.status != "PASS" && !s.should_fail)
+            end
+            isempty(to_compile) ? h.p("No unexpected failures or untried snippets") : compile_summary(to_compile)
+        end
+
+        @get spot_check(; n="5") = begin
+            num = parse(Int, n)
+            passes = Base.filter(snippets()) do (nm, _)
+                s = snippet(nm).status
+                !isnothing(s) && s == "PASS"
+            end
+            sample = passes[Random.randperm(length(passes))[1:min(num, length(passes))]]
+            isempty(sample) ? h.p("No passing snippets to spot check") : compile_summary(sample)
+        end
+
+        @get stanc_all = begin
+            items = snippets()
+            results = map(items) do (nm, _)
+                s = snippet(nm)
+                if isnothing(s.stan_sidecar)
+                    (name=nm, ok=nothing, output="no cached .stan — compile first")
+                else
+                    sc = stanc_check(s.stan_sidecar)
+                    (name=nm, ok=sc.ok, output=sc.output)
+                end
+            end
+            verified = count(r -> r.ok === true, results)
+            failed = count(r -> r.ok === false, results)
+            skipped = count(r -> isnothing(r.ok), results)
+            h.div(
+                h.p(
+                    h.strong("stanc: $verified verified"),
+                    failed > 0 ? h.span(", $failed failed"; data_status="error") : "",
+                    skipped > 0 ? h.span(", $skipped skipped"; data_status="muted") : "",
+                ),
+                [h.div(; class="pdb-snippet-result-row")(
+                    isnothing(r.ok) ? h.span("SKIP"; data_status="muted") :
+                    r.ok ? h.span("OK"; data_status="success") : h.span("FAIL"; data_status="error"),
+                    " ", r.name,
+                    (!isnothing(r.ok) && !r.ok) ? h.small(" - ", r.output; data_status="error") : "",
+                ) for r in results]...,
+            )
+        end
+
+        # Read-only view of `web/sandbox/` rendered via
+        # `HTMXObjects.gallery_grid`. Same files as `/sandbox` but no editor
+        # / CRUD; this is what the docs `record_gallery` flow ships as
+        # static recordings.
+        @get gallery = htmx(
+            h.main(; class="container-fluid")(
+                gallery_grid(_sandbox_gallery.items;
+                    section_titles=_sandbox_gallery.section_titles,
+                    card_renderer=gallery_card),
+            );
+            extra_head=(htmxo_gallery_styles(), htmxo_syntax_head()...),
         )
     end
-
-    snippet_list() = h.div(; id="snippet-list", class="pdb-snippet-grid")(
-        [snippet_card_lazy(name, code) for (name, code) in sort(sandbox_snippets(), by=p -> (sandbox_sort_key(first(p)), first(p)))]...
-    )
-
-    default_slic_code = """@slic (;y=randn(10)) begin
-    mu ~ normal(0, 1)
-    sigma ~ gamma(1, 1)
-    y ~ normal(mu, sigma)
-end"""
-
-    # `/gallery` — read-only view of `web/sandbox/` rendered via
-    # `HTMXObjects.gallery_grid`. Same files as `/sandbox` but no editor /
-    # CRUD; this is what the docs `record_gallery` flow ships as static
-    # recordings.
-    sandbox_gallery_card(item) = safely(; obj=__self__, req=__req__) do
-        code        = item.code_string
-        status      = sandbox_read_status(item.id)
-        ok_pass     = status == "PASS"
-        status_data = isnothing(status) ? "muted" :
-                      ok_pass ? "success" : "error"
-        status_text = isnothing(status) ? "?" :
-                      ok_pass ? "PASS" : "FAIL"
-        # Stan source is shown only when cached (`.jl.stan` written by
-        # `snippet_card` on editor view, or by the recording flow).
-        # Eval-into-`Main` is too expensive + state-polluting to run
-        # 132× on every gallery render.
-        stan_src = sandbox_read_stan(item.id)
-        h.article(; id=item.id)(
-            h.h4(
-                h.a(item.title; href=__self__/"sandbox_view/$(item.id)", target="_blank"),
-                h.span(status_text; data_status=status_data),
-                stanc_badge(item.id),
-            ),
-            isempty(item.description) ? h.span() : h.p(item.description),
-            h.h5("SLIC source"),
-            h.pre(h.code(code; class="language-julia")),
-            isnothing(stan_src) ? h.span() : h.div(
-                h.h5("Generated Stan"),
-                h.pre(h.code(stan_src; class="language-stan")),
-            ),
-            (!isnothing(status) && !ok_pass) ?
-                h.p(; class="htmxo-card-error")(h.code(strip(status))) : h.span(),
-            stanc_error_block(item.id),
-        )
-    end
-
-    @get gallery = htmx(
-        h.main(; class="container-fluid")(
-            gallery_grid(_sandbox_gallery.items;
-                section_titles=_sandbox_gallery.section_titles,
-                card_renderer=sandbox_gallery_card),
-        );
-        extra_head=(htmxo_gallery_styles(), htmxo_syntax_head()...),
-    )
 
     # `/record_gallery` — drive the AppData IP `record_gallery` to dump
-    # `/gallery` + every `/sandbox_view/<id>` URL into
+    # `/sandbox/gallery` + every `/sandbox/snippet/<id>` URL into
     # `docs/src/public/live-sb/`. Long-running so it goes through
     # `polling_fetchindex`. Override the deploy URL prefix via
     # `RECORD_BASE_PREFIX` env var (default `/StanBlocks.jl/dev/live-sb`).
@@ -721,200 +903,6 @@ end"""
         end
     end
 
-    @get sandbox = h.div(
-        h.style("#content { max-width: 100%; } main.container { max-width: 100%; padding: 0 1rem; }"),
-        h.h2("SLIC Sandbox"),
-        h.div(; class="pdb-sandbox-toolbar")(
-            h.h3("Saved Snippets"),
-            h.button("Compile Failures"; type="button",
-                hx_get=__self__/"sandbox_compile_failures", hx_target="#compile-all-output", hx_swap="innerHTML"),
-            h.button("Spot Check (5)"; type="button",
-                hx_get=__self__/"sandbox_spot_check", hx_target="#compile-all-output", hx_swap="innerHTML"),
-            h.button("Compile All"; type="button",
-                hx_get=__self__/"sandbox_compile_all", hx_target="#compile-all-output", hx_swap="innerHTML"),
-            h.button("Verify stanc"; type="button",
-                hx_get=__self__/"sandbox_stanc_all", hx_target="#compile-all-output", hx_swap="innerHTML"),
-        ),
-        snippet_list(),
-        h.div(; id="compile-all-output")(""),
-        h.h3("New"),
-        sandbox_editor(default_slic_code),
-        h.div(; id="sandbox-output")(""),
-    )
-
-    @post sandbox_run(; code="", name="", standalone="") = begin
-        from_card = !isempty(strip(name))
-        name = strip(name)
-        isempty(name) && (name = sandbox_auto_name(code))
-        sandbox_save(name, code)
-        if from_card
-            snippet_card(name, code; standalone=standalone=="1")
-        else
-            result = sandbox_result(code)
-            [sandbox_output(result), h.template(snippet_list)]
-        end
-    end
-
-    @get sandbox_refresh(name) = begin
-        code = read(joinpath(sandbox_path, name * ".jl"), String)
-        snippet_card(name, code)
-    end
-
-    @get sandbox_refresh_all = snippet_list
-
-    @get sandbox_rename(name; to="") = begin
-        to = strip(to)
-        isempty(to) && return snippet_card(name, read(joinpath(sandbox_path, name * ".jl"), String))
-        old_path = joinpath(sandbox_path, name * ".jl")
-        new_path = joinpath(sandbox_path, to * ".jl")
-        isfile(old_path) && mv(old_path, new_path; force=true)
-        code = read(new_path, String)
-        snippet_card(to, code)
-    end
-
-    @get sandbox_view(name) = begin
-        code = read(joinpath(sandbox_path, name * ".jl"), String)
-        snippet_card(name, code; standalone=true)
-    end
-
-    @get sandbox_macroexpand(name) = begin
-        code = read(joinpath(sandbox_path, name * ".jl"), String)
-        mod = Module(:Sandbox)
-        Core.eval(mod, :(const StanBlocks = $StanBlocks))
-        Base.eval(mod, :(using .StanBlocks))
-        exprs = Meta.parseall(code).args
-        expanded = String[]
-        for expr in exprs
-            expr isa LineNumberNode && continue
-            ex = Base.eval(mod, :(macroexpand($mod, $(QuoteNode(expr)))))
-            push!(expanded, sprint(Base.show_unquoted, ex))
-        end
-        h.pre(h.code(join(expanded, "\n\n"); class="language-julia"))
-    end
-
-    # Per-snippet: returns (name, ok::Bool, msg::String, dt::Float64). On
-    # success writes the PASS sidecar; on failure stores the one-line error
-    # message in the FAIL sidecar (so the read-only gallery can still flag
-    # which snippets are broken). The route safety wrapper isn't a fit here
-    # because we want the BATCH summary to render even if some entries fail.
-    _compile_one(name, code) = begin
-        t0 = time()
-        ok, msg = try
-            r = sandbox_result(code)
-            write(joinpath(sandbox_path, name * ".jl.stan"), r.code)
-            true, ""
-        catch e
-            first(split(sprint(showerror, e), "\n"))::String |> m -> (false, m)
-        end
-        write(joinpath(sandbox_path, name * ".jl.status"), ok ? "PASS" : msg)
-        (name=name, ok=ok, msg=msg, dt=time() - t0)
-    end
-
-    compile_snippets(snippets) = begin
-        results = [_compile_one(name, code) for (name, code) in snippets]
-        n_pass = count(r -> r.ok, results)
-        n_fail = length(results) - n_pass
-        total_time = sum(r -> r.dt, results; init=0.0)
-        h.div(
-            h.p(
-                h.strong("$(n_pass)/$(length(results)) passed"),
-                n_fail > 0 ? h.span(" ($n_fail failed)"; data_status="error") : "",
-                h.small(" in $(round(total_time; digits=2))s"),
-            ),
-            [h.div(; class="pdb-snippet-result-row")(
-                h.span(r.ok ? "PASS" : "FAIL"; data_status=r.ok ? "success" : "error"),
-                " ", r.name,
-                h.small(" $(round(r.dt*1000; digits=0))ms"),
-                r.ok ? "" : h.small(" - ", r.msg; data_status="error"),
-            ) for r in results]...,
-        )
-    end
-
-    @get sandbox_compile_all = compile_snippets(sandbox_snippets())
-
-    @get sandbox_compile_failures = begin
-        to_compile = filter(sandbox_snippets()) do (name, _)
-            status = sandbox_read_status(name)
-            should_fail = sandbox_should_fail(name)
-            isnothing(status) || (status != "PASS" && !should_fail)
-        end
-        isempty(to_compile) ? h.p("No unexpected failures or untried snippets") : compile_snippets(to_compile)
-    end
-
-    @get sandbox_spot_check(; n="5") = begin
-        num = parse(Int, n)
-        passes = filter(sandbox_snippets()) do (name, _)
-            status = sandbox_read_status(name)
-            !isnothing(status) && status == "PASS"
-        end
-        sample = passes[Random.randperm(length(passes))[1:min(num, length(passes))]]
-        isempty(sample) ? h.p("No passing snippets to spot check") : compile_snippets(sample)
-    end
-
-    @get sandbox_stanc_check(name) = begin
-        code = read(joinpath(sandbox_path, name * ".jl"), String)
-        result = sandbox_result(code)
-        sc = stanc_check(result.code)
-        if sc.ok
-            h.div(h.span("stanc: OK"; data_status="success"),
-                isempty(sc.output) ? "" : h.pre(sc.output; class="pdb-stanc-output"))
-        else
-            h.div(h.span("stanc: FAIL"; data_status="error"),
-                h.pre(sc.output; class="pdb-stanc-output"))
-        end
-    end
-
-    # Batch stanc check: relies on the cached `.jl.stan` sidecar from a prior
-    # compile run to avoid re-transpiling. Snippets without a cached `.stan`
-    # are skipped (run "Compile All" / "Compile Failures" first).
-    @get sandbox_stanc_all = begin
-        snippets = sandbox_snippets()
-        results = map(snippets) do (name, _)
-            stan_src = sandbox_read_stan(name)
-            if isnothing(stan_src)
-                (name=name, ok=nothing, output="no cached .stan — compile first")
-            else
-                sc = stanc_check(stan_src)
-                (name=name, ok=sc.ok, output=sc.output)
-            end
-        end
-        verified = count(r -> r.ok === true, results)
-        failed = count(r -> r.ok === false, results)
-        skipped = count(r -> isnothing(r.ok), results)
-        h.div(
-            h.p(
-                h.strong("stanc: $verified verified"),
-                failed > 0 ? h.span(", $failed failed"; data_status="error") : "",
-                skipped > 0 ? h.span(", $skipped skipped"; data_status="muted") : "",
-            ),
-            [h.div(; class="pdb-snippet-result-row")(
-                isnothing(r.ok) ? h.span("SKIP"; data_status="muted") :
-                r.ok ? h.span("OK"; data_status="success") : h.span("FAIL"; data_status="error"),
-                " ", r.name,
-                (!isnothing(r.ok) && !r.ok) ? h.small(" - ", r.output; data_status="error") : "",
-            ) for r in results]...,
-        )
-    end
-
-    @get sandbox_toggle_expect(name) = begin
-        ep = joinpath(sandbox_path, name * ".jl.expect")
-        current = sandbox_read_expect(name)
-        write(ep, current == "fail" ? "pass" : "fail")
-        code = read(joinpath(sandbox_path, name * ".jl"), String)
-        snippet_card_lazy(name, code)
-    end
-
-    @delete sandbox_delete(name) = begin
-        fp = joinpath(sandbox_path, name * ".jl")
-        isfile(fp) && rm(fp)
-        sp = joinpath(sandbox_path, name * ".jl.status")
-        isfile(sp) && rm(sp)
-        ep = joinpath(sandbox_path, name * ".jl.expect")
-        isfile(ep) && rm(ep)
-        sc = joinpath(sandbox_path, name * ".jl.stanc")
-        isfile(sc) && rm(sc)
-        ""
-    end
 end
 
 function __init__()
