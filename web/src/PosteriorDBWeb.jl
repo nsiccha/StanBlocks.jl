@@ -160,7 +160,10 @@ const APPDATA = SbAppData(; cache_type=:parallel)
     # `__parent__` for shared rendering (cell, section) — keeps the render
     # logic in one place without losing per-check identity on the data side.
     @struct posterior(pn) = begin
-        pdb_posterior = PosteriorDB.posterior(pdb(), pn)
+        # `pn` arrives as `SubString` from URL routing; PosteriorDB rejects
+        # that. Cast once here and use `pn_s` everywhere PosteriorDB sees it.
+        pn_s = String(pn)
+        pdb_posterior = PosteriorDB.posterior(pdb(), pn_s)
 
         detail_id = "detail-$pn"
         toggle    = "on click toggle @hidden on #$detail_id"
@@ -169,21 +172,21 @@ const APPDATA = SbAppData(; cache_type=:parallel)
 
         @struct transpile = begin
             label     = "Transpiles"
-            check_url = "/check_transpile/$pn"
+            check_url = "/check/$pn/transpile"
             @cached result = transpile_check(slic_implementation(pdb_posterior))
             status = @cache_status result
         end
 
         @struct compile = begin
             label     = "Compiles"
-            check_url = "/check_compile/$pn"
+            check_url = "/check/$pn/compile"
             @cached result = compile_check(slic_implementation(pdb_posterior))
             status = @cache_status result
         end
 
         @struct correct = begin
             label     = "Correct"
-            check_url = "/check_correct/$pn"
+            check_url = "/check/$pn/correct"
             @cached result = correct_check(pdb_posterior)
             status = @cache_status result
         end
@@ -366,22 +369,20 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         h.p("Cache cleared for $pn")
     end
 
-    @get check_transpile(pn) = begin
-        p = posterior(pn)
-        p.force_check(:transpile)
-        [p.detail, h.template(p.updated_summary)]
-    end
+    # Per-check routes for one posterior, mounted at `/check/<pn>/<kind>`.
+    # `force_check` runs once per (posterior, kind) — the IP cache makes
+    # repeated /check requests idempotent (the underlying `@cached result`
+    # is what re-runs when the on-disk cache is cleared).
+    @include check(pn::String) = begin
+        do_check(kind::Symbol) = begin
+            p = __parent__.posterior(pn)
+            p.force_check(kind)
+            [p.detail, h.template(p.updated_summary)]
+        end
 
-    @get check_compile(pn) = begin
-        p = posterior(pn)
-        p.force_check(:compile)
-        [p.detail, h.template(p.updated_summary)]
-    end
-
-    @get check_correct(pn) = begin
-        p = posterior(pn)
-        p.force_check(:correct)
-        [p.detail, h.template(p.updated_summary)]
+        @get transpile = do_check(:transpile)
+        @get compile   = do_check(:compile)
+        @get correct   = do_check(:correct)
     end
 
     @get ref(pn) = posterior(pn).reference_stan
@@ -742,7 +743,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                 write(joinpath(path, name * ".jl.stan"), r.code)
                 true, ""
             catch e
-                first(split(sprint(showerror, e), "\n"))::String |> m -> (false, m)
+                false, String(first(split(sprint(showerror, e), "\n")))
             end
             write(joinpath(path, name * ".jl.status"), ok ? "PASS" : msg)
             (name=name, ok=ok, msg=msg, dt=time() - t0)
