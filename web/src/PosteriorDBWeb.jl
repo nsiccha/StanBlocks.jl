@@ -340,11 +340,13 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                 .pdb-snippet-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
                 .pdb-snippet-result-row { padding: 0.1rem 0; font-family: monospace; font-size: 0.85em; }
                 .pdb-stanc-output { font-size: 0.85em; max-height: 300px; overflow: auto; white-space: pre-wrap; }
+
+                /* Wide-layout pages opt in by emitting their root with `data-layout="wide"`. */
+                main.container:has([data-layout="wide"]) { max-width: 100%; padding: 0 1rem; }
+                #content:has(> [data-layout="wide"])    { max-width: 100%; }
             """),
-            h.link(rel="stylesheet", href="https://cdn.jsdelivr.net/npm/prismjs@1/themes/prism-tomorrow.min.css"),
-            h.script(src="https://cdn.jsdelivr.net/npm/prismjs@1/prism.min.js"),
-            h.script(src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-julia.min.js"),
-            h.script(src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-stan.min.js"),
+            htmxo_gallery_styles(),
+            htmxo_syntax_head()...,
             h.script("document.addEventListener('DOMContentLoaded',function(){document.body.addEventListener('htmx:afterSettle',function(){document.querySelectorAll('code[class*=\"language-\"]').forEach(function(el){if(!el.querySelector('span.token')){Prism.highlightElement(el);}});});});"),
             sortable_table_js(),
             sortable_table_styles(),
@@ -766,8 +768,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             )
         end
 
-        @get index = h.div(
-            h.style("#content { max-width: 100%; } main.container { max-width: 100%; padding: 0 1rem; }"),
+        @get index = h.div(; data_layout="wide")(
             h.h2("SLIC Sandbox"),
             h.div(; class="pdb-sandbox-toolbar")(
                 h.h3("Saved Snippets"),
@@ -854,14 +855,12 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         # Read-only view of `web/sandbox/` rendered via
         # `HTMXObjects.gallery_grid`. Same files as `/sandbox` but no editor
         # / CRUD; this is what the docs `record_gallery` flow ships as
-        # static recordings.
-        @get gallery = htmx(
-            h.main(; class="container-fluid")(
-                gallery_grid(_sandbox_gallery.items;
-                    section_titles=_sandbox_gallery.section_titles,
-                    card_renderer=gallery_card),
-            );
-            extra_head=(htmxo_gallery_styles(), htmxo_syntax_head()...),
+        # static recordings. `__page__` provides the chrome and gallery
+        # styles; this route returns bare content with `data-layout="wide"`.
+        @get gallery = h.div(; data_layout="wide")(
+            gallery_grid(_sandbox_gallery.items;
+                section_titles=_sandbox_gallery.section_titles,
+                card_renderer=gallery_card),
         )
     end
 
