@@ -430,11 +430,11 @@ const APPDATA = SbAppData(; cache_type=:parallel)
 
         snippets() = begin
             isdir(path) || mkpath(path)
-            out = Pair{String,String}[]
+            local out = Pair{String,String}[]
             for f in sort(readdir(path))
                 endswith(f, ".jl") || continue
-                name = f[1:end-3]
-                code = read(joinpath(path, f), String)
+                local name = f[1:end-3]
+                local code = read(joinpath(path, f), String)
                 push!(out, name => code)
             end
             out
@@ -657,9 +657,9 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             end
 
             @get rename(; to="") = begin
-                to = strip(to)
+                local to = strip(to)
                 isempty(to) && return card.index()
-                new_path = joinpath(__parent__.path, to * ".jl")
+                local new_path = joinpath(__parent__.path, to * ".jl")
                 isfile(file_path) && mv(file_path, new_path; force=true)
                 __parent__.snippet(String(to)).card.index()
             end
@@ -786,14 +786,14 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         )
 
         @post run(; code="", name="", standalone="") = begin
-            from_card = !isempty(strip(name))
-            name = String(strip(name))
+            local from_card = !isempty(strip(name))
+            local name = String(strip(name))
             if isempty(name)
-                m = match(r"@slic\s+(?:\([^)]*\)\s+)?begin\s*\n\s*(\w+)", code)
-                base = isnothing(m) ? "snippet" : m[1]
-                existing = first.(snippets())
+                local m = match(r"@slic\s+(?:\([^)]*\)\s+)?begin\s*\n\s*(\w+)", code)
+                local base = isnothing(m) ? "snippet" : m[1]
+                local existing = first.(snippets())
                 name = base
-                i = 1
+                local i = 1
                 while name in existing
                     i += 1
                     name = "$(base)_$i"
