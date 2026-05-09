@@ -112,7 +112,7 @@ _sandbox_gallery = Gallery(_SANDBOX_GALLERY_DIR)
         # restore it via `route!(app)` in the `finally` so subsequent live
         # requests keep going to the editor / live UI.
         app = AppContext()
-        HTMXObjects.route!(app; record_dir, record_base)
+        route!(app; record_dir, record_base)
         router = HTMXObjects.CONTEXT[].service.router
         try
             for (path, phase) in zip(paths, phases)
@@ -122,7 +122,7 @@ _sandbox_gallery = Gallery(_SANDBOX_GALLERY_DIR)
                 end
             end
         finally
-            HTMXObjects.route!(app)
+            route!(app)
         end
 
         n_html = 0; n_js = 0; n_json = 0; n_other = 0
