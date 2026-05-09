@@ -475,6 +475,18 @@ begin
     _is_lpxf_macrocall(x) = _is_inline_macrocall(x, Symbol("@lpxf"))
     _is_lhs_macrocall(x) = _is_inline_macrocall(x, Symbol("@lhs"))
     _is_at_inline_macrocall(x) = _is_inline_macrocall(x, Symbol("@inline"))
+    # Doc-macrocall recognition. Julia's parser/lowering can emit several
+    # shapes for a `@doc`-style docstring attached to a definition:
+    # `GlobalRef(Core, @doc)` (post-lowering form for `"""..."""` followed by
+    # an expr — what `slic_macroexpand` produces), bare `Symbol("@doc")`
+    # (hand-written `@doc "..." expr`), or `Core.@doc` as a `:.` expression.
+    # `slic.jl`'s `_is_doc_macro_head` covers the same set; mirror it here.
+    _is_doc_macrocall(x) = Meta.isexpr(x, :macrocall) && _is_doc_head(x.args[1])
+    _is_doc_head(h::GlobalRef) = h == GlobalRef(Core, Symbol("@doc"))
+    _is_doc_head(h::Symbol) = h === Symbol("@doc")
+    _is_doc_head(h::Expr) = h.head === :. && length(h.args) == 2 &&
+        h.args[2] isa QuoteNode && h.args[2].value === Symbol("@doc")
+    _is_doc_head(_) = false
     _peel_macros(x) = begin
         is_lhs = false
         is_lpxf = false
@@ -525,7 +537,10 @@ begin
         new_is_inline = is_inline || _is_at_inline_macrocall(x)
         deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf, is_inline=new_is_inline, _shim_kwarg_specs)
     elseif x.head == :macrocall
-        @assert x.args[1] == GlobalRef(Core, Symbol("@doc")) "@deffun: unexpected macrocall head `$(x.args[1])` (expected a `@doc` docstring)."
+        _is_doc_macrocall(x) || error(
+            "@deffun: unexpected macrocall head `$(x.args[1])` (expected `@doc` / `@inline` / `@lpxf` / `@lhs`). ",
+            "If a new doc-providing or annotation macro should be allowed, extend the predicate at functions.jl:_is_doc_macrocall / _is_inline_macrocall."
+        )
         # @assert x.args[3] isa String
         deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf, is_inline, _shim_kwarg_specs)
     else
