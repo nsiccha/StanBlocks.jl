@@ -74,8 +74,8 @@ end
 # The interactive `/sandbox` editor is left untouched — the gallery exposes
 # the *same files* via the new `gallery_grid` primitive so the docs
 # `record_gallery` flow can ship the entire sandbox as static recordings.
-const _SANDBOX_GALLERY_DIR = joinpath(dirname(dirname(@__DIR__)), "web", "sandbox")
-const _sandbox_gallery = Gallery(_SANDBOX_GALLERY_DIR)
+_SANDBOX_GALLERY_DIR = joinpath(dirname(dirname(@__DIR__)), "web", "sandbox")
+_sandbox_gallery = Gallery(_SANDBOX_GALLERY_DIR)
 
 # `cache_type=:parallel` so the IP cache survives across the per-request
 # `@htmx` instances polling for `record_gallery` progress (see AoV's
