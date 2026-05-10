@@ -162,41 +162,42 @@ const APPDATA = SbAppData(; cache_type=:parallel)
     ])
 
     # All per-posterior data, rendering, and routes. Mounted at
-    # `/posterior/<pn>/...`. Three sibling sub-DOs (transpile, compile,
+    # `/posterior/<name>/...`. Three sibling sub-DOs (transpile, compile,
     # correct) share shape (label, check_url, @cached result, status) but
     # have distinct check bodies. `check_action(kind)` dispatches via
     # `__self__` for shared cell/section/force rendering — keeps the render
     # logic in one place without losing per-check identity on the data side.
-    @include posterior(pn::String) = begin
+    @include posterior(name::String) = begin
         # `_convert_param(::AbstractString, ::Type{<:AbstractString})` is a
-        # no-op in HTMXObjects, so `pn::String` only affects dispatch — the
-        # value still arrives as `SubString`. PosteriorDB requires `String`.
-        pdb_posterior = PosteriorDB.posterior(pdb(), String(pn))
+        # no-op in HTMXObjects, so `name::String` only affects
+        # dispatch — the value still arrives as `SubString`. PosteriorDB
+        # requires `String`.
+        pdb_posterior = PosteriorDB.posterior(pdb(), String(name))
 
-        detail_id = "detail-$pn"
+        detail_id = "detail-$name"
         toggle    = "on click toggle @hidden on #$detail_id"
 
-        dataset_name, model_name = let parts = split(pn, "-"; limit=2)
-            length(parts) == 2 ? (parts[1], parts[2]) : (pn, "")
+        dataset_name, model_name = let parts = split(name, "-"; limit=2)
+            length(parts) == 2 ? (parts[1], parts[2]) : (name, "")
         end
 
         @struct transpile = begin
             label     = "Transpiles"
-            check_url = "/posterior/$pn/check/transpile"
+            check_url = "/posterior/$name/check/transpile"
             @cached result = transpile_check(slic_implementation(pdb_posterior))
             status = @cache_status result
         end
 
         @struct compile = begin
             label     = "Compiles"
-            check_url = "/posterior/$pn/check/compile"
+            check_url = "/posterior/$name/check/compile"
             @cached result = compile_check(slic_implementation(pdb_posterior))
             status = @cache_status result
         end
 
         @struct correct = begin
             label     = "Correct"
-            check_url = "/posterior/$pn/check/correct"
+            check_url = "/posterior/$name/check/correct"
             @cached result = correct_check(pdb_posterior)
             status = @cache_status result
         end
@@ -257,7 +258,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             "accent"
 
         summary_cells = [
-            h.td(pn; _=toggle),
+            h.td(name; _=toggle),
             h.td(dataset_name; _=toggle),
             h.td(model_name; _=toggle),
             check_action(:transpile).cell,
@@ -266,16 +267,16 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         ]
 
         row = [
-            h.tr(summary_cells...; id="row-$pn"),
+            h.tr(summary_cells...; id="row-$name"),
             h.tr(; id=detail_id, hidden=""),
         ]
 
         updated_summary = h.tr(summary_cells...;
-            id="row-$pn", hx_swap_oob="outerHTML:#row-$pn")
+            id="row-$name", hx_swap_oob="outerHTML:#row-$name")
 
         detail = h.td(; colspan="6")(
             h.div(; class="htmxo-status-banner", data_status=banner_status)(
-                h.h4(pn),
+                h.h4(name),
                 check_action(:transpile).section,
                 check_action(:compile).section,
                 check_action(:correct).section,
@@ -286,7 +287,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(pdb_posterior), "stan")),
             String)
 
-        # Per-check route bundle: /posterior/<pn>/check/<kind>. The IP
+        # Per-check route bundle: /posterior/<name>/check/<kind>. The IP
         # cache makes repeated requests idempotent (the underlying
         # `@cached result` re-runs only when the on-disk cache is cleared).
         @include check = begin
@@ -294,24 +295,24 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                 __parent__.check_action(kind).force
                 [__parent__.detail, h.template(__parent__.updated_summary)]
             end
-            @get transpile = do_check(:transpile)
-            @get compile   = do_check(:compile)
-            @get correct   = do_check(:correct)
+            @get transpile() = do_check(:transpile)
+            @get compile()   = do_check(:compile)
+            @get correct()   = do_check(:correct)
         end
 
-        @get clear_cache = begin
+        @get clear_cache() = begin
             @clear_cache! transpile.result
             @clear_cache! compile.result
             @clear_cache! correct.result
-            h.p("Cache cleared for $pn")
+            h.p("Cache cleared for $name")
         end
 
-        @get ref = reference_stan
+        @get ref() = reference_stan
 
-        @get model = h.div(detail)
+        @get model() = h.div(detail)
     end
 
-    @get index = h.div(
+    @get index() = h.div(
         h.h2("PosteriorDB Models ($(length(posterior_names)) implemented)"),
         h.input(;
             type="search",
@@ -338,7 +339,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         h.body(
             h.header(class="container")(
                 h.h1("StanBlocks.jl PosteriorDB Dashboard"),
-                h.nav(h.a("PosteriorDB"; href=__self__), " | ", h.a("Tests"; href=__self__/"tests"), " | ", h.a("Sandbox"; href=__self__/"sandbox"), " | ", h.a("Gallery"; href=__self__/"sandbox/gallery")),
+                h.nav(h.a("PosteriorDB"; href=__self__), " | ", h.a("Tests"; href=__self__/"tests"), " | ", h.a("Sandbox"; href=__self__/"sandbox"), " | ", h.a("Gallery"; href=__self__/"sandbox/gallery"), " | ", h.a("Structure"; href=__self__/"structure")),
             ),
             h.main(class="container")(h.div(content; id="content"))
         );
@@ -382,10 +383,19 @@ const APPDATA = SbAppData(; cache_type=:parallel)
     # --- Test routes (via @include — registers under /tests/) ---
     @include tests = TestRoutes(; __req__, test_module=@__MODULE__)
 
-    @get clear_cache = begin
+    @get clear_cache() = begin
         foreach(rm, Base.filter(f -> endswith(f, ".sjl"), readdir(cache_path; join=true)))
         h.p("Cache cleared")
     end
+
+    # DO/HTMXO type-tree introspection. `DynamicObjects.structure` returns a
+    # `Node{:pre, …}` that's `Base.showable("text/html", …)` — Cobweb auto-
+    # renders HTML-showable children, so embedding it directly works.
+    @get structure() = h.div(
+        h.h2("AppContext type structure"),
+        h.p(h.small("DynamicObjects.structure(AppContext) — bond colors mark identical worst-case dependency sets")),
+        DynamicObjects.structure(AppContext),
+    )
 
     # Per-check-kind routes for batch operations across all posteriors.
     # Mounted at `/checks/<check>/{filter|recheck}[/<status>]`.
@@ -513,7 +523,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                         h.pre(h.code(sidecar)),
                     )
 
-                @get index = begin
+                @get index() = begin
                     r = __parent__.draft(code).result
                     sc = stanc_check(r.code)
                     if sc.ok
@@ -641,10 +651,10 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                 end
             end
 
-            @get index = card.index(standalone=true)
-            @get refresh = card.index()
+            @get index() = card.index(standalone=true)
+            @get refresh() = card.index()
 
-            @get macroexpand = begin
+            @get macroexpand() = begin
                 exprs = Meta.parseall(code).args
                 mod = @__MODULE__
                 expanded = String[]
@@ -657,20 +667,20 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             end
 
             @get rename(; to="") = begin
-                local to = strip(to)
-                isempty(to) && return card.index()
-                local new_path = joinpath(__parent__.path, to * ".jl")
+                local target = strip(to)
+                isempty(target) && return card.index()
+                local new_path = joinpath(__parent__.path, target * ".jl")
                 isfile(file_path) && mv(file_path, new_path; force=true)
-                __parent__.snippet(String(to)).card.index()
+                __parent__.snippet(String(target)).card.index()
             end
 
-            @get toggle_expect = begin
+            @get toggle_expect() = begin
                 ep = "$file_path.expect"
                 write(ep, expect == "fail" ? "pass" : "fail")
                 __parent__.snippet(name).card.lazy
             end
 
-            @delete delete = begin
+            @delete delete() = begin
                 for suffix in ("", ".status", ".expect", ".stanc")
                     fp = file_path * suffix
                     isfile(fp) && rm(fp)
@@ -754,9 +764,9 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                 )
             end
 
-            @get all = summary(__parent__.snippets())
+            @get all() = summary(__parent__.snippets())
 
-            @get failures = begin
+            @get failures() = begin
                 to_compile = Base.filter(__parent__.snippets()) do (n, _)
                     s = __parent__.snippet(n)
                     isnothing(s.status) || (s.status != "PASS" && !s.should_fail)
@@ -765,7 +775,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             end
         end
 
-        @get index = h.div(; data_layout="wide")(
+        @get index() = h.div(; data_layout="wide")(
             h.h2("SLIC Sandbox"),
             h.div(; class="pdb-sandbox-toolbar")(
                 h.h3("Saved Snippets"),
@@ -787,28 +797,28 @@ const APPDATA = SbAppData(; cache_type=:parallel)
 
         @post run(; code="", name="", standalone="") = begin
             local from_card = !isempty(strip(name))
-            local name = String(strip(name))
-            if isempty(name)
+            local snippet_name = String(strip(name))
+            if isempty(snippet_name)
                 local m = match(r"@slic\s+(?:\([^)]*\)\s+)?begin\s*\n\s*(\w+)", code)
                 local base = isnothing(m) ? "snippet" : m[1]
                 local existing = first.(snippets())
-                name = base
+                snippet_name = base
                 local i = 1
-                while name in existing
+                while snippet_name in existing
                     i += 1
-                    name = "$(base)_$i"
+                    snippet_name = "$(base)_$i"
                 end
             end
             isdir(path) || mkpath(path)
-            write(joinpath(path, name * ".jl"), code)
+            write(joinpath(path, snippet_name * ".jl"), code)
             if from_card
-                snippet(name).card.index(standalone=standalone=="1")
+                snippet(snippet_name).card.index(standalone=standalone=="1")
             else
                 [draft(code).output, h.template(list())]
             end
         end
 
-        @get refresh_all = list()
+        @get refresh_all() = list()
 
         @get spot_check(; n="5") = begin
             num = parse(Int, n)
@@ -820,7 +830,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             isempty(sample) ? h.p("No passing snippets to spot check") : compile.summary(sample)
         end
 
-        @get stanc_all = begin
+        @get stanc_all() = begin
             items = snippets()
             results = map(items) do (nm, _)
                 s = snippet(nm)
@@ -854,7 +864,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         # / CRUD; this is what the docs `record_gallery` flow ships as
         # static recordings. `__page__` provides the chrome and gallery
         # styles; this route returns bare content with `data-layout="wide"`.
-        @get gallery = h.div(; data_layout="wide")(
+        @get gallery() = h.div(; data_layout="wide")(
             gallery_grid(_sandbox_gallery.items;
                 section_titles=_sandbox_gallery.section_titles,
                 card_renderer=gallery_card),

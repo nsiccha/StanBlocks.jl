@@ -1,4 +1,9 @@
 using Documenter, DocumenterVitepress, StanBlocks
+import HTMXObjects
+
+# Sync the canonical `htmxo-embed.ts` into our theme dir before
+# DocumenterVitepress runs. The theme's `index.ts` imports from it.
+HTMXObjects.vitepress_theme_install(joinpath(@__DIR__, "src", ".vitepress", "theme"))
 
 makedocs(
     sitename = "StanBlocks.jl",

@@ -1,7 +1,17 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 DocumenterVitepress = "4710194d-e776-4893-9690-8d956a29c365"
+DynamicObjects = "23d02862-63fe-4c6e-8fdb-1d52cbbd39d5"
+HTMX = "27f3e1ef-6ef8-44dc-9e9a-2fb23ed44e83"
+HTMXObjects = "b12ef442-5798-4353-80f3-9562b03a0cb6"
 StanBlocks = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
+TestModules = "63c02187-99fd-4e5c-aaf0-4d6bfebc181c"
+Treebars = "e1e568c4-3a56-40a4-95fa-9b9c6c16fccb"
+WarmupHMC = "60658175-6863-4866-a322-ab51a11c0cfe"
+
+[sources.HTMXObjects]
+rev = "dev"
+url = "https://github.com/nsiccha/HTMXObjects.jl.git"
 
 [sources.StanBlocks]
 path = ".."

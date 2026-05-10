@@ -34,6 +34,10 @@ export default defineConfig({
   description: 'REPLACE_ME_DOCUMENTER_VITEPRESS',
   lastUpdated: true,
   cleanUrls: true,
+  // Allow `http://localhost:…` references (gallery.md links to the
+  // local Sb sandbox app) — vitepress build flags them as dead links
+  // otherwise.
+  ignoreDeadLinks: [/^https?:\/\/localhost(:\d+)?(\/|$)/],
   outDir: 'REPLACE_ME_DOCUMENTER_VITEPRESS', // This is required for MarkdownVitepress to work correctly...
   head: [
     ['link', { rel: 'icon', href: 'REPLACE_ME_DOCUMENTER_VITEPRESS_FAVICON' }],
@@ -57,13 +61,6 @@ export default defineConfig({
     --htmxo-error:   var(--vp-c-danger-1, #e76f51);
     --htmxo-border:  var(--vp-c-divider, currentColor);
     --htmxo-muted:   var(--vp-c-text-3, color-mix(in srgb, currentColor 60%, transparent));
-}
-.htmxo-embed {
-    border: 1px solid var(--vp-c-divider);
-    border-radius: 8px;
-    padding: 1rem;
-    margin: 1rem 0;
-    background: var(--vp-c-bg-soft);
 }
 /* Pages with the htmxo-embed-fullwidth class (or a wrapper carrying it)
  * escape VitePress's narrow content column. The gallery embed wants
