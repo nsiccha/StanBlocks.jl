@@ -5,10 +5,10 @@ using DynamicObjects
 import PosteriorDB
 using StanBlocks
 import StanBlocks: slic_implementation
-import StanBlocks.stan: transpiles, compiles, stan_code, stan_model, instantiate
+import StanBlocks.stan: stan_code, instantiate
 using LogDensityProblems
 using Statistics, Random
-using BridgeStan, StanLogDensityProblems, JSON
+using BridgeStan, StanLogDensityProblems
 using TestModules
 using Treebars: prepare_progress!, with_prepared_progress, polling_fetchindex, initialize_progress!
 
