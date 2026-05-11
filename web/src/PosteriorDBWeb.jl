@@ -323,10 +323,6 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             )
         )
 
-        reference_stan = read(
-            PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(pdb_posterior), "stan")),
-            String)
-
         # Per-check route bundle: /posterior/<name>/check/<kind>. The IP
         # cache makes repeated requests idempotent (the underlying
         # `@cached result` re-runs only when the on-disk cache is cleared).
@@ -347,7 +343,10 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             h.p("Cache cleared for $name")
         end
 
-        @get ref() = reference_stan
+        # Read reference Stan on-demand (only /ref route needs it, not the index).
+        @get ref() = read(
+            PosteriorDB.path(PosteriorDB.implementation(PosteriorDB.model(pdb_posterior), "stan")),
+            String)
 
         @get model() = h.div(detail)
     end
