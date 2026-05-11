@@ -18,6 +18,21 @@ full_cqual_eq(p; kwargs...) = begin
     return rv
 end
 
+"""
+    transpiles(model; re=true) -> Bool
+
+Return `true` if `model` (a [`SlicModel`](@ref StanBlocks.SlicModel) or
+[`StanModel`](@ref StanBlocks.StanModel)) successfully transpiles to Stan
+source via [`stan_code`](@ref StanBlocks.stan_code), `false` otherwise.
+
+This is the fast smoke-test for a model — it exercises the full SLIC
+tracing pipeline but stops short of invoking `stanc` / BridgeStan.
+
+Set `re=false` to swallow the transpilation error and just return `false`
+(useful for batch regression dashboards); the default `re=true` rethrows
+so failures surface with their normal [`StanBlocksError`](@ref
+StanBlocks.StanBlocksError) trace.
+"""
 transpiles(p; re=true) = try
     stan_code(p)
     return true
@@ -25,6 +40,22 @@ catch e
     re && rethrow()
     return false
 end
+
+"""
+    compiles(model; re=true) -> Bool
+
+Return `true` if `model` (a [`SlicModel`](@ref StanBlocks.SlicModel) or
+[`StanModel`](@ref StanBlocks.StanModel)) successfully transpiles **and**
+compiles via BridgeStan (i.e. [`stan_instantiate`](@ref
+StanBlocks.stan_instantiate) succeeds), `false` otherwise.
+
+Strictly stronger than [`transpiles`](@ref StanBlocks.transpiles): a
+model that transpiles can still fail to compile if `stanc` rejects the
+generated Stan or the C++ build fails.
+
+Set `re=false` to swallow the error and just return `false`; the default
+`re=true` rethrows.
+"""
 compiles(p; re=true) = try
     instantiate(p)
     return true

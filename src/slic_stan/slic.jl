@@ -275,7 +275,21 @@ maybedata(expr, value; kwargs...) = stan_expr(expr, value; qual=:data, kwargs...
 maybedata(expr, value::Function; kwargs...) = stan_expr(value, value; qual=:data, kwargs...)
 maybecv(expr, value) = stan_expr(expr, value; cv=true)
 
-"Traces through its first argument (a `StanBlocks.SlicModel`) and returns the inferred `StanBlocks.StanModel`."
+"""
+    stan_model(slic::SlicModel) -> StanModel
+
+Trace `slic` end-to-end (forward / backward / distribute passes), returning the
+inferred [`StanModel`](@ref StanBlocks.StanModel) — a fully resolved
+representation of the Stan blocks plus the data dictionary.
+
+Tracing is the expensive step. A `StanModel` is **cheap to re-data**: call
+`model(; new_kwargs...)` to swap the data dict without re-tracing. Use
+this in preference to repeatedly calling [`stan_instantiate`](@ref
+StanBlocks.stan_instantiate) on the original `SlicModel`.
+
+Errors during tracing are wrapped in a [`StanBlocksError`](@ref
+StanBlocks.StanBlocksError) tagged with `phase = :transpile`.
+"""
 function stan_model end
 const _StanBlocksError = parentmodule(@__MODULE__).StanBlocksError
 _is_stanblocks_error(e::_StanBlocksError) = true
@@ -1934,7 +1948,23 @@ end
 @eval forward!(x::CanonicalExprV{:(.=)}; info) = stan_expr(remake(x, forward!(x.args; info)...))
 @eval Base.show(io::IO, x::CanonicalExprV{:(.=)}) = print(io, Join(x.args, " = "))
     
-"Return the stan code of its first argument (a `StanBlocks.SlicModel` or a `StanBlocks.StanModel`) as a string."
+"""
+    stan_code(model) -> String
+
+Return the generated Stan source for `model` (a [`SlicModel`](@ref
+StanBlocks.SlicModel) or [`StanModel`](@ref StanBlocks.StanModel)) as a
+plain `String`.
+
+For a `SlicModel`, tracing runs first via [`stan_model`](@ref
+StanBlocks.stan_model); for an already-traced `StanModel`, only the
+rendering pass runs. Output covers the full Stan program — `data`,
+`transformed_data`, `parameters`, `transformed_parameters`, `model`, and
+`generated_quantities` blocks — with automatic block placement applied.
+
+Pair with [`transpiles`](@ref StanBlocks.transpiles) for boolean smoke
+tests and [`stan_instantiate`](@ref StanBlocks.stan_instantiate) to
+compile the generated code via BridgeStan.
+"""
 function stan_code end
 
 stan_code(x::StanModel) = begin 
@@ -1951,7 +1981,29 @@ prepare_for_stan(x::NamedTuple) = prepare_for_stan(values(x))
 prepare_for_stan(x::Tuple) = prepare_for_stan(Dict(enumerate(x)))
 bridgestan_data(x::Dict) = JSON.json(prepare_for_stan(x))
 """
-Returns the StanLogDensityProblem (a compiled posterior).
+    instantiate(model; nan_on_error=true, make_args=["STAN_THREADS=true"], warn=false, path=…) -> StanProblem
+    stan_instantiate(model; ...) -> StanProblem
+
+Compile `model` (a [`SlicModel`](@ref StanBlocks.SlicModel) or
+[`StanModel`](@ref StanBlocks.StanModel)) via BridgeStan and return a
+`StanLogDensityProblems.StanProblem`. The returned value implements the
+`LogDensityProblems` interface — call `LogDensityProblems.dimension`,
+`logdensity`, and `logdensity_and_gradient` on it.
+
+`stan_instantiate` is an exported alias for `instantiate`.
+
+# Keyword arguments
+
+- `path::AbstractString` — where to write the `.stan` file. Defaults to
+  `"tmp/<hash>.stan"`, so identical generated code is cached on disk.
+- `nan_on_error::Bool = true` — make BridgeStan return `NaN` instead of
+  throwing on evaluation failures.
+- `make_args::Vector{String} = ["STAN_THREADS=true"]` — extra arguments
+  forwarded to Stan's `make`.
+- `warn::Bool = false` — forwarded to BridgeStan.
+
+Errors during compilation are wrapped in a [`StanBlocksError`](@ref
+StanBlocks.StanBlocksError) tagged with `phase = :compile`.
 """
 instantiate(x::Union{SlicModel,StanModel}; nan_on_error=true, make_args=["STAN_THREADS=true"], warn=false, kwargs...) = begin
     sc = stan_code(x)
@@ -1998,4 +2050,14 @@ slic_expr(x::Expr) = x
 
 include("test.jl")
 
+"""
+    stan_instantiate(model; kwargs...) -> StanProblem
+
+Exported alias for [`StanBlocks.instantiate`](@ref). Compiles `model`
+(a [`SlicModel`](@ref StanBlocks.SlicModel) or [`StanModel`](@ref
+StanBlocks.StanModel)) via BridgeStan and returns a
+`StanLogDensityProblems.StanProblem` implementing the
+`LogDensityProblems` interface. See [`instantiate`](@ref
+StanBlocks.instantiate) for the full kwarg list.
+"""
 const stan_instantiate = instantiate

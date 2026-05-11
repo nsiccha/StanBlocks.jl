@@ -6,6 +6,20 @@
 StanBlocks.@slic
 StanBlocks.@deffun
 StanBlocks.@defsig
+StanBlocks.@usertype
+```
+
+## Sampling-form Dispatch
+
+```@docs
+StanBlocks.@lpxf
+StanBlocks.@lhs
+```
+
+## Runtime Assertions
+
+```@docs
+StanBlocks.@stan_assert
 ```
 
 ## Model Inspection and Compilation
@@ -14,6 +28,15 @@ StanBlocks.@defsig
 StanBlocks.stan_code
 StanBlocks.stan_model
 StanBlocks.stan_instantiate
+StanBlocks.instantiate
+```
+
+## Smoke Tests
+
+```@docs
+StanBlocks.transpiles
+StanBlocks.compiles
+StanBlocks.stanc_check
 ```
 
 ## Types
