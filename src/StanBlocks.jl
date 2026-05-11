@@ -1,10 +1,11 @@
 module StanBlocks
 
 export @slic, @defsig, @deffun, @lpxf, @lhs, @stan_assert
-export stan_code, stan_model, stan_instantiate
+export stan_code, stan_model, stan_instantiate, stanc_check
 export StanBlocksError
 
 using OrderedCollections, JSON, StanLogDensityProblems, LogDensityProblems, Markdown
+using BridgeStan
 
 # --- Error type for StanBlocks computations (defined early so submodules can use it) ---
 

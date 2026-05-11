@@ -4,6 +4,7 @@ authors = ["Nikolas Siccha <nikolassiccha@gmail.com>"]
 version = "0.1.5"
 
 [deps]
+BridgeStan = "c88b6f0a-829e-4b0b-94b7-f06ab5908f5a"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 LogDensityProblems = "6fdf6af0-433a-55f7-b3ed-c6c6e0b8df7c"
 Markdown = "d6f4376e-aef5-505a-96c1-9c027394607a"
@@ -21,6 +22,7 @@ PosteriorDBExt = "PosteriorDB"
 TestModules = {url = "https://github.com/nsiccha/TestModules.jl"}
 
 [compat]
+BridgeStan = "2.3"
 JSON = "0.18, 0.19, 0.20, 0.21, 1"
 LogDensityProblems = "2.1"
 OrderedCollections = "1.8"
