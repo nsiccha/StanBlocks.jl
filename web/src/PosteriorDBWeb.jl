@@ -544,6 +544,10 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             expect = read_sidecar("expect"; default="pass")
             should_fail = expect == "fail"
 
+            # Delegate draft(code) to sandbox so sub-structs (card, stanc) can
+            # reach it via a single __parent__ instead of __parent__.__parent__.
+            draft(code) = __parent__.draft(code)
+
             # Stanc verification: cached sidecar (read at construction), the
             # render fragments that depend on it, and the live re-run route.
             # Mounted at `/sandbox/snippet/<name>/stanc`.
@@ -597,7 +601,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                         title="Ctrl+click to edit",
                         _="on click[ctrlKey or shiftKey] halt the event set editor to the next .pdb-snippet-editor add @hidden to me remove @hidden from editor focus() the first <textarea/> in editor"),
                     h.div(; class="pdb-snippet-editor", hidden="")(
-                        __parent__.__parent__.draft(code).editor(; name, target="#$id", standalone),
+                        __parent__.draft(code).editor(; name, target="#$id", standalone),
                     ),
                 )
 
@@ -605,7 +609,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                 # renders the full card. Wraps eval in `safely` so transpile
                 # errors render as a contained error article.
                 index(; standalone=false) = safely(; obj=__parent__) do
-                    d = __parent__.__parent__.draft(code)
+                    d = __parent__.draft(code)
                     write("$file_path.status", "PASS")
                     write("$file_path.stan", d.result.code)
                     sc = stanc_check(d.result.code)
