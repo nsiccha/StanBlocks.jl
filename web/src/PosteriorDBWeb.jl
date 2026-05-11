@@ -1,6 +1,11 @@
 module PosteriorDBWeb
 
 using HTMXObjects
+# `using Treebars` (no symbol list — we only need its `__init__` to fire and
+# activate HTMXObjectsTreebarsExt, which is what makes `RecordingRoutes`
+# show live polling progress instead of blocking).
+using Treebars
+using HTMXObjects: RecordingRoutes
 using DynamicObjects
 import PosteriorDB
 using StanBlocks
@@ -10,7 +15,6 @@ using LogDensityProblems
 using Statistics, Random
 using StanLogDensityProblems
 using TestModules
-using Treebars: prepare_progress!, with_prepared_progress, polling_fetchindex, initialize_progress!
 
 # include("test/runtests.jl")
 
@@ -93,65 +97,19 @@ _REPO_ROOT = dirname(dirname(@__DIR__))
 _SANDBOX_GALLERY_DIR = joinpath(_REPO_ROOT, "web", "sandbox")
 _sandbox_gallery = Gallery(_SANDBOX_GALLERY_DIR)
 
-# `cache_type=:parallel` so the IP cache survives across the per-request
-# `@htmx` instances polling for `record_gallery` progress (see AoV's
-# `GalleryAppData` for the canonical shape).
+# Recording configuration. The IP that actually drives `record!` lives
+# upstream as `HTMXObjects.RECORDING_STATE` (its own `:parallel` cache);
+# this `SbAppData` only carries the wiring (`recording_dir`,
+# `recording_base`, `recording_paths`) consumed by the
+# `@include record_gallery = RecordingRoutes(…)` mount on `AppContext`.
+# `cache_type=:parallel` matches AoV's `GalleryAppData` — kept so any
+# future polling IP can live here without re-introducing the cache type.
 @dynamicstruct struct SbAppData
-    # `polling_fetchindex` renders progress via `htmx_render(__status__)`;
-    # without an initialized tree the rendering callback hits
-    # `htmx_render(::Nothing)` on the first call. `:state` selects the
-    # text-tree backend used by the polling progress UI.
-    __status__ = initialize_progress!(:state; description="StanBlocks sandbox")
-
-    """
-    `record_gallery(record_dir, record_base)` — IP. Drives
-    `HTMXObjects.record!` against a fresh `AppContext()` to dump every
-    sandbox-gallery URL into `record_dir`, with per-path `prepare_progress!`
-    markers so the route can poll a live progress tree. Returns a
-    NamedTuple summary `(; n_html, n_js, n_json, n_other, n_paths,
-    record_dir, record_base)`.
-    """
-    record_gallery(record_dir::String, record_base::String) = begin
-        ids = [it.id for it in _sandbox_gallery.items]
-        paths = vcat(
-            ["/sandbox/gallery"],
-            ["/sandbox/snippet/$id" for id in ids],
-        )
-
-        phases = [prepare_progress!(__status__; description=p) for p in paths]
-
-        isdir(record_dir) && rm(record_dir; recursive=true)
-        mkpath(record_dir)
-
-        # `HTMXObjects.record!` re-`route!`s the app with recording closures.
-        # The live AppContext registration is clobbered while this loop runs;
-        # restore it via `route!(app)` in the `finally` so subsequent live
-        # requests keep going to the editor / live UI.
-        app = AppContext()
-        route!(app; record_dir, record_base)
-        router = HTMXObjects.CONTEXT[].service.router
-        try
-            for (path, phase) in zip(paths, phases)
-                with_prepared_progress(phase) do _
-                    HTMXObjects._drive_record_path(router, path, Pair{String,String}[])
-                    HTMXObjects._drive_record_path(router, path, ["HX-Request" => "true"])
-                end
-            end
-        finally
-            route!(app)
-        end
-
-        n_html = 0; n_js = 0; n_json = 0; n_other = 0
-        for (root, _, fs) in walkdir(record_dir)
-            for f in fs
-                ext = lowercase(splitext(f)[2])
-                ext == ".html" ? (n_html += 1) :
-                ext == ".js"   ? (n_js   += 1) :
-                ext == ".json" ? (n_json += 1) :
-                                 (n_other += 1)
-            end
-        end
-        (; n_html, n_js, n_json, n_other, n_paths=length(paths), record_dir, record_base)
+    recording_dir  = joinpath(_REPO_ROOT, "docs", "src", "public", "live-sb")
+    recording_base = get(ENV, "RECORD_BASE_PREFIX", "/StanBlocks.jl/dev/live-sb")
+    recording_paths = let ids = [it.id for it in _sandbox_gallery.items]
+        vcat(["/sandbox/gallery"],
+             ["/sandbox/snippet/$id" for id in ids])
     end
 end
 
@@ -160,14 +118,12 @@ const APPDATA = SbAppData(; cache_type=:parallel)
 
 @htmx struct AppContext
 
-    # Long-running operations (e.g. `record_gallery`) live in the parallel-
-    # cached `APPDATA` so their per-request progress trees survive between
-    # `polling_fetchindex` polls. Reach into `__appdata__.record_gallery`
-    # directly at the call site rather than destructuring `(; record_gallery)
-    # = __appdata__` — the destructuring binds `record_gallery` as a
-    # property of `AppContext`, which collides with the `@get record_gallery`
-    # handler below on `compute_property(AppContext, Val{:record_gallery})`
-    # and routes the IP cache lookup to the wrong struct.
+    # Recording wiring (`recording_dir`, `recording_base`, `recording_paths`)
+    # lives on `APPDATA` so the canonical `@include record_gallery =
+    # RecordingRoutes(…)` mount below can pull the field values at struct-
+    # definition time. The actual recording IP cache lives upstream on
+    # `HTMXObjects.RECORDING_STATE` (`:parallel`); `APPDATA` only carries
+    # the configuration.
     __appdata__ = APPDATA
 
     cache_path = joinpath(_REPO_ROOT, "web", "cache")
@@ -870,43 +826,18 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         )
     end
 
-    # `/record_gallery` — drive the AppData IP `record_gallery` to dump
+    # `/record_gallery` — canonical `RecordingRoutes` mount. Dumps
     # `/sandbox/gallery` + every `/sandbox/snippet/<id>` URL into
-    # `docs/src/public/live-sb/`. Long-running so it goes through
-    # `polling_fetchindex`. Override the deploy URL prefix via
-    # `RECORD_BASE_PREFIX` env var (default `/StanBlocks.jl/dev/live-sb`).
-    @get record_gallery(; record_dir::String="", record_base::String="", force::Bool=false) = begin
-        rd = isempty(record_dir) ?
-            joinpath(_REPO_ROOT, "docs", "src", "public", "live-sb") :
-            record_dir
-        rb = isempty(record_base) ?
-            get(ENV, "RECORD_BASE_PREFIX", "/StanBlocks.jl/dev/live-sb") :
-            record_base
-
-        polling_fetchindex(__appdata__.record_gallery, rd, rb;
-                           poll_url=__route__,
-                           label="Recording sandbox gallery",
-                           force) do summary
-            h.article(
-                h.header(h.h2("Gallery recorded")),
-                h.p("Wrote ", h.code(string(summary.n_paths)),
-                    " routes (× full + HX shapes) into ",
-                    h.code(summary.record_dir), "."),
-                h.ul(
-                    h.li(h.code(string(summary.n_html)), " .html"),
-                    h.li(h.code(string(summary.n_js)),   " .js"),
-                    h.li(h.code(string(summary.n_json)), " .json"),
-                    h.li(h.code(string(summary.n_other)), " other"),
-                ),
-                h.p(h.strong("Next: "),
-                    h.code("git add docs/src/public/live-sb && git commit && git push"),
-                    " — CI deploys the rest."),
-                h.p("Re-record (overwrites cache): ",
-                    h.a("/record_gallery?force=true";
-                        href=query_url(__self__/"record_gallery"; force=true))),
-            )
-        end
-    end
+    # `docs/src/public/live-sb/`. `?force=true` invalidates the upstream
+    # `RECORDING_STATE` cache and re-records. Override the deploy URL prefix
+    # via `RECORD_BASE_PREFIX` (handled in `SbAppData.recording_base`).
+    @include record_gallery = RecordingRoutes(;
+        app_type=AppContext,
+        paths=__appdata__.recording_paths,
+        record_dir=__appdata__.recording_dir,
+        record_base=__appdata__.recording_base,
+        label="Recording StanBlocks sandbox gallery",
+    )
 
 end
 
