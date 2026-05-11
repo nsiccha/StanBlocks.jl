@@ -18,9 +18,49 @@ using Treebars: prepare_progress!, with_prepared_progress, polling_fetchindex, i
 pdb() = PosteriorDB.database()
 
 
+# --- Stanc badge/error helpers (used in stanc @include, card.index, and gallery_card) ---
+
+# Render a stanc pass/fail badge from a Bool. `nothing` → empty string (no sidecar yet).
+stanc_badge(ok::Bool) = ok ?
+    h.span("stanc ✓"; data_status="success",
+        title="Stan compiler (stanc) accepted the generated code") :
+    h.span("stanc ✗"; data_status="error",
+        title="Stan compiler (stanc) rejected the generated code — see error below")
+stanc_badge(::Nothing) = ""
+stanc_badge(sidecar::AbstractString) = stanc_badge(sidecar == "OK")
+
+# Render a stanc error block. Returns `""` for nothing/empty/"OK";
+# otherwise renders the error output in a card-error div.
+stanc_error_block(::Nothing) = ""
+function stanc_error_block(sidecar::AbstractString)
+    (isempty(sidecar) || sidecar == "OK") && return ""
+    h.div(class="htmxo-card-error")(
+        h.strong("stanc rejected the generated Stan code:"),
+        h.pre(h.code(sidecar)),
+    )
+end
+
+
 # --- Test helpers (throw on failure; route safety wrapper renders the error article) ---
 
 transpile_check(post) = (code=stan_code(post),)
+
+# Locate the `stanc` binary. Resolution order:
+#   1. $STANC_PATH env var (explicit override)
+#   2. BridgeStan's shipped binary (bin/stanc relative to its source path)
+#   3. Hardcoded fallback for Niko's machine (last-resort, keeps old behavior)
+function _stanc_bin()
+    if haskey(ENV, "STANC_PATH")
+        return ENV["STANC_PATH"]
+    end
+    bs_path = BridgeStan.get_bridgestan_path(; download=false)
+    if !isempty(bs_path)
+        candidate = joinpath(bs_path, "bin", "stanc")
+        isfile(candidate) && return candidate
+    end
+    # Last-resort fallback (Niko's machine, cmdstan 2.37.0)
+    "/home/niko/.cmdstan/cmdstan-2.37.0/bin/stanc"
+end
 
 # Run `stanc --warn-pedantic` on a stan source string and return
 # `(ok::Bool, output::String)`. Pure utility on a string arg — used by
@@ -28,7 +68,7 @@ transpile_check(post) = (code=stan_code(post),)
 # stan source comes from different identities (live transpile vs cached
 # sidecar), so it has no natural single-owner to attach to.
 function stanc_check(stan_code_str::AbstractString)
-    stanc = "/home/niko/.cmdstan/cmdstan-2.37.0/bin/stanc"
+    stanc = _stanc_bin()
     tmpfile = tempname() * ".stan"
     write(tmpfile, stan_code_str)
     io = IOBuffer()
@@ -181,17 +221,20 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             length(parts) == 2 ? (parts[1], parts[2]) : (name, "")
         end
 
+        # Shared: both transpile and compile need the SLIC model — compute once.
+        slic_post = slic_implementation(pdb_posterior)
+
         @struct transpile = begin
             label     = "Transpiles"
             check_url = "/posterior/$name/check/transpile"
-            @cached result = transpile_check(slic_implementation(pdb_posterior))
+            @cached result = transpile_check(slic_post)
             status = @cache_status result
         end
 
         @struct compile = begin
             label     = "Compiles"
             check_url = "/posterior/$name/check/compile"
-            @cached result = compile_check(slic_implementation(pdb_posterior))
+            @cached result = compile_check(slic_post)
             status = @cache_status result
         end
 
@@ -510,18 +553,8 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             @include stanc = begin
                 sidecar = read_sidecar("stanc")
 
-                badge = isnothing(sidecar) ? "" :
-                    sidecar == "OK" ?
-                        h.span("stanc ✓"; data_status="success",
-                            title="Stan compiler (stanc) accepted the generated code") :
-                        h.span("stanc ✗"; data_status="error",
-                            title="Stan compiler (stanc) rejected the generated code — see error below")
-
-                error_block = (isnothing(sidecar) || sidecar == "OK") ? "" :
-                    h.div(class="htmxo-card-error")(
-                        h.strong("stanc rejected the generated Stan code:"),
-                        h.pre(h.code(sidecar)),
-                    )
+                badge       = stanc_badge(sidecar)
+                error_block = stanc_error_block(sidecar)
 
                 @get index() = begin
                     r = __parent__.draft(code).result
@@ -586,21 +619,11 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                             title="Expected failure but transpiled — toggle 'should pass' if intentional") :
                         h.span("PASS"; data_status="success")
                     expect_label = should_fail ? "xfail" : "should pass"
-                    stanc_b = sc.ok ?
-                        h.span("stanc ✓"; data_status="success",
-                            title="Stan compiler (stanc) accepted the generated code") :
-                        h.span("stanc ✗"; data_status="error",
-                            title="Stan compiler (stanc) rejected the generated code — see error below")
-                    stanc_err = sc.ok ? "" :
-                        h.div(class="htmxo-card-error")(
-                            h.strong("stanc rejected the generated Stan code:"),
-                            h.pre(h.code(sc.output)),
-                        )
                     h.div(; id, class="htmxo-status-banner", data_status="success")(
                         h.div(; class="pdb-snippet-header")(
                             h.strong(name; contenteditable="true", class="pdb-name-input",
                                 _="on blur if my textContent.trim() is not '$name' fetch $(snippet_url/"rename")?to=\${my.textContent.trim()} then put the result into #$id.outerHTML"),
-                            badge, stanc_b,
+                            badge, stanc_badge(sc.ok),
                             h.button("↻"; type="button", class="pdb-icon-btn",
                                 hx_get=refresh_url, hx_target="#$id", hx_swap="outerHTML"),
                             h.button(expect_label; type="button", class="pdb-icon-btn", data_variant="text",
@@ -612,7 +635,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
                             h.a("macro"; href=snippet_url/"macroexpand", target="_blank", class="pdb-icon-link", title="Show macroexpanded code"),
                         ),
                         code_block(; standalone),
-                        stanc_err,
+                        stanc_error_block(sc.ok ? "" : sc.output),
                         standalone ? d.output :
                         h.details(
                             h.summary("Stan code"),
