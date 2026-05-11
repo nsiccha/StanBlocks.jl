@@ -108,13 +108,16 @@ function correct_check(posterior)
     (stats=result,)
 end
 
+# Repo root (web/src/ → web/ → repo root). Used for sandbox, cache, docs paths.
+_REPO_ROOT = dirname(dirname(@__DIR__))
+
 # --- Sandbox gallery (read-only view of `web/sandbox/`) ----------------------
 #
 # Reuses the existing on-disk sandbox dir as a read-only `HTMXObjects.Gallery`.
 # The interactive `/sandbox` editor is left untouched — the gallery exposes
 # the *same files* via the new `gallery_grid` primitive so the docs
 # `record_gallery` flow can ship the entire sandbox as static recordings.
-_SANDBOX_GALLERY_DIR = joinpath(dirname(dirname(@__DIR__)), "web", "sandbox")
+_SANDBOX_GALLERY_DIR = joinpath(_REPO_ROOT, "web", "sandbox")
 _sandbox_gallery = Gallery(_SANDBOX_GALLERY_DIR)
 
 # `cache_type=:parallel` so the IP cache survives across the per-request
@@ -194,7 +197,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
     # and routes the IP cache lookup to the wrong struct.
     __appdata__ = APPDATA
 
-    cache_path = joinpath(dirname(dirname(@__DIR__)), "web", "cache")
+    cache_path = joinpath(_REPO_ROOT, "web", "cache")
 
     @cached posterior_names = sort([
         pn for pn in PosteriorDB.posterior_names(pdb())
@@ -475,7 +478,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
     # sub-bundle. See `SbAppData.record_gallery` for the recording driver,
     # which hardcodes the public URL list.
     @include sandbox = begin
-        path = joinpath(dirname(dirname(@__DIR__)), "web", "sandbox")
+        path = _SANDBOX_GALLERY_DIR
 
         snippets() = begin
             isdir(path) || mkpath(path)
@@ -901,7 +904,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
     # `RECORD_BASE_PREFIX` env var (default `/StanBlocks.jl/dev/live-sb`).
     @get record_gallery(; record_dir::String="", record_base::String="", force::Bool=false) = begin
         rd = isempty(record_dir) ?
-            joinpath(dirname(dirname(@__DIR__)), "docs", "src", "public", "live-sb") :
+            joinpath(_REPO_ROOT, "docs", "src", "public", "live-sb") :
             record_dir
         rb = isempty(record_base) ?
             get(ENV, "RECORD_BASE_PREFIX", "/StanBlocks.jl/dev/live-sb") :
