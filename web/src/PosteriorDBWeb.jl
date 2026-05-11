@@ -221,20 +221,17 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             length(parts) == 2 ? (parts[1], parts[2]) : (name, "")
         end
 
-        # Shared: both transpile and compile need the SLIC model — compute once.
-        slic_post = slic_implementation(pdb_posterior)
-
         @struct transpile = begin
             label     = "Transpiles"
             check_url = "/posterior/$name/check/transpile"
-            @cached result = transpile_check(slic_post)
+            @cached result = transpile_check(slic_implementation(pdb_posterior))
             status = @cache_status result
         end
 
         @struct compile = begin
             label     = "Compiles"
             check_url = "/posterior/$name/check/compile"
-            @cached result = compile_check(slic_post)
+            @cached result = compile_check(slic_implementation(pdb_posterior))
             status = @cache_status result
         end
 
