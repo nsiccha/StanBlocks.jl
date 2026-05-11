@@ -8,7 +8,7 @@ import StanBlocks: slic_implementation
 import StanBlocks.stan: stan_code, instantiate
 using LogDensityProblems
 using Statistics, Random
-using BridgeStan, StanLogDensityProblems
+using StanLogDensityProblems
 using TestModules
 using Treebars: prepare_progress!, with_prepared_progress, polling_fetchindex, initialize_progress!
 
@@ -45,37 +45,10 @@ end
 
 transpile_check(post) = (code=stan_code(post),)
 
-# Locate the `stanc` binary. Resolution order:
-#   1. $STANC_PATH env var (explicit override)
-#   2. BridgeStan's shipped binary (bin/stanc relative to its source path)
-#   3. Hardcoded fallback for Niko's machine (last-resort, keeps old behavior)
-function _stanc_bin()
-    if haskey(ENV, "STANC_PATH")
-        return ENV["STANC_PATH"]
-    end
-    bs_path = BridgeStan.get_bridgestan_path(; download=false)
-    if !isempty(bs_path)
-        candidate = joinpath(bs_path, "bin", "stanc")
-        isfile(candidate) && return candidate
-    end
-    # Last-resort fallback (Niko's machine, cmdstan 2.37.0)
-    "/home/niko/.cmdstan/cmdstan-2.37.0/bin/stanc"
-end
-
-# Run `stanc --warn-pedantic` on a stan source string and return
-# `(ok::Bool, output::String)`. Pure utility on a string arg — used by
-# multiple sandbox sites (live editor card, batch verification) where the
-# stan source comes from different identities (live transpile vs cached
-# sidecar), so it has no natural single-owner to attach to.
-function stanc_check(stan_code_str::AbstractString)
-    stanc = _stanc_bin()
-    tmpfile = tempname() * ".stan"
-    write(tmpfile, stan_code_str)
-    io = IOBuffer()
-    ok = success(pipeline(`$stanc --warn-pedantic $tmpfile`; stderr=io, stdout=io))
-    rm(tmpfile; force=true)
-    (ok=ok, output=String(take!(io)))
-end
+# `stanc_check(code)` lives upstream in StanBlocks (src/slic_stan/test.jl) and
+# is imported via `using StanBlocks`. Discovery: $STANC_PATH → BridgeStan's
+# bin/stanc, or error. The previous local fallback to a hardcoded cmdstan
+# path is intentionally dropped.
 
 compile_check(post) = (dimension=LogDensityProblems.dimension(instantiate(post)),)
 
