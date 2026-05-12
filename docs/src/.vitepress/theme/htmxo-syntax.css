@@ -1,0 +1,75 @@
+/* Theme-aware Prism token coloring. Token classes follow PrismJS's
+ * convention; colors are driven by CSS variables that flip with the
+ * host theme (VitePress `html.dark`, Pico `data-theme="dark"`, or
+ * `prefers-color-scheme: dark` as a last-resort fallback). The tokens
+ * sit on top of `htmxo-gallery-card-code`'s subtle background, so
+ * highlighting blends with the rest of the docs theme instead of
+ * forcing a heavy `prism-tomorrow`-style dark frame everywhere. */
+
+:root {
+    --htmxo-syntax-comment:     #8a8d92;
+    --htmxo-syntax-punctuation: currentColor;
+    --htmxo-syntax-string:      #4f8a3b;
+    --htmxo-syntax-keyword:     #a335a5;
+    --htmxo-syntax-function:    #2f6dc7;
+    --htmxo-syntax-number:      #b06900;
+    --htmxo-syntax-class:       #b06900;
+    --htmxo-syntax-operator:    currentColor;
+    --htmxo-syntax-tag:         #c43d3d;
+}
+
+html.dark, [data-theme="dark"] {
+    --htmxo-syntax-comment:  #8a9ba8;
+    --htmxo-syntax-string:   #98c379;
+    --htmxo-syntax-keyword:  #c678dd;
+    --htmxo-syntax-function: #61afef;
+    --htmxo-syntax-number:   #d19a66;
+    --htmxo-syntax-class:    #e5c07b;
+    --htmxo-syntax-tag:      #e06c75;
+}
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --htmxo-syntax-comment:  #8a9ba8;
+        --htmxo-syntax-string:   #98c379;
+        --htmxo-syntax-keyword:  #c678dd;
+        --htmxo-syntax-function: #61afef;
+        --htmxo-syntax-number:   #d19a66;
+        --htmxo-syntax-class:    #e5c07b;
+        --htmxo-syntax-tag:      #e06c75;
+    }
+}
+
+code[class*="language-"], pre[class*="language-"] { color: inherit; }
+
+.token.comment, .token.prolog, .token.doctype, .token.cdata,
+.token.line-comment, .token.block-comment {
+    color: var(--htmxo-syntax-comment);
+    font-style: italic;
+}
+.token.punctuation { color: var(--htmxo-syntax-punctuation); }
+.token.string, .token.attr-value, .token.char, .token.regex {
+    color: var(--htmxo-syntax-string);
+}
+.token.keyword, .token.atrule, .token.builtin, .token.boolean,
+.token.constant, .token.symbol {
+    color: var(--htmxo-syntax-keyword);
+}
+.token.function, .token.method {
+    color: var(--htmxo-syntax-function);
+}
+.token.class-name, .token.namespace {
+    color: var(--htmxo-syntax-class);
+    font-weight: 600;
+}
+.token.number, .token.unit {
+    color: var(--htmxo-syntax-number);
+}
+.token.operator, .token.entity, .token.url {
+    color: var(--htmxo-syntax-operator);
+}
+.token.tag, .token.selector, .token.important {
+    color: var(--htmxo-syntax-tag);
+    font-weight: 600;
+}
+.token.bold     { font-weight: bold; }
+.token.italic   { font-style: italic; }

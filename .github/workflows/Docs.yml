@@ -33,10 +33,7 @@ jobs:
       - name: Install dependencies
         run: |
           git clone https://github.com/nsiccha/TestModules.jl.git
-          git clone --branch dev https://github.com/nsiccha/HTMXObjects.jl.git
-          git clone https://github.com/nsiccha/DynamicObjects.jl.git
-          git clone https://github.com/nsiccha/HTMX.jl.git
-          julia --project=docs -e 'using Pkg; Pkg.develop([PackageSpec(path=pwd()), PackageSpec(path="TestModules.jl"), PackageSpec(path="HTMXObjects.jl"), PackageSpec(path="DynamicObjects.jl"), PackageSpec(path="HTMX.jl")]); Pkg.instantiate()'
+          julia --project=docs -e 'using Pkg; Pkg.develop([PackageSpec(path=pwd()), PackageSpec(path="TestModules.jl")]); Pkg.instantiate()'
       - name: Build and deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

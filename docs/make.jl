@@ -1,9 +1,11 @@
 using Documenter, DocumenterVitepress, StanBlocks
-import HTMXObjects
 
-# Sync the canonical `htmxo-embed.ts` into our theme dir before
-# DocumenterVitepress runs. The theme's `index.ts` imports from it.
-HTMXObjects.vitepress_theme_install(joinpath(@__DIR__, "src", ".vitepress", "theme"))
+# Theme files synced from HTMXObjects/assets/vitepress/ (htmxo-embed.ts,
+# htmxo-gallery.css, htmxo-syntax.css) are tracked under
+# docs/src/.vitepress/theme/. Re-sync them locally via
+# `using HTMXObjects; HTMXObjects.vitepress_theme_install(joinpath(@__DIR__, "src", ".vitepress", "theme"))`
+# when upstream changes — we don't do that on CI so the private
+# HTMXObjects.jl doesn't need to be cloned during the docs build.
 
 makedocs(
     sitename = "StanBlocks.jl",
