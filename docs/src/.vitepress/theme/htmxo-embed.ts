@@ -219,7 +219,15 @@ export function setupHtmxoEmbed(router: any, options: HtmxoEmbedOptions = {}) {
     // any embed whose fragment swapped in before Prism was ready.
     // The associated token CSS is in `htmxo-syntax.css` (imported
     // above).
+    //
+    // `Prism.manual = true` BEFORE core loads is load-bearing: without
+    // it, prism.min.js auto-calls `highlightAll()` on load, which walks
+    // the whole document and overwrites `<code class="language-*">`
+    // contents — destroying shiki-rendered tokens on host docs pages.
+    // We only ever want Prism to touch `.htmxo-embed` subtrees.
     if (!document.querySelector('script[data-htmxo-prism]')) {
+        (window as any).Prism = (window as any).Prism || {};
+        (window as any).Prism.manual = true;
         const cdn = 'https://cdn.jsdelivr.net/npm/prismjs@1';
         const langs = ['julia', 'stan'];
         const highlightAllEmbeds = () => {
