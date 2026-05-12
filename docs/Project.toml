@@ -5,9 +5,5 @@ HTMXObjects = "b12ef442-5798-4353-80f3-9562b03a0cb6"
 StanBlocks = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
 TestModules = "63c02187-99fd-4e5c-aaf0-4d6bfebc181c"
 
-[sources.HTMXObjects]
-rev = "dev"
-url = "https://github.com/nsiccha/HTMXObjects.jl.git"
-
 [sources.StanBlocks]
 path = ".."
