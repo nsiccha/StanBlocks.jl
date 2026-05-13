@@ -1,0 +1,29 @@
+Semantic error in '/tmp/jl_dCVwrWl6PG.stan', line 23, column 11 to column 35:
+   -------------------------------------------------
+    21:  }
+    22:  generated quantities {
+    23:      vector[num_elements(dose_times)] x = std_normal_vector_rng(num_elements(dose_times));
+                    ^
+    24:  }
+   -------------------------------------------------
+
+Ill-typed arguments supplied to function 'num_elements':
+(tuple(vector, array[] int))
+Available signatures:
+(vector) => int
+  The first argument must be vector but got tuple(vector, array[] int)
+(row_vector) => int
+  The first argument must be row_vector but got tuple(vector, array[] int)
+(matrix) => int
+  The first argument must be matrix but got tuple(vector, array[] int)
+(complex_vector) => int
+  The first argument must be
+   complex_vector
+  but got
+   tuple(vector, array[] int)
+(complex_row_vector) => int
+  The first argument must be
+   complex_row_vector
+  but got
+   tuple(vector, array[] int)
+(Additional signatures omitted)

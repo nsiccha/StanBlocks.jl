@@ -1,0 +1,10 @@
+Syntax error in '/tmp/jl_P61wVgNen6.stan', line 2, column 26 to column 27, parsing error:
+   -------------------------------------------------
+     1:  functions {
+     2:  real kwcall_foo(tuple(real) kw, real x) {
+                                   ^
+     3:      real sigma = kw.1;
+     4:      return (sigma * x);
+   -------------------------------------------------
+
+Expected comma-separated list of types followed by ")" to declare tuple type.

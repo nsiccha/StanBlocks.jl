@@ -1,0 +1,11 @@
+Syntax error in '/tmp/jl_PCNi121W1i.stan', line 12, column 11 to column 26, parsing error:
+   -------------------------------------------------
+    10:  ) {
+    11:      int n = dims(seed)[1];
+    12:      vector["dims(seed)[1]"] out = seed;
+                    ^
+    13:      out[1] = 42.0;
+    14:      return out;
+   -------------------------------------------------
+
+Expected "[" expression "]" for vector size.

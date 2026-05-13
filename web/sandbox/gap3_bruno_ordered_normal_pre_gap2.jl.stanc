@@ -1,0 +1,11 @@
+Semantic error in '/tmp/jl_9gB290taJS.stan', line 49, column 4 to column 48:
+   -------------------------------------------------
+    47:  }
+    48:  model {
+    49:      log_inv_rates ~ ordered_normal(0.0, 1.0, 3);
+             ^
+    50:      y ~ normal(log_inv_rates, 1.0);
+    51:  }
+   -------------------------------------------------
+
+Ill-typed arguments to '~' statement. No function 'ordered_normal_lpdf' was found when looking for distribution 'ordered_normal'.

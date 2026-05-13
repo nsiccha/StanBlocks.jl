@@ -1,0 +1,15 @@
+Semantic error in '/tmp/jl_TcvgxKxOla.stan', line 25, column 11 to column 73:
+   -------------------------------------------------
+    23:      int m = dims(X)[1];
+    24:      int n = dims(X)[2];
+    25:      return neg_binomial_2_log_glm_rng(X, rep_vector(alpha, m), beta, phi);
+                    ^
+    26:  }
+    27:  }
+   -------------------------------------------------
+
+Ill-typed arguments supplied to function 'neg_binomial_2_log_glm_rng':
+(matrix, vector, vector, real)
+Available signatures:
+(matrix, real, vector, real) => array[] int
+  The second argument must be real but got vector

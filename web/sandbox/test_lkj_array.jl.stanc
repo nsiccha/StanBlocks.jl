@@ -1,0 +1,15 @@
+Semantic error in '/tmp/jl_jCrcVuHc3Y.stan', line 59, column 4 to column 31:
+   -------------------------------------------------
+    57:  }
+    58:  model {
+    59:      L ~ lkj_corr_cholesky(1.0);
+             ^
+    60:      y ~ normal(sum(L), 1.0);
+    61:  }
+   -------------------------------------------------
+
+Ill-typed arguments supplied to function 'lkj_corr_cholesky':
+(array[] matrix, real)
+Available signatures:
+(matrix, real) => real
+  The first argument must be matrix but got array[] matrix

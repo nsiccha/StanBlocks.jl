@@ -1,0 +1,11 @@
+Syntax error in '/tmp/jl_7SPor4DAZc.stan', line 44, column 43 to column 49, parsing error:
+   -------------------------------------------------
+    42:      return to_vector(normal_rng(a, b));
+    43:  }
+    44:  vector hier_mean(real mu, real tau, vector offset) {
+                                                    ^
+    45:      return (mu + (tau * offset));
+    46:  }
+   -------------------------------------------------
+
+Expected a new identifier but found reserved keyword 'offset'.

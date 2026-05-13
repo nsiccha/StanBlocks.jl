@@ -1,0 +1,24 @@
+Semantic error in '/tmp/jl_fylIfSVG5i.stan', line 57, column 4 to column 21:
+   -------------------------------------------------
+    55:  }
+    56:  model {
+    57:      A ~ normal(0, 1);
+             ^
+    58:      y ~ normal(to_vector(A), 1.0);
+    59:  }
+   -------------------------------------------------
+
+Ill-typed arguments supplied to function 'normal':
+(matrix, int, int)
+Available signatures:
+(real, row_vector, row_vector) => real
+  The first argument must be real but got matrix
+(real, vector, row_vector) => real
+  The first argument must be real but got matrix
+(real, array[] real, row_vector) => real
+  The first argument must be real but got matrix
+(real, real, row_vector) => real
+  The first argument must be real but got matrix
+(real, row_vector, vector) => real
+  The first argument must be real but got matrix
+(Additional signatures omitted)

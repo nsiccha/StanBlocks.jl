@@ -1,0 +1,24 @@
+Semantic error in '/tmp/jl_V2pO56zalw.stan', line 33, column 11 to column 46:
+   -------------------------------------------------
+    31:      matrix args2
+    32:  ) {
+    33:      return bernoulli_logit_lpmf(args1 | args2);
+                    ^
+    34:  }
+    35:  int broadcasted_getindex(array[] int x, int i) {
+   -------------------------------------------------
+
+Ill-typed arguments supplied to function 'bernoulli_logit_lpmf':
+(int, matrix)
+Available signatures:
+(int, real) => real
+  The second argument must be real but got matrix
+(int, vector) => real
+  The second argument must be vector but got matrix
+(int, row_vector) => real
+  The second argument must be row_vector but got matrix
+(int, array[] real) => real
+  The second argument must be array[] real but got matrix
+(array[] int, row_vector) => real
+  The first argument must be array[] int but got int
+(Additional signatures omitted)

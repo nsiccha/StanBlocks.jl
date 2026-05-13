@@ -1,0 +1,24 @@
+Semantic error in '/tmp/jl_bgR6XIps5S.stan', line 37, column 11 to column 44:
+   -------------------------------------------------
+    35:      real args3
+    36:  ) {
+    37:      return normal_lpdf(args1 | args2, args3);
+                    ^
+    38:  }
+    39:  real broadcasted_getindex(vector x, int i) {
+   -------------------------------------------------
+
+Ill-typed arguments supplied to function 'normal_lpdf':
+(real, matrix, real)
+Available signatures:
+(real, real, row_vector) => real
+  The second argument must be real but got matrix
+(real, real, vector) => real
+  The second argument must be real but got matrix
+(real, real, array[] real) => real
+  The second argument must be real but got matrix
+(real, real, real) => real
+  The second argument must be real but got matrix
+(real, vector, row_vector) => real
+  The second argument must be vector but got matrix
+(Additional signatures omitted)

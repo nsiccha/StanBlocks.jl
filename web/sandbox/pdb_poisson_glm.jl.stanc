@@ -1,0 +1,15 @@
+Semantic error in '/tmp/jl_LUBY9cXufe.stan', line 23, column 11 to column 61:
+   -------------------------------------------------
+    21:      int m = dims(X)[1];
+    22:      int n = dims(X)[2];
+    23:      return poisson_log_glm_rng(X, rep_vector(alpha, m), beta);
+                    ^
+    24:  }
+    25:  }
+   -------------------------------------------------
+
+Ill-typed arguments supplied to function 'poisson_log_glm_rng':
+(matrix, vector, vector)
+Available signatures:
+(matrix, real, vector) => array[] int
+  The second argument must be real but got vector

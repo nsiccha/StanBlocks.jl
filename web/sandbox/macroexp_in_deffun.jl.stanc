@@ -1,0 +1,37 @@
+Semantic error in '/tmp/jl_rO3UBULQPQ.stan', line 8, column 13 to column 18:
+   -------------------------------------------------
+     6:      int n = dims(x)[1];
+     7:      if (dims(y)[1] != n) reject("mymetric: dim mismatch — `y` dim 1 (= ", dims(y)[1], ") does not match `n` (= ", n, ")");
+     8:      return ((x * x) + (y * y));
+                      ^
+     9:  }
+    10:  }
+   -------------------------------------------------
+
+Ill-typed arguments supplied to infix operator *. Available signatures: 
+(int, int) => int
+(real, real) => real
+(real, vector) => vector
+(real, row_vector) => row_vector
+(real, matrix) => matrix
+(vector, real) => vector
+(vector, row_vector) => matrix
+(complex, complex) => complex
+(complex, complex_vector) => complex_vector
+(complex, complex_row_vector) => complex_row_vector
+(complex, complex_matrix) => complex_matrix
+(row_vector, real) => row_vector
+(row_vector, vector) => real
+(row_vector, matrix) => row_vector
+(matrix, real) => matrix
+(matrix, vector) => vector
+(matrix, matrix) => matrix
+(complex_vector, complex) => complex_vector
+(complex_vector, complex_row_vector) => complex_matrix
+(complex_row_vector, complex) => complex_row_vector
+(complex_row_vector, complex_vector) => complex
+(complex_row_vector, complex_matrix) => complex_row_vector
+(complex_matrix, complex) => complex_matrix
+(complex_matrix, complex_vector) => complex_vector
+(complex_matrix, complex_matrix) => complex_matrix
+Instead supplied arguments of incompatible type: vector, vector.

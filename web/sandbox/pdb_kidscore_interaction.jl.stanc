@@ -1,0 +1,37 @@
+Semantic error in '/tmp/jl_xqzOBYxMDM.stan', line 70, column 70 to column 93:
+   -------------------------------------------------
+    68:      beta4 ~ normal(0, 10);
+    69:      sigma ~ cauchy(0, 2.5);
+    70:      kid_score ~ normal((beta + (beta2 * mom_hs) + (beta3 * mom_iq) + (beta4 * mom_hs * mom_iq)), sigma);
+                                                                               ^
+    71:  }
+    72:  generated quantities {
+   -------------------------------------------------
+
+Ill-typed arguments supplied to infix operator *. Available signatures: 
+(int, int) => int
+(real, real) => real
+(real, vector) => vector
+(real, row_vector) => row_vector
+(real, matrix) => matrix
+(vector, real) => vector
+(vector, row_vector) => matrix
+(complex, complex) => complex
+(complex, complex_vector) => complex_vector
+(complex, complex_row_vector) => complex_row_vector
+(complex, complex_matrix) => complex_matrix
+(row_vector, real) => row_vector
+(row_vector, vector) => real
+(row_vector, matrix) => row_vector
+(matrix, real) => matrix
+(matrix, vector) => vector
+(matrix, matrix) => matrix
+(complex_vector, complex) => complex_vector
+(complex_vector, complex_row_vector) => complex_matrix
+(complex_row_vector, complex) => complex_row_vector
+(complex_row_vector, complex_vector) => complex
+(complex_row_vector, complex_matrix) => complex_row_vector
+(complex_matrix, complex) => complex_matrix
+(complex_matrix, complex_vector) => complex_vector
+(complex_matrix, complex_matrix) => complex_matrix
+Instead supplied arguments of incompatible type: vector, vector.

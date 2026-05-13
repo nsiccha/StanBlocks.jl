@@ -1,0 +1,30 @@
+Semantic error in '/tmp/jl_Lc5ef2Py3g.stan', line 21, column 11 to column 35:
+   -------------------------------------------------
+    19:  }
+    20:  transformed data {
+    21:      matrix[num_elements(dose_times), 1] X_log_err = hcat(rep_vector(1.0, num_elements(dose_times)));
+                    ^
+    22:  }
+    23:  parameters {
+   -------------------------------------------------
+
+Ill-typed arguments supplied to function 'num_elements':
+(tuple(vector, array[] int))
+Available signatures:
+(vector) => int
+  The first argument must be vector but got tuple(vector, array[] int)
+(row_vector) => int
+  The first argument must be row_vector but got tuple(vector, array[] int)
+(matrix) => int
+  The first argument must be matrix but got tuple(vector, array[] int)
+(complex_vector) => int
+  The first argument must be
+   complex_vector
+  but got
+   tuple(vector, array[] int)
+(complex_row_vector) => int
+  The first argument must be
+   complex_row_vector
+  but got
+   tuple(vector, array[] int)
+(Additional signatures omitted)
