@@ -153,21 +153,21 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             length(parts) == 2 ? (parts[1], parts[2]) : (name, "")
         end
 
-        @struct transpile = begin
+        @include transpile = begin
             label     = "Transpiles"
             check_url = "/posterior/$name/check/transpile"
             @diskcached result = transpile_check(slic_implementation(pdb_posterior))
             status = @diskcache_status result
         end
 
-        @struct compile = begin
+        @include compile = begin
             label     = "Compiles"
             check_url = "/posterior/$name/check/compile"
             @diskcached result = compile_check(slic_implementation(pdb_posterior))
             status = @diskcache_status result
         end
 
-        @struct correct = begin
+        @include correct = begin
             label     = "Correct"
             check_url = "/posterior/$name/check/correct"
             @diskcached result = correct_check(pdb_posterior)
@@ -178,7 +178,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         # side-effecting `force` (clears stale `:started` cache, returns
         # result). All three share `(kind)` so they live in one bundle
         # instead of as flat siblings on the posterior.
-        @struct check_action(kind::Symbol) = begin
+        @include check_action(kind::Symbol) = begin
             c        = getproperty(__parent__, kind)
             target   = "#$(__parent__.detail_id)"
             on_load  = "on htmx:afterOnLoad if not me.hasAttribute('data-batch') then remove @hidden from $target end remove @data-batch from me"
@@ -425,7 +425,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         # editor form. `result` evaluates user-typed SLIC source (throws on
         # parse / transpile failure — `snippet(name).card` wraps this in
         # `safely(; obj=__self__)` to contain errors).
-        @struct draft(code) = begin
+        @include draft(code) = begin
             result = begin
                 exprs = Meta.parseall(code).args
                 rv = nothing
@@ -522,7 +522,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             # sidecar state, no re-eval), the heavy `full` variant
             # (re-evaluates, writes status/stan/stanc sidecars). Both
             # variants share `id`, `header_buttons`, and the editor block.
-            @struct card = begin
+            @include card = begin
                 id = "snippet-$name"
                 snippet_url = __parent__   # the snippet's URL (parent-prefix)
 
