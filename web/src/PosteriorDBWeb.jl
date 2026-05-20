@@ -128,14 +128,14 @@ const APPDATA = SbAppData(; cache_type=:parallel)
 
     cache_path = joinpath(_REPO_ROOT, "web", "cache")
 
-    @diskcached posterior_names = sort([
+    @cached posterior_names = sort([
         pn for pn in PosteriorDB.posterior_names(pdb())
         if !isnothing(slic_implementation(PosteriorDB.posterior(pdb(), pn)))
     ])
 
     # All per-posterior data, rendering, and routes. Mounted at
     # `/posterior/<name>/...`. Three sibling sub-DOs (transpile, compile,
-    # correct) share shape (label, check_url, @diskcached result, status) but
+    # correct) share shape (label, check_url, @cached result, status) but
     # have distinct check bodies. `check_action(kind)` dispatches via
     # `__self__` for shared cell/section/force rendering — keeps the render
     # logic in one place without losing per-check identity on the data side.
@@ -156,22 +156,22 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         @include transpile = begin
             label     = "Transpiles"
             check_url = "/posterior/$name/check/transpile"
-            @diskcached result = transpile_check(slic_implementation(pdb_posterior))
-            status = @diskcache_status result
+            @cached result = transpile_check(slic_implementation(pdb_posterior))
+            status = @cache_status result
         end
 
         @include compile = begin
             label     = "Compiles"
             check_url = "/posterior/$name/check/compile"
-            @diskcached result = compile_check(slic_implementation(pdb_posterior))
-            status = @diskcache_status result
+            @cached result = compile_check(slic_implementation(pdb_posterior))
+            status = @cache_status result
         end
 
         @include correct = begin
             label     = "Correct"
             check_url = "/posterior/$name/check/correct"
-            @diskcached result = correct_check(pdb_posterior)
-            status = @diskcache_status result
+            @cached result = correct_check(pdb_posterior)
+            status = @cache_status result
         end
 
         # Per-kind derivations: cell + section rendering, plus the
@@ -217,7 +217,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             end
 
             force = begin
-                c.status == :started && @clear_diskcache! c.result
+                c.status == :started && @clear_cache! c.result
                 c.result
             end
         end
@@ -257,7 +257,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
 
         # Per-check route bundle: /posterior/<name>/check/<kind>. The IP
         # cache makes repeated requests idempotent (the underlying
-        # `@diskcached result` re-runs only when the on-disk cache is cleared).
+        # `@cached result` re-runs only when the on-disk cache is cleared).
         @include check = begin
             do_check(kind::Symbol) = begin
                 __parent__.check_action(kind).force
@@ -269,9 +269,9 @@ const APPDATA = SbAppData(; cache_type=:parallel)
         end
 
         @get clear_cache() = begin
-            @clear_diskcache! transpile.result
-            @clear_diskcache! compile.result
-            @clear_diskcache! correct.result
+            @clear_cache! transpile.result
+            @clear_cache! compile.result
+            @clear_cache! correct.result
             h.p("Cache cleared for $name")
         end
 
