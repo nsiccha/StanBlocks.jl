@@ -195,7 +195,7 @@ Base.show(io::IO, x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:t
 Base.show(io::IO, x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.usertype}, <:StanExpr2{<:types.int}}}) = autoprint(io,
     func_name(getindex, x.args), "(", Join(stan_call_args(x.args), ", "), ")"
 )
-for f in (-,+,*,\,/,^,.*,./,<,<=,==,!=,>=,>,&,|)
+for f in (-,+,*,\,/,^,.*,./,.^,<,<=,==,!=,>=,>,&,|)
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f)}) = autoprint(io, "(", Join(x.args, prettystring($f)), ")")
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f),Tuple{A}}) where {A} = print(io, "(", string($f), x.args[1], ")")
 end

@@ -113,8 +113,8 @@ canonical(x::CanonicalExprV{:parameters}) = if all(isexpr(:kw), x.args)
 else
     CanonicalExpr(x.head, ensure_kw.(x.args)...)
 end
-canonical(x::CanonicalExprV{:call}) = begin 
-    f = x.args[1]
+canonical(x::CanonicalExprV{:call}) = begin
+    f = broadcast_callee(x.args[1])
     args = []
     kwargs = []
     for arg in x.args[2:end]
@@ -150,8 +150,36 @@ canonical(x::CanonicalExprV{:macrocall}) = begin
 end
 canonical(x::CanonicalExprV{Symbol("'")}) = CanonicalExpr(:adjoint, x.args...)
 canonical(x::CanonicalExprV{:ref}) = CanonicalExpr(:getindex, x.args...)
-canonical(x::CanonicalExprV{Symbol(".*")}) = CanonicalExpr(.*, x.args...)
-canonical(x::CanonicalExprV{Symbol("./")}) = CanonicalExpr(./, x.args...)
+# Broadcasting operators in `@slic` / `@deffun` bodies. Julia's dotted operators
+# all denote element-wise ops; `broadcast_callee` rewrites the call's callee
+# symbol so each transpiles to valid Stan, and raises a descriptive error for
+# any dotted operator that is not (yet) handled:
+#   `.+` / `.-`        -> plain `+` / `-`  — Stan's `+`/`-` already broadcast
+#                         scalars over vectors/matrices; there is no dotted form.
+#   `.*` / `./` / `.^` -> `Base.BroadcastFunction` — Stan's `*`/`/`/`^` are matrix
+#                         ops, so the element-wise variant needs the dotted Stan op.
+# Resolved once, at the `:call` canonicalization site, so adding a broadcast
+# operator is a single new method below.
+broadcast_callee(f) = f
+broadcast_callee(f::Symbol) = broadcast_callee(f, Val(f))
+broadcast_callee(::Symbol, ::Val{Symbol(".+")}) = +
+broadcast_callee(::Symbol, ::Val{Symbol(".-")}) = -
+broadcast_callee(::Symbol, ::Val{Symbol(".*")}) = .*
+broadcast_callee(::Symbol, ::Val{Symbol("./")}) = ./
+broadcast_callee(::Symbol, ::Val{Symbol(".^")}) = .^
+broadcast_callee(f::Symbol, ::Val) = begin
+    s = string(f)
+    if startswith(s, '.') && length(s) > 1 && s != ".."
+        error(
+            "SLIC: broadcast operator `$f` is not supported in `@slic`/`@deffun` bodies. " *
+            "Supported broadcast operators: `.+` `.-` `.*` `./` `.^`. " *
+            "Stan's plain `+`, `-`, `*` already broadcast scalars over vectors/matrices, " *
+            "so a non-dotted operator is often what you want. To add support for `$f`, " *
+            "define a matching `broadcast_callee(::Symbol, ::Val{Symbol(\"$s\")})` method in tracing.jl."
+        )
+    end
+    f
+end
 pretty_type_expr(T::Symbol) = string(T)
 pretty_type_expr(ref::CanonicalExprV{:getindex}) = string(ref.args[1], "[", join(ref.args[2:end], ", "), "]")
 
