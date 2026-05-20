@@ -675,8 +675,13 @@ const APPDATA = SbAppData(; cache_type=:parallel)
             )
         end
 
+        # Per-snippet `safely` wrap: a broken probe (its card-task throwing
+        # `TaskFailedException`) renders a contained error card instead of
+        # 500-ing every route that calls `list()` (run, refresh_all, index).
         list() = h.div(; id="snippet-list", class="pdb-snippet-grid")(
-            [snippet(name).card.lazy for (name, _) in sort(snippets(), by=p -> (snippet(first(p)).sort_key, first(p)))]...
+            [safely(; obj=snippet(name)) do
+                snippet(name).card.lazy
+            end for (name, _) in sort(snippets(), by=p -> (snippet(first(p)).sort_key, first(p)))]...
         )
 
         # Batch compile bundle. Mounted at `/sandbox/compile/...`.
