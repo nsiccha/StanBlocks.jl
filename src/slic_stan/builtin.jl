@@ -176,6 +176,12 @@ end
     poisson_lpmf poisson_log_lpmf
     neg_binomial_lpdf neg_binomial_2_log_lpdf
     skew_double_exponential_lpdf
+
+    # No-op "distribution": `y ~ dummy(args...)` marks `y` observed while
+    # contributing +0 to the density. Lets a prediction-only model keep a
+    # scalar observed marker (`y = 1`) without resizing it to the prediction
+    # grid. `_lpdf` auto-expands to `dummy` / `dummy_lpdfs` / `dummy_rng` etc.
+    dummy_lpdf
 ]
 
 # GLM distributions — defined outside @builtin_module to avoid Revise conflicts
@@ -281,6 +287,14 @@ import Statistics
     append_row(x::row_vector[n], y::row_vector[n])::matrix[2, n]
     append_row(x::matrix[m, n], y::row_vector[n])::matrix[m+1, n]
     flat_lpdf(args...)
+    # `dummy` no-op distribution: `y ~ dummy(args...)` contributes +0. Bodies
+    # ignore their args; monomorphization emits a concrete Stan
+    # `real dummy_lpdf(<y>, <args>) { return 0.; }` per call-site signature, so
+    # the native `y ~ dummy(args...);` resolves. `dummy_lpdfs` is the gq
+    # pointwise-likelihood term, `dummy_rng` the gq draw — both trivially 0.
+    dummy_lpdf(y, args...) = 0.
+    dummy_lpdfs(y, args...) = 0.
+    dummy_rng(args...) = 0.
     std_normal_lpdf(args...)
     normal_lpdf(args...)
     student_t_lpdf(args...)

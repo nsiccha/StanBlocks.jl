@@ -11,11 +11,10 @@ fold_shape_query(x::StanExpr{<:CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr
     end
 end
 fetch_data!(x::StanType{<:types.tup}; info) = fetch_data!((stan_size(x), x.info.arg_types); info)
-function dummy_likelihood end
-function dummy_rng end
 lpxf_expr(lhs, rhs::StanExpr) = lpxf_expr(lhs, expr(rhs))
 lpxf_expr(lhs, rhs::CanonicalExpr) = stan_call(lpxf_expr(head(rhs)), lhs, rhs.args...)
 for lpxf_rhs in (
+    :dummy_lpdf,
     :flat_lpdf, :std_normal_lpdf, :normal_lpdf, :student_t_lpdf, :cauchy_lpdf,
     :beta_lpdf, :beta_proportion_lpdf, :lognormal_lpdf, :exponential_lpdf, :gamma_lpdf,
     :inv_gamma_lpdf, :weibull_lpdf, :uniform_lpdf,
@@ -53,7 +52,7 @@ end
 lpxf_expr(x) = error("$x is missing `lpxf_expr`")
 likelihood_expr(lhs, rhs::StanExpr) = likelihood_expr(lhs, expr(rhs))
 likelihood_expr(lhs, rhs::CanonicalExpr) = stan_call(likelihood_expr(head(rhs)), lhs, rhs.args...)
-likelihood_expr(rhs) = error("$rhs is missing `likelihood_expr`")#dummy_likelihood
+likelihood_expr(rhs) = error("$rhs is missing `likelihood_expr`")
 # gq `~` synthesis: `rng_expr(token, rhs)` builds either `rng_fn(args...)` (for
 # scalar tokens — matches Stan's native rng signatures) or `rng_fn(token, args...)`
 # (for sized tokens — dispatched into per-shape `*_rng` @deffun overloads).
@@ -63,5 +62,5 @@ rng_expr(token, rhs::StanExpr) = rng_expr(token, expr(rhs))
 rng_expr(token::StanExpr2{<:types.tokenof,0}, rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), rhs.args...)
 # Sized token path: prepend token so per-shape @deffun overloads dispatch.
 rng_expr(token::StanExpr2{<:types.tokenof}, rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), token, rhs.args...)
-rng_expr(x) = error("$x is missing `rng_expr`")#dummy_likelihood
+rng_expr(x) = error("$x is missing `rng_expr`")
 
