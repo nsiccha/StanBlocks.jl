@@ -129,7 +129,6 @@ canonical(x::CanonicalExprV{:call}) = begin
             push!(args, arg)
         end
     end
-    # isa(f, StanExpr) && error()
     CanonicalExpr(f, args...; kwargs...)
 end
 canonical(x::CanonicalExprV{:tuple}) = begin

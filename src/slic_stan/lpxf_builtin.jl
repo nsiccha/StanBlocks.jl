@@ -48,7 +48,6 @@ for lpxf_rhs in (
     @eval likelihood_expr(::typeof(builtin.$base_rhs)) = builtin.$lpxfs_rhs
 end
 
-# lpxf_expr(x::CanonicalExpr) = lpxf_expr(head(x))
 lpxf_expr(x) = error("$x is missing `lpxf_expr`")
 likelihood_expr(lhs, rhs::StanExpr) = likelihood_expr(lhs, expr(rhs))
 likelihood_expr(lhs, rhs::CanonicalExpr) = stan_call(likelihood_expr(head(rhs)), lhs, rhs.args...)
