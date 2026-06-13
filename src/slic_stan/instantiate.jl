@@ -73,7 +73,6 @@ instantiate(x::Union{SlicModel,StanModel}; nan_on_error=true, make_args=["STAN_T
     )
 end
 debug_instantiate(x; kwargs...) = instantiate(x; nan_on_error=false, kwargs...)
-passinstantiate(x; kwargs...) = (instantiate(x; kwargs...); x)
 stan_data(x::SlicModel) = stan_data(stan_model(x))
 stan_data(x::StanModel) = Dict([
     key=>getvalue(value) for (key, value) in pairs(content(block(x, :data)))
@@ -96,4 +95,4 @@ _record_size_kwargs!(args...) = nothing
         for (key, x) in pairs(block(x, :data).content)
     ])))))
 end
-slic_expr(x::Expr) = x
+

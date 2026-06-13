@@ -1,5 +1,4 @@
 const RV_NAME = gensym("RV")
-dumperror(x) = (dump(x); error("dumperror (see dump above): value of type `$(typeof(x))` hit an unhandled code path."))
 """
 The AST and the data, pre-tracing. Can be instantiated via `stan_instantiate`.
 
@@ -81,8 +80,6 @@ IfExpr{T} = CanonicalExprV{:if,T}
 ElseIfExpr{T} = CanonicalExprV{:elseif,T}
 BreakExpr{T} = CanonicalExprV{:break,T}
 ContinueExpr{T} = CanonicalExprV{:continue,T}
-IfThenExpr2{I,T<:BlockExpr} = CanonicalExprV{:if,Tuple{I,T}}
-IfThenElseExpr{I,T<:BlockExpr,E<:BlockExpr} = CanonicalExprV{:if,Tuple{I,T,E}}
 StringExpr{T} = CanonicalExprV{:string,T}
 SplatExpr{T} = CanonicalExprV{:...,T}
 

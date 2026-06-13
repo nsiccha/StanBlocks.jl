@@ -397,9 +397,6 @@ begin
         print(io, "tuple(", join(map(sigtype, x.info.arg_types), ", "), ")")
         String(take!(io))
     end
-    sigarg(x, name::Symbol) = error("sigarg deprecated fallback hit for `$name` of type `$(typeof(x))`; use func_args instead.")#sigtype(x) * " $name"
-    sigarg(::StanExpr2{<:types.func}, ::Symbol) = error("sigarg(::types.func) deprecated; use func_args.")#nothing
-    sigarg(x::Tuple, name::Symbol) = error("sigarg(::Tuple) deprecated; use func_args.")#join(ntuple(i->sigarg(x[i], Symbol(name, i)), length(x)), ", ")
     always_inline(x) = false
     always_inline(::StanExpr2{<:types.func}) = true
     always_inline(::StanExpr2{<:types.closure}) = true
@@ -407,11 +404,6 @@ begin
     # mangle component to the Stan function name. Sized tokens (`real[n]`)
     # _do_ render, as a Stan `tuple(int, ...)` literal at the call site.
     always_inline(::StanExpr2{<:types.tokenof,0}) = true
-    # sigargs(x::Tuple) = filter(!isnothing, map(sigargs, x))
-    sigarg(x::Expr) = begin
-        @assert x.head == :(::) "sigarg expects a `name::T` expression, got `$x` (head `$(x.head)`)."
-        "$(sigtype(x.args[2])) $(x.args[1])"
-    end
     # fname(x) = string(x)
     # fname(::typeof(>=)) = "gte" 
     # stan_call(;kwargs...) = x->stan_call(x, ;kwargs...)

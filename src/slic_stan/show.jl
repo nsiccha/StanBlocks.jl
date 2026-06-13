@@ -114,8 +114,6 @@ Base.show(io::IO, x::StanType{<:types.tup}) = begin
     stan_ndim(x) > 0 && autoprint(io, "array[", Join(stan_size(x), ", "), "] ")
     autoprint(io, "tuple(", Join(x.info.arg_types, ", ") , ")")
 end
-function maybetype end
-maybetype(x::StanExpr) = center_type(x) == types.anything ? "// Disabled because type inference failed\n    // $(type(x))" : type(x)
 Base.show(io::IO, x::AssignmentExpr{<:StanExpr{Symbol}}) = begin
     name, rhs = x.args
     @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
