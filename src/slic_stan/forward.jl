@@ -299,8 +299,7 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
         maybe_lazy_size(name, i, sizei; info)
         for (i, sizei) in enumerate(stan_size(type(rhs)))
     ]...; value=missing))
-    # @info "$x \n=> $rv\n=> $(info[name])"
-    rv 
+    rv
 end
 forward!(x::AssignmentExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::SamplingExpr{Symbol}; info) = begin
@@ -315,8 +314,6 @@ forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
         q == :data || error("Sampling statement `$name ~ ...` has LHS bound to a $q-qualified value — only data-qualified LHS is supported here (submodel kwargs typically refer to caller-provided data).")
         stan.cv(rhs) && (info[name] = remake(info[name]; cv=true))
     else
-        # base = type(rhs)
-        # @info expr(rhs).kwargs
         autotype = stan.autotype(rhs)
         cv = stan.cv(autotype) || stan.cv(rhs)
         qual = cv ? :quantities : :parameter
@@ -360,7 +357,6 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
 end
 forward!(x::SamplingExpr; info) = begin
     lhs, rhs = forward!(x.args; info)
-    # rhs = forward!(rhs; info)::Union{StanExpr,SlicModel}
     forward!(remake(x, lhs, rhs::StanExpr); info)
 end
 forward!(x::SamplingExpr{<:Any,<:StanExpr}; info) = begin
@@ -398,13 +394,11 @@ forward!(x::VectExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::DeclExpr; info) = begin
     @assert length(x.args) == 2
     lhs, type = x.args
-    # @assert isa(lhs, Symbol)
     ct, s... = if _is_getindex_expr(type)
         type.args
     else
         (type, )
     end
-    # @assert isa(type, CanonicalExprV{:getindex})
     @assert ct isa Symbol
     ct = gettype(ct)
     t = StanType(ct, forward!.(s; info))
@@ -429,7 +423,6 @@ end
 forward!(x::WhileExpr; info) = begin
     @assert length(x.args) == 2
     head, body = x.args
-    # @assert isa(head, CanonicalExprV{:(=)})
     @assert _is_block_canonical(body)
     # body = forward!(body; info)
     stan_expr(remake(x, forward!(x.args; info)...))

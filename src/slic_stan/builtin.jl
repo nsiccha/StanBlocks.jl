@@ -679,11 +679,6 @@ import Statistics
         end
         rv
     end
-    # Base.get(x::anything[n], i, d) = if 1 <= i <= n
-    #     x[i]
-    # else
-    #     d
-    # end
 end
 
 # --- RaggedVector usertype + Julia-dispatched accessors ---------------------
@@ -949,7 +944,6 @@ end
     Union{typeof.((+, -, ^, *, /))...} => begin 
         (real,) => real
         (vector[n],) => vector[n]
-        # (real[n],) => real[n]
         (int, real) => real
         (int, int) => int
         (real, int) => real
@@ -1012,7 +1006,6 @@ end
         (matrix[m,n], int[o], int) => vector[o]
         (matrix[m,n], int, int[p]) => row_vector[p]
         (matrix[m,n], int[o], int[p]) => matrix[o, p]
-        # (matrix[m,n], int) => row_vector[n]
         (matrix[m,n,k], int, int, int) => real
         (matrix[m,n,k], int, int[o], int) => vector[o]
         (matrix[m,n,k], int, int, int[p]) => row_vector[p]

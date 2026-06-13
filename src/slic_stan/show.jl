@@ -117,7 +117,6 @@ end
 Base.show(io::IO, x::AssignmentExpr{<:StanExpr{Symbol}}) = begin
     name, rhs = x.args
     @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
-    # @info "$(x.args[1]) = $(x.args[2])"
     print(io, type(rhs), " ", name, " = ", rhs)
 end
 Base.show(io::IO, x::AssignmentExpr) = print(io, x.args[1], " = ", x.args[2])

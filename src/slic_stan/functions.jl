@@ -86,11 +86,6 @@ fetch_data!(x::StanExpr2{<:types.closure}; info) = nothing
 # tokenof StanExprs carry a raw Stan type as `expr`; skip recursing into the
 # bare `Type{...}` which would hit the generic backward! fallback.
 backward!(x::StanExpr2{<:types.tokenof}; info) = x
-# fetch_data!(::StanExpr2{<:types.func}; info) = nothing
-# fetch_data!(::StanExpr{Symbol, StanType{<:types.func}}; info) = nothing
-# fetch_data!(::StanExpr{Symbol, StanType{types.func}}; info) = nothing
-# fetch_data!(::StanExpr{Symbol, StanType{types.func, 0}}; info) = nothing
-# fetch_data!(::StanExpr{Symbol, StanType{<:types.func, 0}}; info) = nothing
 
 short_expr(x::Symbol) = x
 short_expr(x::StanExpr2{types.anything}) = StanExpr(short_expr(expr(x)), type(x))
@@ -164,13 +159,10 @@ tracetype(x::CanonicalExpr{typeof(Base.typeof),<:Tuple{<:StanExpr}}) = begin
 end
 
 tracetype(x::CanonicalExpr{Colon}) = StanType(types.int, (stan_call(+,stan_expr(1,1),stan_call(-,x.args[2],x.args[1])), ))
-# tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:Any,<:StanType{<:types.matrix}},<:Colon,<:StanExpr{<:Any,<:StanType{<:types.int,0}}}}) = StanType(types.vector, (stan_size(x.args[1], 1),))
-# tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:Any,<:StanType{types.real,2}},<:Colon,<:StanExpr{<:Any,<:StanType{<:types.int,0}}}}) = StanType(types.real, (stan_size(x.args[1], 1),))
 tracetype(x::BracesExpr) = StanType(types.real, (stan_expr(length(x.args),length(x.args)),))
 tracetype(x::VectExpr) = StanType(types.vector, (stan_expr(length(x.args),length(x.args)),))
 tracetype(x::TupleExpr) = StanType(types.tup; arg_types=map(type, x.args))
 tracetype(x::KwExpr) = type(x.args[2])
-# tracetype(x::NamedTupleExpr) = StanType(types.ntup; arg_types=map(type, x.args))
 tracetype(x::NamedTupleExpr) = StanType(types.ntup; arg_types=(;[
     kw.args[1]=>type(kw.args[2]) for kw in map(expr, x.args)
 ]...))
@@ -404,11 +396,7 @@ begin
     # mangle component to the Stan function name. Sized tokens (`real[n]`)
     # _do_ render, as a Stan `tuple(int, ...)` literal at the call site.
     always_inline(::StanExpr2{<:types.tokenof,0}) = true
-    # fname(x) = string(x)
-    # fname(::typeof(>=)) = "gte" 
-    # stan_call(;kwargs...) = x->stan_call(x, ;kwargs...)
-    # stan_call(x::Expr; kwargs...) = stan_expr()
-    expr_replace(x; kwargs...) = get(kwargs, x, x) 
+    expr_replace(x; kwargs...) = get(kwargs, x, x)
     expr_replace(x::Expr; kwargs...) = Expr(x.head, expr_replace.(x.args; kwargs...)...)
 
     ensure_xlhs(arg::Symbol; hidden=()) = arg in hidden ? Symbol("_") : arg
@@ -969,11 +957,6 @@ func_name(f, args) = begin
         suffix = rv[suffix_idxs[1]:suffix_idxs[end]-1]
         base = rv[1:suffix_idxs[1]-1] * rv[suffix_idxs[end]:end]
         base * suffix
-        # if isnothing(match(r"u?lp(m|d)f$", suffix))
-        #     base * suffix
-        # else
-        #     replace(base, r"(_u?lp(m|d)f)+$"=>"") * suffix
-        # end
     end
 end
 func_name(args::NamedTuple) = func_name(values(args))

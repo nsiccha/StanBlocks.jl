@@ -16,8 +16,6 @@ using Statistics, Random
 using StanLogDensityProblems
 using TestModules
 
-# include("test/runtests.jl")
-
 
 pdb() = PosteriorDB.database()
 

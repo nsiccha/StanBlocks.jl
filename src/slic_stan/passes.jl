@@ -133,8 +133,6 @@ fetch_data!(x::Union{Function,String}; info) = nothing
 fetch_data!(x::StanExpr{<:Union{Number,String,Missing}}; info) = nothing 
 fetch_data!(x::StanType; info) = fetch_data!(stan_size(x); info)
 fetch_data!(x::StanExpr{Symbol}; info) = begin
-    # fetch_data!(type(x); info)
-    # @info x => hasvalue(x) => getvalue(x)
     hasvalue(x) && push!(block(info, :data), x; info)
 end
 fetch_data!(x::StanExpr{<:Function}; info) = nothing
@@ -157,7 +155,6 @@ end
 Base.push!(b::DeclarativeBlock, x::SamplingExpr; info) = push!(b, x.args[1]; info)
 Base.push!(b::DeclarativeBlock, x::StanExpr{Symbol}; info) = begin
     fetch_data!(type(x); info)
-    # @info name(b)=>expr(x)=>typeof(b)
     get!(content(b), expr(x), x)
 end
 Base.push!(b::ImperativeBlock, x; info) = begin 
@@ -166,10 +163,6 @@ Base.push!(b::ImperativeBlock, x; info) = begin
 end
 Base.push!(b::ImperativeBlock, x::DocumentExpr; info) = begin
     push!(remake(b, remake(x, x.args[1], b)), x.args[2]; info)
-    # push!(content(b), remake(x, x.args[1], "//"))
-    # push!(b, x.args[2]; info)
-    # fetch_data!(x.args[2]; info)
-    # push!(content(b), x)
 end
 Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     lhs, rhs = x.args
@@ -193,10 +186,6 @@ Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     lhs = StanExpr(expr(lhs), remake(type(rng_rhs); value=missing))
     push!(b, CanonicalExpr(:(=), lhs, rng_rhs); info)
 end
-    # if hasvalue(x.args[1])
-    # push!(b, CanonicalExpr(:(=), rng_lhs(x.args[1]), rng_expr(x.args...)); info)
-# end
-# likelihood_expr(lhs, rhs) = likelihood_expr(rhs)
 
 function lpxf_expr end
 function rng_expr end
