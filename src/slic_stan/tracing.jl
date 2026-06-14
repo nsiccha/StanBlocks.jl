@@ -54,6 +54,148 @@ end
 maybedata!(x::StanModel, key, value) = x[key] = maybedata(key, value)
 maybedata!(x::StanModel, key, value::AbstractString) = nothing
 maybedata!(x::SubModel, key, value) = locals(x)[key] = maybedata(key, value)
+
+# --- Partly-missing-vector imputation helpers --------------------------------
+
+# True when a data value is a vector with at least one `missing` entry.
+_is_partly_missing_vec(v) = false
+_is_partly_missing_vec(v::AbstractVector{T}) where {T>:Missing} = any(ismissing, v)
+
+# Distributions that couple all elements of their outcome vector (off-diagonal
+# covariance means obs and mis entries cannot be independently conditioned).
+# A partly-missing LHS with any of these is an error.
+_joint_dist_names() = Set{Symbol}([
+    :multi_normal, :multi_normal_prec, :multi_normal_cholesky,
+    :multi_gp, :multi_gp_cholesky,
+    :multi_student_t, :multi_student_t_cholesky,
+    :wishart, :inv_wishart, :wishart_cholesky, :inv_wishart_cholesky,
+    :lkj_corr, :lkj_corr_cholesky, :gaussian_dlm_obs,
+])
+
+# Scan `data` for partly-missing vectors.  For each one found:
+#   - validate continuous element type
+#   - check for split-name collision
+#   - register y_obs / y_ii_obs / y_ii_mis in `info` (split vars as data)
+#   - register y_ii_mis_n explicitly so it can be used as a size symbol
+#   - return a Dict mapping original name → split metadata
+_scan_and_register_missing_vars!(data, info) = begin
+    result = OrderedDict{Symbol,NamedTuple}()
+    for (key, value) in pairs(data)
+        _is_partly_missing_vec(value) || continue
+        eltype(value) <: Union{Missing,<:AbstractFloat} || error(
+            "Partly-missing vector `$(key)`: auto-imputation only supports continuous " *
+            "(floating-point) outcome vectors — Stan has no discrete parameters. " *
+            "Got element type $(eltype(value)). For discrete missing data, split the " *
+            "model manually or marginalise out the missing entries."
+        )
+        obs_vals = Float64[v for v in value if !ismissing(v)]
+        ii_obs   = Int[i for (i, v) in enumerate(value) if !ismissing(v)]
+        ii_mis   = Int[i for (i, v) in enumerate(value) if ismissing(v)]
+        n_obs = length(ii_obs); n_mis = length(ii_mis)
+        # Guard against accidental collision with user-defined data keys.
+        for (suffix, kind) in (
+            (:_obs, "y_obs (observed values)"),
+            (:_ii_obs, "y_ii_obs (observed indices)"),
+            (:_ii_mis, "y_ii_mis (missing indices)"),
+        )
+            sk = Symbol(key, suffix)
+            sk in keys(data) && error(
+                "Partly-missing vector `$(key)`: auto-generated split name `$(sk)` " *
+                "($(kind)) already exists in the data dict. Rename the conflicting key."
+            )
+        end
+        # Register the three split data arrays; their _n sizes are auto-named
+        # by stan_type (e.g. y_obs → y_obs_n, y_ii_mis → y_ii_mis_n).
+        maybedata!(info, Symbol(key, :_obs),    obs_vals)
+        maybedata!(info, Symbol(key, :_ii_obs), ii_obs)
+        maybedata!(info, Symbol(key, :_ii_mis), ii_mis)
+        # Make the missing-entry count explicitly resolvable as a size symbol
+        # (y_ii_mis_n == n_mis); used in the typed-LHS `~` for y_mis.
+        info[Symbol(key, :_ii_mis_n)] = maybedata(Symbol(key, :_ii_mis_n), n_mis)
+        result[key] = (;obs_vals, ii_obs, ii_mis, n_obs, n_mis)
+    end
+    result
+end
+
+# Walk the raw body block (before canonical/forward!), replacing each
+# `y ~ dist(args...)` where `y` is in `missing_vars` with a 3-statement
+# expansion: typed-LHS parameter ~, data ~ for obs likelihood, assembly.
+# Hoists compound dist args into temporaries to avoid double-eval.
+_expand_missing_stmts(body::Expr, missing_vars) = begin
+    @assert body.head == :block
+    new_args = Any[]
+    seen = Set{Symbol}()
+    for arg in body.args
+        replacement = _try_expand_missing_stmt(arg, missing_vars, seen)
+        if replacement !== nothing
+            append!(new_args, replacement)
+        else
+            push!(new_args, arg)
+        end
+    end
+    unseen = setdiff(keys(missing_vars), seen)
+    isempty(unseen) || error(
+        "Partly-missing vector(s) " *
+        join([string("`", k, "`") for k in sort!(collect(unseen))], ", ") *
+        " never appear as the LHS of a `~` statement. Auto-imputation only supports " *
+        "missing OUTCOMES (left-hand side of `~`). Missing predictors/covariates on " *
+        "the right-hand side are out of scope — split the model manually."
+    )
+    Expr(:block, new_args...)
+end
+
+_try_expand_missing_stmt(arg, missing_vars, seen) = begin
+    # Match: Expr(:call, :~, name::Symbol, Expr(:call, dist_fn, dist_args...))
+    Meta.isexpr(arg, :call) || return nothing
+    arg.args[1] === :~ || return nothing
+    length(arg.args) >= 3 || return nothing
+    name = arg.args[2]
+    name isa Symbol && name in keys(missing_vars) || return nothing
+    dist_call = arg.args[3]
+    Meta.isexpr(dist_call, :call) || return nothing
+    dist_fn = dist_call.args[1]
+    dist_fn in _joint_dist_names() && error(
+        "Partly-missing vector `$(name) ~ $(dist_fn)(...)`: inherently-joint " *
+        "distributions cannot be element-wise imputed — obs and mis entries are " *
+        "coupled through the off-diagonal covariance. Use a conditional-normal " *
+        "formula or an explicit obs/mis split instead."
+    )
+    name in seen && error(
+        "Partly-missing vector `$(name)` appears as the LHS of more than one `~` " *
+        "statement. Auto-imputation requires exactly one sampling statement per " *
+        "missing-data vector."
+    )
+    push!(seen, name)
+    raw_dist_args = dist_call.args[2:end]
+    obs_sym   = Symbol(name, :_obs)
+    mis_sym   = Symbol(name, :_mis)
+    ii_obs    = Symbol(name, :_ii_obs)
+    ii_mis    = Symbol(name, :_ii_mis)
+    mis_n     = Symbol(name, :_ii_mis_n)
+    # Hoist compound args (non-Symbol) so each is evaluated once, not twice.
+    hoisted_stmts = Any[]
+    final_args    = Any[]
+    for (i, darg) in enumerate(raw_dist_args)
+        if darg isa Symbol
+            push!(final_args, darg)
+        else
+            tmp = Symbol(:_, name, :_arg_, i)
+            push!(hoisted_stmts, :($tmp = $darg))
+            push!(final_args, tmp)
+        end
+    end
+    mis_dist = Expr(:call, dist_fn, [:(maybe_index($a, $ii_mis)) for a in final_args]...)
+    obs_dist = Expr(:call, dist_fn, [:(maybe_index($a, $ii_obs)) for a in final_args]...)
+    # Typed-LHS ~ introduces y_mis as a parameter sized by y_ii_mis_n.
+    typed_lhs = :($mis_sym::vector[$mis_n])
+    stmts = Any[
+        hoisted_stmts...,
+        Expr(:call, :~, typed_lhs, mis_dist),
+        Expr(:call, :~, obs_sym,   obs_dist),
+        :($name = merge_missing($obs_sym, $mis_sym, $ii_obs, $ii_mis)),
+    ]
+    stmts
+end
 _control_flow_kind(::ForExpr) = "for"
 _control_flow_kind(::WhileExpr) = "while"
 _control_flow_kind(::IfExpr) = "if"
@@ -72,10 +214,14 @@ Descends forwards through the expression tree. Basically _always_ returns a Stan
 function forward! end
 forward!(x::SlicModel; info=StanModel()) = begin
     info = remake(info; mod=x.mod)
+    missing_vars = _scan_and_register_missing_vars!(data(x), info)
     for (key, value) in pairs(data(x))
+        key in keys(missing_vars) && continue   # split vars already registered above
         maybedata!(info, key, value)
     end
-    body = canonical(model(x))
+    raw_body = model(x)
+    raw_body = isempty(missing_vars) ? raw_body : _expand_missing_stmts(raw_body, missing_vars)
+    body = canonical(raw_body)
     _reject_model_control_flow(body)
     forward!(body; info)
 end

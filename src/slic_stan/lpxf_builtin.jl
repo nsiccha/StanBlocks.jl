@@ -1,3 +1,22 @@
+# `maybe_index(x, idx)` is a trace-time rewriting hook inserted by the
+# partly-missing-vector body pre-pass.  After `forward!` resolves the head
+# symbol to the bare function `builtin.maybe_index` (via canonical's
+# StanExpr2{<:types.func} rewrite), this dispatch intercepts before
+# `stan_expr` would need a `tracetype` for `maybe_index`:
+#   ndim 0 (scalar) → return `x` unchanged (drop `idx`)
+#   ndim 1 (vector) → return `x[idx]`
+#   otherwise       → loud error (matrix / array not supported)
+expand_inline_or_trace(x::CanonicalExpr{typeof(builtin.maybe_index)}; info) = begin
+    nd = stan_ndim(x.args[1])
+    nd == 0 && return x.args[1]
+    nd == 1 && return stan_expr(CanonicalExpr(:getindex, x.args[1], x.args[2]))
+    error(
+        "maybe_index: only scalar (rank 0) and vector (rank 1) distribution args are " *
+        "supported for partly-missing-vector imputation; got rank-$(nd) for " *
+        "$(expr(x.args[1])). Matrix or inherently-joint distribution args cannot be " *
+        "element-wise indexed. Use an explicit obs/mis split model instead."
+    )
+end
 fold_shape_query(x::StanExpr{<:CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:CanonicalExpr{typeof(builtin.dims)}},<:StanExpr{<:Integer}}}}) = begin
     inner = expr(expr(x).args[1])
     arg = inner.args[1]::StanExpr

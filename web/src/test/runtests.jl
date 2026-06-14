@@ -285,6 +285,59 @@ end
     @test compiles(m20.modelb(;n=10))
 end
 
+# === partly-missing-vector imputation tests ===
+
+@testset "partly-missing: basic scalar-dist transpiles" begin
+    @test transpiles(@slic (;y=[1.0, missing, 3.0, missing, 5.0]) begin
+        mu    ~ normal(0., 10.)
+        sigma ~ gamma(2., 1.)
+        y     ~ normal(mu, sigma)
+    end)
+end
+
+@testset "partly-missing: basic scalar-dist compiles" begin
+    @test compiles(@slic (;y=[1.0, missing, 3.0, missing, 5.0]) begin
+        mu    ~ normal(0., 10.)
+        sigma ~ gamma(2., 1.)
+        y     ~ normal(mu, sigma)
+    end)
+end
+
+@testset "partly-missing: logdensity" begin
+    y_full = [1.0, missing, 3.0, missing, 5.0]
+    problem = instantiate(stan_model(@slic (;y=y_full) begin
+        mu    ~ normal(0., 10.)
+        sigma ~ gamma(2., 1.)
+        y     ~ normal(mu, sigma)
+    end))
+    # 2 mis scalars + mu + log_sigma = 4 unconstrained dims
+    @test LogDensityProblems.dimension(problem) == 4
+    # logdensity at zero unconstrained vector must be finite
+    @test isfinite(LogDensityProblems.logdensity(problem, zeros(4)))
+end
+
+@testset "partly-missing: error on joint dist" begin
+    @test_throws ErrorException stan_model(@slic (;y=[1.0, missing, 3.0]) begin
+        mu  ~ std_normal(;n=3)
+        cov = diag_matrix(rep_vector(1., 3))
+        y   ~ multi_normal(mu, cov)
+    end)
+end
+
+@testset "partly-missing: error on missing not used as LHS" begin
+    @test_throws ErrorException stan_model(@slic (;y=[1.0, missing, 3.0]) begin
+        mu ~ normal(0., 10.)
+    end)
+end
+
+@testset "partly-missing: regression — all-observed vector unaffected" begin
+    @test compiles(@slic (;y=[1.0, 2.0, 3.0]) begin
+        mu    ~ normal(0., 10.)
+        sigma ~ gamma(2., 1.)
+        y     ~ normal(mu, sigma)
+    end)
+end
+
 # === logdensity.jl tests ===
 
 @testset "logdensity: unconstrained scalar" begin
