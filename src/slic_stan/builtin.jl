@@ -193,17 +193,11 @@ end
 ]
 
 # GLM distributions — defined outside @builtin_module to avoid Revise conflicts
-for name in builtin_module_names(:normal_id_glm_lpdf)
-    @eval builtin function $name end
-    @eval const $name = builtin.$name
-end
-for name in builtin_module_names(:poisson_log_glm_lpmf)
-    @eval builtin function $name end
-    @eval const $name = builtin.$name
-end
-for name in builtin_module_names(:neg_binomial_2_log_glm_lpmf)
-    @eval builtin function $name end
-    @eval const $name = builtin.$name
+for glm in (:normal_id_glm_lpdf, :poisson_log_glm_lpmf, :neg_binomial_2_log_glm_lpmf)
+    for name in builtin_module_names(glm)
+        @eval builtin function $name end
+        @eval const $name = builtin.$name
+    end
 end
 
 for name in (:real, :int, :vector, :row_vector, :matrix, :ordered, :simplex, :positive_ordered, :cov_matrix, :corr_matrix, :cholesky_factor_cov, :cholesky_factor_corr)

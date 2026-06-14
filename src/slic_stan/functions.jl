@@ -980,22 +980,17 @@ func_name(x::StanExpr2{<:types.usertype}) = [string(center_type(x).name.name)]
 func_name(x::StanExpr2{<:types.tokenof}) = [func_name(type(x).info.value)]
 func_name(::Type{T}) where {T<:types.anything} = string(T.name.name)
 func_name(x::Function) = string(x)
-func_name(::typeof(&)) = "and"
-func_name(::typeof(|)) = "or"
-func_name(::typeof(>=)) = "gte"
-func_name(::typeof(>)) = "gt"
-func_name(::typeof(==)) = "eq"
-func_name(::typeof(<=)) = "lte"
-func_name(::typeof(<)) = "lt"
-func_name(::typeof(+)) = "add"
-func_name(::typeof(-)) = "sub"
-func_name(::typeof(*)) = "mul"
-func_name(::typeof(/)) = "div"
-# Julia functions with different Stan names
-func_name(::typeof(length)) = "num_elements"
-func_name(::typeof(minimum)) = "min"
-func_name(::typeof(maximum)) = "max"
-func_name(::typeof(abs2)) = "square"
+# Operator + renamed-function Stan-name table, generated as an @eval loop
+# (mirrors the operator @eval loop in show.jl). Each entry maps a Julia
+# function to its Stan-side name fragment used for call-site mangling.
+for (f, nm) in (
+    (&, "and"), (|, "or"), (>=, "gte"), (>, "gt"), (==, "eq"),
+    (<=, "lte"), (<, "lt"), (+, "add"), (-, "sub"), (*, "mul"), (/, "div"),
+    # Julia functions with different Stan names
+    (length, "num_elements"), (minimum, "min"), (maximum, "max"), (abs2, "square"),
+)
+    @eval func_name(::typeof($f)) = $nm
+end
 func_args(args::NamedTuple) = Join(mapreduce(func_args, vcat, pairs(args); init=[]), ", ")
 func_args(arg::Pair) = func_args(arg...)
 func_args(name, ::StanExpr2{<:types.func}) = []
