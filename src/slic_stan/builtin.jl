@@ -182,6 +182,14 @@ end
     # scalar observed marker (`y = 1`) without resizing it to the prediction
     # grid. `_lpdf` auto-expands to `dummy` / `dummy_lpdfs` / `dummy_rng` etc.
     dummy_lpdf
+
+    # Partly-missing-vector imputation helpers (auto-inserted by the body
+    # pre-pass; not normally called directly by users).
+    # `maybe_index` is a trace-time rewrite hook (lpxf_builtin.jl); it is
+    # never emitted as a Stan function.  `merge_missing` is a real @deffun
+    # that assembles the full vector in transformed_parameters.
+    maybe_index
+    merge_missing
 ]
 
 # GLM distributions — defined outside @builtin_module to avoid Revise conflicts
@@ -672,12 +680,26 @@ import Statistics
     gp_dot_prod_cov(x::real[n], sigma::real)::matrix[n,n]
     gp_dot_prod_cov(x1::real[m], x2::real[n], sigma::real)::matrix[m,n]
 
-    Base.invperm(x::int[n])::int[n] = begin 
+    Base.invperm(x::int[n])::int[n] = begin
         rv = rep_array(0, n)
         for i in 1:n
             rv[x[i]] = i
         end
         rv
+    end
+
+    # Assemble a full vector from observed and imputed-missing parts.
+    # Emitted into `transformed_parameters` by the body pre-pass when a
+    # partly-missing data vector is detected (auto-detect Union{Missing}).
+    merge_missing(y_obs::vector[n_obs], y_mis::vector[n_mis], ii_obs::int[n_obs], ii_mis::int[n_mis])::vector[n_obs+n_mis] = begin
+        y::vector[n_obs+n_mis]
+        for i in 1:n_obs
+            y[ii_obs[i]] = y_obs[i]
+        end
+        for i in 1:n_mis
+            y[ii_mis[i]] = y_mis[i]
+        end
+        y
     end
 end
 

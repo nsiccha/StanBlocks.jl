@@ -285,6 +285,90 @@ end
     @test compiles(m20.modelb(;n=10))
 end
 
+# === partly-missing-vector imputation tests ===
+
+@testset "partly-missing: basic scalar-dist transpiles" begin
+    @test transpiles(@slic (;y=[1.0, missing, 3.0, missing, 5.0]) begin
+        mu    ~ normal(0., 10.)
+        sigma ~ gamma(2., 1.)
+        y     ~ normal(mu, sigma)
+    end)
+end
+
+@testset "partly-missing: basic scalar-dist compiles" begin
+    @test compiles(@slic (;y=[1.0, missing, 3.0, missing, 5.0]) begin
+        mu    ~ normal(0., 10.)
+        sigma ~ gamma(2., 1.)
+        y     ~ normal(mu, sigma)
+    end)
+end
+
+@testset "partly-missing: logdensity equals obs-only model" begin
+    # y_mis goes to generated_quantities (GQ rng draw), not sampler params.
+    # So the sampler dimension is 2: mu (unconstrained) + log_sigma (lower=0).
+    # Rigorous check: logdensity must equal an explicit obs-only model at the
+    # same unconstrained params — proves missing entries are excluded correctly.
+    m_miss = @slic (;y=[1., missing, 3., missing, 5.]) begin
+        mu    ~ normal(0., 10.)
+        sigma ~ gamma(2., 1.)
+        y     ~ normal(mu, sigma)
+    end
+    m_obs = @slic (;y=[1., 3., 5.]) begin
+        mu    ~ normal(0., 10.)
+        sigma ~ gamma(2., 1.)
+        y     ~ normal(mu, sigma)
+    end
+    p_miss = instantiate(stan_model(m_miss))
+    p_obs  = instantiate(stan_model(m_obs))
+    @test LogDensityProblems.dimension(p_miss) == 2
+    @test LogDensityProblems.dimension(p_obs)  == 2
+    for v in [[-1.0, 0.5], [0.0, 0.0], [1.5, -0.3]]
+        @test LogDensityProblems.logdensity(p_miss, v) ≈
+              LogDensityProblems.logdensity(p_obs,  v) atol=1e-6
+    end
+    # y_mis appears in generated quantities (GQ rng draw), not parameters
+    sc = stan_code(m_miss)
+    @test occursin("generated quantities", sc) && occursin("y_mis", sc)
+    @test occursin("merge_missing", sc)
+end
+
+@testset "partly-missing: vector dist arg (regression check)" begin
+    # This exercises the getindex branch of maybe_index — previously broken
+    # because the node was built with Symbol :getindex instead of Function.
+    m = @slic (;x=collect(1.:6.), y=[1., missing, 3., missing, 5., missing]) begin
+        a     ~ normal(0., 1.)
+        b     ~ normal(0., 1.)
+        sigma ~ gamma(2., 1.)
+        y     ~ normal(a .+ b .* x, sigma)
+    end
+    @test compiles(m)
+    @test LogDensityProblems.dimension(instantiate(stan_model(m))) == 3
+    sc = stan_code(m)
+    @test occursin("y_ii_obs", sc) && occursin("y_ii_mis", sc)
+end
+
+@testset "partly-missing: error on joint dist" begin
+    @test_throws Exception stan_model(@slic (;y=[1.0, missing, 3.0]) begin
+        mu  ~ std_normal(;n=3)
+        cov = diag_matrix(rep_vector(1., 3))
+        y   ~ multi_normal(mu, cov)
+    end)
+end
+
+@testset "partly-missing: error on missing not used as LHS" begin
+    @test_throws Exception stan_model(@slic (;y=[1.0, missing, 3.0]) begin
+        mu ~ normal(0., 10.)
+    end)
+end
+
+@testset "partly-missing: regression — all-observed vector unaffected" begin
+    @test compiles(@slic (;y=[1.0, 2.0, 3.0]) begin
+        mu    ~ normal(0., 10.)
+        sigma ~ gamma(2., 1.)
+        y     ~ normal(mu, sigma)
+    end)
+end
+
 # === logdensity.jl tests ===
 
 @testset "logdensity: unconstrained scalar" begin

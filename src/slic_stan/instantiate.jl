@@ -26,6 +26,13 @@ stan_code(x::SlicModel) = stan_code(stan_model(x))
 prepare_for_stan(x::Dict) = Dict(key => prepare_for_stan(value) for (key, value) in x)
 prepare_for_stan(x::Number) = x
 prepare_for_stan(x::AbstractVector{<:Number}) = x
+prepare_for_stan(x::AbstractVector{T}) where {T >: Missing} = error(
+    "prepare_for_stan: data vector has eltype $(eltype(x)) (contains Missing). " *
+    "Partly-missing vectors are split by the SLIC tracer at tracing time; by the " *
+    "time prepare_for_stan runs, the data block should contain only the observed " *
+    "sub-vector (*_obs). If you see this error, the vector was not auto-detected — " *
+    "check that it was passed as a keyword argument to the SlicModel."
+)
 prepare_for_stan(x::AbstractMatrix{<:Number}) = x'
 prepare_for_stan(x::NamedTuple) = prepare_for_stan(values(x))
 prepare_for_stan(x::Tuple) = prepare_for_stan(Dict(enumerate(x)))
