@@ -9,7 +9,7 @@
 expand_inline_or_trace(x::CanonicalExpr{typeof(builtin.maybe_index)}; info) = begin
     nd = stan_ndim(x.args[1])
     nd == 0 && return x.args[1]
-    nd == 1 && return stan_expr(CanonicalExpr(:getindex, x.args[1], x.args[2]))
+    nd == 1 && return stan_call(getindex, x.args[1], x.args[2])
     error(
         "maybe_index: only scalar (rank 0) and vector (rank 1) distribution args are " *
         "supported for partly-missing-vector imputation; got rank-$(nd) for " *

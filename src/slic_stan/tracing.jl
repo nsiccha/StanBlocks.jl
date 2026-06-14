@@ -179,7 +179,7 @@ _try_expand_missing_stmt(arg, missing_vars, seen) = begin
         if darg isa Symbol
             push!(final_args, darg)
         else
-            tmp = Symbol(:_, name, :_arg_, i)
+            tmp = Symbol(name, :_arg_, i)
             push!(hoisted_stmts, :($tmp = $darg))
             push!(final_args, tmp)
         end
