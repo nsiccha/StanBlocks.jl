@@ -35,6 +35,7 @@ lpxf_expr(lhs, rhs::CanonicalExpr) = stan_call(lpxf_expr(head(rhs)), lhs, rhs.ar
 for lpxf_rhs in (
     :dummy_lpdf,
     :truncated_normal_lpdf,
+    :truncated_student_t_lpdf,
     :flat_lpdf, :std_normal_lpdf, :normal_lpdf, :student_t_lpdf, :cauchy_lpdf,
     :beta_lpdf, :beta_proportion_lpdf, :lognormal_lpdf, :exponential_lpdf, :gamma_lpdf,
     :inv_gamma_lpdf, :weibull_lpdf, :uniform_lpdf,

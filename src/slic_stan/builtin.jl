@@ -199,7 +199,10 @@ end
     # kernels (`bordet_time_response` single-peak bump, `bordet_dose_response`
     # log-sigmoid) + index/broadcast helpers are composed by BRM's `bordet_*`
     # term (contract cut (b): kernels here, BRM composes log_y).
+    # `truncated_student_t_lpdf` = the heavy-tailed obs variant (generated family;
+    # same censoring contract, + a leading `dof` arg, branches on the LOQ limits).
     truncated_normal_lpdf
+    truncated_student_t_lpdf
     bordet_time_response
     bordet_dose_response
     linear_idxs
@@ -470,6 +473,12 @@ import Statistics
     normal_cdf(args...)
     normal_lcdf(args...)
     normal_lccdf(args...)
+    # student_t cdf-family shape rules (the @builtin_module entry declares the
+    # NAMES; these register the tracetype — needed by `truncated_student_t_lpdf`'s
+    # censored branches). `_lcdf`/`_lccdf` suffix → auto return type `real`.
+    student_t_cdf(args...)
+    student_t_lcdf(args...)
+    student_t_lccdf(args...)
 
     append_row(x, y, z, args...) = append_row(append_row(x, y), z, args...)
     append_col(x, y, z, args...) = append_col(append_col(x, y), z, args...)
@@ -871,6 +880,50 @@ end
     # Bare `vector[n]` (no `::`) is the token slot, matching the tokenof shape.
     truncated_normal_rng(vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] =
         truncated_normal_rng(loc, scale, lloq, uloq)
+
+    # Heavy-tailed censored obs model (generated bordet family). Direct analog of
+    # `truncated_normal` + a leading `dof` arg. NOTE the censored branches use the
+    # LOQ LIMITS (`lloq`/`uloq`) inside lcdf/lccdf — faithful to the generated
+    # source (`truncated_normal` used `obs`; the two source files genuinely differ,
+    # so each is mirrored per-source). `~ truncated_student_t(dof, loc, scale,
+    # lloq, uloq)` samples; SLIC auto-emits the GQ log-lik + predictive draw.
+    truncated_student_t_lpdf(obs::real, dof::real, loc::real, scale::real, lloq::real, uloq::real)::real = begin
+        rv::real[1]
+        rv[1] = student_t_lpdf(obs, dof, loc, scale)
+        if obs <= lloq
+            rv[1] = student_t_lcdf(lloq, dof, loc, scale)
+        else
+            if obs >= uloq
+                rv[1] = student_t_lccdf(uloq, dof, loc, scale)
+            end
+        end
+        rv[1]
+    end
+    # Pointwise vector form (generated_quantities log-lik term).
+    truncated_student_t_lpdfs(obs::vector[n], dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = truncated_student_t_lpdf(obs[i], dof[i], loc[i], scale[i], lloq[i], uloq[i])
+        end
+        rv
+    end
+    # Vector form = sum of pointwise; `@lhs` opts it into base-level
+    # `obs ~ truncated_student_t(dof, loc, scale, lloq, uloq)` sampling.
+    @lhs truncated_student_t_lpdf(obs::vector[n], dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::real =
+        sum(truncated_student_t_lpdfs(obs, dof, loc, scale, lloq, uloq))
+    # Posterior-predictive draw: sample then clamp into [lloq, uloq].
+    truncated_student_t_rng(dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
+        draws::vector[n] = to_vector(student_t_rng(dof, loc, scale))
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = fmin(fmax(lloq[i], draws[i]), uloq[i])
+        end
+        rv
+    end
+    # Sized-token gq path (delegates to the native form; cf. multi_normal_rng).
+    # Bare `vector[n]` (no `::`) is the token slot, matching the tokenof shape.
+    truncated_student_t_rng(vector[n], dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] =
+        truncated_student_t_rng(dof, loc, scale, lloq, uloq)
 
     # --- parametric mean kernels (per-observation; BRM does the [series] index) ---
     # Single-peak time response: with xi = (log t - loc)*exp(log_slope), the
