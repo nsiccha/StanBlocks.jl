@@ -422,8 +422,6 @@ import Statistics
     binomial_lpmfs(y::int[n], args...) = jbroadcasted(binomial_lpmfs, y, args...)
     binomial_logit_lpmfs(args...) = binomial_logit_lpmf(args...)
     binomial_logit_lpmfs(y::int[n], args...) = jbroadcasted(binomial_logit_lpmfs, y, args...)
-    normal_lpdfs(args...) = normal_lpdf(args...)
-    normal_lpdfs(obs::anything[n], loc, scale) = jbroadcasted(normal_lpdfs, obs, loc, scale)
     multi_normal_lpdfs(args...) = multi_normal_lpdf(args...)
     dirichlet_lpdfs(args...) = dirichlet_lpdf(args...)
     @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr[m,n], x::real, m::int, n::int)::real = begin
@@ -435,27 +433,6 @@ import Statistics
     end
     lkj_corr_cholesky_lpdfs(args...) = lkj_corr_cholesky_lpdf(args...)
     lkj_corr_cholesky_lpdfs(L::anything[n], x) = jbroadcasted(lkj_corr_cholesky_lpdfs, L, x)
-    # Scalar-fallback _lpdfs for distributions missing vectorized forms.
-    # The args... variant handles scalar obs; array broadcasting is left for future work.
-    cauchy_lpdfs(args...) = cauchy_lpdf(args...)
-    cauchy_lpdfs(obs::anything[n], loc, scale) = jbroadcasted(cauchy_lpdfs, obs, loc, scale)
-    student_t_lpdfs(args...) = student_t_lpdf(args...)
-    lognormal_lpdfs(args...) = lognormal_lpdf(args...)
-    lognormal_lpdfs(obs::anything[n], loc, scale) = jbroadcasted(lognormal_lpdfs, obs, loc, scale)
-    gamma_lpdfs(args...) = gamma_lpdf(args...)
-    gamma_lpdfs(obs::anything[n], alpha, beta) = jbroadcasted(gamma_lpdfs, obs, alpha, beta)
-    beta_lpdfs(args...) = beta_lpdf(args...)
-    beta_lpdfs(obs::anything[n], alpha, beta) = jbroadcasted(beta_lpdfs, obs, alpha, beta)
-    exponential_lpdfs(args...) = exponential_lpdf(args...)
-    exponential_lpdfs(obs::anything[n], rate) = jbroadcasted(exponential_lpdfs, obs, rate)
-    uniform_lpdfs(args...) = uniform_lpdf(args...)
-    uniform_lpdfs(obs::anything[n], lo, hi) = jbroadcasted(uniform_lpdfs, obs, lo, hi)
-    neg_binomial_2_lpmfs(args...) = neg_binomial_2_lpmf(args...)
-    neg_binomial_2_lpmfs(obs::anything[n], mu, phi) = jbroadcasted(neg_binomial_2_lpmfs, obs, mu, phi)
-    poisson_lpmfs(args...) = poisson_lpmf(args...)
-    poisson_lpmfs(obs::anything[n], lambda) = jbroadcasted(poisson_lpmfs, obs, lambda)
-    poisson_log_lpmfs(args...) = poisson_log_lpmf(args...)
-    poisson_log_lpmfs(obs::anything[n], alpha) = jbroadcasted(poisson_log_lpmfs, obs, alpha)
     ordered_logistic_lpmfs(args...) = ordered_logistic_lpmf(args...)
     ordered_logistic_lpmfs(y::int[n], eta::vector[n], c::vector[m]) = begin
         rv::vector[n]
@@ -472,41 +449,6 @@ import Statistics
         rv
     end
     ordered_logistic_rng(int[n], eta::vector[n], c::vector[m])::int[n] = ordered_logistic_rng(eta, c)
-    inv_gamma_lpdfs(args...) = inv_gamma_lpdf(args...)
-    inv_gamma_lpdfs(obs::anything[n], alpha, beta) = jbroadcasted(inv_gamma_lpdfs, obs, alpha, beta)
-    double_exponential_lpdfs(args...) = double_exponential_lpdf(args...)
-    double_exponential_lpdfs(obs::anything[n], mu, sigma) = jbroadcasted(double_exponential_lpdfs, obs, mu, sigma)
-    logistic_lpdfs(args...) = logistic_lpdf(args...)
-    logistic_lpdfs(obs::anything[n], mu, sigma) = jbroadcasted(logistic_lpdfs, obs, mu, sigma)
-    weibull_lpdfs(args...) = weibull_lpdf(args...)
-    weibull_lpdfs(obs::anything[n], alpha, sigma) = jbroadcasted(weibull_lpdfs, obs, alpha, sigma)
-    gumbel_lpdfs(args...) = gumbel_lpdf(args...)
-    gumbel_lpdfs(obs::anything[n], mu, beta) = jbroadcasted(gumbel_lpdfs, obs, mu, beta)
-    chi_square_lpdfs(args...) = chi_square_lpdf(args...)
-    chi_square_lpdfs(obs::anything[n], nu) = jbroadcasted(chi_square_lpdfs, obs, nu)
-    skew_normal_lpdfs(args...) = skew_normal_lpdf(args...)
-    skew_normal_lpdfs(obs::anything[n], mu, sigma, alpha) = jbroadcasted(skew_normal_lpdfs, obs, mu, sigma, alpha)
-    frechet_lpdfs(args...) = frechet_lpdf(args...)
-    frechet_lpdfs(obs::anything[n], alpha, sigma) = jbroadcasted(frechet_lpdfs, obs, alpha, sigma)
-    rayleigh_lpdfs(args...) = rayleigh_lpdf(args...)
-    rayleigh_lpdfs(obs::anything[n], sigma) = jbroadcasted(rayleigh_lpdfs, obs, sigma)
-    loglogistic_lpdfs(args...) = loglogistic_lpdf(args...)
-    loglogistic_lpdfs(obs::anything[n], alpha, beta) = jbroadcasted(loglogistic_lpdfs, obs, alpha, beta)
-    von_mises_lpdfs(args...) = von_mises_lpdf(args...)
-    von_mises_lpdfs(obs::anything[n], mu, kappa) = jbroadcasted(von_mises_lpdfs, obs, mu, kappa)
-    inv_chi_square_lpdfs(args...) = inv_chi_square_lpdf(args...)
-    inv_chi_square_lpdfs(obs::anything[n], nu) = jbroadcasted(inv_chi_square_lpdfs, obs, nu)
-    scaled_inv_chi_square_lpdfs(args...) = scaled_inv_chi_square_lpdf(args...)
-    scaled_inv_chi_square_lpdfs(obs::anything[n], nu, sigma) = jbroadcasted(scaled_inv_chi_square_lpdfs, obs, nu, sigma)
-    exp_mod_normal_lpdfs(args...) = exp_mod_normal_lpdf(args...)
-    exp_mod_normal_lpdfs(obs::anything[n], mu, sigma, lambda) = jbroadcasted(exp_mod_normal_lpdfs, obs, mu, sigma, lambda)
-    pareto_lpdfs(args...) = pareto_lpdf(args...)
-    pareto_lpdfs(obs::anything[n], y_min, alpha) = jbroadcasted(pareto_lpdfs, obs, y_min, alpha)
-    pareto_type_2_lpdfs(args...) = pareto_type_2_lpdf(args...)
-    pareto_type_2_lpdfs(obs::anything[n], mu, lambda, alpha) = jbroadcasted(pareto_type_2_lpdfs, obs, mu, lambda, alpha)
-    beta_binomial_lpmfs(args...) = beta_binomial_lpmf(args...)
-    beta_binomial_lpmfs(obs::anything[n], trials, alpha, beta) = jbroadcasted(beta_binomial_lpmfs, obs, trials, alpha, beta)
-    student_t_lpdfs(obs::anything[n], nu, loc, scale) = jbroadcasted(student_t_lpdfs, obs, nu, loc, scale)
     vector_exponential_rng(rate::real, n::int)::vector[n] = exponential_rng(rep_vector(rate, n))
     lkj_corr_cholesky_rng(n::int, eta::real)
     
@@ -695,6 +637,49 @@ import Statistics
         end
         y
     end
+end
+
+# Elementwise vectorised-lpdf/lpmf companions — one top-level @eval @deffun loop
+# (mirrors the *_rng loop below). `deffun` maps over a begin-block statement-wise,
+# so lifting these out of the @deffun block above is equivalent; `$(params...)`
+# preserves each dist's exact param names so emitted Stan is byte-identical. Each
+# dist gets a scalar-passthrough fallback + an `obs::anything[n]` broadcasted form.
+# Joint dists (multi_normal/dirichlet), the matrix lkj form, the args...-splat
+# forms (bernoulli/binomial), the GLM + ordered_logistic custom bodies, and dummy
+# stay hand-written in the @deffun block above.
+for (base, params) in (
+    (:normal_lpdf, (:loc, :scale)),
+    (:cauchy_lpdf, (:loc, :scale)),
+    (:lognormal_lpdf, (:loc, :scale)),
+    (:gamma_lpdf, (:alpha, :beta)),
+    (:beta_lpdf, (:alpha, :beta)),
+    (:exponential_lpdf, (:rate,)),
+    (:uniform_lpdf, (:lo, :hi)),
+    (:neg_binomial_2_lpmf, (:mu, :phi)),
+    (:poisson_lpmf, (:lambda,)),
+    (:poisson_log_lpmf, (:alpha,)),
+    (:inv_gamma_lpdf, (:alpha, :beta)),
+    (:double_exponential_lpdf, (:mu, :sigma)),
+    (:logistic_lpdf, (:mu, :sigma)),
+    (:weibull_lpdf, (:alpha, :sigma)),
+    (:gumbel_lpdf, (:mu, :beta)),
+    (:chi_square_lpdf, (:nu,)),
+    (:skew_normal_lpdf, (:mu, :sigma, :alpha)),
+    (:frechet_lpdf, (:alpha, :sigma)),
+    (:rayleigh_lpdf, (:sigma,)),
+    (:loglogistic_lpdf, (:alpha, :beta)),
+    (:von_mises_lpdf, (:mu, :kappa)),
+    (:inv_chi_square_lpdf, (:nu,)),
+    (:scaled_inv_chi_square_lpdf, (:nu, :sigma)),
+    (:exp_mod_normal_lpdf, (:mu, :sigma, :lambda)),
+    (:pareto_lpdf, (:y_min, :alpha)),
+    (:pareto_type_2_lpdf, (:mu, :lambda, :alpha)),
+    (:beta_binomial_lpmf, (:trials, :alpha, :beta)),
+    (:student_t_lpdf, (:nu, :loc, :scale)),
+)
+    lpdfs = Symbol(base, :s)
+    @eval @deffun $lpdfs(args...) = $base(args...)
+    @eval @deffun $lpdfs(obs::anything[n], $(params...)) = jbroadcasted($lpdfs, obs, $(params...))
 end
 
 # --- RaggedVector usertype + Julia-dispatched accessors ---------------------
