@@ -190,6 +190,21 @@ end
     # that assembles the full vector in transformed_parameters.
     maybe_index
     merge_missing
+
+    # bordet (generable) longitudinal-biomarker model-family port. The obs
+    # model is a censored normal w/ limits of quantification (`truncated_normal`
+    # — name kept to match the source fn even though semantics = censoring);
+    # `truncated_normal_lpdf` auto-expands to the
+    # truncated_normal / _lpdfs / _rng / _cdf / _lccdf / _lcdf family. The mean
+    # kernels (`bordet_time_response` single-peak bump, `bordet_dose_response`
+    # log-sigmoid) + index/broadcast helpers are composed by BRM's `bordet_*`
+    # term (contract cut (b): kernels here, BRM composes log_y).
+    truncated_normal_lpdf
+    bordet_time_response
+    bordet_dose_response
+    linear_idxs
+    broadcasted_max
+    broadcasted_gt
 ]
 
 # GLM distributions — defined outside @builtin_module to avoid Revise conflicts
@@ -805,6 +820,99 @@ end
 # multi_normal / multi_normal_cholesky: native already returns vector[n]
 @deffun multi_normal_rng(vector[n], loc::vector[n], cov)::vector[n]          = multi_normal_rng(loc, cov)
 @deffun multi_normal_cholesky_rng(vector[n], loc::vector[n], scale)::vector[n] = multi_normal_cholesky_rng(loc, scale)
+
+# =============================================================================
+# bordet (generable) longitudinal-biomarker model-family port.
+# Contract (room `bordet-in-brm`, cut (b)): StanBlocks ships the obs-model
+# triad + the parametric mean KERNELS + index/broadcast helpers; BRM's `bordet_*`
+# term composes `log_y = baseline[series] + affectable .* time_resp .* exp(dose_resp)`
+# and wires the floor hierarchy. All resolve via the builtin path (no import).
+# =============================================================================
+@deffun begin
+    # --- censored-normal observation model (limits of quantification) --------
+    # Scalar form: obs at/below the lower LOQ contributes the left-tail mass
+    # (`normal_lcdf`), at/above the upper LOQ the right-tail mass
+    # (`normal_lccdf`), otherwise the usual density. Indexed-accumulator idiom
+    # (real[1]) keeps a single trailing return without early-return-in-branch.
+    truncated_normal_lpdf(obs::real, loc::real, scale::real, lloq::real, uloq::real)::real = begin
+        rv::real[1]
+        rv[1] = normal_lpdf(obs, loc, scale)
+        if obs <= lloq
+            rv[1] = normal_lcdf(obs, loc, scale)
+        else
+            if obs >= uloq
+                rv[1] = normal_lccdf(obs, loc, scale)
+            end
+        end
+        rv[1]
+    end
+    # Pointwise vector form (generated_quantities log-lik term).
+    truncated_normal_lpdfs(obs::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = truncated_normal_lpdf(obs[i], loc[i], scale[i], lloq[i], uloq[i])
+        end
+        rv
+    end
+    # Vector form = sum of pointwise; `@lhs` opts it into base-level
+    # `obs ~ truncated_normal(loc, scale, lloq, uloq)` sampling.
+    @lhs truncated_normal_lpdf(obs::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::real =
+        sum(truncated_normal_lpdfs(obs, loc, scale, lloq, uloq))
+    # Posterior-predictive draw: sample then clamp into [lloq, uloq].
+    truncated_normal_rng(loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
+        draws::vector[n] = to_vector(normal_rng(loc, scale))
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = fmin(fmax(lloq[i], draws[i]), uloq[i])
+        end
+        rv
+    end
+    # Sized-token gq path (delegates to the native form; cf. multi_normal_rng).
+    # Bare `vector[n]` (no `::`) is the token slot, matching the tokenof shape.
+    truncated_normal_rng(vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] =
+        truncated_normal_rng(loc, scale, lloq, uloq)
+
+    # --- parametric mean kernels (per-observation; BRM does the [series] index) ---
+    # Single-peak time response: with xi = (log t - loc)*exp(log_slope), the
+    # value exp(log_inv_logit(xi)+log_inv_logit(-xi))*mag peaks once at log t=loc
+    # and →0 as t→0 or t→∞ (log_slope stored unconstrained → exp() positive).
+    bordet_time_response(log_time::vector[n], loc::vector[n], log_slope::vector[n], mag::vector[n])::vector[n] = begin
+        xi::vector[n] = (log_time - loc) .* exp(log_slope)
+        exp(log_inv_logit(xi) + log_inv_logit(-xi)) .* mag
+    end
+    # Log dose response (sigmoid in log space): caller exp()s it in the compose.
+    bordet_dose_response(log_dose::vector[n], loc::vector[n], log_slope::vector[n])::vector[n] = begin
+        xi::vector[n] = (log_dose - loc) .* exp(log_slope)
+        log_inv_logit(xi)
+    end
+
+    # --- index / broadcast helpers (transformed-data) ------------------------
+    # Column-major linear indices: `xy` with `vec(M)[xy] == M[x,y]` for an
+    # (max(x) × max(y)) matrix `M`.
+    linear_idxs(x::int[n], y::int[n])::int[n] = begin
+        m = max(x)
+        rv::int[n]
+        for i in 1:n
+            rv[i] = x[i] + (y[i] - 1) * m
+        end
+        rv
+    end
+    # Elementwise max(x[i], y) / (x[i] > y) for a vector x and scalar y.
+    broadcasted_max(x::vector[n], y::real)::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = fmax(x[i], y)
+        end
+        rv
+    end
+    broadcasted_gt(x::vector[n], y::real)::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = x[i] > y
+        end
+        rv
+    end
+end
 
 @defsig begin
     Union{typeof.((sqrt, exp, log, log10, sin, cos, asin, acos, tan, atan,
