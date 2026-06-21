@@ -91,7 +91,7 @@ end
 See `src/slic_stan/builtin.jl` for many more examples.
 """
 macro deffun(x)
-    esc(deffun(lower_string_interp(slic_macroexpand(__module__, x)); source=__source__))
+    esc(deffun(lower_string_interp(slic_macroexpand(__module__, x)); source=__source__, def_mod=__module__))
 end
 
 """
