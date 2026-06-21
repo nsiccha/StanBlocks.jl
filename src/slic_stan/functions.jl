@@ -495,7 +495,7 @@ begin
         f
     end
     _lpxf_inline_fname(inner) = _inline_fname(inner, "lpxf")
-    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, _shim_kwarg_specs=nothing) = if x.head == :block
+    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, _shim_kwarg_specs=nothing, def_mod=nothing) = if x.head == :block
         seen_lpxf_bases = Set{Symbol}()
         for arg in x.args
             _is_expr(arg) || continue
@@ -509,20 +509,20 @@ begin
             )
             push!(seen_lpxf_bases, base)
         end
-        Expr(:block, deffun.(x.args; docstring, source, is_lhs, is_lpxf, is_inline)...)
+        Expr(:block, deffun.(x.args; docstring, source, is_lhs, is_lpxf, is_inline, def_mod)...)
     elseif x.head == :macrocall && (_is_lpxf_macrocall(x) || _is_lhs_macrocall(x) || _is_at_inline_macrocall(x))
         inner_source = _macrocall_source(x.args[2], source)
         new_is_lhs    = is_lhs    || _is_lhs_macrocall(x)
         new_is_lpxf   = is_lpxf   || _is_lpxf_macrocall(x)
         new_is_inline = is_inline || _is_at_inline_macrocall(x)
-        deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf, is_inline=new_is_inline, _shim_kwarg_specs)
+        deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf, is_inline=new_is_inline, _shim_kwarg_specs, def_mod)
     elseif x.head == :macrocall
         _is_doc_macrocall(x) || error(
             "@deffun: unexpected macrocall head `$(x.args[1])` (expected `@doc` / `@inline` / `@lpxf` / `@lhs`). ",
             "If a new doc-providing or annotation macro should be allowed, extend the predicate at functions.jl:_is_doc_macrocall / _is_inline_macrocall."
         )
         # @assert x.args[3] isa String
-        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf, is_inline, _shim_kwarg_specs)
+        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf, is_inline, _shim_kwarg_specs, def_mod)
     else
         # @assert x.head == :(=)
         fsig, body = ensure_xassign(x).args
@@ -590,9 +590,9 @@ begin
                 # `function f end` first so the canonical method's
                 # `::typeof(f)` dispatch can reference it.
                 Expr(:function, f),
-                deffun(canonical_def; docstring, source, is_lhs=false, is_lpxf=false, is_inline=false),
+                deffun(canonical_def; docstring, source, is_lhs=false, is_lpxf=false, is_inline=false, def_mod),
                 deffun(inline_shim; docstring, source, is_lhs, is_lpxf, is_inline=true,
-                    _shim_kwarg_specs=kwarg_specs),
+                    _shim_kwarg_specs=kwarg_specs, def_mod),
             )
         end
 
@@ -633,7 +633,7 @@ begin
             full_sig = isempty(rv_part) ? full_call : Expr(:(::), full_call, rv_part[1])
             push!(defs, Expr(:(=), full_sig, body))
             return Expr(:block, [
-                deffun(d; docstring, source, is_lhs, is_lpxf, is_inline) for d in defs
+                deffun(d; docstring, source, is_lhs, is_lpxf, is_inline, def_mod) for d in defs
             ]...)
         end
 
@@ -778,7 +778,17 @@ begin
         # because the lookup falls back to `Main` and only checks
         # `StanBlocks.builtin` first. `fundef` already does this below;
         # tracetype needs it for the same reason.
-        capture_mod = :(__fundef_mod__ = $parentmodule(typeof($head(x))))
+        #
+        # Prefer the defining module the `@deffun` macro threads in via
+        # `def_mod` (= the macro's `__module__`). Deriving it instead from
+        # `parentmodule(typeof(head(x)))` is wrong for a Base-extended
+        # `@deffun Base.foo(...)=...`, where it yields `Base` (not the user
+        # module), so the body's sibling lookup runs with `mod=Base` and the
+        # user-module sibling isn't found. We fall back to that `parentmodule`
+        # derivation only when `def_mod` isn't threaded (e.g. a direct
+        # internal `deffun` call) — for a normal `@deffun f(...)=...` the two
+        # agree, so the fallback never changes established behavior.
+        capture_mod = isnothing(def_mod) ? :(__fundef_mod__ = $parentmodule(typeof($head(x)))) : :(__fundef_mod__ = $def_mod)
         inject_mod = :(info[$(QuoteNode(:__mod__))] = __fundef_mod__)
         # `tracetype`'s `info` is typically a NamedTuple (immutable), so
         # convert to OrderedDict before injecting `:__mod__`. (`fundef`
