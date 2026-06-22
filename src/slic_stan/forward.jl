@@ -130,6 +130,38 @@ expand_inline!(x::CanonicalExpr, meta; info) = begin
         subst[k] = v
     end
     rewritten = [inline_substitute(s, subst, rename, meta.vararg_name) for s in stmts]
+    _retrace_inline_body(rewritten, get(meta, :mod, nothing); info)
+end
+
+# Re-trace the substituted inline body in the caller's `info`. A *closure*
+# meta carries `mod` (its definition module — snapshotted as `cl.mod` when the
+# lambda was traced); re-point `info[:__mod__]` at it around the re-trace so
+# nested user-module UDF lookups inside the closure body resolve there, mirroring
+# `fundef(::closure)`'s `info[:__mod__] = cl.mod` and 92f08ae's def_mod threading.
+# Without this, a closure inlined inside a builtin helper (e.g.
+# `simple_reduce_sum_helper`, whose module is StanBlocks, calling `f(...)`
+# directly) would re-trace with `__mod__ = StanBlocks` and fail to find the
+# user's UDF. Save/restore keeps the caller's scope (and sibling expansions of
+# the same UDF) unaffected, and nests correctly. Regular `@deffun @inline` UDF
+# metas carry no `mod`, so their established caller-scope resolution is unchanged.
+# Only `AbstractDict` `info` is overridden: `StanModel`/`SubModel` resolve the
+# module elsewhere (and there a closure's `mod` already equals the model's
+# module, so no override is needed) — and `StanModel` `setindex!` would set a
+# *var*, which must not happen.
+_retrace_inline_body(rewritten, mod; info) =
+    if mod === nothing || !(info isa AbstractDict)
+        _do_retrace_inline_body(rewritten; info)
+    else
+        had = haskey(info, :__mod__)
+        old = had ? info[:__mod__] : nothing
+        info[:__mod__] = mod
+        try
+            _do_retrace_inline_body(rewritten; info)
+        finally
+            had ? (info[:__mod__] = old) : delete!(info, :__mod__)
+        end
+    end
+_do_retrace_inline_body(rewritten; info) = begin
     pending = _get_inline_pending()
     for s in rewritten[1:end-1]
         result = forward!(canonical(s); info)
