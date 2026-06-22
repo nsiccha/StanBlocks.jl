@@ -899,12 +899,27 @@ fetch_subfunctions!(x::CanonicalExpr; info) = begin
     fetch_functions!(x; info)
     fetch_subfunctions!((x.args, x.kwargs); info)
 end
-anon_arg(x::StanExpr, i::Int) = StanExpr(Symbol(:_arg, i), type(x))
-anon_arg(x, i::Int) = x
-anon_canonical(x::CanonicalExpr) = remake(x, ntuple(i -> anon_arg(x.args[i], i), length(x.args))...)
-anon_canonical(x::CanonicalExpr{Colon}) = x   # needs real args for range size
-anon_canonical(x::BlockExpr) = x               # args is Vector, not Tuple
-anon_canonical(x::CanonicalExprV{:nt}) = x     # preserve named tuple structure
+# `tok` namespaces a call's anonymized-arg placeholders (`_arg<tok>_<i>`) per
+# `stan_expr`/`anon_canonical` invocation. Without it, every nesting level
+# reused `_arg1`, `_arg2`, …; a UDF whose inferred return type carries a
+# symbolic size expression referencing its own params (anonymized to `_argN`)
+# would have those `_argN` re-substituted by an INNER call's `deanon_size`
+# (whose args are different), aliasing a param to the wrong value. That
+# corrupted symbolic sizes threaded through HOFs (e.g. `getindex_slice`'s
+# `vector[max(0, ends-start+1)]`), surfacing later as
+# `tracetype not defined for (anything - anything)`. The per-call `tok` keeps
+# each level's placeholders distinct so `deanon_size` only ever substitutes
+# the placeholders it actually introduced. Monotonic-`Ref` counter (Revise-OK,
+# same pattern as `_INLINE_CALLSITE_COUNTER`); the names never reach Stan
+# output — they are always deanonymized away.
+const _ANON_ID_COUNTER = Ref(0)
+_next_anon_id() = (_ANON_ID_COUNTER[] += 1)
+anon_arg(x::StanExpr, i::Int, tok) = StanExpr(Symbol(:_arg, tok, :_, i), type(x))
+anon_arg(x, i::Int, tok) = x
+anon_canonical(x::CanonicalExpr, tok=_next_anon_id()) = remake(x, ntuple(i -> anon_arg(x.args[i], i, tok), length(x.args))...)
+anon_canonical(x::CanonicalExpr{Colon}, tok=_next_anon_id()) = x   # needs real args for range size
+anon_canonical(x::BlockExpr, tok=_next_anon_id()) = x               # args is Vector, not Tuple
+anon_canonical(x::CanonicalExprV{:nt}, tok=_next_anon_id()) = x     # preserve named tuple structure
 anon_info(x::NamedTuple) = (;[
     key=>anon_expr(key, value)
     for (key, value) in pairs(x)
