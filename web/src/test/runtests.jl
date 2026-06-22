@@ -823,6 +823,63 @@ end
     end
 end
 
+# --- regression: @deffun symbolic-size operand-type propagation through HOFs ---
+# A symbolic-size UDF return type (here `gslice`'s `vector[max(0, ends-start+1)]`)
+# threaded through a higher-order `size(f(...))` layer used to corrupt the size
+# expression's operands: every anonymization level reused `_arg1`, `_arg2`, … so
+# an inner `deanon_size` re-substituted an enclosing UDF param's placeholder with
+# the wrong arg, aliasing a scalar index to a 2-D value and surfacing as
+# `tracetype not defined for (anything - anything)` (and an infinite-loop hang on
+# the direct path). Per-call placeholder namespacing (`_arg<tok>_<i>`) fixes it.
+# Reproduces with ZERO `@inline` — it is a `@deffun` size-propagation defect.
+@deffun begin
+    hd_rstart(x, i) = if i == 1; 1; else 1 + x.ends[i-1] end
+    hd_rend(x, i) = x.ends[i]
+    hd_gslice(x::vector[_], start, ends)::vector[max(0, ends-start+1)] = if ends < start
+        rep_vector(0., 0)
+    else
+        x[start:ends]
+    end
+    hd_rvec(x, i) = hd_gslice(x.mem, hd_rstart(x, i), hd_rend(x, i))
+    # symbolic-size 2-D core (sizes from arg shapes) — the necessary ingredient
+    hd_core_sym(a::vector[m], b::vector[n])::int[m, n] = rep_array(0, m, n)
+    # concrete-size 2-D core — control: must stay clean (and did pre-fix)
+    hd_core_concrete(a::vector[m], b::vector[n])::int[2, 3] = rep_array(0, 2, 3)
+    hd_wrap_sym(subject, ut, dt) = to_array_1d(hd_core_sym(hd_rvec(ut, subject), hd_rvec(dt, subject)))
+    hd_wrap_concrete(subject, ut, dt) = to_array_1d(hd_core_concrete(hd_rvec(ut, subject), hd_rvec(dt, subject)))
+    # double-HOF: f threaded through `size(f(...))` (sub_lens -> sub_len)
+    hd_sublen(f, xi, a, b) = size(f(xi, a, b))
+    hd_sublens(f, x::anything[n], a, b) = begin
+        rv::int[n]
+        for i in 1:n
+            rv[i] = hd_sublen(f, x[i], a, b)
+        end
+        rv
+    end
+end
+
+@testset "regression: @deffun symbolic-size operand propagation through HOFs" begin
+    D = (; us=[1, 2], ut=[[0., 1.], [0., 1., 2.]], dt=[[0.], [0., 5.]])
+    # double-HOF + symbolic-size core: was `tracetype not defined for (anything - anything)`
+    m_hof = @slic D begin
+        r = hd_sublens(hd_wrap_sym, us, ut, dt)
+        p ~ normal(1.0 * sum(r), 1.0)
+    end
+    @test transpiles(m_hof)
+    # direct (0-HOF) symbolic-size call: was an infinite-loop hang
+    m_direct = @slic D begin
+        idx = hd_wrap_sym(1, ut, dt)
+        p ~ normal(1.0 * sum(idx), 1.0)
+    end
+    @test transpiles(m_direct)
+    # control: concrete-size core stays clean (no regression)
+    m_concrete = @slic D begin
+        r = hd_sublens(hd_wrap_concrete, us, ut, dt)
+        p ~ normal(1.0 * sum(r), 1.0)
+    end
+    @test transpiles(m_concrete)
+end
+
 # === posteriordb.jl tests ===
 
 # Generate per-model test functions for PosteriorDB

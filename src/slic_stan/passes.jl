@@ -1,25 +1,31 @@
 
-deanon_size(s, x) = s
-deanon_size(s::StanExpr, x::CanonicalExpr) = _deanon_size_expr(expr(s), s, x)
-_deanon_size_expr(e::Symbol, s, x) = begin
-    m = match(r"^_arg(\d+)$", string(e))
-    isnothing(m) && return s
-    i = parse(Int, m[1])
+deanon_size(s, x, tok) = s
+deanon_size(s::StanExpr, x::CanonicalExpr, tok) = _deanon_size_expr(expr(s), s, x, tok)
+# Match this call's own placeholders `_arg<tok>_<i>` only — never an inner/outer
+# level's (different `tok`), which would alias a param to the wrong arg.
+_deanon_size_expr(e::Symbol, s, x, tok) = begin
+    pre = string("_arg", tok, "_")
+    es = string(e)
+    startswith(es, pre) || return s
+    suf = SubString(es, lastindex(pre) + 1)
+    (!isempty(suf) && all(isdigit, suf)) || return s
+    i = parse(Int, suf)
     i <= length(x.args) ? x.args[i] : s
 end
-_deanon_size_expr(e::CanonicalExpr, s, x) = begin
-    new_args = map(a -> deanon_size(a, x), e.args)
+_deanon_size_expr(e::CanonicalExpr, s, x, tok) = begin
+    new_args = map(a -> deanon_size(a, x, tok), e.args)
     new_args == e.args && return s
     StanExpr(remake(e, new_args...), type(s))
 end
-_deanon_size_expr(_, s, _) = s
-deanon_type(tt::StanType, x::CanonicalExpr) = begin
+_deanon_size_expr(_, s, _, tok) = s
+deanon_type(tt::StanType, x::CanonicalExpr, tok) = begin
     sz = stan_size(tt)
-    nsz = map(s -> deanon_size(s, x), sz)
+    nsz = map(s -> deanon_size(s, x, tok), sz)
     sz == nsz ? tt : StanType(center_type(tt), nsz; [k => v for (k, v) in pairs(info(tt)) if k != :size]...)
 end
 stan_expr(x::CanonicalExpr) = begin
-    tt = deanon_type(tracetype(anon_canonical(x)), x)
+    tok = _next_anon_id()
+    tt = deanon_type(tracetype(anon_canonical(x, tok)), x, tok)
     StanExpr(x, remake(tt; qual=maximum(qual, x.args; init=:data), cv=any(cv, x.args) || cv(tt)))
 end
 _check_submodel_arg(arg) = nothing
