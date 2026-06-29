@@ -170,9 +170,9 @@ _do_retrace_inline_body(rewritten; info) = begin
     forward!(canonical(rewritten[end]); info)
 end
 
-# Per-callsite counter for locals; uniqueness is the only requirement.
-const _INLINE_CALLSITE_COUNTER = Ref(0)
-_next_inline_id() = (_INLINE_CALLSITE_COUNTER[] += 1)
+# Per-callsite counter for locals (uniqueness within a trace is the only
+# requirement). Lives in per-trace task-local storage — `_next_inline_id` +
+# the seed-scope are defined centrally in tracing.jl.
 
 _get_inline_pending() = get(task_local_storage(), :_slic_inline_pending, nothing)
 

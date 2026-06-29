@@ -909,11 +909,11 @@ end
 # `vector[max(0, ends-start+1)]`), surfacing later as
 # `tracetype not defined for (anything - anything)`. The per-call `tok` keeps
 # each level's placeholders distinct so `deanon_size` only ever substitutes
-# the placeholders it actually introduced. Monotonic-`Ref` counter (Revise-OK,
-# same pattern as `_INLINE_CALLSITE_COUNTER`); the names never reach Stan
-# output — they are always deanonymized away.
-const _ANON_ID_COUNTER = Ref(0)
-_next_anon_id() = (_ANON_ID_COUNTER[] += 1)
+# the placeholders it actually introduced. The counter lives in per-trace
+# task-local storage (`_next_anon_id` + the seed-scope are defined centrally in
+# tracing.jl); the names never reach Stan output — they are always deanonymized
+# away, so the only out-of-trace caller (ad-hoc `stan_expr(::CanonicalExpr)`)
+# is determinism-irrelevant and falls to the lazy `get!` default.
 anon_arg(x::StanExpr, i::Int, tok) = StanExpr(Symbol(:_arg, tok, :_, i), type(x))
 anon_arg(x, i::Int, tok) = x
 anon_canonical(x::CanonicalExpr, tok=_next_anon_id()) = remake(x, ntuple(i -> anon_arg(x.args[i], i, tok), length(x.args))...)

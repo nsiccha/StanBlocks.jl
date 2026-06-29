@@ -47,6 +47,24 @@ end
     issue10b(_::vector[n]) = 0.
 end
 
+# Determinism regression: an inline UDF whose locals are renamed `<name>__il_<id>`.
+@deffun @inline det_polish(x::vector[n])::vector[n] = begin
+    z = x * 2
+    return z + 1
+end
+
+# Determinism regression model — exercises BOTH a session-counter-dependent
+# Stan-output site: an inlined UDF (`__il_<id>` local rename) AND a lifted
+# closure (`// lifted closure (id <id>)` + `closure_<id>` fn name). Transpiled
+# twice in one session it must be byte-identical (per-trace counters, not
+# session-global ones).
+det_model = @slic (;n=5, ts=collect(1.0:5.0)) begin
+    lambda ~ std_normal(;lower=0.)
+    mu     ~ std_normal(;n=n)
+    obs    = det_polish(mu)
+    y      = ode_rk45((t, y_state) -> -lambda * y_state, [1.0], 0.0, to_array_1d(ts))
+end
+
 # issue 12 sub-models
 sm12a = @slic begin
     x ~ std_normal(;n)
@@ -252,6 +270,16 @@ end
     end ; n=10, y=1.)) == stan_code(sm15b(; n=10, y=1.))
     @test compiles(sm15a(;n=10, y=1.))
     @test compiles(sm15b(;n=10, y=1.))
+end
+
+@testset "determinism: inline UDF + lifted closure" begin
+    a = stan_code(stan_model(det_model))
+    b = stan_code(stan_model(det_model))
+    # non-vacuous: the model must actually exercise both counter-dependent sites
+    @test occursin("__il_", a)
+    @test occursin("// lifted closure", a)
+    # transpiling twice in one session must be byte-identical
+    @test a == b
 end
 
 @testset "issue17" begin

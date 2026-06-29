@@ -11,11 +11,11 @@ _is_ntup_stan_expr(::StanExpr2{<:types.ntup}) = true
 # positions, which the load-order in StanBlocks.jl resolves only once
 # `functions.jl` has registered the `types` module.
 
-# Per-`:->` counter so each `(x) -> body` site gets a stable id used both
-# for `func_name` mangling (so HOF receivers specialise per closure) and for
-# debugging closure flow through the tracer.
-const _CLOSURE_ID_COUNTER = Ref(0)
-_next_closure_id() = (_CLOSURE_ID_COUNTER[] += 1)
+# Per-`:->` counter so each `(x) -> body` site gets an id used both for
+# `func_name` mangling (so HOF receivers specialise per closure) and for
+# debugging closure flow through the tracer. Lives in per-trace task-local
+# storage — `_next_closure_id` + the seed-scope are defined centrally in
+# tracing.jl (so the id is fresh per transpilation, not session-global).
 
 # Walk the un-canonicalised body collecting *all* Symbols that appear (as
 # uses or definitions). The closure builder subtracts bound names (params
