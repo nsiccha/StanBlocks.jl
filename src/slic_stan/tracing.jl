@@ -29,6 +29,36 @@ function stan_model end
 const _StanBlocksError = parentmodule(@__MODULE__).StanBlocksError
 _is_stanblocks_error(e::_StanBlocksError) = true
 _is_stanblocks_error(_) = false
+
+# --- Per-trace monotonic id counters (thread-safe + deterministic) -----------
+# `_next_inline_id`/`_next_closure_id`/`_next_anon_id` hand out the ids used for
+# inlined-UDF local renames (`name__il_<id>`, forward.jl), lifted-closure Stan
+# fn names + comments (`// lifted closure (id <id>)`, closures.jl), and per-call
+# anon-arg placeholders (`_arg<tok>_<i>`, functions.jl). These ids must be
+# unique WITHIN a single transpilation but must NOT carry across transpilations:
+# a module-global counter would (a) data-race under concurrent tracing and (b)
+# make the emitted Stan depend on how many prior inlines/closures ran this
+# session — non-deterministic generation that also defeats the `hash(stan_code)`
+# cache. So the counters live in PER-TASK storage, seeded FRESH per trace by
+# `_with_trace_counters` (called from the `stan_model` wrapper below). The lazy
+# `get!` is the get-with-default for any call OUTSIDE a trace scope (only the
+# anon counter is reachable there, via ad-hoc `stan_expr(::CanonicalExpr)`;
+# determinism is irrelevant there since anon placeholders are always
+# deanonymized away) — it returns a task-local `Ref`, so still thread-safe.
+_trace_counter(key) = get!(() -> Ref(0), task_local_storage(), key)
+_next_inline_id()  = (_trace_counter(:_slic_inline_counter)[]  += 1)
+_next_closure_id() = (_trace_counter(:_slic_closure_counter)[] += 1)
+_next_anon_id()    = (_trace_counter(:_slic_anon_counter)[]    += 1)
+# Seed all three counters fresh (scoped, restored on exit) around one trace.
+_with_trace_counters(body) =
+    task_local_storage(:_slic_inline_counter, Ref(0)) do
+        task_local_storage(:_slic_closure_counter, Ref(0)) do
+            task_local_storage(:_slic_anon_counter, Ref(0)) do
+                body()
+            end
+        end
+    end
+
 stan_model(x::SlicModel; info=StanModel()) = begin
     _expr_stack = Any[]
     _current_lnn = Ref{Any}(nothing)
@@ -36,16 +66,18 @@ stan_model(x::SlicModel; info=StanModel()) = begin
     task_local_storage(:_slic_expr_stack, _expr_stack) do
         task_local_storage(:_slic_current_lnn, _current_lnn) do
             task_local_storage(:_slic_inline_pending, Any[]) do
-                try
-                    distribute!(backward!(forward!(x; info); info); info)
-                    remake(info; docstring=get(x.data, :docstring, ""))
-                catch e
-                    _is_stanblocks_error(e) && rethrow()
-                    bt = catch_backtrace()
-                    # Keep the raw (exception, backtrace, expr_stack) tuple so the
-                    # display layer can show the Julia traceback alongside the
-                    # SLIC-level expression trace.
-                    throw(_StanBlocksError(:transpile, "model", (e, bt, copy(_expr_stack))))
+                _with_trace_counters() do
+                    try
+                        distribute!(backward!(forward!(x; info); info); info)
+                        remake(info; docstring=get(x.data, :docstring, ""))
+                    catch e
+                        _is_stanblocks_error(e) && rethrow()
+                        bt = catch_backtrace()
+                        # Keep the raw (exception, backtrace, expr_stack) tuple so the
+                        # display layer can show the Julia traceback alongside the
+                        # SLIC-level expression trace.
+                        throw(_StanBlocksError(:transpile, "model", (e, bt, copy(_expr_stack))))
+                    end
                 end
             end
         end
