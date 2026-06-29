@@ -388,8 +388,11 @@ forward!(x::LineNumberNode; info) = (_set_lnn!(_get_lnn_ref(info), x); x)
 _set_lnn!(r::Ref, x) = (r[] = x; nothing)
 _set_lnn!(_, _) = nothing
 forward!(x::QuoteNode; info) = x.value
-forward!(x::Irrational; info) = error("forward! not defined for irrational `$x` — only `π` is handled; convert to a concrete numeric value first.")
-forward!(x::Irrational{:π}; info) = forward!(Float64(pi); info)
+# Built-in mathematical constants (π, ℯ, γ, φ, catalan — all `Irrational`s)
+# resolve to their `Float64` value. Per user decision `3bbtrv` (comment: "only
+# pi and e or other built in constants"): the built-in constants resolve;
+# arbitrary module-level numbers do not (no `::Number` resolution method).
+forward!(x::Irrational; info) = forward!(Float64(x); info)
 forward!(x::Number; info) = maybedata(x, x)
 get_module(info::StanModel) = get(info.meta, :mod, Main)
 get_module(info::AbstractDict) = get(info, :__mod__, Main)

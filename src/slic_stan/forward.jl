@@ -4,6 +4,12 @@
 # constructor call dispatches via the usertype tracetype.
 _forward_module_value(v::Function, info) = forward!(v; info)
 _forward_module_value(v::SlicModel, info) = v
+# Built-in mathematical constants (π, ℯ, … — all `Irrational`s) resolve to their
+# Float64 value via `forward!(::Irrational)`. Per user decision `3bbtrv`: only
+# built-in constants resolve this way, NOT arbitrary module-level numbers (there
+# is deliberately no `::Number` method here — a bare `const X = 2.5` referenced
+# in a model still errors loudly at `forward!(::Symbol)`).
+_forward_module_value(v::Irrational, info) = forward!(v; info)
 # `_forward_module_value(::Type{<:types.anything}, _)` is defined after
 # `include("functions.jl")` (which defines `module types`); placing it
 # here would error at module-load time with `UndefVarError: types`.
@@ -40,6 +46,9 @@ _try_symbol_lookup(x::Symbol; info) = begin
 end
 _resolve_module_value(v::Function) = v
 _resolve_module_value(v::SlicModel) = v
+# Built-in constants resolve here too (the GlobalRef path), mirroring the
+# `_forward_module_value(::Irrational)` symbol path — user decision `3bbtrv`.
+_resolve_module_value(v::Irrational) = v
 # Type{<:types.anything} method defined after `include("functions.jl")`.
 _resolve_module_value(_) = nothing
 forward!(x::Colon; info) = x
