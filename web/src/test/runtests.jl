@@ -282,6 +282,18 @@ end
     @test a == b
 end
 
+# An in-body `@doc` lowers to a DocumentExpr; `forward!` wraps the docstring
+# String into a `StanExpr{String}`, so render must dispatch
+# `commentstring(::StanExpr)` (not just `::String`).
+doc_model = @slic (;n=5) begin
+    y ~ std_normal(;n)
+    @doc "documented local declaration" z = y .* 2
+end
+@testset "in-body @doc docstring renders (StanExpr unwrap)" begin
+    @test transpiles(doc_model)
+    @test occursin("// documented local declaration", stan_code(stan_model(doc_model)))
+end
+
 @testset "issue17" begin
     @test compiles(@slic (;n=10, y=1.) begin
         x ~ issue17(;n)
