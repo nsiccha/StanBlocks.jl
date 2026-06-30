@@ -148,6 +148,11 @@ Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = autoprint(io, head(x), "(", J
      _closure_captures(x.args[1])...), ", "
 ), ")")
 commentstring(x::String) = "// " * replace(x, "\n"=>"\n    // ") * "\n"
+# A docstring arg can arrive traced (a `StanExpr` wrapping the String) rather
+# than a bare String — e.g. a doc comment on a sub-model whose body was forwarded.
+# Unwrap to the underlying value and re-dispatch (loud MethodError if it isn't a
+# String, matching the bare-String-only contract).
+commentstring(x::StanExpr) = commentstring(expr(x))
 Base.show(io::IO, x::DocumentExpr) = print(io, commentstring(x.args[1]), current_indent(io), x.args[2])
 Base.show(io::IO, x::ReturnExpr) = print(io, "return ", x.args[1])
 Base.show(io::IO, x::TupleExpr) = autoprint(io, "(", Join(x.args, ", "), ")")

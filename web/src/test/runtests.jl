@@ -65,6 +65,19 @@ det_model = @slic (;n=5, ts=collect(1.0:5.0)) begin
     y      = ode_rk45((t, y_state) -> -lambda * y_state, [1.0], 0.0, to_array_1d(ts))
 end
 
+# Built-in math constants (`pi`, `ℯ`) resolve to their Float64 value in a model
+# body (user decision 3bbtrv); arbitrary module-level numbers must NOT.
+@deffun @inline _scale_by_consts(x::vector[n])::vector[n] = (4. / pi) * x .+ ℯ
+consts_model = @slic (;n=5) begin
+    x ~ std_normal(;n)
+    s = _scale_by_consts(x)
+end
+CONSTS_TEST_NUM = 2.5
+consts_bad_model = @slic (;n=5) begin
+    x ~ std_normal(;n)
+    s = CONSTS_TEST_NUM .* x
+end
+
 # issue 12 sub-models
 sm12a = @slic begin
     x ~ std_normal(;n)
@@ -280,6 +293,27 @@ end
     @test occursin("// lifted closure", a)
     # transpiling twice in one session must be byte-identical
     @test a == b
+end
+
+# An in-body `@doc` lowers to a DocumentExpr; `forward!` wraps the docstring
+# String into a `StanExpr{String}`, so render must dispatch
+# `commentstring(::StanExpr)` (not just `::String`).
+doc_model = @slic (;n=5) begin
+    y ~ std_normal(;n)
+    @doc "documented local declaration" z = y .* 2
+end
+@testset "in-body @doc docstring renders (StanExpr unwrap)" begin
+    @test transpiles(doc_model)
+    @test occursin("// documented local declaration", stan_code(stan_model(doc_model)))
+end
+
+@testset "built-in constants resolve (pi, ℯ); arbitrary const errors" begin
+    @test transpiles(consts_model)
+    code = stan_code(stan_model(consts_model))
+    @test occursin("3.14159", code)   # pi
+    @test occursin("2.71828", code)   # ℯ
+    # arbitrary module-level number is NOT a built-in constant → loud failure
+    @test !transpiles(consts_bad_model; re=false)
 end
 
 @testset "issue17" begin
