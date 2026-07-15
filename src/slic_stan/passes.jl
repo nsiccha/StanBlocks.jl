@@ -84,11 +84,26 @@ backward!(x::AssignmentExpr; info) = begin
             "Compiler-generated slice-fill of `", key, "[…]` but `", key, "` is not declared ",
             "in model scope — the inlining/plate emitter must register the base variable first."
         )
-        (qual(info[key]) == :parameter && !_is_fresh_decl(info[key])) && error(
-            "Cannot assign to a slice/element of parameter `", key, "` in the model block — Stan ",
-            "parameters are read-only there (this typically comes from inlining a mutating helper ",
-            "onto a parameter; fill a local/derived vector instead)."
-        )
+        # CERTIFICATE: a compiler-injected slice-fill is legitimate only into a var
+        # declared FRESH via `::` (`forward!(::DeclExpr)` stamps `fresh_decl`) — a
+        # transformed-quantity result under construction, whose qual is determined
+        # solely by its fills. Any other base is read-only for element assignment in a
+        # model block: a SAMPLED parameter (Stan-read-only), a DATA var (Stan-read-only),
+        # or an ASSIGNMENT-bound/derived var (its qual is already committed — SSA can't
+        # un-commit it in one pass; the settled "pre-committed var" bar). Reject all.
+        _is_fresh_decl(info[key]) || let q = qual(info[key])
+            q == :parameter ? error(
+                "Cannot assign to a slice/element of parameter `", key, "` in the model block — Stan ",
+                "parameters are read-only there (this typically comes from inlining a mutating helper ",
+                "onto a parameter; fill a freshly-declared local/derived vector instead)."
+            ) : error(
+                "Compiler-injected slice-fill onto `", key, "`, which is not a fresh declaration (it is ",
+                q == :data ? "data" : "an assignment-bound/derived value",
+                ", read-only for element assignment in a model block). Slice-fills are supported only into ",
+                "a vector declared fresh via `::` inside the inlined body (`out::T`); the emitter must ",
+                "target such a result."
+            )
+        end
     end
     if lqual(info[key]) == :affects_likelihood
         lhs2, rhs = x.args
