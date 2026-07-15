@@ -99,7 +99,14 @@ _lower_scalar_array_broadcast(x::CanonicalExpr; info) = begin
         CanonicalExpr(builtin.jbroadcasted, f, l, r)
     elseif _is_commutative_broadcast(head(x))
         CanonicalExpr(builtin.jbroadcasted, f, r, l)
+    elseif f === (-)
+        # scalar-first subtraction `s .- arr` has no array-first jbroadcasted
+        # form, but algebraically `s .- arr == -(arr .- s)` — negate the (valid,
+        # real `vector[n]`) result of the array-first loop.
+        CanonicalExpr(-, CanonicalExpr(builtin.jbroadcasted, -, r, l))
     else
+        # scalar-first `./`/`.^` — no commuting/negation identity; defer to the
+        # generalised (arbitrary arg-position) jbroadcasted, reject until then.
         return nothing
     end
     forward!(call; info)
