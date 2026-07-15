@@ -795,6 +795,85 @@ end
     end
 end
 
+@testset "slic: scalar-array elementwise broadcasting (jbroadcasted)" begin
+    # Generalised trace-level `jbroadcasted` (f4b601f): elementwise arithmetic on
+    # scalar arrays (`array[] int` / `array[] real` — what a `Vector{Int}` /
+    # `Vector{Float64}` data input becomes; NOT a native `vector`) has no Stan
+    # operator, so it lowers to an element loop whose output CONTAINER is inferred
+    # from `f`'s per-element return type — `int` stays `array[] int` (usable as an
+    # index), `real` → `vector[n]`. Native `vector` operands keep Stan's built-in
+    # scalar-vector ops (no lowering). GATE ON `compiles`, NOT `transpiles`: the
+    # pre-generalisation bug transpiled PASS but stanc REJECTed (StanBlocks primer,
+    # `4b45a5ac` scalar-array section).
+    @testset "int array stays int (reporter: fs = fe - Ks + 1)" begin
+        model = @slic (;fe=[3,4,5], Ks=[1,1,1]) begin
+            fs = fe - Ks + 1
+            mu ~ std_normal()
+            mu
+        end
+        code = stan_code(model)
+        # int container preserved — NOT silently coerced to a real `vector`
+        @test occursin(r"array\[\w*\] int (?:\w+ )?fs\b", code)
+        @test !occursin(r"vector\[\w*\] (?:\w+ )?fs\b", code)
+        @test occursin("jbroadcasted_add", code)
+        @test occursin("jbroadcasted_sub", code)
+        @test compiles(model)
+    end
+    @testset "real scalar-array → vector" begin
+        model = @slic (;n=4) begin
+            ra = rep_array(1.5, n)   # array[n] real
+            z  = 2.0 .- ra           # scalar-array real → jbroadcasted → vector
+            mu ~ std_normal()
+            mu
+        end
+        @test occursin("jbroadcasted_sub", stan_code(model))
+        @test check_type(model, :z, "vector")
+        @test compiles(model)
+    end
+    @testset "scalar-first ./ and .^ on a real array lower (any arg position)" begin
+        # Previously fell through to the loud reject (no commute/negate identity);
+        # the generalised any-position jbroadcasted lowers them directly.
+        model = @slic (;n=4) begin
+            ra = rep_array(2.0, n)
+            q  = 3.0 ./ ra
+            p  = 3.0 .^ ra
+            mu ~ std_normal()
+            mu
+        end
+        @test occursin("jbroadcasted", stan_code(model))
+        @test compiles(model)
+    end
+    @testset "native vector operand keeps built-in scalar-vector op (no lowering)" begin
+        model = @slic (;w=[1.0,2.0,3.0]) begin   # Vector{Float64} → Stan vector
+            z = 2.0 .- w
+            mu ~ std_normal()
+            mu
+        end
+        @test !occursin("jbroadcasted", stan_code(model))
+        @test compiles(model)
+    end
+    @testset "regression: binomial_lpmfs caller keeps real vector[n]" begin
+        # jbroadcasted backs every `*_lpmfs` distribution — the container inference
+        # must keep the real-element path a `vector[n]`, not flip it to `array[] int`.
+        model = @slic (;y=[0,1,1,0,1], N=[2,2,2,2,2]) begin
+            p ~ std_normal(;lower=0., upper=1.)
+            y ~ binomial(N, p)
+            p
+        end
+        @test occursin(r"vector\[\w*\] (?:\w+ )?y_likelihood\b", stan_code(model))
+        @test compiles(model)
+    end
+    @testset "reject floor: plain * / ^ on scalar arrays still loudly rejected" begin
+        # Matmul/dim-shaped `*` on arrays is NOT elementwise — must stay rejected,
+        # never silently miscompiled.
+        @test_throws Exception stan_code(@slic (;a=[1,2,3], b=[1,2,3]) begin
+            c = a * b
+            mu ~ std_normal()
+            mu
+        end)
+    end
+end
+
 @testset "shapes: RNG" begin
     @testset "vector_std_normal_rng(n) :: vector[n]" begin
         @test compiles(@slic (;n=5, obs=randn(5)) begin
