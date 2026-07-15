@@ -585,41 +585,43 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     remake(x, info[name], rhs_stan)
 end
-# Desugar a RAGGED vector-constrained parameter (`p::simplex[Ks] ~ …`, `Ks` a
-# data int-vector of per-group dims) into constructs SB can emit. Stan cannot
-# declare `simplex[Ks]`/`ordered[Ks]` natively, so replicate its transform and
-# jacobian per group. The free dimension is family-specific: simplex[K] uses
-# K-1 coordinates; ordered[K] and positive_ordered[K] each use K.
+# Desugar a RAGGED constrained parameter (`p::simplex[Ks] ~ …`, `Ks` a data
+# int-vector of per-group dims) into constructs SB can emit. Vector families use
+# a RaggedVector; square cholesky families flatten K×K results and bind a
+# RaggedMatrix that reconstructs each matrix on indexed access.
 #   • flat improper-uniform free param sized by the flattened free dimensions
 #   • per-group offsets in transformed data via `cumulative_sum` (data-qualified)
 #   • a FRESH result vector filled by a compiler-injected per-group constrain loop
 #     calling the built-in `<ct>_jacobian` (the jacobian accumulates directly in
 #     `transformed parameters`; routing landed on slic-model-slice @ 29c3b59)
-#   • a `RaggedVector(mem, ends)` pairing bound to `name`
+#   • a compile-time ragged pairing bound to `name`
 # All statements are injected via `_slic_inline_pending` (they never enter the raw
 # body, so they bypass `_reject_model_control_flow`) and routed to their blocks by
 # `distribute!`. NOTE (scope decision 1mfltua): the RHS informative prior is NOT yet
 # applied — `p[g] ~ dist` is a `~`-in-loop = the Feature-2 `~`-aware superset, not
 # built. For now the ragged param carries only its uniform base measure (jacobian);
 # `rhs_raw` is intentionally unused pending 1mfltua.
-_forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) = begin
+_forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) =
+    if ct in (:simplex, :ordered, :positive_ordered)
+        _forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info)
+    elseif ct in (:cholesky_factor_corr, :cholesky_factor_cov)
+        _forward_ragged_matrix_constrained!(name, ct, sizes, rhs_raw; info)
+    else
+        error(
+            "Ragged constrained `$name::$ct[…]` is not supported yet. Supported ",
+            "families are `simplex`, `ordered`, `positive_ordered`, ",
+            "`cholesky_factor_corr`, and square `cholesky_factor_cov`."
+        )
+    end
+
+_forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info) = begin
     length(sizes) == 1 || error(
         "Ragged constrained `$name::$ct[…]`: expected a single vector size (the ",
         "per-group dims), got $(length(sizes)). Rectangular `$ct[a,b]` and ragged ",
         "`$ct[Ks]` are distinct shapes; a mixed form is unsupported."
     )
     Ks  = sizes[1]
-    free_drop = if ct === :simplex
-        1
-    elseif ct in (:ordered, :positive_ordered)
-        0
-    else
-        error(
-            "Ragged constrained `$name::$ct[…]`: only vector-valued `simplex`, ",
-            "`ordered`, and `positive_ordered` families are supported. Matrix-valued ",
-            "families need a separate ragged representation and free-dimension rule."
-        )
-    end
+    free_drop = ct === :simplex ? 1 : 0
     jac = Symbol(ct, :_jacobian)
     free_sizes = free_drop == 0 ? Ks : :($Ks .- $free_drop)
     # Stan-valid unique names (gensym's `#` is an illegal Stan identifier char);
@@ -640,6 +642,48 @@ _forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) = begin
                   $jac($pfree[$free_start : $fend[$g]])
           end),
         :($name = RaggedVector($pmem, $cend)),           # ragged view (representation bae1167)
+    ]
+    _do_retrace_inline_body(stmts; info)
+end
+
+_forward_ragged_matrix_constrained!(name, ct, sizes, rhs_raw; info) = begin
+    length(sizes) == 1 || error(
+        "Ragged constrained `$name::$ct[…]`: this increment supports one vector ",
+        "of square group sizes. Rectangular ragged cholesky factors need separate ",
+        "row and column size vectors and are not implemented yet."
+    )
+    Ks = sizes[1]
+    corr_family = ct === :cholesky_factor_corr
+    jac = Symbol(ct, :_jacobian)
+    # cholesky_factor_corr[K] has K(K-1)/2 free coordinates; a square
+    # cholesky_factor_cov[K] has K(K+1)/2. Both materialise K² matrix cells.
+    free_sizes = corr_family ? :(($Ks .* ($Ks .- 1)) .÷ 2) : :(($Ks .* ($Ks .+ 1)) .÷ 2)
+    mem_sizes = :($Ks .* $Ks)
+
+    id = _next_inline_id()
+    pfree = Symbol(:p_free, "__rcm_", id); pmem = Symbol(:p_mem, "__rcm_", id)
+    cend  = Symbol(:c_end, "__rcm_", id);  fend = Symbol(:f_end, "__rcm_", id)
+    g     = Symbol(:g, "__rcm_", id)
+    free_size_g = corr_family ?
+        :(($Ks[$g] * ($Ks[$g] - 1)) ÷ 2) :
+        :(($Ks[$g] * ($Ks[$g] + 1)) ÷ 2)
+    mem_size_g = :($Ks[$g] * $Ks[$g])
+    free_start = :($fend[$g] - $free_size_g + 1)
+    mem_start = :($cend[$g] - $mem_size_g + 1)
+    free_slice = :($pfree[$free_start : $fend[$g]])
+    constrained = corr_family ?
+        :($jac($free_slice, $Ks[$g])) :
+        :($jac($free_slice, $Ks[$g], $Ks[$g]))
+
+    stmts = Any[
+        :($pfree ~ flat(; n = sum($free_sizes))),
+        :($cend = cumulative_sum($mem_sizes)),
+        :($fend = cumulative_sum($free_sizes)),
+        :($pmem :: vector[sum($mem_sizes)]),
+        :(for $g in 1:length($Ks)
+              $pmem[$mem_start : $cend[$g]] = to_vector($constrained)
+          end),
+        :($name = RaggedMatrix($pmem, $cend, $Ks, $Ks)),
     ]
     _do_retrace_inline_body(stmts; info)
 end
