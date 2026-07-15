@@ -106,6 +106,10 @@ end
     hcat
     reshape
     ragged_n ragged_total ragged_start ragged_end ragged_length
+    # Stan 2.37 exposed constraint transforms (Feature 1) — @deffun sigs below.
+    simplex_constrain simplex_unconstrain simplex_jacobian
+    ordered_constrain ordered_unconstrain ordered_jacobian
+    positive_ordered_constrain positive_ordered_unconstrain positive_ordered_jacobian
     diag_matrix
     mdivide_left_tri_low
     one_hot_vector
