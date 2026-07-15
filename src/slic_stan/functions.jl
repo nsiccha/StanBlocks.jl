@@ -1038,7 +1038,7 @@ func_name(x::Function) = string(x)
 # function to its Stan-side name fragment used for call-site mangling.
 for (f, nm) in (
     (&, "and"), (|, "or"), (>=, "gte"), (>, "gt"), (==, "eq"),
-    (<=, "lte"), (<, "lt"), (+, "add"), (-, "sub"), (*, "mul"), (/, "div"),
+    (<=, "lte"), (<, "lt"), (+, "add"), (-, "sub"), (*, "mul"), (/, "div"), (^, "pow"),
     # Julia functions with different Stan names
     (length, "num_elements"), (minimum, "min"), (maximum, "max"), (abs2, "square"),
 )
