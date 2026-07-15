@@ -551,7 +551,7 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # …) to be a SCALAR int. A NON-scalar size — e.g. `p::simplex[Ks]` with a data
     # int-vector `Ks` — is a RAGGED / varying-per-group constrained parameter. Stan
     # cannot declare `simplex[Ks]` natively, so we desugar: a flat improper-uniform
-    # free param + a compiler-injected per-group constrain loop (`simplex_jacobian`)
+    # free param + a compiler-injected per-group `<family>_jacobian` loop
     # + a `RaggedVector` pairing, reusing the loop-fill routing landed on
     # `slic-model-slice-b3a85769` @ 29c3b59. See brief 2026-07-15T18-26-44-152-1b6sc6m.
     if _is_native_constrained_ct(ct_resolved) && any(sz -> stan_ndim(type(sz)) > 0, sizes_forwarded)
@@ -585,11 +585,12 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     remake(x, info[name], rhs_stan)
 end
-# Desugar a RAGGED native-constrained parameter (`p::simplex[Ks] ~ …`, `Ks` a data
-# int-vector of per-group dims) into constructs SB can emit. Stan cannot declare
-# `simplex[Ks]` natively, so we replicate what Stan does for a native simplex —
-# unconstrained free coords + the constrain transform's jacobian — but per group:
-#   • flat improper-uniform free param   `p_free ~ flat(;n=sum(Ks .- 1))`
+# Desugar a RAGGED vector-constrained parameter (`p::simplex[Ks] ~ …`, `Ks` a
+# data int-vector of per-group dims) into constructs SB can emit. Stan cannot
+# declare `simplex[Ks]`/`ordered[Ks]` natively, so replicate its transform and
+# jacobian per group. The free dimension is family-specific: simplex[K] uses
+# K-1 coordinates; ordered[K] and positive_ordered[K] each use K.
+#   • flat improper-uniform free param sized by the flattened free dimensions
 #   • per-group offsets in transformed data via `cumulative_sum` (data-qualified)
 #   • a FRESH result vector filled by a compiler-injected per-group constrain loop
 #     calling the built-in `<ct>_jacobian` (the jacobian accumulates directly in
@@ -608,21 +609,35 @@ _forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) = begin
         "`$ct[Ks]` are distinct shapes; a mixed form is unsupported."
     )
     Ks  = sizes[1]
+    free_drop = if ct === :simplex
+        1
+    elseif ct in (:ordered, :positive_ordered)
+        0
+    else
+        error(
+            "Ragged constrained `$name::$ct[…]`: only vector-valued `simplex`, ",
+            "`ordered`, and `positive_ordered` families are supported. Matrix-valued ",
+            "families need a separate ragged representation and free-dimension rule."
+        )
+    end
     jac = Symbol(ct, :_jacobian)
+    free_sizes = free_drop == 0 ? Ks : :($Ks .- $free_drop)
     # Stan-valid unique names (gensym's `#` is an illegal Stan identifier char);
     # `_next_inline_id` is the per-trace counter SB uses for inlined-local renames.
     id = _next_inline_id()
     pfree = Symbol(:p_free, "__rc_", id); pmem = Symbol(:p_mem, "__rc_", id)
     cend  = Symbol(:c_end, "__rc_", id);  fend = Symbol(:f_end, "__rc_", id)
     g     = Symbol(:g, "__rc_", id)
+    free_size_g = free_drop == 0 ? :($Ks[$g]) : :($Ks[$g] - $free_drop)
+    free_start = :($fend[$g] - $free_size_g + 1)
     stmts = Any[
-        :($pfree ~ flat(; n = sum($Ks .- 1))),          # improper-uniform free coords → parameters
+        :($pfree ~ flat(; n = sum($free_sizes))),        # improper-uniform free coords → parameters
         :($cend = cumulative_sum($Ks)),                  # constrained group ends (data → TD)
-        :($fend = cumulative_sum($Ks .- 1)),             # free group ends (data → TD)
+        :($fend = cumulative_sum($free_sizes)),           # free group ends (data → TD)
         :($pmem :: vector[sum($Ks)]),                    # fresh result → auto fresh_decl cert
         :(for $g in 1:length($Ks)                        # injected ForExpr — 29c3b59 routes it
               $pmem[$cend[$g] - $Ks[$g] + 1 : $cend[$g]] =
-                  $jac($pfree[$fend[$g] - $Ks[$g] + 2 : $fend[$g]])
+                  $jac($pfree[$free_start : $fend[$g]])
           end),
         :($name = RaggedVector($pmem, $cend)),           # ragged view (representation bae1167)
     ]
