@@ -692,6 +692,10 @@ end
     end
     return out
 end
+bare_parameter_submodel = @slic begin
+    offset::real
+    return offset
+end
 
 @testset "slic: standalone bare typed model parameters" begin
     y = [0.2, -0.1, 0.4]
@@ -724,6 +728,16 @@ end
     theta = [0.25, -0.1, 0.2, 0.4, 17.0]
     expected = sum(_stan_normal.(y, theta[1] .+ theta[2:4], 1.0))
     @test LogDensityProblems.logdensity(problem, theta) ≈ expected atol=1e-6
+
+    embedded = @slic (;y=0.3) begin
+        mu ~ bare_parameter_submodel
+        y ~ normal(mu, 1.0)
+    end
+    @test transpiles(embedded)
+    @test compiles(embedded)
+    embedded_code = stan_code(embedded)
+    @test occursin(r"\breal mu_offset;", stan_block(embedded_code, "parameters"))
+    @test !occursin(r"\bmu_offset\s*~", stan_block(embedded_code, "model"))
 
     # User-authored model-body declare-then-fill stays rejected before `forward!`;
     # only compiler-injected indexed fills carry the reclassification certificate.
