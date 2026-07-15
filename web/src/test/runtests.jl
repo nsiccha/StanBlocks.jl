@@ -1535,6 +1535,47 @@ c3_plate_router_model = @slic (;) begin
     routed ~ c3_plate_router_submodel
 end
 
+# Public plate regression: the do-block calls a named @slic submodel whose own
+# sample and derived local are not visible in the plate's raw AST.  The plate
+# discovery trace must find all three flattened bindings (`cell_z`,
+# `cell_shifted`, `cell`), and the emit trace must promote every definition and
+# reference to the current outer index.
+@slic c3_plate_ncp(mu::real, sigma::real) = begin
+    z ~ std_normal()
+    shifted = mu + sigma * z
+    return shifted
+end
+c3_plate_submodel_model = @slic (;y=randn(6), mu0=0.5) begin
+    sigma ~ normal(0.0, 1.0; lower=0.0)
+    theta ~ plate(y; outer=(6,)) do yi
+        cell ~ c3_plate_ncp(mu0, sigma)
+        yi ~ normal(cell, sigma)
+        cell
+    end
+end
+
+# The same promotion must preserve a vector-valued submodel cell: the internal
+# vector parameter and returned value collect as matrices and are indexed by
+# column in the emitted loop.
+@slic c3_plate_vector_ncp(k::int) = begin
+    z::vector[k] ~ std_normal()
+    return z
+end
+c3_plate_vector_submodel_model = @slic (;n=3, k=2) begin
+    theta ~ plate(; outer=(n,)) do _i
+        cell ~ c3_plate_vector_ncp(k)
+        cell
+    end
+end
+
+# Folded `lwchee` regression: one public model exercises the registered
+# transform builtin, compiler-certified range fill, symbolic TP loop, and the
+# compile-time RaggedVector representation together.
+c3_ragged_simplex_model = @slic (;K=[2, 3, 4], y=0.3) begin
+    p::simplex[K] ~ flat()
+    y ~ normal(sum(p[1]), 0.1)
+end
+
 @testset "slic: compiler-injected for-loop + range fresh-result fills (case-3 C.1/C.2)" begin
     # C.1 PARAM: for-loop fresh fill from a parameter → loop+decl+bind in transformed parameters.
     forfill_param = @slic (;y=randn(3)) begin
@@ -1614,6 +1655,47 @@ end
         @test occursin("vector[n] routed_plate_prior", gq)
         @test occursin("for(routed_plate_i in 1:n)", gq)
         @test occursin("routed_plate_prior[routed_plate_i] = normal_rng", gq)
+    end
+end
+
+@testset "slic: public plate promotes called-submodel bindings" begin
+    @test transpiles(c3_plate_submodel_model)
+    @test compiles(c3_plate_submodel_model)
+    code = stan_code(c3_plate_submodel_model)
+
+    let parameters = stan_block(code, "parameters")
+        @test occursin("vector[6] cell_z", parameters)
+        @test occursin("real<lower=0.0> sigma", parameters)
+    end
+    let tp = stan_block(code, "transformed parameters")
+        @test occursin(r"cell_shifted\[plate_i__pl_\d+\]\s*=", tp)
+        @test occursin(r"cell\[plate_i__pl_\d+\]\s*=", tp)
+        @test occursin(r"theta\[plate_i__pl_\d+\]\s*=\s*cell\[plate_i__pl_\d+\]", tp)
+    end
+    let model_block = stan_block(code, "model")
+        @test occursin(r"cell_z\[plate_i__pl_\d+\]\s*~\s*std_normal", model_block)
+        @test occursin(r"y\[plate_i__pl_\d+\]\s*~\s*normal\(cell\[plate_i__pl_\d+\]", model_block)
+    end
+
+    @test transpiles(c3_plate_vector_submodel_model)
+    @test compiles(c3_plate_vector_submodel_model)
+    vector_code = stan_code(c3_plate_vector_submodel_model)
+    @test occursin("matrix[k, n] cell_z", stan_block(vector_code, "parameters"))
+    @test occursin(r"cell_z\[:, plate_i__pl_\d+\]\s*~\s*std_normal", stan_block(vector_code, "model"))
+    @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*cell\[:, plate_i__pl_\d+\]", stan_block(vector_code, "transformed parameters"))
+end
+
+@testset "slic: ragged simplex uses TP-inlined constraint transforms" begin
+    @test transpiles(c3_ragged_simplex_model)
+    @test compiles(c3_ragged_simplex_model)
+    code = stan_code(c3_ragged_simplex_model)
+
+    @test occursin(r"vector\[sum\(jbroadcasted_sub", stan_block(code, "parameters"))
+    let tp = stan_block(code, "transformed parameters")
+        @test occursin("simplex_jacobian", tp)
+        @test occursin("for(", tp)
+        @test !occursin("tuple(", tp)
+        @test !occursin(r"array\[.*\]\s+int", tp)
     end
 end
 
