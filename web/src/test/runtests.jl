@@ -951,6 +951,83 @@ end
     @test transpiles(m_concrete)
 end
 
+# --- regression: compiler-injected fresh-result slice-fills (case-3 layers 2+3) ---
+# An `@inline` UDF that declares its own result vector and fills it element/slice-wise
+# (`out::vector[n]; out[i]=…; return out`) injects a bare declaration + those fills into
+# the *model* body. They reach `distribute!` wrapped as NON-void StanExprs, which the
+# generic method rejected. `forward!` now PROMOTES the base var's qual across the fills
+# (`_promote_qual`); `backward!(::StanExpr{<:DeclExpr})` stays INERT so the promoted qual
+# survives; `distribute!` routes the decl + every fill to ONE block by that finalized qual
+# (`_qual_blocks`). The read-only gate still rejects filling a SAMPLED parameter. Commit
+# e52344e (todos 168mbms + 1fncg6j). GATE ON compiles() — transpiles()/stan_code alone
+# accept invalid Stan (primer §@deffun-gotchas); the original piece was only verified with
+# stan_code (codegen), never stanc.
+@deffun @inline c3_freshfill(x::vector[n])::vector[n] = begin
+    out::vector[n]
+    out[1] = x[1] * x[1]
+    out[2] = x[2] + x[3]
+    return out
+end
+@deffun @inline c3_mapinto!(out::vector[n], f, x::vector[n])::vector[n] = begin
+    for i in 1:n
+        out[i] = f(x[i])
+    end
+    return out
+end
+@deffun c3_softplus(x::real)::real = log1p(exp(x))
+@deffun c3_build_eta(alpha::real, beta::vector[k], X::matrix[n, k])::vector[n] = begin
+    eta = rep_vector(alpha, n)
+    smooth = rep_vector(0., n)
+    c3_mapinto!(smooth, c3_softplus, eta)
+    return eta + smooth
+end
+@deffun @inline c3_set_first!(buf::vector[n])::vector[n] = begin
+    buf[1] = 42.
+    return buf
+end
+
+@testset "slic: compiler-injected fresh-result slice-fills (case-3)" begin
+    # PARAM input: fresh result filled from a parameter → transformed parameters.
+    param_model = @slic (;y=randn(3)) begin
+        x ~ std_normal(;n=3)
+        r = c3_freshfill(x)
+        y ~ normal(r, 1.0)
+    end
+    @test transpiles(param_model)
+    @test compiles(param_model)
+    @test occursin(r"transformed parameters\s*\{[^}]*\bout__il_\d+", stan_code(param_model))
+
+    # DATA input: fresh result filled from data → transformed data.
+    data_model = @slic (;xd=randn(3)) begin
+        r = c3_freshfill(xd)
+        p ~ std_normal()
+    end
+    @test transpiles(data_model)
+    @test compiles(data_model)
+    @test occursin(r"transformed data\s*\{[^}]*\bout__il_\d+", stan_code(data_model))
+
+    # regression: inline UDF with a for-loop fill that USES the size param `n`
+    # (layer-0 inline size resolution) still transpiles AND compiles.
+    build_eta_model = @slic (;y=randn(20), X=randn(20,3)) begin
+        alpha ~ std_normal()
+        beta  ~ std_normal(;n=3)
+        sigma ~ std_normal(;lower=0.)
+        mu    = c3_build_eta(alpha, beta, X)
+        y     ~ normal(mu, sigma)
+    end
+    @test transpiles(build_eta_model)
+    @test compiles(build_eta_model)
+
+    # gate: inlining a mutating helper ONTO a sampled parameter must still be rejected
+    # (Stan parameters are read-only in the model block).
+    reject_model = @slic (;y=randn(4)) begin
+        theta ~ std_normal(;n=4)
+        s = c3_set_first!(theta)
+        y ~ normal(s, 1.0)
+    end
+    @test !transpiles(reject_model; re=false)
+end
+
 # === posteriordb.jl tests ===
 
 # Generate per-model test functions for PosteriorDB
