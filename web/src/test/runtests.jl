@@ -1568,6 +1568,45 @@ c3_plate_vector_submodel_model = @slic (;n=3, k=2) begin
     end
 end
 
+# N-dimensional plate regressions: preserve the shipped dense 1-D shapes,
+# route one compiler-owned loop per outer axis, and keep logical cell dimensions
+# first while Stan array prefixes carry outer axes beyond the vector/matrix core.
+c3_plate_outer_int_model = @slic (;y=randn(4)) begin
+    theta ~ plate(y; outer=4) do yi
+        z ~ normal(0.0, 1.0)
+        yi ~ normal(z, 1.0)
+        z
+    end
+end
+c3_plate_outer_2d_scalar_model = @slic (;y=randn(2, 3)) begin
+    theta ~ plate(y; outer=(2, 3)) do yi
+        z ~ normal(0.0, 1.0)
+        yi ~ normal(z, 1.0)
+        z
+    end
+end
+c3_plate_outer_2d_vector_model = @slic (;y=randn(2, 3), k=4) begin
+    theta ~ plate(y; outer=(2, 3)) do yi
+        z::vector[k] ~ std_normal()
+        yi ~ normal(z[1], 1.0)
+        z
+    end
+end
+c3_plate_outer_3d_scalar_model = @slic (;y=randn(2, 3)) begin
+    theta ~ plate(; outer=(2, 3, 4)) do i, j, k
+        z ~ normal(0.0, 1.0)
+        y[i, j] ~ normal(z, 1.0)
+        z + 0.0 * k
+    end
+end
+c3_plate_outer_4d_scalar_model = @slic (;y=randn(2, 3)) begin
+    theta ~ plate(; outer=(2, 3, 4, 5)) do i, j, k, l
+        z ~ normal(0.0, 1.0)
+        y[i, j] ~ normal(z, 1.0)
+        z + 0.0 * k + 0.0 * l
+    end
+end
+
 # Folded `lwchee` regression: one public model exercises the registered
 # transform builtin, compiler-certified range fill, symbolic TP loop, and the
 # compile-time RaggedVector representation together.
@@ -1694,6 +1733,66 @@ end
     @test occursin("matrix[k, n] cell_z", stan_block(vector_code, "parameters"))
     @test occursin(r"cell_z\[:, plate_i__pl_\d+\]\s*~\s*std_normal", stan_block(vector_code, "model"))
     @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*cell\[:, plate_i__pl_\d+\]", stan_block(vector_code, "transformed parameters"))
+end
+
+@testset "slic: public plate emits N-dimensional outer loops" begin
+    @test transpiles(c3_plate_outer_int_model)
+    @test compiles(c3_plate_outer_int_model)
+    int_code = stan_code(c3_plate_outer_int_model)
+    @test occursin("vector[4] z", stan_block(int_code, "parameters"))
+    @test occursin("vector[4] theta", stan_block(int_code, "transformed parameters"))
+    @test occursin(r"for\(plate_i__pl_\d+ in 1:4\)", stan_block(int_code, "model"))
+
+    @test transpiles(c3_plate_outer_2d_scalar_model)
+    @test compiles(c3_plate_outer_2d_scalar_model)
+    scalar2_code = stan_code(c3_plate_outer_2d_scalar_model)
+    @test occursin("matrix[2, 3] z", stan_block(scalar2_code, "parameters"))
+    @test occursin("matrix[2, 3] theta", stan_block(scalar2_code, "transformed parameters"))
+    let model_block = stan_block(scalar2_code, "model")
+        @test occursin(r"for\(plate_i1__pl_\d+ in 1:2\)", model_block)
+        @test occursin(r"for\(plate_i2__pl_\d+ in 1:3\)", model_block)
+        @test occursin(r"y\[plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal", model_block)
+        @test occursin(r"z\[plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal", model_block)
+    end
+
+    @test transpiles(c3_plate_outer_2d_vector_model)
+    @test compiles(c3_plate_outer_2d_vector_model)
+    vector2_code = stan_code(c3_plate_outer_2d_vector_model)
+    @test occursin("array[3] matrix[k, 2] z", stan_block(vector2_code, "parameters"))
+    @test occursin("array[3] matrix[k, 2] theta", stan_block(vector2_code, "transformed parameters"))
+    @test occursin(
+        r"z\[plate_i2__pl_\d+, :, plate_i1__pl_\d+\]\s*~\s*std_normal",
+        stan_block(vector2_code, "model"),
+    )
+
+    @test transpiles(c3_plate_outer_3d_scalar_model)
+    @test compiles(c3_plate_outer_3d_scalar_model)
+    scalar3_code = stan_code(c3_plate_outer_3d_scalar_model)
+    @test occursin("array[4] matrix[2, 3] z", stan_block(scalar3_code, "parameters"))
+    @test occursin(
+        r"z\[plate_i3__pl_\d+, plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal",
+        stan_block(scalar3_code, "model"),
+    )
+
+    @test transpiles(c3_plate_outer_4d_scalar_model)
+    @test compiles(c3_plate_outer_4d_scalar_model)
+    scalar4_code = stan_code(c3_plate_outer_4d_scalar_model)
+    @test occursin("array[4, 5] matrix[2, 3] z", stan_block(scalar4_code, "parameters"))
+    @test occursin(
+        r"z\[plate_i3__pl_\d+, plate_i4__pl_\d+, plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal",
+        stan_block(scalar4_code, "model"),
+    )
+
+    @test !transpiles(@slic (;) begin
+        theta ~ plate(; outer=()) do i
+            i
+        end
+    end; re=false)
+    @test !transpiles(@slic (;) begin
+        theta ~ plate(; outer=(2, 3)) do i
+            i
+        end
+    end; re=false)
 end
 
 @testset "slic: ragged simplex uses TP-inlined constraint transforms" begin
