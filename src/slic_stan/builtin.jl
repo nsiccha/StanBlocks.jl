@@ -73,6 +73,7 @@ end
     wishart_cholesky_lpdf
 
     vector_std_normal_rng
+    vector_exponential_rng
     log1m
     to_vector
     to_row_vector
