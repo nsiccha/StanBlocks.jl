@@ -42,14 +42,54 @@ backward!(x::Union{Tuple,NamedTuple,Vector,Base.Pairs}; info) = map(backward!(;i
 backward!(x::Union{String,Number,LineNumberNode,Symbol,Nothing,Colon}; info) = x
 backward!(x::CanonicalExpr; info) = remake(x, backward!(x.args; info)...)
 backward!(x::BlockExpr; info) = remake(x, reverse(backward!.(reverse(x.args); info))...)
-backward!(x::AssignmentExpr; info) = if lqual(info[expr(x.args[1])]) == :affects_likelihood
-    lhs, rhs = x.args
-    remake(x, info[expr(x.args[1])], backward!(rhs; info))
-elseif qual(x.args[1]) == :parameter
-    lhs, rhs = x.args
-    remake(x, remake(lhs, qual=:quantities), rhs)
-else
-    x
+# The LHS of a compiler-injected slice/element fill (`out[a:b] = rhs`, hoisted
+# from an inlined mutating helper or a plate via `_slic_inline_pending`) is a
+# getindex expr, not a bare Symbol — but every `info` key is a Symbol. Resolve
+# the BASE variable being (partially) filled, "coarse-grained": discard *which*
+# elements are written and treat the whole base var as touched. A plain Symbol
+# LHS resolves to itself (unchanged behaviour). Assignment-LHS canonicals are
+# always getindex (a user-written non-Symbol LHS is rejected pre-`forward!`), so
+# descending `args[1]` reaches the base Symbol.
+_base_lhs_symbol(x::StanExpr) = _base_lhs_symbol(expr(x))
+_base_lhs_symbol(x::Symbol) = x
+_base_lhs_symbol(x::CanonicalExpr) = _base_lhs_symbol(x.args[1])
+# The declared Symbol of a compiler-injected fresh-result declaration `out::T`
+# (a `DeclExpr` = single-arg `CanonicalExprV{:(::)}` whose one arg is the typed
+# symbol, itself a `StanExpr{Symbol}` post-`forward!`).
+_decl_lhs_symbol(x::DeclExpr) = _base_lhs_symbol(x.args[1])
+# True iff `x` was registered via an explicit `DeclExpr` (`forward!(::DeclExpr)`
+# sets `fresh_decl=true`). Distinguishes a fresh-declared local/derived var — into
+# which a compiler-injected slice-fill IS legal even at `:parameter` qual (it's a
+# transformed parameter under construction) — from a SAMPLED Stan parameter, which
+# is read-only and must reject the fill. `info(::StanType)` is the type-info
+# accessor (kept out of the kwarg-`info` methods below to avoid the name clash).
+_is_fresh_decl(x::StanExpr) = get(info(type(x)), :fresh_decl, false)
+backward!(x::AssignmentExpr; info) = begin
+    lhs = x.args[1]
+    key = _base_lhs_symbol(lhs)
+    slice = !(expr(lhs) isa Symbol)   # getindex LHS ⇒ compiler-injected partial fill
+    if slice
+        key in keys(info) || error(
+            "Compiler-generated slice-fill of `", key, "[…]` but `", key, "` is not declared ",
+            "in model scope — the inlining/plate emitter must register the base variable first."
+        )
+        (qual(info[key]) == :parameter && !_is_fresh_decl(info[key])) && error(
+            "Cannot assign to a slice/element of parameter `", key, "` in the model block — Stan ",
+            "parameters are read-only there (this typically comes from inlining a mutating helper ",
+            "onto a parameter; fill a local/derived vector instead)."
+        )
+    end
+    if lqual(info[key]) == :affects_likelihood
+        lhs2, rhs = x.args
+        # Symbol LHS: swap in the updated info entry. Slice LHS: keep the getindex
+        # LHS verbatim so the emitter renders `out[a:b] = rhs`.
+        remake(x, slice ? lhs2 : info[key], backward!(rhs; info))
+    elseif qual(lhs) == :parameter
+        lhs2, rhs = x.args
+        remake(x, remake(lhs2, qual=:quantities), rhs)
+    else
+        x
+    end
 end
 backward!(x::SamplingExpr{<:StanExpr{Symbol}}; info) = if qual(x.args[1]) == :data || lqual(info[expr(x.args[1])]) == :affects_likelihood
     lhs, rhs = x.args
@@ -65,6 +105,29 @@ backward!(x::SamplingExpr; info) = begin
 end
 backward!(x::ReturnExpr; info) = x
 backward!(x::DocumentExpr; info) = remake(x, backward!.(x.args; info)...)
+# A compiler-injected fresh-result declaration `out::T` must stay INERT here.
+# The generic `StanExpr`/`StanExpr{Symbol}` methods below would descend into the
+# decl's inner typed symbol and rebind `info[out]` to the decl's *stale* entry —
+# clobbering the qual that `forward!` promoted across the fills back to the
+# declaration-time `:undefined`, which then mis-routes the whole variable to
+# generated quantities. Leave the decl unchanged and the promoted `info` entry
+# intact; downstream uses (e.g. the injected `r = out`) still set its `lqual`.
+backward!(x::StanExpr{<:DeclExpr}; info) = x
+# A compiler-injected `for` loop: the generic method would descend into the head's
+# raw-Symbol index assignment and into body statements that reference the loop
+# index, but `forward!(::ForExpr)` POPS the index after tracing, so it's absent from
+# `info` here. Re-scope the index, `backward!` only the body (the head is structural
+# `i = 1:n`), then pop — mirroring `forward!(::ForExpr)`. The base vars filled in the
+# body keep their `forward!`-promoted qual (this doesn't touch them).
+backward!(x::StanExpr{<:ForExpr}; info) = begin
+    fe = expr(x)
+    head, body = fe.args
+    idx = head.args[1]
+    info[idx] = StanExpr(idx, StanType(types.int; qual=:data))   # :data — see forward!(::ForExpr)
+    rv = StanExpr(remake(fe, head, backward!(body; info)), type(x))
+    pop!(info, idx)
+    rv
+end
 backward!(x::StanExpr; info) = StanExpr(backward!(expr(x); info), backward!(type(x); info))
 backward!(x::StanExpr{Symbol}; info) = info[expr(x)] = remake(x; lqual=:affects_likelihood)
 backward!(x::StanType; info) = remake(x; lqual=:affects_likelihood)
@@ -119,12 +182,44 @@ distribution_blocks(x::StanExpr; info) = if center_type(x) === types.void
 else
     error("distribution_blocks not defined for non-void StanExpr at statement position: $x")
 end
+# Compiler-injected fresh-result declaration `out::T` and its slice/element fills
+# `out[i] = rhs` reach `distribute!` wrapped as NON-void StanExprs (the decl carries
+# its declared center type; a fill carries `anything`), so the generic method above
+# would error. Route BOTH by the base/declared variable's FINALIZED qual in `info`
+# — promoted across every fill in `forward!` and preserved through `backward!` — so
+# the declaration and all fills land together in one block (coarse-grained). The
+# wrapper's own qual is the stale declaration-time `:undefined`; ignore it.
+_qual_blocks(q) = q == :data ? (:transformed_data,) :
+    q == :parameter ? (:transformed_parameters,) : (:generated_quantities,)
+distribution_blocks(x::StanExpr{<:DeclExpr}; info) = _qual_blocks(qual(info[_decl_lhs_symbol(expr(x))]))
+distribution_blocks(x::StanExpr{<:AssignmentExpr}; info) = _qual_blocks(qual(info[_base_lhs_symbol(expr(x))]))
+# A compiler-injected `for` loop whose body is fills (Feature-1 ragged-simplex:
+# `for(g in 1:G) p_flat[lo:hi] = simplex_jacobian(...)`, G data-sized so it can't
+# unroll). Route the WHOLE loop by the coarse (max) qual over the base vars its body
+# fills — the same coarse-graining as a bare fill, one level into the body. The loop
+# emits intact (`show(::ForExpr)`) into the chosen block.
+_fill_base(x::StanExpr) = _fill_base(expr(x))
+_fill_base(x::AssignmentExpr) = _base_lhs_symbol(x.args[1])
+_fill_base(x) = nothing
+_for_body_qual(fe::ForExpr, info) = begin
+    q = :undefined
+    for stmt in fe.args[2].args
+        b = _fill_base(stmt)
+        (b isa Symbol && b in keys(info)) && (q = _promote_qual(q, qual(info[b])))
+    end
+    q
+end
+distribution_blocks(x::StanExpr{<:ForExpr}; info) = _qual_blocks(_for_body_qual(expr(x), info))
 
 DeclarativeBlock = Union{DataBlock,ParametersBlock}
 ImperativeBlock = Union{FunctionsBlock,TransformedDataBlock,TransformedParametersBlock,ModelBlock,GeneratedQuantitiesBlock}
 fetch_data!(;info) = x->fetch_data!(x; info)
 fetch_data!(x::Union{Tuple,NamedTuple,Vector}; info) = map(fetch_data!(;info), x)
-fetch_data!(x::Union{Function,String}; info) = nothing 
+fetch_data!(x::Union{Function,String}; info) = nothing
+# `distribute!` skips LineNumberNodes/Nothing at the block level, but they also live
+# INSIDE a compiler-injected loop body (`@inline` line info), which
+# `fetch_data!(::StanExpr{<:ForExpr})` recurses into — skip them here too.
+fetch_data!(x::Union{LineNumberNode,Nothing}; info) = nothing
 fetch_data!(x::StanExpr{<:Union{Number,String,Missing}}; info) = nothing 
 fetch_data!(x::StanType; info) = fetch_data!(stan_size(x); info)
 fetch_data!(x::StanExpr{Symbol}; info) = begin
@@ -133,6 +228,15 @@ end
 fetch_data!(x::StanExpr{<:Function}; info) = nothing
 fetch_data!(x::StanExpr{<:DataType}; info) = nothing
 fetch_data!(x::StanExpr{<:CanonicalExpr}; info) = fetch_data!((type(x), expr(x)); info)
+# A compiler-injected `for` loop: walk the range bound and body for data deps, but
+# SKIP the head's raw-Symbol loop index — it isn't data, and the generic
+# `fetch_data!(::Symbol)` fallback errors on it. Body references to the index are
+# `StanExpr{Symbol}` (valueless → no-op), so only the head's bare index needs skipping.
+fetch_data!(x::StanExpr{<:ForExpr}; info) = begin
+    fe = expr(x)
+    fetch_data!(fe.args[1].args[2]; info)   # the range bound (e.g. `1:n`), not the index Symbol
+    fetch_data!(fe.args[2]; info)           # the loop body
+end
 fetch_data!(x::CanonicalExpr; info) = begin
     fetch_functions!(x; info=block(info, :functions).content)
     fetch_data!(x.args; info)

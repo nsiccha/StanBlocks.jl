@@ -377,7 +377,23 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     ]...; value=missing))
     rv
 end
-forward!(x::AssignmentExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+# Fallback: a compiler-injected slice/element fill `out[i] = rhs` (getindex LHS —
+# Symbol LHS is fully handled by the two methods above; a user-written non-Symbol
+# LHS is rejected pre-`forward!`). Forward the args, then PROMOTE the base
+# variable's qual by the rhs qual. This is what lets `distribute!` route the whole
+# coarse-grained variable — its bare declaration + every fill — to ONE block:
+# `info[base].qual` finalizes to `max` over the fills' rhs quals. `:undefined` (the
+# bare decl's default, before any fill) is bottom; the reals order
+# `data < parameter < quantities` (lexicographically AND semantically).
+_promote_qual(cur::Symbol, new::Symbol) =
+    cur === :undefined ? new : (new === :undefined ? cur : max(cur, new))
+forward!(x::AssignmentExpr; info) = begin
+    fwd = stan_expr(remake(x, forward!(x.args; info)...))
+    lhs, rhs = expr(fwd).args
+    k = _base_lhs_symbol(lhs)   # descends the getindex LHS to its base Symbol
+    k in keys(info) && (info[k] = remake(info[k]; qual=_promote_qual(qual(info[k]), qual(rhs))))
+    fwd
+end
 forward!(x::SamplingExpr{Symbol}; info) = begin
     name, rhs = x.args
     rhs = forward!(rhs; info)::Union{StanExpr,SlicModel}
@@ -503,7 +519,11 @@ forward!(x::DeclExpr; info) = begin
     end
     @assert ct isa Symbol
     ct = gettype(ct)
-    t = StanType(ct, forward!.(s; info))
+    # Mark the var as an explicit fresh declaration (a local/derived var, NOT a
+    # sampled parameter). A compiler-injected slice-fill onto a `:parameter`-qual
+    # var is legal iff the var is fresh-declared like this (a transformed parameter
+    # being constructed); the read-only-parameter gate in `backward!` keys on this.
+    t = remake(StanType(ct, forward!.(s; info)); fresh_decl=true)
     rv = StanExpr(lhs, t)
     lhs isa Symbol || return StanExpr(expr(forward!(lhs; info)), t)
     info[lhs] = rv 
@@ -516,7 +536,13 @@ forward!(x::ForExpr; info) = begin
     @assert _is_block_canonical(body)
     idx = head.args[1]
     @assert idx isa Symbol
-    info[idx] = StanExpr(idx, StanType(types.int))
+    # `:data`-qualify the loop index: it's a deterministic integer. Without an
+    # explicit qual it defaults to `:undefined`, which is lexicographically the
+    # LARGEST qual symbol and so poisons `stan_expr`'s `maximum(qual, args)` for any
+    # body expression referencing the index (`x[i]` → `max(:parameter, :undefined)`
+    # → `:undefined`), breaking qual-promotion of a model-body loop's fill target.
+    # Irrelevant to forward-only UDF bodies (no qual routing), so no regression there.
+    info[idx] = StanExpr(idx, StanType(types.int; qual=:data))
     idx_range = forward!(head.args[2]; info)
     body = forward!(body; info)
     pop!(info, idx)

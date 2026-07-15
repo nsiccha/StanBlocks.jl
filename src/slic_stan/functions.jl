@@ -523,6 +523,10 @@ begin
         f
     end
     _lpxf_inline_fname(inner) = _inline_fname(inner, "lpxf")
+    # Does AST `x` mention symbol `s` anywhere? Decides which size-param bindings
+    # an inline body actually needs (so unused ones aren't prepended).
+    _ast_mentions(x, s::Symbol) = x isa Symbol ? x === s :
+        (x isa Expr ? any(a -> _ast_mentions(a, s), x.args) : false)
     deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, _shim_kwarg_specs=nothing, def_mod=nothing) = if x.head == :block
         seen_lpxf_bases = Set{Symbol}()
         for arg in x.args
@@ -768,6 +772,29 @@ begin
         # for substitution; the canonicalized + return-wrapped form is only
         # needed for the regular fundef path.
         original_body = body
+        # Inline UDFs re-trace their body in the CALLER's scope, where the size
+        # names (`n` in `x::vector[n]`) — which the non-inline path binds via the
+        # emitted `int n = dims(x)[i];` preamble — are undefined. Prepend explicit
+        # `n = dims(x)[i]` bindings so an inline body's `out::vector[n]` (fresh
+        # result) resolves. Only for dims the body actually uses, once per dim
+        # (first arg wins); non-token args only (token dims are dispatch glue).
+        # The inline rename machinery turns each into a fresh local, so these
+        # never leak into the caller's scope.
+        inline_body_ast = original_body
+        if !ismissing(original_body) && Meta.isexpr(original_body, :block)
+            _size_binds = Any[]
+            _seen_dims = Set{Symbol}()
+            for (an, at, tok) in zip(arg_names, arg_types, is_token)
+                tok && continue
+                for (i, dn) in enumerate(at.args[2:end])
+                    (_is_symbol(dn) && dn !== :(_) && !(dn in arg_names) && !(dn in _seen_dims)) || continue
+                    _ast_mentions(original_body, dn) || continue
+                    push!(_seen_dims, dn)
+                    push!(_size_binds, :($dn = dims($an)[$i]))
+                end
+            end
+            isempty(_size_binds) || (inline_body_ast = Expr(:block, _size_binds..., original_body.args...))
+        end
         if !ismissing(body)
             @assert Meta.isexpr(body, :block) "@deffun: function body must be a `begin ... end` block, got `$body`."
             _reject_udf_forms!(body, f)
@@ -845,7 +872,7 @@ begin
             push!(stmts, :($stan.inline_body($xexpr) = (
                 arg_names = $arg_names_tuple,
                 vararg_name = $vararg_qn,
-                body = $(QuoteNode(original_body)),
+                body = $(QuoteNode(inline_body_ast)),
                 kwargs = $kwarg_meta,
                 source = $source,
             )))
