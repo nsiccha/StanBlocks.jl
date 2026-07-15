@@ -581,13 +581,31 @@ end
 # cell fresh vars (⇒ `vector[N]` decls); no vararg params; the body must end in
 # a value expression; fresh/param names must not collide with function names
 # (uniform symbol substitution).
-_plate_stmt_lhs(s) =
-    if s isa Expr && s.head === :call && length(s.args) >= 3 && s.args[1] === :~
+# (name, per_cell_type) for a plate body statement, or nothing. `z::T ~ dist` /
+# `z::T = expr` ⇒ (z, T); `t ~ dist` / `w = expr` ⇒ (t, nothing).
+_plate_fresh_info(s) = begin
+    lhs = if s isa Expr && s.head === :call && length(s.args) >= 3 && s.args[1] === :~
         s.args[2]                         # `lhs ~ dist`  (raw `~` ⇒ Expr(:call, :~, lhs, rhs))
     elseif s isa Expr && s.head === :(=)
         s.args[1]                         # `lhs = rhs`
     else
-        nothing
+        return nothing
+    end
+    lhs isa Symbol && return (lhs, nothing)
+    (lhs isa Expr && lhs.head === :(::) && lhs.args[1] isa Symbol) && return (lhs.args[1], lhs.args[2])
+    nothing
+end
+# Strip a typed-LHS annotation on a plate body stmt's LHS: `z::T ~ dist` ⇒
+# `z ~ dist` (the per-cell type is captured separately for the outer decl; the
+# indexed form `z[idx]`/`z[:,idx]` carries its type from the decl).
+_strip_plate_decl(s) =
+    if s isa Expr && s.head === :call && length(s.args) >= 3 && s.args[1] === :~ &&
+            s.args[2] isa Expr && s.args[2].head === :(::)
+        Expr(:call, :~, s.args[2].args[1], s.args[3:end]...)
+    elseif s isa Expr && s.head === :(=) && s.args[1] isa Expr && s.args[1].head === :(::)
+        Expr(:(=), s.args[1].args[1], s.args[2:end]...)
+    else
+        s
     end
 # Uniform symbol substitution over a raw body AST. Only names in `m` are
 # rewritten; dist/function names + captures are absent from `m`, so they pass
@@ -596,10 +614,39 @@ _subst_syms(x, m) = x
 _subst_syms(x::Symbol, m) = get(m, x, x)
 _subst_syms(x::Expr, m) = Expr(x.head, Any[_subst_syms(a, m) for a in x.args]...)
 
-forward!(x::SamplingExpr{Symbol,<:CanonicalExprV{:plate}}; info) =
-    _forward_plate!(x.args[1], x.args[2]; info)
+# `vector[K]` per-cell size K, from a raw `:ref` (body decls) or canonical
+# `getindex` (typed plate LHS) type expr; nothing for scalar/unsupported.
+_plate_vector_size(ct) =
+    if ct isa Expr && ct.head === :ref && length(ct.args) == 2 && ct.args[1] === :vector
+        ct.args[2]
+    elseif ct isa CanonicalExprV{:getindex} && length(ct.args) == 2 && ct.args[1] === :vector
+        ct.args[2]
+    else
+        nothing
+    end
+# Outer collection decl + per-cell accessor for a var of per-cell type `ct` over
+# N cells. Scalar (ct===nothing) ⇒ `vector[N]` / `f[idx]`; `vector[K]` ⇒
+# `matrix[K, N]` / `f[:, idx]` (a column per cell — F's routing keys on the base
+# symbol, so a column-slice sample/fill routes like a single-index one).
+_plate_outer_decl(f, ct, N) = begin
+    ct === nothing && return :($f :: vector[$N])
+    K = _plate_vector_size(ct)
+    K === nothing && error("plate: unsupported per-cell type `$ct` for `$f` — scalar or `vector[K]` only (MVP).")
+    :($f :: matrix[$K, $N])
+end
+_plate_cell_index(f, ct, idx) = ct === nothing ? :($f[$idx]) : :($f[:, $idx])
 
-_forward_plate!(rv::Symbol, plate; info) = begin
+forward!(x::SamplingExpr{Symbol,<:CanonicalExprV{:plate}}; info) =
+    _forward_plate!(x.args[1], nothing, x.args[2]; info)
+# Typed-LHS plate result `b::vector[K] ~ plate(…)` ⇒ vector cell output collected
+# as `matrix[K, N]`. The DeclExpr LHS carries the per-cell result type.
+forward!(x::SamplingExpr{<:DeclExpr,<:CanonicalExprV{:plate}}; info) = begin
+    decl = x.args[1]
+    (decl.args[1] isa Symbol) || error("plate: typed-LHS result must name a Symbol, got `$(decl.args[1])`.")
+    _forward_plate!(decl.args[1], decl.args[2], x.args[2]; info)
+end
+
+_forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     lambda = plate.args[1]
     lambda isa CanonicalExprV{:->} || error(
         "plate: `$rv ~ plate(…)` requires a `do … end` block, got `$(typeof(lambda))`."
@@ -644,27 +691,32 @@ _forward_plate!(rv::Symbol, plate; info) = begin
     stmts = Any[s for s in body_raw.args if !(s isa LineNumberNode)]
     isempty(stmts) && error("plate: empty do-block body.")
     body_stmts, ret_expr = stmts[1:end-1], stmts[end]
-    _plate_stmt_lhs(ret_expr) === nothing || error(
+    _plate_fresh_info(ret_expr) === nothing || error(
         "plate: the do-block must END with a cell-output VALUE expression, not a `~`/`=` statement."
     )
 
-    fresh = Symbol[]
+    # Fresh per-cell vars WITH their per-cell types (scalar or `vector[K]`).
+    fresh = Tuple{Symbol,Any}[]
     for s in body_stmts
-        lhs = _plate_stmt_lhs(s)
-        (lhs isa Symbol) && !(lhs in params) && !(lhs in fresh) && push!(fresh, lhs)
+        fi = _plate_fresh_info(s)
+        fi === nothing && continue
+        name, ct = fi
+        (name in params || any(fc -> fc[1] === name, fresh)) && continue
+        push!(fresh, (name, ct))
     end
-    for f in fresh
-        subst[f] = :($f[$idx])                           # fresh var ⇒ indexed into its outer array
+    for (f, ct) in fresh
+        subst[f] = _plate_cell_index(f, ct, idx)         # scalar ⇒ f[idx]; vector[K] ⇒ f[:, idx]
     end
 
-    loop_body = Any[_subst_syms(s, subst) for s in body_stmts]
-    push!(loop_body, :($rv[$idx] = $(_subst_syms(ret_expr, subst))))  # indexed return fill
+    # Strip typed-LHS annotations, then substitute names ⇒ per-cell accessors.
+    loop_body = Any[_subst_syms(_strip_plate_decl(s), subst) for s in body_stmts]
+    push!(loop_body, :($(_plate_cell_index(rv, rv_ct, idx)) = $(_subst_syms(ret_expr, subst))))
 
     injected = Any[]
-    for f in fresh
-        push!(injected, :($f :: vector[$N]))             # scalar-per-cell (MVP)
+    for (f, ct) in fresh
+        push!(injected, _plate_outer_decl(f, ct, N))
     end
-    push!(injected, :($rv :: vector[$N]))
+    push!(injected, _plate_outer_decl(rv, rv_ct, N))
     # NB: build the iteration spec as `Expr(:(=), idx, 1:N)` — a hand-built
     # `Expr(:for, :(idx in 1:N), …)` yields an `:in` CALL spec, not the `:(=)`
     # form `forward!(::ForExpr)` asserts (a quoted `for` auto-normalizes it).
