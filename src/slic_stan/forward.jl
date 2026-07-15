@@ -474,7 +474,6 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     if _is_native_constrained_ct(ct_resolved) && any(sz -> stan_ndim(type(sz)) > 0, sizes_forwarded)
         return _forward_ragged_constrained!(name, ct, collect(sizes), rhs_raw; info)
     end
-    base_lhs_type = StanType(ct_resolved, sizes_forwarded)
     _is_canonical_expr(rhs_raw) || error(
         "Typed-LHS sampling `$name::$(pretty_type_expr(type_expr)) ~ rhs` requires rhs to be a distribution call"
     )
@@ -482,6 +481,21 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     args_resolved = collect(forward!(rhs_raw.args; info))
     kwargs_resolved = forward!(rhs_raw.kwargs; info)
     rhs_canonical = CanonicalExpr(head_resolved, args_resolved...; kwargs_resolved...)
+    # Fold the RHS distribution's constraints into the DECLARED type: the
+    # explicit `lower=`/`upper=`/`offset=`/`multiplier=` kwargs AND the
+    # distribution-implied ones (`exponential`→lower=0, `beta`→[0,1], …). The
+    # bare-LHS path does exactly this via `autotype(rhs)` (functions.jl §219);
+    # the typed-LHS path historically built the decl type from center+sizes
+    # ONLY, silently dropping the constraint — so a positive scale
+    # `tau::vector[K] ~ normal(0,1; lower=0)` emitted an UNCONSTRAINED
+    # `vector[K] tau`. Native-constrained centers (simplex/cholesky/…) carry no
+    # bound autokwargs and take no user bounds, so `cons` is empty for them.
+    cons_kw = merge(autokwargs(rhs_canonical), (; kwargs_resolved...))
+    cons = (;[
+        key => getindex(cons_kw, key)
+        for key in (:lower, :upper, :offset, :multiplier) if key in keys(cons_kw)
+    ]...)
+    base_lhs_type = StanType(ct_resolved, sizes_forwarded; cons...)
     cv_args = any(stan.cv, args_resolved)
     qual = cv_args ? :quantities : :parameter
     info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args))
