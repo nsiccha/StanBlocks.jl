@@ -1734,6 +1734,50 @@ end
     end
 end
 
+@testset "slic: ragged ordered constrained parameters" begin
+    Ks = [1, 2, 4]
+    ordered_model = @slic (;Ks, y=0.2) begin
+        p::ordered[Ks] ~ flat()
+        y ~ normal(sum(p[1]), 1.0)
+    end
+    positive_model = @slic (;Ks, y=0.2) begin
+        p::positive_ordered[Ks] ~ flat()
+        y ~ normal(sum(p[1]), 1.0)
+    end
+
+    for (model, jacobian) in (
+        (ordered_model, "ordered_jacobian"),
+        (positive_model, "positive_ordered_jacobian"),
+    )
+        @test transpiles(model)
+        @test compiles(model)
+        code = stan_code(model)
+        @test LogDensityProblems.dimension(instantiate(stan_model(model))) == sum(Ks)
+
+        let parameters = stan_block(code, "parameters")
+            @test occursin(r"\bvector\[[^]]+\] p_free__rc_\d+;", parameters)
+            @test !occursin("p_mem__rc_", parameters)
+        end
+        let tp = stan_block(code, "transformed parameters")
+            @test occursin(r"\bvector\[[^]]+\] p_mem__rc_\d+;", tp)
+            @test occursin(jacobian, tp)
+        end
+        @test !occursin(r"p_free__rc_\d+\s*~", stan_block(code, "model"))
+    end
+
+    informative_prior = @slic (;Ks, y=0.2) begin
+        p::ordered[Ks] ~ normal(0.0, 1.0)
+        y ~ normal(sum(p[1]), 1.0)
+    end
+    @test !transpiles(informative_prior; re=false)
+
+    unsupported_matrix_family = @slic (;Ks, y=0.2) begin
+        p::corr_matrix[Ks] ~ flat()
+        y ~ normal(p[1, 1], 1.0)
+    end
+    @test !transpiles(unsupported_matrix_family; re=false)
+end
+
 # === posteriordb.jl tests ===
 
 # Generate per-model test functions for PosteriorDB

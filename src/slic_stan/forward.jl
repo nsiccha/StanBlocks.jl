@@ -597,11 +597,17 @@ end
 #   • a compile-time ragged pairing bound to `name`
 # All statements are injected via `_slic_inline_pending` (they never enter the raw
 # body, so they bypass `_reject_model_control_flow`) and routed to their blocks by
-# `distribute!`. NOTE (scope decision 1mfltua): the RHS informative prior is NOT yet
-# applied — `p[g] ~ dist` is a `~`-in-loop = the Feature-2 `~`-aware superset, not
-# built. For now the ragged param carries only its uniform base measure (jacobian);
-# `rhs_raw` is intentionally unused pending 1mfltua.
-_forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) =
+# `distribute!`. NOTE (scope decision 1mfltua): only the explicit `flat()` base
+# measure is accepted. Applying an informative RHS would require `p[g] ~ dist`
+# inside the injected loop (the Feature-2 `~`-aware superset), so reject it loudly
+# until that lowering exists rather than silently dropping the user's prior.
+_forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) = begin
+    rhs_is_flat = _is_canonical_expr(rhs_raw) && head(rhs_raw) === :flat &&
+        isempty(rhs_raw.args) && isempty(rhs_raw.kwargs)
+    rhs_is_flat || error(
+        "Ragged constrained `$name::$ct[…]` currently supports only `~ flat()`. ",
+        "Informative RHS priors are not implemented and must not be silently ignored."
+    )
     if ct in (:simplex, :ordered, :positive_ordered)
         _forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info)
     elseif ct in (:cholesky_factor_corr, :cholesky_factor_cov)
@@ -613,6 +619,7 @@ _forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) =
             "`cholesky_factor_corr`, and square `cholesky_factor_cov`."
         )
     end
+end
 
 _forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info) = begin
     length(sizes) == 1 || error(
