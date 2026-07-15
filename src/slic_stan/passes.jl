@@ -47,6 +47,13 @@ stan_expr(x::CanonicalExpr{<:SlicModel}) = begin
     head(x)(x.args...; x.kwargs...)
 end
 
+# A NAMED sub-model function call `f(args...; kwargs...)`. Unlike an anonymous
+# `SlicModel` value, positional args here ARE the inputs (bound by name via the
+# `@slic f(...)=...`-generated call method) — Julia's own dispatch/arity handle
+# them, so there is no `_check_submodel_arg` gate. The call returns a `SlicModel`,
+# which then embeds through the existing `~`-rhs-is-`SlicModel` path (forward.jl).
+stan_expr(x::CanonicalExpr{<:SubmodelFn}) = head(x)(x.args...; x.kwargs...)
+
 backward!(x; info) = error("backward! not defined for value `$x` of type `$(typeof(x))` — no method matches a more specific signature.")
 backward!(;info) = x->backward!(x; info)
 backward!(x::Union{Tuple,NamedTuple,Vector,Base.Pairs}; info) = map(backward!(;info), x)

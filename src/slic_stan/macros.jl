@@ -8,6 +8,11 @@ A leading string literal inside the `begin ... end` block is captured as the mod
 docstring and rendered as a `// ...` comment header in the generated Stan code.
 """
 macro slic(model)
+    # `@slic f(args...) = body` — a NAMED sub-model function (see `_slic_fn`);
+    # everything else is an anonymous `SlicModel` value.
+    if Meta.isexpr(model, :(=)) && Meta.isexpr(model.args[1], :call)
+        return _slic_fn(model, __module__)
+    end
     expanded = lower_string_interp(slic_macroexpand(__module__, model))
     doc, stripped = extract_leading_docstring(expanded)
     SlicModel(stripped, Dict{Symbol,Any}(:docstring => doc), __module__)
@@ -22,6 +27,43 @@ macro slic(data, model)
     else
         esc(:($mod.SlicModel($qmodel, merge((;docstring=$doc), $data), $(__module__))))
     end
+end
+
+# `@slic f(args...) = body` — a NAMED sub-model function (the `@deffun`-analogue for
+# models). Lowers to a proper Julia callable: binds `f = SubmodelFn{:f}()` and adds a
+# call method `(::SubmodelFn{:f})(args...; kwargs...) = SlicModel(body, data, mod)` that
+# binds the POSITIONAL args by name into the sub-model's data. Multiple `@slic f(...)=...`
+# definitions add methods → native multiple-dispatch; other inputs still flow in by
+# kwarg/scope. Contrast `@slic begin ... end`, which builds an anonymous `SlicModel`
+# value. Typed args (`a::vector[n]`) are accepted but do NOT yet drive dispatch
+# (positional-only) — typed-dispatch is a follow-up piece.
+_slic_fn(model, mod) = begin
+    call, body = model.args
+    fname = call.args[1]
+    fname isa Symbol || error(
+        "@slic f(...) = ...: the function name must be a bare Symbol, got `", fname, "`."
+    )
+    argspecs = call.args[2:end]
+    any(a -> Meta.isexpr(a, :parameters), argspecs) && error(
+        "@slic ", fname, "(...) = ...: keyword parameters in the signature are not supported — ",
+        "declare only the POSITIONAL argument names; other inputs flow in by kwarg or scope."
+    )
+    argnames = map(argspecs) do a
+        a isa Symbol && return a
+        (Meta.isexpr(a, :(::)) && a.args[1] isa Symbol) && return a.args[1]
+        error("@slic ", fname, "(...): unsupported argument form `", a, "` — use `name` or `name::type`.")
+    end
+    expanded = lower_string_interp(slic_macroexpand(mod, body))
+    doc, stripped = extract_leading_docstring(expanded)
+    qbody = Meta.quot(stripped)
+    data_pairs = [:($(QuoteNode(nm)) => $nm) for nm in argnames]
+    ftype = Expr(:curly, SubmodelFn, QuoteNode(fname))
+    methsig = Expr(:call, Expr(:(::), ftype), Expr(:parameters, :(kwargs...)), argnames...)
+    methbody = :($SlicModel($qbody, merge(Dict{Symbol,Any}(:docstring => $doc, $(data_pairs...)), kwargs), $mod))
+    esc(Expr(:block,
+        Expr(:(=), fname, Expr(:call, ftype)),
+        Expr(:(=), methsig, methbody),
+    ))
 end
 
 """

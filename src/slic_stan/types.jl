@@ -28,6 +28,17 @@ struct SubModel#{P,N,L}
     name#::N
     locals#::L
 end
+"""
+A named sub-model function, produced by `@slic f(args...) = body`. The singleton
+`SubmodelFn{:f}()` is bound to `f`; each `@slic f(...) = ...` adds a call method
+`(::SubmodelFn{:f})(args...; kwargs...) = SlicModel(body, data, mod)` that binds the
+positional args by name into the sub-model's data. Multiple definitions of the same
+`f` add methods → native multiple-dispatch. A call to a `SubmodelFn` is embedded as a
+sub-model by `stan_expr(::CanonicalExpr{<:SubmodelFn})` (the value it returns is a
+`SlicModel`, which flows through the existing embedding path). Contrast the anonymous
+`SlicModel` value built by `@slic begin ... end`.
+"""
+struct SubmodelFn{name} end
 abstract type AbstractStanType end
 struct StanExpr{E,T<:AbstractStanType}
     expr::E
