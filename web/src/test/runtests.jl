@@ -1742,6 +1742,112 @@ end
     end
 end
 
+# Public `rv ~ plate(...) do ... end` emitter (Feature 2, surface n35u3c).
+# The routing testset above exercises the shared lower-level contract via a
+# synthetic producer; THIS testset drives the real public surface end-to-end,
+# promoting the `web/sandbox/plate_*.jl` regression snippets into the suite so
+# the trace-then-promote rework (1vujeta) cannot silently regress the MVP.
+@testset "slic: public plate() do-block emitter" begin
+    # 1. Scalar-per-cell plate with a live per-cell likelihood → vector result.
+    doblock = @slic (; y = randn(6), mu0 = 0.5) begin
+        sigma ~ normal(0.0, 1.0; lower = 0.0)
+        theta ~ plate(y; outer = (6,)) do yi
+            t ~ normal(mu0, 1.0)              # fresh per-cell param (mu0 captured)
+            yi ~ normal(t, sigma)             # observation on the sliced input
+            t                                 # cell output → theta[i]
+        end
+    end
+    @test transpiles(doblock)
+    @test compiles(doblock)
+    let code = stan_code(doblock)
+        params = stan_block(code, "parameters")
+        @test occursin("vector[6] t", params)
+        @test occursin(r"real<lower=0\.0> sigma", params)
+        @test !occursin("theta", params)               # theta is a TP fill, not a param
+        tp = stan_block(code, "transformed parameters")
+        @test occursin("vector[6] theta", tp)
+        @test occursin(r"theta\[plate_i\w*\] = t\[plate_i", tp)
+        mb = stan_block(code, "model")
+        @test occursin(r"t\[plate_i\w*\] ~ normal\(mu0", mb)
+        @test occursin(r"y\[plate_i\w*\] ~ normal\(t\[plate_i", mb)
+    end
+    # sampler dims = sigma + t[6]; theta is a deterministic TP fill, not a dim.
+    @test LogDensityProblems.dimension(instantiate(doblock)) == 7
+
+    # 2. Vector-per-cell plate (BRM #1): typed fresh `vector[K]` param + typed
+    #    vector cell output, each collected as `matrix[K, N]` (cells in columns).
+    vec_cell = @slic (; n_series = 8) begin
+        L::cholesky_factor_corr[6] ~ lkj_corr_cholesky(2.0)   # shared, captured
+        tau::vector[6] ~ normal(0.0, 1.0; lower = 0.0)        # shared, captured
+        b::vector[6] ~ plate(; outer = (n_series,)) do s
+            z::vector[6] ~ std_normal()                       # fresh per-cell vector
+            diag_pre_multiply(tau, L) * z                     # vector[6] cell output
+        end
+    end
+    @test transpiles(vec_cell)
+    @test compiles(vec_cell)
+    let code = stan_code(vec_cell)
+        params = stan_block(code, "parameters")
+        @test occursin("matrix[6, n_series] z", params)       # per-cell vector → matrix column
+        tp = stan_block(code, "transformed parameters")
+        @test occursin("matrix[6, n_series] b", tp)
+        @test occursin(r"b\[:, plate_i\w*\] = \(diag_pre_multiply\(tau, L\) \* z\[:, plate_i", tp)
+        mb = stan_block(code, "model")
+        @test occursin(r"z\[:, plate_i\w*\] ~ std_normal\(\)", mb)  # sampled per column
+        @test !occursin("b[:", mb)                            # the b fill is NOT in model
+    end
+
+    # 3. fspmjv regression: a FULLY prior-only dead plate (no likelihood anywhere
+    #    AND its output unused) must keep its fresh per-cell samples as PARAMETERS
+    #    (not prior-only-lowered to generated quantities), so the transformed-
+    #    parameters return-fill stays in scope. Before aef6a42 this emitted
+    #    invalid Stan — stanc: "Identifier w not in scope". `compiles` (stanc +
+    #    BridgeStan) is the guard that actually catches that regression.
+    priordead = @slic (;) begin
+        tau ~ normal(0.0, 1.0; lower = 0.0)
+        z ~ plate(; outer = (4,)) do i
+            w ~ normal(0.0, tau)              # fresh per-cell param — MUST stay a parameter
+            w                                 # cell output → z[i] (transformed parameters)
+        end
+    end
+    @test transpiles(priordead)
+    @test compiles(priordead)
+    let code = stan_code(priordead)
+        params = stan_block(code, "parameters")
+        @test occursin("vector[4] w", params)               # w stays a PARAMETER (the fix)
+        @test occursin(r"real<lower=0\.0> tau", params)
+        tp = stan_block(code, "transformed parameters")
+        @test occursin("vector[4] z", tp)
+        @test occursin(r"z\[plate_i\w*\] = w\[plate_i", tp)
+        # The bug: w was RNG-lowered to generated quantities while z (TP) still
+        # referenced it. Guard both the decl and the RNG draw are absent from GQ.
+        gq = stan_block(code, "generated quantities")
+        @test !occursin("w", gq)
+    end
+    # dim = tau + w[4] = 5 (w is a real sampler dim; z is a deterministic TP fill).
+    @test LogDensityProblems.dimension(instantiate(priordead)) == 5
+
+    # 4. Control for fspmjv: the moment the plate output feeds a likelihood, the
+    #    fresh sample is naturally a parameter and TP is valid — confirms the
+    #    fspmjv fix did not disturb the common (non-dead) path.
+    priorlive = @slic (; obs = randn(4)) begin
+        tau ~ normal(0.0, 1.0; lower = 0.0)
+        z ~ plate(; outer = (4,)) do i
+            w ~ normal(0.0, tau)
+            w
+        end
+        obs ~ normal(z, 1.0)
+    end
+    @test transpiles(priorlive)
+    @test compiles(priorlive)
+    let code = stan_code(priorlive)
+        @test occursin("vector[4] w", stan_block(code, "parameters"))
+        @test occursin("vector[4] z", stan_block(code, "transformed parameters"))
+        @test occursin(r"obs ~ normal\(z", stan_block(code, "model"))
+    end
+    @test LogDensityProblems.dimension(instantiate(priorlive)) == 5
+end
+
 # === posteriordb.jl tests ===
 
 # Generate per-model test functions for PosteriorDB
