@@ -97,6 +97,12 @@ A bare typed declaration is also a parameter declaration with no prior:
 end
 ```
 
+This form is model/sub-model syntax: the declaration goes directly into Stan's
+`parameters` block and contributes no density statement. A bare declaration inside
+an `@deffun` remains an ordinary function-local declaration. Use `~ flat(...)` when
+the distribution call must carry `lower`, `upper`, `offset`, or `multiplier` kwargs;
+the bare form has no RHS from which to obtain those constraints.
+
 Model-body indexed assignment remains unavailable to user code: do not follow a
 bare declaration with `beta[i] = ...`. Compiler-owned inline/plate lowering may
 use certified indexed fills internally; those are reclassified as transformed
