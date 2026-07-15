@@ -1028,6 +1028,62 @@ end
     @test !transpiles(reject_model; re=false)
 end
 
+# --- regression: cert-marker read-only gate for compiler-injected slice-fills (case-3) ---
+# The gate in `backward!(::AssignmentExpr)` (passes.jl) routes a compiler-injected
+# slice-fill IFF its base was declared FRESH via `::` (`fresh_decl`, stamped by
+# `forward!(::DeclExpr)`); EVERY other base is read-only for element assignment in a
+# model block and must reject. Commit a6bf5a3 (todo 4dhw3f) GENERALISED the earlier
+# parameter-only gate to also catch two cases the testset above never exercised (it
+# predates the cert marker): a DATA input, and a PRE-COMMITTED/derived local. Assert the
+# error *message* too, so a regression that rejects for the WRONG reason — or silently
+# mis-routes/accepts — surfaces here, not just a bare `!transpiles`. All four models use
+# the `c3_set_first!` mutating helper defined above (`buf[1]=42.; return buf`).
+_cert_reject_msg(m) = try; stan_code(m); nothing; catch e; sprint(showerror, e); end
+@testset "slic: cert-marker read-only gate (case-3)" begin
+    # SAMPLED parameter (untyped `~`): read-only ⇒ the parameter message.
+    m_param = @slic (;y=randn(4)) begin
+        theta ~ std_normal(;n=4)
+        s = c3_set_first!(theta)
+        y ~ normal(s, 1.0)
+    end
+    e_param = _cert_reject_msg(m_param)
+    @test e_param !== nothing
+    @test occursin("parameter `theta`", e_param) && occursin("read-only", e_param)
+
+    # SAMPLED parameter with a TYPED LHS (`theta::vector[n] ~ ...`): same reject. The
+    # typed-LHS trace path builds the type differently — it must NOT leak `fresh_decl`
+    # onto a sampled parameter (which would wrongly *accept* the fill).
+    m_typed = @slic (;y=randn(4)) begin
+        theta::vector[4] ~ std_normal()
+        s = c3_set_first!(theta)
+        y ~ normal(s, 1.0)
+    end
+    @test !transpiles(m_typed; re=false)
+
+    # DATA input: Stan data is read-only; filling it via an inlined mutating helper
+    # previously emitted invalid `xd[i] = ...` — now a clear reject (the DATA case,
+    # NEW in a6bf5a3). `xd` (a signature input) has no `fresh_decl`, so the gate fires.
+    m_data = @slic (;xd=randn(4)) begin
+        s = c3_set_first!(xd)
+        p ~ normal(s[1], 1.0)
+    end
+    e_data = _cert_reject_msg(m_data)
+    @test e_data !== nothing
+    @test occursin("`xd`", e_data) && occursin("not a fresh declaration", e_data) && occursin("data", e_data)
+
+    # PRE-COMMITTED / derived local (`w = 2 .* theta`): its qual is committed at its
+    # assignment — one-pass tracing can't un-commit it, so a later element-fill rejects
+    # (the settled SSA bar, NEW in a6bf5a3). Derived-from-parameter ⇒ `:parameter` qual,
+    # so the base is not `fresh_decl` and the gate fires.
+    m_derived = @slic (;y=randn(4)) begin
+        theta ~ std_normal(;n=4)
+        w = 2.0 .* theta
+        s = c3_set_first!(w)
+        y ~ normal(s, 1.0)
+    end
+    @test !transpiles(m_derived; re=false)
+end
+
 # === posteriordb.jl tests ===
 
 # Generate per-model test functions for PosteriorDB
