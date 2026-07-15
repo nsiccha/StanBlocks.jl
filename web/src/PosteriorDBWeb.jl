@@ -613,7 +613,7 @@ const APPDATA = SbAppData()
                 expanded = String[]
                 for expr in exprs
                     expr isa LineNumberNode && continue
-                    ex = macroexpand(mod, expr)
+                    ex = Base.macroexpand(mod, expr)
                     push!(expanded, sprint(Base.show_unquoted, ex))
                 end
                 h.pre(h.code(join(expanded, "\n\n"); class="language-julia"))
