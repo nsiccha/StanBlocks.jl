@@ -240,6 +240,17 @@ _reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,ElseIfExpr,BreakExp
     "`$(_control_flow_kind(x))` control flow is not supported in @slic model bodies — ",
     "move the logic into an @deffun function body, or use a vectorised form."
 )
+# Slice/element assignment (`v[a:b] = …`, `v[i] = …`) is declare-then-fill: the
+# indexed LHS forwards to a non-Symbol expr that is never registered in `info`,
+# so the backward pass would otherwise die with a raw `KeyError` from the
+# OrderedDict. Reject it loudly here (BEFORE `forward!`, model-bodies only — so
+# it fires even when the RHS wouldn't resolve, and never touches @deffun bodies,
+# which ARE traced forward-only and DO support indexed assignment). §R3.
+_reject_model_control_flow(x::AssignmentExpr{<:CanonicalExprV{:getindex}}) = error(
+    "Indexed/slice assignment `", x.args[1].args[1], "[…] = …` is not supported in a @slic model ",
+    "body — only whole-variable assignment `name = …` is. Declare-then-fill (`v[a:b] = expr`) is ",
+    "available only inside an @deffun function body; move it there and call it (e.g. `v = fill_v(…)`)."
+)
 """
 Descends forwards through the expression tree. Basically _always_ returns a StanExpr.
 """
