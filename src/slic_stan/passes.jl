@@ -28,31 +28,13 @@ stan_expr(x::CanonicalExpr) = begin
     tt = deanon_type(tracetype(anon_canonical(x, tok)), x, tok)
     StanExpr(x, remake(tt; qual=maximum(qual, x.args; init=:data), cv=any(cv, x.args) || cv(tt)))
 end
-_check_submodel_arg(arg) = nothing
-_check_submodel_arg(arg::Union{StanExpr,SlicModel}) = error(
-    "SLIC sub-model was passed a regular positional argument `$arg`. ",
-    "Sub-models accept data only via kwargs (e.g. `submodel(;X=X)`); ",
-    "positional args are reserved for quoted body extensions ",
-    "(e.g. `submodel(quote ... end; X=X)`).")
-
-stan_expr(x::CanonicalExpr{<:SlicModel}) = begin
-    # Sub-models accept data via kwargs and (optionally) quoted body
-    # extensions as positional args. Regular call-style positional args —
-    # whose forwarding produced a `StanExpr` or another `SlicModel` —
-    # are not supported, and would otherwise die in a deep `MethodError`
-    # for `model(::SlicModel, ::StanExpr)`.
-    for arg in x.args
-        _check_submodel_arg(arg)
-    end
-    head(x)(x.args...; x.kwargs...)
-end
-
-# A NAMED sub-model function call `f(args...; kwargs...)`. Unlike an anonymous
-# `SlicModel` value, positional args here ARE the inputs (bound by name via the
-# `@slic f(...)=...`-generated call method) — Julia's own dispatch/arity handle
-# them, so there is no `_check_submodel_arg` gate. The call returns a `SlicModel`,
-# which then embeds through the existing `~`-rhs-is-`SlicModel` path (forward.jl).
-stan_expr(x::CanonicalExpr{<:SubmodelFn}) = head(x)(x.args...; x.kwargs...)
+# A @slic sub-model or named sub-model function in call position. For an anonymous
+# `SlicModel`, data flows via KEYWORDS — a positional call now errors (its call
+# operator points at `Base.merge` for splice overrides / `@slic f(...)=...` for
+# positional inputs). For a `SubmodelFn`, positional args ARE the inputs (bound by
+# its generated call method; Julia's own dispatch/arity handle them). Either way the
+# call yields a `SlicModel`, embedded via the existing `~`-rhs-is-`SlicModel` path.
+stan_expr(x::CanonicalExpr{<:Union{SlicModel,SubmodelFn}}) = head(x)(x.args...; x.kwargs...)
 
 backward!(x; info) = error("backward! not defined for value `$x` of type `$(typeof(x))` — no method matches a more specific signature.")
 backward!(;info) = x->backward!(x; info)
