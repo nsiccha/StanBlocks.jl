@@ -100,8 +100,8 @@ _sandbox_gallery = Gallery(_SANDBOX_GALLERY_DIR)
 # this `SbAppData` only carries the wiring (`recording_dir`,
 # `recording_base`, `recording_paths`) consumed by the
 # `@include record_gallery = RecordingRoutes(…)` mount on `AppContext`.
-# `cache_type=:parallel` matches AoV's `GalleryAppData` — kept so any
-# future polling IP can live here without re-introducing the cache type.
+# Any future polling IP can live here; the DO cache is always threadsafe
+# now (`cache_type` was removed 2026-07-07, decision 2canrl).
 @dynamicstruct struct SbAppData
     recording_dir  = joinpath(_REPO_ROOT, "docs", "src", "public", "live-sb")
     recording_base = get(ENV, "RECORD_BASE_PREFIX", "/StanBlocks.jl/dev/live-sb")
@@ -111,7 +111,7 @@ _sandbox_gallery = Gallery(_SANDBOX_GALLERY_DIR)
     end
 end
 
-const APPDATA = SbAppData(; cache_type=:parallel)
+const APPDATA = SbAppData()
 
 
 @htmx struct AppContext
@@ -124,7 +124,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
     # the configuration.
     __appdata__ = APPDATA
 
-    cache_path = joinpath(_REPO_ROOT, "web", "cache")
+    __cache_path__ = joinpath(_REPO_ROOT, "web", "cache")
 
     @cached posterior_names = sort([
         pn for pn in PosteriorDB.posterior_names(pdb())
@@ -353,7 +353,7 @@ const APPDATA = SbAppData(; cache_type=:parallel)
     @include tests = TestRoutes(; __req__, test_module=@__MODULE__)
 
     @get clear_cache() = begin
-        foreach(rm, Base.filter(f -> endswith(f, ".sjl"), readdir(cache_path; join=true)))
+        foreach(rm, Base.filter(f -> endswith(f, ".sjl"), readdir(__cache_path__; join=true)))
         h.p("Cache cleared")
     end
 
