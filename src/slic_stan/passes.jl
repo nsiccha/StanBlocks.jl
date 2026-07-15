@@ -94,7 +94,18 @@ backward!(x::AssignmentExpr; info) = begin
         remake(x, slice ? lhs2 : info[key], backward!(rhs; info))
     elseif qual(lhs) == :parameter
         lhs2, rhs = x.args
-        remake(x, remake(lhs2, qual=:quantities), rhs)
+        # A prior-only fill (e.g. a plate's return `z[i] = w[i]`) still CONSUMES
+        # its RHS in an EARLIER block (transformed parameters). Recurse into the
+        # RHS — exactly as the `:affects_likelihood` branch above does — so its
+        # sources (a plate's fresh sample `w`) stay PARAMETERS instead of being
+        # prior-only-lowered to generated quantities. Without this, the sample
+        # moves to GQ (info updated) but this TP fill stays put (info NOT updated)
+        # → the fill references a GQ-only variable, which is out of scope in TP
+        # (the fully-dead-plate bug: no likelihood anywhere + output unused).
+        # Marking a source as reachable only makes it a parameter — the safe
+        # direction (params are in scope everywhere downstream); a prior-only
+        # param has posterior = prior, so this changes emission, not the density.
+        remake(x, remake(lhs2, qual=:quantities), backward!(rhs; info))
     else
         x
     end
