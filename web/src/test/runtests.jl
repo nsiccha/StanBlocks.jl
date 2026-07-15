@@ -1084,6 +1084,104 @@ _cert_reject_msg(m) = try; stan_code(m); nothing; catch e; sprint(showerror, e);
     @test !transpiles(m_derived; re=false)
 end
 
+# --- regression: compiler-injected for-loop + range-indexed fresh-result fills ---
+# (case-3 deltas C.1 / C.2; commit 29c3b59 + todos 17cynmi / 1u392rh).
+# C.1 (ForExpr routing): an `@inline` UDF whose body is a `for`-loop fresh-result
+# fill (`out::vector[n]; for i in 1:n; out[i]=…; end; return out`), called DIRECTLY
+# from a model body, injects a REAL Stan `for` into the *model* body — where `info`
+# is the top-level StanModel. That path was never exercised before 29c3b59 (existing
+# injected loops only inline into forward-only @deffun bodies) and needed five gaps
+# fixed: `pop!(::StanModel)`, a `:data` qual on the loop index (else `:undefined`
+# poisoned `maximum(qual, args)` and mis-routed the loop to generated quantities),
+# `backward!`/`distribution_blocks`/`fetch_data!(::StanExpr{<:ForExpr})`. The loop
+# routes by the coarse (max) qual over the base vars its body fills and emits verbatim
+# via `show(::ForExpr)`, co-located with its decl + result-bind in ONE block.
+# C.2 (range-indexed LHS): a range fresh-result fill (`out[1:2]=x[1:2]`) coarse-grains
+# its range-getindex LHS to the base var (`_base_lhs_symbol(::CanonicalExpr)`), routing
+# exactly like a scalar fill (no code change — verify-only, todo 1u392rh).
+# GATE ON compiles() (stanc+BridgeStan): the qual-poisoning bug 29c3b59 fixed
+# mis-routed the loop while STILL passing stan_code/transpiles (primer §compiles-not-
+# codegen); the `!occursin("for(", generated quantities)` check guards that regression.
+
+# Extract a top-level Stan block's body (braces included) by brace-matching from its
+# header — robust to the nested braces of a `for(...){...}` loop body, which a
+# `…\{[^}]*…` regex (as used by the case-3 testset above) would truncate at the loop's
+# first inner `}`.
+function stan_block(code::AbstractString, name::AbstractString)
+    r = findfirst(name * " {", code)
+    isnothing(r) && return ""
+    i = last(r); depth = 0; start = i
+    while i <= lastindex(code)
+        c = code[i]
+        c == '{' && (depth += 1)
+        c == '}' && (depth -= 1; depth == 0 && return code[start:i])
+        i = nextind(code, i)
+    end
+    code[start:end]
+end
+
+@deffun @inline c3_forfill(x::vector[n])::vector[n] = begin
+    out::vector[n]
+    for i in 1:n
+        out[i] = x[i] * x[i]
+    end
+    return out
+end
+@deffun @inline c3_rangefill(x::vector[n])::vector[n] = begin
+    out::vector[n]
+    out[1:2] = x[1:2]
+    return out
+end
+
+@testset "slic: compiler-injected for-loop + range fresh-result fills (case-3 C.1/C.2)" begin
+    # C.1 PARAM: for-loop fresh fill from a parameter → loop+decl+bind in transformed parameters.
+    forfill_param = @slic (;y=randn(3)) begin
+        x ~ std_normal(;n=3)
+        r = c3_forfill(x)
+        y ~ normal(r, 1.0)
+    end
+    @test transpiles(forfill_param)
+    @test compiles(forfill_param)
+    let tp = stan_block(stan_code(forfill_param), "transformed parameters")
+        @test occursin("for(", tp)             # loop emitted symbolically (not unrolled)
+        @test occursin(r"\bout__il_\d+", tp)   # fresh-result decl co-located in the same block
+    end
+    # qual-routing guard (29c3b59): the loop must NOT land in generated quantities.
+    @test !occursin("for(", stan_block(stan_code(forfill_param), "generated quantities"))
+
+    # C.1 DATA: for-loop fresh fill from data → transformed data.
+    forfill_data = @slic (;xd=randn(3)) begin
+        r = c3_forfill(xd)
+        p ~ std_normal()
+    end
+    @test transpiles(forfill_data)
+    @test compiles(forfill_data)
+    let td = stan_block(stan_code(forfill_data), "transformed data")
+        @test occursin("for(", td)
+        @test occursin(r"\bout__il_\d+", td)
+    end
+
+    # C.2 PARAM: range-indexed fresh fill from a parameter → transformed parameters,
+    # base-coarse-grained (out[1:2] routes by base `out`, like a scalar fill).
+    rangefill_param = @slic (;y=randn(3)) begin
+        x ~ std_normal(;n=3)
+        r = c3_rangefill(x)
+        y ~ normal(r[1], 1.0)
+    end
+    @test transpiles(rangefill_param)
+    @test compiles(rangefill_param)
+    @test occursin(r"out__il_\d+\[1:2\]\s*=", stan_block(stan_code(rangefill_param), "transformed parameters"))
+
+    # C.2 DATA: range-indexed fresh fill from data → transformed data.
+    rangefill_data = @slic (;xd=randn(3)) begin
+        r = c3_rangefill(xd)
+        p ~ std_normal()
+    end
+    @test transpiles(rangefill_data)
+    @test compiles(rangefill_data)
+    @test occursin(r"out__il_\d+\[1:2\]\s*=", stan_block(stan_code(rangefill_data), "transformed data"))
+end
+
 # === posteriordb.jl tests ===
 
 # Generate per-model test functions for PosteriorDB
