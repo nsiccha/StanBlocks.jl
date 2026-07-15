@@ -101,7 +101,9 @@ Model-body indexed assignment remains unavailable to user code: do not follow a
 bare declaration with `beta[i] = ...`. Compiler-owned inline/plate lowering may
 use certified indexed fills internally; those are reclassified as transformed
 data, transformed parameters, or generated quantities from their right-hand
-sides rather than emitted as parameters.
+sides rather than emitted as parameters. These internal fills follow Stan's
+ordinary partial-initialization semantics: the compiler-owned producer is
+responsible for covering every element it later reads.
 
 ### Data binding
 
