@@ -709,21 +709,32 @@ forward!(x::BracesExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::VectExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::DeclExpr; info) = begin
     @assert length(x.args) == 2
-    lhs, type = x.args
-    ct, s... = if _is_getindex_expr(type)
-        type.args
+    lhs, type_ann = x.args
+    ct, s... = if _is_getindex_expr(type_ann)
+        type_ann.args
     else
-        (type, )
+        (type_ann, )
     end
-    @assert ct isa Symbol
-    ct = gettype(ct)
-    # A fresh declaration is provisionally a flat-prior parameter. Its first
-    # certified indexed use dynamically selects the final role (`:fill` resets
-    # the qual from its RHS; `:sampled` remains a parameter). This is the
-    # one-pass design selected in decision `1dd0eww` and is what lets the same
-    # compiler-injected declaration serve both inline fills and plate params.
-    t = remake(StanType(ct, forward!.(s; info));
-        fresh_decl=true, decl_role=:unfilled, qual=:parameter)
+    t = if ct isa Symbol
+        StanType(gettype(ct), forward!.(s; info))
+    else
+        # Computed type annotation (`typeof(...)` / `return_type(...)`, optionally
+        # `[dims]`-sized). Forward the base to a `tokenof{CT}` token, take its
+        # center type CT, and pick the NATURAL container for the given dims via
+        # `autotype` (real→vector, int→array[] int — matching jbroadcasted's
+        # inference). Explicit `[dims]` override the token's own size; otherwise
+        # the token carries the size (e.g. `typeof(some_vector)`).
+        tok = forward!(ct; info)
+        _decl_computed_type(tok, s; info)
+    end
+    # Fresh-declaration cert marker (Feature-1/plate): a SYMBOL-typed model
+    # declaration is provisionally a flat-prior parameter; its first certified
+    # indexed use dynamically selects the final role (`:fill` resets the qual
+    # from its RHS; `:sampled` stays a parameter) — decision `1dd0eww`, which
+    # lets one compiler-injected decl serve both inline fills and plate params.
+    # A COMPUTED-type decl (`::typeof(...)`/`return_type`, merged from devibe)
+    # keeps its natural qual from `_decl_computed_type` — no fresh-decl override.
+    ct isa Symbol && (t = remake(t; fresh_decl=true, decl_role=:unfilled, qual=:parameter))
     rv = StanExpr(lhs, t)
     lhs isa Symbol || return StanExpr(expr(forward!(lhs; info)), t)
     info[lhs] = rv
@@ -731,6 +742,18 @@ forward!(x::DeclExpr; info) = begin
     # value into the declaration AST too, so later backward/distribution lookup
     # uses the same name as the parent model's `info` key.
     stan_expr(remake(x, info[lhs]))
+end
+# `types` is defined in functions.jl (included AFTER this file), so the token
+# check lives in the body (resolved at trace time), not the signature.
+_decl_computed_type(tok, s; info) = begin
+    tt = type(tok)
+    center_type(tt) <: types.tokenof || error(
+        "type-annotation expression must evaluate to a type token (e.g. `typeof(...)` ",
+        "/ `return_type(...)`), got a value of Stan type `$(sigtype(tt))`."
+    )
+    cct = tt.info.value
+    sz = isempty(s) ? stan_size(tt) : Tuple(forward!.(s; info))
+    autotype(StanType(cct, sz))
 end
 forward!(x::ForExpr; info) = begin
     @assert length(x.args) == 2

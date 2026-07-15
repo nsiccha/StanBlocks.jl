@@ -56,6 +56,45 @@ end
     issue10b(_::vector[n]) = 0.
 end
 
+# --- computed type annotations (@deffun container inference; todo 1v94weu) ---
+# `rv::typeof(f(x[1]))[dims]` infers the output container from `f`'s per-element
+# return type: a `real` element → native `vector[n]`, an `int` element →
+# `array[] int` (stays int, usable as an index), `real` + 2 dims → `matrix[n,n]`.
+# So ONE definition covers both int- and real-valued element functions. Covers
+# BOTH the body-decl form (`umap`) and the `::ret` form (`umap_r`); HOF-aware —
+# `f` is a closure arg, lifted per call. Exercised by the "computed type
+# annotations" testset (commits `03aef9c` body decls + `a11934a` `::ret`).
+@deffun umap(f, x::anything[n]) = begin
+    rv::typeof(f(x[1]))[n]
+    for i in 1:n
+        rv[i] = f(x[i])
+    end
+    rv
+end
+@deffun umap_r(f, x::anything[n])::typeof(f(x[1]))[n] = begin
+    rv::typeof(f(x[1]))[n]
+    for i in 1:n
+        rv[i] = f(x[i])
+    end
+    rv
+end
+@deffun umap_mat(f, x::anything[n]) = begin
+    rv::typeof(f(x[1]))[n,n]
+    for i in 1:n
+        for j in 1:n
+            rv[i,j] = f(x[i])
+        end
+    end
+    rv
+end
+# Error-path fixture: the annotation base is a VALUE (`x[1]::real`), not a type
+# token → `_decl_computed_type` must error loudly at trace time (reject sub-test).
+@deffun bad_computed_ann(x::anything[n]) = begin
+    rv::(x[1])[n]
+    rv[1] = x[1]
+    rv
+end
+
 # Determinism regression: an inline UDF whose locals are renamed `<name>__il_<id>`.
 @deffun @inline det_polish(x::vector[n])::vector[n] = begin
     z = x * 2
@@ -992,6 +1031,131 @@ end
             mu ~ std_normal()
             mu
         end)
+    end
+end
+
+@testset "slic: computed type annotations (@deffun container inference)" begin
+    # `@deffun` accepts a COMPUTED type annotation — `typeof(f(x[1]))[dims]` — in
+    # both a body decl (`umap`) and the `::ret` position (`umap_r`). The output
+    # container is INFERRED from `f`'s per-element return type: a `real` element →
+    # native `vector[n]`, an `int` element → `array[] int` (stays int, usable as an
+    # index), `real` + 2 dims → `matrix[n,n]`. So ONE definition covers both int-
+    # and real-valued element functions, subsuming the separate `map`/`imap` (j*/i*)
+    # variants (todo `1v94weu`, commits `03aef9c` body decls + `a11934a` `::ret`).
+    # GATE ON `compiles`, NOT `transpiles` — an @deffun body can transpile yet be
+    # rejected by stanc (StanBlocks primer §5 of stanblocks-use; the umap fixtures
+    # are defined at module level above).
+    @testset "body decl: real element → vector[n]" begin
+        model = @slic (;v=[1.0,2.0,3.0]) begin
+            w = umap(a -> a*2.0, v)
+            mu ~ std_normal()
+            mu
+        end
+        @test check_type(model, :w, "vector")
+        @test compiles(model)
+    end
+    @testset "body decl: int element → array[] int (stays int, index-usable)" begin
+        model = @slic (;a=[1,2,3]) begin
+            b = umap(x -> x + 1, a)
+            mu ~ std_normal()
+            mu
+        end
+        code = stan_code(model)
+        # int container preserved — NOT silently coerced to a real `vector`
+        @test occursin(r"array\[\w*\] int (?:\w+ )?b\b", code)
+        @test !occursin(r"vector\[\w*\] (?:\w+ )?b\b", code)
+        @test compiles(model)
+    end
+    @testset "::ret form: real → vector[n], int → array[] int" begin
+        mr = @slic (;v=[1.0,2.0,3.0]) begin
+            w = umap_r(a -> a*2.0, v)
+            mu ~ std_normal()
+            mu
+        end
+        mi = @slic (;a=[1,2,3]) begin
+            b = umap_r(x -> x + 1, a)
+            mu ~ std_normal()
+            mu
+        end
+        @test check_type(mr, :w, "vector")
+        @test occursin(r"array\[\w*\] int (?:\w+ )?b\b", stan_code(mi))
+        @test compiles(mr)
+        @test compiles(mi)
+    end
+    @testset "2 dims: real element → matrix[n,n]" begin
+        model = @slic (;v=[1.0,2.0,3.0]) begin
+            w = umap_mat(a -> a*2.0, v)
+            mu ~ std_normal()
+            mu
+        end
+        @test check_type(model, :w, "matrix")
+        @test compiles(model)
+    end
+    @testset "reject: annotation base must be a type token, not a value" begin
+        # `rv::(x[1])[n]` — `x[1]` is a real VALUE, not a `typeof(...)` token — so
+        # `_decl_computed_type` errors loudly at trace time instead of miscompiling.
+        @test_throws Exception stan_code(@slic (;v=[1.0,2.0,3.0]) begin
+            w = bad_computed_ann(v)
+            mu ~ std_normal()
+            mu
+        end)
+    end
+end
+
+@testset "slic: jmap (inference-driven element-wise map)" begin
+    # `jmap(f, x::anything[n])` maps `f` over `x`, inferring the output CONTAINER
+    # from `f`'s per-element return type (`typeof(f(x[1]))`): a `real`-returning
+    # `f` → `vector[n]`, an `int`-returning `f` → `array[] int`. ONE definition
+    # covers both element kinds — no separate real `map` / int `imap` (prong 3,
+    # commit `7279601`, decision `1mk4gqh`; enabler `03aef9c`/`a11934a`). GATE ON
+    # `compiles`, NOT `transpiles` — a `@deffun` body can transpile yet stanc-REJECT.
+    @testset "real f over a vector → vector[n]" begin
+        model = @slic (;w=[1.0,2.0,3.0]) begin   # Vector{Float64} → Stan vector
+            z = jmap(a -> a * 2.0, w)
+            mu ~ std_normal()
+            mu
+        end
+        @test check_type(model, :z, "vector")
+        @test compiles(model)
+    end
+    @testset "int f over an int array → array[] int (container preserved)" begin
+        model = @slic (;k=[3,4,5]) begin        # Vector{Int} → array[] int
+            r = jmap(a -> a + 1, k)
+            mu ~ std_normal()
+            mu
+        end
+        code = stan_code(model)
+        # int container preserved — NOT silently coerced to a real `vector`
+        @test occursin(r"array\[\w*\] int (?:\w+ )?r\b", code)
+        @test !occursin(r"vector\[\w*\] (?:\w+ )?r\b", code)
+        @test compiles(model)
+    end
+    @testset "real f over an int array → vector[n] (element type from f, not x)" begin
+        # The OUTPUT container follows `f`'s return type, not the input element
+        # type: a real-returning `f` over an int array still yields a `vector`.
+        model = @slic (;k=[3,4,5]) begin
+            r = jmap(a -> a * 1.5, k)
+            mu ~ std_normal()
+            mu
+        end
+        @test check_type(model, :r, "vector")
+        @test compiles(model)
+    end
+    @testset "reuse: two identical closure literals don't collide" begin
+        # Regression for a closure-lift dedup/naming mismatch (fixed `harden.43kmku8o`,
+        # functions.jl `sig_expr(::StanExpr2{<:types.closure})`): two DISTINCT
+        # `a->a*2.0` literals get distinct closure ids → distinct Stan fn names
+        # `jmap_closure_1`/`_2`, but the function-dedup key had dropped the id and
+        # collapsed both to ONE definition, leaving the 2nd call site referencing
+        # an undeclared `jmap_closure_2` (stanc reject). Binding the closure to a
+        # name (one `:->` site → one id) was the only working form before the fix.
+        model = @slic (;w=[1.0,2.0,3.0], v=[4.0,5.0,6.0]) begin
+            z1 = jmap(a -> a * 2.0, w)
+            z2 = jmap(a -> a * 2.0, v)
+            mu ~ std_normal()
+            mu
+        end
+        @test compiles(model)
     end
 end
 
