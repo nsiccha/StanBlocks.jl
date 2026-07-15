@@ -565,6 +565,112 @@ forward!(x::SamplingExpr{<:CanonicalExprV{:getindex}}; info) = begin
     end
     remake(x, lhs, rhs)
 end
+# --- Public `plate` do-block emitter (Feature 2, surface decision n35u3c) -----
+# Lowers `rv ~ plate(iter1, …; outer=(N,)) do a1, …; body…; cell_output; end`
+# into the plate PRODUCER CONTRACT that the `~`-aware routing (landed on
+# slic-model-slice-b3a85769) consumes: outer `DeclExpr`s + a compiler-injected
+# certified `ForExpr` with indexed fresh samples, indexed observations, and an
+# indexed return fill — injected via `_slic_inline_pending` (so they bypass
+# `_reject_model_control_flow`, same as `_forward_ragged_constrained!`).
+#
+# Semantics (n35u3c): positional iterables are PER-CELL slices bound to the
+# do-block params (`a_k` ⇒ `iter_k[i]`); lexical captures stay SHARED; each
+# fresh `~`/`=` LHS in the body is promoted to an outer array indexed by the
+# loop var; the trailing expression is each cell's output, filled into `rv`.
+# MVP scope (surface these as limitations): 1-D `outer=(N,)` only; scalar-per-
+# cell fresh vars (⇒ `vector[N]` decls); no vararg params; the body must end in
+# a value expression; fresh/param names must not collide with function names
+# (uniform symbol substitution).
+_plate_stmt_lhs(s) =
+    if s isa Expr && s.head === :call && length(s.args) >= 3 && s.args[1] === :~
+        s.args[2]                         # `lhs ~ dist`  (raw `~` ⇒ Expr(:call, :~, lhs, rhs))
+    elseif s isa Expr && s.head === :(=)
+        s.args[1]                         # `lhs = rhs`
+    else
+        nothing
+    end
+# Uniform symbol substitution over a raw body AST. Only names in `m` are
+# rewritten; dist/function names + captures are absent from `m`, so they pass
+# through untouched. LHS symbols are rewritten too (`t ~ …` ⇒ `t[i] ~ …`).
+_subst_syms(x, m) = x
+_subst_syms(x::Symbol, m) = get(m, x, x)
+_subst_syms(x::Expr, m) = Expr(x.head, Any[_subst_syms(a, m) for a in x.args]...)
+
+forward!(x::SamplingExpr{Symbol,<:CanonicalExprV{:plate}}; info) =
+    _forward_plate!(x.args[1], x.args[2]; info)
+
+_forward_plate!(rv::Symbol, plate; info) = begin
+    lambda = plate.args[1]
+    lambda isa CanonicalExprV{:->} || error(
+        "plate: `$rv ~ plate(…)` requires a `do … end` block, got `$(typeof(lambda))`."
+    )
+    lhs_raw, body_raw = lambda.args
+    (body_raw isa Expr && body_raw.head === :block) || error(
+        "plate: the do-block body must be a `:block` Expr, got `$(typeof(body_raw))`."
+    )
+    params, vararg = _parse_lambda_lhs(lhs_raw)
+    vararg === nothing || error("plate: vararg do-block params (`args...`) are not supported yet.")
+    iterables = collect(plate.args[2:end])
+
+    # Plate size N: explicit `outer=(N,)` (1-D MVP) wins; else the first iterable's length.
+    outer = get(plate.kwargs, :outer, nothing)
+    N = if outer !== nothing
+        (outer isa CanonicalExprV{:tuple} && length(outer.args) == 1) || error(
+            "plate: only a 1-D `outer=(N,)` is supported for now."
+        )
+        outer.args[1]
+    elseif !isempty(iterables)
+        :(length($(iterables[1])))
+    else
+        error("plate: cannot size the plate — pass `outer=(N,)` or at least one iterable.")
+    end
+
+    (length(params) == length(iterables) || (isempty(iterables) && length(params) == 1)) || error(
+        "plate: $(length(params)) do-block params vs $(length(iterables)) positional iterables — ",
+        "positional args are per-cell slices and must match 1:1, or use a single `do i` (no iterables)."
+    )
+
+    id  = _next_inline_id()
+    idx = Symbol(:plate_i, "__pl_", id)
+    subst = Dict{Symbol,Any}()
+    if isempty(iterables) && length(params) == 1
+        subst[params[1]] = idx                          # `do i` ⇒ the cell index
+    else
+        for (a, it) in zip(params, iterables)
+            subst[a] = :($it[$idx])                      # per-cell slice
+        end
+    end
+
+    stmts = Any[s for s in body_raw.args if !(s isa LineNumberNode)]
+    isempty(stmts) && error("plate: empty do-block body.")
+    body_stmts, ret_expr = stmts[1:end-1], stmts[end]
+    _plate_stmt_lhs(ret_expr) === nothing || error(
+        "plate: the do-block must END with a cell-output VALUE expression, not a `~`/`=` statement."
+    )
+
+    fresh = Symbol[]
+    for s in body_stmts
+        lhs = _plate_stmt_lhs(s)
+        (lhs isa Symbol) && !(lhs in params) && !(lhs in fresh) && push!(fresh, lhs)
+    end
+    for f in fresh
+        subst[f] = :($f[$idx])                           # fresh var ⇒ indexed into its outer array
+    end
+
+    loop_body = Any[_subst_syms(s, subst) for s in body_stmts]
+    push!(loop_body, :($rv[$idx] = $(_subst_syms(ret_expr, subst))))  # indexed return fill
+
+    injected = Any[]
+    for f in fresh
+        push!(injected, :($f :: vector[$N]))             # scalar-per-cell (MVP)
+    end
+    push!(injected, :($rv :: vector[$N]))
+    # NB: build the iteration spec as `Expr(:(=), idx, 1:N)` — a hand-built
+    # `Expr(:for, :(idx in 1:N), …)` yields an `:in` CALL spec, not the `:(=)`
+    # form `forward!(::ForExpr)` asserts (a quoted `for` auto-normalizes it).
+    push!(injected, Expr(:for, Expr(:(=), idx, :(1:$N)), Expr(:block, loop_body...)))
+    _do_retrace_inline_body(injected; info)
+end
 forward!(x::SamplingExpr; info) = begin
     lhs, rhs = forward!(x.args; info)
     forward!(remake(x, lhs, rhs::StanExpr); info)
