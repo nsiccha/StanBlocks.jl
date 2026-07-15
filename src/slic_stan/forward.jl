@@ -440,24 +440,15 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     ct isa Symbol || error("Typed-LHS sampling: type center must be a Symbol, got `$ct`")
     ct_resolved = gettype(ct)
     sizes_forwarded = isempty(sizes) ? () : Tuple(forward!(collect(sizes); info))
-    # Stan requires every constrained-type size (`simplex[N]`, `ordered[N]`,
-    # `cholesky_factor_corr[N]`, …) to be a SCALAR int. A non-scalar size — e.g.
-    # `p::simplex[Ks]` with a data int-vector `Ks` — is a request for a ragged /
-    # varying-size constrained parameter, which SB cannot yet emit (it needs a
-    # generated TP-loop + slice-assignment; tracked by decision
-    # 2026-07-15T13-40-58-783-r0bwp4). Fail LOUDLY here rather than silently
-    # emitting invalid `simplex[<array>]` that only stanc rejects downstream.
-    if _is_native_constrained_ct(ct_resolved)
-        for (i, sz) in enumerate(sizes_forwarded)
-            stan_ndim(type(sz)) == 0 || error(
-                "Ragged / varying-size constrained parameter not yet supported: ",
-                "`$name::$(pretty_type_expr(type_expr)) ~ …` — the size argument ",
-                "#$i of `$ct[…]` forwards to non-scalar type `$(type(sz))`, but a ",
-                "native constrained-type size must be a scalar int. ",
-                "(Ragged constrained params are tracked by StanBlocks decision ",
-                "2026-07-15T13-40-58-783-r0bwp4.)"
-            )
-        end
+    # Stan requires every native constrained-type size (`simplex[N]`, `ordered[N]`,
+    # …) to be a SCALAR int. A NON-scalar size — e.g. `p::simplex[Ks]` with a data
+    # int-vector `Ks` — is a RAGGED / varying-per-group constrained parameter. Stan
+    # cannot declare `simplex[Ks]` natively, so we desugar: a flat improper-uniform
+    # free param + a compiler-injected per-group constrain loop (`simplex_jacobian`)
+    # + a `RaggedVector` pairing, reusing the loop-fill routing landed on
+    # `slic-model-slice-b3a85769` @ 29c3b59. See brief 2026-07-15T18-26-44-152-1b6sc6m.
+    if _is_native_constrained_ct(ct_resolved) && any(sz -> stan_ndim(type(sz)) > 0, sizes_forwarded)
+        return _forward_ragged_constrained!(name, ct, collect(sizes), rhs_raw; info)
     end
     base_lhs_type = StanType(ct_resolved, sizes_forwarded)
     _is_canonical_expr(rhs_raw) || error(
@@ -472,6 +463,49 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args))
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     remake(x, info[name], rhs_stan)
+end
+# Desugar a RAGGED native-constrained parameter (`p::simplex[Ks] ~ …`, `Ks` a data
+# int-vector of per-group dims) into constructs SB can emit. Stan cannot declare
+# `simplex[Ks]` natively, so we replicate what Stan does for a native simplex —
+# unconstrained free coords + the constrain transform's jacobian — but per group:
+#   • flat improper-uniform free param   `p_free ~ flat(;n=sum(Ks .- 1))`
+#   • per-group offsets in transformed data via `cumulative_sum` (data-qualified)
+#   • a FRESH result vector filled by a compiler-injected per-group constrain loop
+#     calling the built-in `<ct>_jacobian` (the jacobian accumulates directly in
+#     `transformed parameters`; routing landed on slic-model-slice @ 29c3b59)
+#   • a `RaggedVector(mem, ends)` pairing bound to `name`
+# All statements are injected via `_slic_inline_pending` (they never enter the raw
+# body, so they bypass `_reject_model_control_flow`) and routed to their blocks by
+# `distribute!`. NOTE (scope decision 1mfltua): the RHS informative prior is NOT yet
+# applied — `p[g] ~ dist` is a `~`-in-loop = the Feature-2 `~`-aware superset, not
+# built. For now the ragged param carries only its uniform base measure (jacobian);
+# `rhs_raw` is intentionally unused pending 1mfltua.
+_forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) = begin
+    length(sizes) == 1 || error(
+        "Ragged constrained `$name::$ct[…]`: expected a single vector size (the ",
+        "per-group dims), got $(length(sizes)). Rectangular `$ct[a,b]` and ragged ",
+        "`$ct[Ks]` are distinct shapes; a mixed form is unsupported."
+    )
+    Ks  = sizes[1]
+    jac = Symbol(ct, :_jacobian)
+    # Stan-valid unique names (gensym's `#` is an illegal Stan identifier char);
+    # `_next_inline_id` is the per-trace counter SB uses for inlined-local renames.
+    id = _next_inline_id()
+    pfree = Symbol(:p_free, "__rc_", id); pmem = Symbol(:p_mem, "__rc_", id)
+    cend  = Symbol(:c_end, "__rc_", id);  fend = Symbol(:f_end, "__rc_", id)
+    g     = Symbol(:g, "__rc_", id)
+    stmts = Any[
+        :($pfree ~ flat(; n = sum($Ks .- 1))),          # improper-uniform free coords → parameters
+        :($cend = cumulative_sum($Ks)),                  # constrained group ends (data → TD)
+        :($fend = cumulative_sum($Ks .- 1)),             # free group ends (data → TD)
+        :($pmem :: vector[sum($Ks)]),                    # fresh result → auto fresh_decl cert
+        :(for $g in 1:length($Ks)                        # injected ForExpr — 29c3b59 routes it
+              $pmem[$cend[$g] - $Ks[$g] + 1 : $cend[$g]] =
+                  $jac($pfree[$fend[$g] - $Ks[$g] + 2 : $fend[$g]])
+          end),
+        :($name = RaggedVector($pmem, $cend)),           # ragged view (representation bae1167)
+    ]
+    _do_retrace_inline_body(stmts; info)
 end
 forward!(x::SamplingExpr; info) = begin
     lhs, rhs = forward!(x.args; info)
