@@ -1,6 +1,6 @@
 module StanBlocks
 
-export @slic, @defsig, @deffun, @lpxf, @lhs, @stan_assert
+export @slic, @defsig, @deffun, @stanonly, @lpxf, @lhs, @stan_assert
 export stan_code, stan_model, stan_instantiate, stanc_check
 export StanBlocksError
 

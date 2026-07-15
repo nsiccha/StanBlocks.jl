@@ -243,6 +243,155 @@ Base.show(io::IO, f::StanFunction3) = autoprint(
     StanBlock(Symbol(), f.body)
 )
 
+# Runtime half of the bounded Julia target for `@deffun`.  The macro-side
+# lowering below routes global calls through `jcall(Val(name), def_mod, ...)`:
+# ordinary Julia/user functions resolve in the definition module, while the
+# deliberately small Stan compatibility set gets methods here.  Keeping the
+# compatibility dispatch internal avoids adding broad methods to Base.
+jcall(f, args...; kwargs...) = f(args...; kwargs...)
+jcall(::Val{name}, mod::Module, args...; kwargs...) where {name} =
+    getproperty(mod, name)(args...; kwargs...)
+
+for f in (:sqrt, :exp, :log, :log10, :sin, :cos, :asin, :acos, :tan, :atan,
+          :cosh, :sinh, :tanh, :acosh, :asinh, :atanh, :expm1, :abs,
+          :exp2, :log2, :ceil, :floor, :round, :trunc)
+    bf = getproperty(Base, f)
+    @eval jcall(::Val{$(QuoteNode(f))}, ::Module, x::AbstractArray) = $bf.(x)
+end
+
+for f in (:+, :-)
+    bf = getproperty(Base, f)
+    @eval begin
+        jcall(::Val{$(QuoteNode(f))}, ::Module, x::AbstractArray, y::Number) = $bf.(x, y)
+        jcall(::Val{$(QuoteNode(f))}, ::Module, x::Number, y::AbstractArray) = $bf.(x, y)
+    end
+end
+
+# Julia represents dotted operators as call heads such as `:.*`, not as
+# bindings that can be looked up with `getproperty(Base, name)`.
+for (f, bf) in ((Symbol(".+"), +), (Symbol(".-"), -), (Symbol(".*"), *),
+                (Symbol("./"), /), (Symbol(".^"), ^),
+                (Symbol(".=="), ==), (Symbol(".!="), !=),
+                (Symbol(".<"), <), (Symbol(".<="), <=),
+                (Symbol(".>"), >), (Symbol(".>="), >=))
+    @eval jcall(::Val{$(QuoteNode(f))}, ::Module, args...) = broadcast($bf, args...)
+end
+
+_julia_log_inv_logit(x) = min(x, zero(x)) - log1p(exp(-abs(x)))
+_julia_logit(x) = log(x) - log1p(-x)
+_julia_log1m(x) = log1p(-x)
+_julia_log1p_exp(x) = max(x, zero(x)) + log1p(exp(-abs(x)))
+_julia_log1m_exp(x) = x < -log(2) ? log1p(-exp(x)) : log(-expm1(x))
+
+jcall(::Val{:inv_logit}, ::Module, x) = inv(one(x) + exp(-x))
+jcall(::Val{:inv_logit}, ::Module, x::AbstractArray) = jcall.(Ref(Val(:inv_logit)), Ref(@__MODULE__), x)
+jcall(::Val{:logit}, ::Module, x) = _julia_logit(x)
+jcall(::Val{:logit}, ::Module, x::AbstractArray) = _julia_logit.(x)
+jcall(::Val{:log_inv_logit}, ::Module, x) = _julia_log_inv_logit(x)
+jcall(::Val{:log_inv_logit}, ::Module, x::AbstractArray) = _julia_log_inv_logit.(x)
+jcall(::Val{:log1m}, ::Module, x) = _julia_log1m(x)
+jcall(::Val{:log1m}, ::Module, x::AbstractArray) = _julia_log1m.(x)
+jcall(::Val{:log1p_exp}, ::Module, x) = _julia_log1p_exp(x)
+jcall(::Val{:log1p_exp}, ::Module, x::AbstractArray) = _julia_log1p_exp.(x)
+jcall(::Val{:log1m_exp}, ::Module, x) = _julia_log1m_exp(x)
+jcall(::Val{:log1m_exp}, ::Module, x::AbstractArray) = _julia_log1m_exp.(x)
+jcall(::Val{:square}, ::Module, x) = x * x
+jcall(::Val{:square}, ::Module, x::AbstractArray) = x .* x
+jcall(::Val{:fmin}, ::Module, x, y) = min(x, y)
+jcall(::Val{:fmax}, ::Module, x, y) = max(x, y)
+jcall(::Val{:max}, ::Module, x::AbstractArray) = maximum(x)
+jcall(::Val{:min}, ::Module, x::AbstractArray) = minimum(x)
+jcall(::Val{:dims}, ::Module, x) = collect(size(x))
+jcall(::Val{:rows}, ::Module, x) = size(x, 1)
+jcall(::Val{:cols}, ::Module, x) = size(x, 2)
+jcall(::Val{:num_elements}, ::Module, x) = length(x)
+jcall(::Val{:rep_vector}, ::Module, x, n::Integer) = fill(x, n)
+jcall(::Val{:rep_array}, ::Module, x, dims::Integer...) = fill(x, dims...)
+jcall(::Val{:rep_matrix}, ::Module, x::Number, m::Integer, n::Integer) = fill(x, m, n)
+jcall(::Val{:rep_matrix}, ::Module, x::AbstractVector, n::Integer) = repeat(x, 1, n)
+jcall(::Val{:to_vector}, ::Module, x) = vec(x)
+jcall(::Val{:to_row_vector}, ::Module, x) = vec(x)
+jcall(::Val{:to_array_1d}, ::Module, x) = collect(vec(x))
+jcall(::Val{:to_array_2d}, ::Module, x, m::Integer, n::Integer) = reshape(collect(x), m, n)
+jcall(::Val{:to_matrix}, ::Module, x, m::Integer, n::Integer) = reshape(collect(x), m, n)
+jcall(::Val{:append_array}, ::Module, xs...) = vcat(xs...)
+jcall(::Val{:append_row}, ::Module, xs...) = vcat(xs...)
+jcall(::Val{:append_col}, ::Module, xs...) = hcat(xs...)
+jcall(::Val{:hcat}, ::Module, xs...) = hcat(xs...)
+jcall(::Val{:reshape}, ::Module, x, dims::Integer...) = reshape(x, dims...)
+jcall(::Val{:cumulative_sum}, ::Module, x) = cumsum(x)
+jcall(::Val{:mean}, ::Module, x) = Statistics.mean(x)
+jcall(::Val{:sd}, ::Module, x) = Statistics.std(x)
+jcall(::Val{:broadcasted_getindex}, ::Module, x, i) = x isa AbstractArray ? x[i] : x
+jcall(::Val{:jmap}, ::Module, f, x) = map(f, x)
+jcall(::Val{:reject}, ::Module, args...) = throw(ArgumentError(join(string.(args))))
+
+_deffun_julia_numeric_type(x::Number) = typeof(x)
+_deffun_julia_numeric_type(x::AbstractArray{<:Number}) = eltype(x)
+_deffun_julia_numeric_type(_) = nothing
+_deffun_julia_real_type(args...) = begin
+    ts = filter(!isnothing, _deffun_julia_numeric_type.(args))
+    isempty(ts) && return Float64
+    T = promote_type(ts...)
+    T <: Integer ? Float64 : T
+end
+_deffun_julia_alloc(::Val{:int}, dims::Tuple, args...) = Array{Int}(undef, dims)
+_deffun_julia_alloc(::Val{:real}, dims::Tuple, args...) = Array{_deffun_julia_real_type(args...)}(undef, dims)
+_deffun_julia_alloc(::Val{:anything}, dims::Tuple, args...) = Array{Any}(undef, dims)
+_deffun_julia_alloc_type(::Type{T}, dims::Tuple) where {T} = Array{T}(undef, dims)
+
+_deffun_julia_check_dim(x, i::Integer, expected, fname, argname) = begin
+    actual = size(x, i)
+    actual == expected || throw(DimensionMismatch(
+        string(fname, ": dim mismatch — `", argname, "` dim ", i,
+               " (= ", actual, ") does not match expected ", expected)
+    ))
+    nothing
+end
+
+_deffun_julia_validate(x, ::Val{:int}, dims::Tuple, name) = begin
+    isempty(dims) ? (x isa Integer || throw(ArgumentError("$name must be an integer"))) :
+        (x isa AbstractArray{<:Integer} || throw(ArgumentError("$name must be an integer array")))
+    _deffun_julia_validate_dims(x, dims, name)
+end
+_deffun_julia_validate(x, ::Val{:real}, dims::Tuple, name) = begin
+    isempty(dims) ? (x isa Real || throw(ArgumentError("$name must be real-valued"))) :
+        (x isa AbstractArray{<:Real} || throw(ArgumentError("$name must be a real-valued array")))
+    _deffun_julia_validate_dims(x, dims, name)
+end
+_deffun_julia_validate(x, ::Val{:anything}, dims::Tuple, name) =
+    _deffun_julia_validate_dims(x, dims, name)
+_deffun_julia_validate_dims(x, dims::Tuple, name) = begin
+    isempty(dims) && return x
+    size(x) == dims || throw(DimensionMismatch(
+        string(name, " has size ", size(x), ", expected ", dims)
+    ))
+    x
+end
+
+# Mutable, non-const registry: one SLIC overload may map to one Julia dispatch
+# signature.  Re-evaluating the same definition is allowed for Revise; a
+# distinct SLIC signature collapsing onto the same Julia signature errors.
+@isdefined(_deffun_julia_signatures) || (_deffun_julia_signatures = IdDict{Any,Dict{Any,Any}}())
+_register_deffun_julia_signature!(f, julia_key, slic_key) = begin
+    registered = get(_deffun_julia_signatures, f, nothing)
+    if isnothing(registered)
+        isempty(methods(f)) || return false
+        registered = Dict{Any,Any}()
+        _deffun_julia_signatures[f] = registered
+    end
+    if haskey(registered, julia_key)
+        registered[julia_key] == slic_key || error(
+            "@deffun Julia emission collision for `$(nameof(f))`: SLIC signatures ",
+            "$(registered[julia_key]) and $slic_key both map to $julia_key. ",
+            "Mark one definition `@stanonly` or make its Julia dispatch distinguishable."
+        )
+    else
+        registered[julia_key] = slic_key
+    end
+    true
+end
+
 begin
     xiscall(x, f) = Meta.isexpr(x, :call) && x.args[1] == f
     xassign(args...) = Expr(:(=), args...)
@@ -509,7 +658,8 @@ begin
         is_inline = false
         cur = x
         while Meta.isexpr(cur, :macrocall) && (
-                _is_lhs_macrocall(cur) || _is_lpxf_macrocall(cur) || _is_at_inline_macrocall(cur)
+                _is_lhs_macrocall(cur) || _is_lpxf_macrocall(cur) ||
+                _is_at_inline_macrocall(cur) || _is_stanonly_macrocall(cur)
             )
             is_lhs    |= _is_lhs_macrocall(cur)
             is_lpxf   |= _is_lpxf_macrocall(cur)
@@ -535,7 +685,288 @@ begin
     # an inline body actually needs (so unused ones aren't prepended).
     _ast_mentions(x, s::Symbol) = x isa Symbol ? x === s :
         (x isa Expr ? any(a -> _ast_mentions(a, s), x.args) : false)
-    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, _shim_kwarg_specs=nothing, def_mod=nothing) = if x.head == :block
+
+    _is_stanonly_macrocall(x) = _is_inline_macrocall(x, Symbol("@stanonly"))
+
+    _julia_arg_name(x::Symbol) = x
+    _julia_arg_name(x::Expr) = if x.head === :(::) && length(x.args) == 1
+        nothing
+    elseif x.head in (:(::), :kw, :(...))
+        _julia_arg_name(x.args[1])
+    else
+        nothing
+    end
+    _julia_arg_name(_) = nothing
+
+    _julia_vector_type(ct::Symbol) = ct in (
+        :vector, :row_vector, :any_vector, :simplex, :ordered,
+        :positive_ordered, :unit_vector,
+    )
+    _julia_matrix_type(ct::Symbol) = ct in (
+        :matrix, :square_matrix, :cov_matrix, :corr_matrix,
+        :cholesky_factor_cov, :cholesky_factor_corr,
+    )
+    _julia_scalar_type(ct::Symbol) = ct in (:anything, :int, :real, :complex)
+    _deffun_julia_glue_type(t::Symbol) = t in (:tup, :ntup, :tokenof)
+    _deffun_julia_glue_type(t::Expr) = t.head === :ref && !isempty(t.args) &&
+        t.args[1] isa Symbol && _deffun_julia_glue_type(t.args[1])
+    _deffun_julia_glue_type(_) = false
+    _deffun_julia_glue_arg(x::Expr) = x.head === :(::) ? _deffun_julia_glue_type(x.args[2]) :
+        (x.head === :kw ? _deffun_julia_glue_arg(x.args[1]) : false)
+    _deffun_julia_glue_arg(_) = false
+
+    # Return `(Julia annotation or nothing, Julia dispatch key, SLIC key,
+    # dimensions)`.  The Julia key deliberately forgets constraints and the
+    # vector-vs-row-vector distinction; the registry then catches a collapse.
+    _deffun_julia_type(t::Symbol) = _deffun_julia_type(xref(t))
+    _deffun_julia_type(t::Expr) = begin
+        if t.head != :ref
+            return (t, (:exact, repr(t)), (:exact, repr(t)), Any[])
+        end
+        ct, dims... = t.args
+        ct isa Symbol || return (nothing, (:unsupported, repr(t)), (:computed, repr(t)), dims)
+        nd = length(dims)
+        slic_key = (ct, nd)
+        if ct === :anything && nd == 0
+            return (nothing, (:any,), slic_key, dims)
+        elseif ct === :int && nd == 0
+            return (Integer, (:integer,), slic_key, dims)
+        elseif ct === :real && nd == 0
+            return (Real, (:real,), slic_key, dims)
+        elseif ct === :complex && nd == 0
+            return (Number, (:number,), slic_key, dims)
+        elseif ct === :int && nd > 0
+            jt = :(AbstractArray{<:Integer,$nd})
+            return (jt, (:int_array, nd), slic_key, dims)
+        elseif ct === :real && nd > 0
+            jt = :(AbstractArray{<:Real,$nd})
+            return (jt, (:real_array, nd), slic_key, dims)
+        elseif ct === :anything && nd > 0
+            jt = :(AbstractArray{<:Any,$nd})
+            return (jt, (:array, nd), slic_key, dims)
+        elseif _julia_vector_type(ct) && nd == 1
+            return (:(AbstractVector{<:Real}), (:real_array, 1), slic_key, dims)
+        elseif _julia_matrix_type(ct) && nd == 2
+            return (:(AbstractMatrix{<:Real}), (:real_array, 2), slic_key, dims)
+        elseif (_julia_vector_type(ct) || _julia_matrix_type(ct))
+            return (nothing, (:unsupported, repr(t)), slic_key, dims)
+        end
+        # User types and exact Julia type expressions retain ordinary Julia
+        # dispatch. They have no SLIC-container collapse to detect here.
+        nd == 0 ? (ct, (:exact, ct), slic_key, dims) :
+            (nothing, (:unsupported, repr(t)), slic_key, dims)
+    end
+
+    _deffun_julia_mapped_arg(arg::Symbol) = (arg, (:any,), (:anything, 0), Any[])
+    _deffun_julia_mapped_arg(arg::Expr) = if arg.head === :(::)
+        name, t = length(arg.args) == 1 ? (nothing, arg.args[1]) : arg.args
+        jt, jk, sk, dims = _deffun_julia_type(t)
+        jk[1] === :unsupported && error(
+            "@deffun Julia emission: unsupported argument type `$t`. ",
+            "Mark this definition `@stanonly` if the signature is intentionally Stan-only."
+        )
+        mapped = if isnothing(name)
+            isnothing(jt) ? arg : Expr(:(::), jt)
+        else
+            isnothing(jt) ? name : Expr(:(::), name, jt)
+        end
+        (mapped, jk, sk, dims)
+    elseif arg.head === :kw
+        mapped, jk, sk, dims = _deffun_julia_mapped_arg(arg.args[1])
+        (Expr(:kw, mapped, arg.args[2]), jk, sk, dims)
+    elseif arg.head === :(...)
+        name = arg.args[1]
+        (Expr(:(...), name), (:vararg,), (:vararg,), Any[])
+    else
+        (arg, (:any,), (:anything, 0), Any[])
+    end
+
+    _deffun_julia_local_names!(names, ::Any) = names
+    _deffun_julia_local_names!(names, x::Expr) = begin
+        if x.head === :(=)
+            n = _julia_arg_name(x.args[1])
+            isnothing(n) || push!(names, n)
+        elseif x.head === :for && !isempty(x.args)
+            spec = x.args[1]
+            Meta.isexpr(spec, :(=)) && spec.args[1] isa Symbol && push!(names, spec.args[1])
+        elseif x.head === :->
+            lhs = x.args[1]
+            for a in (Meta.isexpr(lhs, :tuple) ? lhs.args : (lhs,))
+                n = _julia_arg_name(a)
+                isnothing(n) || push!(names, n)
+            end
+        end
+        foreach(a -> _deffun_julia_local_names!(names, a), x.args)
+        names
+    end
+
+    _deffun_julia_unsupported_call(s::Symbol) =
+        any(suffix -> endswith(string(s), suffix), ("_lpdf", "_lpmf", "_lcdf", "_lccdf", "_cdf", "_rng")) ||
+        startswith(string(s), "ode_") ||
+        s in (:reduce_sum, :reduce_sum_static, :simple_reduce_sum)
+
+    _deffun_julia_call_symbol(x::Symbol) = x
+    _deffun_julia_call_symbol(x::GlobalRef) = x.name
+    _deffun_julia_call_symbol(x::Expr) = if x.head === :. && !isempty(x.args)
+        q = x.args[end]
+        q isa QuoteNode ? q.value : nothing
+    else
+        nothing
+    end
+    _deffun_julia_call_symbol(_) = nothing
+
+    _deffun_julia_call(f, args, locals, def_mod, fname) = begin
+        params = !isempty(args) && Meta.isexpr(args[1], :parameters) ? (args[1],) : ()
+        positional = isempty(params) ? args : args[2:end]
+        s = _deffun_julia_call_symbol(f)
+        !isnothing(s) && _deffun_julia_unsupported_call(s) && error(
+            "@deffun ($fname): Julia emission does not implement `$s`. ",
+            "Probability, RNG, ODE, and reduce_sum parity is outside the deterministic compatibility layer; ",
+            "mark this definition `@stanonly`."
+        )
+        if f isa Symbol && f in locals
+            Expr(:call, :($stan.jcall), params..., f, positional...)
+        elseif f isa Symbol
+            tag = :($Val{$(QuoteNode(f))}())
+            Expr(:call, :($stan.jcall), params..., tag, def_mod, positional...)
+        else
+            Expr(:call, :($stan.jcall), params..., f, positional...)
+        end
+    end
+
+    _deffun_julia_alloc_tag(ct::Symbol) = ct === :int ? :int :
+        (ct === :anything ? :anything : :real)
+    _deffun_julia_local_type(t::Symbol) = (t, Any[])
+    _deffun_julia_local_type(t::Expr) = t.head === :ref ? (t.args[1], Any[t.args[2:end]...]) : (t, Any[])
+
+    _deffun_julia_transform(x, locals, def_mod, fname, promote_args) = x
+    _deffun_julia_transform(x::Expr, locals, def_mod, fname, promote_args) = begin
+        if x.head === :(=) && Meta.isexpr(x.args[1], :(::))
+            lhs, rhs = x.args
+            name, t = lhs.args
+            name isa Symbol || error(
+                "@deffun ($fname): Julia emission supports typed local declarations only for bare-symbol locals; mark the definition `@stanonly`."
+            )
+            ct, dims = _deffun_julia_local_type(t)
+            rhs = _deffun_julia_transform(rhs, locals, def_mod, fname, promote_args)
+            tdims = map(d -> _deffun_julia_transform(d, locals, def_mod, fname, promote_args), dims)
+            if ct isa Symbol
+                tag = _deffun_julia_alloc_tag(ct)
+                return Expr(:(=), name, :($stan._deffun_julia_validate(
+                    $rhs, $Val{$(QuoteNode(tag))}(), ($(tdims...),), $(QuoteNode(name))
+                )))
+            end
+            return Expr(:(=), name, :($stan._deffun_julia_validate_dims(
+                $rhs, ($(tdims...),), $(QuoteNode(name))
+            )))
+        elseif x.head === :(::) && length(x.args) == 2 && x.args[1] isa Symbol
+            name, t = x.args
+            ct, dims = _deffun_julia_local_type(t)
+            isempty(dims) && error(
+                "@deffun ($fname): Julia emission cannot allocate unsized local `$name::$t`; initialize it or mark the definition `@stanonly`."
+            )
+            tdims = map(d -> _deffun_julia_transform(d, locals, def_mod, fname, promote_args), dims)
+            if ct isa Symbol
+                tag = _deffun_julia_alloc_tag(ct)
+                return Expr(:(=), name, :($stan._deffun_julia_alloc(
+                    $Val{$(QuoteNode(tag))}(), ($(tdims...),), $(promote_args...)
+                )))
+            elseif Meta.isexpr(ct, :call) && ct.args[1] === :typeof
+                type_expr = _deffun_julia_transform(ct, locals, def_mod, fname, promote_args)
+                return Expr(:(=), name, :($stan._deffun_julia_alloc_type($type_expr, ($(tdims...),))))
+            end
+            error(
+                "@deffun ($fname): Julia emission cannot allocate computed local type `$t`; mark the definition `@stanonly`."
+            )
+        elseif x.head === :call
+            f = x.args[1]
+            args = map(a -> _deffun_julia_transform(a, locals, def_mod, fname, promote_args), x.args[2:end])
+            return _deffun_julia_call(f, args, locals, def_mod, fname)
+        end
+        Expr(x.head, map(a -> _deffun_julia_transform(a, locals, def_mod, fname, promote_args), x.args)...)
+    end
+
+    _deffun_julia_dim_symbols!(out, x::Symbol) = (push!(out, x); out)
+    _deffun_julia_dim_symbols!(out, x::Expr) = begin
+        args = x.head === :call ? x.args[2:end] : x.args
+        foreach(a -> _deffun_julia_dim_symbols!(out, a), args)
+        out
+    end
+    _deffun_julia_dim_symbols!(out, _) = out
+
+    _deffun_julia_expr(fcall, rv, body; source, def_mod) = begin
+        ismissing(body) && return nothing
+        f = fcall.args[1]
+        f isa Symbol || return nothing
+        all_args = Any[fcall.args[2:end]...]
+        any(_is_type_token, all_args) && return nothing
+        any(_deffun_julia_glue_arg, all_args) && return nothing
+        positional = !isempty(all_args) && Meta.isexpr(all_args[1], :parameters) ? all_args[2:end] : all_args
+        params = !isempty(all_args) && Meta.isexpr(all_args[1], :parameters) ? all_args[1] : nothing
+        flat_args = isnothing(params) ? copy(positional) : vcat(positional, params.args)
+
+        mapped = map(_deffun_julia_mapped_arg, flat_args)
+        mapped_pos = mapped[1:length(positional)]
+        mapped_kw = mapped[length(positional)+1:end]
+        julia_call_args = Any[]
+        if !isnothing(params)
+            push!(julia_call_args, Expr(:parameters, first.(mapped_kw)...))
+        end
+        append!(julia_call_args, first.(mapped_pos))
+        julia_call = Expr(:call, f, julia_call_args...)
+
+        arg_names = filter(!isnothing, _julia_arg_name.(flat_args))
+        locals = Set{Symbol}(arg_names)
+        julia_source_body = Meta.isexpr(body, :block) ? body : Expr(:block, source, body)
+        _deffun_julia_local_names!(locals, julia_source_body)
+        promote_args = Any[n for n in arg_names if n !== :_]
+
+        known = Set{Symbol}(arg_names)
+        dim_preamble = Any[]
+        seen_dims = Set{Symbol}()
+        for (arg, item) in zip(flat_args, mapped)
+            name = _julia_arg_name(arg)
+            isnothing(name) && continue
+            name === :_ && begin
+                any(dim -> dim isa Symbol && _ast_mentions(julia_source_body, dim), item[4]) && error(
+                    "@deffun ($f): Julia emission cannot bind a body-used dimension from anonymous argument `$arg`; name the argument or mark the definition `@stanonly`."
+                )
+                continue
+            end
+            dims = item[4]
+            for (i, dim) in enumerate(dims)
+                dim === :(_) && continue
+                if dim isa Symbol && !(dim in known) && !(dim in seen_dims)
+                    push!(seen_dims, dim)
+                    push!(known, dim)
+                    push!(locals, dim)
+                    push!(dim_preamble, :($dim = size($name, $i)))
+                else
+                    syms = _deffun_julia_dim_symbols!(Set{Symbol}(), dim)
+                    unknown = setdiff(syms, known)
+                    isempty(unknown) || error(
+                        "@deffun ($f): Julia emission cannot derive dimension expression `$dim`; unknown symbols $(collect(unknown)). Mark the definition `@stanonly`."
+                    )
+                    push!(dim_preamble, :($stan._deffun_julia_check_dim(
+                        $name, $i, $dim, $(QuoteNode(f)), $(QuoteNode(name))
+                    )))
+                end
+            end
+        end
+
+        transformed = _deffun_julia_transform(julia_source_body, locals, def_mod, f, promote_args)
+        julia_body = Expr(:block, source, dim_preamble..., transformed.args...)
+        julia_key = Tuple(item[2] for item in mapped_pos)
+        slic_key = Tuple(item[3] for item in mapped_pos)
+        julia_def = Expr(:(=), julia_call, julia_body)
+        quote
+            if $stan._register_deffun_julia_signature!($f, $(QuoteNode(julia_key)), $(QuoteNode(slic_key)))
+                $julia_def
+            end
+        end
+    end
+
+    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, is_stanonly=false, emit_julia=true, _shim_kwarg_specs=nothing, def_mod=nothing) = if x.head == :block
         seen_lpxf_bases = Set{Symbol}()
         for arg in x.args
             _is_expr(arg) || continue
@@ -549,26 +980,28 @@ begin
             )
             push!(seen_lpxf_bases, base)
         end
-        Expr(:block, deffun.(x.args; docstring, source, is_lhs, is_lpxf, is_inline, def_mod)...)
-    elseif x.head == :macrocall && (_is_lpxf_macrocall(x) || _is_lhs_macrocall(x) || _is_at_inline_macrocall(x))
+        Expr(:block, deffun.(x.args; docstring, source, is_lhs, is_lpxf, is_inline, is_stanonly, emit_julia, def_mod)...)
+    elseif x.head == :macrocall && (_is_lpxf_macrocall(x) || _is_lhs_macrocall(x) || _is_at_inline_macrocall(x) || _is_stanonly_macrocall(x))
         inner_source = _macrocall_source(x.args[2], source)
         new_is_lhs    = is_lhs    || _is_lhs_macrocall(x)
         new_is_lpxf   = is_lpxf   || _is_lpxf_macrocall(x)
         new_is_inline = is_inline || _is_at_inline_macrocall(x)
-        deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf, is_inline=new_is_inline, _shim_kwarg_specs, def_mod)
+        new_is_stanonly = is_stanonly || _is_stanonly_macrocall(x)
+        deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf, is_inline=new_is_inline, is_stanonly=new_is_stanonly, emit_julia, _shim_kwarg_specs, def_mod)
     elseif x.head == :macrocall
         _is_doc_macrocall(x) || error(
-            "@deffun: unexpected macrocall head `$(x.args[1])` (expected `@doc` / `@inline` / `@lpxf` / `@lhs`). ",
+            "@deffun: unexpected macrocall head `$(x.args[1])` (expected `@doc` / `@inline` / `@stanonly` / `@lpxf` / `@lhs`). ",
             "If a new doc-providing or annotation macro should be allowed, extend the predicate at functions.jl:_is_doc_macrocall / _is_inline_macrocall."
         )
         # @assert x.args[3] isa String
-        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf, is_inline, _shim_kwarg_specs, def_mod)
+        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf, is_inline, is_stanonly, emit_julia, _shim_kwarg_specs, def_mod)
     else
         # @assert x.head == :(=)
         fsig, body = ensure_xassign(x).args
         fcall, rv = ensure_xtyped(fsig).args
         @assert Meta.isexpr(fcall, :call) "@deffun: function signature must be a `:call` expression like `f(args...)::T`, got `$fcall`."
         f, all_args... = fcall.args
+        julia_surface = emit_julia && !is_stanonly ? _deffun_julia_expr(fcall, rv, body; source, def_mod) : nothing
 
         # Kwargs (`f(x; sigma=1.0, alpha=2.0) = body`) mirror Julia's own
         # lowering: emit a canonical body method
@@ -597,7 +1030,11 @@ begin
                 push!(kwarg_specs, (name=kw_name, default=p.args[2]))
             end
 
-            positional_names = [_name_of(p) for p in positional]
+            # Positional defaults are Julia surface syntax only.  The
+            # canonical `kwcall` method receives every positional argument;
+            # defaults are represented by the inline shim/trampolines below.
+            canonical_positional = [Meta.isexpr(p, :kw) ? p.args[1] : p for p in positional]
+            positional_names = [_name_of(p) for p in canonical_positional]
             rv_part = rv === :anything ? () : (rv,)
 
             # Canonical body method: `Core.kwcall(kw::ntup, ::typeof(f), positional...) = begin (unpack); body end`.
@@ -610,7 +1047,7 @@ begin
             canonical_call = Expr(:call, Core.kwcall,
                 Expr(:(::), :kw, :ntup),
                 Expr(:(::), Expr(:call, :typeof, f)),
-                positional...)
+                canonical_positional...)
             canonical_sig = isempty(rv_part) ? canonical_call : Expr(:(::), canonical_call, rv_part[1])
             canonical_def = Expr(:(=), canonical_sig, canonical_body)
 
@@ -630,9 +1067,10 @@ begin
                 # `function f end` first so the canonical method's
                 # `::typeof(f)` dispatch can reference it.
                 Expr(:function, f),
-                deffun(canonical_def; docstring, source, is_lhs=false, is_lpxf=false, is_inline=false, def_mod),
+                isnothing(julia_surface) ? nothing : julia_surface,
+                deffun(canonical_def; docstring, source, is_lhs=false, is_lpxf=false, is_inline=false, is_stanonly, emit_julia=false, def_mod),
                 deffun(inline_shim; docstring, source, is_lhs, is_lpxf, is_inline=true,
-                    _shim_kwarg_specs=kwarg_specs, def_mod),
+                    is_stanonly, emit_julia=false, _shim_kwarg_specs=kwarg_specs, def_mod),
             )
         end
 
@@ -672,9 +1110,13 @@ begin
             full_call = Expr(:call, f, stripped...)
             full_sig = isempty(rv_part) ? full_call : Expr(:(::), full_call, rv_part[1])
             push!(defs, Expr(:(=), full_sig, body))
-            return Expr(:block, [
-                deffun(d; docstring, source, is_lhs, is_lpxf, is_inline, def_mod) for d in defs
-            ]...)
+            return Expr(:block,
+                Expr(:function, f),
+                isnothing(julia_surface) ? nothing : julia_surface,
+                [
+                    deffun(d; docstring, source, is_lhs, is_lpxf, is_inline, is_stanonly, emit_julia=false, def_mod) for d in defs
+                ]...,
+            )
         end
 
         args = all_args
@@ -832,6 +1274,7 @@ begin
         xexpr = :(x::$CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
         if _is_symbol(f)
             push!(stmts, :(function $f end))
+            isnothing(julia_surface) || push!(stmts, julia_surface)
             # Fail LOUDLY at load time if this StanBlocks-context builtin name was
             # not also added to the `@builtin_module` manifest (see
             # `_assert_builtin_registered`). No-op for user-side `@deffun`, whose

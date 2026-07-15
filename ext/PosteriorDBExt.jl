@@ -11,7 +11,7 @@ slic_implementation(posterior::PosteriorDB.Posterior) = slic_implementation(
     Dict([Symbol(k)=>v for (k, v) in pairs(PosteriorDB.load(PosteriorDB.dataset(posterior)))])...
 )
 
-@deffun begin
+@deffun @stanonly begin
     garch11_lpdf(y::anything[T], mu::real, alpha0::real, alpha1::real, beta1::real, sigma1::real)::real = begin
         sigma_vec::real[T]
         sigma_vec[1] = sigma1
@@ -31,7 +31,7 @@ slic_implementation(posterior::PosteriorDB.Posterior) = slic_implementation(
     end
 end
 
-@deffun begin
+@deffun @stanonly begin
     arma11_lpdf(y::anything[T], mu::real, phi::real, theta_ma::real, sigma::real)::real = begin
         nu_vec::real[T]
         err_vec::real[T]
@@ -54,7 +54,7 @@ end
     end
 end
 
-@deffun begin
+@deffun @stanonly begin
     gauss_mix2_lpdf(obs::anything[n], theta::real, mu1::real, mu2::real, sig1::real, sig2::real)::real = begin
         rv = 0.
         for i in 1:n
@@ -69,7 +69,7 @@ end
     end
 end
 
-@deffun begin
+@deffun @stanonly begin
     car_normal_lpdf(phi::vector[N], node1::int[M], node2::int[M])::real =
         -0.5 * dot_self(phi[node1] - phi[node2])
     car_normal_lpdfs(phi::vector[N], node1::int[M], node2::int[M])::real =

@@ -105,11 +105,19 @@ end
 """
     @deffun function_definition
 
-Define a Stan-compatible function with type inference and code generation.
+Define a Stan-compatible function with type inference and dual code generation.
 
 Parses a Julia-style function definition (with type-annotated arguments and return type),
 generates the corresponding Stan function, and registers type-inference signatures so the
-transpiler can propagate types through calls to this function.
+transpiler can propagate types through calls to this function. Eligible bodyful bare-symbol
+definitions also install one callable Julia method from the original user-facing definition.
+Signature-only/type-token glue and qualified or pre-existing function extensions skip the
+Julia target automatically.
+
+The Julia target is a bounded deterministic compatibility layer: supported signatures,
+symbolic dimension checks, typed locals, control flow/mutation, nested deterministic calls,
+higher-order arguments, and varargs. Probability/RNG/ODE/`reduce_sum` primitives require the
+explicit `@stanonly` opt-out; an unsupported call otherwise errors at expansion time.
 
 For functions ending in `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf`, the return type is automatically
 set to `real` and companion `_lpdfs`/`_rng` stubs are generated for use in `generated_quantities`.
@@ -143,7 +151,7 @@ the enclosing block.
 # Example
 
 ```julia
-@deffun garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
+@deffun @stanonly garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
     sigma2 = alpha0
     rv = 0.
     for t in 1:T
@@ -158,6 +166,25 @@ See `src/slic_stan/builtin.jl` for many more examples.
 """
 macro deffun(x)
     esc(deffun(lower_string_interp(slic_macroexpand(__module__, x)); source=__source__, def_mod=__module__))
+end
+
+"""
+    @stanonly definition
+
+Opt a bodyful `@deffun` definition out of its default Julia method while
+retaining the existing SLIC/Stan lowering. Use it for deliberately Stan-only
+semantics outside the bounded deterministic Julia compatibility layer:
+
+```julia
+@deffun @stanonly foo_rng(x::real)::real = stan_rng_primitive(x)
+```
+
+It may wrap one definition or a `begin ... end` group inside `@deffun`.
+Signature-only and type-token compiler-glue definitions already skip Julia
+emission automatically.
+"""
+macro stanonly(x)
+    error("@stanonly may only appear inside an @deffun block")
 end
 
 """
