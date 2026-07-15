@@ -1102,6 +1102,63 @@ end
     end
 end
 
+@testset "slic: jmap (inference-driven element-wise map)" begin
+    # `jmap(f, x::anything[n])` maps `f` over `x`, inferring the output CONTAINER
+    # from `f`'s per-element return type (`typeof(f(x[1]))`): a `real`-returning
+    # `f` → `vector[n]`, an `int`-returning `f` → `array[] int`. ONE definition
+    # covers both element kinds — no separate real `map` / int `imap` (prong 3,
+    # commit `7279601`, decision `1mk4gqh`; enabler `03aef9c`/`a11934a`). GATE ON
+    # `compiles`, NOT `transpiles` — a `@deffun` body can transpile yet stanc-REJECT.
+    @testset "real f over a vector → vector[n]" begin
+        model = @slic (;w=[1.0,2.0,3.0]) begin   # Vector{Float64} → Stan vector
+            z = jmap(a -> a * 2.0, w)
+            mu ~ std_normal()
+            mu
+        end
+        @test check_type(model, :z, "vector")
+        @test compiles(model)
+    end
+    @testset "int f over an int array → array[] int (container preserved)" begin
+        model = @slic (;k=[3,4,5]) begin        # Vector{Int} → array[] int
+            r = jmap(a -> a + 1, k)
+            mu ~ std_normal()
+            mu
+        end
+        code = stan_code(model)
+        # int container preserved — NOT silently coerced to a real `vector`
+        @test occursin(r"array\[\w*\] int (?:\w+ )?r\b", code)
+        @test !occursin(r"vector\[\w*\] (?:\w+ )?r\b", code)
+        @test compiles(model)
+    end
+    @testset "real f over an int array → vector[n] (element type from f, not x)" begin
+        # The OUTPUT container follows `f`'s return type, not the input element
+        # type: a real-returning `f` over an int array still yields a `vector`.
+        model = @slic (;k=[3,4,5]) begin
+            r = jmap(a -> a * 1.5, k)
+            mu ~ std_normal()
+            mu
+        end
+        @test check_type(model, :r, "vector")
+        @test compiles(model)
+    end
+    @testset "reuse: two identical closure literals don't collide" begin
+        # Regression for a closure-lift dedup/naming mismatch (fixed `harden.43kmku8o`,
+        # functions.jl `sig_expr(::StanExpr2{<:types.closure})`): two DISTINCT
+        # `a->a*2.0` literals get distinct closure ids → distinct Stan fn names
+        # `jmap_closure_1`/`_2`, but the function-dedup key had dropped the id and
+        # collapsed both to ONE definition, leaving the 2nd call site referencing
+        # an undeclared `jmap_closure_2` (stanc reject). Binding the closure to a
+        # name (one `:->` site → one id) was the only working form before the fix.
+        model = @slic (;w=[1.0,2.0,3.0], v=[4.0,5.0,6.0]) begin
+            z1 = jmap(a -> a * 2.0, w)
+            z2 = jmap(a -> a * 2.0, v)
+            mu ~ std_normal()
+            mu
+        end
+        @test compiles(model)
+    end
+end
+
 @testset "shapes: RNG" begin
     @testset "vector_std_normal_rng(n) :: vector[n]" begin
         @test compiles(@slic (;n=5, obs=randn(5)) begin
