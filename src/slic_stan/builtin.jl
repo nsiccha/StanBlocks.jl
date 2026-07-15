@@ -251,6 +251,21 @@ import Statistics
     positive_infinity()::real
     negative_infinity()::real
     reject(args...)::anything
+    # --- Stan 2.37 exposed constraint-transform functions (Feature 1: ragged
+    # non-trivial constrained parameters). Bodyless — these are Stan built-ins
+    # (2.37+, wrapped by BridgeStan 2.7.0); SB only needs their signatures to
+    # emit `<family>_jacobian(free_slice)` calls per ragged slice. `_jacobian`
+    # constrains AND increments the target Jacobian implicitly (no `jacobian +=`
+    # block needed). simplex: free vector[n] (=N-1) <-> simplex vector[n+1] (=N).
+    simplex_constrain(y::vector[n])::vector[n+1]
+    simplex_jacobian(y::vector[n])::vector[n+1]
+    simplex_unconstrain(x::vector[n])::vector[n-1]
+    ordered_constrain(y::vector[n])::vector[n]
+    ordered_jacobian(y::vector[n])::vector[n]
+    ordered_unconstrain(x::vector[n])::vector[n]
+    positive_ordered_constrain(y::vector[n])::vector[n]
+    positive_ordered_jacobian(y::vector[n])::vector[n]
+    positive_ordered_unconstrain(x::vector[n])::vector[n]
     Base.log1p(x::real)::real
     Base.inv(::vector[n])::vector[n]
     Base.print(args...)::anything
