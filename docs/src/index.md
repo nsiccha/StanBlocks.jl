@@ -66,6 +66,7 @@ A `@slic` body is a flat sequence of:
 |----------------------------|------------------------------------------------------------------|
 | `lhs ~ rhs(args…)`         | Sample / observe (registers `lhs` as a parameter or observation) |
 | `lhs::T[size…] ~ rhs(args…)` | Same, but with explicit type and shape — see [Typed-LHS](#typed-lhs) |
+| `lhs::T[size…]`            | Declare a flat-prior parameter with explicit type and shape       |
 | `lhs = expr`               | Deterministic assignment                                         |
 | `lhs::T[size…] = expr`     | Typed-LHS assignment                                             |
 | `lhs ~ submodel(;…)`       | Embed a [sub-model](#sub-models) (its parameters land under `lhs_*`) |
@@ -86,6 +87,21 @@ end
 ```
 
 This works for both `~` (sampling) and `=` (assignment). The size arguments inside `[…]` may reference any data-qualified name.
+
+A bare typed declaration is also a parameter declaration with no prior:
+
+```julia
+@slic (;y=randn(20), X=randn(20, 3)) begin
+    beta::vector[3]                 # flat-prior parameter
+    y ~ normal(X * beta, 1.0)
+end
+```
+
+Model-body indexed assignment remains unavailable to user code: do not follow a
+bare declaration with `beta[i] = ...`. Compiler-owned inline/plate lowering may
+use certified indexed fills internally; those are reclassified as transformed
+data, transformed parameters, or generated quantities from their right-hand
+sides rather than emitted as parameters.
 
 ### Data binding
 
