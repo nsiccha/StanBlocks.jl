@@ -77,6 +77,30 @@ end
 # (e.g. `accumulate!`), which would mask user-defined SLIC UDFs that share
 # Base's name. Restrict to bindings actually owned by the `builtin` module.
 _is_builtin_name(x::Symbol) = isdefined(builtin, x) && Base.which(builtin, x) === builtin
+# Guardrail against the silent `@deffun`/`@builtin_module` drift. A bare-symbol
+# `@deffun name(...)` registered inside StanBlocks's own builtin context emits
+# its dispatch stub (`function name end`) into the *StanBlocks* module — which
+# symbol resolution never consults (`forward!(::Symbol)` checks info → builtin →
+# user-model-module → Main). Such a name is therefore reachable from a user
+# `@slic` body ONLY if it is ALSO bound in the `builtin` submodule via the
+# `@builtin_module` manifest. The two registrations are separate by design
+# (centralising the module declaration keeps Revise happy — see the GLM note in
+# builtin.jl), so a name added to `@deffun` but not the manifest fails silently
+# at the user's call site ("Could not find <name> in model, builtin, … or
+# Main!"). This turns that drift into a loud LOAD-TIME error naming the missing
+# manifest entry. Scoped to `def_mod === @__MODULE__` (StanBlocks): a user-side
+# `@deffun` emits its stub into the *user's* module, which IS `get_module(info)`
+# at resolution, so user UDFs resolve without a manifest entry and are not flagged.
+_assert_builtin_registered(name::Symbol, def_mod::Module) = begin
+    def_mod === (@__MODULE__) || return nothing
+    _is_builtin_name(name) && return nothing
+    error(
+        "@deffun registered `", name, "` as a StanBlocks builtin, but it is not in ",
+        "the `@builtin_module` manifest (src/slic_stan/builtin.jl): `_is_builtin_name(:",
+        name, ")` is false, so a user `@slic` body cannot resolve it. Add `", name,
+        "` to the `@builtin_module [ … ]` list."
+    )
+end
 expand_inline!(x::CanonicalExpr, meta; info) = begin
     arg_names = collect(meta.arg_names)
     n_pos = length(arg_names)

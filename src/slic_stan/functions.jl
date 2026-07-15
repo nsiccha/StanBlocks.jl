@@ -767,7 +767,14 @@ begin
         end
 
         xexpr = :(x::$CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
-        _is_symbol(f) && push!(stmts, :(function $f end))
+        if _is_symbol(f)
+            push!(stmts, :(function $f end))
+            # Fail LOUDLY at load time if this StanBlocks-context builtin name was
+            # not also added to the `@builtin_module` manifest (see
+            # `_assert_builtin_registered`). No-op for user-side `@deffun`, whose
+            # stub lands in the user's own module and resolves without a manifest.
+            def_mod === nothing || push!(stmts, :($stan._assert_builtin_registered($(QuoteNode(f)), $def_mod)))
+        end
         # Capture + inject the user function's defining module into
         # `info[:__mod__]` so nested `forward!`s inside the body (e.g.
         # `rv_expr = forward_return!(body; info)` when `rv == :anything`)
