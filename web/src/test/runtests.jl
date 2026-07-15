@@ -24,7 +24,7 @@ msg(e::MethodError) = e.msg
 # binds `simple`, so the `::typeof(simple)` methods here threw `UndefVarError: simple`
 # and blocked the whole include. Annotate only the heads actually used as base
 # distributions; `my_lpdf` stays plain (`my` is only ever called, never `~ my(...)`).
-@deffun begin
+@deffun @stanonly begin
     @lpxf simple_lpdf(y, x) = 0.
     simple_lpdfs(y, x) = 0.
     simple_rng(x) = 0.
@@ -126,6 +126,56 @@ consts_bad_model = @slic (;n=5) begin
     s = CONSTS_TEST_NUM .* x
 end
 
+# --- bounded Julia emission from @deffun ------------------------------------
+
+module JuliaEmissionFixtures
+using StanBlocks
+
+@deffun begin
+    julia_shift(x::real, a::real)::real = x + a
+    julia_apply(f, x::vector[n], args...)::vector[n] = begin
+        out::vector[n]
+        for i in 1:n
+            out[i] = f(x[i], args...)
+        end
+        out
+    end
+    julia_nested(x::vector[n], a::real)::vector[n] = julia_apply(julia_shift, x, a)
+    julia_branch_mutate(x::vector[n], y::vector[n])::vector[n] = begin
+        out::vector[n]
+        for i in 1:n
+            if x[i] > 0
+                out[i] = x[i] + y[i]
+            else
+                out[i] = y[i]
+            end
+        end
+        out
+    end
+    julia_initialized(x::vector[n])::vector[n] = begin
+        out::vector[n] = exp(x)
+        out
+    end
+    julia_defaults(x::real, a::real=2.0; b=1.0)::real = a * x + b
+    @stanonly julia_stan_only(x::real)::real = exp(x)
+    julia_signature_only(x::real)::real
+    julia_sized_token(vector[n], x::vector[n])::vector[n] = x
+end
+
+existing_julia_function(x::AbstractString) = length(x)
+@deffun existing_julia_function(x::real)::real = x
+
+module JuliaExtensionTarget
+function extension end
+end
+@deffun JuliaExtensionTarget.extension(x::real)::real = x
+
+dual_model = @slic (;n=3, x=[1.0, 2.0, 3.0], y=[4.0, 5.0, 6.0]) begin
+    z = julia_branch_mutate(x, y)
+end
+
+end
+
 # issue 12 sub-models
 sm12a = @slic begin
     x ~ std_normal(;n)
@@ -182,7 +232,7 @@ end
     end
 end
 
-@deffun begin
+@deffun @stanonly begin
     issue18_lpdf(y) = normal_cdf(y, 0, 1) + normal_lcdf(y, 0, 1) + normal_lccdf(y, 0, 1)
 end
 
@@ -350,7 +400,7 @@ end
     @test occursin("normal(0, 5)", disp_code)   # ::int  method body
 end
 
-@deffun begin
+@deffun @stanonly begin
     preconditioned_normal_lpdf(xi::matrix[m, n], loc::vector[m], scale::vector[m], prescale::matrix[m,m], n) = begin
         multi_normal_cholesky_lpdf(eachcol(xi), mdivide_left_tri_low(prescale, loc), mdivide_left_tri_low(prescale, diag_matrix(scale)))
     end
@@ -364,6 +414,70 @@ end
         x ~ issue9(n)
         y ~ vararg(x)
     end)
+end
+
+@testset "slic: bounded default Julia emission from @deffun" begin
+    J = JuliaEmissionFixtures
+
+    @test J.julia_shift(2.0, 3.0) == 5.0
+    @test J.julia_nested([1.0, 2.0, 3.0], 0.5) == [1.5, 2.5, 3.5]
+    @test J.julia_branch_mutate([1.0, -2.0], [3.0, 4.0]) == [4.0, 4.0]
+    @test J.julia_initialized([0.0, log(2.0)]) ≈ [1.0, 2.0]
+    @test J.julia_defaults(3.0) == 7.0
+    @test J.julia_defaults(3.0, 4.0; b=2.0) == 14.0
+
+    err = try
+        J.julia_branch_mutate([1.0, 2.0], [3.0])
+        nothing
+    catch e
+        e
+    end
+    @test err isa DimensionMismatch
+    @test occursin("julia_branch_mutate", sprint(showerror, err))
+
+    @test !hasmethod(J.julia_stan_only, Tuple{Float64})
+    @test !hasmethod(J.julia_signature_only, Tuple{Float64})
+    @test isempty(methods(J.julia_sized_token))
+    @test J.existing_julia_function("abc") == 3
+    @test !hasmethod(J.existing_julia_function, Tuple{Float64})
+    @test isempty(methods(J.JuliaExtensionTarget.extension))
+
+    collision = try
+        Core.eval(J, quote
+            @deffun begin
+                julia_collision(x::vector[n])::vector[n] = x
+                julia_collision(x::row_vector[n])::row_vector[n] = x
+            end
+        end)
+        nothing
+    catch e
+        e
+    end
+    @test occursin("Julia emission collision", sprint(showerror, collision))
+    @test occursin("@stanonly", sprint(showerror, collision))
+
+    unsupported = try
+        Core.eval(J, :(@deffun julia_bad_rng(x::real)::real = normal_rng(x, 1.0)))
+        nothing
+    catch e
+        e
+    end
+    @test occursin("does not implement `normal_rng`", sprint(showerror, unsupported))
+    @test occursin("@stanonly", sprint(showerror, unsupported))
+
+    # The Julia method is an additional expansion artifact; SLIC still sees
+    # the original definition and emits the same deterministic Stan function.
+    code = stan_code(J.dual_model)
+    @test occursin("julia_branch_mutate", code)
+    @test code == stan_code(J.dual_model)
+
+    @test StanBlocks.builtin.bordet_time_response(
+        [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [1.0, 1.0]
+    ) ≈ [0.25, inv(1 + exp(-1.0)) * inv(1 + exp(1.0))]
+    @test StanBlocks.builtin.bordet_dose_response(
+        [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]
+    ) ≈ [-log(2.0), -log1p(exp(-1.0))]
+    @test StanBlocks.builtin.linear_idxs([1, 2, 1], [1, 1, 2]) == [1, 2, 3]
 end
 
 @testset "issue10" begin
