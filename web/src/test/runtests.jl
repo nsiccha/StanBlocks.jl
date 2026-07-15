@@ -15,11 +15,20 @@ msg(e::ErrorException) = e.msg
 msg(e::AssertionError) = e.msg
 msg(e::MethodError) = e.msg
 
+# `@lpxf` opts a `_lpdf`-named @deffun into the base-callable + lpxf/rng/likelihood
+# triad registration: it binds the base fn (`simple`, `vararg`, `fof`, `srs2`) and
+# wires `lpxf_expr`/`rng_expr`/`likelihood_expr` so the name is usable both as a
+# `y ~ simple(...)` distribution AND as a `::typeof(simple)` dispatch tag below.
+# This registration was NAME-driven until 31772b4 (2026-04-24, "Add @lhs opt-in")
+# made it an explicit `@lpxf`/`@lhs` opt-in; a plain `@deffun simple_lpdf` no longer
+# binds `simple`, so the `::typeof(simple)` methods here threw `UndefVarError: simple`
+# and blocked the whole include. Annotate only the heads actually used as base
+# distributions; `my_lpdf` stays plain (`my` is only ever called, never `~ my(...)`).
 @deffun begin
-    simple_lpdf(y, x) = 0.
+    @lpxf simple_lpdf(y, x) = 0.
     simple_lpdfs(y, x) = 0.
     simple_rng(x) = 0.
-    vararg_lpdf(y, args...) = 0.
+    @lpxf vararg_lpdf(y, args...) = 0.
     vararg_lpdfs(y, args...) = 0.
     vararg_rng(args...) = 0.
 
@@ -31,10 +40,10 @@ msg(e::MethodError) = e.msg
     my_rng(::typeof(simple), args...) = simple_rng(args...)
     my_lpdf(y, ::typeof(vararg), args...) = vararg_lpdf(y, args...)
 
-    fof_lpdf(y, f, args...) = my_lpdf(y, f, args...)
+    @lpxf fof_lpdf(y, f, args...) = my_lpdf(y, f, args...)
     fof_lpdfs(y, f, args...) = my_lpdfs(y, f, args...)
     fof_rng(f, args...) = my_rng(f, args...)
-    srs2_lpdf(y, f, args...) = simple_reduce_sum(srs2_helper, rep_array(y, 1), f, args...)
+    @lpxf srs2_lpdf(y, f, args...) = simple_reduce_sum(srs2_helper, rep_array(y, 1), f, args...)
     srs2_helper(y, f, args...) = my_lpdf(y, f, args...)
     srs2_lpdfs(y, f, args...) = 0.
     srs2_rng(f, args...) = 0.
