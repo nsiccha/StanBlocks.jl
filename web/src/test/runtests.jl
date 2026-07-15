@@ -1133,6 +1133,44 @@ end
     return out
 end
 
+# Test-only producer for the shared do-block plate ROUTING contract. The public
+# `rv ~ plate(...) do ... end` emitter is a separate feature; this hook injects
+# exactly its agreed lower-level shape: outer declarations followed by one
+# symbolic loop containing fresh indexed samples, a transformed result fill, a
+# data fill, and an indexed observation. Keeping the producer synthetic lets
+# this regression isolate the shared forward/backward/distribution machinery.
+function c3_plate_router_probe end
+function StanBlocks.stan.expand_inline_or_trace(
+        call::StanBlocks.stan.CanonicalExpr{typeof(c3_plate_router_probe)};
+        info)
+    n, obs = call.args
+    injected = quote
+        plate_x::vector[$n]
+        plate_y::vector[$n]
+        plate_prior::vector[$n]
+        plate_flat::real
+        plate_rv::vector[$n]
+        plate_data_copy::vector[$n]
+        for plate_i in 1:$n
+            plate_x[plate_i] ~ normal(0.0, 1.0)
+            plate_y[plate_i] ~ normal(plate_x[plate_i] + plate_flat, 1.0)
+            plate_prior[plate_i] ~ normal(0.0, 1.0)
+            plate_rv[plate_i] = plate_x[plate_i] + plate_y[plate_i]
+            plate_data_copy[plate_i] = $obs[plate_i]
+            $obs[plate_i] ~ normal(plate_rv[plate_i], 1.0)
+        end
+    end
+    StanBlocks.stan.forward!(StanBlocks.stan.canonical(injected); info)
+end
+
+c3_plate_router_submodel = @slic (;obs=randn(4), n=4) begin
+    c3_plate_router_probe(n, obs)
+    return plate_rv
+end
+c3_plate_router_model = @slic (;) begin
+    routed ~ c3_plate_router_submodel
+end
+
 @testset "slic: compiler-injected for-loop + range fresh-result fills (case-3 C.1/C.2)" begin
     # C.1 PARAM: for-loop fresh fill from a parameter → loop+decl+bind in transformed parameters.
     forfill_param = @slic (;y=randn(3)) begin
@@ -1180,6 +1218,39 @@ end
     @test transpiles(rangefill_data)
     @test compiles(rangefill_data)
     @test occursin(r"out__il_\d+\[1:2\]\s*=", stan_block(stan_code(rangefill_data), "transformed data"))
+end
+
+@testset "slic: mixed sampling/fill routing in compiler-owned plate loop" begin
+    @test transpiles(c3_plate_router_model)
+    @test compiles(c3_plate_router_model)
+    code = stan_code(c3_plate_router_model)
+
+    let parameters = stan_block(code, "parameters")
+        @test occursin("vector[n] routed_plate_x", parameters)
+        @test occursin("vector[n] routed_plate_y", parameters)
+        @test occursin("real routed_plate_flat", parameters)
+        @test !occursin("routed_plate_rv", parameters)
+    end
+    let td = stan_block(code, "transformed data")
+        @test occursin("for(routed_plate_i in 1:n)", td)
+        @test occursin("routed_plate_data_copy[routed_plate_i] = obs[routed_plate_i]", td)
+    end
+    let tp = stan_block(code, "transformed parameters")
+        @test occursin("for(routed_plate_i in 1:n)", tp)
+        @test occursin("routed_plate_rv[routed_plate_i] =", tp)
+    end
+    let model_block = stan_block(code, "model")
+        @test occursin("for(routed_plate_i in 1:n)", model_block)
+        @test occursin("routed_plate_x[routed_plate_i] ~ normal", model_block)
+        @test occursin("routed_plate_y[routed_plate_i] ~ normal", model_block)
+        @test occursin("obs[routed_plate_i] ~ normal", model_block)
+        @test !occursin("routed_plate_rv[routed_plate_i] =", model_block)
+    end
+    let gq = stan_block(code, "generated quantities")
+        @test occursin("vector[n] routed_plate_prior", gq)
+        @test occursin("for(routed_plate_i in 1:n)", gq)
+        @test occursin("routed_plate_prior[routed_plate_i] = normal_rng", gq)
+    end
 end
 
 # === posteriordb.jl tests ===
