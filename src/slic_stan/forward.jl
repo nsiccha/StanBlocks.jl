@@ -552,7 +552,7 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # int-vector `Ks` — is a RAGGED / varying-per-group constrained parameter. Stan
     # cannot declare `simplex[Ks]` natively, so we desugar: a flat improper-uniform
     # free param + a compiler-injected per-group `<family>_jacobian` loop
-    # + a `RaggedVector` pairing, reusing the loop-fill routing landed on
+    # + a compile-time ragged carrier, reusing the loop-fill routing landed on
     # `slic-model-slice-b3a85769` @ 29c3b59. See brief 2026-07-15T18-26-44-152-1b6sc6m.
     if _is_native_constrained_ct(ct_resolved) && any(sz -> stan_ndim(type(sz)) > 0, sizes_forwarded)
         return _forward_ragged_constrained!(name, ct, collect(sizes), rhs_raw; info)

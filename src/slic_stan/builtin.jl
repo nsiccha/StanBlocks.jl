@@ -719,10 +719,11 @@ for (base, params) in (
     @eval @deffun $lpdfs(obs::anything[n], $(params...)) = jbroadcasted($lpdfs, obs, $(params...))
 end
 
-# --- RaggedVector usertype + Julia-dispatched accessors ---------------------
+# --- Ragged vector/matrix usertypes + Julia-dispatched accessors -------------
 # A ragged vector is conceptually `Vector{<:AbstractVector{<:Real}}` — a
-# variable-length collection of real subvectors. SLIC encodes one as a
-# tagged ntup with fields:
+# variable-length collection of real subvectors. A RaggedMatrix uses the same
+# flat-memory scheme for varying matrix shapes and carries per-group row/column
+# sizes. SLIC encodes either as a tagged ntup with fields:
 #   mem  :: vector[total]   — concatenation of all subvectors
 #   ends :: int[n_groups]   — inclusive 1-based end index of each subvector
 # Standard Julia dispatch on the `RaggedVector` tag drives `length(rv)`
@@ -878,8 +879,9 @@ expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)
     _is_ragged_construction(x.args[1]) ? stan_call(length, _ragged_ends(x.args[1])) : fold_shape_query(stan_expr(x))
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedMatrix}}}; info) =
     _is_ragged_construction(x.args[1]) ? stan_call(length, _ragged_ends(x.args[1])) : fold_shape_query(stan_expr(x))
-# `rv.mem` / `rv.ends` → the stored component (field access lowers to
-# `getfield(rv, position)`; resolve it to `expr(rv).args[position]`).
+# `rv.mem` / `rv.ends` (and the matrix shape fields) → the stored component;
+# field access lowers to `getfield(rv, position)`, resolved against the
+# constructor arguments here.
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedVector},<:StanExpr2{<:types.int}}}; info) =
     _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =

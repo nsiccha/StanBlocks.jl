@@ -1576,6 +1576,17 @@ c3_ragged_simplex_model = @slic (;K=[2, 3, 4], y=0.3) begin
     y ~ normal(sum(p[1]), 0.1)
 end
 
+# Matrix-valued ragged constraints use a flat RaggedMatrix carrier.  Start at
+# K=1 so the correlation family also exercises its zero-coordinate first group.
+c3_ragged_cholesky_corr_model = @slic (;K=[1, 2, 3], y=0.3) begin
+    L::cholesky_factor_corr[K] ~ flat()
+    y ~ normal(sum(to_vector(L[2])), 0.1)
+end
+c3_ragged_cholesky_cov_model = @slic (;K=[1, 2, 3], y=0.3) begin
+    L::cholesky_factor_cov[K] ~ flat()
+    y ~ normal(sum(to_vector(L[2])), 0.1)
+end
+
 @testset "slic: compiler-injected for-loop + range fresh-result fills (case-3 C.1/C.2)" begin
     # C.1 PARAM: for-loop fresh fill from a parameter → loop+decl+bind in transformed parameters.
     forfill_param = @slic (;y=randn(3)) begin
@@ -1696,6 +1707,30 @@ end
         @test occursin("for(", tp)
         @test !occursin("tuple(", tp)
         @test !occursin(r"array\[.*\]\s+int", tp)
+    end
+end
+
+@testset "slic: ragged Cholesky factors use flattened matrix carriers" begin
+    cases = (
+        (c3_ragged_cholesky_corr_model, "cholesky_factor_corr_jacobian", 4),
+        (c3_ragged_cholesky_cov_model, "cholesky_factor_cov_jacobian", 10),
+    )
+    for (model, jacobian, expected_dimension) in cases
+        @test transpiles(model)
+        problem = instantiate(model)
+        @test LogDensityProblems.dimension(problem) == expected_dimension
+        @test isfinite(LogDensityProblems.logdensity(problem, zeros(expected_dimension)))
+
+        code = stan_code(model)
+        @test occursin("p_free__rcm_", stan_block(code, "parameters"))
+        let tp = stan_block(code, "transformed parameters")
+            @test occursin(jacobian, tp)
+            @test occursin("to_vector", tp)
+            @test occursin("for(", tp)
+            @test !occursin("tuple(", tp)
+            @test !occursin(r"array\[.*\]\s+int", tp)
+        end
+        @test occursin("to_matrix", stan_block(code, "model"))
     end
 end
 
