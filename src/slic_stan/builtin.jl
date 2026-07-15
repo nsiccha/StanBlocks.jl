@@ -723,17 +723,105 @@ end
 # same convention used for `vector`/`real`/etc. above.
 @eval builtin const RaggedVector = $RaggedVector
 
+# A `RaggedVector` is a COMPILE-TIME pairing of its two components, never a
+# materialised Stan tuple. Reason: when `mem` is parameter-derived
+# (transformed parameters) and `ends` is data — the ragged constrained
+# parameter case — the tuple `(mem, ends)` would land in `transformed
+# parameters` as `tuple(vector, array[] int)`, and Stan forbids an
+# integer-valued (transformed) parameter (the `ends` component):
+# "(Transformed) Parameters cannot be integers." Bundling `mem` with `ends`
+# also poisons every group-size expression, since `ragged_length(rv, i)`
+# would carry `mem`'s parameter qual into a Stan size declaration.
+#
+# So the constructor binds VERBATIM (emitting no Stan statement, like a
+# closure) and `length(rv)` / `rv[i]` / `rv.field` lower to expressions over
+# the SEPARATE `mem` (vector) and `ends` (int[]) StanExprs. Every offset and
+# group length then references only `ends` (data), keeping them data-qualified
+# — so the per-group slice `rv[g] = mem[start(g):end(g)]` is valid Stan (a
+# parameter vector sliced by data indices). The all-data case (both components
+# data) lowers identically, just landing in `transformed data`.
+
+# `ends`-array-taking ragged offset accessors: data-computable (the offsets
+# depend only on the data `ends` array), so they stay legal inside Stan size
+# declarations. Overloads of the legacy `x::ntup` accessors above — additive,
+# so no `@builtin_module` manifest edit (and no live-app const wedge, §R13).
+@deffun begin
+    ragged_start(ends::int[k], i::int)::int = if i == 1
+        1
+    else
+        1 + ends[i-1]
+    end
+    ragged_end(ends::int[k], i::int)::int = ends[i]
+    # Data-qualified group length: `ragged_length(ends, g)` is legal in a Stan
+    # size declaration, so a downstream `z::vector[ragged_length(ends, g)]` param
+    # can be sized by a group. (`length(rv[g])` would instead be `num_elements`
+    # of a parameter-valued slice, which — like `length(<any param vector>)` —
+    # is not folded to a data size, §R9; size from `ends` for a top-level decl.)
+    ragged_length(ends::int[k], i::int)::int = ragged_end(ends, i) - ragged_start(ends, i) + 1
+end
+
+# Tuple-representation accessors (retained). These fire when a RaggedVector is
+# a genuine Stan tuple VALUE — i.e. a `@deffun`/sub-model PARAMETER of type
+# RaggedVector, where `rv` is a bound name (not a construction). There the tuple
+# is a legal function-argument type (Stan forbids an int tuple only as a
+# top-level (transformed) parameter DECLARATION, not as a function arg), so
+# passing the whole RaggedVector into a function keeps its size info intact.
 @deffun begin
     Base.length(rv::RaggedVector)::int = size(rv.ends)
     Base.lastindex(rv::RaggedVector)::int = size(rv.ends)
-    # The slice's runtime length is named *exactly* via `ragged_length`,
-    # so the return-type annotation is `vector[ragged_length(rv, i)]`
-    # (matching Stan's call-site declarations). Legacy `ragged_start` /
-    # `ragged_end` / `ragged_length` are `::ntup`-typed and dispatch
-    # on `RaggedVector <: ntup` automatically.
     Base.getindex(rv::RaggedVector, i::int)::vector[ragged_length(rv, i)] =
         rv.mem[ragged_start(rv, i):ragged_end(rv, i)]
 end
+
+# Constructor: bind the RaggedVector StanExpr verbatim into `info` (mirrors the
+# closure verbatim-bind) so its component StanExprs survive, and emit no Stan
+# declaration (`nothing` → `forward!(::BlockExpr)` skips it via
+# `_is_inert_block_stmt(::Nothing)`).
+forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:RaggedVector}}; info) = begin
+    name, rhs = x.args
+    name in keys(info) && _is_submodel_info(info) && return nothing
+    name in keys(info) && error(
+        "RaggedVector: rebinding `$name` is not supported — a RaggedVector is a " *
+        "SLIC-side compile-time pairing of its (mem, ends) components."
+    )
+    info[name] = rhs
+    nothing
+end
+# Defensive: a RaggedVector StanExpr must never be re-forwarded as a bare symbol
+# (mirrors the closure `StanExpr{Symbol,...}` passthrough).
+forward!(x::StanExpr{Symbol,<:StanType{<:RaggedVector}}; info) = x
+
+# A RaggedVector StanExpr is a COMPILE-TIME CONSTRUCTION iff its `expr` is the
+# constructor `CanonicalExpr` (args = `mem`, `ends`) — the model-body case a
+# verbatim-bind produces. A RaggedVector *parameter* inside a `@deffun` body is
+# instead a bound Symbol and stays a real Stan tuple: the accessor hooks below
+# fire ONLY for constructions and fall through (to the tuple-representation UDFs
+# above) otherwise. This is what lets the whole RaggedVector still be passed to
+# a function without losing its size info.
+_is_ragged_construction(rv::StanExpr) = expr(rv) isa CanonicalExpr
+_ragged_mem(rv::StanExpr) = expr(rv).args[1]
+_ragged_ends(rv::StanExpr) = expr(rv).args[2]
+
+# `rv[i]` → `mem[ragged_start(ends, i):ragged_end(ends, i)]` (a parameter vector
+# sliced by data bounds). Intercepts before `tracetype`, so a construction never
+# needs a tuple-taking UDF or a materialised tuple.
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:RaggedVector},<:StanExpr2{<:types.int}}}; info) =
+    if _is_ragged_construction(x.args[1])
+        rv, i = x.args
+        ends = _ragged_ends(rv)
+        lo = stan_call(builtin.ragged_start, ends, i)
+        hi = stan_call(builtin.ragged_end, ends, i)
+        stan_call(getindex, _ragged_mem(rv), stan_call(Colon(), lo, hi))
+    else
+        fold_shape_query(stan_expr(x))
+    end
+# `length(rv)` / `lastindex(rv)` → number of groups = `num_elements(ends)`.
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedVector}}}; info) =
+    _is_ragged_construction(x.args[1]) ? stan_call(length, _ragged_ends(x.args[1])) : fold_shape_query(stan_expr(x))
+# `rv.mem` / `rv.ends` → the stored component (field access lowers to
+# `getfield(rv, position)`; resolve it to `expr(rv).args[position]`).
+expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedVector},<:StanExpr2{<:types.int}}}; info) =
+    _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
 
 # --- Sized-token rng overloads (generated via @eval @deffun) -----------------
 # gq `x::T[n] ~ dist(args...)` synthesizes `dist_rng(T[n], args...)` which
