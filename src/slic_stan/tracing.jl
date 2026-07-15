@@ -409,8 +409,16 @@ get_module(info::StanModel) = get(info.meta, :mod, Main)
 get_module(info::AbstractDict) = get(info, :__mod__, Main)
 get_module(info::NamedTuple) = get(info, :__mod__, Main)
 get_module(info::SubModel) = get_module(parent(info))
+# Plate emission installs a task-local promotion context while re-tracing its
+# compiler-owned loop.  The forward layer adds the StanModel/SubModel method;
+# this floor keeps ordinary symbol resolution independent of that feature.
+_plate_promoted_reference(x, info) = nothing
 forward!(x::Symbol; info) = begin
-    x in keys(info) && return info[x]
+    if x in keys(info)
+        promoted = _plate_promoted_reference(x, info)
+        promoted === nothing || return promoted
+        return info[x]
+    end
     _is_builtin_name(x) && return forward!(getproperty(builtin, x); info)
     mod = get_module(info)
     if isdefined(mod, x)

@@ -220,6 +220,65 @@ end
 
 _get_inline_pending() = get(task_local_storage(), :_slic_inline_pending, nothing)
 
+# A plate's second trace runs inside the real model scope, but every discovered
+# cell-local binding is represented there by an outer array.  Keep the mapping
+# task-local so normal tracing stays untouched and submodels can participate:
+# their local `z` is mapped to the flattened outer key (`t_z`) before indexing.
+_plate_context() = get(task_local_storage(), :_slic_plate_context, nothing)
+_plate_root_info(info::StanModel) = info
+_plate_root_info(info::SubModel) = _plate_root_info(parent(info))
+_plate_global_name(::StanModel, name::Symbol) = name
+_plate_global_name(info::SubModel, name::Symbol) =
+    _plate_global_name(parent(info), supname(info, name))
+_plate_context_entry(name::Symbol; info) = begin
+    ctx = _plate_context()
+    ctx === nothing && return nothing
+    global_name = _plate_global_name(info, name)
+    haskey(ctx.cell_types, global_name) || return nothing
+    (global_name=global_name, cell_type=ctx.cell_types[global_name], idx=ctx.idx)
+end
+_plate_promoted_lhs(name::Symbol; info) = begin
+    entry = _plate_context_entry(name; info)
+    entry === nothing && return nothing
+    canonical(_plate_cell_index(entry.global_name, entry.cell_type, entry.idx))
+end
+_plate_promoted_reference(name::Symbol, info::Union{StanModel,SubModel}) = begin
+    lhs = _plate_promoted_lhs(name; info)
+    lhs === nothing && return nothing
+    # Resolve the indexed expression against the top-level outer declaration.
+    # Disable the context for this one lookup so resolving its base Symbol does
+    # not recursively promote itself.
+    task_local_storage(:_slic_plate_context, nothing) do
+        forward!(lhs; info=_plate_root_info(info))
+    end
+end
+_plate_bind_local!(::StanModel, _name, _value) = nothing
+_plate_bind_local!(info::SubModel, name, value) = (locals(info)[name] = value)
+
+_forward_plate_assignment!(x, name, lhs, rhs_raw; info) = begin
+    rhs = forward!(rhs_raw; info)
+    _check_assignment_rhs(name, rhs)
+    center_type(rhs) === types.void && error(
+        "`$name = <void-call>(...)`: cannot bind the return value of a void UDF. ",
+        "Drop the `$name = ` and call as a statement."
+    )
+    # `lhs` is already the promoted outer accessor. Suppress promotion while
+    # forwarding it, otherwise its base Symbol becomes indexed a second time.
+    fwd = task_local_storage(:_slic_plate_context, nothing) do
+        forward!(remake(x, lhs, rhs); info=_plate_root_info(info))
+    end
+    _plate_bind_local!(info, name, expr(fwd).args[1])
+    fwd
+end
+
+_forward_plate_sampling!(x, name, lhs, rhs::StanExpr; info) = begin
+    fwd = task_local_storage(:_slic_plate_context, nothing) do
+        forward!(remake(x, lhs, rhs); info=_plate_root_info(info))
+    end
+    _plate_bind_local!(info, name, fwd.args[1])
+    fwd
+end
+
 # Unwrap an inline-UDF body into a vector of effective statements. A `:return`
 # in the final position is unwrapped to its value; an empty/all-LNN body
 # signals the caller to error.
@@ -311,7 +370,14 @@ forward!(x::BlockExpr; info) = task_local_storage(:_slic_inline_pending, Any[]) 
         # Stan-side meaning — they arise e.g. when an inline UDF whose final
         # expression is just one of its args (`f!(buf) = (mutate; buf)`) is
         # called at statement position. Skip them so we don't emit `name;`.
-        _is_inert_block_stmt(resolved) || push!(new_args, resolved)
+        if _plate_context() !== nothing && resolved isa BlockExpr
+            # A submodel embedded inside a plate is an inline expansion. The
+            # loop router consumes a flat statement list, so splice the traced
+            # submodel block here rather than leaving a nested BlockExpr.
+            append!(new_args, resolved.args)
+        elseif !_is_inert_block_stmt(resolved)
+            push!(new_args, resolved)
+        end
     end
     remake(x, new_args...)
 end
@@ -344,6 +410,8 @@ _check_assignment_rhs(name, resolved) = error(
 
 forward!(x::AssignmentExpr{Symbol}; info) = begin
     name, rhs = x.args
+    promoted = _plate_promoted_lhs(name; info)
+    promoted === nothing || return _forward_plate_assignment!(x, name, promoted, rhs; info)
     name in keys(info) && _is_submodel_info(info) && return nothing
     resolved = forward!(rhs; info)
     _check_assignment_rhs(name, resolved)
@@ -366,7 +434,9 @@ else
     forward!(canonical(:(dims($key)[$i])); info)
 end
 forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
-    name, rhs = x.args 
+    name, rhs = x.args
+    promoted = _plate_promoted_lhs(name; info)
+    promoted === nothing || return _forward_plate_assignment!(x, name, promoted, rhs; info)
     @assert name ∉ keys(info)
     info[name] = StanExpr(name, remake(type(rhs); value=missing))
     @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
@@ -388,6 +458,12 @@ end
 _promote_qual(cur::Symbol, new::Symbol) =
     cur === :undefined ? new : (new === :undefined ? cur : max(cur, new))
 forward!(x::AssignmentExpr; info) = begin
+    lhs_raw = x.args[1]
+    if lhs_raw isa DeclExpr && lhs_raw.args[1] isa Symbol
+        name = lhs_raw.args[1]
+        promoted = _plate_promoted_lhs(name; info)
+        promoted === nothing || return _forward_plate_assignment!(x, name, promoted, x.args[2]; info)
+    end
     # Keep the local/raw key before forwarding: inside a `SubModel`, forwarding
     # rewrites the emitted base to its flattened parent name while `keys(info)`
     # intentionally remains the local-name view.
@@ -425,6 +501,8 @@ forward!(x::SamplingExpr{Symbol}; info) = begin
 end
 forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args
+    promoted = _plate_promoted_lhs(name; info)
+    promoted === nothing || return _forward_plate_sampling!(x, name, promoted, rhs; info)
     if name in keys(info)
         q = stan.qual(info[name])
         q == :data || error("Sampling statement `$name ~ ...` has LHS bound to a $q-qualified value — only data-qualified LHS is supported here (submodel kwargs typically refer to caller-provided data).")
@@ -455,6 +533,11 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
         "Typed-LHS sampling currently requires a Symbol LHS, got `$name`. ",
         "For more complex LHS shapes, use a bare assignment + sampling pair."
     )
+    promoted = _plate_promoted_lhs(name; info)
+    if promoted !== nothing
+        rhs = forward!(rhs_raw; info)::StanExpr
+        return _forward_plate_sampling!(x, name, promoted, rhs; info)
+    end
     type_expr = decl.args[2]
     ct, sizes... = if _is_getindex_expr(type_expr)
         type_expr.args
@@ -551,7 +634,7 @@ end
 # first such use classifies the declaration as a parameter; indexed data LHSs
 # remain ordinary observations.  An indexed parameter that did NOT come from a
 # fresh declaration stays out of this internal path.
-forward!(x::SamplingExpr{<:CanonicalExprV{:getindex}}; info) = begin
+_forward_indexed_sampling!(x; info) = begin
     lhs_raw, rhs_raw = x.args
     k = _base_lhs_symbol(lhs_raw)
     k in keys(info) || error(
@@ -579,6 +662,13 @@ forward!(x::SamplingExpr{<:CanonicalExprV{:getindex}}; info) = begin
     end
     remake(x, lhs, rhs)
 end
+forward!(x::SamplingExpr{<:CanonicalExprV{:getindex}}; info) =
+    _forward_indexed_sampling!(x; info)
+# Resolve the intentional intersection with the generic
+# `SamplingExpr{<:Any,<:StanExpr}` floor. Plate promotion forwards the RHS first,
+# then hands the indexed LHS to this same classifier.
+forward!(x::SamplingExpr{<:CanonicalExprV{:getindex},<:StanExpr}; info) =
+    _forward_indexed_sampling!(x; info)
 # --- Public `plate` do-block emitter (Feature 2, surface decision n35u3c) -----
 # Lowers `rv ~ plate(iter1, …; outer=(N,)) do a1, …; body…; cell_output; end`
 # into the plate PRODUCER CONTRACT that the `~`-aware routing (landed on
@@ -591,12 +681,10 @@ end
 # do-block params (`a_k` ⇒ `iter_k[i]`); lexical captures stay SHARED; each
 # fresh `~`/`=` LHS in the body is promoted to an outer array indexed by the
 # loop var; the trailing expression is each cell's output, filled into `rv`.
-# MVP scope (surface these as limitations): 1-D `outer=(N,)` only; scalar-per-
-# cell fresh vars (⇒ `vector[N]` decls); no vararg params; the body must end in
-# a value expression; fresh/param names must not collide with function names
-# (uniform symbol substitution).
-# (name, per_cell_type) for a plate body statement, or nothing. `z::T ~ dist` /
-# `z::T = expr` ⇒ (z, T); `t ~ dist` / `w = expr` ⇒ (t, nothing).
+# MVP scope (surface these as limitations): 1-D `outer=(N,)` only; scalar or
+# vector[K] cell values; no vararg params; the body must end in a value expr.
+# Used only to reject a terminal `~`/`=` statement with a clear error. Fresh
+# binding discovery itself is trace-based (`_plate_discover` below).
 _plate_fresh_info(s) = begin
     lhs = if s isa Expr && s.head === :call && length(s.args) >= 3 && s.args[1] === :~
         s.args[2]                         # `lhs ~ dist`  (raw `~` ⇒ Expr(:call, :~, lhs, rhs))
@@ -609,92 +697,39 @@ _plate_fresh_info(s) = begin
     (lhs isa Expr && lhs.head === :(::) && lhs.args[1] isa Symbol) && return (lhs.args[1], lhs.args[2])
     nothing
 end
-# Strip a typed-LHS annotation on a plate body stmt's LHS: `z::T ~ dist` ⇒
-# `z ~ dist` (the per-cell type is captured separately for the outer decl; the
-# indexed form `z[idx]`/`z[:,idx]` carries its type from the decl).
-_strip_plate_decl(s) =
-    if s isa Expr && s.head === :call && length(s.args) >= 3 && s.args[1] === :~ &&
-            s.args[2] isa Expr && s.args[2].head === :(::)
-        Expr(:call, :~, s.args[2].args[1], s.args[3:end]...)
-    elseif s isa Expr && s.head === :(=) && s.args[1] isa Expr && s.args[1].head === :(::)
-        Expr(:(=), s.args[1].args[1], s.args[2:end]...)
-    else
-        s
-    end
-# Uniform symbol substitution over a raw body AST. Only names in `m` are
-# rewritten; dist/function names + captures are absent from `m`, so they pass
-# through untouched. LHS symbols are rewritten too (`t ~ …` ⇒ `t[i] ~ …`).
+# Substitute only do-block parameters with their per-cell input accessors. Fresh
+# names are promoted during tracing via `_slic_plate_context`, which also reaches
+# names introduced inside an inlined submodel (not present in this raw AST).
 _subst_syms(x, m) = x
 _subst_syms(x::Symbol, m) = get(m, x, x)
 _subst_syms(x::Expr, m) = Expr(x.head, Any[_subst_syms(a, m) for a in x.args]...)
 
-# `vector[K]` per-cell size K, from a raw `:ref` (body decls) or canonical
-# `getindex` (typed plate LHS) type expr; nothing for scalar/unsupported.
-_plate_vector_size(ct) =
-    if ct isa Expr && ct.head === :ref && length(ct.args) == 2 && ct.args[1] === :vector
-        ct.args[2]
-    elseif ct isa CanonicalExprV{:getindex} && length(ct.args) == 2 && ct.args[1] === :vector
-        ct.args[2]
-    else
-        nothing
-    end
-# Outer collection decl + per-cell accessor for a var of per-cell type `ct` over
-# N cells. Scalar (ct===nothing) ⇒ `vector[N]` / `f[idx]`; `vector[K]` ⇒
-# `matrix[K, N]` / `f[:, idx]` (a column per cell — F's routing keys on the base
-# symbol, so a column-slice sample/fill routes like a single-index one).
-_plate_outer_decl(f, ct, N) = begin
-    ct === nothing && return :($f :: vector[$N])
-    K = _plate_vector_size(ct)
-    K === nothing && error("plate: unsupported per-cell type `$ct` for `$f` — scalar or `vector[K]` only (MVP).")
+# Resolve a legacy typed plate-result override to the same per-cell StanType the
+# discovery trace produces. Bare result LHSs use discovery's `ret_type` directly.
+_plate_annotation_type(type_expr; info) = begin
+    ct, sizes... = _is_getindex_expr(type_expr) ? type_expr.args : (type_expr,)
+    ct isa Symbol || error("plate: result type center must be a Symbol, got `$ct`.")
+    StanType(gettype(ct), forward!.(sizes; info))
+end
+
+_plate_cell_shape(T, name) = begin
+    stan_ndim(T) == 0 && return :scalar
+    (center_type(T) <: types.vector && stan_ndim(T) == 1) && return :vector
+    error(
+        "plate: unsupported per-cell type `", sigtype(T), "` for `", name,
+        "` — scalar or vector[K] only (MVP)."
+    )
+end
+
+# Outer collection decl + per-cell accessor from DISCOVERED StanTypes. Scalar ⇒
+# `vector[N]` / `f[idx]`; vector[K] ⇒ `matrix[K,N]` / `f[:,idx]`.
+_plate_outer_decl(f, T::StanType, N) = begin
+    _plate_cell_shape(T, f) === :scalar && return :($f :: vector[$N])
+    K = expr(stan_size(T)[1])
     :($f :: matrix[$K, $N])
 end
-_plate_cell_index(f, ct, idx) = ct === nothing ? :($f[$idx]) : :($f[:, $idx])
-
-# Per-cell StanType of a fresh var, for the result-inference probe: an annotated
-# `z::vector[K]` ⇒ `vector[K]`; a bare scalar fresh ⇒ `real` (the MVP's scalar
-# assumption). Used only to TYPE the trailing expression, never emitted.
-_plate_fresh_cell_type(ct; info) = begin
-    ct === nothing && return StanType(types.real)
-    K = _plate_vector_size(ct)
-    K === nothing && error("plate: unsupported fresh per-cell type `$ct` for result inference.")
-    StanType(types.vector, (forward!(K; info),))
-end
-# FULL AUTO TYPE INFERENCE (goal §5): infer a BARE plate result's per-cell shape
-# from the do-block trailing expression, so `b ~ plate(...)` needs no
-# `b::vector[K]` annotation. Temporarily binds the per-cell names (loop index,
-# do-block params at their slice types, fresh vars at their per-cell types) into
-# `info`, then a pure-expression `forward!` of the trailing expression computes
-# its `tracetype`; captures are already in `info`. Pops every temp binding (the
-# `forward!(::ForExpr)` add-index/pop idiom) so the real retrace sees an
-# unperturbed scope. Returns a synthetic per-cell type expr for the existing
-# `_plate_outer_decl`/`_plate_cell_index`: `nothing` (scalar ⇒ `vector[N]`) or
-# `:(vector[K])` (⇒ `matrix[K, N]`).
-_infer_plate_rv_ct(ret_expr, fresh, params, iterables, idx; info) = begin
-    bound = Symbol[]
-    _bind!(nm, ty) = (info[nm] = StanExpr(nm, ty); push!(bound, nm))
-    try
-        _bind!(idx, StanType(types.int; qual=:data))
-        if isempty(iterables) && length(params) == 1
-            _bind!(params[1], StanType(types.int; qual=:data))               # `do i` ⇒ cell index
-        else
-            for (a, it) in zip(params, iterables)
-                _bind!(a, type(forward!(canonical(:($it[$idx])); info)))     # per-cell slice
-            end
-        end
-        for (f, ct) in fresh
-            _bind!(f, _plate_fresh_cell_type(ct; info))
-        end
-        T = type(forward!(canonical(ret_expr); info))
-        stan_ndim(T) == 0 && return nothing
-        (center_type(T) <: types.vector && stan_ndim(T) == 1) &&
-            return :(vector[$(expr(stan_size(T)[1]))])
-        error("plate: inferred cell-output type has ndim $(stan_ndim(T)); only scalar or vector[K] supported for now.")
-    finally
-        for nm in bound
-            pop!(info, nm)
-        end
-    end
-end
+_plate_cell_index(f, T::StanType, idx) =
+    _plate_cell_shape(T, f) === :scalar ? :($f[$idx]) : :($f[:, $idx])
 
 # TRACE-THEN-PROMOTE discovery (rework, decision 1vujeta): trace the do-block
 # body ONCE in an ISOLATED probe scope to discover the fresh params/vars the body
@@ -773,12 +808,12 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
 
     id  = _next_inline_id()
     idx = Symbol(:plate_i, "__pl_", id)
-    subst = Dict{Symbol,Any}()
+    input_subst = Dict{Symbol,Any}()
     if isempty(iterables) && length(params) == 1
-        subst[params[1]] = idx                          # `do i` ⇒ the cell index
+        input_subst[params[1]] = idx                    # `do i` ⇒ the cell index
     else
         for (a, it) in zip(params, iterables)
-            subst[a] = :($it[$idx])                      # per-cell slice
+            input_subst[a] = :($it[$idx])               # per-cell slice
         end
     end
 
@@ -789,38 +824,43 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         "plate: the do-block must END with a cell-output VALUE expression, not a `~`/`=` statement."
     )
 
-    # Fresh per-cell vars WITH their per-cell types (scalar or `vector[K]`).
-    fresh = Tuple{Symbol,Any}[]
-    for s in body_stmts
-        fi = _plate_fresh_info(s)
-        fi === nothing && continue
-        name, ct = fi
-        (name in params || any(fc -> fc[1] === name, fresh)) && continue
-        push!(fresh, (name, ct))
-    end
-    for (f, ct) in fresh
-        subst[f] = _plate_cell_index(f, ct, idx)         # scalar ⇒ f[idx]; vector[K] ⇒ f[:, idx]
-    end
+    # Trace once in isolation to discover EVERY fresh binding — including
+    # submodel-internal flattened names — and the cell result type. The emit
+    # trace below uses these StanTypes rather than re-parsing LHS syntax.
+    discovered = _plate_discover(body_stmts, ret_expr, params, iterables, idx; info)
+    fresh = discovered.fresh
+    rv_type = rv_ct === nothing ? discovered.ret_type : _plate_annotation_type(rv_ct; info)
 
-    # Full auto type inference (goal §5): a BARE `b ~ plate(...)` (no `b::vector[K]`)
-    # gets its result shape from the do-block trailing expression. A typed-LHS
-    # `b::vector[K]` (rv_ct given) stays an explicit override.
-    rv_ct === nothing && (rv_ct = _infer_plate_rv_ct(ret_expr, fresh, params, iterables, idx; info))
+    cell_types = Dict{Symbol,Any}(fresh)
+    haskey(cell_types, rv) && error("plate: result `$rv` collides with a fresh binding in the do-block.")
+    rv in keys(info) && error("plate: result `$rv` is already bound in model scope.")
 
-    # Strip typed-LHS annotations, then substitute names ⇒ per-cell accessors.
-    loop_body = Any[_subst_syms(_strip_plate_decl(s), subst) for s in body_stmts]
-    push!(loop_body, :($(_plate_cell_index(rv, rv_ct, idx)) = $(_subst_syms(ret_expr, subst))))
+    # Positional do-block params still lower syntactically to per-cell input
+    # accessors. Fresh names stay untouched: the task-local promotion context
+    # rewrites them while tracing, including names hidden inside submodels.
+    loop_body = Any[_subst_syms(s, input_subst) for s in body_stmts]
+    ret_cell = _subst_syms(ret_expr, input_subst)
+    push!(loop_body, :($(_plate_cell_index(rv, rv_type, idx)) = $ret_cell))
 
-    injected = Any[]
-    for (f, ct) in fresh
-        push!(injected, _plate_outer_decl(f, ct, N))
-    end
-    push!(injected, _plate_outer_decl(rv, rv_ct, N))
+    decls = Any[_plate_outer_decl(f, T, N) for (f, T) in fresh]
+    push!(decls, _plate_outer_decl(rv, rv_type, N))
     # NB: build the iteration spec as `Expr(:(=), idx, 1:N)` — a hand-built
     # `Expr(:for, :(idx in 1:N), …)` yields an `:in` CALL spec, not the `:(=)`
     # form `forward!(::ForExpr)` asserts (a quoted `for` auto-normalizes it).
-    push!(injected, Expr(:for, Expr(:(=), idx, :(1:$N)), Expr(:block, loop_body...)))
-    _do_retrace_inline_body(injected; info)
+    loop = Expr(:for, Expr(:(=), idx, :(1:$N)), Expr(:block, loop_body...))
+
+    # Hoist declarations into the enclosing block exactly like an inline UDF,
+    # then trace ONLY the loop under promotion. `forward!(::ForExpr)` binds the
+    # loop index before its body, so promoted references can resolve `f[idx]`.
+    pending = _get_inline_pending()
+    for decl in decls
+        emitted = forward!(canonical(decl); info)
+        pending !== nothing && push!(pending, emitted)
+    end
+    ctx = (idx=idx, cell_types=cell_types)
+    task_local_storage(:_slic_plate_context, ctx) do
+        forward!(canonical(loop); info)
+    end
 end
 forward!(x::SamplingExpr; info) = begin
     lhs, rhs = forward!(x.args; info)
