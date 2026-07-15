@@ -366,6 +366,13 @@ forward!(x::SamplingExpr{Symbol,<:SlicModel}; info) = begin
     name, rhs = x.args
     forward!(rhs; info=SubModel(info, name, Dict()))
 end
+# A native constrained center type carries an implicit Stan constraint
+# transform (simplex/ordered/positive_ordered — proper subtypes of `vector` —
+# and cov_matrix/corr_matrix/cholesky_factor_* — subtypes of `square_matrix`).
+# Plain `vector`/`row_vector`/`matrix`/`int`/… are NOT native-constrained.
+_is_native_constrained_ct(T) = T isa Type && (
+    (T <: types.vector && T !== types.vector) || T <: types.square_matrix
+)
 forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     decl, rhs_raw = x.args
     name = decl.args[1]
@@ -382,6 +389,25 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     ct isa Symbol || error("Typed-LHS sampling: type center must be a Symbol, got `$ct`")
     ct_resolved = gettype(ct)
     sizes_forwarded = isempty(sizes) ? () : Tuple(forward!(collect(sizes); info))
+    # Stan requires every constrained-type size (`simplex[N]`, `ordered[N]`,
+    # `cholesky_factor_corr[N]`, …) to be a SCALAR int. A non-scalar size — e.g.
+    # `p::simplex[Ks]` with a data int-vector `Ks` — is a request for a ragged /
+    # varying-size constrained parameter, which SB cannot yet emit (it needs a
+    # generated TP-loop + slice-assignment; tracked by decision
+    # 2026-07-15T13-40-58-783-r0bwp4). Fail LOUDLY here rather than silently
+    # emitting invalid `simplex[<array>]` that only stanc rejects downstream.
+    if _is_native_constrained_ct(ct_resolved)
+        for (i, sz) in enumerate(sizes_forwarded)
+            stan_ndim(type(sz)) == 0 || error(
+                "Ragged / varying-size constrained parameter not yet supported: ",
+                "`$name::$(pretty_type_expr(type_expr)) ~ …` — the size argument ",
+                "#$i of `$ct[…]` forwards to non-scalar type `$(type(sz))`, but a ",
+                "native constrained-type size must be a scalar int. ",
+                "(Ragged constrained params are tracked by StanBlocks decision ",
+                "2026-07-15T13-40-58-783-r0bwp4.)"
+            )
+        end
+    end
     base_lhs_type = StanType(ct_resolved, sizes_forwarded)
     _is_canonical_expr(rhs_raw) || error(
         "Typed-LHS sampling `$name::$(pretty_type_expr(type_expr)) ~ rhs` requires rhs to be a distribution call"
