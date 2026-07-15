@@ -1501,6 +1501,7 @@ end
     @test transpiles(ragged_model)
     @test compiles(ragged_model)
     code = stan_code(ragged_model)
+    @test LogDensityProblems.dimension(instantiate(stan_model(ragged_model))) == 3
 
     let parameters = stan_block(code, "parameters")
         @test occursin(r"\bvector\[[^]]+\] p_free__rc_\d+;", parameters)
