@@ -43,7 +43,7 @@ golf_angle = @slic begin
 end
 r = (1.68/2)/12
 R = (4.25/2)/12
-golf_angle_distance_2 = golf_angle(quote 
+golf_angle_distance_2 = Base.merge(golf_angle, quote 
     sigma ~ normal(0, 1; n=2, lower=0.)
     sigma_angle = sigma[1]
     sigma_distance = sigma[2]
@@ -58,12 +58,12 @@ end)
 
 overshot = 1.
 distance_tolerance = 3.
-golf_angle_distance_3_with_resids = golf_angle_distance_2(quote
+golf_angle_distance_3_with_resids = Base.merge(golf_angle_distance_2, quote
     vec_n = to_vector(n)
     sigma_y ~ normal(0, 1)
     y ~ normal(vec_n .* p, vec_n .* sqrt(p .* (1 - p) ./ to_vector(n) + sigma_y ^ 2))
 end)
-golf_angle_distance_4 = golf_angle_distance_2(quote 
+golf_angle_distance_4 = Base.merge(golf_angle_distance_2, quote 
     overshot ~ normal(1, 5; lower=0)
     distance_tolerance ~ normal(3, 5; lower=0)
 end)

@@ -141,9 +141,9 @@ for i in 1:(n-1), j in 1:i
     i == j && (L[i,i] = exp(L[i,i]))
 end
 simplex_posterior = dirichlet_model(;alpha)
-multi_logit_posterior = simplex_posterior(quote
+multi_logit_posterior = Base.merge(simplex_posterior, quote
     alpha ~ multi_logit_normal_likelihood(x, mu, L)
-end;mu,L);
+end)(;mu,L);
 ILR = @slic begin 
     xi ~ ILR_simplex_dirichlet(alpha)
     return ILR_simplex_jacobian(xi)
@@ -167,19 +167,19 @@ normalized_exponential = @slic begin
     xi ~ normalized_exponential_simplex_dirichlet(alpha)
     return normalized_exponential_simplex_jacobian(xi)
 end
-normalized_exponential_posterior = base_posterior(quote 
+normalized_exponential_posterior = Base.merge(base_posterior, quote 
     x ~ normalized_exponential(;alpha=ones)
 end)
-ILR_posterior = base_posterior(quote 
+ILR_posterior = Base.merge(base_posterior, quote 
     x ~ ILR(;alpha=ones)
 end)
-ALR_posterior = base_posterior(quote 
+ALR_posterior = Base.merge(base_posterior, quote 
     x ~ ALR(;alpha=ones)
 end)
-expanded_softmax_posterior = base_posterior(quote 
+expanded_softmax_posterior = Base.merge(base_posterior, quote 
     x ~ expanded_softmax(;alpha=ones)
 end)
-stickbreaking_normal_posterior = base_posterior(quote 
+stickbreaking_normal_posterior = Base.merge(base_posterior, quote 
     x ~ stickbreaking_normal(;alpha=ones)
 end)
 

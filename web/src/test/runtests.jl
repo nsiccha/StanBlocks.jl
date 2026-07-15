@@ -263,9 +263,9 @@ end
 end
 
 @testset "issue12" begin
-    @test stan_code(sm12a(quote
+    @test stan_code(Base.merge(sm12a, quote
         return x
-    end ; n=10, y=1.)) == stan_code(sm12b(; n=10, y=1.))
+    end)(; n=10, y=1.)) == stan_code(sm12b(; n=10, y=1.))
     @test compiles(@slic (;n=10, y=1.) begin
         x ~ sm12a(;n)
         y ~ simple(x)
@@ -277,10 +277,10 @@ end
 end
 
 @testset "issue15" begin
-    @test stan_code(sm15a(quote
+    @test stan_code(Base.merge(sm15a, quote
         xx = append_row(x, x)
         return xx
-    end ; n=10, y=1.)) == stan_code(sm15b(; n=10, y=1.))
+    end)(; n=10, y=1.)) == stan_code(sm15b(; n=10, y=1.))
     @test compiles(sm15a(;n=10, y=1.))
     @test compiles(sm15b(;n=10, y=1.))
 end
