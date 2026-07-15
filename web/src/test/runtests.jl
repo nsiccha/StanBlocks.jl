@@ -325,6 +325,34 @@ end
     @test !transpiles(consts_bad_model; re=false)
 end
 
+@testset "slic: scalar-array elementwise arithmetic (prong 1)" begin
+    # Array-operand elementwise arithmetic on scalar arrays (`array[] int` /
+    # `array[] real`) lowers to the `jbroadcasted` element loop → a real `vector`,
+    # emitting VALID Stan. Guarded by `compiles` (stanc), NOT just `transpiles`:
+    # the pre-fix bug transpiled PASS but stanc REJECTed (StanBlocks fcb0f64 / dfd588a).
+    @test compiles(@slic (;Ks=[2,3,1]) begin d = Ks .+ 1; x ~ normal(1.0*sum(d), 1.) end)       # array .+ scalar
+    @test compiles(@slic (;Ks=[2,3,1]) begin d = 1 .+ Ks; x ~ normal(1.0*sum(d), 1.) end)       # commutative scalar-first reorder
+    @test compiles(@slic (;Ks=[2,3,1]) begin d = Ks .- 1; x ~ normal(1.0*sum(d), 1.) end)       # array .- scalar
+    @test compiles(@slic (;Ks=[2,3,1]) begin d = Ks .* Ks; x ~ normal(1.0*sum(d), 1.) end)      # array .* array
+    @test compiles(@slic (;rs=[1.0,2.0,3.0]) begin g = rs + rs; x ~ normal(1.0*sum(g), 1.) end) # real array + real array
+    # reporter's flagship `fe - Ks + 1` on int-array operands (closes the int-array snag)
+    @test compiles(@slic (;Ks=[2,3,1]) begin fe = cumulative_sum(Ks); fs = fe - Ks + 1; x ~ normal(1.0*sum(fs), 1.) end)
+    # lowered result is a real `vector` (int-preserving output waits on prong 3)
+    @test occursin("vector", stan_code(@slic (;Ks=[2,3,1]) begin d = Ks .+ 1; x ~ normal(1.0*sum(d), 1.) end))
+
+    # What does NOT lower must reject LOUDLY (no silent invalid Stan) — the dfd588a contract.
+    # (Scalar-first `.-`, e.g. `1 .- Ks`, is NOT here: prong 2 `9d878a5` lowers it via the
+    # negate identity `s .- arr == -(arr .- s)` — covered by prong 2's own hardening.)
+    @test !transpiles(@slic (;Ks=[2,3,1]) begin d = 1 ./ Ks; x ~ normal(1.0*sum(d), 1.) end; re=false)  # non-commutative scalar-first division (no identity → prong 2 backlog)
+    @test !transpiles(@slic (;Ks=[2,3,1]) begin d = Ks * Ks; x ~ normal(1.0*sum(d), 1.) end; re=false)  # plain `*` = matmul, not elementwise
+    @test !transpiles(@slic (;Ks=[2,3,1]) begin d = Ks / 2; x ~ normal(1.0*sum(d), 1.) end; re=false)   # plain `/`
+    @test !transpiles(@slic (;Ks=[2,3,1]) begin d = Ks ^ 2; x ~ normal(1.0*sum(d), 1.) end; re=false)   # plain `^`
+
+    # Vector arithmetic (scalar⊗vector, vector⊗vector) is unaffected by the new dispatch:
+    @test transpiles(@slic (;) begin a ~ std_normal(; n=3); c = a .* a; y ~ normal(sum(c), 1.) end)
+    @test transpiles(@slic (;) begin a ~ std_normal(; n=3); c = 3*a; y ~ normal(sum(c), 1.) end)
+end
+
 @testset "issue17" begin
     @test compiles(@slic (;n=10, y=1.) begin
         x ~ issue17(;n)
