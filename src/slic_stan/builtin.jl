@@ -1103,19 +1103,19 @@ end
     typeof(÷) => begin 
         (int, int) => int
     end
-    Union{typeof.((+, -, ^, *, /))...} => begin 
+    Union{typeof.((+, -, ^, *, /))...} => begin
         (real,) => real
         (vector[n],) => vector[n]
         (int, real) => real
         (int, int) => int
         (real, int) => real
         (real, real) => real
-        (real[n], real[n]) => real[n]
-        (int[n], int[n]) => int[n]
-        (int[n], int) => int[n]
+        # NOTE: scalar-array operand rows (`(int[n], int[n])`, `(int[n], int)`,
+        # `(int, int[n])`, `(real[n], real[n])`, `(real, real[n])`) are deliberately
+        # ABSENT — Stan has no elementwise `+ - * / ^` on `array[] int` / `array[] real`,
+        # so they are rejected loudly by `_reject_scalar_array_elementwise` (functions.jl)
+        # rather than silently emitting invalid Stan. Do not re-add them.
         (int, vector[n]) => vector[n]
-        (int, int[n]) => int[n]
-        (real, real[n]) => real[n]
         (real, vector[n]) => vector[n]
         (real, matrix[m,n]) => matrix[m,n]
         (vector[n], real) => vector[n]
@@ -1227,13 +1227,13 @@ end
         (int[n], real, vector[n]) => int[n]
         (int[n], vector[n], vector[n]) => int[n]
     end
-    Base.BroadcastFunction => begin 
+    Base.BroadcastFunction => begin
         (real, real) => real
-        (real[n], real[n]) => real[n]
-        (real[n], real) => real[n]
-        (real, real[n]) => real[n]
-        (int[n], int) => int[n]
-        (int[n], int[n]) => int[n]
+        # NOTE: scalar-array operand rows (`(real[n], real[n])`, `(real[n], real)`,
+        # `(real, real[n])`, `(int[n], int)`, `(int[n], int[n])`) are deliberately
+        # ABSENT — Stan has no elementwise `.* ./ .^` on `array[] int` / `array[] real`,
+        # so they are rejected loudly by the `Base.BroadcastFunction` `tracetype` guard
+        # (functions.jl) rather than silently emitting invalid Stan. Do not re-add them.
         (vector[n], real) => vector[n]
         (real, vector[n]) => vector[n]
         (vector[n], vector[n]) => vector[n]
