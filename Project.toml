@@ -22,7 +22,7 @@ PosteriorDBExt = "PosteriorDB"
 TestModules = {url = "https://github.com/nsiccha/TestModules.jl"}
 
 [compat]
-BridgeStan = "2.3"
+BridgeStan = "2.9"
 JSON = "0.18, 0.19, 0.20, 0.21, 1"
 LogDensityProblems = "2.1"
 OrderedCollections = "1.8"
