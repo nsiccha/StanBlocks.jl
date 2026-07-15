@@ -696,6 +696,40 @@ _infer_plate_rv_ct(ret_expr, fresh, params, iterables, idx; info) = begin
     end
 end
 
+# TRACE-THEN-PROMOTE discovery (rework, decision 1vujeta): trace the do-block
+# body ONCE in an ISOLATED probe scope to discover the fresh params/vars the body
+# creates AND their per-cell types — INCLUDING submodel-internal ones (a submodel
+# embeds via `SubModel`, flattening `t_z`/`t` into the probe's vars). The probe is
+# a StanModel with COPIED `vars` (bindings land in the copy) and SHARED `blocks`
+# (`forward!` only binds vars + returns canonical — block routing is a later pass,
+# so blocks stay untouched); pending is isolated in its own task-local. Nothing is
+# emitted; the probe is discarded. Returns (fresh::Vector{Pair{Symbol,StanType}}
+# in body order, ret_type). Top-level `info` only (a plate nested in a submodel is
+# a later case).
+_plate_discover(body_stmts, ret_expr, params, iterables, idx; info::StanModel) =
+    task_local_storage(:_slic_inline_pending, Any[]) do
+        probe = StanModel(meta(info), copy(vars(info)), blocks(info))
+        before = Set(keys(probe))
+        probe[idx] = StanExpr(idx, StanType(types.int; qual=:data))
+        if isempty(iterables) && length(params) == 1
+            probe[params[1]] = StanExpr(params[1], StanType(types.int; qual=:data))
+        else
+            for (a, it) in zip(params, iterables)
+                probe[a] = StanExpr(a, type(forward!(canonical(:($it[$idx])); info=probe)))
+            end
+        end
+        # Trace as a BLOCK (not per-statement) so submodel embedding binds its
+        # flattened result the same way the real model-body trace does.
+        isempty(body_stmts) || forward!(canonical(Expr(:block, body_stmts...)); info=probe)
+        ret = forward!(canonical(ret_expr); info=probe)
+        fresh = Pair{Symbol,Any}[]
+        for k in keys(probe)
+            (k in before || k == idx || k in params) && continue
+            push!(fresh, k => type(probe[k]))
+        end
+        (fresh=fresh, ret_type=type(ret))
+    end
+
 forward!(x::SamplingExpr{Symbol,<:CanonicalExprV{:plate}}; info) =
     _forward_plate!(x.args[1], nothing, x.args[2]; info)
 # Typed-LHS plate result `b::vector[K] ~ plate(…)` ⇒ vector cell output collected
