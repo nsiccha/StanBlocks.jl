@@ -418,6 +418,34 @@ end
     @test !transpiles(consts_bad_model; re=false)
 end
 
+@testset "slic: scalar-array elementwise arithmetic (prong 1)" begin
+    # Array-operand elementwise arithmetic on scalar arrays (`array[] int` /
+    # `array[] real`) lowers to the `jbroadcasted` element loop → a real `vector`,
+    # emitting VALID Stan. Guarded by `compiles` (stanc), NOT just `transpiles`:
+    # the pre-fix bug transpiled PASS but stanc REJECTed (StanBlocks fcb0f64 / dfd588a).
+    @test compiles(@slic (;Ks=[2,3,1]) begin d = Ks .+ 1; x ~ normal(1.0*sum(d), 1.) end)       # array .+ scalar
+    @test compiles(@slic (;Ks=[2,3,1]) begin d = 1 .+ Ks; x ~ normal(1.0*sum(d), 1.) end)       # commutative scalar-first reorder
+    @test compiles(@slic (;Ks=[2,3,1]) begin d = Ks .- 1; x ~ normal(1.0*sum(d), 1.) end)       # array .- scalar
+    @test compiles(@slic (;Ks=[2,3,1]) begin d = Ks .* Ks; x ~ normal(1.0*sum(d), 1.) end)      # array .* array
+    @test compiles(@slic (;rs=[1.0,2.0,3.0]) begin g = rs + rs; x ~ normal(1.0*sum(g), 1.) end) # real array + real array
+    # reporter's flagship `fe - Ks + 1` on int-array operands (closes the int-array snag)
+    @test compiles(@slic (;Ks=[2,3,1]) begin fe = cumulative_sum(Ks); fs = fe - Ks + 1; x ~ normal(1.0*sum(fs), 1.) end)
+    # lowered result is a real `vector` (int-preserving output waits on prong 3)
+    @test occursin("vector", stan_code(@slic (;Ks=[2,3,1]) begin d = Ks .+ 1; x ~ normal(1.0*sum(d), 1.) end))
+
+    # What does NOT lower must reject LOUDLY (no silent invalid Stan) — the dfd588a contract.
+    # (Scalar-first `.-`, e.g. `1 .- Ks`, is NOT here: prong 2 `9d878a5` lowers it via the
+    # negate identity `s .- arr == -(arr .- s)` — covered by prong 2's own hardening.)
+    @test !transpiles(@slic (;Ks=[2,3,1]) begin d = 1 ./ Ks; x ~ normal(1.0*sum(d), 1.) end; re=false)  # non-commutative scalar-first division (no identity → prong 2 backlog)
+    @test !transpiles(@slic (;Ks=[2,3,1]) begin d = Ks * Ks; x ~ normal(1.0*sum(d), 1.) end; re=false)  # plain `*` = matmul, not elementwise
+    @test !transpiles(@slic (;Ks=[2,3,1]) begin d = Ks / 2; x ~ normal(1.0*sum(d), 1.) end; re=false)   # plain `/`
+    @test !transpiles(@slic (;Ks=[2,3,1]) begin d = Ks ^ 2; x ~ normal(1.0*sum(d), 1.) end; re=false)   # plain `^`
+
+    # Vector arithmetic (scalar⊗vector, vector⊗vector) is unaffected by the new dispatch:
+    @test transpiles(@slic (;) begin a ~ std_normal(; n=3); c = a .* a; y ~ normal(sum(c), 1.) end)
+    @test transpiles(@slic (;) begin a ~ std_normal(; n=3); c = 3*a; y ~ normal(sum(c), 1.) end)
+end
+
 @testset "issue17" begin
     @test compiles(@slic (;n=10, y=1.) begin
         x ~ issue17(;n)
@@ -884,6 +912,85 @@ end
             a = rep_array(1., n)
             b = rep_array(2., m)
             c = append_array(a, b)
+        end)
+    end
+end
+
+@testset "slic: scalar-array elementwise broadcasting (jbroadcasted)" begin
+    # Generalised trace-level `jbroadcasted` (f4b601f): elementwise arithmetic on
+    # scalar arrays (`array[] int` / `array[] real` — what a `Vector{Int}` /
+    # `Vector{Float64}` data input becomes; NOT a native `vector`) has no Stan
+    # operator, so it lowers to an element loop whose output CONTAINER is inferred
+    # from `f`'s per-element return type — `int` stays `array[] int` (usable as an
+    # index), `real` → `vector[n]`. Native `vector` operands keep Stan's built-in
+    # scalar-vector ops (no lowering). GATE ON `compiles`, NOT `transpiles`: the
+    # pre-generalisation bug transpiled PASS but stanc REJECTed (StanBlocks primer,
+    # `4b45a5ac` scalar-array section).
+    @testset "int array stays int (reporter: fs = fe - Ks + 1)" begin
+        model = @slic (;fe=[3,4,5], Ks=[1,1,1]) begin
+            fs = fe - Ks + 1
+            mu ~ std_normal()
+            mu
+        end
+        code = stan_code(model)
+        # int container preserved — NOT silently coerced to a real `vector`
+        @test occursin(r"array\[\w*\] int (?:\w+ )?fs\b", code)
+        @test !occursin(r"vector\[\w*\] (?:\w+ )?fs\b", code)
+        @test occursin("jbroadcasted_add", code)
+        @test occursin("jbroadcasted_sub", code)
+        @test compiles(model)
+    end
+    @testset "real scalar-array → vector" begin
+        model = @slic (;n=4) begin
+            ra = rep_array(1.5, n)   # array[n] real
+            z  = 2.0 .- ra           # scalar-array real → jbroadcasted → vector
+            mu ~ std_normal()
+            mu
+        end
+        @test occursin("jbroadcasted_sub", stan_code(model))
+        @test check_type(model, :z, "vector")
+        @test compiles(model)
+    end
+    @testset "scalar-first ./ and .^ on a real array lower (any arg position)" begin
+        # Previously fell through to the loud reject (no commute/negate identity);
+        # the generalised any-position jbroadcasted lowers them directly.
+        model = @slic (;n=4) begin
+            ra = rep_array(2.0, n)
+            q  = 3.0 ./ ra
+            p  = 3.0 .^ ra
+            mu ~ std_normal()
+            mu
+        end
+        @test occursin("jbroadcasted", stan_code(model))
+        @test compiles(model)
+    end
+    @testset "native vector operand keeps built-in scalar-vector op (no lowering)" begin
+        model = @slic (;w=[1.0,2.0,3.0]) begin   # Vector{Float64} → Stan vector
+            z = 2.0 .- w
+            mu ~ std_normal()
+            mu
+        end
+        @test !occursin("jbroadcasted", stan_code(model))
+        @test compiles(model)
+    end
+    @testset "regression: binomial_lpmfs caller keeps real vector[n]" begin
+        # jbroadcasted backs every `*_lpmfs` distribution — the container inference
+        # must keep the real-element path a `vector[n]`, not flip it to `array[] int`.
+        model = @slic (;y=[0,1,1,0,1], N=[2,2,2,2,2]) begin
+            p ~ std_normal(;lower=0., upper=1.)
+            y ~ binomial(N, p)
+            p
+        end
+        @test occursin(r"vector\[\w*\] (?:\w+ )?y_likelihood\b", stan_code(model))
+        @test compiles(model)
+    end
+    @testset "reject floor: plain * / ^ on scalar arrays still loudly rejected" begin
+        # Matmul/dim-shaped `*` on arrays is NOT elementwise — must stay rejected,
+        # never silently miscompiled.
+        @test_throws Exception stan_code(@slic (;a=[1,2,3], b=[1,2,3]) begin
+            c = a * b
+            mu ~ std_normal()
+            mu
         end)
     end
 end

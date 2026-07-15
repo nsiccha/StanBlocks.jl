@@ -103,12 +103,40 @@ tracetype(x::CanonicalExpr) = begin
     end
     StanType(types.anything)
 end
+# Stan defines the elementwise arithmetic operators `+ - * / ^` (and their
+# broadcast forms `.+ .- .* ./ .^`) only on `vector` / `row_vector` / `matrix`
+# operands — NEVER on plain scalar arrays (`array[] int` / `array[] real` /
+# `array[] complex`). A `tracetype` that returned `int[n]` / `real[n]` for such a
+# call transpiles PASS but stanc REJECTs it downstream ("Semantic error"): a
+# silent miscompile. `_reject_scalar_array_elementwise` fails LOUDLY at trace time
+# with the actionable fix instead of emitting invalid Stan. (Correct lowering — an
+# @deffun element loop or a `to_vector` round-trip — is a possible future
+# enhancement; today the loud rejection is the contract.)
+_is_scalar_array(t::StanType) = center_type(t) <: types.complex && l_ndim(t) >= 1
+_reject_scalar_array_elementwise(x::CanonicalExpr) = begin
+    any(a -> _is_scalar_array(type(a)), x.args) || return nothing
+    error(
+        "Elementwise arithmetic (`+ - * / ^`, `.+ .- .* ./ .^`) is not supported on scalar ",
+        "arrays (`array[] int` / `array[] real`): Stan defines it only on `vector` / ",
+        "`row_vector` / `matrix`. Got `", short_expr(x), "`. Compute it element-by-element in ",
+        "an @deffun function-body loop, or convert to a `vector` via `to_vector(...)` first."
+    )
+end
 tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = if length(x.args) > 2
     f = head(x)
     tracetype(CanonicalExpr(f, x.args[1], stan_expr(CanonicalExpr(f, x.args[2:end]...))))
-else 
+else
+    _reject_scalar_array_elementwise(x)
     error("tracetype not defined for $(short_expr(x))!")
     StanType(types.anything)
+end
+# Broadcast `.* ./ .^` route to `Base.BroadcastFunction` (unlike `.+`/`.-`, which
+# `broadcast_callee` rewrites to plain `+`/`-` above). Reject scalar-array operands
+# the same way, then preserve the generic fallthrough so valid-but-untabulated
+# broadcasts (e.g. `matrix .* matrix`) keep their current inferred type.
+tracetype(x::CanonicalExpr{<:Base.BroadcastFunction}) = begin
+    _reject_scalar_array_elementwise(x)
+    invoke(tracetype, Tuple{CanonicalExpr}, x)
 end
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 1),))))
@@ -1010,7 +1038,7 @@ func_name(x::Function) = string(x)
 # function to its Stan-side name fragment used for call-site mangling.
 for (f, nm) in (
     (&, "and"), (|, "or"), (>=, "gte"), (>, "gt"), (==, "eq"),
-    (<=, "lte"), (<, "lt"), (+, "add"), (-, "sub"), (*, "mul"), (/, "div"),
+    (<=, "lte"), (<, "lt"), (+, "add"), (-, "sub"), (*, "mul"), (/, "div"), (^, "pow"),
     # Julia functions with different Stan names
     (length, "num_elements"), (minimum, "min"), (maximum, "max"), (abs2, "square"),
 )

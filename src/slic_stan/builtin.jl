@@ -373,34 +373,10 @@ import Statistics
     binomial_logit_rng(n::vector[m], p::vector[m])::int[m]
     broadcasted_getindex(x, i) = x
     broadcasted_getindex(x::anything[m], i) = x[i]
-    jbroadcasted(f, x1::anything[n]) = begin 
-        rv::vector[n]
-        for i in 1:n
-            rv[i] = f(broadcasted_getindex(x1, i))
-        end
-        rv
-    end
-    jbroadcasted(f, x1::anything[n], x2) = begin 
-        rv::vector[n]
-        for i in 1:n
-            rv[i] = f(broadcasted_getindex(x1, i), broadcasted_getindex(x2, i))
-        end
-        rv
-    end
-    jbroadcasted(f, x1::anything[n], x2, x3) = begin
-        rv::vector[n]
-        for i in 1:n
-            rv[i] = f(broadcasted_getindex(x1, i), broadcasted_getindex(x2, i), broadcasted_getindex(x3, i))
-        end
-        rv
-    end
-    jbroadcasted(f, x1::anything[n], x2, x3, x4) = begin
-        rv::vector[n]
-        for i in 1:n
-            rv[i] = f(broadcasted_getindex(x1, i), broadcasted_getindex(x2, i), broadcasted_getindex(x3, i), broadcasted_getindex(x4, i))
-        end
-        rv
-    end
+    # `jbroadcasted(f, args...)` is a TRACE-LEVEL construct (custom tracetype +
+    # fundef below, not a fixed-arity @deffun): arbitrary arity, any array-arg
+    # positions, and an INFERRED output container (int element → array[] int,
+    # real element → vector[n]). Its Stan function is generated per call shape.
     vector_std_normal_rng(n::int)::vector[n] = to_vector(normal_rng(rep_vector(0, n), 1))
     # Sized-token rng overloads are generated via `@eval @deffun` loops below
     # (after the block closes). See comment at the @eval block.
@@ -1191,19 +1167,19 @@ end
     typeof(÷) => begin 
         (int, int) => int
     end
-    Union{typeof.((+, -, ^, *, /))...} => begin 
+    Union{typeof.((+, -, ^, *, /))...} => begin
         (real,) => real
         (vector[n],) => vector[n]
         (int, real) => real
         (int, int) => int
         (real, int) => real
         (real, real) => real
-        (real[n], real[n]) => real[n]
-        (int[n], int[n]) => int[n]
-        (int[n], int) => int[n]
+        # NOTE: scalar-array operand rows (`(int[n], int[n])`, `(int[n], int)`,
+        # `(int, int[n])`, `(real[n], real[n])`, `(real, real[n])`) are deliberately
+        # ABSENT — Stan has no elementwise `+ - * / ^` on `array[] int` / `array[] real`,
+        # so they are rejected loudly by `_reject_scalar_array_elementwise` (functions.jl)
+        # rather than silently emitting invalid Stan. Do not re-add them.
         (int, vector[n]) => vector[n]
-        (int, int[n]) => int[n]
-        (real, real[n]) => real[n]
         (real, vector[n]) => vector[n]
         (real, matrix[m,n]) => matrix[m,n]
         (vector[n], real) => vector[n]
@@ -1315,13 +1291,13 @@ end
         (int[n], real, vector[n]) => int[n]
         (int[n], vector[n], vector[n]) => int[n]
     end
-    Base.BroadcastFunction => begin 
+    Base.BroadcastFunction => begin
         (real, real) => real
-        (real[n], real[n]) => real[n]
-        (real[n], real) => real[n]
-        (real, real[n]) => real[n]
-        (int[n], int) => int[n]
-        (int[n], int[n]) => int[n]
+        # NOTE: scalar-array operand rows (`(real[n], real[n])`, `(real[n], real)`,
+        # `(real, real[n])`, `(int[n], int)`, `(int[n], int[n])`) are deliberately
+        # ABSENT — Stan has no elementwise `.* ./ .^` on `array[] int` / `array[] real`,
+        # so they are rejected loudly by the `Base.BroadcastFunction` `tracetype` guard
+        # (functions.jl) rather than silently emitting invalid Stan. Do not re-add them.
         (vector[n], real) => vector[n]
         (real, vector[n]) => vector[n]
         (vector[n], vector[n]) => vector[n]
@@ -1456,6 +1432,62 @@ const ReduceSumFunction = Union{typeof.((reduce_sum, reduce_sum_static))...}
 tracetype(x::CanonicalExpr{<:ODESolver}) = StanType(
     types.vector, (stan_size(x.args[4], 1), stan_size(x.args[2], 1))
 )
+
+# ── Generalised `jbroadcasted(f, a1, …, ak)` — trace-level element loop ──
+# Applies `f` element-wise over its iterated args (any arity, any position):
+# iterated args (anything with a leading dimension — `vector`/`row_vector`,
+# `array[] T`, `matrix`) are indexed per element, scalar args pass through, and
+# the loop size comes from the first iterated arg. The output CONTAINER is
+# INFERRED from `f`'s per-element return type — an `int` element gives
+# `array[] int`, a `real` element gives `vector[n]` — so int-array broadcasting
+# stays int while the real path (every `*_lpmfs`/`*_lpdfs` caller, whose data /
+# location args are native `vector`s) is unchanged. The iterability predicate is
+# `stan_ndim >= 1` (NOT `l_ndim`, which is `array[]`-only and misses `vector`s —
+# that gap silently broke the vectorised `normal(vector, real)` likelihood). The
+# Stan function is generated per call shape (mirrors the @deffun body build + the
+# reduce_sum trace-level fundef); `broadcasted_getindex` does the per-arg slice.
+_jb_iterated(a) = stan_ndim(type(a)) >= 1
+_jb_elem(a) = _jb_iterated(a) ? stan_expr(CanonicalExpr(getindex, a, stan_expr(1, 1))) : a
+_jb_infer(x::CanonicalExpr) = begin
+    f, dargs = x.args[1], x.args[2:end]
+    ai = findfirst(_jb_iterated, dargs)
+    isnothing(ai) && error("jbroadcasted: needs at least one iterated (vector/array) argument")
+    n = stan_size(type(dargs[ai]), 1)
+    elem_rt = type(stan_expr(CanonicalExpr(f, map(_jb_elem, dargs)...)))
+    stan_ndim(elem_rt) == 0 || error("jbroadcasted: `f` must return a scalar per element (got `$(sigtype(elem_rt))`)")
+    container = center_type(elem_rt) <: types.int ? types.int : types.vector
+    (; f, dargs, ai, n, container)
+end
+tracetype(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
+    inf = _jb_infer(x)
+    StanType(inf.container, (inf.n,))
+end
+fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
+    inf = _jb_infer(x)
+    k = length(inf.dargs)
+    argnames = [Symbol("x", i) for i in 1:k]
+    f_ph = anon_expr(:f, inf.f)
+    arg_phs = [anon_expr(argnames[i], inf.dargs[i]) for i in 1:k]
+    n_expr = StanExpr(:n, StanType(types.int, ()))
+    container_sym = inf.container === types.int ? :int : :vector
+    slices = [:($broadcasted_getindex($(argnames[j]), i)) for j in 1:k]
+    body_ast = Expr(:block,
+        :(rv :: $container_sym[n]),
+        Expr(:for, :(i = 1:n), Expr(:block, :(rv[i] = f($(slices...))))),
+        :rv,
+    )
+    info = OrderedDict{Symbol,Any}(:f => f_ph, :n => n_expr)
+    for i in 1:k
+        info[argnames[i]] = arg_phs[i]
+    end
+    info[:__mod__] = parentmodule(typeof(jbroadcasted))
+    n_decl = string("int n = dims(", argnames[inf.ai], ")[1];")
+    StanFunction3(
+        "", StanType(inf.container, (n_expr,)), jbroadcasted,
+        (; f=f_ph, (argnames[i] => arg_phs[i] for i in 1:k)...),
+        [n_decl, forward!(canonical(ensure_xreturn(body_ast)); info)],
+    )
+end
 
 fetch_functions!(x::CanonicalExpr{<:TolODESolver}; info) = fetch_functions!(
     CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[8:end]..., _closure_captures(x.args[1])...); info

@@ -77,6 +77,37 @@ expand_inline_or_trace(x::CanonicalExpr; info) = begin
     isnothing(meta) && return fold_shape_query(stan_expr(x))
     expand_inline!(x, meta; info)
 end
+# ── Elementwise arithmetic on scalar arrays → lower to the `jbroadcasted` loop ──
+# Stan has no elementwise arithmetic on `array[] int`/`array[] real` (nor a
+# dotted `.+`/`.-` — `broadcast_callee` collapses those to plain `+`/`-`), so a
+# binary `+`/`-` or a broadcast `.* ./ .^` with a scalar-array operand is lowered
+# to the generalised `jbroadcasted` element loop (builtin.jl) instead of emitting
+# invalid Stan. `jbroadcasted` handles ANY arg position (array-first,
+# scalar-first, arbitrary arity) and INFERS the output container from `f`'s
+# per-element return type, so the operator + operands pass straight through — no
+# commuting/negating dance (the old array-first-only form needed one, and its
+# `s .- arr == -(arr .- s)` identity has since become wrong: `jbroadcasted`'s
+# int-array result has no valid Stan unary minus). Both plain and dotted `+`/`-`
+# lower (Julia-consistent: `+` on arrays is elementwise); plain `*`/`/`/`^` on
+# arrays stay rejected (a matmul/dim error in Julia, not elementwise) via the
+# `_reject_scalar_array_elementwise` floor. Only binary (2-arg) operators lower;
+# a rare >2-arg form falls through to that reject rather than miscompiling.
+_broadcast_op(f) = f
+_broadcast_op(f::Base.BroadcastFunction) = f.f
+_lower_scalar_array_broadcast(x::CanonicalExpr; info) = begin
+    length(x.args) == 2 || return nothing
+    l, r = x.args
+    (_is_scalar_array(type(l)) || _is_scalar_array(type(r))) || return nothing
+    forward!(CanonicalExpr(builtin.jbroadcasted, _broadcast_op(head(x)), l, r); info)
+end
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(+),typeof(-)}}; info) = begin
+    rv = _lower_scalar_array_broadcast(x; info)
+    isnothing(rv) ? fold_shape_query(stan_expr(x)) : rv
+end
+expand_inline_or_trace(x::CanonicalExpr{<:Base.BroadcastFunction}; info) = begin
+    rv = _lower_scalar_array_broadcast(x; info)
+    isnothing(rv) ? fold_shape_query(stan_expr(x)) : rv
+end
 # `isdefined(builtin, x)` returns true even for names inherited from Base
 # (e.g. `accumulate!`), which would mask user-defined SLIC UDFs that share
 # Base's name. Restrict to bindings actually owned by the `builtin` module.
