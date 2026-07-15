@@ -57,13 +57,6 @@ _base_lhs_symbol(x::CanonicalExpr) = _base_lhs_symbol(x.args[1])
 # (a `DeclExpr` = single-arg `CanonicalExprV{:(::)}` whose one arg is the typed
 # symbol, itself a `StanExpr{Symbol}` post-`forward!`).
 _decl_lhs_symbol(x::DeclExpr) = _base_lhs_symbol(x.args[1])
-# True iff `x` was registered via an explicit `DeclExpr` (`forward!(::DeclExpr)`
-# sets `fresh_decl=true`). Distinguishes a fresh-declared local/derived var — into
-# which a compiler-injected slice-fill IS legal even at `:parameter` qual (it's a
-# transformed parameter under construction) — from a SAMPLED Stan parameter, which
-# is read-only and must reject the fill. `info(::StanType)` is the type-info
-# accessor (kept out of the kwarg-`info` methods below to avoid the name clash).
-_is_fresh_decl(x::StanExpr) = get(info(type(x)), :fresh_decl, false)
 backward!(x::AssignmentExpr; info) = begin
     lhs = x.args[1]
     key = _base_lhs_symbol(lhs)
@@ -73,11 +66,26 @@ backward!(x::AssignmentExpr; info) = begin
             "Compiler-generated slice-fill of `", key, "[…]` but `", key, "` is not declared ",
             "in model scope — the inlining/plate emitter must register the base variable first."
         )
-        (qual(info[key]) == :parameter && !_is_fresh_decl(info[key])) && error(
-            "Cannot assign to a slice/element of parameter `", key, "` in the model block — Stan ",
-            "parameters are read-only there (this typically comes from inlining a mutating helper ",
-            "onto a parameter; fill a local/derived vector instead)."
-        )
+        # CERTIFICATE: a compiler-injected slice-fill is legitimate only into a var
+        # declared FRESH via `::` (`forward!(::DeclExpr)` stamps `fresh_decl`) — a
+        # transformed-quantity result under construction, whose qual is determined
+        # solely by its fills. Any other base is read-only for element assignment in a
+        # model block: a SAMPLED parameter (Stan-read-only), a DATA var (Stan-read-only),
+        # or an ASSIGNMENT-bound/derived var (its qual is already committed — SSA can't
+        # un-commit it in one pass; the settled "pre-committed var" bar). Reject all.
+        (_is_fresh_decl(info[key]) && _decl_role(info[key]) == :fill) || let q = qual(info[key])
+            q == :parameter ? error(
+                "Cannot assign to a slice/element of parameter `", key, "` in the model block — Stan ",
+                "parameters are read-only there (this typically comes from inlining a mutating helper ",
+                "onto a parameter; fill a freshly-declared local/derived vector instead)."
+            ) : error(
+                "Compiler-injected slice-fill onto `", key, "`, which is not a fresh declaration (it is ",
+                q == :data ? "data" : "an assignment-bound/derived value",
+                ", read-only for element assignment in a model block). Slice-fills are supported only into ",
+                "a vector declared fresh via `::` inside the inlined body (`out::T`); the emitter must ",
+                "target such a result."
+            )
+        end
     end
     if lqual(info[key]) == :affects_likelihood
         lhs2, rhs = x.args
@@ -99,9 +107,25 @@ else
     remake(x, remake(lhs, qual=:quantities), rhs)
 end
 backward!(x::SamplingExpr; info) = begin 
-    @assert qual(x.args[1]) == :data
     lhs, rhs = x.args
-    remake(x, backward!(lhs; info), backward!(rhs; info))
+    key = _base_lhs_symbol(lhs)
+    if key in keys(info) && _is_fresh_decl(info[key]) && _decl_role(info[key]) == :sampled
+        if lqual(info[key]) == :affects_likelihood
+            # A plate parameter used by a later likelihood remains a parameter;
+            # propagate that reachability into its prior's RHS exactly like the
+            # established bare-Symbol sampling path above.
+            remake(x, lhs, backward!(rhs; info))
+        else
+            # Prior-only plate locals are generated quantities, matching the
+            # existing prior-predictive treatment of unused Symbol samples. The
+            # separate outer declaration reads this updated qualifier later.
+            info[key] = remake(info[key]; qual=:quantities)
+            remake(x, remake(lhs; qual=:quantities), rhs)
+        end
+    else
+        @assert qual(lhs) == :data
+        remake(x, backward!(lhs; info), backward!(rhs; info))
+    end
 end
 backward!(x::ReturnExpr; info) = x
 backward!(x::DocumentExpr; info) = remake(x, backward!.(x.args; info)...)
@@ -152,13 +176,20 @@ else
     (:generated_quantities, )
 end
 distribution_blocks(x::SamplingExpr; info) = if qual(x) == :data
-    if cv(x.args[1])
+    if !(expr(x.args[1]) isa Symbol)
+        # Indexed observations inside a compiler-owned plate loop contribute to
+        # the model only. The ordinary generated-quantities observation/rng
+        # expansion assumes a whole named LHS and cannot represent one cell.
+        (:model,)
+    elseif cv(x.args[1])
         (:generated_quantities,)
     else
         (:model, :generated_quantities)
     end
 elseif qual(x) == :parameter
-    (:parameters, :model)
+    # A plate producer emits the outer declaration separately; an indexed
+    # sampling statement contributes only the model-side prior/likelihood.
+    expr(x.args[1]) isa Symbol ? (:parameters, :model) : (:model,)
 else
     (:generated_quantities, )
 end
@@ -191,7 +222,18 @@ end
 # wrapper's own qual is the stale declaration-time `:undefined`; ignore it.
 _qual_blocks(q) = q == :data ? (:transformed_data,) :
     q == :parameter ? (:transformed_parameters,) : (:generated_quantities,)
-distribution_blocks(x::StanExpr{<:DeclExpr}; info) = _qual_blocks(qual(info[_decl_lhs_symbol(expr(x))]))
+distribution_blocks(x::StanExpr{<:DeclExpr}; info) = begin
+    base = info[_decl_lhs_symbol(expr(x))]
+    role = _decl_role(base)
+    if role in (:unfilled, :sampled)
+        qual(base) == :parameter ? (:parameters,) : (:generated_quantities,)
+    else
+        role == :fill || error(
+            "Fresh declaration `", expr(base), "` reached distribution with unknown role `", role, "`."
+        )
+        _qual_blocks(qual(base))
+    end
+end
 distribution_blocks(x::StanExpr{<:AssignmentExpr}; info) = _qual_blocks(qual(info[_base_lhs_symbol(expr(x))]))
 # A compiler-injected `for` loop whose body is fills (Feature-1 ragged-simplex:
 # `for(g in 1:G) p_flat[lo:hi] = simplex_jacobian(...)`, G data-sized so it can't
@@ -210,6 +252,47 @@ _for_body_qual(fe::ForExpr, info) = begin
     q
 end
 distribution_blocks(x::StanExpr{<:ForExpr}; info) = _qual_blocks(_for_body_qual(expr(x), info))
+
+# Route a compiler-owned loop FINE-GRAINED by body statement while preserving a
+# coarse symbolic runtime loop in every destination block. A plate body commonly
+# needs one model loop for indexed `~` statements and one transformed-parameters
+# loop for its returned-cell fill. This is still one LOGICAL plate loop; Stan's
+# block separation requires cloning its structural head around the relevant
+# statement subsets.
+_loop_distribution_blocks(::Union{LineNumberNode,Nothing}; info) = ()
+_loop_distribution_blocks(x; info) = distribution_blocks(x; info)
+_loop_distribution_stmt(x, ::Val; info) = x
+_loop_distribution_stmt(x::SamplingExpr, ::Val{:generated_quantities}; info) = begin
+    expr(x.args[1]) isa Symbol && error(
+        "Compiler-owned loop contains a non-indexed generated-quantities sample. Plate locals must use an outer declaration and indexed sampling."
+    )
+    _indexed_rng_assignment(x)
+end
+distribute!(x::StanExpr{<:ForExpr}; info) = begin
+    _push_expr!(info, x)
+    try
+        fe = expr(x)
+        head, body = fe.args
+        grouped = OrderedDict{Symbol,Vector{Any}}()
+        for stmt in body.args
+            for b in _loop_distribution_blocks(stmt; info)
+                b in (:data, :parameters) && error(
+                    "Compiler-owned loop body statement `", stmt, "` tried to emit into declarative block `", b,
+                    "`. Plate parameters must have an outer declaration before the loop and use indexed sampling inside it."
+                )
+                push!(get!(() -> Any[], grouped, b),
+                    _loop_distribution_stmt(stmt, Val(b); info))
+            end
+        end
+        for (b, stmts) in grouped
+            loop = StanExpr(remake(fe, head, remake(body, stmts...)), type(x))
+            push!(block(info, b), loop; info)
+        end
+    finally
+        _pop_expr!(info)
+    end
+    nothing
+end
 
 DeclarativeBlock = Union{DataBlock,ParametersBlock}
 ImperativeBlock = Union{FunctionsBlock,TransformedDataBlock,TransformedParametersBlock,ModelBlock,GeneratedQuantitiesBlock}
@@ -252,6 +335,8 @@ Base.push!(b::StanBlock, x::DocumentExpr; info) = begin
     push!(remake(b, remake(x, x.args[1], b)), x.args[2]; info)
 end
 Base.push!(b::DeclarativeBlock, x::SamplingExpr; info) = push!(b, x.args[1]; info)
+Base.push!(b::DeclarativeBlock, x::StanExpr{<:DeclExpr}; info) =
+    push!(b, info[_decl_lhs_symbol(expr(x))]; info)
 Base.push!(b::DeclarativeBlock, x::StanExpr{Symbol}; info) = begin
     fetch_data!(type(x); info)
     get!(content(b), expr(x), x)
@@ -284,6 +369,21 @@ Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     rng_rhs = rng_expr(token, rhs)
     lhs = StanExpr(expr(lhs), remake(type(rng_rhs); value=missing))
     push!(b, CanonicalExpr(:(=), lhs, rng_rhs); info)
+end
+# Prior-only indexed plate parameters are lowered cell-wise in generated
+# quantities: their outer declaration is already present there, so each loop
+# statement becomes `x[i] = dist_rng(...)` rather than trying to synthesize a
+# second whole-variable name from the getindex expression.
+Base.push!(b::GeneratedQuantitiesBlock,
+        x::SamplingExpr{<:StanExpr{<:CanonicalExpr}}; info) = begin
+    push!(b, _indexed_rng_assignment(x); info)
+end
+_indexed_rng_assignment(x::SamplingExpr) = begin
+    lhs, rhs = x.args
+    lhs_ct = center_type(lhs)
+    token = StanExpr(lhs_ct,
+        StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
+    CanonicalExpr(:(=), lhs, rng_expr(token, rhs))
 end
 
 function lpxf_expr end

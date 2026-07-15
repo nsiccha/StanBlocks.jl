@@ -125,7 +125,23 @@ Base.setindex!(x::SubModel, value, name) = begin
     setindex!(parent(x), supvalue(x, value), supname(x, name))
     setindex!(locals(x), getindex(parent(x), supname(x, name)), name)
 end
+# A symbol-valued local is represented by its FLATTENED name in the parent
+# model (`theta_x`, not `x`).  Replacing its type metadata later (qualifier,
+# declaration role, likelihood reachability) must keep that one prefix rather
+# than feeding the already-prefixed symbol through `supvalue` a second time.
+Base.setindex!(x::SubModel, value::StanExpr{Symbol}, local_name) = begin
+    parent_name = supname(x, local_name)
+    setindex!(parent(x), StanExpr(parent_name, type(value)), parent_name)
+    setindex!(locals(x), getindex(parent(x), parent_name), local_name)
+end
 Base.keys(x::SubModel) = keys(locals(x))
+# Compiler-owned loops temporarily register their index in whichever scope is
+# tracing the body.  Remove both views when that scope is a flattened submodel.
+Base.pop!(x::SubModel, local_name) = begin
+    value = pop!(locals(x), local_name)
+    pop!(parent(x), supname(x, local_name))
+    value
+end
 supname(x::SubModel, post) = Symbol(name(x), "_", post)
 supvalue(x::SubModel, value) = value
 supvalue(x::SubModel, value::StanExpr{Symbol}) = StanExpr(supname(x, expr(value)), type(value))
@@ -227,6 +243,8 @@ _submodel_positional_error(args...) = error(
 qual(x) = :data
 qual(x::StanExpr) = qual(type(x))
 qual(x::StanType) = get(info(x), :qual, :undefined)
+_is_fresh_decl(x::StanExpr) = get(info(type(x)), :fresh_decl, false)
+_decl_role(x::StanExpr) = get(info(type(x)), :decl_role, :none)
 lqual(x) = :undefined
 lqual(x::StanExpr) = lqual(type(x))
 lqual(x::StanType) = get(info(x), :lqual, :undefined) 

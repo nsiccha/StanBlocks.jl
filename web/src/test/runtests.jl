@@ -1228,6 +1228,231 @@ end
     @test !transpiles(reject_model; re=false)
 end
 
+# --- regression: cert-marker read-only gate for compiler-injected slice-fills (case-3) ---
+# The gate in `backward!(::AssignmentExpr)` (passes.jl) routes a compiler-injected
+# slice-fill IFF its base was declared FRESH via `::` (`fresh_decl`, stamped by
+# `forward!(::DeclExpr)`); EVERY other base is read-only for element assignment in a
+# model block and must reject. Commit a6bf5a3 (todo 4dhw3f) GENERALISED the earlier
+# parameter-only gate to also catch two cases the testset above never exercised (it
+# predates the cert marker): a DATA input, and a PRE-COMMITTED/derived local. Assert the
+# error *message* too, so a regression that rejects for the WRONG reason — or silently
+# mis-routes/accepts — surfaces here, not just a bare `!transpiles`. All four models use
+# the `c3_set_first!` mutating helper defined above (`buf[1]=42.; return buf`).
+_cert_reject_msg(m) = try; stan_code(m); nothing; catch e; sprint(showerror, e); end
+@testset "slic: cert-marker read-only gate (case-3)" begin
+    # SAMPLED parameter (untyped `~`): read-only ⇒ the parameter message.
+    m_param = @slic (;y=randn(4)) begin
+        theta ~ std_normal(;n=4)
+        s = c3_set_first!(theta)
+        y ~ normal(s, 1.0)
+    end
+    e_param = _cert_reject_msg(m_param)
+    @test e_param !== nothing
+    @test occursin("parameter `theta`", e_param) && occursin("read-only", e_param)
+
+    # SAMPLED parameter with a TYPED LHS (`theta::vector[n] ~ ...`): same reject. The
+    # typed-LHS trace path builds the type differently — it must NOT leak `fresh_decl`
+    # onto a sampled parameter (which would wrongly *accept* the fill).
+    m_typed = @slic (;y=randn(4)) begin
+        theta::vector[4] ~ std_normal()
+        s = c3_set_first!(theta)
+        y ~ normal(s, 1.0)
+    end
+    @test !transpiles(m_typed; re=false)
+
+    # DATA input: Stan data is read-only; filling it via an inlined mutating helper
+    # previously emitted invalid `xd[i] = ...` — now a clear reject (the DATA case,
+    # NEW in a6bf5a3). `xd` (a signature input) has no `fresh_decl`, so the gate fires.
+    m_data = @slic (;xd=randn(4)) begin
+        s = c3_set_first!(xd)
+        p ~ normal(s[1], 1.0)
+    end
+    e_data = _cert_reject_msg(m_data)
+    @test e_data !== nothing
+    @test occursin("`xd`", e_data) && occursin("not a fresh declaration", e_data) && occursin("data", e_data)
+
+    # PRE-COMMITTED / derived local (`w = 2 .* theta`): its qual is committed at its
+    # assignment — one-pass tracing can't un-commit it, so a later element-fill rejects
+    # (the settled SSA bar, NEW in a6bf5a3). Derived-from-parameter ⇒ `:parameter` qual,
+    # so the base is not `fresh_decl` and the gate fires.
+    m_derived = @slic (;y=randn(4)) begin
+        theta ~ std_normal(;n=4)
+        w = 2.0 .* theta
+        s = c3_set_first!(w)
+        y ~ normal(s, 1.0)
+    end
+    @test !transpiles(m_derived; re=false)
+end
+
+# --- regression: compiler-injected for-loop + range-indexed fresh-result fills ---
+# (case-3 deltas C.1 / C.2; commit 29c3b59 + todos 17cynmi / 1u392rh).
+# C.1 (ForExpr routing): an `@inline` UDF whose body is a `for`-loop fresh-result
+# fill (`out::vector[n]; for i in 1:n; out[i]=…; end; return out`), called DIRECTLY
+# from a model body, injects a REAL Stan `for` into the *model* body — where `info`
+# is the top-level StanModel. That path was never exercised before 29c3b59 (existing
+# injected loops only inline into forward-only @deffun bodies) and needed five gaps
+# fixed: `pop!(::StanModel)`, a `:data` qual on the loop index (else `:undefined`
+# poisoned `maximum(qual, args)` and mis-routed the loop to generated quantities),
+# `backward!`/`distribution_blocks`/`fetch_data!(::StanExpr{<:ForExpr})`. The loop
+# routes by the coarse (max) qual over the base vars its body fills and emits verbatim
+# via `show(::ForExpr)`, co-located with its decl + result-bind in ONE block.
+# C.2 (range-indexed LHS): a range fresh-result fill (`out[1:2]=x[1:2]`) coarse-grains
+# its range-getindex LHS to the base var (`_base_lhs_symbol(::CanonicalExpr)`), routing
+# exactly like a scalar fill (no code change — verify-only, todo 1u392rh).
+# GATE ON compiles() (stanc+BridgeStan): the qual-poisoning bug 29c3b59 fixed
+# mis-routed the loop while STILL passing stan_code/transpiles (primer §compiles-not-
+# codegen); the `!occursin("for(", generated quantities)` check guards that regression.
+
+# Extract a top-level Stan block's body (braces included) by brace-matching from its
+# header — robust to the nested braces of a `for(...){...}` loop body, which a
+# `…\{[^}]*…` regex (as used by the case-3 testset above) would truncate at the loop's
+# first inner `}`.
+function stan_block(code::AbstractString, name::AbstractString)
+    r = findfirst(name * " {", code)
+    isnothing(r) && return ""
+    i = last(r); depth = 0; start = i
+    while i <= lastindex(code)
+        c = code[i]
+        c == '{' && (depth += 1)
+        c == '}' && (depth -= 1; depth == 0 && return code[start:i])
+        i = nextind(code, i)
+    end
+    code[start:end]
+end
+
+@deffun @inline c3_forfill(x::vector[n])::vector[n] = begin
+    out::vector[n]
+    for i in 1:n
+        out[i] = x[i] * x[i]
+    end
+    return out
+end
+@deffun @inline c3_rangefill(x::vector[n])::vector[n] = begin
+    out::vector[n]
+    out[1:2] = x[1:2]
+    return out
+end
+
+# Test-only producer for the shared do-block plate ROUTING contract. The public
+# `rv ~ plate(...) do ... end` emitter is a separate feature; this hook injects
+# exactly its agreed lower-level shape: outer declarations followed by one
+# symbolic loop containing fresh indexed samples, a transformed result fill, a
+# data fill, and an indexed observation. Keeping the producer synthetic lets
+# this regression isolate the shared forward/backward/distribution machinery.
+function c3_plate_router_probe end
+function StanBlocks.stan.expand_inline_or_trace(
+        call::StanBlocks.stan.CanonicalExpr{typeof(c3_plate_router_probe)};
+        info)
+    n, obs = call.args
+    injected = quote
+        plate_x::vector[$n]
+        plate_y::vector[$n]
+        plate_prior::vector[$n]
+        plate_flat::real
+        plate_rv::vector[$n]
+        plate_data_copy::vector[$n]
+        for plate_i in 1:$n
+            plate_x[plate_i] ~ normal(0.0, 1.0)
+            plate_y[plate_i] ~ normal(plate_x[plate_i] + plate_flat, 1.0)
+            plate_prior[plate_i] ~ normal(0.0, 1.0)
+            plate_rv[plate_i] = plate_x[plate_i] + plate_y[plate_i]
+            plate_data_copy[plate_i] = $obs[plate_i]
+            $obs[plate_i] ~ normal(plate_rv[plate_i], 1.0)
+        end
+    end
+    StanBlocks.stan.forward!(StanBlocks.stan.canonical(injected); info)
+end
+
+c3_plate_router_submodel = @slic (;obs=randn(4), n=4) begin
+    c3_plate_router_probe(n, obs)
+    return plate_rv
+end
+c3_plate_router_model = @slic (;) begin
+    routed ~ c3_plate_router_submodel
+end
+
+@testset "slic: compiler-injected for-loop + range fresh-result fills (case-3 C.1/C.2)" begin
+    # C.1 PARAM: for-loop fresh fill from a parameter → loop+decl+bind in transformed parameters.
+    forfill_param = @slic (;y=randn(3)) begin
+        x ~ std_normal(;n=3)
+        r = c3_forfill(x)
+        y ~ normal(r, 1.0)
+    end
+    @test transpiles(forfill_param)
+    @test compiles(forfill_param)
+    let tp = stan_block(stan_code(forfill_param), "transformed parameters")
+        @test occursin("for(", tp)             # loop emitted symbolically (not unrolled)
+        @test occursin(r"\bout__il_\d+", tp)   # fresh-result decl co-located in the same block
+    end
+    # qual-routing guard (29c3b59): the loop must NOT land in generated quantities.
+    @test !occursin("for(", stan_block(stan_code(forfill_param), "generated quantities"))
+
+    # C.1 DATA: for-loop fresh fill from data → transformed data.
+    forfill_data = @slic (;xd=randn(3)) begin
+        r = c3_forfill(xd)
+        p ~ std_normal()
+    end
+    @test transpiles(forfill_data)
+    @test compiles(forfill_data)
+    let td = stan_block(stan_code(forfill_data), "transformed data")
+        @test occursin("for(", td)
+        @test occursin(r"\bout__il_\d+", td)
+    end
+
+    # C.2 PARAM: range-indexed fresh fill from a parameter → transformed parameters,
+    # base-coarse-grained (out[1:2] routes by base `out`, like a scalar fill).
+    rangefill_param = @slic (;y=randn(3)) begin
+        x ~ std_normal(;n=3)
+        r = c3_rangefill(x)
+        y ~ normal(r[1], 1.0)
+    end
+    @test transpiles(rangefill_param)
+    @test compiles(rangefill_param)
+    @test occursin(r"out__il_\d+\[1:2\]\s*=", stan_block(stan_code(rangefill_param), "transformed parameters"))
+
+    # C.2 DATA: range-indexed fresh fill from data → transformed data.
+    rangefill_data = @slic (;xd=randn(3)) begin
+        r = c3_rangefill(xd)
+        p ~ std_normal()
+    end
+    @test transpiles(rangefill_data)
+    @test compiles(rangefill_data)
+    @test occursin(r"out__il_\d+\[1:2\]\s*=", stan_block(stan_code(rangefill_data), "transformed data"))
+end
+
+@testset "slic: mixed sampling/fill routing in compiler-owned plate loop" begin
+    @test transpiles(c3_plate_router_model)
+    @test compiles(c3_plate_router_model)
+    code = stan_code(c3_plate_router_model)
+
+    let parameters = stan_block(code, "parameters")
+        @test occursin("vector[n] routed_plate_x", parameters)
+        @test occursin("vector[n] routed_plate_y", parameters)
+        @test occursin("real routed_plate_flat", parameters)
+        @test !occursin("routed_plate_rv", parameters)
+    end
+    let td = stan_block(code, "transformed data")
+        @test occursin("for(routed_plate_i in 1:n)", td)
+        @test occursin("routed_plate_data_copy[routed_plate_i] = obs[routed_plate_i]", td)
+    end
+    let tp = stan_block(code, "transformed parameters")
+        @test occursin("for(routed_plate_i in 1:n)", tp)
+        @test occursin("routed_plate_rv[routed_plate_i] =", tp)
+    end
+    let model_block = stan_block(code, "model")
+        @test occursin("for(routed_plate_i in 1:n)", model_block)
+        @test occursin("routed_plate_x[routed_plate_i] ~ normal", model_block)
+        @test occursin("routed_plate_y[routed_plate_i] ~ normal", model_block)
+        @test occursin("obs[routed_plate_i] ~ normal", model_block)
+        @test !occursin("routed_plate_rv[routed_plate_i] =", model_block)
+    end
+    let gq = stan_block(code, "generated quantities")
+        @test occursin("vector[n] routed_plate_prior", gq)
+        @test occursin("for(routed_plate_i in 1:n)", gq)
+        @test occursin("routed_plate_prior[routed_plate_i] = normal_rng", gq)
+    end
+end
+
 # === posteriordb.jl tests ===
 
 # Generate per-model test functions for PosteriorDB

@@ -388,10 +388,34 @@ end
 _promote_qual(cur::Symbol, new::Symbol) =
     cur === :undefined ? new : (new === :undefined ? cur : max(cur, new))
 forward!(x::AssignmentExpr; info) = begin
+    # Keep the local/raw key before forwarding: inside a `SubModel`, forwarding
+    # rewrites the emitted base to its flattened parent name while `keys(info)`
+    # intentionally remains the local-name view.
+    local_key = _base_lhs_symbol(x.args[1])
     fwd = stan_expr(remake(x, forward!(x.args; info)...))
     lhs, rhs = expr(fwd).args
-    k = _base_lhs_symbol(lhs)   # descends the getindex LHS to its base Symbol
-    k in keys(info) && (info[k] = remake(info[k]; qual=_promote_qual(qual(info[k]), qual(rhs))))
+    k = local_key in keys(info) ? local_key : _base_lhs_symbol(lhs)
+    if k in keys(info)
+        base = info[k]
+        if _is_fresh_decl(base)
+            role = _decl_role(base)
+            role == :sampled && error(
+                "Cannot fill `", k, "[…]` after it has been classified as a plate parameter by indexed sampling."
+            )
+            if role == :unfilled
+                # User decision `1dd0eww`: a bare declaration starts life as a
+                # flat-prior parameter, then its FIRST certified indexed fill
+                # reclassifies it as a transformed fill target.  Reset (rather
+                # than promote) the qualifier to that first RHS.
+                info[k] = remake(base; decl_role=:fill, qual=qual(rhs))
+            else
+                role == :fill || error("Fresh declaration `", k, "` has unknown declaration role `", role, "`.")
+                info[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)))
+            end
+        else
+            info[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)))
+        end
+    end
     fwd
 end
 forward!(x::SamplingExpr{Symbol}; info) = begin
@@ -507,6 +531,40 @@ _forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) = begin
     ]
     _do_retrace_inline_body(stmts; info)
 end
+# Indexed sampling is the plate producer's declaration certificate.  The
+# producer first emits an outer-sized fresh declaration, then rewrites a
+# cell-local `x ~ dist` to `x[i] ~ dist` inside its compiler-owned loop.  The
+# first such use classifies the declaration as a parameter; indexed data LHSs
+# remain ordinary observations.  An indexed parameter that did NOT come from a
+# fresh declaration stays out of this internal path.
+forward!(x::SamplingExpr{<:CanonicalExprV{:getindex}}; info) = begin
+    lhs_raw, rhs_raw = x.args
+    k = _base_lhs_symbol(lhs_raw)
+    k in keys(info) || error(
+        "Plate-generated indexed sampling of `", k, "[…]` requires the plate emitter to register its outer declaration first."
+    )
+    lhs = forward!(lhs_raw; info)
+    rhs = forward!(rhs_raw; info)::StanExpr
+    base = info[k]
+    if _is_fresh_decl(base)
+        role = _decl_role(base)
+        role == :fill && error(
+            "Cannot sample `", k, "[…]` after the fresh declaration was classified as a transformed fill target."
+        )
+        role in (:unfilled, :sampled) || error(
+            "Fresh declaration `", k, "` has unknown declaration role `", role, "`."
+        )
+        role == :unfilled && (info[k] = remake(base; decl_role=:sampled, qual=:parameter))
+    else
+        q = qual(base)
+        q == :data || error(
+            "Indexed sampling of `", k, "[…]` has a ", q,
+            "-qualified base that is not a compiler-generated fresh plate declaration."
+        )
+        cv(rhs) && (info[k] = remake(base; cv=true))
+    end
+    remake(x, lhs, rhs)
+end
 forward!(x::SamplingExpr; info) = begin
     lhs, rhs = forward!(x.args; info)
     forward!(remake(x, lhs, rhs::StanExpr); info)
@@ -553,15 +611,20 @@ forward!(x::DeclExpr; info) = begin
     end
     @assert ct isa Symbol
     ct = gettype(ct)
-    # Mark the var as an explicit fresh declaration (a local/derived var, NOT a
-    # sampled parameter). A compiler-injected slice-fill onto a `:parameter`-qual
-    # var is legal iff the var is fresh-declared like this (a transformed parameter
-    # being constructed); the read-only-parameter gate in `backward!` keys on this.
-    t = remake(StanType(ct, forward!.(s; info)); fresh_decl=true)
+    # A fresh declaration is provisionally a flat-prior parameter. Its first
+    # certified indexed use dynamically selects the final role (`:fill` resets
+    # the qual from its RHS; `:sampled` remains a parameter). This is the
+    # one-pass design selected in decision `1dd0eww` and is what lets the same
+    # compiler-injected declaration serve both inline fills and plate params.
+    t = remake(StanType(ct, forward!.(s; info));
+        fresh_decl=true, decl_role=:unfilled, qual=:parameter)
     rv = StanExpr(lhs, t)
     lhs isa Symbol || return StanExpr(expr(forward!(lhs; info)), t)
-    info[lhs] = rv 
-    stan_expr(remake(x, rv))
+    info[lhs] = rv
+    # `SubModel.setindex!` flattens the symbol into the parent. Put that stored
+    # value into the declaration AST too, so later backward/distribution lookup
+    # uses the same name as the parent model's `info` key.
+    stan_expr(remake(x, info[lhs]))
 end
 forward!(x::ForExpr; info) = begin
     @assert length(x.args) == 2
@@ -577,10 +640,14 @@ forward!(x::ForExpr; info) = begin
     # → `:undefined`), breaking qual-promotion of a model-body loop's fill target.
     # Irrelevant to forward-only UDF bodies (no qual routing), so no regression there.
     info[idx] = StanExpr(idx, StanType(types.int; qual=:data))
+    # A SubModel stores the index under a flattened parent name. The loop head
+    # must declare that SAME emitted symbol used by forwarded body references;
+    # keeping the raw local `idx` would produce `for(i ...) body[prefix_i]`.
+    emitted_idx = expr(info[idx])
     idx_range = forward!(head.args[2]; info)
     body = forward!(body; info)
     pop!(info, idx)
-    stan_expr(remake(x, remake(head, idx, idx_range), body))
+    stan_expr(remake(x, remake(head, emitted_idx, idx_range), body))
 end
 forward!(x::WhileExpr; info) = begin
     @assert length(x.args) == 2
