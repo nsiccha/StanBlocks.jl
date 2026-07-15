@@ -230,7 +230,7 @@ end
 # would error. Route BOTH by the base/declared variable's FINALIZED qual in `info`
 # — promoted across every fill in `forward!` and preserved through `backward!` — so
 # the declaration and all fills land together in one block (coarse-grained). The
-# wrapper's own qual is the stale declaration-time `:undefined`; ignore it.
+# wrapper's own qual is only the provisional declaration-time qualifier; ignore it.
 _qual_blocks(q) = q == :data ? (:transformed_data,) :
     q == :parameter ? (:transformed_parameters,) : (:generated_quantities,)
 distribution_blocks(x::StanExpr{<:DeclExpr}; info) = begin

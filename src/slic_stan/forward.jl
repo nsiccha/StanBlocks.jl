@@ -345,6 +345,8 @@ _is_inert_expr(::Symbol) = true
 _is_inert_expr(::Number) = true
 _is_inert_expr(::AbstractString) = true
 _is_inert_expr(_) = false
+_is_model_decl_scope(::Union{StanModel,SubModel}) = true
+_is_model_decl_scope(_) = false
 _is_submodel_info(::SubModel) = true
 _is_submodel_info(_) = false
 _is_getindex_expr(::CanonicalExprV{:getindex}) = true
@@ -405,9 +407,10 @@ end
 # Symbol LHS is fully handled by the two methods above; a user-written non-Symbol
 # LHS is rejected pre-`forward!`). Forward the args, then PROMOTE the base
 # variable's qual by the rhs qual. This is what lets `distribute!` route the whole
-# coarse-grained variable — its bare declaration + every fill — to ONE block:
-# `info[base].qual` finalizes to `max` over the fills' rhs quals. `:undefined` (the
-# bare decl's default, before any fill) is bottom; the reals order
+# coarse-grained variable — its bare declaration + every fill — to ONE block.
+# The first certified fill resets a fresh declaration's provisional `:parameter`
+# qualifier to the RHS qualifier; subsequent fills promote across RHS qualifiers.
+# For those later fills, `:undefined` is bottom and the real order is
 # `data < parameter < quantities` (lexicographically AND semantically).
 _promote_qual(cur::Symbol, new::Symbol) =
     cur === :undefined ? new : (new === :undefined ? cur : max(cur, new))
@@ -530,7 +533,7 @@ end
 # int-vector of per-group dims) into constructs SB can emit. Stan cannot declare
 # `simplex[Ks]` natively, so we replicate what Stan does for a native simplex —
 # unconstrained free coords + the constrain transform's jacobian — but per group:
-#   • flat improper-uniform free param   `p_free ~ flat(;n=sum(Ks .- 1))`
+#   • bare improper-uniform free param   `p_free::vector[sum(Ks .- 1)]`
 #   • per-group offsets in transformed data via `cumulative_sum` (data-qualified)
 #   • a FRESH result vector filled by a compiler-injected per-group constrain loop
 #     calling the built-in `<ct>_jacobian` (the jacobian accumulates directly in
@@ -557,7 +560,7 @@ _forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) = begin
     cend  = Symbol(:c_end, "__rc_", id);  fend = Symbol(:f_end, "__rc_", id)
     g     = Symbol(:g, "__rc_", id)
     stmts = Any[
-        :($pfree ~ flat(; n = sum($Ks .- 1))),          # improper-uniform free coords → parameters
+        :($pfree :: vector[sum($Ks .- 1)]),             # bare improper-uniform free coords → parameters
         :($cend = cumulative_sum($Ks)),                  # constrained group ends (data → TD)
         :($fend = cumulative_sum($Ks .- 1)),             # free group ends (data → TD)
         :($pmem :: vector[sum($Ks)]),                    # fresh result → auto fresh_decl cert
@@ -824,7 +827,8 @@ forward!(x::DeclExpr; info) = begin
     # lets one compiler-injected decl serve both inline fills and plate params.
     # A COMPUTED-type decl (`::typeof(...)`/`return_type`, merged from devibe)
     # keeps its natural qual from `_decl_computed_type` — no fresh-decl override.
-    ct isa Symbol && (t = remake(t; fresh_decl=true, decl_role=:unfilled, qual=:parameter))
+    ct isa Symbol && _is_model_decl_scope(info) &&
+        (t = remake(t; fresh_decl=true, decl_role=:unfilled, qual=:parameter))
     rv = StanExpr(lhs, t)
     lhs isa Symbol || return StanExpr(expr(forward!(lhs; info)), t)
     info[lhs] = rv
