@@ -475,7 +475,13 @@ forward!(x::ForExpr; info) = begin
     @assert _is_block_canonical(body)
     idx = head.args[1]
     @assert idx isa Symbol
-    info[idx] = StanExpr(idx, StanType(types.int))
+    # `:data`-qualify the loop index: it's a deterministic integer. Without an
+    # explicit qual it defaults to `:undefined`, which is lexicographically the
+    # LARGEST qual symbol and so poisons `stan_expr`'s `maximum(qual, args)` for any
+    # body expression referencing the index (`x[i]` → `max(:parameter, :undefined)`
+    # → `:undefined`), breaking qual-promotion of a model-body loop's fill target.
+    # Irrelevant to forward-only UDF bodies (no qual routing), so no regression there.
+    info[idx] = StanExpr(idx, StanType(types.int; qual=:data))
     idx_range = forward!(head.args[2]; info)
     body = forward!(body; info)
     pop!(info, idx)

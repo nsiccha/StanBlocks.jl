@@ -124,6 +124,21 @@ backward!(x::DocumentExpr; info) = remake(x, backward!.(x.args; info)...)
 # generated quantities. Leave the decl unchanged and the promoted `info` entry
 # intact; downstream uses (e.g. the injected `r = out`) still set its `lqual`.
 backward!(x::StanExpr{<:DeclExpr}; info) = x
+# A compiler-injected `for` loop: the generic method would descend into the head's
+# raw-Symbol index assignment and into body statements that reference the loop
+# index, but `forward!(::ForExpr)` POPS the index after tracing, so it's absent from
+# `info` here. Re-scope the index, `backward!` only the body (the head is structural
+# `i = 1:n`), then pop — mirroring `forward!(::ForExpr)`. The base vars filled in the
+# body keep their `forward!`-promoted qual (this doesn't touch them).
+backward!(x::StanExpr{<:ForExpr}; info) = begin
+    fe = expr(x)
+    head, body = fe.args
+    idx = head.args[1]
+    info[idx] = StanExpr(idx, StanType(types.int; qual=:data))   # :data — see forward!(::ForExpr)
+    rv = StanExpr(remake(fe, head, backward!(body; info)), type(x))
+    pop!(info, idx)
+    rv
+end
 backward!(x::StanExpr; info) = StanExpr(backward!(expr(x); info), backward!(type(x); info))
 backward!(x::StanExpr{Symbol}; info) = info[expr(x)] = remake(x; lqual=:affects_likelihood)
 backward!(x::StanType; info) = remake(x; lqual=:affects_likelihood)
@@ -189,12 +204,33 @@ _qual_blocks(q) = q == :data ? (:transformed_data,) :
     q == :parameter ? (:transformed_parameters,) : (:generated_quantities,)
 distribution_blocks(x::StanExpr{<:DeclExpr}; info) = _qual_blocks(qual(info[_decl_lhs_symbol(expr(x))]))
 distribution_blocks(x::StanExpr{<:AssignmentExpr}; info) = _qual_blocks(qual(info[_base_lhs_symbol(expr(x))]))
+# A compiler-injected `for` loop whose body is fills (Feature-1 ragged-simplex:
+# `for(g in 1:G) p_flat[lo:hi] = simplex_jacobian(...)`, G data-sized so it can't
+# unroll). Route the WHOLE loop by the coarse (max) qual over the base vars its body
+# fills — the same coarse-graining as a bare fill, one level into the body. The loop
+# emits intact (`show(::ForExpr)`) into the chosen block.
+_fill_base(x::StanExpr) = _fill_base(expr(x))
+_fill_base(x::AssignmentExpr) = _base_lhs_symbol(x.args[1])
+_fill_base(x) = nothing
+_for_body_qual(fe::ForExpr, info) = begin
+    q = :undefined
+    for stmt in fe.args[2].args
+        b = _fill_base(stmt)
+        (b isa Symbol && b in keys(info)) && (q = _promote_qual(q, qual(info[b])))
+    end
+    q
+end
+distribution_blocks(x::StanExpr{<:ForExpr}; info) = _qual_blocks(_for_body_qual(expr(x), info))
 
 DeclarativeBlock = Union{DataBlock,ParametersBlock}
 ImperativeBlock = Union{FunctionsBlock,TransformedDataBlock,TransformedParametersBlock,ModelBlock,GeneratedQuantitiesBlock}
 fetch_data!(;info) = x->fetch_data!(x; info)
 fetch_data!(x::Union{Tuple,NamedTuple,Vector}; info) = map(fetch_data!(;info), x)
-fetch_data!(x::Union{Function,String}; info) = nothing 
+fetch_data!(x::Union{Function,String}; info) = nothing
+# `distribute!` skips LineNumberNodes/Nothing at the block level, but they also live
+# INSIDE a compiler-injected loop body (`@inline` line info), which
+# `fetch_data!(::StanExpr{<:ForExpr})` recurses into — skip them here too.
+fetch_data!(x::Union{LineNumberNode,Nothing}; info) = nothing
 fetch_data!(x::StanExpr{<:Union{Number,String,Missing}}; info) = nothing 
 fetch_data!(x::StanType; info) = fetch_data!(stan_size(x); info)
 fetch_data!(x::StanExpr{Symbol}; info) = begin
@@ -203,6 +239,15 @@ end
 fetch_data!(x::StanExpr{<:Function}; info) = nothing
 fetch_data!(x::StanExpr{<:DataType}; info) = nothing
 fetch_data!(x::StanExpr{<:CanonicalExpr}; info) = fetch_data!((type(x), expr(x)); info)
+# A compiler-injected `for` loop: walk the range bound and body for data deps, but
+# SKIP the head's raw-Symbol loop index — it isn't data, and the generic
+# `fetch_data!(::Symbol)` fallback errors on it. Body references to the index are
+# `StanExpr{Symbol}` (valueless → no-op), so only the head's bare index needs skipping.
+fetch_data!(x::StanExpr{<:ForExpr}; info) = begin
+    fe = expr(x)
+    fetch_data!(fe.args[1].args[2]; info)   # the range bound (e.g. `1:n`), not the index Symbol
+    fetch_data!(fe.args[2]; info)           # the loop body
+end
 fetch_data!(x::CanonicalExpr; info) = begin
     fetch_functions!(x; info=block(info, :functions).content)
     fetch_data!(x.args; info)

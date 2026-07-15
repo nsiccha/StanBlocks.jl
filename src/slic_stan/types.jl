@@ -100,6 +100,11 @@ block(x::StanModel, name) = blocks(x)[name]
 Base.getindex(x::StanModel, name) = getindex(vars(x), name)
 Base.setindex!(x::StanModel, value, name) = setindex!(vars(x), value, name)
 Base.keys(x::StanModel) = keys(vars(x))
+# Drop a name from model scope. `forward!(::ForExpr)`/`backward!(::ForExpr)` add a
+# loop index then `pop!` it once the body is traced; this was only reachable with a
+# plain-Dict UDF scope before compiler-injected `for`s (Feature-1 ragged-simplex,
+# plating) landed loops in the top-level model body, where `info` is a StanModel.
+Base.pop!(x::StanModel, name) = pop!(vars(x), name)
 Base.parent(x::SubModel) = x.parent
 name(x::SubModel) = x.name
 locals(x::SubModel) = x.locals
