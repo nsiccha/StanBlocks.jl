@@ -386,6 +386,14 @@ begin
         ct = getproperty(types, ct)
         StanType(ct, StanExpr.((size..., ), Ref(StanType(types.int))))
     end
+    # A return annotation whose base type is COMPUTED (`typeof(...)` /
+    # `return_type(...)`, optionally `[dims]`-sized) cannot be built at
+    # macro-expansion time (the args aren't bound yet). Route it to the same
+    # infer-from-body path as `::anything` — the body's trailing (declared)
+    # expression already carries the resolved container type.
+    _is_computed_ret_type(rv) = false
+    _is_computed_ret_type(rv::Expr) =
+        rv.head == :call || (rv.head == :ref && !(rv.args[1] isa Symbol))
     sigtype(x::Symbol) = sigtype(xref(x))
     sigtype(x::Expr) = begin
         @assert x.head == :ref "sigtype expects a `T[dims...]` `:ref` expression, got `$x` (head `$(x.head)`)."
@@ -776,7 +784,7 @@ begin
             if rv != :void
                 body = ensure_xreturn(body)
             end
-            sig_rv = if rv == :anything
+            sig_rv = if rv == :anything || _is_computed_ret_type(rv)
                 rv_expr = :($forward_return!($(canonical(body)); info).type)
                 :($rv_expr)
             else
