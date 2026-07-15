@@ -682,6 +682,65 @@ end
     end
 end
 
+# A bare `::` declaration has two deliberately scope-sensitive meanings:
+# model/sub-model scope declares an improper-uniform parameter, while a non-inline
+# `@deffun` body keeps the established Stan function-local declaration semantics.
+@deffun bare_parameter_local_copy(x::vector[n])::vector[n] = begin
+    out::vector[n]
+    for i in 1:n
+        out[i] = x[i]
+    end
+    return out
+end
+
+@testset "slic: standalone bare typed model parameters" begin
+    y = [0.2, -0.1, 0.4]
+    model = @slic (;y) begin
+        alpha::real
+        beta::vector[3]
+        unused::real
+        mu = bare_parameter_local_copy(alpha + beta)
+        y ~ normal(mu, 1.0)
+    end
+
+    @test transpiles(model)
+    @test compiles(model)
+    code = stan_code(model)
+    let parameters = stan_block(code, "parameters")
+        @test occursin(r"\breal alpha;", parameters)
+        @test occursin(r"\bvector\[3\] beta;", parameters)
+        @test occursin(r"\breal unused;", parameters)
+        @test !occursin("out", parameters)
+    end
+    let functions = stan_block(code, "functions")
+        @test occursin("bare_parameter_local_copy", functions)
+        @test occursin(r"\bvector\[n\] out;", functions)
+    end
+    @test !occursin("flat", code)
+    @test !occursin(r"\b(alpha|beta|unused)\s*~", stan_block(code, "model"))
+
+    problem = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(problem) == 5
+    theta = [0.25, -0.1, 0.2, 0.4, 17.0]
+    expected = sum(_stan_normal.(y, theta[1] .+ theta[2:4], 1.0))
+    @test LogDensityProblems.logdensity(problem, theta) ≈ expected atol=1e-6
+
+    # User-authored model-body declare-then-fill stays rejected before `forward!`;
+    # only compiler-injected indexed fills carry the reclassification certificate.
+    bad = @slic (;) begin
+        target::vector[2]
+        target[1] = 0.0
+    end
+    err = try
+        stan_code(bad)
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test err !== nothing
+    @test occursin("Indexed/slice assignment", err)
+end
+
 @testset "logdensity: hierarchical (normal-normal)" begin
     n = 3
     y_val = [0.2, -0.1, 0.8]
@@ -1332,6 +1391,9 @@ end
     out[2] = x[2] + x[3]
     return out
 end
+@deffun @inline c3_nestedfill(x::vector[n])::vector[n] = begin
+    return c3_freshfill(x)
+end
 @deffun @inline c3_mapinto!(out::vector[n], f, x::vector[n])::vector[n] = begin
     for i in 1:n
         out[i] = f(x[i])
@@ -1370,6 +1432,31 @@ end
     @test compiles(data_model)
     @test occursin(r"transformed data\s*\{[^}]*\bout__il_\d+", stan_code(data_model))
 
+    # NESTED INLINE: the fresh declaration is revealed only during the nested
+    # re-trace, so sibling-statement lookahead cannot classify it. Its first
+    # certified data fill must reset the provisional parameter qual to data.
+    nested_data_model = @slic (;xd=randn(3)) begin
+        r = c3_nestedfill(xd)
+        p ~ std_normal()
+    end
+    @test transpiles(nested_data_model)
+    @test compiles(nested_data_model)
+    @test occursin(r"transformed data\s*\{[^}]*\bout__il_\d+", stan_code(nested_data_model))
+
+    # QUANTITIES input: a cv-tainted parameter is predictive-only from the
+    # forward pass onward, so its first fill reclassifies the fresh declaration
+    # directly into generated quantities (not parameters/TP).
+    cv_n = StanBlocks.stan.maybecv(:n, 3)
+    quantities_model = @slic (;n=cv_n) begin
+        x ~ std_normal(;n=n)
+        r = c3_freshfill(x)
+    end
+    @test transpiles(quantities_model)
+    @test compiles(quantities_model)
+    quantities_code = stan_code(quantities_model)
+    @test occursin(r"generated quantities\s*\{[^}]*\bout__il_\d+", quantities_code)
+    @test !occursin(r"parameters\s*\{[^}]*\bout__il_\d+", quantities_code)
+
     # regression: inline UDF with a for-loop fill that USES the size param `n`
     # (layer-0 inline size resolution) still transpiles AND compiles.
     build_eta_model = @slic (;y=randn(20), X=randn(20,3)) begin
@@ -1390,6 +1477,29 @@ end
         y ~ normal(s, 1.0)
     end
     @test !transpiles(reject_model; re=false)
+end
+
+@testset "slic: ragged lowering adopts a bare free parameter" begin
+    ragged_model = @slic (;Ks=[2, 3], y=0.2) begin
+        p::simplex[Ks] ~ flat()
+        y ~ normal(sum(p[1]), 1.0)
+    end
+    @test transpiles(ragged_model)
+    @test compiles(ragged_model)
+    code = stan_code(ragged_model)
+
+    let parameters = stan_block(code, "parameters")
+        @test occursin(r"\bvector\[[^]]+\] p_free__rc_\d+;", parameters)
+        @test !occursin("p_mem__rc_", parameters)
+    end
+    let tp = stan_block(code, "transformed parameters")
+        @test occursin(r"\bvector\[[^]]+\] p_mem__rc_\d+;", tp)
+        @test occursin(r"p_mem__rc_\d+\[", tp)
+    end
+    let model_block = stan_block(code, "model")
+        @test !occursin(r"p_free__rc_\d+\s*~", model_block)
+        @test occursin("y ~ normal", model_block)
+    end
 end
 
 # --- regression: cert-marker read-only gate for compiler-injected slice-fills (case-3) ---
