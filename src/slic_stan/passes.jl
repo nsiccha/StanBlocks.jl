@@ -53,14 +53,43 @@ backward!(x::Union{Tuple,NamedTuple,Vector,Base.Pairs}; info) = map(backward!(;i
 backward!(x::Union{String,Number,LineNumberNode,Symbol,Nothing,Colon}; info) = x
 backward!(x::CanonicalExpr; info) = remake(x, backward!(x.args; info)...)
 backward!(x::BlockExpr; info) = remake(x, reverse(backward!.(reverse(x.args); info))...)
-backward!(x::AssignmentExpr; info) = if lqual(info[expr(x.args[1])]) == :affects_likelihood
-    lhs, rhs = x.args
-    remake(x, info[expr(x.args[1])], backward!(rhs; info))
-elseif qual(x.args[1]) == :parameter
-    lhs, rhs = x.args
-    remake(x, remake(lhs, qual=:quantities), rhs)
-else
-    x
+# The LHS of a compiler-injected slice/element fill (`out[a:b] = rhs`, hoisted
+# from an inlined mutating helper or a plate via `_slic_inline_pending`) is a
+# getindex expr, not a bare Symbol — but every `info` key is a Symbol. Resolve
+# the BASE variable being (partially) filled, "coarse-grained": discard *which*
+# elements are written and treat the whole base var as touched. A plain Symbol
+# LHS resolves to itself (unchanged behaviour). Assignment-LHS canonicals are
+# always getindex (a user-written non-Symbol LHS is rejected pre-`forward!`), so
+# descending `args[1]` reaches the base Symbol.
+_base_lhs_symbol(x::StanExpr) = _base_lhs_symbol(expr(x))
+_base_lhs_symbol(x::Symbol) = x
+_base_lhs_symbol(x::CanonicalExpr) = _base_lhs_symbol(x.args[1])
+backward!(x::AssignmentExpr; info) = begin
+    lhs = x.args[1]
+    key = _base_lhs_symbol(lhs)
+    slice = !(expr(lhs) isa Symbol)   # getindex LHS ⇒ compiler-injected partial fill
+    if slice
+        key in keys(info) || error(
+            "Compiler-generated slice-fill of `", key, "[…]` but `", key, "` is not declared ",
+            "in model scope — the inlining/plate emitter must register the base variable first."
+        )
+        qual(info[key]) == :parameter && error(
+            "Cannot assign to a slice/element of parameter `", key, "` in the model block — Stan ",
+            "parameters are read-only there (this typically comes from inlining a mutating helper ",
+            "onto a parameter; fill a local/derived vector instead)."
+        )
+    end
+    if lqual(info[key]) == :affects_likelihood
+        lhs2, rhs = x.args
+        # Symbol LHS: swap in the updated info entry. Slice LHS: keep the getindex
+        # LHS verbatim so the emitter renders `out[a:b] = rhs`.
+        remake(x, slice ? lhs2 : info[key], backward!(rhs; info))
+    elseif qual(lhs) == :parameter
+        lhs2, rhs = x.args
+        remake(x, remake(lhs2, qual=:quantities), rhs)
+    else
+        x
+    end
 end
 backward!(x::SamplingExpr{<:StanExpr{Symbol}}; info) = if qual(x.args[1]) == :data || lqual(info[expr(x.args[1])]) == :affects_likelihood
     lhs, rhs = x.args
