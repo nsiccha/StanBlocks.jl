@@ -271,8 +271,25 @@ distribution_blocks(x::StanExpr{<:ForExpr}; info) = _qual_blocks(_for_body_qual(
 # block separation requires cloning its structural head around the relevant
 # statement subsets.
 _loop_distribution_blocks(::Union{LineNumberNode,Nothing}; info) = ()
+_loop_distribution_blocks(x::StanExpr{<:ForExpr}; info) = begin
+    blocks = Symbol[]
+    for stmt in expr(x).args[2].args
+        append!(blocks, _loop_distribution_blocks(stmt; info))
+    end
+    Tuple(unique(blocks))
+end
 _loop_distribution_blocks(x; info) = distribution_blocks(x; info)
 _loop_distribution_stmt(x, ::Val; info) = x
+_loop_distribution_stmt(x::StanExpr{<:ForExpr}, ::Val{B}; info) where {B} = begin
+    fe = expr(x)
+    head, body = fe.args
+    selected = Any[]
+    for stmt in body.args
+        B in _loop_distribution_blocks(stmt; info) || continue
+        push!(selected, _loop_distribution_stmt(stmt, Val(B); info))
+    end
+    StanExpr(remake(fe, head, remake(body, selected...)), type(x))
+end
 _loop_distribution_stmt(x::SamplingExpr, ::Val{:generated_quantities}; info) = begin
     expr(x.args[1]) isa Symbol && error(
         "Compiler-owned loop contains a non-indexed generated-quantities sample. Plate locals must use an outer declaration and indexed sampling."

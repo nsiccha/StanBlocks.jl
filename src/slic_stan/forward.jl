@@ -235,12 +235,12 @@ _plate_context_entry(name::Symbol; info) = begin
     ctx === nothing && return nothing
     global_name = _plate_global_name(info, name)
     haskey(ctx.cell_types, global_name) || return nothing
-    (global_name=global_name, cell_type=ctx.cell_types[global_name], idx=ctx.idx)
+    (global_name=global_name, cell_type=ctx.cell_types[global_name], idxs=ctx.idxs)
 end
 _plate_promoted_lhs(name::Symbol; info) = begin
     entry = _plate_context_entry(name; info)
     entry === nothing && return nothing
-    canonical(_plate_cell_index(entry.global_name, entry.cell_type, entry.idx))
+    canonical(_plate_cell_index(entry.global_name, entry.cell_type, entry.idxs))
 end
 _plate_promoted_reference(name::Symbol, info::Union{StanModel,SubModel}) = begin
     lhs = _plate_promoted_lhs(name; info)
@@ -729,7 +729,7 @@ forward!(x::SamplingExpr{<:CanonicalExprV{:getindex}}; info) =
 forward!(x::SamplingExpr{<:CanonicalExprV{:getindex},<:StanExpr}; info) =
     _forward_indexed_sampling!(x; info)
 # --- Public `plate` do-block emitter (Feature 2, surface decision n35u3c) -----
-# Lowers `rv ~ plate(iter1, …; outer=(N,)) do a1, …; body…; cell_output; end`
+# Lowers `rv ~ plate(iter1, …; outer=(dims...)) do a1, …; body…; cell_output; end`
 # into the plate PRODUCER CONTRACT that the `~`-aware routing (landed on
 # slic-model-slice-b3a85769) consumes: outer `DeclExpr`s + a compiler-injected
 # certified `ForExpr` with indexed fresh samples, indexed observations, and an
@@ -737,11 +737,12 @@ forward!(x::SamplingExpr{<:CanonicalExprV{:getindex},<:StanExpr}; info) =
 # `_reject_model_control_flow`, same as `_forward_ragged_constrained!`).
 #
 # Semantics (n35u3c): positional iterables are PER-CELL slices bound to the
-# do-block params (`a_k` ⇒ `iter_k[i]`); lexical captures stay SHARED; each
-# fresh `~`/`=` LHS in the body is promoted to an outer array indexed by the
-# loop var; the trailing expression is each cell's output, filled into `rv`.
-# MVP scope (surface these as limitations): 1-D `outer=(N,)` only; scalar or
-# vector[K] cell values; no vararg params; the body must end in a value expr.
+# do-block params (`a_k` ⇒ `iter_k[i1,…]`); lexical captures stay SHARED; each
+# fresh `~`/`=` LHS in the body is promoted to an outer collection indexed by
+# every loop axis; the trailing expression is each cell's output, filled into
+# `rv`. An integer `outer=N` is the 1-D shorthand; tuples emit nested loops.
+# Current cell-shape scope: scalar or vector[K] values; no vararg params; the
+# body must end in a value expression.
 # Used only to reject a terminal `~`/`=` statement with a clear error. Fresh
 # binding discovery itself is trace-based (`_plate_discover` below).
 _plate_fresh_info(s) = begin
@@ -780,15 +781,35 @@ _plate_cell_shape(T, name) = begin
     )
 end
 
-# Outer collection decl + per-cell accessor from DISCOVERED StanTypes. Scalar ⇒
-# `vector[N]` / `f[idx]`; vector[K] ⇒ `matrix[K,N]` / `f[:,idx]`.
-_plate_outer_decl(f, T::StanType, N) = begin
-    _plate_cell_shape(T, f) === :scalar && return :($f :: vector[$N])
+# Outer collection decl + per-cell accessor from DISCOVERED StanTypes. The
+# shipped 1-D shapes stay dense (`vector[N]`, `matrix[K,N]`). Additional outer
+# axes become Stan array dimensions around the natural vector/matrix core while
+# preserving the logical cell-first shape.
+_plate_type_expr(ct::Symbol, sizes) = Expr(:ref, ct, sizes...)
+_plate_outer_decl(f, T::StanType, outer) = begin
+    isempty(outer) && error("plate: `outer` must contain at least one dimension.")
+    shape = _plate_cell_shape(T, f)
+    if shape === :scalar
+        length(outer) == 1 && return Expr(:(::), f, _plate_type_expr(:vector, outer))
+        sizes = Any[outer[3:end]...; outer[1]; outer[2]]
+        return Expr(:(::), f, _plate_type_expr(:matrix, sizes))
+    end
     K = expr(stan_size(T)[1])
-    :($f :: matrix[$K, $N])
+    length(outer) == 1 && return Expr(:(::), f, _plate_type_expr(:matrix, Any[K, outer[1]]))
+    sizes = Any[outer[2:end]...; K; outer[1]]
+    Expr(:(::), f, _plate_type_expr(:matrix, sizes))
 end
-_plate_cell_index(f, T::StanType, idx) =
-    _plate_cell_shape(T, f) === :scalar ? :($f[$idx]) : :($f[:, $idx])
+_plate_cell_index(f, T::StanType, idxs) = begin
+    isempty(idxs) && error("plate: internal error — missing outer indices for `$f`.")
+    shape = _plate_cell_shape(T, f)
+    if shape === :scalar
+        length(idxs) == 1 && return Expr(:ref, f, idxs[1])
+        indices = Any[idxs[3:end]...; idxs[1]; idxs[2]]
+        return Expr(:ref, f, indices...)
+    end
+    indices = Any[idxs[2:end]...; Symbol(":"); idxs[1]]
+    Expr(:ref, f, indices...)
+end
 
 # TRACE-THEN-PROMOTE discovery (rework, decision 1vujeta): trace the do-block
 # body ONCE in an ISOLATED probe scope to discover the fresh params/vars the body
@@ -800,16 +821,21 @@ _plate_cell_index(f, T::StanType, idx) =
 # emitted; the probe is discarded. Returns (fresh::Vector{Pair{Symbol,StanType}}
 # in body order, ret_type). Top-level `info` only (a plate nested in a submodel is
 # a later case).
-_plate_discover(body_stmts, ret_expr, params, iterables, idx; info::StanModel) =
+_plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::StanModel) =
     task_local_storage(:_slic_inline_pending, Any[]) do
         probe = StanModel(meta(info), copy(vars(info)), blocks(info))
         before = Set(keys(probe))
-        probe[idx] = StanExpr(idx, StanType(types.int; qual=:data))
-        if isempty(iterables) && length(params) == 1
-            probe[params[1]] = StanExpr(params[1], StanType(types.int; qual=:data))
+        for idx in idxs
+            probe[idx] = StanExpr(idx, StanType(types.int; qual=:data))
+        end
+        if isempty(iterables)
+            for (param, idx) in zip(params, idxs)
+                probe[param] = StanExpr(param, StanType(types.int; qual=:data))
+            end
         else
             for (a, it) in zip(params, iterables)
-                probe[a] = StanExpr(a, type(forward!(canonical(:($it[$idx])); info=probe)))
+                cell = Expr(:ref, it, idxs...)
+                probe[a] = StanExpr(a, type(forward!(canonical(cell); info=probe)))
             end
         end
         # Trace as a BLOCK (not per-statement) so submodel embedding binds its
@@ -818,7 +844,7 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idx; info::StanModel) =
         ret = forward!(canonical(ret_expr); info=probe)
         fresh = Pair{Symbol,Any}[]
         for k in keys(probe)
-            (k in before || k == idx || k in params) && continue
+            (k in before || k in idxs || k in params) && continue
             push!(fresh, k => type(probe[k]))
         end
         (fresh=fresh, ret_type=type(ret))
@@ -847,32 +873,45 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     vararg === nothing || error("plate: vararg do-block params (`args...`) are not supported yet.")
     iterables = collect(plate.args[2:end])
 
-    # Plate size N: explicit `outer=(N,)` (1-D MVP) wins; else the first iterable's length.
+    # Explicit `outer` accepts an int or a non-empty tuple. Without it, infer the
+    # shipped 1-D shape from the first positional iterable.
     outer = get(plate.kwargs, :outer, nothing)
-    N = if outer !== nothing
-        (outer isa CanonicalExprV{:tuple} && length(outer.args) == 1) || error(
-            "plate: only a 1-D `outer=(N,)` is supported for now."
-        )
-        outer.args[1]
+    outer_dims = if outer !== nothing
+        dims = outer isa CanonicalExprV{:tuple} ? collect(outer.args) : Any[outer]
+        isempty(dims) && error("plate: `outer=()` is invalid; pass an int or a non-empty tuple.")
+        dims
     elseif !isempty(iterables)
-        :(length($(iterables[1])))
+        Any[:(length($(iterables[1])))]
     else
-        error("plate: cannot size the plate — pass `outer=(N,)` or at least one iterable.")
+        error("plate: cannot size the plate — pass `outer=N`, `outer=(dims...)`, or at least one iterable.")
     end
 
-    (length(params) == length(iterables) || (isempty(iterables) && length(params) == 1)) || error(
-        "plate: $(length(params)) do-block params vs $(length(iterables)) positional iterables — ",
-        "positional args are per-cell slices and must match 1:1, or use a single `do i` (no iterables)."
-    )
+    if isempty(iterables)
+        length(params) == length(outer_dims) || error(
+            "plate: without positional iterables, bind one do-block index per outer axis ",
+            "($(length(params)) params for $(length(outer_dims)) axes)."
+        )
+    else
+        length(params) == length(iterables) || error(
+            "plate: $(length(params)) do-block params vs $(length(iterables)) positional iterables — ",
+            "positional args are per-cell slices and must match 1:1."
+        )
+    end
 
-    id  = _next_inline_id()
-    idx = Symbol(:plate_i, "__pl_", id)
+    id = _next_inline_id()
+    idxs = if length(outer_dims) == 1
+        Symbol[Symbol(:plate_i, "__pl_", id)]
+    else
+        Symbol[Symbol(:plate_i, axis, "__pl_", id) for axis in eachindex(outer_dims)]
+    end
     input_subst = Dict{Symbol,Any}()
-    if isempty(iterables) && length(params) == 1
-        input_subst[params[1]] = idx                    # `do i` ⇒ the cell index
+    if isempty(iterables)
+        for (param, idx) in zip(params, idxs)
+            input_subst[param] = idx                    # `do i,j` ⇒ the cell indices
+        end
     else
         for (a, it) in zip(params, iterables)
-            input_subst[a] = :($it[$idx])               # per-cell slice
+            input_subst[a] = Expr(:ref, it, idxs...)    # per-cell scalar/slice
         end
     end
 
@@ -886,7 +925,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     # Trace once in isolation to discover EVERY fresh binding — including
     # submodel-internal flattened names — and the cell result type. The emit
     # trace below uses these StanTypes rather than re-parsing LHS syntax.
-    discovered = _plate_discover(body_stmts, ret_expr, params, iterables, idx; info)
+    discovered = _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info)
     fresh = discovered.fresh
     rv_type = rv_ct === nothing ? discovered.ret_type : _plate_annotation_type(rv_ct; info)
 
@@ -899,14 +938,18 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     # rewrites them while tracing, including names hidden inside submodels.
     loop_body = Any[_subst_syms(s, input_subst) for s in body_stmts]
     ret_cell = _subst_syms(ret_expr, input_subst)
-    push!(loop_body, :($(_plate_cell_index(rv, rv_type, idx)) = $ret_cell))
+    push!(loop_body, :($(_plate_cell_index(rv, rv_type, idxs)) = $ret_cell))
 
-    decls = Any[_plate_outer_decl(f, T, N) for (f, T) in fresh]
-    push!(decls, _plate_outer_decl(rv, rv_type, N))
-    # NB: build the iteration spec as `Expr(:(=), idx, 1:N)` — a hand-built
+    decls = Any[_plate_outer_decl(f, T, outer_dims) for (f, T) in fresh]
+    push!(decls, _plate_outer_decl(rv, rv_type, outer_dims))
+    # NB: build each iteration spec as `Expr(:(=), idx, 1:N)` — a hand-built
     # `Expr(:for, :(idx in 1:N), …)` yields an `:in` CALL spec, not the `:(=)`
     # form `forward!(::ForExpr)` asserts (a quoted `for` auto-normalizes it).
-    loop = Expr(:for, Expr(:(=), idx, :(1:$N)), Expr(:block, loop_body...))
+    loop = nothing
+    for (idx, dim) in reverse(collect(zip(idxs, outer_dims)))
+        body = loop === nothing ? Expr(:block, loop_body...) : Expr(:block, loop)
+        loop = Expr(:for, Expr(:(=), idx, :(1:$dim)), body)
+    end
 
     # Hoist declarations into the enclosing block exactly like an inline UDF,
     # then trace ONLY the loop under promotion. `forward!(::ForExpr)` binds the
@@ -916,7 +959,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         emitted = forward!(canonical(decl); info)
         pending !== nothing && push!(pending, emitted)
     end
-    ctx = (idx=idx, cell_types=cell_types)
+    ctx = (idxs=idxs, cell_types=cell_types)
     task_local_storage(:_slic_plate_context, ctx) do
         forward!(canonical(loop); info)
     end
