@@ -99,6 +99,25 @@ sm15b = @slic begin
     return xx
 end
 
+# chained + variable-bound splice (the crowdsource.qmd composition pattern).
+# The 916f100 migration converted the inline splice sites but overlooked
+# crowdsource.qmd, whose transforms are SEPARATELY-BOUND `quote` blocks doing
+# ASSIGNMENT (`=`) overrides, CHAINED through `Base.merge`. issue12/issue15
+# cover only a single INLINE `Base.merge(base, quote…end)`; this fixture drives
+# the chained + variable-bound + assignment-override shape.
+sm_splice_base = @slic begin
+    lambda = rep_vector(1, n)
+    delta  = rep_vector(2, n)
+    x ~ std_normal(;n)
+    return x .* lambda .* delta
+end
+splice_t1 = quote
+    lambda = rep_vector(0, n)
+end
+splice_t2 = quote
+    delta = rep_vector(1, n)
+end
+
 @deffun begin
     issue17_lpdf(y::vector[n]) = begin
         rv = 0.
@@ -331,6 +350,32 @@ end
     end)(; n=10, y=1.)) == stan_code(sm15b(; n=10, y=1.))
     @test compiles(sm15a(;n=10, y=1.))
     @test compiles(sm15b(;n=10, y=1.))
+end
+
+@testset "slic: chained + variable-bound Base.merge splice (crowdsource pattern)" begin
+    # single variable-bound splice: the `lambda` assignment is overridden to
+    # rep_vector(0, n); the original rep_vector(1, n) must be gone. (Match the
+    # assignment `lambda = …`, not a bare `rep_vector(0, n)` — the latter also
+    # appears in the std_normal RNG helper body, which would be vacuous.)
+    single = Base.merge(sm_splice_base, splice_t1)
+    @test transpiles(single(; n=3))
+    single_code = stan_code(single(; n=3))
+    @test occursin("lambda = rep_vector(0, n)", single_code)    # override applied
+    @test !occursin("lambda = rep_vector(1, n)", single_code)   # original gone
+    @test occursin("delta = rep_vector(2, n)", single_code)     # untouched statement kept
+    # chained: BOTH overrides applied — lambda→0 AND delta→1 — original delta gone.
+    chained = Base.merge(Base.merge(sm_splice_base, splice_t1), splice_t2)
+    @test transpiles(chained(; n=3))
+    chained_code = stan_code(chained(; n=3))
+    @test occursin("lambda = rep_vector(0, n)", chained_code)   # lambda→0
+    @test occursin("delta = rep_vector(1, n)", chained_code)    # delta→1
+    @test !occursin("delta = rep_vector(2, n)", chained_code)   # original delta gone
+    # each Base.merge returns a NEW model — the base is unchanged by the merges.
+    # (crowdsource.qmd consumes each merged model directly via `stan_code(posterior)`,
+    # which is exactly what the transpiles/stan_code checks above exercise.)
+    base_code = stan_code(sm_splice_base(; n=3))
+    @test occursin("lambda = rep_vector(1, n)", base_code)
+    @test occursin("delta = rep_vector(2, n)", base_code)
 end
 
 @testset "determinism: inline UDF + lifted closure" begin
