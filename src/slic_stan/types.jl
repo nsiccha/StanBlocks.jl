@@ -28,6 +28,17 @@ struct SubModel#{P,N,L}
     name#::N
     locals#::L
 end
+"""
+A named sub-model function, produced by `@slic f(args...) = body`. The singleton
+`SubmodelFn{:f}()` is bound to `f`; each `@slic f(...) = ...` adds a call method
+`(::SubmodelFn{:f})(args...; kwargs...) = SlicModel(body, data, mod)` that binds the
+positional args by name into the sub-model's data. Multiple definitions of the same
+`f` add methods → native multiple-dispatch. A call to a `SubmodelFn` is embedded as a
+sub-model by `stan_expr(::CanonicalExpr{<:SubmodelFn})` (the value it returns is a
+`SlicModel`, which flows through the existing embedding path). Contrast the anonymous
+`SlicModel` value built by `@slic begin ... end`.
+"""
+struct SubmodelFn{name} end
 abstract type AbstractStanType end
 struct StanExpr{E,T<:AbstractStanType}
     expr::E
@@ -185,15 +196,28 @@ top_replace_components(x::Expr; rep::OrderedDict) = begin
     append!(args, values(rep))
     Expr(:block, args...)
 end
-model(x::SlicModel, args::Union{SamplingExpr,AssignmentExpr,ReturnExpr}...) = top_replace_components(model(x); rep=OrderedDict([
+# `Base.merge(submodel, stmts...)` — statement-splice composition: override the
+# body statements whose LHS-name matches, append the rest. This REPLACES the old
+# positional-call splice (`submodel(quote … end)`); a positional sub-model call now
+# errors loudly (see the call operator below).
+_splice_body(x::SlicModel, args::Union{SamplingExpr,AssignmentExpr,ReturnExpr}...) = top_replace_components(model(x); rep=OrderedDict([
     replace_name(arg)=>arg for arg in args
 ]))
 unblock(x::BlockExpr) = mapreduce(unblock, vcat, x.args)
 unblock(x::LineNumberNode) = []
 unblock(x) = [x]
-model(x::SlicModel, args::Union{BlockExpr,SamplingExpr,AssignmentExpr,ReturnExpr}...) = model(x, mapreduce(unblock, vcat, args)...)
-model(x::SlicModel, args::Expr...) = model(x, canonical.(args)...)
-(x::SlicModel)(args...; kwargs...) = SlicModel(model(x, args...), merge(data(x), kwargs), x.mod)
+_splice_body(x::SlicModel, args::Union{BlockExpr,SamplingExpr,AssignmentExpr,ReturnExpr}...) = _splice_body(x, mapreduce(unblock, vcat, args)...)
+_splice_body(x::SlicModel, args::Expr...) = _splice_body(x, canonical.(args)...)
+Base.merge(x::SlicModel, args...) = SlicModel(_splice_body(x, args...), data(x), x.mod)
+
+_submodel_positional_error(args...) = error(
+    "A @slic sub-model was called with positional argument(s). ",
+    "Data inputs are KEYWORD arguments (`submodel(; X=X)`); statement-splice overrides ",
+    "now use `Base.merge(submodel, stmts...)` (e.g. `Base.merge(base, quote … end)`); and ",
+    "positional scalar inputs require a named sub-model function declared with `@slic f(args...) = …`."
+)
+(x::SlicModel)(; kwargs...) = SlicModel(model(x), merge(data(x), kwargs), x.mod)
+(x::SlicModel)(arg, args...; kwargs...) = _submodel_positional_error(arg, args...)
 
 qual(x) = :data
 qual(x::StanExpr) = qual(type(x))

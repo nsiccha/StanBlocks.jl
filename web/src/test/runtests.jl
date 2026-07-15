@@ -108,6 +108,25 @@ sm15b = @slic begin
     return xx
 end
 
+# chained + variable-bound splice (the crowdsource.qmd composition pattern).
+# The 916f100 migration converted the inline splice sites but overlooked
+# crowdsource.qmd, whose transforms are SEPARATELY-BOUND `quote` blocks doing
+# ASSIGNMENT (`=`) overrides, CHAINED through `Base.merge`. issue12/issue15
+# cover only a single INLINE `Base.merge(base, quote…end)`; this fixture drives
+# the chained + variable-bound + assignment-override shape.
+sm_splice_base = @slic begin
+    lambda = rep_vector(1, n)
+    delta  = rep_vector(2, n)
+    x ~ std_normal(;n)
+    return x .* lambda .* delta
+end
+splice_t1 = quote
+    lambda = rep_vector(0, n)
+end
+splice_t2 = quote
+    delta = rep_vector(1, n)
+end
+
 @deffun begin
     issue17_lpdf(y::vector[n]) = begin
         rv = 0.
@@ -244,6 +263,54 @@ end
     end)(;obs=randn(10)))
 end
 
+# --- `@slic f(…)=…` named sub-model functions (SubmodelFn) ---
+# The @deffun-analogue for models: a named callable whose POSITIONAL args bind
+# by name into the sub-model's data, embedded via `~`-rhs-is-SlicModel. Typed
+# args drive native @deffun-style multiple-dispatch on the StanExpr center-type.
+# Mirrors the `web/sandbox/submodelfn_{positional,2arg,dispatch}.jl` snippets so
+# the feature has a CI regression as well as the dashboard smoke surface (§R14).
+@slic linpred(slope) = begin
+    intercept ~ normal(0, 1)
+    return intercept + slope
+end
+@slic affine(a, b) = begin
+    z ~ normal(0, 1)
+    return a + b * z
+end
+@slic dcase(s::real) = begin
+    z ~ normal(0, 1)
+    return z + s
+end
+@slic dcase(s::int) = begin
+    z ~ normal(0, 5)
+    return z + s
+end
+
+@testset "slic: @slic f(…)=… sub-model functions" begin
+    # positional 1-arg: `mu ~ linpred(x)` binds x into the sub-model's data.
+    @test compiles(@slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        mu ~ linpred(x)
+        y ~ normal(mu, 1)
+    end)
+    # positional 2-arg.
+    @test compiles(@slic (; p=1.0, q=2.0, y=[1.0, 2.0]) begin
+        w ~ affine(p, q)
+        y ~ normal(w, 1)
+    end)
+    # typed-arg native dispatch: a `::real` arg and an `::int` arg select
+    # DISTINCT methods of the SAME `dcase`, so BOTH priors must appear in the
+    # emitted Stan — the load-bearing proof that @deffun-style dispatch resolved.
+    disp = @slic (; sc=2.0, si=3, y=[1.0, 2.0]) begin
+        a ~ dcase(sc)   # sc::real -> normal(0, 1) method
+        b ~ dcase(si)   # si::int  -> normal(0, 5) method
+        y ~ normal(a + b, 1)
+    end
+    @test transpiles(disp)
+    disp_code = stan_code(disp)
+    @test occursin("normal(0, 1)", disp_code)   # ::real method body
+    @test occursin("normal(0, 5)", disp_code)   # ::int  method body
+end
+
 @deffun begin
     preconditioned_normal_lpdf(xi::matrix[m, n], loc::vector[m], scale::vector[m], prescale::matrix[m,m], n) = begin
         multi_normal_cholesky_lpdf(eachcol(xi), mdivide_left_tri_low(prescale, loc), mdivide_left_tri_low(prescale, diag_matrix(scale)))
@@ -272,9 +339,9 @@ end
 end
 
 @testset "issue12" begin
-    @test stan_code(sm12a(quote
+    @test stan_code(Base.merge(sm12a, quote
         return x
-    end ; n=10, y=1.)) == stan_code(sm12b(; n=10, y=1.))
+    end)(; n=10, y=1.)) == stan_code(sm12b(; n=10, y=1.))
     @test compiles(@slic (;n=10, y=1.) begin
         x ~ sm12a(;n)
         y ~ simple(x)
@@ -286,12 +353,38 @@ end
 end
 
 @testset "issue15" begin
-    @test stan_code(sm15a(quote
+    @test stan_code(Base.merge(sm15a, quote
         xx = append_row(x, x)
         return xx
-    end ; n=10, y=1.)) == stan_code(sm15b(; n=10, y=1.))
+    end)(; n=10, y=1.)) == stan_code(sm15b(; n=10, y=1.))
     @test compiles(sm15a(;n=10, y=1.))
     @test compiles(sm15b(;n=10, y=1.))
+end
+
+@testset "slic: chained + variable-bound Base.merge splice (crowdsource pattern)" begin
+    # single variable-bound splice: the `lambda` assignment is overridden to
+    # rep_vector(0, n); the original rep_vector(1, n) must be gone. (Match the
+    # assignment `lambda = …`, not a bare `rep_vector(0, n)` — the latter also
+    # appears in the std_normal RNG helper body, which would be vacuous.)
+    single = Base.merge(sm_splice_base, splice_t1)
+    @test transpiles(single(; n=3))
+    single_code = stan_code(single(; n=3))
+    @test occursin("lambda = rep_vector(0, n)", single_code)    # override applied
+    @test !occursin("lambda = rep_vector(1, n)", single_code)   # original gone
+    @test occursin("delta = rep_vector(2, n)", single_code)     # untouched statement kept
+    # chained: BOTH overrides applied — lambda→0 AND delta→1 — original delta gone.
+    chained = Base.merge(Base.merge(sm_splice_base, splice_t1), splice_t2)
+    @test transpiles(chained(; n=3))
+    chained_code = stan_code(chained(; n=3))
+    @test occursin("lambda = rep_vector(0, n)", chained_code)   # lambda→0
+    @test occursin("delta = rep_vector(1, n)", chained_code)    # delta→1
+    @test !occursin("delta = rep_vector(2, n)", chained_code)   # original delta gone
+    # each Base.merge returns a NEW model — the base is unchanged by the merges.
+    # (crowdsource.qmd consumes each merged model directly via `stan_code(posterior)`,
+    # which is exactly what the transpiles/stan_code checks above exercise.)
+    base_code = stan_code(sm_splice_base(; n=3))
+    @test occursin("lambda = rep_vector(1, n)", base_code)
+    @test occursin("delta = rep_vector(2, n)", base_code)
 end
 
 @testset "determinism: inline UDF + lifted closure" begin

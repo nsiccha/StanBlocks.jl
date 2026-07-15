@@ -46,7 +46,7 @@ pooled_model = @slic begin
     obs ~ normal(obs_location, obs_scale)
 end
 "Equivalent to the previous implementation of `hierarchical_model` above"
-hierarchical_model = pooled_model(quote 
+hierarchical_model = Base.merge(pooled_model, quote 
     obs_location ~ hierarchical_prior(;n)
 end)
 ```

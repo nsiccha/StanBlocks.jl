@@ -172,19 +172,19 @@ regression_mix = @slic begin
 end
 
 bases = (;
-    hetero=base_model(quote 
+    hetero=Base.merge(base_model, quote 
         theta ~ centered_hetero(;link_f, n)
     end),
-    rw1=base_model(quote 
+    rw1=Base.merge(base_model, quote 
         theta ~ centered_rw1(;link_f, n)
     end),
-    rw2=base_model(quote 
+    rw2=Base.merge(base_model, quote 
         theta ~ centered_rw2(;link_f, n)
     end),
-    regression=base_model(quote 
+    regression=Base.merge(base_model, quote 
         theta ~ regression(;link_f, t)
     end),
-    regression_mix=base_model(quote 
+    regression_mix=Base.merge(base_model, quote 
         theta ~ regression_mix(;link_f, t)
         y ~ bernoulli(theta)
     end)
@@ -306,19 +306,19 @@ regression_mix = @slic begin
 end
 
 bases = (;
-    hetero=base_model(quote 
+    hetero=Base.merge(base_model, quote 
         theta ~ centered_hetero(;link_f, n)
     end),
-    rw1=base_model(quote 
+    rw1=Base.merge(base_model, quote 
         theta ~ centered_rw1(;link_f, n)
     end),
-    rw2=base_model(quote 
+    rw2=Base.merge(base_model, quote 
         theta ~ centered_rw2(;link_f, n)
     end),
-    regression=base_model(quote 
+    regression=Base.merge(base_model, quote 
         theta ~ regression(;link_f, t)
     end),
-    regression_mix=base_model(quote 
+    regression_mix=Base.merge(base_model, quote 
         theta ~ regression_mix(;link_f, t)
         y ~ bernoulli(theta)
     end)
