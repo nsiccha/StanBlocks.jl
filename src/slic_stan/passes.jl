@@ -64,6 +64,17 @@ backward!(x::BlockExpr; info) = remake(x, reverse(backward!.(reverse(x.args); in
 _base_lhs_symbol(x::StanExpr) = _base_lhs_symbol(expr(x))
 _base_lhs_symbol(x::Symbol) = x
 _base_lhs_symbol(x::CanonicalExpr) = _base_lhs_symbol(x.args[1])
+# The declared Symbol of a compiler-injected fresh-result declaration `out::T`
+# (a `DeclExpr` = single-arg `CanonicalExprV{:(::)}` whose one arg is the typed
+# symbol, itself a `StanExpr{Symbol}` post-`forward!`).
+_decl_lhs_symbol(x::DeclExpr) = _base_lhs_symbol(x.args[1])
+# True iff `x` was registered via an explicit `DeclExpr` (`forward!(::DeclExpr)`
+# sets `fresh_decl=true`). Distinguishes a fresh-declared local/derived var — into
+# which a compiler-injected slice-fill IS legal even at `:parameter` qual (it's a
+# transformed parameter under construction) — from a SAMPLED Stan parameter, which
+# is read-only and must reject the fill. `info(::StanType)` is the type-info
+# accessor (kept out of the kwarg-`info` methods below to avoid the name clash).
+_is_fresh_decl(x::StanExpr) = get(info(type(x)), :fresh_decl, false)
 backward!(x::AssignmentExpr; info) = begin
     lhs = x.args[1]
     key = _base_lhs_symbol(lhs)
@@ -73,7 +84,7 @@ backward!(x::AssignmentExpr; info) = begin
             "Compiler-generated slice-fill of `", key, "[…]` but `", key, "` is not declared ",
             "in model scope — the inlining/plate emitter must register the base variable first."
         )
-        qual(info[key]) == :parameter && error(
+        (qual(info[key]) == :parameter && !_is_fresh_decl(info[key])) && error(
             "Cannot assign to a slice/element of parameter `", key, "` in the model block — Stan ",
             "parameters are read-only there (this typically comes from inlining a mutating helper ",
             "onto a parameter; fill a local/derived vector instead)."
@@ -105,6 +116,14 @@ backward!(x::SamplingExpr; info) = begin
 end
 backward!(x::ReturnExpr; info) = x
 backward!(x::DocumentExpr; info) = remake(x, backward!.(x.args; info)...)
+# A compiler-injected fresh-result declaration `out::T` must stay INERT here.
+# The generic `StanExpr`/`StanExpr{Symbol}` methods below would descend into the
+# decl's inner typed symbol and rebind `info[out]` to the decl's *stale* entry —
+# clobbering the qual that `forward!` promoted across the fills back to the
+# declaration-time `:undefined`, which then mis-routes the whole variable to
+# generated quantities. Leave the decl unchanged and the promoted `info` entry
+# intact; downstream uses (e.g. the injected `r = out`) still set its `lqual`.
+backward!(x::StanExpr{<:DeclExpr}; info) = x
 backward!(x::StanExpr; info) = StanExpr(backward!(expr(x); info), backward!(type(x); info))
 backward!(x::StanExpr{Symbol}; info) = info[expr(x)] = remake(x; lqual=:affects_likelihood)
 backward!(x::StanType; info) = remake(x; lqual=:affects_likelihood)
@@ -159,6 +178,17 @@ distribution_blocks(x::StanExpr; info) = if center_type(x) === types.void
 else
     error("distribution_blocks not defined for non-void StanExpr at statement position: $x")
 end
+# Compiler-injected fresh-result declaration `out::T` and its slice/element fills
+# `out[i] = rhs` reach `distribute!` wrapped as NON-void StanExprs (the decl carries
+# its declared center type; a fill carries `anything`), so the generic method above
+# would error. Route BOTH by the base/declared variable's FINALIZED qual in `info`
+# — promoted across every fill in `forward!` and preserved through `backward!` — so
+# the declaration and all fills land together in one block (coarse-grained). The
+# wrapper's own qual is the stale declaration-time `:undefined`; ignore it.
+_qual_blocks(q) = q == :data ? (:transformed_data,) :
+    q == :parameter ? (:transformed_parameters,) : (:generated_quantities,)
+distribution_blocks(x::StanExpr{<:DeclExpr}; info) = _qual_blocks(qual(info[_decl_lhs_symbol(expr(x))]))
+distribution_blocks(x::StanExpr{<:AssignmentExpr}; info) = _qual_blocks(qual(info[_base_lhs_symbol(expr(x))]))
 
 DeclarativeBlock = Union{DataBlock,ParametersBlock}
 ImperativeBlock = Union{FunctionsBlock,TransformedDataBlock,TransformedParametersBlock,ModelBlock,GeneratedQuantitiesBlock}
