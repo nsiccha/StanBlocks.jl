@@ -471,6 +471,21 @@ import Statistics
     # specified dims. Grow as needed.
     reshape(v::vector[n], m::int, k::int)::matrix[m, k] = to_matrix(v, m, k)
 
+    # `jmap(f, x)` — element-wise map whose output CONTAINER is inferred from
+    # `f`'s per-element return type (`typeof(f(x[1]))`): an `int`-returning `f`
+    # over an `int` array gives `array[] int`, a `real`-returning `f` gives
+    # `vector[n]`. A single definition therefore covers both element kinds — no
+    # separate real `map` / int `imap` (`ibroadcasted`) variants are needed
+    # (prong 3). `x::anything[n]` accepts a `vector` / `row_vector` / `array[] T`
+    # (1-dim); `jbroadcasted` remains the arbitrary-arity elementwise construct.
+    jmap(f, x::anything[n]) = begin
+        rv::typeof(f(x[1]))[n]
+        for i in 1:n
+            rv[i] = f(x[i])
+        end
+        rv
+    end
+
     # Legacy ragged-vector accessors operating on bare `ntup` values. Kept
     # for back-compat with existing models; new code should prefer the
     # `RaggedVector` usertype + Julia-dispatched `Base.length` /

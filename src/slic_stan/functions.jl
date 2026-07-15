@@ -386,6 +386,14 @@ begin
         ct = getproperty(types, ct)
         StanType(ct, StanExpr.((size..., ), Ref(StanType(types.int))))
     end
+    # A return annotation whose base type is COMPUTED (`typeof(...)` /
+    # `return_type(...)`, optionally `[dims]`-sized) cannot be built at
+    # macro-expansion time (the args aren't bound yet). Route it to the same
+    # infer-from-body path as `::anything` — the body's trailing (declared)
+    # expression already carries the resolved container type.
+    _is_computed_ret_type(rv) = false
+    _is_computed_ret_type(rv::Expr) =
+        rv.head == :call || (rv.head == :ref && !(rv.args[1] isa Symbol))
     sigtype(x::Symbol) = sigtype(xref(x))
     sigtype(x::Expr) = begin
         @assert x.head == :ref "sigtype expects a `T[dims...]` `:ref` expression, got `$x` (head `$(x.head)`)."
@@ -776,7 +784,7 @@ begin
             if rv != :void
                 body = ensure_xreturn(body)
             end
-            sig_rv = if rv == :anything
+            sig_rv = if rv == :anything || _is_computed_ret_type(rv)
                 rv_expr = :($forward_return!($(canonical(body)); info).type)
                 :($rv_expr)
             else
@@ -898,6 +906,16 @@ sig_expr_size(x::StanExpr) = StanExpr(:_, StanType(types.int, ()))
 sig_expr(x::StanType) = StanType(sigtype(center_type(x)), map(sig_expr_size, stan_size(x)))
 sig_expr(x::StanType{<:types.tup}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); arg_types=sig_expr(info(x).arg_types))
 sig_expr(x::StanType{<:types.func}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); value=sig_expr(info(x).value))
+# A closure arg's function-dedup key MUST preserve its per-site `id`.
+# `func_name(::StanExpr2{<:types.closure})` mangles the emitted Stan function
+# name on that id (`f_closure_<id>`), so two DISTINCT closure literals with
+# identical bodies — distinct ids → distinct names `f_closure_1`/`f_closure_2`
+# — must collect as TWO definitions. The generic `sig_expr(::StanExpr)` wipes
+# `expr` to `:_` and the generic `sig_expr(::StanType)` drops `info.value`,
+# losing the id: both keys collapsed to one, so only `f_closure_1` was defined
+# while the second call site still emitted `f_closure_2(...)` → stanc rejects
+# with "undeclared identifier". Keying on the id realigns dedup with naming.
+sig_expr(x::StanExpr2{<:types.closure}) = StanExpr(type(x).info.value.id, sig_expr(type(x)))
 fetch_functions!(x::CanonicalExpr; info) = begin
     sx = sig_expr(x)
     sx in keys(info) && return
