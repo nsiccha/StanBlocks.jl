@@ -56,11 +56,17 @@ just sticking to Julia comes with many advantages.
 
 Features which I am on the fence about, but currently not planning to implement:
 
-* a Julia backend,
+* full Julia runtime parity for Stan probability, RNG, ODE, and parallel built-ins,
 * `target +=` statements,
 * top level control flow,
 * top level mutability,
 * getting rid of superfluous parentheses.
+
+Bodyful, bare-symbol `@deffun` definitions do have a bounded Julia target:
+eligible deterministic definitions install one callable Julia method from the
+original user-facing signature while retaining the same Stan lowering. Use
+`@stanonly` for intentionally Stan-only bodies. Signature-only/type-token glue
+and qualified existing-function extensions skip Julia emission automatically.
 
 Features which are **NOT** planned:
 

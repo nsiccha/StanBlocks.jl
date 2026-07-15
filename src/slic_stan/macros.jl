@@ -116,8 +116,8 @@ Julia target automatically.
 
 The Julia target is a bounded deterministic compatibility layer: supported signatures,
 symbolic dimension checks, typed locals, control flow/mutation, nested deterministic calls,
-higher-order arguments, and varargs. Probability/RNG/ODE/`reduce_sum` primitives require the
-explicit `@stanonly` opt-out; an unsupported call otherwise errors at expansion time.
+higher-order arguments, and varargs. Direct probability/RNG/ODE/`reduce_sum` primitive calls
+require the explicit `@stanonly` opt-out and otherwise error at expansion time.
 
 For functions ending in `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf`, the return type is automatically
 set to `real` and companion `_lpdfs`/`_rng` stubs are generated for use in `generated_quantities`.
