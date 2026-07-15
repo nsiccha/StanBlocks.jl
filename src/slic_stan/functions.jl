@@ -141,6 +141,23 @@ end
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 1),))))
 )
+# Fully selecting the scalar array-prefix of an `array[...] vector/matrix`
+# leaves its native vector/matrix core. This general rule covers arbitrary
+# array depth (e.g. `array[N] matrix[K,M] x; x[n, :, m]`) beyond the finite
+# signature table below while preserving that table's core slice inference.
+tracetype(x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr,Vararg{Any}}}) = begin
+    value = x.args[1]
+    nl = l_ndim(type(value))
+    indices = x.args[2:end]
+    if nl > 0 && length(indices) >= nl && all(i -> i isa StanExpr2{<:types.int,0}, indices[1:nl])
+        core_type = remake(type(value), stan_size(type(value))[nl+1:end]...)
+        rest = indices[nl+1:end]
+        isempty(rest) && return core_type
+        core = StanExpr(missing, core_type)
+        return tracetype(CanonicalExpr(getindex, core, rest...))
+    end
+    invoke(tracetype, Tuple{CanonicalExpr}, x)
+end
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 1),))), x.args[3])
 )
@@ -1090,7 +1107,8 @@ func_name(x::Function) = string(x)
 # function to its Stan-side name fragment used for call-site mangling.
 for (f, nm) in (
     (&, "and"), (|, "or"), (>=, "gte"), (>, "gt"), (==, "eq"),
-    (<=, "lte"), (<, "lt"), (+, "add"), (-, "sub"), (*, "mul"), (/, "div"), (^, "pow"),
+    (<=, "lte"), (<, "lt"), (+, "add"), (-, "sub"), (*, "mul"),
+    (/, "div"), (÷, "idiv"), (^, "pow"),
     # Julia functions with different Stan names
     (length, "num_elements"), (minimum, "min"), (maximum, "max"), (abs2, "square"),
 )

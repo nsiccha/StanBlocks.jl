@@ -1660,6 +1660,97 @@ c3_plate_router_model = @slic (;) begin
     routed ~ c3_plate_router_submodel
 end
 
+# Public plate regression: the do-block calls a named @slic submodel whose own
+# sample and derived local are not visible in the plate's raw AST.  The plate
+# discovery trace must find all three flattened bindings (`cell_z`,
+# `cell_shifted`, `cell`), and the emit trace must promote every definition and
+# reference to the current outer index.
+@slic c3_plate_ncp(mu::real, sigma::real) = begin
+    z ~ std_normal()
+    shifted = mu + sigma * z
+    return shifted
+end
+c3_plate_submodel_model = @slic (;y=randn(6), mu0=0.5) begin
+    sigma ~ normal(0.0, 1.0; lower=0.0)
+    theta ~ plate(y; outer=(6,)) do yi
+        cell ~ c3_plate_ncp(mu0, sigma)
+        yi ~ normal(cell, sigma)
+        cell
+    end
+end
+
+# The same promotion must preserve a vector-valued submodel cell: the internal
+# vector parameter and returned value collect as matrices and are indexed by
+# column in the emitted loop.
+@slic c3_plate_vector_ncp(k::int) = begin
+    z::vector[k] ~ std_normal()
+    return z
+end
+c3_plate_vector_submodel_model = @slic (;n=3, k=2) begin
+    theta ~ plate(; outer=(n,)) do _i
+        cell ~ c3_plate_vector_ncp(k)
+        cell
+    end
+end
+
+# N-dimensional plate regressions: preserve the shipped dense 1-D shapes,
+# route one compiler-owned loop per outer axis, and keep logical cell dimensions
+# first while Stan array prefixes carry outer axes beyond the vector/matrix core.
+c3_plate_outer_int_model = @slic (;y=randn(4)) begin
+    theta ~ plate(y; outer=4) do yi
+        z ~ normal(0.0, 1.0)
+        yi ~ normal(z, 1.0)
+        z
+    end
+end
+c3_plate_outer_2d_scalar_model = @slic (;y=randn(2, 3)) begin
+    theta ~ plate(y; outer=(2, 3)) do yi
+        z ~ normal(0.0, 1.0)
+        yi ~ normal(z, 1.0)
+        z
+    end
+end
+c3_plate_outer_2d_vector_model = @slic (;y=randn(2, 3), k=4) begin
+    theta ~ plate(y; outer=(2, 3)) do yi
+        z::vector[k] ~ std_normal()
+        yi ~ normal(z[1], 1.0)
+        z
+    end
+end
+c3_plate_outer_3d_scalar_model = @slic (;y=randn(2, 3)) begin
+    theta ~ plate(; outer=(2, 3, 4)) do i, j, k
+        z ~ normal(0.0, 1.0)
+        y[i, j] ~ normal(z, 1.0)
+        z + 0.0 * k
+    end
+end
+c3_plate_outer_4d_scalar_model = @slic (;y=randn(2, 3)) begin
+    theta ~ plate(; outer=(2, 3, 4, 5)) do i, j, k, l
+        z ~ normal(0.0, 1.0)
+        y[i, j] ~ normal(z, 1.0)
+        z + 0.0 * k + 0.0 * l
+    end
+end
+
+# Folded `lwchee` regression: one public model exercises the registered
+# transform builtin, compiler-certified range fill, symbolic TP loop, and the
+# compile-time RaggedVector representation together.
+c3_ragged_simplex_model = @slic (;K=[2, 3, 4], y=0.3) begin
+    p::simplex[K] ~ flat()
+    y ~ normal(sum(p[1]), 0.1)
+end
+
+# Matrix-valued ragged constraints use a flat RaggedMatrix carrier.  Start at
+# K=1 so the correlation family also exercises its zero-coordinate first group.
+c3_ragged_cholesky_corr_model = @slic (;K=[1, 2, 3], y=0.3) begin
+    L::cholesky_factor_corr[K] ~ flat()
+    y ~ normal(sum(to_vector(L[2])), 0.1)
+end
+c3_ragged_cholesky_cov_model = @slic (;K=[1, 2, 3], y=0.3) begin
+    L::cholesky_factor_cov[K] ~ flat()
+    y ~ normal(sum(to_vector(L[2])), 0.1)
+end
+
 @testset "slic: compiler-injected for-loop + range fresh-result fills (case-3 C.1/C.2)" begin
     # C.1 PARAM: for-loop fresh fill from a parameter → loop+decl+bind in transformed parameters.
     forfill_param = @slic (;y=randn(3)) begin
@@ -1846,6 +1937,175 @@ end
         @test occursin(r"obs ~ normal\(z", stan_block(code, "model"))
     end
     @test LogDensityProblems.dimension(instantiate(priorlive)) == 5
+end
+
+@testset "slic: public plate promotes called-submodel bindings" begin
+    @test transpiles(c3_plate_submodel_model)
+    @test compiles(c3_plate_submodel_model)
+    code = stan_code(c3_plate_submodel_model)
+
+    let parameters = stan_block(code, "parameters")
+        @test occursin("vector[6] cell_z", parameters)
+        @test occursin("real<lower=0.0> sigma", parameters)
+    end
+    let tp = stan_block(code, "transformed parameters")
+        @test occursin(r"cell_shifted\[plate_i__pl_\d+\]\s*=", tp)
+        @test occursin(r"cell\[plate_i__pl_\d+\]\s*=", tp)
+        @test occursin(r"theta\[plate_i__pl_\d+\]\s*=\s*cell\[plate_i__pl_\d+\]", tp)
+    end
+    let model_block = stan_block(code, "model")
+        @test occursin(r"cell_z\[plate_i__pl_\d+\]\s*~\s*std_normal", model_block)
+        @test occursin(r"y\[plate_i__pl_\d+\]\s*~\s*normal\(cell\[plate_i__pl_\d+\]", model_block)
+    end
+
+    @test transpiles(c3_plate_vector_submodel_model)
+    @test compiles(c3_plate_vector_submodel_model)
+    vector_code = stan_code(c3_plate_vector_submodel_model)
+    @test occursin("matrix[k, n] cell_z", stan_block(vector_code, "parameters"))
+    @test occursin(r"cell_z\[:, plate_i__pl_\d+\]\s*~\s*std_normal", stan_block(vector_code, "model"))
+    @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*cell\[:, plate_i__pl_\d+\]", stan_block(vector_code, "transformed parameters"))
+end
+
+@testset "slic: public plate emits N-dimensional outer loops" begin
+    @test transpiles(c3_plate_outer_int_model)
+    @test compiles(c3_plate_outer_int_model)
+    int_code = stan_code(c3_plate_outer_int_model)
+    @test occursin("vector[4] z", stan_block(int_code, "parameters"))
+    @test occursin("vector[4] theta", stan_block(int_code, "transformed parameters"))
+    @test occursin(r"for\(plate_i__pl_\d+ in 1:4\)", stan_block(int_code, "model"))
+
+    @test transpiles(c3_plate_outer_2d_scalar_model)
+    @test compiles(c3_plate_outer_2d_scalar_model)
+    scalar2_code = stan_code(c3_plate_outer_2d_scalar_model)
+    @test occursin("matrix[2, 3] z", stan_block(scalar2_code, "parameters"))
+    @test occursin("matrix[2, 3] theta", stan_block(scalar2_code, "transformed parameters"))
+    let model_block = stan_block(scalar2_code, "model")
+        @test occursin(r"for\(plate_i1__pl_\d+ in 1:2\)", model_block)
+        @test occursin(r"for\(plate_i2__pl_\d+ in 1:3\)", model_block)
+        @test occursin(r"y\[plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal", model_block)
+        @test occursin(r"z\[plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal", model_block)
+    end
+
+    @test transpiles(c3_plate_outer_2d_vector_model)
+    @test compiles(c3_plate_outer_2d_vector_model)
+    vector2_code = stan_code(c3_plate_outer_2d_vector_model)
+    @test occursin("array[3] matrix[k, 2] z", stan_block(vector2_code, "parameters"))
+    @test occursin("array[3] matrix[k, 2] theta", stan_block(vector2_code, "transformed parameters"))
+    @test occursin(
+        r"z\[plate_i2__pl_\d+, :, plate_i1__pl_\d+\]\s*~\s*std_normal",
+        stan_block(vector2_code, "model"),
+    )
+
+    @test transpiles(c3_plate_outer_3d_scalar_model)
+    @test compiles(c3_plate_outer_3d_scalar_model)
+    scalar3_code = stan_code(c3_plate_outer_3d_scalar_model)
+    @test occursin("array[4] matrix[2, 3] z", stan_block(scalar3_code, "parameters"))
+    @test occursin(
+        r"z\[plate_i3__pl_\d+, plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal",
+        stan_block(scalar3_code, "model"),
+    )
+
+    @test transpiles(c3_plate_outer_4d_scalar_model)
+    @test compiles(c3_plate_outer_4d_scalar_model)
+    scalar4_code = stan_code(c3_plate_outer_4d_scalar_model)
+    @test occursin("array[4, 5] matrix[2, 3] z", stan_block(scalar4_code, "parameters"))
+    @test occursin(
+        r"z\[plate_i3__pl_\d+, plate_i4__pl_\d+, plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal",
+        stan_block(scalar4_code, "model"),
+    )
+
+    @test !transpiles(@slic (;) begin
+        theta ~ plate(; outer=()) do i
+            i
+        end
+    end; re=false)
+    @test !transpiles(@slic (;) begin
+        theta ~ plate(; outer=(2, 3)) do i
+            i
+        end
+    end; re=false)
+end
+
+@testset "slic: ragged simplex uses TP-inlined constraint transforms" begin
+    @test transpiles(c3_ragged_simplex_model)
+    @test compiles(c3_ragged_simplex_model)
+    code = stan_code(c3_ragged_simplex_model)
+
+    @test occursin(r"vector\[sum\(jbroadcasted_sub", stan_block(code, "parameters"))
+    let tp = stan_block(code, "transformed parameters")
+        @test occursin("simplex_jacobian", tp)
+        @test occursin("for(", tp)
+        @test !occursin("tuple(", tp)
+        @test !occursin(r"array\[.*\]\s+int", tp)
+    end
+end
+
+@testset "slic: ragged Cholesky factors use flattened matrix carriers" begin
+    cases = (
+        (c3_ragged_cholesky_corr_model, "cholesky_factor_corr_jacobian", 4),
+        (c3_ragged_cholesky_cov_model, "cholesky_factor_cov_jacobian", 10),
+    )
+    for (model, jacobian, expected_dimension) in cases
+        @test transpiles(model)
+        problem = instantiate(model)
+        @test LogDensityProblems.dimension(problem) == expected_dimension
+        @test isfinite(LogDensityProblems.logdensity(problem, zeros(expected_dimension)))
+
+        code = stan_code(model)
+        @test occursin("p_free__rcm_", stan_block(code, "parameters"))
+        let tp = stan_block(code, "transformed parameters")
+            @test occursin(jacobian, tp)
+            @test occursin("to_vector", tp)
+            @test occursin("for(", tp)
+            @test !occursin("tuple(", tp)
+            @test !occursin(r"array\[.*\]\s+int", tp)
+        end
+        @test occursin("to_matrix", stan_block(code, "model"))
+    end
+end
+
+@testset "slic: ragged ordered constrained parameters" begin
+    Ks = [1, 2, 4]
+    ordered_model = @slic (;Ks, y=0.2) begin
+        p::ordered[Ks] ~ flat()
+        y ~ normal(sum(p[1]), 1.0)
+    end
+    positive_model = @slic (;Ks, y=0.2) begin
+        p::positive_ordered[Ks] ~ flat()
+        y ~ normal(sum(p[1]), 1.0)
+    end
+
+    for (model, jacobian) in (
+        (ordered_model, "ordered_jacobian"),
+        (positive_model, "positive_ordered_jacobian"),
+    )
+        @test transpiles(model)
+        @test compiles(model)
+        code = stan_code(model)
+        @test LogDensityProblems.dimension(instantiate(stan_model(model))) == sum(Ks)
+
+        let parameters = stan_block(code, "parameters")
+            @test occursin(r"\bvector\[[^]]+\] p_free__rc_\d+;", parameters)
+            @test !occursin("p_mem__rc_", parameters)
+        end
+        let tp = stan_block(code, "transformed parameters")
+            @test occursin(r"\bvector\[[^]]+\] p_mem__rc_\d+;", tp)
+            @test occursin(jacobian, tp)
+        end
+        @test !occursin(r"p_free__rc_\d+\s*~", stan_block(code, "model"))
+    end
+
+    informative_prior = @slic (;Ks, y=0.2) begin
+        p::ordered[Ks] ~ normal(0.0, 1.0)
+        y ~ normal(sum(p[1]), 1.0)
+    end
+    @test !transpiles(informative_prior; re=false)
+
+    unsupported_matrix_family = @slic (;Ks, y=0.2) begin
+        p::corr_matrix[Ks] ~ flat()
+        y ~ normal(p[1, 1], 1.0)
+    end
+    @test !transpiles(unsupported_matrix_family; re=false)
 end
 
 # === posteriordb.jl tests ===

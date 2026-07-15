@@ -344,8 +344,8 @@ canonical(x::CanonicalExprV{:ref}) = CanonicalExpr(:getindex, x.args...)
 # any dotted operator that is not (yet) handled:
 #   `.+` / `.-`        -> plain `+` / `-`  — Stan's `+`/`-` already broadcast
 #                         scalars over vectors/matrices; there is no dotted form.
-#   `.*` / `./` / `.^` -> `Base.BroadcastFunction` — Stan's `*`/`/`/`^` are matrix
-#                         ops, so the element-wise variant needs the dotted Stan op.
+#   `.*` / `./` / `.^` / `.÷` -> `Base.BroadcastFunction` — Stan's arithmetic is
+#                         matrix-oriented, so element-wise variants need this form.
 # Resolved once, at the `:call` canonicalization site, so adding a broadcast
 # operator is a single new method below.
 broadcast_callee(f) = f
@@ -355,12 +355,13 @@ broadcast_callee(::Symbol, ::Val{Symbol(".-")}) = -
 broadcast_callee(::Symbol, ::Val{Symbol(".*")}) = .*
 broadcast_callee(::Symbol, ::Val{Symbol("./")}) = ./
 broadcast_callee(::Symbol, ::Val{Symbol(".^")}) = .^
+broadcast_callee(::Symbol, ::Val{Symbol(".÷")}) = Base.BroadcastFunction(÷)
 broadcast_callee(f::Symbol, ::Val) = begin
     s = string(f)
     if startswith(s, '.') && length(s) > 1 && s != ".."
         error(
             "SLIC: broadcast operator `$f` is not supported in `@slic`/`@deffun` bodies. " *
-            "Supported broadcast operators: `.+` `.-` `.*` `./` `.^`. " *
+            "Supported broadcast operators: `.+` `.-` `.*` `./` `.^` `.÷`. " *
             "Stan's plain `+`, `-`, `*` already broadcast scalars over vectors/matrices, " *
             "so a non-dotted operator is often what you want. To add support for `$f`, " *
             "define a matching `broadcast_callee(::Symbol, ::Val{Symbol(\"$s\")})` method in tracing.jl."
@@ -409,8 +410,16 @@ get_module(info::StanModel) = get(info.meta, :mod, Main)
 get_module(info::AbstractDict) = get(info, :__mod__, Main)
 get_module(info::NamedTuple) = get(info, :__mod__, Main)
 get_module(info::SubModel) = get_module(parent(info))
+# Plate emission installs a task-local promotion context while re-tracing its
+# compiler-owned loop.  The forward layer adds the StanModel/SubModel method;
+# this floor keeps ordinary symbol resolution independent of that feature.
+_plate_promoted_reference(x, info) = nothing
 forward!(x::Symbol; info) = begin
-    x in keys(info) && return info[x]
+    if x in keys(info)
+        promoted = _plate_promoted_reference(x, info)
+        promoted === nothing || return promoted
+        return info[x]
+    end
     _is_builtin_name(x) && return forward!(getproperty(builtin, x); info)
     mod = get_module(info)
     if isdefined(mod, x)

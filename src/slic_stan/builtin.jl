@@ -111,6 +111,7 @@ end
     simplex_constrain simplex_unconstrain simplex_jacobian
     ordered_constrain ordered_unconstrain ordered_jacobian
     positive_ordered_constrain positive_ordered_unconstrain positive_ordered_jacobian
+    cholesky_factor_corr_jacobian cholesky_factor_cov_jacobian
     diag_matrix
     mdivide_left_tri_low
     one_hot_vector
@@ -271,6 +272,8 @@ import Statistics
     positive_ordered_constrain(y::vector[n])::vector[n]
     positive_ordered_jacobian(y::vector[n])::vector[n]
     positive_ordered_unconstrain(x::vector[n])::vector[n]
+    cholesky_factor_corr_jacobian(y::vector[n], K::int)::matrix[K,K]
+    cholesky_factor_cov_jacobian(y::vector[n], M::int, N::int)::matrix[M,N]
     Base.log1p(x::real)::real
     Base.inv(::vector[n])::vector[n]
     Base.print(args...)::anything
@@ -717,10 +720,11 @@ for (base, params) in (
     @eval @deffun $lpdfs(obs::anything[n], $(params...)) = jbroadcasted($lpdfs, obs, $(params...))
 end
 
-# --- RaggedVector usertype + Julia-dispatched accessors ---------------------
+# --- Ragged vector/matrix usertypes + Julia-dispatched accessors -------------
 # A ragged vector is conceptually `Vector{<:AbstractVector{<:Real}}` — a
-# variable-length collection of real subvectors. SLIC encodes one as a
-# tagged ntup with fields:
+# variable-length collection of real subvectors. A RaggedMatrix uses the same
+# flat-memory scheme for varying matrix shapes and carries per-group row/column
+# sizes. SLIC encodes either as a tagged ntup with fields:
 #   mem  :: vector[total]   — concatenation of all subvectors
 #   ends :: int[n_groups]   — inclusive 1-based end index of each subvector
 # Standard Julia dispatch on the `RaggedVector` tag drives `length(rv)`
@@ -729,10 +733,21 @@ end
     mem  :: vector
     ends :: int[]
 end
+@usertype struct RaggedMatrix
+    mem  :: vector
+    ends :: int[]
+    rows :: int[]
+    cols :: int[]
+end
 # Built-in usertypes get aliased into the `builtin` submodule so SLIC's
 # `_is_builtin_name` lookup picks them up at any user `@slic` site —
 # same convention used for `vector`/`real`/etc. above.
 @eval builtin const RaggedVector = $RaggedVector
+@eval builtin const RaggedMatrix = $RaggedMatrix
+
+# `RaggedMatrix` extends the same flat-memory representation to matrix-valued
+# groups. `ends` indexes each flattened matrix, while data-qualified `rows` and
+# `cols` reconstruct the selected group with `to_matrix`.
 
 # A `RaggedVector` is a COMPILE-TIME pairing of its two components, never a
 # materialised Stan tuple. Reason: when `mem` is parameter-derived
@@ -782,12 +797,19 @@ end
     Base.lastindex(rv::RaggedVector)::int = size(rv.ends)
     Base.getindex(rv::RaggedVector, i::int)::vector[ragged_length(rv, i)] =
         rv.mem[ragged_start(rv, i):ragged_end(rv, i)]
+    Base.length(rv::RaggedMatrix)::int = size(rv.ends)
+    Base.lastindex(rv::RaggedMatrix)::int = size(rv.ends)
+    Base.getindex(rv::RaggedMatrix, i::int)::matrix[rv.rows[i],rv.cols[i]] =
+        to_matrix(
+            rv.mem[ragged_start(rv, i):ragged_end(rv, i)],
+            rv.rows[i],
+            rv.cols[i],
+        )
 end
 
-# Constructor: bind the RaggedVector StanExpr verbatim into `info` (mirrors the
-# closure verbatim-bind) so its component StanExprs survive, and emit no Stan
-# declaration (`nothing` → `forward!(::BlockExpr)` skips it via
-# `_is_inert_block_stmt(::Nothing)`).
+# Constructors bind ragged StanExprs verbatim into `info` (mirrors the closure
+# verbatim-bind) so their component StanExprs survive, and emit no Stan
+# declaration (`nothing` → `forward!(::BlockExpr)` skips them).
 forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:RaggedVector}}; info) = begin
     name, rhs = x.args
     name in keys(info) && _is_submodel_info(info) && return nothing
@@ -798,20 +820,33 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:RaggedVector}}; info) = begin
     info[name] = rhs
     nothing
 end
-# Defensive: a RaggedVector StanExpr must never be re-forwarded as a bare symbol
+forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:RaggedMatrix}}; info) = begin
+    name, rhs = x.args
+    name in keys(info) && _is_submodel_info(info) && return nothing
+    name in keys(info) && error(
+        "RaggedMatrix: rebinding `$name` is not supported — a RaggedMatrix is a " *
+        "SLIC-side compile-time pairing of its (mem, ends, rows, cols) components."
+    )
+    info[name] = rhs
+    nothing
+end
+# Defensive: a ragged StanExpr must never be re-forwarded as a bare symbol
 # (mirrors the closure `StanExpr{Symbol,...}` passthrough).
 forward!(x::StanExpr{Symbol,<:StanType{<:RaggedVector}}; info) = x
+forward!(x::StanExpr{Symbol,<:StanType{<:RaggedMatrix}}; info) = x
 
-# A RaggedVector StanExpr is a COMPILE-TIME CONSTRUCTION iff its `expr` is the
-# constructor `CanonicalExpr` (args = `mem`, `ends`) — the model-body case a
-# verbatim-bind produces. A RaggedVector *parameter* inside a `@deffun` body is
+# A ragged StanExpr is a COMPILE-TIME CONSTRUCTION iff its `expr` is the
+# constructor `CanonicalExpr` — the model-body case a verbatim-bind produces.
+# A ragged *parameter* inside a `@deffun` body is
 # instead a bound Symbol and stays a real Stan tuple: the accessor hooks below
 # fire ONLY for constructions and fall through (to the tuple-representation UDFs
-# above) otherwise. This is what lets the whole RaggedVector still be passed to
-# a function without losing its size info.
+# above) otherwise. This lets either ragged carrier be passed to a function
+# without losing its size info.
 _is_ragged_construction(rv::StanExpr) = expr(rv) isa CanonicalExpr
 _ragged_mem(rv::StanExpr) = expr(rv).args[1]
 _ragged_ends(rv::StanExpr) = expr(rv).args[2]
+_ragged_rows(rv::StanExpr) = expr(rv).args[3]
+_ragged_cols(rv::StanExpr) = expr(rv).args[4]
 
 # `rv[i]` → `mem[ragged_start(ends, i):ragged_end(ends, i)]` (a parameter vector
 # sliced by data bounds). Intercepts before `tracetype`, so a construction never
@@ -826,12 +861,31 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:R
     else
         fold_shape_query(stan_expr(x))
     end
+# `rm[i]` → reconstruct the selected flat slice with its data-only dimensions.
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
+    if _is_ragged_construction(x.args[1])
+        rv, i = x.args
+        ends = _ragged_ends(rv)
+        lo = stan_call(builtin.ragged_start, ends, i)
+        hi = stan_call(builtin.ragged_end, ends, i)
+        slice = stan_call(getindex, _ragged_mem(rv), stan_call(Colon(), lo, hi))
+        nr = stan_call(getindex, _ragged_rows(rv), i)
+        nc = stan_call(getindex, _ragged_cols(rv), i)
+        stan_call(builtin.to_matrix, slice, nr, nc)
+    else
+        fold_shape_query(stan_expr(x))
+    end
 # `length(rv)` / `lastindex(rv)` → number of groups = `num_elements(ends)`.
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedVector}}}; info) =
     _is_ragged_construction(x.args[1]) ? stan_call(length, _ragged_ends(x.args[1])) : fold_shape_query(stan_expr(x))
-# `rv.mem` / `rv.ends` → the stored component (field access lowers to
-# `getfield(rv, position)`; resolve it to `expr(rv).args[position]`).
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedMatrix}}}; info) =
+    _is_ragged_construction(x.args[1]) ? stan_call(length, _ragged_ends(x.args[1])) : fold_shape_query(stan_expr(x))
+# `rv.mem` / `rv.ends` (and the matrix shape fields) → the stored component;
+# field access lowers to `getfield(rv, position)`, resolved against the
+# constructor arguments here.
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedVector},<:StanExpr2{<:types.int}}}; info) =
+    _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
     _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
 
 # --- Sized-token rng overloads (generated via @eval @deffun) -----------------
