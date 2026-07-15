@@ -650,6 +650,52 @@ _plate_outer_decl(f, ct, N) = begin
 end
 _plate_cell_index(f, ct, idx) = ct === nothing ? :($f[$idx]) : :($f[:, $idx])
 
+# Per-cell StanType of a fresh var, for the result-inference probe: an annotated
+# `z::vector[K]` ⇒ `vector[K]`; a bare scalar fresh ⇒ `real` (the MVP's scalar
+# assumption). Used only to TYPE the trailing expression, never emitted.
+_plate_fresh_cell_type(ct; info) = begin
+    ct === nothing && return StanType(types.real)
+    K = _plate_vector_size(ct)
+    K === nothing && error("plate: unsupported fresh per-cell type `$ct` for result inference.")
+    StanType(types.vector, (forward!(K; info),))
+end
+# FULL AUTO TYPE INFERENCE (goal §5): infer a BARE plate result's per-cell shape
+# from the do-block trailing expression, so `b ~ plate(...)` needs no
+# `b::vector[K]` annotation. Temporarily binds the per-cell names (loop index,
+# do-block params at their slice types, fresh vars at their per-cell types) into
+# `info`, then a pure-expression `forward!` of the trailing expression computes
+# its `tracetype`; captures are already in `info`. Pops every temp binding (the
+# `forward!(::ForExpr)` add-index/pop idiom) so the real retrace sees an
+# unperturbed scope. Returns a synthetic per-cell type expr for the existing
+# `_plate_outer_decl`/`_plate_cell_index`: `nothing` (scalar ⇒ `vector[N]`) or
+# `:(vector[K])` (⇒ `matrix[K, N]`).
+_infer_plate_rv_ct(ret_expr, fresh, params, iterables, idx; info) = begin
+    bound = Symbol[]
+    _bind!(nm, ty) = (info[nm] = StanExpr(nm, ty); push!(bound, nm))
+    try
+        _bind!(idx, StanType(types.int; qual=:data))
+        if isempty(iterables) && length(params) == 1
+            _bind!(params[1], StanType(types.int; qual=:data))               # `do i` ⇒ cell index
+        else
+            for (a, it) in zip(params, iterables)
+                _bind!(a, type(forward!(canonical(:($it[$idx])); info)))     # per-cell slice
+            end
+        end
+        for (f, ct) in fresh
+            _bind!(f, _plate_fresh_cell_type(ct; info))
+        end
+        T = type(forward!(canonical(ret_expr); info))
+        stan_ndim(T) == 0 && return nothing
+        (center_type(T) <: types.vector && stan_ndim(T) == 1) &&
+            return :(vector[$(expr(stan_size(T)[1]))])
+        error("plate: inferred cell-output type has ndim $(stan_ndim(T)); only scalar or vector[K] supported for now.")
+    finally
+        for nm in bound
+            pop!(info, nm)
+        end
+    end
+end
+
 forward!(x::SamplingExpr{Symbol,<:CanonicalExprV{:plate}}; info) =
     _forward_plate!(x.args[1], nothing, x.args[2]; info)
 # Typed-LHS plate result `b::vector[K] ~ plate(…)` ⇒ vector cell output collected
@@ -721,6 +767,11 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     for (f, ct) in fresh
         subst[f] = _plate_cell_index(f, ct, idx)         # scalar ⇒ f[idx]; vector[K] ⇒ f[:, idx]
     end
+
+    # Full auto type inference (goal §5): a BARE `b ~ plate(...)` (no `b::vector[K]`)
+    # gets its result shape from the do-block trailing expression. A typed-LHS
+    # `b::vector[K]` (rv_ct given) stays an explicit override.
+    rv_ct === nothing && (rv_ct = _infer_plate_rv_ct(ret_expr, fresh, params, iterables, idx; info))
 
     # Strip typed-LHS annotations, then substitute names ⇒ per-cell accessors.
     loop_body = Any[_subst_syms(_strip_plate_decl(s), subst) for s in body_stmts]
