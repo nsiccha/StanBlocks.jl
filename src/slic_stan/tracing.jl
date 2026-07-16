@@ -26,7 +26,14 @@ Errors during tracing are wrapped in a [`StanBlocksError`](@ref
 StanBlocks.StanBlocksError) tagged with `phase = :transpile`.
 """
 function stan_model end
-const _StanBlocksError = parentmodule(@__MODULE__).StanBlocksError
+# Internal alias for the sibling error type (StanBlocks.jl defines it before this
+# include). Reference it DIRECTLY — not via `parentmodule(@__MODULE__)`. That
+# indirection was correct only while SLIC lived in the nested `module stan`
+# (parent = StanBlocks); after the hoist (1a3a4ae) `@__MODULE__` IS StanBlocks, so
+# under `include`-into-Main-from-source `parentmodule` resolves to `Main` and
+# `Main.StanBlocksError` is undefined (a normal `using` load is masked because a
+# top-level package module is its own parent).
+const _StanBlocksError = StanBlocksError
 _is_stanblocks_error(e::_StanBlocksError) = true
 _is_stanblocks_error(_) = false
 
