@@ -2,7 +2,7 @@ module PosteriorDBExt
 
 import PosteriorDB
 import StanBlocks
-import StanBlocks: slic_implementation, @slic, @deffun
+import StanBlocks: slic_implementation, @slic, @deffun, @lpxf
 
 # --- SLIC (Stan transpiler) implementations ---
 
@@ -12,7 +12,7 @@ slic_implementation(posterior::PosteriorDB.Posterior) = slic_implementation(
 )
 
 @deffun begin
-    garch11_lpdf(y::anything[T], mu::real, alpha0::real, alpha1::real, beta1::real, sigma1::real)::real = begin
+    @lpxf garch11_lpdf(y::anything[T], mu::real, alpha0::real, alpha1::real, beta1::real, sigma1::real)::real = begin
         sigma_vec::real[T]
         sigma_vec[1] = sigma1
         for t in 2:T
@@ -29,10 +29,12 @@ slic_implementation(posterior::PosteriorDB.Posterior) = slic_implementation(
     garch11_rng(mu::real, alpha0::real, alpha1::real, beta1::real, sigma1::real)::real[1] = begin
         rv::real[1]; rv[1] = normal_rng(mu, sigma1); rv
     end
+    garch11_rng(vector[T], mu::real, alpha0::real, alpha1::real, beta1::real, sigma1::real)::vector[T] =
+        rep_vector(garch11_rng(mu, alpha0, alpha1, beta1, sigma1)[1], T)
 end
 
 @deffun begin
-    arma11_lpdf(y::anything[T], mu::real, phi::real, theta_ma::real, sigma::real)::real = begin
+    @lpxf arma11_lpdf(y::anything[T], mu::real, phi::real, theta_ma::real, sigma::real)::real = begin
         nu_vec::real[T]
         err_vec::real[T]
         nu_vec[1] = mu + phi * mu
@@ -52,10 +54,12 @@ end
     arma11_rng(mu::real, phi::real, theta_ma::real, sigma::real)::real[1] = begin
         rv::real[1]; rv[1] = normal_rng(mu + phi * mu, sigma); rv
     end
+    arma11_rng(vector[T], mu::real, phi::real, theta_ma::real, sigma::real)::vector[T] =
+        rep_vector(arma11_rng(mu, phi, theta_ma, sigma)[1], T)
 end
 
 @deffun begin
-    gauss_mix2_lpdf(obs::anything[n], theta::real, mu1::real, mu2::real, sig1::real, sig2::real)::real = begin
+    @lpxf gauss_mix2_lpdf(obs::anything[n], theta::real, mu1::real, mu2::real, sig1::real, sig2::real)::real = begin
         rv = 0.
         for i in 1:n
             rv += log_mix(theta, normal_lpdf(obs[i], mu1, sig1), normal_lpdf(obs[i], mu2, sig2))
@@ -67,10 +71,12 @@ end
     gauss_mix2_rng(theta::real, mu1::real, mu2::real, sig1::real, sig2::real)::real[1] = begin
         rv::real[1]; rv[1] = normal_rng(mu1, sig1); rv
     end
+    gauss_mix2_rng(vector[n], theta::real, mu1::real, mu2::real, sig1::real, sig2::real)::vector[n] =
+        rep_vector(gauss_mix2_rng(theta, mu1, mu2, sig1, sig2)[1], n)
 end
 
 @deffun begin
-    car_normal_lpdf(phi::vector[N], node1::int[M], node2::int[M])::real =
+    @lpxf car_normal_lpdf(phi::vector[N], node1::int[M], node2::int[M])::real =
         -0.5 * dot_self(phi[node1] - phi[node2])
     car_normal_lpdfs(phi::vector[N], node1::int[M], node2::int[M])::real =
         car_normal_lpdf(phi, node1, node2)
@@ -192,9 +198,9 @@ slic_implementation(::Val{:kidscore_interaction}; kwargs...) = @slic kwargs begi
     kid_score ~ normal(beta[1] + beta[2] * to_vector(mom_hs) + beta[3] * to_vector(mom_iq) + beta[4] * inter, sigma)
 end
 slic_implementation(::Val{:kidscore_mom_work}; kwargs...) = @slic kwargs begin
-    work2 = jbroadcasted(==, mom_work, 2)
-    work3 = jbroadcasted(==, mom_work, 3)
-    work4 = jbroadcasted(==, mom_work, 4)
+    work2 = to_vector(jbroadcasted(==, mom_work, 2))
+    work3 = to_vector(jbroadcasted(==, mom_work, 3))
+    work4 = to_vector(jbroadcasted(==, mom_work, 4))
     beta ~ flat(;n=4)
     sigma ~ flat(; lower=0.)
     kid_score ~ normal(beta[1] + beta[2] * work2 + beta[3] * work3 + beta[4] * work4, sigma)
@@ -484,9 +490,9 @@ slic_implementation(::Val{:log10earn_height}; kwargs...) = @slic kwargs begin
     log10_earn ~ normal(beta[1]+beta[2]*to_vector(height), sigma)
 end
 slic_implementation(::Val{:nes}; kwargs...) = @slic kwargs begin
-    age30_44 = jbroadcasted(==, age_discrete, 2)
-    age45_64 = jbroadcasted(==, age_discrete, 3)
-    age65up = jbroadcasted(==, age_discrete, 4)
+    age30_44 = to_vector(jbroadcasted(==, age_discrete, 2))
+    age45_64 = to_vector(jbroadcasted(==, age_discrete, 3))
+    age65up = to_vector(jbroadcasted(==, age_discrete, 4))
     beta ~ flat(;n=9)
     sigma ~ flat(;lower=0.)
     to_vector(partyid7) ~ normal(beta[1] + beta[2] * to_vector(real_ideo) + beta[3] * to_vector(race_adj) + beta[4] * age30_44 + beta[5] * age45_64 + beta[6] * age65up + beta[7] * to_vector(educ1) + beta[8] * to_vector(gender) + beta[9] * to_vector(income), sigma)
@@ -519,7 +525,7 @@ slic_implementation(::Val{:seeds_model}; kwargs...) = @slic kwargs begin
     tau ~ gamma(0.001, 0.001; lower=0.)
     sigma = 1.0 / sqrt(tau)
     b ~ normal(0, sigma; n=I)
-    n ~ binomial_logit(to_vector(N), alpha0 + alpha1 * vx1 + alpha2 * vx2 + alpha12 * x1x2 + b)
+    n ~ binomial_logit(N, alpha0 + alpha1 * vx1 + alpha2 * vx2 + alpha12 * x1x2 + b)
 end
 slic_implementation(::Val{:seeds_stanified_model}; kwargs...) = @slic kwargs begin
     vx1 = to_vector(x1)
@@ -531,7 +537,7 @@ slic_implementation(::Val{:seeds_stanified_model}; kwargs...) = @slic kwargs beg
     alpha12 ~ normal(0, 1.)
     sigma ~ cauchy(0, 1; lower=0.)
     b ~ normal(0, sigma; n=I)
-    n ~ binomial_logit(to_vector(N), alpha0 + alpha1 * vx1 + alpha2 * vx2 + alpha12 * x1x2 + b)
+    n ~ binomial_logit(N, alpha0 + alpha1 * vx1 + alpha2 * vx2 + alpha12 * x1x2 + b)
 end
 slic_implementation(::Val{:seeds_centered_model}; kwargs...) = @slic kwargs begin
     vx1 = to_vector(x1)
@@ -544,7 +550,7 @@ slic_implementation(::Val{:seeds_centered_model}; kwargs...) = @slic kwargs begi
     sigma ~ cauchy(0, 1; lower=0.)
     c ~ normal(0, sigma; n=I)
     b = c - mean(c)
-    n ~ binomial_logit(to_vector(N), alpha0 + alpha1 * vx1 + alpha2 * vx2 + alpha12 * x1x2 + b)
+    n ~ binomial_logit(N, alpha0 + alpha1 * vx1 + alpha2 * vx2 + alpha12 * x1x2 + b)
 end
 slic_implementation(::Val{:GLM_Poisson_model}; kwargs...) = @slic kwargs begin
     year_squared = year .* year

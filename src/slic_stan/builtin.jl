@@ -950,6 +950,12 @@ end
 # binomial: N::int[n] is already a container, so Stan broadcasts scalar p natively
 @deffun binomial_rng(int[n], N::int[n], p)::int[n] = binomial_rng(N, p)
 
+# The native GLM RNG already returns one integer per design-matrix row. The
+# generated-quantities path also passes the observed int-array's sized token;
+# unwrap that token while asserting the output and matrix row counts agree.
+@deffun bernoulli_logit_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] =
+    bernoulli_logit_glm_rng(X, alpha, beta)
+
 # binomial_logit: Stan ships `binomial_logit_lpmf` but NOT a matching
 # `binomial_logit_rng` (only the GLM-flavoured variant exists). Lower
 # the token-path call to `binomial_rng(N, inv_logit(eta))` so SBBRMI's
