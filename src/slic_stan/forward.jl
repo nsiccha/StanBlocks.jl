@@ -1116,7 +1116,13 @@ _plate_outer_decl(f, T::StanType, outer) = begin
         sizes = Any[outer[3:end]...; outer[1]; outer[2]]
         return Expr(:(::), f, _plate_type_expr(:matrix, sizes))
     end
-    K = expr(stan_size(T)[1])
+    # Keep `K` as the traced StanExpr (not its bare `expr`). A submodel arg-derived
+    # size resolves to a CALLER-scope name (`n_terms` ⇒ the caller's `P`); as a bare
+    # symbol that re-traces cleanly at the root but NOT under `info` (where the `rv`
+    # decl emits), so keep the resolved StanExpr and let `forward!(::StanExpr)` pass
+    # it through idempotently in either scope. A top-level plate is unaffected (the
+    # size renders identically either way).
+    K = stan_size(T)[1]
     if shape === :constrained_vector
         # `array[outer…] <ct>[K]`: outer dims lead (Stan array), the constrained
         # core size K trails. `<ct>` (simplex/ordered/positive_ordered) declared
@@ -1465,10 +1471,27 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     # it to the parent AND binds the local alias the submodel's `return rv` needs.
     # For a top-level plate `root === info`, so this reduces to the original loop.
     root = _plate_root_info(info)
+    # A submodel-scoped plate emits its FRESH cell collections at the ROOT (under
+    # already-global names) but the `rv` result under `info`. The `outer=` dims are
+    # submodel-LOCAL names: a data arg like `n_groups` ALIASES the caller's binding
+    # (e.g. the caller's `G`) rather than gaining a `<sub>_` prefix, so the raw
+    # symbol resolves under `info` but NOT at the root. Resolve each dim under `info`
+    # ONCE, up front, to the StanExpr it names — matching how the cell core size `K`
+    # (`stan_size(T)[1]`, kept as a StanExpr by `_plate_outer_decl`) already comes
+    # resolved from the traced cell type. Because `forward!(::StanExpr)` is
+    # idempotent, these resolved dims re-trace cleanly whether the decl is emitted at
+    # the root (fresh cells) or under `info` (the `rv`), so both targets name the
+    # caller's binding rather than a raw local that need not exist there. A top-level
+    # plate keeps the raw dims (identity), leaving its emitted Stan byte-for-byte
+    # unchanged.
+    plate_outer = info isa SubModel ?
+        task_local_storage(:_slic_plate_context, nothing) do
+            Any[forward!(canonical(d); info) for d in outer_dims]
+        end : outer_dims
     for (f, T) in all_cell_types
         haskey(ragged_plans, f) && continue
         tgt = f === rv ? info : root
-        emitted = forward!(canonical(_plate_outer_decl(f, T, outer_dims)); info=tgt)
+        emitted = forward!(canonical(_plate_outer_decl(f, T, plate_outer)); info=tgt)
         pending !== nothing && push!(pending, emitted)
     end
     # The emit trace forwards each promoted cell accessor at the root, where the

@@ -717,6 +717,28 @@ end
         end
         y ~ normal(to_vector(b'[:, 1]), 0.5)
     end
+    # Snag regression (plate-submodel-c-f792c57a): the SAME submodel, but the CALLER
+    # names the group count `G` and term count `P` — DIFFERENT from the submodel's
+    # `n_groups`/`k`. A submodel data arg ALIASES the caller's binding (`n_groups` ⇒
+    # `G`, `k` ⇒ `P`) rather than gaining a `<sub>_` prefix, so the raw local names
+    # do NOT exist at the root scope. The fresh cell's root decl AND the `rv` decl
+    # must therefore be sized by `P`/`G`. The matching-names model above only passed
+    # because the caller happened to reuse `n_groups`/`k`, masking this.
+    c3_plate_in_submodel_renamed = @slic (;G=4, P=3, y=[0.2, -0.1, 0.3, 0.0]) begin
+        b ~ c3_plate_in_sub_draws(G, P)
+        y ~ normal(to_vector(b'[:, 1]), 0.5)
+    end
+    # Top-level equivalent with the caller-scope names, for log-density/gradient
+    # parity against the renamed submodel path.
+    c3_plate_in_submodel_renamed_reference = @slic (;G=4, P=3, y=[0.2, -0.1, 0.3, 0.0]) begin
+        L::cholesky_factor_corr[P] ~ lkj_corr_cholesky(2.0)
+        tau::vector[P] ~ std_normal(; lower=0.0)
+        b::vector[P] ~ plate(; outer=(G,)) do g
+            z::vector[P] ~ std_normal()
+            diag_pre_multiply(tau, L) * z
+        end
+        y ~ normal(to_vector(b'[:, 1]), 0.5)
+    end
 
     # N-dimensional plate regressions: preserve the shipped dense 1-D shapes,
     # route one compiler-owned loop per outer axis, and keep logical cell dimensions
@@ -2912,6 +2934,37 @@ Verify `slic: public plate inside a called submodel` in an isolated test item.
         _, g_sub = LogDensityProblems.logdensity_and_gradient(p_sub, v)
         _, g_ref = LogDensityProblems.logdensity_and_gradient(p_ref, v)
         @test g_sub ≈ g_ref atol=1e-8
+    end
+
+    # Snag regression (plate-submodel-c-f792c57a): caller names ≠ submodel arg names.
+    # Both the fresh cell `b_b_z` (`z` namespaced under the plate result `b`, then
+    # flattened by the submodel binding `b`) and the `rv` `b_b` must be sized by the
+    # CALLER's `P`/`G`, never the raw submodel-local `k`/`n_groups` (absent at the root).
+    @test transpiles(c3_plate_in_submodel_renamed)
+    @test stanc_compiles(c3_plate_in_submodel_renamed)
+    let rcode = stan_code(c3_plate_in_submodel_renamed)
+        @test occursin(r"matrix\[P, G\] b_b_z", stan_block(rcode, "parameters"))
+        let tp = stan_block(rcode, "transformed parameters")
+            @test occursin(r"b_b\[:, b_plate_i__pl_\d+\]\s*=", tp)
+            @test occursin(r"matrix\[P, G\] b\s*=\s*b_b", tp)
+        end
+        # The raw submodel-local size names must NOT leak into the emitted Stan.
+        @test !occursin("n_groups", rcode)
+        @test !occursin(r"\[k,|, k\]", rcode)
+    end
+    p_ren = instantiate(stan_model(c3_plate_in_submodel_renamed))
+    p_ren_ref = instantiate(stan_model(c3_plate_in_submodel_renamed_reference))
+    @test LogDensityProblems.dimension(p_ren) == LogDensityProblems.dimension(p_ren_ref)
+    for v in (
+        cos.(1:LogDensityProblems.dimension(p_ren)) .* 0.7,
+        sin.(1:LogDensityProblems.dimension(p_ren)),
+        collect(range(-1.0, 1.0; length=LogDensityProblems.dimension(p_ren))),
+    )
+        @test LogDensityProblems.logdensity(p_ren, v) ≈
+              LogDensityProblems.logdensity(p_ren_ref, v) atol=1e-8
+        _, g_ren = LogDensityProblems.logdensity_and_gradient(p_ren, v)
+        _, g_ren_ref = LogDensityProblems.logdensity_and_gradient(p_ren_ref, v)
+        @test g_ren ≈ g_ren_ref atol=1e-8
     end
 
     # Ragged vector cells inside a submodel are not wired yet — must fail loud
