@@ -1145,6 +1145,15 @@ _plate_cell_index(f, T::StanType, idxs) = begin
     Expr(:ref, f, indices...)
 end
 
+# An isolated copy of the tracing `info`, MIRRORING its structure so bindings
+# land in throwaway storage: a StanModel copies its `vars`; a SubModel copies its
+# `locals` AND recursively probes its parent, so a fresh binding created inside a
+# submodel-scoped plate flattens into the probe-ROOT the same way it will at emit
+# time (`t_z`), without polluting the real parent's vars. `blocks` stay SHARED —
+# `forward!` only binds vars + returns canonical; block routing is a later pass.
+_plate_probe(info::StanModel) = StanModel(meta(info), copy(vars(info)), blocks(info))
+_plate_probe(info::SubModel) = SubModel(_plate_probe(parent(info)), name(info), copy(locals(info)))
+
 # Per-cell input accessor for a positional plate iterable. A DENSE iterable slices
 # with ordinary `it[idxs...]` (scalar element or dense sub-slice). A CERTIFIED
 # RAGGED carrier — nested-vector data, which `stan_type(::NamedTuple)` encodes as an
@@ -1168,17 +1177,19 @@ end
 # TRACE-THEN-PROMOTE discovery (rework, decision 1vujeta): trace the do-block
 # body ONCE in an ISOLATED probe scope to discover the fresh params/vars the body
 # creates AND their per-cell types — INCLUDING submodel-internal ones (a submodel
-# embeds via `SubModel`, flattening `t_z`/`t` into the probe's vars). The probe is
-# a StanModel with COPIED `vars` (bindings land in the copy) and SHARED `blocks`
-# (`forward!` only binds vars + returns canonical — block routing is a later pass,
-# so blocks stay untouched); pending is isolated in its own task-local. Nothing is
-# emitted; the probe is discarded. Returns (fresh::Vector{Pair{Symbol,StanType}}
-# in body order, ret_type). Top-level `info` only (a plate nested in a submodel is
-# a later case).
-_plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::StanModel) =
+# embeds via `SubModel`, flattening `t_z`/`t` into the probe's vars). Fresh names
+# are collected in the probe ROOT (global) namespace so a plate nested inside a
+# called `@slic` submodel discovers each cell under the SAME flattened name the
+# emit-time promotion context (`_plate_global_name`) will look it up by. For a
+# top-level plate the probe root IS the probe, so the global names equal the local
+# ones. `pending` is isolated in its own task-local; nothing is emitted and the
+# probe is discarded. Returns (fresh::Vector{Pair{Symbol,StanType}} in body order
+# keyed by global name, ret_type).
+_plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanModel,SubModel}) =
     task_local_storage(:_slic_inline_pending, Any[]) do
-        probe = StanModel(meta(info), copy(vars(info)), blocks(info))
-        before = Set(keys(probe))
+        probe = _plate_probe(info)
+        root = _plate_root_info(probe)
+        before = Set(keys(root))
         for idx in idxs
             probe[idx] = StanExpr(idx, StanType(types.int; qual=:data))
         end
@@ -1209,10 +1220,14 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::StanModel) 
         # flattened result the same way the real model-body trace does.
         isempty(body_stmts) || forward!(canonical(Expr(:block, body_stmts...)); info=probe)
         ret = forward!(canonical(ret_expr); info=probe)
+        # idx/param helper bindings flatten to their global names in the root; skip
+        # those (and everything present before the trace) so only body-introduced
+        # cell bindings remain.
+        helpers = Set(_plate_global_name(info, s) for s in Iterators.flatten((idxs, params)))
         fresh = Pair{Symbol,Any}[]
-        for k in keys(probe)
-            (k in before || k in idxs || k in params) && continue
-            push!(fresh, k => type(probe[k]))
+        for k in keys(root)
+            (k in before || k in helpers) && continue
+            push!(fresh, k => type(root[k]))
         end
         (fresh=fresh, ret_type=type(ret))
     end
@@ -1325,17 +1340,41 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     fresh = discovered.fresh
     rv_type = rv_ct === nothing ? discovered.ret_type : _plate_annotation_type(rv_ct; info)
 
+    # `cell_types`/`fresh` are keyed by the GLOBAL (root-namespace) name of each
+    # discovered cell binding; `rv` stays the do-block's LOCAL result name. For a
+    # top-level plate these coincide, so the collision check compares rv's global
+    # name against the fresh set.
     cell_types = Dict{Symbol,Any}(fresh)
-    haskey(cell_types, rv) && error("plate: result `$rv` collides with a fresh binding in the do-block.")
+    global_rv = _plate_global_name(info, rv)
+    haskey(cell_types, global_rv) && error("plate: result `$rv` collides with a fresh binding in the do-block.")
     rv in keys(info) && error("plate: result `$rv` is already bound in model scope.")
     all_cell_types = copy(cell_types)
     all_cell_types[rv] = rv_type
 
+    # A cell is ragged when its length depends on the per-cell position. That
+    # position is aliased by the loop index AND the do-block param, each of which a
+    # SubModel flattens (`g` ⇒ `sub_g`, `plate_i` ⇒ `sub_plate_i`) — so raggedness
+    # must be tested against ALL of those names, not just the raw indices, or a
+    # submodel-scoped ragged size (`K[sub_g]`) escapes detection and emits invalid
+    # Stan (`matrix[K[sub_g], …]`).
+    index_aliases = Set{Symbol}()
+    for s in Iterators.flatten((idxs, params))
+        push!(index_aliases, s)
+        push!(index_aliases, _plate_global_name(info, s))
+    end
     ragged_plans = Dict{Symbol,Any}()
     for (f, T) in all_cell_types
-        _plate_is_ragged_cell(T, idxs) || continue
+        _plate_is_ragged_cell(T, index_aliases) || continue
         ragged_plans[f] = _plate_ragged_plan(f, T, outer_dims, idxs, id)
     end
+    # A ragged cell's flat-memory carriers (lens/ends/mem) are declared in the
+    # plate's own `info` scope and indexed by the raw loop index; hoisting them out
+    # of a called submodel (parent-scope carriers + flattened index) is not wired
+    # yet. Fixed `vector[K]` and scalar cells ARE supported inside a submodel.
+    (info isa SubModel && !isempty(ragged_plans)) && error(
+        "plate: ragged vector cells inside a called @slic submodel are not supported yet — ",
+        "use a fixed `vector[K]` cell here, or lift the ragged plate to model scope."
+    )
     cell_accessors = Dict{Symbol,Any}(
         f => plan.accessor for (f, plan) in ragged_plans if haskey(cell_types, f)
     )
@@ -1349,10 +1388,6 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         ragged_plans[rv].accessor : _plate_cell_index(rv, rv_type, idxs)
     push!(loop_body, :($rv_accessor = $ret_cell))
 
-    decls = Any[
-        _plate_outer_decl(f, T, outer_dims)
-        for (f, T) in all_cell_types if !haskey(ragged_plans, f)
-    ]
     # NB: build each iteration spec as `Expr(:(=), idx, 1:N)` — a hand-built
     # `Expr(:for, :(idx in 1:N), …)` yields an `:in` CALL spec, not the `:(=)`
     # form `forward!(::ForExpr)` asserts (a quoted `for` auto-normalizes it).
@@ -1394,11 +1429,22 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
             pending !== nothing && push!(pending, emitted)
         end
     end
-    for decl in decls
-        emitted = forward!(canonical(decl); info)
+    # Outer collection declarations. FRESH cell collections carry GLOBAL names, so
+    # emit them at the ROOT to bind each once without re-flattening. The `rv` result
+    # collection keeps its LOCAL name and emits under `info`, so a SubModel flattens
+    # it to the parent AND binds the local alias the submodel's `return rv` needs.
+    # For a top-level plate `root === info`, so this reduces to the original loop.
+    root = _plate_root_info(info)
+    for (f, T) in all_cell_types
+        haskey(ragged_plans, f) && continue
+        tgt = f === rv ? info : root
+        emitted = forward!(canonical(_plate_outer_decl(f, T, outer_dims)); info=tgt)
         pending !== nothing && push!(pending, emitted)
     end
-    ctx = (idxs=idxs, cell_types=cell_types, cell_accessors=cell_accessors)
+    # The emit trace forwards each promoted cell accessor at the root, where the
+    # loop index is bound under its flattened name; key the context idxs to match.
+    global_idxs = Symbol[_plate_global_name(info, idx) for idx in idxs]
+    ctx = (idxs=global_idxs, cell_types=cell_types, cell_accessors=cell_accessors)
     emitted_loop = task_local_storage(:_slic_plate_context, ctx) do
         forward!(canonical(loop); info)
     end
