@@ -631,8 +631,9 @@ begin
         f
     end
     _lpxf_inline_fname(inner) = _inline_fname(inner, "lpxf")
-    # Does AST `x` mention symbol `s` anywhere? Decides which size-param bindings
-    # an inline body actually needs (so unused ones aren't prepended).
+    # Does AST `x` mention symbol `s` anywhere? Used by both regular-UDF
+    # signature-dimension analysis and inline-body size binding so neither path
+    # materialises size locals that its own definition never references.
     _ast_mentions(x, s::Symbol) = x isa Symbol ? x === s :
         (x isa Expr ? any(a -> _ast_mentions(a, s), x.args) : false)
     deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, _shim_kwarg_specs=nothing, def_mod=nothing) = if x.head == :block
@@ -824,7 +825,14 @@ begin
             push!(lhs_type, :(Vararg{Any}))
         end
 
-        fun_sizes = OrderedDict()
+        # Collect every signature-dimension binding as a candidate first.  A
+        # named dimension only belongs in the emitted function preamble when
+        # this UDF's body / return annotation references it, or when a later
+        # occurrence needs it as the reference side of a runtime shape check.
+        # Keeping the use analysis local to this definition avoids emitting an
+        # `int n = dims(x)[1];` merely because `n` appeared in the signature.
+        fun_size_candidates = OrderedDict()
+        required_fun_sizes = Set{Symbol}()
         # When a dim name appears in multiple args (e.g.
         # `f(x::vector[n], y::vector[n])`), the first occurrence binds it
         # via `int n = dims(x)[1];` and each subsequent occurrence becomes
@@ -836,17 +844,18 @@ begin
                 _is_symbol(dim_name) || continue
                 dim_name == :(_) && continue
                 dim_name in arg_names && continue
-                if haskey(fun_sizes, dim_name)
+                if haskey(fun_size_candidates, dim_name)
                     # Token-arg dims are encoded differently; skip the
                     # check for those — usually internal dispatch glue.
                     tok && continue
+                    push!(required_fun_sizes, dim_name)
                     access = string("dims(", arg_name, ")[", i, "]")
                     msg = string("\"", f, ": dim mismatch — `", arg_name,
                                  "` dim ", i, " (= \", ", access,
                                  ", \") does not match `", dim_name, "` (= \", ", dim_name, ", \")\"")
                     push!(fun_checks, string("if (", access, " != ", dim_name, ") reject(", msg, ");"))
                 else
-                    fun_sizes[dim_name] = if tok
+                    fun_size_candidates[dim_name] = if tok
                         # Stan has no 1-element tuple type — single-dim tokens are passed
                         # as a plain `int`, so unpack without `.1` indexing.
                         ndims = length(arg_type.args) - 1
@@ -857,10 +866,23 @@ begin
                 end
             end
         end
+        for dim_name in keys(fun_size_candidates)
+            (_ast_mentions(body, dim_name) || _ast_mentions(rv, dim_name)) || continue
+            push!(required_fun_sizes, dim_name)
+        end
+        fun_sizes = OrderedDict(
+            dim_name => binding
+            for (dim_name, binding) in pairs(fun_size_candidates)
+            if dim_name in required_fun_sizes
+        )
+        hidden_size_names = union(
+            Set(arg_names),
+            setdiff(Set(keys(fun_size_candidates)), required_fun_sizes),
+        )
         deconstruct = Expr(:block, 
             xassign(xtuple(arg_names..., (isnothing(vararg) ? () : (vararg,))...), :(x.args)), 
             [
-                xassign(xtuple(ensure_xlhs.(args_type.args[2:end]; hidden=arg_names)...), :($stan_size($args_name)))
+                xassign(xtuple(ensure_xlhs.(args_type.args[2:end]; hidden=hidden_size_names)...), :($stan_size($args_name)))
                 for (args_name, args_type) in zip(arg_names, arg_types)
             ]..., 
             :(info = (;$(sig_names...), $(keys(fun_sizes)...),))
