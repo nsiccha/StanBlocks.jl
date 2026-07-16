@@ -244,6 +244,27 @@ end
 
 _get_inline_pending() = get(task_local_storage(), :_slic_inline_pending, nothing)
 
+# Ragged informative priors are emitted as compiler-owned indexed sampling
+# statements over the constrained view.  Keep the certificate task-local: an
+# ordinary user-authored `derived[i] ~ dist(...)` remains rejected by the
+# generic already-bound-LHS rule, while the lowering below may deliberately add
+# density to the transformed ragged value.
+_ragged_density_targets() =
+    get(task_local_storage(), :_slic_ragged_density_targets, ())
+_is_ragged_density_target(name::Symbol) = name in _ragged_density_targets()
+
+# Trace-time marker used only while rewriting distribution arguments for one
+# ragged group.  `builtin.jl` supplies the type-aware expansion after the
+# RaggedVector/RaggedMatrix usertypes exist: ragged args become `arg[g]`, while
+# shared scalars/dense values pass through unchanged.
+function _ragged_group_arg end
+_ragged_group_rhs(rhs::CanonicalExpr, g) = begin
+    args = map(a -> CanonicalExpr(_ragged_group_arg, a, g), rhs.args)
+    CanonicalExpr(head(rhs), args...; rhs.kwargs...)
+end
+_ragged_rhs_is_flat(rhs) = _is_canonical_expr(rhs) && head(rhs) === :flat &&
+    isempty(rhs.args) && isempty(rhs.kwargs)
+
 # A plate's second trace runs inside the real model scope, but every discovered
 # cell-local binding is represented there by an outer array.  Keep the mapping
 # task-local so normal tracing stays untouched and submodels can participate:
@@ -624,16 +645,18 @@ end
 #   • a compile-time ragged pairing bound to `name`
 # All statements are injected via `_slic_inline_pending` (they never enter the raw
 # body, so they bypass `_reject_model_control_flow`) and routed to their blocks by
-# `distribute!`. NOTE (scope decision 1mfltua): only the explicit `flat()` base
-# measure is accepted. Applying an informative RHS would require `p[g] ~ dist`
-# inside the injected loop (the Feature-2 `~`-aware superset), so reject it loudly
-# until that lowering exists rather than silently dropping the user's prior.
+# `distribute!`. Informative RHS distributions add a second compiler-owned loop
+# after the view binding: `name[g] ~ dist(group_arg(args, g)...)`. The same
+# fine-grained ForExpr router used by plate sends that loop to `model`; ragged
+# distribution arguments are indexed per group while shared arguments remain
+# unchanged.
 _forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) = begin
-    rhs_is_flat = _is_canonical_expr(rhs_raw) && head(rhs_raw) === :flat &&
-        isempty(rhs_raw.args) && isempty(rhs_raw.kwargs)
-    rhs_is_flat || error(
-        "Ragged constrained `$name::$ct[…]` currently supports only `~ flat()`. ",
-        "Informative RHS priors are not implemented and must not be silently ignored."
+    _is_canonical_expr(rhs_raw) || error(
+        "Ragged constrained `$name::$ct[…] ~ rhs` requires rhs to be a distribution call."
+    )
+    isempty(rhs_raw.kwargs) || error(
+        "Ragged constrained `$name::$ct[…]` does not accept distribution constraint kwargs. ",
+        "Put the constraint in the declared center type and pass prior parameters positionally."
     )
     if ct in (:simplex, :ordered, :positive_ordered)
         _forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info)
@@ -646,6 +669,30 @@ _forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) = begin
             "`cholesky_factor_corr`, and square `cholesky_factor_cov`."
         )
     end
+end
+
+_ragged_density_stmt(name, Ks, rhs_raw, g) = _ragged_rhs_is_flat(rhs_raw) ?
+    nothing : :(for $g in 1:length($Ks)
+                    $name[$g] ~ $(_ragged_group_rhs(rhs_raw, g))
+                end)
+_trace_ragged_stmts(stmts, name; info, certify_density::Bool=false) = begin
+    targets = (_ragged_density_targets()..., name)
+    traced = task_local_storage(:_slic_ragged_density_targets, targets) do
+        _do_retrace_inline_body(stmts; info)
+    end
+    # The task-local certificate above is sufficient during `forward!`, but the
+    # backward likelihood-reachability pass runs after tracing has left that
+    # dynamic scope.  Stamp the underlying constrained-memory declaration so an
+    # indexed `mem[lo:hi] ~ prior(...)` remains recognisable as a compiler-owned
+    # ragged density (and not as forbidden user sampling of a derived value).
+    if certify_density
+        ragged = info[name]
+        mem = expr(ragged).args[1]
+        mem_key = _base_lhs_symbol(mem)
+        root = _plate_root_info(info)
+        root[mem_key] = remake(root[mem_key]; ragged_density=true)
+    end
+    traced
 end
 
 _forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info) = begin
@@ -677,7 +724,9 @@ _forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info) = begin
           end),
         :($name = RaggedVector($pmem, $cend)),           # ragged view (representation bae1167)
     ]
-    _do_retrace_inline_body(stmts; info)
+    density = _ragged_density_stmt(name, Ks, rhs_raw, g)
+    density === nothing || push!(stmts, density)
+    _trace_ragged_stmts(stmts, name; info, certify_density=density !== nothing)
 end
 
 _forward_ragged_matrix_constrained!(name, ct, sizes, rhs_raw; info) = begin
@@ -719,7 +768,9 @@ _forward_ragged_matrix_constrained!(name, ct, sizes, rhs_raw; info) = begin
           end),
         :($name = RaggedMatrix($pmem, $cend, $Ks, $Ks)),
     ]
-    _do_retrace_inline_body(stmts; info)
+    density = _ragged_density_stmt(name, Ks, rhs_raw, g)
+    density === nothing || push!(stmts, density)
+    _trace_ragged_stmts(stmts, name; info, certify_density=density !== nothing)
 end
 # Indexed sampling is the plate producer's declaration certificate.  The
 # producer first emits an outer-sized fresh declaration, then rewrites a
@@ -736,6 +787,13 @@ _forward_indexed_sampling!(x; info) = begin
     lhs = forward!(lhs_raw; info)
     rhs = forward!(rhs_raw; info)::StanExpr
     base = info[k]
+    if _is_ragged_density_target(k)
+        (center_type(base) <: RaggedVector || center_type(base) <: RaggedMatrix) || error(
+            "Compiler-certified ragged density target `", k,
+            "` is not backed by a RaggedVector/RaggedMatrix."
+        )
+        return remake(x, lhs, rhs)
+    end
     if _is_fresh_decl(base)
         role = _decl_role(base)
         role == :fill && error(

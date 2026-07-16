@@ -849,6 +849,31 @@ _ragged_ends(rv::StanExpr) = expr(rv).args[2]
 _ragged_rows(rv::StanExpr) = expr(rv).args[3]
 _ragged_cols(rv::StanExpr) = expr(rv).args[4]
 
+# Distribution arguments in a compiler-owned ragged prior loop are mapped only
+# when their carrier is itself ragged. This keeps shared scalar/dense arguments
+# shared and makes e.g. `p::simplex[Ks] ~ dirichlet(alpha)` index a ragged
+# `alpha` as `alpha[g]` without inventing ambiguous auto-indexing for ordinary
+# vectors.
+expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_arg)}; info) = begin
+    arg, g = x.args
+    if center_type(arg) <: RaggedVector || center_type(arg) <: RaggedMatrix
+        forward!(CanonicalExpr(getindex, arg, g); info)
+    elseif center_type(arg) <: types.ntup && keys(type(arg).info.arg_types) == (:mem, :ends)
+        # Nested-vector data kwargs are encoded by `stan_type` as the explicit
+        # `(mem, ends)` named-tuple carrier.  It is semantically ragged even
+        # though it does not carry the internal `RaggedVector` nominal tag.
+        # Slice only this certified representation; dense vectors remain shared
+        # distribution arguments because auto-indexing them would be ambiguous.
+        mem = forward!(CanonicalExpr(Base.getfield, arg, 1); info)
+        ends = forward!(CanonicalExpr(Base.getfield, arg, 2); info)
+        lo = stan_call(builtin.ragged_start, ends, g)
+        hi = stan_call(builtin.ragged_end, ends, g)
+        stan_call(getindex, mem, stan_call(Colon(), lo, hi))
+    else
+        arg
+    end
+end
+
 # `rv[i]` → `mem[ragged_start(ends, i):ragged_end(ends, i)]` (a parameter vector
 # sliced by data bounds). Intercepts before `tracetype`, so a construction never
 # needs a tuple-taking UDF or a materialised tuple.

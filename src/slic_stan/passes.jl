@@ -134,6 +134,12 @@ backward!(x::SamplingExpr; info) = begin
             info[key] = remake(info[key]; qual=:quantities)
             remake(x, remake(lhs; qual=:quantities), rhs)
         end
+    elseif key in keys(info) && get(type(info[key]).info, :ragged_density, false)
+        # Informative ragged priors sample a compiler-generated slice of the
+        # constrained memory.  Mark both the slice and RHS as likelihood-relevant;
+        # the earlier transform fill will then propagate reachability from this
+        # memory declaration into the unconstrained free coordinates.
+        remake(x, backward!(lhs; info), backward!(rhs; info))
     else
         @assert qual(lhs) == :data
         remake(x, backward!(lhs; info), backward!(rhs; info))
@@ -165,7 +171,17 @@ backward!(x::StanExpr{<:ForExpr}; info) = begin
     rv
 end
 backward!(x::StanExpr; info) = StanExpr(backward!(expr(x); info), backward!(type(x); info))
-backward!(x::StanExpr{Symbol}; info) = info[expr(x)] = remake(x; lqual=:affects_likelihood)
+backward!(x::StanExpr{Symbol}; info) = begin
+    key = expr(x)
+    current = info[key]
+    # A symbol occurrence captures the type metadata present when it was
+    # forwarded. Compiler-owned ragged density certification is stamped only
+    # after the injected lowering finishes, so a later likelihood may reach the
+    # memory through an older occurrence. Preserve the current certified entry
+    # instead of erasing that durable marker with the stale snapshot.
+    source = get(type(current).info, :ragged_density, false) ? current : x
+    info[key] = remake(source; lqual=:affects_likelihood)
+end
 backward!(x::StanType; info) = remake(x; lqual=:affects_likelihood)
 
 distribute!(x::BlockExpr; info) = distribute!.(x.args; info)
