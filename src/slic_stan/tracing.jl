@@ -241,9 +241,10 @@ _control_flow_kind(::IfExpr) = "if"
 _control_flow_kind(::ElseIfExpr) = "elseif"
 _control_flow_kind(::BreakExpr) = "break"
 _control_flow_kind(::ContinueExpr) = "continue"
+_control_flow_kind(::ComprehensionExpr) = "comprehension"
 _reject_model_control_flow(x) = x
 _reject_model_control_flow(x::CanonicalExpr) = (foreach(_reject_model_control_flow, x.args); x)
-_reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,ElseIfExpr,BreakExpr,ContinueExpr}) = error(
+_reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,ElseIfExpr,BreakExpr,ContinueExpr,ComprehensionExpr}) = error(
     "`$(_control_flow_kind(x))` control flow is not supported in @slic model bodies — ",
     "move the logic into an @deffun function body, or use a vectorised form."
 )
@@ -422,9 +423,13 @@ get_module(info::SubModel) = get_module(parent(info))
 # this floor keeps ordinary symbol resolution independent of that feature.
 _plate_promoted_reference(x, info) = nothing
 forward!(x::Symbol; info) = begin
+    # A ragged plate logical cell has no dense top-level declaration: the emit
+    # context maps it straight to a certified flat-memory slice. Consult that
+    # context before ordinary scope lookup so such logical names can resolve
+    # while the compiler-owned loop is being traced.
+    promoted = _plate_promoted_reference(x, info)
+    promoted === nothing || return promoted
     if x in keys(info)
-        promoted = _plate_promoted_reference(x, info)
-        promoted === nothing || return promoted
         return info[x]
     end
     _is_builtin_name(x) && return forward!(getproperty(builtin, x); info)

@@ -173,7 +173,7 @@ You can additionally pass `n=…` or `m=…, n=…` on any prior to make the par
 
 ## User-defined functions with `@deffun`
 
-`@deffun` registers a Stan-compatible function with type-annotated arguments. Its body is real Julia and may use `for`/`while`/`if`/comprehensions. The body is also transpiled to Stan.
+`@deffun` registers a Stan-compatible function with type-annotated arguments. Its body is real Julia and may use `for`/`while`/`if`. It also supports bounded one-dimensional comprehensions of the form `[scalar_expr for i in lo:hi]`; these lower to a typed local plus a Stan `for` loop. Multiple or nested generators, filters, arbitrary iterables, stepped ranges, and non-scalar elements are rejected explicitly. The body is transpiled to Stan.
 
 UDF bodies must not contain `~` sampling statements or `target +=` increments — UDFs cannot introduce parameters or directly manipulate the log density. The macro errors at expansion time if either is found.
 
@@ -224,6 +224,40 @@ Underscored names mean "I take this argument but ignore the value, just use its 
 ```julia
 @deffun pad_zero(_::vector[n])::vector[n+1] = append_row(rep_vector(0., n), 0.)
 ```
+
+### Transpile-time return-type queries
+
+`return_type_of(f, args...)` exposes the same inference table the transpiler
+uses for calls to non-inline `@deffun` functions and `@defsig`-registered
+callables. With representative Julia values it returns a printable `StanType`:
+
+```julia
+@deffun identity_vec(x::vector[n])::vector[n] = x
+
+return_type_of(identity_vec, [1.0, 2.0, 3.0])  # vector[3]
+```
+
+Inside an `@deffun` body the query is a compile-time type token, so it can drive
+a computed declaration without emitting a Stan call:
+
+```julia
+@deffun element_type(x::real)::real = x
+@deffun copy_vec(x::vector[n]) = begin
+    out::return_type_of(element_type, x[1])[n]
+    for i in 1:n
+        out[i] = x[i]
+    end
+    out
+end
+```
+
+The public contract currently covers scalar and sized-container results.
+Inline functions, closures, `@slic` sub-models, arbitrary Julia functions, and
+tuple/user-defined-type results need a full call-site trace and fail with an
+explicit error rather than returning `anything`.
+Within a UDF, write already-bound symbolic output dimensions explicitly as
+`return_type_of(f, x)[n]`; this keeps the declaration tied to the surrounding
+signature's shape names.
 
 ### `_lpdf` / `_lpmf` / `_lcdf` / `_lccdf` companions
 

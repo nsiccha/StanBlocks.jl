@@ -74,6 +74,15 @@ end
         issue10b(_::vector[n]) = 0.
     end
 
+    # UDF signature dimensions are bound in the emitted Stan body only when
+    # this definition uses them. Repeated dimensions remain runtime-checked.
+    @deffun begin
+        udf_dead_size(x::vector[dead_n])::real = sum(x)
+        udf_body_size(x::vector[body_n])::real = sum(x) / body_n
+        udf_return_size(x::vector[return_n])::vector[return_n] = x
+        udf_checked_size(x::vector[checked_n], y::vector[checked_n])::real = dot_product(x, y)
+    end
+
     # --- computed type annotations (@deffun container inference; todo 1v94weu) ---
     # `rv::typeof(f(x[1]))[dims]` infers the output container from `f`'s per-element
     # return type: a `real` element → native `vector[n]`, an `int` element →
@@ -130,6 +139,28 @@ end
         rv::vector[n+1] = x
         rv
     end
+    # --- bounded one-dimensional array comprehensions in @deffun ---
+    # The supported surface is deliberately one scalar expression over one
+    # explicit `lo:hi` range.  These fixtures cover real/int result inference,
+    # non-1 lower bounds, and each rejected Julia generator shape.
+    @deffun comprehension_square(x::vector[n]) = [x[i] * x[i] for i in 1:n]
+    @deffun comprehension_int_shift(x::int[n]) = [x[i] + 1 for i in 1:n]
+    @deffun comprehension_slice(x::vector[n], lo::int, hi::int) = [x[i] for i in lo:hi]
+    @deffun comprehension_filtered(x::vector[n]) = [x[i] for i in 1:n if x[i] > 0]
+    @deffun comprehension_multiple(x::vector[n], m::int) = [x[i] + j for i in 1:n, j in 1:m]
+    @deffun comprehension_nested(x::vector[n]) = [[x[i] + j for j in 1:2] for i in 1:n]
+    @deffun comprehension_iterable(x::vector[n]) = [xi for xi in x]
+    # --- public transpile-time return-type query ---
+    @deffun return_type_scalar(x::real)::real = square(x)
+    @deffun return_type_vector(x::vector[n])::vector[n] = x
+    @deffun copy_via_return_type(x::vector[n]) = begin
+        rv::return_type_of(return_type_scalar, x[1])[n]
+        for i in 1:n
+            rv[i] = x[i]
+        end
+        rv
+    end
+    ordinary_return_type_probe(x) = x
 
     # Determinism regression: an inline UDF whose locals are renamed `<name>__il_<id>`.
     @deffun @inline det_polish(x::vector[n])::vector[n] = begin
@@ -595,6 +626,40 @@ end
         end
     end
 
+    # Heterogeneous vector cells use one data-sized flat-memory carrier per
+    # discovered binding. Discovery must retain the actual plate index inside
+    # `K[g]`, including across a called submodel boundary.
+    @slic c3_plate_ragged_ncp(k::int) = begin
+        z::vector[k] ~ std_normal()
+        return z
+    end
+    @slic c3_plate_ragged_correlated_cell(k::int, L::matrix[k, k]) = begin
+        z::vector[k] ~ std_normal()
+        return L * z
+    end
+    c3_plate_ragged_model = @slic (;K=[2, 3, 4], y=0.3) begin
+        b ~ plate(; outer=length(K)) do g
+            z::vector[K[g]] ~ std_normal()
+            z
+        end
+        y ~ normal(sum(b[1]), 1.0)
+    end
+    c3_plate_ragged_submodel_model = @slic (;K=[2, 3, 4], y=0.3) begin
+        b ~ plate(; outer=length(K)) do g
+            cell ~ c3_plate_ragged_ncp(K[g])
+            cell
+        end
+        y ~ normal(sum(b[2]), 1.0)
+    end
+    c3_plate_ragged_brm_model = @slic (;K=[1, 2, 3], y=0.3) begin
+        L::cholesky_factor_corr[K] ~ lkj_corr_cholesky(2.0)
+        b ~ plate(; outer=length(K)) do g
+            cell ~ c3_plate_ragged_correlated_cell(K[g], L[g])
+            cell
+        end
+        y ~ normal(sum(b[3]), 1.0)
+    end
+
     # N-dimensional plate regressions: preserve the shipped dense 1-D shapes,
     # route one compiler-owned loop per outer axis, and keep logical cell dimensions
     # first while Stan array prefixes carry outer axes beyond the vector/matrix core.
@@ -641,6 +706,18 @@ end
         p::simplex[K] ~ flat()
         y ~ normal(sum(p[1]), 0.1)
     end
+    c3_ragged_simplex_informative_model = @slic (;
+        K=[2, 3, 4],
+        alpha=[[1.5, 2.0], [1.2, 1.4, 1.6], [1.1, 1.3, 1.5, 1.7]],
+        y=0.3,
+    ) begin
+        p::simplex[K] ~ dirichlet(alpha)
+        y ~ normal(sum(p[1]), 0.1)
+    end
+    c3_ragged_ordered_informative_model = @slic (;K=[2, 3, 4], y=0.3) begin
+        p::ordered[K] ~ normal(0.0, 1.0)
+        y ~ normal(sum(p[1]), 0.1)
+    end
 
     # Matrix-valued ragged constraints use a flat RaggedMatrix carrier.  Start at
     # K=1 so the correlation family also exercises its zero-coordinate first group.
@@ -650,6 +727,10 @@ end
     end
     c3_ragged_cholesky_cov_model = @slic (;K=[1, 2, 3], y=0.3) begin
         L::cholesky_factor_cov[K] ~ flat()
+        y ~ normal(sum(to_vector(L[2])), 0.1)
+    end
+    c3_ragged_cholesky_corr_informative_model = @slic (;K=[1, 2, 3], y=0.3) begin
+        L::cholesky_factor_corr[K] ~ lkj_corr_cholesky(2.0)
         y ~ normal(sum(to_vector(L[2])), 0.1)
     end
 
@@ -803,6 +884,28 @@ Verify `issue10` in an isolated test item.
         y ~ std_normal(;n)
         x = issue10b(y)
     end)
+end
+
+"""
+Verify dead UDF signature dimensions are not emitted while required bindings remain.
+"""
+@testitem "slic: UDF signature dimension use analysis" tags=[:slic, :regression, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    model = @slic (;x=randn(3), y=randn(3)) begin
+        dead = udf_dead_size(x)
+        body_used = udf_body_size(x)
+        return_used = udf_return_size(x)
+        checked = udf_checked_size(x, y)
+        p ~ normal(dead + body_used + sum(return_used) + checked, 1.0)
+    end
+
+    @test stanc_compiles(model)
+    functions = stan_block(stan_code(model), "functions")
+    @test occursin("udf_dead_size", functions)
+    @test !occursin("int dead_n = dims(x)[1];", functions)
+    @test occursin("int body_n = dims(x)[1];", functions)
+    @test occursin("int return_n = dims(x)[1];", functions)
+    @test occursin("int checked_n = dims(x)[1];", functions)
+    @test occursin("if (dims(y)[1] != checked_n) reject", functions)
 end
 
 """
@@ -1615,6 +1718,137 @@ Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolat
 end
 
 """
+Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated test item.
+"""
+@testitem "slic: bounded one-dimensional @deffun comprehensions" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    @testset "canonicalization preserves the comprehension/generator structure" begin
+        c = StanBlocks.stan.canonical(Meta.parse("[x[i] * x[i] for i in 1:n]"))
+        @test c isa StanBlocks.stan.ComprehensionExpr
+        @test length(c.args) == 1
+        @test c.args[1] isa StanBlocks.stan.GeneratorExpr
+        @test length(c.args[1].args) == 2
+        @test c.args[1].args[2] isa StanBlocks.stan.AssignmentExpr
+    end
+
+    @testset "real and int comprehensions lower to typed locals + symbolic loops" begin
+        real_model = @slic (;x=[1.0, 2.0, 3.0], y=[1.0, 4.0, 9.0]) begin
+            mu = comprehension_square(x)
+            y ~ normal(mu, 1.0)
+        end
+        real_code = stan_code(real_model)
+        @test occursin(r"vector\[[^]]+\] comprehension_result__lc_\d+;", real_code)
+        @test occursin(r"for\(i in 1:n\)", real_code)
+        @test occursin(r"comprehension_result__lc_\d+\[i\] = \(x\[i\] \* x\[i\]\)", real_code)
+        @test stanc_compiles(real_model)
+
+        int_model = @slic (;x=[1, 2, 3]) begin
+            shifted = comprehension_int_shift(x)
+            mu ~ normal(shifted[1], 1.0)
+        end
+        int_code = stan_code(int_model)
+        @test occursin(r"array\[[^]]+\] int comprehension_result__lc_\d+;", int_code)
+        @test stanc_compiles(int_model)
+    end
+
+    @testset "non-1 lower bound uses a dense output index" begin
+        model = @slic (;x=[1.0, 2.0, 3.0, 4.0], y=[2.0, 3.0, 4.0]) begin
+            mu = comprehension_slice(x, 2, 4)
+            y ~ normal(mu, 1.0)
+        end
+        code = stan_code(model)
+        @test occursin(r"for\(i in lo:hi\)", code)
+        @test occursin(r"comprehension_result__lc_\d+\[\(\(i - lo\) \+ 1\)\] = x\[i\]", code)
+        @test stanc_compiles(model)
+    end
+
+    comprehension_error(f) = try
+        stan_code(f())
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+
+    @testset "unsupported generator forms reject explicitly" begin
+        filtered = comprehension_error() do
+            @slic (;x=[-1.0, 2.0]) begin
+                z = comprehension_filtered(x)
+                mu ~ normal(z[1], 1.0)
+            end
+        end
+        @test filtered !== nothing
+        @test occursin("filtered generators are not supported", filtered)
+
+        multiple = comprehension_error() do
+            @slic (;x=[1.0, 2.0]) begin
+                z = comprehension_multiple(x, 2)
+                mu ~ normal(z[1], 1.0)
+            end
+        end
+        @test multiple !== nothing
+        @test occursin("nested or multiple generators are not supported", multiple)
+
+        nested = comprehension_error() do
+            @slic (;x=[1.0, 2.0]) begin
+                z = comprehension_nested(x)
+                mu ~ normal(z[1], 1.0)
+            end
+        end
+        @test nested !== nothing
+        @test occursin("nested comprehensions are not supported", nested)
+
+        iterable = comprehension_error() do
+            @slic (;x=[1.0, 2.0]) begin
+                z = comprehension_iterable(x)
+                mu ~ normal(z[1], 1.0)
+            end
+        end
+        @test iterable !== nothing
+        @test occursin("one bounded `lo:hi` range", iterable)
+    end
+
+    @testset "model-level comprehension remains rejected" begin
+        err = comprehension_error() do
+            @slic (;x=[1.0, 2.0]) begin
+                z = [x[i] for i in 1:2]
+                mu ~ normal(z[1], 1.0)
+            end
+        end
+        @test err !== nothing
+        @test occursin("`comprehension` control flow is not supported in @slic model bodies", err)
+    end
+end
+
+"""
+Verify `return_type_of(f, args...)` exposes the existing SLIC inference table
+both as a direct public query and as a computed `@deffun` type annotation.
+"""
+@testitem "slic: public return_type_of transpile-time query" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    scalar_rt = return_type_of(return_type_scalar, 1.0)
+    vector_rt = return_type_of(return_type_vector, [1.0, 2.0, 3.0])
+
+    @test scalar_rt isa StanBlocks.StanType
+    @test sprint(show, scalar_rt) == "real"
+    @test sprint(show, vector_rt) == "vector[3]"
+
+    model = @slic (;x=[1.0, 2.0, 3.0]) begin
+        y = copy_via_return_type(x)
+        mu ~ std_normal()
+        mu
+    end
+    @test check_type(model, :y, "vector")
+    @test stanc_compiles(model)
+
+    err = try
+        return_type_of(ordinary_return_type_probe, 1.0)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test occursin("Only non-inline @deffun functions and @defsig-registered SLIC callables are supported", sprint(showerror, err))
+end
+
+"""
 Verify `slic: computed type annotations (@deffun container inference)` in an isolated test item.
 """
 @testitem "slic: computed type annotations (@deffun container inference)" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
@@ -2358,6 +2592,58 @@ Verify `slic: public plate emits N-dimensional outer loops` in an isolated test 
 end
 
 """
+Verify `slic: public plate emits heterogeneous vector cells` in an isolated test item.
+"""
+@testitem "slic: public plate emits heterogeneous vector cells" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    for model in (c3_plate_ragged_model, c3_plate_ragged_submodel_model)
+        @test transpiles(model)
+        @test stanc_compiles(model)
+    end
+
+    direct = stan_code(c3_plate_ragged_model)
+    let td = stan_block(direct, "transformed data")
+        @test occursin(r"array\[num_elements\(K\)\] int z__pl_len_\d+", td)
+        @test occursin(r"z__pl_len_\d+\[plate_i__pl_\d+\] = K\[plate_i__pl_\d+\]", td)
+        @test occursin("cumulative_sum", td)
+    end
+    @test occursin(r"vector\[sum\(z__pl_len_\d+\)\] z__pl_mem_\d+", stan_block(direct, "parameters"))
+    @test occursin(
+        r"z__pl_mem_\d+\[ragged_start\(.*\):ragged_end\(.*\)\] ~ std_normal",
+        stan_block(direct, "model"),
+    )
+    @test occursin(r"vector\[sum\(b__pl_len_\d+\)\] b__pl_mem_\d+", stan_block(direct, "transformed parameters"))
+
+    called = stan_code(c3_plate_ragged_submodel_model)
+    @test occursin(r"vector\[sum\(cell_z__pl_len_\d+\)\] cell_z__pl_mem_\d+", stan_block(called, "parameters"))
+    @test occursin(r"(?s)cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", stan_block(called, "model"))
+    @test occursin(r"(?s)b__pl_mem_\d+\[.*?\]\s*=\s*cell__pl_mem_\d+\[", stan_block(called, "transformed parameters"))
+end
+
+"""
+Verify `slic: BRM-shaped ragged constraints compose with plate` in an isolated test item.
+"""
+@testitem "slic: BRM-shaped ragged constraints compose with plate" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    @test transpiles(c3_plate_ragged_brm_model)
+    @test stanc_compiles(c3_plate_ragged_brm_model)
+    code = stan_code(c3_plate_ragged_brm_model)
+
+    let parameters = stan_block(code, "parameters")
+        @test occursin("p_free__rcm_", parameters)
+        @test occursin(r"vector\[sum\(cell_z__pl_len_\d+\)\] cell_z__pl_mem_\d+", parameters)
+    end
+    let tp = stan_block(code, "transformed parameters")
+        @test occursin("cholesky_factor_corr_jacobian", tp)
+        @test occursin("to_matrix", tp)
+        @test occursin(r"(?s)cell__pl_mem_\d+\[.*?\]\s*=\s*\(.*?to_matrix.*?\*.*?cell_z__pl_mem_\d+", tp)
+    end
+    let model_block = stan_block(code, "model")
+        @test occursin("~ lkj_corr_cholesky(2.0)", model_block)
+        @test occursin(r"(?s)cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", model_block)
+        @test occursin(r"y ~ normal\(sum\(b__pl_mem_\d+\[", model_block)
+    end
+end
+
+"""
 Verify `slic: ragged simplex uses TP-inlined constraint transforms` in an isolated test item.
 """
 @testitem "slic: ragged simplex uses TP-inlined constraint transforms" tags=[:slic, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
@@ -2371,6 +2657,15 @@ Verify `slic: ragged simplex uses TP-inlined constraint transforms` in an isolat
         @test occursin("for(", tp)
         @test !occursin("tuple(", tp)
         @test !occursin(r"array\[.*\]\s+int", tp)
+    end
+
+    @test transpiles(c3_ragged_simplex_informative_model)
+    @test stanc_compiles(c3_ragged_simplex_informative_model)
+    informative_code = stan_code(c3_ragged_simplex_informative_model)
+    let model_block = stan_block(informative_code, "model")
+        @test occursin(r"for\(g__rc_\d+ in 1:num_elements\(K\)\)", model_block)
+        @test occursin(r"p_mem__rc_\d+\[.*\] ~ dirichlet", model_block)
+        @test occursin("alpha", model_block)
     end
 end
 
@@ -2399,6 +2694,12 @@ Verify `slic: ragged Cholesky factors use flattened matrix carriers` in an isola
         end
         @test occursin("to_matrix", stan_block(code, "model"))
     end
+    @test transpiles(c3_ragged_cholesky_corr_informative_model)
+    @test stanc_compiles(c3_ragged_cholesky_corr_informative_model)
+    @test occursin(
+        r"to_matrix\(.*\) ~ lkj_corr_cholesky\(2\.0\)",
+        stan_block(stan_code(c3_ragged_cholesky_corr_informative_model), "model"),
+    )
 end
 
 """
@@ -2435,11 +2736,12 @@ Verify `slic: ragged ordered constrained parameters` in an isolated test item.
         @test !occursin(r"p_free__rc_\d+\s*~", stan_block(code, "model"))
     end
 
-    informative_prior = @slic (;Ks, y=0.2) begin
-        p::ordered[Ks] ~ normal(0.0, 1.0)
-        y ~ normal(sum(p[1]), 1.0)
-    end
-    @test !transpiles(informative_prior; re=false)
+    @test transpiles(c3_ragged_ordered_informative_model)
+    @test stanc_compiles(c3_ragged_ordered_informative_model)
+    @test occursin(
+        r"p_mem__rc_\d+\[.*\] ~ normal\(0\.0, 1\.0\)",
+        stan_block(stan_code(c3_ragged_ordered_informative_model), "model"),
+    )
 
     unsupported_matrix_family = @slic (;Ks, y=0.2) begin
         p::corr_matrix[Ks] ~ flat()
