@@ -660,6 +660,29 @@ end
         y ~ normal(sum(b[3]), 1.0)
     end
 
+    # Snag regression (plate-called-cel-c38a50e8): a called cell declaring a plain
+    # `matrix[k, k]` argument must accept a FIXED-width top-level Stan constrained
+    # square-matrix value (`cholesky_factor_corr[k]`).  Unlike
+    # `c3_plate_ragged_brm_model`, whose ragged `L[g]` reconstructs a plain `matrix`
+    # (ndim 2), here `L` stays `cholesky_factor_corr` (ndim 1, `r_ndim(square_matrix)`)
+    # and previously failed plate-discovery dispatch with a `SubmodelFn` MethodError
+    # on the `ndims` type parameter (value 1 ≠ decl 2), even though
+    # `cholesky_factor_corr <: matrix`.  The value flows into the cell verbatim, so
+    # its constrained declaration is preserved at the caller.
+    @slic c3_plate_fixed_correlated_cell(k::int, L::matrix[k, k], tau::vector[k]) = begin
+        z::vector[k] ~ std_normal()
+        return diag_pre_multiply(tau, L) * z
+    end
+    c3_plate_fixed_correlated_model = @slic (;n_groups=5, k=3, y=[0.2, -0.1, 0.3, 0.0, 0.4]) begin
+        L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
+        tau::vector[k] ~ normal(0.0, 1.0; lower=0.0)
+        b::vector[k] ~ plate(y; outer=(n_groups,)) do yi
+            cell ~ c3_plate_fixed_correlated_cell(k, L, tau)
+            yi ~ normal(cell[1], 0.5)
+            cell
+        end
+    end
+
     # N-dimensional plate regressions: preserve the shipped dense 1-D shapes,
     # route one compiler-owned loop per outer axis, and keep logical cell dimensions
     # first while Stan array prefixes carry outer axes beyond the vector/matrix core.
@@ -2718,6 +2741,20 @@ Verify `slic: BRM-shaped ragged constraints compose with plate` in an isolated t
         @test occursin(r"(?s)cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", model_block)
         @test occursin(r"y ~ normal\(sum\(b__pl_mem_\d+\[", model_block)
     end
+end
+
+"""
+Verify `slic: fixed-width constrained matrix accepted by matrix-typed plate cell` in an isolated test item.
+"""
+@testitem "slic: fixed-width constrained matrix accepted by matrix-typed plate cell" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    @test transpiles(c3_plate_fixed_correlated_model)
+    @test stanc_compiles(c3_plate_fixed_correlated_model)
+    code = stan_code(c3_plate_fixed_correlated_model)
+    # Constraint metadata preserved at the caller: `L` keeps its cholesky
+    # declaration and lkj prior, and the matrix-typed cell inlines against it.
+    @test occursin("cholesky_factor_corr[k] L", stan_block(code, "parameters"))
+    @test occursin("~ lkj_corr_cholesky(2.0)", stan_block(code, "model"))
+    @test occursin("diag_pre_multiply(tau, L)", stan_block(code, "transformed parameters"))
 end
 
 """

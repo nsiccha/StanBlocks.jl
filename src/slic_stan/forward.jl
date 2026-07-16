@@ -1188,6 +1188,31 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::StanModel) 
         (fresh=fresh, ret_type=type(ret))
     end
 
+# ── Plate emitter entry: the public `rv ~ plate(iters…; outer=…) do … end`. ──
+# Trace-then-promote (decision 1vujeta): `_plate_discover` probes the body once to
+# find every fresh cell-local binding + the cell result type, then the loop is
+# re-traced under the task-local `_slic_plate_context` that maps each cell name to
+# its outer array slot. VERIFIED contract boundary (BRM Complete-PLATE snag,
+# 2026-07-16) — consumers must not assume more than this is owned:
+#   • Cell VALUES: scalar or 1-D `vector[K]` ONLY (`_plate_cell_shape`, l.1052).
+#     `ndim≥2`/matrix cells error. Constrained centers created in-body are NOT
+#     carried: `_plate_outer_decl` emits a PLAIN `vector[N]`/`matrix[K,N]`, so a
+#     `~`-constraint (lower/simplex/cholesky/…) on a cell is dropped (or rejected
+#     for non-vector centers). Declare ragged/constrained parameters at model scope.
+#   • RAGGED cells: 1-D plain-vector with a DATA-computable per-cell length only
+#     (`_plate_is_ragged_cell` / `_plate_ragged_plan`). N-D/arbitrary raggedness
+#     and ragged CONSTRAINED cells are rejected.
+#   • Per-cell LIKELIHOOD is HALF-owned. The pointwise DENSITY (lpdf/lpmf) loop IS
+#     compiler-owned — an indexed data-LHS `obs[i] ~ dist(...)` routes to the model
+#     block (passes.jl:206); a cv-flipped per-cell PARAMETER redraws in GQ
+#     (`_indexed_rng_assignment`). But per-cell OBSERVATION posterior-predictive
+#     RNG is NOT synthesized: indexed data-LHS routes to `(:model,)` only, because
+#     the whole-LHS `_gen`/`_likelihood` expansion (passes.jl:396) "cannot represent
+#     one cell" (passes.jl:206-211). Do not assume plate owns observation-RNG loops.
+#   • cv/GQ taint does NOT flow through the outer sized declaration (same limit as
+#     typed-LHS ranefs — cv section / parked override feature); vararg do-block
+#     params (l.1193) and reduce_sum lowering are unimplemented.
+# The StanBlocks primer's plate sections hold the acceptance-ladder roadmap.
 forward!(x::SamplingExpr{Symbol,<:CanonicalExprV{:plate}}; info) =
     _forward_plate!(x.args[1], nothing, x.args[2]; info)
 # Typed-LHS plate result `b::vector[K] ~ plate(…)` ⇒ vector cell output collected
