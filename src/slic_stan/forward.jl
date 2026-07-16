@@ -758,28 +758,6 @@ end
 _is_native_constrained_ct(T) = T isa Type && (
     (T <: types.vector && T !== types.vector) || T <: types.square_matrix
 )
-# Sampling a native-constrained per-cell PARAMETER inside a plate
-# (`cell::simplex[k] ~ dirichlet(…)`) is not yet supported: the trace-then-
-# promote emitter has no per-cell constrained-transform path, so it stores the
-# cell in an UNCONSTRAINED `matrix[K,N]` outer decl (dropping the constraint AND
-# its jacobian — a silently WRONG model) and routes the `~` through the
-# vectorized `_lpdfs` companion, whose varargs signature emits an `anything`
-# return type that `stanc` rejects. `transpiles()` nonetheless reported success.
-# Reject loudly during tracing with the capability error instead of emitting
-# invalid Stan (snag plate-constraine-90607054).
-_reject_constrained_plate_cell(name, type_expr) = begin
-    ct = _is_getindex_expr(type_expr) ? type_expr.args[1] : type_expr
-    (ct isa Symbol && _is_native_constrained_ct(gettype(ct))) && error(
-        "plate: sampling a constrained per-cell parameter (`", name, "::",
-        pretty_type_expr(type_expr), " ~ …`) inside a plate is not supported yet. ",
-        "Constrained centers produced inside a plate (simplex/ordered/",
-        "positive_ordered/cholesky_factor_*/cov_matrix/corr_matrix) need the ",
-        "per-cell constrained-transform path, which the trace-then-promote plate ",
-        "emitter does not implement. Declare the constrained parameter at model ",
-        "scope instead (a ragged `p::simplex[Ks] ~ …` is supported), or use an ",
-        "unconstrained `vector[K]` cell."
-    )
-end
 forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     decl, rhs_raw = x.args
     name = decl.args[1]
@@ -789,7 +767,6 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     )
     promoted = _plate_promoted_lhs(name; info)
     if promoted !== nothing
-        _reject_constrained_plate_cell(name, decl.args[2])
         rhs = forward!(rhs_raw; info)::StanExpr
         return _forward_plate_sampling!(x, name, promoted, rhs; info)
     end
@@ -1074,7 +1051,13 @@ end
 
 _plate_cell_shape(T, name) = begin
     stan_ndim(T) == 0 && return :scalar
-    (center_type(T) <: types.vector && stan_ndim(T) == 1) && return :vector
+    if center_type(T) <: types.vector && stan_ndim(T) == 1
+        # A native-constrained vector cell (simplex/ordered/positive_ordered) is
+        # stored as a Stan `array[N…] <ct>[K]` so Stan applies the constraint
+        # transform + jacobian per cell; a plain `vector[K]` cell is packed into a
+        # dense `matrix[K, N]` column instead (no per-cell constraint).
+        return _is_native_constrained_ct(center_type(T)) ? :constrained_vector : :vector
+    end
     error(
         "plate: unsupported per-cell type `", sigtype(T), "` for `", name,
         "` — scalar or vector[K] only (MVP)."
@@ -1134,6 +1117,14 @@ _plate_outer_decl(f, T::StanType, outer) = begin
         return Expr(:(::), f, _plate_type_expr(:matrix, sizes))
     end
     K = expr(stan_size(T)[1])
+    if shape === :constrained_vector
+        # `array[outer…] <ct>[K]`: outer dims lead (Stan array), the constrained
+        # core size K trails. `<ct>` (simplex/ordered/positive_ordered) declared
+        # in `parameters` gets Stan's native constraint transform + jacobian; in
+        # `transformed parameters` (the plate result copy) it is validate-only.
+        ct = center_type(T).name.name
+        return Expr(:(::), f, _plate_type_expr(ct, Any[outer...; K]))
+    end
     length(outer) == 1 && return Expr(:(::), f, _plate_type_expr(:matrix, Any[K, outer[1]]))
     sizes = Any[outer[2:end]...; K; outer[1]]
     Expr(:(::), f, _plate_type_expr(:matrix, sizes))
@@ -1146,6 +1137,10 @@ _plate_cell_index(f, T::StanType, idxs) = begin
         indices = Any[idxs[3:end]...; idxs[1]; idxs[2]]
         return Expr(:ref, f, indices...)
     end
+    # A native-constrained `array[N…] <ct>[K]` cell is indexed by its plate axes
+    # as a whole element (`cell[g]`); the plain-vector matrix packing takes a
+    # column (`cell[:, g]`) instead.
+    shape === :constrained_vector && return Expr(:ref, f, idxs...)
     indices = Any[idxs[2:end]...; Symbol(":"); idxs[1]]
     Expr(:ref, f, indices...)
 end

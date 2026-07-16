@@ -2620,43 +2620,56 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
 end
 
 """
-Verify `slic: plate rejects constrained per-cell parameters` in an isolated test item.
+Verify `slic: plate supports dense native-constrained vector cells` in an isolated test item.
 
-Regression for snag plate-constraine-90607054: sampling a native-constrained
-per-cell parameter inside a plate (`cell::simplex[k] ~ dirichlet(…)`) used to
-report `transpiles() == true` while emitting invalid Stan — an unconstrained
-`matrix[k,n]` cell decl plus an `anything`-returning `dirichlet_lpdfs` helper
-that `stanc` rejects. It must now fail LOUDLY during tracing with the explicit
-capability error rather than producing code.
+Snag plate-constraine-90607054: a native-constrained per-cell parameter inside a
+plate (`cell::simplex[k] ~ dirichlet(…)`) used to report `transpiles() == true`
+while emitting invalid Stan — an UNCONSTRAINED `matrix[k,n]` cell decl (dropping
+the constraint + jacobian) plus an `anything`-returning `dirichlet_lpdfs` helper
+that `stanc` rejects. It now emits a native Stan `array[N…] <ct>[K]` parameter, so
+Stan applies the constraint transform + jacobian per cell. Dense simplex / ordered
+/ positive_ordered vector cells (fixed `K`, any `outer` rank) are supported;
+ragged constrained cells (`K` per plate index) and constrained MATRIX families
+(cholesky_*) remain rejected pending follow-up.
 """
-@testitem "slic: plate rejects constrained per-cell parameters" tags=[:slic, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: plate supports dense native-constrained vector cells" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     simplex_cell = @slic (; n = 3, k = 3) begin
         p ~ plate(; outer = (n,)) do g
             cell::simplex[k] ~ dirichlet(rep_vector(1.0, k))
             cell
         end
     end
-    # Fails during tracing (before code is produced), not silently transpiles.
-    @test !transpiles(simplex_cell; re = false)
-    err = try
-        stan_code(simplex_cell)
-        ""
-    catch e
-        sprint(showerror, e)
+    @test transpiles(simplex_cell)
+    @test stanc_compiles(simplex_cell)
+    let code = stan_code(simplex_cell)
+        @test occursin(r"array\[n\] simplex\[k\] cell", stan_block(code, "parameters"))
+        @test occursin(r"cell\[plate_i\w*\] ~ dirichlet", stan_block(code, "model"))
+        @test !occursin("anything", code)           # the bug: anything-typed _lpdfs helper
     end
-    @test occursin("constrained per-cell parameter", err)
-    @test occursin("not supported yet", err)
+    # Stan applies the simplex transform: n cells × (k-1) free coords each.
+    @test LogDensityProblems.dimension(instantiate(simplex_cell)) == 3 * (3 - 1)
 
-    # Same rejection for a native-constrained matrix family (cholesky_factor_corr).
-    chol_cell = @slic (; n = 2, k = 3) begin
+    # `ordered` family: N cells × K free coords each.
+    ordered_cell = @slic (; n = 2, k = 4) begin
         p ~ plate(; outer = (n,)) do g
-            L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
-            L
+            c::ordered[k] ~ normal(0.0, 1.0)
+            c
         end
     end
-    @test !transpiles(chol_cell; re = false)
+    @test stanc_compiles(ordered_cell)
+    @test LogDensityProblems.dimension(instantiate(ordered_cell)) == 2 * 4
 
-    # Control: an UNCONSTRAINED `vector[k]` cell is unaffected and still transpiles.
+    # N-dimensional outer: `array[a, b] simplex[k]`.
+    nd_cell = @slic (; a = 2, b = 2, k = 3) begin
+        p ~ plate(; outer = (a, b)) do i, j
+            c::simplex[k] ~ dirichlet(rep_vector(1.0, k))
+            c
+        end
+    end
+    @test stanc_compiles(nd_cell)
+    @test occursin(r"array\[a, b\] simplex\[k\]", stan_block(stan_code(nd_cell), "parameters"))
+
+    # Control: an UNCONSTRAINED `vector[k]` cell keeps the dense `matrix[k,n]` packing.
     plain_cell = @slic (; n = 3, k = 3) begin
         p ~ plate(; outer = (n,)) do g
             z::vector[k] ~ std_normal()
@@ -2664,6 +2677,23 @@ capability error rather than producing code.
         end
     end
     @test transpiles(plain_cell)
+    @test occursin("matrix[k, n] z", stan_block(stan_code(plain_cell), "parameters"))
+
+    # Still-unsupported constrained cells reject cleanly (no invalid Stan):
+    #   ragged simplex — Stan cannot declare `array[n] simplex[K[g]]` (varying K).
+    @test !transpiles(@slic (; K = [2, 3, 4]) begin
+        p ~ plate(; outer = length(K)) do g
+            c::simplex[K[g]] ~ dirichlet(rep_vector(1.0, K[g]))
+            c
+        end
+    end; re = false)
+    #   constrained MATRIX family — matrix cells are not yet supported in plate at all.
+    @test !transpiles(@slic (; n = 2, k = 3) begin
+        p ~ plate(; outer = (n,)) do g
+            L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
+            L
+        end
+    end; re = false)
 end
 
 """
