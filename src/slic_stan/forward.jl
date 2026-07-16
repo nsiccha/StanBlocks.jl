@@ -1127,6 +1127,26 @@ _plate_cell_index(f, T::StanType, idxs) = begin
     Expr(:ref, f, indices...)
 end
 
+# Per-cell input accessor for a positional plate iterable. A DENSE iterable slices
+# with ordinary `it[idxs...]` (scalar element or dense sub-slice). A CERTIFIED
+# RAGGED carrier — nested-vector data, which `stan_type(::NamedTuple)` encodes as an
+# `ntup` with `(mem, ends)` fields (the same certification `_ragged_group_arg`
+# slices on; it carries no `RaggedVector` nominal tag, so a bare `it[idx]` would
+# type as `anything`) — is instead sliced into its per-group `vector` view, mirroring
+# the ragged OUTPUT accessor `mem[ragged_start(ends,i):ragged_end(ends,i)]`. That lets
+# a ragged observed slice feed a typed `vector[k]` called cell. Ragged input is only
+# recognised for a 1-D `outer` (single index), matching the ragged-cell scope.
+_plate_iterable_type(it::Symbol, info) = it in keys(info) ? type(info[it]) : nothing
+_plate_iterable_type(it, info) = nothing
+_plate_is_ragged_iterable(::Nothing) = false
+_plate_is_ragged_iterable(T::StanType) =
+    center_type(T) <: types.ntup && keys(T.info.arg_types) == (:mem, :ends)
+_plate_input_accessor(it, idxs, info) = begin
+    (length(idxs) == 1 && _plate_is_ragged_iterable(_plate_iterable_type(it, info))) || return Expr(:ref, it, idxs...)
+    idx = only(idxs)
+    :($it.mem[ragged_start($it.ends, $idx):ragged_end($it.ends, $idx)])
+end
+
 # TRACE-THEN-PROMOTE discovery (rework, decision 1vujeta): trace the do-block
 # body ONCE in an ISOLATED probe scope to discover the fresh params/vars the body
 # creates AND their per-cell types — INCLUDING submodel-internal ones (a submodel
@@ -1154,8 +1174,17 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::StanModel) 
             end
         else
             for (a, it) in zip(params, iterables)
-                cell = Expr(:ref, it, idxs...)
-                probe[a] = StanExpr(a, type(forward!(canonical(cell); info=probe)))
+                # Bind the do-block param to its per-cell accessor EXPR (not a bare
+                # symbol), mirroring the iterable-free `probe[param] = StanExpr(idx, …)`
+                # aliasing above. A fresh cell whose size indexes THROUGH this param —
+                # e.g. `z::vector[K[g]]` with `g` an index into positional `groups` —
+                # then carries the loop-index dependence into discovered size
+                # expressions (`K[g]` ⇒ `K[groups[plate_i]]`), so
+                # `_plate_is_ragged_cell` classifies it ragged instead of emitting a
+                # dense `matrix[K[g], N]` decl that references the out-of-scope `g`.
+                # The expr matches emit-time `input_subst`, keeping the two traces
+                # consistent (same invariant the iterable-free branch relies on).
+                probe[a] = forward!(canonical(_plate_input_accessor(it, idxs, info)); info=probe)
             end
         end
         # Trace as a BLOCK (not per-statement) so submodel embedding binds its
@@ -1231,7 +1260,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         end
     else
         for (a, it) in zip(params, iterables)
-            input_subst[a] = Expr(:ref, it, idxs...)    # per-cell scalar/slice
+            input_subst[a] = _plate_input_accessor(it, idxs, info)   # per-cell scalar/slice; ragged → group vector view
         end
     end
 
