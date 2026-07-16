@@ -584,6 +584,10 @@ end
         z::vector[k] ~ std_normal()
         return z
     end
+    @slic c3_plate_ragged_correlated_cell(k::int, L::matrix[k, k]) = begin
+        z::vector[k] ~ std_normal()
+        return L * z
+    end
     c3_plate_ragged_model = @slic (;K=[2, 3, 4], y=0.3) begin
         b ~ plate(; outer=length(K)) do g
             z::vector[K[g]] ~ std_normal()
@@ -597,6 +601,14 @@ end
             cell
         end
         y ~ normal(sum(b[2]), 1.0)
+    end
+    c3_plate_ragged_brm_model = @slic (;K=[1, 2, 3], y=0.3) begin
+        L::cholesky_factor_corr[K] ~ lkj_corr_cholesky(2.0)
+        b ~ plate(; outer=length(K)) do g
+            cell ~ c3_plate_ragged_correlated_cell(K[g], L[g])
+            cell
+        end
+        y ~ normal(sum(b[3]), 1.0)
     end
 
     # N-dimensional plate regressions: preserve the shipped dense 1-D shapes,
@@ -2351,6 +2363,30 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
     @test occursin(r"vector\[sum\(cell_z__pl_len_\d+\)\] cell_z__pl_mem_\d+", stan_block(called, "parameters"))
     @test occursin(r"(?s)cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", stan_block(called, "model"))
     @test occursin(r"(?s)b__pl_mem_\d+\[.*?\]\s*=\s*cell__pl_mem_\d+\[", stan_block(called, "transformed parameters"))
+end
+
+"""
+Verify `slic: BRM-shaped ragged constraints compose with plate` in an isolated test item.
+"""
+@testitem "slic: BRM-shaped ragged constraints compose with plate" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    @test transpiles(c3_plate_ragged_brm_model)
+    @test stanc_compiles(c3_plate_ragged_brm_model)
+    code = stan_code(c3_plate_ragged_brm_model)
+
+    let parameters = stan_block(code, "parameters")
+        @test occursin("p_free__rcm_", parameters)
+        @test occursin(r"vector\[sum\(cell_z__pl_len_\d+\)\] cell_z__pl_mem_\d+", parameters)
+    end
+    let tp = stan_block(code, "transformed parameters")
+        @test occursin("cholesky_factor_corr_jacobian", tp)
+        @test occursin("to_matrix", tp)
+        @test occursin(r"(?s)cell__pl_mem_\d+\[.*?\]\s*=\s*\(.*?to_matrix.*?\*.*?cell_z__pl_mem_\d+", tp)
+    end
+    let model_block = stan_block(code, "model")
+        @test occursin("~ lkj_corr_cholesky(2.0)", model_block)
+        @test occursin(r"(?s)cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", model_block)
+        @test occursin(r"y ~ normal\(sum\(b__pl_mem_\d+\[", model_block)
+    end
 end
 
 """
