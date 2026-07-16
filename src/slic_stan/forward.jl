@@ -1051,7 +1051,13 @@ end
 
 _plate_cell_shape(T, name) = begin
     stan_ndim(T) == 0 && return :scalar
-    (center_type(T) <: types.vector && stan_ndim(T) == 1) && return :vector
+    if center_type(T) <: types.vector && stan_ndim(T) == 1
+        # A native-constrained vector cell (simplex/ordered/positive_ordered) is
+        # stored as a Stan `array[N…] <ct>[K]` so Stan applies the constraint
+        # transform + jacobian per cell; a plain `vector[K]` cell is packed into a
+        # dense `matrix[K, N]` column instead (no per-cell constraint).
+        return _is_native_constrained_ct(center_type(T)) ? :constrained_vector : :vector
+    end
     error(
         "plate: unsupported per-cell type `", sigtype(T), "` for `", name,
         "` — scalar or vector[K] only (MVP)."
@@ -1111,6 +1117,14 @@ _plate_outer_decl(f, T::StanType, outer) = begin
         return Expr(:(::), f, _plate_type_expr(:matrix, sizes))
     end
     K = expr(stan_size(T)[1])
+    if shape === :constrained_vector
+        # `array[outer…] <ct>[K]`: outer dims lead (Stan array), the constrained
+        # core size K trails. `<ct>` (simplex/ordered/positive_ordered) declared
+        # in `parameters` gets Stan's native constraint transform + jacobian; in
+        # `transformed parameters` (the plate result copy) it is validate-only.
+        ct = center_type(T).name.name
+        return Expr(:(::), f, _plate_type_expr(ct, Any[outer...; K]))
+    end
     length(outer) == 1 && return Expr(:(::), f, _plate_type_expr(:matrix, Any[K, outer[1]]))
     sizes = Any[outer[2:end]...; K; outer[1]]
     Expr(:(::), f, _plate_type_expr(:matrix, sizes))
@@ -1123,24 +1137,59 @@ _plate_cell_index(f, T::StanType, idxs) = begin
         indices = Any[idxs[3:end]...; idxs[1]; idxs[2]]
         return Expr(:ref, f, indices...)
     end
+    # A native-constrained `array[N…] <ct>[K]` cell is indexed by its plate axes
+    # as a whole element (`cell[g]`); the plain-vector matrix packing takes a
+    # column (`cell[:, g]`) instead.
+    shape === :constrained_vector && return Expr(:ref, f, idxs...)
     indices = Any[idxs[2:end]...; Symbol(":"); idxs[1]]
     Expr(:ref, f, indices...)
+end
+
+# An isolated copy of the tracing `info`, MIRRORING its structure so bindings
+# land in throwaway storage: a StanModel copies its `vars`; a SubModel copies its
+# `locals` AND recursively probes its parent, so a fresh binding created inside a
+# submodel-scoped plate flattens into the probe-ROOT the same way it will at emit
+# time (`t_z`), without polluting the real parent's vars. `blocks` stay SHARED —
+# `forward!` only binds vars + returns canonical; block routing is a later pass.
+_plate_probe(info::StanModel) = StanModel(meta(info), copy(vars(info)), blocks(info))
+_plate_probe(info::SubModel) = SubModel(_plate_probe(parent(info)), name(info), copy(locals(info)))
+
+# Per-cell input accessor for a positional plate iterable. A DENSE iterable slices
+# with ordinary `it[idxs...]` (scalar element or dense sub-slice). A CERTIFIED
+# RAGGED carrier — nested-vector data, which `stan_type(::NamedTuple)` encodes as an
+# `ntup` with `(mem, ends)` fields (the same certification `_ragged_group_arg`
+# slices on; it carries no `RaggedVector` nominal tag, so a bare `it[idx]` would
+# type as `anything`) — is instead sliced into its per-group `vector` view, mirroring
+# the ragged OUTPUT accessor `mem[ragged_start(ends,i):ragged_end(ends,i)]`. That lets
+# a ragged observed slice feed a typed `vector[k]` called cell. Ragged input is only
+# recognised for a 1-D `outer` (single index), matching the ragged-cell scope.
+_plate_iterable_type(it::Symbol, info) = it in keys(info) ? type(info[it]) : nothing
+_plate_iterable_type(it, info) = nothing
+_plate_is_ragged_iterable(::Nothing) = false
+_plate_is_ragged_iterable(T::StanType) =
+    center_type(T) <: types.ntup && keys(T.info.arg_types) == (:mem, :ends)
+_plate_input_accessor(it, idxs, info) = begin
+    (length(idxs) == 1 && _plate_is_ragged_iterable(_plate_iterable_type(it, info))) || return Expr(:ref, it, idxs...)
+    idx = only(idxs)
+    :($it.mem[ragged_start($it.ends, $idx):ragged_end($it.ends, $idx)])
 end
 
 # TRACE-THEN-PROMOTE discovery (rework, decision 1vujeta): trace the do-block
 # body ONCE in an ISOLATED probe scope to discover the fresh params/vars the body
 # creates AND their per-cell types — INCLUDING submodel-internal ones (a submodel
-# embeds via `SubModel`, flattening `t_z`/`t` into the probe's vars). The probe is
-# a StanModel with COPIED `vars` (bindings land in the copy) and SHARED `blocks`
-# (`forward!` only binds vars + returns canonical — block routing is a later pass,
-# so blocks stay untouched); pending is isolated in its own task-local. Nothing is
-# emitted; the probe is discarded. Returns (fresh::Vector{Pair{Symbol,StanType}}
-# in body order, ret_type). Top-level `info` only (a plate nested in a submodel is
-# a later case).
-_plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::StanModel) =
+# embeds via `SubModel`, flattening `t_z`/`t` into the probe's vars). Fresh names
+# are collected in the probe ROOT (global) namespace so a plate nested inside a
+# called `@slic` submodel discovers each cell under the SAME flattened name the
+# emit-time promotion context (`_plate_global_name`) will look it up by. For a
+# top-level plate the probe root IS the probe, so the global names equal the local
+# ones. `pending` is isolated in its own task-local; nothing is emitted and the
+# probe is discarded. Returns (fresh::Vector{Pair{Symbol,StanType}} in body order
+# keyed by global name, ret_type).
+_plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanModel,SubModel}) =
     task_local_storage(:_slic_inline_pending, Any[]) do
-        probe = StanModel(meta(info), copy(vars(info)), blocks(info))
-        before = Set(keys(probe))
+        probe = _plate_probe(info)
+        root = _plate_root_info(probe)
+        before = Set(keys(root))
         for idx in idxs
             probe[idx] = StanExpr(idx, StanType(types.int; qual=:data))
         end
@@ -1154,18 +1203,31 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::StanModel) 
             end
         else
             for (a, it) in zip(params, iterables)
-                cell = Expr(:ref, it, idxs...)
-                probe[a] = StanExpr(a, type(forward!(canonical(cell); info=probe)))
+                # Bind the do-block param to its per-cell accessor EXPR (not a bare
+                # symbol), mirroring the iterable-free `probe[param] = StanExpr(idx, …)`
+                # aliasing above. A fresh cell whose size indexes THROUGH this param —
+                # e.g. `z::vector[K[g]]` with `g` an index into positional `groups` —
+                # then carries the loop-index dependence into discovered size
+                # expressions (`K[g]` ⇒ `K[groups[plate_i]]`), so
+                # `_plate_is_ragged_cell` classifies it ragged instead of emitting a
+                # dense `matrix[K[g], N]` decl that references the out-of-scope `g`.
+                # The expr matches emit-time `input_subst`, keeping the two traces
+                # consistent (same invariant the iterable-free branch relies on).
+                probe[a] = forward!(canonical(_plate_input_accessor(it, idxs, info)); info=probe)
             end
         end
         # Trace as a BLOCK (not per-statement) so submodel embedding binds its
         # flattened result the same way the real model-body trace does.
         isempty(body_stmts) || forward!(canonical(Expr(:block, body_stmts...)); info=probe)
         ret = forward!(canonical(ret_expr); info=probe)
+        # idx/param helper bindings flatten to their global names in the root; skip
+        # those (and everything present before the trace) so only body-introduced
+        # cell bindings remain.
+        helpers = Set(_plate_global_name(info, s) for s in Iterators.flatten((idxs, params)))
         fresh = Pair{Symbol,Any}[]
-        for k in keys(probe)
-            (k in before || k in idxs || k in params) && continue
-            push!(fresh, k => type(probe[k]))
+        for k in keys(root)
+            (k in before || k in helpers) && continue
+            push!(fresh, k => type(root[k]))
         end
         (fresh=fresh, ret_type=type(ret))
     end
@@ -1176,14 +1238,18 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::StanModel) 
 # re-traced under the task-local `_slic_plate_context` that maps each cell name to
 # its outer array slot. VERIFIED contract boundary (BRM Complete-PLATE snag,
 # 2026-07-16) — consumers must not assume more than this is owned:
-#   • Cell VALUES: scalar or 1-D `vector[K]` ONLY (`_plate_cell_shape`, l.1052).
-#     `ndim≥2`/matrix cells error. Constrained centers created in-body are NOT
-#     carried: `_plate_outer_decl` emits a PLAIN `vector[N]`/`matrix[K,N]`, so a
-#     `~`-constraint (lower/simplex/cholesky/…) on a cell is dropped (or rejected
-#     for non-vector centers). Declare ragged/constrained parameters at model scope.
+#   • Cell VALUES: scalar or 1-D `vector[K]` (`_plate_cell_shape`, l.1052);
+#     `ndim≥2`/matrix cells error. A NATIVE-constrained 1-D vector center
+#     (simplex/ordered/positive_ordered, fixed `K`) IS carried now: it emits a
+#     Stan `array[N…] <ct>[K]` parameter (`:constrained_vector`) so Stan applies
+#     the per-cell constraint transform + jacobian; a plain `vector[K]` keeps the
+#     dense `matrix[K,N]` packing (snag plate-constraine-90607054). Still dropped:
+#     `~`-bound scalar constraints (lower/upper on a plain center) and constrained
+#     MATRIX families (cholesky/cov/corr) — declare those at model scope.
 #   • RAGGED cells: 1-D plain-vector with a DATA-computable per-cell length only
 #     (`_plate_is_ragged_cell` / `_plate_ragged_plan`). N-D/arbitrary raggedness
-#     and ragged CONSTRAINED cells are rejected.
+#     and ragged CONSTRAINED cells (varying-`K` simplex/…) are rejected — Stan
+#     cannot declare `array[N] simplex[K[g]]`.
 #   • Per-cell LIKELIHOOD is HALF-owned. The pointwise DENSITY (lpdf/lpmf) loop IS
 #     compiler-owned — an indexed data-LHS `obs[i] ~ dist(...)` routes to the model
 #     block (passes.jl:206); a cv-flipped per-cell PARAMETER redraws in GQ
@@ -1256,7 +1322,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         end
     else
         for (a, it) in zip(params, iterables)
-            input_subst[a] = Expr(:ref, it, idxs...)    # per-cell scalar/slice
+            input_subst[a] = _plate_input_accessor(it, idxs, info)   # per-cell scalar/slice; ragged → group vector view
         end
     end
 
@@ -1304,17 +1370,41 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     fresh = discovered.fresh
     rv_type = rv_ct === nothing ? discovered.ret_type : _plate_annotation_type(rv_ct; info)
 
+    # `cell_types`/`fresh` are keyed by the GLOBAL (root-namespace) name of each
+    # discovered cell binding; `rv` stays the do-block's LOCAL result name. For a
+    # top-level plate these coincide, so the collision check compares rv's global
+    # name against the fresh set.
     cell_types = Dict{Symbol,Any}(fresh)
-    haskey(cell_types, rv) && error("plate: result `$rv` collides with a fresh binding in the do-block.")
+    global_rv = _plate_global_name(info, rv)
+    haskey(cell_types, global_rv) && error("plate: result `$rv` collides with a fresh binding in the do-block.")
     rv in keys(info) && error("plate: result `$rv` is already bound in model scope.")
     all_cell_types = copy(cell_types)
     all_cell_types[rv] = rv_type
 
+    # A cell is ragged when its length depends on the per-cell position. That
+    # position is aliased by the loop index AND the do-block param, each of which a
+    # SubModel flattens (`g` ⇒ `sub_g`, `plate_i` ⇒ `sub_plate_i`) — so raggedness
+    # must be tested against ALL of those names, not just the raw indices, or a
+    # submodel-scoped ragged size (`K[sub_g]`) escapes detection and emits invalid
+    # Stan (`matrix[K[sub_g], …]`).
+    index_aliases = Set{Symbol}()
+    for s in Iterators.flatten((idxs, params))
+        push!(index_aliases, s)
+        push!(index_aliases, _plate_global_name(info, s))
+    end
     ragged_plans = Dict{Symbol,Any}()
     for (f, T) in all_cell_types
-        _plate_is_ragged_cell(T, idxs) || continue
+        _plate_is_ragged_cell(T, index_aliases) || continue
         ragged_plans[f] = _plate_ragged_plan(f, T, outer_dims, idxs, id)
     end
+    # A ragged cell's flat-memory carriers (lens/ends/mem) are declared in the
+    # plate's own `info` scope and indexed by the raw loop index; hoisting them out
+    # of a called submodel (parent-scope carriers + flattened index) is not wired
+    # yet. Fixed `vector[K]` and scalar cells ARE supported inside a submodel.
+    (info isa SubModel && !isempty(ragged_plans)) && error(
+        "plate: ragged vector cells inside a called @slic submodel are not supported yet — ",
+        "use a fixed `vector[K]` cell here, or lift the ragged plate to model scope."
+    )
     cell_accessors = Dict{Symbol,Any}(
         f => plan.accessor for (f, plan) in ragged_plans if haskey(cell_types, f)
     )
@@ -1328,10 +1418,6 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         ragged_plans[rv].accessor : _plate_cell_index(rv, rv_type, idxs)
     push!(loop_body, :($rv_accessor = $ret_cell))
 
-    decls = Any[
-        _plate_outer_decl(f, T, outer_dims)
-        for (f, T) in all_cell_types if !haskey(ragged_plans, f)
-    ]
     # NB: build each iteration spec as `Expr(:(=), idx, 1:N)` — a hand-built
     # `Expr(:for, :(idx in 1:N), …)` yields an `:in` CALL spec, not the `:(=)`
     # form `forward!(::ForExpr)` asserts (a quoted `for` auto-normalizes it).
@@ -1373,11 +1459,22 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
             pending !== nothing && push!(pending, emitted)
         end
     end
-    for decl in decls
-        emitted = forward!(canonical(decl); info)
+    # Outer collection declarations. FRESH cell collections carry GLOBAL names, so
+    # emit them at the ROOT to bind each once without re-flattening. The `rv` result
+    # collection keeps its LOCAL name and emits under `info`, so a SubModel flattens
+    # it to the parent AND binds the local alias the submodel's `return rv` needs.
+    # For a top-level plate `root === info`, so this reduces to the original loop.
+    root = _plate_root_info(info)
+    for (f, T) in all_cell_types
+        haskey(ragged_plans, f) && continue
+        tgt = f === rv ? info : root
+        emitted = forward!(canonical(_plate_outer_decl(f, T, outer_dims)); info=tgt)
         pending !== nothing && push!(pending, emitted)
     end
-    ctx = (idxs=idxs, cell_types=cell_types, cell_accessors=cell_accessors)
+    # The emit trace forwards each promoted cell accessor at the root, where the
+    # loop index is bound under its flattened name; key the context idxs to match.
+    global_idxs = Symbol[_plate_global_name(info, idx) for idx in idxs]
+    ctx = (idxs=global_idxs, cell_types=cell_types, cell_accessors=cell_accessors)
     emitted_loop = task_local_storage(:_slic_plate_context, ctx) do
         forward!(canonical(loop); info)
     end

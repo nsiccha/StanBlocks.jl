@@ -660,6 +660,64 @@ end
         y ~ normal(sum(b[3]), 1.0)
     end
 
+    # Snag regression (plate-called-cel-c38a50e8): a called cell declaring a plain
+    # `matrix[k, k]` argument must accept a FIXED-width top-level Stan constrained
+    # square-matrix value (`cholesky_factor_corr[k]`).  Unlike
+    # `c3_plate_ragged_brm_model`, whose ragged `L[g]` reconstructs a plain `matrix`
+    # (ndim 2), here `L` stays `cholesky_factor_corr` (ndim 1, `r_ndim(square_matrix)`)
+    # and previously failed plate-discovery dispatch with a `SubmodelFn` MethodError
+    # on the `ndims` type parameter (value 1 ≠ decl 2), even though
+    # `cholesky_factor_corr <: matrix`.  The value flows into the cell verbatim, so
+    # its constrained declaration is preserved at the caller.
+    @slic c3_plate_fixed_correlated_cell(k::int, L::matrix[k, k], tau::vector[k]) = begin
+        z::vector[k] ~ std_normal()
+        return diag_pre_multiply(tau, L) * z
+    end
+    c3_plate_fixed_correlated_model = @slic (;n_groups=5, k=3, y=[0.2, -0.1, 0.3, 0.0, 0.4]) begin
+        L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
+        tau::vector[k] ~ normal(0.0, 1.0; lower=0.0)
+        b::vector[k] ~ plate(y; outer=(n_groups,)) do yi
+            cell ~ c3_plate_fixed_correlated_cell(k, L, tau)
+            yi ~ normal(cell[1], 0.5)
+            cell
+        end
+    end
+
+    # Snag regression (plate-inside-cal-69cec8bc): a fixed-vector plate INSIDE a
+    # called `@slic` submodel body. Previously threw
+    # `TypeError: ... expected StanModel, got SubModel` at `_plate_discover`,
+    # because discovery + outer-decl emission assumed a top-level `StanModel` info.
+    # Now the probe MIRRORS the SubModel structure, fresh cell collections discover
+    # and emit under their flattened (global) names at the root, and the `rv` result
+    # keeps its local alias for the submodel's `return`. This is BRM's
+    # `ranef_correlated_draws`-as-a-plate migration shape: submodel-scope params
+    # (`L`, `tau`) feed a per-group correlated draw.
+    @slic c3_plate_in_sub_draws(n_groups::int, k::int) = begin
+        L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
+        tau::vector[k] ~ std_normal(; lower=0.0)
+        b::vector[k] ~ plate(; outer=(n_groups,)) do g
+            z::vector[k] ~ std_normal()
+            diag_pre_multiply(tau, L) * z
+        end
+        return b
+    end
+    c3_plate_in_submodel_model = @slic (;n_groups=4, k=3, y=[0.2, -0.1, 0.3, 0.0]) begin
+        b ~ c3_plate_in_sub_draws(n_groups, k)
+        y ~ normal(to_vector(b'[:, 1]), 0.5)
+    end
+    # Top-level equivalent: identical parameters + target, so the two must yield an
+    # identical log density and gradient. Guards the SubModel promotion path against
+    # ever diverging from the already-verified top-level plate path.
+    c3_plate_in_submodel_reference = @slic (;n_groups=4, k=3, y=[0.2, -0.1, 0.3, 0.0]) begin
+        L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
+        tau::vector[k] ~ std_normal(; lower=0.0)
+        b::vector[k] ~ plate(; outer=(n_groups,)) do g
+            z::vector[k] ~ std_normal()
+            diag_pre_multiply(tau, L) * z
+        end
+        y ~ normal(to_vector(b'[:, 1]), 0.5)
+    end
+
     # N-dimensional plate regressions: preserve the shipped dense 1-D shapes,
     # route one compiler-owned loop per outer axis, and keep logical cell dimensions
     # first while Stan array prefixes carry outer axes beyond the vector/matrix core.
@@ -2702,6 +2760,84 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
 end
 
 """
+Verify `slic: plate supports dense native-constrained vector cells` in an isolated test item.
+
+Snag plate-constraine-90607054: a native-constrained per-cell parameter inside a
+plate (`cell::simplex[k] ~ dirichlet(…)`) used to report `transpiles() == true`
+while emitting invalid Stan — an UNCONSTRAINED `matrix[k,n]` cell decl (dropping
+the constraint + jacobian) plus an `anything`-returning `dirichlet_lpdfs` helper
+that `stanc` rejects. It now emits a native Stan `array[N…] <ct>[K]` parameter, so
+Stan applies the constraint transform + jacobian per cell. Dense simplex / ordered
+/ positive_ordered vector cells (fixed `K`, any `outer` rank) are supported;
+ragged constrained cells (`K` per plate index) and constrained MATRIX families
+(cholesky_*) remain rejected pending follow-up.
+"""
+@testitem "slic: plate supports dense native-constrained vector cells" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    simplex_cell = @slic (; n = 3, k = 3) begin
+        p ~ plate(; outer = (n,)) do g
+            cell::simplex[k] ~ dirichlet(rep_vector(1.0, k))
+            cell
+        end
+    end
+    @test transpiles(simplex_cell)
+    @test stanc_compiles(simplex_cell)
+    let code = stan_code(simplex_cell)
+        # cell-local `cell` is namespaced under the plate result `p` → `p_cell`.
+        @test occursin(r"array\[n\] simplex\[k\] p_cell", stan_block(code, "parameters"))
+        @test occursin(r"p_cell\[plate_i\w*\] ~ dirichlet", stan_block(code, "model"))
+        @test !occursin("anything", code)           # the bug: anything-typed _lpdfs helper
+    end
+    # Stan applies the simplex transform: n cells × (k-1) free coords each.
+    @test LogDensityProblems.dimension(instantiate(simplex_cell)) == 3 * (3 - 1)
+
+    # `ordered` family: N cells × K free coords each.
+    ordered_cell = @slic (; n = 2, k = 4) begin
+        p ~ plate(; outer = (n,)) do g
+            c::ordered[k] ~ normal(0.0, 1.0)
+            c
+        end
+    end
+    @test stanc_compiles(ordered_cell)
+    @test LogDensityProblems.dimension(instantiate(ordered_cell)) == 2 * 4
+
+    # N-dimensional outer: `array[a, b] simplex[k]`.
+    nd_cell = @slic (; a = 2, b = 2, k = 3) begin
+        p ~ plate(; outer = (a, b)) do i, j
+            c::simplex[k] ~ dirichlet(rep_vector(1.0, k))
+            c
+        end
+    end
+    @test stanc_compiles(nd_cell)
+    @test occursin(r"array\[a, b\] simplex\[k\]", stan_block(stan_code(nd_cell), "parameters"))
+
+    # Control: an UNCONSTRAINED `vector[k]` cell keeps the dense `matrix[k,n]` packing.
+    plain_cell = @slic (; n = 3, k = 3) begin
+        p ~ plate(; outer = (n,)) do g
+            z::vector[k] ~ std_normal()
+            z
+        end
+    end
+    @test transpiles(plain_cell)
+    @test occursin("matrix[k, n] p_z", stan_block(stan_code(plain_cell), "parameters"))
+
+    # Still-unsupported constrained cells reject cleanly (no invalid Stan):
+    #   ragged simplex — Stan cannot declare `array[n] simplex[K[g]]` (varying K).
+    @test !transpiles(@slic (; K = [2, 3, 4]) begin
+        p ~ plate(; outer = length(K)) do g
+            c::simplex[K[g]] ~ dirichlet(rep_vector(1.0, K[g]))
+            c
+        end
+    end; re = false)
+    #   constrained MATRIX family — matrix cells are not yet supported in plate at all.
+    @test !transpiles(@slic (; n = 2, k = 3) begin
+        p ~ plate(; outer = (n,)) do g
+            L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
+            L
+        end
+    end; re = false)
+end
+
+"""
 Verify `slic: BRM-shaped ragged constraints compose with plate` in an isolated test item.
 """
 @testitem "slic: BRM-shaped ragged constraints compose with plate" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
@@ -2723,6 +2859,74 @@ Verify `slic: BRM-shaped ragged constraints compose with plate` in an isolated t
         @test occursin(r"(?s)cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", model_block)
         @test occursin(r"y ~ normal\(sum\(b__pl_mem_\d+\[", model_block)
     end
+end
+
+"""
+Verify `slic: fixed-width constrained matrix accepted by matrix-typed plate cell` in an isolated test item.
+"""
+@testitem "slic: fixed-width constrained matrix accepted by matrix-typed plate cell" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    @test transpiles(c3_plate_fixed_correlated_model)
+    @test stanc_compiles(c3_plate_fixed_correlated_model)
+    code = stan_code(c3_plate_fixed_correlated_model)
+    # Constraint metadata preserved at the caller: `L` keeps its cholesky
+    # declaration and lkj prior, and the matrix-typed cell inlines against it.
+    @test occursin("cholesky_factor_corr[k] L", stan_block(code, "parameters"))
+    @test occursin("~ lkj_corr_cholesky(2.0)", stan_block(code, "model"))
+    @test occursin("diag_pre_multiply(tau, L)", stan_block(code, "transformed parameters"))
+end
+
+"""
+Verify `slic: public plate inside a called submodel` in an isolated test item.
+"""
+@testitem "slic: public plate inside a called submodel" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Snag regression (plate-inside-cal-69cec8bc): a fixed-vector plate in a CALLED
+    # submodel body. Previously threw `TypeError: ... expected StanModel, got
+    # SubModel` at `_plate_discover`. Fresh cell collections discover + emit under
+    # their flattened (global) names at the root; `rv` keeps its local alias.
+    @test transpiles(c3_plate_in_submodel_model)
+    @test stanc_compiles(c3_plate_in_submodel_model)
+    code = stan_code(c3_plate_in_submodel_model)
+    # The submodel-internal cell `z` is a root parameter under its flattened name.
+    # Namespaced under the inner plate result `b` (→ `b_z`), then flattened by the
+    # submodel binding `b` (→ `b_b_z`).
+    @test occursin(r"matrix\[k, n_groups\] b_b_z", stan_block(code, "parameters"))
+    @test occursin(r"b_b_z\[:, b_plate_i__pl_\d+\]\s*~\s*std_normal", stan_block(code, "model"))
+    let tp = stan_block(code, "transformed parameters")
+        @test occursin(r"b_b\[:, b_plate_i__pl_\d+\]\s*=", tp)
+        @test occursin(r"matrix\[k, n_groups\] b\s*=\s*b_b", tp)
+    end
+
+    # Identical parameters + target as the top-level plate ⇒ identical log density
+    # and gradient. The top-level plate path is already covered above.
+    p_sub = instantiate(stan_model(c3_plate_in_submodel_model))
+    p_ref = instantiate(stan_model(c3_plate_in_submodel_reference))
+    @test LogDensityProblems.dimension(p_sub) == LogDensityProblems.dimension(p_ref)
+    for v in (
+        cos.(1:LogDensityProblems.dimension(p_sub)) .* 0.7,
+        sin.(1:LogDensityProblems.dimension(p_sub)),
+        fill(0.15, LogDensityProblems.dimension(p_sub)),
+        collect(range(-1.0, 1.0; length=LogDensityProblems.dimension(p_sub))),
+    )
+        @test LogDensityProblems.logdensity(p_sub, v) ≈
+              LogDensityProblems.logdensity(p_ref, v) atol=1e-8
+        _, g_sub = LogDensityProblems.logdensity_and_gradient(p_sub, v)
+        _, g_ref = LogDensityProblems.logdensity_and_gradient(p_ref, v)
+        @test g_sub ≈ g_ref atol=1e-8
+    end
+
+    # Ragged vector cells inside a submodel are not wired yet — must fail loud
+    # rather than emit invalid Stan (`matrix[K[sub_g], …]`).
+    @slic c3_plate_ragged_in_sub(K::int[3]) = begin
+        b ~ plate(; outer=length(K)) do g
+            z::vector[K[g]] ~ std_normal()
+            z
+        end
+        return b
+    end
+    @test_throws "ragged vector cells inside a called" stan_code(@slic (;K=[2, 3, 4], y=0.3) begin
+        b ~ c3_plate_ragged_in_sub(K)
+        y ~ normal(sum(b[1]), 1.0)
+    end)
 end
 
 """

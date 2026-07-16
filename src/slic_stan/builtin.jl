@@ -440,8 +440,14 @@ import Statistics
     binomial_lpmfs(y::int[n], args...) = jbroadcasted(binomial_lpmfs, y, args...)
     binomial_logit_lpmfs(args...) = binomial_logit_lpmf(args...)
     binomial_logit_lpmfs(y::int[n], args...) = jbroadcasted(binomial_logit_lpmfs, y, args...)
-    multi_normal_lpdfs(args...) = multi_normal_lpdf(args...)
-    dirichlet_lpdfs(args...) = dirichlet_lpdf(args...)
+    # Scalar-fallback pointwise-density companions delegate to the `_lpdf`, which
+    # returns `real`; the explicit `::real` return type is REQUIRED — without it
+    # the varargs signature monomorphises to a Stan function with return type
+    # `anything`, which `stanc` rejects. This surfaced when a constrained per-cell
+    # parameter inside a plate (`cell[g] ~ dirichlet(…)`) fetched `dirichlet_lpdfs`
+    # (snag plate-constraine-90607054).
+    multi_normal_lpdfs(args...)::real = multi_normal_lpdf(args...)
+    dirichlet_lpdfs(args...)::real = dirichlet_lpdf(args...)
     @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr[m,n], x::real, m::int, n::int)::real = begin
         rv = 0.0
         for i in 1:m
@@ -449,7 +455,7 @@ import Statistics
         end
         rv
     end
-    lkj_corr_cholesky_lpdfs(args...) = lkj_corr_cholesky_lpdf(args...)
+    lkj_corr_cholesky_lpdfs(args...)::real = lkj_corr_cholesky_lpdf(args...)
     lkj_corr_cholesky_lpdfs(L::anything[n], x) = jbroadcasted(lkj_corr_cholesky_lpdfs, L, x)
     ordered_logistic_lpmfs(args...) = ordered_logistic_lpmf(args...)
     ordered_logistic_lpmfs(y::int[n], eta::vector[n], c::vector[m]) = begin
