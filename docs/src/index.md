@@ -173,7 +173,7 @@ You can additionally pass `n=…` or `m=…, n=…` on any prior to make the par
 
 ## User-defined functions with `@deffun`
 
-`@deffun` registers a Stan-compatible function with type-annotated arguments. Its body is real Julia and may use `for`/`while`/`if`/comprehensions. The body is also transpiled to Stan.
+`@deffun` registers a Stan-compatible function with type-annotated arguments. Its body is real Julia and may use `for`/`while`/`if`. It also supports bounded one-dimensional comprehensions of the form `[scalar_expr for i in lo:hi]`; these lower to a typed local plus a Stan `for` loop. Multiple or nested generators, filters, arbitrary iterables, stepped ranges, and non-scalar elements are rejected explicitly. The body is transpiled to Stan.
 
 UDF bodies must not contain `~` sampling statements or `target +=` increments — UDFs cannot introduce parameters or directly manipulate the log density. The macro errors at expansion time if either is found.
 

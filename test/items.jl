@@ -113,6 +113,18 @@ end
         rv
     end
 
+    # --- bounded one-dimensional array comprehensions in @deffun ---
+    # The supported surface is deliberately one scalar expression over one
+    # explicit `lo:hi` range.  These fixtures cover real/int result inference,
+    # non-1 lower bounds, and each rejected Julia generator shape.
+    @deffun comprehension_square(x::vector[n]) = [x[i] * x[i] for i in 1:n]
+    @deffun comprehension_int_shift(x::int[n]) = [x[i] + 1 for i in 1:n]
+    @deffun comprehension_slice(x::vector[n], lo::int, hi::int) = [x[i] for i in lo:hi]
+    @deffun comprehension_filtered(x::vector[n]) = [x[i] for i in 1:n if x[i] > 0]
+    @deffun comprehension_multiple(x::vector[n], m::int) = [x[i] + j for i in 1:n, j in 1:m]
+    @deffun comprehension_nested(x::vector[n]) = [[x[i] + j for j in 1:2] for i in 1:n]
+    @deffun comprehension_iterable(x::vector[n]) = [xi for xi in x]
+
     # Determinism regression: an inline UDF whose locals are renamed `<name>__il_<id>`.
     @deffun @inline det_polish(x::vector[n])::vector[n] = begin
         z = x * 2
@@ -1593,6 +1605,107 @@ Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolat
             mu ~ std_normal()
             mu
         end)
+    end
+end
+
+"""
+Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated test item.
+"""
+@testitem "slic: bounded one-dimensional @deffun comprehensions" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    @testset "canonicalization preserves the comprehension/generator structure" begin
+        c = StanBlocks.stan.canonical(Meta.parse("[x[i] * x[i] for i in 1:n]"))
+        @test c isa StanBlocks.stan.ComprehensionExpr
+        @test length(c.args) == 1
+        @test c.args[1] isa StanBlocks.stan.GeneratorExpr
+        @test length(c.args[1].args) == 2
+        @test c.args[1].args[2] isa StanBlocks.stan.AssignmentExpr
+    end
+
+    @testset "real and int comprehensions lower to typed locals + symbolic loops" begin
+        real_model = @slic (;x=[1.0, 2.0, 3.0], y=[1.0, 4.0, 9.0]) begin
+            mu = comprehension_square(x)
+            y ~ normal(mu, 1.0)
+        end
+        real_code = stan_code(real_model)
+        @test occursin(r"vector\[[^]]+\] comprehension_result__lc_\d+;", real_code)
+        @test occursin(r"for\(i in 1:n\)", real_code)
+        @test occursin(r"comprehension_result__lc_\d+\[i\] = \(x\[i\] \* x\[i\]\)", real_code)
+        @test stanc_compiles(real_model)
+
+        int_model = @slic (;x=[1, 2, 3]) begin
+            shifted = comprehension_int_shift(x)
+            mu ~ normal(shifted[1], 1.0)
+        end
+        int_code = stan_code(int_model)
+        @test occursin(r"array\[[^]]+\] int comprehension_result__lc_\d+;", int_code)
+        @test stanc_compiles(int_model)
+    end
+
+    @testset "non-1 lower bound uses a dense output index" begin
+        model = @slic (;x=[1.0, 2.0, 3.0, 4.0], y=[2.0, 3.0, 4.0]) begin
+            mu = comprehension_slice(x, 2, 4)
+            y ~ normal(mu, 1.0)
+        end
+        code = stan_code(model)
+        @test occursin(r"for\(i in lo:hi\)", code)
+        @test occursin(r"comprehension_result__lc_\d+\[\(\(i - lo\) \+ 1\)\] = x\[i\]", code)
+        @test stanc_compiles(model)
+    end
+
+    comprehension_error(f) = try
+        stan_code(f())
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+
+    @testset "unsupported generator forms reject explicitly" begin
+        filtered = comprehension_error() do
+            @slic (;x=[-1.0, 2.0]) begin
+                z = comprehension_filtered(x)
+                mu ~ normal(z[1], 1.0)
+            end
+        end
+        @test filtered !== nothing
+        @test occursin("filtered generators are not supported", filtered)
+
+        multiple = comprehension_error() do
+            @slic (;x=[1.0, 2.0]) begin
+                z = comprehension_multiple(x, 2)
+                mu ~ normal(z[1], 1.0)
+            end
+        end
+        @test multiple !== nothing
+        @test occursin("nested or multiple generators are not supported", multiple)
+
+        nested = comprehension_error() do
+            @slic (;x=[1.0, 2.0]) begin
+                z = comprehension_nested(x)
+                mu ~ normal(z[1], 1.0)
+            end
+        end
+        @test nested !== nothing
+        @test occursin("nested comprehensions are not supported", nested)
+
+        iterable = comprehension_error() do
+            @slic (;x=[1.0, 2.0]) begin
+                z = comprehension_iterable(x)
+                mu ~ normal(z[1], 1.0)
+            end
+        end
+        @test iterable !== nothing
+        @test occursin("one bounded `lo:hi` range", iterable)
+    end
+
+    @testset "model-level comprehension remains rejected" begin
+        err = comprehension_error() do
+            @slic (;x=[1.0, 2.0]) begin
+                z = [x[i] for i in 1:2]
+                mu ~ normal(z[1], 1.0)
+            end
+        end
+        @test err !== nothing
+        @test occursin("`comprehension` control flow is not supported in @slic model bodies", err)
     end
 end
 
