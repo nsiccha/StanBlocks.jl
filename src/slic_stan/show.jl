@@ -102,7 +102,8 @@ constraints(x::StanType) = (;[
     for key in (:lower, :upper, :offset, :multiplier) if key in keys(info(x))
 ]...)
 Base.show(io::IO, x::StanExpr) = print(io, expr(x), "::", type(x))
-Base.show(io::IO, x::StanType) = begin 
+Base.show(io::IO, x::StanType) = show(StanIO(io), x)
+Base.show(io::StanIO, x::StanType) = begin
     l, r = lr_size(x)
     length(l) > 0 && autoprint(io, "array[", Join(l, ", "), "] ")
     print(io, center_type(x))
@@ -110,7 +111,8 @@ Base.show(io::IO, x::StanType) = begin
     length(cons) > 0 && autoprint(io, "<", Join(map((k,v)->Join((k,v), "="), keys(cons), values(cons)), ", "), ">")
     length(r) > 0 && autoprint(io, "[", Join(r, ", "), "]")
 end
-Base.show(io::IO, x::StanType{<:types.tup}) = begin 
+Base.show(io::IO, x::StanType{<:types.tup}) = show(StanIO(io), x)
+Base.show(io::StanIO, x::StanType{<:types.tup}) = begin
     stan_ndim(x) > 0 && autoprint(io, "array[", Join(stan_size(x), ", "), "] ")
     autoprint(io, "tuple(", Join(x.info.arg_types, ", ") , ")")
 end

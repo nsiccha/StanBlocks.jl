@@ -1045,7 +1045,7 @@ forward!(x::DeclExpr; info) = begin
     t = if ct isa Symbol
         StanType(gettype(ct), forward!.(s; info))
     else
-        # Computed type annotation (`typeof(...)` / `return_type(...)`, optionally
+        # Computed type annotation (`typeof(...)` / `return_type_of(...)`, optionally
         # `[dims]`-sized). Forward the base to a `tokenof{CT}` token, take its
         # center type CT, and pick the NATURAL container for the given dims via
         # `autotype` (real→vector, int→array[] int — matching jbroadcasted's
@@ -1077,7 +1077,7 @@ _decl_computed_type(tok, s; info) = begin
     tt = type(tok)
     center_type(tt) <: types.tokenof || error(
         "type-annotation expression must evaluate to a type token (e.g. `typeof(...)` ",
-        "/ `return_type(...)`), got a value of Stan type `$(sigtype(tt))`."
+        "/ `return_type_of(...)`), got a value of Stan type `$(sigtype(tt))`."
     )
     cct = tt.info.value
     sz = isempty(s) ? stan_size(tt) : Tuple(forward!.(s; info))

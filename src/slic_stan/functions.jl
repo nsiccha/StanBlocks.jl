@@ -103,6 +103,89 @@ tracetype(x::CanonicalExpr) = begin
     end
     StanType(types.anything)
 end
+
+"""
+    return_type_of(f, args...) -> StanType
+
+Infer the Stan return type and shape of a SLIC-callable function for the given
+representative Julia arguments. The result is the same `StanType` used
+by the transpiler and prints as Stan syntax, for example `real`, `vector[3]`,
+or `matrix[2, 4]`.
+
+Inside an `@deffun` body, `return_type_of(f, args...)` is a transpile-time type
+token and may be used in a computed type annotation:
+
+```julia
+@deffun element_type(x::real)::real = x
+@deffun copy_like(x::vector[n]) = begin
+    out::return_type_of(element_type, x[1])[n]
+    for i in 1:n
+        out[i] = x[i]
+    end
+    out
+end
+```
+
+The query is intentionally bounded to non-inline `@deffun` functions and
+`@defsig`-registered SLIC callables whose result is a scalar or sized Stan
+container. Inline functions, closures, sub-models, arbitrary Julia functions,
+and tuple/user-defined-type results require a full call-site trace and are not
+queryable through this API. Inside a UDF, spell symbolic output dimensions
+explicitly (`return_type_of(f, x)[n]`) when they are already bound by the
+surrounding signature.
+"""
+function return_type_of end
+
+_return_type_query_arg(i, x::StanExpr) = x
+_return_type_query_arg(i, x) = begin
+    name = Symbol(:arg, i)
+    sx = stan_expr(name, x)
+    concrete_size = map(stan_size(sx)) do dim
+        hasvalue(dim) ? stan_expr(getvalue(dim), getvalue(dim)) : dim
+    end
+    StanExpr(name, remake(type(sx), concrete_size...))
+end
+
+_return_type_signature(args) = join((sprint(show, type(arg)) for arg in args), ", ")
+_supported_return_type(rt::StanType) = begin
+    ct = center_type(rt)
+    ct <: types.complex || ct <: types.any_vector || ct <: types.matrix
+end
+_checked_return_type(f, args) = begin
+    rt = type(stan_expr(CanonicalExpr(f, args...)))
+    center_type(rt) === types.anything && throw(ArgumentError(
+        "return_type_of could not infer a SLIC return type for $(f)(" *
+        _return_type_signature(args) * "). Only non-inline @deffun functions and " *
+        "@defsig-registered SLIC callables are supported."
+    ))
+    _supported_return_type(rt) || throw(ArgumentError(
+        "return_type_of inferred unsupported result `$(sprint(show, rt))` for $(f). " *
+        "The public query currently supports scalar and sized-container results."
+    ))
+    rt
+end
+
+return_type_of(f::Function, args...) = _checked_return_type(
+    f,
+    ntuple(i -> _return_type_query_arg(i, args[i]), length(args)),
+)
+return_type_of(f, args...) = throw(ArgumentError(
+    "return_type_of expects a non-inline @deffun or @defsig-registered Function " *
+    "as its first argument, got $(typeof(f))."
+))
+
+tracetype(x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}) = begin
+    farg = x.args[1]
+    rt = _checked_return_type(getvalue(farg), x.args[2:end])
+    ct = center_type(rt)
+    StanType(types.tokenof{ct}, stan_size(rt); value=ct, qual=:data)
+end
+tracetype(x::CanonicalExpr{typeof(return_type_of)}) = error(
+    "return_type_of expects a non-inline @deffun or @defsig-registered function " *
+    "as its first argument; closures, inline functions, and sub-models require a " *
+    "full call-site trace and are not supported by this query."
+)
+
 # Stan defines the elementwise arithmetic operators `+ - * / ^` (and their
 # broadcast forms `.+ .- .* ./ .^`) only on `vector` / `row_vector` / `matrix`
 # operands — NEVER on plain scalar arrays (`array[] int` / `array[] real` /
@@ -404,7 +487,7 @@ begin
         StanType(ct, StanExpr.((size..., ), Ref(StanType(types.int))))
     end
     # A return annotation whose base type is COMPUTED (`typeof(...)` /
-    # `return_type(...)`, optionally `[dims]`-sized) cannot be built at
+    # `return_type_of(...)`, optionally `[dims]`-sized) cannot be built at
     # macro-expansion time (the args aren't bound yet). Route it to the same
     # infer-from-body path as `::anything` — the body's trailing (declared)
     # expression already carries the resolved container type.
