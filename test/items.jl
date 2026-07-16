@@ -122,6 +122,18 @@ end
         rv
     end
 
+    # --- public transpile-time return-type query ---
+    @deffun return_type_scalar(x::real)::real = square(x)
+    @deffun return_type_vector(x::vector[n])::vector[n] = x
+    @deffun copy_via_return_type(x::vector[n]) = begin
+        rv::return_type_of(return_type_scalar, x[1])[n]
+        for i in 1:n
+            rv[i] = x[i]
+        end
+        rv
+    end
+    ordinary_return_type_probe(x) = x
+
     # Determinism regression: an inline UDF whose locals are renamed `<name>__il_<id>`.
     @deffun @inline det_polish(x::vector[n])::vector[n] = begin
         z = x * 2
@@ -1625,6 +1637,36 @@ Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolat
             mu
         end)
     end
+end
+
+"""
+Verify `return_type_of(f, args...)` exposes the existing SLIC inference table
+both as a direct public query and as a computed `@deffun` type annotation.
+"""
+@testitem "slic: public return_type_of transpile-time query" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    scalar_rt = return_type_of(return_type_scalar, 1.0)
+    vector_rt = return_type_of(return_type_vector, [1.0, 2.0, 3.0])
+
+    @test scalar_rt isa StanBlocks.StanType
+    @test sprint(show, scalar_rt) == "real"
+    @test sprint(show, vector_rt) == "vector[3]"
+
+    model = @slic (;x=[1.0, 2.0, 3.0]) begin
+        y = copy_via_return_type(x)
+        mu ~ std_normal()
+        mu
+    end
+    @test check_type(model, :y, "vector")
+    @test stanc_compiles(model)
+
+    err = try
+        return_type_of(ordinary_return_type_probe, 1.0)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test occursin("Only non-inline @deffun functions and @defsig-registered SLIC callables are supported", sprint(showerror, err))
 end
 
 """

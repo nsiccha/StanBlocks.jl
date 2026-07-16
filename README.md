@@ -25,6 +25,7 @@ Current features include
 
 Recently shipped:
 
+* `return_type_of(f, args...)` — public transpile-time return-type and shape queries for registered SLIC callables,
 * user-defined Julia macros expand transparently inside `@slic` / `@deffun` bodies (`@views`, `@.`, `@inbounds`, anything),
 * `@stan_assert cond [msg]` — runtime assertion that lowers to `if !cond reject(msg)`,
 * `@inline` UDFs / trailing `!`: every call expands at the call site, no Stan `functions {}` entry — supports multi-statement bodies, varargs, higher-order arguments, and caller-scope mutation through `f!(buf, …)`-style helpers,
@@ -32,7 +33,6 @@ Recently shipped:
 
 Upcoming features, in rough priority order:
 
-* "transpile-time functions" — exposing the existing `tracetype` machinery as a user-facing `return_type_of(f, …)`,
 * generated functions — already implicit (every call site re-traces with concrete arg types) but no compile-once cache,
 * model docstrings (top-level `@slic` doc-prefix propagation),
 * custom types (for method dispatch — would help "Julia-style" broadcasting, e.g. via `Ref`),
