@@ -193,7 +193,8 @@ end
     # pre-pass; not normally called directly by users).
     # `maybe_index` is a trace-time rewrite hook (lpxf_builtin.jl); it is
     # never emitted as a Stan function.  `merge_missing` is a real @deffun
-    # that assembles the full vector in transformed_parameters.
+    # that assembles the full vector in generated quantities when prior-only,
+    # or transformed parameters when the completed vector feeds a likelihood.
     maybe_index
     merge_missing
 
