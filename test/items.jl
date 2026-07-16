@@ -113,6 +113,24 @@ end
         rv
     end
 
+    # --- typed assignment compatibility ---
+    @deffun typed_assign_symbolic(x::vector[n]) = begin
+        rv::vector[n] = x * 2.0
+        rv
+    end
+    @deffun typed_assign_computed(x::anything[n]) = begin
+        rv::typeof(x) = x
+        rv
+    end
+    @deffun typed_assign_bad_center(x::vector[n]) = begin
+        rv::matrix[n,n] = x
+        rv
+    end
+    @deffun typed_assign_bad_dim(x::vector[n]) = begin
+        rv::vector[n+1] = x
+        rv
+    end
+
     # Determinism regression: an inline UDF whose locals are renamed `<name>__il_<id>`.
     @deffun @inline det_polish(x::vector[n])::vector[n] = begin
         z = x * 2
@@ -1665,6 +1683,58 @@ Verify `slic: computed type annotations (@deffun container inference)` in an iso
             mu
         end)
     end
+end
+
+"""
+Verify `slic: typed assignment compatibility` in an isolated test item.
+"""
+@testitem "slic: typed assignment compatibility" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    good = @slic (;x=[1.0, 2.0, 3.0], ii=[1, 2, 3]) begin
+        # Known-value equality: the literal 3 matches the data-size symbol x_n.
+        direct::vector[3] = x
+        symbolic = typed_assign_symbolic(x)
+        computed_real = typed_assign_computed(x)
+        computed_int = typed_assign_computed(ii)
+        filled = bare_parameter_local_copy(x)
+        widened::real = ii[1]
+        mu ~ normal(sum(direct + symbolic + computed_real + filled), 1.0)
+        idx = computed_int[1]
+        result = mu + idx + widened
+    end
+    @test transpiles(good)
+    @test stanc_compiles(good)
+    code = stan_code(good)
+    @test occursin(r"array\[\w*\] int (?:\w+ )?computed_int\b", code)
+
+    center_bad = @slic (;x=[1.0, 2.0, 3.0]) begin
+        rv = typed_assign_bad_center(x)
+        mu ~ std_normal()
+        mu
+    end
+    center_err = try
+        stan_code(center_bad)
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test center_err !== nothing
+    @test occursin("Typed assignment", center_err)
+    @test occursin("RHS center", center_err)
+
+    dim_bad = @slic (;x=[1.0, 2.0, 3.0]) begin
+        rv = typed_assign_bad_dim(x)
+        mu ~ std_normal()
+        mu
+    end
+    dim_err = try
+        stan_code(dim_bad)
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test dim_err !== nothing
+    @test occursin("Typed assignment", dim_err)
+    @test occursin("dimension 1", dim_err)
 end
 
 """

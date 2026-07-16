@@ -742,6 +742,12 @@ begin
         end
 
         fun_sizes = OrderedDict()
+        # Keep the semantic source of each signature-size name alongside the
+        # emitted Stan binding. During anonymous UDF tracing, `n` and
+        # `dims(x)[1]` are distinct syntax even though the function preamble
+        # explicitly equates them; typed-assignment validation needs that
+        # relationship to compare shapes accurately.
+        fun_size_aliases = OrderedDict{Symbol,String}()
         # When a dim name appears in multiple args (e.g.
         # `f(x::vector[n], y::vector[n])`), the first occurrence binds it
         # via `int n = dims(x)[1];` and each subsequent occurrence becomes
@@ -763,14 +769,16 @@ begin
                                  ", \") does not match `", dim_name, "` (= \", ", dim_name, ", \")\"")
                     push!(fun_checks, string("if (", access, " != ", dim_name, ") reject(", msg, ");"))
                 else
-                    fun_sizes[dim_name] = if tok
+                    access = if tok
                         # Stan has no 1-element tuple type — single-dim tokens are passed
                         # as a plain `int`, so unpack without `.1` indexing.
                         ndims = length(arg_type.args) - 1
-                        ndims == 1 ? "int $dim_name = $arg_name;" : "int $dim_name = $arg_name.$i;"
+                        ndims == 1 ? string(arg_name) : string(arg_name, ".", i)
                     else
-                        "int $dim_name = dims($arg_name)[$i];"
+                        string("dims(", arg_name, ")[", i, "]")
                     end
+                    fun_size_aliases[dim_name] = access
+                    fun_sizes[dim_name] = "int $dim_name = $access;"
                 end
             end
         end
@@ -782,10 +790,11 @@ begin
             ]..., 
             :(info = (;$(sig_names...), $(keys(fun_sizes)...),))
         )
+        size_aliases = (; fun_size_aliases...)
         anon_deconstruct = Expr(
             :block, 
             deconstruct.args..., 
-            :(info = $anon_info(info)),
+            :(info = merge($anon_info(info), (; __size_aliases__ = $size_aliases))),
             :((;$(sig_names...), $(keys(fun_sizes)...),) = info),
             :(info = $OrderedDict{Symbol,Any}(pairs(info)))
         )

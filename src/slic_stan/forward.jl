@@ -484,6 +484,59 @@ end
 # `data < parameter < quantities` (lexicographically AND semantically).
 _promote_qual(cur::Symbol, new::Symbol) =
     cur === :undefined ? new : (new === :undefined ? cur : max(cur, new))
+
+# Typed assignment is an assertion about the RHS, not a request to coerce it.
+# Center types follow the SLIC lattice (`int <: real`, constrained vectors
+# `<: vector`, …); dimensions must describe the same Stan shape.  A dimension
+# can be equal either symbolically or through a known data value (`3` versus a
+# data vector's `x_n`, whose trace-time value is also 3).
+_typed_assignment_shape_key(x::StanExpr, aliases) = _typed_assignment_shape_key(expr(x), aliases)
+_typed_assignment_shape_key(x::CanonicalExpr, aliases) = (
+    head(x),
+    map(arg -> _typed_assignment_shape_key(arg, aliases), x.args),
+    Tuple((k, _typed_assignment_shape_key(v, aliases)) for (k, v) in pairs(x.kwargs)),
+)
+_typed_assignment_shape_key(x::Expr, aliases) =
+    (x.head, map(arg -> _typed_assignment_shape_key(arg, aliases), x.args))
+_typed_assignment_shape_key(x::Tuple, aliases) =
+    map(arg -> _typed_assignment_shape_key(arg, aliases), x)
+_typed_assignment_shape_key(x::Symbol, aliases) =
+    haskey(aliases, x) ? _typed_assignment_shape_key(aliases[x], aliases) : x
+_typed_assignment_shape_key(x, aliases) = x
+
+_typed_assignment_dim_matches(declared::StanExpr, inferred::StanExpr, aliases) =
+    isequal(_typed_assignment_shape_key(declared, aliases), _typed_assignment_shape_key(inferred, aliases)) ||
+    (hasvalue(declared) && hasvalue(inferred) && isequal(getvalue(declared), getvalue(inferred)))
+
+_typed_assignment_aliases(info::Union{AbstractDict,NamedTuple}) =
+    get(info, :__size_aliases__, NamedTuple())
+_typed_assignment_aliases(info) = NamedTuple()
+
+_check_typed_assignment(name, declared::StanType, inferred::StanType; info) = begin
+    declared_ct = center_type(declared)
+    inferred_ct = center_type(inferred)
+    inferred_ct <: declared_ct || error(
+        "Typed assignment `", name, "::", declared, " = ...` is incompatible with inferred RHS type `",
+        inferred, "`: RHS center `", inferred_ct, "` is not assignable to declared center `", declared_ct, "`."
+    )
+
+    declared_size = stan_size(declared)
+    inferred_size = stan_size(inferred)
+    length(declared_size) == length(inferred_size) || error(
+        "Typed assignment `", name, "::", declared, " = ...` is incompatible with inferred RHS type `",
+        inferred, "`: declared rank is ", length(declared_size), " but RHS rank is ", length(inferred_size), "."
+    )
+    aliases = _typed_assignment_aliases(info)
+    for i in eachindex(declared_size, inferred_size)
+        _typed_assignment_dim_matches(declared_size[i], inferred_size[i], aliases) || error(
+            "Typed assignment `", name, "::", declared, " = ...` is incompatible with inferred RHS type `",
+            inferred, "`: dimension ", i, " is declared as `", declared_size[i], "` but inferred as `",
+            inferred_size[i], "`."
+        )
+    end
+    nothing
+end
+
 forward!(x::AssignmentExpr; info) = begin
     lhs_raw = x.args[1]
     if lhs_raw isa DeclExpr && lhs_raw.args[1] isa Symbol
@@ -497,6 +550,7 @@ forward!(x::AssignmentExpr; info) = begin
     local_key = _base_lhs_symbol(x.args[1])
     fwd = stan_expr(remake(x, forward!(x.args; info)...))
     lhs, rhs = expr(fwd).args
+    lhs_raw isa DeclExpr && _check_typed_assignment(local_key, type(lhs), type(rhs); info)
     k = local_key in keys(info) ? local_key : _base_lhs_symbol(lhs)
     if k in keys(info)
         base = info[k]
@@ -1073,6 +1127,15 @@ forward!(x::DeclExpr; info) = begin
 end
 # `types` is defined in functions.jl (included AFTER this file), so the token
 # check lives in the body (resolved at trace time), not the signature.
+_decl_computed_size_alias(size, info) = begin
+    aliases = _typed_assignment_aliases(info)
+    size_key = _typed_assignment_shape_key(size, NamedTuple())
+    for (name, access) in pairs(aliases)
+        isequal(size_key, access) && name in keys(info) && return info[name]
+    end
+    size
+end
+
 _decl_computed_type(tok, s; info) = begin
     tt = type(tok)
     center_type(tt) <: types.tokenof || error(
@@ -1080,7 +1143,11 @@ _decl_computed_type(tok, s; info) = begin
         "/ `return_type(...)`), got a value of Stan type `$(sigtype(tt))`."
     )
     cct = tt.info.value
-    sz = isempty(s) ? stan_size(tt) : Tuple(forward!.(s; info))
+    raw_size = isempty(s) ? stan_size(tt) : Tuple(forward!.(s; info))
+    # Anonymous UDF args carry dimensions as raw `dims(arg)[i]` expressions.
+    # Reuse the signature's emitted size binding (`int n = dims(arg)[i]`) so a
+    # computed declaration emits `vector[n]`, not a quoted string dimension.
+    sz = Tuple(_decl_computed_size_alias(size, info) for size in raw_size)
     autotype(StanType(cct, sz))
 end
 forward!(x::ForExpr; info) = begin
