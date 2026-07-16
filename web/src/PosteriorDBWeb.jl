@@ -14,7 +14,6 @@ import StanBlocks.stan: stan_code, instantiate
 using LogDensityProblems
 using Statistics, Random
 using StanLogDensityProblems
-using TestModules
 
 
 pdb() = PosteriorDB.database()
@@ -350,7 +349,7 @@ const APPDATA = SbAppData()
     )
 
     # --- Test routes (via @include — registers under /tests/) ---
-    @include tests = TestRoutes(; __req__, test_module=@__MODULE__)
+    @include tests = TestRoutes(project=pkgdir(StanBlocks))
 
     @get clear_cache() = begin
         foreach(rm, Base.filter(f -> endswith(f, ".sjl"), readdir(__cache_path__; join=true)))

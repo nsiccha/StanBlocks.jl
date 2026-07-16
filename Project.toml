@@ -18,9 +18,6 @@ PosteriorDB = "1c4bc282-d2f5-44f9-b6d1-8c4424a23ad4"
 [extensions]
 PosteriorDBExt = "PosteriorDB"
 
-[sources]
-TestModules = {url = "https://github.com/nsiccha/TestModules.jl"}
-
 [compat]
 BridgeStan = "2.9"
 JSON = "0.18, 0.19, 0.20, 0.21, 1"
@@ -28,12 +25,14 @@ LogDensityProblems = "2.1"
 OrderedCollections = "1.8"
 PosteriorDB = "0.5, 0.6"
 StanLogDensityProblems = "0.1"
+TestItemRunner = "1"
 julia = "1.10"
 
 [extras]
+PosteriorDB = "1c4bc282-d2f5-44f9-b6d1-8c4424a23ad4"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-TestModules = "63c02187-99fd-4e5c-aaf0-4d6bfebc181c"
+TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 
 [targets]
-test = ["Random", "Test", "TestModules"]
+test = ["PosteriorDB", "Random", "Test", "TestItemRunner"]
