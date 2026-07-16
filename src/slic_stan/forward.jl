@@ -1333,6 +1333,36 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         "plate: the do-block must END with a cell-output VALUE expression, not a `~`/`=` statement."
     )
 
+    # HYGIENE (multiple-plate snag): a fresh cell-local (`z ~ std_normal()`) emits
+    # a model-scope Stan parameter named exactly `z` and binds `info[:z]`. Two
+    # independent plates that reuse the same cell-local name then collide — the
+    # second plate's discovery probe copies `info` (now holding `z`) and rejects
+    # its own `z ~ …` as "LHS bound to a parameter-qualified value", and even
+    # discovery aside, two `vector[N] z;` declarations are invalid Stan. Give every
+    # plate its own NAMESPACE by prefixing each fresh cell-local with the plate's
+    # result name `rv` (`z` → `b_subject_z`): `rv` is required and already unique
+    # in model scope (asserted below), so distinct plates get distinct carriers,
+    # and the emitted Stan reads as "the `z` of `b_subject`". The rename runs
+    # BEFORE discovery, so a submodel-internal flattened name (`cell_z`, derived
+    # from the direct binding `cell`) inherits the prefix (`rv_cell_z`) for free —
+    # matching how submodel flattening already namespaces. Only genuinely fresh
+    # names are renamed: a captured/model-scope reference (already in `info`) is
+    # left alone, and a do-block PARAMETER used as an observation LHS
+    # (`yi ~ normal(t, sigma)`) is a sliced INPUT, not a cell-local, so it is
+    # excluded too (it lowers via `input_subst` to `y[plate_i]`).
+    fresh_rename = Dict{Symbol,Symbol}()
+    for s in body_stmts
+        fi = _plate_fresh_info(s)
+        fi === nothing && continue
+        f = fi[1]
+        (f in params || f in keys(info) || haskey(fresh_rename, f)) && continue
+        fresh_rename[f] = Symbol(rv, :_, f)
+    end
+    if !isempty(fresh_rename)
+        body_stmts = Any[_subst_syms(s, fresh_rename) for s in body_stmts]
+        ret_expr = _subst_syms(ret_expr, fresh_rename)
+    end
+
     # Trace once in isolation to discover EVERY fresh binding — including
     # submodel-internal flattened names — and the cell result type. The emit
     # trace below uses these StanTypes rather than re-parsing LHS syntax.
