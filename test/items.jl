@@ -74,6 +74,15 @@ end
         issue10b(_::vector[n]) = 0.
     end
 
+    # UDF signature dimensions are bound in the emitted Stan body only when
+    # this definition uses them. Repeated dimensions remain runtime-checked.
+    @deffun begin
+        udf_dead_size(x::vector[dead_n])::real = sum(x)
+        udf_body_size(x::vector[body_n])::real = sum(x) / body_n
+        udf_return_size(x::vector[return_n])::vector[return_n] = x
+        udf_checked_size(x::vector[checked_n], y::vector[checked_n])::real = dot_product(x, y)
+    end
+
     # --- computed type annotations (@deffun container inference; todo 1v94weu) ---
     # `rv::typeof(f(x[1]))[dims]` infers the output container from `f`'s per-element
     # return type: a `real` element → native `vector[n]`, an `int` element →
@@ -785,6 +794,28 @@ Verify `issue10` in an isolated test item.
         y ~ std_normal(;n)
         x = issue10b(y)
     end)
+end
+
+"""
+Verify dead UDF signature dimensions are not emitted while required bindings remain.
+"""
+@testitem "slic: UDF signature dimension use analysis" tags=[:slic, :regression, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    model = @slic (;x=randn(3), y=randn(3)) begin
+        dead = udf_dead_size(x)
+        body_used = udf_body_size(x)
+        return_used = udf_return_size(x)
+        checked = udf_checked_size(x, y)
+        p ~ normal(dead + body_used + sum(return_used) + checked, 1.0)
+    end
+
+    @test stanc_compiles(model)
+    functions = stan_block(stan_code(model), "functions")
+    @test occursin("udf_dead_size", functions)
+    @test !occursin("int dead_n = dims(x)[1];", functions)
+    @test occursin("int body_n = dims(x)[1];", functions)
+    @test occursin("int return_n = dims(x)[1];", functions)
+    @test occursin("int checked_n = dims(x)[1];", functions)
+    @test occursin("if (dims(y)[1] != checked_n) reject", functions)
 end
 
 """
