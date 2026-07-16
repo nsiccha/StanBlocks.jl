@@ -28,21 +28,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Configure git for private repos
-        run: git config --global url."https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.julia-version }}
           arch: ${{ matrix.julia-arch }}
       - uses: julia-actions/cache@v2
-      - name: Install dependencies and run tests
-        run: |
-          git clone https://github.com/nsiccha/TestModules.jl.git
-          julia --project=. -e '
-            using Pkg
-            Pkg.develop(path="TestModules.jl")
-            Pkg.add(["LogDensityProblems", "PosteriorDB", "StanLogDensityProblems", "JSON"])
-            Pkg.instantiate()
-            Pkg.precompile()
-          '
-          julia --project=. -e 'include("test/runtests.jl")'
+      - uses: julia-actions/julia-runtest@v1
