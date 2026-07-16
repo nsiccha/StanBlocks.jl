@@ -55,9 +55,27 @@ _slic_argsig(a::Expr, fname) = begin
         "@slic ", fname, "(...): unknown SLIC type `", ct, "` in argument `", a, "`."
     )
     ctval = getproperty(types, ct)
-    constr = (ctval === types.anything && ndims == 0) ?
-        Expr(:curly, StanExpr2, Expr(:(<:), ctval)) :
+    constr = if ctval === types.anything && ndims == 0
+        Expr(:curly, StanExpr2, Expr(:(<:), ctval))
+    elseif ctval === types.matrix && ndims == 2
+        # A `matrix[m,n]` cell argument ALSO admits Stan's constrained
+        # square-matrix families (`cholesky_factor_corr`/`cholesky_factor_cov`,
+        # `corr_matrix`, `cov_matrix` — the `<:square_matrix` subtypes). Those
+        # carry a SINGLE declared size (`r_ndim(square_matrix)==1`, so
+        # `stan_ndim==1`) even though they ARE matrices, so a plain
+        # `StanExpr2{<:matrix, 2}` signature rejects them on the `ndims` type
+        # parameter (value ndim 1 ≠ decl ndim 2) — the reported
+        # `SubmodelFn(...) MethodError` for a top-level `cholesky_factor_corr[k]`
+        # passed where `matrix[k,k]` is declared. Widen dispatch to accept both
+        # shapes; the value flows into the sub-model verbatim, so its constraint
+        # metadata is preserved at the caller. (No reverse admission: a plain
+        # `matrix` value is NOT accepted where a constrained family is declared.)
+        Expr(:curly, Union,
+            Expr(:curly, StanExpr2, Expr(:(<:), ctval), ndims),
+            Expr(:curly, StanExpr2, Expr(:(<:), types.square_matrix), 1))
+    else
         Expr(:curly, StanExpr2, Expr(:(<:), ctval), ndims)
+    end
     Expr(:(::), name, constr)
 end
 _slic_fn(model, mod) = begin
