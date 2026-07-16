@@ -66,6 +66,7 @@ A `@slic` body is a flat sequence of:
 |----------------------------|------------------------------------------------------------------|
 | `lhs ~ rhs(args…)`         | Sample / observe (registers `lhs` as a parameter or observation) |
 | `lhs::T[size…] ~ rhs(args…)` | Same, but with explicit type and shape — see [Typed-LHS](#typed-lhs) |
+| `lhs::T[size…]`            | Declare a flat-prior parameter with explicit type and shape       |
 | `lhs = expr`               | Deterministic assignment                                         |
 | `lhs::T[size…] = expr`     | Typed-LHS assignment                                             |
 | `lhs ~ submodel(;…)`       | Embed a [sub-model](#sub-models) (its parameters land under `lhs_*`) |
@@ -86,6 +87,29 @@ end
 ```
 
 This works for both `~` (sampling) and `=` (assignment). The size arguments inside `[…]` may reference any data-qualified name.
+
+A bare typed declaration is also a parameter declaration with no prior:
+
+```julia
+@slic (;y=randn(20), X=randn(20, 3)) begin
+    beta::vector[3]                 # flat-prior parameter
+    y ~ normal(X * beta, 1.0)
+end
+```
+
+This form is model/sub-model syntax: the declaration goes directly into Stan's
+`parameters` block and contributes no density statement. A bare declaration inside
+an `@deffun` remains an ordinary function-local declaration. Use `~ flat(...)` when
+the distribution call must carry `lower`, `upper`, `offset`, or `multiplier` kwargs;
+the bare form has no RHS from which to obtain those constraints.
+
+Model-body indexed assignment remains unavailable to user code: do not follow a
+bare declaration with `beta[i] = ...`. Compiler-owned inline/plate lowering may
+use certified indexed fills internally; those are reclassified as transformed
+data, transformed parameters, or generated quantities from their right-hand
+sides rather than emitted as parameters. These internal fills follow Stan's
+ordinary partial-initialization semantics: the compiler-owned producer is
+responsible for covering every element it later reads.
 
 ### Data binding
 
@@ -149,7 +173,7 @@ You can additionally pass `n=…` or `m=…, n=…` on any prior to make the par
 
 ## User-defined functions with `@deffun`
 
-`@deffun` registers a Stan-compatible function with type-annotated arguments. Its body is real Julia and may use `for`/`while`/`if`/comprehensions. The body is also transpiled to Stan.
+`@deffun` registers a Stan-compatible function with type-annotated arguments. Its body is real Julia and may use `for`/`while`/`if`. It also supports bounded one-dimensional comprehensions of the form `[scalar_expr for i in lo:hi]`; these lower to a typed local plus a Stan `for` loop. Multiple or nested generators, filters, arbitrary iterables, stepped ranges, and non-scalar elements are rejected explicitly. The body is transpiled to Stan.
 
 UDF bodies must not contain `~` sampling statements or `target +=` increments — UDFs cannot introduce parameters or directly manipulate the log density. The macro errors at expansion time if either is found.
 
@@ -200,6 +224,40 @@ Underscored names mean "I take this argument but ignore the value, just use its 
 ```julia
 @deffun pad_zero(_::vector[n])::vector[n+1] = append_row(rep_vector(0., n), 0.)
 ```
+
+### Transpile-time return-type queries
+
+`return_type_of(f, args...)` exposes the same inference table the transpiler
+uses for calls to non-inline `@deffun` functions and `@defsig`-registered
+callables. With representative Julia values it returns a printable `StanType`:
+
+```julia
+@deffun identity_vec(x::vector[n])::vector[n] = x
+
+return_type_of(identity_vec, [1.0, 2.0, 3.0])  # vector[3]
+```
+
+Inside an `@deffun` body the query is a compile-time type token, so it can drive
+a computed declaration without emitting a Stan call:
+
+```julia
+@deffun element_type(x::real)::real = x
+@deffun copy_vec(x::vector[n]) = begin
+    out::return_type_of(element_type, x[1])[n]
+    for i in 1:n
+        out[i] = x[i]
+    end
+    out
+end
+```
+
+The public contract currently covers scalar and sized-container results.
+Inline functions, closures, `@slic` sub-models, arbitrary Julia functions, and
+tuple/user-defined-type results need a full call-site trace and fail with an
+explicit error rather than returning `anything`.
+Within a UDF, write already-bound symbolic output dimensions explicitly as
+`return_type_of(f, x)[n]`; this keeps the declaration tied to the surrounding
+signature's shape names.
 
 ### `_lpdf` / `_lpmf` / `_lcdf` / `_lccdf` companions
 

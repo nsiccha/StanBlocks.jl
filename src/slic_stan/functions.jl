@@ -103,16 +103,144 @@ tracetype(x::CanonicalExpr) = begin
     end
     StanType(types.anything)
 end
+
+"""
+    return_type_of(f, args...) -> StanType
+
+Infer the Stan return type and shape of a SLIC-callable function for the given
+representative Julia arguments. The result is the same `StanType` used
+by the transpiler and prints as Stan syntax, for example `real`, `vector[3]`,
+or `matrix[2, 4]`.
+
+Inside an `@deffun` body, `return_type_of(f, args...)` is a transpile-time type
+token and may be used in a computed type annotation:
+
+```julia
+@deffun element_type(x::real)::real = x
+@deffun copy_like(x::vector[n]) = begin
+    out::return_type_of(element_type, x[1])[n]
+    for i in 1:n
+        out[i] = x[i]
+    end
+    out
+end
+```
+
+The query is intentionally bounded to non-inline `@deffun` functions and
+`@defsig`-registered SLIC callables whose result is a scalar or sized Stan
+container. Inline functions, closures, sub-models, arbitrary Julia functions,
+and tuple/user-defined-type results require a full call-site trace and are not
+queryable through this API. Inside a UDF, spell symbolic output dimensions
+explicitly (`return_type_of(f, x)[n]`) when they are already bound by the
+surrounding signature.
+"""
+function return_type_of end
+
+_return_type_query_arg(i, x::StanExpr) = x
+_return_type_query_arg(i, x) = begin
+    name = Symbol(:arg, i)
+    sx = stan_expr(name, x)
+    concrete_size = map(stan_size(sx)) do dim
+        hasvalue(dim) ? stan_expr(getvalue(dim), getvalue(dim)) : dim
+    end
+    StanExpr(name, remake(type(sx), concrete_size...))
+end
+
+_return_type_signature(args) = join((sprint(show, type(arg)) for arg in args), ", ")
+_supported_return_type(rt::StanType) = begin
+    ct = center_type(rt)
+    ct <: types.complex || ct <: types.any_vector || ct <: types.matrix
+end
+_checked_return_type(f, args) = begin
+    rt = type(stan_expr(CanonicalExpr(f, args...)))
+    center_type(rt) === types.anything && throw(ArgumentError(
+        "return_type_of could not infer a SLIC return type for $(f)(" *
+        _return_type_signature(args) * "). Only non-inline @deffun functions and " *
+        "@defsig-registered SLIC callables are supported."
+    ))
+    _supported_return_type(rt) || throw(ArgumentError(
+        "return_type_of inferred unsupported result `$(sprint(show, rt))` for $(f). " *
+        "The public query currently supports scalar and sized-container results."
+    ))
+    rt
+end
+
+return_type_of(f::Function, args...) = _checked_return_type(
+    f,
+    ntuple(i -> _return_type_query_arg(i, args[i]), length(args)),
+)
+return_type_of(f, args...) = throw(ArgumentError(
+    "return_type_of expects a non-inline @deffun or @defsig-registered Function " *
+    "as its first argument, got $(typeof(f))."
+))
+
+tracetype(x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}) = begin
+    farg = x.args[1]
+    rt = _checked_return_type(getvalue(farg), x.args[2:end])
+    ct = center_type(rt)
+    StanType(types.tokenof{ct}, stan_size(rt); value=ct, qual=:data)
+end
+tracetype(x::CanonicalExpr{typeof(return_type_of)}) = error(
+    "return_type_of expects a non-inline @deffun or @defsig-registered function " *
+    "as its first argument; closures, inline functions, and sub-models require a " *
+    "full call-site trace and are not supported by this query."
+)
+
+# Stan defines the elementwise arithmetic operators `+ - * / ^` (and their
+# broadcast forms `.+ .- .* ./ .^`) only on `vector` / `row_vector` / `matrix`
+# operands — NEVER on plain scalar arrays (`array[] int` / `array[] real` /
+# `array[] complex`). A `tracetype` that returned `int[n]` / `real[n]` for such a
+# call transpiles PASS but stanc REJECTs it downstream ("Semantic error"): a
+# silent miscompile. `_reject_scalar_array_elementwise` fails LOUDLY at trace time
+# with the actionable fix instead of emitting invalid Stan. (Correct lowering — an
+# @deffun element loop or a `to_vector` round-trip — is a possible future
+# enhancement; today the loud rejection is the contract.)
+_is_scalar_array(t::StanType) = center_type(t) <: types.complex && l_ndim(t) >= 1
+_reject_scalar_array_elementwise(x::CanonicalExpr) = begin
+    any(a -> _is_scalar_array(type(a)), x.args) || return nothing
+    error(
+        "Elementwise arithmetic (`+ - * / ^`, `.+ .- .* ./ .^`) is not supported on scalar ",
+        "arrays (`array[] int` / `array[] real`): Stan defines it only on `vector` / ",
+        "`row_vector` / `matrix`. Got `", short_expr(x), "`. Compute it element-by-element in ",
+        "an @deffun function-body loop, or convert to a `vector` via `to_vector(...)` first."
+    )
+end
 tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = if length(x.args) > 2
     f = head(x)
     tracetype(CanonicalExpr(f, x.args[1], stan_expr(CanonicalExpr(f, x.args[2:end]...))))
-else 
+else
+    _reject_scalar_array_elementwise(x)
     error("tracetype not defined for $(short_expr(x))!")
     StanType(types.anything)
+end
+# Broadcast `.* ./ .^` route to `Base.BroadcastFunction` (unlike `.+`/`.-`, which
+# `broadcast_callee` rewrites to plain `+`/`-` above). Reject scalar-array operands
+# the same way, then preserve the generic fallthrough so valid-but-untabulated
+# broadcasts (e.g. `matrix .* matrix`) keep their current inferred type.
+tracetype(x::CanonicalExpr{<:Base.BroadcastFunction}) = begin
+    _reject_scalar_array_elementwise(x)
+    invoke(tracetype, Tuple{CanonicalExpr}, x)
 end
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 1),))))
 )
+# Fully selecting the scalar array-prefix of an `array[...] vector/matrix`
+# leaves its native vector/matrix core. This general rule covers arbitrary
+# array depth (e.g. `array[N] matrix[K,M] x; x[n, :, m]`) beyond the finite
+# signature table below while preserving that table's core slice inference.
+tracetype(x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr,Vararg{Any}}}) = begin
+    value = x.args[1]
+    nl = l_ndim(type(value))
+    indices = x.args[2:end]
+    if nl > 0 && length(indices) >= nl && all(i -> i isa StanExpr2{<:types.int,0}, indices[1:nl])
+        core_type = remake(type(value), stan_size(type(value))[nl+1:end]...)
+        rest = indices[nl+1:end]
+        isempty(rest) && return core_type
+        core = StanExpr(missing, core_type)
+        return tracetype(CanonicalExpr(getindex, core, rest...))
+    end
+    invoke(tracetype, Tuple{CanonicalExpr}, x)
+end
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 1),))), x.args[3])
 )
@@ -358,6 +486,14 @@ begin
         ct = getproperty(types, ct)
         StanType(ct, StanExpr.((size..., ), Ref(StanType(types.int))))
     end
+    # A return annotation whose base type is COMPUTED (`typeof(...)` /
+    # `return_type_of(...)`, optionally `[dims]`-sized) cannot be built at
+    # macro-expansion time (the args aren't bound yet). Route it to the same
+    # infer-from-body path as `::anything` — the body's trailing (declared)
+    # expression already carries the resolved container type.
+    _is_computed_ret_type(rv) = false
+    _is_computed_ret_type(rv::Expr) =
+        rv.head == :call || (rv.head == :ref && !(rv.args[1] isa Symbol))
     sigtype(x::Symbol) = sigtype(xref(x))
     sigtype(x::Expr) = begin
         @assert x.head == :ref "sigtype expects a `T[dims...]` `:ref` expression, got `$x` (head `$(x.head)`)."
@@ -495,6 +631,11 @@ begin
         f
     end
     _lpxf_inline_fname(inner) = _inline_fname(inner, "lpxf")
+    # Does AST `x` mention symbol `s` anywhere? Used by both regular-UDF
+    # signature-dimension analysis and inline-body size binding so neither path
+    # materialises size locals that its own definition never references.
+    _ast_mentions(x, s::Symbol) = x isa Symbol ? x === s :
+        (x isa Expr ? any(a -> _ast_mentions(a, s), x.args) : false)
     deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, _shim_kwarg_specs=nothing, def_mod=nothing) = if x.head == :block
         seen_lpxf_bases = Set{Symbol}()
         for arg in x.args
@@ -684,7 +825,20 @@ begin
             push!(lhs_type, :(Vararg{Any}))
         end
 
-        fun_sizes = OrderedDict()
+        # Collect every signature-dimension binding as a candidate first.  A
+        # named dimension only belongs in the emitted function preamble when
+        # this UDF's body / return annotation references it, or when a later
+        # occurrence needs it as the reference side of a runtime shape check.
+        # Keeping the use analysis local to this definition avoids emitting an
+        # `int n = dims(x)[1];` merely because `n` appeared in the signature.
+        fun_size_candidates = OrderedDict()
+        required_fun_sizes = Set{Symbol}()
+        # Keep the semantic source of each signature-size name alongside the
+        # emitted Stan binding. During anonymous UDF tracing, `n` and
+        # `dims(x)[1]` are distinct syntax even though the function preamble
+        # explicitly equates them; typed-assignment validation needs that
+        # relationship to compare shapes accurately.
+        fun_size_aliases = OrderedDict{Symbol,String}()
         # When a dim name appears in multiple args (e.g.
         # `f(x::vector[n], y::vector[n])`), the first occurrence binds it
         # via `int n = dims(x)[1];` and each subsequent occurrence becomes
@@ -696,39 +850,56 @@ begin
                 _is_symbol(dim_name) || continue
                 dim_name == :(_) && continue
                 dim_name in arg_names && continue
-                if haskey(fun_sizes, dim_name)
+                if haskey(fun_size_candidates, dim_name)
                     # Token-arg dims are encoded differently; skip the
                     # check for those — usually internal dispatch glue.
                     tok && continue
+                    push!(required_fun_sizes, dim_name)
                     access = string("dims(", arg_name, ")[", i, "]")
                     msg = string("\"", f, ": dim mismatch — `", arg_name,
                                  "` dim ", i, " (= \", ", access,
                                  ", \") does not match `", dim_name, "` (= \", ", dim_name, ", \")\"")
                     push!(fun_checks, string("if (", access, " != ", dim_name, ") reject(", msg, ");"))
                 else
-                    fun_sizes[dim_name] = if tok
+                    access = if tok
                         # Stan has no 1-element tuple type — single-dim tokens are passed
                         # as a plain `int`, so unpack without `.1` indexing.
                         ndims = length(arg_type.args) - 1
-                        ndims == 1 ? "int $dim_name = $arg_name;" : "int $dim_name = $arg_name.$i;"
+                        ndims == 1 ? string(arg_name) : string(arg_name, ".", i)
                     else
-                        "int $dim_name = dims($arg_name)[$i];"
+                        string("dims(", arg_name, ")[", i, "]")
                     end
+                    fun_size_aliases[dim_name] = access
+                    fun_size_candidates[dim_name] = "int $dim_name = $access;"
                 end
             end
         end
+        for dim_name in keys(fun_size_candidates)
+            (_ast_mentions(body, dim_name) || _ast_mentions(rv, dim_name)) || continue
+            push!(required_fun_sizes, dim_name)
+        end
+        fun_sizes = OrderedDict(
+            dim_name => binding
+            for (dim_name, binding) in pairs(fun_size_candidates)
+            if dim_name in required_fun_sizes
+        )
+        hidden_size_names = union(
+            Set(arg_names),
+            setdiff(Set(keys(fun_size_candidates)), required_fun_sizes),
+        )
         deconstruct = Expr(:block, 
             xassign(xtuple(arg_names..., (isnothing(vararg) ? () : (vararg,))...), :(x.args)), 
             [
-                xassign(xtuple(ensure_xlhs.(args_type.args[2:end]; hidden=arg_names)...), :($stan_size($args_name)))
+                xassign(xtuple(ensure_xlhs.(args_type.args[2:end]; hidden=hidden_size_names)...), :($stan_size($args_name)))
                 for (args_name, args_type) in zip(arg_names, arg_types)
             ]..., 
             :(info = (;$(sig_names...), $(keys(fun_sizes)...),))
         )
+        size_aliases = (; fun_size_aliases...)
         anon_deconstruct = Expr(
             :block, 
             deconstruct.args..., 
-            :(info = $anon_info(info)),
+            :(info = merge($anon_info(info), (; __size_aliases__ = $size_aliases))),
             :((;$(sig_names...), $(keys(fun_sizes)...),) = info),
             :(info = $OrderedDict{Symbol,Any}(pairs(info)))
         )
@@ -740,6 +911,29 @@ begin
         # for substitution; the canonicalized + return-wrapped form is only
         # needed for the regular fundef path.
         original_body = body
+        # Inline UDFs re-trace their body in the CALLER's scope, where the size
+        # names (`n` in `x::vector[n]`) — which the non-inline path binds via the
+        # emitted `int n = dims(x)[i];` preamble — are undefined. Prepend explicit
+        # `n = dims(x)[i]` bindings so an inline body's `out::vector[n]` (fresh
+        # result) resolves. Only for dims the body actually uses, once per dim
+        # (first arg wins); non-token args only (token dims are dispatch glue).
+        # The inline rename machinery turns each into a fresh local, so these
+        # never leak into the caller's scope.
+        inline_body_ast = original_body
+        if !ismissing(original_body) && Meta.isexpr(original_body, :block)
+            _size_binds = Any[]
+            _seen_dims = Set{Symbol}()
+            for (an, at, tok) in zip(arg_names, arg_types, is_token)
+                tok && continue
+                for (i, dn) in enumerate(at.args[2:end])
+                    (_is_symbol(dn) && dn !== :(_) && !(dn in arg_names) && !(dn in _seen_dims)) || continue
+                    _ast_mentions(original_body, dn) || continue
+                    push!(_seen_dims, dn)
+                    push!(_size_binds, :($dn = dims($an)[$i]))
+                end
+            end
+            isempty(_size_binds) || (inline_body_ast = Expr(:block, _size_binds..., original_body.args...))
+        end
         if !ismissing(body)
             @assert Meta.isexpr(body, :block) "@deffun: function body must be a `begin ... end` block, got `$body`."
             _reject_udf_forms!(body, f)
@@ -748,7 +942,7 @@ begin
             if rv != :void
                 body = ensure_xreturn(body)
             end
-            sig_rv = if rv == :anything
+            sig_rv = if rv == :anything || _is_computed_ret_type(rv)
                 rv_expr = :($forward_return!($(canonical(body)); info).type)
                 :($rv_expr)
             else
@@ -824,7 +1018,7 @@ begin
             push!(stmts, :($stan.inline_body($xexpr) = (
                 arg_names = $arg_names_tuple,
                 vararg_name = $vararg_qn,
-                body = $(QuoteNode(original_body)),
+                body = $(QuoteNode(inline_body_ast)),
                 kwargs = $kwarg_meta,
                 source = $source,
             )))
@@ -877,6 +1071,16 @@ sig_expr_size(x::StanExpr) = StanExpr(:_, StanType(types.int, ()))
 sig_expr(x::StanType) = StanType(sigtype(center_type(x)), map(sig_expr_size, stan_size(x)))
 sig_expr(x::StanType{<:types.tup}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); arg_types=sig_expr(info(x).arg_types))
 sig_expr(x::StanType{<:types.func}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); value=sig_expr(info(x).value))
+# A closure arg's function-dedup key MUST preserve its per-site `id`.
+# `func_name(::StanExpr2{<:types.closure})` mangles the emitted Stan function
+# name on that id (`f_closure_<id>`), so two DISTINCT closure literals with
+# identical bodies — distinct ids → distinct names `f_closure_1`/`f_closure_2`
+# — must collect as TWO definitions. The generic `sig_expr(::StanExpr)` wipes
+# `expr` to `:_` and the generic `sig_expr(::StanType)` drops `info.value`,
+# losing the id: both keys collapsed to one, so only `f_closure_1` was defined
+# while the second call site still emitted `f_closure_2(...)` → stanc rejects
+# with "undeclared identifier". Keying on the id realigns dedup with naming.
+sig_expr(x::StanExpr2{<:types.closure}) = StanExpr(type(x).info.value.id, sig_expr(type(x)))
 fetch_functions!(x::CanonicalExpr; info) = begin
     sx = sig_expr(x)
     sx in keys(info) && return
@@ -1017,7 +1221,8 @@ func_name(x::Function) = string(x)
 # function to its Stan-side name fragment used for call-site mangling.
 for (f, nm) in (
     (&, "and"), (|, "or"), (>=, "gte"), (>, "gt"), (==, "eq"),
-    (<=, "lte"), (<, "lt"), (+, "add"), (-, "sub"), (*, "mul"), (/, "div"),
+    (<=, "lte"), (<, "lt"), (+, "add"), (-, "sub"), (*, "mul"),
+    (/, "div"), (÷, "idiv"), (^, "pow"),
     # Julia functions with different Stan names
     (length, "num_elements"), (minimum, "min"), (maximum, "max"), (abs2, "square"),
 )

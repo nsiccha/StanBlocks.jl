@@ -4,6 +4,9 @@
 # constructor call dispatches via the usertype tracetype.
 _forward_module_value(v::Function, info) = forward!(v; info)
 _forward_module_value(v::SlicModel, info) = v
+# A named sub-model function resolves to its (singleton) value, like a `SlicModel`;
+# the call is embedded by `stan_expr(::CanonicalExpr{<:SubmodelFn})`.
+_forward_module_value(v::SubmodelFn, info) = v
 # Built-in mathematical constants (π, ℯ, … — all `Irrational`s) resolve to their
 # Float64 value via `forward!(::Irrational)`. Per user decision `3bbtrv`: only
 # built-in constants resolve this way, NOT arbitrary module-level numbers (there
@@ -46,6 +49,7 @@ _try_symbol_lookup(x::Symbol; info) = begin
 end
 _resolve_module_value(v::Function) = v
 _resolve_module_value(v::SlicModel) = v
+_resolve_module_value(v::SubmodelFn) = v
 # Built-in constants resolve here too (the GlobalRef path), mirroring the
 # `_forward_module_value(::Irrational)` symbol path — user decision `3bbtrv`.
 _resolve_module_value(v::Irrational) = v
@@ -72,6 +76,37 @@ expand_inline_or_trace(x::CanonicalExpr; info) = begin
     meta = inline_body(x)
     isnothing(meta) && return fold_shape_query(stan_expr(x))
     expand_inline!(x, meta; info)
+end
+# ── Elementwise arithmetic on scalar arrays → lower to the `jbroadcasted` loop ──
+# Stan has no elementwise arithmetic on `array[] int`/`array[] real` (nor a
+# dotted `.+`/`.-` — `broadcast_callee` collapses those to plain `+`/`-`), so a
+# binary `+`/`-` or a broadcast `.* ./ .^` with a scalar-array operand is lowered
+# to the generalised `jbroadcasted` element loop (builtin.jl) instead of emitting
+# invalid Stan. `jbroadcasted` handles ANY arg position (array-first,
+# scalar-first, arbitrary arity) and INFERS the output container from `f`'s
+# per-element return type, so the operator + operands pass straight through — no
+# commuting/negating dance (the old array-first-only form needed one, and its
+# `s .- arr == -(arr .- s)` identity has since become wrong: `jbroadcasted`'s
+# int-array result has no valid Stan unary minus). Both plain and dotted `+`/`-`
+# lower (Julia-consistent: `+` on arrays is elementwise); plain `*`/`/`/`^` on
+# arrays stay rejected (a matmul/dim error in Julia, not elementwise) via the
+# `_reject_scalar_array_elementwise` floor. Only binary (2-arg) operators lower;
+# a rare >2-arg form falls through to that reject rather than miscompiling.
+_broadcast_op(f) = f
+_broadcast_op(f::Base.BroadcastFunction) = f.f
+_lower_scalar_array_broadcast(x::CanonicalExpr; info) = begin
+    length(x.args) == 2 || return nothing
+    l, r = x.args
+    (_is_scalar_array(type(l)) || _is_scalar_array(type(r))) || return nothing
+    forward!(CanonicalExpr(builtin.jbroadcasted, _broadcast_op(head(x)), l, r); info)
+end
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(+),typeof(-)}}; info) = begin
+    rv = _lower_scalar_array_broadcast(x; info)
+    isnothing(rv) ? fold_shape_query(stan_expr(x)) : rv
+end
+expand_inline_or_trace(x::CanonicalExpr{<:Base.BroadcastFunction}; info) = begin
+    rv = _lower_scalar_array_broadcast(x; info)
+    isnothing(rv) ? fold_shape_query(stan_expr(x)) : rv
 end
 # `isdefined(builtin, x)` returns true even for names inherited from Base
 # (e.g. `accumulate!`), which would mask user-defined SLIC UDFs that share
@@ -209,6 +244,88 @@ end
 
 _get_inline_pending() = get(task_local_storage(), :_slic_inline_pending, nothing)
 
+# Ragged informative priors are emitted as compiler-owned indexed sampling
+# statements over the constrained view.  Keep the certificate task-local: an
+# ordinary user-authored `derived[i] ~ dist(...)` remains rejected by the
+# generic already-bound-LHS rule, while the lowering below may deliberately add
+# density to the transformed ragged value.
+_ragged_density_targets() =
+    get(task_local_storage(), :_slic_ragged_density_targets, ())
+_is_ragged_density_target(name::Symbol) = name in _ragged_density_targets()
+
+# Trace-time marker used only while rewriting distribution arguments for one
+# ragged group.  `builtin.jl` supplies the type-aware expansion after the
+# RaggedVector/RaggedMatrix usertypes exist: ragged args become `arg[g]`, while
+# shared scalars/dense values pass through unchanged.
+function _ragged_group_arg end
+_ragged_group_rhs(rhs::CanonicalExpr, g) = begin
+    args = map(a -> CanonicalExpr(_ragged_group_arg, a, g), rhs.args)
+    CanonicalExpr(head(rhs), args...; rhs.kwargs...)
+end
+_ragged_rhs_is_flat(rhs) = _is_canonical_expr(rhs) && head(rhs) === :flat &&
+    isempty(rhs.args) && isempty(rhs.kwargs)
+
+# A plate's second trace runs inside the real model scope, but every discovered
+# cell-local binding is represented there by an outer array.  Keep the mapping
+# task-local so normal tracing stays untouched and submodels can participate:
+# their local `z` is mapped to the flattened outer key (`t_z`) before indexing.
+_plate_context() = get(task_local_storage(), :_slic_plate_context, nothing)
+_plate_root_info(info::StanModel) = info
+_plate_root_info(info::SubModel) = _plate_root_info(parent(info))
+_plate_global_name(::StanModel, name::Symbol) = name
+_plate_global_name(info::SubModel, name::Symbol) =
+    _plate_global_name(parent(info), supname(info, name))
+_plate_context_entry(name::Symbol; info) = begin
+    ctx = _plate_context()
+    ctx === nothing && return nothing
+    global_name = _plate_global_name(info, name)
+    haskey(ctx.cell_types, global_name) || return nothing
+    accessor = get(ctx.cell_accessors, global_name, nothing)
+    (global_name=global_name, cell_type=ctx.cell_types[global_name], idxs=ctx.idxs, accessor)
+end
+_plate_promoted_lhs(name::Symbol; info) = begin
+    entry = _plate_context_entry(name; info)
+    entry === nothing && return nothing
+    canonical(entry.accessor === nothing ?
+        _plate_cell_index(entry.global_name, entry.cell_type, entry.idxs) : entry.accessor)
+end
+_plate_promoted_reference(name::Symbol, info::Union{StanModel,SubModel}) = begin
+    lhs = _plate_promoted_lhs(name; info)
+    lhs === nothing && return nothing
+    # Resolve the indexed expression against the top-level outer declaration.
+    # Disable the context for this one lookup so resolving its base Symbol does
+    # not recursively promote itself.
+    task_local_storage(:_slic_plate_context, nothing) do
+        forward!(lhs; info=_plate_root_info(info))
+    end
+end
+_plate_bind_local!(::StanModel, _name, _value) = nothing
+_plate_bind_local!(info::SubModel, name, value) = (locals(info)[name] = value)
+
+_forward_plate_assignment!(x, name, lhs, rhs_raw; info) = begin
+    rhs = forward!(rhs_raw; info)
+    _check_assignment_rhs(name, rhs)
+    center_type(rhs) === types.void && error(
+        "`$name = <void-call>(...)`: cannot bind the return value of a void UDF. ",
+        "Drop the `$name = ` and call as a statement."
+    )
+    # `lhs` is already the promoted outer accessor. Suppress promotion while
+    # forwarding it, otherwise its base Symbol becomes indexed a second time.
+    fwd = task_local_storage(:_slic_plate_context, nothing) do
+        forward!(remake(x, lhs, rhs); info=_plate_root_info(info))
+    end
+    _plate_bind_local!(info, name, expr(fwd).args[1])
+    fwd
+end
+
+_forward_plate_sampling!(x, name, lhs, rhs::StanExpr; info) = begin
+    fwd = task_local_storage(:_slic_plate_context, nothing) do
+        forward!(remake(x, lhs, rhs); info=_plate_root_info(info))
+    end
+    _plate_bind_local!(info, name, fwd.args[1])
+    fwd
+end
+
 # Unwrap an inline-UDF body into a vector of effective statements. A `:return`
 # in the final position is unwrapped to its value; an empty/all-LNN body
 # signals the caller to error.
@@ -300,7 +417,14 @@ forward!(x::BlockExpr; info) = task_local_storage(:_slic_inline_pending, Any[]) 
         # Stan-side meaning — they arise e.g. when an inline UDF whose final
         # expression is just one of its args (`f!(buf) = (mutate; buf)`) is
         # called at statement position. Skip them so we don't emit `name;`.
-        _is_inert_block_stmt(resolved) || push!(new_args, resolved)
+        if _plate_context() !== nothing && resolved isa BlockExpr
+            # A submodel embedded inside a plate is an inline expansion. The
+            # loop router consumes a flat statement list, so splice the traced
+            # submodel block here rather than leaving a nested BlockExpr.
+            append!(new_args, resolved.args)
+        elseif !_is_inert_block_stmt(resolved)
+            push!(new_args, resolved)
+        end
     end
     remake(x, new_args...)
 end
@@ -310,6 +434,8 @@ _is_inert_expr(::Symbol) = true
 _is_inert_expr(::Number) = true
 _is_inert_expr(::AbstractString) = true
 _is_inert_expr(_) = false
+_is_model_decl_scope(::Union{StanModel,SubModel}) = true
+_is_model_decl_scope(_) = false
 _is_submodel_info(::SubModel) = true
 _is_submodel_info(_) = false
 _is_getindex_expr(::CanonicalExprV{:getindex}) = true
@@ -324,6 +450,134 @@ _is_assign_canonical(::CanonicalExprV{:(=)}) = true
 _is_assign_canonical(_) = false
 _is_block_canonical(::CanonicalExprV{:block}) = true
 _is_block_canonical(_) = false
+
+# A bounded one-dimensional comprehension in an `@deffun` body is syntax sugar
+# for the local declaration + indexed-fill loop authors otherwise write by hand:
+#
+#     [f(i) for i in lo:hi]
+#
+# becomes (using a per-trace fresh result name):
+#
+#     result::typeof(f(lo))[hi - lo + 1]
+#     for i in lo:hi
+#         result[i - lo + 1] = f(i)
+#     end
+#     result
+#
+# Keep the accepted surface intentionally narrow.  A fixed `lo:hi` range gives
+# both Stan's loop bounds and the output size without inventing collection
+# iteration semantics; scalar elements keep the output one-dimensional.  The
+# dedicated errors below prevent Julia's richer generator/filter ASTs from
+# falling into the generic `forward!` error or, worse, being partly lowered.
+_contains_comprehension(::Any) = false
+_contains_comprehension(::ComprehensionExpr) = true
+_contains_comprehension(x::CanonicalExpr) = any(_contains_comprehension, x.args)
+
+function _bounded_comprehension_parts(x::ComprehensionExpr)
+    length(x.args) == 1 && x.args[1] isa GeneratorExpr || error(
+        "@deffun array comprehension: expected exactly one generator. ",
+        "Only `[expr for i in lo:hi]` is supported."
+    )
+    generator = x.args[1]
+    length(generator.args) == 2 || error(
+        "@deffun array comprehension: nested or multiple generators are not supported. ",
+        "Use one bounded generator `[expr for i in lo:hi]` or write the nested loops explicitly."
+    )
+    value, iteration = generator.args
+    iteration isa FilterExpr && error(
+        "@deffun array comprehension: filtered generators are not supported. ",
+        "Write an explicit loop when the output length depends on a condition."
+    )
+    iteration isa AssignmentExpr || error(
+        "@deffun array comprehension: expected a generator binding `i = lo:hi`, got `", iteration, "`."
+    )
+    idx, range = iteration.args
+    idx isa Symbol || error(
+        "@deffun array comprehension: the generator must bind one Symbol, got `", idx, "`."
+    )
+    _contains_comprehension(value) && error(
+        "@deffun array comprehension: nested comprehensions are not supported. ",
+        "Write the nested loops explicitly."
+    )
+    value, idx, range
+end
+
+_is_literal_one(x) = x == 1
+_is_literal_one(x::StanExpr) = _is_literal_one(expr(x))
+
+function forward!(x::ComprehensionExpr; info)
+    value_raw, idx, range_raw = _bounded_comprehension_parts(x)
+    pending = _get_inline_pending()
+    pending === nothing && error(
+        "@deffun array comprehension lowering requires a statement context; ",
+        "bind or return the comprehension from an @deffun body."
+    )
+
+    range = forward!(range_raw; info)
+    range isa StanExpr && expr(range) isa CanonicalExpr{Colon} &&
+        length(expr(range).args) == 2 || error(
+            "@deffun array comprehension: the generator must use one bounded `lo:hi` range. ",
+            "Arbitrary iterable and stepped-range generators are not supported."
+        )
+    range_expr = expr(range)
+    result_size = stan_size(range, 1)
+
+    had_idx = idx in keys(info)
+    old_idx = had_idx ? info[idx] : nothing
+    info[idx] = StanExpr(idx, StanType(types.int; qual=:data))
+    emitted_idx = info[idx]
+    try
+        # Inline calls (and a future supported expression-level lowering) may
+        # contribute pre-statements.  Isolate them so they stay INSIDE this
+        # comprehension's loop instead of leaking into the enclosing block.
+        value, loop_stmts = task_local_storage(:_slic_inline_pending, Any[]) do
+            value = forward!(value_raw; info)
+            value isa StanExpr || error(
+                "@deffun array comprehension: element expression forwarded to `",
+                typeof(value), "`, expected a scalar Stan expression."
+            )
+            value, copy(task_local_storage(:_slic_inline_pending))
+        end
+        value_type = type(value)
+        (center_type(value_type) <: types.complex && stan_ndim(value_type) == 0) || error(
+            "@deffun array comprehension: the element expression must yield one scalar numeric value; ",
+            "got Stan type `", sigtype(value_type), "`."
+        )
+
+        id = _next_inline_id()
+        result_name = Symbol(:comprehension_result__lc_, id)
+        while result_name in keys(info)
+            id = _next_inline_id()
+            result_name = Symbol(:comprehension_result__lc_, id)
+        end
+        result_type = autotype(StanType(center_type(value_type), (result_size,)))
+        _is_model_decl_scope(info) && (result_type = remake(
+            result_type; fresh_decl=true, decl_role=:unfilled, qual=:parameter
+        ))
+        info[result_name] = StanExpr(result_name, result_type)
+        result = info[result_name]
+        declaration = stan_expr(CanonicalExpr(:(::), result))
+
+        lo = range_expr.args[1]
+        result_idx = if _is_literal_one(lo)
+            emitted_idx
+        else
+            forward!(CanonicalExpr(+, CanonicalExpr(-, emitted_idx, lo), 1); info)
+        end
+        fill = forward!(CanonicalExpr(
+            :(=), CanonicalExpr(getindex, result, result_idx), value
+        ); info)
+        push!(loop_stmts, fill)
+        loop_head = CanonicalExpr(:(=), emitted_idx, range)
+        loop = stan_expr(CanonicalExpr(:for, loop_head, CanonicalExpr(:block, loop_stmts...)))
+
+        push!(pending, declaration, loop)
+        info[result_name]
+    finally
+        had_idx ? (info[idx] = old_idx) : pop!(info, idx)
+    end
+end
+
 _check_assignment_rhs(name, ::SlicModel) = error(
     "`$name = <submodel>(...)` is not supported — sub-models can only be embedded via `~`. ",
     "Use `$name ~ <submodel>(...)` instead.")
@@ -333,6 +587,8 @@ _check_assignment_rhs(name, resolved) = error(
 
 forward!(x::AssignmentExpr{Symbol}; info) = begin
     name, rhs = x.args
+    promoted = _plate_promoted_lhs(name; info)
+    promoted === nothing || return _forward_plate_assignment!(x, name, promoted, rhs; info)
     name in keys(info) && _is_submodel_info(info) && return nothing
     resolved = forward!(rhs; info)
     _check_assignment_rhs(name, resolved)
@@ -355,7 +611,9 @@ else
     forward!(canonical(:(dims($key)[$i])); info)
 end
 forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
-    name, rhs = x.args 
+    name, rhs = x.args
+    promoted = _plate_promoted_lhs(name; info)
+    promoted === nothing || return _forward_plate_assignment!(x, name, promoted, rhs; info)
     @assert name ∉ keys(info)
     info[name] = StanExpr(name, remake(type(rhs); value=missing))
     @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
@@ -366,7 +624,108 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     ]...; value=missing))
     rv
 end
-forward!(x::AssignmentExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+# Fallback: a compiler-injected slice/element fill `out[i] = rhs` (getindex LHS —
+# Symbol LHS is fully handled by the two methods above; a user-written non-Symbol
+# LHS is rejected pre-`forward!`). Forward the args, then PROMOTE the base
+# variable's qual by the rhs qual. This is what lets `distribute!` route the whole
+# coarse-grained variable — its bare declaration + every fill — to ONE block.
+# The first certified fill resets a fresh declaration's provisional `:parameter`
+# qualifier to the RHS qualifier; subsequent fills promote across RHS qualifiers.
+# For those later fills, `:undefined` is bottom and the real order is
+# `data < parameter < quantities` (lexicographically AND semantically).
+_promote_qual(cur::Symbol, new::Symbol) =
+    cur === :undefined ? new : (new === :undefined ? cur : max(cur, new))
+
+# Typed assignment is an assertion about the RHS, not a request to coerce it.
+# Center types follow the SLIC lattice (`int <: real`, constrained vectors
+# `<: vector`, …); dimensions must describe the same Stan shape.  A dimension
+# can be equal either symbolically or through a known data value (`3` versus a
+# data vector's `x_n`, whose trace-time value is also 3).
+_typed_assignment_shape_key(x::StanExpr, aliases) = _typed_assignment_shape_key(expr(x), aliases)
+_typed_assignment_shape_key(x::CanonicalExpr, aliases) = (
+    head(x),
+    map(arg -> _typed_assignment_shape_key(arg, aliases), x.args),
+    Tuple((k, _typed_assignment_shape_key(v, aliases)) for (k, v) in pairs(x.kwargs)),
+)
+_typed_assignment_shape_key(x::Expr, aliases) =
+    (x.head, map(arg -> _typed_assignment_shape_key(arg, aliases), x.args))
+_typed_assignment_shape_key(x::Tuple, aliases) =
+    map(arg -> _typed_assignment_shape_key(arg, aliases), x)
+_typed_assignment_shape_key(x::Symbol, aliases) =
+    haskey(aliases, x) ? _typed_assignment_shape_key(aliases[x], aliases) : x
+_typed_assignment_shape_key(x, aliases) = x
+
+_typed_assignment_dim_matches(declared::StanExpr, inferred::StanExpr, aliases) =
+    isequal(_typed_assignment_shape_key(declared, aliases), _typed_assignment_shape_key(inferred, aliases)) ||
+    (hasvalue(declared) && hasvalue(inferred) && isequal(getvalue(declared), getvalue(inferred)))
+
+_typed_assignment_aliases(info::Union{AbstractDict,NamedTuple}) =
+    get(info, :__size_aliases__, NamedTuple())
+_typed_assignment_aliases(info) = NamedTuple()
+
+_check_typed_assignment(name, declared::StanType, inferred::StanType; info) = begin
+    declared_ct = center_type(declared)
+    inferred_ct = center_type(inferred)
+    inferred_ct <: declared_ct || error(
+        "Typed assignment `", name, "::", declared, " = ...` is incompatible with inferred RHS type `",
+        inferred, "`: RHS center `", inferred_ct, "` is not assignable to declared center `", declared_ct, "`."
+    )
+
+    declared_size = stan_size(declared)
+    inferred_size = stan_size(inferred)
+    length(declared_size) == length(inferred_size) || error(
+        "Typed assignment `", name, "::", declared, " = ...` is incompatible with inferred RHS type `",
+        inferred, "`: declared rank is ", length(declared_size), " but RHS rank is ", length(inferred_size), "."
+    )
+    aliases = _typed_assignment_aliases(info)
+    for i in eachindex(declared_size, inferred_size)
+        _typed_assignment_dim_matches(declared_size[i], inferred_size[i], aliases) || error(
+            "Typed assignment `", name, "::", declared, " = ...` is incompatible with inferred RHS type `",
+            inferred, "`: dimension ", i, " is declared as `", declared_size[i], "` but inferred as `",
+            inferred_size[i], "`."
+        )
+    end
+    nothing
+end
+
+forward!(x::AssignmentExpr; info) = begin
+    lhs_raw = x.args[1]
+    if lhs_raw isa DeclExpr && lhs_raw.args[1] isa Symbol
+        name = lhs_raw.args[1]
+        promoted = _plate_promoted_lhs(name; info)
+        promoted === nothing || return _forward_plate_assignment!(x, name, promoted, x.args[2]; info)
+    end
+    # Keep the local/raw key before forwarding: inside a `SubModel`, forwarding
+    # rewrites the emitted base to its flattened parent name while `keys(info)`
+    # intentionally remains the local-name view.
+    local_key = _base_lhs_symbol(x.args[1])
+    fwd = stan_expr(remake(x, forward!(x.args; info)...))
+    lhs, rhs = expr(fwd).args
+    lhs_raw isa DeclExpr && _check_typed_assignment(local_key, type(lhs), type(rhs); info)
+    k = local_key in keys(info) ? local_key : _base_lhs_symbol(lhs)
+    if k in keys(info)
+        base = info[k]
+        if _is_fresh_decl(base)
+            role = _decl_role(base)
+            role == :sampled && error(
+                "Cannot fill `", k, "[…]` after it has been classified as a plate parameter by indexed sampling."
+            )
+            if role == :unfilled
+                # User decision `1dd0eww`: a bare declaration starts life as a
+                # flat-prior parameter, then its FIRST certified indexed fill
+                # reclassifies it as a transformed fill target.  Reset (rather
+                # than promote) the qualifier to that first RHS.
+                info[k] = remake(base; decl_role=:fill, qual=qual(rhs))
+            else
+                role == :fill || error("Fresh declaration `", k, "` has unknown declaration role `", role, "`.")
+                info[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)))
+            end
+        else
+            info[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)))
+        end
+    end
+    fwd
+end
 forward!(x::SamplingExpr{Symbol}; info) = begin
     name, rhs = x.args
     rhs = forward!(rhs; info)::Union{StanExpr,SlicModel}
@@ -374,6 +733,8 @@ forward!(x::SamplingExpr{Symbol}; info) = begin
 end
 forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args
+    promoted = _plate_promoted_lhs(name; info)
+    promoted === nothing || return _forward_plate_sampling!(x, name, promoted, rhs; info)
     if name in keys(info)
         q = stan.qual(info[name])
         q == :data || error("Sampling statement `$name ~ ...` has LHS bound to a $q-qualified value — only data-qualified LHS is supported here (submodel kwargs typically refer to caller-provided data).")
@@ -390,6 +751,13 @@ forward!(x::SamplingExpr{Symbol,<:SlicModel}; info) = begin
     name, rhs = x.args
     forward!(rhs; info=SubModel(info, name, Dict()))
 end
+# A native constrained center type carries an implicit Stan constraint
+# transform (simplex/ordered/positive_ordered — proper subtypes of `vector` —
+# and cov_matrix/corr_matrix/cholesky_factor_* — subtypes of `square_matrix`).
+# Plain `vector`/`row_vector`/`matrix`/`int`/… are NOT native-constrained.
+_is_native_constrained_ct(T) = T isa Type && (
+    (T <: types.vector && T !== types.vector) || T <: types.square_matrix
+)
 forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     decl, rhs_raw = x.args
     name = decl.args[1]
@@ -397,6 +765,11 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
         "Typed-LHS sampling currently requires a Symbol LHS, got `$name`. ",
         "For more complex LHS shapes, use a bare assignment + sampling pair."
     )
+    promoted = _plate_promoted_lhs(name; info)
+    if promoted !== nothing
+        rhs = forward!(rhs_raw; info)::StanExpr
+        return _forward_plate_sampling!(x, name, promoted, rhs; info)
+    end
     type_expr = decl.args[2]
     ct, sizes... = if _is_getindex_expr(type_expr)
         type_expr.args
@@ -406,7 +779,16 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     ct isa Symbol || error("Typed-LHS sampling: type center must be a Symbol, got `$ct`")
     ct_resolved = gettype(ct)
     sizes_forwarded = isempty(sizes) ? () : Tuple(forward!(collect(sizes); info))
-    base_lhs_type = StanType(ct_resolved, sizes_forwarded)
+    # Stan requires every native constrained-type size (`simplex[N]`, `ordered[N]`,
+    # …) to be a SCALAR int. A NON-scalar size — e.g. `p::simplex[Ks]` with a data
+    # int-vector `Ks` — is a RAGGED / varying-per-group constrained parameter. Stan
+    # cannot declare `simplex[Ks]` natively, so we desugar: a flat improper-uniform
+    # free param + a compiler-injected per-group `<family>_jacobian` loop
+    # + a compile-time ragged carrier, reusing the loop-fill routing landed on
+    # `slic-model-slice-b3a85769` @ 29c3b59. See brief 2026-07-15T18-26-44-152-1b6sc6m.
+    if _is_native_constrained_ct(ct_resolved) && any(sz -> stan_ndim(type(sz)) > 0, sizes_forwarded)
+        return _forward_ragged_constrained!(name, ct, collect(sizes), rhs_raw; info)
+    end
     _is_canonical_expr(rhs_raw) || error(
         "Typed-LHS sampling `$name::$(pretty_type_expr(type_expr)) ~ rhs` requires rhs to be a distribution call"
     )
@@ -414,11 +796,540 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     args_resolved = collect(forward!(rhs_raw.args; info))
     kwargs_resolved = forward!(rhs_raw.kwargs; info)
     rhs_canonical = CanonicalExpr(head_resolved, args_resolved...; kwargs_resolved...)
+    # Fold the RHS distribution's constraints into the DECLARED type: the
+    # explicit `lower=`/`upper=`/`offset=`/`multiplier=` kwargs AND the
+    # distribution-implied ones (`exponential`→lower=0, `beta`→[0,1], …). The
+    # bare-LHS path does exactly this via `autotype(rhs)` (functions.jl §219);
+    # the typed-LHS path historically built the decl type from center+sizes
+    # ONLY, silently dropping the constraint — so a positive scale
+    # `tau::vector[K] ~ normal(0,1; lower=0)` emitted an UNCONSTRAINED
+    # `vector[K] tau`. Native-constrained centers (simplex/cholesky/…) carry no
+    # bound autokwargs and take no user bounds, so `cons` is empty for them.
+    cons_kw = merge(autokwargs(rhs_canonical), (; kwargs_resolved...))
+    cons = (;[
+        key => getindex(cons_kw, key)
+        for key in (:lower, :upper, :offset, :multiplier) if key in keys(cons_kw)
+    ]...)
+    base_lhs_type = StanType(ct_resolved, sizes_forwarded; cons...)
     cv_args = any(stan.cv, args_resolved)
     qual = cv_args ? :quantities : :parameter
     info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args))
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     remake(x, info[name], rhs_stan)
+end
+# Desugar a RAGGED constrained parameter (`p::simplex[Ks] ~ …`, `Ks` a data
+# int-vector of per-group dims) into constructs SB can emit. Vector families use
+# a RaggedVector; square cholesky families flatten K×K results and bind a
+# RaggedMatrix that reconstructs each matrix on indexed access.
+#   • bare improper-uniform free param sized by the flattened free dimensions
+#   • per-group offsets in transformed data via `cumulative_sum` (data-qualified)
+#   • a FRESH result vector filled by a compiler-injected per-group constrain loop
+#     calling the built-in `<ct>_jacobian` (the jacobian accumulates directly in
+#     `transformed parameters`; routing landed on slic-model-slice @ 29c3b59)
+#   • a compile-time ragged pairing bound to `name`
+# All statements are injected via `_slic_inline_pending` (they never enter the raw
+# body, so they bypass `_reject_model_control_flow`) and routed to their blocks by
+# `distribute!`. Informative RHS distributions add a second compiler-owned loop
+# after the view binding: `name[g] ~ dist(group_arg(args, g)...)`. The same
+# fine-grained ForExpr router used by plate sends that loop to `model`; ragged
+# distribution arguments are indexed per group while shared arguments remain
+# unchanged.
+_forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) = begin
+    _is_canonical_expr(rhs_raw) || error(
+        "Ragged constrained `$name::$ct[…] ~ rhs` requires rhs to be a distribution call."
+    )
+    isempty(rhs_raw.kwargs) || error(
+        "Ragged constrained `$name::$ct[…]` does not accept distribution constraint kwargs. ",
+        "Put the constraint in the declared center type and pass prior parameters positionally."
+    )
+    if ct in (:simplex, :ordered, :positive_ordered)
+        _forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info)
+    elseif ct in (:cholesky_factor_corr, :cholesky_factor_cov)
+        _forward_ragged_matrix_constrained!(name, ct, sizes, rhs_raw; info)
+    else
+        error(
+            "Ragged constrained `$name::$ct[…]` is not supported yet. Supported ",
+            "families are `simplex`, `ordered`, `positive_ordered`, ",
+            "`cholesky_factor_corr`, and square `cholesky_factor_cov`."
+        )
+    end
+end
+
+_ragged_density_stmt(name, Ks, rhs_raw, g) = _ragged_rhs_is_flat(rhs_raw) ?
+    nothing : :(for $g in 1:length($Ks)
+                    $name[$g] ~ $(_ragged_group_rhs(rhs_raw, g))
+                end)
+_trace_ragged_stmts(stmts, name; info, certify_density::Bool=false) = begin
+    targets = (_ragged_density_targets()..., name)
+    traced = task_local_storage(:_slic_ragged_density_targets, targets) do
+        _do_retrace_inline_body(stmts; info)
+    end
+    # The task-local certificate above is sufficient during `forward!`, but the
+    # backward likelihood-reachability pass runs after tracing has left that
+    # dynamic scope.  Stamp the underlying constrained-memory declaration so an
+    # indexed `mem[lo:hi] ~ prior(...)` remains recognisable as a compiler-owned
+    # ragged density (and not as forbidden user sampling of a derived value).
+    if certify_density
+        ragged = info[name]
+        mem = expr(ragged).args[1]
+        mem_key = _base_lhs_symbol(mem)
+        root = _plate_root_info(info)
+        root[mem_key] = remake(root[mem_key]; ragged_density=true)
+    end
+    traced
+end
+
+_forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info) = begin
+    length(sizes) == 1 || error(
+        "Ragged constrained `$name::$ct[…]`: expected a single vector size (the ",
+        "per-group dims), got $(length(sizes)). Rectangular `$ct[a,b]` and ragged ",
+        "`$ct[Ks]` are distinct shapes; a mixed form is unsupported."
+    )
+    Ks  = sizes[1]
+    free_drop = ct === :simplex ? 1 : 0
+    jac = Symbol(ct, :_jacobian)
+    free_sizes = free_drop == 0 ? Ks : :($Ks .- $free_drop)
+    # Stan-valid unique names (gensym's `#` is an illegal Stan identifier char);
+    # `_next_inline_id` is the per-trace counter SB uses for inlined-local renames.
+    id = _next_inline_id()
+    pfree = Symbol(:p_free, "__rc_", id); pmem = Symbol(:p_mem, "__rc_", id)
+    cend  = Symbol(:c_end, "__rc_", id);  fend = Symbol(:f_end, "__rc_", id)
+    g     = Symbol(:g, "__rc_", id)
+    free_size_g = free_drop == 0 ? :($Ks[$g]) : :($Ks[$g] - $free_drop)
+    free_start = :($fend[$g] - $free_size_g + 1)
+    stmts = Any[
+        :($pfree :: vector[sum($free_sizes)]),           # bare improper-uniform free coords → parameters
+        :($cend = cumulative_sum($Ks)),                  # constrained group ends (data → TD)
+        :($fend = cumulative_sum($free_sizes)),           # free group ends (data → TD)
+        :($pmem :: vector[sum($Ks)]),                    # fresh result → auto fresh_decl cert
+        :(for $g in 1:length($Ks)                        # injected ForExpr — 29c3b59 routes it
+              $pmem[$cend[$g] - $Ks[$g] + 1 : $cend[$g]] =
+                  $jac($pfree[$free_start : $fend[$g]])
+          end),
+        :($name = RaggedVector($pmem, $cend)),           # ragged view (representation bae1167)
+    ]
+    density = _ragged_density_stmt(name, Ks, rhs_raw, g)
+    density === nothing || push!(stmts, density)
+    _trace_ragged_stmts(stmts, name; info, certify_density=density !== nothing)
+end
+
+_forward_ragged_matrix_constrained!(name, ct, sizes, rhs_raw; info) = begin
+    length(sizes) == 1 || error(
+        "Ragged constrained `$name::$ct[…]`: this increment supports one vector ",
+        "of square group sizes. Rectangular ragged cholesky factors need separate ",
+        "row and column size vectors and are not implemented yet."
+    )
+    Ks = sizes[1]
+    corr_family = ct === :cholesky_factor_corr
+    jac = Symbol(ct, :_jacobian)
+    # cholesky_factor_corr[K] has K(K-1)/2 free coordinates; a square
+    # cholesky_factor_cov[K] has K(K+1)/2. Both materialise K² matrix cells.
+    free_sizes = corr_family ? :(($Ks .* ($Ks .- 1)) .÷ 2) : :(($Ks .* ($Ks .+ 1)) .÷ 2)
+    mem_sizes = :($Ks .* $Ks)
+
+    id = _next_inline_id()
+    pfree = Symbol(:p_free, "__rcm_", id); pmem = Symbol(:p_mem, "__rcm_", id)
+    cend  = Symbol(:c_end, "__rcm_", id);  fend = Symbol(:f_end, "__rcm_", id)
+    g     = Symbol(:g, "__rcm_", id)
+    free_size_g = corr_family ?
+        :(($Ks[$g] * ($Ks[$g] - 1)) ÷ 2) :
+        :(($Ks[$g] * ($Ks[$g] + 1)) ÷ 2)
+    mem_size_g = :($Ks[$g] * $Ks[$g])
+    free_start = :($fend[$g] - $free_size_g + 1)
+    mem_start = :($cend[$g] - $mem_size_g + 1)
+    free_slice = :($pfree[$free_start : $fend[$g]])
+    constrained = corr_family ?
+        :($jac($free_slice, $Ks[$g])) :
+        :($jac($free_slice, $Ks[$g], $Ks[$g]))
+
+    stmts = Any[
+        :($pfree :: vector[sum($free_sizes)]),
+        :($cend = cumulative_sum($mem_sizes)),
+        :($fend = cumulative_sum($free_sizes)),
+        :($pmem :: vector[sum($mem_sizes)]),
+        :(for $g in 1:length($Ks)
+              $pmem[$mem_start : $cend[$g]] = to_vector($constrained)
+          end),
+        :($name = RaggedMatrix($pmem, $cend, $Ks, $Ks)),
+    ]
+    density = _ragged_density_stmt(name, Ks, rhs_raw, g)
+    density === nothing || push!(stmts, density)
+    _trace_ragged_stmts(stmts, name; info, certify_density=density !== nothing)
+end
+# Indexed sampling is the plate producer's declaration certificate.  The
+# producer first emits an outer-sized fresh declaration, then rewrites a
+# cell-local `x ~ dist` to `x[i] ~ dist` inside its compiler-owned loop.  The
+# first such use classifies the declaration as a parameter; indexed data LHSs
+# remain ordinary observations.  An indexed parameter that did NOT come from a
+# fresh declaration stays out of this internal path.
+_forward_indexed_sampling!(x; info) = begin
+    lhs_raw, rhs_raw = x.args
+    k = _base_lhs_symbol(lhs_raw)
+    k in keys(info) || error(
+        "Plate-generated indexed sampling of `", k, "[…]` requires the plate emitter to register its outer declaration first."
+    )
+    lhs = forward!(lhs_raw; info)
+    rhs = forward!(rhs_raw; info)::StanExpr
+    base = info[k]
+    if _is_ragged_density_target(k)
+        (center_type(base) <: RaggedVector || center_type(base) <: RaggedMatrix) || error(
+            "Compiler-certified ragged density target `", k,
+            "` is not backed by a RaggedVector/RaggedMatrix."
+        )
+        return remake(x, lhs, rhs)
+    end
+    if _is_fresh_decl(base)
+        role = _decl_role(base)
+        role == :fill && error(
+            "Cannot sample `", k, "[…]` after the fresh declaration was classified as a transformed fill target."
+        )
+        role in (:unfilled, :sampled) || error(
+            "Fresh declaration `", k, "` has unknown declaration role `", role, "`."
+        )
+        role == :unfilled && (info[k] = remake(base; decl_role=:sampled, qual=:parameter))
+    else
+        q = qual(base)
+        q == :data || error(
+            "Indexed sampling of `", k, "[…]` has a ", q,
+            "-qualified base that is not a compiler-generated fresh plate declaration."
+        )
+        cv(rhs) && (info[k] = remake(base; cv=true))
+    end
+    remake(x, lhs, rhs)
+end
+forward!(x::SamplingExpr{<:CanonicalExprV{:getindex}}; info) =
+    _forward_indexed_sampling!(x; info)
+# Resolve the intentional intersection with the generic
+# `SamplingExpr{<:Any,<:StanExpr}` floor. Plate promotion forwards the RHS first,
+# then hands the indexed LHS to this same classifier.
+forward!(x::SamplingExpr{<:CanonicalExprV{:getindex},<:StanExpr}; info) =
+    _forward_indexed_sampling!(x; info)
+# --- Public `plate` do-block emitter (Feature 2, surface decision n35u3c) -----
+# Lowers `rv ~ plate(iter1, …; outer=(dims...)) do a1, …; body…; cell_output; end`
+# into the plate PRODUCER CONTRACT that the `~`-aware routing (landed on
+# slic-model-slice-b3a85769) consumes: outer `DeclExpr`s + a compiler-injected
+# certified `ForExpr` with indexed fresh samples, indexed observations, and an
+# indexed return fill — injected via `_slic_inline_pending` (so they bypass
+# `_reject_model_control_flow`, same as `_forward_ragged_constrained!`).
+#
+# Semantics (n35u3c): positional iterables are PER-CELL slices bound to the
+# do-block params (`a_k` ⇒ `iter_k[i1,…]`); lexical captures stay SHARED; each
+# fresh `~`/`=` LHS in the body is promoted to an outer collection indexed by
+# every loop axis; the trailing expression is each cell's output, filled into
+# `rv`. An integer `outer=N` is the 1-D shorthand; tuples emit nested loops.
+# Current cell-shape scope: scalar, fixed `vector[K]`, or heterogeneous
+# one-dimensional `vector[K[i]]` values; no vararg params; the body must end in
+# a value expression.
+# Used only to reject a terminal `~`/`=` statement with a clear error. Fresh
+# binding discovery itself is trace-based (`_plate_discover` below).
+_plate_fresh_info(s) = begin
+    lhs = if s isa Expr && s.head === :call && length(s.args) >= 3 && s.args[1] === :~
+        s.args[2]                         # `lhs ~ dist`  (raw `~` ⇒ Expr(:call, :~, lhs, rhs))
+    elseif s isa Expr && s.head === :(=)
+        s.args[1]                         # `lhs = rhs`
+    else
+        return nothing
+    end
+    lhs isa Symbol && return (lhs, nothing)
+    (lhs isa Expr && lhs.head === :(::) && lhs.args[1] isa Symbol) && return (lhs.args[1], lhs.args[2])
+    nothing
+end
+# Substitute only do-block parameters with their per-cell input accessors. Fresh
+# names are promoted during tracing via `_slic_plate_context`, which also reaches
+# names introduced inside an inlined submodel (not present in this raw AST).
+_subst_syms(x, m) = x
+_subst_syms(x::Symbol, m) = get(m, x, x)
+_subst_syms(x::Expr, m) = Expr(x.head, Any[_subst_syms(a, m) for a in x.args]...)
+
+# Resolve a legacy typed plate-result override to the same per-cell StanType the
+# discovery trace produces. Bare result LHSs use discovery's `ret_type` directly.
+_plate_annotation_type(type_expr; info) = begin
+    ct, sizes... = _is_getindex_expr(type_expr) ? type_expr.args : (type_expr,)
+    ct isa Symbol || error("plate: result type center must be a Symbol, got `$ct`.")
+    StanType(gettype(ct), forward!.(sizes; info))
+end
+
+_plate_cell_shape(T, name) = begin
+    stan_ndim(T) == 0 && return :scalar
+    (center_type(T) <: types.vector && stan_ndim(T) == 1) && return :vector
+    error(
+        "plate: unsupported per-cell type `", sigtype(T), "` for `", name,
+        "` — scalar or vector[K] only (MVP)."
+    )
+end
+
+# A vector cell is ragged when its inferred length depends on the plate's own
+# loop index. Discovery already traces size expressions (including through a
+# called submodel), so this is an expression-level dependency test rather than
+# an AST guess at the do-block source.
+_plate_depends_on(x, idxs) = false
+_plate_depends_on(x::Symbol, idxs) = x in idxs
+_plate_depends_on(x::StanExpr, idxs) = _plate_depends_on(expr(x), idxs)
+_plate_depends_on(x::CanonicalExpr, idxs) = any(a -> _plate_depends_on(a, idxs), x.args)
+_plate_depends_on(x::Union{Tuple,NamedTuple,AbstractVector}, idxs) =
+    any(a -> _plate_depends_on(a, idxs), x)
+_plate_is_ragged_cell(T::StanType, idxs) =
+    center_type(T) <: types.vector && stan_ndim(T) == 1 &&
+    _plate_depends_on(stan_size(T)[1], idxs)
+
+_plate_ragged_plan(f, T::StanType, outer, idxs, id) = begin
+    length(outer) == 1 || error(
+        "plate: ragged vector cells currently require a one-dimensional `outer`; ",
+        "got $(length(outer)) axes for `$f`."
+    )
+    center_type(T) === types.vector || error(
+        "plate: ragged constrained cell `$f::$(sigtype(T))` needs the constrained-",
+        "parameter transform path and is not represented as unconstrained flat memory. ",
+        "Use a plain `vector[K[i]]` cell here, or declare the ragged constrained ",
+        "parameter at model scope."
+    )
+    qual(stan_size(T)[1]) == :data || error(
+        "plate: ragged cell length for `$f` must be data-computable, got a ",
+        "$(qual(stan_size(T)[1]))-qualified size expression. Stan parameter ",
+        "dimensions cannot depend on parameters or generated quantities."
+    )
+    mem = Symbol(f, :__pl_mem_, id)
+    lens = Symbol(f, :__pl_len_, id)
+    ends = Symbol(f, :__pl_end_, id)
+    idx = only(idxs)
+    accessor = :($mem[ragged_start($ends, $idx):ragged_end($ends, $idx)])
+    (; logical=f, cell_type=T, mem, lens, ends,
+       size_expr=expr(stan_size(T)[1]), accessor)
+end
+
+# Outer collection decl + per-cell accessor from DISCOVERED StanTypes. The
+# shipped 1-D shapes stay dense (`vector[N]`, `matrix[K,N]`). Additional outer
+# axes become Stan array dimensions around the natural vector/matrix core while
+# preserving the logical cell-first shape.
+_plate_type_expr(ct::Symbol, sizes) = Expr(:ref, ct, sizes...)
+_plate_outer_decl(f, T::StanType, outer) = begin
+    isempty(outer) && error("plate: `outer` must contain at least one dimension.")
+    shape = _plate_cell_shape(T, f)
+    if shape === :scalar
+        length(outer) == 1 && return Expr(:(::), f, _plate_type_expr(:vector, outer))
+        sizes = Any[outer[3:end]...; outer[1]; outer[2]]
+        return Expr(:(::), f, _plate_type_expr(:matrix, sizes))
+    end
+    K = expr(stan_size(T)[1])
+    length(outer) == 1 && return Expr(:(::), f, _plate_type_expr(:matrix, Any[K, outer[1]]))
+    sizes = Any[outer[2:end]...; K; outer[1]]
+    Expr(:(::), f, _plate_type_expr(:matrix, sizes))
+end
+_plate_cell_index(f, T::StanType, idxs) = begin
+    isempty(idxs) && error("plate: internal error — missing outer indices for `$f`.")
+    shape = _plate_cell_shape(T, f)
+    if shape === :scalar
+        length(idxs) == 1 && return Expr(:ref, f, idxs[1])
+        indices = Any[idxs[3:end]...; idxs[1]; idxs[2]]
+        return Expr(:ref, f, indices...)
+    end
+    indices = Any[idxs[2:end]...; Symbol(":"); idxs[1]]
+    Expr(:ref, f, indices...)
+end
+
+# TRACE-THEN-PROMOTE discovery (rework, decision 1vujeta): trace the do-block
+# body ONCE in an ISOLATED probe scope to discover the fresh params/vars the body
+# creates AND their per-cell types — INCLUDING submodel-internal ones (a submodel
+# embeds via `SubModel`, flattening `t_z`/`t` into the probe's vars). The probe is
+# a StanModel with COPIED `vars` (bindings land in the copy) and SHARED `blocks`
+# (`forward!` only binds vars + returns canonical — block routing is a later pass,
+# so blocks stay untouched); pending is isolated in its own task-local. Nothing is
+# emitted; the probe is discarded. Returns (fresh::Vector{Pair{Symbol,StanType}}
+# in body order, ret_type). Top-level `info` only (a plate nested in a submodel is
+# a later case).
+_plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::StanModel) =
+    task_local_storage(:_slic_inline_pending, Any[]) do
+        probe = StanModel(meta(info), copy(vars(info)), blocks(info))
+        before = Set(keys(probe))
+        for idx in idxs
+            probe[idx] = StanExpr(idx, StanType(types.int; qual=:data))
+        end
+        if isempty(iterables)
+            for (param, idx) in zip(params, idxs)
+                # The do-block parameter is an alias for this plate axis, not a
+                # distinct Stan variable. Preserve that alias in discovered size
+                # expressions (`K[g]` becomes `K[plate_i]`) so ragged dependency
+                # analysis sees the same index that emit-time substitution uses.
+                probe[param] = StanExpr(idx, StanType(types.int; qual=:data))
+            end
+        else
+            for (a, it) in zip(params, iterables)
+                cell = Expr(:ref, it, idxs...)
+                probe[a] = StanExpr(a, type(forward!(canonical(cell); info=probe)))
+            end
+        end
+        # Trace as a BLOCK (not per-statement) so submodel embedding binds its
+        # flattened result the same way the real model-body trace does.
+        isempty(body_stmts) || forward!(canonical(Expr(:block, body_stmts...)); info=probe)
+        ret = forward!(canonical(ret_expr); info=probe)
+        fresh = Pair{Symbol,Any}[]
+        for k in keys(probe)
+            (k in before || k in idxs || k in params) && continue
+            push!(fresh, k => type(probe[k]))
+        end
+        (fresh=fresh, ret_type=type(ret))
+    end
+
+forward!(x::SamplingExpr{Symbol,<:CanonicalExprV{:plate}}; info) =
+    _forward_plate!(x.args[1], nothing, x.args[2]; info)
+# Typed-LHS plate result `b::vector[K] ~ plate(…)` ⇒ vector cell output collected
+# as `matrix[K, N]`. The DeclExpr LHS carries the per-cell result type.
+forward!(x::SamplingExpr{<:DeclExpr,<:CanonicalExprV{:plate}}; info) = begin
+    decl = x.args[1]
+    (decl.args[1] isa Symbol) || error("plate: typed-LHS result must name a Symbol, got `$(decl.args[1])`.")
+    _forward_plate!(decl.args[1], decl.args[2], x.args[2]; info)
+end
+
+_forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
+    lambda = plate.args[1]
+    lambda isa CanonicalExprV{:->} || error(
+        "plate: `$rv ~ plate(…)` requires a `do … end` block, got `$(typeof(lambda))`."
+    )
+    lhs_raw, body_raw = lambda.args
+    (body_raw isa Expr && body_raw.head === :block) || error(
+        "plate: the do-block body must be a `:block` Expr, got `$(typeof(body_raw))`."
+    )
+    params, vararg = _parse_lambda_lhs(lhs_raw)
+    vararg === nothing || error("plate: vararg do-block params (`args...`) are not supported yet.")
+    iterables = collect(plate.args[2:end])
+
+    # Explicit `outer` accepts an int or a non-empty tuple. Without it, infer the
+    # shipped 1-D shape from the first positional iterable.
+    outer = get(plate.kwargs, :outer, nothing)
+    outer_dims = if outer !== nothing
+        dims = outer isa CanonicalExprV{:tuple} ? collect(outer.args) : Any[outer]
+        isempty(dims) && error("plate: `outer=()` is invalid; pass an int or a non-empty tuple.")
+        dims
+    elseif !isempty(iterables)
+        Any[:(length($(iterables[1])))]
+    else
+        error("plate: cannot size the plate — pass `outer=N`, `outer=(dims...)`, or at least one iterable.")
+    end
+
+    if isempty(iterables)
+        length(params) == length(outer_dims) || error(
+            "plate: without positional iterables, bind one do-block index per outer axis ",
+            "($(length(params)) params for $(length(outer_dims)) axes)."
+        )
+    else
+        length(params) == length(iterables) || error(
+            "plate: $(length(params)) do-block params vs $(length(iterables)) positional iterables — ",
+            "positional args are per-cell slices and must match 1:1."
+        )
+    end
+
+    id = _next_inline_id()
+    idxs = if length(outer_dims) == 1
+        Symbol[Symbol(:plate_i, "__pl_", id)]
+    else
+        Symbol[Symbol(:plate_i, axis, "__pl_", id) for axis in eachindex(outer_dims)]
+    end
+    input_subst = Dict{Symbol,Any}()
+    if isempty(iterables)
+        for (param, idx) in zip(params, idxs)
+            input_subst[param] = idx                    # `do i,j` ⇒ the cell indices
+        end
+    else
+        for (a, it) in zip(params, iterables)
+            input_subst[a] = Expr(:ref, it, idxs...)    # per-cell scalar/slice
+        end
+    end
+
+    stmts = Any[s for s in body_raw.args if !(s isa LineNumberNode)]
+    isempty(stmts) && error("plate: empty do-block body.")
+    body_stmts, ret_expr = stmts[1:end-1], stmts[end]
+    _plate_fresh_info(ret_expr) === nothing || error(
+        "plate: the do-block must END with a cell-output VALUE expression, not a `~`/`=` statement."
+    )
+
+    # Trace once in isolation to discover EVERY fresh binding — including
+    # submodel-internal flattened names — and the cell result type. The emit
+    # trace below uses these StanTypes rather than re-parsing LHS syntax.
+    discovered = _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info)
+    fresh = discovered.fresh
+    rv_type = rv_ct === nothing ? discovered.ret_type : _plate_annotation_type(rv_ct; info)
+
+    cell_types = Dict{Symbol,Any}(fresh)
+    haskey(cell_types, rv) && error("plate: result `$rv` collides with a fresh binding in the do-block.")
+    rv in keys(info) && error("plate: result `$rv` is already bound in model scope.")
+    all_cell_types = copy(cell_types)
+    all_cell_types[rv] = rv_type
+
+    ragged_plans = Dict{Symbol,Any}()
+    for (f, T) in all_cell_types
+        _plate_is_ragged_cell(T, idxs) || continue
+        ragged_plans[f] = _plate_ragged_plan(f, T, outer_dims, idxs, id)
+    end
+    cell_accessors = Dict{Symbol,Any}(
+        f => plan.accessor for (f, plan) in ragged_plans if haskey(cell_types, f)
+    )
+
+    # Positional do-block params still lower syntactically to per-cell input
+    # accessors. Fresh names stay untouched: the task-local promotion context
+    # rewrites them while tracing, including names hidden inside submodels.
+    loop_body = Any[_subst_syms(s, input_subst) for s in body_stmts]
+    ret_cell = _subst_syms(ret_expr, input_subst)
+    rv_accessor = haskey(ragged_plans, rv) ?
+        ragged_plans[rv].accessor : _plate_cell_index(rv, rv_type, idxs)
+    push!(loop_body, :($rv_accessor = $ret_cell))
+
+    decls = Any[
+        _plate_outer_decl(f, T, outer_dims)
+        for (f, T) in all_cell_types if !haskey(ragged_plans, f)
+    ]
+    # NB: build each iteration spec as `Expr(:(=), idx, 1:N)` — a hand-built
+    # `Expr(:for, :(idx in 1:N), …)` yields an `:in` CALL spec, not the `:(=)`
+    # form `forward!(::ForExpr)` asserts (a quoted `for` auto-normalizes it).
+    loop = nothing
+    for (idx, dim) in reverse(collect(zip(idxs, outer_dims)))
+        body = loop === nothing ? Expr(:block, loop_body...) : Expr(:block, loop)
+        loop = Expr(:for, Expr(:(=), idx, :(1:$dim)), body)
+    end
+
+    # Hoist declarations into the enclosing block exactly like an inline UDF,
+    # then trace ONLY the loop under promotion. `forward!(::ForExpr)` binds the
+    # loop index before its body, so promoted references can resolve `f[idx]`.
+    pending = _get_inline_pending()
+    # Ragged vector cells get a data-sized flat-memory carrier. First materialise
+    # each cell length in transformed data (this accepts arbitrary data-only size
+    # expressions, not merely `K[i]`), then cumulative ends and flat storage.
+    # The logical RaggedVector binding is installed after the emit trace so it
+    # captures the memory declaration's final promoted qualifier.
+    for plan in values(ragged_plans)
+        emitted = forward!(canonical(:($(plan.lens) :: int[$(outer_dims[1])])); info)
+        pending !== nothing && push!(pending, emitted)
+    end
+    if !isempty(ragged_plans)
+        sizing_body = Any[
+            :($(plan.lens)[$(idxs[1])] = $(plan.size_expr))
+            for plan in values(ragged_plans)
+        ]
+        sizing_loop = Expr(
+            :for,
+            Expr(:(=), idxs[1], :(1:$(outer_dims[1]))),
+            Expr(:block, sizing_body...),
+        )
+        emitted = forward!(canonical(sizing_loop); info)
+        pending !== nothing && push!(pending, emitted)
+        for plan in values(ragged_plans)
+            emitted = forward!(canonical(:($(plan.ends) = cumulative_sum($(plan.lens)))); info)
+            pending !== nothing && push!(pending, emitted)
+            emitted = forward!(canonical(:($(plan.mem) :: vector[sum($(plan.lens))])); info)
+            pending !== nothing && push!(pending, emitted)
+        end
+    end
+    for decl in decls
+        emitted = forward!(canonical(decl); info)
+        pending !== nothing && push!(pending, emitted)
+    end
+    ctx = (idxs=idxs, cell_types=cell_types, cell_accessors=cell_accessors)
+    emitted_loop = task_local_storage(:_slic_plate_context, ctx) do
+        forward!(canonical(loop); info)
+    end
+    for plan in values(ragged_plans)
+        forward!(canonical(:($(plan.logical) = RaggedVector($(plan.mem), $(plan.ends)))); info)
+    end
+    emitted_loop
 end
 forward!(x::SamplingExpr; info) = begin
     lhs, rhs = forward!(x.args; info)
@@ -458,19 +1369,65 @@ forward!(x::BracesExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::VectExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
 forward!(x::DeclExpr; info) = begin
     @assert length(x.args) == 2
-    lhs, type = x.args
-    ct, s... = if _is_getindex_expr(type)
-        type.args
+    lhs, type_ann = x.args
+    ct, s... = if _is_getindex_expr(type_ann)
+        type_ann.args
     else
-        (type, )
+        (type_ann, )
     end
-    @assert ct isa Symbol
-    ct = gettype(ct)
-    t = StanType(ct, forward!.(s; info))
+    t = if ct isa Symbol
+        StanType(gettype(ct), forward!.(s; info))
+    else
+        # Computed type annotation (`typeof(...)` / `return_type_of(...)`, optionally
+        # `[dims]`-sized). Forward the base to a `tokenof{CT}` token, take its
+        # center type CT, and pick the NATURAL container for the given dims via
+        # `autotype` (real→vector, int→array[] int — matching jbroadcasted's
+        # inference). Explicit `[dims]` override the token's own size; otherwise
+        # the token carries the size (e.g. `typeof(some_vector)`).
+        tok = forward!(ct; info)
+        _decl_computed_type(tok, s; info)
+    end
+    # Fresh-declaration cert marker (Feature-1/plate): a SYMBOL-typed model
+    # declaration is provisionally a flat-prior parameter; its first certified
+    # indexed use dynamically selects the final role (`:fill` resets the qual
+    # from its RHS; `:sampled` stays a parameter) — decision `1dd0eww`, which
+    # lets one compiler-injected decl serve both inline fills and plate params.
+    # A COMPUTED-type decl (`::typeof(...)`/`return_type`, merged from devibe)
+    # keeps its natural qual from `_decl_computed_type` — no fresh-decl override.
+    ct isa Symbol && _is_model_decl_scope(info) &&
+        (t = remake(t; fresh_decl=true, decl_role=:unfilled, qual=:parameter))
     rv = StanExpr(lhs, t)
     lhs isa Symbol || return StanExpr(expr(forward!(lhs; info)), t)
-    info[lhs] = rv 
-    stan_expr(remake(x, rv))
+    info[lhs] = rv
+    # `SubModel.setindex!` flattens the symbol into the parent. Put that stored
+    # value into the declaration AST too, so later backward/distribution lookup
+    # uses the same name as the parent model's `info` key.
+    stan_expr(remake(x, info[lhs]))
+end
+# `types` is defined in functions.jl (included AFTER this file), so the token
+# check lives in the body (resolved at trace time), not the signature.
+_decl_computed_size_alias(size, info) = begin
+    aliases = _typed_assignment_aliases(info)
+    size_key = _typed_assignment_shape_key(size, NamedTuple())
+    for (name, access) in pairs(aliases)
+        isequal(size_key, access) && name in keys(info) && return info[name]
+    end
+    size
+end
+
+_decl_computed_type(tok, s; info) = begin
+    tt = type(tok)
+    center_type(tt) <: types.tokenof || error(
+        "type-annotation expression must evaluate to a type token (e.g. `typeof(...)` ",
+        "/ `return_type_of(...)`), got a value of Stan type `$(sigtype(tt))`."
+    )
+    cct = tt.info.value
+    raw_size = isempty(s) ? stan_size(tt) : Tuple(forward!.(s; info))
+    # Anonymous UDF args carry dimensions as raw `dims(arg)[i]` expressions.
+    # Reuse the signature's emitted size binding (`int n = dims(arg)[i]`) so a
+    # computed declaration emits `vector[n]`, not a quoted string dimension.
+    sz = Tuple(_decl_computed_size_alias(size, info) for size in raw_size)
+    autotype(StanType(cct, sz))
 end
 forward!(x::ForExpr; info) = begin
     @assert length(x.args) == 2
@@ -479,11 +1436,21 @@ forward!(x::ForExpr; info) = begin
     @assert _is_block_canonical(body)
     idx = head.args[1]
     @assert idx isa Symbol
-    info[idx] = StanExpr(idx, StanType(types.int))
+    # `:data`-qualify the loop index: it's a deterministic integer. Without an
+    # explicit qual it defaults to `:undefined`, which is lexicographically the
+    # LARGEST qual symbol and so poisons `stan_expr`'s `maximum(qual, args)` for any
+    # body expression referencing the index (`x[i]` → `max(:parameter, :undefined)`
+    # → `:undefined`), breaking qual-promotion of a model-body loop's fill target.
+    # Irrelevant to forward-only UDF bodies (no qual routing), so no regression there.
+    info[idx] = StanExpr(idx, StanType(types.int; qual=:data))
+    # A SubModel stores the index under a flattened parent name. The loop head
+    # must declare that SAME emitted symbol used by forwarded body references;
+    # keeping the raw local `idx` would produce `for(i ...) body[prefix_i]`.
+    emitted_idx = expr(info[idx])
     idx_range = forward!(head.args[2]; info)
     body = forward!(body; info)
     pop!(info, idx)
-    stan_expr(remake(x, remake(head, idx, idx_range), body))
+    stan_expr(remake(x, remake(head, emitted_idx, idx_range), body))
 end
 forward!(x::WhileExpr; info) = begin
     @assert length(x.args) == 2

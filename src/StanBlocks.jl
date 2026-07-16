@@ -1,7 +1,7 @@
 module StanBlocks
 
 export @slic, @defsig, @deffun, @lpxf, @lhs, @stan_assert
-export stan_code, stan_model, stan_instantiate, stanc_check
+export return_type_of, stan_code, stan_model, stan_instantiate, stanc_check
 export StanBlocksError
 
 using OrderedCollections, JSON, StanLogDensityProblems, LogDensityProblems, Markdown

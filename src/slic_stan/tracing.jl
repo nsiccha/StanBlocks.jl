@@ -26,7 +26,14 @@ Errors during tracing are wrapped in a [`StanBlocksError`](@ref
 StanBlocks.StanBlocksError) tagged with `phase = :transpile`.
 """
 function stan_model end
-const _StanBlocksError = parentmodule(@__MODULE__).StanBlocksError
+# Internal alias for the sibling error type (StanBlocks.jl defines it before this
+# include). Reference it DIRECTLY — not via `parentmodule(@__MODULE__)`. That
+# indirection was correct only while SLIC lived in the nested `module stan`
+# (parent = StanBlocks); after the hoist (1a3a4ae) `@__MODULE__` IS StanBlocks, so
+# under `include`-into-Main-from-source `parentmodule` resolves to `Main` and
+# `Main.StanBlocksError` is undefined (a normal `using` load is masked because a
+# top-level package module is its own parent).
+const _StanBlocksError = StanBlocksError
 _is_stanblocks_error(e::_StanBlocksError) = true
 _is_stanblocks_error(_) = false
 
@@ -234,11 +241,23 @@ _control_flow_kind(::IfExpr) = "if"
 _control_flow_kind(::ElseIfExpr) = "elseif"
 _control_flow_kind(::BreakExpr) = "break"
 _control_flow_kind(::ContinueExpr) = "continue"
+_control_flow_kind(::ComprehensionExpr) = "comprehension"
 _reject_model_control_flow(x) = x
 _reject_model_control_flow(x::CanonicalExpr) = (foreach(_reject_model_control_flow, x.args); x)
-_reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,ElseIfExpr,BreakExpr,ContinueExpr}) = error(
+_reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,ElseIfExpr,BreakExpr,ContinueExpr,ComprehensionExpr}) = error(
     "`$(_control_flow_kind(x))` control flow is not supported in @slic model bodies — ",
     "move the logic into an @deffun function body, or use a vectorised form."
+)
+# Slice/element assignment (`v[a:b] = …`, `v[i] = …`) is declare-then-fill: the
+# indexed LHS forwards to a non-Symbol expr that is never registered in `info`,
+# so the backward pass would otherwise die with a raw `KeyError` from the
+# OrderedDict. Reject it loudly here (BEFORE `forward!`, model-bodies only — so
+# it fires even when the RHS wouldn't resolve, and never touches @deffun bodies,
+# which ARE traced forward-only and DO support indexed assignment). §R3.
+_reject_model_control_flow(x::AssignmentExpr{<:CanonicalExprV{:getindex}}) = error(
+    "Indexed/slice assignment `", x.args[1].args[1], "[…] = …` is not supported in a @slic model ",
+    "body — only whole-variable assignment `name = …` is. Declare-then-fill (`v[a:b] = expr`) is ",
+    "available only inside an @deffun function body; move it there and call it (e.g. `v = fill_v(…)`)."
 )
 """
 Descends forwards through the expression tree. Basically _always_ returns a StanExpr.
@@ -333,8 +352,8 @@ canonical(x::CanonicalExprV{:ref}) = CanonicalExpr(:getindex, x.args...)
 # any dotted operator that is not (yet) handled:
 #   `.+` / `.-`        -> plain `+` / `-`  — Stan's `+`/`-` already broadcast
 #                         scalars over vectors/matrices; there is no dotted form.
-#   `.*` / `./` / `.^` -> `Base.BroadcastFunction` — Stan's `*`/`/`/`^` are matrix
-#                         ops, so the element-wise variant needs the dotted Stan op.
+#   `.*` / `./` / `.^` / `.÷` -> `Base.BroadcastFunction` — Stan's arithmetic is
+#                         matrix-oriented, so element-wise variants need this form.
 # Resolved once, at the `:call` canonicalization site, so adding a broadcast
 # operator is a single new method below.
 broadcast_callee(f) = f
@@ -344,12 +363,13 @@ broadcast_callee(::Symbol, ::Val{Symbol(".-")}) = -
 broadcast_callee(::Symbol, ::Val{Symbol(".*")}) = .*
 broadcast_callee(::Symbol, ::Val{Symbol("./")}) = ./
 broadcast_callee(::Symbol, ::Val{Symbol(".^")}) = .^
+broadcast_callee(::Symbol, ::Val{Symbol(".÷")}) = Base.BroadcastFunction(÷)
 broadcast_callee(f::Symbol, ::Val) = begin
     s = string(f)
     if startswith(s, '.') && length(s) > 1 && s != ".."
         error(
             "SLIC: broadcast operator `$f` is not supported in `@slic`/`@deffun` bodies. " *
-            "Supported broadcast operators: `.+` `.-` `.*` `./` `.^`. " *
+            "Supported broadcast operators: `.+` `.-` `.*` `./` `.^` `.÷`. " *
             "Stan's plain `+`, `-`, `*` already broadcast scalars over vectors/matrices, " *
             "so a non-dotted operator is often what you want. To add support for `$f`, " *
             "define a matching `broadcast_callee(::Symbol, ::Val{Symbol(\"$s\")})` method in tracing.jl."
@@ -398,8 +418,20 @@ get_module(info::StanModel) = get(info.meta, :mod, Main)
 get_module(info::AbstractDict) = get(info, :__mod__, Main)
 get_module(info::NamedTuple) = get(info, :__mod__, Main)
 get_module(info::SubModel) = get_module(parent(info))
+# Plate emission installs a task-local promotion context while re-tracing its
+# compiler-owned loop.  The forward layer adds the StanModel/SubModel method;
+# this floor keeps ordinary symbol resolution independent of that feature.
+_plate_promoted_reference(x, info) = nothing
 forward!(x::Symbol; info) = begin
-    x in keys(info) && return info[x]
+    # A ragged plate logical cell has no dense top-level declaration: the emit
+    # context maps it straight to a certified flat-memory slice. Consult that
+    # context before ordinary scope lookup so such logical names can resolve
+    # while the compiler-owned loop is being traced.
+    promoted = _plate_promoted_reference(x, info)
+    promoted === nothing || return promoted
+    if x in keys(info)
+        return info[x]
+    end
     _is_builtin_name(x) && return forward!(getproperty(builtin, x); info)
     mod = get_module(info)
     if isdefined(mod, x)

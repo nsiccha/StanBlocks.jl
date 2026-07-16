@@ -146,7 +146,7 @@ dummy_model = @slic begin
 end
 
 disk_posteriors = (;
-    disk=dummy_model(quote 
+    disk=Base.merge(dummy_model, quote 
         theta ~ disk()
     end)
 )
@@ -357,7 +357,7 @@ any_simplex = @slic begin
     xi ~ simplex_prior(constrain_f, prior_f, n)
     return simplex_constrain(xi, constrain_f)
 end
-dummy_simplex_model = dummy_model(quote 
+dummy_simplex_model = Base.merge(dummy_model, quote 
     theta ~ any_simplex(;constrain_f, prior_f, n=10)
 end)
 

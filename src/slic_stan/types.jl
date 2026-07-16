@@ -28,6 +28,17 @@ struct SubModel#{P,N,L}
     name#::N
     locals#::L
 end
+"""
+A named sub-model function, produced by `@slic f(args...) = body`. The singleton
+`SubmodelFn{:f}()` is bound to `f`; each `@slic f(...) = ...` adds a call method
+`(::SubmodelFn{:f})(args...; kwargs...) = SlicModel(body, data, mod)` that binds the
+positional args by name into the sub-model's data. Multiple definitions of the same
+`f` add methods → native multiple-dispatch. A call to a `SubmodelFn` is embedded as a
+sub-model by `stan_expr(::CanonicalExpr{<:SubmodelFn})` (the value it returns is a
+`SlicModel`, which flows through the existing embedding path). Contrast the anonymous
+`SlicModel` value built by `@slic begin ... end`.
+"""
+struct SubmodelFn{name} end
 abstract type AbstractStanType end
 struct StanExpr{E,T<:AbstractStanType}
     expr::E
@@ -73,6 +84,9 @@ GetPropertyExpr{T} = CanonicalExprV{:.,T}
 BracesExpr{T} = CanonicalExprV{:braces,T} 
 VectExpr{T} = CanonicalExprV{:vect,T} 
 DeclExpr{T} = CanonicalExprV{:(::),T} 
+ComprehensionExpr{T} = CanonicalExprV{:comprehension,T}
+GeneratorExpr{T} = CanonicalExprV{:generator,T}
+FilterExpr{T} = CanonicalExprV{:filter,T}
 ForExpr{T} = CanonicalExprV{:for,T}
 WhileExpr{T} = CanonicalExprV{:while,T}
 ColonExpr{T} = CanonicalExprV{:(:),T}
@@ -100,6 +114,11 @@ block(x::StanModel, name) = blocks(x)[name]
 Base.getindex(x::StanModel, name) = getindex(vars(x), name)
 Base.setindex!(x::StanModel, value, name) = setindex!(vars(x), value, name)
 Base.keys(x::StanModel) = keys(vars(x))
+# Drop a name from model scope. `forward!(::ForExpr)`/`backward!(::ForExpr)` add a
+# loop index then `pop!` it once the body is traced; this was only reachable with a
+# plain-Dict UDF scope before compiler-injected `for`s (Feature-1 ragged-simplex,
+# plating) landed loops in the top-level model body, where `info` is a StanModel.
+Base.pop!(x::StanModel, name) = pop!(vars(x), name)
 Base.parent(x::SubModel) = x.parent
 name(x::SubModel) = x.name
 locals(x::SubModel) = x.locals
@@ -109,7 +128,23 @@ Base.setindex!(x::SubModel, value, name) = begin
     setindex!(parent(x), supvalue(x, value), supname(x, name))
     setindex!(locals(x), getindex(parent(x), supname(x, name)), name)
 end
+# A symbol-valued local is represented by its FLATTENED name in the parent
+# model (`theta_x`, not `x`).  Replacing its type metadata later (qualifier,
+# declaration role, likelihood reachability) must keep that one prefix rather
+# than feeding the already-prefixed symbol through `supvalue` a second time.
+Base.setindex!(x::SubModel, value::StanExpr{Symbol}, local_name) = begin
+    parent_name = supname(x, local_name)
+    setindex!(parent(x), StanExpr(parent_name, type(value)), parent_name)
+    setindex!(locals(x), getindex(parent(x), parent_name), local_name)
+end
 Base.keys(x::SubModel) = keys(locals(x))
+# Compiler-owned loops temporarily register their index in whichever scope is
+# tracing the body.  Remove both views when that scope is a flattened submodel.
+Base.pop!(x::SubModel, local_name) = begin
+    value = pop!(locals(x), local_name)
+    pop!(parent(x), supname(x, local_name))
+    value
+end
 supname(x::SubModel, post) = Symbol(name(x), "_", post)
 supvalue(x::SubModel, value) = value
 supvalue(x::SubModel, value::StanExpr{Symbol}) = StanExpr(supname(x, expr(value)), type(value))
@@ -185,19 +220,34 @@ top_replace_components(x::Expr; rep::OrderedDict) = begin
     append!(args, values(rep))
     Expr(:block, args...)
 end
-model(x::SlicModel, args::Union{SamplingExpr,AssignmentExpr,ReturnExpr}...) = top_replace_components(model(x); rep=OrderedDict([
+# `Base.merge(submodel, stmts...)` — statement-splice composition: override the
+# body statements whose LHS-name matches, append the rest. This REPLACES the old
+# positional-call splice (`submodel(quote … end)`); a positional sub-model call now
+# errors loudly (see the call operator below).
+_splice_body(x::SlicModel, args::Union{SamplingExpr,AssignmentExpr,ReturnExpr}...) = top_replace_components(model(x); rep=OrderedDict([
     replace_name(arg)=>arg for arg in args
 ]))
 unblock(x::BlockExpr) = mapreduce(unblock, vcat, x.args)
 unblock(x::LineNumberNode) = []
 unblock(x) = [x]
-model(x::SlicModel, args::Union{BlockExpr,SamplingExpr,AssignmentExpr,ReturnExpr}...) = model(x, mapreduce(unblock, vcat, args)...)
-model(x::SlicModel, args::Expr...) = model(x, canonical.(args)...)
-(x::SlicModel)(args...; kwargs...) = SlicModel(model(x, args...), merge(data(x), kwargs), x.mod)
+_splice_body(x::SlicModel, args::Union{BlockExpr,SamplingExpr,AssignmentExpr,ReturnExpr}...) = _splice_body(x, mapreduce(unblock, vcat, args)...)
+_splice_body(x::SlicModel, args::Expr...) = _splice_body(x, canonical.(args)...)
+Base.merge(x::SlicModel, args...) = SlicModel(_splice_body(x, args...), data(x), x.mod)
+
+_submodel_positional_error(args...) = error(
+    "A @slic sub-model was called with positional argument(s). ",
+    "Data inputs are KEYWORD arguments (`submodel(; X=X)`); statement-splice overrides ",
+    "now use `Base.merge(submodel, stmts...)` (e.g. `Base.merge(base, quote … end)`); and ",
+    "positional scalar inputs require a named sub-model function declared with `@slic f(args...) = …`."
+)
+(x::SlicModel)(; kwargs...) = SlicModel(model(x), merge(data(x), kwargs), x.mod)
+(x::SlicModel)(arg, args...; kwargs...) = _submodel_positional_error(arg, args...)
 
 qual(x) = :data
 qual(x::StanExpr) = qual(type(x))
 qual(x::StanType) = get(info(x), :qual, :undefined)
+_is_fresh_decl(x::StanExpr) = get(info(type(x)), :fresh_decl, false)
+_decl_role(x::StanExpr) = get(info(type(x)), :decl_role, :none)
 lqual(x) = :undefined
 lqual(x::StanExpr) = lqual(type(x))
 lqual(x::StanType) = get(info(x), :lqual, :undefined) 
