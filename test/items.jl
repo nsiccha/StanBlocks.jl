@@ -2937,12 +2937,13 @@ Verify `slic: public plate inside a called submodel` in an isolated test item.
     end
 
     # Snag regression (plate-submodel-c-f792c57a): caller names ≠ submodel arg names.
-    # Both the fresh cell `b_z` and the `rv` `b_b` must be sized by the CALLER's
-    # `P`/`G`, never the raw submodel-local `k`/`n_groups` (absent at the root).
+    # Both the fresh cell `b_b_z` (`z` namespaced under the plate result `b`, then
+    # flattened by the submodel binding `b`) and the `rv` `b_b` must be sized by the
+    # CALLER's `P`/`G`, never the raw submodel-local `k`/`n_groups` (absent at the root).
     @test transpiles(c3_plate_in_submodel_renamed)
     @test stanc_compiles(c3_plate_in_submodel_renamed)
     let rcode = stan_code(c3_plate_in_submodel_renamed)
-        @test occursin(r"matrix\[P, G\] b_z", stan_block(rcode, "parameters"))
+        @test occursin(r"matrix\[P, G\] b_b_z", stan_block(rcode, "parameters"))
         let tp = stan_block(rcode, "transformed parameters")
             @test occursin(r"b_b\[:, b_plate_i__pl_\d+\]\s*=", tp)
             @test occursin(r"matrix\[P, G\] b\s*=\s*b_b", tp)
