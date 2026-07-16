@@ -758,6 +758,28 @@ end
 _is_native_constrained_ct(T) = T isa Type && (
     (T <: types.vector && T !== types.vector) || T <: types.square_matrix
 )
+# Sampling a native-constrained per-cell PARAMETER inside a plate
+# (`cell::simplex[k] ~ dirichlet(…)`) is not yet supported: the trace-then-
+# promote emitter has no per-cell constrained-transform path, so it stores the
+# cell in an UNCONSTRAINED `matrix[K,N]` outer decl (dropping the constraint AND
+# its jacobian — a silently WRONG model) and routes the `~` through the
+# vectorized `_lpdfs` companion, whose varargs signature emits an `anything`
+# return type that `stanc` rejects. `transpiles()` nonetheless reported success.
+# Reject loudly during tracing with the capability error instead of emitting
+# invalid Stan (snag plate-constraine-90607054).
+_reject_constrained_plate_cell(name, type_expr) = begin
+    ct = _is_getindex_expr(type_expr) ? type_expr.args[1] : type_expr
+    (ct isa Symbol && _is_native_constrained_ct(gettype(ct))) && error(
+        "plate: sampling a constrained per-cell parameter (`", name, "::",
+        pretty_type_expr(type_expr), " ~ …`) inside a plate is not supported yet. ",
+        "Constrained centers produced inside a plate (simplex/ordered/",
+        "positive_ordered/cholesky_factor_*/cov_matrix/corr_matrix) need the ",
+        "per-cell constrained-transform path, which the trace-then-promote plate ",
+        "emitter does not implement. Declare the constrained parameter at model ",
+        "scope instead (a ragged `p::simplex[Ks] ~ …` is supported), or use an ",
+        "unconstrained `vector[K]` cell."
+    )
+end
 forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     decl, rhs_raw = x.args
     name = decl.args[1]
@@ -767,6 +789,7 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     )
     promoted = _plate_promoted_lhs(name; info)
     if promoted !== nothing
+        _reject_constrained_plate_cell(name, decl.args[2])
         rhs = forward!(rhs_raw; info)::StanExpr
         return _forward_plate_sampling!(x, name, promoted, rhs; info)
     end

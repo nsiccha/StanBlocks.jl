@@ -2620,6 +2620,53 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
 end
 
 """
+Verify `slic: plate rejects constrained per-cell parameters` in an isolated test item.
+
+Regression for snag plate-constraine-90607054: sampling a native-constrained
+per-cell parameter inside a plate (`cell::simplex[k] ~ dirichlet(…)`) used to
+report `transpiles() == true` while emitting invalid Stan — an unconstrained
+`matrix[k,n]` cell decl plus an `anything`-returning `dirichlet_lpdfs` helper
+that `stanc` rejects. It must now fail LOUDLY during tracing with the explicit
+capability error rather than producing code.
+"""
+@testitem "slic: plate rejects constrained per-cell parameters" tags=[:slic, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    simplex_cell = @slic (; n = 3, k = 3) begin
+        p ~ plate(; outer = (n,)) do g
+            cell::simplex[k] ~ dirichlet(rep_vector(1.0, k))
+            cell
+        end
+    end
+    # Fails during tracing (before code is produced), not silently transpiles.
+    @test !transpiles(simplex_cell; re = false)
+    err = try
+        stan_code(simplex_cell)
+        ""
+    catch e
+        sprint(showerror, e)
+    end
+    @test occursin("constrained per-cell parameter", err)
+    @test occursin("not supported yet", err)
+
+    # Same rejection for a native-constrained matrix family (cholesky_factor_corr).
+    chol_cell = @slic (; n = 2, k = 3) begin
+        p ~ plate(; outer = (n,)) do g
+            L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
+            L
+        end
+    end
+    @test !transpiles(chol_cell; re = false)
+
+    # Control: an UNCONSTRAINED `vector[k]` cell is unaffected and still transpiles.
+    plain_cell = @slic (; n = 3, k = 3) begin
+        p ~ plate(; outer = (n,)) do g
+            z::vector[k] ~ std_normal()
+            z
+        end
+    end
+    @test transpiles(plain_cell)
+end
+
+"""
 Verify `slic: BRM-shaped ragged constraints compose with plate` in an isolated test item.
 """
 @testitem "slic: BRM-shaped ragged constraints compose with plate" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
