@@ -2411,15 +2411,15 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
     @test stanc_compiles(doblock)
     let code = stan_code(doblock)
         params = stan_block(code, "parameters")
-        @test occursin("vector[6] t", params)
+        @test occursin("vector[6] theta_t", params)    # fresh cell-local, namespaced under `theta`
         @test occursin(r"real<lower=0\.0> sigma", params)
-        @test !occursin("theta", params)               # theta is a TP fill, not a param
+        @test !occursin("theta;", params)              # theta is a TP fill, not a param (theta_t is the cell)
         tp = stan_block(code, "transformed parameters")
         @test occursin("vector[6] theta", tp)
-        @test occursin(r"theta\[plate_i\w*\] = t\[plate_i", tp)
+        @test occursin(r"theta\[plate_i\w*\] = theta_t\[plate_i", tp)
         mb = stan_block(code, "model")
-        @test occursin(r"t\[plate_i\w*\] ~ normal\(mu0", mb)
-        @test occursin(r"y\[plate_i\w*\] ~ normal\(t\[plate_i", mb)
+        @test occursin(r"theta_t\[plate_i\w*\] ~ normal\(mu0", mb)
+        @test occursin(r"y\[plate_i\w*\] ~ normal\(theta_t\[plate_i", mb)
     end
     # sampler dims = sigma + t[6]; theta is a deterministic TP fill, not a dim.
     @test LogDensityProblems.dimension(instantiate(doblock)) == 7
@@ -2438,12 +2438,12 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
     @test stanc_compiles(vec_cell)
     let code = stan_code(vec_cell)
         params = stan_block(code, "parameters")
-        @test occursin("matrix[6, n_series] z", params)       # per-cell vector → matrix column
+        @test occursin("matrix[6, n_series] b_z", params)     # per-cell vector → matrix column
         tp = stan_block(code, "transformed parameters")
         @test occursin("matrix[6, n_series] b", tp)
-        @test occursin(r"b\[:, plate_i\w*\] = \(diag_pre_multiply\(tau, L\) \* z\[:, plate_i", tp)
+        @test occursin(r"b\[:, plate_i\w*\] = \(diag_pre_multiply\(tau, L\) \* b_z\[:, plate_i", tp)
         mb = stan_block(code, "model")
-        @test occursin(r"z\[:, plate_i\w*\] ~ std_normal\(\)", mb)  # sampled per column
+        @test occursin(r"b_z\[:, plate_i\w*\] ~ std_normal\(\)", mb)  # sampled per column
         @test !occursin("b[:", mb)                            # the b fill is NOT in model
     end
 
@@ -2464,11 +2464,11 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
     @test stanc_compiles(priordead)
     let code = stan_code(priordead)
         params = stan_block(code, "parameters")
-        @test occursin("vector[4] w", params)               # w stays a PARAMETER (the fix)
+        @test occursin("vector[4] z_w", params)             # w stays a PARAMETER (the fix), namespaced under `z`
         @test occursin(r"real<lower=0\.0> tau", params)
         tp = stan_block(code, "transformed parameters")
         @test occursin("vector[4] z", tp)
-        @test occursin(r"z\[plate_i\w*\] = w\[plate_i", tp)
+        @test occursin(r"z\[plate_i\w*\] = z_w\[plate_i", tp)
         # The bug: w was RNG-lowered to generated quantities while z (TP) still
         # referenced it. Guard both the decl and the RNG draw are absent from GQ.
         gq = stan_block(code, "generated quantities")
@@ -2491,11 +2491,90 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
     @test transpiles(priorlive)
     @test stanc_compiles(priorlive)
     let code = stan_code(priorlive)
-        @test occursin("vector[4] w", stan_block(code, "parameters"))
+        @test occursin("vector[4] z_w", stan_block(code, "parameters"))
         @test occursin("vector[4] z", stan_block(code, "transformed parameters"))
         @test occursin(r"obs ~ normal\(z", stan_block(code, "model"))
     end
     @test LogDensityProblems.dimension(instantiate(priorlive)) == 5
+end
+
+"""
+Verify `slic: multiple plates reuse cell-local names hygienically` in an isolated
+test item. Two sequential independent plates that each use the SAME fresh cell-local
+name (`z ~ std_normal()`) must scope hygienically into two INDEPENDENT parameter
+carriers, not collide. Before the multiple-plate-l snag fix the second plate's
+discovery saw the first plate's leaked `z` and rejected `z ~ …` as "LHS bound to a
+parameter-qualified value". Regression for the BRM crossed-effects use case.
+"""
+@testitem "slic: multiple plates reuse cell-local names hygienically" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # BRM crossed-effects shape: two grouping factors, each its own plate, both
+    # using the natural fresh cell-local name `z`, then a JOINT likelihood.
+    crossed = @slic (; y = [0.2, -0.1, 0.3, 0.0], subject = [1, 1, 2, 2], item = [1, 2, 1, 2]) begin
+        b_subject ~ plate(; outer = (2,)) do s
+            z ~ std_normal()
+            z
+        end
+        b_item ~ plate(; outer = (2,)) do i
+            z ~ std_normal()
+            z
+        end
+        y ~ normal(b_subject[subject] + b_item[item], 1.0)
+    end
+    @test transpiles(crossed)
+    @test stanc_compiles(crossed)
+    let params = stan_block(stan_code(crossed), "parameters")
+        # Two INDEPENDENT carriers, each namespaced under its plate's result name.
+        @test occursin(r"vector\[2\] b_subject_z;", params)
+        @test occursin(r"vector\[2\] b_item_z;", params)
+    end
+    let mb = stan_block(stan_code(crossed), "model")
+        @test occursin(r"b_subject_z\[plate_i\w*\] ~ std_normal", mb)
+        @test occursin(r"b_item_z\[plate_i\w*\] ~ std_normal", mb)
+        @test occursin(r"y ~ normal\(\(b_subject\[subject\] \+ b_item\[item\]\)", mb)
+    end
+    # Independence at the sampler: 2 + 2 = 4 scalar dims (the two vector[2]
+    # carriers), b_subject/b_item are deterministic transformed-parameter fills.
+    @test LogDensityProblems.dimension(instantiate(crossed)) == 4
+
+    # Same hygiene must reach a CALLED submodel's internal fresh name: two plates
+    # bound to the same direct name `cell`, each calling the same submodel whose
+    # internal fresh name is `z`, must not collide.
+    @slic mp_ncp(k::int) = begin
+        z::vector[k] ~ std_normal()
+        return z
+    end
+    crossed_sub = @slic (; a = 1.0) begin
+        g1 ~ plate(; outer = (2,)) do s
+            cell ~ mp_ncp(3)
+            cell
+        end
+        g2 ~ plate(; outer = (2,)) do s
+            cell ~ mp_ncp(3)
+            cell
+        end
+        a ~ normal(sum(g1[1]) + sum(g2[1]), 1.0)
+    end
+    @test transpiles(crossed_sub)
+    @test stanc_compiles(crossed_sub)
+    let params = stan_block(stan_code(crossed_sub), "parameters")
+        @test occursin(r"matrix\[3, 2\] g1_cell_z;", params)
+        @test occursin(r"matrix\[3, 2\] g2_cell_z;", params)
+    end
+
+    # Ragged cell-locals reusing the same name across plates stay independent too.
+    crossed_ragged = @slic (; K = [2, 3, 4], y = 0.3) begin
+        r1 ~ plate(; outer = length(K)) do g
+            z::vector[K[g]] ~ std_normal()
+            z
+        end
+        r2 ~ plate(; outer = length(K)) do g
+            z::vector[K[g]] ~ std_normal()
+            z
+        end
+        y ~ normal(sum(r1[1]) + sum(r2[2]), 1.0)
+    end
+    @test transpiles(crossed_ragged)
+    @test stanc_compiles(crossed_ragged)
 end
 
 """
@@ -2507,25 +2586,27 @@ Verify `slic: public plate promotes called-submodel bindings` in an isolated tes
     code = stan_code(c3_plate_submodel_model)
 
     let parameters = stan_block(code, "parameters")
-        @test occursin("vector[6] cell_z", parameters)
+        # Submodel-internal `z` is namespaced under the plate result `theta` via
+        # the direct binding `cell` (`theta` + `cell` + `z`).
+        @test occursin("vector[6] theta_cell_z", parameters)
         @test occursin("real<lower=0.0> sigma", parameters)
     end
     let tp = stan_block(code, "transformed parameters")
-        @test occursin(r"cell_shifted\[plate_i__pl_\d+\]\s*=", tp)
-        @test occursin(r"cell\[plate_i__pl_\d+\]\s*=", tp)
-        @test occursin(r"theta\[plate_i__pl_\d+\]\s*=\s*cell\[plate_i__pl_\d+\]", tp)
+        @test occursin(r"theta_cell_shifted\[plate_i__pl_\d+\]\s*=", tp)
+        @test occursin(r"theta_cell\[plate_i__pl_\d+\]\s*=", tp)
+        @test occursin(r"theta\[plate_i__pl_\d+\]\s*=\s*theta_cell\[plate_i__pl_\d+\]", tp)
     end
     let model_block = stan_block(code, "model")
-        @test occursin(r"cell_z\[plate_i__pl_\d+\]\s*~\s*std_normal", model_block)
-        @test occursin(r"y\[plate_i__pl_\d+\]\s*~\s*normal\(cell\[plate_i__pl_\d+\]", model_block)
+        @test occursin(r"theta_cell_z\[plate_i__pl_\d+\]\s*~\s*std_normal", model_block)
+        @test occursin(r"y\[plate_i__pl_\d+\]\s*~\s*normal\(theta_cell\[plate_i__pl_\d+\]", model_block)
     end
 
     @test transpiles(c3_plate_vector_submodel_model)
     @test stanc_compiles(c3_plate_vector_submodel_model)
     vector_code = stan_code(c3_plate_vector_submodel_model)
-    @test occursin("matrix[k, n] cell_z", stan_block(vector_code, "parameters"))
-    @test occursin(r"cell_z\[:, plate_i__pl_\d+\]\s*~\s*std_normal", stan_block(vector_code, "model"))
-    @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*cell\[:, plate_i__pl_\d+\]", stan_block(vector_code, "transformed parameters"))
+    @test occursin("matrix[k, n] theta_cell_z", stan_block(vector_code, "parameters"))
+    @test occursin(r"theta_cell_z\[:, plate_i__pl_\d+\]\s*~\s*std_normal", stan_block(vector_code, "model"))
+    @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*theta_cell\[:, plate_i__pl_\d+\]", stan_block(vector_code, "transformed parameters"))
 end
 
 """
@@ -2535,47 +2616,47 @@ Verify `slic: public plate emits N-dimensional outer loops` in an isolated test 
     @test transpiles(c3_plate_outer_int_model)
     @test stanc_compiles(c3_plate_outer_int_model)
     int_code = stan_code(c3_plate_outer_int_model)
-    @test occursin("vector[4] z", stan_block(int_code, "parameters"))
+    @test occursin("vector[4] theta_z", stan_block(int_code, "parameters"))
     @test occursin("vector[4] theta", stan_block(int_code, "transformed parameters"))
     @test occursin(r"for\(plate_i__pl_\d+ in 1:4\)", stan_block(int_code, "model"))
 
     @test transpiles(c3_plate_outer_2d_scalar_model)
     @test stanc_compiles(c3_plate_outer_2d_scalar_model)
     scalar2_code = stan_code(c3_plate_outer_2d_scalar_model)
-    @test occursin("matrix[2, 3] z", stan_block(scalar2_code, "parameters"))
+    @test occursin("matrix[2, 3] theta_z", stan_block(scalar2_code, "parameters"))
     @test occursin("matrix[2, 3] theta", stan_block(scalar2_code, "transformed parameters"))
     let model_block = stan_block(scalar2_code, "model")
         @test occursin(r"for\(plate_i1__pl_\d+ in 1:2\)", model_block)
         @test occursin(r"for\(plate_i2__pl_\d+ in 1:3\)", model_block)
         @test occursin(r"y\[plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal", model_block)
-        @test occursin(r"z\[plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal", model_block)
+        @test occursin(r"theta_z\[plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal", model_block)
     end
 
     @test transpiles(c3_plate_outer_2d_vector_model)
     @test stanc_compiles(c3_plate_outer_2d_vector_model)
     vector2_code = stan_code(c3_plate_outer_2d_vector_model)
-    @test occursin("array[3] matrix[k, 2] z", stan_block(vector2_code, "parameters"))
+    @test occursin("array[3] matrix[k, 2] theta_z", stan_block(vector2_code, "parameters"))
     @test occursin("array[3] matrix[k, 2] theta", stan_block(vector2_code, "transformed parameters"))
     @test occursin(
-        r"z\[plate_i2__pl_\d+, :, plate_i1__pl_\d+\]\s*~\s*std_normal",
+        r"theta_z\[plate_i2__pl_\d+, :, plate_i1__pl_\d+\]\s*~\s*std_normal",
         stan_block(vector2_code, "model"),
     )
 
     @test transpiles(c3_plate_outer_3d_scalar_model)
     @test stanc_compiles(c3_plate_outer_3d_scalar_model)
     scalar3_code = stan_code(c3_plate_outer_3d_scalar_model)
-    @test occursin("array[4] matrix[2, 3] z", stan_block(scalar3_code, "parameters"))
+    @test occursin("array[4] matrix[2, 3] theta_z", stan_block(scalar3_code, "parameters"))
     @test occursin(
-        r"z\[plate_i3__pl_\d+, plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal",
+        r"theta_z\[plate_i3__pl_\d+, plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal",
         stan_block(scalar3_code, "model"),
     )
 
     @test transpiles(c3_plate_outer_4d_scalar_model)
     @test stanc_compiles(c3_plate_outer_4d_scalar_model)
     scalar4_code = stan_code(c3_plate_outer_4d_scalar_model)
-    @test occursin("array[4, 5] matrix[2, 3] z", stan_block(scalar4_code, "parameters"))
+    @test occursin("array[4, 5] matrix[2, 3] theta_z", stan_block(scalar4_code, "parameters"))
     @test occursin(
-        r"z\[plate_i3__pl_\d+, plate_i4__pl_\d+, plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal",
+        r"theta_z\[plate_i3__pl_\d+, plate_i4__pl_\d+, plate_i1__pl_\d+, plate_i2__pl_\d+\]\s*~\s*normal",
         stan_block(scalar4_code, "model"),
     )
 
@@ -2602,21 +2683,22 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
 
     direct = stan_code(c3_plate_ragged_model)
     let td = stan_block(direct, "transformed data")
-        @test occursin(r"array\[num_elements\(K\)\] int z__pl_len_\d+", td)
-        @test occursin(r"z__pl_len_\d+\[plate_i__pl_\d+\] = K\[plate_i__pl_\d+\]", td)
+        # rv `b`, fresh cell-local `z` → `b_z`; ragged carriers keep the `__pl_*` suffixes.
+        @test occursin(r"array\[num_elements\(K\)\] int b_z__pl_len_\d+", td)
+        @test occursin(r"b_z__pl_len_\d+\[plate_i__pl_\d+\] = K\[plate_i__pl_\d+\]", td)
         @test occursin("cumulative_sum", td)
     end
-    @test occursin(r"vector\[sum\(z__pl_len_\d+\)\] z__pl_mem_\d+", stan_block(direct, "parameters"))
+    @test occursin(r"vector\[sum\(b_z__pl_len_\d+\)\] b_z__pl_mem_\d+", stan_block(direct, "parameters"))
     @test occursin(
-        r"z__pl_mem_\d+\[ragged_start\(.*\):ragged_end\(.*\)\] ~ std_normal",
+        r"b_z__pl_mem_\d+\[ragged_start\(.*\):ragged_end\(.*\)\] ~ std_normal",
         stan_block(direct, "model"),
     )
     @test occursin(r"vector\[sum\(b__pl_len_\d+\)\] b__pl_mem_\d+", stan_block(direct, "transformed parameters"))
 
     called = stan_code(c3_plate_ragged_submodel_model)
-    @test occursin(r"vector\[sum\(cell_z__pl_len_\d+\)\] cell_z__pl_mem_\d+", stan_block(called, "parameters"))
-    @test occursin(r"(?s)cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", stan_block(called, "model"))
-    @test occursin(r"(?s)b__pl_mem_\d+\[.*?\]\s*=\s*cell__pl_mem_\d+\[", stan_block(called, "transformed parameters"))
+    @test occursin(r"vector\[sum\(b_cell_z__pl_len_\d+\)\] b_cell_z__pl_mem_\d+", stan_block(called, "parameters"))
+    @test occursin(r"(?s)b_cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", stan_block(called, "model"))
+    @test occursin(r"(?s)b__pl_mem_\d+\[.*?\]\s*=\s*b_cell__pl_mem_\d+\[", stan_block(called, "transformed parameters"))
 end
 
 """
@@ -2629,7 +2711,7 @@ Verify `slic: BRM-shaped ragged constraints compose with plate` in an isolated t
 
     let parameters = stan_block(code, "parameters")
         @test occursin("p_free__rcm_", parameters)
-        @test occursin(r"vector\[sum\(cell_z__pl_len_\d+\)\] cell_z__pl_mem_\d+", parameters)
+        @test occursin(r"vector\[sum\(b_cell_z__pl_len_\d+\)\] b_cell_z__pl_mem_\d+", parameters)
     end
     let tp = stan_block(code, "transformed parameters")
         @test occursin("cholesky_factor_corr_jacobian", tp)
