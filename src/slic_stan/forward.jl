@@ -1051,7 +1051,13 @@ end
 
 _plate_cell_shape(T, name) = begin
     stan_ndim(T) == 0 && return :scalar
-    (center_type(T) <: types.vector && stan_ndim(T) == 1) && return :vector
+    if center_type(T) <: types.vector && stan_ndim(T) == 1
+        # A native-constrained vector cell (simplex/ordered/positive_ordered) is
+        # stored as a Stan `array[N…] <ct>[K]` so Stan applies the constraint
+        # transform + jacobian per cell; a plain `vector[K]` cell is packed into a
+        # dense `matrix[K, N]` column instead (no per-cell constraint).
+        return _is_native_constrained_ct(center_type(T)) ? :constrained_vector : :vector
+    end
     error(
         "plate: unsupported per-cell type `", sigtype(T), "` for `", name,
         "` — scalar or vector[K] only (MVP)."
@@ -1111,6 +1117,14 @@ _plate_outer_decl(f, T::StanType, outer) = begin
         return Expr(:(::), f, _plate_type_expr(:matrix, sizes))
     end
     K = expr(stan_size(T)[1])
+    if shape === :constrained_vector
+        # `array[outer…] <ct>[K]`: outer dims lead (Stan array), the constrained
+        # core size K trails. `<ct>` (simplex/ordered/positive_ordered) declared
+        # in `parameters` gets Stan's native constraint transform + jacobian; in
+        # `transformed parameters` (the plate result copy) it is validate-only.
+        ct = center_type(T).name.name
+        return Expr(:(::), f, _plate_type_expr(ct, Any[outer...; K]))
+    end
     length(outer) == 1 && return Expr(:(::), f, _plate_type_expr(:matrix, Any[K, outer[1]]))
     sizes = Any[outer[2:end]...; K; outer[1]]
     Expr(:(::), f, _plate_type_expr(:matrix, sizes))
@@ -1123,6 +1137,10 @@ _plate_cell_index(f, T::StanType, idxs) = begin
         indices = Any[idxs[3:end]...; idxs[1]; idxs[2]]
         return Expr(:ref, f, indices...)
     end
+    # A native-constrained `array[N…] <ct>[K]` cell is indexed by its plate axes
+    # as a whole element (`cell[g]`); the plain-vector matrix packing takes a
+    # column (`cell[:, g]`) instead.
+    shape === :constrained_vector && return Expr(:ref, f, idxs...)
     indices = Any[idxs[2:end]...; Symbol(":"); idxs[1]]
     Expr(:ref, f, indices...)
 end
@@ -1205,14 +1223,18 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::StanModel) 
 # re-traced under the task-local `_slic_plate_context` that maps each cell name to
 # its outer array slot. VERIFIED contract boundary (BRM Complete-PLATE snag,
 # 2026-07-16) — consumers must not assume more than this is owned:
-#   • Cell VALUES: scalar or 1-D `vector[K]` ONLY (`_plate_cell_shape`, l.1052).
-#     `ndim≥2`/matrix cells error. Constrained centers created in-body are NOT
-#     carried: `_plate_outer_decl` emits a PLAIN `vector[N]`/`matrix[K,N]`, so a
-#     `~`-constraint (lower/simplex/cholesky/…) on a cell is dropped (or rejected
-#     for non-vector centers). Declare ragged/constrained parameters at model scope.
+#   • Cell VALUES: scalar or 1-D `vector[K]` (`_plate_cell_shape`, l.1052);
+#     `ndim≥2`/matrix cells error. A NATIVE-constrained 1-D vector center
+#     (simplex/ordered/positive_ordered, fixed `K`) IS carried now: it emits a
+#     Stan `array[N…] <ct>[K]` parameter (`:constrained_vector`) so Stan applies
+#     the per-cell constraint transform + jacobian; a plain `vector[K]` keeps the
+#     dense `matrix[K,N]` packing (snag plate-constraine-90607054). Still dropped:
+#     `~`-bound scalar constraints (lower/upper on a plain center) and constrained
+#     MATRIX families (cholesky/cov/corr) — declare those at model scope.
 #   • RAGGED cells: 1-D plain-vector with a DATA-computable per-cell length only
 #     (`_plate_is_ragged_cell` / `_plate_ragged_plan`). N-D/arbitrary raggedness
-#     and ragged CONSTRAINED cells are rejected.
+#     and ragged CONSTRAINED cells (varying-`K` simplex/…) are rejected — Stan
+#     cannot declare `array[N] simplex[K[g]]`.
 #   • Per-cell LIKELIHOOD is HALF-owned. The pointwise DENSITY (lpdf/lpmf) loop IS
 #     compiler-owned — an indexed data-LHS `obs[i] ~ dist(...)` routes to the model
 #     block (passes.jl:206); a cv-flipped per-cell PARAMETER redraws in GQ
