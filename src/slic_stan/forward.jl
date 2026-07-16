@@ -1194,14 +1194,18 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::StanModel) 
 # re-traced under the task-local `_slic_plate_context` that maps each cell name to
 # its outer array slot. VERIFIED contract boundary (BRM Complete-PLATE snag,
 # 2026-07-16) — consumers must not assume more than this is owned:
-#   • Cell VALUES: scalar or 1-D `vector[K]` ONLY (`_plate_cell_shape`, l.1052).
-#     `ndim≥2`/matrix cells error. Constrained centers created in-body are NOT
-#     carried: `_plate_outer_decl` emits a PLAIN `vector[N]`/`matrix[K,N]`, so a
-#     `~`-constraint (lower/simplex/cholesky/…) on a cell is dropped (or rejected
-#     for non-vector centers). Declare ragged/constrained parameters at model scope.
+#   • Cell VALUES: scalar or 1-D `vector[K]` (`_plate_cell_shape`, l.1052);
+#     `ndim≥2`/matrix cells error. A NATIVE-constrained 1-D vector center
+#     (simplex/ordered/positive_ordered, fixed `K`) IS carried now: it emits a
+#     Stan `array[N…] <ct>[K]` parameter (`:constrained_vector`) so Stan applies
+#     the per-cell constraint transform + jacobian; a plain `vector[K]` keeps the
+#     dense `matrix[K,N]` packing (snag plate-constraine-90607054). Still dropped:
+#     `~`-bound scalar constraints (lower/upper on a plain center) and constrained
+#     MATRIX families (cholesky/cov/corr) — declare those at model scope.
 #   • RAGGED cells: 1-D plain-vector with a DATA-computable per-cell length only
 #     (`_plate_is_ragged_cell` / `_plate_ragged_plan`). N-D/arbitrary raggedness
-#     and ragged CONSTRAINED cells are rejected.
+#     and ragged CONSTRAINED cells (varying-`K` simplex/…) are rejected — Stan
+#     cannot declare `array[N] simplex[K[g]]`.
 #   • Per-cell LIKELIHOOD is HALF-owned. The pointwise DENSITY (lpdf/lpmf) loop IS
 #     compiler-owned — an indexed data-LHS `obs[i] ~ dist(...)` routes to the model
 #     block (passes.jl:206); a cv-flipped per-cell PARAMETER redraws in GQ
