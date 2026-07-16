@@ -423,9 +423,13 @@ get_module(info::SubModel) = get_module(parent(info))
 # this floor keeps ordinary symbol resolution independent of that feature.
 _plate_promoted_reference(x, info) = nothing
 forward!(x::Symbol; info) = begin
+    # A ragged plate logical cell has no dense top-level declaration: the emit
+    # context maps it straight to a certified flat-memory slice. Consult that
+    # context before ordinary scope lookup so such logical names can resolve
+    # while the compiler-owned loop is being traced.
+    promoted = _plate_promoted_reference(x, info)
+    promoted === nothing || return promoted
     if x in keys(info)
-        promoted = _plate_promoted_reference(x, info)
-        promoted === nothing || return promoted
         return info[x]
     end
     _is_builtin_name(x) && return forward!(getproperty(builtin, x); info)

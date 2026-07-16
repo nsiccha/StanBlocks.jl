@@ -244,6 +244,27 @@ end
 
 _get_inline_pending() = get(task_local_storage(), :_slic_inline_pending, nothing)
 
+# Ragged informative priors are emitted as compiler-owned indexed sampling
+# statements over the constrained view.  Keep the certificate task-local: an
+# ordinary user-authored `derived[i] ~ dist(...)` remains rejected by the
+# generic already-bound-LHS rule, while the lowering below may deliberately add
+# density to the transformed ragged value.
+_ragged_density_targets() =
+    get(task_local_storage(), :_slic_ragged_density_targets, ())
+_is_ragged_density_target(name::Symbol) = name in _ragged_density_targets()
+
+# Trace-time marker used only while rewriting distribution arguments for one
+# ragged group.  `builtin.jl` supplies the type-aware expansion after the
+# RaggedVector/RaggedMatrix usertypes exist: ragged args become `arg[g]`, while
+# shared scalars/dense values pass through unchanged.
+function _ragged_group_arg end
+_ragged_group_rhs(rhs::CanonicalExpr, g) = begin
+    args = map(a -> CanonicalExpr(_ragged_group_arg, a, g), rhs.args)
+    CanonicalExpr(head(rhs), args...; rhs.kwargs...)
+end
+_ragged_rhs_is_flat(rhs) = _is_canonical_expr(rhs) && head(rhs) === :flat &&
+    isempty(rhs.args) && isempty(rhs.kwargs)
+
 # A plate's second trace runs inside the real model scope, but every discovered
 # cell-local binding is represented there by an outer array.  Keep the mapping
 # task-local so normal tracing stays untouched and submodels can participate:
@@ -259,12 +280,14 @@ _plate_context_entry(name::Symbol; info) = begin
     ctx === nothing && return nothing
     global_name = _plate_global_name(info, name)
     haskey(ctx.cell_types, global_name) || return nothing
-    (global_name=global_name, cell_type=ctx.cell_types[global_name], idxs=ctx.idxs)
+    accessor = get(ctx.cell_accessors, global_name, nothing)
+    (global_name=global_name, cell_type=ctx.cell_types[global_name], idxs=ctx.idxs, accessor)
 end
 _plate_promoted_lhs(name::Symbol; info) = begin
     entry = _plate_context_entry(name; info)
     entry === nothing && return nothing
-    canonical(_plate_cell_index(entry.global_name, entry.cell_type, entry.idxs))
+    canonical(entry.accessor === nothing ?
+        _plate_cell_index(entry.global_name, entry.cell_type, entry.idxs) : entry.accessor)
 end
 _plate_promoted_reference(name::Symbol, info::Union{StanModel,SubModel}) = begin
     lhs = _plate_promoted_lhs(name; info)
@@ -752,16 +775,18 @@ end
 #   • a compile-time ragged pairing bound to `name`
 # All statements are injected via `_slic_inline_pending` (they never enter the raw
 # body, so they bypass `_reject_model_control_flow`) and routed to their blocks by
-# `distribute!`. NOTE (scope decision 1mfltua): only the explicit `flat()` base
-# measure is accepted. Applying an informative RHS would require `p[g] ~ dist`
-# inside the injected loop (the Feature-2 `~`-aware superset), so reject it loudly
-# until that lowering exists rather than silently dropping the user's prior.
+# `distribute!`. Informative RHS distributions add a second compiler-owned loop
+# after the view binding: `name[g] ~ dist(group_arg(args, g)...)`. The same
+# fine-grained ForExpr router used by plate sends that loop to `model`; ragged
+# distribution arguments are indexed per group while shared arguments remain
+# unchanged.
 _forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) = begin
-    rhs_is_flat = _is_canonical_expr(rhs_raw) && head(rhs_raw) === :flat &&
-        isempty(rhs_raw.args) && isempty(rhs_raw.kwargs)
-    rhs_is_flat || error(
-        "Ragged constrained `$name::$ct[…]` currently supports only `~ flat()`. ",
-        "Informative RHS priors are not implemented and must not be silently ignored."
+    _is_canonical_expr(rhs_raw) || error(
+        "Ragged constrained `$name::$ct[…] ~ rhs` requires rhs to be a distribution call."
+    )
+    isempty(rhs_raw.kwargs) || error(
+        "Ragged constrained `$name::$ct[…]` does not accept distribution constraint kwargs. ",
+        "Put the constraint in the declared center type and pass prior parameters positionally."
     )
     if ct in (:simplex, :ordered, :positive_ordered)
         _forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info)
@@ -774,6 +799,30 @@ _forward_ragged_constrained!(name, ct, sizes, rhs_raw; info) = begin
             "`cholesky_factor_corr`, and square `cholesky_factor_cov`."
         )
     end
+end
+
+_ragged_density_stmt(name, Ks, rhs_raw, g) = _ragged_rhs_is_flat(rhs_raw) ?
+    nothing : :(for $g in 1:length($Ks)
+                    $name[$g] ~ $(_ragged_group_rhs(rhs_raw, g))
+                end)
+_trace_ragged_stmts(stmts, name; info, certify_density::Bool=false) = begin
+    targets = (_ragged_density_targets()..., name)
+    traced = task_local_storage(:_slic_ragged_density_targets, targets) do
+        _do_retrace_inline_body(stmts; info)
+    end
+    # The task-local certificate above is sufficient during `forward!`, but the
+    # backward likelihood-reachability pass runs after tracing has left that
+    # dynamic scope.  Stamp the underlying constrained-memory declaration so an
+    # indexed `mem[lo:hi] ~ prior(...)` remains recognisable as a compiler-owned
+    # ragged density (and not as forbidden user sampling of a derived value).
+    if certify_density
+        ragged = info[name]
+        mem = expr(ragged).args[1]
+        mem_key = _base_lhs_symbol(mem)
+        root = _plate_root_info(info)
+        root[mem_key] = remake(root[mem_key]; ragged_density=true)
+    end
+    traced
 end
 
 _forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info) = begin
@@ -805,7 +854,9 @@ _forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info) = begin
           end),
         :($name = RaggedVector($pmem, $cend)),           # ragged view (representation bae1167)
     ]
-    _do_retrace_inline_body(stmts; info)
+    density = _ragged_density_stmt(name, Ks, rhs_raw, g)
+    density === nothing || push!(stmts, density)
+    _trace_ragged_stmts(stmts, name; info, certify_density=density !== nothing)
 end
 
 _forward_ragged_matrix_constrained!(name, ct, sizes, rhs_raw; info) = begin
@@ -847,7 +898,9 @@ _forward_ragged_matrix_constrained!(name, ct, sizes, rhs_raw; info) = begin
           end),
         :($name = RaggedMatrix($pmem, $cend, $Ks, $Ks)),
     ]
-    _do_retrace_inline_body(stmts; info)
+    density = _ragged_density_stmt(name, Ks, rhs_raw, g)
+    density === nothing || push!(stmts, density)
+    _trace_ragged_stmts(stmts, name; info, certify_density=density !== nothing)
 end
 # Indexed sampling is the plate producer's declaration certificate.  The
 # producer first emits an outer-sized fresh declaration, then rewrites a
@@ -864,6 +917,13 @@ _forward_indexed_sampling!(x; info) = begin
     lhs = forward!(lhs_raw; info)
     rhs = forward!(rhs_raw; info)::StanExpr
     base = info[k]
+    if _is_ragged_density_target(k)
+        (center_type(base) <: RaggedVector || center_type(base) <: RaggedMatrix) || error(
+            "Compiler-certified ragged density target `", k,
+            "` is not backed by a RaggedVector/RaggedMatrix."
+        )
+        return remake(x, lhs, rhs)
+    end
     if _is_fresh_decl(base)
         role = _decl_role(base)
         role == :fill && error(
@@ -903,8 +963,9 @@ forward!(x::SamplingExpr{<:CanonicalExprV{:getindex},<:StanExpr}; info) =
 # fresh `~`/`=` LHS in the body is promoted to an outer collection indexed by
 # every loop axis; the trailing expression is each cell's output, filled into
 # `rv`. An integer `outer=N` is the 1-D shorthand; tuples emit nested loops.
-# Current cell-shape scope: scalar or vector[K] values; no vararg params; the
-# body must end in a value expression.
+# Current cell-shape scope: scalar, fixed `vector[K]`, or heterogeneous
+# one-dimensional `vector[K[i]]` values; no vararg params; the body must end in
+# a value expression.
 # Used only to reject a terminal `~`/`=` statement with a clear error. Fresh
 # binding discovery itself is trace-based (`_plate_discover` below).
 _plate_fresh_info(s) = begin
@@ -941,6 +1002,45 @@ _plate_cell_shape(T, name) = begin
         "plate: unsupported per-cell type `", sigtype(T), "` for `", name,
         "` — scalar or vector[K] only (MVP)."
     )
+end
+
+# A vector cell is ragged when its inferred length depends on the plate's own
+# loop index. Discovery already traces size expressions (including through a
+# called submodel), so this is an expression-level dependency test rather than
+# an AST guess at the do-block source.
+_plate_depends_on(x, idxs) = false
+_plate_depends_on(x::Symbol, idxs) = x in idxs
+_plate_depends_on(x::StanExpr, idxs) = _plate_depends_on(expr(x), idxs)
+_plate_depends_on(x::CanonicalExpr, idxs) = any(a -> _plate_depends_on(a, idxs), x.args)
+_plate_depends_on(x::Union{Tuple,NamedTuple,AbstractVector}, idxs) =
+    any(a -> _plate_depends_on(a, idxs), x)
+_plate_is_ragged_cell(T::StanType, idxs) =
+    center_type(T) <: types.vector && stan_ndim(T) == 1 &&
+    _plate_depends_on(stan_size(T)[1], idxs)
+
+_plate_ragged_plan(f, T::StanType, outer, idxs, id) = begin
+    length(outer) == 1 || error(
+        "plate: ragged vector cells currently require a one-dimensional `outer`; ",
+        "got $(length(outer)) axes for `$f`."
+    )
+    center_type(T) === types.vector || error(
+        "plate: ragged constrained cell `$f::$(sigtype(T))` needs the constrained-",
+        "parameter transform path and is not represented as unconstrained flat memory. ",
+        "Use a plain `vector[K[i]]` cell here, or declare the ragged constrained ",
+        "parameter at model scope."
+    )
+    qual(stan_size(T)[1]) == :data || error(
+        "plate: ragged cell length for `$f` must be data-computable, got a ",
+        "$(qual(stan_size(T)[1]))-qualified size expression. Stan parameter ",
+        "dimensions cannot depend on parameters or generated quantities."
+    )
+    mem = Symbol(f, :__pl_mem_, id)
+    lens = Symbol(f, :__pl_len_, id)
+    ends = Symbol(f, :__pl_end_, id)
+    idx = only(idxs)
+    accessor = :($mem[ragged_start($ends, $idx):ragged_end($ends, $idx)])
+    (; logical=f, cell_type=T, mem, lens, ends,
+       size_expr=expr(stan_size(T)[1]), accessor)
 end
 
 # Outer collection decl + per-cell accessor from DISCOVERED StanTypes. The
@@ -992,7 +1092,11 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::StanModel) 
         end
         if isempty(iterables)
             for (param, idx) in zip(params, idxs)
-                probe[param] = StanExpr(param, StanType(types.int; qual=:data))
+                # The do-block parameter is an alias for this plate axis, not a
+                # distinct Stan variable. Preserve that alias in discovered size
+                # expressions (`K[g]` becomes `K[plate_i]`) so ragged dependency
+                # analysis sees the same index that emit-time substitution uses.
+                probe[param] = StanExpr(idx, StanType(types.int; qual=:data))
             end
         else
             for (a, it) in zip(params, iterables)
@@ -1094,16 +1198,31 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     cell_types = Dict{Symbol,Any}(fresh)
     haskey(cell_types, rv) && error("plate: result `$rv` collides with a fresh binding in the do-block.")
     rv in keys(info) && error("plate: result `$rv` is already bound in model scope.")
+    all_cell_types = copy(cell_types)
+    all_cell_types[rv] = rv_type
+
+    ragged_plans = Dict{Symbol,Any}()
+    for (f, T) in all_cell_types
+        _plate_is_ragged_cell(T, idxs) || continue
+        ragged_plans[f] = _plate_ragged_plan(f, T, outer_dims, idxs, id)
+    end
+    cell_accessors = Dict{Symbol,Any}(
+        f => plan.accessor for (f, plan) in ragged_plans if haskey(cell_types, f)
+    )
 
     # Positional do-block params still lower syntactically to per-cell input
     # accessors. Fresh names stay untouched: the task-local promotion context
     # rewrites them while tracing, including names hidden inside submodels.
     loop_body = Any[_subst_syms(s, input_subst) for s in body_stmts]
     ret_cell = _subst_syms(ret_expr, input_subst)
-    push!(loop_body, :($(_plate_cell_index(rv, rv_type, idxs)) = $ret_cell))
+    rv_accessor = haskey(ragged_plans, rv) ?
+        ragged_plans[rv].accessor : _plate_cell_index(rv, rv_type, idxs)
+    push!(loop_body, :($rv_accessor = $ret_cell))
 
-    decls = Any[_plate_outer_decl(f, T, outer_dims) for (f, T) in fresh]
-    push!(decls, _plate_outer_decl(rv, rv_type, outer_dims))
+    decls = Any[
+        _plate_outer_decl(f, T, outer_dims)
+        for (f, T) in all_cell_types if !haskey(ragged_plans, f)
+    ]
     # NB: build each iteration spec as `Expr(:(=), idx, 1:N)` — a hand-built
     # `Expr(:for, :(idx in 1:N), …)` yields an `:in` CALL spec, not the `:(=)`
     # form `forward!(::ForExpr)` asserts (a quoted `for` auto-normalizes it).
@@ -1117,14 +1236,46 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     # then trace ONLY the loop under promotion. `forward!(::ForExpr)` binds the
     # loop index before its body, so promoted references can resolve `f[idx]`.
     pending = _get_inline_pending()
+    # Ragged vector cells get a data-sized flat-memory carrier. First materialise
+    # each cell length in transformed data (this accepts arbitrary data-only size
+    # expressions, not merely `K[i]`), then cumulative ends and flat storage.
+    # The logical RaggedVector binding is installed after the emit trace so it
+    # captures the memory declaration's final promoted qualifier.
+    for plan in values(ragged_plans)
+        emitted = forward!(canonical(:($(plan.lens) :: int[$(outer_dims[1])])); info)
+        pending !== nothing && push!(pending, emitted)
+    end
+    if !isempty(ragged_plans)
+        sizing_body = Any[
+            :($(plan.lens)[$(idxs[1])] = $(plan.size_expr))
+            for plan in values(ragged_plans)
+        ]
+        sizing_loop = Expr(
+            :for,
+            Expr(:(=), idxs[1], :(1:$(outer_dims[1]))),
+            Expr(:block, sizing_body...),
+        )
+        emitted = forward!(canonical(sizing_loop); info)
+        pending !== nothing && push!(pending, emitted)
+        for plan in values(ragged_plans)
+            emitted = forward!(canonical(:($(plan.ends) = cumulative_sum($(plan.lens)))); info)
+            pending !== nothing && push!(pending, emitted)
+            emitted = forward!(canonical(:($(plan.mem) :: vector[sum($(plan.lens))])); info)
+            pending !== nothing && push!(pending, emitted)
+        end
+    end
     for decl in decls
         emitted = forward!(canonical(decl); info)
         pending !== nothing && push!(pending, emitted)
     end
-    ctx = (idxs=idxs, cell_types=cell_types)
-    task_local_storage(:_slic_plate_context, ctx) do
+    ctx = (idxs=idxs, cell_types=cell_types, cell_accessors=cell_accessors)
+    emitted_loop = task_local_storage(:_slic_plate_context, ctx) do
         forward!(canonical(loop); info)
     end
+    for plan in values(ragged_plans)
+        forward!(canonical(:($(plan.logical) = RaggedVector($(plan.mem), $(plan.ends)))); info)
+    end
+    emitted_loop
 end
 forward!(x::SamplingExpr; info) = begin
     lhs, rhs = forward!(x.args; info)
@@ -1173,7 +1324,7 @@ forward!(x::DeclExpr; info) = begin
     t = if ct isa Symbol
         StanType(gettype(ct), forward!.(s; info))
     else
-        # Computed type annotation (`typeof(...)` / `return_type(...)`, optionally
+        # Computed type annotation (`typeof(...)` / `return_type_of(...)`, optionally
         # `[dims]`-sized). Forward the base to a `tokenof{CT}` token, take its
         # center type CT, and pick the NATURAL container for the given dims via
         # `autotype` (real→vector, int→array[] int — matching jbroadcasted's
@@ -1205,7 +1356,7 @@ _decl_computed_type(tok, s; info) = begin
     tt = type(tok)
     center_type(tt) <: types.tokenof || error(
         "type-annotation expression must evaluate to a type token (e.g. `typeof(...)` ",
-        "/ `return_type(...)`), got a value of Stan type `$(sigtype(tt))`."
+        "/ `return_type_of(...)`), got a value of Stan type `$(sigtype(tt))`."
     )
     cct = tt.info.value
     sz = isempty(s) ? stan_size(tt) : Tuple(forward!.(s; info))
