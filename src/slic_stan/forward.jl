@@ -450,6 +450,134 @@ _is_assign_canonical(::CanonicalExprV{:(=)}) = true
 _is_assign_canonical(_) = false
 _is_block_canonical(::CanonicalExprV{:block}) = true
 _is_block_canonical(_) = false
+
+# A bounded one-dimensional comprehension in an `@deffun` body is syntax sugar
+# for the local declaration + indexed-fill loop authors otherwise write by hand:
+#
+#     [f(i) for i in lo:hi]
+#
+# becomes (using a per-trace fresh result name):
+#
+#     result::typeof(f(lo))[hi - lo + 1]
+#     for i in lo:hi
+#         result[i - lo + 1] = f(i)
+#     end
+#     result
+#
+# Keep the accepted surface intentionally narrow.  A fixed `lo:hi` range gives
+# both Stan's loop bounds and the output size without inventing collection
+# iteration semantics; scalar elements keep the output one-dimensional.  The
+# dedicated errors below prevent Julia's richer generator/filter ASTs from
+# falling into the generic `forward!` error or, worse, being partly lowered.
+_contains_comprehension(::Any) = false
+_contains_comprehension(::ComprehensionExpr) = true
+_contains_comprehension(x::CanonicalExpr) = any(_contains_comprehension, x.args)
+
+function _bounded_comprehension_parts(x::ComprehensionExpr)
+    length(x.args) == 1 && x.args[1] isa GeneratorExpr || error(
+        "@deffun array comprehension: expected exactly one generator. ",
+        "Only `[expr for i in lo:hi]` is supported."
+    )
+    generator = x.args[1]
+    length(generator.args) == 2 || error(
+        "@deffun array comprehension: nested or multiple generators are not supported. ",
+        "Use one bounded generator `[expr for i in lo:hi]` or write the nested loops explicitly."
+    )
+    value, iteration = generator.args
+    iteration isa FilterExpr && error(
+        "@deffun array comprehension: filtered generators are not supported. ",
+        "Write an explicit loop when the output length depends on a condition."
+    )
+    iteration isa AssignmentExpr || error(
+        "@deffun array comprehension: expected a generator binding `i = lo:hi`, got `", iteration, "`."
+    )
+    idx, range = iteration.args
+    idx isa Symbol || error(
+        "@deffun array comprehension: the generator must bind one Symbol, got `", idx, "`."
+    )
+    _contains_comprehension(value) && error(
+        "@deffun array comprehension: nested comprehensions are not supported. ",
+        "Write the nested loops explicitly."
+    )
+    value, idx, range
+end
+
+_is_literal_one(x) = x == 1
+_is_literal_one(x::StanExpr) = _is_literal_one(expr(x))
+
+function forward!(x::ComprehensionExpr; info)
+    value_raw, idx, range_raw = _bounded_comprehension_parts(x)
+    pending = _get_inline_pending()
+    pending === nothing && error(
+        "@deffun array comprehension lowering requires a statement context; ",
+        "bind or return the comprehension from an @deffun body."
+    )
+
+    range = forward!(range_raw; info)
+    range isa StanExpr && expr(range) isa CanonicalExpr{Colon} &&
+        length(expr(range).args) == 2 || error(
+            "@deffun array comprehension: the generator must use one bounded `lo:hi` range. ",
+            "Arbitrary iterable and stepped-range generators are not supported."
+        )
+    range_expr = expr(range)
+    result_size = stan_size(range, 1)
+
+    had_idx = idx in keys(info)
+    old_idx = had_idx ? info[idx] : nothing
+    info[idx] = StanExpr(idx, StanType(types.int; qual=:data))
+    emitted_idx = info[idx]
+    try
+        # Inline calls (and a future supported expression-level lowering) may
+        # contribute pre-statements.  Isolate them so they stay INSIDE this
+        # comprehension's loop instead of leaking into the enclosing block.
+        value, loop_stmts = task_local_storage(:_slic_inline_pending, Any[]) do
+            value = forward!(value_raw; info)
+            value isa StanExpr || error(
+                "@deffun array comprehension: element expression forwarded to `",
+                typeof(value), "`, expected a scalar Stan expression."
+            )
+            value, copy(task_local_storage(:_slic_inline_pending))
+        end
+        value_type = type(value)
+        (center_type(value_type) <: types.complex && stan_ndim(value_type) == 0) || error(
+            "@deffun array comprehension: the element expression must yield one scalar numeric value; ",
+            "got Stan type `", sigtype(value_type), "`."
+        )
+
+        id = _next_inline_id()
+        result_name = Symbol(:comprehension_result__lc_, id)
+        while result_name in keys(info)
+            id = _next_inline_id()
+            result_name = Symbol(:comprehension_result__lc_, id)
+        end
+        result_type = autotype(StanType(center_type(value_type), (result_size,)))
+        _is_model_decl_scope(info) && (result_type = remake(
+            result_type; fresh_decl=true, decl_role=:unfilled, qual=:parameter
+        ))
+        info[result_name] = StanExpr(result_name, result_type)
+        result = info[result_name]
+        declaration = stan_expr(CanonicalExpr(:(::), result))
+
+        lo = range_expr.args[1]
+        result_idx = if _is_literal_one(lo)
+            emitted_idx
+        else
+            forward!(CanonicalExpr(+, CanonicalExpr(-, emitted_idx, lo), 1); info)
+        end
+        fill = forward!(CanonicalExpr(
+            :(=), CanonicalExpr(getindex, result, result_idx), value
+        ); info)
+        push!(loop_stmts, fill)
+        loop_head = CanonicalExpr(:(=), emitted_idx, range)
+        loop = stan_expr(CanonicalExpr(:for, loop_head, CanonicalExpr(:block, loop_stmts...)))
+
+        push!(pending, declaration, loop)
+        info[result_name]
+    finally
+        had_idx ? (info[idx] = old_idx) : pop!(info, idx)
+    end
+end
+
 _check_assignment_rhs(name, ::SlicModel) = error(
     "`$name = <submodel>(...)` is not supported — sub-models can only be embedded via `~`. ",
     "Use `$name ~ <submodel>(...)` instead.")

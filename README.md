@@ -45,7 +45,7 @@ Upcoming features, in rough priority order:
 * keyword + default arguments to `@deffun`,
 * `void` UDFs (side-effect-only functions),
 * easier custom parameter transformations (sampler parametrization ↔ user parametrization),
-* array comprehensions,
+* broader array-comprehension forms beyond the bounded one-dimensional `@deffun` subset,
 * a more complete (and more correct) coverage of built-in Stan functions,
 * elimination of unused (size) variables in UDFs,
 * and more.
