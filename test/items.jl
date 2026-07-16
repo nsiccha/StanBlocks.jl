@@ -577,6 +577,28 @@ end
         end
     end
 
+    # Heterogeneous vector cells use one data-sized flat-memory carrier per
+    # discovered binding. Discovery must retain the actual plate index inside
+    # `K[g]`, including across a called submodel boundary.
+    @slic c3_plate_ragged_ncp(k::int) = begin
+        z::vector[k] ~ std_normal()
+        return z
+    end
+    c3_plate_ragged_model = @slic (;K=[2, 3, 4], y=0.3) begin
+        b ~ plate(; outer=length(K)) do g
+            z::vector[K[g]] ~ std_normal()
+            z
+        end
+        y ~ normal(sum(b[1]), 1.0)
+    end
+    c3_plate_ragged_submodel_model = @slic (;K=[2, 3, 4], y=0.3) begin
+        b ~ plate(; outer=length(K)) do g
+            cell ~ c3_plate_ragged_ncp(K[g])
+            cell
+        end
+        y ~ normal(sum(b[2]), 1.0)
+    end
+
     # N-dimensional plate regressions: preserve the shipped dense 1-D shapes,
     # route one compiler-owned loop per outer axis, and keep logical cell dimensions
     # first while Stan array prefixes carry outer axes beyond the vector/matrix core.
@@ -2301,6 +2323,34 @@ Verify `slic: public plate emits N-dimensional outer loops` in an isolated test 
             i
         end
     end; re=false)
+end
+
+"""
+Verify `slic: public plate emits heterogeneous vector cells` in an isolated test item.
+"""
+@testitem "slic: public plate emits heterogeneous vector cells" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    for model in (c3_plate_ragged_model, c3_plate_ragged_submodel_model)
+        @test transpiles(model)
+        @test stanc_compiles(model)
+    end
+
+    direct = stan_code(c3_plate_ragged_model)
+    let td = stan_block(direct, "transformed data")
+        @test occursin(r"array\[num_elements\(K\)\] int z__pl_len_\d+", td)
+        @test occursin(r"z__pl_len_\d+\[plate_i__pl_\d+\] = K\[plate_i__pl_\d+\]", td)
+        @test occursin("cumulative_sum", td)
+    end
+    @test occursin(r"vector\[sum\(z__pl_len_\d+\)\] z__pl_mem_\d+", stan_block(direct, "parameters"))
+    @test occursin(
+        r"z__pl_mem_\d+\[ragged_start\(.*\):ragged_end\(.*\)\] ~ std_normal",
+        stan_block(direct, "model"),
+    )
+    @test occursin(r"vector\[sum\(b__pl_len_\d+\)\] b__pl_mem_\d+", stan_block(direct, "transformed parameters"))
+
+    called = stan_code(c3_plate_ragged_submodel_model)
+    @test occursin(r"vector\[sum\(cell_z__pl_len_\d+\)\] cell_z__pl_mem_\d+", stan_block(called, "parameters"))
+    @test occursin(r"(?s)cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", stan_block(called, "model"))
+    @test occursin(r"(?s)b__pl_mem_\d+\[.*?\]\s*=\s*cell__pl_mem_\d+\[", stan_block(called, "transformed parameters"))
 end
 
 """
