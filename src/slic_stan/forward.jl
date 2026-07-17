@@ -514,6 +514,51 @@ end
 _is_literal_one(x) = x == 1
 _is_literal_one(x::StanExpr) = _is_literal_one(expr(x))
 
+# ── Value-iteration (`for xi in <container>` / `[expr for xi in <container>]`) ──
+# A `lo:hi` iteration source forwards to a 2-arg `CanonicalExpr{Colon}` and takes
+# the index-iteration path. Any OTHER indexable container (vector/array, or a
+# RaggedVector/RaggedMatrix/EachCol/EachRow view usertype) desugars to
+# index-iteration binding the user's loop variable to the element:
+#     for xi in c          →  for _vi in 1:length(c); xi = c[_vi]; <body>
+#     [f(xi) for xi in c]  →  [f(c[_vi]) for _vi in 1:length(c)]
+# `length(c)` and `c[_vi]` already dispatch per container type, so no per-type
+# loop logic lives here — the same desugar covers every supported container.
+_is_bounded_colon(x) =
+    x isa StanExpr && expr(x) isa CanonicalExpr{Colon} && length(expr(x).args) == 2
+# A Colon-headed range is NEVER value-iterable: a 2-arg `lo:hi` takes the index
+# path, and any other arity is a stepped range (`lo:step:hi`) — unsupported, and
+# must reject rather than be mistaken for a container (it has ndim ≥ 1).
+_is_value_iterable(x::StanExpr) =
+    !(expr(x) isa CanonicalExpr{Colon}) &&
+    (stan_ndim(type(x)) >= 1 || center_type(type(x)) <: types.usertype)
+_is_value_iterable(::Any) = false
+
+function _fresh_value_index(info)
+    id = _next_inline_id()
+    vi = Symbol(:value_index__vi_, id)
+    while vi in keys(info)
+        id = _next_inline_id()
+        vi = Symbol(:value_index__vi_, id)
+    end
+    vi
+end
+
+# Loop bound: `1:length(container)`. `length` dispatches per container type —
+# `num_elements(x)` for vectors/arrays, `cols(X)` / `num_elements(ends)` for the
+# view usertypes — so one form covers every supported container.
+#
+# LIMITATION (parameter-sized results): when the container is a UDF *parameter*
+# arg, `length` emits `num_elements(x)`, which Stan rejects as a non-data size in
+# the model-side result declaration (`transformed parameters { vector[num_elements(x)] z; }`).
+# The equivalent index form `[f(x[i]) for i in 1:n]` avoids this only because the
+# user names the signature dim `n`, which the UDF binds as `int n = dims(x)[1]`
+# and the return type tracks to the arg's concrete size; a value generator never
+# mentions `n`, so functions.jl's size-requirement analysis leaves it unbound and
+# unavailable here. Recovering it would couple this desugar to that macro-time
+# analysis. Value-iteration over DATA containers (the common case) is unaffected.
+_value_iter_count(container) = CanonicalExpr(Colon(), 1, CanonicalExpr(length, container))
+_value_iter_elem(container, vi) = CanonicalExpr(getindex, container, vi)
+
 function forward!(x::ComprehensionExpr; info)
     value_raw, idx, range_raw = _bounded_comprehension_parts(x)
     pending = _get_inline_pending()
@@ -523,11 +568,20 @@ function forward!(x::ComprehensionExpr; info)
     )
 
     range = forward!(range_raw; info)
-    range isa StanExpr && expr(range) isa CanonicalExpr{Colon} &&
-        length(expr(range).args) == 2 || error(
-            "@deffun array comprehension: the generator must use one bounded `lo:hi` range. ",
-            "Arbitrary iterable and stepped-range generators are not supported."
+    # Value-iteration: `[expr for xi in <container>]` over a non-range indexable
+    # container desugars to `[expr for _vi in 1:length(container)]` with the user's
+    # `xi` bound to `container[_vi]` before the element expression is forwarded.
+    user_var, container = nothing, nothing
+    if !_is_bounded_colon(range)
+        _is_value_iterable(range) || error(
+            "@deffun array comprehension: the generator must use one bounded `lo:hi` range ",
+            "or an indexable container. Got an iteration source of Stan type `",
+            sigtype(type(range)), "` (stepped-range and filtered generators are unsupported)."
         )
+        user_var, container = idx, range
+        idx = _fresh_value_index(info)
+        range = forward!(_value_iter_count(container); info)
+    end
     range_expr = expr(range)
     result_size = stan_size(range, 1)
 
@@ -535,11 +589,16 @@ function forward!(x::ComprehensionExpr; info)
     old_idx = had_idx ? info[idx] : nothing
     info[idx] = StanExpr(idx, StanType(types.int; qual=:data))
     emitted_idx = info[idx]
+    # Value-iteration binds the user's element variable to `container[_vi]`.
+    had_uvar = user_var !== nothing && user_var in keys(info)
+    old_uvar = had_uvar ? info[user_var] : nothing
     try
         # Inline calls (and a future supported expression-level lowering) may
         # contribute pre-statements.  Isolate them so they stay INSIDE this
         # comprehension's loop instead of leaking into the enclosing block.
         value, loop_stmts = task_local_storage(:_slic_inline_pending, Any[]) do
+            user_var === nothing ||
+                (info[user_var] = forward!(_value_iter_elem(container, emitted_idx); info))
             value = forward!(value_raw; info)
             value isa StanExpr || error(
                 "@deffun array comprehension: element expression forwarded to `",
@@ -584,6 +643,8 @@ function forward!(x::ComprehensionExpr; info)
         info[result_name]
     finally
         had_idx ? (info[idx] = old_idx) : pop!(info, idx)
+        user_var === nothing || (had_uvar ? (info[user_var] = old_uvar) :
+            (user_var in keys(info) && pop!(info, user_var)))
     end
 end
 
@@ -1623,6 +1684,19 @@ forward!(x::ForExpr; info) = begin
     @assert _is_block_canonical(body)
     idx = head.args[1]
     @assert idx isa Symbol
+    # Forward the iteration source first. A bounded `lo:hi` range takes the
+    # index-iteration path below; any other indexable container value-iterates
+    # (`for xi in c` → `for _vi in 1:length(c); xi = c[_vi]; <body>`). The range
+    # never references `idx`, so forwarding it before binding `idx` is safe.
+    idx_range = forward!(head.args[2]; info)
+    if !_is_bounded_colon(idx_range)
+        _is_value_iterable(idx_range) || error(
+            "@deffun `for $idx in <iterable>`: iteration source is neither a bounded ",
+            "`lo:hi` range nor an indexable container (Stan type `",
+            sigtype(type(idx_range)), "`)."
+        )
+        return _forward_value_for!(x, idx, idx_range, body; info)
+    end
     # `:data`-qualify the loop index: it's a deterministic integer. Without an
     # explicit qual it defaults to `:undefined`, which is lexicographically the
     # LARGEST qual symbol and so poisons `stan_expr`'s `maximum(qual, args)` for any
@@ -1634,11 +1708,30 @@ forward!(x::ForExpr; info) = begin
     # must declare that SAME emitted symbol used by forwarded body references;
     # keeping the raw local `idx` would produce `for(i ...) body[prefix_i]`.
     emitted_idx = expr(info[idx])
-    idx_range = forward!(head.args[2]; info)
     body = forward!(body; info)
     pop!(info, idx)
     stan_expr(remake(x, remake(head, emitted_idx, idx_range), body))
 end
+
+# `for xi in <container>`: desugar to index-iteration `for _vi in 1:length(c)`
+# with `xi = c[_vi]` bound as the first loop statement (element in scope for the
+# body). Re-forwarding the rewritten ForExpr takes the bounded-range path above;
+# `xi` is scoped to the loop (saved/restored) so it does not leak afterwards.
+function _forward_value_for!(x, var, container, body; info)
+    head, _ = x.args
+    vi = _fresh_value_index(info)
+    new_head = remake(head, vi, _value_iter_count(container))
+    elem_bind = CanonicalExpr(:(=), var, _value_iter_elem(container, vi))
+    new_body = remake(body, elem_bind, body.args...)
+    had_var = var in keys(info)
+    old_var = had_var ? info[var] : nothing
+    try
+        forward!(remake(x, new_head, new_body); info)
+    finally
+        had_var ? (info[var] = old_var) : (var in keys(info) && pop!(info, var))
+    end
+end
+
 forward!(x::WhileExpr; info) = begin
     @assert length(x.args) == 2
     head, body = x.args
