@@ -171,6 +171,25 @@ end
     # Chained/flattened generators (`for i … for j …`) build a ragged result — a
     # deferred follow-up; rejected loudly for now.
     @deffun comprehension_flatten(x::vector[n], m::int) = [x[i] + j for i in 1:n for j in 1:m]
+    # enumerate / zip destructuring + N-D / nested iteration (devibe 2eb42c2).
+    @deffun iter_enum(x::vector[n]) = [i * xi for (i, xi) in enumerate(x)]                 # → vector[n]
+    @deffun iter_enum_col(X::matrix[m, k]) = [j * sum(c) for (j, c) in enumerate(EachCol(X))]
+    @deffun iter_enum_acc(x::vector[n])::real = begin
+        acc = 0.0
+        for (i, xi) in enumerate(x); acc .= acc + i * xi; end
+        acc
+    end
+    @deffun iter_zip(a::vector[n], b::vector[n]) = [ai * bi for (ai, bi) in zip(a, b)]      # → vector[n]
+    @deffun iter_zip3(a::vector[n], b::vector[n], c::vector[n]) =
+        [ai + bi + ci for (ai, bi, ci) in zip(a, b, c)]
+    @deffun iter_nd(x::vector[n], y::vector[m]) = [x[i] * y[j] for i in 1:n, j in 1:m]      # → matrix[n,m]
+    @deffun iter_nd_int(x::int[n], y::int[m]) = [x[i] + y[j] for i in 1:n, j in 1:m]        # → array[n,m] int
+    @deffun iter_nested(X::matrix[n, m])::real = begin
+        acc = 0.0
+        for i in 1:n, j in 1:m; acc .= acc + X[i, j]; end
+        acc
+    end
+    @deffun iter_nd3(x::int[n]) = [i + j + k for i in 1:n, j in 1:n, k in 1:n]              # 3-D → reject
     # value-iteration generators `[expr for xi in <container>]` desugar to index
     # iteration `[expr for _vi in 1:length(container)]` with `xi = container[_vi]`.
     @deffun comprehension_iterable(x::vector[n]) = [xi for xi in x]
@@ -2267,6 +2286,120 @@ Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated tes
         end
         @test err !== nothing
         @test occursin("`comprehension` control flow is not supported in @slic model bodies", err)
+    end
+end
+
+"""
+Verify the enumerate/zip/N-D/nested iteration-protocol extensions (devibe
+`2eb42c2`): tuple-destructuring sources and multi-axis comprehensions/loops in
+`@deffun` bodies, gated on `stanc_compiles` with BridgeStan lp/gradient spot
+checks, plus the 3-D and flattened-generator rejections.
+"""
+@testitem "slic: enumerate / zip / N-D comprehension iteration" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    iter_error(f) = try (f(); nothing) catch e sprint(showerror, e) end
+
+    @testset "enumerate binds (index, element)" begin
+        # comprehension: index is the 1-based position (data int), element is x[i].
+        m = @slic (;x=[1.0, 2.0, 3.0], y=6.0) begin
+            w ~ std_normal(; n=2)
+            z = iter_enum(x)
+            y ~ normal(sum(z) + w[1], 0.5)
+        end
+        code = stan_code(m)
+        @test occursin("iter_enum", code)
+        @test stanc_compiles(m)
+        prob = instantiate(m)
+        lp, g = LogDensityProblems.logdensity_and_gradient(prob, fill(0.1, LogDensityProblems.dimension(prob)))
+        @test isfinite(lp) && all(isfinite, g)
+
+        # enumerate over the EachCol view + a for-loop accumulation form.
+        col = @slic (;X=[1.0 2.0; 3.0 4.0; 5.0 6.0], y=6.0) begin
+            w ~ std_normal(; n=2)
+            cs = iter_enum_col(X)
+            acc = iter_enum_acc(cs)
+            y ~ normal(acc + w[1], 0.5)
+        end
+        @test occursin("col(X", stan_code(col))
+        @test stanc_compiles(col)
+        cprob = instantiate(col)
+        clp, cg = LogDensityProblems.logdensity_and_gradient(cprob, fill(0.1, LogDensityProblems.dimension(cprob)))
+        @test isfinite(clp) && all(isfinite, cg)
+    end
+
+    @testset "zip iterates parallel containers" begin
+        m = @slic (;a=[1.0, 2.0, 3.0], b=[4.0, 5.0, 6.0], y=6.0) begin
+            w ~ std_normal(; n=2)
+            z = iter_zip(a, b)
+            y ~ normal(sum(z) + w[1], 0.5)
+        end
+        @test occursin("iter_zip", stan_code(m))
+        @test stanc_compiles(m)
+        prob = instantiate(m)
+        lp, g = LogDensityProblems.logdensity_and_gradient(prob, fill(0.1, LogDensityProblems.dimension(prob)))
+        @test isfinite(lp) && all(isfinite, g)
+
+        m3 = @slic (;a=[1.0, 2.0], b=[3.0, 4.0], c=[5.0, 6.0], y=6.0) begin
+            w ~ std_normal(; n=2)
+            z = iter_zip3(a, b, c)
+            y ~ normal(sum(z) + w[1], 0.5)
+        end
+        @test stanc_compiles(m3)
+    end
+
+    @testset "N-D comprehensions and one-line nested loops" begin
+        # real → matrix[n,m], with nested fill loops.
+        nd = @slic (;x=[1.0, 2.0, 3.0], y=[4.0, 5.0], obs=6.0) begin
+            w ~ std_normal(; n=2)
+            M = iter_nd(x, y)
+            obs ~ normal(M[1, 1] + w[1], 0.5)
+        end
+        ndc = stan_code(nd)
+        @test occursin(r"matrix\[[^]]+, ?[^]]+\] comprehension_result__lc_\d+;", ndc)
+        @test occursin(r"for\(i in 1:n\)", ndc)
+        @test occursin(r"for\(j in 1:m\)", ndc)
+        @test stanc_compiles(nd)
+        ndprob = instantiate(nd)
+        ndlp, ndg = LogDensityProblems.logdensity_and_gradient(ndprob, fill(0.1, LogDensityProblems.dimension(ndprob)))
+        @test isfinite(ndlp) && all(isfinite, ndg)
+
+        # int → array[n,m] int.
+        ndi = @slic (;x=[1, 2, 3], y=[4, 5]) begin
+            M = iter_nd_int(x, y)
+            mu ~ normal(M[1, 1], 1.0)
+        end
+        @test occursin(r"array\[[^]]+, ?[^]]+\] int comprehension_result__lc_\d+;", stan_code(ndi))
+        @test stanc_compiles(ndi)
+
+        # one-line nested for-loop (statement) accumulating a matrix sum.
+        nested = @slic (;X=[1.0 2.0; 3.0 4.0], obs=6.0) begin
+            w ~ std_normal(; n=2)
+            s = iter_nested(X)
+            obs ~ normal(s + w[1], 0.5)
+        end
+        @test stanc_compiles(nested)
+        nprob = instantiate(nested)
+        nlp, ng = LogDensityProblems.logdensity_and_gradient(nprob, fill(0.1, LogDensityProblems.dimension(nprob)))
+        @test isfinite(nlp) && all(isfinite, ng)
+    end
+
+    @testset "unsupported iteration shapes reject loudly" begin
+        # 3-D comprehension (SLIC containers are ≤ 2-D).
+        d3 = iter_error() do
+            stan_code(@slic (;x=[1, 2]) begin
+                M = iter_nd3(x); mu ~ normal(M[1, 1, 1], 1.0)
+            end)
+        end
+        @test d3 !== nothing
+        @test occursin("dimensional comprehensions are unsupported", d3)
+
+        # chained/flattened `for i … for j …` (ragged result — deferred follow-up).
+        flat = iter_error() do
+            stan_code(@slic (;x=[1.0, 2.0]) begin
+                z = comprehension_flatten(x, 2); mu ~ normal(z[1], 1.0)
+            end)
+        end
+        @test flat !== nothing
+        @test occursin("chained/flattened generators", flat)
     end
 end
 
