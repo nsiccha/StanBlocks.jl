@@ -76,7 +76,24 @@ backward!(x::StanExpr2{<:types.func}; info) = x
 # pulls the closure record off `type(head(x)).info.value` and substitutes
 # captures + args into the stored body Expr.
 forward!(x::StanExpr2{<:types.closure}; info) = x
-backward!(x::StanExpr2{<:types.closure}; info) = x
+# `backward!` only descends into a closure when the enclosing call is itself
+# reachable from the likelihood (the `AssignmentExpr`/`SamplingExpr` methods
+# recurse into an RHS only once its LHS is `:affects_likelihood`). A LIFTED
+# closure flowing to a builtin (`ode_rk45`/`reduce_sum`/`jbroadcasted`) has its
+# body emitted as a SEPARATE Stan function with its captures threaded as trailing
+# call args (`show(::CanonicalExpr{<:ODESolver})`, `_closure_captures`), so a
+# capture that appears ONLY inside such a body is never seen as a plain symbol
+# occurrence — without this, a capture-only parameter (e.g. an ODE-RHS `lambda`)
+# is optimised into `generated quantities` yet still emitted in `transformed
+# parameters`, producing out-of-scope Stan. Reaching here means the closure's
+# output IS a downstream-likelihood use, so mark each captured binding
+# `:affects_likelihood` (INLINED closures never reach here — `expand_inline!`
+# removes them in `forward!`, so their captures keep flowing through their
+# spliced bindings).
+backward!(x::StanExpr2{<:types.closure}; info) = begin
+    foreach(backward!(; info), _closure_captures(x))
+    x
+end
 # A closure StanExpr's `expr` field carries the closure record (a
 # NamedTuple). Without a specialisation, `fetch_data!`'s NamedTuple
 # fallback would iterate the record and trip on its `body::Expr` field.
