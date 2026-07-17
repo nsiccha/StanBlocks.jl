@@ -482,33 +482,53 @@ _contains_comprehension(::Any) = false
 _contains_comprehension(::ComprehensionExpr) = true
 _contains_comprehension(x::CanonicalExpr) = any(_contains_comprehension, x.args)
 
-function _bounded_comprehension_parts(x::ComprehensionExpr)
-    length(x.args) == 1 && x.args[1] isa GeneratorExpr || error(
-        "@deffun array comprehension: expected exactly one generator. ",
-        "Only `[expr for i in lo:hi]` is supported."
+# Parse one comprehension's generator into its value expression and the list of
+# `(binding, source)` iteration specs. A single symbol-bound `lo:hi` generator is
+# the base case; multi-generator (`for i in …, j in …`) forms yield several specs
+# (N-D result), and a tuple binding (`(i, xi)`) marks an enumerate/zip source.
+function _comprehension_generator_specs(x::ComprehensionExpr)
+    length(x.args) == 1 || error(
+        "@deffun array comprehension: malformed comprehension `", x, "`."
+    )
+    # Chained/flattened generators `[expr for i in … for j in …]` produce a
+    # ragged/flattened 1-D result (its length depends on the inner ranges). That
+    # ragged-result path is a deferred follow-up; reject it specifically rather than
+    # via the generic "expected one generator" error.
+    x.args[1] isa CanonicalExprV{:flatten} && error(
+        "@deffun array comprehension: chained/flattened generators ",
+        "`[expr for i in … for j in …]` are not supported — they build a ragged/flattened ",
+        "result. Use the product form `[expr for i in …, j in …]` for a rectangular N-D ",
+        "result, or write explicit nested loops (or `plate`) to assemble a ragged result."
+    )
+    x.args[1] isa GeneratorExpr || error(
+        "@deffun array comprehension: expected exactly one generator, got `", x.args[1], "`. ",
+        "Only `[expr for i in lo:hi]` (and its enumerate/zip/N-D forms) is supported."
     )
     generator = x.args[1]
-    length(generator.args) == 2 || error(
-        "@deffun array comprehension: nested or multiple generators are not supported. ",
-        "Use one bounded generator `[expr for i in lo:hi]` or write the nested loops explicitly."
+    length(generator.args) >= 2 || error(
+        "@deffun array comprehension: malformed generator `", generator, "`."
     )
-    value, iteration = generator.args
-    iteration isa FilterExpr && error(
-        "@deffun array comprehension: filtered generators are not supported. ",
-        "Write an explicit loop when the output length depends on a condition."
-    )
-    iteration isa AssignmentExpr || error(
-        "@deffun array comprehension: expected a generator binding `i = lo:hi`, got `", iteration, "`."
-    )
-    idx, range = iteration.args
-    idx isa Symbol || error(
-        "@deffun array comprehension: the generator must bind one Symbol, got `", idx, "`."
-    )
+    value = generator.args[1]
     _contains_comprehension(value) && error(
         "@deffun array comprehension: nested comprehensions are not supported. ",
         "Write the nested loops explicitly."
     )
-    value, idx, range
+    specs = Tuple{Any,Any}[]
+    for iteration in generator.args[2:end]
+        iteration isa FilterExpr && error(
+            "@deffun array comprehension: filtered generators are not supported. ",
+            "Write an explicit loop when the output length depends on a condition."
+        )
+        iteration isa AssignmentExpr || error(
+            "@deffun array comprehension: expected a generator binding `i = lo:hi`, got `", iteration, "`."
+        )
+        idx, range = iteration.args
+        (idx isa Symbol || idx isa TupleExpr) || error(
+            "@deffun array comprehension: the generator must bind one Symbol or a `(a, b, …)` tuple, got `", idx, "`."
+        )
+        push!(specs, (idx, range))
+    end
+    value, specs
 end
 
 _is_literal_one(x) = x == 1
@@ -559,46 +579,161 @@ end
 _value_iter_count(container) = CanonicalExpr(Colon(), 1, CanonicalExpr(length, container))
 _value_iter_elem(container, vi) = CanonicalExpr(getindex, container, vi)
 
+# ── Save/restore a set of names around a scoped loop body ─────────────────────
+# Loop indices and element bindings must not leak into the enclosing block. Values
+# in `info` are always StanExprs, so `nothing` is a safe "was-unbound" sentinel.
+_save_scope(info, names) = Dict{Symbol,Any}(n => (n in keys(info) ? info[n] : nothing) for n in names)
+_restore_scope!(info, saved) = for (n, old) in saved
+    old === nothing ? (n in keys(info) && pop!(info, n)) : (info[n] = old)
+end
+
+# ── Destructuring iteration: `enumerate(c)` / `zip(a, b, …)` ──────────────────
+# `for (i, xi) in enumerate(c)` / `for (ai, bi) in zip(a, b)` (and their
+# comprehension forms) bind a TUPLE of names per step. `enumerate`/`zip` survive
+# canonicalisation as symbol-headed `CanonicalExprV{:enumerate}`/`{:zip}` calls
+# (they are never forwarded on their own). Both desugar to ordinary index
+# iteration binding the element name(s) to `container[idx]`; `length`/`getindex`
+# dispatch per container, so every supported container works with no per-type
+# logic. Returns `(idx::Symbol, range, preludes)` where `range` is a raw `lo:hi`
+# canonical expr (re-forwarded by each consumer) and `preludes` is a
+# `Vector{Pair{Symbol,<raw element expr>}}` of `name => container[idx]` bindings.
+_checked_iterable(c, ctx, what) = begin
+    _is_value_iterable(c) || error(
+        "@deffun `", ctx, "`: ", what, " must be an indexable container, got Stan type `",
+        sigtype(type(c)), "`."
+    )
+    c
+end
+# `1:min(length(c1), length(c2), …)` — zip stops at the shortest container.
+_zip_count(containers) = CanonicalExpr(Colon(), 1, foldl(
+    (acc, c) -> CanonicalExpr(min, acc, CanonicalExpr(length, c)),
+    containers[2:end]; init=CanonicalExpr(length, containers[1])
+))
+function _destructure_iteration(lhs::TupleExpr, source_raw; info)
+    names = lhs.args
+    all(n -> n isa Symbol, names) || error(
+        "@deffun destructuring iteration: the tuple binding must contain only names, got `", lhs, "`."
+    )
+    if source_raw isa CanonicalExprV{:enumerate}
+        length(source_raw.args) == 1 || error(
+            "@deffun `enumerate(c)`: expected exactly one container argument, got ", length(source_raw.args), "."
+        )
+        length(names) == 2 || error(
+            "@deffun `enumerate(c)`: bind exactly two names `(i, xi)` (index and element), got `", lhs, "`."
+        )
+        iname, ename = names
+        container = _checked_iterable(forward!(source_raw.args[1]; info), "enumerate(c)", "the container `c`")
+        # `enumerate`'s first slot IS the 1-based position, so it doubles as the
+        # loop index; the element name binds to `container[i]`.
+        return iname, _value_iter_count(container), Pair{Symbol,Any}[ename => _value_iter_elem(container, iname)]
+    elseif source_raw isa CanonicalExprV{:zip}
+        length(source_raw.args) >= 1 || error("@deffun `zip(…)`: expected at least one container argument.")
+        length(names) == length(source_raw.args) || error(
+            "@deffun `zip(a, b, …)`: the binding has ", length(names), " names but zip has ",
+            length(source_raw.args), " containers — they must match."
+        )
+        containers = [
+            _checked_iterable(forward!(a; info), "zip(…)", string("container ", k))
+            for (k, a) in enumerate(source_raw.args)
+        ]
+        vi = _fresh_value_index(info)
+        preludes = Pair{Symbol,Any}[names[k] => _value_iter_elem(containers[k], vi) for k in eachindex(names)]
+        return vi, _zip_count(containers), preludes
+    else
+        error(
+            "@deffun destructuring `for (…) in <source>`: a tuple binding requires `enumerate(…)` ",
+            "or `zip(…)` as the iteration source, got `", source_raw, "`."
+        )
+    end
+end
+
+# Normalize one comprehension generator binding into an index-iteration plan:
+# `(idx::Symbol, range, preludes)`. A tuple binding routes through the shared
+# enumerate/zip destructuring; a plain `i in lo:hi` keeps the user's index and has
+# no preludes; a container value-iterates with a fresh index and one element
+# prelude. `range` is raw for the container/tuple cases (re-forwarded by the
+# caller) and an already-forwarded StanExpr for the plain-range case.
+function _comprehension_iter(lhs, source_raw; info)
+    lhs isa TupleExpr && return _destructure_iteration(lhs, source_raw; info)
+    lhs isa Symbol || error(
+        "@deffun array comprehension: the generator must bind a Symbol or `(a, b, …)` tuple, got `", lhs, "`."
+    )
+    source = forward!(source_raw; info)
+    _is_bounded_colon(source) && return lhs, source, Pair{Symbol,Any}[]
+    _is_value_iterable(source) || error(
+        "@deffun array comprehension: the generator must use one bounded `lo:hi` range ",
+        "or an indexable container. Got an iteration source of Stan type `",
+        sigtype(type(source)), "` (stepped-range and filtered generators are unsupported)."
+    )
+    vi = _fresh_value_index(info)
+    vi, _value_iter_count(source), Pair{Symbol,Any}[lhs => _value_iter_elem(source, vi)]
+end
+
+# Fresh, non-underscore-leading comprehension result name.
+function _fresh_comprehension_result(info)
+    id = _next_inline_id()
+    name = Symbol(:comprehension_result__lc_, id)
+    while name in keys(info)
+        id = _next_inline_id()
+        name = Symbol(:comprehension_result__lc_, id)
+    end
+    name
+end
+# Output index for one dimension: the loop index for a `1:hi` range, else the
+# dense offset `(i - lo) + 1`.
+_result_index(emitted_idx, lo; info) = _is_literal_one(lo) ? emitted_idx :
+    forward!(CanonicalExpr(+, CanonicalExpr(-, emitted_idx, lo), 1); info)
+
+# One comprehension lowers to a typed result local + a (possibly nested) fill loop:
+#
+#     [f(i, j) for i in 1:n, j in 1:m]
+#   →
+#     result::<matrix|array[n,m]>[n, m]
+#     for i in 1:n; for j in 1:m; result[i, j] = f(i, j); end; end
+#     result
+#
+# `_comprehension_generator_specs` yields one `(binding, source)` per generator;
+# `_comprehension_iter` normalises each to `(idx, range, preludes)` (handling
+# `lo:hi`, value-iterated containers, and enumerate/zip). All indices + element
+# bindings are in scope when the element expression is forwarded, so a
+# multi-generator comprehension is exactly N nested single-index loops. SLIC scalar
+# containers are at most 2-D, so a 3-D+ comprehension rejects loudly.
 function forward!(x::ComprehensionExpr; info)
-    value_raw, idx, range_raw = _bounded_comprehension_parts(x)
+    value_raw, specs = _comprehension_generator_specs(x)
     pending = _get_inline_pending()
     pending === nothing && error(
         "@deffun array comprehension lowering requires a statement context; ",
         "bind or return the comprehension from an @deffun body."
     )
+    ndim = length(specs)
+    ndim <= 2 || error(
+        "@deffun array comprehension: ", ndim, "-dimensional comprehensions are unsupported ",
+        "(SLIC scalar containers are at most 2-D). Write explicit nested loops filling a typed result."
+    )
+    plans = [_comprehension_iter(lhs, src; info) for (lhs, src) in specs]
+    ranges = [forward!(p[2]; info) for p in plans]
+    result_sizes = Tuple(stan_size(r, 1) for r in ranges)
 
-    range = forward!(range_raw; info)
-    # Value-iteration: `[expr for xi in <container>]` over a non-range indexable
-    # container desugars to `[expr for _vi in 1:length(container)]` with the user's
-    # `xi` bound to `container[_vi]` before the element expression is forwarded.
-    user_var, container = nothing, nothing
-    if !_is_bounded_colon(range)
-        _is_value_iterable(range) || error(
-            "@deffun array comprehension: the generator must use one bounded `lo:hi` range ",
-            "or an indexable container. Got an iteration source of Stan type `",
-            sigtype(type(range)), "` (stepped-range and filtered generators are unsupported)."
-        )
-        user_var, container = idx, range
-        idx = _fresh_value_index(info)
-        range = forward!(_value_iter_count(container); info)
+    scope_names = Symbol[]
+    for p in plans
+        push!(scope_names, p[1])
+        append!(scope_names, Symbol[pp.first for pp in p[3]])
     end
-    range_expr = expr(range)
-    result_size = stan_size(range, 1)
-
-    had_idx = idx in keys(info)
-    old_idx = had_idx ? info[idx] : nothing
-    info[idx] = StanExpr(idx, StanType(types.int; qual=:data))
-    emitted_idx = info[idx]
-    # Value-iteration binds the user's element variable to `container[_vi]`.
-    had_uvar = user_var !== nothing && user_var in keys(info)
-    old_uvar = had_uvar ? info[user_var] : nothing
+    saved = _save_scope(info, scope_names)
+    emitted_idxs = Vector{Any}(undef, ndim)
     try
-        # Inline calls (and a future supported expression-level lowering) may
-        # contribute pre-statements.  Isolate them so they stay INSIDE this
-        # comprehension's loop instead of leaking into the enclosing block.
+        # Inline calls (and the element bindings) may contribute pre-statements.
+        # Isolate them so they stay INSIDE the innermost loop instead of leaking
+        # into the enclosing block.
         value, loop_stmts = task_local_storage(:_slic_inline_pending, Any[]) do
-            user_var === nothing ||
-                (info[user_var] = forward!(_value_iter_elem(container, emitted_idx); info))
+            for (k, p) in enumerate(plans)
+                idx_k = p[1]
+                info[idx_k] = StanExpr(idx_k, StanType(types.int; qual=:data))
+                emitted_idxs[k] = info[idx_k]
+                for (v, elem) in p[3]
+                    info[v] = forward!(elem; info)
+                end
+            end
             value = forward!(value_raw; info)
             value isa StanExpr || error(
                 "@deffun array comprehension: element expression forwarded to `",
@@ -612,13 +747,8 @@ function forward!(x::ComprehensionExpr; info)
             "got Stan type `", sigtype(value_type), "`."
         )
 
-        id = _next_inline_id()
-        result_name = Symbol(:comprehension_result__lc_, id)
-        while result_name in keys(info)
-            id = _next_inline_id()
-            result_name = Symbol(:comprehension_result__lc_, id)
-        end
-        result_type = autotype(StanType(center_type(value_type), (result_size,)))
+        result_name = _fresh_comprehension_result(info)
+        result_type = autotype(StanType(center_type(value_type), result_sizes))
         _is_model_decl_scope(info) && (result_type = remake(
             result_type; fresh_decl=true, decl_role=:unfilled, qual=:parameter
         ))
@@ -626,25 +756,21 @@ function forward!(x::ComprehensionExpr; info)
         result = info[result_name]
         declaration = stan_expr(CanonicalExpr(:(::), result))
 
-        lo = range_expr.args[1]
-        result_idx = if _is_literal_one(lo)
-            emitted_idx
-        else
-            forward!(CanonicalExpr(+, CanonicalExpr(-, emitted_idx, lo), 1); info)
-        end
-        fill = forward!(CanonicalExpr(
-            :(=), CanonicalExpr(getindex, result, result_idx), value
-        ); info)
-        push!(loop_stmts, fill)
-        loop_head = CanonicalExpr(:(=), emitted_idx, range)
-        loop = stan_expr(CanonicalExpr(:for, loop_head, CanonicalExpr(:block, loop_stmts...)))
+        result_idxs = [_result_index(emitted_idxs[k], expr(ranges[k]).args[1]; info) for k in 1:ndim]
+        fill = forward!(CanonicalExpr(:(=), CanonicalExpr(getindex, result, result_idxs...), value); info)
 
-        push!(pending, declaration, loop)
+        # Nest the fill loops from the innermost generator outward.
+        body = CanonicalExpr(:block, loop_stmts..., fill)
+        for k in ndim:-1:1
+            body = stan_expr(CanonicalExpr(:for,
+                CanonicalExpr(:(=), emitted_idxs[k], ranges[k]),
+                _is_block_canonical(body) ? body : CanonicalExpr(:block, body)))
+        end
+
+        push!(pending, declaration, body)
         info[result_name]
     finally
-        had_idx ? (info[idx] = old_idx) : pop!(info, idx)
-        user_var === nothing || (had_uvar ? (info[user_var] = old_uvar) :
-            (user_var in keys(info) && pop!(info, user_var)))
+        _restore_scope!(info, saved)
     end
 end
 
@@ -1704,9 +1830,17 @@ end
 forward!(x::ForExpr; info) = begin
     @assert length(x.args) == 2
     head, body = x.args
-    @assert _is_assign_canonical(head)
     @assert _is_block_canonical(body)
+    # One-line nested loops `for i in r1, j in r2, … ; body end` parse with a
+    # `:block` head holding the successive `i = r1`, `j = r2` bindings; desugar to
+    # genuinely nested single loops.
+    _is_block_canonical(head) && return _forward_nested_for!(head, body; info)
+    @assert _is_assign_canonical(head)
     idx = head.args[1]
+    # Tuple binding ⇒ destructuring iteration (`for (i, xi) in enumerate(c)` /
+    # `for (ai, bi) in zip(a, b)`); the enumerate/zip source is intercepted raw,
+    # never forwarded on its own.
+    idx isa TupleExpr && return _forward_destructured_for!(x, idx, head.args[2], body; info)
     @assert idx isa Symbol
     # Forward the iteration source first. A bounded `lo:hi` range takes the
     # index-iteration path below; any other indexable container value-iterates
@@ -1737,23 +1871,54 @@ forward!(x::ForExpr; info) = begin
     stan_expr(remake(x, remake(head, emitted_idx, idx_range), body))
 end
 
-# `for xi in <container>`: desugar to index-iteration `for _vi in 1:length(c)`
-# with `xi = c[_vi]` bound as the first loop statement (element in scope for the
-# body). Re-forwarding the rewritten ForExpr takes the bounded-range path above;
-# `xi` is scoped to the loop (saved/restored) so it does not leak afterwards.
-function _forward_value_for!(x, var, container, body; info)
+# Re-forward `x` (a ForExpr) as an ordinary index loop `for idx in range_raw` whose
+# body is prefixed with `prelude_stmts` (the element bindings), scoping `idx` and
+# the prelude names to the loop. Re-forwarding takes the bounded-range path above.
+# Shared by value-iteration (`for xi in c`) and enumerate/zip destructuring.
+function _reforward_index_loop!(x, idx, range_raw, prelude_stmts, scope_names, body; info)
     head, _ = x.args
-    vi = _fresh_value_index(info)
-    new_head = remake(head, vi, _value_iter_count(container))
-    elem_bind = CanonicalExpr(:(=), var, _value_iter_elem(container, vi))
-    new_body = remake(body, elem_bind, body.args...)
-    had_var = var in keys(info)
-    old_var = had_var ? info[var] : nothing
+    saved = _save_scope(info, scope_names)
     try
-        forward!(remake(x, new_head, new_body); info)
+        forward!(remake(x, remake(head, idx, range_raw),
+            remake(body, prelude_stmts..., body.args...)); info)
     finally
-        had_var ? (info[var] = old_var) : (var in keys(info) && pop!(info, var))
+        _restore_scope!(info, saved)
     end
+end
+
+# `for xi in <container>`: desugar to `for _vi in 1:length(c); xi = c[_vi]; <body>`.
+_forward_value_for!(x, var, container, body; info) = begin
+    vi = _fresh_value_index(info)
+    _reforward_index_loop!(x, vi, _value_iter_count(container),
+        Any[CanonicalExpr(:(=), var, _value_iter_elem(container, vi))], Symbol[var], body; info)
+end
+
+# `for (…) in enumerate(c)/zip(a, b)`: destructure the tuple binding into a loop
+# index + element bindings (see `_destructure_iteration`), then re-forward.
+_forward_destructured_for!(x, lhs, source_raw, body; info) = begin
+    idx, range_raw, preludes = _destructure_iteration(lhs, source_raw; info)
+    _reforward_index_loop!(x, idx, range_raw,
+        Any[CanonicalExpr(:(=), v, e) for (v, e) in preludes],
+        Symbol[idx; Symbol[p.first for p in preludes]], body; info)
+end
+
+# `for i in r1, j in r2, … ; body end`: the `:block` head lists successive
+# `var in range` bindings; desugar to genuinely nested single loops and re-forward.
+# Each binding may be any supported iteration source (range, container, enumerate,
+# zip), so nested loops compose with the destructuring/value-iteration forms.
+_as_block(b::BlockExpr) = b
+_as_block(b) = CanonicalExpr(:block, b)
+function _forward_nested_for!(head, body; info)
+    binds = head.args
+    isempty(binds) && error("@deffun `for`: empty iteration head `", head, "`.")
+    all(_is_assign_canonical, binds) || error(
+        "@deffun one-line nested `for`: each `,`-separated clause must bind `var in range`, got `", head, "`."
+    )
+    nested = body
+    for bind in reverse(binds)
+        nested = CanonicalExpr(:for, bind, _as_block(nested))
+    end
+    forward!(nested; info)
 end
 
 forward!(x::WhileExpr; info) = begin

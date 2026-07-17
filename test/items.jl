@@ -157,16 +157,20 @@ end
         xi = (a - b) .* exp(c)
         xi
     end
-    # --- bounded one-dimensional array comprehensions in @deffun ---
-    # The supported surface is deliberately one scalar expression over one
-    # explicit `lo:hi` range.  These fixtures cover real/int result inference,
-    # non-1 lower bounds, and each rejected Julia generator shape.
+    # --- bounded array comprehensions in @deffun ---
+    # A scalar expression over one or more explicit `lo:hi` ranges. Fixtures cover
+    # real/int result inference, non-1 lower bounds, N-D (multi-generator) results,
+    # and the still-rejected filtered / comprehension-valued shapes.
     @deffun comprehension_square(x::vector[n]) = [x[i] * x[i] for i in 1:n]
     @deffun comprehension_int_shift(x::int[n]) = [x[i] + 1 for i in 1:n]
     @deffun comprehension_slice(x::vector[n], lo::int, hi::int) = [x[i] for i in lo:hi]
     @deffun comprehension_filtered(x::vector[n]) = [x[i] for i in 1:n if x[i] > 0]
+    # Multi-generator (`for i …, j …`) lowers to a 2-D result (matrix[n,m] here).
     @deffun comprehension_multiple(x::vector[n], m::int) = [x[i] + j for i in 1:n, j in 1:m]
     @deffun comprehension_nested(x::vector[n]) = [[x[i] + j for j in 1:2] for i in 1:n]
+    # Chained/flattened generators (`for i … for j …`) build a ragged result — a
+    # deferred follow-up; rejected loudly for now.
+    @deffun comprehension_flatten(x::vector[n], m::int) = [x[i] + j for i in 1:n for j in 1:m]
     # value-iteration generators `[expr for xi in <container>]` desugar to index
     # iteration `[expr for _vi in 1:length(container)]` with `xi = container[_vi]`.
     @deffun comprehension_iterable(x::vector[n]) = [xi for xi in x]
@@ -2148,15 +2152,6 @@ Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated tes
         @test filtered !== nothing
         @test occursin("filtered generators are not supported", filtered)
 
-        multiple = comprehension_error() do
-            @slic (;x=[1.0, 2.0]) begin
-                z = comprehension_multiple(x, 2)
-                mu ~ normal(z[1], 1.0)
-            end
-        end
-        @test multiple !== nothing
-        @test occursin("nested or multiple generators are not supported", multiple)
-
         nested = comprehension_error() do
             @slic (;x=[1.0, 2.0]) begin
                 z = comprehension_nested(x)
@@ -2175,6 +2170,30 @@ Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated tes
         end
         @test stepped !== nothing
         @test occursin("bounded `lo:hi` range", stepped)
+
+        # chained/flattened `for i … for j …` (ragged result) rejects specifically.
+        flattened = comprehension_error() do
+            @slic (;x=[1.0, 2.0]) begin
+                z = comprehension_flatten(x, 2)
+                mu ~ normal(z[1], 1.0)
+            end
+        end
+        @test flattened !== nothing
+        @test occursin("chained/flattened generators", flattened)
+    end
+
+    @testset "multi-generator comprehensions lower to N-D results" begin
+        # `[x[i] + j for i in 1:n, j in 1:m]` now lowers to nested fill loops over
+        # an N-D result (was rejected as "multiple generators"); real → matrix.
+        real_nd = @slic (;x=[1.0, 2.0, 3.0]) begin
+            M = comprehension_multiple(x, 2)
+            mu ~ normal(M[1, 1], 1.0)
+        end
+        nd_code = stan_code(real_nd)
+        @test occursin(r"matrix\[[^]]+, ?[^]]+\] comprehension_result__lc_\d+;", nd_code)
+        @test occursin(r"for\(i in 1:n\)", nd_code)
+        @test occursin(r"comprehension_result__lc_\d+\[i, ?j\] =", nd_code)
+        @test stanc_compiles(real_nd)
     end
 
     @testset "value-iteration generators lower to index loops" begin
