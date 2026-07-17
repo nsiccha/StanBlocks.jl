@@ -1244,6 +1244,24 @@ end
         end
         rv
     end
+    # True-positions of a 0/1 integer mask, à la Julia's `findall(mask)`. Returns
+    # the 1-based indices where `m[i] != 0` as a data-sized `int[sum(m)]` array —
+    # so `idx = findall(cmt .== 1)` materialises a transformed-data integer index
+    # column ONCE (`cmt` is data), and both `y[idx]` and `mu[idx]` share it at zero
+    # runtime/gradient cost. Boolean-mask indexing (which Stan lacks) is thus
+    # expressed as ordinary integer-array indexing over a precomputed index.
+    Base.findall(m::int[n])::int[sum(m)] = begin
+        k = sum(m)
+        rv::int[k]
+        j = 1
+        for i in 1:n
+            if m[i] != 0
+                rv[j] = i
+                j += 1
+            end
+        end
+        rv
+    end
 end
 
 @defsig begin

@@ -1263,7 +1263,7 @@ func_name(x::Function) = string(x)
 # (mirrors the operator @eval loop in show.jl). Each entry maps a Julia
 # function to its Stan-side name fragment used for call-site mangling.
 for (f, nm) in (
-    (&, "and"), (|, "or"), (>=, "gte"), (>, "gt"), (==, "eq"),
+    (&, "and"), (|, "or"), (>=, "gte"), (>, "gt"), (==, "eq"), (!=, "ne"),
     (<=, "lte"), (<, "lt"), (+, "add"), (-, "sub"), (*, "mul"),
     (/, "div"), (÷, "idiv"), (^, "pow"),
     # Julia functions with different Stan names

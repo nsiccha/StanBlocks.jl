@@ -1914,6 +1914,61 @@ Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolat
     end
 end
 
+@testitem "slic: boolean-mask indexing via comparison broadcast + findall" tags=[:slic, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Stan has no boolean-mask indexing (`v[mask]`). Instead, element-wise
+    # comparison on a DATA scalar array (`cmt .== 1`, cmt an `array[] int`) lowers
+    # via `jbroadcasted` to a 0/1 `array[] int` mask, and `findall(mask)`
+    # materialises the true-positions as a data-sized `int[sum(mask)]` array in
+    # transformed data. `y[findall(cmt .== 1)]` is then ordinary integer-array
+    # indexing — the mask precomputes for free (cmt is data) and one index array is
+    # shared by every use at zero runtime/gradient cost. GATE ON `compiles`.
+    @testset "BRM-shaped: y[findall(cmt .== 1)] ~ normal(mu[...], sd)" begin
+        model = @slic (;n=8, cmt=[1,2,1,2,1,2,1,2], y=randn(8), mu=randn(8)) begin
+            idx = findall(cmt .== 1)
+            sd::real ~ normal(0,1)
+            y[idx] ~ normal(mu[idx], sd)
+        end
+        code = stan_code(model)
+        # mask lowers to an int-container jbroadcasted; idx is data-sized in tdata.
+        @test occursin("jbroadcasted_eq", code)
+        @test occursin(r"array\[[^\]]*\] int idx = findall\(", code)
+        @test occursin("y[idx] ~ normal(mu[idx]", code)
+        @test stanc_compiles(model)
+        # gradient-correct end to end (BridgeStan).
+        prob = instantiate(model)
+        x = randn(LogDensityProblems.dimension(prob))
+        lp, g = LogDensityProblems.logdensity_and_gradient(prob, x)
+        @test isfinite(lp) && all(isfinite, g)
+    end
+    @testset "all six comparison operators broadcast to an int mask" begin
+        for form in (
+            :(findall(cmt .== 2)), :(findall(cmt .!= 2)), :(findall(cmt .< 2)),
+            :(findall(cmt .<= 2)), :(findall(cmt .> 2)), :(findall(cmt .>= 2)),
+        )
+            body = Expr(:block, Expr(:(=), :idx, form), :(z::real ~ normal(0,1)))
+            model = StanBlocks.stan.SlicModel(body, (;n=6, cmt=[1,2,3,1,2,3]), @__MODULE__)
+            @test stanc_compiles(model)
+        end
+    end
+    @testset "mask usable as a plain count: sum(cmt .== 1)" begin
+        model = @slic (;n=6, cmt=[1,2,1,2,1,2]) begin
+            k = sum(cmt .== 1)
+            z::real ~ normal(0,1)
+            z
+        end
+        @test stanc_compiles(model)
+    end
+    @testset "element-wise comparison on a native vector fails loudly (no silent miscompile)" begin
+        # `vector .> scalar` has no int-mask lowering (only scalar arrays do); it
+        # must error, never emit invalid Stan silently.
+        @test_throws Exception stan_code(@slic (;n=6, x=randn(6)) begin
+            idx = findall(x .> 0.5)
+            z::real ~ normal(0,1)
+            z
+        end)
+    end
+end
+
 """
 Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated test item.
 """
