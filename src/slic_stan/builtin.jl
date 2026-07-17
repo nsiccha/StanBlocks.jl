@@ -886,10 +886,11 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_arg)}; info) = begi
     if center_type(arg) <: RaggedVector || center_type(arg) <: RaggedMatrix
         forward!(CanonicalExpr(getindex, arg, g); info)
     elseif center_type(arg) <: types.ntup && keys(type(arg).info.arg_types) == (:mem, :ends)
-        # Nested-vector data kwargs are encoded by `stan_type` as the explicit
-        # `(mem, ends)` named-tuple carrier.  It is semantically ragged even
-        # though it does not carry the internal `RaggedVector` nominal tag.
-        # Slice only this certified representation; dense vectors remain shared
+        # Fallback for a bare `(mem, ends)` ntup that is NOT the nominal
+        # `RaggedVector`. Since 197f5be nested-vector DATA mints a `RaggedVector`
+        # and so takes the branch above; this reaches only a hand-built
+        # `(; mem, ends)` named-tuple carrier — still semantically ragged, so slice
+        # this certified representation the same way. Dense vectors remain shared
         # distribution arguments because auto-indexing them would be ambiguous.
         mem = forward!(CanonicalExpr(Base.getfield, arg, 1); info)
         ends = forward!(CanonicalExpr(Base.getfield, arg, 2); info)
