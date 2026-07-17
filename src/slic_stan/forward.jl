@@ -487,8 +487,21 @@ _contains_comprehension(x::CanonicalExpr) = any(_contains_comprehension, x.args)
 # the base case; multi-generator (`for i in …, j in …`) forms yield several specs
 # (N-D result), and a tuple binding (`(i, xi)`) marks an enumerate/zip source.
 function _comprehension_generator_specs(x::ComprehensionExpr)
-    length(x.args) == 1 && x.args[1] isa GeneratorExpr || error(
-        "@deffun array comprehension: expected exactly one generator. ",
+    length(x.args) == 1 || error(
+        "@deffun array comprehension: malformed comprehension `", x, "`."
+    )
+    # Chained/flattened generators `[expr for i in … for j in …]` produce a
+    # ragged/flattened 1-D result (its length depends on the inner ranges). That
+    # ragged-result path is a deferred follow-up; reject it specifically rather than
+    # via the generic "expected one generator" error.
+    x.args[1] isa CanonicalExprV{:flatten} && error(
+        "@deffun array comprehension: chained/flattened generators ",
+        "`[expr for i in … for j in …]` are not supported — they build a ragged/flattened ",
+        "result. Use the product form `[expr for i in …, j in …]` for a rectangular N-D ",
+        "result, or write explicit nested loops (or `plate`) to assemble a ragged result."
+    )
+    x.args[1] isa GeneratorExpr || error(
+        "@deffun array comprehension: expected exactly one generator, got `", x.args[1], "`. ",
         "Only `[expr for i in lo:hi]` (and its enumerate/zip/N-D forms) is supported."
     )
     generator = x.args[1]

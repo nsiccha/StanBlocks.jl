@@ -168,6 +168,9 @@ end
     # Multi-generator (`for i …, j …`) lowers to a 2-D result (matrix[n,m] here).
     @deffun comprehension_multiple(x::vector[n], m::int) = [x[i] + j for i in 1:n, j in 1:m]
     @deffun comprehension_nested(x::vector[n]) = [[x[i] + j for j in 1:2] for i in 1:n]
+    # Chained/flattened generators (`for i … for j …`) build a ragged result — a
+    # deferred follow-up; rejected loudly for now.
+    @deffun comprehension_flatten(x::vector[n], m::int) = [x[i] + j for i in 1:n for j in 1:m]
     # value-iteration generators `[expr for xi in <container>]` desugar to index
     # iteration `[expr for _vi in 1:length(container)]` with `xi = container[_vi]`.
     @deffun comprehension_iterable(x::vector[n]) = [xi for xi in x]
@@ -2027,6 +2030,16 @@ Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated tes
         end
         @test stepped !== nothing
         @test occursin("bounded `lo:hi` range", stepped)
+
+        # chained/flattened `for i … for j …` (ragged result) rejects specifically.
+        flattened = comprehension_error() do
+            @slic (;x=[1.0, 2.0]) begin
+                z = comprehension_flatten(x, 2)
+                mu ~ normal(z[1], 1.0)
+            end
+        end
+        @test flattened !== nothing
+        @test occursin("chained/flattened generators", flattened)
     end
 
     @testset "multi-generator comprehensions lower to N-D results" begin
