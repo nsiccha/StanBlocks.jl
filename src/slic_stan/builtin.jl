@@ -904,6 +904,37 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_arg)}; info) = begi
     end
 end
 
+# `v[mask]` with `mask :: bool[n]` (an element-wise comparison result such as
+# `cmt .== 1`) is BOOLEAN-MASK selection, which Stan has no syntax for. Lower it
+# to ordinary integer indexing over the true-positions — `v[findall(mask)]` —
+# intercepting before the generic `int[n]` getindex tracetype (a `bool[n]` would
+# otherwise be read as an integer index list). To keep it zero-RUNTIME-cost we
+# HOIST `idx = findall(mask)` into its own statement rather than inlining the
+# `findall` call at the index site: a data-derived mask makes the binding
+# data-qualified, so `distribute!` routes it to `transformed data` (materialised
+# ONCE at startup, no per-iteration / no-AD recompute), and every use of that
+# `idx` is plain integer indexing. Falls back to the inline form outside a
+# statement context, and a SCALAR `bool` index (l_ndim 0) is NOT a mask — it
+# falls through to normal integer indexing. This getindex overload is the ONLY
+# way `bool` differs from `int`; everywhere else `bool[n]` dispatches as `int[n]`.
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2,<:StanExpr2{<:types.bool}}}; info) = begin
+    stan_ndim(type(x.args[2])) >= 1 || return fold_shape_query(stan_expr(x))
+    idx_val = forward!(CanonicalExpr(Base.findall, x.args[2]); info)
+    pending = _get_inline_pending()
+    idx_ref = if pending === nothing
+        idx_val                                   # no statement context → inline the findall
+    else
+        id = _next_inline_id()
+        name = Symbol(:boolmask_idx_, id)
+        while name in keys(info)
+            id = _next_inline_id(); name = Symbol(:boolmask_idx_, id)
+        end
+        push!(pending, forward!(CanonicalExpr(:(=), name, idx_val); info))
+        info[name]
+    end
+    forward!(CanonicalExpr(getindex, x.args[1], idx_ref); info)
+end
+
 # `rv[i]` → `mem[ragged_start(ends, i):ragged_end(ends, i)]` (a parameter vector
 # sliced by data bounds). Intercepts before `tracetype`, so a construction never
 # needs a tuple-taking UDF or a materialised tuple.
@@ -1565,7 +1596,11 @@ end
         (vector[n], ) => real
     end
     Union{typeof.((|, &, ==, !=, <, <=, >, >=))...} => begin
-        (anything, anything) => int
+        # Boolean-valued: `bool` (a subtype of `int`, so still an int everywhere
+        # except that a `bool[n]` result used as a `getindex` argument means a
+        # boolean mask). A scalar comparison stays semantically an int (renders as
+        # `int`), so nothing downstream changes except mask-shaped indexing.
+        (anything, anything) => bool
     end
     # step: Base.step is exported; Stan's step(real)->int dispatches on it
     typeof(step) => begin
@@ -1707,7 +1742,10 @@ _jb_infer(x::CanonicalExpr) = begin
     n = stan_size(type(dargs[ai]), 1)
     elem_rt = type(stan_expr(CanonicalExpr(f, map(_jb_elem, dargs)...)))
     stan_ndim(elem_rt) == 0 || error("jbroadcasted: `f` must return a scalar per element (got `$(sigtype(elem_rt))`)")
-    container = center_type(elem_rt) <: types.int ? types.int : types.vector
+    # Preserve the exact int-family element center type: `int` stays `array[] int`
+    # and `bool` (a comparison result) stays `array[] bool` (a mask), so
+    # `cmt .== 1` is boolean-mask-indexable; a `real` element → `vector[n]`.
+    container = center_type(elem_rt) <: types.int ? center_type(elem_rt) : types.vector
     (; f, dargs, ai, n, container)
 end
 tracetype(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
@@ -1721,7 +1759,9 @@ fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
     f_ph = anon_expr(:f, inf.f)
     arg_phs = [anon_expr(argnames[i], inf.dargs[i]) for i in 1:k]
     n_expr = StanExpr(:n, StanType(types.int, ()))
-    container_sym = inf.container === types.int ? :int : :vector
+    # `nameof` gives the parseable type-token symbol for the body decl / return:
+    # `:int`, `:vector`, or `:bool` (which renders as `int`). All are valid tokens.
+    container_sym = nameof(inf.container)
     slices = [:($broadcasted_getindex($(argnames[j]), i)) for j in 1:k]
     body_ast = Expr(:block,
         :(rv :: $container_sym[n]),

@@ -15,6 +15,13 @@ module types
     abstract type complex <: anything end
     abstract type real <: complex end
     abstract type int <: real end
+    # A boolean is an `int` (Stan has no bool array — it emits as `array[] int`),
+    # so `bool[n]` behaves like `int[n]` under EVERY dispatch (arithmetic, `sum`,
+    # comparison tracetypes) — the ONLY specialisation is `getindex`, where a
+    # `bool[n]` index means boolean-MASK selection (lowered to `v[findall(mask)]`)
+    # rather than integer indexing. Produced by element-wise comparison broadcasts
+    # (`cmt .== 1`). Renders as `int` (see the `Base.show` override below).
+    abstract type bool <: int end
     abstract type func{T} <: anything end
     # Anonymous lambdas (`(x) -> body`) flow through tracing as values of
     # type `types.closure`. They are *sibling* to `types.func` (not a subtype)
@@ -50,6 +57,8 @@ stan_type(expr, value::Type{T}; kwargs...) where {T<:types.anything} = StanType(
     types.tokenof{T}; value=T, qual=:data, kwargs...
 )
 Base.show(io::IO, ::Type{T}) where {T<:types.anything} = print(io, T.name.name)
+# A `bool` has no Stan spelling — it IS an `int` on the Stan side.
+Base.show(io::IO, ::Type{<:types.bool}) = print(io, "int")
 Base.show(io::IO, ::Type{T}) where {T<:types.func} = print(io, "func")#.parameters[1].name.name)
 Base.show(io::IO, ::Type{<:types.closure}) = print(io, "closure")
 Base.show(io::IO, ::Type{<:types.tup}) = print(io, "tuple(...)")
@@ -534,6 +543,14 @@ begin
     sigtype(x::Type) = x
     sigtype(x::Type{types.cholesky_factor_corr}) = types.matrix
     sigtype(x::Type{<:types.vector}) = types.vector
+    # `bool` is Stan-identical to `int` (it emits as `array[] int`), so its
+    # signature type — which drives Stan-function NAMING and DEDUP — must be
+    # `int`. Otherwise a generated helper reached with a `bool[]` arg and the same
+    # helper reached with an `int[]` arg (e.g. `broadcasted_getindex` inside
+    # `jbroadcasted`) would key as two distinct functions yet render to one
+    # identical Stan signature → "already declared". `center_type` stays `bool`
+    # for the `getindex` mask dispatch; only the Stan-facing signature collapses.
+    sigtype(x::Type{<:types.bool}) = types.int
     sigtype(x::StanExpr) = sigtype(x.type)
     sigtype(x::StanType) = begin 
         ct = center_type(x)

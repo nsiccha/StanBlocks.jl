@@ -1923,9 +1923,11 @@ end
     # indexing — the mask precomputes for free (cmt is data) and one index array is
     # shared by every use at zero runtime/gradient cost. GATE ON `compiles`.
     @testset "BRM-shaped: y[findall(cmt .== 1)] ~ normal(mu[...], sd)" begin
+        # `sd` is lower-bounded so any unconstrained test point maps to a valid
+        # (positive) normal scale — the gradient check below must be deterministic.
         model = @slic (;n=8, cmt=[1,2,1,2,1,2,1,2], y=randn(8), mu=randn(8)) begin
             idx = findall(cmt .== 1)
-            sd::real ~ normal(0,1)
+            sd ~ std_normal(;lower=0.)
             y[idx] ~ normal(mu[idx], sd)
         end
         code = stan_code(model)
@@ -1934,10 +1936,9 @@ end
         @test occursin(r"array\[[^\]]*\] int idx = findall\(", code)
         @test occursin("y[idx] ~ normal(mu[idx]", code)
         @test stanc_compiles(model)
-        # gradient-correct end to end (BridgeStan).
+        # gradient-correct end to end (BridgeStan), at a fixed valid point.
         prob = instantiate(model)
-        x = randn(LogDensityProblems.dimension(prob))
-        lp, g = LogDensityProblems.logdensity_and_gradient(prob, x)
+        lp, g = LogDensityProblems.logdensity_and_gradient(prob, [0.4])
         @test isfinite(lp) && all(isfinite, g)
     end
     @testset "all six comparison operators broadcast to an int mask" begin
@@ -1966,6 +1967,51 @@ end
             z::real ~ normal(0,1)
             z
         end)
+    end
+    @testset "bool-type auto-sugar: y[cmt .== 1] indexes directly with the mask" begin
+        # A comparison broadcast yields a `bool[n]` (a subtype of `int`), and
+        # `getindex` on a `bool[n]` mask lowers to `v[findall(mask)]` — so the
+        # full `y[cmt .== 1] ~ normal(mu[cmt .== 1], sd)` sugar works with no
+        # explicit `findall`. The findall is HOISTED to a transformed-data binding
+        # (zero per-iteration cost), and the model block is plain integer indexing.
+        model = @slic (;n=8, cmt=[1,2,1,2,1,2,1,2], y=randn(8), mu=randn(8)) begin
+            sd ~ std_normal(;lower=0.)
+            y[cmt .== 1] ~ normal(mu[cmt .== 1], sd)
+        end
+        code = stan_code(model)
+        @test occursin(r"array\[[^\]]*\] int boolmask_idx_\d+ = findall\(", code)   # hoisted to tdata
+        @test occursin(r"y\[boolmask_idx_\d+\] ~ normal\(mu\[boolmask_idx_\d+\]", code)
+        @test !occursin("findall", split(code, "model {")[2])   # NOT recomputed in the model block
+        @test stanc_compiles(model)
+        # Auto-sugar is numerically identical to the explicit findall form.
+        explicit = @slic (;n=8, cmt=[1,2,1,2,1,2,1,2], y=randn(8), mu=randn(8)) begin
+            idx = findall(cmt .== 1)
+            sd ~ std_normal(;lower=0.)
+            y[idx] ~ normal(mu[idx], sd)
+        end
+        # same data seed so the two log-densities must coincide
+        Random.seed!(7); cmt=[1,2,1,2,1,2,1,2]; y=randn(8); mu=randn(8)
+        ms = @slic (;n=8, cmt=cmt, y=y, mu=mu) begin
+            sd ~ std_normal(;lower=0.); y[cmt .== 1] ~ normal(mu[cmt .== 1], sd)
+        end
+        me = @slic (;n=8, cmt=cmt, y=y, mu=mu) begin
+            idx = findall(cmt .== 1); sd ~ std_normal(;lower=0.); y[idx] ~ normal(mu[idx], sd)
+        end
+        ps = instantiate(ms); pe = instantiate(me)
+        xx = [0.3]
+        @test LogDensityProblems.logdensity(ps, xx) ≈ LogDensityProblems.logdensity(pe, xx)
+        g = LogDensityProblems.logdensity_and_gradient(ps, xx)[2]
+        @test all(isfinite, g)
+    end
+    @testset "bool is an int everywhere except getindex" begin
+        # sum(mask) counts, mask arithmetic stays int — `bool <: int`.
+        model = @slic (;n=6, cmt=[1,2,1,2,1,2]) begin
+            k = sum(cmt .== 1)          # bool[] sums as int
+            m2 = (cmt .== 1) + (cmt .== 2)   # int arithmetic on masks
+            z::real ~ normal(0,1)
+            z
+        end
+        @test stanc_compiles(model)
     end
 end
 
