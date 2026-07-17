@@ -160,6 +160,15 @@ end
     @deffun comprehension_iter_eachcol(X::matrix[m, k]) = [sum(c) for c in EachCol(X)]
     @deffun comprehension_iter_ragged(g::RaggedVector) = [sum(gi) for gi in g]
     @deffun comprehension_stepped(x::vector[n]) = [x[i] for i in 1:2:n]
+    # value-iteration FOR loop with `.=` accumulation (the `=` form hits the SSA
+    # single-assignment gate — a pre-existing @deffun limitation, index loops too).
+    @deffun for_iter_sum(x::vector[n])::real = begin
+        acc = 0.0
+        for xi in x
+            acc .= acc + xi
+        end
+        acc
+    end
     # --- public transpile-time return-type query ---
     @deffun return_type_scalar(x::real)::real = square(x)
     @deffun return_type_vector(x::vector[n])::vector[n] = x
@@ -2056,6 +2065,24 @@ Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated tes
             rprob, fill(0.1, LogDensityProblems.dimension(rprob)))
         @test isfinite(rlp)
         @test all(isfinite, rgrad)
+    end
+
+    @testset "value-iteration for-loop with `.=` accumulation" begin
+        # `for xi in x; acc .= acc + xi` desugars to `for _vi in 1:length(x)` with
+        # `xi = x[_vi]`; `.=` (not `=`) is required for the accumulation itself.
+        model = @slic (;y=6.0) begin
+            x ~ std_normal(; n=3)
+            s = for_iter_sum(x)
+            y ~ normal(s, 0.5)
+        end
+        code = stan_code(model)
+        @test occursin(r"for\(value_index__vi_\d+ in 1:", code)
+        @test stanc_compiles(model)
+        prob = instantiate(model)
+        lp, grad = LogDensityProblems.logdensity_and_gradient(
+            prob, fill(0.1, LogDensityProblems.dimension(prob)))
+        @test isfinite(lp)
+        @test all(isfinite, grad)
     end
 
     @testset "model-level comprehension remains rejected" begin
