@@ -139,6 +139,20 @@ end
         rv::vector[n+1] = x
         rv
     end
+    # --- BARE whole-vector local (no size annotation) with a broadcast RHS ---
+    # The intermediate local's inferred size is the arg-placeholder fragment
+    # `dims(a)[1]` (a `StanExpr{String}` of center `int`). It must emit UNQUOTED
+    # (`vector[dims(a)[1]]`), not the invalid quoted `vector["dims(a)[1]"]`.
+    # Single-arg (unambiguous dim) and multi-arg (repeated dim, size sourced
+    # from a non-first arg) both exercise the render path.
+    @deffun bare_vec_local_single(a::vector[n]) = begin
+        xi = exp(a) .* a
+        xi
+    end
+    @deffun bare_vec_local_multi(a::vector[n], b::vector[n], c::vector[n]) = begin
+        xi = (a - b) .* exp(c)
+        xi
+    end
     # --- bounded one-dimensional array comprehensions in @deffun ---
     # The supported surface is deliberately one scalar expression over one
     # explicit `lo:hi` range.  These fixtures cover real/int result inference,
@@ -2166,6 +2180,34 @@ Verify `slic: typed assignment compatibility` in an isolated test item.
     @test dim_err !== nothing
     @test occursin("Typed assignment", dim_err)
     @test occursin("dimension 1", dim_err)
+end
+
+@testitem "slic: bare whole-vector local (broadcast RHS) emits unquoted size" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Regression for the inferred whole-vector-local snag: a bare (un-annotated)
+    # intermediate local whose RHS is a broadcast must emit a VALID unquoted size
+    # `vector[dims(a)[1]]`, not the invalid quoted `vector["dims(a)[1]"]` that
+    # transpiles() accepts but stanc rejects.
+    single = @slic (;yy=randn(4)) begin
+        a ~ std_normal(;n=4)
+        out = bare_vec_local_single(a)
+        yy ~ normal(out, 1.0)
+    end
+    @test transpiles(single)
+    @test stanc_compiles(single)
+    single_code = stan_code(single)
+    @test occursin("vector[dims(a)[1]]", single_code)
+    @test !occursin("\"dims(", single_code)
+
+    # Repeated dim, size sourced from a non-first arg (`c`): even here the bare
+    # form works because it declares with the RHS type directly (no assertion).
+    multi = @slic (;a=randn(4), b=randn(4), yy=randn(4)) begin
+        c ~ std_normal(;n=4)
+        out = bare_vec_local_multi(a, b, c)
+        yy ~ normal(out, 1.0)
+    end
+    @test transpiles(multi)
+    @test stanc_compiles(multi)
+    @test !occursin("\"dims(", stan_code(multi))
 end
 
 """

@@ -61,8 +61,15 @@ end
 Base.show(io::StanIO, x::StanExpr) = _show_stan_expr(io, type(x), x)
 _show_stan_expr(io, ::StringStanType, x) = print(io, expr(x), "::", type(x))
 _show_stan_expr(io, _t, x) = print(io, expr(x))
-# String-literal StanExprs render as a quoted Stan string.
-Base.show(io::StanIO, x::StanExpr{<:AbstractString}) = print(io, '"', expr(x), '"')
+# A String-valued StanExpr is one of two things, discriminated by its center
+# type. A MESSAGE literal (reject/print — center `anything`) renders QUOTED.
+# A raw-Stan-code SIZE fragment (center `int` — an @deffun arg-placeholder
+# `dims(a)[1]` from `anon_expr`, or a sized-token dim `name.i`) renders
+# UNQUOTED: it is a Stan expression, and a quoted string in a `vector[...]`
+# size position is invalid Stan (the inferred whole-vector-local snag —
+# primer §180.2 / stanblocks-use §5).
+Base.show(io::StanIO, x::StanExpr{<:AbstractString}) =
+    center_type(x) <: types.int ? print(io, expr(x)) : print(io, '"', expr(x), '"')
 # Sized type tokens render as Stan tuple literals at the call site. 0-dim
 # tokens are always_inline'd away, so no call-site form is needed for them.
 # 1-dim tokens render as a bare int (Stan has no 1-element tuple type).
