@@ -180,6 +180,35 @@ end
         y      = ode_rk45((t, y_state) -> -lambda * y_state, [1.0], 0.0, to_array_1d(ts))
     end
 
+    # Snag `ode-closure-capt` regression model — the Torsten/Stan idiom of a
+    # parameter CAPTURED by an ODE-RHS closure whose solve feeds a DOWNSTREAM
+    # likelihood. `lambda` must stay a sampled parameter (in `parameters`, `~`
+    # in `model`), NOT be optimised into `generated quantities` as a
+    # `std_normal_rng()` draw while still emitted as a trailing solver arg in
+    # `transformed parameters` (out-of-scope Stan). `det_model` above only
+    # covers the PRIOR-PREDICTIVE path (ODE output unused → `lambda` correctly
+    # lands in GQ); this model forces the ODE output into transformed
+    # parameters and so exercises the `backward!(closure)` capture-following fix.
+    det_lik_model = @slic (;ts=[1.0], yobs=0.37) begin
+        lambda ~ std_normal(;lower=0.)
+        y      = ode_rk45((t, y_state) -> -lambda * y_state, [1.0], 0.0, to_array_1d(ts))
+        pred   = y[1][1]
+        yobs   ~ normal(pred, 0.05)
+    end
+
+    # Snag `ode-closure-capt`, DATA-side twin — a DATA value (`k`) captured ONLY
+    # inside a lifted ODE-RHS closure. The emitter threads `k` as a trailing
+    # solver arg, so `fetch_data!(closure)` must follow captures and emit `k`'s
+    # `data` declaration; otherwise dead-data elimination drops it and the solve
+    # references an out-of-scope `k`. `k` appears NOWHERE outside the closure, so
+    # only the capture-following path can declare it.
+    det_datacap_model = @slic (;ts=[1.0], yobs=0.37, k=2.0) begin
+        lambda ~ std_normal(;lower=0.)
+        y      = ode_rk45((t, y_state) -> -lambda * k * y_state, [1.0], 0.0, to_array_1d(ts))
+        pred   = y[1][1]
+        yobs   ~ normal(pred, 0.05)
+    end
+
     # Built-in math constants (`pi`, `ℯ`) resolve to their Float64 value in a model
     # body (user decision 3bbtrv); arbitrary module-level numbers must NOT.
     @deffun @inline _scale_by_consts(x::vector[n])::vector[n] = (4. / pi) * x .+ ℯ
@@ -1057,6 +1086,47 @@ Verify `determinism: inline UDF + lifted closure` in an isolated test item.
     @test occursin("// lifted closure", a)
     # transpiling twice in one session must be byte-identical
     @test a == b
+end
+
+"""
+Verify `slic: ODE closure-captured param feeding a likelihood stays a parameter`
+in an isolated test item.
+"""
+@testitem "slic: ODE closure-captured param feeding a likelihood stays a parameter" tags=[:slic, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Snag `ode-closure-capt`: a parameter captured by an ODE-RHS closure whose
+    # solve feeds a downstream likelihood must remain a SAMPLED parameter. The
+    # §9 prior-but-no-downstream-use → GQ `_rng` analysis must follow the closure
+    # capture (the emitter threads it as a trailing solver arg), else `lambda` is
+    # GQ-lowered yet used in `transformed parameters` → stanc "not in scope".
+    @test stanc_compiles(det_lik_model)
+    sc = stan_code(det_lik_model)
+    # `lambda` stayed a sampled parameter: `~` in the model block, no GQ rng draw.
+    @test occursin("lambda ~ std_normal()", sc)
+    @test !occursin("std_normal_rng", sc)
+    # Instantiating (not just transpiling) confirms it: `lambda` is the sole
+    # sampler dimension and the density evaluates finitely.
+    p = instantiate(stan_model(det_lik_model))
+    @test LogDensityProblems.dimension(p) == 1
+    @test isfinite(LogDensityProblems.logdensity(p, [0.5]))
+end
+
+"""
+Verify `slic: ODE closure-captured DATA value is declared in the data block`
+in an isolated test item.
+"""
+@testitem "slic: ODE closure-captured DATA value is declared in the data block" tags=[:slic, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Snag `ode-closure-capt` DATA-side twin: a data value (`k`) captured only
+    # inside a lifted ODE-RHS closure is threaded as a trailing solver arg, so
+    # `fetch_data!(closure)` must follow captures and declare it — else dead-data
+    # elimination drops `real k;` and the solve references an out-of-scope `k`.
+    @test stanc_compiles(det_datacap_model)
+    sc = stan_code(det_datacap_model)
+    @test occursin("real k;", sc)                     # k declared in the data block
+    @test occursin("to_array_1d(ts), k", sc)          # and threaded into the solve
+    # Instantiating confirms the data binding round-trips.
+    p = instantiate(stan_model(det_datacap_model))
+    @test LogDensityProblems.dimension(p) == 1
+    @test isfinite(LogDensityProblems.logdensity(p, [0.5]))
 end
 
 """
