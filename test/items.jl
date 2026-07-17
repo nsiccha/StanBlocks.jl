@@ -1986,6 +1986,107 @@ Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolat
     end
 end
 
+@testitem "slic: boolean-mask indexing via comparison broadcast + findall" tags=[:slic, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Stan has no boolean-mask indexing (`v[mask]`). Instead, element-wise
+    # comparison on a DATA scalar array (`cmt .== 1`, cmt an `array[] int`) lowers
+    # via `jbroadcasted` to a 0/1 `array[] int` mask, and `findall(mask)`
+    # materialises the true-positions as a data-sized `int[sum(mask)]` array in
+    # transformed data. `y[findall(cmt .== 1)]` is then ordinary integer-array
+    # indexing — the mask precomputes for free (cmt is data) and one index array is
+    # shared by every use at zero runtime/gradient cost. GATE ON `compiles`.
+    @testset "BRM-shaped: y[findall(cmt .== 1)] ~ normal(mu[...], sd)" begin
+        # `sd` is lower-bounded so any unconstrained test point maps to a valid
+        # (positive) normal scale — the gradient check below must be deterministic.
+        model = @slic (;n=8, cmt=[1,2,1,2,1,2,1,2], y=randn(8), mu=randn(8)) begin
+            idx = findall(cmt .== 1)
+            sd ~ std_normal(;lower=0.)
+            y[idx] ~ normal(mu[idx], sd)
+        end
+        code = stan_code(model)
+        # mask lowers to an int-container jbroadcasted; idx is data-sized in tdata.
+        @test occursin("jbroadcasted_eq", code)
+        @test occursin(r"array\[[^\]]*\] int idx = findall\(", code)
+        @test occursin("y[idx] ~ normal(mu[idx]", code)
+        @test stanc_compiles(model)
+        # gradient-correct end to end (BridgeStan), at a fixed valid point.
+        prob = instantiate(model)
+        lp, g = LogDensityProblems.logdensity_and_gradient(prob, [0.4])
+        @test isfinite(lp) && all(isfinite, g)
+    end
+    @testset "all six comparison operators broadcast to an int mask" begin
+        for form in (
+            :(findall(cmt .== 2)), :(findall(cmt .!= 2)), :(findall(cmt .< 2)),
+            :(findall(cmt .<= 2)), :(findall(cmt .> 2)), :(findall(cmt .>= 2)),
+        )
+            body = Expr(:block, Expr(:(=), :idx, form), :(z::real ~ normal(0,1)))
+            model = StanBlocks.stan.SlicModel(body, (;n=6, cmt=[1,2,3,1,2,3]), @__MODULE__)
+            @test stanc_compiles(model)
+        end
+    end
+    @testset "mask usable as a plain count: sum(cmt .== 1)" begin
+        model = @slic (;n=6, cmt=[1,2,1,2,1,2]) begin
+            k = sum(cmt .== 1)
+            z::real ~ normal(0,1)
+            z
+        end
+        @test stanc_compiles(model)
+    end
+    @testset "element-wise comparison on a native vector fails loudly (no silent miscompile)" begin
+        # `vector .> scalar` has no int-mask lowering (only scalar arrays do); it
+        # must error, never emit invalid Stan silently.
+        @test_throws Exception stan_code(@slic (;n=6, x=randn(6)) begin
+            idx = findall(x .> 0.5)
+            z::real ~ normal(0,1)
+            z
+        end)
+    end
+    @testset "bool-type auto-sugar: y[cmt .== 1] indexes directly with the mask" begin
+        # A comparison broadcast yields a `bool[n]` (a subtype of `int`), and
+        # `getindex` on a `bool[n]` mask lowers to `v[findall(mask)]` — so the
+        # full `y[cmt .== 1] ~ normal(mu[cmt .== 1], sd)` sugar works with no
+        # explicit `findall`. The findall is HOISTED to a transformed-data binding
+        # (zero per-iteration cost), and the model block is plain integer indexing.
+        model = @slic (;n=8, cmt=[1,2,1,2,1,2,1,2], y=randn(8), mu=randn(8)) begin
+            sd ~ std_normal(;lower=0.)
+            y[cmt .== 1] ~ normal(mu[cmt .== 1], sd)
+        end
+        code = stan_code(model)
+        @test occursin(r"array\[[^\]]*\] int boolmask_idx_\d+ = findall\(", code)   # hoisted to tdata
+        @test occursin(r"y\[boolmask_idx_\d+\] ~ normal\(mu\[boolmask_idx_\d+\]", code)
+        @test !occursin("findall", split(code, "model {")[2])   # NOT recomputed in the model block
+        @test stanc_compiles(model)
+        # Auto-sugar is numerically identical to the explicit findall form.
+        explicit = @slic (;n=8, cmt=[1,2,1,2,1,2,1,2], y=randn(8), mu=randn(8)) begin
+            idx = findall(cmt .== 1)
+            sd ~ std_normal(;lower=0.)
+            y[idx] ~ normal(mu[idx], sd)
+        end
+        # same data seed so the two log-densities must coincide
+        Random.seed!(7); cmt=[1,2,1,2,1,2,1,2]; y=randn(8); mu=randn(8)
+        ms = @slic (;n=8, cmt=cmt, y=y, mu=mu) begin
+            sd ~ std_normal(;lower=0.); y[cmt .== 1] ~ normal(mu[cmt .== 1], sd)
+        end
+        me = @slic (;n=8, cmt=cmt, y=y, mu=mu) begin
+            idx = findall(cmt .== 1); sd ~ std_normal(;lower=0.); y[idx] ~ normal(mu[idx], sd)
+        end
+        ps = instantiate(ms); pe = instantiate(me)
+        xx = [0.3]
+        @test LogDensityProblems.logdensity(ps, xx) ≈ LogDensityProblems.logdensity(pe, xx)
+        g = LogDensityProblems.logdensity_and_gradient(ps, xx)[2]
+        @test all(isfinite, g)
+    end
+    @testset "bool is an int everywhere except getindex" begin
+        # sum(mask) counts, mask arithmetic stays int — `bool <: int`.
+        model = @slic (;n=6, cmt=[1,2,1,2,1,2]) begin
+            k = sum(cmt .== 1)          # bool[] sums as int
+            m2 = (cmt .== 1) + (cmt .== 2)   # int arithmetic on masks
+            z::real ~ normal(0,1)
+            z
+        end
+        @test stanc_compiles(model)
+    end
+end
+
 """
 Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated test item.
 """

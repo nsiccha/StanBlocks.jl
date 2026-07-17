@@ -364,6 +364,18 @@ broadcast_callee(::Symbol, ::Val{Symbol(".*")}) = .*
 broadcast_callee(::Symbol, ::Val{Symbol("./")}) = ./
 broadcast_callee(::Symbol, ::Val{Symbol(".^")}) = .^
 broadcast_callee(::Symbol, ::Val{Symbol(".÷")}) = Base.BroadcastFunction(÷)
+# Element-wise comparisons on scalar arrays produce a 0/1 `array[] int` mask (via
+# the generalised `jbroadcasted` loop, whose container inference sees the
+# `(anything,anything)=>int` comparison tracetype and stays int). Stan has no
+# native element-wise comparison operator on arrays, so — like `.÷` — these route
+# through `Base.BroadcastFunction`; the mask feeds `findall(...)` to derive a
+# transformed-data integer index array (`y[findall(cmt .== 1)]`).
+broadcast_callee(::Symbol, ::Val{Symbol(".==")}) = Base.BroadcastFunction(==)
+broadcast_callee(::Symbol, ::Val{Symbol(".!=")}) = Base.BroadcastFunction(!=)
+broadcast_callee(::Symbol, ::Val{Symbol(".<")})  = Base.BroadcastFunction(<)
+broadcast_callee(::Symbol, ::Val{Symbol(".<=")}) = Base.BroadcastFunction(<=)
+broadcast_callee(::Symbol, ::Val{Symbol(".>")})  = Base.BroadcastFunction(>)
+broadcast_callee(::Symbol, ::Val{Symbol(".>=")}) = Base.BroadcastFunction(>=)
 broadcast_callee(f::Symbol, ::Val) = begin
     s = string(f)
     if startswith(s, '.') && length(s) > 1 && s != ".."
