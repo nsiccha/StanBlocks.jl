@@ -941,6 +941,70 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
     _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
 
+# --- EachCol / EachRow — first-class column/row VIEWS of a matrix -------------
+# `EachCol(X)` / `EachRow(X)` make a matrix's columns / rows an indexable container
+# everywhere (`EachCol(X)[j]` = the j-th column) and a plate iterable — the
+# eachcol/eachrow analogue of RaggedVector (decision 2026-07-17T02-25-53-568-igj5dy).
+# Like RaggedVector, a construction is a COMPILE-TIME view (verbatim-bound, emitting
+# no wrapper tuple): `[j]` lowers directly to Stan's native `col(X, j)` / `row(X, i)`,
+# `length` to `cols(X)` / `rows(X)`.
+@usertype struct EachCol
+    X :: matrix
+end
+@usertype struct EachRow
+    X :: matrix
+end
+@eval builtin const EachCol = $EachCol
+@eval builtin const EachRow = $EachRow
+
+# Tuple-representation accessors — fire when the view is a BOUND name (a @deffun /
+# submodel param), not a construction (mirrors the RaggedVector UDFs).
+@deffun begin
+    Base.length(ec::EachCol)::int = cols(ec.X)
+    Base.lastindex(ec::EachCol)::int = cols(ec.X)
+    Base.getindex(ec::EachCol, j::int)::vector[rows(ec.X)] = col(ec.X, j)
+    Base.length(er::EachRow)::int = rows(er.X)
+    Base.lastindex(er::EachRow)::int = rows(er.X)
+    Base.getindex(er::EachRow, i::int)::row_vector[cols(er.X)] = row(er.X, i)
+end
+
+# Constructions bind verbatim (mirrors RaggedVector), emitting no Stan statement.
+forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:EachCol}}; info) = begin
+    name, rhs = x.args
+    name in keys(info) && _is_submodel_info(info) && return nothing
+    name in keys(info) && error("EachCol: rebinding `$name` is not supported — it is a compile-time view of a matrix.")
+    info[name] = rhs
+    nothing
+end
+forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:EachRow}}; info) = begin
+    name, rhs = x.args
+    name in keys(info) && _is_submodel_info(info) && return nothing
+    name in keys(info) && error("EachRow: rebinding `$name` is not supported — it is a compile-time view of a matrix.")
+    info[name] = rhs
+    nothing
+end
+forward!(x::StanExpr{Symbol,<:StanType{<:EachCol}}; info) = x
+forward!(x::StanExpr{Symbol,<:StanType{<:EachRow}}; info) = x
+
+_is_view_construction(v::StanExpr) = expr(v) isa CanonicalExpr
+_view_mat(v::StanExpr) = expr(v).args[1]
+
+# `EachCol(X)[j]` → `col(X, j)`; `EachRow(X)[i]` → `row(X, i)` (construction case).
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:EachCol},<:StanExpr2{<:types.int}}}; info) =
+    _is_view_construction(x.args[1]) ? stan_call(builtin.col, _view_mat(x.args[1]), x.args[2]) : fold_shape_query(stan_expr(x))
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:EachRow},<:StanExpr2{<:types.int}}}; info) =
+    _is_view_construction(x.args[1]) ? stan_call(builtin.row, _view_mat(x.args[1]), x.args[2]) : fold_shape_query(stan_expr(x))
+# `length(EachCol(X))` / `lastindex` → `cols(X)`; EachRow → `rows(X)`.
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:EachCol}}}; info) =
+    _is_view_construction(x.args[1]) ? stan_call(builtin.cols, _view_mat(x.args[1])) : fold_shape_query(stan_expr(x))
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:EachRow}}}; info) =
+    _is_view_construction(x.args[1]) ? stan_call(builtin.rows, _view_mat(x.args[1])) : fold_shape_query(stan_expr(x))
+# `EachCol(X).X` / `EachRow(X).X` → the captured matrix (construction case).
+expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:EachCol},<:StanExpr2{<:types.int}}}; info) =
+    _is_view_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:EachRow},<:StanExpr2{<:types.int}}}; info) =
+    _is_view_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+
 # --- Sized-token rng overloads (generated via @eval @deffun) -----------------
 # gq `x::T[n] ~ dist(args...)` synthesizes `dist_rng(T[n], args...)` which
 # dispatches here on the token's shape. Stan's native `*_rng` broadcasts scalars
