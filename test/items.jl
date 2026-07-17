@@ -5,6 +5,8 @@ using TestItemRunner
     using StanBlocks
     using LogDensityProblems
     import StanBlocks.stan: @deffun, full_cqual_eq, transpiles, stan_model, stan_code, stanc_check, instantiate
+    # View usertypes are not exported; alias so @deffun signatures can name them.
+    const RaggedVector = StanBlocks.RaggedVector
     using PosteriorDB
 end
 
@@ -13,6 +15,8 @@ end
     using StanBlocks
     using LogDensityProblems
     import StanBlocks.stan: @deffun, full_cqual_eq, transpiles, stan_model, stan_code, stanc_check, instantiate
+    # View usertypes are not exported; alias so @deffun signatures can name them.
+    const RaggedVector = StanBlocks.RaggedVector
     using PosteriorDB
 
     function stanc_compiles(model; re::Bool=true)
@@ -149,7 +153,22 @@ end
     @deffun comprehension_filtered(x::vector[n]) = [x[i] for i in 1:n if x[i] > 0]
     @deffun comprehension_multiple(x::vector[n], m::int) = [x[i] + j for i in 1:n, j in 1:m]
     @deffun comprehension_nested(x::vector[n]) = [[x[i] + j for j in 1:2] for i in 1:n]
+    # value-iteration generators `[expr for xi in <container>]` desugar to index
+    # iteration `[expr for _vi in 1:length(container)]` with `xi = container[_vi]`.
     @deffun comprehension_iterable(x::vector[n]) = [xi for xi in x]
+    @deffun comprehension_iter_square(x::vector[n]) = [xi * xi for xi in x]
+    @deffun comprehension_iter_eachcol(X::matrix[m, k]) = [sum(c) for c in EachCol(X)]
+    @deffun comprehension_iter_ragged(g::RaggedVector) = [sum(gi) for gi in g]
+    @deffun comprehension_stepped(x::vector[n]) = [x[i] for i in 1:2:n]
+    # value-iteration FOR loop with `.=` accumulation (the `=` form hits the SSA
+    # single-assignment gate — a pre-existing @deffun limitation, index loops too).
+    @deffun for_iter_sum(x::vector[n])::real = begin
+        acc = 0.0
+        for xi in x
+            acc .= acc + xi
+        end
+        acc
+    end
     # --- public transpile-time return-type query ---
     @deffun return_type_scalar(x::real)::real = square(x)
     @deffun return_type_vector(x::vector[n])::vector[n] = x
@@ -1993,14 +2012,77 @@ Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated tes
         @test nested !== nothing
         @test occursin("nested comprehensions are not supported", nested)
 
-        iterable = comprehension_error() do
-            @slic (;x=[1.0, 2.0]) begin
-                z = comprehension_iterable(x)
+        # stepped ranges stay rejected via the same (non-bounded-`lo:hi`) gate.
+        stepped = comprehension_error() do
+            @slic (;x=[1.0, 2.0, 3.0, 4.0]) begin
+                z = comprehension_stepped(x)
                 mu ~ normal(z[1], 1.0)
             end
         end
-        @test iterable !== nothing
-        @test occursin("one bounded `lo:hi` range", iterable)
+        @test stepped !== nothing
+        @test occursin("bounded `lo:hi` range", stepped)
+    end
+
+    @testset "value-iteration generators lower to index loops" begin
+        # `[xi for xi in x]` desugars to `[x[_vi] for _vi in 1:length(x)]`.
+        vec_model = @slic (;x=[1.0, 2.0, 3.0], y=6.0) begin
+            w ~ std_normal(; n=2)
+            z = comprehension_iter_square(x)
+            y ~ normal(sum(z) + w[1], 0.5)
+        end
+        vcode = stan_code(vec_model)
+        @test occursin(r"for\(value_index__vi_\d+ in 1:", vcode)
+        @test stanc_compiles(vec_model)
+        vprob = instantiate(vec_model)
+        vlp, vgrad = LogDensityProblems.logdensity_and_gradient(
+            vprob, fill(0.1, LogDensityProblems.dimension(vprob)))
+        @test isfinite(vlp)
+        @test all(isfinite, vgrad)
+
+        # value-iteration over the EachCol view usertype: `[sum(c) for c in EachCol(X)]`.
+        col_model = @slic (;X=[1.0 2.0; 3.0 4.0; 5.0 6.0], y=6.0) begin
+            w ~ std_normal(; n=3)
+            cs = comprehension_iter_eachcol(X)
+            y ~ normal(sum(cs) + w[1], 0.5)
+        end
+        @test occursin("col(X", stan_code(col_model))
+        @test stanc_compiles(col_model)
+        cprob = instantiate(col_model)
+        clp, cgrad = LogDensityProblems.logdensity_and_gradient(
+            cprob, fill(0.1, LogDensityProblems.dimension(cprob)))
+        @test isfinite(clp)
+        @test all(isfinite, cgrad)
+
+        # value-iteration over a ragged-data RaggedVector: `[sum(gi) for gi in g]`.
+        rag_model = @slic (;g=[[1.0, 2.0, 3.0], [4.0, 5.0]], y=6.0) begin
+            w ~ std_normal(; n=2)
+            gs = comprehension_iter_ragged(g)
+            y ~ normal(sum(gs) + w[1], 0.5)
+        end
+        @test stanc_compiles(rag_model)
+        rprob = instantiate(rag_model)
+        rlp, rgrad = LogDensityProblems.logdensity_and_gradient(
+            rprob, fill(0.1, LogDensityProblems.dimension(rprob)))
+        @test isfinite(rlp)
+        @test all(isfinite, rgrad)
+    end
+
+    @testset "value-iteration for-loop with `.=` accumulation" begin
+        # `for xi in x; acc .= acc + xi` desugars to `for _vi in 1:length(x)` with
+        # `xi = x[_vi]`; `.=` (not `=`) is required for the accumulation itself.
+        model = @slic (;y=6.0) begin
+            x ~ std_normal(; n=3)
+            s = for_iter_sum(x)
+            y ~ normal(s, 0.5)
+        end
+        code = stan_code(model)
+        @test occursin(r"for\(value_index__vi_\d+ in 1:", code)
+        @test stanc_compiles(model)
+        prob = instantiate(model)
+        lp, grad = LogDensityProblems.logdensity_and_gradient(
+            prob, fill(0.1, LogDensityProblems.dimension(prob)))
+        @test isfinite(lp)
+        @test all(isfinite, grad)
     end
 
     @testset "model-level comprehension remains rejected" begin
