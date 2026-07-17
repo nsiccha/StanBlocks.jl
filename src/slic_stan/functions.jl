@@ -94,12 +94,21 @@ backward!(x::StanExpr2{<:types.closure}; info) = begin
     foreach(backward!(; info), _closure_captures(x))
     x
 end
-# A closure StanExpr's `expr` field carries the closure record (a
-# NamedTuple). Without a specialisation, `fetch_data!`'s NamedTuple
-# fallback would iterate the record and trip on its `body::Expr` field.
-# Closures contribute nothing data-side — captured StanExprs are already
-# traversed via their original bindings.
-fetch_data!(x::StanExpr2{<:types.closure}; info) = nothing
+# A closure StanExpr's `expr` field carries the closure record (a NamedTuple);
+# the generic `fetch_data!` NamedTuple fallback would iterate the record and trip
+# on its `body::Expr` field, so a specialisation is required. It must NOT be a
+# no-op, though: for a LIFTED closure (flowing to a builtin like `ode_rk45`) the
+# body becomes a SEPARATE Stan function and the emitter threads the captures as
+# trailing call args (`show(::CanonicalExpr{<:ODESolver})`, `_closure_captures`).
+# A DATA value captured ONLY inside such a body is therefore never walked as a
+# plain symbol occurrence, so dead-data elimination (`fetch_data!(::StanExpr{Symbol})`
+# only declares `hasvalue` symbols it visits) drops its `data` declaration while
+# the emitter still references it → out-of-scope Stan. Descend into the CAPTURES
+# only (not the whole record, which keeps the `body::Expr` trap avoided): a
+# captured data symbol gets declared, captured params/derived values are `hasvalue`
+# no-ops. This mirrors `backward!(closure)` above. Inlined closures never reach
+# here (`expand_inline!` removes them in `forward!`).
+fetch_data!(x::StanExpr2{<:types.closure}; info) = foreach(fetch_data!(; info), _closure_captures(x))
 # tokenof StanExprs carry a raw Stan type as `expr`; skip recursing into the
 # bare `Type{...}` which would hit the generic backward! fallback.
 backward!(x::StanExpr2{<:types.tokenof}; info) = x
