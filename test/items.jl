@@ -703,6 +703,45 @@ end
         end
         y ~ normal(sum(b[2]), 1.0)
     end
+    # Snag regression (ragged-dist-arg-dcffbc1b): a plate collects per-cell VECTORS
+    # of differing lengths into a ragged result `mu`, then a TOP-LEVEL obs model is
+    # applied to the WHOLE ragged result (obs-outside). It BROADCASTS across groups.
+    c3_plate_ragged_obs_outside_model = @slic (;
+        ts=[[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]],
+        ys=[[0.6, 0.8, 1.0], [0.5, 0.7], [0.4, 0.9, 1.1, 1.3]],
+        nsub=3,
+    ) begin
+        sigma ~ exponential(1)
+        mu ~ plate(ts; outer=(nsub,)) do t
+            m::typeof(t) = 2.0 .* t
+            m
+        end
+        ys ~ normal(mu, sigma)
+    end
+    # Obs-in-cell twin — the reference the broadcast form must be NUMERICALLY equal to.
+    c3_plate_ragged_obs_incell_model = @slic (;
+        ts=[[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]],
+        ys=[[0.6, 0.8, 1.0], [0.5, 0.7], [0.4, 0.9, 1.1, 1.3]],
+        nsub=3,
+    ) begin
+        sigma ~ exponential(1)
+        mu ~ plate(ts, ys; outer=(nsub,)) do t, y
+            m::typeof(t) = 2.0 .* t
+            y ~ normal(m, sigma)
+            m
+        end
+    end
+    # Vector-valued (multi_normal) ragged obs: the ragged structure MUST be preserved
+    # — each group is ONE multivariate observation, never a flattened backing.
+    # Equal-length groups so a shared covariance applies.
+    c3_ragged_obs_broadcast_mvn_model = @slic (;
+        ym=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]],
+        mm=[[0.0, 0.1, 0.2], [0.3, 0.4, 0.5], [0.6, 0.7, 0.8]],
+        Sig=[1.0 0.0 0.0; 0.0 1.0 0.0; 0.0 0.0 1.0],
+    ) begin
+        scale ~ exponential(1)
+        ym ~ multi_normal(mm, Sig)
+    end
     c3_plate_ragged_brm_model = @slic (;K=[1, 2, 3], y=0.3) begin
         L::cholesky_factor_corr[K] ~ lkj_corr_cholesky(2.0)
         b ~ plate(; outer=length(K)) do g
@@ -2896,6 +2935,65 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
     @test occursin(r"vector\[sum\(b_cell_z__pl_len_\d+\)\] b_cell_z__pl_mem_\d+", stan_block(called, "parameters"))
     @test occursin(r"(?s)b_cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", stan_block(called, "model"))
     @test occursin(r"(?s)b__pl_mem_\d+\[.*?\]\s*=\s*b_cell__pl_mem_\d+\[", stan_block(called, "transformed parameters"))
+end
+
+"""
+Verify `slic: ragged obs broadcasts a distribution across groups (obs-outside)`.
+
+Snag ragged-dist-arg-dcffbc1b: a plate collects per-cell VECTORS of differing
+lengths into a ragged `mu` (`tuple(vector, array[] int)`); the user then applies a
+TOP-LEVEL observation model to the WHOLE ragged result — `ys ~ normal(mu, sigma)` —
+instead of keeping the obs in-cell. Previously this aborted at TRACING time: the
+auto-generated posterior-predictive `_rng` draw hit
+`normal_rng(::tuple(vector, array[] int), ::real)`, which has no tracetype.
+
+The obs is now BROADCAST ACROSS the ragged groups (never flattened): it lowers to a
+compiler-owned per-group loop `for g in 1:length(ys): ys[g] ~ dist(mu[g], …)`
+(ragged distribution args sliced per group via `_ragged_group_arg`; shared
+scalar/dense args pass through), reusing the ragged-prior density-loop machinery.
+The indexed data obs routes to the model block only (no auto-GQ), matching the
+obs-in-cell plate form.
+
+Correctness for BOTH:
+- univariate `normal` reduces to the same per-group density as the obs-in-cell
+  twin — numerically identical log density (checked via BridgeStan);
+- vector-valued `multi_normal` KEEPS the ragged structure — each `ys[g]` is ONE
+  multivariate observation with its own group vector `mu[g]`, NOT a flattened
+  backing (which would silently change the model).
+"""
+@testitem "slic: ragged obs broadcasts a distribution across groups (obs-outside)" tags=[:slic, :plate, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # (A) univariate normal — per-group broadcast, equal to the obs-in-cell twin.
+    model = c3_plate_ragged_obs_outside_model
+    @test transpiles(model)
+    @test stanc_compiles(model)
+    let mb = stan_block(stan_code(model), "model")
+        # Per-group loop over the ragged obs — NOT a flattened `.mem` density.
+        @test occursin(r"for\(g__ro_\d+ in 1:num_elements_RaggedVector\(ys\)\)", mb)
+        @test occursin(r"getindex_RaggedVector\(ys, g__ro_\d+\) ~ normal\(mu__pl_mem_\d+\[", mb)
+    end
+    # Numerically identical to the obs-in-cell twin, end-to-end through BridgeStan.
+    p_out = instantiate(model)
+    p_in  = instantiate(c3_plate_ragged_obs_incell_model)
+    @test LogDensityProblems.dimension(p_out) == 1
+    let x = [0.3]
+        lp_out, g_out = LogDensityProblems.logdensity_and_gradient(p_out, x)
+        @test isfinite(lp_out)
+        @test all(isfinite, g_out)
+        @test lp_out ≈ LogDensityProblems.logdensity(p_in, x)
+    end
+
+    # (B) vector-valued multi_normal — the ragged structure MUST be preserved: each
+    # group is ONE multivariate observation `ys[g] ~ multi_normal(mm[g], Sig)`.
+    mvn = c3_ragged_obs_broadcast_mvn_model
+    @test transpiles(mvn)
+    @test stanc_compiles(mvn)
+    let mb = stan_block(stan_code(mvn), "model")
+        @test occursin(r"for\(g__ro_\d+ in 1:num_elements_RaggedVector\(ym\)\)", mb)
+        @test occursin(
+            r"getindex_RaggedVector\(ym, g__ro_\d+\) ~ multi_normal\(getindex_RaggedVector\(mm, g__ro_\d+\), Sig\)",
+            mb,
+        )
+    end
 end
 
 """

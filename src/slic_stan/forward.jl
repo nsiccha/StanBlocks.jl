@@ -737,8 +737,32 @@ forward!(x::AssignmentExpr; info) = begin
 end
 forward!(x::SamplingExpr{Symbol}; info) = begin
     name, rhs = x.args
+    # A whole ragged-vector OBSERVATION fed to a top-level distribution is
+    # BROADCAST ACROSS its groups — never flattened. `ys ~ dist(mu, args…)` with a
+    # data `RaggedVector` LHS lowers to a compiler-owned per-group loop
+    #   for g in 1:length(ys)   ys[g] ~ dist(mu[g], args[g]…)
+    # (ragged distribution args sliced per group via `_ragged_group_arg`; shared
+    # scalar/dense args pass through). This preserves the ragged structure that
+    # VECTOR-valued families need — `ys[g] ~ multi_normal(mu[g], Sigma)` is ONE
+    # obs per group — while univariate families (`normal`) reduce to the same
+    # per-group density Stan already vectorises. It reuses the ragged-prior density
+    # loop (`_ragged_group_rhs` + `_trace_ragged_stmts`); the indexed data obs
+    # routes to the model block only (no auto-GQ), matching the obs-in-cell plate
+    # form. Uses the RAW rhs so the `_ragged_group_arg` markers resolve during the
+    # injected trace. See snag ragged-dist-arg-dcffbc1b.
+    if name in keys(info) && stan.qual(info[name]) == :data &&
+            center_type(info[name]) <: RaggedVector && _is_canonical_expr(rhs)
+        return _forward_ragged_obs_broadcast!(name, rhs; info)
+    end
     rhs = forward!(rhs; info)::Union{StanExpr,SlicModel}
     forward!(remake(x, name, rhs); info)
+end
+_forward_ragged_obs_broadcast!(name, rhs_raw; info) = begin
+    g = Symbol(:g, "__ro_", _next_inline_id())
+    stmt = :(for $g in 1:length($name)
+                 $name[$g] ~ $(_ragged_group_rhs(rhs_raw, g))
+             end)
+    _trace_ragged_stmts([stmt], name; info, certify_density=false)
 end
 forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args
