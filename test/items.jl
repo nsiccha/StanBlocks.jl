@@ -740,6 +740,45 @@ end
         end
         y ~ normal(sum(b[2]), 1.0)
     end
+    # Snag regression (ragged-dist-arg-dcffbc1b): a plate collects per-cell VECTORS
+    # of differing lengths into a ragged result `mu`, then a TOP-LEVEL obs model is
+    # applied to the WHOLE ragged result (obs-outside). It BROADCASTS across groups.
+    c3_plate_ragged_obs_outside_model = @slic (;
+        ts=[[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]],
+        ys=[[0.6, 0.8, 1.0], [0.5, 0.7], [0.4, 0.9, 1.1, 1.3]],
+        nsub=3,
+    ) begin
+        sigma ~ exponential(1)
+        mu ~ plate(ts; outer=(nsub,)) do t
+            m::typeof(t) = 2.0 .* t
+            m
+        end
+        ys ~ normal(mu, sigma)
+    end
+    # Obs-in-cell twin — the reference the broadcast form must be NUMERICALLY equal to.
+    c3_plate_ragged_obs_incell_model = @slic (;
+        ts=[[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]],
+        ys=[[0.6, 0.8, 1.0], [0.5, 0.7], [0.4, 0.9, 1.1, 1.3]],
+        nsub=3,
+    ) begin
+        sigma ~ exponential(1)
+        mu ~ plate(ts, ys; outer=(nsub,)) do t, y
+            m::typeof(t) = 2.0 .* t
+            y ~ normal(m, sigma)
+            m
+        end
+    end
+    # Vector-valued (multi_normal) ragged obs: the ragged structure MUST be preserved
+    # — each group is ONE multivariate observation, never a flattened backing.
+    # Equal-length groups so a shared covariance applies.
+    c3_ragged_obs_broadcast_mvn_model = @slic (;
+        ym=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]],
+        mm=[[0.0, 0.1, 0.2], [0.3, 0.4, 0.5], [0.6, 0.7, 0.8]],
+        Sig=[1.0 0.0 0.0; 0.0 1.0 0.0; 0.0 0.0 1.0],
+    ) begin
+        scale ~ exponential(1)
+        ym ~ multi_normal(mm, Sig)
+    end
     c3_plate_ragged_brm_model = @slic (;K=[1, 2, 3], y=0.3) begin
         L::cholesky_factor_corr[K] ~ lkj_corr_cholesky(2.0)
         b ~ plate(; outer=length(K)) do g
@@ -1951,6 +1990,107 @@ Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolat
     end
 end
 
+@testitem "slic: boolean-mask indexing via comparison broadcast + findall" tags=[:slic, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Stan has no boolean-mask indexing (`v[mask]`). Instead, element-wise
+    # comparison on a DATA scalar array (`cmt .== 1`, cmt an `array[] int`) lowers
+    # via `jbroadcasted` to a 0/1 `array[] int` mask, and `findall(mask)`
+    # materialises the true-positions as a data-sized `int[sum(mask)]` array in
+    # transformed data. `y[findall(cmt .== 1)]` is then ordinary integer-array
+    # indexing — the mask precomputes for free (cmt is data) and one index array is
+    # shared by every use at zero runtime/gradient cost. GATE ON `compiles`.
+    @testset "BRM-shaped: y[findall(cmt .== 1)] ~ normal(mu[...], sd)" begin
+        # `sd` is lower-bounded so any unconstrained test point maps to a valid
+        # (positive) normal scale — the gradient check below must be deterministic.
+        model = @slic (;n=8, cmt=[1,2,1,2,1,2,1,2], y=randn(8), mu=randn(8)) begin
+            idx = findall(cmt .== 1)
+            sd ~ std_normal(;lower=0.)
+            y[idx] ~ normal(mu[idx], sd)
+        end
+        code = stan_code(model)
+        # mask lowers to an int-container jbroadcasted; idx is data-sized in tdata.
+        @test occursin("jbroadcasted_eq", code)
+        @test occursin(r"array\[[^\]]*\] int idx = findall\(", code)
+        @test occursin("y[idx] ~ normal(mu[idx]", code)
+        @test stanc_compiles(model)
+        # gradient-correct end to end (BridgeStan), at a fixed valid point.
+        prob = instantiate(model)
+        lp, g = LogDensityProblems.logdensity_and_gradient(prob, [0.4])
+        @test isfinite(lp) && all(isfinite, g)
+    end
+    @testset "all six comparison operators broadcast to an int mask" begin
+        for form in (
+            :(findall(cmt .== 2)), :(findall(cmt .!= 2)), :(findall(cmt .< 2)),
+            :(findall(cmt .<= 2)), :(findall(cmt .> 2)), :(findall(cmt .>= 2)),
+        )
+            body = Expr(:block, Expr(:(=), :idx, form), :(z::real ~ normal(0,1)))
+            model = StanBlocks.stan.SlicModel(body, (;n=6, cmt=[1,2,3,1,2,3]), @__MODULE__)
+            @test stanc_compiles(model)
+        end
+    end
+    @testset "mask usable as a plain count: sum(cmt .== 1)" begin
+        model = @slic (;n=6, cmt=[1,2,1,2,1,2]) begin
+            k = sum(cmt .== 1)
+            z::real ~ normal(0,1)
+            z
+        end
+        @test stanc_compiles(model)
+    end
+    @testset "element-wise comparison on a native vector fails loudly (no silent miscompile)" begin
+        # `vector .> scalar` has no int-mask lowering (only scalar arrays do); it
+        # must error, never emit invalid Stan silently.
+        @test_throws Exception stan_code(@slic (;n=6, x=randn(6)) begin
+            idx = findall(x .> 0.5)
+            z::real ~ normal(0,1)
+            z
+        end)
+    end
+    @testset "bool-type auto-sugar: y[cmt .== 1] indexes directly with the mask" begin
+        # A comparison broadcast yields a `bool[n]` (a subtype of `int`), and
+        # `getindex` on a `bool[n]` mask lowers to `v[findall(mask)]` — so the
+        # full `y[cmt .== 1] ~ normal(mu[cmt .== 1], sd)` sugar works with no
+        # explicit `findall`. The findall is HOISTED to a transformed-data binding
+        # (zero per-iteration cost), and the model block is plain integer indexing.
+        model = @slic (;n=8, cmt=[1,2,1,2,1,2,1,2], y=randn(8), mu=randn(8)) begin
+            sd ~ std_normal(;lower=0.)
+            y[cmt .== 1] ~ normal(mu[cmt .== 1], sd)
+        end
+        code = stan_code(model)
+        @test occursin(r"array\[[^\]]*\] int boolmask_idx_\d+ = findall\(", code)   # hoisted to tdata
+        @test occursin(r"y\[boolmask_idx_\d+\] ~ normal\(mu\[boolmask_idx_\d+\]", code)
+        @test !occursin("findall", split(code, "model {")[2])   # NOT recomputed in the model block
+        @test stanc_compiles(model)
+        # Auto-sugar is numerically identical to the explicit findall form.
+        explicit = @slic (;n=8, cmt=[1,2,1,2,1,2,1,2], y=randn(8), mu=randn(8)) begin
+            idx = findall(cmt .== 1)
+            sd ~ std_normal(;lower=0.)
+            y[idx] ~ normal(mu[idx], sd)
+        end
+        # same data seed so the two log-densities must coincide
+        Random.seed!(7); cmt=[1,2,1,2,1,2,1,2]; y=randn(8); mu=randn(8)
+        ms = @slic (;n=8, cmt=cmt, y=y, mu=mu) begin
+            sd ~ std_normal(;lower=0.); y[cmt .== 1] ~ normal(mu[cmt .== 1], sd)
+        end
+        me = @slic (;n=8, cmt=cmt, y=y, mu=mu) begin
+            idx = findall(cmt .== 1); sd ~ std_normal(;lower=0.); y[idx] ~ normal(mu[idx], sd)
+        end
+        ps = instantiate(ms); pe = instantiate(me)
+        xx = [0.3]
+        @test LogDensityProblems.logdensity(ps, xx) ≈ LogDensityProblems.logdensity(pe, xx)
+        g = LogDensityProblems.logdensity_and_gradient(ps, xx)[2]
+        @test all(isfinite, g)
+    end
+    @testset "bool is an int everywhere except getindex" begin
+        # sum(mask) counts, mask arithmetic stays int — `bool <: int`.
+        model = @slic (;n=6, cmt=[1,2,1,2,1,2]) begin
+            k = sum(cmt .== 1)          # bool[] sums as int
+            m2 = (cmt .== 1) + (cmt .== 2)   # int arithmetic on masks
+            z::real ~ normal(0,1)
+            z
+        end
+        @test stanc_compiles(model)
+    end
+end
+
 """
 Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated test item.
 """
@@ -3039,6 +3179,65 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
     @test occursin(r"vector\[sum\(b_cell_z__pl_len_\d+\)\] b_cell_z__pl_mem_\d+", stan_block(called, "parameters"))
     @test occursin(r"(?s)b_cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", stan_block(called, "model"))
     @test occursin(r"(?s)b__pl_mem_\d+\[.*?\]\s*=\s*b_cell__pl_mem_\d+\[", stan_block(called, "transformed parameters"))
+end
+
+"""
+Verify `slic: ragged obs broadcasts a distribution across groups (obs-outside)`.
+
+Snag ragged-dist-arg-dcffbc1b: a plate collects per-cell VECTORS of differing
+lengths into a ragged `mu` (`tuple(vector, array[] int)`); the user then applies a
+TOP-LEVEL observation model to the WHOLE ragged result — `ys ~ normal(mu, sigma)` —
+instead of keeping the obs in-cell. Previously this aborted at TRACING time: the
+auto-generated posterior-predictive `_rng` draw hit
+`normal_rng(::tuple(vector, array[] int), ::real)`, which has no tracetype.
+
+The obs is now BROADCAST ACROSS the ragged groups (never flattened): it lowers to a
+compiler-owned per-group loop `for g in 1:length(ys): ys[g] ~ dist(mu[g], …)`
+(ragged distribution args sliced per group via `_ragged_group_arg`; shared
+scalar/dense args pass through), reusing the ragged-prior density-loop machinery.
+The indexed data obs routes to the model block only (no auto-GQ), matching the
+obs-in-cell plate form.
+
+Correctness for BOTH:
+- univariate `normal` reduces to the same per-group density as the obs-in-cell
+  twin — numerically identical log density (checked via BridgeStan);
+- vector-valued `multi_normal` KEEPS the ragged structure — each `ys[g]` is ONE
+  multivariate observation with its own group vector `mu[g]`, NOT a flattened
+  backing (which would silently change the model).
+"""
+@testitem "slic: ragged obs broadcasts a distribution across groups (obs-outside)" tags=[:slic, :plate, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # (A) univariate normal — per-group broadcast, equal to the obs-in-cell twin.
+    model = c3_plate_ragged_obs_outside_model
+    @test transpiles(model)
+    @test stanc_compiles(model)
+    let mb = stan_block(stan_code(model), "model")
+        # Per-group loop over the ragged obs — NOT a flattened `.mem` density.
+        @test occursin(r"for\(g__ro_\d+ in 1:num_elements_RaggedVector\(ys\)\)", mb)
+        @test occursin(r"getindex_RaggedVector\(ys, g__ro_\d+\) ~ normal\(mu__pl_mem_\d+\[", mb)
+    end
+    # Numerically identical to the obs-in-cell twin, end-to-end through BridgeStan.
+    p_out = instantiate(model)
+    p_in  = instantiate(c3_plate_ragged_obs_incell_model)
+    @test LogDensityProblems.dimension(p_out) == 1
+    let x = [0.3]
+        lp_out, g_out = LogDensityProblems.logdensity_and_gradient(p_out, x)
+        @test isfinite(lp_out)
+        @test all(isfinite, g_out)
+        @test lp_out ≈ LogDensityProblems.logdensity(p_in, x)
+    end
+
+    # (B) vector-valued multi_normal — the ragged structure MUST be preserved: each
+    # group is ONE multivariate observation `ys[g] ~ multi_normal(mm[g], Sig)`.
+    mvn = c3_ragged_obs_broadcast_mvn_model
+    @test transpiles(mvn)
+    @test stanc_compiles(mvn)
+    let mb = stan_block(stan_code(mvn), "model")
+        @test occursin(r"for\(g__ro_\d+ in 1:num_elements_RaggedVector\(ym\)\)", mb)
+        @test occursin(
+            r"getindex_RaggedVector\(ym, g__ro_\d+\) ~ multi_normal\(getindex_RaggedVector\(mm, g__ro_\d+\), Sig\)",
+            mb,
+        )
+    end
 end
 
 """
