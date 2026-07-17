@@ -752,6 +752,27 @@ end
 @eval builtin const RaggedVector = $RaggedVector
 @eval builtin const RaggedMatrix = $RaggedMatrix
 
+# Ragged DATA (`Vector{Vector{<:Real}}`) → nominal `RaggedVector` at ingest, so it is a
+# first-class indexable container in ANY model body (`y[g]` slices to the g-th group
+# vector), not only inside a plate. Both components are DATA, so a materialised
+# `tuple(vector, array[] int)` data var is legal — the compile-time-pairing dance
+# (above) exists only to avoid an int *parameter* tuple. Because
+# `RaggedVector <: types.usertype <: types.ntup` with `arg_types` keyed `(:mem, :ends)`,
+# every existing certified-ntup consumer (`_ragged_group_arg`, `_plate_is_ragged_iterable`)
+# keeps matching; the NEW `y[g]`-anywhere capability comes from `RaggedVector`'s getindex
+# dispatch (a bound data name is not a construction → the tuple-representation UDF).
+# (decision 2026-07-17T00-14-01-598-1g0cf6y, approach B — unify data/param ragged carriers.)
+stan_type(expr, value::AbstractVector{<:AbstractVector{<:Real}}; kwargs...) = begin
+    r = to_ragged(value)
+    StanType(RaggedVector, tuple();
+        arg_types=(;
+            mem=stan_type(Symbol(expr, "_mem"), r.mem),
+            ends=stan_type(Symbol(expr, "_ends"), r.ends),
+        ),
+        value=r, kwargs...,
+    )
+end
+
 # `RaggedMatrix` extends the same flat-memory representation to matrix-valued
 # groups. `ends` indexes each flattened matrix, while data-qualified `rows` and
 # `cols` reconstruct the selected group with `to_matrix`.
