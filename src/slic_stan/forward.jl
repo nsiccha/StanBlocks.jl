@@ -150,8 +150,10 @@ expand_inline!(x::CanonicalExpr, meta; info) = begin
         error("@inline: call to $(head(x)) has $(length(x.args)) args but the UDF takes exactly $n_pos.")
     end
     # Kwargs (kwarg-shim case): bind each declared kwarg name to either the
-    # call-site value or the registered default. Unknown call-site kwargs
-    # are an error — there's no schema to dispatch them to.
+    # call-site value or the registered default. A kwarg declared without a
+    # default (sentinel `missing`) is required — omitting it at the call site
+    # errors. Unknown call-site kwargs are an error too — there's no schema to
+    # dispatch them to.
     kwarg_meta = get(meta, :kwargs, ())
     if !isempty(kwarg_meta)
         callsite_kw = Dict(pairs(x.kwargs))
@@ -165,6 +167,13 @@ expand_inline!(x::CanonicalExpr, meta; info) = begin
         for (kn, default_expr) in kwarg_meta
             subst[kn] = if haskey(callsite_kw, kn)
                 callsite_kw[kn]
+            elseif default_expr === missing
+                # Required kwarg (declared without a default) omitted at the
+                # call site — the SLIC analogue of Julia's `UndefKeywordError`.
+                error(
+                    "@inline kwcall shim for `$(head(x))`: required keyword argument `$kn` ",
+                    "was not provided (it has no default). Pass `$kn=…` at the call site."
+                )
             else
                 forward!(canonical(default_expr); info)
             end

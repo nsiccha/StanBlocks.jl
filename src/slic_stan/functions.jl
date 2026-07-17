@@ -703,7 +703,9 @@ begin
         # plus an `@inline` shim `f(x) = Core.kwcall((;sigma=sigma, alpha=alpha), f, x)`
         # whose inline_body carries the kwarg names + defaults so call-site
         # expansion fills them from call-site kwargs or the registered
-        # defaults. The shim's positional signature (no `:parameters` block)
+        # defaults. A kwarg with no default (`f(x; sigma)`) is *required*:
+        # its default slot carries the sentinel `missing` and call-site
+        # expansion errors if it is omitted. The shim's positional signature (no `:parameters` block)
         # is what gets registered for dispatch; kwargs don't participate in
         # dispatch (Julia's rule). Stan-side the canonical name auto-mangles
         # to `kwcall_f` via `func_name` since the function arg is
@@ -715,13 +717,26 @@ begin
             positional = all_args[2:end]
             kwarg_specs = []
             for p in params.args
-                Meta.isexpr(p, :kw) || error(
-                    "@deffun: kwargs must have defaults — got `$p`. ",
-                    "Write `f(x; sigma=1.0)` not `f(x; sigma)`."
-                )
-                nt = p.args[1]
-                kw_name = Meta.isexpr(nt, :(::)) ? nt.args[1] : nt
-                push!(kwarg_specs, (name=kw_name, default=p.args[2]))
+                if Meta.isexpr(p, :kw)
+                    # Optional kwarg with a default: `sigma=1.0` / `sigma::real=1.0`.
+                    nt = p.args[1]
+                    kw_name = Meta.isexpr(nt, :(::)) ? nt.args[1] : nt
+                    push!(kwarg_specs, (name=kw_name, default=p.args[2]))
+                elseif _is_symbol(p) || Meta.isexpr(p, :(::))
+                    # Required kwarg with no default: `sigma` / `sigma::real`.
+                    # The sentinel `missing` in the `default` slot marks it as
+                    # required; call-site expansion (forward.jl) errors — the
+                    # SLIC analogue of Julia's `UndefKeywordError` — if omitted.
+                    # A real default is always an AST node (Symbol/Expr/literal),
+                    # so the *value* `missing` can never collide with one.
+                    kw_name = Meta.isexpr(p, :(::)) ? p.args[1] : p
+                    push!(kwarg_specs, (name=kw_name, default=missing))
+                else
+                    error(
+                        "@deffun: unrecognised keyword argument `$p`. ",
+                        "Write `f(x; sigma)` (required) or `f(x; sigma=1.0)` (with default)."
+                    )
+                end
             end
 
             positional_names = [_name_of(p) for p in positional]
@@ -1035,7 +1050,9 @@ begin
             else
                 # Pair each kwarg name (Symbol) with its default value Expr
                 # — defaults are quoted as AST so they can be canonicalised
-                # and forwarded at the call site.
+                # and forwarded at the call site. A *required* kwarg carries
+                # the sentinel `missing` (not an AST) here; `expand_inline!`
+                # errors if such a kwarg is omitted at the call site.
                 Expr(:tuple, [
                     Expr(:tuple, QuoteNode(s.name), QuoteNode(s.default))
                     for s in _shim_kwarg_specs

@@ -222,6 +222,29 @@ end
         s = CONSTS_TEST_NUM .* x
     end
 
+    # --- required @deffun kwargs (no default) ---
+    # A kwarg declared without a default is *required*: omitting it at the
+    # call site errors at trace time (the SLIC analogue of Julia's
+    # `UndefKeywordError`). `kw_req_opt` mixes a required kwarg (`a`) with an
+    # optional one (`b`), so the two paths coexist in one shim.
+    @deffun kw_scale(x::vector[n]; scale)::vector[n] = scale * x
+    @deffun kw_req_opt(x::vector[n]; a, b=2.0)::vector[n] = a * x .+ b
+    # required kwarg provided → transpiles
+    kw_required_model = @slic (;n=3) begin
+        x ~ std_normal(;n)
+        s = kw_scale(x; scale=2.0)
+    end
+    # mixed required+optional, both provided
+    kw_mixed_model = @slic (;n=3) begin
+        x ~ std_normal(;n)
+        s = kw_req_opt(x; a=1.5, b=0.5)
+    end
+    # mixed, optional omitted → falls back to the registered default `b=2.0`
+    kw_opt_default_model = @slic (;n=3) begin
+        x ~ std_normal(;n)
+        s = kw_req_opt(x; a=1.5)
+    end
+
     # issue 12 sub-models
     sm12a = @slic begin
         x ~ std_normal(;n)
@@ -876,6 +899,30 @@ Verify `slic: normal(loc,scale)` in an isolated test item.
         loc ~ std_normal()
         scale ~ std_normal(;lower=0.)
         obs ~ normal(loc, scale)
+    end)
+end
+
+@testitem "slic: required @deffun kwarg" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Required kwarg provided at the call site → transpiles.
+    @test transpiles(kw_required_model)
+    # Omitting a required kwarg (no default) errors at trace time — the SLIC
+    # analogue of Julia's `UndefKeywordError`. The `@slic` form constructs
+    # fine; the error surfaces when the model is traced (`stan_code`).
+    @test_throws Exception stan_code(@slic (;n=3) begin
+        x ~ std_normal(;n)
+        s = kw_scale(x)
+    end)
+end
+
+@testitem "slic: required + optional @deffun kwargs" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Required (`a`) + optional (`b`) kwargs coexist in one shim: both provided,
+    # and the optional omitted (falls back to the registered default) both work.
+    @test transpiles(kw_mixed_model)
+    @test transpiles(kw_opt_default_model)
+    # Omitting the *required* kwarg still errors even when the optional is given.
+    @test_throws Exception stan_code(@slic (;n=3) begin
+        x ~ std_normal(;n)
+        s = kw_req_opt(x; b=1.0)
     end)
 end
 
