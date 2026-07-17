@@ -3160,6 +3160,122 @@ Verify `slic: ragged ordered constrained parameters` in an isolated test item.
 end
 
 """
+Verify `slic: ragged data indexes as a first-class container outside a plate`.
+
+Decision `2026-07-17T00-14-01-598-1g0cf6y` (approach B, commit 197f5be): ragged
+`Vector{Vector{<:Real}}` DATA now mints a NOMINAL `RaggedVector` usertype at ingest
+(`stan_type`, builtin.jl), so `y[g]` slices to the g-th group vector and `length(y)`
+counts groups in ANY model body — not only inside a plate. Backward-compatible by
+construction: `RaggedVector <: types.usertype <: types.ntup` with `(:mem, :ends)`
+arg_types, so every certified-ntup consumer (`_ragged_group_arg`, the plate ragged
+slicer) keeps matching; the NEW `y[g]`-anywhere capability comes from RaggedVector's
+own getindex/length UDFs firing on a bound (non-construction) data name. This is the
+non-plate regression the plate testitems above never exercised (their ragged carriers
+are PARAMETERS built by the plate, not ingested `Vector{Vector}` DATA).
+"""
+@testitem "slic: ragged data indexes as a first-class container outside a plate" tags=[:slic, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    ragged = [[0.1, 0.2], [0.3, 0.4, 0.5], [0.6]]
+
+    # `y[g]` (literal AND data-driven index) + `length(y)`, all OUTSIDE any plate.
+    model = @slic (; y=ragged, g=2) begin
+        mu ~ std_normal()
+        first_group = y[1]
+        driven_group = y[g]
+        n_groups = length(y)
+        (sum(first_group) + sum(driven_group) + n_groups) ~ normal(mu, 1.0)
+    end
+
+    @test transpiles(model)
+    @test stanc_compiles(model)
+
+    code = stan_code(model)
+    # Ragged data materialises as a SINGLE `tuple(vector, array[] int)` data var —
+    # both components are DATA, so Stan's "no integer (transformed) parameter tuple"
+    # restriction does not apply.
+    @test occursin(r"tuple\(vector\[y_mem_n\], array\[y_ends_n\] int\) y;", stan_block(code, "data"))
+    let td = stan_block(code, "transformed data")
+        # `y[g]` routes through RaggedVector's getindex UDF (a bound data name is NOT a
+        # construction), sized by the data-qualified per-group length.
+        @test occursin("getindex_RaggedVector(y, 1)", td)
+        @test occursin("getindex_RaggedVector(y, g)", td)
+        @test occursin(r"vector\[ragged_length_RaggedVector\(y, 1\)\]", td)
+        # `length(y)` counts groups via `size(ends)`.
+        @test occursin("num_elements_RaggedVector(y)", td)
+    end
+
+    # End-to-end through BridgeStan: one free parameter (`mu`), finite lp + gradient.
+    problem = instantiate(model)
+    @test LogDensityProblems.dimension(problem) == 1
+    lp, grad = LogDensityProblems.logdensity_and_gradient(problem, [0.5])
+    @test isfinite(lp)
+    @test all(isfinite, grad)
+end
+
+"""
+Verify `slic: EachCol / EachRow are first-class column/row matrix views`.
+
+Decision `2026-07-17T02-25-53-568-igj5dy` (commit 38bbada): `EachCol(X)` / `EachRow(X)`
+make a matrix's columns / rows a first-class indexable container everywhere — the
+eachcol/eachrow analogue of the ragged-data `RaggedVector` (item above). A construction
+is a zero-cost COMPILE-TIME view (verbatim-bound, no wrapper tuple): `EachCol(X)[j]`
+lowers to Stan's native `col(X, j)`, `EachRow(X)[i]` to `row(X, i)`, and
+`length(EachCol(X))` to `cols(X)`. Pairs with `plate` to broadcast a submodel over
+columns. (EachSlice deferred — it would need 3-D+ container support.)
+"""
+@testitem "slic: EachCol / EachRow are first-class column/row matrix views" tags=[:slic, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    X = reshape(collect(1.0:15.0), 3, 5)   # deterministic 3×5
+
+    # (1) column/row indexing OUTSIDE a plate, end-to-end through BridgeStan.
+    model = @slic (; X=X, y=0.3) begin
+        beta ~ std_normal(; n=3)           # sized == rows(X)
+        w    ~ std_normal(; n=5)           # sized == cols(X)
+        a = EachCol(X)[1]' * beta          # col(X,1)' * beta  (scalar)
+        b = EachRow(X)[2] * w              # row(X,2) * w      (scalar)
+        y ~ normal(a + b, 1.0)
+    end
+    @test transpiles(model)
+    @test stanc_compiles(model)
+    code = stan_code(model)
+    # Zero-cost view: the matrix materialises directly, no wrapper tuple.
+    @test occursin(r"matrix\[X_m, X_n\] X;", stan_block(code, "data"))
+    @test !occursin("tuple(", code)
+    # `[j]`/`[i]` lower to Stan-native col/row.
+    @test occursin("col(X, 1)", code)
+    @test occursin("row(X, 2)", code)
+    # dim = beta(3) + w(5); finite lp + gradient.
+    problem = instantiate(model)
+    @test LogDensityProblems.dimension(problem) == 8
+    lp, grad = LogDensityProblems.logdensity_and_gradient(problem, fill(0.2, 8))
+    @test isfinite(lp)
+    @test all(isfinite, grad)
+
+    # (2) `length(EachCol(X))` == cols(X), usable as a parameter size.
+    sized = @slic (; X=X, y=0.3) begin
+        n = length(EachCol(X))
+        w ~ std_normal(; n=n)
+        y ~ normal(sum(w), 1.0)
+    end
+    @test transpiles(sized)
+    @test stanc_compiles(sized)
+    @test occursin("cols(X)", stan_code(sized))
+
+    # (3) plate broadcasts a submodel over columns — `EachCol(X)` as the iterable.
+    plated = @slic (; X=X, y=0.3) begin
+        beta ~ std_normal(; n=3)
+        s ~ plate(EachCol(X); outer=5) do xj
+            dot_product(xj, beta)
+        end
+        y ~ normal(sum(s), 1.0)
+    end
+    @test transpiles(plated)
+    @test stanc_compiles(plated)
+    @test occursin(
+        r"s\[plate_i\w*\] = dot_product\(col\(X, plate_i\w*\), beta\)",
+        stan_block(stan_code(plated), "transformed parameters"),
+    )
+end
+
+"""
 Run stanc over every PosteriorDB model for which StanBlocks ships a SLIC implementation.
 """
 @testitem "posteriordb: implemented models pass stanc" tags=[:posteriordb, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin

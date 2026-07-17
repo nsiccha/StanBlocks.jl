@@ -1162,13 +1162,16 @@ _plate_probe(info::SubModel) = SubModel(_plate_probe(parent(info)), name(info), 
 
 # Per-cell input accessor for a positional plate iterable. A DENSE iterable slices
 # with ordinary `it[idxs...]` (scalar element or dense sub-slice). A CERTIFIED
-# RAGGED carrier — nested-vector data, which `stan_type(::NamedTuple)` encodes as an
-# `ntup` with `(mem, ends)` fields (the same certification `_ragged_group_arg`
-# slices on; it carries no `RaggedVector` nominal tag, so a bare `it[idx]` would
-# type as `anything`) — is instead sliced into its per-group `vector` view, mirroring
-# the ragged OUTPUT accessor `mem[ragged_start(ends,i):ragged_end(ends,i)]`. That lets
-# a ragged observed slice feed a typed `vector[k]` called cell. Ragged input is only
-# recognised for a 1-D `outer` (single index), matching the ragged-cell scope.
+# RAGGED carrier — nested-vector data, which `stan_type` now mints as a nominal
+# `RaggedVector` (a subtype of `ntup`) with `(mem, ends)` fields (the same
+# certification `_ragged_group_arg` slices on) — is instead sliced INLINE here into
+# its per-group `vector` view, mirroring the ragged OUTPUT accessor
+# `mem[ragged_start(ends,i):ragged_end(ends,i)]`. That lets a ragged observed slice
+# feed a typed `vector[k]` called cell. Since 197f5be the data ALSO carries the
+# nominal tag, so a bare `it[idx]` would route through `getindex_RaggedVector` and
+# yield the same group vector — the inline form is kept to avoid a per-cell UDF call
+# and to match emit-time `input_subst`. Ragged input is only recognised for a 1-D
+# `outer` (single index), matching the ragged-cell scope.
 _plate_iterable_type(it::Symbol, info) = it in keys(info) ? type(info[it]) : nothing
 _plate_iterable_type(it, info) = nothing
 _plate_is_ragged_iterable(::Nothing) = false
