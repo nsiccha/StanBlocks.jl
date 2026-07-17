@@ -3221,6 +3221,77 @@ Correctness for BOTH:
     end
 end
 
+@testitem "slic: cmt-keyed boolean-mask obs inside a plate cell" tags=[:slic, :plate, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Snag plate-cell-int: a per-cell `findall`/boolean-mask INDEX array (`array[] int`)
+    # feeding cmt-keyed multi-output do-block obs. Both the auto-sugar `y[c .== 1]` and
+    # the explicit `idx = findall(c .== 1)` forms used to abort with `plate: unsupported
+    # per-cell type array[] int` — the index array was discovered as a fresh cell binding
+    # and promoted to an unrepresentable outer collection. It must NOT be collected across
+    # cells: it is inlined at each use so the index is recomputed in whichever block
+    # `distribute!` routes the use to (avoiding a loop-local stranded in the data-loop copy
+    # when the model-loop copy references it — stanc "Identifier not in scope").
+    data = (;
+        ts  = [[0.5, 0.7, 0.9, 0.4], [0.6, 0.8, 0.3, 0.9]],
+        ys  = [[0.6, 0.8, 1.0, 0.5], [0.7, 0.9, 0.4, 1.1]],
+        cs  = [[1, 1, 2, 2], [1, 1, 2, 2]],
+        nsub = 2,
+    )
+    sugar = @slic data begin
+        sd_pk ~ exponential(1); sd_pd ~ exponential(1)
+        mu ~ plate(ts, ys, cs; outer=(nsub,)) do t, y, c
+            m::typeof(t) = 2.0 .* t
+            y[c .== 1] ~ normal(m[c .== 1], sd_pk)
+            y[c .== 2] ~ normal(m[c .== 2], sd_pd)
+            m
+        end
+    end
+    explicit = @slic data begin
+        sd_pk ~ exponential(1); sd_pd ~ exponential(1)
+        mu ~ plate(ts, ys, cs; outer=(nsub,)) do t, y, c
+            m::typeof(t) = 2.0 .* t
+            ipk = findall(c .== 1); ipd = findall(c .== 2)
+            y[ipk] ~ normal(m[ipk], sd_pk)
+            y[ipd] ~ normal(m[ipd], sd_pd)
+            m
+        end
+    end
+    # Reference: SAME data, fixed slicing (cs=[1,1,2,2] ⇒ PK=1:2, PD=3:4). Numerically
+    # identical to the cmt-keyed forms — the workaround the reporter wants to shed.
+    ref = @slic data begin
+        sd_pk ~ exponential(1); sd_pd ~ exponential(1)
+        mu ~ plate(ts, ys; outer=(nsub,)) do t, y
+            m::typeof(t) = 2.0 .* t
+            y[1:2] ~ normal(m[1:2], sd_pk)
+            y[3:4] ~ normal(m[3:4], sd_pd)
+            m
+        end
+    end
+    for m in (sugar, explicit)
+        @test transpiles(m)
+        @test stanc_compiles(m)
+        code = stan_code(m)
+        # The findall index is recomputed INLINE in the model block, never a stranded
+        # loop-local declaration in transformed data.
+        @test occursin("findall(jbroadcasted_eq(cs.1[", stan_block(code, "model"))
+        @test !occursin("boolmask_idx", stan_block(code, "transformed data"))
+        @test !occursin(r"int (mu_ipk|mu_ipd)", stan_block(code, "transformed data"))
+    end
+    # End-to-end BridgeStan: both forms match the fixed-slice reference logdensity AND
+    # are gradient-finite.
+    p_ref = instantiate(ref)
+    @test LogDensityProblems.dimension(p_ref) == 2
+    for m in (sugar, explicit)
+        p = instantiate(m)
+        @test LogDensityProblems.dimension(p) == 2
+        for x in ([0.1, -0.2], [0.5, 0.5], [1.2, -0.7])
+            lp, g = LogDensityProblems.logdensity_and_gradient(p, x)
+            @test isfinite(lp)
+            @test all(isfinite, g)
+            @test lp ≈ LogDensityProblems.logdensity(p_ref, x)
+        end
+    end
+end
+
 """
 Verify `slic: plate supports dense native-constrained vector cells` in an isolated test item.
 

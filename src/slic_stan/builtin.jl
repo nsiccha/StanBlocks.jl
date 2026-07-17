@@ -917,12 +917,21 @@ end
 # statement context, and a SCALAR `bool` index (l_ndim 0) is NOT a mask — it
 # falls through to normal integer indexing. This getindex overload is the ONLY
 # way `bool` differs from `int`; everywhere else `bool[n]` dispatches as `int[n]`.
+#
+# INSIDE A PLATE loop (`_plate_context() !== nothing`) the hoist is SUPPRESSED and
+# the `findall` stays inline: a per-cell mask is data-derived, so the hoisted `idx`
+# would land in the transformed-data COPY of the plate loop that `distribute!` splits
+# off — out of scope in the model COPY where the cmt-keyed obs uses it (stanc
+# "Identifier not in scope"). Recomputing the index inline keeps it in the using
+# block; the plate emitter mirrors this for an explicit `idx = findall(...)` local
+# (forward.jl). Snag plate-cell-int.
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2,<:StanExpr2{<:types.bool}}}; info) = begin
     stan_ndim(type(x.args[2])) >= 1 || return fold_shape_query(stan_expr(x))
     idx_val = forward!(CanonicalExpr(Base.findall, x.args[2]); info)
     pending = _get_inline_pending()
-    idx_ref = if pending === nothing
-        idx_val                                   # no statement context → inline the findall
+    idx_ref = if pending === nothing || _plate_context() !== nothing
+        idx_val                                   # no statement context, or inside a plate
+                                                  # loop → inline the findall (see above)
     else
         id = _next_inline_id()
         name = Symbol(:boolmask_idx_, id)
