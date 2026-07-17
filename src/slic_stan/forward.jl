@@ -656,6 +656,35 @@ function _comprehension_iter(lhs, source_raw; info)
     vi, _value_iter_count(source), Pair{Symbol,Any}[lhs => _value_iter_elem(source, vi)]
 end
 
+# Fresh, non-underscore-leading comprehension result name.
+function _fresh_comprehension_result(info)
+    id = _next_inline_id()
+    name = Symbol(:comprehension_result__lc_, id)
+    while name in keys(info)
+        id = _next_inline_id()
+        name = Symbol(:comprehension_result__lc_, id)
+    end
+    name
+end
+# Output index for one dimension: the loop index for a `1:hi` range, else the
+# dense offset `(i - lo) + 1`.
+_result_index(emitted_idx, lo; info) = _is_literal_one(lo) ? emitted_idx :
+    forward!(CanonicalExpr(+, CanonicalExpr(-, emitted_idx, lo), 1); info)
+
+# One comprehension lowers to a typed result local + a (possibly nested) fill loop:
+#
+#     [f(i, j) for i in 1:n, j in 1:m]
+#   →
+#     result::<matrix|array[n,m]>[n, m]
+#     for i in 1:n; for j in 1:m; result[i, j] = f(i, j); end; end
+#     result
+#
+# `_comprehension_generator_specs` yields one `(binding, source)` per generator;
+# `_comprehension_iter` normalises each to `(idx, range, preludes)` (handling
+# `lo:hi`, value-iterated containers, and enumerate/zip). All indices + element
+# bindings are in scope when the element expression is forwarded, so a
+# multi-generator comprehension is exactly N nested single-index loops. SLIC scalar
+# containers are at most 2-D, so a 3-D+ comprehension rejects loudly.
 function forward!(x::ComprehensionExpr; info)
     value_raw, specs = _comprehension_generator_specs(x)
     pending = _get_inline_pending()
@@ -663,27 +692,34 @@ function forward!(x::ComprehensionExpr; info)
         "@deffun array comprehension lowering requires a statement context; ",
         "bind or return the comprehension from an @deffun body."
     )
-    length(specs) == 1 || error(
-        "@deffun array comprehension: nested or multiple generators are not supported. ",
-        "Use one bounded generator `[expr for i in lo:hi]` or write the nested loops explicitly."
+    ndim = length(specs)
+    ndim <= 2 || error(
+        "@deffun array comprehension: ", ndim, "-dimensional comprehensions are unsupported ",
+        "(SLIC scalar containers are at most 2-D). Write explicit nested loops filling a typed result."
     )
-    lhs, source_raw = specs[1]
-    idx, range_raw, preludes = _comprehension_iter(lhs, source_raw; info)
-    range = forward!(range_raw; info)
-    range_expr = expr(range)
-    result_size = stan_size(range, 1)
+    plans = [_comprehension_iter(lhs, src; info) for (lhs, src) in specs]
+    ranges = [forward!(p[2]; info) for p in plans]
+    result_sizes = Tuple(stan_size(r, 1) for r in ranges)
 
-    scope_names = Symbol[idx; Symbol[p.first for p in preludes]]
+    scope_names = Symbol[]
+    for p in plans
+        push!(scope_names, p[1])
+        append!(scope_names, Symbol[pp.first for pp in p[3]])
+    end
     saved = _save_scope(info, scope_names)
-    info[idx] = StanExpr(idx, StanType(types.int; qual=:data))
-    emitted_idx = info[idx]
+    emitted_idxs = Vector{Any}(undef, ndim)
     try
         # Inline calls (and the element bindings) may contribute pre-statements.
-        # Isolate them so they stay INSIDE this comprehension's loop instead of
-        # leaking into the enclosing block.
+        # Isolate them so they stay INSIDE the innermost loop instead of leaking
+        # into the enclosing block.
         value, loop_stmts = task_local_storage(:_slic_inline_pending, Any[]) do
-            for (v, elem) in preludes
-                info[v] = forward!(elem; info)
+            for (k, p) in enumerate(plans)
+                idx_k = p[1]
+                info[idx_k] = StanExpr(idx_k, StanType(types.int; qual=:data))
+                emitted_idxs[k] = info[idx_k]
+                for (v, elem) in p[3]
+                    info[v] = forward!(elem; info)
+                end
             end
             value = forward!(value_raw; info)
             value isa StanExpr || error(
@@ -698,13 +734,8 @@ function forward!(x::ComprehensionExpr; info)
             "got Stan type `", sigtype(value_type), "`."
         )
 
-        id = _next_inline_id()
-        result_name = Symbol(:comprehension_result__lc_, id)
-        while result_name in keys(info)
-            id = _next_inline_id()
-            result_name = Symbol(:comprehension_result__lc_, id)
-        end
-        result_type = autotype(StanType(center_type(value_type), (result_size,)))
+        result_name = _fresh_comprehension_result(info)
+        result_type = autotype(StanType(center_type(value_type), result_sizes))
         _is_model_decl_scope(info) && (result_type = remake(
             result_type; fresh_decl=true, decl_role=:unfilled, qual=:parameter
         ))
@@ -712,20 +743,18 @@ function forward!(x::ComprehensionExpr; info)
         result = info[result_name]
         declaration = stan_expr(CanonicalExpr(:(::), result))
 
-        lo = range_expr.args[1]
-        result_idx = if _is_literal_one(lo)
-            emitted_idx
-        else
-            forward!(CanonicalExpr(+, CanonicalExpr(-, emitted_idx, lo), 1); info)
-        end
-        fill = forward!(CanonicalExpr(
-            :(=), CanonicalExpr(getindex, result, result_idx), value
-        ); info)
-        push!(loop_stmts, fill)
-        loop_head = CanonicalExpr(:(=), emitted_idx, range)
-        loop = stan_expr(CanonicalExpr(:for, loop_head, CanonicalExpr(:block, loop_stmts...)))
+        result_idxs = [_result_index(emitted_idxs[k], expr(ranges[k]).args[1]; info) for k in 1:ndim]
+        fill = forward!(CanonicalExpr(:(=), CanonicalExpr(getindex, result, result_idxs...), value); info)
 
-        push!(pending, declaration, loop)
+        # Nest the fill loops from the innermost generator outward.
+        body = CanonicalExpr(:block, loop_stmts..., fill)
+        for k in ndim:-1:1
+            body = stan_expr(CanonicalExpr(:for,
+                CanonicalExpr(:(=), emitted_idxs[k], ranges[k]),
+                _is_block_canonical(body) ? body : CanonicalExpr(:block, body)))
+        end
+
+        push!(pending, declaration, body)
         info[result_name]
     finally
         _restore_scope!(info, saved)
@@ -1764,8 +1793,12 @@ end
 forward!(x::ForExpr; info) = begin
     @assert length(x.args) == 2
     head, body = x.args
-    @assert _is_assign_canonical(head)
     @assert _is_block_canonical(body)
+    # One-line nested loops `for i in r1, j in r2, … ; body end` parse with a
+    # `:block` head holding the successive `i = r1`, `j = r2` bindings; desugar to
+    # genuinely nested single loops.
+    _is_block_canonical(head) && return _forward_nested_for!(head, body; info)
+    @assert _is_assign_canonical(head)
     idx = head.args[1]
     # Tuple binding ⇒ destructuring iteration (`for (i, xi) in enumerate(c)` /
     # `for (ai, bi) in zip(a, b)`); the enumerate/zip source is intercepted raw,
@@ -1830,6 +1863,25 @@ _forward_destructured_for!(x, lhs, source_raw, body; info) = begin
     _reforward_index_loop!(x, idx, range_raw,
         Any[CanonicalExpr(:(=), v, e) for (v, e) in preludes],
         Symbol[idx; Symbol[p.first for p in preludes]], body; info)
+end
+
+# `for i in r1, j in r2, … ; body end`: the `:block` head lists successive
+# `var in range` bindings; desugar to genuinely nested single loops and re-forward.
+# Each binding may be any supported iteration source (range, container, enumerate,
+# zip), so nested loops compose with the destructuring/value-iteration forms.
+_as_block(b::BlockExpr) = b
+_as_block(b) = CanonicalExpr(:block, b)
+function _forward_nested_for!(head, body; info)
+    binds = head.args
+    isempty(binds) && error("@deffun `for`: empty iteration head `", head, "`.")
+    all(_is_assign_canonical, binds) || error(
+        "@deffun one-line nested `for`: each `,`-separated clause must bind `var in range`, got `", head, "`."
+    )
+    nested = body
+    for bind in reverse(binds)
+        nested = CanonicalExpr(:for, bind, _as_block(nested))
+    end
+    forward!(nested; info)
 end
 
 forward!(x::WhileExpr; info) = begin
