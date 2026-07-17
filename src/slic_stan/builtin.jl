@@ -101,6 +101,8 @@ end
     ode_ckrk ode_ckrk_tol
     ode_adams ode_adams_tol
     ode_bdf ode_bdf_tol
+    # Torsten (metrumresearchgroup/Torsten) analytical PK event-schedule solvers.
+    pmx_solve_onecpt pmx_solve_twocpt
     append_array
     append_row
     append_col
@@ -1559,6 +1561,25 @@ const ReduceSumFunction = Union{typeof.((reduce_sum, reduce_sum_static))...}
 tracetype(x::CanonicalExpr{<:ODESolver}) = StanType(
     types.vector, (stan_size(x.args[4], 1), stan_size(x.args[2], 1))
 )
+
+# ── Torsten `pmx_solve_*` analytical (closed-form) PK solvers ──
+# Torsten (metrumresearchgroup/Torsten) extends Stan — a pmx-aware stanc3 fork plus
+# a `torsten_math` submodule — with NONMEM-style event-schedule solvers. The
+# analytical compartment models take the event arrays
+#   time, amt, rate, ii  :: array[] real     (AutoDiffable)
+#   evid, cmt, addl, ss   :: array[] int      (data)
+# followed by the PK parameters `theta` (+ optional biovar/tlag), and return a
+# `matrix[nCmt, nEvent]` of per-compartment amounts at each event. nCmt is fixed
+# per model (onecpt = depot+central = 2; twocpt = +peripheral = 3); nEvent is the
+# leading dim of the first argument (`time`) — the same shape-from-an-argument
+# pattern as the native `ODESolver` tracetype above. `func_name(x::Function)`
+# emits the bare Stan name and the generic `CanonicalExpr` show renders the
+# positional call, so only the return-type tracetype is needed (no show method).
+_pmx_solve_tracetype(x, ncmt) = StanType(
+    types.matrix, (stan_expr(ncmt, ncmt), stan_size(x.args[1], 1))
+)
+tracetype(x::CanonicalExpr{typeof(pmx_solve_onecpt)}) = _pmx_solve_tracetype(x, 2)
+tracetype(x::CanonicalExpr{typeof(pmx_solve_twocpt)}) = _pmx_solve_tracetype(x, 3)
 
 # ── Generalised `jbroadcasted(f, a1, …, ak)` — trace-level element loop ──
 # Applies `f` element-wise over its iterated args (any arity, any position):
