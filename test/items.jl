@@ -196,6 +196,19 @@ end
         yobs   ~ normal(pred, 0.05)
     end
 
+    # Snag `ode-closure-capt`, DATA-side twin — a DATA value (`k`) captured ONLY
+    # inside a lifted ODE-RHS closure. The emitter threads `k` as a trailing
+    # solver arg, so `fetch_data!(closure)` must follow captures and emit `k`'s
+    # `data` declaration; otherwise dead-data elimination drops it and the solve
+    # references an out-of-scope `k`. `k` appears NOWHERE outside the closure, so
+    # only the capture-following path can declare it.
+    det_datacap_model = @slic (;ts=[1.0], yobs=0.37, k=2.0) begin
+        lambda ~ std_normal(;lower=0.)
+        y      = ode_rk45((t, y_state) -> -lambda * k * y_state, [1.0], 0.0, to_array_1d(ts))
+        pred   = y[1][1]
+        yobs   ~ normal(pred, 0.05)
+    end
+
     # Built-in math constants (`pi`, `ℯ`) resolve to their Float64 value in a model
     # body (user decision 3bbtrv); arbitrary module-level numbers must NOT.
     @deffun @inline _scale_by_consts(x::vector[n])::vector[n] = (4. / pi) * x .+ ℯ
@@ -1093,6 +1106,25 @@ in an isolated test item.
     # Instantiating (not just transpiling) confirms it: `lambda` is the sole
     # sampler dimension and the density evaluates finitely.
     p = instantiate(stan_model(det_lik_model))
+    @test LogDensityProblems.dimension(p) == 1
+    @test isfinite(LogDensityProblems.logdensity(p, [0.5]))
+end
+
+"""
+Verify `slic: ODE closure-captured DATA value is declared in the data block`
+in an isolated test item.
+"""
+@testitem "slic: ODE closure-captured DATA value is declared in the data block" tags=[:slic, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Snag `ode-closure-capt` DATA-side twin: a data value (`k`) captured only
+    # inside a lifted ODE-RHS closure is threaded as a trailing solver arg, so
+    # `fetch_data!(closure)` must follow captures and declare it — else dead-data
+    # elimination drops `real k;` and the solve references an out-of-scope `k`.
+    @test stanc_compiles(det_datacap_model)
+    sc = stan_code(det_datacap_model)
+    @test occursin("real k;", sc)                     # k declared in the data block
+    @test occursin("to_array_1d(ts), k", sc)          # and threaded into the solve
+    # Instantiating confirms the data binding round-trips.
+    p = instantiate(stan_model(det_datacap_model))
     @test LogDensityProblems.dimension(p) == 1
     @test isfinite(LogDensityProblems.logdensity(p, [0.5]))
 end
