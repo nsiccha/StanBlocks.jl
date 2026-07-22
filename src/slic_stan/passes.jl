@@ -205,10 +205,23 @@ else
 end
 distribution_blocks(x::SamplingExpr; info) = if qual(x) == :data
     if !(expr(x.args[1]) isa Symbol)
-        # Indexed observations inside a compiler-owned plate loop contribute to
-        # the model only. The ordinary generated-quantities observation/rng
-        # expansion assumes a whole named LHS and cannot represent one cell.
-        (:model,)
+        # Indexed observation inside a compiler-owned plate loop. The ordinary
+        # gq expansion assumes a whole named LHS and cannot write one cell of a
+        # DATA variable (Stan data is read-only), so this used to route to the
+        # model block only — leaving a plate model with no predictive draw at all
+        # (snag build-a-declarat-ab2d2471). It now gets the same gq treatment as
+        # a whole-LHS observation whenever a generated-output shape is derivable
+        # from the base declaration: the per-cell rng writes into a compiler-owned
+        # `<base>_gen` twin of the base's declared type (`_indexed_obs_gen_base`).
+        # Bases with no natively declarable Stan shape (RaggedVector/RaggedMatrix
+        # views over flat memory) keep the model-only routing.
+        if _indexed_obs_gen_base(x.args[1]; info) === nothing
+            (:model,)
+        elseif cv(x.args[1])
+            (:generated_quantities,)
+        else
+            (:model, :generated_quantities)
+        end
     elseif cv(x.args[1])
         (:generated_quantities,)
     else
@@ -311,7 +324,10 @@ _loop_distribution_stmt(x::SamplingExpr, ::Val{:generated_quantities}; info) = b
     expr(x.args[1]) isa Symbol && error(
         "Compiler-owned loop contains a non-indexed generated-quantities sample. Plate locals must use an outer declaration and indexed sampling."
     )
-    _indexed_rng_assignment(x)
+    # A per-cell PARAMETER draw writes back into its own outer declaration; a
+    # per-cell DATA observation writes into the `<base>_gen` twin instead.
+    k = _indexed_obs_gen_base(x.args[1]; info)
+    k === nothing ? _indexed_rng_assignment(x) : _indexed_obs_gen_assignment(x, k)
 end
 distribute!(x::StanExpr{<:ForExpr}; info) = begin
     _push_expr!(info, x)
@@ -331,6 +347,11 @@ distribute!(x::StanExpr{<:ForExpr}; info) = begin
         end
         for (b, stmts) in grouped
             loop = StanExpr(remake(fe, head, remake(body, stmts...)), type(x))
+            # The gq clone writes per-cell observation draws into `<base>_gen`
+            # twins; declare each one immediately before the loop that fills it.
+            b === :generated_quantities && for k in unique(_obs_gen_bases(x; info))
+                _push_obs_gen_decl!(block(info, b), k; info)
+            end
             push!(block(info, b), loop; info)
         end
     finally
@@ -421,7 +442,13 @@ end
 # second whole-variable name from the getindex expression.
 Base.push!(b::GeneratedQuantitiesBlock,
         x::SamplingExpr{<:StanExpr{<:CanonicalExpr}}; info) = begin
-    push!(b, _indexed_rng_assignment(x); info)
+    # Same split as the loop clone (`_loop_distribution_stmt`): a per-cell
+    # PARAMETER redraw fills its own outer declaration, a per-cell DATA
+    # observation fills the `<base>_gen` twin, which must be declared first.
+    k = _indexed_obs_gen_base(x.args[1]; info)
+    k === nothing && return push!(b, _indexed_rng_assignment(x); info)
+    _push_obs_gen_decl!(b, k; info)
+    push!(b, _indexed_obs_gen_assignment(x, k); info)
 end
 _indexed_rng_assignment(x::SamplingExpr) = begin
     lhs, rhs = x.args
@@ -429,6 +456,77 @@ _indexed_rng_assignment(x::SamplingExpr) = begin
     token = StanExpr(lhs_ct,
         StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
     CanonicalExpr(:(=), lhs, rng_expr(token, rhs))
+end
+
+# --- Per-cell DATA observations inside a plate: the `<base>_gen` twin ---------
+# snag build-a-declarat-ab2d2471. A per-cell observation `y[i] ~ dist(…)` inside
+# a compiler-owned plate loop cannot write its predictive draw back into `y`
+# (Stan data is read-only), which is why it used to route to `model` only — so a
+# plate model got NO generated observation at all, while the same statement
+# written against a whole `y` did. The gq clone of the loop instead retargets the
+# draw at a compiler-owned twin `<base>_gen`, declared once in `generated
+# quantities` with the base variable's OWN declared type — that is the
+# "generated-output shape" the plate could not previously derive. The per-cell rng
+# call itself is unchanged: `_indexed_rng_assignment`'s token already carries the
+# CELL shape, so each `*_rng` overload dispatches exactly as it does for a
+# prior-only plate parameter.
+#
+# Only a base with a natively declarable Stan shape qualifies. A RaggedVector /
+# RaggedMatrix base is a compile-time view over flat backing memory with no
+# declaration form, so the ragged obs-broadcast path (snag ragged-dist-arg) keeps
+# its model-only routing; same for any usertype/tuple carrier.
+_gen_twin_name(k::Symbol) = Symbol(k, "_gen")
+_is_gen_declarable(T) = T isa Type &&
+    (T <: types.real || T <: types.any_vector || T <: types.matrix)
+_indexed_obs_gen_base(lhs; info) = begin
+    expr(lhs) isa Symbol && return nothing
+    k = _base_lhs_symbol(lhs)
+    (k isa Symbol && k in keys(info)) || return nothing
+    base = info[k]
+    qual(base) == :data || return nothing
+    _is_gen_declarable(center_type(base)) ? k : nothing
+end
+# Rebuild an indexed LHS against a different base symbol, preserving every index
+# expression and the cell type (`y[i, j]` ⇒ `y_gen[i, j]`).
+# The twin is a gq OUTPUT, so drop the base's data value (else `fetch_data!`
+# would re-declare `y_gen` in the data block) and its `:data` qualifier.
+_rename_lhs_base(x::StanExpr{Symbol}, newname::Symbol) =
+    StanExpr(newname, remake(type(x); value=missing, qual=:quantities))
+_rename_lhs_base(x::StanExpr{<:CanonicalExpr}, newname::Symbol) =
+    StanExpr(_rename_lhs_base(expr(x), newname), type(x))
+_rename_lhs_base(x::CanonicalExpr, newname::Symbol) =
+    remake(x, _rename_lhs_base(x.args[1], newname), x.args[2:end]...)
+_indexed_obs_gen_assignment(x::SamplingExpr, k::Symbol) = begin
+    lhs, rhs = x.args
+    lhs_ct = center_type(lhs)
+    token = StanExpr(lhs_ct,
+        StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
+    CanonicalExpr(:(=), _rename_lhs_base(lhs, _gen_twin_name(k)), rng_expr(token, rhs))
+end
+# Walk a (possibly nested) compiler-owned loop for the bases needing a twin.
+_obs_gen_bases(::Union{LineNumberNode,Nothing}; info) = Symbol[]
+_obs_gen_bases(x; info) = Symbol[]
+_obs_gen_bases(x::StanExpr{<:ForExpr}; info) = begin
+    rv = Symbol[]
+    for stmt in expr(x).args[2].args
+        append!(rv, _obs_gen_bases(stmt; info))
+    end
+    rv
+end
+_obs_gen_bases(x::SamplingExpr; info) = begin
+    qual(x) == :data || return Symbol[]
+    k = _indexed_obs_gen_base(x.args[1]; info)
+    k === nothing ? Symbol[] : Symbol[k]
+end
+# Declare the twin once per model (a base observed by two plates must not emit
+# two declarations); registering it in `info` doubles as the dedup key.
+_push_obs_gen_decl!(b, k::Symbol; info) = begin
+    gen = _gen_twin_name(k)
+    gen in keys(info) && return
+    t = remake(type(info[k]); value=missing, qual=:quantities)
+    decl = StanExpr(gen, t)
+    info[gen] = decl
+    push!(b, StanExpr(CanonicalExpr(:(::), decl), t); info)
 end
 
 function lpxf_expr end

@@ -4,6 +4,9 @@ using TestItemRunner
     using Random, Statistics
     using StanBlocks
     using LogDensityProblems
+    # BridgeStan directly (not just through `instantiate`) for gq draw assertions:
+    # `param_names(...; include_gq=true)` + `param_constrain(...; rng=…)`.
+    import BridgeStan
     import StanBlocks.stan: @deffun, full_cqual_eq, transpiles, stan_model, stan_code, stanc_check, instantiate
     # View usertypes are not exported; alias so @deffun signatures can name them.
     const RaggedVector = StanBlocks.RaggedVector
@@ -14,6 +17,9 @@ end
     using Random, Statistics
     using StanBlocks
     using LogDensityProblems
+    # BridgeStan directly (not just through `instantiate`) for gq draw assertions:
+    # `param_names(...; include_gq=true)` + `param_constrain(...; rng=…)`.
+    import BridgeStan
     import StanBlocks.stan: @deffun, full_cqual_eq, transpiles, stan_model, stan_code, stanc_check, instantiate
     # View usertypes are not exported; alias so @deffun signatures can name them.
     const RaggedVector = StanBlocks.RaggedVector
@@ -3370,6 +3376,97 @@ Correctness for BOTH:
             r"getindex_RaggedVector\(ym, g__ro_\d+\) ~ multi_normal\(getindex_RaggedVector\(mm, g__ro_\d+\), Sig\)",
             mb,
         )
+    end
+end
+
+"""
+Snag build-a-declarat-ab2d2471 (reported by BRM): a declaration-driven prior /
+posterior generative artifact needs two things StanBlocks did not give it.
+
+(A) A per-cell DATA observation inside a plate produced NO generated quantity at
+all — the indexed data-LHS `~` routed to `(:model,)` because the whole-LHS
+`_gen`/`_likelihood` expansion cannot write one cell of a read-only Stan data
+variable. It now also emits a gq clone of the loop that fills a compiler-owned
+`<obs>_gen` twin, declared with the observation's OWN type.
+
+(B) `lkj_corr_cholesky_rng` was declared without a return type, so the auto-GQ
+redraw of a cv-tainted `L::cholesky_factor_corr[K] ~ lkj_corr_cholesky(eta)` died
+in `stan_code` with `tracetype not defined for L::anything = …_rng(…)` — the trap
+already recorded in the primer's cv section ("mark the group count, NEVER
+n_terms").
+
+Out of scope by design and asserted as such: the pointwise `<obs>_likelihood`
+companion, and RAGGED observation bases (a RaggedVector is a compile-time view
+over flat memory with no declarable Stan twin, so it keeps the model-only route).
+"""
+@testitem "slic: plate per-cell observations emit a _gen twin; lkj gq redraw" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # (A) per-cell observation inside a plate → `y_gen` in generated quantities.
+    obs_plate = @slic (; n_groups = 5, k = 3, y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
+        L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
+        tau::vector[k] ~ normal(0.0, 1.0; lower = 0.0)
+        b::vector[k] ~ plate(y; outer = (n_groups,)) do yi
+            cell ~ c3_plate_fixed_correlated_cell(k, L, tau)
+            yi ~ normal(cell[1], 0.5)
+            cell
+        end
+    end
+    @test transpiles(obs_plate)
+    @test stanc_compiles(obs_plate)
+    let code = stan_code(obs_plate)
+        gq = stan_block(code, "generated quantities")
+        @test occursin("vector[y_n] y_gen", gq)
+        @test occursin(r"y_gen\[plate_i\w*\] = normal_rng\(", gq)
+        # The observation still contributes its density to the model block, and the
+        # twin is a gq OUTPUT — never a re-declared data input.
+        @test occursin(r"y\[plate_i\w*\] ~ normal\(", stan_block(code, "model"))
+        @test !occursin("y_gen", stan_block(code, "data"))
+        # Out of scope: the pointwise likelihood companion.
+        @test !occursin("y_likelihood", code)
+    end
+    # End-to-end: the draws are real gq output and finite.
+    let p = instantiate(obs_plate), d = LogDensityProblems.dimension(p)
+        names = BridgeStan.param_names(p.model; include_tp = true, include_gq = true)
+        idx = findall(n -> startswith(n, "y_gen"), names)
+        @test length(idx) == 5
+        drawn = BridgeStan.param_constrain(
+            p.model, zeros(d);
+            include_tp = true, include_gq = true, rng = BridgeStan.StanRNG(p.model, 1234),
+        )
+        @test all(isfinite, drawn[idx])
+    end
+
+    # A RAGGED observation base has no declarable twin → model-only, unchanged.
+    let code = stan_code(c3_plate_ragged_obs_outside_model)
+        @test !occursin("ys_gen", code)
+    end
+
+    # A COMPOUND data-qualified LHS is not an indexed observation. The twin
+    # matcher must not descend into it the way `_base_lhs_symbol` does for a
+    # compiler-injected fill — doing so found the innermost leaf `v` and emitted
+    # the nonsense `(sum(v_gen) + c) = normal_rng(...)`.
+    compound_lhs = @slic (; v = [0.1, 0.2, 0.3], c = 1.0) begin
+        mu ~ std_normal()
+        (sum(v) + c) ~ normal(mu, 1.0)
+    end
+    @test transpiles(compound_lhs)
+    @test stanc_compiles(compound_lhs)
+    @test !occursin("v_gen", stan_code(compound_lhs))
+
+    # (B) cv-tainted lkj prior redraws in generated quantities instead of blowing
+    # up at render time; `matrix`, not `cholesky_factor_corr`, matching the
+    # dirichlet/simplex precedent for a gq redraw's container.
+    lkj_base = @slic (; K = 3, eta = 2.0, y = 0.3) begin
+        L::cholesky_factor_corr[K] ~ lkj_corr_cholesky(eta)
+        y ~ normal(sum(to_vector(L)), 0.1)
+    end
+    @test transpiles(lkj_base)
+    @test stanc_compiles(lkj_base)
+    let cv_model = lkj_base(; eta = StanBlocks.stan.maybecv(:eta, 2.0)),
+        code = stan_code(cv_model)
+        @test stanc_compiles(cv_model)
+        @test !occursin("L", stan_block(code, "parameters"))
+        @test occursin(r"matrix\[K, K\] L = lkj_corr_cholesky_\w*rng\(K, eta\)",
+                       stan_block(code, "generated quantities"))
     end
 end
 
