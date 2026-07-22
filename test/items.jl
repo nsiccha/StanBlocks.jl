@@ -3724,8 +3724,32 @@ Verify `slic: ragged Cholesky factors use flattened matrix carriers` in an isola
     end
     @test transpiles(c3_ragged_cholesky_corr_informative_model)
     @test stanc_compiles(c3_ragged_cholesky_corr_informative_model)
+    # The emitter LINE-WRAPS any multi-argument call, so `.` (which does not
+    # match a newline) can never span this one and the old single-line regex
+    # asserted a shape the emitter had stopped producing. MEASURED model block:
+    #
+    #     for(g__rcm_1 in 1:num_elements(K)) {
+    #         to_matrix(
+    #             p_mem__rcm_1[ragged_start(c_end__rcm_1, g__rcm_1):ragged_end(c_end__rcm_1, g__rcm_1)],
+    #             K[g__rcm_1],
+    #             K[g__rcm_1]
+    #         ) ~ lkj_corr_cholesky(2.0);
+    #     }
+    #
+    # The wrap is GENERAL pretty-printing, not something specific to this call
+    # or to the ragged path: the sibling `y ~ normal(sum(to_vector(...)), 0.1)`
+    # in the same block wraps identically, and the model still passes
+    # `stanc_compiles` (asserted two lines above). So relaxing the assertion is
+    # not papering over an emission change — the Stan is right and the test was
+    # stale.
+    #
+    # `(?s)` + lazy quantifiers is the house style for a wrapped call (see the
+    # `cell__pl_mem_` assertion in the plate item). Tightened while here: name
+    # the ragged memory slice and BOTH square dimensions, so this now checks the
+    # informative prior lands on the reconstructed per-group matrix rather than
+    # merely that some `to_matrix` appears somewhere before the `~`.
     @test occursin(
-        r"to_matrix\(.*\) ~ lkj_corr_cholesky\(2\.0\)",
+        r"(?s)to_matrix\(\s*p_mem__rcm_\d+\[.*?\],\s*K\[.*?\],\s*K\[.*?\]\s*\)\s*~\s*lkj_corr_cholesky\(2\.0\)",
         stan_block(stan_code(c3_ragged_cholesky_corr_informative_model), "model"),
     )
 end
