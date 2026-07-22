@@ -194,7 +194,9 @@ _descriptor_constraints(i) = (; [
 #
 #  (1) the model block's `~` statements. Authoritative, and the only signal for
 #      a RAGGED observation, which has no declarable Stan shape and therefore no
-#      `_gen` twin at all.
+#      `_gen` twin at all — so pass (2) can never see one. Resolving the base of
+#      such an LHS needs `_obs_projection_base`, not the getindex-only matcher;
+#      see the note there.
 #  (2) the `<stem>_gen` / `<stem>_likelihood` declarations in generated
 #      quantities, WHERE `<stem>` IS ITSELF A DATA INPUT. Needed because a
 #      cv-held-out observation routes to generated quantities ONLY — and by then
@@ -213,14 +215,37 @@ _observed_bases(x::BlockExpr, acc) = _observed_bases(x.args, acc)
 _observed_bases(x::DocumentExpr, acc) = _observed_bases(x.args[2], acc)
 _observed_bases(x::StanExpr{<:ForExpr}, acc) = _observed_bases(expr(x).args[2], acc)
 _observed_bases(x::StanExpr{<:CanonicalExpr}, acc) = _observed_bases(expr(x), acc)
+# A sampling LHS may be an arbitrary data-qualified expression
+# (`(sum(a) + n) ~ normal(…)` is legal), so only a STRUCTURAL PROJECTION of a
+# named data variable counts as conditioning on it. Two node kinds project:
+#
+#   * `getindex` — `y[i]`, `y[a:b]`: the per-cell observation of a plate;
+#   * `Base.getfield` — a positional field of a carrier tuple.
+#
+# A RAGGED observation reaches its cell through BOTH. `_plate_input_accessor`
+# (forward.jl) slices a ragged plate input as
+# `dv.mem[ragged_start(dv.ends, i):ragged_end(dv.ends, i)]`, which traces as
+# `getindex(getfield(dv, 1), …)` and emits as `dv.1[…]`. A getindex-only walk
+# stops dead at that `getfield` and reports the column as UNOBSERVED.
+#
+# Deliberately WIDER than `_getindex_chain_base` (passes.jl), which must stay
+# getindex-only: that matcher gates the compiler-owned `<base>_gen` retarget, and
+# a ragged base has no declarable Stan shape to retarget INTO, so it keeps its
+# model-only routing by design. Whether a model CONDITIONS on a column and
+# whether the compiler can PREDICT it are different questions — conflating them
+# is what hid BOTH `observed` and `:fit` from every ragged-observation model
+# (snag built-brm-s-desc-55d6d48c). `:predict` stays correctly absent here,
+# because it gates on a `:draw` output rather than on this walk.
+_obs_projection_base(x::StanExpr) = _obs_projection_base(expr(x))
+_obs_projection_base(x::Symbol) = x
+_obs_projection_base(x::CanonicalExpr) =
+    (head(x) === getindex || head(x) === Base.getfield) ?
+        _obs_projection_base(x.args[1]) : nothing
+_obs_projection_base(::Any) = nothing
 _observed_bases(x::SamplingExpr, acc) = begin
     lhs = x.args[1]
     qual(lhs) == :data || return acc
-    # A sampling LHS may be an arbitrary data-qualified expression
-    # (`(sum(a) + n) ~ normal(…)` is legal), so accept only a bare Symbol or a
-    # genuine `base[i…]` getindex chain — the same strictness `_gen` twin
-    # retargeting uses.
-    k = expr(lhs) isa Symbol ? expr(lhs) : _getindex_chain_base(lhs)
+    k = _obs_projection_base(lhs)
     k isa Symbol && push!(acc, k)
     acc
 end

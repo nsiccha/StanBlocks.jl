@@ -4037,6 +4037,64 @@ than declared twice.
 end
 
 """
+Snag regression (built-brm-s-desc-55d6d48c). A RAGGED, plate-sliced observation
+is still an observation: the descriptor must report the column as `observed` and
+offer `:fit`. It previously reported NEITHER, because the base walk stopped at
+the `getfield` in `dv.mem[ragged_start(dv.ends, i):ragged_end(dv.ends, i)]` — so
+every PKPD-shaped per-subject plate model rendered with no Fit button while
+fitting perfectly well.
+
+Pins the exact BLAST RADIUS measured when fixing it: only the in-cell ragged
+form was broken. The top-level ragged form (obs-outside, snag ragged-dist-arg)
+and the DENSE per-cell plate form were already correct, and must stay so.
+"""
+@testitem "slic: descriptor sees a ragged plate-sliced observation" tags=[:slic, :descriptor, :ragged, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    obs(d) = [i.name for i in d.inputs if i.observed]
+    ops(d) = [op.name for op in d.operations]
+
+    # (1) THE SNAG: a per-cell observation whose LHS is a ragged plate slice.
+    d = stan_descriptor(c3_plate_ragged_obs_incell_model; name = :incell)
+    @test obs(d) == [:ys]
+    @test :fit in ops(d)
+    # The covariate is ALSO a RaggedVector — being ragged is not what makes a
+    # column observed; appearing left of a `~` is.
+    @test !Dict(i.name => i for i in d.inputs)[:ts].observed
+    # A ragged observation base still gets no `_gen` twin (no declarable Stan
+    # shape), so `:predict` must stay absent — conditioning on a column and
+    # being able to predict it are different questions.
+    @test :predict ∉ ops(d)
+    @test :pointwise_loglik ∉ ops(d)
+
+    # (2) Already-correct sibling: top-level ragged obs, broadcast across groups.
+    do_ = stan_descriptor(c3_plate_ragged_obs_outside_model; name = :outside)
+    @test obs(do_) == [:ys]
+    @test :fit in ops(do_)
+
+    # (3) Already-correct sibling: a DENSE per-cell plate obs, which DOES get a
+    # `_gen` twin — the widened walk must not disturb it.
+    dense = @slic (; ys = [1.0, 2.0, 3.0], nsub = 3) begin
+        sigma ~ exponential(1)
+        mu ~ plate(; outer = (nsub,)) do i
+            z ~ normal(0.0, 1.0)
+            ys[i] ~ normal(z, sigma)
+            z
+        end
+    end
+    dd = stan_descriptor(dense; name = :dense_cell)
+    @test obs(dd) == [:ys]
+    @test :fit in ops(dd)
+
+    # A compound (non-projection) sampling LHS must still NOT mark a base
+    # observed — the walk was widened to structural projections only, not to
+    # arbitrary data-qualified expressions.
+    compound = @slic (; a = [1.0, 2.0], n = 3.0) begin
+        mu ~ normal(0.0, 1.0)
+        (sum(a) + n) ~ normal(mu, 1.0)
+    end
+    @test isempty(obs(stan_descriptor(compound; name = :compound)))
+end
+
+"""
 Verify the descriptor's operations actually EXECUTE through the normal
 StanBlocks → BridgeStan path: `:fit` yields the differentiable log-density a
 sampler consumes, and `:predict` / `:pointwise_loglik` draw exactly the
