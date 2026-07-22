@@ -1,11 +1,17 @@
 name: Run tests
 
 on:
+  workflow_dispatch:
   push:
     branches:
-      - master
+      # `devibe` is the ACTIVE development branch and is 217 commits ahead of
+      # `dev`. Without it here, every push for the last two months went to a
+      # branch this workflow does not watch — the last run was 2026-05-12, which
+      # reads as "CI is fine" when it means "CI never ran". `master` dropped:
+      # the repo has no such branch (default is `main`).
       - main
       - dev
+      - devibe
   pull_request:
     types: [opened, edited]
 
@@ -18,6 +24,11 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
+      # One broken cell used to cancel the other eight, so a single genuine
+      # failure arrived as nine notifications and the real cause was buried
+      # among eight `cancelled` cells with no failing step recorded. Matches
+      # DynamicObjects.jl.
+      fail-fast: false
       matrix:
         julia-version: ['lts', '1', 'pre']
         julia-arch: [x64]
