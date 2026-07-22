@@ -6,6 +6,12 @@ on:
     branches:
       - main
       - dev
+      # The active branch (217 commits ahead of `dev`). `deploydocs` has
+      # `devbranch = "dev"`, so a `devibe` run BUILDS but skips deployment —
+      # deliberate: it catches doc-build breakage on the branch work actually
+      # lands on, without silently re-pointing what `gh-pages/dev/` publishes.
+      # Whether `devbranch` should move to `devibe` is decision `1t5p8ee`.
+      - devibe
     tags: '*'
   pull_request:
 
