@@ -3440,6 +3440,18 @@ over flat memory with no declarable Stan twin, so it keeps the model-only route)
         @test !occursin("ys_gen", code)
     end
 
+    # A COMPOUND data-qualified LHS is not an indexed observation. The twin
+    # matcher must not descend into it the way `_base_lhs_symbol` does for a
+    # compiler-injected fill — doing so found the innermost leaf `v` and emitted
+    # the nonsense `(sum(v_gen) + c) = normal_rng(...)`.
+    compound_lhs = @slic (; v = [0.1, 0.2, 0.3], c = 1.0) begin
+        mu ~ std_normal()
+        (sum(v) + c) ~ normal(mu, 1.0)
+    end
+    @test transpiles(compound_lhs)
+    @test stanc_compiles(compound_lhs)
+    @test !occursin("v_gen", stan_code(compound_lhs))
+
     # (B) cv-tainted lkj prior redraws in generated quantities instead of blowing
     # up at render time; `matrix`, not `cholesky_factor_corr`, matching the
     # dirichlet/simplex precedent for a gq redraw's container.
