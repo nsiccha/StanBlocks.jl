@@ -3919,3 +3919,171 @@ Run stanc over every PosteriorDB model for which StanBlocks ships a SLIC impleme
     end
     @test isempty(failures)
 end
+
+"""
+Verify the descriptor surface — `stan_descriptor` / `stan_operation` /
+`stan_execute` — reflects one `@slic` declaration as identity + inputs + outputs
++ DERIVED operations, and fails closed on the cases a consumer cannot recover
+from (an operation the model does not offer, a name that is both an input and an
+output, an unbound required input).
+
+Todo `Expose descriptor-bearing executable semantic models`: downstream
+(BRM / SbPMX) must mount a StanBlocks model without maintaining its own parallel
+operation list, so every assertion here is about something being DERIVED rather
+than declared twice.
+"""
+@testitem "slic: model descriptor reflects inputs, outputs and derived operations" tags=[:slic, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    base = @slic (; x = [1.0, 2.0, 3.0, 4.0, 5.0], y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
+        sigma ~ exponential(1.0)
+        beta ~ normal(0.0, 10.0)
+        y ~ normal(beta * x, sigma)
+    end
+    d = stan_descriptor(base; name = :demo)
+
+    # --- identity ------------------------------------------------------------
+    @test d.name == :demo
+    # Content-derived, so reflecting the same model twice agrees, and it agrees
+    # with the key `instantiate` caches the compiled artifact under.
+    @test d.id == stan_descriptor(base).id
+    @test d.id == string(hash(stan_code(base)); base = 16)
+    # The gensym'd model name must NOT leak into the identity.
+    @test stan_descriptor(base; name = :other).id == d.id
+    changed = @slic (; x = [1.0, 2.0, 3.0, 4.0, 5.0], y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
+        sigma ~ exponential(2.0)
+        beta ~ normal(0.0, 10.0)
+        y ~ normal(beta * x, sigma)
+    end
+    @test stan_descriptor(changed).id != d.id
+
+    # --- inputs --------------------------------------------------------------
+    ins = Dict(i.name => i for i in d.inputs)
+    @test haskey(ins, :y) && haskey(ins, :x)
+    # `y` is what the model conditions on; `x` is a covariate. That distinction
+    # comes from walking the traced `~` statements, not from any naming rule.
+    @test ins[:y].observed
+    @test !ins[:x].observed
+    @test ins[:y].type == :vector && ins[:x].type == :vector
+    @test ins[:y].value == [0.2, -0.1, 0.3, 0.0, 0.4]
+    @test !ins[:y].held_out
+    @test !any(i -> i.inlined, d.inputs)
+    # `y_n` IS a data-block entry (it reaches the JSON), but it is another
+    # input's declared size — re-binding `y` re-derives it, so a generated form
+    # must never ask for it.
+    @test ins[:y].size == (:y_n,)
+    @test ins[:y_n].derived && !ins[:y].derived
+    @test StanBlocks.required_inputs(d) == (:y, :x)
+
+    # --- outputs + generative semantics --------------------------------------
+    outs = Dict(o.name => o for o in d.outputs)
+    @test outs[:sigma].kind == :parameter && outs[:sigma].generative == :posterior
+    @test outs[:beta].kind == :parameter
+    # `exponential` implies a positive support; the descriptor reports the
+    # constraint the declaration actually carries.
+    @test outs[:sigma].constraints.lower == 0.0
+    # The compiler-owned twins are labelled by ROLE and point back at the
+    # observation they derive from — a consumer never parses the `_gen` suffix.
+    @test outs[:y_gen].kind == :generated_quantity
+    @test outs[:y_gen].generative == :draw
+    @test outs[:y_gen].source == :y
+    @test outs[:y_likelihood].generative == :pointwise_loglik
+    @test outs[:y_likelihood].source == :y
+    @test [o.name for o in d.outputs if o.generative == :draw] == [:y_gen]
+
+    # --- operations are DERIVED, not listed ----------------------------------
+    opnames = [op.name for op in d.operations]
+    @test opnames == [:transpile, :instantiate, :fit, :predict, :pointwise_loglik]
+    @test stan_operation(d, :predict).outputs == (:y_gen,)
+    @test stan_operation(d, :pointwise_loglik).outputs == (:y_likelihood,)
+    @test :y in stan_operation(d, :fit).inputs
+    @test stan_operation(d, :transpile).inputs == ()
+    @test stan_execute(d, :transpile) == stan_code(base)
+
+    # A prior-predictive model has no likelihood, hence no `:fit` — and no
+    # observation, hence no `:predict`.
+    prior_only = @slic (;) begin
+        sigma ~ exponential(1.0)
+        beta ~ normal(0.0, 10.0)
+    end
+    pd = stan_descriptor(prior_only; name = :prior_only)
+    @test [op.name for op in pd.operations] == [:transpile, :instantiate]
+
+    # cv-held-out: the ONLY observation moves to generated quantities, so the
+    # model can still be instantiated but there is nothing left to fit.
+    heldout = base(; y = StanBlocks.stan.maybecv(:y, [0.2, -0.1, 0.3, 0.0, 0.4]))
+    hd = stan_descriptor(heldout; name = :heldout)
+    @test Dict(i.name => i for i in hd.inputs)[:y].held_out
+    @test :fit ∉ [op.name for op in hd.operations]
+    @test :predict in [op.name for op in hd.operations]
+
+    # --- fail closed ---------------------------------------------------------
+    # (a) an operation the model does not offer names the ones it does.
+    err = try; stan_operation(pd, :fit); catch e; sprint(showerror, e); end
+    @test occursin("has no `fit` operation", err)
+    @test occursin("`transpile`", err) && occursin("`instantiate`", err)
+    @test_throws ErrorException stan_execute(pd, :predict; draws = [0.0], seed = 1)
+
+    # (b) `:transpile` takes no keywords — silently ignoring them would look
+    #     like a data re-bind that never happened.
+    @test_throws ErrorException stan_execute(d, :transpile; y = [1.0])
+
+    # (c) a data variable colliding with a compiler-owned twin cannot be
+    #     resolved automatically: every consumer keys on the name.
+    collide = @slic (; y = [0.2, -0.1], y_gen = [1.0, 2.0]) begin
+        mu ~ normal(sum(y_gen), 1.0)
+        y ~ normal(mu, 1.0)
+    end
+    cerr = try; stan_descriptor(collide); catch e; sprint(showerror, e); end
+    @test occursin("BOTH a data input and a model output", cerr)
+end
+
+"""
+Verify the descriptor's operations actually EXECUTE through the normal
+StanBlocks → BridgeStan path: `:fit` yields the differentiable log-density a
+sampler consumes, and `:predict` / `:pointwise_loglik` draw exactly the
+generated quantities the descriptor advertised, addressed by the descriptor's
+own names rather than by BridgeStan's flattened `name.i` spelling.
+"""
+@testitem "slic: descriptor operations execute through BridgeStan" tags=[:slic, :descriptor, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    m = @slic (; x = [1.0, 2.0, 3.0, 4.0, 5.0], y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
+        sigma ~ exponential(1.0)
+        beta ~ normal(0.0, 10.0)
+        y ~ normal(beta * x, sigma)
+    end
+    d = stan_descriptor(m; name = :demo)
+
+    prob = stan_execute(d, :fit)
+    dim = LogDensityProblems.dimension(prob)
+    @test dim == 2
+    @test isfinite(LogDensityProblems.logdensity(prob, zeros(dim)))
+
+    # One draw → one vector per advertised output, sized by the declaration.
+    pred = stan_execute(d, :predict; problem = prob, draws = zeros(dim), seed = 1234)
+    @test keys(pred) == (:y_gen,)
+    @test length(pred.y_gen) == 5
+    @test all(isfinite, pred.y_gen)
+
+    ll = stan_execute(d, :pointwise_loglik; problem = prob, draws = zeros(dim), seed = 1234)
+    @test keys(ll) == (:y_likelihood,)
+    @test length(ll.y_likelihood) == 5
+    @test all(isfinite, ll.y_likelihood)
+
+    # Several draws → one column each.
+    multi = stan_execute(d, :predict; problem = prob, draws = zeros(dim, 3), seed = 7)
+    @test size(multi.y_gen) == (5, 3)
+    # Same seed, same draws ⇒ reproducible.
+    @test stan_execute(d, :predict; problem = prob, draws = zeros(dim), seed = 99).y_gen ==
+          stan_execute(d, :predict; problem = prob, draws = zeros(dim), seed = 99).y_gen
+
+    # Without `problem` the operation compiles for itself (same cached artifact).
+    @test length(stan_execute(d, :predict; draws = zeros(dim), seed = 1234).y_gen) == 5
+
+    # A generated quantity is an RNG draw: refuse rather than silently pick a seed.
+    @test_throws ErrorException stan_execute(d, :predict; problem = prob, draws = zeros(dim))
+    @test_throws ErrorException stan_execute(d, :predict; problem = prob, seed = 1)
+
+    # Data re-binding flows through the executor, so a consumer never has to
+    # rebuild the model by hand to predict on new data.
+    rebound = stan_execute(d, :predict;
+        y = [1.0, 1.0, 1.0], x = [1.0, 2.0, 3.0], draws = zeros(dim), seed = 5)
+    @test length(rebound.y_gen) == 3
+end
