@@ -54,9 +54,11 @@ StanBlocks.stan_descriptor).
   generated form.
 - `observed::Bool` — this variable appears on the left of a `~` (it is data the
   model conditions on), as opposed to a covariate or a size.
-- `held_out::Bool` — this variable was marked via `StanBlocks.stan.maybecv`, so
-  its likelihood contribution is dropped and it is re-drawn in generated
-  quantities (the cross-validation flag).
+- `held_out::Bool` — the cross-validation flag: this variable's likelihood
+  contribution is dropped and it re-draws in generated quantities. **Contagion-
+  aware, not a record of what you marked** — cv propagates through every
+  expression it reaches, so marking one input via `StanBlocks.stan.maybecv` can
+  make several inputs report `held_out`.
 """
 struct ModelInput
     name::Symbol
@@ -239,7 +241,19 @@ _output_symbols(x::DocumentExpr, acc) = _output_symbols(x.args[2], acc)
 # the loop index instead.
 _output_symbols(::StanExpr{<:ForExpr}, acc) = acc
 _output_symbols(x::StanExpr{Symbol}, acc) = (get!(acc, expr(x), x); acc)
-_output_symbols(x::StanExpr{<:DeclExpr}, acc) = acc
+# A bare `name::T[…]` declaration IS the declaration — do not skip it. This is
+# how a plate's `<obs>_gen` twin enters generated quantities: `_push_obs_gen_decl!`
+# pushes the DeclExpr once at block scope and the per-cell fills happen inside the
+# loop above, which we deliberately do not descend into. Skipping both dropped the
+# twin entirely, so a plate model silently advertised no `:predict` even though the
+# emitted Stan had `vector[y_n] y_gen;` — the exact silently-wrong answer the
+# descriptor exists to prevent. Same shape covers a fresh-result `out::T` in
+# transformed parameters.
+_output_symbols(x::StanExpr{<:DeclExpr}, acc) = begin
+    inner = expr(x).args[1]
+    expr(inner) isa Symbol && get!(acc, expr(inner), inner)
+    acc
+end
 _output_symbols(x::AssignmentExpr, acc) = begin
     lhs = x.args[1]
     expr(lhs) isa Symbol && get!(acc, expr(lhs), lhs)
