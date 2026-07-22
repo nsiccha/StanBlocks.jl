@@ -4087,3 +4087,100 @@ own names rather than by BridgeStan's flattened `name.i` spelling.
         y = [1.0, 1.0, 1.0], x = [1.0, 2.0, 3.0], draws = zeros(dim), seed = 5)
     @test length(rebound.y_gen) == 3
 end
+
+"""
+Verify the descriptor over the PLATE shape — the case `e4f0964`'s two testitems
+did not reach. A per-cell observation inside a compiler-owned plate loop gets
+its `<base>_gen` twin from `_push_obs_gen_decl!` INSIDE a `ForExpr`, while
+`_output_symbols` deliberately does not descend into such a loop (the base is
+declared separately). That interaction, the ragged carve-out, and the
+distinction between a gq observation-twin and a gq prior RE-DRAW are what this
+item pins down.
+
+Todo `2026-07-22T11-53-04-745-0ly84er`, from decision `0a6ftf8` resolving "no
+preference": the two gaps I had flagged are reachable from pure `@slic`, so
+none of this needs BRM.
+"""
+@testitem "slic: descriptor over plate observations, ragged carve-out and gq re-draws" tags=[:slic, :descriptor, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # --- per-cell plate observation: the twin is reached through a loop -------
+    obs_plate = @slic (; n_groups = 5, k = 3, y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
+        L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
+        tau::vector[k] ~ normal(0.0, 1.0; lower = 0.0)
+        b::vector[k] ~ plate(y; outer = (n_groups,)) do yi
+            cell ~ c3_plate_fixed_correlated_cell(k, L, tau)
+            yi ~ normal(cell[1], 0.5)
+            cell
+        end
+    end
+    d = stan_descriptor(obs_plate; name = :obs_plate)
+    outs = Dict(o.name => o for o in d.outputs)
+
+    # The twin is classified even though the `~` it came from lives inside a
+    # compiler-owned loop and was rewritten to an assignment on the way in.
+    @test haskey(outs, :y_gen)
+    @test outs[:y_gen].kind == :generated_quantity
+    @test outs[:y_gen].generative == :draw
+    @test outs[:y_gen].source == :y
+    @test outs[:y_gen].size == (:y_n,)
+    # `y` is the observation, reached through the getindex chain of `y[plate_i…]`.
+    @test Dict(i.name => i for i in d.inputs)[:y].observed
+
+    # The loop index is NOT an output: `_output_symbols` must not descend into a
+    # compiler-owned `for`, or every plate would advertise a phantom quantity.
+    @test !any(o -> occursin("plate_i", string(o.name)), d.outputs)
+
+    # A per-cell observation gets the DRAW but deliberately no pointwise
+    # log-likelihood companion (the cell shape does not fix its container —
+    # `d243f24`). The operation set must reflect that, not assume the pair.
+    @test !haskey(outs, :y_likelihood)
+    opnames = [op.name for op in d.operations]
+    @test :predict in opnames
+    @test :pointwise_loglik ∉ opnames
+    @test stan_operation(d, :predict).outputs == (:y_gen,)
+
+    # Derived sizes stay out of what a consumer must supply; the plate's own
+    # scalars stay in.
+    @test Set(StanBlocks.required_inputs(d)) == Set([:n_groups, :k, :y])
+
+    # The plate's own carriers are bare `out::T` declarations too, and were
+    # dropped by the same bug that dropped `y_gen` — assert them so a future
+    # skip-the-DeclExpr regression fails here loudly rather than silently
+    # shrinking every plate model's output set.
+    @test outs[:b].kind == :transformed_parameter
+    @test outs[:b_cell].kind == :transformed_parameter
+    @test outs[:b_cell_z].kind == :parameter
+
+    # --- ragged carve-out: no declarable shape ⇒ no twin ⇒ no :predict -------
+    rd = stan_descriptor(c3_plate_ragged_obs_outside_model; name = :ragged)
+    @test !any(o -> o.generative == :draw, rd.outputs)
+    @test :predict ∉ [op.name for op in rd.operations]
+    # It is still an observation — pass (1) sees the model-block `~` even though
+    # pass (2) has no twin to find. The two passes are not redundant.
+    @test Dict(i.name => i for i in rd.inputs)[:ys].observed
+    @test :fit in [op.name for op in rd.operations]
+
+    # --- a gq prior RE-DRAW is :derived, not :draw ---------------------------
+    # cv-tainting `eta` flips `L` out of `parameters` into a generated-quantities
+    # re-draw. That is a latent, not a predictive draw of an observation, and a
+    # consumer plotting posterior predictions must be able to tell them apart.
+    lkj_base = @slic (; K = 3, eta = 2.0, y = 0.3) begin
+        L::cholesky_factor_corr[K] ~ lkj_corr_cholesky(eta)
+        y ~ normal(sum(to_vector(L)), 0.1)
+    end
+    cd = stan_descriptor(lkj_base(; eta = StanBlocks.stan.maybecv(:eta, 2.0)); name = :cv_lkj)
+    couts = Dict(o.name => o for o in cd.outputs)
+    @test couts[:L].kind == :generated_quantity
+    @test couts[:L].generative == :derived
+    @test couts[:L].source === nothing
+    # `y` is untainted, so its own twins are unaffected and still :draw.
+    @test couts[:y_gen].generative == :draw && couts[:y_gen].source == :y
+    @test [o.name for o in cd.outputs if o.generative == :draw] == [:y_gen]
+    # `held_out` is CONTAGION-aware, not a record of what the user marked. Only
+    # `eta` was passed through `maybecv`, but cv propagates through every
+    # expression it reaches, so `y`'s own likelihood contribution is dropped too
+    # — which is exactly why `:fit` is gone. Reporting `y` as un-held-out here
+    # would contradict the operation set.
+    cins = Dict(i.name => i for i in cd.inputs)
+    @test cins[:eta].held_out && cins[:y].held_out
+    @test :fit ∉ [op.name for op in cd.operations]
+end
