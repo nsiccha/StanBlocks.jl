@@ -478,9 +478,19 @@ end
 _gen_twin_name(k::Symbol) = Symbol(k, "_gen")
 _is_gen_declarable(T) = T isa Type &&
     (T <: types.real || T <: types.any_vector || T <: types.matrix)
+# STRICT indexed-LHS matcher. A SAMPLING lhs may be an arbitrary data-qualified
+# expression — `(sum(a) + n) ~ normal(...)` is legal — so `_base_lhs_symbol`,
+# which blindly descends `args[1]`, is the wrong tool here: it is only correct
+# for a compiler-injected FILL, whose lhs is always a getindex. Descend ONLY
+# through a genuine `base[i…]` getindex chain, bottoming out in a bare Symbol.
+_getindex_chain_base(x::StanExpr) = _getindex_chain_base(expr(x))
+_getindex_chain_base(x::Symbol) = x
+_getindex_chain_base(x::CanonicalExpr) =
+    head(x) === getindex ? _getindex_chain_base(x.args[1]) : nothing
+_getindex_chain_base(::Any) = nothing
 _indexed_obs_gen_base(lhs; info) = begin
     expr(lhs) isa Symbol && return nothing
-    k = _base_lhs_symbol(lhs)
+    k = _getindex_chain_base(lhs)
     (k isa Symbol && k in keys(info)) || return nothing
     base = info[k]
     qual(base) == :data || return nothing
@@ -494,8 +504,14 @@ _rename_lhs_base(x::StanExpr{Symbol}, newname::Symbol) =
     StanExpr(newname, remake(type(x); value=missing, qual=:quantities))
 _rename_lhs_base(x::StanExpr{<:CanonicalExpr}, newname::Symbol) =
     StanExpr(_rename_lhs_base(expr(x), newname), type(x))
-_rename_lhs_base(x::CanonicalExpr, newname::Symbol) =
+# Asserts the same shape `_getindex_chain_base` accepts, so a future widening of
+# the matcher cannot silently reintroduce the rewrite of a compound sampling lhs.
+_rename_lhs_base(x::CanonicalExpr, newname::Symbol) = begin
+    head(x) === getindex || error(
+        "internal: `_gen` twin retarget reached a non-getindex lhs node (head ",
+        head(x), ") — only a genuine `base[i…]` chain may be renamed.")
     remake(x, _rename_lhs_base(x.args[1], newname), x.args[2:end]...)
+end
 _indexed_obs_gen_assignment(x::SamplingExpr, k::Symbol) = begin
     lhs, rhs = x.args
     lhs_ct = center_type(lhs)
