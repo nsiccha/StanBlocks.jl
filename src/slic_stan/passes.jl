@@ -173,13 +173,21 @@ end
 backward!(x::StanExpr; info) = StanExpr(backward!(expr(x); info), backward!(type(x); info))
 backward!(x::StanExpr{Symbol}; info) = begin
     key = expr(x)
-    current = info[key]
     # A symbol occurrence captures the type metadata present when it was
     # forwarded. Compiler-owned ragged density certification is stamped only
     # after the injected lowering finishes, so a later likelihood may reach the
     # memory through an older occurrence. Preserve the current certified entry
     # instead of erasing that durable marker with the stale snapshot.
-    source = get(type(current).info, :ragged_density, false) ? current : x
+    #
+    # The lookup MUST stay guarded. This method is fundamentally a WRITE — before
+    # the ragged-density certificate existed it was exactly
+    # `info[expr(x)] = remake(x; lqual=:affects_likelihood)`, which happily BOUND a
+    # name `info` had never seen. Reading `info[key]` unconditionally silently
+    # turned every such first binding into a `KeyError`; a submodel data input
+    # reached through an indexed sampling LHS (`obs[i] ~ normal(...)`, where the
+    # generic descent hits bare `obs`) is the live case. Absent name ⇒ bind `x`.
+    certified = key in keys(info) && get(type(info[key]).info, :ragged_density, false)
+    source = certified ? info[key] : x
     info[key] = remake(source; lqual=:affects_likelihood)
 end
 backward!(x::StanType; info) = remake(x; lqual=:affects_likelihood)
