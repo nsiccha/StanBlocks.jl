@@ -2119,7 +2119,7 @@ end
 """
 Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated test item.
 """
-@testitem "slic: bounded one-dimensional @deffun comprehensions" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: bounded one-dimensional @deffun comprehensions" tags=[:slic, :shapes, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @testset "canonicalization preserves the comprehension/generator structure" begin
         c = StanBlocks.stan.canonical(Meta.parse("[x[i] * x[i] for i in 1:n]"))
         @test c isa StanBlocks.stan.ComprehensionExpr
@@ -2301,7 +2301,7 @@ Verify the enumerate/zip/N-D/nested iteration-protocol extensions (devibe
 `@deffun` bodies, gated on `stanc_compiles` with BridgeStan lp/gradient spot
 checks, plus the 3-D and flattened-generator rejections.
 """
-@testitem "slic: enumerate / zip / N-D comprehension iteration" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: enumerate / zip / N-D comprehension iteration" tags=[:slic, :shapes, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     iter_error(f) = try (f(); nothing) catch e sprint(showerror, e) end
 
     @testset "enumerate binds (index, element)" begin
