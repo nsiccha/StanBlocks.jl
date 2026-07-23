@@ -163,6 +163,76 @@ end
         xi = (a - b) .* exp(c)
         xi
     end
+    # --- COMPOSITE (named-tuple) return whose ELEMENT sizes name the params ---
+    # A ragged-map HOF: the returned `(;ends, mem)` has `mem` sized by a CALL over
+    # the function's own params (`sum(ntd_sub_lengths(f, x, args...))`). At a call
+    # site those params are anonymized to `_arg<tok>_<i>`, and the placeholders
+    # live in the ntup's `info.arg_types`, NOT in its (empty) `stan_size` — so
+    # `deanon_type` has to recurse into the element types or they reach Stan
+    # verbatim (undeclared identifier in a size position + a phantom `data` decl).
+    # Shape lifted from Bruno's `ragged_imap1` / `groupedby_idxs`.
+    @deffun begin
+        ntd_filter_n(f, x::anything[n], args...) = begin
+            rv = 0
+            for i in 1:n
+                if f(x[i], args...)
+                    rv += 1
+                end
+            end
+            rv
+        end
+        ntd_filter_idxs(f, x::anything[m], args...) = begin
+            rv::int[ntd_filter_n(f, x, args...)]
+            rvi = 1
+            for i in 1:m
+                if f(x[i], args...)
+                    rv[rvi] = i
+                    rvi += 1
+                end
+            end
+            rv
+        end
+        ntd_sub_length(f, xi, args...) = size(f(xi, args...))
+        ntd_sub_lengths(f, x::anything[n], args...) = begin
+            rv::int[n]
+            for i in 1:n
+                rv[i] = ntd_sub_length(f, x[i], args...)
+            end
+            rv
+        end
+        ntd_ragged_imap1(f, x::anything[n], args...) = begin
+            ends::int[n] = cumulative_sum(ntd_sub_lengths(f, x, args...))
+            mem::int[sum(ntd_sub_lengths(f, x, args...))]
+            rvi = 1
+            for i in 1:n
+                mem[rvi:ends[i]] = f(x[i], args...)
+                rvi .= ends[i]+1
+            end
+            (;ends, mem)
+        end
+        ntd_filter_idxs2(arg, f, x::anything[m]) = ntd_filter_idxs(f, x, arg)
+        # 2-arg form: the leak surfaces on the UDF-body local `tmp`.
+        ntd_group_idxs(y::anything[n], uy::anything[m]) = begin
+            ends::int[m]
+            mem::int[n]
+            tmp = ntd_ragged_imap1(ntd_filter_idxs2, uy, ==, y)
+            ends .= tmp.ends
+            mem .= tmp.mem
+            (;ends, mem)
+        end
+        # 1-arg wrapper: the leak surfaces on the MODEL-scope declaration, and the
+        # unresolved placeholder is then picked up by `fetch_data!` as a phantom
+        # `data` variable — a second, independent symptom of the same miss.
+        ntd_prefix_n(x::anything[m])::int = m
+        ntd_prefix(x::anything[m]) = begin
+            rv::int[ntd_prefix_n(x)]
+            for i in 1:ntd_prefix_n(x)
+                rv[i] = x[i]
+            end
+            rv
+        end
+        ntd_group_idxs(y::anything[n]) = ntd_group_idxs(y, ntd_prefix(y))
+    end
     # --- bounded array comprehensions in @deffun ---
     # A scalar expression over one or more explicit `lo:hi` ranges. Fixtures cover
     # real/int result inference, non-1 lower bounds, N-D (multi-generator) results,
@@ -2588,6 +2658,36 @@ end
     @test transpiles(multi)
     @test stanc_compiles(multi)
     @test !occursin("\"dims(", stan_code(multi))
+end
+
+@testitem "slic: composite return type deanonymizes nested element sizes" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Regression for the leaked-gensym snag: a `@deffun` returning a (named)
+    # tuple whose ELEMENT sizes are calls over its own params. Those sizes live
+    # in the type's `info.arg_types`; the tup/ntup's own `stan_size` is empty, so
+    # deanonymization must recurse or the per-call placeholders `_arg<tok>_<i>`
+    # are emitted verbatim (stanc: "Invalid character found").
+    two = @slic (;subject=[1, 1, 2, 2, 2, 3], uy=[1, 2, 3]) begin
+        idxs = ntd_group_idxs(subject, uy)
+        mu ~ normal(idxs.ends[1], 1)
+    end
+    @test transpiles(two)
+    two_code = stan_code(two)
+    @test !occursin(r"_arg\d+_\d+", two_code)
+    # The UDF-body local `tmp` names the caller's own params, not placeholders.
+    @test occursin("sum(ntd_sub_lengths_ntd_filter_idxs2_eq(uy, y))", two_code)
+    @test stanc_compiles(two)
+
+    # 1-arg wrapper: the model-scope declaration carries the nested size, and an
+    # unresolved placeholder there also materialised as a phantom `data` var.
+    one = @slic (;subject=[1, 1, 2, 2, 2, 3]) begin
+        idxs = ntd_group_idxs(subject)
+        mu ~ normal(idxs.ends[1], 1)
+    end
+    @test transpiles(one)
+    one_code = stan_code(one)
+    @test !occursin(r"_arg\d+_\d+", one_code)
+    @test occursin("array[ntd_prefix_n(subject)] int", one_code)
+    @test stanc_compiles(one)
 end
 
 """

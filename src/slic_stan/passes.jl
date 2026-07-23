@@ -18,10 +18,26 @@ _deanon_size_expr(e::CanonicalExpr, s, x, tok) = begin
     StanExpr(remake(e, new_args...), type(s))
 end
 _deanon_size_expr(_, s, _, tok) = s
+# A COMPOSITE type (`tup`/`ntup`, incl. every `usertype` built on one) keeps its
+# ELEMENT types in `info.arg_types`, and each of those carries its OWN symbolic
+# size. `stan_size` of a tup/ntup is EMPTY, so deanonymizing only the top-level
+# size leaves those nested sizes anonymized: a `@deffun` returning a (named)
+# tuple whose element sizes reference its own params (`mem::int[sum(g(x, a))]`)
+# emits `_arg<tok>_<i>` verbatim into Stan — an undeclared identifier in a size
+# position, which `fetch_data!` then compounds by declaring as a phantom `data`
+# variable. Recurse so an element's size is deanonymized exactly like a scalar's.
+deanon_arg_types(at, x::CanonicalExpr, tok) = at
+deanon_arg_types(at::Union{Tuple,NamedTuple}, x::CanonicalExpr, tok) =
+    map(t -> deanon_type(t, x, tok), at)
 deanon_type(tt::StanType, x::CanonicalExpr, tok) = begin
     sz = stan_size(tt)
     nsz = map(s -> deanon_size(s, x, tok), sz)
-    sz == nsz ? tt : StanType(center_type(tt), nsz; [k => v for (k, v) in pairs(info(tt)) if k != :size]...)
+    at = get(info(tt), :arg_types, nothing)
+    nat = deanon_arg_types(at, x, tok)
+    sz == nsz && nat === at && return tt
+    StanType(center_type(tt), nsz; [
+        k => (k === :arg_types ? nat : v) for (k, v) in pairs(info(tt)) if k != :size
+    ]...)
 end
 stan_expr(x::CanonicalExpr) = begin
     tok = _next_anon_id()
