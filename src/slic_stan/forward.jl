@@ -1603,6 +1603,40 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     fresh = discovered.fresh
     rv_type = rv_ct === nothing ? discovered.ret_type : _plate_annotation_type(rv_ct; info)
 
+    # An `array[] int` cell-local is an EPHEMERAL per-cell INDEX array — a
+    # `findall`/boolean-mask result such as an explicit `idx = findall(c .== 1)`, or
+    # the index `y[c .== 1]` lowers to. It is NEVER collected across cells (its length
+    # is `sum(mask)`, inherently ragged, and an int-array cell OUTPUT is unsupported
+    # anyway), so it must NOT become an outer collection. It also cannot survive as a
+    # loop-local: `distribute!` duplicates the plate loop into a transformed-data copy
+    # (where the data-derived index is computed) and a model copy (where the obs uses
+    # it), and a loop-local does not cross between those scopes (stanc "Identifier not
+    # in scope"). So drop it from the promoted set and INLINE its defining `name = rhs`
+    # into every use, recomputing the index in whichever block routes the use. The
+    # boolean-mask SUGAR (`y[c .== 1]`) has no source binding to inline — its `findall`
+    # is kept inline inside a plate by `expand_inline_or_trace` (builtin.jl) for the
+    # same reason — so here we only drop its discovered `boolmask_idx_*` entry. (Snag
+    # plate-cell-int: a per-cell index array feeding cmt-keyed do-block obs.)
+    inline_int_names = Set{Symbol}(
+        f for (f, T) in fresh if center_type(T) <: types.int && stan_ndim(T) >= 1
+    )
+    if !isempty(inline_int_names)
+        fresh = Pair{Symbol,Any}[p for p in fresh if !(p.first in inline_int_names)]
+        inline_map = Dict{Symbol,Any}()
+        kept = Any[]
+        for s in body_stmts
+            fi = _plate_fresh_info(s)
+            if fi !== nothing && s isa Expr && s.head === :(=) &&
+                _plate_global_name(info, fi[1]) in inline_int_names
+                inline_map[fi[1]] = s.args[2]
+            else
+                push!(kept, s)
+            end
+        end
+        body_stmts = Any[_subst_syms(s, inline_map) for s in kept]
+        ret_expr = _subst_syms(ret_expr, inline_map)
+    end
+
     # `cell_types`/`fresh` are keyed by the GLOBAL (root-namespace) name of each
     # discovered cell binding; `rv` stays the do-block's LOCAL result name. For a
     # top-level plate these coincide, so the collision check compares rv's global
