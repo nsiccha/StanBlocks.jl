@@ -151,6 +151,25 @@ end
         rv::vector[n+1] = x
         rv
     end
+    # --- signature dim sourced from a NON-FIRST argument ---
+    # A whole-vector `normal_rng(loc, scale)` sizes off `scale`, the SECOND
+    # `vector[n]` arg, so the inferred RHS type carries `dims(scale)[1]` while the
+    # declaration says `n`. The emitted UDF binds `int n = dims(loc)[1];` AND
+    # rejects at runtime unless `dims(scale)[1] == n`, so equating the two at
+    # trace time asserts exactly what the generated Stan already enforces.
+    # The `_rng` suffix is load-bearing: Stan only permits an RNG call inside a
+    # UDF whose name ends in `_rng`, so without it stanc rejects the body on
+    # grounds that have nothing to do with the shape check under test.
+    @deffun @stanonly typed_assign_nonfirst_rng(loc::vector[n], scale::vector[n])::vector[n] = begin
+        draws::vector[n] = to_vector(normal_rng(loc, scale))
+        draws
+    end
+    # NEGATIVE control: DISTINCT signature dims are never equated — no runtime
+    # check relates `m` to `n`, so nothing backs such an equality.
+    @deffun @stanonly typed_assign_nonfirst_bad_rng(loc::vector[n], scale::vector[m])::vector[n] = begin
+        draws::vector[n] = to_vector(normal_rng(loc, scale))
+        draws
+    end
     # --- BARE whole-vector local (no size annotation) with a broadcast RHS ---
     # The intermediate local's inferred size is the arg-placeholder fragment
     # `dims(a)[1]` (a `StanExpr{String}` of center `int`). It must emit UNQUOTED
@@ -2776,6 +2795,64 @@ Verify `slic: typed assignment compatibility` in an isolated test item.
     @test dim_err !== nothing
     @test occursin("Typed assignment", dim_err)
     @test occursin("dimension 1", dim_err)
+end
+
+@testitem "slic: typed assignment sized from a non-first signature arg" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Regression for the signature-dimension alias gap: the all-vector `_rng`
+    # idiom `draws::vector[n] = to_vector(normal_rng(loc, scale))` infers its size
+    # from `scale` — the SECOND `vector[n]` arg — and the alias table used to
+    # record `n` only against the FIRST arg mentioning it, so the declared `n` and
+    # the inferred `dims(scale)[1]` were unequatable and this threw at transpile
+    # time. Both directions matter, so the negative control below is the test that
+    # actually keeps the shape check honest.
+    ok = @slic (;loc=[0.0, 1.0, 2.0], scale=[1.0, 1.0, 1.0]) begin
+        mu ~ std_normal()
+        out = typed_assign_nonfirst_rng(loc, scale)
+        result = mu + out[1]
+    end
+    @test transpiles(ok)
+    @test stanc_compiles(ok)
+    code = stan_code(ok)
+    @test occursin("vector[n] draws = to_vector(normal_rng(loc, scale));", code)
+    # SOUNDNESS COUPLING — the point of the whole change. Accepting
+    # `dims(scale)[1] == n` at trace time is only truthful because the emitted
+    # function REJECTS at runtime when it is false. If that guard is ever dropped,
+    # the alias must go with it, and this assertion is what says so.
+    @test occursin("if (dims(scale)[1] != n) reject(", code)
+
+    # DISTINCT signature dims stay distinct: nothing in the emitted Stan relates
+    # `m` to `n`, so the shape check must still throw.
+    bad = @slic (;loc=[0.0, 1.0, 2.0], scale=[1.0, 1.0, 1.0]) begin
+        mu ~ std_normal()
+        out = typed_assign_nonfirst_bad_rng(loc, scale)
+        result = mu + out[1]
+    end
+    bad_err = try
+        stan_code(bad)
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test bad_err !== nothing
+    @test occursin("Typed assignment", bad_err)
+    @test occursin("dimension 1", bad_err)
+
+    # TOKEN carve-out: a sized-token `_rng` (reached through the auto-GQ
+    # predictive draw) binds its dim from the TOKEN slot, for which NO runtime
+    # check is emitted — so a token occurrence must never be aliased on an
+    # unchecked assumption. Every subsequent NON-token arg is guarded as usual.
+    tok = @slic (;y=[0.0, 0.5, -0.5], lloq=[-3.0, -3.0, -3.0], uloq=[3.0, 3.0, 3.0]) begin
+        mu ~ std_normal()
+        sigma ~ std_normal()
+        y ~ truncated_normal(rep_vector(mu, 3), rep_vector(exp(sigma), 3), lloq, uloq)
+    end
+    @test transpiles(tok)
+    @test stanc_compiles(tok)
+    tok_code = stan_code(tok)
+    @test occursin(r"int n = anontok__\d+;", tok_code)
+    @test occursin("if (dims(loc)[1] != n) reject(", tok_code)
+    @test !occursin(r"anontok__\d+ != n\) reject", tok_code)
+    @test !occursin(r"!= anontok__\d+\) reject", tok_code)
 end
 
 @testitem "slic: bare whole-vector local (broadcast RHS) emits unquoted size" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin

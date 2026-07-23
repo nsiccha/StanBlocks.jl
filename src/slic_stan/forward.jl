@@ -847,8 +847,19 @@ _typed_assignment_shape_key(x::Expr, aliases) =
     (x.head, map(arg -> _typed_assignment_shape_key(arg, aliases), x.args))
 _typed_assignment_shape_key(x::Tuple, aliases) =
     map(arg -> _typed_assignment_shape_key(arg, aliases), x)
-_typed_assignment_shape_key(x::Symbol, aliases) =
-    haskey(aliases, x) ? _typed_assignment_shape_key(aliases[x], aliases) : x
+# Signature-dimension aliases (`__size_alias_names__`, functions.jl) map an
+# emitted Stan access expression back to the signature dimension it is
+# GUARANTEED to equal — `dims(loc)[1]` and `dims(scale)[1]` both canonicalize to
+# `n` for `f(loc::vector[n], scale::vector[n])`, an equality the emitted UDF
+# either establishes (the defining `int n = dims(loc)[1];`) or enforces (the
+# `reject` guard on every later occurrence).
+#
+# Normalization is deliberately ONE-WAY, towards the dimension NAME: a declared
+# `n` is already canonical, while an argument-derived RHS type carries the raw
+# `dims(...)[i]` fragment. Mapping names FORWARD to accesses as well would
+# ping-pong, and could not express the many-to-one relation anyway.
+_typed_assignment_shape_key(x::Symbol, aliases) = x
+_typed_assignment_shape_key(x::AbstractString, aliases) = get(aliases, Symbol(x), x)
 _typed_assignment_shape_key(x, aliases) = x
 
 _typed_assignment_dim_matches(declared::StanExpr, inferred::StanExpr, aliases) =
@@ -856,7 +867,7 @@ _typed_assignment_dim_matches(declared::StanExpr, inferred::StanExpr, aliases) =
     (hasvalue(declared) && hasvalue(inferred) && isequal(getvalue(declared), getvalue(inferred)))
 
 _typed_assignment_aliases(info::Union{AbstractDict,NamedTuple}) =
-    get(info, :__size_aliases__, NamedTuple())
+    get(info, :__size_alias_names__, NamedTuple())
 _typed_assignment_aliases(info) = NamedTuple()
 
 _check_typed_assignment(name, declared::StanType, inferred::StanType; info) = begin
@@ -1845,10 +1856,15 @@ end
 _decl_computed_size_alias(size, info) = begin
     aliases = _typed_assignment_aliases(info)
     size_key = _typed_assignment_shape_key(size, NamedTuple())
-    for (name, access) in pairs(aliases)
-        isequal(size_key, access) && name in keys(info) && return info[name]
-    end
-    size
+    # Only a raw `dims(arg)[i]` / `tok.i` access fragment can name a signature
+    # dimension; anything else (a symbol, a compound size expression) is left
+    # alone. `name in keys(info)` keeps this honest for a dimension whose
+    # `int n = …;` binding was pruned as unused (§R5 addendum) — there is no
+    # `n` in scope to render.
+    size_key isa AbstractString || return size
+    name = get(aliases, Symbol(size_key), nothing)
+    (name === nothing || !(name in keys(info))) && return size
+    info[name]
 end
 
 _decl_computed_type(tok, s; info) = begin
