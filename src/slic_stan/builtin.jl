@@ -1203,12 +1203,17 @@ end
     # `obs ~ truncated_normal(loc, scale, lloq, uloq)` sampling.
     @lhs truncated_normal_lpdf(obs::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::real =
         sum(truncated_normal_lpdfs(obs, loc, scale, lloq, uloq))
-    # Posterior-predictive draw: sample then clamp into [lloq, uloq].
+    # Posterior-predictive draw: sample then clamp into [lloq, uloq]. Per-element
+    # `normal_rng(loc[i], scale[i])` (not the whole-vector `to_vector(normal_rng(loc,
+    # scale))`): the vector rng infers its size from `scale` (`dims(scale)[1]`), which
+    # the typed-assignment shape check cannot equate to the signature `n` (recorded
+    # only against the FIRST `vector[n]` arg `loc`; functions.jl `fun_size_aliases`),
+    # so `draws::vector[n] = to_vector(normal_rng(loc, scale))` fails to transpile.
+    # The scalar per-element draw sidesteps the gap and matches the `_lpdfs` idiom.
     truncated_normal_rng(loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
-        draws::vector[n] = to_vector(normal_rng(loc, scale))
         rv::vector[n]
         for i in 1:n
-            rv[i] = fmin(fmax(lloq[i], draws[i]), uloq[i])
+            rv[i] = fmin(fmax(lloq[i], normal_rng(loc[i], scale[i])), uloq[i])
         end
         rv
     end
@@ -1247,12 +1252,14 @@ end
     # `obs ~ truncated_student_t(dof, loc, scale, lloq, uloq)` sampling.
     @lhs truncated_student_t_lpdf(obs::vector[n], dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::real =
         sum(truncated_student_t_lpdfs(obs, dof, loc, scale, lloq, uloq))
-    # Posterior-predictive draw: sample then clamp into [lloq, uloq].
+    # Posterior-predictive draw: sample then clamp into [lloq, uloq]. Per-element
+    # `student_t_rng(dof[i], loc[i], scale[i])` for the same size-alias reason as
+    # `truncated_normal_rng` above (the whole-vector rng infers `dims(scale)[1]`,
+    # unequatable to the signature `n`).
     truncated_student_t_rng(dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
-        draws::vector[n] = to_vector(student_t_rng(dof, loc, scale))
         rv::vector[n]
         for i in 1:n
-            rv[i] = fmin(fmax(lloq[i], draws[i]), uloq[i])
+            rv[i] = fmin(fmax(lloq[i], student_t_rng(dof[i], loc[i], scale[i])), uloq[i])
         end
         rv
     end
