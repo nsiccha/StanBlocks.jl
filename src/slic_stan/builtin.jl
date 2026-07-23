@@ -476,8 +476,17 @@ import Statistics
     end
     ordered_logistic_rng(int[n], eta::vector[n], c::vector[m])::int[n] = ordered_logistic_rng(eta, c)
     vector_exponential_rng(rate::real, n::int)::vector[n] = exponential_rng(rep_vector(rate, n))
-    lkj_corr_cholesky_rng(n::int, eta::real)
-    
+    # Stan's `lkj_corr_cholesky_rng(int K, real eta)` returns a K×K Cholesky
+    # factor. WITHOUT the `::matrix[n,n]` the tracetype is `anything`, so the
+    # auto-GQ redraw of a cv-tainted `L::cholesky_factor_corr[K] ~
+    # lkj_corr_cholesky(eta)` blew up in `stan_code` with
+    # `tracetype not defined for L::anything = lkj_corr_cholesky_rng(...)`
+    # (snag build-a-declarat-ab2d2471; the trap was already recorded in the
+    # primer's cv section). `matrix` — not `cholesky_factor_corr` — matches the
+    # `dirichlet_rng`/`simplex` precedent: a gq redraw declares the natural
+    # unconstrained container, not the constrained parameter type.
+    lkj_corr_cholesky_rng(n::int, eta::real)::matrix[n,n]
+
     normal_cdf(args...)
     normal_lcdf(args...)
     normal_lccdf(args...)
@@ -1139,6 +1148,14 @@ end
 # multi_normal / multi_normal_cholesky: native already returns vector[n]
 @deffun multi_normal_rng(vector[n], loc::vector[n], cov)::vector[n]          = multi_normal_rng(loc, cov)
 @deffun multi_normal_cholesky_rng(vector[n], loc::vector[n], scale)::vector[n] = multi_normal_cholesky_rng(loc, scale)
+
+# lkj_corr_cholesky: the gq token carries the DECLARED constrained shape
+# (`tokenof{cholesky_factor_corr}` sized `(n,)` — `r_ndim(square_matrix) == 1`),
+# so the sized-token slot is written `cholesky_factor_corr[n]`, not
+# `matrix[n,n]`. Delegates to the native 2-arg form, whose first argument is the
+# DIMENSION (an int), not a container — hence `n` rather than the token.
+@deffun lkj_corr_cholesky_rng(cholesky_factor_corr[n], eta::real)::matrix[n,n] =
+    lkj_corr_cholesky_rng(n, eta)
 
 # =============================================================================
 # bordet (generable) longitudinal-biomarker model-family port.

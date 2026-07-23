@@ -9,6 +9,7 @@ end
 function parse_test_args(args)
     names = String[]
     tags = Symbol[]
+    skip_tags = Symbol[]
     files = String[]
     exact = nothing
     list = false
@@ -28,6 +29,16 @@ function parse_test_args(args)
         elseif arg == "--tag"
             value, i = option_value(args, i, arg)
             push!(tags, Symbol(lstrip(value, ':')))
+        # `--tag` is an AND-SELECTION, so it cannot express "everything except
+        # X". CI needs exactly that: most of the suite is transpile-only and
+        # runs anywhere, while `:bridgestan` / `:stanc` items need a Stan
+        # toolchain the runner does not have. `--skip-tag` is the complement,
+        # and like `--tag` it accepts a leading colon.
+        elseif startswith(arg, "--skip-tag=")
+            push!(skip_tags, Symbol(lstrip(split(arg, "="; limit=2)[2], ':')))
+        elseif arg == "--skip-tag"
+            value, i = option_value(args, i, arg)
+            push!(skip_tags, Symbol(lstrip(value, ':')))
         elseif startswith(arg, "--file=")
             push!(files, replace(split(arg, "="; limit=2)[2], '\\' => '/'))
         elseif arg == "--file"
@@ -47,7 +58,7 @@ function parse_test_args(args)
 
     exact_parts = isnothing(exact) ? nothing : split(replace(exact, '\\' => '/'), "::"; limit=2)
     isnothing(exact_parts) || length(exact_parts) == 2 || error("--htmxo-test must be file::name")
-    return (; names, tags, files, exact_parts, list)
+    return (; names, tags, skip_tags, files, exact_parts, list)
 end
 
 const TEST_SELECTION = parse_test_args(ARGS)
@@ -59,6 +70,7 @@ function selected(ti)
     selection = TEST_SELECTION
     matches = all(name -> occursin(lowercase(name), lowercase(ti.name)), selection.names) &&
               all(tag -> tag in ti.tags, selection.tags) &&
+              !any(tag -> tag in ti.tags, selection.skip_tags) &&
               all(file -> occursin(lowercase(file), lowercase(path)), selection.files) &&
               (isnothing(selection.exact_parts) ||
                (path == selection.exact_parts[1] && ti.name == selection.exact_parts[2]))

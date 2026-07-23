@@ -1479,13 +1479,17 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
 #     (`_plate_is_ragged_cell` / `_plate_ragged_plan`). N-D/arbitrary raggedness
 #     and ragged CONSTRAINED cells (varying-`K` simplex/…) are rejected — Stan
 #     cannot declare `array[N] simplex[K[g]]`.
-#   • Per-cell LIKELIHOOD is HALF-owned. The pointwise DENSITY (lpdf/lpmf) loop IS
-#     compiler-owned — an indexed data-LHS `obs[i] ~ dist(...)` routes to the model
-#     block (passes.jl:206); a cv-flipped per-cell PARAMETER redraws in GQ
-#     (`_indexed_rng_assignment`). But per-cell OBSERVATION posterior-predictive
-#     RNG is NOT synthesized: indexed data-LHS routes to `(:model,)` only, because
-#     the whole-LHS `_gen`/`_likelihood` expansion (passes.jl:396) "cannot represent
-#     one cell" (passes.jl:206-211). Do not assume plate owns observation-RNG loops.
+#   • Per-cell LIKELIHOOD: the pointwise DENSITY (lpdf/lpmf) loop is compiler-owned
+#     — an indexed data-LHS `obs[i] ~ dist(...)` routes to the model block — and a
+#     cv-flipped per-cell PARAMETER redraws in GQ (`_indexed_rng_assignment`).
+#     Per-cell OBSERVATION posterior-predictive RNG IS now synthesized too (snag
+#     build-a-declarat-ab2d2471, superseding the 2026-07-16 boundary note): the gq
+#     clone of the loop writes each draw into a compiler-owned `<obs>_gen` twin
+#     declared with the observation's own type (`_indexed_obs_gen_base` /
+#     `_push_obs_gen_decl!`, passes.jl). NOT covered: the pointwise
+#     `<obs>_likelihood` vector (the whole-LHS expansion's other half — the cell
+#     shape does not fix its container), and a RAGGED observation base, which has
+#     no declarable Stan twin and keeps the model-only routing.
 #   • cv/GQ taint does NOT flow through the outer sized declaration (same limit as
 #     typed-LHS ranefs — cv section / parked override feature); vararg do-block
 #     params (l.1193) and reduce_sum lowering are unimplemented.
