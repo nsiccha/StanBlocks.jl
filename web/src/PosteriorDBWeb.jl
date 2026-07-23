@@ -14,7 +14,6 @@ import StanBlocks.stan: stan_code, instantiate
 using LogDensityProblems
 using Statistics, Random
 using StanLogDensityProblems
-using TestModules
 
 
 pdb() = PosteriorDB.database()
@@ -350,7 +349,7 @@ const APPDATA = SbAppData()
     )
 
     # --- Test routes (via @include — registers under /tests/) ---
-    @include tests = TestRoutes(; __req__, test_module=@__MODULE__)
+    @include tests = TestRoutes(project=pkgdir(StanBlocks))
 
     @get clear_cache() = begin
         foreach(rm, Base.filter(f -> endswith(f, ".sjl"), readdir(__cache_path__; join=true)))
@@ -519,10 +518,29 @@ const APPDATA = SbAppData()
             # Card rendering: id (DOM id), the cheap `lazy` variant (cached
             # sidecar state, no re-eval), the heavy `full` variant
             # (re-evaluates, writes status/stan/stanc sidecars). Both
-            # variants share `id`, `header_buttons`, and the editor block.
+            # variants share `id`, `snippet_header`, and the editor block.
             @include card = begin
                 id = "snippet-$name"
                 snippet_url = __parent__   # the snippet's URL (parent-prefix)
+
+                snippet_header(name_node, badge_node, stanc_node;
+                        refresh_url, standalone=false, show_macroexpand=false) =
+                    h.div(; class="pdb-snippet-header")(
+                        name_node,
+                        badge_node, stanc_node,
+                        h.button("↻"; type="button", class="pdb-icon-btn",
+                            hx_get=refresh_url, hx_target="#$id", hx_swap="outerHTML"),
+                        h.button(should_fail ? "xfail" : "should pass";
+                            type="button", class="pdb-icon-btn", data_variant="text",
+                            hx_get=snippet_url/"toggle_expect", hx_target="#$id", hx_swap="outerHTML"),
+                        h.button("✕"; type="button", class="pdb-icon-btn", data_variant="del",
+                            hx_delete=snippet_url/"delete", hx_target="#$id", hx_swap="outerHTML",
+                            hx_confirm="Delete snippet '$name'?"),
+                        standalone ? "" : h.a("⧉"; href=snippet_url, target="_blank", class="pdb-icon-link"),
+                        show_macroexpand ?
+                            h.a("macro"; href=snippet_url/"macroexpand", target="_blank",
+                                class="pdb-icon-link", title="Show macroexpanded code") : "",
+                    )
 
                 code_block(; standalone=false) = h.div(
                     h.pre(h.code(code; class="language-julia");
@@ -548,21 +566,15 @@ const APPDATA = SbAppData()
                         h.span("XPASS"; data_status="warning",
                             title="Expected failure but transpiled — toggle 'should pass' if intentional") :
                         h.span("PASS"; data_status="success")
-                    expect_label = should_fail ? "xfail" : "should pass"
                     h.div(; id, class="htmxo-status-banner", data_status="success")(
-                        h.div(; class="pdb-snippet-header")(
+                        snippet_header(
                             h.strong(name; contenteditable="true", class="pdb-name-input",
                                 _="on blur if my textContent.trim() is not '$name' fetch $(snippet_url/"rename")?to=\${my.textContent.trim()} then put the result into #$id.outerHTML"),
-                            badge, stanc_badge(sc.ok),
-                            h.button("↻"; type="button", class="pdb-icon-btn",
-                                hx_get=refresh_url, hx_target="#$id", hx_swap="outerHTML"),
-                            h.button(expect_label; type="button", class="pdb-icon-btn", data_variant="text",
-                                hx_get=snippet_url/"toggle_expect", hx_target="#$id", hx_swap="outerHTML"),
-                            h.button("✕"; type="button", class="pdb-icon-btn", data_variant="del",
-                                hx_delete=snippet_url/"delete", hx_target="#$id", hx_swap="outerHTML",
-                                hx_confirm="Delete snippet '$name'?"),
-                            standalone ? "" : h.a("⧉"; href=snippet_url, target="_blank", class="pdb-icon-link"),
-                            h.a("macro"; href=snippet_url/"macroexpand", target="_blank", class="pdb-icon-link", title="Show macroexpanded code"),
+                            badge,
+                            stanc_badge(sc.ok);
+                            refresh_url,
+                            standalone,
+                            show_macroexpand=true,
                         ),
                         code_block(; standalone),
                         stanc_error_block(sc.ok ? "" : sc.output),
@@ -584,19 +596,12 @@ const APPDATA = SbAppData()
                         status == "PASS" ? h.span("PASS"; data_status="success") :
                         should_fail ? h.span("XFAIL"; data_status="warning") :
                         h.span("FAIL"; data_status="error", title=status)
-                    expect_label = should_fail ? "xfail" : "should pass"
                     h.div(; id, class="htmxo-status-banner", data_status=banner_status)(
-                        h.div(; class="pdb-snippet-header")(
+                        snippet_header(
                             h.strong(name),
-                            badge, stanc.badge,
-                            h.button("↻"; type="button", class="pdb-icon-btn",
-                                hx_get=snippet_url/"refresh", hx_target="#$id", hx_swap="outerHTML"),
-                            h.button(expect_label; type="button", class="pdb-icon-btn", data_variant="text",
-                                hx_get=snippet_url/"toggle_expect", hx_target="#$id", hx_swap="outerHTML"),
-                            h.button("✕"; type="button", class="pdb-icon-btn", data_variant="del",
-                                hx_delete=snippet_url/"delete", hx_target="#$id", hx_swap="outerHTML",
-                                hx_confirm="Delete snippet '$name'?"),
-                            h.a("⧉"; href=snippet_url, target="_blank", class="pdb-icon-link"),
+                            badge,
+                            stanc.badge;
+                            refresh_url=snippet_url/"refresh",
                         ),
                         code_block(),
                         stanc.error_block,

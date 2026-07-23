@@ -101,6 +101,8 @@ end
     ode_ckrk ode_ckrk_tol
     ode_adams ode_adams_tol
     ode_bdf ode_bdf_tol
+    # Torsten (metrumresearchgroup/Torsten) analytical PK event-schedule solvers.
+    pmx_solve_onecpt pmx_solve_twocpt
     append_array
     append_row
     append_col
@@ -111,6 +113,7 @@ end
     simplex_constrain simplex_unconstrain simplex_jacobian
     ordered_constrain ordered_unconstrain ordered_jacobian
     positive_ordered_constrain positive_ordered_unconstrain positive_ordered_jacobian
+    cholesky_factor_corr_jacobian cholesky_factor_cov_jacobian
     diag_matrix
     mdivide_left_tri_low
     one_hot_vector
@@ -192,7 +195,8 @@ end
     # pre-pass; not normally called directly by users).
     # `maybe_index` is a trace-time rewrite hook (lpxf_builtin.jl); it is
     # never emitted as a Stan function.  `merge_missing` is a real @deffun
-    # that assembles the full vector in transformed_parameters.
+    # that assembles the full vector in generated quantities when prior-only,
+    # or transformed parameters when the completed vector feeds a likelihood.
     maybe_index
     merge_missing
 
@@ -271,6 +275,8 @@ import Statistics
     positive_ordered_constrain(y::vector[n])::vector[n]
     positive_ordered_jacobian(y::vector[n])::vector[n]
     positive_ordered_unconstrain(x::vector[n])::vector[n]
+    cholesky_factor_corr_jacobian(y::vector[n], K::int)::matrix[K,K]
+    cholesky_factor_cov_jacobian(y::vector[n], M::int, N::int)::matrix[M,N]
     Base.log1p(x::real)::real
     Base.inv(::vector[n])::vector[n]
     Base.print(args...)::anything
@@ -437,8 +443,14 @@ import Statistics
     binomial_lpmfs(y::int[n], args...) = jbroadcasted(binomial_lpmfs, y, args...)
     binomial_logit_lpmfs(args...) = binomial_logit_lpmf(args...)
     binomial_logit_lpmfs(y::int[n], args...) = jbroadcasted(binomial_logit_lpmfs, y, args...)
-    multi_normal_lpdfs(args...) = multi_normal_lpdf(args...)
-    dirichlet_lpdfs(args...) = dirichlet_lpdf(args...)
+    # Scalar-fallback pointwise-density companions delegate to the `_lpdf`, which
+    # returns `real`; the explicit `::real` return type is REQUIRED — without it
+    # the varargs signature monomorphises to a Stan function with return type
+    # `anything`, which `stanc` rejects. This surfaced when a constrained per-cell
+    # parameter inside a plate (`cell[g] ~ dirichlet(…)`) fetched `dirichlet_lpdfs`
+    # (snag plate-constraine-90607054).
+    multi_normal_lpdfs(args...)::real = multi_normal_lpdf(args...)
+    dirichlet_lpdfs(args...)::real = dirichlet_lpdf(args...)
     @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr[m,n], x::real, m::int, n::int)::real = begin
         rv = 0.0
         for i in 1:m
@@ -446,7 +458,7 @@ import Statistics
         end
         rv
     end
-    lkj_corr_cholesky_lpdfs(args...) = lkj_corr_cholesky_lpdf(args...)
+    lkj_corr_cholesky_lpdfs(args...)::real = lkj_corr_cholesky_lpdf(args...)
     lkj_corr_cholesky_lpdfs(L::anything[n], x) = jbroadcasted(lkj_corr_cholesky_lpdfs, L, x)
     ordered_logistic_lpmfs(args...) = ordered_logistic_lpmf(args...)
     ordered_logistic_lpmfs(y::int[n], eta::vector[n], c::vector[m]) = begin
@@ -466,8 +478,17 @@ import Statistics
     ordered_logistic_rng(int[n], eta::vector[n], c::vector[m])::int[n] = ordered_logistic_rng(eta, c)
     vector_exponential_rng(rate::real, n::int)::vector[n] = exponential_rng(rep_vector(rate, n))
     end
-    lkj_corr_cholesky_rng(n::int, eta::real)
-    
+    # Stan's `lkj_corr_cholesky_rng(int K, real eta)` returns a K×K Cholesky
+    # factor. WITHOUT the `::matrix[n,n]` the tracetype is `anything`, so the
+    # auto-GQ redraw of a cv-tainted `L::cholesky_factor_corr[K] ~
+    # lkj_corr_cholesky(eta)` blew up in `stan_code` with
+    # `tracetype not defined for L::anything = lkj_corr_cholesky_rng(...)`
+    # (snag build-a-declarat-ab2d2471; the trap was already recorded in the
+    # primer's cv section). `matrix` — not `cholesky_factor_corr` — matches the
+    # `dirichlet_rng`/`simplex` precedent: a gq redraw declares the natural
+    # unconstrained container, not the constrained parameter type.
+    lkj_corr_cholesky_rng(n::int, eta::real)::matrix[n,n]
+
     normal_cdf(args...)
     normal_lcdf(args...)
     normal_lccdf(args...)
@@ -719,10 +740,11 @@ for (base, params) in (
     @eval @deffun @stanonly $lpdfs(obs::anything[n], $(params...)) = jbroadcasted($lpdfs, obs, $(params...))
 end
 
-# --- RaggedVector usertype + Julia-dispatched accessors ---------------------
+# --- Ragged vector/matrix usertypes + Julia-dispatched accessors -------------
 # A ragged vector is conceptually `Vector{<:AbstractVector{<:Real}}` — a
-# variable-length collection of real subvectors. SLIC encodes one as a
-# tagged ntup with fields:
+# variable-length collection of real subvectors. A RaggedMatrix uses the same
+# flat-memory scheme for varying matrix shapes and carries per-group row/column
+# sizes. SLIC encodes either as a tagged ntup with fields:
 #   mem  :: vector[total]   — concatenation of all subvectors
 #   ends :: int[n_groups]   — inclusive 1-based end index of each subvector
 # Standard Julia dispatch on the `RaggedVector` tag drives `length(rv)`
@@ -731,10 +753,42 @@ end
     mem  :: vector
     ends :: int[]
 end
+@usertype struct RaggedMatrix
+    mem  :: vector
+    ends :: int[]
+    rows :: int[]
+    cols :: int[]
+end
 # Built-in usertypes get aliased into the `builtin` submodule so SLIC's
 # `_is_builtin_name` lookup picks them up at any user `@slic` site —
 # same convention used for `vector`/`real`/etc. above.
 @eval builtin const RaggedVector = $RaggedVector
+@eval builtin const RaggedMatrix = $RaggedMatrix
+
+# Ragged DATA (`Vector{Vector{<:Real}}`) → nominal `RaggedVector` at ingest, so it is a
+# first-class indexable container in ANY model body (`y[g]` slices to the g-th group
+# vector), not only inside a plate. Both components are DATA, so a materialised
+# `tuple(vector, array[] int)` data var is legal — the compile-time-pairing dance
+# (above) exists only to avoid an int *parameter* tuple. Because
+# `RaggedVector <: types.usertype <: types.ntup` with `arg_types` keyed `(:mem, :ends)`,
+# every existing certified-ntup consumer (`_ragged_group_arg`, `_plate_is_ragged_iterable`)
+# keeps matching; the NEW `y[g]`-anywhere capability comes from `RaggedVector`'s getindex
+# dispatch (a bound data name is not a construction → the tuple-representation UDF).
+# (decision 2026-07-17T00-14-01-598-1g0cf6y, approach B — unify data/param ragged carriers.)
+stan_type(expr, value::AbstractVector{<:AbstractVector{<:Real}}; kwargs...) = begin
+    r = to_ragged(value)
+    StanType(RaggedVector, tuple();
+        arg_types=(;
+            mem=stan_type(Symbol(expr, "_mem"), r.mem),
+            ends=stan_type(Symbol(expr, "_ends"), r.ends),
+        ),
+        value=r, kwargs...,
+    )
+end
+
+# `RaggedMatrix` extends the same flat-memory representation to matrix-valued
+# groups. `ends` indexes each flattened matrix, while data-qualified `rows` and
+# `cols` reconstruct the selected group with `to_matrix`.
 
 # A `RaggedVector` is a COMPILE-TIME pairing of its two components, never a
 # materialised Stan tuple. Reason: when `mem` is parameter-derived
@@ -784,12 +838,19 @@ end
     Base.lastindex(rv::RaggedVector)::int = size(rv.ends)
     Base.getindex(rv::RaggedVector, i::int)::vector[ragged_length(rv, i)] =
         rv.mem[ragged_start(rv, i):ragged_end(rv, i)]
+    Base.length(rv::RaggedMatrix)::int = size(rv.ends)
+    Base.lastindex(rv::RaggedMatrix)::int = size(rv.ends)
+    Base.getindex(rv::RaggedMatrix, i::int)::matrix[rv.rows[i],rv.cols[i]] =
+        to_matrix(
+            rv.mem[ragged_start(rv, i):ragged_end(rv, i)],
+            rv.rows[i],
+            rv.cols[i],
+        )
 end
 
-# Constructor: bind the RaggedVector StanExpr verbatim into `info` (mirrors the
-# closure verbatim-bind) so its component StanExprs survive, and emit no Stan
-# declaration (`nothing` → `forward!(::BlockExpr)` skips it via
-# `_is_inert_block_stmt(::Nothing)`).
+# Constructors bind ragged StanExprs verbatim into `info` (mirrors the closure
+# verbatim-bind) so their component StanExprs survive, and emit no Stan
+# declaration (`nothing` → `forward!(::BlockExpr)` skips them).
 forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:RaggedVector}}; info) = begin
     name, rhs = x.args
     name in keys(info) && _is_submodel_info(info) && return nothing
@@ -800,20 +861,99 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:RaggedVector}}; info) = begin
     info[name] = rhs
     nothing
 end
-# Defensive: a RaggedVector StanExpr must never be re-forwarded as a bare symbol
+forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:RaggedMatrix}}; info) = begin
+    name, rhs = x.args
+    name in keys(info) && _is_submodel_info(info) && return nothing
+    name in keys(info) && error(
+        "RaggedMatrix: rebinding `$name` is not supported — a RaggedMatrix is a " *
+        "SLIC-side compile-time pairing of its (mem, ends, rows, cols) components."
+    )
+    info[name] = rhs
+    nothing
+end
+# Defensive: a ragged StanExpr must never be re-forwarded as a bare symbol
 # (mirrors the closure `StanExpr{Symbol,...}` passthrough).
 forward!(x::StanExpr{Symbol,<:StanType{<:RaggedVector}}; info) = x
+forward!(x::StanExpr{Symbol,<:StanType{<:RaggedMatrix}}; info) = x
 
-# A RaggedVector StanExpr is a COMPILE-TIME CONSTRUCTION iff its `expr` is the
-# constructor `CanonicalExpr` (args = `mem`, `ends`) — the model-body case a
-# verbatim-bind produces. A RaggedVector *parameter* inside a `@deffun` body is
+# A ragged StanExpr is a COMPILE-TIME CONSTRUCTION iff its `expr` is the
+# constructor `CanonicalExpr` — the model-body case a verbatim-bind produces.
+# A ragged *parameter* inside a `@deffun` body is
 # instead a bound Symbol and stays a real Stan tuple: the accessor hooks below
 # fire ONLY for constructions and fall through (to the tuple-representation UDFs
-# above) otherwise. This is what lets the whole RaggedVector still be passed to
-# a function without losing its size info.
+# above) otherwise. This lets either ragged carrier be passed to a function
+# without losing its size info.
 _is_ragged_construction(rv::StanExpr) = expr(rv) isa CanonicalExpr
 _ragged_mem(rv::StanExpr) = expr(rv).args[1]
 _ragged_ends(rv::StanExpr) = expr(rv).args[2]
+_ragged_rows(rv::StanExpr) = expr(rv).args[3]
+_ragged_cols(rv::StanExpr) = expr(rv).args[4]
+
+# Distribution arguments in a compiler-owned ragged prior loop are mapped only
+# when their carrier is itself ragged. This keeps shared scalar/dense arguments
+# shared and makes e.g. `p::simplex[Ks] ~ dirichlet(alpha)` index a ragged
+# `alpha` as `alpha[g]` without inventing ambiguous auto-indexing for ordinary
+# vectors.
+expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_arg)}; info) = begin
+    arg, g = x.args
+    if center_type(arg) <: RaggedVector || center_type(arg) <: RaggedMatrix
+        forward!(CanonicalExpr(getindex, arg, g); info)
+    elseif center_type(arg) <: types.ntup && keys(type(arg).info.arg_types) == (:mem, :ends)
+        # Fallback for a bare `(mem, ends)` ntup that is NOT the nominal
+        # `RaggedVector`. Since 197f5be nested-vector DATA mints a `RaggedVector`
+        # and so takes the branch above; this reaches only a hand-built
+        # `(; mem, ends)` named-tuple carrier — still semantically ragged, so slice
+        # this certified representation the same way. Dense vectors remain shared
+        # distribution arguments because auto-indexing them would be ambiguous.
+        mem = forward!(CanonicalExpr(Base.getfield, arg, 1); info)
+        ends = forward!(CanonicalExpr(Base.getfield, arg, 2); info)
+        lo = stan_call(builtin.ragged_start, ends, g)
+        hi = stan_call(builtin.ragged_end, ends, g)
+        stan_call(getindex, mem, stan_call(Colon(), lo, hi))
+    else
+        arg
+    end
+end
+
+# `v[mask]` with `mask :: bool[n]` (an element-wise comparison result such as
+# `cmt .== 1`) is BOOLEAN-MASK selection, which Stan has no syntax for. Lower it
+# to ordinary integer indexing over the true-positions — `v[findall(mask)]` —
+# intercepting before the generic `int[n]` getindex tracetype (a `bool[n]` would
+# otherwise be read as an integer index list). To keep it zero-RUNTIME-cost we
+# HOIST `idx = findall(mask)` into its own statement rather than inlining the
+# `findall` call at the index site: a data-derived mask makes the binding
+# data-qualified, so `distribute!` routes it to `transformed data` (materialised
+# ONCE at startup, no per-iteration / no-AD recompute), and every use of that
+# `idx` is plain integer indexing. Falls back to the inline form outside a
+# statement context, and a SCALAR `bool` index (l_ndim 0) is NOT a mask — it
+# falls through to normal integer indexing. This getindex overload is the ONLY
+# way `bool` differs from `int`; everywhere else `bool[n]` dispatches as `int[n]`.
+#
+# INSIDE A PLATE loop (`_plate_context() !== nothing`) the hoist is SUPPRESSED and
+# the `findall` stays inline: a per-cell mask is data-derived, so the hoisted `idx`
+# would land in the transformed-data COPY of the plate loop that `distribute!` splits
+# off — out of scope in the model COPY where the cmt-keyed obs uses it (stanc
+# "Identifier not in scope"). Recomputing the index inline keeps it in the using
+# block; the plate emitter mirrors this for an explicit `idx = findall(...)` local
+# (forward.jl). Snag plate-cell-int.
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2,<:StanExpr2{<:types.bool}}}; info) = begin
+    stan_ndim(type(x.args[2])) >= 1 || return fold_shape_query(stan_expr(x))
+    idx_val = forward!(CanonicalExpr(Base.findall, x.args[2]); info)
+    pending = _get_inline_pending()
+    idx_ref = if pending === nothing || _plate_context() !== nothing
+        idx_val                                   # no statement context, or inside a plate
+                                                  # loop → inline the findall (see above)
+    else
+        id = _next_inline_id()
+        name = Symbol(:boolmask_idx_, id)
+        while name in keys(info)
+            id = _next_inline_id(); name = Symbol(:boolmask_idx_, id)
+        end
+        push!(pending, forward!(CanonicalExpr(:(=), name, idx_val); info))
+        info[name]
+    end
+    forward!(CanonicalExpr(getindex, x.args[1], idx_ref); info)
+end
 
 # `rv[i]` → `mem[ragged_start(ends, i):ragged_end(ends, i)]` (a parameter vector
 # sliced by data bounds). Intercepts before `tracetype`, so a construction never
@@ -828,13 +968,96 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:R
     else
         fold_shape_query(stan_expr(x))
     end
+# `rm[i]` → reconstruct the selected flat slice with its data-only dimensions.
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
+    if _is_ragged_construction(x.args[1])
+        rv, i = x.args
+        ends = _ragged_ends(rv)
+        lo = stan_call(builtin.ragged_start, ends, i)
+        hi = stan_call(builtin.ragged_end, ends, i)
+        slice = stan_call(getindex, _ragged_mem(rv), stan_call(Colon(), lo, hi))
+        nr = stan_call(getindex, _ragged_rows(rv), i)
+        nc = stan_call(getindex, _ragged_cols(rv), i)
+        stan_call(builtin.to_matrix, slice, nr, nc)
+    else
+        fold_shape_query(stan_expr(x))
+    end
 # `length(rv)` / `lastindex(rv)` → number of groups = `num_elements(ends)`.
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedVector}}}; info) =
     _is_ragged_construction(x.args[1]) ? stan_call(length, _ragged_ends(x.args[1])) : fold_shape_query(stan_expr(x))
-# `rv.mem` / `rv.ends` → the stored component (field access lowers to
-# `getfield(rv, position)`; resolve it to `expr(rv).args[position]`).
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedMatrix}}}; info) =
+    _is_ragged_construction(x.args[1]) ? stan_call(length, _ragged_ends(x.args[1])) : fold_shape_query(stan_expr(x))
+# `rv.mem` / `rv.ends` (and the matrix shape fields) → the stored component;
+# field access lowers to `getfield(rv, position)`, resolved against the
+# constructor arguments here.
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedVector},<:StanExpr2{<:types.int}}}; info) =
     _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
+    _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+
+# --- EachCol / EachRow — first-class column/row VIEWS of a matrix -------------
+# `EachCol(X)` / `EachRow(X)` make a matrix's columns / rows an indexable container
+# everywhere (`EachCol(X)[j]` = the j-th column) and a plate iterable — the
+# eachcol/eachrow analogue of RaggedVector (decision 2026-07-17T02-25-53-568-igj5dy).
+# Like RaggedVector, a construction is a COMPILE-TIME view (verbatim-bound, emitting
+# no wrapper tuple): `[j]` lowers directly to Stan's native `col(X, j)` / `row(X, i)`,
+# `length` to `cols(X)` / `rows(X)`.
+@usertype struct EachCol
+    X :: matrix
+end
+@usertype struct EachRow
+    X :: matrix
+end
+@eval builtin const EachCol = $EachCol
+@eval builtin const EachRow = $EachRow
+
+# Tuple-representation accessors — fire when the view is a BOUND name (a @deffun /
+# submodel param), not a construction (mirrors the RaggedVector UDFs).
+@deffun begin
+    Base.length(ec::EachCol)::int = cols(ec.X)
+    Base.lastindex(ec::EachCol)::int = cols(ec.X)
+    Base.getindex(ec::EachCol, j::int)::vector[rows(ec.X)] = col(ec.X, j)
+    Base.length(er::EachRow)::int = rows(er.X)
+    Base.lastindex(er::EachRow)::int = rows(er.X)
+    Base.getindex(er::EachRow, i::int)::row_vector[cols(er.X)] = row(er.X, i)
+end
+
+# Constructions bind verbatim (mirrors RaggedVector), emitting no Stan statement.
+forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:EachCol}}; info) = begin
+    name, rhs = x.args
+    name in keys(info) && _is_submodel_info(info) && return nothing
+    name in keys(info) && error("EachCol: rebinding `$name` is not supported — it is a compile-time view of a matrix.")
+    info[name] = rhs
+    nothing
+end
+forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:EachRow}}; info) = begin
+    name, rhs = x.args
+    name in keys(info) && _is_submodel_info(info) && return nothing
+    name in keys(info) && error("EachRow: rebinding `$name` is not supported — it is a compile-time view of a matrix.")
+    info[name] = rhs
+    nothing
+end
+forward!(x::StanExpr{Symbol,<:StanType{<:EachCol}}; info) = x
+forward!(x::StanExpr{Symbol,<:StanType{<:EachRow}}; info) = x
+
+_is_view_construction(v::StanExpr) = expr(v) isa CanonicalExpr
+_view_mat(v::StanExpr) = expr(v).args[1]
+
+# `EachCol(X)[j]` → `col(X, j)`; `EachRow(X)[i]` → `row(X, i)` (construction case).
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:EachCol},<:StanExpr2{<:types.int}}}; info) =
+    _is_view_construction(x.args[1]) ? stan_call(builtin.col, _view_mat(x.args[1]), x.args[2]) : fold_shape_query(stan_expr(x))
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:EachRow},<:StanExpr2{<:types.int}}}; info) =
+    _is_view_construction(x.args[1]) ? stan_call(builtin.row, _view_mat(x.args[1]), x.args[2]) : fold_shape_query(stan_expr(x))
+# `length(EachCol(X))` / `lastindex` → `cols(X)`; EachRow → `rows(X)`.
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:EachCol}}}; info) =
+    _is_view_construction(x.args[1]) ? stan_call(builtin.cols, _view_mat(x.args[1])) : fold_shape_query(stan_expr(x))
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:EachRow}}}; info) =
+    _is_view_construction(x.args[1]) ? stan_call(builtin.rows, _view_mat(x.args[1])) : fold_shape_query(stan_expr(x))
+# `EachCol(X).X` / `EachRow(X).X` → the captured matrix (construction case).
+expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:EachCol},<:StanExpr2{<:types.int}}}; info) =
+    _is_view_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:EachRow},<:StanExpr2{<:types.int}}}; info) =
+    _is_view_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
 
 # --- Sized-token rng overloads (generated via @eval @deffun) -----------------
 # gq `x::T[n] ~ dist(args...)` synthesizes `dist_rng(T[n], args...)` which
@@ -897,6 +1120,12 @@ end
 # binomial: N::int[n] is already a container, so Stan broadcasts scalar p natively
 @deffun binomial_rng(int[n], N::int[n], p)::int[n] = binomial_rng(N, p)
 
+# The native GLM RNG already returns one integer per design-matrix row. The
+# generated-quantities path also passes the observed int-array's sized token;
+# unwrap that token while asserting the output and matrix row counts agree.
+@deffun bernoulli_logit_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] =
+    bernoulli_logit_glm_rng(X, alpha, beta)
+
 # binomial_logit: Stan ships `binomial_logit_lpmf` but NOT a matching
 # `binomial_logit_rng` (only the GLM-flavoured variant exists). Lower
 # the token-path call to `binomial_rng(N, inv_logit(eta))` so SBBRMI's
@@ -930,6 +1159,14 @@ end
 # multi_normal / multi_normal_cholesky: native already returns vector[n]
 @deffun multi_normal_rng(vector[n], loc::vector[n], cov)::vector[n]          = multi_normal_rng(loc, cov)
 @deffun multi_normal_cholesky_rng(vector[n], loc::vector[n], scale)::vector[n] = multi_normal_cholesky_rng(loc, scale)
+
+# lkj_corr_cholesky: the gq token carries the DECLARED constrained shape
+# (`tokenof{cholesky_factor_corr}` sized `(n,)` — `r_ndim(square_matrix) == 1`),
+# so the sized-token slot is written `cholesky_factor_corr[n]`, not
+# `matrix[n,n]`. Delegates to the native 2-arg form, whose first argument is the
+# DIMENSION (an int), not a container — hence `n` rather than the token.
+@deffun lkj_corr_cholesky_rng(cholesky_factor_corr[n], eta::real)::matrix[n,n] =
+    lkj_corr_cholesky_rng(n, eta)
 
 # =============================================================================
 # bordet (generable) longitudinal-biomarker model-family port.
@@ -969,12 +1206,17 @@ end
     # `obs ~ truncated_normal(loc, scale, lloq, uloq)` sampling.
     @lhs truncated_normal_lpdf(obs::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::real =
         sum(truncated_normal_lpdfs(obs, loc, scale, lloq, uloq))
-    # Posterior-predictive draw: sample then clamp into [lloq, uloq].
+    # Posterior-predictive draw: sample then clamp into [lloq, uloq]. Per-element
+    # `normal_rng(loc[i], scale[i])` (not the whole-vector `to_vector(normal_rng(loc,
+    # scale))`): the vector rng infers its size from `scale` (`dims(scale)[1]`), which
+    # the typed-assignment shape check cannot equate to the signature `n` (recorded
+    # only against the FIRST `vector[n]` arg `loc`; functions.jl `fun_size_aliases`),
+    # so `draws::vector[n] = to_vector(normal_rng(loc, scale))` fails to transpile.
+    # The scalar per-element draw sidesteps the gap and matches the `_lpdfs` idiom.
     truncated_normal_rng(loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
-        draws::vector[n] = to_vector(normal_rng(loc, scale))
         rv::vector[n]
         for i in 1:n
-            rv[i] = fmin(fmax(lloq[i], draws[i]), uloq[i])
+            rv[i] = fmin(fmax(lloq[i], normal_rng(loc[i], scale[i])), uloq[i])
         end
         rv
     end
@@ -1013,12 +1255,14 @@ end
     # `obs ~ truncated_student_t(dof, loc, scale, lloq, uloq)` sampling.
     @lhs truncated_student_t_lpdf(obs::vector[n], dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::real =
         sum(truncated_student_t_lpdfs(obs, dof, loc, scale, lloq, uloq))
-    # Posterior-predictive draw: sample then clamp into [lloq, uloq].
+    # Posterior-predictive draw: sample then clamp into [lloq, uloq]. Per-element
+    # `student_t_rng(dof[i], loc[i], scale[i])` for the same size-alias reason as
+    # `truncated_normal_rng` above (the whole-vector rng infers `dims(scale)[1]`,
+    # unequatable to the signature `n`).
     truncated_student_t_rng(dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
-        draws::vector[n] = to_vector(student_t_rng(dof, loc, scale))
         rv::vector[n]
         for i in 1:n
-            rv[i] = fmin(fmax(lloq[i], draws[i]), uloq[i])
+            rv[i] = fmin(fmax(lloq[i], student_t_rng(dof[i], loc[i], scale[i])), uloq[i])
         end
         rv
     end
@@ -1065,6 +1309,24 @@ end
         rv::vector[n]
         for i in 1:n
             rv[i] = x[i] > y
+        end
+        rv
+    end
+    # True-positions of a 0/1 integer mask, à la Julia's `findall(mask)`. Returns
+    # the 1-based indices where `m[i] != 0` as a data-sized `int[sum(m)]` array —
+    # so `idx = findall(cmt .== 1)` materialises a transformed-data integer index
+    # column ONCE (`cmt` is data), and both `y[idx]` and `mu[idx]` share it at zero
+    # runtime/gradient cost. Boolean-mask indexing (which Stan lacks) is thus
+    # expressed as ordinary integer-array indexing over a precomputed index.
+    Base.findall(m::int[n])::int[sum(m)] = begin
+        k = sum(m)
+        rv::int[k]
+        j = 1
+        for i in 1:n
+            if m[i] != 0
+                rv[j] = i
+                j += 1
+            end
         end
         rv
     end
@@ -1371,7 +1633,11 @@ end
         (vector[n], ) => real
     end
     Union{typeof.((|, &, ==, !=, <, <=, >, >=))...} => begin
-        (anything, anything) => int
+        # Boolean-valued: `bool` (a subtype of `int`, so still an int everywhere
+        # except that a `bool[n]` result used as a `getindex` argument means a
+        # boolean mask). A scalar comparison stays semantically an int (renders as
+        # `int`), so nothing downstream changes except mask-shaped indexing.
+        (anything, anything) => bool
     end
     # step: Base.step is exported; Stan's step(real)->int dispatches on it
     typeof(step) => begin
@@ -1472,6 +1738,25 @@ tracetype(x::CanonicalExpr{<:ODESolver}) = StanType(
     types.vector, (stan_size(x.args[4], 1), stan_size(x.args[2], 1))
 )
 
+# ── Torsten `pmx_solve_*` analytical (closed-form) PK solvers ──
+# Torsten (metrumresearchgroup/Torsten) extends Stan — a pmx-aware stanc3 fork plus
+# a `torsten_math` submodule — with NONMEM-style event-schedule solvers. The
+# analytical compartment models take the event arrays
+#   time, amt, rate, ii  :: array[] real     (AutoDiffable)
+#   evid, cmt, addl, ss   :: array[] int      (data)
+# followed by the PK parameters `theta` (+ optional biovar/tlag), and return a
+# `matrix[nCmt, nEvent]` of per-compartment amounts at each event. nCmt is fixed
+# per model (onecpt = depot+central = 2; twocpt = +peripheral = 3); nEvent is the
+# leading dim of the first argument (`time`) — the same shape-from-an-argument
+# pattern as the native `ODESolver` tracetype above. `func_name(x::Function)`
+# emits the bare Stan name and the generic `CanonicalExpr` show renders the
+# positional call, so only the return-type tracetype is needed (no show method).
+_pmx_solve_tracetype(x, ncmt) = StanType(
+    types.matrix, (stan_expr(ncmt, ncmt), stan_size(x.args[1], 1))
+)
+tracetype(x::CanonicalExpr{typeof(pmx_solve_onecpt)}) = _pmx_solve_tracetype(x, 2)
+tracetype(x::CanonicalExpr{typeof(pmx_solve_twocpt)}) = _pmx_solve_tracetype(x, 3)
+
 # ── Generalised `jbroadcasted(f, a1, …, ak)` — trace-level element loop ──
 # Applies `f` element-wise over its iterated args (any arity, any position):
 # iterated args (anything with a leading dimension — `vector`/`row_vector`,
@@ -1494,7 +1779,10 @@ _jb_infer(x::CanonicalExpr) = begin
     n = stan_size(type(dargs[ai]), 1)
     elem_rt = type(stan_expr(CanonicalExpr(f, map(_jb_elem, dargs)...)))
     stan_ndim(elem_rt) == 0 || error("jbroadcasted: `f` must return a scalar per element (got `$(sigtype(elem_rt))`)")
-    container = center_type(elem_rt) <: types.int ? types.int : types.vector
+    # Preserve the exact int-family element center type: `int` stays `array[] int`
+    # and `bool` (a comparison result) stays `array[] bool` (a mask), so
+    # `cmt .== 1` is boolean-mask-indexable; a `real` element → `vector[n]`.
+    container = center_type(elem_rt) <: types.int ? center_type(elem_rt) : types.vector
     (; f, dargs, ai, n, container)
 end
 tracetype(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
@@ -1508,7 +1796,9 @@ fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
     f_ph = anon_expr(:f, inf.f)
     arg_phs = [anon_expr(argnames[i], inf.dargs[i]) for i in 1:k]
     n_expr = StanExpr(:n, StanType(types.int, ()))
-    container_sym = inf.container === types.int ? :int : :vector
+    # `nameof` gives the parseable type-token symbol for the body decl / return:
+    # `:int`, `:vector`, or `:bool` (which renders as `int`). All are valid tokens.
+    container_sym = nameof(inf.container)
     slices = [:($broadcasted_getindex($(argnames[j]), i)) for j in 1:k]
     body_ast = Expr(:block,
         :(rv :: $container_sym[n]),

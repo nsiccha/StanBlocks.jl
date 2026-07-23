@@ -13,7 +13,12 @@ makedocs(
     format   = DocumenterVitepress.MarkdownVitepress(
         repo = "github.com/nsiccha/StanBlocks.jl",
         devurl = "dev",
-        devbranch = "dev",
+        # `devurl` is the URL PATH (`gh-pages/dev/`, which the root redirect
+        # points at); `devbranch` is the git branch that deploys there. Only the
+        # latter moves: `dev` had fallen 217 commits behind `devibe`, so the
+        # published docs were stale by that much while the URL stayed correct.
+        # Decision `0xyqj00`.
+        devbranch = "devibe",
     ),
     pages = [
         "Home"      => "index.md",
@@ -36,6 +41,6 @@ end
 
 DocumenterVitepress.deploydocs(
     repo = "github.com/nsiccha/StanBlocks.jl",
-    devbranch = "dev",
+    devbranch = "devibe",
     push_preview = true,
 )

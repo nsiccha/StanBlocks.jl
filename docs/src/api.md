@@ -25,6 +25,7 @@ StanBlocks.@stan_assert
 ## Model Inspection and Compilation
 
 ```@docs
+StanBlocks.return_type_of
 StanBlocks.stan_code
 StanBlocks.stan_model
 StanBlocks.stan_instantiate

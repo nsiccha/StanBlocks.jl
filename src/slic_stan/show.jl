@@ -61,8 +61,15 @@ end
 Base.show(io::StanIO, x::StanExpr) = _show_stan_expr(io, type(x), x)
 _show_stan_expr(io, ::StringStanType, x) = print(io, expr(x), "::", type(x))
 _show_stan_expr(io, _t, x) = print(io, expr(x))
-# String-literal StanExprs render as a quoted Stan string.
-Base.show(io::StanIO, x::StanExpr{<:AbstractString}) = print(io, '"', expr(x), '"')
+# A String-valued StanExpr is one of two things, discriminated by its center
+# type. A MESSAGE literal (reject/print — center `anything`) renders QUOTED.
+# A raw-Stan-code SIZE fragment (center `int` — an @deffun arg-placeholder
+# `dims(a)[1]` from `anon_expr`, or a sized-token dim `name.i`) renders
+# UNQUOTED: it is a Stan expression, and a quoted string in a `vector[...]`
+# size position is invalid Stan (the inferred whole-vector-local snag —
+# primer §180.2 / stanblocks-use §5).
+Base.show(io::StanIO, x::StanExpr{<:AbstractString}) =
+    center_type(x) <: types.int ? print(io, expr(x)) : print(io, '"', expr(x), '"')
 # Sized type tokens render as Stan tuple literals at the call site. 0-dim
 # tokens are always_inline'd away, so no call-site form is needed for them.
 # 1-dim tokens render as a bare int (Stan has no 1-element tuple type).
@@ -102,7 +109,8 @@ constraints(x::StanType) = (;[
     for key in (:lower, :upper, :offset, :multiplier) if key in keys(info(x))
 ]...)
 Base.show(io::IO, x::StanExpr) = print(io, expr(x), "::", type(x))
-Base.show(io::IO, x::StanType) = begin 
+Base.show(io::IO, x::StanType) = show(StanIO(io), x)
+Base.show(io::StanIO, x::StanType) = begin
     l, r = lr_size(x)
     length(l) > 0 && autoprint(io, "array[", Join(l, ", "), "] ")
     print(io, center_type(x))
@@ -110,7 +118,8 @@ Base.show(io::IO, x::StanType) = begin
     length(cons) > 0 && autoprint(io, "<", Join(map((k,v)->Join((k,v), "="), keys(cons), values(cons)), ", "), ">")
     length(r) > 0 && autoprint(io, "[", Join(r, ", "), "]")
 end
-Base.show(io::IO, x::StanType{<:types.tup}) = begin 
+Base.show(io::IO, x::StanType{<:types.tup}) = show(StanIO(io), x)
+Base.show(io::StanIO, x::StanType{<:types.tup}) = begin
     stan_ndim(x) > 0 && autoprint(io, "array[", Join(stan_size(x), ", "), "] ")
     autoprint(io, "tuple(", Join(x.info.arg_types, ", ") , ")")
 end

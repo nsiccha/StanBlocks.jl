@@ -84,6 +84,9 @@ GetPropertyExpr{T} = CanonicalExprV{:.,T}
 BracesExpr{T} = CanonicalExprV{:braces,T} 
 VectExpr{T} = CanonicalExprV{:vect,T} 
 DeclExpr{T} = CanonicalExprV{:(::),T} 
+ComprehensionExpr{T} = CanonicalExprV{:comprehension,T}
+GeneratorExpr{T} = CanonicalExprV{:generator,T}
+FilterExpr{T} = CanonicalExprV{:filter,T}
 ForExpr{T} = CanonicalExprV{:for,T}
 WhileExpr{T} = CanonicalExprV{:while,T}
 ColonExpr{T} = CanonicalExprV{:(:),T}
@@ -306,4 +309,7 @@ to_ragged(x::AbstractVector{<:AbstractVector{T}}) where {T<:Real} = (;
     mem=reduce(vcat, x; init=T[]),
     ends=cumsum(length.(x)),
 )
-stan_type(expr, value::AbstractVector{<:AbstractVector{<:Real}}; kwargs...) = stan_type(expr, to_ragged(value); kwargs...)
+# `stan_type(expr, ::AbstractVector{<:AbstractVector{<:Real}})` — ragged DATA ingest —
+# lives in `builtin.jl` (after `RaggedVector` is defined), minting a nominal
+# `RaggedVector` so ragged data is a first-class indexable container everywhere
+# (decision 2026-07-17T00-14-01-598-1g0cf6y, approach B). `to_ragged` stays here.

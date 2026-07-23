@@ -97,6 +97,12 @@ A bare typed declaration is also a parameter declaration with no prior:
 end
 ```
 
+This form is model/sub-model syntax: the declaration goes directly into Stan's
+`parameters` block and contributes no density statement. A bare declaration inside
+an `@deffun` remains an ordinary function-local declaration. Use `~ flat(...)` when
+the distribution call must carry `lower`, `upper`, `offset`, or `multiplier` kwargs;
+the bare form has no RHS from which to obtain those constraints.
+
 Model-body indexed assignment remains unavailable to user code: do not follow a
 bare declaration with `beta[i] = ...`. Compiler-owned inline/plate lowering may
 use certified indexed fills internally; those are reclassified as transformed
@@ -195,8 +201,10 @@ body that directly calls an unsupported probability, RNG, ODE, or `reduce_sum`
 primitive errors at expansion with a pointer to `@stanonly`; full runtime parity
 for those Stan facilities is not part of this compatibility layer.
 
-Bodies may use `for`/`while`/nested `if`, mutation, and comprehensions for both
-targets. The body is also transpiled to Stan.
+Bodies may use `for`/`while`/nested `if`, mutation, index or value iteration,
+`enumerate`/`zip`, one-line nested loops, and rectangular comprehensions with at
+most two axes. Filtered, stepped, flattened-ragged, and three-or-more-dimensional
+comprehensions reject explicitly. The body is also transpiled to Stan.
 
 UDF bodies must not contain `~` sampling statements or `target +=` increments — UDFs cannot introduce parameters or directly manipulate the log density. The macro errors at expansion time if either is found.
 
@@ -247,6 +255,40 @@ Underscored names mean "I take this argument but ignore the value, just use its 
 ```julia
 @deffun pad_zero(_::vector[n])::vector[n+1] = append_row(rep_vector(0., n), 0.)
 ```
+
+### Transpile-time return-type queries
+
+`return_type_of(f, args...)` exposes the same inference table the transpiler
+uses for calls to non-inline `@deffun` functions and `@defsig`-registered
+callables. With representative Julia values it returns a printable `StanType`:
+
+```julia
+@deffun identity_vec(x::vector[n])::vector[n] = x
+
+return_type_of(identity_vec, [1.0, 2.0, 3.0])  # vector[3]
+```
+
+Inside an `@deffun` body the query is a compile-time type token, so it can drive
+a computed declaration without emitting a Stan call:
+
+```julia
+@deffun element_type(x::real)::real = x
+@deffun copy_vec(x::vector[n]) = begin
+    out::return_type_of(element_type, x[1])[n]
+    for i in 1:n
+        out[i] = x[i]
+    end
+    out
+end
+```
+
+The public contract currently covers scalar and sized-container results.
+Inline functions, closures, `@slic` sub-models, arbitrary Julia functions, and
+tuple/user-defined-type results need a full call-site trace and fail with an
+explicit error rather than returning `anything`.
+Within a UDF, write already-bound symbolic output dimensions explicitly as
+`return_type_of(f, x)[n]`; this keeps the declaration tied to the surrounding
+signature's shape names.
 
 ### `_lpdf` / `_lpmf` / `_lcdf` / `_lccdf` companions
 
