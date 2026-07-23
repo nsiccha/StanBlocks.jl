@@ -11,7 +11,7 @@ slic_implementation(posterior::PosteriorDB.Posterior) = slic_implementation(
     Dict([Symbol(k)=>v for (k, v) in pairs(PosteriorDB.load(PosteriorDB.dataset(posterior)))])...
 )
 
-@deffun begin
+@deffun @stanonly begin
     @lpxf garch11_lpdf(y::anything[T], mu::real, alpha0::real, alpha1::real, beta1::real, sigma1::real)::real = begin
         sigma_vec::real[T]
         sigma_vec[1] = sigma1
@@ -33,7 +33,7 @@ slic_implementation(posterior::PosteriorDB.Posterior) = slic_implementation(
         rep_vector(garch11_rng(mu, alpha0, alpha1, beta1, sigma1)[1], T)
 end
 
-@deffun begin
+@deffun @stanonly begin
     @lpxf arma11_lpdf(y::anything[T], mu::real, phi::real, theta_ma::real, sigma::real)::real = begin
         nu_vec::real[T]
         err_vec::real[T]
@@ -58,7 +58,7 @@ end
         rep_vector(arma11_rng(mu, phi, theta_ma, sigma)[1], T)
 end
 
-@deffun begin
+@deffun @stanonly begin
     @lpxf gauss_mix2_lpdf(obs::anything[n], theta::real, mu1::real, mu2::real, sig1::real, sig2::real)::real = begin
         rv = 0.
         for i in 1:n
@@ -75,7 +75,7 @@ end
         rep_vector(gauss_mix2_rng(theta, mu1, mu2, sig1, sig2)[1], n)
 end
 
-@deffun begin
+@deffun @stanonly begin
     @lpxf car_normal_lpdf(phi::vector[N], node1::int[M], node2::int[M])::real =
         -0.5 * dot_self(phi[node1] - phi[node2])
     car_normal_lpdfs(phi::vector[N], node1::int[M], node2::int[M])::real =

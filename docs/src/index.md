@@ -173,12 +173,43 @@ You can additionally pass `n=…` or `m=…, n=…` on any prior to make the par
 
 ## User-defined functions with `@deffun`
 
-`@deffun` registers a Stan-compatible function with type-annotated arguments. Its body is real Julia and may use `for`/`while`/`if`. It also supports bounded one-dimensional comprehensions of the form `[scalar_expr for i in lo:hi]`; these lower to a typed local plus a Stan `for` loop. Multiple or nested generators, filters, arbitrary iterables, stepped ranges, and non-scalar elements are rejected explicitly. The body is transpiled to Stan.
+`@deffun` registers a Stan-compatible function with type-annotated arguments.
+An eligible bodyful, bare-symbol definition emits **both** one callable Julia
+method and the existing Stan function by default. The Julia method comes from
+the original user-facing definition exactly once, so defaults and kwargs keep
+ordinary Julia behaviour while internal SLIC trampolines remain compiler-only.
+
+The Julia target is deliberately deterministic and bounded. It supports scalar,
+vector, matrix, and scalar-array signatures; symbolic dimensions (with
+`DimensionMismatch` checks); typed local allocations; loops, branches,
+mutation, nested deterministic calls, higher-order functions, and varargs. A
+small internal compatibility dispatch supplies Stan spellings such as
+`log_inv_logit`, `rep_vector`, `dims`, and array-valued unary math without type
+piracy. Distinct SLIC overloads that collapse to the same Julia container
+signature error instead of silently overwriting a method.
+
+Use `@stanonly` for an intentionally Stan-only body:
+
+```julia
+@deffun @stanonly my_normal_rng(mu::real, sigma::real)::real = normal_rng(mu, sigma)
+```
+
+`@stanonly` may wrap one definition or a `begin ... end` group. Signature-only
+stubs, bare type-token/compiler-glue forms, and qualified or pre-existing
+function extensions skip Julia emission automatically. An otherwise eligible
+body that directly calls an unsupported probability, RNG, ODE, or `reduce_sum`
+primitive errors at expansion with a pointer to `@stanonly`; full runtime parity
+for those Stan facilities is not part of this compatibility layer.
+
+Bodies may use `for`/`while`/nested `if`, mutation, index or value iteration,
+`enumerate`/`zip`, one-line nested loops, and rectangular comprehensions with at
+most two axes. Filtered, stepped, flattened-ragged, and three-or-more-dimensional
+comprehensions reject explicitly. The body is also transpiled to Stan.
 
 UDF bodies must not contain `~` sampling statements or `target +=` increments — UDFs cannot introduce parameters or directly manipulate the log density. The macro errors at expansion time if either is found.
 
 ```julia
-@deffun garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
+@deffun @stanonly garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
     sigma2 = alpha0
     rv = 0.
     for t in 1:T
@@ -267,8 +298,8 @@ For functions whose name ends in one of `_lpdf` / `_lpmf` / `_lcdf` / `_lccdf`:
 - companion `_lpdfs` / `_lpmfs` / `_lcdfs` / `_lccdfs` (pointwise) and `_rng` (predictive) stubs are generated automatically and used by [posterior pointwise likelihood / predictive generation](#posterior-pointwise-likelihood-and-predictive-draws)
 
 ```julia
-@deffun my_normal_lpdf(y, mu, sigma) = normal_lpdf(y, mu, sigma)
-@deffun my_normal_rng(mu, sigma)::real = normal_rng(mu, sigma)
+@deffun @stanonly my_normal_lpdf(y, mu, sigma) = normal_lpdf(y, mu, sigma)
+@deffun @stanonly my_normal_rng(mu, sigma)::real = normal_rng(mu, sigma)
 ```
 
 ### Variadic and higher-order functions

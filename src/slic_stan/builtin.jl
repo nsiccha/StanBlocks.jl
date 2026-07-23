@@ -243,13 +243,13 @@ import Statistics
 @deffun begin 
     reduce_sum(args...)::real
     reduce_sum_static(args...)::real
-    simple_reduce_sum(f, x, args...)::real = reduce_sum(simple_reduce_sum_helper, x, 1, f, args...)
+    @stanonly simple_reduce_sum(f, x, args...)::real = reduce_sum(simple_reduce_sum_helper, x, 1, f, args...)
     # Stan's `reduce_sum` only accepts `T[]` arrays as its data argument, not
     # `vector` (or its `simplex`/`ordered`/`positive_ordered` subtypes, or
     # `row_vector`). Auto-convert via `to_array_1d` so users can call
     # `simple_reduce_sum(f, ::any_vector, ...)` directly. `any_vector` covers
     # all 1-d vector-like Stan types in the SLIC hierarchy.
-    simple_reduce_sum(f, x::any_vector[n], args...)::real = reduce_sum(simple_reduce_sum_helper, to_array_1d(x), 1, f, args...)
+    @stanonly simple_reduce_sum(f, x::any_vector[n], args...)::real = reduce_sum(simple_reduce_sum_helper, to_array_1d(x), 1, f, args...)
     simple_reduce_sum_helper(x_slice::anything[n], slice_start, slice_end, f, args...)::real = begin 
         rv = 0.
         for i in 1:n
@@ -301,7 +301,7 @@ import Statistics
     mdivide_left_tri_low(::matrix[m,m], ::matrix[m,n])::matrix[m,n]
     linspaced_array(n, x, y)::real[n]
     linspaced_int_array(n, args...)::int[n]
-    robust_linspaced_int_array(n, args...)::int[n] = if n == 0
+    @stanonly robust_linspaced_int_array(n, args...)::int[n] = if n == 0
         rv::int[n]
         rv 
     else
@@ -338,9 +338,9 @@ import Statistics
     # `real dummy_lpdf(<y>, <args>) { return 0.; }` per call-site signature, so
     # the native `y ~ dummy(args...);` resolves. `dummy_lpdfs` is the gq
     # pointwise-likelihood term, `dummy_rng` the gq draw — both trivially 0.
-    dummy_lpdf(y, args...) = 0.
-    dummy_lpdfs(y, args...) = 0.
-    dummy_rng(args...) = 0.
+    @stanonly dummy_lpdf(y, args...) = 0.
+    @stanonly dummy_lpdfs(y, args...) = 0.
+    @stanonly dummy_rng(args...) = 0.
     std_normal_lpdf(args...)
     normal_lpdf(args...)
     student_t_lpdf(args...)
@@ -386,13 +386,13 @@ import Statistics
     bernoulli_logit_rng(::real)::int
     bernoulli_logit_rng(::vector[n])::int[n]
     bernoulli_logit_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
-    bernoulli_logit_glm_rng(X::matrix[m,n], alpha::real, beta) = bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta)
+    @stanonly bernoulli_logit_glm_rng(X::matrix[m,n], alpha::real, beta) = bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta)
     normal_id_glm_rng(X::matrix[m,n], alpha, beta, sigma)::vector[m]
-    normal_id_glm_rng(X::matrix[m,n], alpha::real, beta, sigma) = normal_id_glm_rng(X, rep_vector(alpha, m), beta, sigma)
+    @stanonly normal_id_glm_rng(X::matrix[m,n], alpha::real, beta, sigma) = normal_id_glm_rng(X, rep_vector(alpha, m), beta, sigma)
     poisson_log_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
-    poisson_log_glm_rng(X::matrix[m,n], alpha::real, beta) = poisson_log_glm_rng(X, rep_vector(alpha, m), beta)
+    @stanonly poisson_log_glm_rng(X::matrix[m,n], alpha::real, beta) = poisson_log_glm_rng(X, rep_vector(alpha, m), beta)
     neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha, beta, phi)::int[m]
-    neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::real, beta, phi) = neg_binomial_2_log_glm_rng(X, rep_vector(alpha, m), beta, phi)
+    @stanonly neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::real, beta, phi) = neg_binomial_2_log_glm_rng(X, rep_vector(alpha, m), beta, phi)
     beta_rng(args...)::real
     binomial_rng(args...)::int
     binomial_logit_rng(n::int[m], p::vector[m])::int[m]
@@ -403,6 +403,7 @@ import Statistics
     # fundef below, not a fixed-arity @deffun): arbitrary arity, any array-arg
     # positions, and an INFERRED output container (int element → array[] int,
     # real element → vector[n]). Its Stan function is generated per call shape.
+    @stanonly begin
     vector_std_normal_rng(n::int)::vector[n] = to_vector(normal_rng(rep_vector(0, n), 1))
     # Sized-token rng overloads are generated via `@eval @deffun` loops below
     # (after the block closes). See comment at the @eval block.
@@ -476,6 +477,7 @@ import Statistics
     end
     ordered_logistic_rng(int[n], eta::vector[n], c::vector[m])::int[n] = ordered_logistic_rng(eta, c)
     vector_exponential_rng(rate::real, n::int)::vector[n] = exponential_rng(rep_vector(rate, n))
+    end
     # Stan's `lkj_corr_cholesky_rng(int K, real eta)` returns a K×K Cholesky
     # factor. WITHOUT the `::matrix[n,n]` the tracetype is `anything`, so the
     # auto-GQ redraw of a cv-tainted `L::cholesky_factor_corr[K] ~
@@ -734,8 +736,8 @@ for (base, params) in (
     (:student_t_lpdf, (:nu, :loc, :scale)),
 )
     lpdfs = Symbol(base, :s)
-    @eval @deffun $lpdfs(args...) = $base(args...)
-    @eval @deffun $lpdfs(obs::anything[n], $(params...)) = jbroadcasted($lpdfs, obs, $(params...))
+    @eval @deffun @stanonly $lpdfs(args...) = $base(args...)
+    @eval @deffun @stanonly $lpdfs(obs::anything[n], $(params...)) = jbroadcasted($lpdfs, obs, $(params...))
 end
 
 # --- Ragged vector/matrix usertypes + Julia-dispatched accessors -------------
@@ -1175,6 +1177,7 @@ end
 # =============================================================================
 @deffun begin
     # --- censored-normal observation model (limits of quantification) --------
+    @stanonly begin
     # Scalar form: obs at/below the lower LOQ contributes the left-tail mass
     # (`normal_lcdf`), at/above the upper LOQ the right-tail mass
     # (`normal_lccdf`), otherwise the usual density. Indexed-accumulator idiom
@@ -1267,6 +1270,7 @@ end
     # Bare `vector[n]` (no `::`) is the token slot, matching the tokenof shape.
     truncated_student_t_rng(vector[n], dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] =
         truncated_student_t_rng(dof, loc, scale, lloq, uloq)
+    end
 
     # --- parametric mean kernels (per-observation; BRM does the [series] index) ---
     # Single-peak time response: with xi = (log t - loc)*exp(log_slope), the
