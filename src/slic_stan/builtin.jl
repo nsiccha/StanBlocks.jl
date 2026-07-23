@@ -1207,12 +1207,15 @@ end
     @lhs truncated_normal_lpdf(obs::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::real =
         sum(truncated_normal_lpdfs(obs, loc, scale, lloq, uloq))
     # Posterior-predictive draw: sample then clamp into [lloq, uloq]. Per-element
-    # `normal_rng(loc[i], scale[i])` (not the whole-vector `to_vector(normal_rng(loc,
-    # scale))`): the vector rng infers its size from `scale` (`dims(scale)[1]`), which
-    # the typed-assignment shape check cannot equate to the signature `n` (recorded
-    # only against the FIRST `vector[n]` arg `loc`; functions.jl `fun_size_aliases`),
-    # so `draws::vector[n] = to_vector(normal_rng(loc, scale))` fails to transpile.
-    # The scalar per-element draw sidesteps the gap and matches the `_lpdfs` idiom.
+    # `normal_rng(loc[i], scale[i])`, matching the `_lpdfs` loop idiom right above.
+    # HISTORY: this form was originally FORCED — the whole-vector
+    # `draws::vector[n] = to_vector(normal_rng(loc, scale))` infers its size from
+    # `scale` (`dims(scale)[1]`), and the signature-dimension alias table recorded
+    # `n` only against the FIRST `vector[n]` arg `loc`, so the typed-assignment
+    # shape check threw. That gap is CLOSED (functions.jl `fun_size_alias_names`
+    # now records every guarded occurrence), so the whole-vector form transpiles
+    # too; the per-element draw is kept because it is correct Stan, costs nothing,
+    # and reads like its `_lpdfs` sibling.
     truncated_normal_rng(loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
         rv::vector[n]
         for i in 1:n
@@ -1256,9 +1259,9 @@ end
     @lhs truncated_student_t_lpdf(obs::vector[n], dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::real =
         sum(truncated_student_t_lpdfs(obs, dof, loc, scale, lloq, uloq))
     # Posterior-predictive draw: sample then clamp into [lloq, uloq]. Per-element
-    # `student_t_rng(dof[i], loc[i], scale[i])` for the same size-alias reason as
-    # `truncated_normal_rng` above (the whole-vector rng infers `dims(scale)[1]`,
-    # unequatable to the signature `n`).
+    # `student_t_rng(dof[i], loc[i], scale[i])`, same rationale as
+    # `truncated_normal_rng` above (originally forced by the size-alias gap, now
+    # kept for symmetry with the `_lpdfs` loop).
     truncated_student_t_rng(dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
         rv::vector[n]
         for i in 1:n

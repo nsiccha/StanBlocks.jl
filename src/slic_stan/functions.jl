@@ -1338,7 +1338,25 @@ begin
         # `dims(x)[1]` are distinct syntax even though the function preamble
         # explicitly equates them; typed-assignment validation needs that
         # relationship to compare shapes accurately.
-        fun_size_aliases = OrderedDict{Symbol,String}()
+        #
+        # The table is keyed by the ACCESS EXPRESSION and maps back to the
+        # canonical dimension name, because the relation is many-to-one: for
+        # `f(loc::vector[n], scale::vector[n])` BOTH `dims(loc)[1]` and
+        # `dims(scale)[1]` ARE `n`. A `dim_name => access` map can only hold
+        # one of them, which made a size inferred from a NON-FIRST argument
+        # unequatable to the signature symbol — `draws::vector[n] = <RHS sized
+        # off scale>` threw outright.
+        #
+        # Every entry is backed by the emitted Stan, so the compile-time
+        # equality never outruns what Stan enforces: the FIRST occurrence of a
+        # dim is its defining binding (`int n = dims(loc)[1];`, below), and each
+        # SUBSEQUENT non-token occurrence is guarded by the runtime `reject`
+        # pushed below. Token args are deliberately excluded from the subsequent
+        # case (they skip that check — `tok && continue`), so nothing there is
+        # aliased on an unchecked assumption.
+        #
+        # Keys are `Symbol(access)` so the frozen table can be a NamedTuple.
+        fun_size_alias_names = OrderedDict{Symbol,Symbol}()
         # When a dim name appears in multiple args (e.g.
         # `f(x::vector[n], y::vector[n])`), the first occurrence binds it
         # via `int n = dims(x)[1];` and each subsequent occurrence becomes
@@ -1356,6 +1374,8 @@ begin
                     tok && continue
                     push!(required_fun_sizes, dim_name)
                     access = string("dims(", arg_name, ")[", i, "]")
+                    # Sound because of the `reject` emitted immediately below.
+                    fun_size_alias_names[Symbol(access)] = dim_name
                     msg = string("\"", f, ": dim mismatch — `", arg_name,
                                  "` dim ", i, " (= \", ", access,
                                  ", \") does not match `", dim_name, "` (= \", ", dim_name, ", \")\"")
@@ -1369,7 +1389,7 @@ begin
                     else
                         string("dims(", arg_name, ")[", i, "]")
                     end
-                    fun_size_aliases[dim_name] = access
+                    fun_size_alias_names[Symbol(access)] = dim_name
                     fun_size_candidates[dim_name] = "int $dim_name = $access;"
                 end
             end
@@ -1395,11 +1415,11 @@ begin
             ]..., 
             :(info = (;$(sig_names...), $(keys(fun_sizes)...),))
         )
-        size_aliases = (; fun_size_aliases...)
+        size_aliases = (; fun_size_alias_names...)
         anon_deconstruct = Expr(
-            :block, 
-            deconstruct.args..., 
-            :(info = merge($anon_info(info), (; __size_aliases__ = $size_aliases))),
+            :block,
+            deconstruct.args...,
+            :(info = merge($anon_info(info), (; __size_alias_names__ = $size_aliases))),
             :((;$(sig_names...), $(keys(fun_sizes)...),) = info),
             :(info = $OrderedDict{Symbol,Any}(pairs(info)))
         )
