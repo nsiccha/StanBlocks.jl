@@ -65,8 +65,10 @@ Features which I am on the fence about, but currently not planning to implement:
 Bodyful, bare-symbol `@deffun` definitions do have a bounded Julia target:
 eligible deterministic definitions install one callable Julia method from the
 original user-facing signature while retaining the same Stan lowering. Use
-`@stanonly` for intentionally Stan-only bodies. Signature-only/type-token glue
-and qualified existing-function extensions skip Julia emission automatically.
+`@stanonly` for intentionally Stan-only bodies. Signature-only/type-token glue,
+qualified existing-function extensions, and probability/RNG/ODE-family
+definitions (`*_lpdf`, `*_lpmf`, `*_rng`, `ode_*`, …) skip Julia emission
+automatically.
 
 Features which are **NOT** planned:
 

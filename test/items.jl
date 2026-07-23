@@ -1114,6 +1114,47 @@ end
         out
     end
 
+    # Probability-family definitions auto-skip the Julia target by name, so a
+    # downstream `@deffun` that calls probability primitives loads unannotated.
+    # Shape mirrors the zero-inflated Poisson family that BRM ships.
+    @deffun begin
+        @lpxf julia_zip_lpmf(y::int, lambda::real, zi::real)::real = begin
+            if y == 0
+                log_sum_exp(log(zi), log1m(zi) + poisson_lpmf(0::int, lambda))
+            else
+                log1m(zi) + poisson_lpmf(y, lambda)
+            end
+        end
+        julia_zip_lpmf(y::int[n], lambda::vector[n], zi::vector[n])::real = begin
+            rv = 0.
+            for i in 1:n
+                rv += julia_zip_lpmf(y[i], lambda[i], zi[i])::real
+            end
+            rv
+        end
+        julia_zip_lpmfs(y::int[n], lambda, zi) = begin
+            rv::vector[n]
+            for i in 1:n
+                rv[i] = julia_zip_lpmf(y[i], lambda[i], zi[i])
+            end
+            rv
+        end
+        # Sized-token `_rng` companion for the auto-generated predictive draw.
+        # Already auto-skipped via the type token; the `_rng` name now says so
+        # independently.
+        julia_zip_rng(int[n], lambda::vector[n], zi::vector[n])::int[n] = begin
+            rv::int[n]
+            for i in 1:n
+                if bernoulli_rng(zi[i]) == 1
+                    rv[i] = 0
+                else
+                    rv[i] = poisson_rng(lambda[i])
+                end
+            end
+            rv
+        end
+    end
+
     existing_julia_function(x::AbstractString) = length(x)
     @deffun existing_julia_function(x::real)::real = x
 
@@ -1179,10 +1220,13 @@ Verify bounded default Julia emission from `@deffun` in an isolated test item.
     @test occursin("Julia emission collision", sprint(showerror, collision))
     @test occursin("@stanonly", sprint(showerror, collision))
 
+    # A *deterministically named* definition that reaches for a probability
+    # primitive still errors: the name says it was meant to be callable, so a
+    # silent skip would hide the mistake.
     unsupported = try
         Core.eval(
             julia_emission_fixture_module,
-            :(@deffun julia_bad_rng(x::real)::real = normal_rng(x, 1.0)),
+            :(@deffun julia_bad_draw(x::real)::real = normal_rng(x, 1.0)),
         )
         nothing
     catch e
@@ -1190,6 +1234,22 @@ Verify bounded default Julia emission from `@deffun` in an isolated test item.
     end
     @test occursin("does not implement `normal_rng`", sprint(showerror, unsupported))
     @test occursin("@stanonly", sprint(showerror, unsupported))
+
+    # …but a probability-family *definition* is outside the layer by
+    # construction, so it loads unannotated and simply gets no Julia method.
+    @test !hasmethod(julia_zip_lpmf, Tuple{Int,Float64,Float64})
+    @test !hasmethod(julia_zip_lpmf, Tuple{Vector{Int},Vector{Float64},Vector{Float64}})
+    @test !hasmethod(julia_zip_lpmfs, Tuple{Vector{Int},Vector{Float64},Vector{Float64}})
+
+    # The Stan side of those definitions is untouched by the skip.
+    zip_model = @slic (;n=3, y=[0, 1, 2]) begin
+        lambda ~ lognormal(0., 1.; n=3)
+        zi ~ beta(2., 2.; n=3)
+        y ~ julia_zip(lambda, zi)
+    end
+    zip_code = stan_code(zip_model)
+    @test occursin("julia_zip_lpmf", zip_code)
+    @test stanc_check(zip_code; warn_pedantic=false).ok
 
     dual_code = stan_code(dual_model)
     stanonly_code = replace(
