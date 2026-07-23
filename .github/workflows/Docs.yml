@@ -6,6 +6,12 @@ on:
     branches:
       - main
       - dev
+      # The active branch, and now the one that PUBLISHES: `deploydocs` has
+      # `devbranch = "devibe"` as of decision `0xyqj00`. It had been `dev`,
+      # which had fallen 217 commits behind, so the published docs were stale
+      # by that much. `devurl` is still "dev", so the URL (`gh-pages/dev/`)
+      # and the root redirect are unchanged — only the source branch moved.
+      - devibe
     tags: '*'
   pull_request:
 

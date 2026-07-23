@@ -4,6 +4,9 @@ using TestItemRunner
     using Random, Statistics
     using StanBlocks
     using LogDensityProblems
+    # BridgeStan directly (not just through `instantiate`) for gq draw assertions:
+    # `param_names(...; include_gq=true)` + `param_constrain(...; rng=…)`.
+    import BridgeStan
     import StanBlocks.stan: @deffun, full_cqual_eq, transpiles, stan_model, stan_code, stanc_check, instantiate
     # View usertypes are not exported; alias so @deffun signatures can name them.
     const RaggedVector = StanBlocks.RaggedVector
@@ -14,6 +17,9 @@ end
     using Random, Statistics
     using StanBlocks
     using LogDensityProblems
+    # BridgeStan directly (not just through `instantiate`) for gq draw assertions:
+    # `param_names(...; include_gq=true)` + `param_constrain(...; rng=…)`.
+    import BridgeStan
     import StanBlocks.stan: @deffun, full_cqual_eq, transpiles, stan_model, stan_code, stanc_check, instantiate
     # View usertypes are not exported; alias so @deffun signatures can name them.
     const RaggedVector = StanBlocks.RaggedVector
@@ -157,16 +163,109 @@ end
         xi = (a - b) .* exp(c)
         xi
     end
-    # --- bounded one-dimensional array comprehensions in @deffun ---
-    # The supported surface is deliberately one scalar expression over one
-    # explicit `lo:hi` range.  These fixtures cover real/int result inference,
-    # non-1 lower bounds, and each rejected Julia generator shape.
+    # --- COMPOSITE (named-tuple) return whose ELEMENT sizes name the params ---
+    # A ragged-map HOF: the returned `(;ends, mem)` has `mem` sized by a CALL over
+    # the function's own params (`sum(ntd_sub_lengths(f, x, args...))`). At a call
+    # site those params are anonymized to `_arg<tok>_<i>`, and the placeholders
+    # live in the ntup's `info.arg_types`, NOT in its (empty) `stan_size` — so
+    # `deanon_type` has to recurse into the element types or they reach Stan
+    # verbatim (undeclared identifier in a size position + a phantom `data` decl).
+    # Shape lifted from Bruno's `ragged_imap1` / `groupedby_idxs`.
+    @deffun begin
+        ntd_filter_n(f, x::anything[n], args...) = begin
+            rv = 0
+            for i in 1:n
+                if f(x[i], args...)
+                    rv += 1
+                end
+            end
+            rv
+        end
+        ntd_filter_idxs(f, x::anything[m], args...) = begin
+            rv::int[ntd_filter_n(f, x, args...)]
+            rvi = 1
+            for i in 1:m
+                if f(x[i], args...)
+                    rv[rvi] = i
+                    rvi += 1
+                end
+            end
+            rv
+        end
+        ntd_sub_length(f, xi, args...) = size(f(xi, args...))
+        ntd_sub_lengths(f, x::anything[n], args...) = begin
+            rv::int[n]
+            for i in 1:n
+                rv[i] = ntd_sub_length(f, x[i], args...)
+            end
+            rv
+        end
+        ntd_ragged_imap1(f, x::anything[n], args...) = begin
+            ends::int[n] = cumulative_sum(ntd_sub_lengths(f, x, args...))
+            mem::int[sum(ntd_sub_lengths(f, x, args...))]
+            rvi = 1
+            for i in 1:n
+                mem[rvi:ends[i]] = f(x[i], args...)
+                rvi .= ends[i]+1
+            end
+            (;ends, mem)
+        end
+        ntd_filter_idxs2(arg, f, x::anything[m]) = ntd_filter_idxs(f, x, arg)
+        # 2-arg form: the leak surfaces on the UDF-body local `tmp`.
+        ntd_group_idxs(y::anything[n], uy::anything[m]) = begin
+            ends::int[m]
+            mem::int[n]
+            tmp = ntd_ragged_imap1(ntd_filter_idxs2, uy, ==, y)
+            ends .= tmp.ends
+            mem .= tmp.mem
+            (;ends, mem)
+        end
+        # 1-arg wrapper: the leak surfaces on the MODEL-scope declaration, and the
+        # unresolved placeholder is then picked up by `fetch_data!` as a phantom
+        # `data` variable — a second, independent symptom of the same miss.
+        ntd_prefix_n(x::anything[m])::int = m
+        ntd_prefix(x::anything[m]) = begin
+            rv::int[ntd_prefix_n(x)]
+            for i in 1:ntd_prefix_n(x)
+                rv[i] = x[i]
+            end
+            rv
+        end
+        ntd_group_idxs(y::anything[n]) = ntd_group_idxs(y, ntd_prefix(y))
+    end
+    # --- bounded array comprehensions in @deffun ---
+    # A scalar expression over one or more explicit `lo:hi` ranges. Fixtures cover
+    # real/int result inference, non-1 lower bounds, N-D (multi-generator) results,
+    # and the still-rejected filtered / comprehension-valued shapes.
     @deffun comprehension_square(x::vector[n]) = [x[i] * x[i] for i in 1:n]
     @deffun comprehension_int_shift(x::int[n]) = [x[i] + 1 for i in 1:n]
     @deffun comprehension_slice(x::vector[n], lo::int, hi::int) = [x[i] for i in lo:hi]
     @deffun comprehension_filtered(x::vector[n]) = [x[i] for i in 1:n if x[i] > 0]
+    # Multi-generator (`for i …, j …`) lowers to a 2-D result (matrix[n,m] here).
     @deffun comprehension_multiple(x::vector[n], m::int) = [x[i] + j for i in 1:n, j in 1:m]
     @deffun comprehension_nested(x::vector[n]) = [[x[i] + j for j in 1:2] for i in 1:n]
+    # Chained/flattened generators (`for i … for j …`) build a ragged result — a
+    # deferred follow-up; rejected loudly for now.
+    @deffun comprehension_flatten(x::vector[n], m::int) = [x[i] + j for i in 1:n for j in 1:m]
+    # enumerate / zip destructuring + N-D / nested iteration (devibe 2eb42c2).
+    @deffun iter_enum(x::vector[n]) = [i * xi for (i, xi) in enumerate(x)]                 # → vector[n]
+    @deffun iter_enum_col(X::matrix[m, k]) = [j * sum(c) for (j, c) in enumerate(EachCol(X))]
+    @deffun iter_enum_acc(x::vector[n])::real = begin
+        acc = 0.0
+        for (i, xi) in enumerate(x); acc .= acc + i * xi; end
+        acc
+    end
+    @deffun iter_zip(a::vector[n], b::vector[n]) = [ai * bi for (ai, bi) in zip(a, b)]      # → vector[n]
+    @deffun iter_zip3(a::vector[n], b::vector[n], c::vector[n]) =
+        [ai + bi + ci for (ai, bi, ci) in zip(a, b, c)]
+    @deffun iter_nd(x::vector[n], y::vector[m]) = [x[i] * y[j] for i in 1:n, j in 1:m]      # → matrix[n,m]
+    @deffun iter_nd_int(x::int[n], y::int[m]) = [x[i] + y[j] for i in 1:n, j in 1:m]        # → array[n,m] int
+    @deffun iter_nested(X::matrix[n, m])::real = begin
+        acc = 0.0
+        for i in 1:n, j in 1:m; acc .= acc + X[i, j]; end
+        acc
+    end
+    @deffun iter_nd3(x::int[n]) = [i + j + k for i in 1:n, j in 1:n, k in 1:n]              # 3-D → reject
     # value-iteration generators `[expr for xi in <container>]` desugar to index
     # iteration `[expr for _vi in 1:length(container)]` with `xi = container[_vi]`.
     @deffun comprehension_iterable(x::vector[n]) = [xi for xi in x]
@@ -2090,7 +2189,7 @@ end
 """
 Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated test item.
 """
-@testitem "slic: bounded one-dimensional @deffun comprehensions" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: bounded one-dimensional @deffun comprehensions" tags=[:slic, :shapes, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @testset "canonicalization preserves the comprehension/generator structure" begin
         c = StanBlocks.stan.canonical(Meta.parse("[x[i] * x[i] for i in 1:n]"))
         @test c isa StanBlocks.stan.ComprehensionExpr
@@ -2148,15 +2247,6 @@ Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated tes
         @test filtered !== nothing
         @test occursin("filtered generators are not supported", filtered)
 
-        multiple = comprehension_error() do
-            @slic (;x=[1.0, 2.0]) begin
-                z = comprehension_multiple(x, 2)
-                mu ~ normal(z[1], 1.0)
-            end
-        end
-        @test multiple !== nothing
-        @test occursin("nested or multiple generators are not supported", multiple)
-
         nested = comprehension_error() do
             @slic (;x=[1.0, 2.0]) begin
                 z = comprehension_nested(x)
@@ -2175,6 +2265,30 @@ Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated tes
         end
         @test stepped !== nothing
         @test occursin("bounded `lo:hi` range", stepped)
+
+        # chained/flattened `for i … for j …` (ragged result) rejects specifically.
+        flattened = comprehension_error() do
+            @slic (;x=[1.0, 2.0]) begin
+                z = comprehension_flatten(x, 2)
+                mu ~ normal(z[1], 1.0)
+            end
+        end
+        @test flattened !== nothing
+        @test occursin("chained/flattened generators", flattened)
+    end
+
+    @testset "multi-generator comprehensions lower to N-D results" begin
+        # `[x[i] + j for i in 1:n, j in 1:m]` now lowers to nested fill loops over
+        # an N-D result (was rejected as "multiple generators"); real → matrix.
+        real_nd = @slic (;x=[1.0, 2.0, 3.0]) begin
+            M = comprehension_multiple(x, 2)
+            mu ~ normal(M[1, 1], 1.0)
+        end
+        nd_code = stan_code(real_nd)
+        @test occursin(r"matrix\[[^]]+, ?[^]]+\] comprehension_result__lc_\d+;", nd_code)
+        @test occursin(r"for\(i in 1:n\)", nd_code)
+        @test occursin(r"comprehension_result__lc_\d+\[i, ?j\] =", nd_code)
+        @test stanc_compiles(real_nd)
     end
 
     @testset "value-iteration generators lower to index loops" begin
@@ -2248,6 +2362,120 @@ Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated tes
         end
         @test err !== nothing
         @test occursin("`comprehension` control flow is not supported in @slic model bodies", err)
+    end
+end
+
+"""
+Verify the enumerate/zip/N-D/nested iteration-protocol extensions (devibe
+`2eb42c2`): tuple-destructuring sources and multi-axis comprehensions/loops in
+`@deffun` bodies, gated on `stanc_compiles` with BridgeStan lp/gradient spot
+checks, plus the 3-D and flattened-generator rejections.
+"""
+@testitem "slic: enumerate / zip / N-D comprehension iteration" tags=[:slic, :shapes, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    iter_error(f) = try (f(); nothing) catch e sprint(showerror, e) end
+
+    @testset "enumerate binds (index, element)" begin
+        # comprehension: index is the 1-based position (data int), element is x[i].
+        m = @slic (;x=[1.0, 2.0, 3.0], y=6.0) begin
+            w ~ std_normal(; n=2)
+            z = iter_enum(x)
+            y ~ normal(sum(z) + w[1], 0.5)
+        end
+        code = stan_code(m)
+        @test occursin("iter_enum", code)
+        @test stanc_compiles(m)
+        prob = instantiate(m)
+        lp, g = LogDensityProblems.logdensity_and_gradient(prob, fill(0.1, LogDensityProblems.dimension(prob)))
+        @test isfinite(lp) && all(isfinite, g)
+
+        # enumerate over the EachCol view + a for-loop accumulation form.
+        col = @slic (;X=[1.0 2.0; 3.0 4.0; 5.0 6.0], y=6.0) begin
+            w ~ std_normal(; n=2)
+            cs = iter_enum_col(X)
+            acc = iter_enum_acc(cs)
+            y ~ normal(acc + w[1], 0.5)
+        end
+        @test occursin("col(X", stan_code(col))
+        @test stanc_compiles(col)
+        cprob = instantiate(col)
+        clp, cg = LogDensityProblems.logdensity_and_gradient(cprob, fill(0.1, LogDensityProblems.dimension(cprob)))
+        @test isfinite(clp) && all(isfinite, cg)
+    end
+
+    @testset "zip iterates parallel containers" begin
+        m = @slic (;a=[1.0, 2.0, 3.0], b=[4.0, 5.0, 6.0], y=6.0) begin
+            w ~ std_normal(; n=2)
+            z = iter_zip(a, b)
+            y ~ normal(sum(z) + w[1], 0.5)
+        end
+        @test occursin("iter_zip", stan_code(m))
+        @test stanc_compiles(m)
+        prob = instantiate(m)
+        lp, g = LogDensityProblems.logdensity_and_gradient(prob, fill(0.1, LogDensityProblems.dimension(prob)))
+        @test isfinite(lp) && all(isfinite, g)
+
+        m3 = @slic (;a=[1.0, 2.0], b=[3.0, 4.0], c=[5.0, 6.0], y=6.0) begin
+            w ~ std_normal(; n=2)
+            z = iter_zip3(a, b, c)
+            y ~ normal(sum(z) + w[1], 0.5)
+        end
+        @test stanc_compiles(m3)
+    end
+
+    @testset "N-D comprehensions and one-line nested loops" begin
+        # real → matrix[n,m], with nested fill loops.
+        nd = @slic (;x=[1.0, 2.0, 3.0], y=[4.0, 5.0], obs=6.0) begin
+            w ~ std_normal(; n=2)
+            M = iter_nd(x, y)
+            obs ~ normal(M[1, 1] + w[1], 0.5)
+        end
+        ndc = stan_code(nd)
+        @test occursin(r"matrix\[[^]]+, ?[^]]+\] comprehension_result__lc_\d+;", ndc)
+        @test occursin(r"for\(i in 1:n\)", ndc)
+        @test occursin(r"for\(j in 1:m\)", ndc)
+        @test stanc_compiles(nd)
+        ndprob = instantiate(nd)
+        ndlp, ndg = LogDensityProblems.logdensity_and_gradient(ndprob, fill(0.1, LogDensityProblems.dimension(ndprob)))
+        @test isfinite(ndlp) && all(isfinite, ndg)
+
+        # int → array[n,m] int.
+        ndi = @slic (;x=[1, 2, 3], y=[4, 5]) begin
+            M = iter_nd_int(x, y)
+            mu ~ normal(M[1, 1], 1.0)
+        end
+        @test occursin(r"array\[[^]]+, ?[^]]+\] int comprehension_result__lc_\d+;", stan_code(ndi))
+        @test stanc_compiles(ndi)
+
+        # one-line nested for-loop (statement) accumulating a matrix sum.
+        nested = @slic (;X=[1.0 2.0; 3.0 4.0], obs=6.0) begin
+            w ~ std_normal(; n=2)
+            s = iter_nested(X)
+            obs ~ normal(s + w[1], 0.5)
+        end
+        @test stanc_compiles(nested)
+        nprob = instantiate(nested)
+        nlp, ng = LogDensityProblems.logdensity_and_gradient(nprob, fill(0.1, LogDensityProblems.dimension(nprob)))
+        @test isfinite(nlp) && all(isfinite, ng)
+    end
+
+    @testset "unsupported iteration shapes reject loudly" begin
+        # 3-D comprehension (SLIC containers are ≤ 2-D).
+        d3 = iter_error() do
+            stan_code(@slic (;x=[1, 2]) begin
+                M = iter_nd3(x); mu ~ normal(M[1, 1, 1], 1.0)
+            end)
+        end
+        @test d3 !== nothing
+        @test occursin("dimensional comprehensions are unsupported", d3)
+
+        # chained/flattened `for i … for j …` (ragged result — deferred follow-up).
+        flat = iter_error() do
+            stan_code(@slic (;x=[1.0, 2.0]) begin
+                z = comprehension_flatten(x, 2); mu ~ normal(z[1], 1.0)
+            end)
+        end
+        @test flat !== nothing
+        @test occursin("chained/flattened generators", flat)
     end
 end
 
@@ -2430,6 +2658,36 @@ end
     @test transpiles(multi)
     @test stanc_compiles(multi)
     @test !occursin("\"dims(", stan_code(multi))
+end
+
+@testitem "slic: composite return type deanonymizes nested element sizes" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Regression for the leaked-gensym snag: a `@deffun` returning a (named)
+    # tuple whose ELEMENT sizes are calls over its own params. Those sizes live
+    # in the type's `info.arg_types`; the tup/ntup's own `stan_size` is empty, so
+    # deanonymization must recurse or the per-call placeholders `_arg<tok>_<i>`
+    # are emitted verbatim (stanc: "Invalid character found").
+    two = @slic (;subject=[1, 1, 2, 2, 2, 3], uy=[1, 2, 3]) begin
+        idxs = ntd_group_idxs(subject, uy)
+        mu ~ normal(idxs.ends[1], 1)
+    end
+    @test transpiles(two)
+    two_code = stan_code(two)
+    @test !occursin(r"_arg\d+_\d+", two_code)
+    # The UDF-body local `tmp` names the caller's own params, not placeholders.
+    @test occursin("sum(ntd_sub_lengths_ntd_filter_idxs2_eq(uy, y))", two_code)
+    @test stanc_compiles(two)
+
+    # 1-arg wrapper: the model-scope declaration carries the nested size, and an
+    # unresolved placeholder there also materialised as a phantom `data` var.
+    one = @slic (;subject=[1, 1, 2, 2, 2, 3]) begin
+        idxs = ntd_group_idxs(subject)
+        mu ~ normal(idxs.ends[1], 1)
+    end
+    @test transpiles(one)
+    one_code = stan_code(one)
+    @test !occursin(r"_arg\d+_\d+", one_code)
+    @test occursin("array[ntd_prefix_n(subject)] int", one_code)
+    @test stanc_compiles(one)
 end
 
 """
@@ -3293,6 +3551,97 @@ end
 end
 
 """
+Snag build-a-declarat-ab2d2471 (reported by BRM): a declaration-driven prior /
+posterior generative artifact needs two things StanBlocks did not give it.
+
+(A) A per-cell DATA observation inside a plate produced NO generated quantity at
+all — the indexed data-LHS `~` routed to `(:model,)` because the whole-LHS
+`_gen`/`_likelihood` expansion cannot write one cell of a read-only Stan data
+variable. It now also emits a gq clone of the loop that fills a compiler-owned
+`<obs>_gen` twin, declared with the observation's OWN type.
+
+(B) `lkj_corr_cholesky_rng` was declared without a return type, so the auto-GQ
+redraw of a cv-tainted `L::cholesky_factor_corr[K] ~ lkj_corr_cholesky(eta)` died
+in `stan_code` with `tracetype not defined for L::anything = …_rng(…)` — the trap
+already recorded in the primer's cv section ("mark the group count, NEVER
+n_terms").
+
+Out of scope by design and asserted as such: the pointwise `<obs>_likelihood`
+companion, and RAGGED observation bases (a RaggedVector is a compile-time view
+over flat memory with no declarable Stan twin, so it keeps the model-only route).
+"""
+@testitem "slic: plate per-cell observations emit a _gen twin; lkj gq redraw" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # (A) per-cell observation inside a plate → `y_gen` in generated quantities.
+    obs_plate = @slic (; n_groups = 5, k = 3, y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
+        L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
+        tau::vector[k] ~ normal(0.0, 1.0; lower = 0.0)
+        b::vector[k] ~ plate(y; outer = (n_groups,)) do yi
+            cell ~ c3_plate_fixed_correlated_cell(k, L, tau)
+            yi ~ normal(cell[1], 0.5)
+            cell
+        end
+    end
+    @test transpiles(obs_plate)
+    @test stanc_compiles(obs_plate)
+    let code = stan_code(obs_plate)
+        gq = stan_block(code, "generated quantities")
+        @test occursin("vector[y_n] y_gen", gq)
+        @test occursin(r"y_gen\[plate_i\w*\] = normal_rng\(", gq)
+        # The observation still contributes its density to the model block, and the
+        # twin is a gq OUTPUT — never a re-declared data input.
+        @test occursin(r"y\[plate_i\w*\] ~ normal\(", stan_block(code, "model"))
+        @test !occursin("y_gen", stan_block(code, "data"))
+        # Out of scope: the pointwise likelihood companion.
+        @test !occursin("y_likelihood", code)
+    end
+    # End-to-end: the draws are real gq output and finite.
+    let p = instantiate(obs_plate), d = LogDensityProblems.dimension(p)
+        names = BridgeStan.param_names(p.model; include_tp = true, include_gq = true)
+        idx = findall(n -> startswith(n, "y_gen"), names)
+        @test length(idx) == 5
+        drawn = BridgeStan.param_constrain(
+            p.model, zeros(d);
+            include_tp = true, include_gq = true, rng = BridgeStan.StanRNG(p.model, 1234),
+        )
+        @test all(isfinite, drawn[idx])
+    end
+
+    # A RAGGED observation base has no declarable twin → model-only, unchanged.
+    let code = stan_code(c3_plate_ragged_obs_outside_model)
+        @test !occursin("ys_gen", code)
+    end
+
+    # A COMPOUND data-qualified LHS is not an indexed observation. The twin
+    # matcher must not descend into it the way `_base_lhs_symbol` does for a
+    # compiler-injected fill — doing so found the innermost leaf `v` and emitted
+    # the nonsense `(sum(v_gen) + c) = normal_rng(...)`.
+    compound_lhs = @slic (; v = [0.1, 0.2, 0.3], c = 1.0) begin
+        mu ~ std_normal()
+        (sum(v) + c) ~ normal(mu, 1.0)
+    end
+    @test transpiles(compound_lhs)
+    @test stanc_compiles(compound_lhs)
+    @test !occursin("v_gen", stan_code(compound_lhs))
+
+    # (B) cv-tainted lkj prior redraws in generated quantities instead of blowing
+    # up at render time; `matrix`, not `cholesky_factor_corr`, matching the
+    # dirichlet/simplex precedent for a gq redraw's container.
+    lkj_base = @slic (; K = 3, eta = 2.0, y = 0.3) begin
+        L::cholesky_factor_corr[K] ~ lkj_corr_cholesky(eta)
+        y ~ normal(sum(to_vector(L)), 0.1)
+    end
+    @test transpiles(lkj_base)
+    @test stanc_compiles(lkj_base)
+    let cv_model = lkj_base(; eta = StanBlocks.stan.maybecv(:eta, 2.0)),
+        code = stan_code(cv_model)
+        @test stanc_compiles(cv_model)
+        @test !occursin("L", stan_block(code, "parameters"))
+        @test occursin(r"matrix\[K, K\] L = lkj_corr_cholesky_\w*rng\(K, eta\)",
+                       stan_block(code, "generated quantities"))
+    end
+end
+
+"""
 Verify `slic: plate supports dense native-constrained vector cells` in an isolated test item.
 
 Snag plate-constraine-90607054: a native-constrained per-cell parameter inside a
@@ -3546,8 +3895,32 @@ Verify `slic: ragged Cholesky factors use flattened matrix carriers` in an isola
     end
     @test transpiles(c3_ragged_cholesky_corr_informative_model)
     @test stanc_compiles(c3_ragged_cholesky_corr_informative_model)
+    # The emitter LINE-WRAPS any multi-argument call, so `.` (which does not
+    # match a newline) can never span this one and the old single-line regex
+    # asserted a shape the emitter had stopped producing. MEASURED model block:
+    #
+    #     for(g__rcm_1 in 1:num_elements(K)) {
+    #         to_matrix(
+    #             p_mem__rcm_1[ragged_start(c_end__rcm_1, g__rcm_1):ragged_end(c_end__rcm_1, g__rcm_1)],
+    #             K[g__rcm_1],
+    #             K[g__rcm_1]
+    #         ) ~ lkj_corr_cholesky(2.0);
+    #     }
+    #
+    # The wrap is GENERAL pretty-printing, not something specific to this call
+    # or to the ragged path: the sibling `y ~ normal(sum(to_vector(...)), 0.1)`
+    # in the same block wraps identically, and the model still passes
+    # `stanc_compiles` (asserted two lines above). So relaxing the assertion is
+    # not papering over an emission change — the Stan is right and the test was
+    # stale.
+    #
+    # `(?s)` + lazy quantifiers is the house style for a wrapped call (see the
+    # `cell__pl_mem_` assertion in the plate item). Tightened while here: name
+    # the ragged memory slice and BOTH square dimensions, so this now checks the
+    # informative prior lands on the reconstructed per-group matrix rather than
+    # merely that some `to_matrix` appears somewhere before the `~`.
     @test occursin(
-        r"to_matrix\(.*\) ~ lkj_corr_cholesky\(2\.0\)",
+        r"(?s)to_matrix\(\s*p_mem__rcm_\d+\[.*?\],\s*K\[.*?\],\s*K\[.*?\]\s*\)\s*~\s*lkj_corr_cholesky\(2\.0\)",
         stan_block(stan_code(c3_ragged_cholesky_corr_informative_model), "model"),
     )
 end
@@ -3740,4 +4113,327 @@ Run stanc over every PosteriorDB model for which StanBlocks ships a SLIC impleme
         error("$(length(failures)) PosteriorDB implementations failed stanc:\n" * join(summaries, "\n"))
     end
     @test isempty(failures)
+end
+
+"""
+Verify the descriptor surface — `stan_descriptor` / `stan_operation` /
+`stan_execute` — reflects one `@slic` declaration as identity + inputs + outputs
++ DERIVED operations, and fails closed on the cases a consumer cannot recover
+from (an operation the model does not offer, a name that is both an input and an
+output, an unbound required input).
+
+Todo `Expose descriptor-bearing executable semantic models`: downstream
+(BRM / SbPMX) must mount a StanBlocks model without maintaining its own parallel
+operation list, so every assertion here is about something being DERIVED rather
+than declared twice.
+"""
+@testitem "slic: model descriptor reflects inputs, outputs and derived operations" tags=[:slic, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    base = @slic (; x = [1.0, 2.0, 3.0, 4.0, 5.0], y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
+        sigma ~ exponential(1.0)
+        beta ~ normal(0.0, 10.0)
+        y ~ normal(beta * x, sigma)
+    end
+    d = stan_descriptor(base; name = :demo)
+
+    # --- identity ------------------------------------------------------------
+    @test d.name == :demo
+    # Content-derived, so reflecting the same model twice agrees, and it agrees
+    # with the key `instantiate` caches the compiled artifact under.
+    @test d.id == stan_descriptor(base).id
+    @test d.id == string(hash(stan_code(base)); base = 16)
+    # The gensym'd model name must NOT leak into the identity.
+    @test stan_descriptor(base; name = :other).id == d.id
+    changed = @slic (; x = [1.0, 2.0, 3.0, 4.0, 5.0], y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
+        sigma ~ exponential(2.0)
+        beta ~ normal(0.0, 10.0)
+        y ~ normal(beta * x, sigma)
+    end
+    @test stan_descriptor(changed).id != d.id
+
+    # --- inputs --------------------------------------------------------------
+    ins = Dict(i.name => i for i in d.inputs)
+    @test haskey(ins, :y) && haskey(ins, :x)
+    # `y` is what the model conditions on; `x` is a covariate. That distinction
+    # comes from walking the traced `~` statements, not from any naming rule.
+    @test ins[:y].observed
+    @test !ins[:x].observed
+    @test ins[:y].type == :vector && ins[:x].type == :vector
+    @test ins[:y].value == [0.2, -0.1, 0.3, 0.0, 0.4]
+    @test !ins[:y].held_out
+    @test !any(i -> i.inlined, d.inputs)
+    # `y_n` IS a data-block entry (it reaches the JSON), but it is another
+    # input's declared size — re-binding `y` re-derives it, so a generated form
+    # must never ask for it.
+    @test ins[:y].size == (:y_n,)
+    @test ins[:y_n].derived && !ins[:y].derived
+    @test StanBlocks.required_inputs(d) == (:y, :x)
+
+    # --- outputs + generative semantics --------------------------------------
+    outs = Dict(o.name => o for o in d.outputs)
+    @test outs[:sigma].kind == :parameter && outs[:sigma].generative == :posterior
+    @test outs[:beta].kind == :parameter
+    # `exponential` implies a positive support; the descriptor reports the
+    # constraint the declaration actually carries.
+    @test outs[:sigma].constraints.lower == 0.0
+    # The compiler-owned twins are labelled by ROLE and point back at the
+    # observation they derive from — a consumer never parses the `_gen` suffix.
+    @test outs[:y_gen].kind == :generated_quantity
+    @test outs[:y_gen].generative == :draw
+    @test outs[:y_gen].source == :y
+    @test outs[:y_likelihood].generative == :pointwise_loglik
+    @test outs[:y_likelihood].source == :y
+    @test [o.name for o in d.outputs if o.generative == :draw] == [:y_gen]
+
+    # --- operations are DERIVED, not listed ----------------------------------
+    opnames = [op.name for op in d.operations]
+    @test opnames == [:transpile, :instantiate, :fit, :predict, :pointwise_loglik]
+    @test stan_operation(d, :predict).outputs == (:y_gen,)
+    @test stan_operation(d, :pointwise_loglik).outputs == (:y_likelihood,)
+    @test :y in stan_operation(d, :fit).inputs
+    @test stan_operation(d, :transpile).inputs == ()
+    @test stan_execute(d, :transpile) == stan_code(base)
+
+    # A prior-predictive model has no likelihood, hence no `:fit` — and no
+    # observation, hence no `:predict`.
+    prior_only = @slic (;) begin
+        sigma ~ exponential(1.0)
+        beta ~ normal(0.0, 10.0)
+    end
+    pd = stan_descriptor(prior_only; name = :prior_only)
+    @test [op.name for op in pd.operations] == [:transpile, :instantiate]
+
+    # cv-held-out: the ONLY observation moves to generated quantities, so the
+    # model can still be instantiated but there is nothing left to fit.
+    heldout = base(; y = StanBlocks.stan.maybecv(:y, [0.2, -0.1, 0.3, 0.0, 0.4]))
+    hd = stan_descriptor(heldout; name = :heldout)
+    @test Dict(i.name => i for i in hd.inputs)[:y].held_out
+    @test :fit ∉ [op.name for op in hd.operations]
+    @test :predict in [op.name for op in hd.operations]
+
+    # --- fail closed ---------------------------------------------------------
+    # (a) an operation the model does not offer names the ones it does.
+    err = try; stan_operation(pd, :fit); catch e; sprint(showerror, e); end
+    @test occursin("has no `fit` operation", err)
+    @test occursin("`transpile`", err) && occursin("`instantiate`", err)
+    @test_throws ErrorException stan_execute(pd, :predict; draws = [0.0], seed = 1)
+
+    # (b) `:transpile` takes no keywords — silently ignoring them would look
+    #     like a data re-bind that never happened.
+    @test_throws ErrorException stan_execute(d, :transpile; y = [1.0])
+
+    # (c) a data variable colliding with a compiler-owned twin cannot be
+    #     resolved automatically: every consumer keys on the name.
+    collide = @slic (; y = [0.2, -0.1], y_gen = [1.0, 2.0]) begin
+        mu ~ normal(sum(y_gen), 1.0)
+        y ~ normal(mu, 1.0)
+    end
+    cerr = try; stan_descriptor(collide); catch e; sprint(showerror, e); end
+    @test occursin("BOTH a data input and a model output", cerr)
+end
+
+"""
+Snag regression (built-brm-s-desc-55d6d48c). A RAGGED, plate-sliced observation
+is still an observation: the descriptor must report the column as `observed` and
+offer `:fit`. It previously reported NEITHER, because the base walk stopped at
+the `getfield` in `dv.mem[ragged_start(dv.ends, i):ragged_end(dv.ends, i)]` — so
+every PKPD-shaped per-subject plate model rendered with no Fit button while
+fitting perfectly well.
+
+Pins the exact BLAST RADIUS measured when fixing it: only the in-cell ragged
+form was broken. The top-level ragged form (obs-outside, snag ragged-dist-arg)
+and the DENSE per-cell plate form were already correct, and must stay so.
+"""
+@testitem "slic: descriptor sees a ragged plate-sliced observation" tags=[:slic, :descriptor, :ragged, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    obs(d) = [i.name for i in d.inputs if i.observed]
+    ops(d) = [op.name for op in d.operations]
+
+    # (1) THE SNAG: a per-cell observation whose LHS is a ragged plate slice.
+    d = stan_descriptor(c3_plate_ragged_obs_incell_model; name = :incell)
+    @test obs(d) == [:ys]
+    @test :fit in ops(d)
+    # The covariate is ALSO a RaggedVector — being ragged is not what makes a
+    # column observed; appearing left of a `~` is.
+    @test !Dict(i.name => i for i in d.inputs)[:ts].observed
+    # A ragged observation base still gets no `_gen` twin (no declarable Stan
+    # shape), so `:predict` must stay absent — conditioning on a column and
+    # being able to predict it are different questions.
+    @test :predict ∉ ops(d)
+    @test :pointwise_loglik ∉ ops(d)
+
+    # (2) Already-correct sibling: top-level ragged obs, broadcast across groups.
+    do_ = stan_descriptor(c3_plate_ragged_obs_outside_model; name = :outside)
+    @test obs(do_) == [:ys]
+    @test :fit in ops(do_)
+
+    # (3) Already-correct sibling: a DENSE per-cell plate obs, which DOES get a
+    # `_gen` twin — the widened walk must not disturb it.
+    dense = @slic (; ys = [1.0, 2.0, 3.0], nsub = 3) begin
+        sigma ~ exponential(1)
+        mu ~ plate(; outer = (nsub,)) do i
+            z ~ normal(0.0, 1.0)
+            ys[i] ~ normal(z, sigma)
+            z
+        end
+    end
+    dd = stan_descriptor(dense; name = :dense_cell)
+    @test obs(dd) == [:ys]
+    @test :fit in ops(dd)
+
+    # A compound (non-projection) sampling LHS must still NOT mark a base
+    # observed — the walk was widened to structural projections only, not to
+    # arbitrary data-qualified expressions.
+    compound = @slic (; a = [1.0, 2.0], n = 3.0) begin
+        mu ~ normal(0.0, 1.0)
+        (sum(a) + n) ~ normal(mu, 1.0)
+    end
+    @test isempty(obs(stan_descriptor(compound; name = :compound)))
+end
+
+"""
+Verify the descriptor's operations actually EXECUTE through the normal
+StanBlocks → BridgeStan path: `:fit` yields the differentiable log-density a
+sampler consumes, and `:predict` / `:pointwise_loglik` draw exactly the
+generated quantities the descriptor advertised, addressed by the descriptor's
+own names rather than by BridgeStan's flattened `name.i` spelling.
+"""
+@testitem "slic: descriptor operations execute through BridgeStan" tags=[:slic, :descriptor, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    m = @slic (; x = [1.0, 2.0, 3.0, 4.0, 5.0], y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
+        sigma ~ exponential(1.0)
+        beta ~ normal(0.0, 10.0)
+        y ~ normal(beta * x, sigma)
+    end
+    d = stan_descriptor(m; name = :demo)
+
+    prob = stan_execute(d, :fit)
+    dim = LogDensityProblems.dimension(prob)
+    @test dim == 2
+    @test isfinite(LogDensityProblems.logdensity(prob, zeros(dim)))
+
+    # One draw → one vector per advertised output, sized by the declaration.
+    pred = stan_execute(d, :predict; problem = prob, draws = zeros(dim), seed = 1234)
+    @test keys(pred) == (:y_gen,)
+    @test length(pred.y_gen) == 5
+    @test all(isfinite, pred.y_gen)
+
+    ll = stan_execute(d, :pointwise_loglik; problem = prob, draws = zeros(dim), seed = 1234)
+    @test keys(ll) == (:y_likelihood,)
+    @test length(ll.y_likelihood) == 5
+    @test all(isfinite, ll.y_likelihood)
+
+    # Several draws → one column each.
+    multi = stan_execute(d, :predict; problem = prob, draws = zeros(dim, 3), seed = 7)
+    @test size(multi.y_gen) == (5, 3)
+    # Same seed, same draws ⇒ reproducible.
+    @test stan_execute(d, :predict; problem = prob, draws = zeros(dim), seed = 99).y_gen ==
+          stan_execute(d, :predict; problem = prob, draws = zeros(dim), seed = 99).y_gen
+
+    # Without `problem` the operation compiles for itself (same cached artifact).
+    @test length(stan_execute(d, :predict; draws = zeros(dim), seed = 1234).y_gen) == 5
+
+    # A generated quantity is an RNG draw: refuse rather than silently pick a seed.
+    @test_throws ErrorException stan_execute(d, :predict; problem = prob, draws = zeros(dim))
+    @test_throws ErrorException stan_execute(d, :predict; problem = prob, seed = 1)
+
+    # Data re-binding flows through the executor, so a consumer never has to
+    # rebuild the model by hand to predict on new data.
+    rebound = stan_execute(d, :predict;
+        y = [1.0, 1.0, 1.0], x = [1.0, 2.0, 3.0], draws = zeros(dim), seed = 5)
+    @test length(rebound.y_gen) == 3
+end
+
+"""
+Verify the descriptor over the PLATE shape — the case `e4f0964`'s two testitems
+did not reach. A per-cell observation inside a compiler-owned plate loop gets
+its `<base>_gen` twin from `_push_obs_gen_decl!` INSIDE a `ForExpr`, while
+`_output_symbols` deliberately does not descend into such a loop (the base is
+declared separately). That interaction, the ragged carve-out, and the
+distinction between a gq observation-twin and a gq prior RE-DRAW are what this
+item pins down.
+
+Todo `2026-07-22T11-53-04-745-0ly84er`, from decision `0a6ftf8` resolving "no
+preference": the two gaps I had flagged are reachable from pure `@slic`, so
+none of this needs BRM.
+"""
+@testitem "slic: descriptor over plate observations, ragged carve-out and gq re-draws" tags=[:slic, :descriptor, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # --- per-cell plate observation: the twin is reached through a loop -------
+    obs_plate = @slic (; n_groups = 5, k = 3, y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
+        L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
+        tau::vector[k] ~ normal(0.0, 1.0; lower = 0.0)
+        b::vector[k] ~ plate(y; outer = (n_groups,)) do yi
+            cell ~ c3_plate_fixed_correlated_cell(k, L, tau)
+            yi ~ normal(cell[1], 0.5)
+            cell
+        end
+    end
+    d = stan_descriptor(obs_plate; name = :obs_plate)
+    outs = Dict(o.name => o for o in d.outputs)
+
+    # The twin is classified even though the `~` it came from lives inside a
+    # compiler-owned loop and was rewritten to an assignment on the way in.
+    @test haskey(outs, :y_gen)
+    @test outs[:y_gen].kind == :generated_quantity
+    @test outs[:y_gen].generative == :draw
+    @test outs[:y_gen].source == :y
+    @test outs[:y_gen].size == (:y_n,)
+    # `y` is the observation, reached through the getindex chain of `y[plate_i…]`.
+    @test Dict(i.name => i for i in d.inputs)[:y].observed
+
+    # The loop index is NOT an output: `_output_symbols` must not descend into a
+    # compiler-owned `for`, or every plate would advertise a phantom quantity.
+    @test !any(o -> occursin("plate_i", string(o.name)), d.outputs)
+
+    # A per-cell observation gets the DRAW but deliberately no pointwise
+    # log-likelihood companion (the cell shape does not fix its container —
+    # `d243f24`). The operation set must reflect that, not assume the pair.
+    @test !haskey(outs, :y_likelihood)
+    opnames = [op.name for op in d.operations]
+    @test :predict in opnames
+    @test :pointwise_loglik ∉ opnames
+    @test stan_operation(d, :predict).outputs == (:y_gen,)
+
+    # Derived sizes stay out of what a consumer must supply; the plate's own
+    # scalars stay in.
+    @test Set(StanBlocks.required_inputs(d)) == Set([:n_groups, :k, :y])
+
+    # The plate's own carriers are bare `out::T` declarations too, and were
+    # dropped by the same bug that dropped `y_gen` — assert them so a future
+    # skip-the-DeclExpr regression fails here loudly rather than silently
+    # shrinking every plate model's output set.
+    @test outs[:b].kind == :transformed_parameter
+    @test outs[:b_cell].kind == :transformed_parameter
+    @test outs[:b_cell_z].kind == :parameter
+
+    # --- ragged carve-out: no declarable shape ⇒ no twin ⇒ no :predict -------
+    rd = stan_descriptor(c3_plate_ragged_obs_outside_model; name = :ragged)
+    @test !any(o -> o.generative == :draw, rd.outputs)
+    @test :predict ∉ [op.name for op in rd.operations]
+    # It is still an observation — pass (1) sees the model-block `~` even though
+    # pass (2) has no twin to find. The two passes are not redundant.
+    @test Dict(i.name => i for i in rd.inputs)[:ys].observed
+    @test :fit in [op.name for op in rd.operations]
+
+    # --- a gq prior RE-DRAW is :derived, not :draw ---------------------------
+    # cv-tainting `eta` flips `L` out of `parameters` into a generated-quantities
+    # re-draw. That is a latent, not a predictive draw of an observation, and a
+    # consumer plotting posterior predictions must be able to tell them apart.
+    lkj_base = @slic (; K = 3, eta = 2.0, y = 0.3) begin
+        L::cholesky_factor_corr[K] ~ lkj_corr_cholesky(eta)
+        y ~ normal(sum(to_vector(L)), 0.1)
+    end
+    cd = stan_descriptor(lkj_base(; eta = StanBlocks.stan.maybecv(:eta, 2.0)); name = :cv_lkj)
+    couts = Dict(o.name => o for o in cd.outputs)
+    @test couts[:L].kind == :generated_quantity
+    @test couts[:L].generative == :derived
+    @test couts[:L].source === nothing
+    # `y` is untainted, so its own twins are unaffected and still :draw.
+    @test couts[:y_gen].generative == :draw && couts[:y_gen].source == :y
+    @test [o.name for o in cd.outputs if o.generative == :draw] == [:y_gen]
+    # `held_out` is CONTAGION-aware, not a record of what the user marked. Only
+    # `eta` was passed through `maybecv`, but cv propagates through every
+    # expression it reaches, so `y`'s own likelihood contribution is dropped too
+    # — which is exactly why `:fit` is gone. Reporting `y` as un-held-out here
+    # would contradict the operation set.
+    cins = Dict(i.name => i for i in cd.inputs)
+    @test cins[:eta].held_out && cins[:y].held_out
+    @test :fit ∉ [op.name for op in cd.operations]
 end

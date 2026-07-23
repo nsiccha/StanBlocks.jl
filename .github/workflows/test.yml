@@ -1,11 +1,17 @@
 name: Run tests
 
 on:
+  workflow_dispatch:
   push:
     branches:
-      - master
+      # `devibe` is the ACTIVE development branch and is 217 commits ahead of
+      # `dev`. Without it here, every push for the last two months went to a
+      # branch this workflow does not watch — the last run was 2026-05-12, which
+      # reads as "CI is fine" when it means "CI never ran". `master` dropped:
+      # the repo has no such branch (default is `main`).
       - main
       - dev
+      - devibe
   pull_request:
     types: [opened, edited]
 
@@ -14,17 +20,42 @@ permissions:
   actions: write
   contents: read
 
+# Two jobs, because the suite splits cleanly in two and the halves have very
+# different costs (decision `1t5p8ee`):
+#
+#   `transpile` — everything except `:bridgestan`. MEASURED: 45 of 87 items
+#     need only the `stanc` BINARY (shipped inside BridgeStan's download —
+#     no compilation), and 15 need nothing external at all. So this job
+#     downloads BridgeStan but never invokes the C++ toolchain. Cheap enough
+#     for all three OSes x all three Julia versions.
+#   `stan` — the full suite, including the 27 items that call
+#     `instantiate`/`compiles` and therefore drive BridgeStan's C++ build.
+#     Real coverage of emission -> stanc acceptance -> log-density, which is
+#     the half most likely to break. ubuntu-only, and cached.
+#
+# Splitting them is what `--skip-tag` was added for: `--tag` is an AND-selection
+# and cannot express "everything except X".
+#
+# `:bridgestan` is LOAD-BEARING for this split — it decides which items the
+# cross-platform job skips. Two items called `instantiate` without carrying it
+# and were retagged in the same commit. If you add an item that calls
+# `instantiate` or `compiles`, TAG IT, or the `transpile` job will try to build
+# Stan on Windows and fail there.
+
 jobs:
-  test:
+  transpile:
+    name: transpile (no Stan toolchain)
     runs-on: ${{ matrix.os }}
     strategy:
+      # One broken cell used to cancel the other eight, so a single genuine
+      # failure arrived as nine notifications and the real cause was buried
+      # among eight `cancelled` cells with no failing step recorded. Matches
+      # DynamicObjects.jl.
+      fail-fast: false
       matrix:
         julia-version: ['lts', '1', 'pre']
         julia-arch: [x64]
         os: [ubuntu-latest, windows-latest, macOS-latest]
-        exclude:
-          - os: macOS-latest
-            julia-arch: x86
 
     steps:
       - uses: actions/checkout@v4
@@ -33,4 +64,66 @@ jobs:
           version: ${{ matrix.julia-version }}
           arch: ${{ matrix.julia-arch }}
       - uses: julia-actions/cache@v2
-      - uses: julia-actions/julia-runtest@v1
+      # `julia-buildpkg` instantiates the PACKAGE project (`.`), not `test/`.
+      # The suite runs out of `test/Project.toml` (TestItemRunner lives there),
+      # so that env needs its own instantiate with the package developed into
+      # it — the same invocation used locally.
+      - name: Instantiate test environment
+        run: julia --project=test -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
+      # Most of these items call `stanc_compiles`, which resolves `stanc`
+      # through `BridgeStan.get_bridgestan_path(; download=false)`. That is the
+      # shipped stanc3 BINARY, not a build — the download is a tarball fetch, so
+      # this stays fast and needs no C++ toolchain.
+      - name: Cache BridgeStan (stanc binary)
+        uses: actions/cache@v4
+        with:
+          path: ~/.bridgestan
+          key: bridgestan-${{ runner.os }}-${{ hashFiles('Project.toml') }}
+          restore-keys: bridgestan-${{ runner.os }}-
+      - name: Download BridgeStan
+        run: julia --project=test -e 'using BridgeStan; println(BridgeStan.get_bridgestan_path(; download=true))'
+      - name: Run tests that need no Stan build
+        run: julia --project=test -e 'include("test/runtests.jl")' -- --skip-tag=bridgestan
+
+  stan:
+    name: stan (BridgeStan toolchain)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        julia-version: ['lts', '1']
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.julia-version }}
+      - uses: julia-actions/cache@v2
+      - name: Instantiate test environment
+        run: julia --project=test -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
+      # Same download as the `transpile` job, but THIS job also drives the C++
+      # build: `instantiate` compiles each model through BridgeStan's Makefile,
+      # which builds Stan's objects under `~/.bridgestan` on first use. Caching
+      # that directory is what turns a cold multi-minute Stan build into a warm
+      # one. `Project.toml` carries the `[compat] BridgeStan` bound, so hashing
+      # it invalidates the cache when the pinned version moves.
+      - name: Cache BridgeStan toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.bridgestan
+          key: bridgestan-${{ runner.os }}-${{ hashFiles('Project.toml') }}
+          restore-keys: bridgestan-${{ runner.os }}-
+      - name: Download BridgeStan
+        run: julia --project=test -e 'using BridgeStan; println(BridgeStan.get_bridgestan_path(; download=true))'
+      # Compiled models land in `tmp/<hash(stan_code)>.stan` + its shared
+      # library, keyed by a hash of the GENERATED SOURCE — so a model whose Stan
+      # is unchanged reuses its build across runs. Partial hits are the norm and
+      # are still worth having; the key is per-run so each run refreshes it.
+      - name: Cache compiled Stan models
+        uses: actions/cache@v4
+        with:
+          path: tmp
+          key: stanmodels-${{ runner.os }}-${{ matrix.julia-version }}-${{ github.sha }}
+          restore-keys: stanmodels-${{ runner.os }}-${{ matrix.julia-version }}-
+      - name: Run Stan-toolchain tests
+        run: julia --project=test -e 'include("test/runtests.jl")'

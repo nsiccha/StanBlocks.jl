@@ -1,4 +1,5 @@
 [deps]
+BridgeStan = "c88b6f0a-829e-4b0b-94b7-f06ab5908f5a"
 LogDensityProblems = "6fdf6af0-433a-55f7-b3ed-c6c6e0b8df7c"
 PosteriorDB = "1c4bc282-d2f5-44f9-b6d1-8c4424a23ad4"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
