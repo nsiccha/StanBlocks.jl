@@ -949,6 +949,28 @@ begin
         startswith(string(s), "ode_") ||
         s in (:reduce_sum, :reduce_sum_static, :simple_reduce_sum)
 
+    # A definition whose *own* name is in the probability / RNG / ODE /
+    # `reduce_sum` family sits outside the deterministic compatibility layer by
+    # construction: the same predicate that rejects such a *call* settles the
+    # *definition* too, and a `foo_lpmf` overload that recurses into `foo_lpmf`
+    # can never obtain a Julia method however it is annotated.  These auto-skip
+    # the Julia target — exactly like signature-only stubs, type-token glue and
+    # qualified/existing-function extensions — instead of demanding a
+    # per-definition `@stanonly`.  The elementwise `_lpdfs`/`_lpmfs` companions
+    # belong to the same families.  Note this is deliberately *only* a
+    # definition-name test: `_deffun_julia_unsupported_call` above is unchanged,
+    # so no call that is accepted today starts being rejected.
+    _deffun_julia_excluded_definition(s::Symbol) =
+        any(
+            suffix -> endswith(string(s), suffix),
+            (
+                "_lpdf", "_lpmf", "_lcdf", "_lccdf", "_cdf", "_rng",
+                "_lpdfs", "_lpmfs", "_lcdfs", "_lccdfs", "_cdfs",
+            ),
+        ) ||
+        startswith(string(s), "ode_") ||
+        s in (:reduce_sum, :reduce_sum_static, :simple_reduce_sum)
+
     _deffun_julia_call_symbol(x::Symbol) = x
     _deffun_julia_call_symbol(x::GlobalRef) = x.name
     _deffun_julia_call_symbol(x::Expr) = if x.head === :. && !isempty(x.args)
@@ -1042,6 +1064,7 @@ begin
         ismissing(body) && return nothing
         f = fcall.args[1]
         f isa Symbol || return nothing
+        _deffun_julia_excluded_definition(f) && return nothing
         all_args = Any[fcall.args[2:end]...]
         any(_is_type_token, all_args) && return nothing
         any(_deffun_julia_glue_arg, all_args) && return nothing
