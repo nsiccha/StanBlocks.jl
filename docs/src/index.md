@@ -195,11 +195,15 @@ Use `@stanonly` for an intentionally Stan-only body:
 ```
 
 `@stanonly` may wrap one definition or a `begin ... end` group. Signature-only
-stubs, bare type-token/compiler-glue forms, and qualified or pre-existing
-function extensions skip Julia emission automatically. An otherwise eligible
-body that directly calls an unsupported probability, RNG, ODE, or `reduce_sum`
-primitive errors at expansion with a pointer to `@stanonly`; full runtime parity
-for those Stan facilities is not part of this compatibility layer.
+stubs, bare type-token/compiler-glue forms, qualified or pre-existing function
+extensions, and definitions whose own name is in the probability/RNG/ODE family
+(`*_lpdf`, `*_lpmf`, `*_lcdf`, `*_lccdf`, `*_cdf`, `*_rng`, the elementwise
+`*_lpdfs`/`*_lpmfs`/… companions, and `ode_*`) skip Julia emission
+automatically — so a user-defined `_lpmf` that calls Stan probability
+primitives needs no annotation. A *deterministically named* body that directly
+calls an unsupported probability, RNG, ODE, or `reduce_sum` primitive still
+errors at expansion with a pointer to `@stanonly`; full runtime parity for those
+Stan facilities is not part of this compatibility layer.
 
 Bodies may use `for`/`while`/nested `if`, mutation, index or value iteration,
 `enumerate`/`zip`, one-line nested loops, and rectangular comprehensions with at
