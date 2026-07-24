@@ -4720,3 +4720,106 @@ none of this needs BRM.
     @test cins[:eta].held_out && cins[:y].held_out
     @test :fit ∉ [op.name for op in cd.operations]
 end
+
+"""
+Verify `slic: unresolved sampling distribution fails loudly` in an isolated test item.
+
+Regression for snag `truncated-normal-84fc4089` (reported by BRM). A `~` statement
+is emitted VERBATIM as Stan while the `dist_lpdf` UDF behind it is pulled in by
+`fetch_functions!`. When no `@deffun` signature matches the ARGUMENT SHAPES, the
+UDF half silently produced nothing (`fundef` → `nothing`) while the `~` half still
+emitted — so the model transpiled to Stan that stanc then rejected with a message
+naming neither SLIC nor the shape mismatch. Inside a RAGGED plate cell nothing
+raised at all, because the auto-GQ path (whose assertion catches this at top level)
+is skipped for a ragged plate-sliced obs.
+"""
+@testitem "slic: unresolved sampling distribution fails loudly" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    ys = [randn(3) for _ in 1:4]
+    xs = [randn(3) for _ in 1:4]
+
+    # --- POSITIVE: the registered ALL-VECTOR signature still resolves --------
+    # Both in a ragged plate cell and at top level: the UDF is emitted and stanc
+    # accepts. These are the shapes the guard must NOT touch.
+    plate_ok = @slic (; ys, xs, lloqs = [fill(-3., 3) for _ in 1:4],
+                        uloqs = [fill(3., 3) for _ in 1:4],
+                        sigmas = [fill(.5, 3) for _ in 1:4]) begin
+        theta ~ plate(ys, xs, lloqs, uloqs, sigmas; outer = (4,)) do yi, xi, li, ui, si
+            t ~ normal(0., 1.)
+            yi ~ truncated_normal(t * xi, si, li, ui)
+            t
+        end
+    end
+    @test transpiles(plate_ok)
+    @test occursin("truncated_normal_lpdf", stan_code(plate_ok))
+    @test stanc_compiles(plate_ok)
+
+    top_ok = @slic (; y = randn(6), x = randn(6), lloq = fill(-3., 6),
+                      uloq = fill(3., 6), sig = fill(.5, 6)) begin
+        mu ~ normal(0., 1.)
+        y ~ truncated_normal(mu * x, sig, lloq, uloq)
+    end
+    @test transpiles(top_ok)
+    @test occursin("truncated_normal_lpdf", stan_code(top_ok))
+    @test stanc_compiles(top_ok)
+
+    # --- NEGATIVE: an unmatched shape now raises a SLIC error ----------------
+    # vector obs + vector loc but SCALAR scale/lloq/uloq matches no registered
+    # `truncated_normal_lpdf` overload. Before the fix this transpiled silently
+    # (no `truncated_normal_lpdf` anywhere in the output) and only stanc caught
+    # it. The error must name the signature that failed to resolve.
+    plate_bad = @slic (; ys, xs, lloq = -3., uloq = 3.) begin
+        sigma ~ normal(0., 1.; lower = 0.)
+        theta ~ plate(ys, xs; outer = (4,)) do yi, xi
+            t ~ normal(0., 1.)
+            yi ~ truncated_normal(t * xi, sigma, lloq, uloq)
+            t
+        end
+    end
+    @test_throws "unresolved sampling distribution" stan_code(plate_bad)
+    @test_throws "truncated_normal_lpdf" stan_code(plate_bad)
+
+    # The same shape at TOP level already failed (via the auto-GQ `_lpdfs`
+    # assertion), but with an opaque message. It now reports the same, earlier.
+    top_bad = @slic (; y = randn(6), x = randn(6), lloq = -3., uloq = 3.) begin
+        mu ~ normal(0., 1.)
+        sigma ~ normal(0., 1.; lower = 0.)
+        y ~ truncated_normal(mu * x, sigma, lloq, uloq)
+    end
+    @test_throws "unresolved sampling distribution" stan_code(top_bad)
+
+    # --- FALSE-POSITIVE GUARD: NATIVE Stan distributions are unaffected ------
+    # `normal_lpdf(::vector | ::real, ::real)` is a real Stan signature: it types
+    # concretely and legitimately has NO `fundef`. Mixing vector and scalar args
+    # is perfectly valid there, so the guard must stay silent — both at top level
+    # and in a plate cell.
+    native_top = @slic (; y = randn(6), x = randn(6)) begin
+        mu ~ normal(0., 1.)
+        sigma ~ normal(0., 1.; lower = 0.)
+        y ~ normal(mu * x, sigma)                      # vector loc, SCALAR scale
+    end
+    @test transpiles(native_top)
+    @test stanc_compiles(native_top)
+
+    native_plate = @slic (; ys, xs) begin
+        sigma ~ normal(0., 1.; lower = 0.)
+        theta ~ plate(ys, xs; outer = (4,)) do yi, xi
+            t ~ normal(0., 1.)
+            yi ~ normal(t * xi, sigma)                 # vector loc, SCALAR scale
+            t
+        end
+    end
+    @test transpiles(native_plate)
+    @test stanc_compiles(native_plate)
+
+    # The sharp case: `lkj_corr_cholesky_lpdf` is BOTH native (a body-less
+    # `(cholesky_factor_corr, real)` signature) AND `@deffun`-bodyful (an
+    # array-of-factors helper). Here it traces to `anything` with no `fundef` —
+    # exactly the fingerprint of the negative cases above — yet stanc resolves it
+    # natively. Only the `udf_backed && !native_backed` pair tells them apart; a
+    # `udf_backed`-only check breaks this model.
+    native_both = @slic (;) begin
+        L::cholesky_factor_corr[3] ~ lkj_corr_cholesky(2.)
+    end
+    @test transpiles(native_both)
+    @test stanc_compiles(native_both)
+end

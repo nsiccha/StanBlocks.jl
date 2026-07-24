@@ -1574,7 +1574,20 @@ begin
             end)
             if !ismissing(body)
                 push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, source, capture_mod, anon_deconstruct, inject_mod, stan_fundef))))
+                # Mark the NAME as UDF-backed. `fundef` alone cannot answer
+                # "should this function have had a Stan definition?" — it falls
+                # back to `nothing` both for a native Stan function (correct)
+                # and for a UDF whose signature simply did not match (a bug).
+                # These markers are per-name and shape-independent, which is
+                # exactly the question `_check_lpxf_resolves` needs to ask.
+                marker = _backed_marker(:udf_backed, f, ftype, def_mod, stan)
+            else
+                # A body-less signature declares a function Stan ALREADY has —
+                # StanBlocks owes it no definition. See `_check_lpxf_resolves`
+                # for why a name needs both markers rather than one.
+                marker = _backed_marker(:native_backed, f, ftype, def_mod, stan)
             end
+            isnothing(marker) || push!(stmts, marker)
         end
         _is_symbol(f) || return Expr(:block, stmts...)
         if is_lhs
@@ -1609,6 +1622,54 @@ begin
 end
 
 fundef(x) = nothing
+
+# --- Provenance markers for `@deffun`-registered names ------------------------
+#
+# `fundef` answers "does THIS argument shape have a Stan definition?" — it
+# cannot answer "SHOULD it have had one?", because it falls back to `nothing`
+# both for a native Stan function (correct: Stan supplies it) and for a UDF
+# whose signature simply failed to match (a bug: nothing supplies it). These two
+# markers record, per NAME, which kinds of registration a name has:
+#
+#   `udf_backed`    — at least one bodyful `@deffun` overload, so StanBlocks
+#                     emits a Stan definition for some shape.
+#   `native_backed` — at least one body-less signature, i.e. a name Stan (or a
+#                     `@defsig`-declared external) already provides.
+#
+# A name can be BOTH: `lkj_corr_cholesky_lpdf` declares the native
+# `(cholesky_factor_corr, real)` signature body-less AND adds a bodyful
+# array-of-factors helper. Only `udf_backed && !native_backed` — a name Stan has
+# never heard of — lets `_check_lpxf_resolves` conclude an unmatched shape is
+# unresolvable rather than merely unmodelled by SLIC's signature table.
+udf_backed(x) = false
+native_backed(x) = false
+
+# A marker is an ordinary top-level method definition, so it must be emitted AT
+# MOST ONCE per name: a name routinely carries several registrations
+# (`truncated_normal_lpdf` has two bodyful overloads, `simple_reduce_sum` more),
+# and re-defining an identical method is *method overwriting*, which Julia
+# forbids outright during precompilation.
+#
+# Dedup therefore happens at MACRO-EXPANSION time, keyed by defining module +
+# name. The obvious run-time alternative — look the method up, then `@eval` it if
+# absent — is unusable: `@deffun` is also called from package EXTENSIONS
+# (`ext/PosteriorDBExt.jl`), and an extension cannot `eval` into the by-then
+# closed `StanBlocks` module (Julia: "breaks incremental compilation"). A plain
+# top-level definition works from anywhere; only the duplicate must be avoided.
+#
+# Keying includes `def_mod` so two modules defining the same NAME never suppress
+# each other's markers. A name we cannot key (qualified or computed) simply gets
+# no marker — `udf_backed` stays `false` and `_check_lpxf_resolves` stays quiet,
+# which is the safe direction to fail.
+_marked_backed = Set{Tuple{Symbol,Any,Symbol}}()
+_backed_marker(kind, f, ftype, def_mod, stan) = begin
+    _is_symbol(f) || return nothing
+    key = (kind, def_mod, f)
+    key in _marked_backed && return nothing
+    push!(_marked_backed, key)
+    marker = Expr(:., stan, QuoteNode(kind))
+    :($marker(::$ftype) = true)
+end
 sig_expr(x) = x
 sig_expr(x::Union{Tuple,NamedTuple,Vector}) = map(sig_expr, x)
 sig_expr(x::CanonicalExpr) = remake(x, sig_expr(x.args)...)
@@ -1634,9 +1695,53 @@ fetch_functions!(x::CanonicalExpr; info) = begin
     isnothing(info[sx]) && return
     fetch_subfunctions!(info[sx].body; info)
 end
+# A sampling statement is emitted VERBATIM as Stan (`lhs ~ dist(args…)`, show.jl),
+# while the `dist_lpdf` UDF standing behind it is pulled into the functions block
+# by `fetch_functions!` below. Those two halves can silently disagree: `lpxf_expr`
+# maps `dist` → `dist_lpdf` for EVERY registered distribution, but when no
+# `@deffun` signature matches the ARGUMENT SHAPES, `tracetype` degrades to
+# `anything` and the generic `fundef(x) = nothing` fallback yields no definition —
+# so the `~` reaches Stan with nothing behind it and only stanc objects, in a
+# message ("no dist_lpdf function exists for distribution dist") that names
+# neither SLIC nor the shape mismatch that actually caused it.
+#
+# NATIVE Stan distributions must NOT be caught by this check, and `anything`
+# alone does not separate them: SLIC does not tabulate every native signature
+# either, so a perfectly valid `L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.)`
+# also traces to `anything` with no `fundef` — and is correct, because stanc
+# resolves it natively. The `udf_backed`/`native_backed` marker pair is what does
+# separate them: both are registered per NAME at `@deffun` expansion, so together
+# they answer "is this a name Stan has never heard of?" independently of shapes.
+# Note `lkj_corr_cholesky_lpdf` is BOTH — hence the check needs the pair, not just
+# `udf_backed`.
+#
+# TOP-LEVEL sampling already failed on this, one pass later, via the auto-GQ
+# `_lpdfs` assertion in show.jl — but a ragged plate-sliced obs skips auto-GQ
+# entirely (the ragged carve-out: no `<base>_gen` twin), so nothing raised at all
+# and the break surfaced only from stanc, far from its cause. Fail here instead,
+# naming the signature that did not resolve.
+_check_lpxf_resolves(lpxf) = begin
+    center_type(lpxf) === types.anything || return
+    x = expr(lpxf)
+    fundef(x) === nothing || return
+    h = head(x)
+    (udf_backed(h) && !native_backed(h)) || return
+    error(
+        "slic: unresolved sampling distribution — no registered signature matches `",
+        short_expr(x), "`.\n",
+        "The distribution IS registered, but every `@deffun` overload declares a ",
+        "different argument shape, so the `~` would be emitted with no function ",
+        "definition behind it and stanc would reject it as an unknown distribution.\n",
+        "Fix: match a registered signature — e.g. make every distribution argument a ",
+        "`vector[n]` of the same length instead of mixing `vector` and scalar args — ",
+        "or add a `@deffun` overload for this shape."
+    )
+end
 fetch_functions!(x::SamplingExpr; info) = begin
     lhs, rhs = x.args
-    fetch_functions!(expr(lpxf_expr(lhs, rhs)); info)
+    lpxf = lpxf_expr(lhs, rhs)
+    _check_lpxf_resolves(lpxf)
+    fetch_functions!(expr(lpxf); info)
     if qual(lhs) == :data || lqual(lhs) == :undefined
         fetch_functions!(expr(likelihood_expr(lhs, rhs)); info)
         # Mirror the gq push: wrap `lhs` into a tokenof token so the per-shape
