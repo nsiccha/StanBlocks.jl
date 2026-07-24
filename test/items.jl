@@ -53,6 +53,7 @@ end
     # and blocked the whole include. Annotate only the heads actually used as base
     # distributions; `my_lpdf` stays plain (`my` is only ever called, never `~ my(...)`).
     @deffun begin
+        @stanonly begin
         @lpxf simple_lpdf(y, x) = 0.
         simple_lpdfs(y, x) = 0.
         simple_rng(x) = 0.
@@ -75,6 +76,7 @@ end
         srs2_helper(y, f, args...) = my_lpdf(y, f, args...)
         srs2_lpdfs(y, f, args...) = 0.
         srs2_rng(f, args...) = 0.
+        end
     end
 
     # --- issue @deffun definitions (hoisted to module level) ---
@@ -126,7 +128,7 @@ end
     end
     # Error-path fixture: the annotation base is a VALUE (`x[1]::real`), not a type
     # token → `_decl_computed_type` must error loudly at trace time (reject sub-test).
-    @deffun bad_computed_ann(x::anything[n]) = begin
+    @deffun @stanonly bad_computed_ann(x::anything[n]) = begin
         rv::(x[1])[n]
         rv[1] = x[1]
         rv
@@ -148,6 +150,25 @@ end
     @deffun typed_assign_bad_dim(x::vector[n]) = begin
         rv::vector[n+1] = x
         rv
+    end
+    # --- signature dim sourced from a NON-FIRST argument ---
+    # A whole-vector `normal_rng(loc, scale)` sizes off `scale`, the SECOND
+    # `vector[n]` arg, so the inferred RHS type carries `dims(scale)[1]` while the
+    # declaration says `n`. The emitted UDF binds `int n = dims(loc)[1];` AND
+    # rejects at runtime unless `dims(scale)[1] == n`, so equating the two at
+    # trace time asserts exactly what the generated Stan already enforces.
+    # The `_rng` suffix is load-bearing: Stan only permits an RNG call inside a
+    # UDF whose name ends in `_rng`, so without it stanc rejects the body on
+    # grounds that have nothing to do with the shape check under test.
+    @deffun @stanonly typed_assign_nonfirst_rng(loc::vector[n], scale::vector[n])::vector[n] = begin
+        draws::vector[n] = to_vector(normal_rng(loc, scale))
+        draws
+    end
+    # NEGATIVE control: DISTINCT signature dims are never equated — no runtime
+    # check relates `m` to `n`, so nothing backs such an equality.
+    @deffun @stanonly typed_assign_nonfirst_bad_rng(loc::vector[n], scale::vector[m])::vector[n] = begin
+        draws::vector[n] = to_vector(normal_rng(loc, scale))
+        draws
     end
     # --- BARE whole-vector local (no size annotation) with a broadcast RHS ---
     # The intermediate local's inferred size is the arg-placeholder fragment
@@ -285,7 +306,7 @@ end
     # --- public transpile-time return-type query ---
     @deffun return_type_scalar(x::real)::real = square(x)
     @deffun return_type_vector(x::vector[n])::vector[n] = x
-    @deffun copy_via_return_type(x::vector[n]) = begin
+    @deffun @stanonly copy_via_return_type(x::vector[n]) = begin
         rv::return_type_of(return_type_scalar, x[1])[n]
         for i in 1:n
             rv[i] = x[i]
@@ -434,7 +455,7 @@ end
     end
 
     @deffun begin
-        @lpxf issue18_lpdf(y) = normal_cdf(y, 0, 1) + normal_lcdf(y, 0, 1) + normal_lccdf(y, 0, 1)
+        @stanonly @lpxf issue18_lpdf(y) = normal_cdf(y, 0, 1) + normal_lcdf(y, 0, 1) + normal_lccdf(y, 0, 1)
     end
 
     # issue 19 sub-models
@@ -528,7 +549,7 @@ end
 
 
     @deffun begin
-        preconditioned_normal_lpdf(xi::matrix[m, n], loc::vector[m], scale::vector[m], prescale::matrix[m,m], n) = begin
+        @stanonly preconditioned_normal_lpdf(xi::matrix[m, n], loc::vector[m], scale::vector[m], prescale::matrix[m,m], n) = begin
             multi_normal_cholesky_lpdf(eachcol(xi), mdivide_left_tri_low(prescale, loc), mdivide_left_tri_low(prescale, diag_matrix(scale)))
         end
     end
@@ -1060,6 +1081,150 @@ end
       _name in (:StanBlocksTestSetup, :eval, :include, :_name, :_text) && continue
       @eval export $_name
   end
+end
+
+@testmodule JuliaEmissionFixtures begin
+    using StanBlocks
+
+    const julia_emission_fixture_module = @__MODULE__
+
+    @deffun begin
+        julia_shift(x::real, a::real)::real = x + a
+        julia_apply(f, x::vector[n], args...)::vector[n] = begin
+            out::vector[n]
+            for i in 1:n
+                out[i] = f(x[i], args...)
+            end
+            out
+        end
+        julia_nested(x::vector[n], a::real)::vector[n] = julia_apply(julia_shift, x, a)
+        julia_branch_mutate(x::vector[n], y::vector[n])::vector[n] = begin
+            out::vector[n]
+            for i in 1:n
+                if x[i] > 0
+                    out[i] = x[i] + y[i]
+                else
+                    out[i] = y[i]
+                end
+            end
+            out
+        end
+        julia_initialized(x::vector[n])::vector[n] = begin
+            out::vector[n] = exp(x)
+            out
+        end
+        julia_defaults(x::real, a::real=2.0; b=1.0)::real = a * x + b
+        @stanonly julia_stan_only(x::real)::real = exp(x)
+        julia_signature_only(x::real)::real
+        julia_sized_token(vector[n], x::vector[n])::vector[n] = x
+    end
+
+    @deffun @stanonly julia_branch_mutate_stanonly(
+        x::vector[n], y::vector[n]
+    )::vector[n] = begin
+        out::vector[n]
+        for i in 1:n
+            if x[i] > 0
+                out[i] = x[i] + y[i]
+            else
+                out[i] = y[i]
+            end
+        end
+        out
+    end
+
+    existing_julia_function(x::AbstractString) = length(x)
+    @deffun existing_julia_function(x::real)::real = x
+
+    module JuliaExtensionTarget
+    function extension end
+    end
+    @deffun JuliaExtensionTarget.extension(x::real)::real = x
+
+    dual_model = @slic (;n=3, x=[1.0, 2.0, 3.0], y=[4.0, 5.0, 6.0]) begin
+        z = julia_branch_mutate(x, y)
+    end
+    stanonly_model = @slic (;n=3, x=[1.0, 2.0, 3.0], y=[4.0, 5.0, 6.0]) begin
+        z = julia_branch_mutate_stanonly(x, y)
+    end
+
+    for _name in names(@__MODULE__; all=true, imported=false)
+        _text = String(_name)
+        Base.isidentifier(_text) || continue
+        startswith(_text, "#") && continue
+        _name in (:JuliaEmissionFixtures, :eval, :include, :_name, :_text) && continue
+        @eval export $_name
+    end
+end
+
+"""
+Verify bounded default Julia emission from `@deffun` in an isolated test item.
+"""
+@testitem "slic: bounded default Julia emission from @deffun" tags=[:slic, :stanc] setup=[StanBlocksImports, JuliaEmissionFixtures] begin
+    @test julia_shift(2.0, 3.0) == 5.0
+    @test julia_nested([1.0, 2.0, 3.0], 0.5) == [1.5, 2.5, 3.5]
+    @test julia_branch_mutate([1.0, -2.0], [3.0, 4.0]) == [4.0, 4.0]
+    @test julia_initialized([0.0, log(2.0)]) ≈ [1.0, 2.0]
+    @test julia_defaults(3.0) == 7.0
+    @test julia_defaults(3.0, 4.0; b=2.0) == 14.0
+
+    err = try
+        julia_branch_mutate([1.0, 2.0], [3.0])
+        nothing
+    catch e
+        e
+    end
+    @test err isa DimensionMismatch
+    @test occursin("julia_branch_mutate", sprint(showerror, err))
+
+    @test !hasmethod(julia_stan_only, Tuple{Float64})
+    @test !hasmethod(julia_signature_only, Tuple{Float64})
+    @test isempty(methods(julia_sized_token))
+    @test existing_julia_function("abc") == 3
+    @test !hasmethod(existing_julia_function, Tuple{Float64})
+    @test isempty(methods(JuliaExtensionTarget.extension))
+
+    collision = try
+        Core.eval(julia_emission_fixture_module, quote
+            @deffun begin
+                julia_collision(x::vector[n])::vector[n] = x
+                julia_collision(x::row_vector[n])::row_vector[n] = x
+            end
+        end)
+        nothing
+    catch e
+        e
+    end
+    @test occursin("Julia emission collision", sprint(showerror, collision))
+    @test occursin("@stanonly", sprint(showerror, collision))
+
+    unsupported = try
+        Core.eval(
+            julia_emission_fixture_module,
+            :(@deffun julia_bad_rng(x::real)::real = normal_rng(x, 1.0)),
+        )
+        nothing
+    catch e
+        e
+    end
+    @test occursin("does not implement `normal_rng`", sprint(showerror, unsupported))
+    @test occursin("@stanonly", sprint(showerror, unsupported))
+
+    dual_code = stan_code(dual_model)
+    stanonly_code = replace(
+        stan_code(stanonly_model),
+        "julia_branch_mutate_stanonly" => "julia_branch_mutate",
+    )
+    @test dual_code == stanonly_code
+    @test stanc_check(dual_code; warn_pedantic=false).ok
+
+    @test StanBlocks.builtin.bordet_time_response(
+        [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [1.0, 1.0],
+    ) ≈ [0.25, inv(1 + exp(-1.0)) * inv(1 + exp(1.0))]
+    @test StanBlocks.builtin.bordet_dose_response(
+        [0.0, 1.0], [0.0, 0.0], [0.0, 0.0],
+    ) ≈ [-log(2.0), -log1p(exp(-1.0))]
+    @test StanBlocks.builtin.linear_idxs([1, 2, 1], [1, 1, 2]) == [1, 2, 3]
 end
 
 """
@@ -2630,6 +2795,64 @@ Verify `slic: typed assignment compatibility` in an isolated test item.
     @test dim_err !== nothing
     @test occursin("Typed assignment", dim_err)
     @test occursin("dimension 1", dim_err)
+end
+
+@testitem "slic: typed assignment sized from a non-first signature arg" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Regression for the signature-dimension alias gap: the all-vector `_rng`
+    # idiom `draws::vector[n] = to_vector(normal_rng(loc, scale))` infers its size
+    # from `scale` — the SECOND `vector[n]` arg — and the alias table used to
+    # record `n` only against the FIRST arg mentioning it, so the declared `n` and
+    # the inferred `dims(scale)[1]` were unequatable and this threw at transpile
+    # time. Both directions matter, so the negative control below is the test that
+    # actually keeps the shape check honest.
+    ok = @slic (;loc=[0.0, 1.0, 2.0], scale=[1.0, 1.0, 1.0]) begin
+        mu ~ std_normal()
+        out = typed_assign_nonfirst_rng(loc, scale)
+        result = mu + out[1]
+    end
+    @test transpiles(ok)
+    @test stanc_compiles(ok)
+    code = stan_code(ok)
+    @test occursin("vector[n] draws = to_vector(normal_rng(loc, scale));", code)
+    # SOUNDNESS COUPLING — the point of the whole change. Accepting
+    # `dims(scale)[1] == n` at trace time is only truthful because the emitted
+    # function REJECTS at runtime when it is false. If that guard is ever dropped,
+    # the alias must go with it, and this assertion is what says so.
+    @test occursin("if (dims(scale)[1] != n) reject(", code)
+
+    # DISTINCT signature dims stay distinct: nothing in the emitted Stan relates
+    # `m` to `n`, so the shape check must still throw.
+    bad = @slic (;loc=[0.0, 1.0, 2.0], scale=[1.0, 1.0, 1.0]) begin
+        mu ~ std_normal()
+        out = typed_assign_nonfirst_bad_rng(loc, scale)
+        result = mu + out[1]
+    end
+    bad_err = try
+        stan_code(bad)
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test bad_err !== nothing
+    @test occursin("Typed assignment", bad_err)
+    @test occursin("dimension 1", bad_err)
+
+    # TOKEN carve-out: a sized-token `_rng` (reached through the auto-GQ
+    # predictive draw) binds its dim from the TOKEN slot, for which NO runtime
+    # check is emitted — so a token occurrence must never be aliased on an
+    # unchecked assumption. Every subsequent NON-token arg is guarded as usual.
+    tok = @slic (;y=[0.0, 0.5, -0.5], lloq=[-3.0, -3.0, -3.0], uloq=[3.0, 3.0, 3.0]) begin
+        mu ~ std_normal()
+        sigma ~ std_normal()
+        y ~ truncated_normal(rep_vector(mu, 3), rep_vector(exp(sigma), 3), lloq, uloq)
+    end
+    @test transpiles(tok)
+    @test stanc_compiles(tok)
+    tok_code = stan_code(tok)
+    @test occursin(r"int n = anontok__\d+;", tok_code)
+    @test occursin("if (dims(loc)[1] != n) reject(", tok_code)
+    @test !occursin(r"anontok__\d+ != n\) reject", tok_code)
+    @test !occursin(r"!= anontok__\d+\) reject", tok_code)
 end
 
 @testitem "slic: bare whole-vector local (broadcast RHS) emits unquoted size" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
