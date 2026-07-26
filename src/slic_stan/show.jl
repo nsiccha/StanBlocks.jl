@@ -76,13 +76,9 @@ Base.show(io::StanIO, x::StanExpr{<:AbstractString}) =
 Base.show(io::StanIO, x::StanExpr2{<:types.tokenof,1}) = autoprint(io, stan_size(x)[1])
 Base.show(io::StanIO, x::StanExpr2{<:types.tokenof}) = autoprint(io, "(", Join(stan_size(x), ", "), ")")
 Base.show(io::StanIO, ::Colon) = print(io, ":")
-Base.show(io::IO, x::StanModel) = show(StanIO(io), x)
-Base.show(io::IO, x::SlicModel; mayfail=true) = try
-    print(io, stan_model(x))
-catch e
-    mayfail && return print(io, "SlicModel: Something went wrong:", e)
-    rethrow(e)
-end
+# The ordinary `Base.show(::IO, ::SlicModel/::StanModel)` methods are semantic
+# summaries in `quarto.jl`. Stan emission is deliberately available only through
+# this `StanIO` method and the explicit `stan_code(model)` entry point.
 Base.show(io::IO, x::StanBlock) = if true#length(content(x)) > 0
     print(io, name(x), " {\n")
     map(stmt->block_print(maybe_indent(io, x), x, stmt), collect(values(content(x))))

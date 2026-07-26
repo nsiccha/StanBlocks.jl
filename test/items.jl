@@ -4399,6 +4399,57 @@ Run stanc over every PosteriorDB model for which StanBlocks ships a SLIC impleme
 end
 
 """
+Verify that ordinary model display is semantic observation, never an implicit
+trace or Stan-source rendering pass. The invalid declaration is deliberately a
+valid `SlicModel` but cannot be traced; every default MIME must still render it.
+"""
+@testitem "slic: model display is semantic and non-transpiling" tags=[:slic, :display] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    untraced = @slic (; y = [1.0]) begin
+        if true
+            y ~ normal(0.0, 1.0)
+        end
+    end
+
+    compact = sprint(show, untraced)
+    plain = sprint(show, MIME"text/plain"(), untraced)
+    markdown = sprint(show, MIME"text/markdown"(), untraced)
+    html = sprint(show, MIME"text/html"(), untraced)
+
+    @test occursin("SlicModel", compact) && occursin("untraced", compact)
+    @test occursin("bound inputs", plain) && occursin("y", plain)
+    @test occursin("Model declaration", markdown)
+    @test occursin("data-stanblocks-stage=\"untraced\"", html)
+    @test occursin("data-stanblocks-input=\"y\"", html)
+    @test !occursin("hx-", html)
+    @test all(out -> !occursin("parameters {", out), (compact, plain, markdown, html))
+    @test showable(MIME"text/markdown"(), untraced)
+    @test showable(MIME"text/html"(), untraced)
+    @test_throws StanBlocksError stan_code(untraced)
+
+    traced = stan_model(@slic (; obs = 0.0) begin
+        loc ~ std_normal()
+        obs ~ normal(loc, 1.0)
+    end)
+    traced_plain = sprint(show, MIME"text/plain"(), traced)
+    traced_markdown = sprint(show, MIME"text/markdown"(), traced)
+    traced_html = sprint(show, MIME"text/html"(), traced)
+
+    @test occursin("StanModel", sprint(show, traced))
+    @test occursin("observed", traced_plain)
+    @test occursin("outputs:", traced_plain) && occursin("operations:", traced_plain)
+    @test occursin("#### Outputs", traced_markdown)
+    @test occursin("data-stanblocks-stage=\"traced\"", traced_html)
+    @test occursin("data-stanblocks-operation=\"fit\"", traced_html)
+    @test !occursin("hx-", traced_html)
+    @test all(out -> !occursin("parameters {", out),
+        (traced_plain, traced_markdown, traced_html))
+
+    code = stan_code(traced)
+    @test occursin("parameters {", code)
+    @test occursin("model {", code)
+end
+
+"""
 Verify the descriptor surface — `stan_descriptor` / `stan_operation` /
 `stan_execute` — reflects one `@slic` declaration as identity + inputs + outputs
 + DERIVED operations, and fails closed on the cases a consumer cannot recover

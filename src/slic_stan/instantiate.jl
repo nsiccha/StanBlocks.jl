@@ -3,7 +3,9 @@
 
 Return the generated Stan source for `model` (a [`SlicModel`](@ref
 StanBlocks.SlicModel) or [`StanModel`](@ref StanBlocks.StanModel)) as a
-plain `String`.
+plain `String`. This is the intentional source-inspection API: ordinary
+terminal, Markdown, and HTML display shows a semantic model summary and never
+calls this function automatically.
 
 For a `SlicModel`, tracing runs first via [`stan_model`](@ref
 StanBlocks.stan_model); for an already-traced `StanModel`, only the
@@ -19,7 +21,7 @@ function stan_code end
 
 stan_code(x::StanModel) = begin 
     buf = IOBuffer()
-    show(buf, x)
+    show(StanIO(buf), x)
     String(take!(buf))
 end
 stan_code(x::SlicModel) = stan_code(stan_model(x))
@@ -131,4 +133,3 @@ _record_size_kwargs!(args...) = nothing
         for (key, x) in pairs(block(x, :data).content)
     ])))))
 end
-

@@ -38,6 +38,11 @@ LogDensityProblems.logdensity(problem, theta)               # log target
 LogDensityProblems.logdensity_and_gradient(problem, theta)  # log target + ∇
 ```
 
+Displaying a model in a terminal or notebook shows a semantic summary of its
+inputs, outputs, and available operations. Display never traces or transpiles a
+model; call `stan_code(model)` explicitly when you want the generated Stan
+program.
+
 ## Defining models with `@slic`
 
 `@slic` captures a `begin … end` block as an unevaluated AST plus a defining module. Two forms:
@@ -563,6 +568,10 @@ end
 ```
 
 ## Inspection and compilation
+
+Terminal, Markdown, and HTML display are non-transpiling model summaries. Use
+`stan_code(model)` explicitly to perform source generation and inspect the full
+Stan program.
 
 | API                                                          | Use                                                                                  |
 |--------------------------------------------------------------|--------------------------------------------------------------------------------------|
