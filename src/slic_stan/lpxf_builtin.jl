@@ -53,7 +53,7 @@ for lpxf_rhs in (
     :normal_id_glm_lpdf,
     :bernoulli_lpmf, :bernoulli_logit_lpmf, :bernoulli_logit_glm_lpmf,
     :binomial_lpmf, :binomial_logit_lpmf, :beta_binomial_lpmf,
-    :neg_binomial_lpdf, :neg_binomial_2_lpmf, :neg_binomial_2_log_lpdf,
+    :neg_binomial_lpmf, :neg_binomial_2_lpmf, :neg_binomial_2_log_lpdf,
     :neg_binomial_2_log_glm_lpmf,
     :poisson_lpmf, :poisson_log_lpmf, :poisson_log_glm_lpmf,
     :discrete_range_lpmf, :hypergeometric_lpmf, :multinomial_lpmf,
@@ -83,4 +83,3 @@ rng_expr(token::StanExpr2{<:types.tokenof,0}, rhs::CanonicalExpr) = stan_call(rn
 # Sized token path: prepend token so per-shape @deffun overloads dispatch.
 rng_expr(token::StanExpr2{<:types.tokenof}, rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), token, rhs.args...)
 rng_expr(x) = error("$x is missing `rng_expr`")
-
