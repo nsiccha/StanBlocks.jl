@@ -3122,7 +3122,12 @@ Verify `shapes: distributions` in an isolated test item.
             k     ~ binomial(n, theta)
         end)
     end
-    @testset "neg_binomial_2" begin
+    @testset "neg_binomial / neg_binomial_2" begin
+        @test stanc_compiles(@slic (;obs=[2, 5, 3]) begin
+            alpha ~ std_normal(;lower=0.)
+            beta  ~ std_normal(;lower=0.)
+            obs   ~ neg_binomial(alpha, beta)
+        end)
         @test stanc_compiles(@slic (;obs=5) begin
             mu  ~ std_normal(;lower=0.)
             phi ~ std_normal(;lower=0.)
@@ -4563,6 +4568,29 @@ than declared twice.
     end
     cerr = try; stan_descriptor(collide); catch e; sprint(showerror, e); end
     @test occursin("BOTH a data input and a model output", cerr)
+end
+
+"""
+Regression for the legacy `neg_binomial(alpha, beta)` SLIC family used by BRM:
+an integer-vector observation must synthesize a typed pointwise log-likelihood,
+just like the already-covered `neg_binomial_2(mu, phi)` family.
+"""
+@testitem "slic: negative-binomial descriptor has typed pointwise likelihood" tags=[:slic, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    model = @slic (; counts = [1, 3, 2]) begin
+        alpha ~ exponential(1.0)
+        beta ~ exponential(1.0)
+        counts ~ neg_binomial(alpha, beta)
+    end
+
+    d = stan_descriptor(model; name = :negative_binomial)
+    outs = Dict(o.name => o for o in d.outputs)
+    @test outs[:counts_likelihood].type == :vector
+    @test outs[:counts_likelihood].size == (:counts_n,)
+    @test outs[:counts_likelihood].generative == :pointwise_loglik
+    @test stan_operation(d, :pointwise_loglik).outputs == (:counts_likelihood,)
+    code = stan_code(model)
+    @test occursin("neg_binomial_lpmfs", code)
+    @test !occursin("neg_binomial_lpdf", code)
 end
 
 """

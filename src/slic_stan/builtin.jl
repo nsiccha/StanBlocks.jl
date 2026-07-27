@@ -182,7 +182,7 @@ end
     multinomial_lpmf
     categorical_lpmf categorical_logit_lpmf
     poisson_lpmf poisson_log_lpmf
-    neg_binomial_lpdf neg_binomial_2_log_lpdf
+    neg_binomial_lpmf neg_binomial_2_log_lpdf
     skew_double_exponential_lpdf
 
     # No-op "distribution": `y ~ dummy(args...)` marks `y` observed while
@@ -560,7 +560,7 @@ import Statistics
     ordered_logistic_lpmf(args...)
     poisson_lpmf(args...)
     poisson_log_lpmf(args...)
-    neg_binomial_lpdf(args...)
+    neg_binomial_lpmf(args...)
     neg_binomial_2_log_lpdf(args...)
     skew_double_exponential_lpdf(args...)
 
@@ -713,6 +713,7 @@ for (base, params) in (
     (:beta_lpdf, (:alpha, :beta)),
     (:exponential_lpdf, (:rate,)),
     (:uniform_lpdf, (:lo, :hi)),
+    (:neg_binomial_lpmf, (:alpha, :beta)),
     (:neg_binomial_2_lpmf, (:mu, :phi)),
     (:poisson_lpmf, (:lambda,)),
     (:poisson_log_lpmf, (:alpha,)),
