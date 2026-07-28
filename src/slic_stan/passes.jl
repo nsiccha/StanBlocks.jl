@@ -404,6 +404,7 @@ fetch_data!(x::Union{Function,String}; info) = nothing
 # INSIDE a compiler-injected loop body (`@inline` line info), which
 # `fetch_data!(::StanExpr{<:ForExpr})` recurses into — skip them here too.
 fetch_data!(x::Union{LineNumberNode,Nothing}; info) = nothing
+fetch_data!(x::Union{Number,Missing}; info) = nothing
 fetch_data!(x::StanExpr{<:Union{Number,String,Missing}}; info) = nothing 
 # A StanType's `info` carries its constraint EXPRESSIONS
 # (`lower`/`upper`/`offset`/`multiplier`) alongside its size, and data named only
