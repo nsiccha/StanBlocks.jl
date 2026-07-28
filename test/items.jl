@@ -5310,3 +5310,78 @@ isolated test item.
     @test occursin("While processing:", oshown)
     @test !occursin("<unrenderable", oshown)
 end
+
+@testitem "slic: plate carries cell constraints through promotion" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block, msg
+    G, lamv = 4, fill(0.5, 4)
+    obs_pos, obs_any = abs.(randn(G)), randn(G)
+
+    # `lower`/`upper`/`offset`/`multiplier` live in the cell StanType's `info`,
+    # not in its center type, so `_plate_outer_decl`'s shape/size/center rebuild
+    # used to drop them SILENTLY: stanc accepted the unconstrained declaration
+    # and sampled a different posterior with no diagnostic anywhere.
+    lower_model = @slic (; G, obs = obs_pos, lamv) begin
+        m0 ~ normal(sum(lamv), 1.)
+        s ~ plate(lamv; outer = G) do l
+            c::real ~ normal(m0, 1.; lower = 0.)
+            c
+        end
+        obs ~ normal(s, 1.)
+        s
+    end
+    lower_code = stan_code(lower_model)
+    @test occursin("lower=0.0", stan_block(lower_code, "parameters"))
+    @test stanc_compiles(lower_model)
+
+    affine_model = @slic (; G, obs = obs_any, lamv) begin
+        m0  ~ normal(0., 1.)
+        tau ~ normal(0., 1.; lower = 0.)
+        s ~ plate(lamv; outer = G) do l
+            c::real ~ normal(m0, tau; offset = m0, multiplier = tau)
+            c
+        end
+        obs ~ normal(s, 1.)
+        s
+    end
+    affine_params = stan_block(stan_code(affine_model), "parameters")
+    @test occursin("offset=m0", affine_params)
+    @test occursin("multiplier=tau", affine_params)
+    @test stanc_compiles(affine_model)
+
+    # A constraint naming the plate's per-cell position cannot be promoted: the
+    # promoted declaration is emitted OUTSIDE the loop, where that position does
+    # not exist. Refuse loudly rather than emit a model that compiles and is wrong.
+    idx_dependent = try
+        stan_code(@slic (; G, obs = obs_pos, lamv) begin
+            m0 ~ normal(sum(lamv), 1.)
+            s ~ plate(lamv; outer = G) do l
+                c::real ~ normal(m0, 1.; lower = 0., multiplier = exp(l))
+                c
+            end
+            obs ~ normal(s, 1.)
+            s
+        end)
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test idx_dependent !== nothing
+    @test occursin("per-cell position", idx_dependent)
+    @test occursin("multiplier", idx_dependent)
+
+    # Negative control: a constraint-free plate is untouched by any of this.
+    plain_model = @slic (; G, obs = obs_any, lamv) begin
+        m0 ~ normal(sum(lamv), 1.)
+        s ~ plate(lamv; outer = G) do l
+            c::real ~ normal(m0, 1.)
+            c
+        end
+        obs ~ normal(s, 1.)
+        s
+    end
+    plain_params = stan_block(stan_code(plain_model), "parameters")
+    @test occursin("vector[G] s_c;", plain_params)
+    @test !occursin("lower", plain_params)
+    @test !occursin("multiplier", stan_code(plain_model))
+    @test stanc_compiles(plain_model)
+end

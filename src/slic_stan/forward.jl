@@ -1409,6 +1409,47 @@ _plate_outer_decl(f, T::StanType, outer) = begin
     sizes = Any[outer[2:end]...; K; outer[1]]
     Expr(:(::), f, _plate_type_expr(:matrix, sizes))
 end
+
+# `lower`/`upper`/`offset`/`multiplier` live in a cell StanType's `info`, not in
+# its center type — so unlike the native-constrained centers (simplex/ordered/…)
+# they do NOT survive `_plate_outer_decl`'s shape/size/center-type rebuild. Left
+# alone they simply vanish on promotion, and the model compiles clean: `stanc`
+# accepts the unconstrained declaration and samples a DIFFERENT posterior with no
+# diagnostic anywhere. Carry them onto the promoted declaration instead.
+#
+# A constraint referencing the plate's own per-cell position cannot be promoted
+# verbatim: the promoted declaration is emitted OUTSIDE the loop, so a cell
+# `multiplier=exp(l)` would render with `l` unbound. Promoting it needs the whole
+# constraint vector materialised over the outer axis first, and Stan additionally
+# forbids a constraint referencing a transformed parameter — so only the
+# data-qualified case is hoistable at all. Until that hoist lands, refuse loudly:
+# a wrong model that compiles is the failure mode being removed here.
+_plate_promoted_constraints(f, T::StanType, index_aliases) = begin
+    cons = constraints(T)
+    for (key, value) in pairs(cons)
+        _plate_depends_on(value, index_aliases) || continue
+        error(
+            "plate: cell `", f, "`'s `", key, "=` constraint depends on the plate's ",
+            "per-cell position, but the promoted declaration is emitted outside the ",
+            "loop, where that position does not exist. Compute the full `", key,
+            "` over the outer axis BEFORE the plate and pass that name, or declare ",
+            "`", f, "` at model scope."
+        )
+    end
+    cons
+end
+
+# Merge promoted constraints into an already-emitted declaration, mirroring the
+# tail of `forward!(::DeclExpr)`: re-key on the RAW name `f` so a SubModel's
+# `setindex!` flattens it exactly once, then put the stored value back into the
+# declaration AST so later passes look the binding up under the same name.
+_plate_constrain_decl(f, x, cons; info) = begin
+    isempty(cons) && return x
+    d = expr(x)
+    info[f] = StanExpr(f, remake(type(d.args[1]); cons...))
+    stan_expr(remake(d, info[f]))
+end
+
 _plate_cell_index(f, T::StanType, idxs) = begin
     isempty(idxs) && error("plate: internal error — missing outer indices for `$f`.")
     shape = _plate_cell_shape(T, f)
@@ -1983,7 +2024,9 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     for (f, T) in all_cell_types
         haskey(ragged_plans, f) && continue
         tgt = f === rv ? info : root
+        cons = _plate_promoted_constraints(f, T, index_aliases)
         emitted = forward!(canonical(_plate_outer_decl(f, T, plate_outer)); info=tgt)
+        emitted = _plate_constrain_decl(f, emitted, cons; info=tgt)
         pending !== nothing && push!(pending, emitted)
     end
     # The emit trace forwards each promoted cell accessor at the root, where the
