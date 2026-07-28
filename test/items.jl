@@ -3448,7 +3448,17 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
         @test occursin("matrix[6, n_series] b_z", params)     # per-cell vector → matrix column
         tp = stan_block(code, "transformed parameters")
         @test occursin("matrix[6, n_series] b", tp)
-        @test occursin(r"b\[:, plate_i\w*\] = \(diag_pre_multiply\(tau, L\) \* b_z\[:, plate_i", tp)
+        # LICM: `diag_pre_multiply(tau, L)` does not depend on the cell, so the
+        # emitter binds it ONCE before the compiler-owned loop rather than
+        # re-evaluating (and re-AD-taping) it per cell. Snag
+        # benchmarked-brm-20aa0361 measured ~2x per-gradient on a 1000-group
+        # correlated random effect purely from where this landed.
+        @test occursin(r"matrix\[6, 6\] b__pl_inv\d+_\d+ = diag_pre_multiply\(tau, L\);", tp)
+        @test occursin(r"b\[:, plate_i\w*\] = \(b__pl_inv\d+_\d+ \* b_z\[:, plate_i", tp)
+        # …and the loop itself is left with no copy of the invariant.
+        let li = findfirst("for(", tp)
+            @test li !== nothing && !occursin("diag_pre_multiply", tp[first(li):end])
+        end
         mb = stan_block(code, "model")
         @test occursin(r"b_z\[:, plate_i\w*\] ~ std_normal\(\)", mb)  # sampled per column
         @test !occursin("b[:", mb)                            # the b fill is NOT in model
@@ -3503,6 +3513,145 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
         @test occursin(r"obs ~ normal\(z", stan_block(code, "model"))
     end
     @test LogDensityProblems.dimension(instantiate(priorlive)) == 5
+end
+
+"""
+Verify `slic: plate hoists loop-invariant cell-body expressions` in an isolated test
+item. The cell body is emitted INSIDE the compiler-owned `for` loop, so anything in
+it that does not depend on the cell — `diag_pre_multiply(tau, L)`, `rep_vector(0., K)`
+— used to be re-evaluated and re-AD-taped `prod(outer)` times per gradient. Snag
+`benchmarked-brm-20aa0361` measured that at 1.99x (non-centered) and 1.48x (centered)
+per-gradient on a BRM correlated random effect with `n_groups=1000, K=5`, purely from
+where the emitter put the expression: binding the SAME scale to a local by hand
+before the plate already emitted the fast form. These assertions pin the automatic
+version — and, just as importantly, pin that it changes nothing observable: the
+hoisted spelling and the hand-hoisted spelling must agree to the bit on `lp` and on
+every gradient component.
+
+The complementary NEGATIVE coverage lives in `slic: public plate promotes
+called-submodel bindings`: both submodel fixtures there are called with fully
+cell-invariant arguments, and their internal samples must nonetheless stay per-cell
+(`vector[6] theta_cell_z`, `matrix[k, n] theta_cell_z`) — a `~`-bearing submodel call
+is never lifted, however invariant its arguments look.
+"""
+@testitem "slic: plate hoists loop-invariant cell-body expressions" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # 1. NON-CENTERED (BRM `ranef_correlated`): the scale is written inline in the
+    #    cell body. It must be bound once before the loop, and the result must be
+    #    indistinguishable from writing that binding by hand.
+    inline_nc = @slic (; n_terms = 3, n_groups = 5) begin
+        L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
+        tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
+        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+            z::vector[n_terms] ~ std_normal()
+            diag_pre_multiply(tau, L) * z
+        end
+    end
+    hoisted_nc = @slic (; n_terms = 3, n_groups = 5) begin
+        L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
+        tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
+        S = diag_pre_multiply(tau, L)                 # the hand-hoisted spelling
+        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+            z::vector[n_terms] ~ std_normal()
+            S * z
+        end
+    end
+    @test transpiles(inline_nc)
+    @test stanc_compiles(inline_nc)
+    let tp = stan_block(stan_code(inline_nc), "transformed parameters")
+        # `tau`/`L` are parameters, so the hoist is parameter-qualified and lands in
+        # `transformed parameters` — the same block the hand-hoisted spelling uses.
+        @test occursin(r"matrix\[n_terms, n_terms\] b__pl_inv\d+_\d+ = diag_pre_multiply\(tau, L\);", tp)
+        @test occursin(r"b\[:, plate_i\w*\] = \(b__pl_inv\d+_\d+ \* b_z\[:, plate_i", tp)
+        let li = findfirst("for(", tp)
+            @test li !== nothing && !occursin("diag_pre_multiply", tp[first(li):end])
+        end
+    end
+
+    # 2. CENTERED: BOTH arguments of the per-cell `multi_normal_cholesky` are
+    #    cell-invariant. `rep_vector(0.0, n_terms)` is data-qualified, so it hoists
+    #    all the way to `transformed data` (evaluated once ever, never taped); the
+    #    scale is parameter-qualified and stops at `transformed parameters`. The
+    #    sampling statement itself is the per-cell effect and always stays in the loop.
+    inline_c = @slic (; n_terms = 3, n_groups = 5) begin
+        L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
+        tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
+        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+            bc::vector[n_terms] ~ multi_normal_cholesky(rep_vector(0.0, n_terms), diag_pre_multiply(tau, L))
+            bc
+        end
+    end
+    hoisted_c = @slic (; n_terms = 3, n_groups = 5) begin
+        L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
+        tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
+        mu0 = rep_vector(0.0, n_terms)
+        S = diag_pre_multiply(tau, L)
+        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+            bc::vector[n_terms] ~ multi_normal_cholesky(mu0, S)
+            bc
+        end
+    end
+    @test transpiles(inline_c)
+    @test stanc_compiles(inline_c)
+    let code = stan_code(inline_c)
+        @test occursin(r"vector\[n_terms\] b__pl_inv\d+_\d+ = rep_vector\(0\.0, n_terms\);",
+                       stan_block(code, "transformed data"))
+        @test occursin(r"matrix\[n_terms, n_terms\] b__pl_inv\d+_\d+ = diag_pre_multiply\(tau, L\);",
+                       stan_block(code, "transformed parameters"))
+        let mb = stan_block(code, "model")
+            # the `~` is still per-cell; only its ARGUMENTS moved out
+            @test occursin(r"b_bc\[:, plate_i\w*\] ~ multi_normal_cholesky\(b__pl_inv\d+_\d+, b__pl_inv\d+_\d+\);", mb)
+            @test !occursin("rep_vector", mb)
+            @test !occursin("diag_pre_multiply", mb)
+        end
+    end
+
+    # 3. A hoist must be a pure code MOTION: identical `lp` and identical gradient.
+    #    Both spellings declare `L`, `tau` and the plate carrier in the same order,
+    #    so one unconstrained draw feeds both.
+    for (a, b) in ((inline_nc, hoisted_nc), (inline_c, hoisted_c))
+        pa, pb = instantiate(a), instantiate(b)
+        @test LogDensityProblems.dimension(pa) == LogDensityProblems.dimension(pb)
+        theta = randn(Xoshiro(20361), LogDensityProblems.dimension(pa))
+        lpa, ga = LogDensityProblems.logdensity_and_gradient(pa, theta)
+        lpb, gb = LogDensityProblems.logdensity_and_gradient(pb, theta)
+        @test lpa == lpb
+        @test ga == gb
+    end
+
+    # 4. PASS A: a cell-invariant ASSIGNMENT written inside the cell body is lifted
+    #    WHOLE — one shared `matrix[n_terms, n_terms]`, not an `n_groups`-wide
+    #    per-cell collection plus a fill loop.
+    passA = @slic (; n_terms = 3, n_groups = 5) begin
+        L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
+        tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
+        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+            S = diag_pre_multiply(tau, L)             # invariant, but written per-cell
+            z::vector[n_terms] ~ std_normal()
+            S * z
+        end
+    end
+    @test transpiles(passA)
+    @test stanc_compiles(passA)
+    let tp = stan_block(stan_code(passA), "transformed parameters")
+        @test occursin("matrix[n_terms, n_terms] b_S = diag_pre_multiply(tau, L);", tp)
+        @test !occursin("matrix[n_terms, n_groups] b_S", tp)   # NOT collected per cell
+        @test !occursin("b_S[:, plate_i", tp)                  # NOT filled per cell
+        @test occursin(r"b\[:, plate_i\w*\] = \(b_S \* b_z\[:, plate_i", tp)
+    end
+
+    # 5. NEGATIVE CONTROL: a cell-VARYING cell body is emitted exactly as before —
+    #    nothing is bound outside the loop.
+    varying = @slic (; y = randn(4)) begin
+        sigma ~ normal(0.0, 1.0; lower = 0.0)
+        theta ~ plate(y; outer = (4,)) do yi
+            t ~ normal(0.0, 1.0)
+            yi ~ normal(t, sigma)
+            sigma * t                                 # depends on the cell
+        end
+    end
+    @test transpiles(varying)
+    @test stanc_compiles(varying)
+    @test !occursin("__pl_inv", stan_code(varying))
 end
 
 """

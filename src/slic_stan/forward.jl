@@ -1414,6 +1414,177 @@ _plate_input_accessor(it, idxs, info) = begin
     :($it.mem[ragged_start($it.ends, $idx):ragged_end($it.ends, $idx)])
 end
 
+# ── Loop-invariant code motion (LICM) over the plate cell body ───────────────
+# The cell body is emitted INSIDE the compiler-owned `for` loop, so every
+# subexpression that does not depend on the cell — `diag_pre_multiply(tau, L)`,
+# `rep_vector(0.0, K)` — is recomputed and AD-taped `prod(outer)` times per
+# gradient evaluation. Measured on a BRM correlated-random-effect block
+# (`n_groups=1000`, `K=5`, identical posterior, dlp=0): 743 us/grad with the
+# scale written inline in the cell body vs 408 us/grad with the SAME scale bound
+# to a local before the plate — 1.82x, purely from where the emitter put it
+# (snag benchmarked-brm-20aa0361). The emitter already emits the right thing for
+# the hand-hoisted spelling, so this pass performs that binding automatically
+# and every plate author stops having to know the trick.
+#
+#   PASS A lifts a whole cell-body ASSIGNMENT whose RHS is cell-invariant out of
+#          the loop entirely, so its LHS becomes one shared value instead of a
+#          promoted per-cell collection plus a fill loop.
+#   PASS B replaces each MAXIMAL cell-invariant CALL subexpression that survives
+#          Pass A with a compiler-owned local bound before the loop. Identical
+#          expressions share one local.
+#
+# Two independent gates decide hoistability and BOTH must pass, so the error is
+# always "declined to hoist" (emit exactly as before), never "hoisted something
+# that was per-cell":
+#   1. SYNTACTIC INVARIANCE — the expression mentions no loop index, no do-block
+#      parameter and no name the cell body itself binds. Symbol collection
+#      deliberately over-approximates (callee names and keyword labels count), so
+#      it can only ever be too strict.
+#   2. A PROBE TRACE in a throwaway copy of `info` (`_plate_probe` — the same
+#      isolation `_plate_discover` uses) that must resolve WITHOUT creating any
+#      binding, WITHOUT queueing any pending statement, and must yield a plain
+#      declarable Stan value. That single gate is what keeps a `~`-bearing @slic
+#      submodel call — whose per-cell parameters must NOT collapse to shared ones
+#      — and an inline UDF that hoists its own statements out of this pass,
+#      without it having to recognise either shape syntactically.
+# `~` statements are never lifted: only the ARGUMENTS of the distribution call
+# are eligible, so the sampling effect itself always stays per-cell.
+_plate_stmt_lhs(s) =
+    if s isa Expr && s.head === :(=)
+        s.args[1]
+    elseif s isa Expr && s.head === :call && length(s.args) >= 3 && s.args[1] === :~
+        s.args[2]
+    else
+        nothing
+    end
+_plate_lhs_root(::Nothing) = nothing
+_plate_lhs_root(lhs::Symbol) = lhs
+_plate_lhs_root(lhs::Expr) =
+    (lhs.head === :(::) || lhs.head === :ref) ? _plate_lhs_root(lhs.args[1]) : nothing
+_plate_lhs_root(_) = nothing
+
+_plate_collect_syms!(acc, _) = acc
+_plate_collect_syms!(acc, x::Symbol) = (push!(acc, x); acc)
+_plate_collect_syms!(acc, x::GlobalRef) = (push!(acc, x.name); acc)
+_plate_collect_syms!(acc, x::Expr) =
+    (for a in x.args; _plate_collect_syms!(acc, a); end; acc)
+_plate_is_invariant(x, varying) =
+    isdisjoint(_plate_collect_syms!(Set{Symbol}(), x), varying)
+
+# Only a CALL with at least one binding-mentioning argument is worth lifting: a
+# bare symbol or literal costs nothing per cell, an index into a shared value
+# would become an AD-tracked copy, and a pure constant fold saves nothing.
+# `:`/`~`/`&&`/`||` are syntax or statements, not Stan values.
+_plate_mentions_binding(::Symbol) = true
+_plate_mentions_binding(::GlobalRef) = true
+_plate_mentions_binding(x::Expr) = any(_plate_mentions_binding, x.args)
+_plate_mentions_binding(_) = false
+_plate_hoist_callee_ok(f::Symbol) = !(f in (:~, :(:), :(=), :&&, :||))
+_plate_hoist_callee_ok(f::GlobalRef) = _plate_hoist_callee_ok(f.name)
+_plate_hoist_callee_ok(_) = false
+_plate_is_hoist_candidate(x) =
+    x isa Expr && x.head === :call && length(x.args) >= 2 &&
+    _plate_hoist_callee_ok(x.args[1]) &&
+    any(_plate_mentions_binding, @view x.args[2:end])
+
+# A hoisted local is DECLARED at model scope, so its value must have a plain
+# declarable center. Constrained centers are excluded deliberately: emitting
+# `simplex[K] tmp = <expr>;` in `transformed parameters` adds a Stan VALIDATION
+# the inline expression never paid, which could reject a draw the model used to
+# accept — a hoist must not change what the posterior admits.
+_plate_hoistable_center(T) = T === types.int || T === types.bool || T === types.real ||
+    T === types.vector || T === types.row_vector || T === types.matrix
+_plate_probe_hoistable(e; info) = task_local_storage(:_slic_inline_pending, Any[]) do
+    probe = _plate_probe(info)
+    root = _plate_root_info(probe)
+    before = Set(keys(root))
+    # A candidate that does not resolve standalone (it reached a cell-local the
+    # syntactic gate could not see, or it is not a value at all) is simply NOT
+    # hoisted. That is the expected, survivable outcome of a probe — the
+    # expression is then emitted verbatim, exactly as before this pass existed —
+    # not a swallowed bug.
+    v = try
+        forward!(canonical(e); info=probe)
+    catch
+        return false
+    end
+    isempty(task_local_storage(:_slic_inline_pending)) || return false
+    Set(keys(root)) == before || return false
+    v isa StanExpr || return false
+    _plate_hoistable_center(center_type(v))
+end
+
+# Emits each lifted binding into `info` + `pending` (so it lands before the loop
+# in the enclosing block) and returns the rewritten `(body_stmts, ret_expr)`.
+# Runs BEFORE `_plate_discover`, so a lifted name is already in `info` when
+# discovery snapshots `before` and is therefore never promoted to a cell.
+_plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs, id; info) = begin
+    pending = _get_inline_pending()
+    varying = Set{Symbol}(idxs)
+    union!(varying, params)
+    for s in body_stmts
+        r = _plate_lhs_root(_plate_stmt_lhs(s))
+        r === nothing || push!(varying, r)
+    end
+    emit_hoist!(s) = begin
+        emitted = forward!(canonical(s); info)
+        pending !== nothing && push!(pending, emitted)
+        emitted
+    end
+
+    # PASS A — lift whole cell-invariant assignments. Restricted to an UNTYPED
+    # Symbol LHS: a typed `S::matrix[K,K] = …` would have to re-trace through the
+    # ordinary model-scope declaration path the probe never exercised, and
+    # declining costs only the optimisation.
+    kept = Any[]
+    for s in body_stmts
+        name = (s isa Expr && s.head === :(=) && s.args[1] isa Symbol) ? s.args[1] : nothing
+        if name !== nothing && !(name in keys(info)) &&
+            _plate_is_invariant(s.args[2], varying) && _plate_probe_hoistable(s.args[2]; info)
+            emit_hoist!(s)
+            delete!(varying, name)
+        else
+            push!(kept, s)
+        end
+    end
+    body_stmts = kept
+
+    # PASS B — maximal invariant call subexpressions.
+    cache = Dict{Any,Symbol}()
+    n = Ref(0)
+    hoist!(e) = begin
+        haskey(cache, e) && return cache[e]
+        (_plate_is_hoist_candidate(e) && _plate_is_invariant(e, varying) &&
+            _plate_probe_hoistable(e; info)) || return nothing
+        n[] += 1
+        name = Symbol(rv, :__pl_inv, n[], :_, id)
+        emit_hoist!(Expr(:(=), name, e))
+        cache[e] = name
+    end
+    walk(e) = begin
+        h = hoist!(e)
+        h === nothing || return h
+        e isa Expr || return e
+        Expr(e.head, Any[walk(a) for a in e.args]...)
+    end
+    # A distribution call and a void call at statement position ARE the effect —
+    # descend into their arguments only, never lift the call itself.
+    walk_call_args(e) = (e isa Expr && e.head === :call && length(e.args) >= 2) ?
+        Expr(:call, e.args[1], Any[walk(a) for a in @view e.args[2:end]]...) : e
+    rewrite(s) =
+        if s isa Expr && s.head === :call && length(s.args) == 3 && s.args[1] === :~
+            Expr(:call, :~, s.args[2], walk_call_args(s.args[3]))
+        elseif s isa Expr && s.head === :(=)
+            Expr(:(=), s.args[1], walk(s.args[2]))
+        elseif s isa Expr && s.head === :call
+            walk_call_args(s)
+        else
+            s
+        end
+
+    (Any[rewrite(s) for s in body_stmts], walk(ret_expr))
+end
+
 # TRACE-THEN-PROMOTE discovery (rework, decision 1vujeta): trace the do-block
 # body ONCE in an ISOLATED probe scope to discover the fresh params/vars the body
 # creates AND their per-cell types — INCLUDING submodel-internal ones (a submodel
@@ -1606,6 +1777,12 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         body_stmts = Any[_subst_syms(s, fresh_rename) for s in body_stmts]
         ret_expr = _subst_syms(ret_expr, fresh_rename)
     end
+
+    # Lift every cell-INVARIANT binding and subexpression out of the loop before
+    # anything else looks at the body, so discovery never sees a lifted name and
+    # never promotes it to a per-cell collection. Emits into `info` + `pending`.
+    body_stmts, ret_expr =
+        _plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs, id; info)
 
     # Trace once in isolation to discover EVERY fresh binding — including
     # submodel-internal flattened names — and the cell result type. The emit
