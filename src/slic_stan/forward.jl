@@ -1531,8 +1531,9 @@ end
 #      submodel call — whose per-cell parameters must NOT collapse to shared ones
 #      — and an inline UDF that hoists its own statements out of this pass,
 #      without it having to recognise either shape syntactically.
-# `~` statements are never lifted: only the ARGUMENTS of the distribution call
-# are eligible, so the sampling effect itself always stays per-cell.
+# `~` statements are never lifted by LICM: only the ARGUMENTS of the distribution
+# call are eligible. A later, separate plate pass may vectorise one whole direct
+# multivariate sample after discovery has proved its cell type.
 _plate_stmt_lhs(s) =
     if s isa Expr && s.head === :(=)
         s.args[1]
@@ -1669,6 +1670,103 @@ _plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs, id; info) = begi
     (Any[rewrite(s) for s in body_stmts], walk(ret_expr))
 end
 
+# Stan's multivariate vector families accept an `array[] vector` outcome and
+# evaluate the whole batch in one lpdf call. That matters beyond ordinary loop
+# overhead: `multi_normal_cholesky` factors/log-determinants its shared scale once
+# for the vectorised call, but once PER CELL when emitted inside the plate loop.
+# Keep this allow-list semantic and dispatch-based: a family joins only after its
+# Stan signature is known to accept an array of vectors.
+_plate_array_vectorizable(::Val) = false
+_plate_array_vectorizable(::Val{:multi_normal}) = true
+_plate_array_vectorizable(::Val{:multi_normal_prec}) = true
+_plate_array_vectorizable(::Val{:multi_normal_cholesky}) = true
+_plate_array_vectorizable(::Val{:multi_student_t}) = true
+_plate_array_vectorizable(::Val{:multi_student_t_cholesky}) = true
+_plate_array_vectorizable(f::Symbol) = _plate_array_vectorizable(Val(f))
+_plate_array_vectorizable(f::GlobalRef) = _plate_array_vectorizable(f.name)
+_plate_array_vectorizable(_) = false
+
+# Recognise the deliberately narrow, semantics-preserving case:
+#
+#     cell::vector[K] ~ multi_*(shared_args...)
+#     cell
+#
+# The sample must be the whole effective body, its value must be returned
+# unchanged, its arguments must not mention a cell index/input, and discovery
+# must have classified it as a fixed plain-vector PARAMETER. Generated-quantity
+# sampling stays looped because Stan's multivariate RNGs return one vector, not a
+# vectorised array. One outer axis is the only representation covered here.
+_plate_vectorized_sample(body_stmts, ret_expr, params, idxs, outer, cell_types; info) = begin
+    length(body_stmts) == 1 || return nothing
+    length(outer) == 1 || return nothing
+    stmt = only(body_stmts)
+    (stmt isa Expr && stmt.head === :call && length(stmt.args) == 3 &&
+        stmt.args[1] === :~) || return nothing
+    fresh_info = _plate_fresh_info(stmt)
+    fresh_info === nothing && return nothing
+    local_name = fresh_info[1]
+    ret_expr === local_name || return nothing
+    rhs = stmt.args[3]
+    (rhs isa Expr && rhs.head === :call && !isempty(rhs.args) &&
+        _plate_array_vectorizable(rhs.args[1])) || return nothing
+
+    varying = Set{Symbol}(idxs)
+    union!(varying, params)
+    push!(varying, local_name)
+    _plate_is_invariant(rhs, varying) || return nothing
+
+    global_name = _plate_global_name(info, local_name)
+    T = get(cell_types, global_name, nothing)
+    T isa StanType || return nothing
+    center_type(T) === types.vector || return nothing
+    stan_ndim(T) == 1 || return nothing
+    qual(T) === :parameter || return nothing
+    cv(T) && return nothing
+    (; local_name, global_name, rhs, cell_type=T)
+end
+
+# `vector[N,K]` in SLIC's type notation renders as `array[N] vector[K]` (the
+# vector center owns the final/right dimension; preceding dimensions are Stan
+# array dimensions). Only the fresh sampled carrier uses this layout. The public
+# plate result remains `matrix[K,N]`, and the ordinary result-fill loop preserves
+# the existing API and downstream indexing.
+_plate_vectorized_outer_decl(f, T::StanType, outer) = begin
+    K = only(stan_size(T))
+    Expr(:(::), f, _plate_type_expr(:vector, Any[outer...; K]))
+end
+
+_plate_emit_vectorized_sample!(candidate, outer, index_aliases; info) = begin
+    root = _plate_root_info(info)
+    rhs = task_local_storage(:_slic_plate_context, nothing) do
+        forward!(canonical(candidate.rhs); info)
+    end
+    rhs isa StanExpr || error(
+        "plate: internal error — vectorised distribution did not resolve to a Stan value."
+    )
+    cv(rhs) && error(
+        "plate: internal error — generated-quantity sampling reached the vectorised-prior path."
+    )
+
+    # Forwarding the declaration installs the exact outer array type in root
+    # scope. The sampling expression itself later contributes that LHS to the
+    # parameters block, so the standalone declaration node is intentionally not
+    # queued as a second statement.
+    emitted_decl = forward!(
+        canonical(_plate_vectorized_outer_decl(
+            candidate.global_name, candidate.cell_type, outer,
+        ));
+        info=root,
+    )
+    cons = _plate_promoted_constraints(
+        candidate.global_name, candidate.cell_type, index_aliases,
+    )
+    _plate_constrain_decl(candidate.global_name, emitted_decl, cons; info=root)
+    root[candidate.global_name] = remake(
+        root[candidate.global_name]; decl_role=:sampled, qual=:parameter, cv=false,
+    )
+    CanonicalExpr(:(~), root[candidate.global_name], rhs)
+end
+
 # TRACE-THEN-PROMOTE discovery (rework, decision 1vujeta): trace the do-block
 # body ONCE in an ISOLATED probe scope to discover the fresh params/vars the body
 # creates AND their per-cell types — INCLUDING submodel-internal ones (a submodel
@@ -1738,7 +1836,9 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
 #     (simplex/ordered/positive_ordered, fixed `K`) IS carried now: it emits a
 #     Stan `array[N…] <ct>[K]` parameter (`:constrained_vector`) so Stan applies
 #     the per-cell constraint transform + jacobian; a plain `vector[K]` keeps the
-#     dense `matrix[K,N]` packing (snag plate-constraine-90607054). Still dropped:
+#     dense `matrix[K,N]` packing (snag plate-constraine-90607054), except that a
+#     single direct array-vectorizable multivariate sample uses an internal
+#     `array[N] vector[K]` carrier so Stan evaluates one vectorised lpdf. Still dropped:
 #     `~`-bound scalar constraints (lower/upper on a plain center) and constrained
 #     MATRIX families (cholesky/cov/corr) — declare those at model scope.
 #   • RAGGED cells: 1-D plain-vector with a DATA-computable per-cell length only
@@ -1920,6 +2020,15 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     all_cell_types = copy(cell_types)
     all_cell_types[rv] = rv_type
 
+    # Collapse exactly one direct fixed-vector multivariate prior into a whole-
+    # array sample. Discovery has already proved the cell type; recognition now
+    # decides representation and removes only that `~` from the loop. The return
+    # fill stays, preserving the public `matrix[K,N]` plate result.
+    vectorized_sample = _plate_vectorized_sample(
+        body_stmts, ret_expr, params, idxs, outer_dims, cell_types; info,
+    )
+    vectorized_sample === nothing || (body_stmts = Any[])
+
     # A cell is ragged when its length depends on the per-cell position. That
     # position is aliased by the loop index AND the do-block param, each of which a
     # SubModel flattens (`g` ⇒ `sub_g`, `plate_i` ⇒ `sub_plate_i`) — so raggedness
@@ -2023,15 +2132,26 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         end : outer_dims
     for (f, T) in all_cell_types
         haskey(ragged_plans, f) && continue
+        (vectorized_sample !== nothing && f === vectorized_sample.global_name) && continue
         tgt = f === rv ? info : root
         cons = _plate_promoted_constraints(f, T, index_aliases)
         emitted = forward!(canonical(_plate_outer_decl(f, T, plate_outer)); info=tgt)
         emitted = _plate_constrain_decl(f, emitted, cons; info=tgt)
         pending !== nothing && push!(pending, emitted)
     end
+    if vectorized_sample !== nothing
+        emitted = _plate_emit_vectorized_sample!(
+            vectorized_sample, plate_outer, index_aliases; info,
+        )
+        pending !== nothing && push!(pending, emitted)
+    end
     # The emit trace forwards each promoted cell accessor at the root, where the
     # loop index is bound under its flattened name; key the context idxs to match.
     global_idxs = Symbol[_plate_global_name(info, idx) for idx in idxs]
+    if vectorized_sample !== nothing
+        cell_accessors[vectorized_sample.global_name] =
+            Expr(:ref, vectorized_sample.global_name, global_idxs...)
+    end
     ctx = (idxs=global_idxs, cell_types=cell_types, cell_accessors=cell_accessors)
     emitted_loop = task_local_storage(:_slic_plate_context, ctx) do
         forward!(canonical(loop); info)
