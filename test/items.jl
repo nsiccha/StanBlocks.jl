@@ -5144,9 +5144,16 @@ The unmarked emission must stay byte-identical; the flat spelling is the control
         # ... and its whole downstream chain follows it, rather than being left
         # behind referencing a name declared later (the stanc-reject shape).
         @test occursin("matrix[n_terms, n_g] b_cols", gq)
-        @test !occursin("b_cols", tp)
+        # Word-bounded: `transformed parameters` legitimately holds the plate's
+        # hoisted loop-invariant `b_cols__pl_inv1_1 = diag_pre_multiply(tau, L)`,
+        # which is a function of the UNTAINTED `tau`/`L` (asserted below) and so
+        # belongs there — gq reads it. `\b` distinguishes that from the collected
+        # result `b_cols` itself being left behind, which is the actual bug.
+        # (`\b` also stops the `mu` probe matching inside `diag_pre_multiply` —
+        # a false positive the bare substring would have hit regardless.)
+        @test !occursin(r"\bb_cols\b", tp)
         @test occursin("mu = rows_dot_product", gq)
-        @test !occursin("mu", tp)
+        @test !occursin(r"\bmu\b", tp)
         # The likelihood is held out, and the cell prior is no longer a model
         # statement at all — the silent-wrong-model fingerprint was the `~`
         # surviving here while `y ~ ...` vanished.
