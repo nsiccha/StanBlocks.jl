@@ -138,10 +138,21 @@ backward!(x::SamplingExpr; info) = begin
     lhs, rhs = x.args
     key = _base_lhs_symbol(lhs)
     if key in keys(info) && _is_fresh_decl(info[key]) && _decl_role(info[key]) == :sampled
-        if lqual(info[key]) == :affects_likelihood
+        if lqual(info[key]) == :affects_likelihood && !cv(info[key])
             # A plate parameter used by a later likelihood remains a parameter;
             # propagate that reachability into its prior's RHS exactly like the
             # established bare-Symbol sampling path above.
+            #
+            # UNLESS it is cv-tainted. Likelihood reachability is computed over
+            # the UNCONDITIONED trace, so a held-out likelihood still reads as
+            # `:affects_likelihood` here — while cv has already dropped the term
+            # that made it one. Without the `cv` test a plate cell parameter
+            # sized from held-out data stays in `parameters`, sampled from its
+            # prior with nothing informing it: a prior draw dressed up as a fit,
+            # emitted silently and stanc-clean. `forward!` has already qualified
+            # the declaration `:quantities` (see `_forward_indexed_sampling!` in
+            # forward.jl); this is the matching half that turns the `~` itself
+            # into the generated-quantities re-draw.
             remake(x, lhs, backward!(rhs; info))
         else
             # Prior-only plate locals are generated quantities, matching the
