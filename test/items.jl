@@ -4902,3 +4902,204 @@ is skipped for a ragged plate-sliced obs.
     @test transpiles(native_both)
     @test stanc_compiles(native_both)
 end
+
+"""
+Snag plate-silently-i-e41ed2f0 (reported by BRM, found handling its own cv snag
+build-a-cv-out-o-5a22814d): a cv-tainted size reaching a plate-internal FRESH
+parameter was mis-lowered SILENTLY.
+
+Sizing a plate's `outer=` from a cv-marked input and expecting the plate-internal
+fresh parameter to flip to a generated-quantities re-draw — exactly as the
+equivalent FLAT spelling does — instead left the per-cell parameter in
+`parameters` and its whole chain in `transformed parameters`, while dropping ONLY
+the likelihood from the model block. The emitted program was stanc-clean and
+sampled happily: per-group random effects that NOTHING informs, i.e. a prior draw
+dressed up as a fit, reported as a CV result. Nothing warned, nothing errored.
+
+Cause, in two halves that had to be fixed TOGETHER:
+  * `forward.jl` `_forward_indexed_sampling!` — the plate producer's declaration
+    certificate qualified every fresh cell parameter `:parameter` unconditionally,
+    never consulting `cv`, unlike the bare-Symbol path it mirrors.
+  * `passes.jl` `backward!(::SamplingExpr)` — decided the plate qual from
+    likelihood reachability (`lqual`) ALONE. Reachability is computed over the
+    UNCONDITIONED trace, so a held-out likelihood still reads `:affects_likelihood`
+    while cv has already dropped the term that made it one.
+Fixing only the `backward!` half moves the cell parameter and leaves its
+collected result behind in `transformed parameters`, referencing a name declared
+later in `generated quantities` — stanc REJECTS that, which is why the taint has
+to be decided in the forward pass and propagate through the collection.
+
+The unmarked emission must stay byte-identical; the flat spelling is the control.
+"""
+@testitem "slic: cv-tainted plate outer size re-draws the cell parameter in gq" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    n_obs, n_terms, n_g = 40, 2, 5
+    gidx = repeat(1:n_g, inner = div(n_obs, n_g))
+    Zm, yv = randn(n_obs, n_terms), randn(n_obs)
+    data = (; group_idx = gidx, n_terms = n_terms, Z = Zm, y = yv)
+
+    # Two spellings of ONE model, identical in value; only the plate's `outer=`
+    # versus the flat `n=` carries the group count.
+    flat = @slic (; data...) begin
+        n_g    = maximum(group_idx)
+        L      ~ lkj_corr_cholesky(1.; n = n_terms)
+        tau    ~ std_normal(; n = n_terms, lower = 0.)
+        z_flat ~ std_normal(; n = n_terms * n_g)
+        z = reshape(z_flat, n_terms, n_g)
+        mu = rows_dot_product(Z, ((diag_pre_multiply(tau, L) * z)')[group_idx, :])
+        y ~ normal(mu, 1.)
+    end
+    plate_model = @slic (; data...) begin
+        n_g = maximum(group_idx)
+        L   ~ lkj_corr_cholesky(1.; n = n_terms)
+        tau ~ std_normal(; n = n_terms, lower = 0.)
+        b_cols ~ plate(; outer = (n_g,)) do g
+            z::vector[n_terms] ~ std_normal()
+            diag_pre_multiply(tau, L) * z
+        end
+        mu = rows_dot_product(Z, (b_cols')[group_idx, :])
+        y ~ normal(mu, 1.)
+    end
+    mark(m) = m(; group_idx = StanBlocks.stan.maybecv(:group_idx, gidx))
+
+    # --- UNMARKED: a plain fit is untouched by any of this --------------------
+    @test stanc_compiles(plate_model)
+    let code = stan_code(plate_model)
+        @test occursin("matrix[n_terms, n_g] b_cols_z", stan_block(code, "parameters"))
+        @test occursin("matrix[n_terms, n_g] b_cols", stan_block(code, "transformed parameters"))
+        @test occursin(r"y ~ normal\(mu, 1\.0\)", stan_block(code, "model"))
+        @test !occursin("b_cols_z", stan_block(code, "generated quantities"))
+    end
+
+    # --- CONTROL: the FLAT spelling under the same mark -----------------------
+    # This is what the plate is required to match. It also proves the mark is
+    # actually taking: if `maybecv` were a no-op, this control fails too.
+    let code = stan_code(mark(flat))
+        @test stanc_compiles(mark(flat))
+        @test !occursin("z_flat", stan_block(code, "parameters"))
+        @test occursin(r"z_flat = std_normal_vector_rng\(", stan_block(code, "generated quantities"))
+        @test !occursin(r"y ~ normal\(mu", stan_block(code, "model"))
+    end
+
+    # --- MARKED PLATE: same semantics, and stanc-clean ------------------------
+    let cvm = mark(plate_model), code = stan_code(cvm)
+        @test transpiles(cvm)
+        @test stanc_compiles(cvm)
+        params, tp, gq, mdl = stan_block(code, "parameters"),
+                              stan_block(code, "transformed parameters"),
+                              stan_block(code, "generated quantities"),
+                              stan_block(code, "model")
+        # The per-group standardised draw LEAVES `parameters` and is re-drawn.
+        @test !occursin("b_cols_z", params)
+        @test occursin("matrix[n_terms, n_g] b_cols_z", gq)
+        @test occursin(r"b_cols_z\[:, plate_i\w*\] = std_normal_vector_rng\(", gq)
+        # ... and its whole downstream chain follows it, rather than being left
+        # behind referencing a name declared later (the stanc-reject shape).
+        @test occursin("matrix[n_terms, n_g] b_cols", gq)
+        @test !occursin("b_cols", tp)
+        @test occursin("mu = rows_dot_product", gq)
+        @test !occursin("mu", tp)
+        # The likelihood is held out, and the cell prior is no longer a model
+        # statement at all — the silent-wrong-model fingerprint was the `~`
+        # surviving here while `y ~ ...` vanished.
+        @test !occursin(r"y ~ normal\(mu", mdl)
+        @test !occursin("b_cols_z", mdl)
+        # `L`/`tau` are NOT tainted: they stay fitted parameters.
+        @test occursin("cholesky_factor_corr[n_terms] L", params)
+        @test occursin("tau", params)
+    end
+
+    # A cv-tainted RHS (rather than a cv-tainted outer size) reaching the same
+    # fresh cell parameter must route the same way.
+    cv_rhs = @slic (; n_groups = 4, s = 1.0, w = 0.5) begin
+        b ~ plate(; outer = (n_groups,)) do g
+            t ~ normal(0., s)
+            t
+        end
+        mu = sum(b)
+        w ~ normal(mu, 1.)
+    end
+    @test stanc_compiles(cv_rhs)
+    @test occursin("vector[n_groups] b_t", stan_block(stan_code(cv_rhs), "parameters"))
+    let tainted = cv_rhs(; s = StanBlocks.stan.maybecv(:s, 1.0)),
+        code = stan_code(tainted)
+        @test stanc_compiles(tainted)
+        @test !occursin("b_t", stan_block(code, "parameters"))
+        @test occursin(r"b_t\[plate_i\w*\] = normal_rng\(", stan_block(code, "generated quantities"))
+    end
+
+    # A per-cell OBSERVATION under a cv-tainted outer size. Before the fix this
+    # shape ignored the mark completely: the marked emission was byte-identical
+    # to the unmarked one, so the held-out `y[i] ~ normal(t[i], s)` stayed in the
+    # model block and `t` stayed a fitted parameter — the same silent wrongness
+    # as the headline case, reached by a different route. It is a distinct hole:
+    # the LHS expression is snapshotted before the cv decision, and
+    # `distribution_blocks` routes a sampling statement by reading `cv` off that
+    # emitted LHS rather than off `info`.
+    yv = randn(6)
+    obs_in_cell = @slic (; y = yv, n_g = 6) begin
+        s ~ std_normal(; lower = 0.)
+        b ~ plate(y; outer = (n_g,)) do yi
+            t ~ std_normal()
+            yi ~ normal(t, s)
+            t
+        end
+    end
+    @test stanc_compiles(obs_in_cell)
+    @test occursin("vector[n_g] b_t", stan_block(stan_code(obs_in_cell), "parameters"))
+    let tainted = obs_in_cell(; n_g = StanBlocks.stan.maybecv(:n_g, 6)),
+        code = stan_code(tainted)
+        @test stanc_compiles(tainted)
+        # The cell parameter re-draws in gq, and the held-out per-cell
+        # observation leaves the model block with it.
+        @test !occursin("b_t", stan_block(code, "parameters"))
+        @test occursin(r"b_t\[plate_i\w*\] = std_normal_rng\(", stan_block(code, "generated quantities"))
+        @test !occursin("~ normal(", stan_block(code, "model"))
+        # `s` is untainted and stays fitted.
+        @test occursin("s", stan_block(code, "parameters"))
+    end
+
+    # A CONSTRAINED cell type must survive the same routing: the gq re-draw has
+    # to use the constrained `_rng` and keep the `array[...] simplex[K]` shape.
+    gidx = repeat(1:4, inner = 5)
+    simplex_cell = @slic (; group_idx = gidx, alpha = ones(3), y = randn(20)) begin
+        n_g = maximum(group_idx)
+        K = length(alpha)
+        p ~ plate(; outer = (n_g,)) do g
+            theta::simplex[K] ~ dirichlet(alpha)
+            theta[1]
+        end
+        mu = p[group_idx]
+        y ~ normal(mu, 1.)
+    end
+    @test stanc_compiles(simplex_cell)
+    @test occursin("simplex[K] p_theta", stan_block(stan_code(simplex_cell), "parameters"))
+    let tainted = simplex_cell(; group_idx = StanBlocks.stan.maybecv(:group_idx, gidx)),
+        code = stan_code(tainted),
+        gq = stan_block(code, "generated quantities")
+        @test stanc_compiles(tainted)
+        @test !occursin("p_theta", stan_block(code, "parameters"))
+        @test occursin("array[n_g] simplex[K] p_theta", gq)
+        @test occursin(r"p_theta\[plate_i\w*\] = dirichlet_vector_rng\(", gq)
+    end
+
+    # A RAGGED cell under the same mark: the re-draw runs over the plate's
+    # ragged backing memory rather than a rectangular slice.
+    Ks = [2, 3, 2, 4]
+    ragged_cell = @slic (; Ks = Ks, y = randn(4)) begin
+        n_g = length(Ks)
+        b ~ plate(; outer = (n_g,)) do g
+            z::vector[Ks[g]] ~ std_normal()
+            sum(z)
+        end
+        y ~ normal(b, 1.)
+    end
+    @test stanc_compiles(ragged_cell)
+    let tainted = ragged_cell(; Ks = StanBlocks.stan.maybecv(:Ks, Ks)),
+        code = stan_code(tainted),
+        gq = stan_block(code, "generated quantities")
+        @test stanc_compiles(tainted)
+        @test !occursin("__pl_mem", stan_block(code, "parameters"))
+        @test occursin("std_normal_vector_rng(", gq)
+        @test occursin("__pl_mem", gq)
+    end
+end
