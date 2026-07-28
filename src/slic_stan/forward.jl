@@ -912,6 +912,15 @@ forward!(x::AssignmentExpr; info) = begin
     k = local_key in keys(info) ? local_key : _base_lhs_symbol(lhs)
     if k in keys(info)
         base = info[k]
+        # A fill CARRIES cv, exactly like the ordinary expression path
+        # (`passes.jl` `cv=any(cv, x.args) || cv(tt)`): cv propagates through
+        # every expression it reaches. Without this the plate's collected result
+        # inherits its fill's QUALIFIER but not its TAINT, so a cv-tainted cell
+        # parameter lands in `generated quantities` while the collection reads as
+        # untainted — the downstream likelihood is then kept, referencing a name
+        # that is no longer in scope for the model block (stanc reject). The flag
+        # is monotone: once tainted, a later untainted fill cannot clear it.
+        tainted = cv(base) || cv(rhs)
         if _is_fresh_decl(base)
             role = _decl_role(base)
             role == :sampled && error(
@@ -922,13 +931,13 @@ forward!(x::AssignmentExpr; info) = begin
                 # flat-prior parameter, then its FIRST certified indexed fill
                 # reclassifies it as a transformed fill target.  Reset (rather
                 # than promote) the qualifier to that first RHS.
-                info[k] = remake(base; decl_role=:fill, qual=qual(rhs))
+                info[k] = remake(base; decl_role=:fill, qual=qual(rhs), cv=tainted)
             else
                 role == :fill || error("Fresh declaration `", k, "` has unknown declaration role `", role, "`.")
-                info[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)))
+                info[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)), cv=tainted)
             end
         else
-            info[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)))
+            info[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)), cv=tainted)
         end
     end
     fwd
@@ -1209,6 +1218,7 @@ _forward_indexed_sampling!(x; info) = begin
         )
         return remake(x, lhs, rhs)
     end
+    retainted = false
     if _is_fresh_decl(base)
         role = _decl_role(base)
         role == :fill && error(
@@ -1217,15 +1227,48 @@ _forward_indexed_sampling!(x; info) = begin
         role in (:unfilled, :sampled) || error(
             "Fresh declaration `", k, "` has unknown declaration role `", role, "`."
         )
-        role == :unfilled && (info[k] = remake(base; decl_role=:sampled, qual=:parameter))
+        # cv contagion, exactly as the bare-Symbol path does it (see
+        # `forward!(::SamplingExpr{Symbol,<:StanExpr})`): a fresh parameter whose
+        # DECLARED type is cv-tainted — a plate whose `outer=` size came from
+        # held-out data — or whose prior RHS is cv, is predictive-only and must
+        # be a generated quantity, never a parameter. Deciding it HERE, in the
+        # forward pass, rather than from likelihood reachability in `backward!`,
+        # is what keeps the emitted program stanc-clean: the `:quantities`
+        # qualifier then propagates through the plate's collected result and
+        # everything downstream via the ordinary `_promote_qual` fill path, so
+        # the whole chain lands in `generated quantities` TOGETHER. A `backward!`
+        # -side fix moves the cell parameter alone and leaves its collection
+        # behind in `transformed parameters`, referencing a name declared later.
+        if role == :unfilled
+            tainted = cv(base) || cv(rhs)
+            info[k] = tainted ?
+                remake(base; decl_role=:sampled, qual=:quantities, cv=true) :
+                remake(base; decl_role=:sampled, qual=:parameter)
+            retainted = tainted
+        end
     else
         q = qual(base)
         q == :data || error(
             "Indexed sampling of `", k, "[…]` has a ", q,
             "-qualified base that is not a compiler-generated fresh plate declaration."
         )
-        cv(rhs) && (info[k] = remake(base; cv=true))
+        if cv(rhs)
+            info[k] = remake(base; cv=true)
+            retainted = true
+        end
     end
+    # Re-derive the LHS against the base we may have just tainted.  `lhs` was
+    # snapshotted at the top of this function, BEFORE the cv decision, and
+    # `distribution_blocks` routes a sampling statement by reading `cv` off the
+    # EMITTED LHS expression rather than off `info` — so a stale LHS leaves a
+    # held-out per-cell observation `y[i] ~ normal(t[i], s)` sitting in the model
+    # block while `t` has already moved to `generated quantities`, which stanc
+    # rejects as out of scope.  The bare-Symbol path never hits this because it
+    # ends with `remake(x, info[name], rhs)`, re-reading `info` after the taint;
+    # an indexed LHS is a compound expression and has to be re-forwarded to pick
+    # the base up again.  Guarded on an actual taint so every untainted emission
+    # is byte-identical to before.
+    retainted && (lhs = forward!(lhs_raw; info))
     remake(x, lhs, rhs)
 end
 forward!(x::SamplingExpr{<:CanonicalExprV{:getindex}}; info) =
