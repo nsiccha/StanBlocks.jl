@@ -221,23 +221,21 @@ tracetype(x::CanonicalExpr{typeof(return_type_of)}) = error(
     "full call-site trace and are not supported by this query."
 )
 
-# Stan defines the elementwise arithmetic operators `+ - * / ^` (and their
-# broadcast forms `.+ .- .* ./ .^`) only on `vector` / `row_vector` / `matrix`
-# operands — NEVER on plain scalar arrays (`array[] int` / `array[] real` /
-# `array[] complex`). A `tracetype` that returned `int[n]` / `real[n]` for such a
-# call transpiles PASS but stanc REJECTs it downstream ("Semantic error"): a
-# silent miscompile. `_reject_scalar_array_elementwise` fails LOUDLY at trace time
-# with the actionable fix instead of emitting invalid Stan. (Correct lowering — an
-# @deffun element loop or a `to_vector` round-trip — is a possible future
-# enhancement; today the loud rejection is the contract.)
+# Stan has no arithmetic operators on plain scalar arrays (`array[] int` /
+# `array[] real` / `array[] complex`). Supported elementwise forms are lowered to
+# `jbroadcasted` in forward.jl before `tracetype`: binary `+`/`-`, dotted
+# `.*`/`./`/`.^`, and plain scalar scaling (`scalar * array` or `array * scalar`).
+# Anything that reaches this floor would otherwise transpile to invalid Stan;
+# reject it loudly and name the supported spellings instead.
 _is_scalar_array(t::StanType) = center_type(t) <: types.complex && l_ndim(t) >= 1
 _reject_scalar_array_elementwise(x::CanonicalExpr) = begin
     any(a -> _is_scalar_array(type(a)), x.args) || return nothing
     error(
-        "Elementwise arithmetic (`+ - * / ^`, `.+ .- .* ./ .^`) is not supported on scalar ",
-        "arrays (`array[] int` / `array[] real`): Stan defines it only on `vector` / ",
-        "`row_vector` / `matrix`. Got `", short_expr(x), "`. Compute it element-by-element in ",
-        "an @deffun function-body loop, or convert to a `vector` via `to_vector(...)` first."
+        "Scalar-array arithmetic was not lowered for `", short_expr(x), "`. Supported binary ",
+        "elementwise forms are `+`, `-`, `.*`, `./`, and `.^`; plain `*` is also supported ",
+        "for scalar scaling (`scalar * array` or `array * scalar`). Use `.*` for array-array ",
+        "multiplication, compute another operation element-by-element in an @deffun ",
+        "function-body loop, or convert to a `vector` via `to_vector(...)` first."
     )
 end
 tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = if length(x.args) > 2
