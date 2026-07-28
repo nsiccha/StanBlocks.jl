@@ -3571,7 +3571,10 @@ is never lifted, however invariant its arguments look.
     #    cell-invariant. `rep_vector(0.0, n_terms)` is data-qualified, so it hoists
     #    all the way to `transformed data` (evaluated once ever, never taped); the
     #    scale is parameter-qualified and stops at `transformed parameters`. The
-    #    sampling statement itself is the per-cell effect and always stays in the loop.
+    #    direct sample is then emitted ONCE against an `array[n_groups]
+    #    vector[n_terms]` carrier, so Stan pays the shared Cholesky log determinant
+    #    once instead of once per group. The public plate result remains the same
+    #    `matrix[n_terms,n_groups]`; only its internal sampled carrier changes.
     inline_c = @slic (; n_terms = 3, n_groups = 5) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
@@ -3593,15 +3596,22 @@ is never lifted, however invariant its arguments look.
     @test transpiles(inline_c)
     @test stanc_compiles(inline_c)
     let code = stan_code(inline_c)
+        @test occursin("array[n_groups] vector[n_terms] b_bc;",
+                       stan_block(code, "parameters"))
         @test occursin(r"vector\[n_terms\] b__pl_inv\d+_\d+ = rep_vector\(0\.0, n_terms\);",
                        stan_block(code, "transformed data"))
         @test occursin(r"matrix\[n_terms, n_terms\] b__pl_inv\d+_\d+ = diag_pre_multiply\(tau, L\);",
                        stan_block(code, "transformed parameters"))
         let mb = stan_block(code, "model")
-            # the `~` is still per-cell; only its ARGUMENTS moved out
-            @test occursin(r"b_bc\[:, plate_i\w*\] ~ multi_normal_cholesky\(b__pl_inv\d+_\d+, b__pl_inv\d+_\d+\);", mb)
+            @test occursin(r"b_bc ~ multi_normal_cholesky\(b__pl_inv\d+_\d+, b__pl_inv\d+_\d+\);", mb)
+            @test !occursin(r"b_bc\[", mb)
+            @test !occursin("for(", mb)
             @test !occursin("rep_vector", mb)
             @test !occursin("diag_pre_multiply", mb)
+        end
+        let tp = stan_block(code, "transformed parameters")
+            @test occursin(r"b\[:, plate_i\w*\] = b_bc\[plate_i\w*\];", tp)
+            @test !occursin("multi_normal_cholesky", tp)
         end
     end
 
@@ -3652,6 +3662,59 @@ is never lifted, however invariant its arguments look.
     @test transpiles(varying)
     @test stanc_compiles(varying)
     @test !occursin("__pl_inv", stan_code(varying))
+
+    # 6. The collapse is semantic, not "one sample + return" syntax alone.
+    #    A cell-varying multivariate argument must keep the matrix carrier and
+    #    indexed loop, and a vectorised UNIVARIATE family is outside this pass.
+    varying_mv = @slic (; scales = ones(4), n_terms = 2) begin
+        b::vector[n_terms] ~ plate(scales; outer = length(scales)) do s
+            bc::vector[n_terms] ~ multi_normal_cholesky(
+                rep_vector(0.0, n_terms),
+                diag_matrix(rep_vector(s, n_terms)),
+            )
+            bc
+        end
+    end
+    iid_uni = @slic (; n_groups = 4, n_terms = 2) begin
+        b::vector[n_terms] ~ plate(; outer = n_groups) do g
+            z::vector[n_terms] ~ normal(0.0, 1.0)
+            z
+        end
+    end
+    for (m, carrier) in ((varying_mv, "b_bc"), (iid_uni, "b_z"))
+        @test transpiles(m)
+        @test stanc_compiles(m)
+        code = stan_code(m)
+        @test occursin(Regex(raw"matrix\[n_terms, [^]]+\] " * carrier * ";"),
+                       stan_block(code, "parameters"))
+        @test occursin(Regex(carrier * raw"\[:, plate_i\w*\] ~"), stan_block(code, "model"))
+        @test !occursin(Regex(raw"array\[[^]]+\] vector\[n_terms\] " * carrier * ";"), code)
+    end
+
+    # 7. A plate inside a called submodel resolves its local dimensions and
+    #    flattened names before the same vectorised sample is emitted at root.
+    @slic centered_plate(k::int, n::int, mu::vector[k], S::matrix[k,k]) = begin
+        b::vector[k] ~ plate(; outer = n) do g
+            bc::vector[k] ~ multi_normal_cholesky(mu, S)
+            bc
+        end
+        return b
+    end
+    called = @slic (; n_terms = 2, n_groups = 4) begin
+        mu = rep_vector(0.0, n_terms)
+        S::matrix[n_terms,n_terms] = diag_matrix(rep_vector(1.0, n_terms))
+        b ~ centered_plate(n_terms, n_groups, mu, S)
+    end
+    @test transpiles(called)
+    @test stanc_compiles(called)
+    let code = stan_code(called)
+        @test occursin("array[n_groups] vector[n_terms] b_b_bc;",
+                       stan_block(code, "parameters"))
+        @test occursin(r"b_b_bc ~ multi_normal_cholesky\(mu, S\);",
+                       stan_block(code, "model"))
+        @test occursin(r"b_b\[:, b_plate_i\w*\] = b_b_bc\[b_plate_i\w*\];",
+                       stan_block(code, "transformed parameters"))
+    end
 end
 
 """
@@ -5309,4 +5372,122 @@ isolated test item.
     @test occursin("Could not find definitely_not_a_slic_variable", oshown)
     @test occursin("While processing:", oshown)
     @test !occursin("<unrenderable", oshown)
+end
+
+@testitem "slic: plate carries cell constraints through promotion" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block, msg
+    G, lamv = 4, fill(0.5, 4)
+    obs_pos, obs_any = abs.(randn(G)), randn(G)
+
+    # `lower`/`upper`/`offset`/`multiplier` live in the cell StanType's `info`,
+    # not in its center type, so `_plate_outer_decl`'s shape/size/center rebuild
+    # used to drop them SILENTLY: stanc accepted the unconstrained declaration
+    # and sampled a different posterior with no diagnostic anywhere.
+    lower_model = @slic (; G, obs = obs_pos, lamv) begin
+        m0 ~ normal(sum(lamv), 1.)
+        s ~ plate(lamv; outer = G) do l
+            c::real ~ normal(m0, 1.; lower = 0.)
+            c
+        end
+        obs ~ normal(s, 1.)
+        s
+    end
+    lower_code = stan_code(lower_model)
+    @test occursin("lower=0.0", stan_block(lower_code, "parameters"))
+    @test stanc_compiles(lower_model)
+
+    affine_model = @slic (; G, obs = obs_any, lamv) begin
+        m0  ~ normal(0., 1.)
+        tau ~ normal(0., 1.; lower = 0.)
+        s ~ plate(lamv; outer = G) do l
+            c::real ~ normal(m0, tau; offset = m0, multiplier = tau)
+            c
+        end
+        obs ~ normal(s, 1.)
+        s
+    end
+    affine_params = stan_block(stan_code(affine_model), "parameters")
+    @test occursin("offset=m0", affine_params)
+    @test occursin("multiplier=tau", affine_params)
+    @test stanc_compiles(affine_model)
+
+    # A constraint naming the plate's per-cell position cannot be promoted: the
+    # promoted declaration is emitted OUTSIDE the loop, where that position does
+    # not exist. Refuse loudly rather than emit a model that compiles and is wrong.
+    idx_dependent = try
+        stan_code(@slic (; G, obs = obs_pos, lamv) begin
+            m0 ~ normal(sum(lamv), 1.)
+            s ~ plate(lamv; outer = G) do l
+                c::real ~ normal(m0, 1.; lower = 0., multiplier = exp(l))
+                c
+            end
+            obs ~ normal(s, 1.)
+            s
+        end)
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test idx_dependent !== nothing
+    @test occursin("per-cell position", idx_dependent)
+    @test occursin("multiplier", idx_dependent)
+
+    # Negative control: a constraint-free plate is untouched by any of this.
+    plain_model = @slic (; G, obs = obs_any, lamv) begin
+        m0 ~ normal(sum(lamv), 1.)
+        s ~ plate(lamv; outer = G) do l
+            c::real ~ normal(m0, 1.)
+            c
+        end
+        obs ~ normal(s, 1.)
+        s
+    end
+    plain_params = stan_block(stan_code(plain_model), "parameters")
+    @test occursin("vector[G] s_c;", plain_params)
+    @test !occursin("lower", plain_params)
+    @test !occursin("multiplier", stan_code(plain_model))
+    @test stanc_compiles(plain_model)
+end
+
+@testitem "slic: data referenced only in a constraint reaches the data block" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    J, lam = 5, fill(0.5, 5)
+    gidx, y = repeat(1:5, inner = 4), randn(20)
+
+    # `fetch_data!(::StanType)` descended only into `stan_size`, never into the
+    # constraint expressions carried in the same type's `info`. So data named
+    # ONLY inside `lower`/`upper`/`offset`/`multiplier` never reached the `data`
+    # block and stanc rejected the model with `Identifier … not in scope`.
+    only_in_constraint = @slic (; y, gidx, J, lam) begin
+        mu  ~ normal(0., 5.)
+        tau ~ normal(0., 1.; lower = 0.)
+        theta::vector[J] ~ normal(mu, tau; offset = mu, multiplier = tau .^ (1. .- lam))
+        y ~ normal(theta[gidx], 1.)
+        theta
+    end
+    code = stan_code(only_in_constraint)
+    @test occursin(r"\blam\b", stan_block(code, "data"))
+    @test occursin("multiplier=(tau .^ (1.0 - lam))", stan_block(code, "parameters"))
+    @test stanc_compiles(only_in_constraint)
+
+    # Control: the same model with `lam` ALSO named in the body always worked.
+    also_in_body = @slic (; y, gidx, J, lam) begin
+        mu  ~ normal(sum(lam), 5.)
+        tau ~ normal(0., 1.; lower = 0.)
+        theta::vector[J] ~ normal(mu, tau; offset = mu, multiplier = tau .^ (1. .- lam))
+        y ~ normal(theta[gidx], 1.)
+        theta
+    end
+    @test occursin(r"\blam\b", stan_block(stan_code(also_in_body), "data"))
+    @test stanc_compiles(also_in_body)
+
+    # Control: a literal constraint pulls nothing extra into `data`.
+    literal_only = @slic (; y) begin
+        s ~ normal(0., 1.; lower = 0.)
+        y ~ normal(0., s)
+        s
+    end
+    @test !occursin("lam", stan_code(literal_only))
+    @test occursin("lower=0.0", stan_block(stan_code(literal_only), "parameters"))
+    @test stanc_compiles(literal_only)
 end
