@@ -79,6 +79,34 @@ _split_stack_item(x) = (x, nothing)
 _stack_loc(lnn::LineNumberNode) = (" at ", lnn.file, ":", lnn.line)
 _stack_loc(_) = ()
 
+# First line of `x`, truncated — for a one-line marker inside a diagnostic.
+_brief(x, n=160) = begin
+    s = split(string(x), '\n'; limit=2)[1]
+    length(s) <= n ? s : string(first(s, n), "…")
+end
+
+# An expression-stack entry is a SLIC AST node, and the `Base.show` methods
+# that render one ARE the Stan emitter — they legitimately `error(...)` on a
+# node they cannot emit. Entries reach here in shapes the emitter never has to
+# handle in anger: `forward!` pushes the RAW node and only swaps in the resolved
+# form once head *and* args have traced, so a failure early in a call (an
+# unresolvable callee, say) leaves un-canonicalised lambda bodies and bare
+# `Expr`s on the stack — `func_name(::Expr)` then rejects a `:tuple`/`:block`
+# head from inside `showerror`. Rendering an entry must never be able to
+# destroy the diagnostic it decorates, so each is rendered into a scratch
+# buffer and committed only once it succeeded: a throw costs that one entry's
+# text, not the `Caused by:` line, and never leaves a half-written line in `io`.
+_show_stack_entry(x) = try
+    sprint(print, x)
+catch err
+    inner = try
+        _brief(sprint(showerror, err))
+    catch
+        string(typeof(err))
+    end
+    string("<unrenderable ", _brief(typeof(x)), ": ", inner, ">")
+end
+
 function _format_cause(io::IO, phase, context, cause_error, expr_stack, bt)
     print(io, "StanBlocksError [", phase, "]: ", context, "\n")
     print(io, "  Caused by: ")
@@ -87,7 +115,7 @@ function _format_cause(io::IO, phase, context, cause_error, expr_stack, bt)
         println(io, "\n\n  While processing:")
         for (i, item) in enumerate(reverse(expr_stack))
             x, lnn = _split_stack_item(item)
-            print(io, "   [", i, "] ", x, _stack_loc(lnn)..., "\n")
+            print(io, "   [", i, "] ", _show_stack_entry(x), _stack_loc(lnn)..., "\n")
         end
     end
 end
