@@ -5103,3 +5103,54 @@ The unmarked emission must stay byte-identical; the flat spelling is the control
         @test occursin("__pl_mem", gq)
     end
 end
+
+"""
+Verify `slic: error formatter never destroys the error it formats` in an
+isolated test item.
+"""
+@testitem "slic: error formatter never destroys the error it formats" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # The `While processing:` expression stack holds RAW, un-forwarded SLIC
+    # nodes: `forward!` pushes the node and only swaps in the resolved form
+    # once head *and* args have traced. An unresolvable callee therefore
+    # throws while its lambda argument is still an un-canonicalised
+    # `CanonicalExpr{Val{:->}}` over bare `Expr`s — and rendering that with
+    # the Stan emitter's own `show` hits `func_name(::Expr)`, which rejects a
+    # `:tuple`/`:block` head. Before the fix that throw escaped `showerror`
+    # itself, replacing a perfectly good diagnostic with an unrelated crash
+    # (and killing Julia's top-level error printer outright).
+    # Reported by Bruno as snag `error-formatter-79e40522`.
+    unrenderable = @slic begin
+        x::real ~ normal(0, 1)
+        y ~ definitely_not_a_slic_function(g -> g + x)
+    end
+    err = try; stan_code(unrenderable); nothing; catch e; e; end
+    @test err isa StanBlocksError
+
+    # `showerror` must not throw, and the REAL cause must survive.
+    shown = sprint(showerror, err)
+    @test occursin("Could not find definitely_not_a_slic_function", shown)
+    @test occursin("While processing:", shown)
+    # The entry that cannot render degrades to a bounded one-line marker that
+    # still names the offending node, instead of taking the diagnostic with it.
+    @test occursin("<unrenderable", shown)
+    @test occursin("definitely_not_a_slic_function", shown)
+    # The marker is rendered into a scratch buffer and committed whole, so it
+    # is a single bounded line — no half-written entry left in the stream.
+    let marker = only(filter(contains("<unrenderable"), split(shown, '\n')))
+        @test endswith(strip(marker), ">") || occursin("> at ", marker)
+    end
+    @test StanBlocks.unwrap_error(err) isa ErrorException
+
+    # CONTROL: an ordinary transpile error whose stack entries all render is
+    # unchanged — the guard must not turn every entry into a marker.
+    ordinary = @slic begin
+        x::real ~ normal(0, 1)
+        y ~ normal(x, definitely_not_a_slic_variable)
+    end
+    oerr = try; stan_code(ordinary); nothing; catch e; e; end
+    @test oerr isa StanBlocksError
+    oshown = sprint(showerror, oerr)
+    @test occursin("Could not find definitely_not_a_slic_variable", oshown)
+    @test occursin("While processing:", oshown)
+    @test !occursin("<unrenderable", oshown)
+end
