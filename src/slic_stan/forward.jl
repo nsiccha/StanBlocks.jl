@@ -88,10 +88,13 @@ end
 # commuting/negating dance (the old array-first-only form needed one, and its
 # `s .- arr == -(arr .- s)` identity has since become wrong: `jbroadcasted`'s
 # int-array result has no valid Stan unary minus). Both plain and dotted `+`/`-`
-# lower (Julia-consistent: `+` on arrays is elementwise); plain `*`/`/`/`^` on
-# arrays stay rejected (a matmul/dim error in Julia, not elementwise) via the
-# `_reject_scalar_array_elementwise` floor. Only binary (2-arg) operators lower;
-# a rare >2-arg form falls through to that reject rather than miscompiling.
+# lower (Julia-consistent: `+` on arrays is elementwise). Plain `*` also lowers
+# when exactly one operand is a numeric scalar: Julia defines `scalar * array`
+# and `array * scalar` as scalar scaling, and the element return type determines
+# the output container (`real * array[] int` -> `vector`). Array-array `*`, and
+# plain `/`/`^`, stay rejected via the `_reject_scalar_array_elementwise` floor.
+# Only binary (2-arg) operators lower; a rare >2-arg form falls through to that
+# reject rather than miscompiling.
 _broadcast_op(f) = f
 _broadcast_op(f::Base.BroadcastFunction) = f.f
 _lower_scalar_array_broadcast(x::CanonicalExpr; info) = begin
@@ -100,8 +103,20 @@ _lower_scalar_array_broadcast(x::CanonicalExpr; info) = begin
     (_is_scalar_array(type(l)) || _is_scalar_array(type(r))) || return nothing
     forward!(CanonicalExpr(builtin.jbroadcasted, _broadcast_op(head(x)), l, r); info)
 end
+_is_numeric_scalar(t::StanType) = center_type(t) <: types.complex && stan_ndim(t) == 0
+_lower_scalar_array_scale(x::CanonicalExpr; info) = begin
+    length(x.args) == 2 || return nothing
+    l, r = x.args
+    ((_is_scalar_array(type(l)) && _is_numeric_scalar(type(r))) ||
+     (_is_numeric_scalar(type(l)) && _is_scalar_array(type(r)))) || return nothing
+    forward!(CanonicalExpr(builtin.jbroadcasted, *, l, r); info)
+end
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(+),typeof(-)}}; info) = begin
     rv = _lower_scalar_array_broadcast(x; info)
+    isnothing(rv) ? fold_shape_query(stan_expr(x)) : rv
+end
+expand_inline_or_trace(x::CanonicalExpr{typeof(*)}; info) = begin
+    rv = _lower_scalar_array_scale(x; info)
     isnothing(rv) ? fold_shape_query(stan_expr(x)) : rv
 end
 expand_inline_or_trace(x::CanonicalExpr{<:Base.BroadcastFunction}; info) = begin

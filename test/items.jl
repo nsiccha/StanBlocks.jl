@@ -2279,6 +2279,31 @@ Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolat
         @test occursin("jbroadcasted", stan_code(model))
         @test stanc_compiles(model)
     end
+    @testset "plain scalar * scalar array lowers as Julia scalar scaling" begin
+        # Deployed-PKPD regression: comparison broadcasting intentionally returns
+        # an index-capable `array[] int` mask. Multiplying that mask by a real
+        # coefficient is nevertheless ordinary Julia scalar scaling, not
+        # array-array multiplication, and must produce a Stan vector.
+        left = @slic (;cmt=[1,2,1], y=zeros(3)) begin
+            beta ~ std_normal()
+            mask = jbroadcasted(==, cmt, 1)
+            eta = beta * mask
+            y ~ normal(eta, 1.0)
+        end
+        right = @slic (;cmt=[1,2,1], y=zeros(3)) begin
+            beta ~ std_normal()
+            mask = jbroadcasted(==, cmt, 1)
+            eta = mask * beta
+            y ~ normal(eta, 1.0)
+        end
+        for model in (left, right)
+            code = stan_code(model)
+            @test occursin("jbroadcasted_eq", code)
+            @test occursin("jbroadcasted_mul", code)
+            @test check_type(model, :eta, "vector")
+            @test stanc_compiles(model)
+        end
+    end
     @testset "native vector operand keeps built-in scalar-vector op (no lowering)" begin
         model = @slic (;w=[1.0,2.0,3.0]) begin   # Vector{Float64} → Stan vector
             z = 2.0 .- w
@@ -2299,9 +2324,9 @@ Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolat
         @test occursin(r"vector\[\w*\] (?:\w+ )?y_likelihood\b", stan_code(model))
         @test stanc_compiles(model)
     end
-    @testset "reject floor: plain * / ^ on scalar arrays still loudly rejected" begin
-        # Matmul/dim-shaped `*` on arrays is NOT elementwise — must stay rejected,
-        # never silently miscompiled.
+    @testset "reject floor: array-array * is still loudly rejected" begin
+        # Array-array `*` is NOT elementwise — must stay rejected, never silently
+        # miscompiled. The scalar-scaling case above is deliberately narrower.
         @test_throws Exception stan_code(@slic (;a=[1,2,3], b=[1,2,3]) begin
             c = a * b
             mu ~ std_normal()
