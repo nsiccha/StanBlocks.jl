@@ -102,7 +102,7 @@ end
 block_print(io, ::FunctionsBlock, x) = isnothing(x) || print(io, x, "\n")
 constraints(x::StanType) = (;[
     key=>getindex(info(x), key)
-    for key in (:lower, :upper, :offset, :multiplier) if key in keys(info(x))
+    for key in CONSTRAINT_KEYS if key in keys(info(x))
 ]...)
 Base.show(io::IO, x::StanExpr) = print(io, expr(x), "::", type(x))
 Base.show(io::IO, x::StanType) = show(StanIO(io), x)

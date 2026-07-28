@@ -1277,11 +1277,9 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # `tau::vector[K] ~ normal(0,1; lower=0)` emitted an UNCONSTRAINED
     # `vector[K] tau`. Native-constrained centers (simplex/cholesky/…) carry no
     # bound autokwargs and take no user bounds, so `cons` is empty for them.
-    cons_kw = merge(autokwargs(rhs_canonical), (; kwargs_resolved...))
-    cons = (;[
-        key => getindex(cons_kw, key)
-        for key in (:lower, :upper, :offset, :multiplier) if key in keys(cons_kw)
-    ]...)
+    implied_kw = autokwargs(rhs_canonical)
+    cons_kw = merge(implied_kw, (; kwargs_resolved...))
+    cons = _fold_constraints(name, cons_kw; implied=keys(implied_kw))
     base_lhs_type = StanType(ct_resolved, sizes_forwarded; cons...)
     cv_args = any(stan.cv, args_resolved)
     qual = cv_args ? :quantities : :parameter

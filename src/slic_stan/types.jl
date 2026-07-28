@@ -392,6 +392,47 @@ _submodel_positional_error(args...) = error(
 (x::SlicModel)(; kwargs...) = SlicModel(model(x), merge(data(x), kwargs), x.mod)
 (x::SlicModel)(arg, args...; kwargs...) = _submodel_positional_error(arg, args...)
 
+# The four constraint keys a StanType carries in its `info` alongside its size.
+# One tuple, because four sites need the same set — `constraints` (show.jl), the
+# descriptor projection, and the two places user kwargs get folded into a
+# declared type (`autotype`, and forward.jl's typed-LHS sampling path).
+const CONSTRAINT_KEYS = (:lower, :upper, :offset, :multiplier)
+const BOUND_KEYS  = (:lower, :upper)
+const AFFINE_KEYS = (:offset, :multiplier)
+
+# Stan's declaration grammar admits a BOUND pair (`lower`/`upper`) or an AFFINE
+# pair (`offset`/`multiplier`) — never both. `real<lower=0, multiplier=s> x;` is
+# a stanc SYNTAX error, so left to reach the emitter it surfaces as an
+# unattributed parse failure on generated source the author never wrote, with no
+# line that corresponds to anything in the `@slic` block. Reject it at trace
+# time, where the kwarg still has a name and a model to point at.
+#
+# `implied` names the keys that came from the distribution rather than the
+# author (`exponential`→`lower=0`, `beta`→`[0,1]`): `tau ~ exponential(1.;
+# multiplier=s)` is a genuine collision, but blaming the author for a `lower=`
+# they never wrote is the confusing half, so say where it came from.
+_check_constraint_combination(name, cons; implied=()) = begin
+    bounds = filter(in(BOUND_KEYS), keys(cons))
+    affine = filter(in(AFFINE_KEYS), keys(cons))
+    (isempty(bounds) || isempty(affine)) && return cons
+    src(k) = k in implied ? "`$k=` (implied by the distribution)" : "`$k=`"
+    where = name === nothing ? "" : " on `$name`"
+    error(
+        "Stan cannot combine a bound with an affine transform in one declaration",
+        where, ": ", join(map(src, bounds), " and "), " cannot be used together ",
+        "with ", join(map(src, affine), " and "), ". Stan applies `offset`/",
+        "`multiplier` to an UNBOUNDED parameter; a bounded one is already ",
+        "reparameterised by its own transform. Drop the affine pair, or declare ",
+        "the parameter unbounded and enforce the bound in the model."
+    )
+end
+
+# Project a kwarg bag onto the constraint keys, validating the combination.
+# Both folding sites call this, so the check cannot drift between them.
+_fold_constraints(name, kw; implied=()) = _check_constraint_combination(
+    name, (;[key => kw[key] for key in CONSTRAINT_KEYS if key in keys(kw)]...); implied
+)
+
 qual(x) = :data
 qual(x::StanExpr) = qual(type(x))
 qual(x::StanType) = get(info(x), :qual, :undefined)

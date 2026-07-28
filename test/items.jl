@@ -7299,6 +7299,91 @@ end
     @test !occursin("lam", stan_code(literal_only))
     @test occursin("lower=0.0", stan_block(stan_code(literal_only), "parameters"))
     @test stanc_compiles(literal_only)
+
+    # Control: a DISTRIBUTION-implied bound. `autokwargs` supplies these as raw
+    # Julia values (`exponential`→`lower=0.0`), not as StanExprs like an
+    # author-written `lower=` — so descending into constraints hit
+    # `fetch_data! not defined for value 0.0` on every implied-bound
+    # distribution. The author-written control above does NOT cover this: it
+    # reaches the constraint already wrapped.
+    for (nm, m) in ("exponential" => (@slic (; y) begin
+                        s ~ exponential(1.); y ~ normal(0., s); s end),
+                    "gamma" => (@slic (; y) begin
+                        s ~ gamma(2., 2.); y ~ normal(0., s); s end),
+                    "beta" => (@slic (; y) begin
+                        p ~ beta(2., 2.); y ~ normal(p, 1.); p end))
+        @test occursin("lower=0", stan_block(stan_code(m), "parameters"))
+        @test stanc_compiles(m)
+    end
+end
+
+@testitem "slic: a bound and an affine transform cannot share a declaration" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    y, K = randn(20), 3
+    # `StanBlocksError` wraps the cause, so match on the rendered text — the
+    # same shape the other rejection items in this file use.
+    reject(f) = try; f(); nothing; catch e; sprint(showerror, e) end
+
+    # `real<lower=0, multiplier=s> x;` is a stanc SYNTAX error, so left to reach
+    # the emitter it surfaced as an unattributed parse failure on generated
+    # source the author never wrote. Both folding paths must reject it at trace
+    # time — the bare-LHS one (`autotype`) and the typed-LHS one.
+    bare = reject(() -> stan_code(@slic (; y) begin
+        m ~ normal(0., 1.)
+        s ~ normal(0., 1.; lower = 0., multiplier = m)
+        y ~ normal(0., s); s
+    end))
+    @test bare !== nothing
+    @test occursin("cannot combine a bound with an affine transform", bare)
+    @test occursin("`lower=`", bare)
+    @test occursin("`multiplier=`", bare)
+
+    typed = reject(() -> stan_code(@slic (; y, K) begin
+        m ~ normal(0., 1.)
+        s::vector[K] ~ normal(0., 1.; lower = 0., multiplier = m)
+        y ~ normal(0., sum(s)); s
+    end))
+    @test typed !== nothing
+    @test occursin("cannot combine a bound with an affine transform", typed)
+    @test occursin("on `s`", typed)   # typed path names the parameter
+
+    upoff = reject(() -> stan_code(@slic (; y) begin
+        m ~ normal(0., 1.)
+        s ~ normal(0., 1.; upper = 1., offset = m)
+        y ~ normal(0., s); s
+    end))
+    @test upoff !== nothing
+    @test occursin("`upper=`", upoff)
+    @test occursin("`offset=`", upoff)
+
+    # A DISTRIBUTION-implied bound collides just as really, but blaming the
+    # author for a `lower=` they never wrote is the confusing half.
+    impl = reject(() -> stan_code(@slic (; y) begin
+        m ~ normal(0., 1.)
+        s ~ exponential(1.; multiplier = m)
+        y ~ normal(0., s); s
+    end))
+    @test impl !== nothing
+    @test occursin("implied by the distribution", impl)
+
+    # Controls: each family alone is legal, and both must still compile.
+    bound_only = @slic (; y) begin
+        s ~ normal(0., 1.; lower = 0., upper = 1.); y ~ normal(0., s); s
+    end
+    @test occursin("lower=0.0", stan_block(stan_code(bound_only), "parameters"))
+    @test stanc_compiles(bound_only)
+
+    affine_only = @slic (; y) begin
+        m ~ normal(0., 1.)
+        t ~ normal(0., 1.; lower = 0.)
+        s ~ normal(m, t; offset = m, multiplier = t)
+        y ~ normal(s, 1.); s
+    end
+    affine_params = stan_block(stan_code(affine_only), "parameters")
+    @test occursin("offset=m", affine_params)
+    @test occursin("multiplier=t", affine_params)
+    @test !occursin("lower=0.0>[", affine_params)   # `s` itself stays unbounded
+    @test stanc_compiles(affine_only)
 end
 
 """

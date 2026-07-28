@@ -243,7 +243,7 @@ _size_symbols(x::CanonicalExpr, acc) = (foreach(a -> _size_symbols(a, acc), x.ar
 
 _descriptor_constraints(x::StanExpr) = _descriptor_constraints(info(type(x)))
 _descriptor_constraints(i) = (; [
-    key => i[key] for key in (:lower, :upper, :offset, :multiplier) if haskey(i, key)
+    key => i[key] for key in CONSTRAINT_KEYS if haskey(i, key)
 ]...)
 
 # --- observations ------------------------------------------------------------

@@ -359,7 +359,16 @@ autokwargs(::CanonicalExpr) = (;)
 # `StanType(ct, size; …)` receives a bare Type as it expects.
 _unwrap_type_kwarg(ct::StanExpr2{<:types.tokenof,0}) = type(ct).info.value
 _unwrap_type_kwarg(ct) = ct
-autotype(x::StanExpr) = autotype(type(x); merge(autokwargs(expr(x)), expr(x).kwargs)...)
+# Check the combination HERE, where the distribution-implied keys are still
+# distinguishable from the author's own, so the message can say which is which.
+# `autotype(::StanType)` re-checks (it has direct callers too); the second pass
+# is over an already-valid bag and is a no-op.
+autotype(x::StanExpr) = begin
+    implied = autokwargs(expr(x))
+    kw = merge(implied, expr(x).kwargs)
+    _fold_constraints(nothing, kw; implied=keys(implied))   # validates; result unused
+    autotype(type(x); kw...)
+end
 autotype(x::StanType; kwargs...) = begin
     ct = _unwrap_type_kwarg(get(kwargs, :type, center_type(x)))
     nsize = [
@@ -368,10 +377,7 @@ autotype(x::StanType; kwargs...) = begin
     ]
     size = length(nsize) > 0 ? (nsize..., ) : get(kwargs, :size, stan_size(x))
     (ct in (types.anything, types.real)) && (ct = [types.real, types.vector, types.matrix][1+length(size)])
-    cons = (;[
-        key=>getindex(kwargs, key)
-        for key in (:lower, :upper, :offset, :multiplier) if key in keys(kwargs)
-    ]...)
+    cons = _fold_constraints(nothing, kwargs)
     StanType(ct, size; cons...)
 end
 

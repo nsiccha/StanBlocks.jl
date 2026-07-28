@@ -420,7 +420,12 @@ DeclarativeBlock = Union{DataBlock,ParametersBlock}
 ImperativeBlock = Union{FunctionsBlock,TransformedDataBlock,TransformedParametersBlock,ModelBlock,GeneratedQuantitiesBlock}
 fetch_data!(;info) = x->fetch_data!(x; info)
 fetch_data!(x::Union{Tuple,NamedTuple,Vector}; info) = map(fetch_data!(;info), x)
-fetch_data!(x::Union{Function,String}; info) = nothing
+# Bare (un-wrapped) literals reach here from a StanType's constraint `info`:
+# `autokwargs` supplies a DISTRIBUTION-implied bound as a raw Julia value
+# (`exponential`→`lower=0.0`), never as a StanExpr like an author-written one.
+# Descending into constraints without this method turned every implied bound
+# into `fetch_data! not defined for value 0.0`.
+fetch_data!(x::Union{Function,String,Number,Missing}; info) = nothing
 # `distribute!` skips LineNumberNodes/Nothing at the block level, but they also live
 # INSIDE a compiler-injected loop body (`@inline` line info), which
 # `fetch_data!(::StanExpr{<:ForExpr})` recurses into — skip them here too.
