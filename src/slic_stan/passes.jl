@@ -405,7 +405,17 @@ fetch_data!(x::Union{Function,String}; info) = nothing
 # `fetch_data!(::StanExpr{<:ForExpr})` recurses into — skip them here too.
 fetch_data!(x::Union{LineNumberNode,Nothing}; info) = nothing
 fetch_data!(x::StanExpr{<:Union{Number,String,Missing}}; info) = nothing 
-fetch_data!(x::StanType; info) = fetch_data!(stan_size(x); info)
+# A StanType's `info` carries its constraint EXPRESSIONS
+# (`lower`/`upper`/`offset`/`multiplier`) alongside its size, and data named only
+# inside one of those is just as real a dependency as data named in a size.
+# Descending into the size alone let a constraint-only reference leave its data
+# out of the `data` block entirely — `theta::vector[J] ~ normal(mu, tau;
+# multiplier=tau .^ (1 .- lam))` emitted no `lam` when `lam` appeared nowhere
+# else, and stanc rejected the model with `Identifier "lam" not in scope`.
+fetch_data!(x::StanType; info) = begin
+    fetch_data!(stan_size(x); info)
+    fetch_data!(values(constraints(x)); info)
+end
 fetch_data!(x::StanExpr{Symbol}; info) = begin
     hasvalue(x) && push!(block(info, :data), x; info)
 end

@@ -5385,3 +5385,46 @@ end
     @test !occursin("multiplier", stan_code(plain_model))
     @test stanc_compiles(plain_model)
 end
+
+@testitem "slic: data referenced only in a constraint reaches the data block" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    J, lam = 5, fill(0.5, 5)
+    gidx, y = repeat(1:5, inner = 4), randn(20)
+
+    # `fetch_data!(::StanType)` descended only into `stan_size`, never into the
+    # constraint expressions carried in the same type's `info`. So data named
+    # ONLY inside `lower`/`upper`/`offset`/`multiplier` never reached the `data`
+    # block and stanc rejected the model with `Identifier … not in scope`.
+    only_in_constraint = @slic (; y, gidx, J, lam) begin
+        mu  ~ normal(0., 5.)
+        tau ~ normal(0., 1.; lower = 0.)
+        theta::vector[J] ~ normal(mu, tau; offset = mu, multiplier = tau .^ (1. .- lam))
+        y ~ normal(theta[gidx], 1.)
+        theta
+    end
+    code = stan_code(only_in_constraint)
+    @test occursin(r"\blam\b", stan_block(code, "data"))
+    @test occursin("multiplier=(tau .^ (1.0 - lam))", stan_block(code, "parameters"))
+    @test stanc_compiles(only_in_constraint)
+
+    # Control: the same model with `lam` ALSO named in the body always worked.
+    also_in_body = @slic (; y, gidx, J, lam) begin
+        mu  ~ normal(sum(lam), 5.)
+        tau ~ normal(0., 1.; lower = 0.)
+        theta::vector[J] ~ normal(mu, tau; offset = mu, multiplier = tau .^ (1. .- lam))
+        y ~ normal(theta[gidx], 1.)
+        theta
+    end
+    @test occursin(r"\blam\b", stan_block(stan_code(also_in_body), "data"))
+    @test stanc_compiles(also_in_body)
+
+    # Control: a literal constraint pulls nothing extra into `data`.
+    literal_only = @slic (; y) begin
+        s ~ normal(0., 1.; lower = 0.)
+        y ~ normal(0., s)
+        s
+    end
+    @test !occursin("lam", stan_code(literal_only))
+    @test occursin("lower=0.0", stan_block(stan_code(literal_only), "parameters"))
+    @test stanc_compiles(literal_only)
+end
