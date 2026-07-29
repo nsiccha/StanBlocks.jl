@@ -986,6 +986,11 @@ _forward_ragged_obs_broadcast!(name, rhs_raw; info) = begin
              end)
     _trace_ragged_stmts([stmt], name; info, certify_density=false)
 end
+# Distribution higher-order functions can register call-site invariants without
+# teaching the generic sampling forward pass about any particular combinator.
+# The no-op floor keeps ordinary distributions byte-identical; registrations
+# live beside their lpxf/likelihood/RNG companion selection.
+validate_sampling_rhs(lhs, rhs; info) = nothing
 forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args
     promoted = _plate_promoted_lhs(name; info)
@@ -1000,6 +1005,7 @@ forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
         qual = cv ? :quantities : :parameter
         info[name] = StanExpr(name, remake(autotype; qual, cv))
     end
+    validate_sampling_rhs(info[name], rhs; info)
     remake(x, info[name], rhs)
 end
 forward!(x::SamplingExpr{Symbol,<:SlicModel}; info) = begin
@@ -1070,6 +1076,7 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     qual = cv_args ? :quantities : :parameter
     info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args))
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
+    validate_sampling_rhs(info[name], rhs_stan; info)
     remake(x, info[name], rhs_stan)
 end
 # Desugar a RAGGED constrained parameter (`p::simplex[Ks] ~ …`, `Ks` a data
@@ -1231,6 +1238,7 @@ _forward_indexed_sampling!(x; info) = begin
             "Compiler-certified ragged density target `", k,
             "` is not backed by a RaggedVector/RaggedMatrix."
         )
+        validate_sampling_rhs(lhs, rhs; info)
         return remake(x, lhs, rhs)
     end
     retainted = false
@@ -1284,6 +1292,7 @@ _forward_indexed_sampling!(x; info) = begin
     # the base up again.  Guarded on an actual taint so every untainted emission
     # is byte-identical to before.
     retainted && (lhs = forward!(lhs_raw; info))
+    validate_sampling_rhs(lhs, rhs; info)
     remake(x, lhs, rhs)
 end
 forward!(x::SamplingExpr{<:CanonicalExprV{:getindex}}; info) =
@@ -2183,6 +2192,7 @@ end
 forward!(x::SamplingExpr{<:Any,<:StanExpr}; info) = begin
     lhs, rhs = x.args 
     @assert stan.qual(lhs) == :data
+    validate_sampling_rhs(lhs, rhs; info)
     remake(x, lhs, rhs)
 end
 forward!(x::ReturnExpr; info) = _forward_return!(x, info)
