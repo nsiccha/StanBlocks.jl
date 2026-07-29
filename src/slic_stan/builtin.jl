@@ -1138,6 +1138,10 @@ end
 # generated_quantities for a `BinomialLogit(N, eta)` likelihood compile
 # under stanc.
 @deffun binomial_logit_rng(int[n], N::int[n], eta)::int[n] = binomial_rng(N, inv_logit(eta))
+# Stan's lpmf also broadcasts a scalar trial count across vector observations.
+# Give the RNG an array-valued argument so it returns one draw per observation;
+# this covers both vector `eta` and the all-scalar `N`/`eta` case.
+@deffun binomial_logit_rng(int[n], N::int, eta)::int[n] = binomial_rng(rep_array(N, n), inv_logit(eta))
 
 # beta_binomial: (trials, alpha, beta); trials always int[n]
 @deffun beta_binomial_rng(int[n], N::int[n], a::real, b::real)::int[n] = beta_binomial_rng(N, a, b)
