@@ -488,6 +488,32 @@ end
         udf_checked_size(x::vector[checked_n], y::vector[checked_n])::real = dot_product(x, y)
     end
 
+    # An `@lhs` UDF whose observation argument carries a dimension the BODY never
+    # mentions (`lhs_hidden_n` / `lhs_chol_hidden_n`). The base tracetype `@lhs`
+    # emits returns the observation's DECLARED shape, so it must bind those names
+    # even though the liveness analysis above (correctly) keeps them out of the
+    # emitted Stan preamble. Sharing one hidden set threw `UndefVarError` at trace
+    # time — snag `deffun-hidden-si-facb90e5`.
+    @deffun begin
+        @lhs @lpxf lhs_hidden_dim_lpdf(x::vector[lhs_m, lhs_hidden_n])::real = begin
+            rv = 0.
+            for i in 1:lhs_m
+                rv += std_normal_lpdf(x[i, :])::real
+            end
+            rv
+        end
+        @lhs @lpxf lhs_hidden_chol_lpdf(L::cholesky_factor_corr[lhs_chol_m, lhs_chol_hidden_n], eta::real)::real = begin
+            rv = 0.
+            for i in 1:lhs_chol_m
+                rv += lkj_corr_cholesky_lpdf(L[i, :, :], eta)::real
+            end
+            rv
+        end
+        @lhs @lpxf lhs_all_hidden_lpdf(x::vector[lhs_all_m, lhs_all_n])::real = begin
+            std_normal_lpdf(x[1, :])::real
+        end
+    end
+
     # --- computed type annotations (@deffun container inference; todo 1v94weu) ---
     # `rv::typeof(f(x[1]))[dims]` infers the output container from `f`'s per-element
     # return type: a `real` element → native `vector[n]`, an `int` element →
@@ -1894,6 +1920,52 @@ Verify dead UDF signature dimensions are not emitted while required bindings rem
     @test occursin("int return_n = dims(x)[1];", functions)
     @test occursin("int checked_n = dims(x)[1];", functions)
     @test occursin("if (dims(y)[1] != checked_n) reject", functions)
+end
+
+"""
+Verify an `@lhs` observation dimension the UDF body never reads still resolves.
+"""
+@testitem "slic: @lhs base tracetype binds body-unused observation dimensions" tags=[:slic, :regression, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    # Snag `deffun-hidden-si-facb90e5`: `lhs_hidden_n` appears ONLY in the
+    # observation's declared shape, never in the body, so the signature-dimension
+    # liveness analysis hid it — and the `@lhs` base tracetype, which returns that
+    # declared shape, then referenced an unbound name (`UndefVarError: n`) before
+    # any Stan was emitted. Reported against `x::vector[m, n]`; the same shape
+    # reaches `cholesky_factor_corr[m, n]`.
+    vec_model = @slic (; y = [1.0]) begin
+        z::vector[3, 2] ~ lhs_hidden_dim()
+        y ~ normal(sum(z[1, :]), 1.0)
+    end
+    @test stanc_compiles(vec_model)
+    vec_functions = stan_block(stan_code(vec_model), "functions")
+    # The fix must NOT re-introduce the dead local the liveness analysis removed:
+    # `lhs_m` is read by the body and bound, `lhs_hidden_n` is neither.
+    @test occursin("int lhs_m = dims(x)[1];", vec_functions)
+    @test !occursin("lhs_hidden_n", vec_functions)
+    @test occursin("array[3] vector[2] z;", stan_block(stan_code(vec_model), "parameters"))
+
+    chol_model = @slic (; y = [1.0]) begin
+        L::cholesky_factor_corr[3, 2] ~ lhs_hidden_chol(2.0)
+        y ~ normal(L[1, 1, 1], 1.0)
+    end
+    @test stanc_compiles(chol_model)
+    chol_functions = stan_block(stan_code(chol_model), "functions")
+    @test occursin("int lhs_chol_m = dims(L)[1];", chol_functions)
+    @test !occursin("lhs_chol_hidden_n", chol_functions)
+    @test occursin("array[3] cholesky_factor_corr[2] L;", stan_block(stan_code(chol_model), "parameters"))
+
+    # Every signature dimension hidden: the emitted UDF binds none of them.
+    all_hidden_model = @slic (; y = [1.0]) begin
+        z::vector[3, 2] ~ lhs_all_hidden()
+        y ~ normal(sum(z[1, :]), 1.0)
+    end
+    @test stanc_compiles(all_hidden_model)
+    all_hidden_functions = stan_block(stan_code(all_hidden_model), "functions")
+    @test occursin("lhs_all_hidden_lpdf", all_hidden_functions)
+    @test !occursin("lhs_all_m", all_hidden_functions)
+    @test !occursin("lhs_all_n", all_hidden_functions)
 end
 
 """
