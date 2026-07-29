@@ -97,6 +97,17 @@ StanBlocks.stan_descriptor).
     cv-flipped re-draw of a latent, a model `return` value.
 - `source::Union{Symbol,Nothing}` — the observation a `:draw` /
   `:pointwise_loglik` derives from; `nothing` otherwise.
+- `segments::Union{Nothing,Vector{Int}}` — group boundaries, when this quantity
+  is the twin of a **ragged** observation; `nothing` for every dense quantity.
+  A `RaggedVector` is a compile-time pairing that materialises as
+  `tuple(vector[total], array[k] int)`, so its `<obs>_gen` is emitted FLAT — one
+  `vector` holding every group end to end — while its `<obs>_likelihood` holds
+  one scalar per group. The entries are the **inclusive 1-based end index of
+  each group** (the carrier's own `ends`), so group `g` of a `:draw` occupies
+  `segments[g-1]+1 : segments[g]` (with `segments[0] ≡ 0`) and group `g` of a
+  `:pointwise_loglik` is element `g`. Publishing them here is what lets a
+  consumer of `stan_execute(d, :predict)` cut a flat draw back into groups
+  without reaching into the data's carrier tuple.
 """
 struct ModelOutput
     name::Symbol
@@ -106,6 +117,7 @@ struct ModelOutput
     constraints::NamedTuple
     generative::Symbol
     source::Union{Symbol,Nothing}
+    segments::Union{Nothing,Vector{Int}}
 end
 
 """
@@ -351,9 +363,24 @@ _generative_role(name::Symbol, datanames) = begin
     (:derived, nothing)
 end
 
-_block_outputs(m::StanModel, blockname::Symbol, kind::Symbol, datanames) = begin
+# Group boundaries of a RAGGED observation's twins (`ModelOutput.segments`). The
+# `ends` live on the observation's own carrier — a `RaggedVector` is a nominal
+# ntup with `(mem, ends)` (builtin.jl), and its data value is the materialised
+# pairing — so this reads the DATA, not the emitted Stan. Dense observations
+# have no segmentation and report `nothing`.
+_ragged_segments(x) = begin
+    center_type(x) <: RaggedVector || center_type(x) <: RaggedMatrix || return nothing
+    v = getvalue(x)
+    v isa NamedTuple && haskey(v, :ends) || return nothing
+    collect(Int, v.ends)
+end
+_output_segments(source, data) =
+    source === nothing || !haskey(data, source) ? nothing : _ragged_segments(data[source])
+
+_block_outputs(m::StanModel, blockname::Symbol, kind::Symbol, data) = begin
     acc = OrderedDict{Symbol,Any}()
     _output_symbols(block(m, blockname), acc)
+    datanames = keys(data)
     rv = ModelOutput[]
     for (name, x) in pairs(acc)
         always_inline(x) && continue
@@ -362,6 +389,7 @@ _block_outputs(m::StanModel, blockname::Symbol, kind::Symbol, datanames) = begin
         push!(rv, ModelOutput(
             name, kind, _descriptor_type(x), _descriptor_size(x),
             _descriptor_constraints(x), generative, source,
+            _output_segments(source, data),
         ))
     end
     rv
@@ -509,12 +537,11 @@ stan_descriptor(x::SlicModel; kwargs...) = stan_descriptor(stan_model(x); kwargs
 stan_descriptor(m::StanModel; name=nothing) = begin
     code = stan_code(m)
     data = content(block(m, :data))
-    datanames = Set{Symbol}(keys(data))
 
     outputs = vcat(
-        _block_outputs(m, :parameters, :parameter, datanames),
-        _block_outputs(m, :transformed_parameters, :transformed_parameter, datanames),
-        _block_outputs(m, :generated_quantities, :generated_quantity, datanames),
+        _block_outputs(m, :parameters, :parameter, data),
+        _block_outputs(m, :transformed_parameters, :transformed_parameter, data),
+        _block_outputs(m, :generated_quantities, :generated_quantity, data),
     )
     # Observations: pass (1) the model block's `~`, pass (2) the twins just
     # classified. See the two-pass note above `_observed_bases`.
@@ -863,6 +890,7 @@ Base.show(io::IO, ::MIME"text/plain", d::ModelDescriptor) = begin
         isempty(o.size) || print(io, "[", join(o.size, ", "), "]")
         print(io, "  ", o.kind, "/", o.generative)
         o.source === nothing || print(io, " of ", o.source)
+        o.segments === nothing || print(io, "  ", length(o.segments), " ragged group(s)")
     end
     print(io, "\n  operations: ", join((op.name for op in d.operations), ", "))
 end

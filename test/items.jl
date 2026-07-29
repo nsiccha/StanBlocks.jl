@@ -432,6 +432,14 @@ end
             to_vector(normal_rng(rep_vector(mu, n), sigma))
         cdf_normal_lcdf(y, mu, sigma)::real = normal_lcdf(y, mu, sigma)
         cdf_normal_lccdf(y, mu, sigma)::real = normal_lccdf(y, mu, sigma)
+        # A family with only a SCALAR `_rng`. A RAGGED group is a Stan `vector`,
+        # so its per-group predictive draw needs the sized
+        # `foo_rng(vector[n], …)::vector[n]` companion; without it the draw must
+        # fail LOUDLY naming the family and the signature to add, not from deep
+        # inside `tracetype`.
+        @lpxf scalarrng_lpdf(y::real, mu::real, s::real)::real = normal_lpdf(y | mu, s)
+        scalarrng_lpdfs(y::real, mu::real, s::real)::real = normal_lpdf(y | mu, s)
+        scalarrng_rng(mu::real, s::real)::real = normal_rng(mu, s)
         @lpxf vararg_lpdf(y, args...) = 0.
         vararg_lpdfs(y, args...) = 0.
         vararg_rng(args...) = 0.
@@ -4387,8 +4395,10 @@ The obs is now BROADCAST ACROSS the ragged groups (never flattened): it lowers t
 compiler-owned per-group loop `for g in 1:length(ys): ys[g] ~ dist(mu[g], …)`
 (ragged distribution args sliced per group via `_ragged_group_arg`; shared
 scalar/dense args pass through), reusing the ragged-prior density-loop machinery.
-The indexed data obs routes to the model block only (no auto-GQ), matching the
-obs-in-cell plate form.
+
+This item pins the MODEL block only. The generated-quantities half — the
+`<obs>_gen` / `<obs>_likelihood` twins added by decision
+`2026-07-29T17-18-58-036-0w0r1yf` — is `slic: ragged observation twins`.
 
 Correctness for BOTH:
 - univariate `normal` reduces to the same per-group density as the obs-in-cell
@@ -4429,6 +4439,192 @@ Correctness for BOTH:
             r"getindex_RaggedVector\(ym, g__ro_\d+\) ~ multi_normal\(getindex_RaggedVector\(mm, g__ro_\d+\), Sig\)",
             mb,
         )
+    end
+end
+
+"""
+Verify `slic: ragged observation twins`.
+
+Snag ragged-observati-6a26481b, decision `2026-07-29T17-18-58-036-0w0r1yf`
+(resolved "yes, go" by the user): a ragged observation lowered to a MODEL-ONLY
+per-group density loop, so a `RaggedVector` observation advertised neither
+`:predict` nor `:pointwise_loglik` — the only observation shape in SLIC that
+produced no predictive draw. Root cause: `_is_gen_declarable` (passes.jl)
+rejects a `RaggedVector` base, so `distribution_blocks` routed the whole
+sampling statement to `(:model,)`.
+
+The resolved design is the HYBRID: the compiler owns the STORAGE and the loops
+(a flat `<obs>_gen` over the ragged memory, a per-group `<obs>_likelihood`, both
+filled by a second compiler-owned loop pinned to generated quantities), while
+the FAMILY REGISTRY owns the semantics (`rng_expr` for the draw, `lpxf_expr` for
+the density). Author syntax is unchanged. Contract defaults:
+
+- **A** — one AGGREGATE density per group (`lpxf_expr`, never `_lpdfs`), because
+  a joint family like `multi_normal` has no per-element factorisation. Optional
+  per-element loglik for factorising families is the non-blocking follow-up
+  `2026-07-29T17-26-05-795-1kf2m4c`, deliberately NOT in this landing.
+- **B** — the flat draw plus `ModelOutput.segments` (the carrier's own inclusive
+  1-based `ends`), so a consumer cuts the draw back into groups without reaching
+  into the `(mem, ends)` tuple.
+- **C** — the sized-token RNG protocol every other vector-shaped predictive draw
+  already uses, so a custom family only needs its ordinary
+  `foo_rng(vector[n], …)::vector[n]` companion; missing it fails loudly, naming
+  the family and the signature.
+- **D** — the model block is byte-for-byte unchanged.
+- **E** — a discrete family over a ragged carrier is rejected (a `RaggedVector`
+  stores its groups in a real `vector`, so there is no integer carrier yet).
+"""
+@testitem "slic: ragged observation twins" tags=[:slic, :plate, :ragged, :descriptor, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    ts = [[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]]
+    ys = [[0.6, 0.8, 1.0], [0.5, 0.7], [0.4, 0.9, 1.1, 1.3]]
+    nlpdf(y, m, s) = -0.5 * log(2pi) - log(s) - 0.5 * abs2((y - m) / s)
+
+    # (A) univariate normal ---------------------------------------------------
+    model = c3_plate_ragged_obs_outside_model
+    let gq = stan_block(stan_code(model), "generated quantities")
+        # Storage: the draw is FLAT over the ragged memory; the loglik is one
+        # scalar per GROUP.
+        @test occursin("vector[num_elements(ys.1)] ys_gen;", gq)
+        @test occursin("vector[num_elements_RaggedVector(ys)] ys_likelihood;", gq)
+        # Semantics come from the family registry: the SIZED rng for the draw,
+        # the AGGREGATE `_lpdf` (never `_lpdfs`) for the density.
+        @test occursin(r"ys_gen\[ragged_start\(ys\.2, g__rq_\d+\):ragged_end\(ys\.2, g__rq_\d+\)\] = normal_vector_rng\(", gq)
+        @test occursin(r"ys_likelihood\[g__rq_\d+\] = normal_lpdf\(getindex_RaggedVector\(ys, g__rq_\d+\) \|", gq)
+        @test !occursin("normal_lpdfs", gq)
+    end
+    # (D) the model block stays a PURE density loop — the twins are additive, so
+    # nothing predictive leaks into it (Stan forbids `_rng` there anyway).
+    let mb = stan_block(stan_code(model), "model")
+        @test !occursin("_rng", mb)
+        @test !occursin("ys_gen", mb)
+        @test !occursin("ys_likelihood", mb)
+    end
+
+    d = stan_descriptor(model; name = :ragged_twins)
+    outs = Dict(o.name => o for o in d.outputs)
+    @test outs[:ys_gen].generative == :draw && outs[:ys_gen].source == :ys
+    @test outs[:ys_likelihood].generative == :pointwise_loglik
+    let ops = [op.name for op in d.operations]
+        @test :predict in ops && :pointwise_loglik in ops
+    end
+    # (B) group boundaries — inclusive 1-based ends of groups 3, 2 and 4 long.
+    @test outs[:ys_gen].segments == [3, 5, 9]
+
+    # End-to-end through BridgeStan.
+    p = instantiate(model)
+    sm = p.model
+    names = BridgeStan.param_names(sm; include_tp = true, include_gq = true)
+    gi = findall(n -> startswith(n, "ys_gen"), names)
+    li = findall(n -> startswith(n, "ys_likelihood"), names)
+    @test length(gi) == sum(length, ys)     # ONE flat draw over every element
+    @test length(li) == length(ys)          # ONE aggregate density per group
+    let c = BridgeStan.param_constrain(
+            sm, [0.3];
+            include_tp = true, include_gq = true, rng = BridgeStan.StanRNG(sm, 4321),
+        )
+        @test all(isfinite, c[gi])
+        @test all(isfinite, c[li])
+        sigma = c[findfirst(==("sigma"), names)]
+        # `normal` factorises, so the GROUP density is the sum of its elements'.
+        # (What the follow-up would additionally expose is those summands.)
+        for g in eachindex(ys)
+            @test c[li[g]] ≈ sum(nlpdf(ys[g][i], 2.0 * ts[g][i], sigma) for i in eachindex(ys[g]))
+        end
+        # The published segments cut the flat draw back into the ragged shape.
+        segs = outs[:ys_gen].segments
+        flat = c[gi]
+        starts = [g == 1 ? 1 : segs[g-1] + 1 for g in eachindex(segs)]
+        @test [length(flat[starts[g]:segs[g]]) for g in eachindex(segs)] == length.(ys)
+    end
+
+    # (A, joint family) multi_normal — a group is ONE multivariate observation,
+    # so it has ONE density and no per-element factorisation to expose at all.
+    let mvn = c3_ragged_obs_broadcast_mvn_model,
+        ym = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]],
+        mm = [[0.0, 0.1, 0.2], [0.3, 0.4, 0.5], [0.6, 0.7, 0.8]]
+
+        gq = stan_block(stan_code(mvn), "generated quantities")
+        @test occursin(r"= multi_normal_vector_rng\(", gq)
+        @test occursin(r"ym_likelihood\[g__rq_\d+\] = multi_normal_lpdf\(", gq)
+        pm = instantiate(mvn)
+        nm = BridgeStan.param_names(pm.model; include_tp = true, include_gq = true)
+        @test count(n -> startswith(n, "ym_gen"), nm) == 9
+        @test count(n -> startswith(n, "ym_likelihood"), nm) == 3
+        # `scale` has a prior but no likelihood, so SLIC lowers it to a gq
+        # `exponential_rng` and the sampler dimension is ZERO — the whole model
+        # is the ragged observation.
+        @test LogDensityProblems.dimension(pm) == 0
+        cm = BridgeStan.param_constrain(
+            pm.model, Float64[];
+            include_tp = true, include_gq = true, rng = BridgeStan.StanRNG(pm.model, 99),
+        )
+        lim = findall(n -> startswith(n, "ym_likelihood"), nm)
+        # `Sig` is the identity here, so the joint density coincides with the
+        # elementwise sum — which pins the group DIMENSION (3, not 1 and not 9).
+        for g in eachindex(ym)
+            @test cm[lim[g]] ≈ sum(nlpdf(ym[g][i], mm[g][i], 1.0) for i in eachindex(ym[g]))
+        end
+    end
+
+    # (C) distribution HOFs over a ragged obs. The base family is resolved ONE
+    # level through the HOF (`_ragged_base_family`), because the HOF itself has
+    # no `lpxf_expr`; the draw still goes through the sized-token protocol.
+    let wt = @slic (; ys = ys, w = 2.0) begin
+            sigma ~ exponential(1)
+            ys ~ weighted(normal, w, 0.0, sigma)
+        end
+        @test transpiles(wt)
+        @test stanc_compiles(wt)
+        gq = stan_block(stan_code(wt), "generated quantities")
+        @test occursin(r"= weighted_vector_normal_rng\(", gq)
+        @test occursin(r"ys_likelihood\[g__rq_\d+\] = weighted_normal_lpdf\(", gq)
+    end
+    # A HOF carries its control values in KWARGS, and a per-group censoring bound
+    # is ragged like any other per-group quantity: it must be SLICED in the
+    # generated-quantities loop exactly as in the model loop. Left unsliced this
+    # transpiled but emitted Stan comparing a `real` to a
+    # `tuple(vector, array[] int)`, which only stanc caught.
+    let scalar_bound = @slic (; ys = ys, lloq = 0.45) begin
+            sigma ~ exponential(1)
+            ys ~ clamped(normal, 0.0, sigma; lower = lloq)
+        end
+        @test stanc_compiles(scalar_bound)
+        @test occursin("lloq", stan_block(stan_code(scalar_bound), "generated quantities"))
+    end
+    let ragged_bound = @slic (;
+            ys = ys,
+            lo = [[0.45, 0.45, 0.45], [0.45, 0.45], [0.45, 0.45, 0.45, 0.45]],
+        ) begin
+            sigma ~ exponential(1)
+            ys ~ clamped(normal, 0.0, sigma; lower = lo)
+        end
+        @test stanc_compiles(ragged_bound)
+        code = stan_code(ragged_bound)
+        @test occursin(r"getindex_RaggedVector\(lo, g__ro_\d+\)", stan_block(code, "model"))
+        @test occursin(
+            r"getindex_RaggedVector\(lo, g__rq_\d+\)",
+            stan_block(code, "generated quantities"),
+        )
+    end
+
+    # (C, failure) a family whose only `_rng` is SCALAR cannot build a group
+    # draw. The error names the family and the exact overload to add, instead of
+    # surfacing as an internal `` `tracetype` not defined for …::anything ``.
+    let bad = @slic (; ys = ys) begin
+            s ~ exponential(1)
+            ys ~ scalarrng(0.0, s)
+        end
+        @test_throws "no SIZED predictive companion" stan_code(bad)
+        @test_throws "scalarrng_rng(vector[n]" stan_code(bad)
+    end
+
+    # (E) a discrete family has no ragged carrier: a `RaggedVector`'s groups live
+    # in a real `vector`, so an integer-valued ragged draw has nowhere to land.
+    let discrete = @slic (; ks = [[1.0, 2.0], [3.0, 4.0, 5.0]]) begin
+            lam ~ exponential(1)
+            ks ~ poisson(lam)
+        end
+        @test_throws "is discrete" stan_code(discrete)
     end
 end
 
@@ -4559,9 +4755,12 @@ over flat memory with no declarable Stan twin, so it keeps the model-only route)
         @test all(isfinite, drawn[idx])
     end
 
-    # A RAGGED observation base has no declarable twin → model-only, unchanged.
+    # A RAGGED observation base gets its twins from the compiler-owned ragged
+    # loop instead of `_push_obs_gen_decl!` — the `_gen` retarget this item pins
+    # still must not fire on it (`_getindex_chain_base` stays getindex-only), so
+    # the declaration is the ragged one, sized over the FLAT memory.
     let code = stan_code(c3_plate_ragged_obs_outside_model)
-        @test !occursin("ys_gen", code)
+        @test occursin("vector[num_elements(ys.1)] ys_gen;", code)
     end
 
     # A COMPOUND data-qualified LHS is not an indexed observation. The twin
@@ -5663,15 +5862,21 @@ Verify the descriptor over the PLATE shape — the case `e4f0964`'s two testitem
 did not reach. A per-cell observation inside a compiler-owned plate loop gets
 its `<base>_gen` twin from `_push_obs_gen_decl!` INSIDE a `ForExpr`, while
 `_output_symbols` deliberately does not descend into such a loop (the base is
-declared separately). That interaction, the ragged carve-out, and the
-distinction between a gq observation-twin and a gq prior RE-DRAW are what this
-item pins down.
+declared separately). That interaction, the RAGGED observation's own pair of
+twins, and the distinction between a gq observation-twin and a gq prior RE-DRAW
+are what this item pins down.
 
 Todo `2026-07-22T11-53-04-745-0ly84er`, from decision `0a6ftf8` resolving "no
 preference": the two gaps I had flagged are reachable from pure `@slic`, so
 none of this needs BRM.
+
+The ragged half was a deliberate CARVE-OUT until decision
+`2026-07-29T17-18-58-036-0w0r1yf` (snag ragged-observati-6a26481b): a ragged
+observation lowered to a model-only density loop, so it advertised neither
+`:predict` nor `:pointwise_loglik`. It now emits both twins and publishes the
+group boundaries as `ModelOutput.segments`.
 """
-@testitem "slic: descriptor over plate observations, ragged carve-out and gq re-draws" tags=[:slic, :descriptor, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: descriptor over plate observations, ragged twins and gq re-draws" tags=[:slic, :descriptor, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # --- per-cell plate observation: the twin is reached through a loop -------
     obs_plate = @slic (; n_groups = 5, k = 3, y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
         L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
@@ -5720,14 +5925,35 @@ none of this needs BRM.
     @test outs[:b_cell].kind == :transformed_parameter
     @test outs[:b_cell_z].kind == :parameter
 
-    # --- ragged carve-out: no declarable shape ⇒ no twin ⇒ no :predict -------
+    # --- ragged observation: BOTH twins, plus the group boundaries ------------
     rd = stan_descriptor(c3_plate_ragged_obs_outside_model; name = :ragged)
-    @test !any(o -> o.generative == :draw, rd.outputs)
-    @test :predict ∉ [op.name for op in rd.operations]
-    # It is still an observation — pass (1) sees the model-block `~` even though
-    # pass (2) has no twin to find. The two passes are not redundant.
+    routs = Dict(o.name => o for o in rd.outputs)
+    @test routs[:ys_gen].kind == :generated_quantity
+    @test routs[:ys_gen].generative == :draw && routs[:ys_gen].source == :ys
+    @test routs[:ys_likelihood].generative == :pointwise_loglik
+    @test routs[:ys_likelihood].source == :ys
+    @test [o.name for o in rd.outputs if o.generative == :draw] == [:ys_gen]
+    let ops = [op.name for op in rd.operations]
+        @test :predict in ops && :pointwise_loglik in ops && :fit in ops
+    end
+    @test stan_operation(rd, :predict).outputs == (:ys_gen,)
+    @test stan_operation(rd, :pointwise_loglik).outputs == (:ys_likelihood,)
+    # Contract B of `0w0r1yf`: `ys_gen` is emitted FLAT (one `vector` holding
+    # every group end to end), so the descriptor publishes the group boundaries
+    # — the carrier's own inclusive 1-based `ends` — and a consumer cuts the
+    # draw back into groups without reaching into the `(mem, ends)` tuple.
+    # Groups here are 3, 2 and 4 elements long.
+    @test routs[:ys_gen].segments == [3, 5, 9]
+    @test routs[:ys_likelihood].segments == [3, 5, 9]
+    # `ys_gen` is flat over the memory; `ys_likelihood` is one scalar per group.
+    @test occursin("num_elements_RaggedVector", string(routs[:ys_likelihood].size[1]))
+    @test !occursin("RaggedVector", string(routs[:ys_gen].size[1]))
+    # Pass (1) still sees the model-block `~` — the two passes are not redundant,
+    # and a ragged obs is the only shape where pass (1) is the sole signal for
+    # the `observed` flag (its LHS reaches the cell through a `getfield`).
     @test Dict(i.name => i for i in rd.inputs)[:ys].observed
-    @test :fit in [op.name for op in rd.operations]
+    # A DENSE observation has no segmentation to report.
+    @test outs[:y_gen].segments === nothing
 
     # --- a gq prior RE-DRAW is :derived, not :draw ---------------------------
     # cv-tainting `eta` flips `L` out of `parameters` into a generated-quantities
