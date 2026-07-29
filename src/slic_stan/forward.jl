@@ -288,10 +288,18 @@ _is_ragged_density_target(name::Symbol) = name in _ragged_density_targets()
 # RaggedVector/RaggedMatrix usertypes exist: ragged args become `arg[g]`, while
 # shared scalars/dense values pass through unchanged.
 function _ragged_group_arg end
-_ragged_group_rhs(rhs::CanonicalExpr, g) = begin
-    args = map(a -> CanonicalExpr(_ragged_group_arg, a, g), rhs.args)
-    CanonicalExpr(head(rhs), args...; rhs.kwargs...)
-end
+# KWARGS are sliced exactly like positional args. A distribution HOF carries its
+# control values there (`clamped(normal, …; lower=lloq)`, `conditioned(…; upper=…)`),
+# and a PER-GROUP censoring bound is ragged like any other per-group quantity. Left
+# unsliced, the whole `RaggedVector` reached the per-group call and emitted Stan that
+# compared a real to a `tuple(vector, array[] int)`. `_ragged_group_arg` passes
+# shared scalars and dense values through untouched, so this is a strict widening.
+_ragged_group_args(args, g) = map(a -> CanonicalExpr(_ragged_group_arg, a, g), args)
+_ragged_group_kwargs(kwargs, g) =
+    (; (k => CanonicalExpr(_ragged_group_arg, v, g) for (k, v) in pairs(kwargs))...)
+_ragged_group_rhs(rhs::CanonicalExpr, g) = CanonicalExpr(
+    head(rhs), _ragged_group_args(rhs.args, g)...; _ragged_group_kwargs(rhs.kwargs, g)...,
+)
 _ragged_rhs_is_flat(rhs) = _is_canonical_expr(rhs) && head(rhs) === :flat &&
     isempty(rhs.args) && isempty(rhs.kwargs)
 
@@ -329,8 +337,8 @@ _ragged_group_marker(f, name, rhs::CanonicalExpr, g) = CanonicalExpr(
     f,
     CanonicalExpr(:getindex, name, g),                         # group prototype
     head(rhs),                                                 # base-family token
-    map(a -> CanonicalExpr(_ragged_group_arg, a, g), rhs.args)...;
-    rhs.kwargs...,
+    _ragged_group_args(rhs.args, g)...;                        # per-group arguments
+    _ragged_group_kwargs(rhs.kwargs, g)...,                    # per-group HOF controls
 )
 
 # A plate's second trace runs inside the real model scope, but every discovered

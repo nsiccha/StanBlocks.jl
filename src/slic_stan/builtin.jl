@@ -1508,6 +1508,39 @@ _assert_ragged_continuous_family(rhs::CanonicalExpr) = begin
     )
     rhs
 end
+# A group draw is the ONE place a family's SIZED rng companion becomes mandatory:
+# a ragged group is a `vector`, so the scalar `foo_rng(args…)` Stan ships natively
+# is not enough. Without a `foo_rng(vector[n], args…)::vector[n]` overload the
+# failure surfaces from deep inside `tracetype` as an internal
+# `` `tracetype` not defined for _arg30_2::anything ``, which names neither the
+# family nor what is missing. Re-raise with both.
+_ragged_missing_sized_rng(rhs::CanonicalExpr, ct, detail) = begin
+    family = _ragged_base_family(rhs)
+    rng = try string(nameof(rng_expr(head(rhs)))) catch; string(nameof(family), "_rng") end
+    error(
+        "Ragged observation: family `", nameof(family), "` has no SIZED predictive ",
+        "companion, so its per-group draw cannot be built. A ragged group is a Stan ",
+        "`", ct, "`, not a scalar, so `", rng, "` needs the sized-token overload\n",
+        "    @deffun ", rng, "(", ct, "[n], <the family's args…>)::", ct, "[n] = …\n",
+        "alongside its scalar form — the same protocol every other vector-shaped ",
+        "predictive draw uses (see `normal_rng(vector[n], …)` in `builtin.jl`). ", detail,
+    )
+end
+_ragged_group_rng(token, rhs::CanonicalExpr, ct) = begin
+    rv = try
+        rng_expr(token, rhs)
+    catch e
+        _ragged_missing_sized_rng(rhs, ct, string("Underlying error: ", sprint(showerror, e)))
+    end
+    # A missing sized overload does not always THROW: `@deffun` dispatch can fall
+    # through to an untyped/vararg form that traces to `anything`, which only fails
+    # later, at the slice assignment, as an internal `` `tracetype` not defined for
+    # _argNN::anything ``. Catch that shape here, where the family is still known.
+    center_type(rv) === types.anything && _ragged_missing_sized_rng(
+        rhs, ct, "It resolved to an untyped (`anything`) result instead.",
+    )
+    rv
+end
 expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_draw)}; info) = begin
     proto = x.args[1]
     rhs = _assert_ragged_continuous_family(_ragged_group_call(x))
@@ -1516,7 +1549,7 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_draw)}; info) = beg
     # uses, so a custom `@lpxf` family only needs its ordinary sized
     # `foo_rng(vector[n], args…)::vector[n]` companion (stanblocks-use §8).
     token = StanExpr(ct, StanType(types.tokenof{ct}, stan_size(proto); value=ct, qual=:data))
-    rng_expr(token, rhs)
+    _ragged_group_rng(token, rhs, ct)
 end
 expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_density)}; info) = begin
     rhs = _assert_ragged_continuous_family(_ragged_group_call(x))
