@@ -5757,3 +5757,45 @@ vector observation: model density, predictive RNG, and pointwise log likelihood.
     @test occursin(r"y_likelihood\s*=\s*skew_double_exponential_lpdfs\(y,", code)
     @test stanc_compiles(model)
 end
+
+"""
+Snag regression (gp-exp-quad-mult-43b54b48): Stan's multidimensional
+`gp_exp_quad_cov` consumes `array[] vector` locations and supports both
+self/cross covariance with scalar or per-axis length scales. SLIC spells an
+`array[N] vector[D]` as `vector[N,D]`. Stan's native per-axis scale is
+`array[D] real`; a SLIC `vector[D]` goes through the explicit conversion UDF.
+"""
+@testitem "slic: multidimensional exponentiated-quadratic GP covariance signatures" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    model = @slic (; N = 3, M = 2, D = 2, obs = 0.0) begin
+        x1::vector[N,D] ~ multi_normal(
+            rep_vector(0.0, D), diag_matrix(rep_vector(1.0, D)))
+        x2::vector[M,D] ~ multi_normal(
+            rep_vector(0.0, D), diag_matrix(rep_vector(1.0, D)))
+        length_scale::vector[D] = rep_vector(0.75, D)
+        length_scale_array = to_array_1d(length_scale)
+
+        K_self_scalar = gp_exp_quad_cov(x1, 1.25, 0.5)
+        K_self_array = gp_exp_quad_cov(x1, 1.25, length_scale_array)
+        K_self_vector = gp_exp_quad_cov(x1, 1.25, length_scale)
+        K_cross_scalar = gp_exp_quad_cov(x1, x2, 1.25, 0.5)
+        K_cross_array = gp_exp_quad_cov(x1, x2, 1.25, length_scale_array)
+        K_cross_vector = gp_exp_quad_cov(x1, x2, 1.25, length_scale)
+
+        mu = K_self_scalar[1,1] + K_self_array[1,1] + K_self_vector[1,1] +
+             K_cross_scalar[1,1] + K_cross_array[1,1] + K_cross_vector[1,1]
+        obs ~ normal(mu, 1.0)
+    end
+
+    code = stan_code(model)
+    params = stan_block(code, "parameters")
+    @test occursin("array[N] vector[D] x1;", params)
+    @test occursin("array[M] vector[D] x2;", params)
+    for suffix in ("scalar", "array", "vector")
+        @test occursin("matrix[N, N] K_self_$suffix = gp_exp_quad_cov(", code)
+        @test occursin("matrix[N, M] K_cross_$suffix = gp_exp_quad_cov(", code)
+    end
+    @test occursin("to_array_1d(length_scale)", stan_block(code, "functions"))
+    @test stanc_compiles(model)
+end
