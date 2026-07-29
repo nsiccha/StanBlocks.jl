@@ -295,6 +295,44 @@ end
 _ragged_rhs_is_flat(rhs) = _is_canonical_expr(rhs) && head(rhs) === :flat &&
     isempty(rhs.args) && isempty(rhs.kwargs)
 
+# Trace-time markers for the generated-quantities half of a ragged observation
+# (snag ragged-observati-6a26481b). A ragged `~` lowers to a compiler-owned
+# per-group loop, so its predictive draw and pointwise log-likelihood must be
+# synthesized per group too — but the family companion selection (`rng_expr` /
+# `lpxf_expr`, including the distribution-HOF specs) only exists at the StanExpr
+# level, which the injected SOURCE body cannot spell. These markers carry the
+# group prototype + the base-family token + the per-group arguments through the
+# retrace; `builtin.jl` supplies the expansion once the family registry is in
+# scope, exactly like `_ragged_group_arg` above.
+function _ragged_group_draw end
+function _ragged_group_density end
+
+# Pin a compiler-owned generated-quantities declaration BEFORE its first fill.
+# A fresh declaration's first certified fill RESETS its qualifier to that RHS's
+# (user decision `1dd0eww`, `forward!(::AssignmentExpr)`), so a `<obs>_gen` filled
+# from a parameter-dependent draw would land in `transformed parameters` — where
+# Stan forbids `_rng`. Declaring the role `:fill` at `:quantities` up front sends
+# every later fill down the PROMOTE branch instead, and `:quantities` is the top
+# of that lattice, so the declaration and all of its fills land together in
+# `generated quantities`. Its own `forward!` method keeps the argument a raw
+# Symbol (the generic method would forward it into a StanExpr first).
+function _ragged_gq_pin end
+forward!(x::CanonicalExpr{typeof(_ragged_gq_pin)}; info) = begin
+    name = x.args[1]::Symbol
+    name in keys(info) || error(
+        "internal: `", name, "` must be declared before its generated-quantities pin."
+    )
+    info[name] = remake(info[name]; decl_role=:fill, qual=:quantities)
+    nothing
+end
+_ragged_group_marker(f, name, rhs::CanonicalExpr, g) = CanonicalExpr(
+    f,
+    CanonicalExpr(:getindex, name, g),                         # group prototype
+    head(rhs),                                                 # base-family token
+    map(a -> CanonicalExpr(_ragged_group_arg, a, g), rhs.args)...;
+    rhs.kwargs...,
+)
+
 # A plate's second trace runs inside the real model scope, but every discovered
 # cell-local binding is represented there by an outer array.  Keep the mapping
 # task-local so normal tracing stays untouched and submodels can participate:
@@ -974,10 +1012,15 @@ forward!(x::SamplingExpr{Symbol}; info) = begin
     # VECTOR-valued families need — `ys[g] ~ multi_normal(mu[g], Sigma)` is ONE
     # obs per group — while univariate families (`normal`) reduce to the same
     # per-group density Stan already vectorises. It reuses the ragged-prior density
-    # loop (`_ragged_group_rhs` + `_trace_ragged_stmts`); the indexed data obs
-    # routes to the model block only (no auto-GQ), matching the obs-in-cell plate
-    # form. Uses the RAW rhs so the `_ragged_group_arg` markers resolve during the
-    # injected trace. See snag ragged-dist-arg-dcffbc1b.
+    # loop (`_ragged_group_rhs` + `_trace_ragged_stmts`). Uses the RAW rhs so the
+    # `_ragged_group_arg` markers resolve during the injected trace. See snag
+    # ragged-dist-arg-dcffbc1b.
+    #
+    # The SAME group loop is also cloned into generated quantities (snag
+    # ragged-observati-6a26481b): a compiler-owned flat backing vector `<obs>_gen`
+    # is filled slice-by-slice from the family's sized RNG, and `<obs>_likelihood`
+    # gets ONE scalar per group from the family's aggregate density. The density
+    # statement itself is never flattened — see `_forward_ragged_obs_broadcast!`.
     if name in keys(info) && stan.qual(info[name]) == :data &&
             center_type(info[name]) <: RaggedVector && _is_canonical_expr(rhs)
         return _forward_ragged_obs_broadcast!(name, rhs; info)
@@ -985,12 +1028,50 @@ forward!(x::SamplingExpr{Symbol}; info) = begin
     rhs = forward!(rhs; info)::Union{StanExpr,SlicModel}
     forward!(remake(x, name, rhs); info)
 end
+# A ragged observation gets the model-block density loop AND a generated-quantities
+# twin loop. The twin deliberately keeps the group structure:
+#
+#   vector[num_elements(ys.mem)] ys_gen;          // flat backing, observed `ends`
+#   vector[length(ys)]           ys_likelihood;   // ONE scalar per GROUP
+#   for (g in 1:length(ys)) {
+#     ys_gen[ragged_start(ys.ends,g):ragged_end(ys.ends,g)] = <family>_rng(<sized token>, args_g…);
+#     ys_likelihood[g] = <family>_lpdf(ys[g], args_g…);
+#   }
+#
+# `ys_likelihood` is groupwise-JOINT, not a concatenation of `_lpdfs`: `normal_lpdfs`
+# is elementwise but `multi_normal_lpdfs` is one joint scalar, so concatenating would
+# silently change what a vector-valued family means. One scalar per group is the only
+# shape that is correct for BOTH.
+#
+# The draw preserves the OBSERVED `ends` exactly — Stan's generated-quantities block
+# is statically sized, so a variable-length predictive group has nowhere to live.
 _forward_ragged_obs_broadcast!(name, rhs_raw; info) = begin
-    g = Symbol(:g, "__ro_", _next_inline_id())
-    stmt = :(for $g in 1:length($name)
-                 $name[$g] ~ $(_ragged_group_rhs(rhs_raw, g))
-             end)
-    _trace_ragged_stmts([stmt], name; info, certify_density=false)
+    id = _next_inline_id()
+    g   = Symbol(:g, "__ro_", id)
+    gg  = Symbol(:g, "__rq_", id)
+    gen = Symbol(name, :_gen)
+    lik = Symbol(name, :_likelihood)
+    for k in (gen, lik)
+        k in keys(info) && error(
+            "Ragged observation `", name, " ~ …` needs the compiler-owned name `", k,
+            "`, which is already bound in this model. Rename that variable."
+        )
+    end
+    stmts = Any[
+        :(for $g in 1:length($name)
+              $name[$g] ~ $(_ragged_group_rhs(rhs_raw, g))
+          end),
+        :($gen :: vector[num_elements($name.mem)]),
+        :($lik :: vector[length($name)]),
+        CanonicalExpr(_ragged_gq_pin, gen),
+        CanonicalExpr(_ragged_gq_pin, lik),
+        :(for $gg in 1:length($name)
+              $gen[ragged_start($name.ends, $gg):ragged_end($name.ends, $gg)] =
+                  $(_ragged_group_marker(_ragged_group_draw, name, rhs_raw, gg))
+              $lik[$gg] = $(_ragged_group_marker(_ragged_group_density, name, rhs_raw, gg))
+          end),
+    ]
+    _trace_ragged_stmts(stmts, name; info, certify_density=false)
 end
 # Distribution higher-order functions can register call-site invariants without
 # teaching the generic sampling forward pass about any particular combinator.
