@@ -4842,13 +4842,14 @@ end
 
 """
 Verify that `stan_descriptor` exposes the exact ordered Stan-functions
-inventory used by emission, including stable leading-underscore names, source
-spans, direct dependency links, and a fail-closed transitive-closure selector.
+inventory used by emission, including legal stable names for leading-underscore
+Julia bindings, source spans, direct dependency links, and a fail-closed
+transitive-closure selector.
 
 The nested helpers live in this test item's generated module (not `Main`) so
 the probe also exercises the user-module sibling-resolution path that BRM uses.
 """
-@testitem "slic: descriptor exposes included definition inventory and closure" tags=[:slic, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: descriptor exposes included definition inventory and closure" tags=[:slic, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @deffun _sb_descriptor_leaf(x::real)::real = x + 0.25
     @deffun _sb_descriptor_inner(x::real)::real = 2.0 * _sb_descriptor_leaf(x)
     @deffun _sb_descriptor_outer(x::real)::real = _sb_descriptor_inner(x) - 1.0
@@ -4865,22 +4866,25 @@ the probe also exercises the user-module sibling-resolution path that BRM uses.
     d = stan_descriptor(model; name = :definition_inventory)
     names = [f.name for f in d.definitions]
 
-    outer_i = only(findall(==(:_sb_descriptor_outer), names))
-    inner_i = only(findall(==(:_sb_descriptor_inner), names))
-    leaf_i = only(findall(==(:_sb_descriptor_leaf), names))
-    other_i = only(findall(==(:_sb_descriptor_other), names))
+    outer_i = only(findall(==(:u_sb_descriptor_outer), names))
+    inner_i = only(findall(==(:u_sb_descriptor_inner), names))
+    leaf_i = only(findall(==(:u_sb_descriptor_leaf), names))
+    other_i = only(findall(==(:u_sb_descriptor_other), names))
     @test outer_i < inner_i < leaf_i
     @test other_i ∉ (outer_i, inner_i, leaf_i)
 
-    outer = stan_definition(d, :_sb_descriptor_outer)
-    inner = stan_definition(d, "_sb_descriptor_inner")
-    leaf = stan_definition(d, :_sb_descriptor_leaf)
-    @test outer.name == outer.binding == :_sb_descriptor_outer
+    outer = stan_definition(d, :u_sb_descriptor_outer)
+    inner = stan_definition(d, "u_sb_descriptor_inner")
+    leaf = stan_definition(d, :u_sb_descriptor_leaf)
+    @test outer.name == :u_sb_descriptor_outer
+    @test outer.binding == :_sb_descriptor_outer
     @test outer.kind == :function
-    @test outer.signature == "real _sb_descriptor_outer(real x)"
-    @test outer.dependencies == (:_sb_descriptor_inner,)
+    @test outer.signature == "real u_sb_descriptor_outer(real x)"
+    @test outer.dependencies == (:u_sb_descriptor_inner,)
     @test outer.dependency_signatures == (inner.signature,)
-    @test inner.dependencies == (:_sb_descriptor_leaf,)
+    @test inner.binding == :_sb_descriptor_inner
+    @test leaf.binding == :_sb_descriptor_leaf
+    @test inner.dependencies == (:u_sb_descriptor_leaf,)
     @test inner.dependency_signatures == (leaf.signature,)
     @test isempty(leaf.dependencies) && isempty(leaf.dependency_signatures)
 
@@ -4892,14 +4896,15 @@ the probe also exercises the user-module sibling-resolution path that BRM uses.
     end
     @test first(outer.span) < first(inner.span) < first(leaf.span)
 
-    closure = stan_definition_closure(d, :_sb_descriptor_outer)
+    closure = stan_definition_closure(d, :u_sb_descriptor_outer)
     @test [f.name for f in closure] == [
-        :_sb_descriptor_outer,
-        :_sb_descriptor_inner,
-        :_sb_descriptor_leaf,
+        :u_sb_descriptor_outer,
+        :u_sb_descriptor_inner,
+        :u_sb_descriptor_leaf,
     ]
-    @test :_sb_descriptor_other ∉ [f.name for f in closure]
+    @test :u_sb_descriptor_other ∉ [f.name for f in closure]
     @test stan_definition_closure(d, (outer,)) == closure
+    @test stanc_compiles(model)
 
     # The emitted name can differ from the author binding for specialised
     # helpers; expose both so consumers never reverse-engineer mangling.
@@ -4913,7 +4918,7 @@ the probe also exercises the user-module sibling-resolution path that BRM uses.
         sprint(showerror, e)
     end
     @test occursin("has no included definition `_sb_descriptor_absent`", missing_err)
-    @test occursin("`_sb_descriptor_outer`", missing_err)
+    @test occursin("`u_sb_descriptor_outer`", missing_err)
     @test_throws ErrorException stan_definition_closure(d, :_sb_descriptor_absent)
 end
 
