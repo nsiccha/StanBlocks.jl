@@ -5729,3 +5729,31 @@ end
     @test occursin("lower=0.0", stan_block(stan_code(literal_only), "parameters"))
     @test stanc_compiles(literal_only)
 end
+
+"""
+Snag regression (skew-double-expo-e093bd49): the native Stan
+`skew_double_exponential` family must complete the observation triad for a
+vector observation: model density, predictive RNG, and pointwise log likelihood.
+"""
+@testitem "slic: skew-double-exponential supports the full observation triad" tags=[:slic, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+
+    model = @slic (; y = [-1.0, 0.0, 1.0]) begin
+        y ~ skew_double_exponential(0.0, 1.0, 0.25)
+    end
+
+    d = stan_descriptor(model; name = :skew_double_exponential)
+    outs = Dict(output.name => output for output in d.outputs)
+    @test outs[:y_gen].type == :vector
+    @test outs[:y_gen].size == (:y_n,)
+    @test outs[:y_gen].generative == :draw
+    @test outs[:y_likelihood].type == :vector
+    @test outs[:y_likelihood].size == (:y_n,)
+    @test outs[:y_likelihood].generative == :pointwise_loglik
+
+    code = stan_code(model)
+    @test occursin("y ~ skew_double_exponential(0.0, 1.0, 0.25);", code)
+    @test occursin(r"y_gen\s*=\s*skew_double_exponential_vector_rng\(", code)
+    @test occursin(r"y_likelihood\s*=\s*skew_double_exponential_lpdfs\(y,", code)
+    @test stanc_compiles(model)
+end

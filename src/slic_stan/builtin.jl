@@ -613,6 +613,7 @@ import Statistics
     gumbel_rng(::real, ::real)::real
     skew_normal_rng(::real, ::real, ::real)::real
     exp_mod_normal_rng(::real, ::real, ::real)::real
+    skew_double_exponential_rng(::real, ::real, ::real)::real
     pareto_rng(::real, ::real)::real
     pareto_type_2_rng(::real, ::real, ::real)::real
     categorical_rng(::vector[n])::int
@@ -747,6 +748,7 @@ for (base, params) in (
     (:gumbel_lpdf, (:mu, :beta)),
     (:chi_square_lpdf, (:nu,)),
     (:skew_normal_lpdf, (:mu, :sigma, :alpha)),
+    (:skew_double_exponential_lpdf, (:mu, :sigma, :tau)),
     (:frechet_lpdf, (:alpha, :sigma)),
     (:rayleigh_lpdf, (:sigma,)),
     (:loglogistic_lpdf, (:alpha, :beta)),
@@ -1118,8 +1120,9 @@ for dist in (:exponential, :chi_square, :inv_chi_square, :rayleigh)
     @eval @deffun $drng(vector[n], a)::vector[n] = to_vector($drng(a))
 end
 
-# 3-arg continuous (leading arg — nu / alpha — is always scalar in practice)
-for dist in (:student_t, :skew_normal, :exp_mod_normal, :pareto_type_2)
+# 3-arg continuous (the leading arg is scalar in this registry's supported signatures)
+for dist in (:student_t, :skew_normal, :exp_mod_normal,
+             :skew_double_exponential, :pareto_type_2)
     drng = Symbol(dist, :_rng)
     @eval @deffun $drng(real[n],   nu::real, a::real, b::real)::real[n]   = $drng(nu, rep_vector(a, n), b)
     @eval @deffun $drng(vector[n], nu::real, a::real, b::real)::vector[n] = to_vector($drng(nu, rep_vector(a, n), b))
@@ -1624,7 +1627,8 @@ end
         (real,) => real
         (vector[n],) => real[n]
     end
-    Union{typeof.((student_t_rng, skew_normal_rng, exp_mod_normal_rng, pareto_type_2_rng))...} => begin
+    Union{typeof.((student_t_rng, skew_normal_rng, exp_mod_normal_rng,
+                    skew_double_exponential_rng, pareto_type_2_rng))...} => begin
         (real, real, real) => real
         (real, vector[n], real) => real[n]
         (real, vector[n], vector[n]) => real[n]
