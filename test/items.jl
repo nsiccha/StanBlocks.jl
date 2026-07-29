@@ -4841,6 +4841,83 @@ valid `SlicModel` but cannot be traced; every default MIME must still render it.
 end
 
 """
+Verify that `stan_descriptor` exposes the exact ordered Stan-functions
+inventory used by emission, including stable leading-underscore names, source
+spans, direct dependency links, and a fail-closed transitive-closure selector.
+
+The nested helpers live in this test item's generated module (not `Main`) so
+the probe also exercises the user-module sibling-resolution path that BRM uses.
+"""
+@testitem "slic: descriptor exposes included definition inventory and closure" tags=[:slic, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    @deffun _sb_descriptor_leaf(x::real)::real = x + 0.25
+    @deffun _sb_descriptor_inner(x::real)::real = 2.0 * _sb_descriptor_leaf(x)
+    @deffun _sb_descriptor_outer(x::real)::real = _sb_descriptor_inner(x) - 1.0
+    @deffun _sb_descriptor_other(x::real)::real = square(x)
+
+    model = @slic (; y = [0.25, -0.1]) begin
+        theta ~ normal(0.0, 1.0)
+        y ~ normal(
+            _sb_descriptor_outer(theta) + _sb_descriptor_other(theta),
+            1.0,
+        )
+    end
+    code = stan_code(model)
+    d = stan_descriptor(model; name = :definition_inventory)
+    names = [f.name for f in d.definitions]
+
+    outer_i = only(findall(==(:_sb_descriptor_outer), names))
+    inner_i = only(findall(==(:_sb_descriptor_inner), names))
+    leaf_i = only(findall(==(:_sb_descriptor_leaf), names))
+    other_i = only(findall(==(:_sb_descriptor_other), names))
+    @test outer_i < inner_i < leaf_i
+    @test other_i ∉ (outer_i, inner_i, leaf_i)
+
+    outer = stan_definition(d, :_sb_descriptor_outer)
+    inner = stan_definition(d, "_sb_descriptor_inner")
+    leaf = stan_definition(d, :_sb_descriptor_leaf)
+    @test outer.name == outer.binding == :_sb_descriptor_outer
+    @test outer.kind == :function
+    @test outer.signature == "real _sb_descriptor_outer(real x)"
+    @test outer.dependencies == (:_sb_descriptor_inner,)
+    @test outer.dependency_signatures == (inner.signature,)
+    @test inner.dependencies == (:_sb_descriptor_leaf,)
+    @test inner.dependency_signatures == (leaf.signature,)
+    @test isempty(leaf.dependencies) && isempty(leaf.dependency_signatures)
+
+    # Source is rendered through StanIO (no trace-time `::type` annotations),
+    # and every span points back into the exact full source returned publicly.
+    @test !occursin("::", outer.source)
+    @test all(d.definitions) do f
+        String(SubString(code, first(f.span), last(f.span))) == f.source
+    end
+    @test first(outer.span) < first(inner.span) < first(leaf.span)
+
+    closure = stan_definition_closure(d, :_sb_descriptor_outer)
+    @test [f.name for f in closure] == [
+        :_sb_descriptor_outer,
+        :_sb_descriptor_inner,
+        :_sb_descriptor_leaf,
+    ]
+    @test :_sb_descriptor_other ∉ [f.name for f in closure]
+    @test stan_definition_closure(d, (outer,)) == closure
+
+    # The emitted name can differ from the author binding for specialised
+    # helpers; expose both so consumers never reverse-engineer mangling.
+    broadcasted = stan_definition(d, :jbroadcasted_normal_lpdfs)
+    @test broadcasted.binding == :jbroadcasted
+    @test broadcasted.binding != broadcasted.name
+
+    missing_err = try
+        stan_definition(d, :_sb_descriptor_absent)
+    catch e
+        sprint(showerror, e)
+    end
+    @test occursin("has no included definition `_sb_descriptor_absent`", missing_err)
+    @test occursin("`_sb_descriptor_outer`", missing_err)
+    @test_throws ErrorException stan_definition_closure(d, :_sb_descriptor_absent)
+end
+
+"""
 Verify the descriptor surface — `stan_descriptor` / `stan_operation` /
 `stan_execute` — reflects one `@slic` declaration as identity + inputs + outputs
 + DERIVED operations, and fails closed on the cases a consumer cannot recover

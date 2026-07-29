@@ -18,6 +18,8 @@
 #     each tagged with its GENERATIVE ROLE (`:posterior`, `:draw`,
 #     `:pointwise_loglik`, `:derived`) and, for a twin, the observation it
 #     derives from,
+#   * `definitions` — the ordered Stan `functions` inventory, projected from
+#     the same traced graph the emitter uses, with source and dependency links,
 #   * `operations` — DERIVED from the two above, never hand-listed. A model with
 #     no likelihood term offers no `:fit`; a model with no `_gen` twin offers no
 #     `:predict`. Each operation carries its own executor.
@@ -107,6 +109,49 @@ struct ModelOutput
 end
 
 """
+    ModelDefinition
+
+One included definition in a model's emitted Stan `functions` block — see
+[`stan_descriptor`](@ref StanBlocks.stan_descriptor),
+[`stan_definition`](@ref StanBlocks.stan_definition), and
+[`stan_definition_closure`](@ref StanBlocks.stan_definition_closure).
+
+The descriptor is projected from the traced functions dictionary that the
+emitter itself prints. It is not reconstructed by parsing generated Stan.
+
+# Fields
+- `name::Symbol` — the exact emitted Stan callable name. This is the stable
+  public lookup key and preserves leading underscores.
+- `binding::Union{Symbol,Nothing}` — the author-side Julia binding when there
+  is one. It can differ from `name` when StanBlocks specialises or renames a
+  helper; compiler-lifted closures have no author binding and report `nothing`.
+- `kind::Symbol` — `:function` or `:closure`.
+- `signature::String` — the exact emitted return/name/argument signature,
+  normalized onto one line. It distinguishes valid Stan overloads that share
+  one `name`.
+- `source::String` — the complete emitted definition, without the surrounding
+  `functions {}` block.
+- `span::UnitRange{Int}` — the string-index range of `source` in
+  `stan_code(descriptor.model)`, so
+  `SubString(code, first(span), last(span)) == source`.
+- `dependencies::Tuple{Vararg{Symbol}}` — direct included-definition names in
+  first-use order.
+- `dependency_signatures::Tuple{Vararg{String}}` — exact dependency links,
+  aligned with `dependencies`; these remain unambiguous when Stan overloads
+  share a name.
+"""
+struct ModelDefinition
+    name::Symbol
+    binding::Union{Symbol,Nothing}
+    kind::Symbol
+    signature::String
+    source::String
+    span::UnitRange{Int}
+    dependencies::Tuple{Vararg{Symbol}}
+    dependency_signatures::Tuple{Vararg{String}}
+end
+
+"""
     ModelOperation
 
 One executable operation DERIVED from a model declaration — never a
@@ -150,6 +195,8 @@ by [`stan_descriptor`](@ref StanBlocks.stan_descriptor).
 - `model::StanModel` — the traced model the descriptor reflects.
 - `inputs::Tuple{Vararg{ModelInput}}`
 - `outputs::Tuple{Vararg{ModelOutput}}`
+- `definitions::Tuple{Vararg{ModelDefinition}}` — included Stan definitions in
+  the exact order used by the `functions` block emitter.
 - `operations::Tuple{Vararg{ModelOperation}}`
 """
 struct ModelDescriptor
@@ -159,6 +206,7 @@ struct ModelDescriptor
     model::StanModel
     inputs::Tuple{Vararg{ModelInput}}
     outputs::Tuple{Vararg{ModelOutput}}
+    definitions::Tuple{Vararg{ModelDefinition}}
     operations::Tuple{Vararg{ModelOperation}}
 end
 
@@ -319,6 +367,80 @@ _block_outputs(m::StanModel, blockname::Symbol, kind::Symbol, datanames) = begin
     rv
 end
 
+# --- included Stan definitions ----------------------------------------------
+#
+# `fetch_functions!` (functions.jl) builds the functions block as an
+# `OrderedDict`: exact traced call signature => `StanFunction3` (or `nothing`
+# for a native Stan function that needs no emitted definition). `Base.show` on
+# that block iterates the same dictionary. Reflect it directly so descriptor
+# order, source, names and transitive inclusion cannot drift from execution.
+
+_definition_name(f::StanFunction3) = Symbol(func_name(f.parent, f.args))
+_definition_binding(f::StanFunction3) = f.parent isa Function ? nameof(f.parent) : nothing
+_definition_kind(f::StanFunction3) =
+    f.parent isa StanExpr2{<:types.closure} ? :closure : :function
+_definition_signature(f::StanFunction3) = string(
+    sigtype(f.rv_type), " ", func_name(f.parent, f.args), "(", func_args(f.args), ")",
+)
+_definition_source(f::StanFunction3) = begin
+    io = IOBuffer()
+    show(StanIO(io), f)
+    String(take!(io))
+end
+
+# Mirror `fetch_subfunctions!`'s traversal, but collect only exact keys that
+# resolve to an included (non-`nothing`) definition. A Vector + Set preserves
+# first-use order without introducing a second ordered-container dependency.
+_definition_dependency_keys!(x, functions, acc, seen) = nothing
+_definition_dependency_keys!(xs::Union{Tuple,NamedTuple,AbstractVector}, functions, acc, seen) =
+    (foreach(x -> _definition_dependency_keys!(x, functions, acc, seen), xs); nothing)
+_definition_dependency_keys!(x::StanExpr, functions, acc, seen) =
+    _definition_dependency_keys!((expr(x), type(x)), functions, acc, seen)
+_definition_dependency_keys!(x::StanType, functions, acc, seen) =
+    _definition_dependency_keys!((stan_size(x), info(x)), functions, acc, seen)
+_definition_dependency_keys!(x::CanonicalExpr, functions, acc, seen) = begin
+    key = sig_expr(x)
+    if haskey(functions, key) && !isnothing(functions[key]) && key ∉ seen
+        push!(seen, key)
+        push!(acc, key)
+    end
+    _definition_dependency_keys!((x.args, x.kwargs), functions, acc, seen)
+    nothing
+end
+
+_definition_dependencies(f::StanFunction3, functions) = begin
+    keys = Any[]
+    _definition_dependency_keys!(f.body, functions, keys, Set{Any}())
+    defs = map(key -> functions[key], keys)
+    (
+        Tuple(_definition_name(dep) for dep in defs),
+        Tuple(_definition_signature(dep) for dep in defs),
+    )
+end
+
+_model_definitions(m::StanModel, code::AbstractString) = begin
+    functions = content(block(m, :functions))
+    entries = [(key, f) for (key, f) in pairs(functions) if !isnothing(f)]
+    rv = ModelDefinition[]
+    cursor = firstindex(code)
+    for (_, f) in entries
+        source = _definition_source(f)
+        span = findnext(source, code, cursor)
+        isnothing(span) && error(
+            "Model descriptor: an included definition did not occur in the emitted Stan source. ",
+            "The functions inventory and emitter have diverged for `", _definition_name(f), "`.",
+        )
+        dependencies, dependency_signatures = _definition_dependencies(f, functions)
+        push!(rv, ModelDefinition(
+            _definition_name(f), _definition_binding(f), _definition_kind(f),
+            _definition_signature(f), source, span, dependencies,
+            dependency_signatures,
+        ))
+        cursor = nextind(code, last(span))
+    end
+    Tuple(rv)
+end
+
 # --- the descriptor ----------------------------------------------------------
 
 """
@@ -327,7 +449,8 @@ end
 Reflect `model` (a [`SlicModel`](@ref StanBlocks.SlicModel) or an
 already-traced [`StanModel`](@ref StanBlocks.StanModel)) as one
 descriptor-bearing, executable declaration: stable identity, inputs, outputs
-with their generative semantics, and the operations DERIVED from them.
+with their generative semantics, included Stan definitions, and the operations
+DERIVED from them.
 
 A `SlicModel` is traced first (via [`stan_model`](@ref
 StanBlocks.stan_model)); prefer passing a `StanModel` when reflecting the same
@@ -368,6 +491,7 @@ d.id                                        # "…" — stable, content-derived
 required_inputs(d)                          # (:y,) — not the derived size `y_n`
 [i.name for i in d.inputs if i.observed]    # [:y]
 [o.name for o in d.outputs if o.generative == :draw]   # [:y_gen]
+[f.name for f in d.definitions]             # emitted `functions` inventory
 [op.name for op in d.operations]            # [:transpile, :instantiate, :fit, :predict, :pointwise_loglik]
 
 stan_execute(d, :transpile)                 # the Stan source
@@ -377,6 +501,8 @@ stan_execute(d, :predict; problem=prob, draws=theta_unc, seed=1)   # (; y_gen = 
 
 See also [`stan_operation`](@ref StanBlocks.stan_operation),
 [`stan_execute`](@ref StanBlocks.stan_execute),
+[`stan_definition`](@ref StanBlocks.stan_definition),
+[`stan_definition_closure`](@ref StanBlocks.stan_definition_closure),
 [`required_inputs`](@ref StanBlocks.required_inputs).
 """
 stan_descriptor(x::SlicModel; kwargs...) = stan_descriptor(stan_model(x); kwargs...)
@@ -418,12 +544,90 @@ stan_descriptor(m::StanModel; name=nothing) = begin
         string(hash(code); base=16),
         something(name, meta(m).name),
         get(meta(m), :docstring, ""),
-        m, Tuple(inputs), Tuple(outputs), (),
+        m, Tuple(inputs), Tuple(outputs), _model_definitions(m, code), (),
     )
     _assert_distinct_names(d)
     ModelDescriptor(d.id, d.name, d.docstring, d.model, d.inputs, d.outputs,
-        _derive_operations(d))
+        d.definitions, _derive_operations(d))
 end
+
+"""
+    stan_definition(d::ModelDescriptor, name; signature=nothing) -> ModelDefinition
+
+Look up one included Stan definition by its exact emitted `name` (a `Symbol` or
+string). The lookup fails closed when the name is absent. If valid Stan
+overloads make the emitted name ambiguous, it also fails closed and lists the
+available signatures; pass one back via `signature=` to select exactly.
+"""
+stan_definition(d::ModelDescriptor, name::AbstractString; kwargs...) =
+    stan_definition(d, Symbol(name); kwargs...)
+stan_definition(d::ModelDescriptor, name::Symbol; signature=nothing) = begin
+    matches = [f for f in d.definitions if f.name === name]
+    if signature !== nothing
+        matches = [f for f in matches if f.signature == signature]
+    end
+    if isempty(matches)
+        available = unique(f.name for f in d.definitions)
+        suffix = isempty(available) ? "the model includes no Stan definitions" :
+            "available names are " * join(("`$n`" for n in available), ", ")
+        error(
+            "Model descriptor `", d.name, "` has no included definition `", name,
+            signature === nothing ? "` — " : "` with signature `$(signature)` — ",
+            suffix, ".",
+        )
+    end
+    if length(matches) > 1
+        error(
+            "Model descriptor `", d.name, "`: included definition name `", name,
+            "` is ambiguous across Stan overloads: ",
+            join(("`$(f.signature)`" for f in matches), ", "),
+            ". Pass the exact signature via `signature=`.",
+        )
+    end
+    only(matches)
+end
+
+_descriptor_definition(d::ModelDescriptor, name::Union{Symbol,AbstractString}) =
+    stan_definition(d, name)
+_descriptor_definition(d::ModelDescriptor, f::ModelDefinition) = begin
+    matches = [candidate for candidate in d.definitions if candidate.signature == f.signature]
+    length(matches) == 1 || error(
+        "Model descriptor `", d.name, "` does not include selected definition signature `",
+        f.signature, "` exactly once.",
+    )
+    only(matches)
+end
+
+"""
+    stan_definition_closure(d::ModelDescriptor, selected...) -> Tuple{Vararg{ModelDefinition}}
+
+Select one or more emitted definition names (or `ModelDefinition` values) and
+return them with their complete transitive included-definition dependencies.
+The result preserves `d.definitions`' authoritative functions-block order.
+Name selection uses [`stan_definition`](@ref StanBlocks.stan_definition), so an
+absent or overloaded-ambiguous name fails closed rather than returning a
+non-executable fragment.
+"""
+stan_definition_closure(d::ModelDescriptor, selected...) = begin
+    isempty(selected) && error("stan_definition_closure requires at least one definition")
+    by_signature = Dict(f.signature => f for f in d.definitions)
+    wanted = Set{String}()
+    pending = [_descriptor_definition(d, f).signature for f in selected]
+    while !isempty(pending)
+        signature = pop!(pending)
+        signature in wanted && continue
+        definition = get(by_signature, signature, nothing)
+        isnothing(definition) && error(
+            "Model descriptor `", d.name, "`: dependency signature `", signature,
+            "` is absent from its included definition inventory.",
+        )
+        push!(wanted, signature)
+        append!(pending, definition.dependency_signatures)
+    end
+    Tuple(f for f in d.definitions if f.signature in wanted)
+end
+stan_definition_closure(d::ModelDescriptor, selected::Union{Tuple,AbstractVector}) =
+    stan_definition_closure(d, selected...)
 
 # Fail closed on a name that is both an input and an output, or that appears
 # twice on one side. Reachable in practice: a data variable literally named
