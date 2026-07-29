@@ -33,9 +33,9 @@ end
 @builtin_module [
     weighted_lpdf
     weighted_lpmf
-    # Public distribution-HOF tokens use collision-free implementation bases:
-    # `conditioned(normal, ...)` lowers through `conditioning_normal_*`, etc.
-    conditioned clamped interval_evidence
+    # Public distribution-HOF tokens match Julia's distribution vocabulary;
+    # collision-free conditioning/clamping names remain implementation details.
+    truncated censored interval_censored
     lower_conditioning_lpdf lower_conditioning_lpmf
     upper_conditioning_lpdf upper_conditioning_lpmf
     conditioning_lpdf conditioning_lpmf
@@ -394,7 +394,7 @@ import Statistics
     weighted_rng(int[n], family, weight, args...) =
         predictive(family, int[n], args...)
 
-    # Mathematical truncation (`conditioned`) -------------------------------
+    # Mathematical truncation (`truncated`) ---------------------------------
     # Public optional kwargs select one of these lower/upper/two-sided
     # implementation families at trace time. Only concrete bounds reach Stan.
     lower_conditioning_lpdf(y::real, family, lo, args...)::real = begin
@@ -432,7 +432,7 @@ import Statistics
         attempts[1] = 1
         while draw[1] < lo
             if attempts[1] >= 100000
-                reject("conditioned: lower-tail rejection sampler exceeded 100000 draws")
+                reject("truncated: lower-tail rejection sampler exceeded 100000 draws")
             end
             draw[1] = predictive(family, args...)
             attempts[1] = attempts[1] + 1
@@ -483,7 +483,7 @@ import Statistics
         attempts[1] = 1
         while draw[1] > hi
             if attempts[1] >= 100000
-                reject("conditioned: upper-tail rejection sampler exceeded 100000 draws")
+                reject("truncated: upper-tail rejection sampler exceeded 100000 draws")
             end
             draw[1] = predictive(family, args...)
             attempts[1] = attempts[1] + 1
@@ -504,7 +504,7 @@ import Statistics
         rv::real[1]
         rv[1] = negative_infinity()
         if lo >= hi
-            reject("conditioned: lower bound must be less than upper bound")
+            reject("truncated: lower bound must be less than upper bound")
         else
             if y >= lo
                 if y <= hi
@@ -519,7 +519,7 @@ import Statistics
         rv::real[1]
         rv[1] = negative_infinity()
         if lo > hi
-            reject("conditioned: lower bound must not exceed upper bound")
+            reject("truncated: lower bound must not exceed upper bound")
         else
             if y >= lo
                 if y <= hi
@@ -561,7 +561,7 @@ import Statistics
         attempts[1] = 1
         while conditioning_outside(draw[1], lo, hi) == 1
             if attempts[1] >= 100000
-                reject("conditioned: rejection sampler exceeded 100000 draws")
+                reject("truncated: rejection sampler exceeded 100000 draws")
             end
             draw[1] = predictive(family, args...)
             attempts[1] = attempts[1] + 1
@@ -577,7 +577,7 @@ import Statistics
     conditioning_rng(int[n], family, lo, hi, args...)::int[n] =
         jbroadcasted(conditioning_cell_rng, rep_array(0, n), family, lo, hi, args...)
 
-    # Threshold censoring (`clamped`) ---------------------------------------
+    # Threshold censoring (`censored`) --------------------------------------
     lower_clamping_lpdf(y::real, family, lo, args...)::real = begin
         rv::real[1]
         rv[1] = negative_infinity()
@@ -688,7 +688,7 @@ import Statistics
     clamping_lpdf(y::real, family, lo, hi, args...)::real = begin
         rv::real[1]
         if lo >= hi
-            reject("clamped: lower bound must be less than upper bound")
+            reject("censored: lower bound must be less than upper bound")
         end
         rv[1] = negative_infinity()
         if y == lo
@@ -709,7 +709,7 @@ import Statistics
     clamping_lpmf(y::int, family, lo, hi, args...)::real = begin
         rv::real[1]
         if lo >= hi
-            reject("clamped: lower bound must be less than upper bound")
+            reject("censored: lower bound must be less than upper bound")
         end
         rv[1] = negative_infinity()
         if y == lo
@@ -766,7 +766,7 @@ import Statistics
     interval_evidence_impl_lpdf(y, family, lo, hi, args...)::real = begin
         rv::real[1]
         if lo >= hi
-            reject("interval_evidence: lower bound must be less than upper bound")
+            reject("interval_censored: lower bound must be less than upper bound")
         end
         rv[1] = log_diff_exp(
             logcdf(family, hi, args...), logcdf(family, lo, args...)
@@ -776,7 +776,7 @@ import Statistics
     interval_evidence_impl_lpmf(y, family, lo, hi, args...)::real = begin
         rv::real[1]
         if lo >= hi
-            reject("interval_evidence: lower bound must be less than upper bound")
+            reject("interval_censored: lower bound must be less than upper bound")
         end
         rv[1] = log_diff_exp(
             logcdf(family, hi, args...), logcdf(family, lo, args...)
