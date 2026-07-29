@@ -1143,6 +1143,10 @@ end
 
 # binomial: N::int[n] is already a container, so Stan broadcasts scalar p natively
 @deffun binomial_rng(int[n], N::int[n], p)::int[n] = binomial_rng(N, p)
+# The lpmf also broadcasts a scalar trial count across vector observations.
+# Expand it to the observation length so Stan's native RNG returns int[n]
+# instead of the token call falling through to the scalar catch-all.
+@deffun binomial_rng(int[n], N::int, p)::int[n] = binomial_rng(rep_array(N, n), p)
 
 # The native GLM RNG already returns one integer per design-matrix row. The
 # generated-quantities path also passes the observed int-array's sized token;
