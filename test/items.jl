@@ -4874,6 +4874,50 @@ BRM. Both scalar and vector observations must lower through the discrete
 end
 
 """
+Regression for a vector-valued native Binomial observation with scalar trials.
+The generated-quantities draw carries the observation's sized token, so its RNG
+signature is `(int[n], int, real)` even when both distribution arguments are
+scalar. The scalar trial count must be expanded to make Stan return `int[n]`.
+"""
+@testitem "slic: binomial scalar trials generate vector predictions" tags=[:slic, :descriptor, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+
+    fixed = @slic (; y = [0, 2, 4]) begin
+        y ~ binomial(5, 0.35)
+    end
+    fixed_d = stan_descriptor(fixed; name = :binomial_scalar_args)
+    fixed_outs = Dict(o.name => o for o in fixed_d.outputs)
+    @test fixed_outs[:y_gen].type == :int
+    @test fixed_outs[:y_gen].size == (:y_n,)
+    @test fixed_outs[:y_gen].generative == :draw
+    @test fixed_outs[:y_gen].source == :y
+    @test fixed_outs[:y_likelihood].type == :vector
+    @test fixed_outs[:y_likelihood].size == (:y_n,)
+    @test fixed_outs[:y_likelihood].generative == :pointwise_loglik
+    @test fixed_outs[:y_likelihood].source == :y
+    @test stan_operation(fixed_d, :predict).outputs == (:y_gen,)
+    @test stan_operation(fixed_d, :pointwise_loglik).outputs == (:y_likelihood,)
+    @test stanc_compiles(fixed)
+
+    model = @slic (; y = [0, 2, 4]) begin
+        p ~ beta(2.0, 2.0)
+        y ~ binomial(5, p)
+    end
+    d = stan_descriptor(model; name = :binomial_scalar_trials)
+    problem = stan_execute(d, :fit)
+    dim = LogDensityProblems.dimension(problem)
+    @test dim == 1
+    pred = stan_execute(d, :predict; problem, draws = zeros(dim), seed = 2026)
+    @test keys(pred) == (:y_gen,)
+    @test length(pred.y_gen) == 3
+    @test all(draw -> isinteger(draw) && 0 <= draw <= 5, pred.y_gen)
+    ll = stan_execute(d, :pointwise_loglik; problem, draws = zeros(dim), seed = 2026)
+    @test keys(ll) == (:y_likelihood,)
+    @test length(ll.y_likelihood) == 3
+    @test all(isfinite, ll.y_likelihood)
+end
+
+"""
 Regression for a vector-valued binomial-logit observation with scalar trials.
 The generated-quantities draw carries the observation's sized token, so its RNG
 signature is `(int[n], int, vector[n])` even though Stan broadcasts the scalar
