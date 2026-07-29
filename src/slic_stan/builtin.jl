@@ -1668,8 +1668,17 @@ end
         (matrix[m,n], row_vector[n]) => matrix[m,n] 
     end
     typeof(gp_exp_quad_cov) => begin 
+        # One-dimensional inputs (`array[] real`).
         (real[n], real, real) => matrix[n,n]
         (real[m], real[n], real, real) => matrix[m,n]
+        # Multidimensional inputs (`array[] vector`), matching Stan's four
+        # native self/cross-covariance overloads. `vector[n,d]` is SLIC's
+        # spelling for `array[n] vector[d]`; the per-axis native scale is an
+        # `array[d] real`, hence `real[d]` rather than `vector[d]` here.
+        (vector[n,d], real, real) => matrix[n,n]
+        (vector[n,d], real, real[d]) => matrix[n,n]
+        (vector[m,d], vector[n,d], real, real) => matrix[m,n]
+        (vector[m,d], vector[n,d], real, real[d]) => matrix[m,n]
     end
     typeof(size) => begin
         (vector[n],)=>int
@@ -1775,6 +1784,22 @@ end
         (vector[n],) => real
         (row_vector[n],) => real
         (matrix[m,n],) => real
+    end
+end
+
+# Stan's per-axis multidimensional GP overload accepts `array[] real`, whereas
+# an ordinary dense real vector in SLIC has Stan type `vector`. Keep the native
+# @defsig rows exact and provide the consumer-facing vector convenience as a
+# real UDF adapter; registering `(array[] vector, real, vector)` as native would
+# transpile but fail stanc's signature check.
+@deffun begin
+    @stanonly begin
+    gp_exp_quad_cov(x::vector[n,d], sigma::real,
+                    length_scale::vector[d])::matrix[n,n] =
+        gp_exp_quad_cov(x, sigma, to_array_1d(length_scale))
+    gp_exp_quad_cov(x1::vector[m,d], x2::vector[n,d], sigma::real,
+                    length_scale::vector[d])::matrix[m,n] =
+        gp_exp_quad_cov(x1, x2, sigma, to_array_1d(length_scale))
     end
 end
 
