@@ -72,6 +72,16 @@ end
         @lpxf fof_lpdf(y, f, args...) = my_lpdf(y, f, args...)
         fof_lpdfs(y, f, args...) = my_lpdfs(y, f, args...)
         fof_rng(f, args...) = my_rng(f, args...)
+        @lpxf generic_interval_lpdf(y, lpxf, lcdf, lccdf, rng, lo, hi, args...) =
+            lpxf(y, args...) - log_diff_exp(lcdf(hi, args...), lcdf(lo, args...))
+        generic_interval_lpdfs(y, lpxf, lcdf, lccdf, rng, lo, hi, args...) =
+            generic_interval_lpdf(y, lpxf, lcdf, lccdf, rng, lo, hi, args...)
+        generic_interval_rng(lpxf, lcdf, lccdf, rng, lo, hi, args...) = rng(args...)
+        generic_interval_rng(vector[n], lpxf, lcdf, lccdf, rng, lo, hi, args...)::vector[n] =
+            rng(vector[n], args...)
+        @lpxf generic_passthrough_lpmf(y, lpmf, lpmfs, rng, args...) = lpmf(y, args...)
+        generic_passthrough_lpmfs(y, lpmf, lpmfs, rng, args...) = lpmfs(y, args...)
+        generic_passthrough_rng(lpmf, lpmfs, rng, args...) = rng(args...)
         @lpxf srs2_lpdf(y, f, args...) = simple_reduce_sum(srs2_helper, rep_array(y, 1), f, args...)
         srs2_helper(y, f, args...) = my_lpdf(y, f, args...)
         srs2_lpdfs(y, f, args...) = 0.
@@ -1350,6 +1360,49 @@ Verify `slic: fof(simple)` in an isolated test item.
         loc ~ std_normal()
         obs ~ fof(simple, loc)
     end)
+end
+
+"""
+Verify that probability-function tokens specialise an `@lpxf` HOF without
+changing the outer density/pointwise/RNG suffix or the model-call base name.
+"""
+@testitem "slic: @lpxf HOF probability-function tokens" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    continuous = @slic (;obs=0.2) begin
+        loc ~ std_normal()
+        obs ~ generic_interval(
+            normal_lpdf, normal_lcdf, normal_lccdf, normal_rng,
+            -1., 1., loc, 1.,
+        )
+    end
+    continuous_code = stan_code(continuous)
+    continuous_base = "generic_interval_normal_lpdf_normal_lcdf_normal_lccdf_normal_rng"
+    @test occursin("real $(continuous_base)_lpdf(", continuous_code)
+    @test occursin("real $(continuous_base)_lpdfs(", continuous_code)
+    @test occursin("real $(continuous_base)_rng(", continuous_code)
+    @test occursin("obs ~ $(continuous_base)(-1.0, 1.0, loc, 1.0);", continuous_code)
+    @test !occursin("generic_interval_normal_normal_lcdf", continuous_code)
+    @test stanc_compiles(continuous)
+
+    continuous_vector = @slic (;obs=[0.2, 0.3]) begin
+        loc ~ std_normal()
+        obs ~ generic_interval(
+            normal_lpdf, normal_lcdf, normal_lccdf, normal_rng,
+            -1., 1., loc, 1.,
+        )
+    end
+    @test stanc_compiles(continuous_vector)
+
+    discrete = @slic (;obs=2) begin
+        log_rate ~ std_normal()
+        obs ~ generic_passthrough(poisson_lpmf, poisson_lpmfs, poisson_rng, exp(log_rate))
+    end
+    discrete_code = stan_code(discrete)
+    discrete_base = "generic_passthrough_poisson_lpmf_poisson_lpmfs_poisson_rng"
+    @test occursin("real $(discrete_base)_lpmf(", discrete_code)
+    @test occursin("real $(discrete_base)_lpmfs(", discrete_code)
+    @test occursin("int $(discrete_base)_rng(", discrete_code)
+    @test occursin("obs ~ $(discrete_base)(exp(log_rate));", discrete_code)
+    @test stanc_compiles(discrete)
 end
 
 """
