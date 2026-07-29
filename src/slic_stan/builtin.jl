@@ -1475,6 +1475,88 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_arg)}; info) = begi
     end
 end
 
+# --- ragged observation: generated-quantities companions ---------------------
+# snag ragged-observati-6a26481b. `forward.jl` injects the gq twin loop as SOURCE,
+# but source cannot spell family-companion selection (`rng_expr` / `lpxf_expr`,
+# including the distribution-HOF specs in `lpxf_builtin.jl`). These two markers
+# carry `(group prototype, base-family token, per-group args…)` through the
+# retrace and rebuild the distribution call HERE, where the registry is in scope.
+#
+# Rebuilding the call rather than special-casing each family is what makes nested
+# base-family HOFs (`weighted`, `conditioned`, `clamped`, …) route through the
+# very same group RHS: `lpxf_expr`/`rng_expr`'s own HOF dispatch does the work.
+_ragged_group_call(x::CanonicalExpr) =
+    CanonicalExpr(_family_function(x.args[2]), x.args[3:end]...; x.kwargs...)
+# The BASE family of a group RHS — one level through a distribution HOF, so
+# `weighted(normal, w, …)` is judged by `normal`, exactly as `lpxf_expr` /
+# `likelihood_expr` resolve it. The HOF itself has no `lpxf_expr` method.
+_ragged_base_family(rhs::CanonicalExpr) = begin
+    spec = _distribution_hof(head(rhs))
+    isnothing(spec) ? head(rhs) : _distribution_hof_family(spec, rhs)
+end
+# A ragged carrier's backing memory is a Stan `vector`, so a DISCRETE family would
+# have to coerce its integer draw into real storage — silently, and only for the
+# ragged spelling. Reject at tracing with the family named rather than emit it.
+_assert_ragged_continuous_family(rhs::CanonicalExpr) = begin
+    family = _ragged_base_family(rhs)
+    _probability_kind(family) === :lpdf || error(
+        "Ragged observation: family `", nameof(family), "` is discrete (resolves to ",
+        nameof(lpxf_expr(family)), "). A `RaggedVector` stores its groups in a real ",
+        "`vector`, so an integer-valued ragged observation/prediction has no carrier ",
+        "yet. Use a dense `int[n]` observation, or open a decision for an integer ",
+        "ragged carrier."
+    )
+    rhs
+end
+# A group draw is the ONE place a family's SIZED rng companion becomes mandatory:
+# a ragged group is a `vector`, so the scalar `foo_rng(args…)` Stan ships natively
+# is not enough. Without a `foo_rng(vector[n], args…)::vector[n]` overload the
+# failure surfaces from deep inside `tracetype` as an internal
+# `` `tracetype` not defined for _arg30_2::anything ``, which names neither the
+# family nor what is missing. Re-raise with both.
+_ragged_missing_sized_rng(rhs::CanonicalExpr, ct, detail) = begin
+    family = _ragged_base_family(rhs)
+    rng = try string(nameof(rng_expr(head(rhs)))) catch; string(nameof(family), "_rng") end
+    error(
+        "Ragged observation: family `", nameof(family), "` has no SIZED predictive ",
+        "companion, so its per-group draw cannot be built. A ragged group is a Stan ",
+        "`", ct, "`, not a scalar, so `", rng, "` needs the sized-token overload\n",
+        "    @deffun ", rng, "(", ct, "[n], <the family's args…>)::", ct, "[n] = …\n",
+        "alongside its scalar form — the same protocol every other vector-shaped ",
+        "predictive draw uses (see `normal_rng(vector[n], …)` in `builtin.jl`). ", detail,
+    )
+end
+_ragged_group_rng(token, rhs::CanonicalExpr, ct) = begin
+    rv = try
+        rng_expr(token, rhs)
+    catch e
+        _ragged_missing_sized_rng(rhs, ct, string("Underlying error: ", sprint(showerror, e)))
+    end
+    # A missing sized overload does not always THROW: `@deffun` dispatch can fall
+    # through to an untyped/vararg form that traces to `anything`, which only fails
+    # later, at the slice assignment, as an internal `` `tracetype` not defined for
+    # _argNN::anything ``. Catch that shape here, where the family is still known.
+    center_type(rv) === types.anything && _ragged_missing_sized_rng(
+        rhs, ct, "It resolved to an untyped (`anything`) result instead.",
+    )
+    rv
+end
+expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_draw)}; info) = begin
+    proto = x.args[1]
+    rhs = _assert_ragged_continuous_family(_ragged_group_call(x))
+    ct = center_type(proto)
+    # Sized token — the SAME protocol every other vector-shaped predictive draw
+    # uses, so a custom `@lpxf` family only needs its ordinary sized
+    # `foo_rng(vector[n], args…)::vector[n]` companion (stanblocks-use §8).
+    token = StanExpr(ct, StanType(types.tokenof{ct}, stan_size(proto); value=ct, qual=:data))
+    _ragged_group_rng(token, rhs, ct)
+end
+expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_density)}; info) = begin
+    rhs = _assert_ragged_continuous_family(_ragged_group_call(x))
+    # The AGGREGATE density of the whole group — one scalar. Never `_lpdfs`.
+    lpxf_expr(x.args[1], rhs)
+end
+
 # `v[mask]` with `mask :: bool[n]` (an element-wise comparison result such as
 # `cmt .== 1`) is BOOLEAN-MASK selection, which Stan has no syntax for. Lower it
 # to ordinary integer indexing over the true-positions — `v[findall(mask)]` —
