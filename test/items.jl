@@ -13,6 +13,102 @@ using TestItemRunner
     using PosteriorDB
 end
 
+"""
+Observation weighting is an ordinary distribution HOF specialised by one base
+family token. The compiler-time family selectors must disappear, while the
+specialised Stan wrapper retains the selected continuous/discrete suffix and
+the original family supplies pointwise likelihoods and predictive draws.
+"""
+@testitem "slic: weighted observation HOF uses one base family token" tags=[:slic, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    y_val = [0.2, -0.1, 0.4]
+    w_val = [0.5, 1.0, 2.0]
+    normal_model = @slic (; y = y_val, w = w_val) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ weighted(normal, w, mu, 1.0)
+        mu
+    end
+    normal_code = stan_code(normal_model)
+    normal_model_block = stan_block(normal_code, "model")
+    normal_gq_block = stan_block(normal_code, "generated quantities")
+    @test occursin("weighted_normal", normal_model_block)
+    @test occursin("weighted_normal_lpdf", normal_code)
+    @test occursin("weighted_normal_lpdfs", normal_code)
+    @test occursin("weighted_vector_normal_rng", normal_gq_block)
+    @test !occursin("density(", normal_code)
+    @test !occursin("pointwise(", normal_code)
+    @test !occursin("predictive(", normal_code)
+    @test stanc_compiles(normal_model)
+
+    normal_problem = instantiate(stan_model(normal_model))
+    for mu_val in (-0.7, 0.3)
+        weighted_loglik = _stan_normal.(y_val, mu_val, 1.0) .- 0.5log(2pi)
+        expected = _stan_normal(mu_val, 0.0, 1.0) +
+            sum(w_val .* weighted_loglik)
+        @test LogDensityProblems.logdensity(normal_problem, [mu_val]) ≈ expected atol=1e-6
+    end
+
+    scalar_model = @slic (; y = 0.2, w = 2.5) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ weighted(normal, w, mu, 1.0)
+        mu
+    end
+    scalar_code = stan_code(scalar_model)
+    @test occursin("weighted_normal_lpdf", scalar_code)
+    @test occursin("weighted_normal_lpdfs", scalar_code)
+    @test occursin("weighted_normal_rng", scalar_code)
+    @test stanc_compiles(scalar_model)
+
+    poisson_model = @slic (; y = [0, 1, 3], w = [1.0, 0.25, 1.5]) begin
+        log_rate ~ normal(0.0, 1.0)
+        y ~ weighted(poisson, w, exp(log_rate))
+        log_rate
+    end
+    poisson_code = stan_code(poisson_model)
+    poisson_model_block = stan_block(poisson_code, "model")
+    poisson_gq_block = stan_block(poisson_code, "generated quantities")
+    @test occursin("weighted_poisson", poisson_model_block)
+    @test occursin("weighted_poisson_lpmf", poisson_code)
+    @test occursin("weighted_poisson_lpmfs", poisson_code)
+    @test occursin("weighted_int_poisson_rng", poisson_gq_block)
+    @test !occursin("weighted_poisson_lpdf", poisson_code)
+    @test stanc_compiles(poisson_model)
+
+    custom_model = @slic (; y = 0.3, w = 0.75, x = 1.2) begin
+        y ~ weighted(simple, w, x)
+    end
+    custom_code = stan_code(custom_model)
+    @test occursin("weighted_simple_lpdf", custom_code)
+    @test occursin("weighted_simple_lpdfs", custom_code)
+    @test occursin("weighted_simple_rng", custom_code)
+    @test stanc_compiles(custom_model)
+
+    weighted_prior_error = try
+        stan_code(@slic (; w = 2.0) begin
+            theta ~ weighted(normal, w, 0.0, 1.0)
+            theta
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(weighted_prior_error) &&
+        occursin("weighted priors are not supported", weighted_prior_error)
+
+    parameter_weight_error = try
+        stan_code(@slic (; y = 0.2) begin
+            weight ~ lognormal(0.0, 1.0)
+            y ~ weighted(normal, weight, 0.0, 1.0)
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(parameter_weight_error) &&
+        occursin("parameter-dependent likelihood weights", parameter_weight_error)
+end
+
 @testmodule StanBlocksTestSetup begin
     using Random, Statistics
     using StanBlocks

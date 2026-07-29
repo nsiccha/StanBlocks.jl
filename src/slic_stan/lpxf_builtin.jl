@@ -30,8 +30,77 @@ fold_shape_query(x::StanExpr{<:CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr
     end
 end
 fetch_data!(x::StanType{<:types.tup}; info) = fetch_data!((stan_size(x), x.info.arg_types); info)
+
+# A distribution HOF has one base-family token among its arguments and owns a
+# continuous/discrete pair of aggregate + pointwise wrappers. Registration is
+# deliberately generic: future combinators can opt in without adding new
+# sampling, likelihood, or RNG lowering methods.
+_distribution_hof(::Any) = nothing
+_distribution_hof(::typeof(builtin.weighted)) = (
+    family_arg = 1,
+    data_args = (2,),
+    requires_data_lhs = true,
+    lpdf = builtin.weighted_lpdf,
+    lpmf = builtin.weighted_lpmf,
+    lpdfs = builtin.weighted_lpdfs,
+    lpmfs = builtin.weighted_lpmfs,
+    rng = builtin.weighted_rng,
+)
+
+_family_function(x::StanExpr2{<:types.func}) = type(x).info.value
+_family_function(x) = error(
+    "distribution HOF: expected a base distribution function token, got $(type(x))"
+)
+_distribution_hof_family(spec, rhs::CanonicalExpr) = begin
+    length(rhs.args) >= spec.family_arg || error(
+        "distribution HOF: missing family argument $(spec.family_arg)"
+    )
+    _family_function(rhs.args[spec.family_arg])
+end
+_validate_distribution_hof(spec, lhs, rhs::CanonicalExpr) = begin
+    if spec.requires_data_lhs && qual(lhs) != :data
+        error(
+            "weighted: observations must be data-qualified; weighted priors are not supported"
+        )
+    end
+    for i in spec.data_args
+        length(rhs.args) >= i || error("distribution HOF: missing data argument $i")
+        qual(rhs.args[i]) == :data || error(
+            "weighted: likelihood weights must be data-qualified; " *
+            "parameter-dependent likelihood weights are not supported"
+        )
+    end
+    nothing
+end
+validate_sampling_rhs(lhs, rhs::StanExpr{<:CanonicalExpr}; info) = begin
+    canonical = expr(rhs)
+    spec = _distribution_hof(head(canonical))
+    isnothing(spec) || _validate_distribution_hof(spec, lhs, canonical)
+    nothing
+end
+_probability_kind(family) = begin
+    probability = lpxf_expr(family)
+    name = string(nameof(probability))
+    endswith(name, "_lpdf") && return :lpdf
+    endswith(name, "_lpmf") && return :lpmf
+    error(
+        "distribution HOF: family $(nameof(family)) resolves to $name; " *
+        "expected an _lpdf or _lpmf family"
+    )
+end
+_hof_probability(spec, family) =
+    _probability_kind(family) === :lpdf ? spec.lpdf : spec.lpmf
+_hof_pointwise(spec, family) =
+    _probability_kind(family) === :lpdf ? spec.lpdfs : spec.lpmfs
+
 lpxf_expr(lhs, rhs::StanExpr) = lpxf_expr(lhs, expr(rhs))
-lpxf_expr(lhs, rhs::CanonicalExpr) = stan_call(lpxf_expr(head(rhs)), lhs, rhs.args...)
+lpxf_expr(lhs, rhs::CanonicalExpr) = begin
+    spec = _distribution_hof(head(rhs))
+    isnothing(spec) && return stan_call(lpxf_expr(head(rhs)), lhs, rhs.args...)
+    _validate_distribution_hof(spec, lhs, rhs)
+    family = _distribution_hof_family(spec, rhs)
+    stan_call(_hof_probability(spec, family), lhs, rhs.args...)
+end
 for lpxf_rhs in (
     :dummy_lpdf,
     :truncated_normal_lpdf,
@@ -71,7 +140,13 @@ end
 
 lpxf_expr(x) = error("$x is missing `lpxf_expr`")
 likelihood_expr(lhs, rhs::StanExpr) = likelihood_expr(lhs, expr(rhs))
-likelihood_expr(lhs, rhs::CanonicalExpr) = stan_call(likelihood_expr(head(rhs)), lhs, rhs.args...)
+likelihood_expr(lhs, rhs::CanonicalExpr) = begin
+    spec = _distribution_hof(head(rhs))
+    isnothing(spec) && return stan_call(likelihood_expr(head(rhs)), lhs, rhs.args...)
+    _validate_distribution_hof(spec, lhs, rhs)
+    family = _distribution_hof_family(spec, rhs)
+    stan_call(_hof_pointwise(spec, family), lhs, rhs.args...)
+end
 likelihood_expr(rhs) = error("$rhs is missing `likelihood_expr`")
 # gq `~` synthesis: `rng_expr(token, rhs)` builds either `rng_fn(args...)` (for
 # scalar tokens — matches Stan's native rng signatures) or `rng_fn(token, args...)`
@@ -82,4 +157,29 @@ rng_expr(token, rhs::StanExpr) = rng_expr(token, expr(rhs))
 rng_expr(token::StanExpr2{<:types.tokenof,0}, rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), rhs.args...)
 # Sized token path: prepend token so per-shape @deffun overloads dispatch.
 rng_expr(token::StanExpr2{<:types.tokenof}, rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), token, rhs.args...)
-rng_expr(x) = error("$x is missing `rng_expr`")
+rng_expr(x) = begin
+    spec = _distribution_hof(x)
+    isnothing(spec) && error("$x is missing `rng_expr`")
+    spec.rng
+end
+
+# Base-family companion selectors are compile-time calls. With no trailing
+# arguments they return the selected function token; with trailing arguments
+# they immediately trace a call to that function. In either form the selector
+# itself is absent from emitted Stan.
+const DistributionFamilySelector = Union{
+    typeof(builtin.density), typeof(builtin.pointwise), typeof(builtin.predictive)
+}
+_family_selector_target(::typeof(builtin.density), family) = lpxf_expr(family)
+_family_selector_target(::typeof(builtin.pointwise), family) = likelihood_expr(family)
+_family_selector_target(::typeof(builtin.predictive), family) = rng_expr(family)
+expand_inline_or_trace(
+    x::CanonicalExpr{<:DistributionFamilySelector,<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}};
+    info,
+) = begin
+    family = _family_function(x.args[1])
+    selected = _family_selector_target(head(x), family)
+    rest = x.args[2:end]
+    isempty(rest) ? forward!(selected; info) :
+        forward!(CanonicalExpr(selected, rest...); info)
+end

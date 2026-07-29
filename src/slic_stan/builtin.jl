@@ -12,7 +12,10 @@ _head_or_type(x::Expr) = x.head
 _head_or_type(x) = typeof(x)
 macro builtin_module(x)
     @assert Meta.isexpr(x, :vcat) "@builtin_module expects a `[names...]` vector literal, got `$x` (head `$(_head_or_type(x))`)."
-    names = builtin_module_names(x)
+    # A higher-order distribution can provide both `_lpdf` and `_lpmf`
+    # wrappers under one base name. Their generated base/RNG/CDF companion
+    # names overlap, so keep the manifest declarative and deduplicate here.
+    names = unique(builtin_module_names(x))
     esc(Expr(:block,
         Expr(:toplevel,
             Expr(:module, true, :builtin, Expr(:block, [
@@ -28,6 +31,8 @@ macro builtin_module(x)
 end
 
 @builtin_module [
+    weighted_lpdf
+    weighted_lpmf
     flat_lpdf
     std_normal_lpdf
     normal_lpdf
@@ -135,6 +140,10 @@ end
 
     broadcasted_getindex
     jbroadcasted jmap jsum
+
+    # Compile-time distribution-family selectors. These consume a base family
+    # token (e.g. `normal`) and disappear before Stan emission.
+    density pointwise predictive
 
     # Unary math (Stan-specific, not Julia builtins)
     square log_diff_exp log_mix atan2
@@ -333,6 +342,44 @@ import Statistics
     append_row(x::row_vector[n], y::row_vector[n])::matrix[2, n]
     append_row(x::matrix[m, n], y::row_vector[n])::matrix[m+1, n]
     flat_lpdf(args...)
+    # Observation weighting is an ordinary higher-order distribution family.
+    # `family` is an always-inline base token, encoded into the emitted wrapper
+    # name (`weighted_normal_lpdf`, `weighted_poisson_lpmf`, ...). The selector
+    # calls below resolve through the same @lpxf registry as sampling/GQ.
+    @stanonly begin
+    weighted_lpdf(y, family, weight::real, args...) =
+        weight * density(family, y, args...)
+    weighted_lpmf(y, family, weight::real, args...) =
+        weight * density(family, y, args...)
+    weighted_lpdf(y::anything[n], family, weight::vector[n], args...) = begin
+        lp::vector[n] = pointwise(family, y, args...)
+        sum(weight .* lp)
+    end
+    weighted_lpmf(y::anything[n], family, weight::vector[n], args...) = begin
+        lp::vector[n] = pointwise(family, y, args...)
+        sum(weight .* lp)
+    end
+    weighted_lpdfs(y, family, weight::real, args...) =
+        weight * pointwise(family, y, args...)
+    weighted_lpmfs(y, family, weight::real, args...) =
+        weight * pointwise(family, y, args...)
+    weighted_lpdfs(y::anything[n], family, weight::vector[n], args...)::vector[n] = begin
+        lp::vector[n] = pointwise(family, y, args...)
+        weight .* lp
+    end
+    weighted_lpmfs(y::anything[n], family, weight::vector[n], args...)::vector[n] = begin
+        lp::vector[n] = pointwise(family, y, args...)
+        weight .* lp
+    end
+    weighted_rng(family, weight, args...) =
+        predictive(family, args...)
+    weighted_rng(real[n], family, weight, args...) =
+        predictive(family, real[n], args...)
+    weighted_rng(vector[n], family, weight, args...) =
+        predictive(family, vector[n], args...)
+    weighted_rng(int[n], family, weight, args...) =
+        predictive(family, int[n], args...)
+    end
     # `dummy` no-op distribution: `y ~ dummy(args...)` contributes +0. Bodies
     # ignore their args; monomorphization emits a concrete Stan
     # `real dummy_lpdf(<y>, <args>) { return 0.; }` per call-site signature, so
