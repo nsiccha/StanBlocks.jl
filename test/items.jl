@@ -222,6 +222,43 @@ family, while no `Nothing` value or selector call survives code generation.
     @test !occursin("upper_conditioning_poisson_lpdf", poisson_code)
     @test stanc_compiles(poisson_model)
 
+    lower_clamped_poisson = @slic (; y = 2) begin
+        log_rate ~ normal(0.0, 1.0)
+        y ~ clamped(poisson, exp(log_rate); lower = 2)
+        log_rate
+    end
+    lower_clamped_code = stan_code(lower_clamped_poisson)
+    @test occursin("lower_clamping_poisson_lpmf", lower_clamped_code)
+    @test occursin("lower_clamping_poisson_lpmfs", lower_clamped_code)
+    @test occursin("lower_clamping_poisson_rng", lower_clamped_code)
+    @test stanc_compiles(lower_clamped_poisson)
+    lower_clamped_problem = instantiate(stan_model(lower_clamped_poisson))
+    for log_rate in (-0.3, 0.4)
+        lambda = exp(log_rate)
+        lower_atom = exp(-lambda) * (1.0 + lambda + lambda^2 / 2.0)
+        expected = _stan_normal(log_rate, 0.0, 1.0) + log(lower_atom)
+        @test LogDensityProblems.logdensity(lower_clamped_problem, [log_rate]) ≈ expected atol=1e-6
+    end
+
+    upper_clamped_poisson = @slic (; y = 3) begin
+        log_rate ~ normal(0.0, 1.0)
+        y ~ clamped(poisson, exp(log_rate); upper = 3)
+        log_rate
+    end
+    upper_clamped_code = stan_code(upper_clamped_poisson)
+    @test occursin("upper_clamping_poisson_lpmf", upper_clamped_code)
+    @test occursin("upper_clamping_poisson_lpmfs", upper_clamped_code)
+    @test occursin("upper_clamping_poisson_rng", upper_clamped_code)
+    @test stanc_compiles(upper_clamped_poisson)
+    upper_clamped_problem = instantiate(stan_model(upper_clamped_poisson))
+    for log_rate in (-0.3, 0.4)
+        lambda = exp(log_rate)
+        through_two = exp(-lambda) * (1.0 + lambda + lambda^2 / 2.0)
+        upper_atom = 1.0 - through_two
+        expected = _stan_normal(log_rate, 0.0, 1.0) + log(upper_atom)
+        @test LogDensityProblems.logdensity(upper_clamped_problem, [log_rate]) ≈ expected atol=1e-6
+    end
+
     interval_model = @slic (; marker = [0, 0, 0], lo = [0, 1, 2], hi = [1, 2, 4]) begin
         log_rate ~ normal(0.0, 1.0)
         marker ~ interval_evidence(poisson, lo, hi, exp(log_rate))
