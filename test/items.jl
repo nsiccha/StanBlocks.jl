@@ -4586,7 +4586,7 @@ the density). Author syntax is unchanged. Contract defaults:
     # `tuple(vector, array[] int)`, which only stanc caught.
     let scalar_bound = @slic (; ys = ys, lloq = 0.45) begin
             sigma ~ exponential(1)
-            ys ~ clamped(normal, 0.0, sigma; lower = lloq)
+            ys ~ censored(normal, 0.0, sigma; lower = lloq)
         end
         @test stanc_compiles(scalar_bound)
         @test occursin("lloq", stan_block(stan_code(scalar_bound), "generated quantities"))
@@ -4596,7 +4596,7 @@ the density). Author syntax is unchanged. Contract defaults:
             lo = [[0.45, 0.45, 0.45], [0.45, 0.45], [0.45, 0.45, 0.45, 0.45]],
         ) begin
             sigma ~ exponential(1)
-            ys ~ clamped(normal, 0.0, sigma; lower = lo)
+            ys ~ censored(normal, 0.0, sigma; lower = lo)
         end
         @test stanc_compiles(ragged_bound)
         code = stan_code(ragged_bound)

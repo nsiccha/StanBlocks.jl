@@ -289,7 +289,7 @@ _is_ragged_density_target(name::Symbol) = name in _ragged_density_targets()
 # shared scalars/dense values pass through unchanged.
 function _ragged_group_arg end
 # KWARGS are sliced exactly like positional args. A distribution HOF carries its
-# control values there (`clamped(normal, …; lower=lloq)`, `conditioned(…; upper=…)`),
+# control values there (`censored(normal, …; lower=lloq)`, `truncated(…; upper=…)`),
 # and a PER-GROUP censoring bound is ragged like any other per-group quantity. Left
 # unsliced, the whole `RaggedVector` reached the per-group call and emitted Stan that
 # compared a real to a `tuple(vector, array[] int)`. `_ragged_group_arg` passes
