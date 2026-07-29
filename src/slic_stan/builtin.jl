@@ -182,7 +182,7 @@ end
     multinomial_lpmf
     categorical_lpmf categorical_logit_lpmf
     poisson_lpmf poisson_log_lpmf
-    neg_binomial_lpmf neg_binomial_2_log_lpdf
+    neg_binomial_lpmf neg_binomial_2_log_lpmf
     skew_double_exponential_lpdf
 
     # No-op "distribution": `y ~ dummy(args...)` marks `y` observed while
@@ -561,7 +561,7 @@ import Statistics
     poisson_lpmf(args...)
     poisson_log_lpmf(args...)
     neg_binomial_lpmf(args...)
-    neg_binomial_2_log_lpdf(args...)
+    neg_binomial_2_log_lpmf(args...)
     skew_double_exponential_lpdf(args...)
 
     # RNG signatures for distributions already in @builtin_module
@@ -579,6 +579,10 @@ import Statistics
     neg_binomial_2_rng(::vector[n], ::real)::int[n]
     neg_binomial_2_rng(::real, ::vector[n])::int[n]
     neg_binomial_2_rng(::vector[n], ::vector[n])::int[n]
+    neg_binomial_2_log_rng(::real, ::real)::int
+    neg_binomial_2_log_rng(::vector[n], ::real)::int[n]
+    neg_binomial_2_log_rng(::real, ::vector[n])::int[n]
+    neg_binomial_2_log_rng(::vector[n], ::vector[n])::int[n]
     beta_binomial_rng(::int, ::real, ::real)::int
     binomial_rng(::int, ::real)::int
     binomial_rng(::int[n], ::real)::int[n]
@@ -715,6 +719,7 @@ for (base, params) in (
     (:uniform_lpdf, (:lo, :hi)),
     (:neg_binomial_lpmf, (:alpha, :beta)),
     (:neg_binomial_2_lpmf, (:mu, :phi)),
+    (:neg_binomial_2_log_lpmf, (:eta, :phi)),
     (:poisson_lpmf, (:lambda,)),
     (:poisson_log_lpmf, (:alpha,)),
     (:inv_gamma_lpdf, (:alpha, :beta)),
@@ -1112,7 +1117,7 @@ for dist in (:bernoulli, :bernoulli_logit, :poisson, :poisson_log)
 end
 
 # 2-arg discrete families
-for dist in (:neg_binomial, :neg_binomial_2)
+for dist in (:neg_binomial, :neg_binomial_2, :neg_binomial_2_log)
     drng = Symbol(dist, :_rng)
     @eval @deffun $drng(int[n], a::real, b::real)::int[n] = $drng(rep_vector(a, n), b)
     @eval @deffun $drng(int[n], a, b)::int[n]             = $drng(a, b)

@@ -4831,6 +4831,49 @@ just like the already-covered `neg_binomial_2(mu, phi)` family.
 end
 
 """
+Regression for the log-mean `neg_binomial_2_log(eta, phi)` SLIC family used by
+BRM. Both scalar and vector observations must lower through the discrete
+`_lpmf`, synthesize predictive draws, and expose pointwise log likelihoods.
+"""
+@testitem "slic: log-mean negative-binomial spans model, GQ and pointwise paths" tags=[:slic, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    scalar_model = @slic (; count = 2) begin
+        eta ~ normal(0.0, 1.0)
+        phi ~ exponential(1.0)
+        count ~ neg_binomial_2_log(eta, phi)
+    end
+    vector_model = @slic (; counts = [1, 3, 2]) begin
+        eta ~ normal(0.0, 1.0)
+        phi ~ exponential(1.0)
+        counts ~ neg_binomial_2_log(eta, phi)
+    end
+
+    for (name, model, observation) in (
+        (:negative_binomial_2_log_scalar, scalar_model, :count),
+        (:negative_binomial_2_log_vector, vector_model, :counts),
+    )
+        @test stanc_compiles(model)
+        descriptor = stan_descriptor(model; name)
+        outputs = Dict(output.name => output for output in descriptor.outputs)
+        @test outputs[Symbol(observation, :_gen)].generative == :draw
+        @test outputs[Symbol(observation, :_likelihood)].generative == :pointwise_loglik
+        @test stan_operation(descriptor, :predict).outputs == (Symbol(observation, :_gen),)
+        @test stan_operation(descriptor, :pointwise_loglik).outputs == (Symbol(observation, :_likelihood),)
+
+        code = stan_code(model)
+        @test occursin("neg_binomial_2_log_lpmf", code)
+        @test occursin("neg_binomial_2_log_rng", code)
+        @test occursin("neg_binomial_2_log_lpmfs", code)
+        @test !occursin("neg_binomial_2_log_lpdf", code)
+    end
+
+    vector_outputs = Dict(output.name => output for output in
+        stan_descriptor(vector_model).outputs)
+    @test vector_outputs[:counts_gen].size == (:counts_n,)
+    @test vector_outputs[:counts_likelihood].type == :vector
+    @test vector_outputs[:counts_likelihood].size == (:counts_n,)
+end
+
+"""
 Snag regression (built-brm-s-desc-55d6d48c). A RAGGED, plate-sliced observation
 is still an observation: the descriptor must report the column as `observed` and
 offer `:fit`. It previously reported NEITHER, because the base walk stopped at

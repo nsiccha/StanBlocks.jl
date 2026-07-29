@@ -53,7 +53,7 @@ for lpxf_rhs in (
     :normal_id_glm_lpdf,
     :bernoulli_lpmf, :bernoulli_logit_lpmf, :bernoulli_logit_glm_lpmf,
     :binomial_lpmf, :binomial_logit_lpmf, :beta_binomial_lpmf,
-    :neg_binomial_lpmf, :neg_binomial_2_lpmf, :neg_binomial_2_log_lpdf,
+    :neg_binomial_lpmf, :neg_binomial_2_lpmf, :neg_binomial_2_log_lpmf,
     :neg_binomial_2_log_glm_lpmf,
     :poisson_lpmf, :poisson_log_lpmf, :poisson_log_glm_lpmf,
     :discrete_range_lpmf, :hypergeometric_lpmf, :multinomial_lpmf,
