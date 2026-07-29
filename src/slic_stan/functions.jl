@@ -1834,14 +1834,20 @@ else
     error("func_name(::Expr) only handles `:.` heads (module-qualified refs), got head `$(x.head)` in `$x`.")
 end
 func_name(f, args) = begin
-    rv = join(vcat(func_name(f), func_name(args)), "_")
-    suffix_idxs = findfirst(r"_(rng|u?lp(m|d)fs?)_", rv)
-    if isnothing(suffix_idxs) 
-        rv
+    # Stan gives probability and RNG suffixes semantic meaning, so a UDF's
+    # suffix must remain the final component after HOF-specialisation fragments.
+    # Inspect the receiver alone: scanning the combined receiver + arguments
+    # mistakes a function-valued argument such as `normal_lpdf` for the outer
+    # function's suffix and makes call-site and definition names disagree.
+    receiver_parts = vcat(func_name(f))
+    receiver = join(receiver_parts, "_")
+    suffix_idxs = findfirst(r"_(rng|u?lp(m|d)fs?)$", receiver)
+    if isnothing(suffix_idxs)
+        join(vcat(receiver_parts, func_name(args)), "_")
     else
-        suffix = rv[suffix_idxs[1]:suffix_idxs[end]-1]
-        base = rv[1:suffix_idxs[1]-1] * rv[suffix_idxs[end]:end]
-        base * suffix
+        suffix = receiver[suffix_idxs]
+        base = receiver[1:suffix_idxs[1]-1]
+        join(vcat(base, func_name(args)), "_") * suffix
     end
 end
 func_name(args::NamedTuple) = func_name(values(args))
