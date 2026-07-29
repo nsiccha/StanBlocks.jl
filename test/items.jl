@@ -4944,6 +4944,62 @@ trial count across the vector linear predictor.
 end
 
 """
+Snag regression (categorical-logi-263e52bb): varying categorical logits use
+the same orientation as every vector-valued plate result, `matrix[K, N]`, with
+one observation's K logits in each column. The top-level observation must drive
+all three paths: density, auto-RNG prediction, and pointwise log likelihood.
+"""
+@testitem "slic: categorical-logit varying columns support density prediction and pointwise likelihood" tags=[:slic, :descriptor, :plate, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+
+    N = 4
+    K = 3
+    model = @slic (; x = [-1.0, -0.25, 0.5, 1.25], y = [1, 2, 3, 2], N, K) begin
+        beta::vector[K-1] ~ std_normal()
+        logits::vector[K] ~ plate(x; outer = (N,)) do xi
+            append_row(0.0, beta * xi)
+        end
+        y ~ categorical_logit(logits)
+    end
+
+    d = stan_descriptor(model; name = :categorical_logit_varying)
+    outs = Dict(o.name => o for o in d.outputs)
+    @test outs[:logits].type == :matrix
+    @test outs[:logits].size == (:K, :N)
+    @test outs[:y_gen].type == :int
+    @test outs[:y_gen].size == (:N,)
+    @test outs[:y_gen].generative == :draw
+    @test outs[:y_gen].source == :y
+    @test outs[:y_likelihood].type == :vector
+    @test outs[:y_likelihood].size == (:N,)
+    @test outs[:y_likelihood].generative == :pointwise_loglik
+    @test outs[:y_likelihood].source == :y
+    @test stan_operation(d, :predict).outputs == (:y_gen,)
+    @test stan_operation(d, :pointwise_loglik).outputs == (:y_likelihood,)
+
+    code = stan_code(model)
+    @test occursin("y ~ categorical_logit(logits);", code)
+    @test occursin("categorical_logit_int_rng(y_n, logits)", code)
+    @test occursin("categorical_logit_lpmfs(y, logits)", code)
+    @test stanc_compiles(model)
+
+    problem = stan_execute(d, :fit)
+    dim = LogDensityProblems.dimension(problem)
+    @test dim == K - 1
+    @test isfinite(LogDensityProblems.logdensity(problem, zeros(dim)))
+
+    pred = stan_execute(d, :predict; problem, draws = zeros(dim), seed = 2026)
+    @test keys(pred) == (:y_gen,)
+    @test length(pred.y_gen) == N
+    @test all(draw -> isinteger(draw) && 1 <= draw <= K, pred.y_gen)
+
+    ll = stan_execute(d, :pointwise_loglik; problem, draws = zeros(dim), seed = 2026)
+    @test keys(ll) == (:y_likelihood,)
+    @test length(ll.y_likelihood) == N
+    @test all(isfinite, ll.y_likelihood)
+end
+
+"""
 Snag regression (built-brm-s-desc-55d6d48c). A RAGGED, plate-sliced observation
 is still an observation: the descriptor must report the column as `observed` and
 offer `:fit`. It previously reported NEITHER, because the base walk stopped at

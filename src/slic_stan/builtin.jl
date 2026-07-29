@@ -443,6 +443,24 @@ import Statistics
     binomial_lpmfs(y::int[n], args...) = jbroadcasted(binomial_lpmfs, y, args...)
     binomial_logit_lpmfs(args...) = binomial_logit_lpmf(args...)
     binomial_logit_lpmfs(y::int[n], args...) = jbroadcasted(binomial_logit_lpmfs, y, args...)
+    # A vector-valued plate cell is collected as matrix[k, n], one observation
+    # per column. Stan's categorical-logit primitive accepts only one vector of
+    # logits at a time, so provide the density and pointwise companions for the
+    # public matrix form explicitly instead of relying on row-wise broadcasting.
+    categorical_logit_lpmf(y::int[n], eta::matrix[k,n])::real = begin
+        rv = 0.0
+        for i in 1:n
+            rv += categorical_logit_lpmf(y[i], eta[:, i])
+        end
+        rv
+    end
+    categorical_logit_lpmfs(y::int[n], eta::matrix[k,n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = categorical_logit_lpmf(y[i], eta[:, i])
+        end
+        rv
+    end
     # Scalar-fallback pointwise-density companions delegate to the `_lpdf`, which
     # returns `real`; the explicit `::real` return type is REQUIRED — without it
     # the varargs signature monomorphises to a Stan function with return type
@@ -1150,7 +1168,7 @@ end
 # dirichlet: native already returns vector[n]; token path just unwraps
 @deffun dirichlet_rng(vector[n], alpha::vector[n])::vector[n] = dirichlet_rng(alpha)
 
-# categorical / categorical_logit: per-row loop (same prob vector reused each row)
+# categorical / categorical_logit: repeat one shared probability/logit vector.
 @deffun categorical_rng(int[n], p::vector[k])::int[n] = begin
     rv::int[n]
     for i in 1:n
@@ -1162,6 +1180,16 @@ end
     rv::int[n]
     for i in 1:n
         rv[i] = categorical_logit_rng(eta)
+    end
+    rv
+end
+
+# Plate-produced varying logits use matrix[k, n], with one categorical vector
+# per observation column. Match the density overload above in auto-GQ draws.
+@deffun categorical_logit_rng(int[n], eta::matrix[k,n])::int[n] = begin
+    rv::int[n]
+    for i in 1:n
+        rv[i] = categorical_logit_rng(eta[:, i])
     end
     rv
 end
