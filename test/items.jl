@@ -4874,6 +4874,76 @@ BRM. Both scalar and vector observations must lower through the discrete
 end
 
 """
+Regression for a vector-valued binomial-logit observation with scalar trials.
+The generated-quantities draw carries the observation's sized token, so its RNG
+signature is `(int[n], int, vector[n])` even though Stan broadcasts the scalar
+trial count across the vector linear predictor.
+"""
+@testitem "slic: binomial-logit scalar trials generate vector predictions" tags=[:slic, :descriptor, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+
+    model = @slic (; x = [-1.0, 0.0, 1.0], y = [3, 10, 17], trials = 20) begin
+        alpha ~ normal(0.0, 1.0)
+        beta ~ normal(0.0, 1.0)
+        log_odds = alpha + beta * x
+        y ~ binomial_logit(trials, log_odds)
+    end
+
+    d = stan_descriptor(model; name = :binomial_logit_scalar_trials)
+    outs = Dict(o.name => o for o in d.outputs)
+    @test outs[:y_gen].type == :int
+    @test outs[:y_gen].size == (:y_n,)
+    @test outs[:y_gen].generative == :draw
+    @test outs[:y_gen].source == :y
+    @test outs[:y_likelihood].type == :vector
+    @test outs[:y_likelihood].size == (:y_n,)
+    @test outs[:y_likelihood].generative == :pointwise_loglik
+    @test outs[:y_likelihood].source == :y
+    @test stan_operation(d, :predict).outputs == (:y_gen,)
+    @test stan_operation(d, :pointwise_loglik).outputs == (:y_likelihood,)
+    @test stanc_compiles(model)
+
+    problem = stan_execute(d, :fit)
+    dim = LogDensityProblems.dimension(problem)
+    @test dim == 2
+    pred = stan_execute(d, :predict; problem, draws = zeros(dim), seed = 2026)
+    @test keys(pred) == (:y_gen,)
+    @test length(pred.y_gen) == 3
+    # BridgeStan exposes generated integers through its numeric matrix API, so
+    # they arrive as integer-valued reals rather than Julia `Integer`s.
+    @test all(draw -> isinteger(draw) && 0 <= draw <= 20, pred.y_gen)
+    ll = stan_execute(d, :pointwise_loglik; problem, draws = zeros(dim), seed = 2026)
+    @test keys(ll) == (:y_likelihood,)
+    @test length(ll.y_likelihood) == 3
+    @test all(isfinite, ll.y_likelihood)
+
+    # The same token overload must still produce `int[y_n]` when both
+    # distribution arguments are scalar; expanding `trials` supplies the
+    # output shape that a native scalar/scalar RNG call would otherwise lack.
+    iid = @slic (; y = [3, 10, 17], trials = 20) begin
+        log_odds ~ normal(0.0, 1.0)
+        y ~ binomial_logit(trials, log_odds)
+    end
+    iid_d = stan_descriptor(iid; name = :binomial_logit_scalar_args)
+    iid_outs = Dict(o.name => o for o in iid_d.outputs)
+    @test iid_outs[:y_gen].type == :int
+    @test iid_outs[:y_gen].size == (:y_n,)
+    @test stanc_compiles(iid)
+
+    # Symmetric mixed shape: vector trials with a scalar logit uses the older
+    # token overload and remains valid beside the new scalar-trials method.
+    varying_trials = @slic (; y = [3, 10, 17], trials = [10, 20, 30]) begin
+        log_odds ~ normal(0.0, 1.0)
+        y ~ binomial_logit(trials, log_odds)
+    end
+    varying_d = stan_descriptor(varying_trials; name = :binomial_logit_vector_trials)
+    varying_outs = Dict(o.name => o for o in varying_d.outputs)
+    @test varying_outs[:y_gen].type == :int
+    @test varying_outs[:y_gen].size == (:trials_n,)
+    @test stanc_compiles(varying_trials)
+end
+
+"""
 Snag regression (built-brm-s-desc-55d6d48c). A RAGGED, plate-sliced observation
 is still an observation: the descriptor must report the column as `observed` and
 offer `:fit`. It previously reported NEITHER, because the base walk stopped at
