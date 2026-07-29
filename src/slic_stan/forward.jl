@@ -58,9 +58,15 @@ _resolve_module_value(_) = nothing
 forward!(x::Colon; info) = x
 forward!(x::StanExpr{Symbol}; info) = x
 forward!(x::StanExpr; info) = x
+_forward_call_kwargs(x::CanonicalExpr, resolved_head; info) = forward!(x.kwargs; info)
 forward!(x::CanonicalExpr; info) = begin
     _push_expr!(info, x)
-    resolved = CanonicalExpr(forward!(head(x); info), forward!(x.args; info)...; forward!(x.kwargs; info)...)
+    resolved_head = forward!(head(x); info)
+    resolved = CanonicalExpr(
+        resolved_head,
+        forward!(x.args; info)...;
+        _forward_call_kwargs(x, resolved_head; info)...,
+    )
     s = _get_expr_stack(info)
     isnothing(s) || (s[end] = (resolved, s[end][2]))
     rv = expand_inline_or_trace(resolved; info)
@@ -1053,10 +1059,15 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     _is_canonical_expr(rhs_raw) || error(
         "Typed-LHS sampling `$name::$(pretty_type_expr(type_expr)) ~ rhs` requires rhs to be a distribution call"
     )
-    head_resolved = forward!(head(rhs_raw); info)
-    args_resolved = collect(forward!(rhs_raw.args; info))
-    kwargs_resolved = forward!(rhs_raw.kwargs; info)
-    rhs_canonical = CanonicalExpr(head_resolved, args_resolved...; kwargs_resolved...)
+    # Route typed-LHS distributions through the same call normalisation as the
+    # bare-LHS path. In particular, registered distribution HOFs consume their
+    # compile-time kwargs and rewrite to an internal side-specific call head
+    # here; manually resolving only head/args/kwargs would bypass that hook and
+    # later probability/RNG passes would lose the selected bound mode.
+    rhs_forwarded = forward!(rhs_raw; info)::StanExpr
+    rhs_canonical = expr(rhs_forwarded)
+    args_resolved = collect(rhs_canonical.args)
+    kwargs_resolved = rhs_canonical.kwargs
     # Fold the RHS distribution's constraints into the DECLARED type: the
     # explicit `lower=`/`upper=`/`offset=`/`multiplier=` kwargs AND the
     # distribution-implied ones (`exponential`→lower=0, `beta`→[0,1], …). The

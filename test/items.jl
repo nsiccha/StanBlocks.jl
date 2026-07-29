@@ -109,6 +109,232 @@ the original family supplies pointwise likelihoods and predictive draws.
         occursin("parameter-dependent likelihood weights", parameter_weight_error)
 end
 
+"""
+Truncation, threshold censoring, and interval observations are distribution
+HOFs selected from one base-family token. Optional bounds are compile-time
+syntax: omission and explicit `nothing` choose the same side-specific Stan
+family, while no `Nothing` value or selector call survives code generation.
+"""
+@testitem "slic: conditioned/clamped/interval-evidence distribution HOFs" tags=[:slic, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: cdf_normal, stanc_compiles, stan_block
+
+    lower_omitted = @slic (; y = 0.2) begin
+        theta ~ conditioned(normal, 0.0, 1.0; lower = 0.0)
+        y ~ normal(theta, 1.0)
+        theta
+    end
+    lower_explicit = @slic (; y = 0.2) begin
+        theta ~ conditioned(normal, 0.0, 1.0; lower = 0.0, upper = nothing)
+        y ~ normal(theta, 1.0)
+        theta
+    end
+    for model in (lower_omitted, lower_explicit)
+        code = stan_code(model)
+        @test occursin("real<lower=0.0> theta", code)
+        @test occursin("lower_conditioning_normal_lpdf", code)
+        @test !occursin("upper_conditioning_normal_lpdf", code)
+        @test !occursin("Nothing", code)
+        @test !occursin("nothing", code)
+        @test stanc_compiles(model)
+    end
+
+    typed_prior = @slic (; y = 0.2) begin
+        theta::real ~ conditioned(normal, 0.0, 1.0; upper = 1.0)
+        y ~ normal(theta, 1.0)
+        theta
+    end
+    typed_code = stan_code(typed_prior)
+    @test occursin("real<upper=1.0> theta", typed_code)
+    @test occursin("upper_conditioning_normal_lpdf", typed_code)
+    @test stanc_compiles(typed_prior)
+
+    missing_bounds_error = try
+        stan_code(@slic begin
+            theta ~ conditioned(normal, 0.0, 1.0)
+            theta
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(missing_bounds_error)
+    @test occursin("provide at least one of `lower=` or `upper=`", missing_bounds_error)
+
+    for (name, build) in (
+        ("clamped", () -> stan_code(@slic begin
+            theta ~ clamped(normal, 0.0, 1.0; lower = -1.0, upper = 1.0)
+            theta
+        end)),
+        ("interval_evidence", () -> stan_code(@slic begin
+            theta ~ interval_evidence(normal, -1.0, 1.0, 0.0, 1.0)
+            theta
+        end)),
+    )
+        prior_error = try
+            build()
+            nothing
+        catch err
+            sprint(showerror, err)
+        end
+        @test !isnothing(prior_error)
+        @test occursin("$name priors are not supported", prior_error)
+    end
+
+    unsupported_error = try
+        stan_code(@slic (; y = 1) begin
+            y ~ conditioned(categorical, [0.4, 0.6]; lower = 1)
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(unsupported_error)
+    @test occursin(r"no Stan `categorical_lc(c)?df` companion", unsupported_error)
+
+    normal_y = [-1.0, -0.2, 1.0]
+    normal_model = @slic (; y = normal_y, lo = [-1.0, -0.5, 0.0]) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ clamped(normal, mu, 1.0; lower = lo, upper = 1.0)
+        mu
+    end
+    normal_code = stan_code(normal_model)
+    @test occursin("clamping_normal_lpdf", normal_code)
+    @test occursin("clamping_normal_lpdfs", normal_code)
+    @test occursin("clamping_vector_normal_rng", normal_code)
+    @test !occursin("density(", normal_code)
+    @test !occursin("pointwise(", normal_code)
+    @test !occursin("predictive(", normal_code)
+    @test !occursin("logcdf(", normal_code)
+    @test !occursin("logccdf(", normal_code)
+    @test occursin("clamped: lower bound must be less than upper bound", normal_code)
+    @test occursin("y_likelihood", stan_block(normal_code, "generated quantities"))
+    @test stanc_compiles(normal_model)
+
+    poisson_model = @slic (; y = [0, 2, 3]) begin
+        log_rate ~ normal(0.0, 1.0)
+        y ~ conditioned(poisson, exp(log_rate); upper = 3)
+        log_rate
+    end
+    poisson_code = stan_code(poisson_model)
+    @test occursin("upper_conditioning_poisson_lpmf", poisson_code)
+    @test occursin("upper_conditioning_poisson_lpmfs", poisson_code)
+    @test occursin("upper_conditioning_int_poisson_rng", poisson_code)
+    @test !occursin("upper_conditioning_poisson_lpdf", poisson_code)
+    @test stanc_compiles(poisson_model)
+
+    interval_model = @slic (; marker = [0, 0, 0], lo = [0, 1, 2], hi = [1, 2, 4]) begin
+        log_rate ~ normal(0.0, 1.0)
+        marker ~ interval_evidence(poisson, lo, hi, exp(log_rate))
+        log_rate
+    end
+    interval_code = stan_code(interval_model)
+    @test occursin("interval_evidence_impl_poisson_lpmf", interval_code)
+    @test occursin("interval_evidence_impl_poisson_lpmfs", interval_code)
+    @test occursin("interval_evidence_impl_int_poisson_rng", interval_code)
+    @test occursin("interval_evidence: lower bound must be less than upper bound", interval_code)
+    @test stanc_compiles(interval_model)
+
+    custom_model = @slic (; y = [-0.4, 0.3]) begin
+        y ~ conditioned(cdf_normal, 0.0, 1.0; lower = -1.0, upper = 1.0)
+    end
+    custom_code = stan_code(custom_model)
+    @test occursin("conditioning_cdf_normal_lpdf", custom_code)
+    @test occursin("cdf_normal_lcdf", custom_code)
+    @test occursin("conditioning_vector_cdf_normal_rng", custom_code)
+    @test stanc_compiles(custom_model)
+    custom_lower_model = @slic (; y = 0.2) begin
+        y ~ conditioned(cdf_normal, 0.0, 1.0; lower = -1.0)
+    end
+    custom_lower_code = stan_code(custom_lower_model)
+    @test occursin("cdf_normal_lccdf", custom_lower_code)
+    @test stanc_compiles(custom_lower_model)
+
+    # BridgeStan validates the probability identities rather than only their
+    # emitted names. Explicit base-family calls inside a UDF retain constants.
+    conditioned_numeric = @slic (; y = 0.2, z = 0.1) begin
+        theta ~ normal(0.0, 1.0)
+        z ~ normal(theta, 1.0)
+        y ~ conditioned(normal, 0.0, 1.0; lower = -1.0, upper = 1.0)
+        theta
+    end
+    conditioned_problem = instantiate(stan_model(conditioned_numeric))
+    interval_probability = 0.6826894921370859
+    for theta in (-0.7, 0.3)
+        expected = _stan_normal(theta, 0.0, 1.0) +
+            _stan_normal(0.1, theta, 1.0) +
+            _stan_normal(0.2, 0.0, 1.0) - 0.5log(2pi) - log(interval_probability)
+        @test LogDensityProblems.logdensity(conditioned_problem, [theta]) ≈ expected atol=1e-6
+    end
+
+    clamped_numeric = @slic (; y = -1.0, z = 0.1) begin
+        theta ~ normal(0.0, 1.0)
+        z ~ normal(theta, 1.0)
+        y ~ clamped(normal, 0.0, 1.0; lower = -1.0, upper = 1.0)
+        theta
+    end
+    clamped_problem = instantiate(stan_model(clamped_numeric))
+    for theta in (-0.7, 0.3)
+        expected = _stan_normal(theta, 0.0, 1.0) +
+            _stan_normal(0.1, theta, 1.0) + log(0.15865525393145707)
+        @test LogDensityProblems.logdensity(clamped_problem, [theta]) ≈ expected atol=1e-6
+    end
+
+    interval_numeric = @slic (; marker = 0, z = 0.1) begin
+        theta ~ normal(0.0, 1.0)
+        z ~ normal(theta, 1.0)
+        marker ~ interval_evidence(poisson, 1, 3, 2.0)
+        theta
+    end
+    interval_problem = instantiate(stan_model(interval_numeric))
+    # Genuine interval semantics are (1, 3], hence exactly P(X=2)+P(X=3).
+    poisson_interval_probability = exp(-2.0) * (2.0 + 4.0 / 3.0)
+    for theta in (-0.7, 0.3)
+        expected = _stan_normal(theta, 0.0, 1.0) +
+            _stan_normal(0.1, theta, 1.0) + log(poisson_interval_probability)
+        @test LogDensityProblems.logdensity(interval_problem, [theta]) ≈ expected atol=1e-6
+    end
+
+    invalid_bound_problem = instantiate(stan_model(@slic (; y = 0.0) begin
+        theta ~ normal(0.0, 1.0)
+        y ~ conditioned(normal, theta, 1.0; lower = 1.0, upper = -1.0)
+        theta
+    end))
+    # BridgeStan represents a Stan `reject` during log-density evaluation as
+    # NaN. This exercises the runtime guard rather than merely matching text.
+    @test isnan(LogDensityProblems.logdensity(invalid_bound_problem, [0.0]))
+
+    # Predictive twins exercise both sized RNG specialisations. Conditioned
+    # draws remain inside the interval; clamped draws can land on either atom
+    # but never outside it.
+    conditioned_gq = instantiate(stan_model(@slic (; y = [-0.2, 0.2, 0.4]) begin
+        y ~ conditioned(normal, 0.0, 1.0; lower = -0.5, upper = 0.5)
+    end))
+    conditioned_names = BridgeStan.param_names(
+        conditioned_gq.model; include_tp = true, include_gq = true,
+    )
+    conditioned_idx = findall(n -> startswith(n, "y_gen"), conditioned_names)
+    conditioned_draw = BridgeStan.param_constrain(
+        conditioned_gq.model, zeros(LogDensityProblems.dimension(conditioned_gq));
+        include_tp = true, include_gq = true,
+        rng = BridgeStan.StanRNG(conditioned_gq.model, 1234),
+    )
+    @test length(conditioned_idx) == 3
+    @test all(x -> -0.5 <= x <= 0.5, conditioned_draw[conditioned_idx])
+
+    clamped_gq = instantiate(stan_model(@slic (; y = [-0.5, 0.0, 0.5]) begin
+        y ~ clamped(normal, 0.0, 3.0; lower = -0.5, upper = 0.5)
+    end))
+    clamped_names = BridgeStan.param_names(clamped_gq.model; include_tp = true, include_gq = true)
+    clamped_idx = findall(n -> startswith(n, "y_gen"), clamped_names)
+    clamped_draw = BridgeStan.param_constrain(
+        clamped_gq.model, zeros(LogDensityProblems.dimension(clamped_gq));
+        include_tp = true, include_gq = true,
+        rng = BridgeStan.StanRNG(clamped_gq.model, 4321),
+    )
+    @test length(clamped_idx) == 3
+    @test all(x -> -0.5 <= x <= 0.5, clamped_draw[clamped_idx])
+end
+
 @testmodule StanBlocksTestSetup begin
     using Random, Statistics
     using StanBlocks
@@ -153,6 +379,16 @@ end
         @lpxf simple_lpdf(y, x) = 0.
         simple_lpdfs(y, x) = 0.
         simple_rng(x) = 0.
+        # CDF-capable custom family used to verify that the generic
+        # conditioning/clamping HOFs select all five companions from one base
+        # token. These wrappers deliberately delegate to Stan's normal family.
+        @lpxf cdf_normal_lpdf(y, mu, sigma) = normal_lpdf(y, mu, sigma)
+        cdf_normal_lpdfs(y, mu, sigma) = normal_lpdf(y, mu, sigma)
+        cdf_normal_rng(mu, sigma) = normal_rng(mu, sigma)
+        cdf_normal_rng(vector[n], mu, sigma)::vector[n] =
+            to_vector(normal_rng(rep_vector(mu, n), sigma))
+        cdf_normal_lcdf(y, mu, sigma)::real = normal_lcdf(y, mu, sigma)
+        cdf_normal_lccdf(y, mu, sigma)::real = normal_lccdf(y, mu, sigma)
         @lpxf vararg_lpdf(y, args...) = 0.
         vararg_lpdfs(y, args...) = 0.
         vararg_rng(args...) = 0.
