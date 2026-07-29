@@ -1428,14 +1428,21 @@ begin
             Set(arg_names),
             setdiff(Set(keys(fun_size_candidates)), required_fun_sizes),
         )
-        deconstruct = Expr(:block, 
-            xassign(xtuple(arg_names..., (isnothing(vararg) ? () : (vararg,))...), :(x.args)), 
+        # The trace-time deconstruction binds exactly the size names this
+        # definition emits Stan bindings for; everything else destructures to
+        # `_`. The `@lhs` base tracetype below needs a DIFFERENT hidden set (it
+        # is a separate, Stan-less tracetype whose result reads the observation
+        # argument's declared shape), so build the block from a parameterised
+        # helper rather than baking one `hidden` in.
+        make_deconstruct(hidden) = Expr(:block,
+            xassign(xtuple(arg_names..., (isnothing(vararg) ? () : (vararg,))...), :(x.args)),
             [
-                xassign(xtuple(ensure_xlhs.(args_type.args[2:end]; hidden=hidden_size_names)...), :($stan_size($args_name)))
+                xassign(xtuple(ensure_xlhs.(args_type.args[2:end]; hidden)...), :($stan_size($args_name)))
                 for (args_name, args_type) in zip(arg_names, arg_types)
-            ]..., 
+            ]...,
             :(info = (;$(sig_names...), $(keys(fun_sizes)...),))
         )
+        deconstruct = make_deconstruct(hidden_size_names)
         size_aliases = (; fun_size_alias_names...)
         anon_deconstruct = Expr(
             :block,
@@ -1605,9 +1612,29 @@ begin
                 StanType(getproperty(types, y_type.args[1]), ntuple(i->StanExpr(missing, StanType(types.int)), length(y_type.args)-1))
             )
             reconstruct = :(x = $CanonicalExpr($f, $y_expr, _x.args...))
+            # This tracetype RETURNS the observation argument's declared shape,
+            # so every signature dimension named in that shape must be bound —
+            # independently of whether the UDF body reads it. The `_lpdf`
+            # deconstruction hides a dimension the body never mentions, because
+            # there the binding's only purpose is the emitted `int n =
+            # dims(x)[i];` Stan local, which would be dead (§R5 addendum,
+            # `9335898`). Sharing one hidden set made `@lhs f(x::vector[m, n])`
+            # with an `n`-free body destructure `n` to `_` and then reference it
+            # here — `UndefVarError: n` at trace time, before any Stan is
+            # emitted (snag `deffun-hidden-si-facb90e5`). `base_f` has NO Stan
+            # definition (`fundef` is `nothing` right below), so unhiding here
+            # adds no dead local; the two blocks simply want different sets.
+            base_deconstruct = make_deconstruct(setdiff(
+                hidden_size_names,
+                Set{Symbol}(
+                    dim_name
+                    for dim_name in keys(fun_size_candidates)
+                    if _ast_mentions(y_type, dim_name)
+                ),
+            ))
             push!(stmts, :(function $base_f end))
             push!(stmts, quote
-                $stan.tracetype($base_xexpr) = $(Expr(:block, source, reconstruct, deconstruct, xsig_expr(y_type)))
+                $stan.tracetype($base_xexpr) = $(Expr(:block, source, reconstruct, base_deconstruct, xsig_expr(y_type)))
                 $stan.fundef($base_xexpr) = nothing
             end)
         end
