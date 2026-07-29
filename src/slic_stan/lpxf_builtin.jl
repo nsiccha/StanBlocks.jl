@@ -37,6 +37,7 @@ fetch_data!(x::StanType{<:types.tup}; info) = fetch_data!((stan_size(x), x.info.
 # sampling, likelihood, or RNG lowering methods.
 _distribution_hof(::Any) = nothing
 _distribution_hof(::typeof(builtin.weighted)) = (
+    name = :weighted,
     family_arg = 1,
     data_args = (2,),
     requires_data_lhs = true,
@@ -46,11 +47,145 @@ _distribution_hof(::typeof(builtin.weighted)) = (
     lpmfs = builtin.weighted_lpmfs,
     rng = builtin.weighted_rng,
 )
+_distribution_hof(::typeof(builtin.conditioned)) = (
+    name = :conditioned,
+    family_arg = 1,
+    data_args = (),
+    requires_data_lhs = false,
+    optional_kwargs = (:lower, :upper),
+    variants = (
+        lower = (
+            head = builtin.lower_conditioning,
+            lpdf = builtin.lower_conditioning_lpdf,
+            lpmf = builtin.lower_conditioning_lpmf,
+            lpdfs = builtin.lower_conditioning_lpdfs,
+            lpmfs = builtin.lower_conditioning_lpmfs,
+            rng = builtin.lower_conditioning_rng,
+        ),
+        upper = (
+            head = builtin.upper_conditioning,
+            lpdf = builtin.upper_conditioning_lpdf,
+            lpmf = builtin.upper_conditioning_lpmf,
+            lpdfs = builtin.upper_conditioning_lpdfs,
+            lpmfs = builtin.upper_conditioning_lpmfs,
+            rng = builtin.upper_conditioning_rng,
+        ),
+        both = (
+            head = builtin.conditioning,
+            lpdf = builtin.conditioning_lpdf,
+            lpmf = builtin.conditioning_lpmf,
+            lpdfs = builtin.conditioning_lpdfs,
+            lpmfs = builtin.conditioning_lpmfs,
+            rng = builtin.conditioning_rng,
+        ),
+    ),
+)
+_distribution_hof(::typeof(builtin.clamped)) = (
+    name = :clamped,
+    family_arg = 1,
+    data_args = (),
+    # A clamped law has threshold atoms and is therefore not a valid
+    # continuously-parameterised HMC prior. It is an observation model.
+    requires_data_lhs = true,
+    optional_kwargs = (:lower, :upper),
+    variants = (
+        lower = (
+            head = builtin.lower_clamping,
+            lpdf = builtin.lower_clamping_lpdf,
+            lpmf = builtin.lower_clamping_lpmf,
+            lpdfs = builtin.lower_clamping_lpdfs,
+            lpmfs = builtin.lower_clamping_lpmfs,
+            rng = builtin.lower_clamping_rng,
+        ),
+        upper = (
+            head = builtin.upper_clamping,
+            lpdf = builtin.upper_clamping_lpdf,
+            lpmf = builtin.upper_clamping_lpmf,
+            lpdfs = builtin.upper_clamping_lpdfs,
+            lpmfs = builtin.upper_clamping_lpmfs,
+            rng = builtin.upper_clamping_rng,
+        ),
+        both = (
+            head = builtin.clamping,
+            lpdf = builtin.clamping_lpdf,
+            lpmf = builtin.clamping_lpmf,
+            lpdfs = builtin.clamping_lpdfs,
+            lpmfs = builtin.clamping_lpmfs,
+            rng = builtin.clamping_rng,
+        ),
+    ),
+)
+_distribution_hof(::typeof(builtin.interval_evidence)) = (
+    name = :interval_evidence,
+    family_arg = 1,
+    data_args = (),
+    requires_data_lhs = true,
+    lpdf = builtin.interval_evidence_impl_lpdf,
+    lpmf = builtin.interval_evidence_impl_lpmf,
+    lpdfs = builtin.interval_evidence_impl_lpdfs,
+    lpmfs = builtin.interval_evidence_impl_lpmfs,
+    rng = builtin.interval_evidence_impl_rng,
+)
+_distribution_hof(::typeof(builtin.interval_evidence_impl)) =
+    _distribution_hof(builtin.interval_evidence)
+_fixed_distribution_hof(name, variant; requires_data_lhs = false) = (
+    name,
+    family_arg = 1,
+    data_args = (),
+    requires_data_lhs,
+    lpdf = variant.lpdf,
+    lpmf = variant.lpmf,
+    lpdfs = variant.lpdfs,
+    lpmfs = variant.lpmfs,
+    rng = variant.rng,
+)
+_distribution_hof(::typeof(builtin.lower_conditioning)) = _fixed_distribution_hof(
+    :conditioned, _distribution_hof(builtin.conditioned).variants.lower,
+)
+_distribution_hof(::typeof(builtin.upper_conditioning)) = _fixed_distribution_hof(
+    :conditioned, _distribution_hof(builtin.conditioned).variants.upper,
+)
+_distribution_hof(::typeof(builtin.conditioning)) = _fixed_distribution_hof(
+    :conditioned, _distribution_hof(builtin.conditioned).variants.both,
+)
+_distribution_hof(::typeof(builtin.lower_clamping)) = _fixed_distribution_hof(
+    :clamped, _distribution_hof(builtin.clamped).variants.lower;
+    requires_data_lhs = true,
+)
+_distribution_hof(::typeof(builtin.upper_clamping)) = _fixed_distribution_hof(
+    :clamped, _distribution_hof(builtin.clamped).variants.upper;
+    requires_data_lhs = true,
+)
+_distribution_hof(::typeof(builtin.clamping)) = _fixed_distribution_hof(
+    :clamped, _distribution_hof(builtin.clamped).variants.both;
+    requires_data_lhs = true,
+)
 
 _family_function(x::StanExpr2{<:types.func}) = type(x).info.value
 _family_function(x) = error(
     "distribution HOF: expected a base distribution function token, got $(type(x))"
 )
+_is_compile_time_nothing(x) = x === nothing || x === :nothing ||
+    (x isa QuoteNode && x.value === nothing)
+_forward_call_kwargs(
+    x::CanonicalExpr,
+    resolved_head::StanExpr2{<:types.func};
+    info,
+) = begin
+    spec = _distribution_hof(_family_function(resolved_head))
+    optional = isnothing(spec) ? () : get(spec, :optional_kwargs, ())
+    isempty(optional) && return forward!(x.kwargs; info)
+    # A distribution HOF owns these kwargs at trace time. Explicit `nothing`
+    # is equivalent to omission and must disappear before generic symbol/type
+    # resolution; present bounds remain on the canonical call so `autotype`
+    # can also use them as parameter constraints.
+    kept = (;[
+        key => value
+        for (key, value) in pairs(x.kwargs)
+        if !(key in optional && _is_compile_time_nothing(value))
+    ]...)
+    forward!(kept; info)
+end
 _distribution_hof_family(spec, rhs::CanonicalExpr) = begin
     length(rhs.args) >= spec.family_arg || error(
         "distribution HOF: missing family argument $(spec.family_arg)"
@@ -60,13 +195,13 @@ end
 _validate_distribution_hof(spec, lhs, rhs::CanonicalExpr) = begin
     if spec.requires_data_lhs && qual(lhs) != :data
         error(
-            "weighted: observations must be data-qualified; weighted priors are not supported"
+            "$(spec.name): observations must be data-qualified; $(spec.name) priors are not supported"
         )
     end
     for i in spec.data_args
         length(rhs.args) >= i || error("distribution HOF: missing data argument $i")
         qual(rhs.args[i]) == :data || error(
-            "weighted: likelihood weights must be data-qualified; " *
+            "$(spec.name): likelihood control arguments must be data-qualified; " *
             "parameter-dependent likelihood weights are not supported"
         )
     end
@@ -88,10 +223,97 @@ _probability_kind(family) = begin
         "expected an _lpdf or _lpmf family"
     )
 end
-_hof_probability(spec, family) =
-    _probability_kind(family) === :lpdf ? spec.lpdf : spec.lpmf
-_hof_pointwise(spec, family) =
-    _probability_kind(family) === :lpdf ? spec.lpdfs : spec.lpmfs
+_hof_variant(spec, rhs::CanonicalExpr) = begin
+    optional = get(spec, :optional_kwargs, ())
+    isempty(optional) && return spec
+    present = Tuple(key for key in optional if key in keys(rhs.kwargs))
+    mode = present == (:lower,) ? :lower :
+        present == (:upper,) ? :upper :
+        present == (:lower, :upper) ? :both : error(
+            "$(spec.name): provide at least one of `lower=` or `upper=`"
+        )
+    getproperty(spec.variants, mode)
+end
+_hof_call_args(spec, rhs::CanonicalExpr) = begin
+    optional = get(spec, :optional_kwargs, ())
+    isempty(optional) && return rhs.args
+    i = spec.family_arg
+    bounds = Any[rhs.kwargs[key] for key in optional if key in keys(rhs.kwargs)]
+    Tuple(vcat(collect(rhs.args[1:i]), bounds, collect(rhs.args[i+1:end])))
+end
+_hof_probability(spec, family, rhs) = begin
+    variant = _hof_variant(spec, rhs)
+    _probability_kind(family) === :lpdf ? variant.lpdf : variant.lpmf
+end
+_hof_pointwise(spec, family, rhs) = begin
+    variant = _hof_variant(spec, rhs)
+    _probability_kind(family) === :lpdf ? variant.lpdfs : variant.lpmfs
+end
+_hof_rng(spec, rhs) = _hof_variant(spec, rhs).rng
+
+const CdfCapableBuiltinFamily = Union{typeof.((
+    builtin.std_normal, builtin.normal, builtin.student_t, builtin.cauchy,
+    builtin.beta, builtin.beta_proportion, builtin.lognormal, builtin.exponential,
+    builtin.gamma, builtin.inv_gamma, builtin.weibull, builtin.uniform,
+    builtin.chi_square, builtin.inv_chi_square, builtin.scaled_inv_chi_square,
+    builtin.frechet, builtin.rayleigh, builtin.von_mises,
+    builtin.double_exponential, builtin.logistic, builtin.gumbel,
+    builtin.skew_normal, builtin.exp_mod_normal, builtin.skew_double_exponential,
+    builtin.pareto, builtin.pareto_type_2,
+    builtin.bernoulli, builtin.binomial, builtin.beta_binomial,
+    builtin.neg_binomial, builtin.neg_binomial_2, builtin.poisson,
+    builtin.discrete_range,
+))...}
+
+# Keep optional-bound mode in the call head/positional args, not only in
+# `CanonicalExpr.kwargs`: later compiler passes intentionally rebuild call ASTs
+# without kwargs after `autotype` has consumed declaration constraints. The
+# rewrite therefore preserves the bounds twice for exactly one stage: as
+# positional probability/RNG inputs, and as support constraints for autotype.
+const OptionalBoundDistributionHOF = Union{
+    typeof(builtin.conditioned), typeof(builtin.clamped)
+}
+expand_inline_or_trace(
+    x::CanonicalExpr{<:OptionalBoundDistributionHOF};
+    info,
+) = begin
+    spec = _distribution_hof(head(x))
+    variant = _hof_variant(spec, x)
+    forward!(CanonicalExpr(
+        variant.head,
+        _hof_call_args(spec, x)...;
+        x.kwargs...,
+    ); info)
+end
+expand_inline_or_trace(
+    x::CanonicalExpr{typeof(builtin.interval_evidence)};
+    info,
+) = forward!(CanonicalExpr(
+    builtin.interval_evidence_impl,
+    x.args...;
+    x.kwargs...,
+); info)
+_family_probability_companion(family, suffix::Symbol) = begin
+    if parentmodule(family) === builtin && !(family isa CdfCapableBuiltinFamily)
+        error(
+            "distribution HOF: built-in family $(nameof(family)) has no Stan " *
+            "`$(nameof(family))$(suffix)` companion; choose a CDF-capable family"
+        )
+    end
+    probability = lpxf_expr(family)
+    probability_name = string(nameof(probability))
+    probability_suffix = _probability_kind(family) === :lpdf ? "_lpdf" : "_lpmf"
+    base_name = probability_name[1:end-length(probability_suffix)]
+    companion_name = Symbol(base_name, suffix)
+    mod = parentmodule(probability)
+    isdefined(mod, companion_name) || error(
+        "distribution HOF: family $(nameof(family)) requires companion " *
+        "`$companion_name`, but it is not defined in $mod"
+    )
+    getfield(mod, companion_name)
+end
+logcdf_expr(family) = _family_probability_companion(family, :_lcdf)
+logccdf_expr(family) = _family_probability_companion(family, :_lccdf)
 
 lpxf_expr(lhs, rhs::StanExpr) = lpxf_expr(lhs, expr(rhs))
 lpxf_expr(lhs, rhs::CanonicalExpr) = begin
@@ -99,7 +321,7 @@ lpxf_expr(lhs, rhs::CanonicalExpr) = begin
     isnothing(spec) && return stan_call(lpxf_expr(head(rhs)), lhs, rhs.args...)
     _validate_distribution_hof(spec, lhs, rhs)
     family = _distribution_hof_family(spec, rhs)
-    stan_call(_hof_probability(spec, family), lhs, rhs.args...)
+    stan_call(_hof_probability(spec, family, rhs), lhs, _hof_call_args(spec, rhs)...)
 end
 for lpxf_rhs in (
     :dummy_lpdf,
@@ -145,7 +367,7 @@ likelihood_expr(lhs, rhs::CanonicalExpr) = begin
     isnothing(spec) && return stan_call(likelihood_expr(head(rhs)), lhs, rhs.args...)
     _validate_distribution_hof(spec, lhs, rhs)
     family = _distribution_hof_family(spec, rhs)
-    stan_call(_hof_pointwise(spec, family), lhs, rhs.args...)
+    stan_call(_hof_pointwise(spec, family, rhs), lhs, _hof_call_args(spec, rhs)...)
 end
 likelihood_expr(rhs) = error("$rhs is missing `likelihood_expr`")
 # gq `~` synthesis: `rng_expr(token, rhs)` builds either `rng_fn(args...)` (for
@@ -154,9 +376,19 @@ likelihood_expr(rhs) = error("$rhs is missing `likelihood_expr`")
 # The token is a `tokenof{T}` StanExpr carrying the wanted output shape.
 rng_expr(token, rhs::StanExpr) = rng_expr(token, expr(rhs))
 # Scalar token path: native Stan rng, no token forwarding.
-rng_expr(token::StanExpr2{<:types.tokenof,0}, rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), rhs.args...)
+rng_expr(token::StanExpr2{<:types.tokenof,0}, rhs::CanonicalExpr) = begin
+    spec = _distribution_hof(head(rhs))
+    isnothing(spec) && return stan_call(rng_expr(head(rhs)), rhs.args...)
+    _distribution_hof_family(spec, rhs)
+    stan_call(_hof_rng(spec, rhs), _hof_call_args(spec, rhs)...)
+end
 # Sized token path: prepend token so per-shape @deffun overloads dispatch.
-rng_expr(token::StanExpr2{<:types.tokenof}, rhs::CanonicalExpr) = stan_call(rng_expr(head(rhs)), token, rhs.args...)
+rng_expr(token::StanExpr2{<:types.tokenof}, rhs::CanonicalExpr) = begin
+    spec = _distribution_hof(head(rhs))
+    isnothing(spec) && return stan_call(rng_expr(head(rhs)), token, rhs.args...)
+    _distribution_hof_family(spec, rhs)
+    stan_call(_hof_rng(spec, rhs), token, _hof_call_args(spec, rhs)...)
+end
 rng_expr(x) = begin
     spec = _distribution_hof(x)
     isnothing(spec) && error("$x is missing `rng_expr`")
@@ -168,11 +400,14 @@ end
 # they immediately trace a call to that function. In either form the selector
 # itself is absent from emitted Stan.
 const DistributionFamilySelector = Union{
-    typeof(builtin.density), typeof(builtin.pointwise), typeof(builtin.predictive)
+    typeof(builtin.density), typeof(builtin.pointwise), typeof(builtin.predictive),
+    typeof(builtin.logcdf), typeof(builtin.logccdf)
 }
 _family_selector_target(::typeof(builtin.density), family) = lpxf_expr(family)
 _family_selector_target(::typeof(builtin.pointwise), family) = likelihood_expr(family)
 _family_selector_target(::typeof(builtin.predictive), family) = rng_expr(family)
+_family_selector_target(::typeof(builtin.logcdf), family) = logcdf_expr(family)
+_family_selector_target(::typeof(builtin.logccdf), family) = logccdf_expr(family)
 expand_inline_or_trace(
     x::CanonicalExpr{<:DistributionFamilySelector,<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}};
     info,

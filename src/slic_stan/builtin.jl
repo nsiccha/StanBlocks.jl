@@ -33,6 +33,20 @@ end
 @builtin_module [
     weighted_lpdf
     weighted_lpmf
+    # Public distribution-HOF tokens use collision-free implementation bases:
+    # `conditioned(normal, ...)` lowers through `conditioning_normal_*`, etc.
+    conditioned clamped interval_evidence
+    lower_conditioning_lpdf lower_conditioning_lpmf
+    upper_conditioning_lpdf upper_conditioning_lpmf
+    conditioning_lpdf conditioning_lpmf
+    lower_clamping_lpdf lower_clamping_lpmf
+    upper_clamping_lpdf upper_clamping_lpmf
+    clamping_lpdf clamping_lpmf
+    interval_evidence_impl_lpdf interval_evidence_impl_lpmf
+    lower_conditioning_cell_rng upper_conditioning_cell_rng conditioning_cell_rng
+    conditioning_outside
+    lower_clamping_cell_rng upper_clamping_cell_rng clamping_cell_rng
+    jbroadcasted_rng
     flat_lpdf
     std_normal_lpdf
     normal_lpdf
@@ -143,7 +157,7 @@ end
 
     # Compile-time distribution-family selectors. These consume a base family
     # token (e.g. `normal`) and disappear before Stan emission.
-    density pointwise predictive
+    density pointwise predictive logcdf logccdf
 
     # Unary math (Stan-specific, not Julia builtins)
     square log_diff_exp log_mix atan2
@@ -379,6 +393,416 @@ import Statistics
         predictive(family, vector[n], args...)
     weighted_rng(int[n], family, weight, args...) =
         predictive(family, int[n], args...)
+
+    # Mathematical truncation (`conditioned`) -------------------------------
+    # Public optional kwargs select one of these lower/upper/two-sided
+    # implementation families at trace time. Only concrete bounds reach Stan.
+    lower_conditioning_lpdf(y::real, family, lo, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y >= lo
+            rv[1] = density(family, y, args...) - logccdf(family, lo, args...)
+        end
+        rv[1]
+    end
+    lower_conditioning_lpmf(y::int, family, lo, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y >= lo
+            rv[1] = density(family, y, args...) - logccdf(family, lo - 1, args...)
+        end
+        rv[1]
+    end
+    lower_conditioning_lpdf(y::anything[n], family, lo, args...)::real =
+        sum(lower_conditioning_lpdfs(y, family, lo, args...))
+    lower_conditioning_lpmf(y::anything[n], family, lo, args...)::real =
+        sum(lower_conditioning_lpmfs(y, family, lo, args...))
+    lower_conditioning_lpdfs(y::real, family, lo, args...) =
+        lower_conditioning_lpdf(y, family, lo, args...)
+    lower_conditioning_lpmfs(y::int, family, lo, args...) =
+        lower_conditioning_lpmf(y, family, lo, args...)
+    lower_conditioning_lpdfs(y::anything[n], family, lo, args...)::vector[n] =
+        jbroadcasted(lower_conditioning_lpdf, y, family, lo, args...)
+    lower_conditioning_lpmfs(y::anything[n], family, lo, args...)::vector[n] =
+        jbroadcasted(lower_conditioning_lpmf, y, family, lo, args...)
+    lower_conditioning_rng(family, lo, args...) = begin
+        draw::typeof(predictive(family, args...))[1]
+        attempts::int[1]
+        draw[1] = predictive(family, args...)
+        attempts[1] = 1
+        while draw[1] < lo
+            if attempts[1] >= 100000
+                reject("conditioned: lower-tail rejection sampler exceeded 100000 draws")
+            end
+            draw[1] = predictive(family, args...)
+            attempts[1] = attempts[1] + 1
+        end
+        draw[1]
+    end
+    lower_conditioning_cell_rng(dummy, family, lo, args...) =
+        lower_conditioning_rng(family, lo, args...)
+    lower_conditioning_rng(vector[n], family, lo, args...)::vector[n] =
+        jbroadcasted(lower_conditioning_cell_rng, rep_vector(0., n), family, lo, args...)
+    lower_conditioning_rng(real[n], family, lo, args...)::real[n] =
+        to_array_1d(jbroadcasted(lower_conditioning_cell_rng, rep_vector(0., n), family, lo, args...))
+    lower_conditioning_rng(int[n], family, lo, args...) =
+        jbroadcasted(lower_conditioning_cell_rng, rep_array(0, n), family, lo, args...)
+
+    upper_conditioning_lpdf(y::real, family, hi, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y <= hi
+            rv[1] = density(family, y, args...) - logcdf(family, hi, args...)
+        end
+        rv[1]
+    end
+    upper_conditioning_lpmf(y::int, family, hi, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y <= hi
+            rv[1] = density(family, y, args...) - logcdf(family, hi, args...)
+        end
+        rv[1]
+    end
+    upper_conditioning_lpdf(y::anything[n], family, hi, args...)::real =
+        sum(upper_conditioning_lpdfs(y, family, hi, args...))
+    upper_conditioning_lpmf(y::anything[n], family, hi, args...)::real =
+        sum(upper_conditioning_lpmfs(y, family, hi, args...))
+    upper_conditioning_lpdfs(y::real, family, hi, args...) =
+        upper_conditioning_lpdf(y, family, hi, args...)
+    upper_conditioning_lpmfs(y::int, family, hi, args...) =
+        upper_conditioning_lpmf(y, family, hi, args...)
+    upper_conditioning_lpdfs(y::anything[n], family, hi, args...)::vector[n] =
+        jbroadcasted(upper_conditioning_lpdf, y, family, hi, args...)
+    upper_conditioning_lpmfs(y::anything[n], family, hi, args...)::vector[n] =
+        jbroadcasted(upper_conditioning_lpmf, y, family, hi, args...)
+    upper_conditioning_rng(family, hi, args...) = begin
+        draw::typeof(predictive(family, args...))[1]
+        attempts::int[1]
+        draw[1] = predictive(family, args...)
+        attempts[1] = 1
+        while draw[1] > hi
+            if attempts[1] >= 100000
+                reject("conditioned: upper-tail rejection sampler exceeded 100000 draws")
+            end
+            draw[1] = predictive(family, args...)
+            attempts[1] = attempts[1] + 1
+        end
+        draw[1]
+    end
+    upper_conditioning_cell_rng(dummy, family, hi, args...) =
+        upper_conditioning_rng(family, hi, args...)
+    upper_conditioning_rng(vector[n], family, hi, args...)::vector[n] =
+        jbroadcasted(upper_conditioning_cell_rng, rep_vector(0., n), family, hi, args...)
+    upper_conditioning_rng(real[n], family, hi, args...)::real[n] =
+        to_array_1d(jbroadcasted(upper_conditioning_cell_rng, rep_vector(0., n), family, hi, args...))
+    upper_conditioning_rng(int[n], family, hi, args...) =
+        jbroadcasted(upper_conditioning_cell_rng, rep_array(0, n), family, hi, args...)
+
+    # Two-sided inclusive truncation.
+    conditioning_lpdf(y::real, family, lo, hi, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if lo >= hi
+            reject("conditioned: lower bound must be less than upper bound")
+        else
+            if y >= lo
+                if y <= hi
+                    rv[1] = density(family, y, args...) -
+                        log_diff_exp(logcdf(family, hi, args...), logcdf(family, lo, args...))
+                end
+            end
+        end
+        rv[1]
+    end
+    conditioning_lpmf(y::int, family, lo, hi, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if lo > hi
+            reject("conditioned: lower bound must not exceed upper bound")
+        else
+            if y >= lo
+                if y <= hi
+                    rv[1] = density(family, y, args...) -
+                        log_diff_exp(logcdf(family, hi, args...), logcdf(family, lo - 1, args...))
+                end
+            end
+        end
+        rv[1]
+    end
+    conditioning_lpdf(y::anything[n], family, lo, hi, args...)::real =
+        sum(conditioning_lpdfs(y, family, lo, hi, args...))
+    conditioning_lpmf(y::anything[n], family, lo, hi, args...)::real =
+        sum(conditioning_lpmfs(y, family, lo, hi, args...))
+    conditioning_lpdfs(y::real, family, lo, hi, args...) =
+        conditioning_lpdf(y, family, lo, hi, args...)
+    conditioning_lpmfs(y::int, family, lo, hi, args...) =
+        conditioning_lpmf(y, family, lo, hi, args...)
+    conditioning_lpdfs(y::anything[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(conditioning_lpdf, y, family, lo, hi, args...)
+    conditioning_lpmfs(y::anything[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(conditioning_lpmf, y, family, lo, hi, args...)
+    conditioning_outside(x, lo, hi)::int = begin
+        rv::int[1]
+        rv[1] = 0
+        if x < lo
+            rv[1] = 1
+        else
+            if x > hi
+                rv[1] = 1
+            end
+        end
+        rv[1]
+    end
+    conditioning_rng(family, lo, hi, args...) = begin
+        draw::typeof(predictive(family, args...))[1]
+        attempts::int[1]
+        draw[1] = predictive(family, args...)
+        attempts[1] = 1
+        while conditioning_outside(draw[1], lo, hi) == 1
+            if attempts[1] >= 100000
+                reject("conditioned: rejection sampler exceeded 100000 draws")
+            end
+            draw[1] = predictive(family, args...)
+            attempts[1] = attempts[1] + 1
+        end
+        draw[1]
+    end
+    conditioning_cell_rng(dummy, family, lo, hi, args...) =
+        conditioning_rng(family, lo, hi, args...)
+    conditioning_rng(vector[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(conditioning_cell_rng, rep_vector(0., n), family, lo, hi, args...)
+    conditioning_rng(real[n], family, lo, hi, args...)::real[n] =
+        to_array_1d(jbroadcasted(conditioning_cell_rng, rep_vector(0., n), family, lo, hi, args...))
+    conditioning_rng(int[n], family, lo, hi, args...)::int[n] =
+        jbroadcasted(conditioning_cell_rng, rep_array(0, n), family, lo, hi, args...)
+
+    # Threshold censoring (`clamped`) ---------------------------------------
+    lower_clamping_lpdf(y::real, family, lo, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y == lo
+            rv[1] = logcdf(family, lo, args...)
+        else
+            if y > lo
+                rv[1] = density(family, y, args...)
+            end
+        end
+        rv[1]
+    end
+    lower_clamping_lpmf(y::int, family, lo, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y == lo
+            rv[1] = logcdf(family, lo, args...)
+        else
+            if y > lo
+                rv[1] = density(family, y, args...)
+            end
+        end
+        rv[1]
+    end
+    lower_clamping_lpdf(y::anything[n], family, lo, args...)::real =
+        sum(lower_clamping_lpdfs(y, family, lo, args...))
+    lower_clamping_lpmf(y::anything[n], family, lo, args...)::real =
+        sum(lower_clamping_lpmfs(y, family, lo, args...))
+    lower_clamping_lpdfs(y::real, family, lo, args...) =
+        lower_clamping_lpdf(y, family, lo, args...)
+    lower_clamping_lpmfs(y::int, family, lo, args...) =
+        lower_clamping_lpmf(y, family, lo, args...)
+    lower_clamping_lpdfs(y::anything[n], family, lo, args...)::vector[n] =
+        jbroadcasted(lower_clamping_lpdf, y, family, lo, args...)
+    lower_clamping_lpmfs(y::anything[n], family, lo, args...)::vector[n] =
+        jbroadcasted(lower_clamping_lpmf, y, family, lo, args...)
+    lower_clamping_rng(family, lo, args...) = begin
+        draw::typeof(predictive(family, args...))[1]
+        draw[1] = predictive(family, args...)
+        if draw[1] < lo
+            draw[1] = lo
+        end
+        draw[1]
+    end
+    lower_clamping_cell_rng(dummy, family, lo, args...) =
+        lower_clamping_rng(family, lo, args...)
+    lower_clamping_rng(vector[n], family, lo, args...)::vector[n] =
+        jbroadcasted(lower_clamping_cell_rng, rep_vector(0., n), family, lo, args...)
+    lower_clamping_rng(real[n], family, lo, args...)::real[n] =
+        to_array_1d(jbroadcasted(lower_clamping_cell_rng, rep_vector(0., n), family, lo, args...))
+    lower_clamping_rng(int[n], family, lo, args...) =
+        jbroadcasted(lower_clamping_cell_rng, rep_array(0, n), family, lo, args...)
+
+    upper_clamping_lpdf(y::real, family, hi, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y == hi
+            rv[1] = logccdf(family, hi, args...)
+        else
+            if y < hi
+                rv[1] = density(family, y, args...)
+            end
+        end
+        rv[1]
+    end
+    upper_clamping_lpmf(y::int, family, hi, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y == hi
+            rv[1] = logccdf(family, hi - 1, args...)
+        else
+            if y < hi
+                rv[1] = density(family, y, args...)
+            end
+        end
+        rv[1]
+    end
+    upper_clamping_lpdf(y::anything[n], family, hi, args...)::real =
+        sum(upper_clamping_lpdfs(y, family, hi, args...))
+    upper_clamping_lpmf(y::anything[n], family, hi, args...)::real =
+        sum(upper_clamping_lpmfs(y, family, hi, args...))
+    upper_clamping_lpdfs(y::real, family, hi, args...) =
+        upper_clamping_lpdf(y, family, hi, args...)
+    upper_clamping_lpmfs(y::int, family, hi, args...) =
+        upper_clamping_lpmf(y, family, hi, args...)
+    upper_clamping_lpdfs(y::anything[n], family, hi, args...)::vector[n] =
+        jbroadcasted(upper_clamping_lpdf, y, family, hi, args...)
+    upper_clamping_lpmfs(y::anything[n], family, hi, args...)::vector[n] =
+        jbroadcasted(upper_clamping_lpmf, y, family, hi, args...)
+    upper_clamping_rng(family, hi, args...) = begin
+        draw::typeof(predictive(family, args...))[1]
+        draw[1] = predictive(family, args...)
+        if draw[1] > hi
+            draw[1] = hi
+        end
+        draw[1]
+    end
+    upper_clamping_cell_rng(dummy, family, hi, args...) =
+        upper_clamping_rng(family, hi, args...)
+    upper_clamping_rng(vector[n], family, hi, args...)::vector[n] =
+        jbroadcasted(upper_clamping_cell_rng, rep_vector(0., n), family, hi, args...)
+    upper_clamping_rng(real[n], family, hi, args...)::real[n] =
+        to_array_1d(jbroadcasted(upper_clamping_cell_rng, rep_vector(0., n), family, hi, args...))
+    upper_clamping_rng(int[n], family, hi, args...) =
+        jbroadcasted(upper_clamping_cell_rng, rep_array(0, n), family, hi, args...)
+
+    # Two-sided censoring.
+    clamping_lpdf(y::real, family, lo, hi, args...)::real = begin
+        rv::real[1]
+        if lo >= hi
+            reject("clamped: lower bound must be less than upper bound")
+        end
+        rv[1] = negative_infinity()
+        if y == lo
+            rv[1] = logcdf(family, lo, args...)
+        else
+            if y == hi
+                rv[1] = logccdf(family, hi, args...)
+            else
+                if y > lo
+                    if y < hi
+                        rv[1] = density(family, y, args...)
+                    end
+                end
+            end
+        end
+        rv[1]
+    end
+    clamping_lpmf(y::int, family, lo, hi, args...)::real = begin
+        rv::real[1]
+        if lo >= hi
+            reject("clamped: lower bound must be less than upper bound")
+        end
+        rv[1] = negative_infinity()
+        if y == lo
+            rv[1] = logcdf(family, lo, args...)
+        else
+            if y == hi
+                rv[1] = logccdf(family, hi - 1, args...)
+            else
+                if y > lo
+                    if y < hi
+                        rv[1] = density(family, y, args...)
+                    end
+                end
+            end
+        end
+        rv[1]
+    end
+    clamping_lpdf(y::anything[n], family, lo, hi, args...)::real =
+        sum(clamping_lpdfs(y, family, lo, hi, args...))
+    clamping_lpmf(y::anything[n], family, lo, hi, args...)::real =
+        sum(clamping_lpmfs(y, family, lo, hi, args...))
+    clamping_lpdfs(y::real, family, lo, hi, args...) =
+        clamping_lpdf(y, family, lo, hi, args...)
+    clamping_lpmfs(y::int, family, lo, hi, args...) =
+        clamping_lpmf(y, family, lo, hi, args...)
+    clamping_lpdfs(y::anything[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(clamping_lpdf, y, family, lo, hi, args...)
+    clamping_lpmfs(y::anything[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(clamping_lpmf, y, family, lo, hi, args...)
+    clamping_rng(family, lo, hi, args...) = begin
+        draw::typeof(predictive(family, args...))[1]
+        draw[1] = predictive(family, args...)
+        if draw[1] < lo
+            draw[1] = lo
+        else
+            if draw[1] > hi
+                draw[1] = hi
+            end
+        end
+        draw[1]
+    end
+    clamping_cell_rng(dummy, family, lo, hi, args...) =
+        clamping_rng(family, lo, hi, args...)
+    clamping_rng(vector[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(clamping_cell_rng, rep_vector(0., n), family, lo, hi, args...)
+    clamping_rng(real[n], family, lo, hi, args...)::real[n] =
+        to_array_1d(jbroadcasted(clamping_cell_rng, rep_vector(0., n), family, lo, hi, args...))
+    clamping_rng(int[n], family, lo, hi, args...)::int[n] =
+        jbroadcasted(clamping_cell_rng, rep_array(0, n), family, lo, hi, args...)
+
+    # Genuine interval evidence: latent value is known only to lie in
+    # `(lower, upper]`. The observed marker drives shape; predictive draws stay
+    # on the uncoarsened base-family scale.
+    interval_evidence_impl_lpdf(y, family, lo, hi, args...)::real = begin
+        rv::real[1]
+        if lo >= hi
+            reject("interval_evidence: lower bound must be less than upper bound")
+        end
+        rv[1] = log_diff_exp(
+            logcdf(family, hi, args...), logcdf(family, lo, args...)
+        )
+        rv[1]
+    end
+    interval_evidence_impl_lpmf(y, family, lo, hi, args...)::real = begin
+        rv::real[1]
+        if lo >= hi
+            reject("interval_evidence: lower bound must be less than upper bound")
+        end
+        rv[1] = log_diff_exp(
+            logcdf(family, hi, args...), logcdf(family, lo, args...)
+        )
+        rv[1]
+    end
+    interval_evidence_impl_lpdf(y::anything[n], family, lo, hi, args...)::real =
+        sum(interval_evidence_impl_lpdfs(y, family, lo, hi, args...))
+    interval_evidence_impl_lpmf(y::anything[n], family, lo, hi, args...)::real =
+        sum(interval_evidence_impl_lpmfs(y, family, lo, hi, args...))
+    interval_evidence_impl_lpdfs(y::anything[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(interval_evidence_impl_lpdf, y, family, lo, hi, args...)
+    interval_evidence_impl_lpmfs(y::anything[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(interval_evidence_impl_lpmf, y, family, lo, hi, args...)
+    interval_evidence_impl_lpdfs(y, family, lo, hi, args...) =
+        interval_evidence_impl_lpdf(y, family, lo, hi, args...)
+    interval_evidence_impl_lpmfs(y, family, lo, hi, args...) =
+        interval_evidence_impl_lpmf(y, family, lo, hi, args...)
+    interval_evidence_impl_rng(family, lo, hi, args...) =
+        predictive(family, args...)
+    interval_evidence_impl_rng(real[n], family, lo, hi, args...) =
+        predictive(family, real[n], args...)
+    interval_evidence_impl_rng(vector[n], family, lo, hi, args...) =
+        predictive(family, vector[n], args...)
+    interval_evidence_impl_rng(int[n], family, lo, hi, args...) =
+        predictive(family, int[n], args...)
     end
     # `dummy` no-op distribution: `y ~ dummy(args...)` contributes +0. Bodies
     # ignore their args; monomorphization emits a concrete Stan
@@ -554,15 +978,78 @@ import Statistics
     # unconstrained container, not the constrained parameter type.
     lkj_corr_cholesky_rng(n::int, eta::real)::matrix[n,n]
 
+    # Scalar log-CDF companion signatures used by distribution HOFs. The
+    # `@builtin_module` manifest declares names for every probability family,
+    # including families for which Stan has no CDF. Only this Stan-supported
+    # set is admitted by the capability gate in lpxf_builtin.jl.
     normal_cdf(args...)
+    std_normal_lcdf(args...)
+    std_normal_lccdf(args...)
     normal_lcdf(args...)
     normal_lccdf(args...)
-    # student_t cdf-family shape rules (the @builtin_module entry declares the
-    # NAMES; these register the tracetype — needed by `truncated_student_t_lpdf`'s
-    # censored branches). `_lcdf`/`_lccdf` suffix → auto return type `real`.
-    student_t_cdf(args...)
     student_t_lcdf(args...)
     student_t_lccdf(args...)
+    cauchy_lcdf(args...)
+    cauchy_lccdf(args...)
+    beta_lcdf(args...)
+    beta_lccdf(args...)
+    beta_proportion_lcdf(args...)
+    beta_proportion_lccdf(args...)
+    lognormal_lcdf(args...)
+    lognormal_lccdf(args...)
+    exponential_lcdf(args...)
+    exponential_lccdf(args...)
+    gamma_lcdf(args...)
+    gamma_lccdf(args...)
+    inv_gamma_lcdf(args...)
+    inv_gamma_lccdf(args...)
+    weibull_lcdf(args...)
+    weibull_lccdf(args...)
+    uniform_lcdf(args...)
+    uniform_lccdf(args...)
+    chi_square_lcdf(args...)
+    chi_square_lccdf(args...)
+    inv_chi_square_lcdf(args...)
+    inv_chi_square_lccdf(args...)
+    scaled_inv_chi_square_lcdf(args...)
+    scaled_inv_chi_square_lccdf(args...)
+    frechet_lcdf(args...)
+    frechet_lccdf(args...)
+    rayleigh_lcdf(args...)
+    rayleigh_lccdf(args...)
+    von_mises_lcdf(args...)
+    von_mises_lccdf(args...)
+    double_exponential_lcdf(args...)
+    double_exponential_lccdf(args...)
+    logistic_lcdf(args...)
+    logistic_lccdf(args...)
+    gumbel_lcdf(args...)
+    gumbel_lccdf(args...)
+    skew_normal_lcdf(args...)
+    skew_normal_lccdf(args...)
+    exp_mod_normal_lcdf(args...)
+    exp_mod_normal_lccdf(args...)
+    skew_double_exponential_lcdf(args...)
+    skew_double_exponential_lccdf(args...)
+    pareto_lcdf(args...)
+    pareto_lccdf(args...)
+    pareto_type_2_lcdf(args...)
+    pareto_type_2_lccdf(args...)
+    bernoulli_lcdf(args...)
+    bernoulli_lccdf(args...)
+    binomial_lcdf(args...)
+    binomial_lccdf(args...)
+    beta_binomial_lcdf(args...)
+    beta_binomial_lccdf(args...)
+    neg_binomial_lcdf(args...)
+    neg_binomial_lccdf(args...)
+    neg_binomial_2_lcdf(args...)
+    neg_binomial_2_lccdf(args...)
+    poisson_lcdf(args...)
+    poisson_lccdf(args...)
+    discrete_range_lcdf(args...)
+    discrete_range_lccdf(args...)
+    student_t_cdf(args...)
 
     append_row(x, y, z, args...) = append_row(append_row(x, y), z, args...)
     append_col(x, y, z, args...) = append_col(append_col(x, y), z, args...)
@@ -1893,6 +2380,20 @@ tracetype(x::CanonicalExpr{typeof(pmx_solve_twocpt)}) = _pmx_solve_tracetype(x, 
 # reduce_sum trace-level fundef); `broadcasted_getindex` does the per-arg slice.
 _jb_iterated(a) = stan_ndim(type(a)) >= 1
 _jb_elem(a) = _jb_iterated(a) ? stan_expr(CanonicalExpr(getindex, a, stan_expr(1, 1))) : a
+_jb_semantic_rng(f::StanExpr2{<:types.func}) =
+    endswith(string(nameof(type(f).info.value)), "_rng")
+_jb_semantic_rng(_) = false
+_jb_parent(f) = _jb_semantic_rng(f) ? jbroadcasted_rng : jbroadcasted
+# Stan permits RNG calls only from generated quantities or from a user-defined
+# function whose own name ends `_rng`. A broadcasted RNG cell therefore uses a
+# semantic-suffix receiver for BOTH the call site and its generated definition;
+# ordinary deterministic `jbroadcasted` names stay byte-identical.
+func_name(::typeof(jbroadcasted), args) = invoke(
+    func_name,
+    Tuple{Any,Any},
+    _jb_parent(first(args)),
+    args,
+)
 _jb_infer(x::CanonicalExpr) = begin
     f, dargs = x.args[1], x.args[2:end]
     ai = findfirst(_jb_iterated, dargs)
@@ -1920,7 +2421,11 @@ fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
     # `nameof` gives the parseable type-token symbol for the body decl / return:
     # `:int`, `:vector`, or `:bool` (which renders as `int`). All are valid tokens.
     container_sym = nameof(inf.container)
-    slices = [:($broadcasted_getindex($(argnames[j]), i)) for j in 1:k]
+    slices = [
+        _jb_iterated(inf.dargs[j]) ?
+            :($broadcasted_getindex($(argnames[j]), i)) : argnames[j]
+        for j in 1:k
+    ]
     body_ast = Expr(:block,
         :(rv :: $container_sym[n]),
         Expr(:for, :(i = 1:n), Expr(:block, :(rv[i] = f($(slices...))))),
@@ -1933,7 +2438,7 @@ fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
     info[:__mod__] = parentmodule(typeof(jbroadcasted))
     n_decl = string("int n = dims(", argnames[inf.ai], ")[1];")
     StanFunction3(
-        "", StanType(inf.container, (n_expr,)), jbroadcasted,
+        "", StanType(inf.container, (n_expr,)), _jb_parent(inf.f),
         (; f=f_ph, (argnames[i] => arg_phs[i] for i in 1:k)...),
         [n_decl, forward!(canonical(ensure_xreturn(body_ast)); info)],
     )
