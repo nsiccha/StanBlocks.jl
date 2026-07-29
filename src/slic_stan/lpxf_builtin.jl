@@ -47,8 +47,8 @@ _distribution_hof(::typeof(builtin.weighted)) = (
     lpmfs = builtin.weighted_lpmfs,
     rng = builtin.weighted_rng,
 )
-_distribution_hof(::typeof(builtin.conditioned)) = (
-    name = :conditioned,
+_distribution_hof(::typeof(builtin.truncated)) = (
+    name = :truncated,
     family_arg = 1,
     data_args = (),
     requires_data_lhs = false,
@@ -80,11 +80,11 @@ _distribution_hof(::typeof(builtin.conditioned)) = (
         ),
     ),
 )
-_distribution_hof(::typeof(builtin.clamped)) = (
-    name = :clamped,
+_distribution_hof(::typeof(builtin.censored)) = (
+    name = :censored,
     family_arg = 1,
     data_args = (),
-    # A clamped law has threshold atoms and is therefore not a valid
+    # A censored (clamped) law has threshold atoms and is therefore not a valid
     # continuously-parameterised HMC prior. It is an observation model.
     requires_data_lhs = true,
     optional_kwargs = (:lower, :upper),
@@ -115,8 +115,8 @@ _distribution_hof(::typeof(builtin.clamped)) = (
         ),
     ),
 )
-_distribution_hof(::typeof(builtin.interval_evidence)) = (
-    name = :interval_evidence,
+_distribution_hof(::typeof(builtin.interval_censored)) = (
+    name = :interval_censored,
     family_arg = 1,
     data_args = (),
     requires_data_lhs = true,
@@ -127,7 +127,7 @@ _distribution_hof(::typeof(builtin.interval_evidence)) = (
     rng = builtin.interval_evidence_impl_rng,
 )
 _distribution_hof(::typeof(builtin.interval_evidence_impl)) =
-    _distribution_hof(builtin.interval_evidence)
+    _distribution_hof(builtin.interval_censored)
 _fixed_distribution_hof(name, variant; requires_data_lhs = false) = (
     name,
     family_arg = 1,
@@ -140,24 +140,24 @@ _fixed_distribution_hof(name, variant; requires_data_lhs = false) = (
     rng = variant.rng,
 )
 _distribution_hof(::typeof(builtin.lower_conditioning)) = _fixed_distribution_hof(
-    :conditioned, _distribution_hof(builtin.conditioned).variants.lower,
+    :truncated, _distribution_hof(builtin.truncated).variants.lower,
 )
 _distribution_hof(::typeof(builtin.upper_conditioning)) = _fixed_distribution_hof(
-    :conditioned, _distribution_hof(builtin.conditioned).variants.upper,
+    :truncated, _distribution_hof(builtin.truncated).variants.upper,
 )
 _distribution_hof(::typeof(builtin.conditioning)) = _fixed_distribution_hof(
-    :conditioned, _distribution_hof(builtin.conditioned).variants.both,
+    :truncated, _distribution_hof(builtin.truncated).variants.both,
 )
 _distribution_hof(::typeof(builtin.lower_clamping)) = _fixed_distribution_hof(
-    :clamped, _distribution_hof(builtin.clamped).variants.lower;
+    :censored, _distribution_hof(builtin.censored).variants.lower;
     requires_data_lhs = true,
 )
 _distribution_hof(::typeof(builtin.upper_clamping)) = _fixed_distribution_hof(
-    :clamped, _distribution_hof(builtin.clamped).variants.upper;
+    :censored, _distribution_hof(builtin.censored).variants.upper;
     requires_data_lhs = true,
 )
 _distribution_hof(::typeof(builtin.clamping)) = _fixed_distribution_hof(
-    :clamped, _distribution_hof(builtin.clamped).variants.both;
+    :censored, _distribution_hof(builtin.censored).variants.both;
     requires_data_lhs = true,
 )
 
@@ -271,7 +271,7 @@ const CdfCapableBuiltinFamily = Union{typeof.((
 # rewrite therefore preserves the bounds twice for exactly one stage: as
 # positional probability/RNG inputs, and as support constraints for autotype.
 const OptionalBoundDistributionHOF = Union{
-    typeof(builtin.conditioned), typeof(builtin.clamped)
+    typeof(builtin.truncated), typeof(builtin.censored)
 }
 expand_inline_or_trace(
     x::CanonicalExpr{<:OptionalBoundDistributionHOF};
@@ -286,7 +286,7 @@ expand_inline_or_trace(
     ); info)
 end
 expand_inline_or_trace(
-    x::CanonicalExpr{typeof(builtin.interval_evidence)};
+    x::CanonicalExpr{typeof(builtin.interval_censored)};
     info,
 ) = forward!(CanonicalExpr(
     builtin.interval_evidence_impl,
