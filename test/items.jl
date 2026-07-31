@@ -2113,6 +2113,76 @@ Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
 end
 
 """
+The mirror of the case above: a PLAIN-LHS override against a TYPED-LHS base.
+Keying on the bare name makes the two match (as it must), but replacing the
+statement wholesale then dropped the base's declaration — which does not fail,
+it silently RESCOPES the parameter to a scalar and blows up passes later in
+whatever first consumes the wrong shape, naming neither the parameter nor the
+merge. An override's LHS DECLARES; omitting one means "unchanged", so the
+override supplies the RHS and the base supplies the declaration.
+Snag `merge-plain-over-f228c5b2`, reported by BayesianRegressionModels.
+"""
+@testitem "slic: Base.merge plain-LHS override inherits the base's declaration" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    X_val = reshape(collect(1.0:12.0), 6, 2)
+    y_val = collect(1.0:6.0)
+    outer(callee) = StanBlocks.SlicModel(
+        Expr(:block, :(mu ~ $callee(; X = Xdat)), :(y ~ normal(mu, 1.0))),
+        Dict{Symbol,Any}(:Xdat => X_val, :y => y_val),
+        @__MODULE__,
+    )
+
+    typed_base = @slic begin
+        n_axes = dims(X)[2]
+        rho :: vector[n_axes] ~ lognormal(0.0, 1.0; lower=0.0)
+        return X * rho
+    end
+
+    plain_override = Base.merge(typed_base, :(rho ~ inv_gamma(5.0, 5.0)))
+    printed = sprint(print, StanBlocks.model(plain_override))
+    @test occursin("rho::vector[n_axes]~inv_gamma(5.0,5.0)", replace(printed, " " => ""))
+    @test !occursin("lognormal", printed)
+
+    # The emitted program is byte-identical to repeating the declaration by
+    # hand, which is what a caller had to do before this. That equality is the
+    # point: it is what lets an emitting package drop its per-sub-model
+    # knowledge of each declared form.
+    spelled_out = stan_code(outer(Base.merge(
+        typed_base, :(rho :: vector[n_axes] ~ inv_gamma(5.0, 5.0; lower=0.0)))))
+    @test stan_code(outer(plain_override)) == spelled_out
+    @test occursin("vector<lower=0.0>[mu_n_axes] mu_rho;", spelled_out)
+
+    # An override that wants a DIFFERENT declaration still writes its own, so
+    # nothing became inexpressible.
+    retyped = sprint(print, StanBlocks.model(
+        Base.merge(typed_base, :(rho :: real ~ inv_gamma(5.0, 5.0)))))
+    @test occursin("rho::real", replace(retyped, " " => ""))
+
+    # Assignments take the same path as sampling statements.
+    assign_base = @slic begin
+        n_axes = dims(X)[2]
+        rho :: vector[n_axes] ~ std_normal()
+        scaled :: vector[n_axes] = 2.0 * rho
+        return X * scaled
+    end
+    assign_override = Base.merge(assign_base, :(scaled = 3.0 * rho))
+    @test occursin("scaled::vector[n_axes]=",
+                   replace(sprint(print, StanBlocks.model(assign_override)), " " => ""))
+    @test transpiles(outer(assign_override))
+
+    # A plain base is untouched — there is no declaration to inherit — and a
+    # reusable override Expr is never mutated by an earlier merge.
+    shared = :(rho ~ inv_gamma(5.0, 5.0))
+    Base.merge(typed_base, shared)
+    @test shared == :(rho ~ inv_gamma(5.0, 5.0))
+    plain_base2 = @slic begin
+        n_axes = dims(X)[2]
+        rho ~ std_normal(; n=n_axes)
+        return X * rho
+    end
+    @test !occursin("::", sprint(print, StanBlocks.model(Base.merge(plain_base2, shared))))
+end
+
+"""
 Verify `determinism: inline UDF + lifted closure` in an isolated test item.
 """
 @testitem "determinism: inline UDF + lifted closure" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin

@@ -211,11 +211,45 @@ usedin(s::Symbol, x::Expr) = any(usedin(s), x.args)
 usedin(s::Symbol, x::Symbol) = s == x
 usedin(s::Symbol, x::CanonicalExpr) = any(usedin(s), x.args)
 usedin(s::Symbol, x) = false
+# Where a statement's LHS sits in its RAW AST: `x ~ rhs` parses to
+# `Expr(:call, :~, lhs, rhs)`, `x = rhs` to `Expr(:(=), lhs, rhs)`. `0` means
+# "not a shape whose LHS we rewrite" (a `return`, or anything unrecognised).
+_lhs_position(x::Expr) =
+    Meta.isexpr(x, :call, 3) && x.args[1] === :~ ? 2 :
+    Meta.isexpr(x, :(=), 2) ? 1 : 0
+_lhs_position(x) = 0
+# An override's LHS declares; OMITTING a declaration means "unchanged", not
+# "cleared". So when a spliced statement's LHS is a bare name and the base
+# statement it replaces DECLARED that name (`rho :: vector[n_axes] ~ …`), the
+# override supplies the RHS and the base supplies the declaration.
+#
+# Replacing the statement wholesale instead dropped the type and size, which
+# does not fail — it silently RESCOPES the parameter (`rho` becomes a scalar)
+# into a well-formed but different model, and the mismatch surfaces passes
+# later in whatever first consumes the wrong shape, naming neither the
+# parameter nor the merge. Swapping one statement's distribution while keeping
+# its declaration is the whole point of the splice surface, so it must not
+# require every caller to know and repeat each sub-model's declared form.
+#
+# An override that WANTS a different declaration still writes its own
+# (`rho :: real ~ …`), so nothing becomes inexpressible.
+# Snag `merge-plain-over-f228c5b2`, reported by BayesianRegressionModels.
+_inherit_lhs_decl(base::Expr, override::Expr) = begin
+    bi, oi = _lhs_position(base), _lhs_position(override)
+    (bi == 0 || oi == 0) && return override
+    Meta.isexpr(base.args[bi], :(::)) || return override
+    Meta.isexpr(override.args[oi], :(::)) && return override
+    out = copy(override)
+    out.args[oi] = base.args[bi]
+    out
+end
+_inherit_lhs_decl(_base, override) = override
 top_replace_components(x::Expr; rep::OrderedDict) = begin
     @assert x.head == :block "top_replace_components expects a `begin ... end` block, got `$x` (head `$(x.head)`)."
     args = []
     for arg in x.args
-        push!(args, pop!(rep, replace_name(arg), arg))
+        override = pop!(rep, replace_name(arg), nothing)
+        push!(args, isnothing(override) ? arg : _inherit_lhs_decl(arg, override))
     end
     i = 1
     while i <= length(args)
