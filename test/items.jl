@@ -2027,6 +2027,92 @@ Verify `slic: chained + variable-bound Base.merge splice (crowdsource pattern)` 
 end
 
 """
+A sub-model spliced into a generated body as a VALUE must behave exactly like a
+Symbol naming the same sub-model. This is the only way to embed a `Base.merge`
+result from an emitting package: the merged model exists only as a value at
+emission time and has no name. Head resolution used to route such a head into
+the EAGER `forward!(::SlicModel)` tracer, which traced the sub-model body before
+any kwarg had bound its data inputs, so every data reference died with
+`Could not find <name> in model, builtin, … or Main!`.
+Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
+"""
+@testitem "slic: a SlicModel VALUE in call position embeds like a named sub-model" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    X_val = reshape(collect(1.0:6.0), 3, 2)
+    y_val = [0.1, 0.2, 0.3]
+
+    prior_base = @slic begin
+        n_covariates = dims(X)[2]
+        beta_pop ~ std_normal(; n=n_covariates)
+        return X * beta_pop
+    end
+    merged = Base.merge(prior_base, :(beta_pop ~ normal(0.5, 2.0; n=n_covariates)))
+
+    outer(callee) = StanBlocks.SlicModel(
+        Expr(:block, :(mu ~ $callee(; X = Xdat)), :(y ~ normal(mu, 1.0))),
+        Dict{Symbol,Any}(:Xdat => X_val, :y => y_val),
+        @__MODULE__,
+    )
+    # The control names the SAME merged model through a module-level binding.
+    global VALUE_SPLICE_CONTROL = merged
+    control = stan_code(outer(:VALUE_SPLICE_CONTROL))
+    spliced = stan_code(outer(merged))
+
+    @test spliced == control
+    @test occursin("mu_beta_pop ~ normal(0.5, 2.0);", spliced)
+    # The kwarg really bound the sub-model's data input (`X` -> the outer `Xdat`).
+    @test occursin("mu = (Xdat * mu_beta_pop)", spliced)
+
+    # A named sub-model FUNCTION spliced as a value takes the same head path.
+    @slic value_splice_shift(s::real) = begin
+        z ~ normal(0.0, s)
+        return z
+    end
+    fn = value_splice_shift
+    fn_model = StanBlocks.SlicModel(
+        Expr(:block, :(w ~ $fn(2.0)), :(yy ~ normal(w, 1.0))),
+        Dict{Symbol,Any}(:yy => 0.5),
+        @__MODULE__,
+    )
+    @test transpiles(fn_model)
+end
+
+"""
+`Base.merge` keys a spliced statement on what its LHS NAMES, so a typed-LHS
+override replaces the base's plain-LHS statement instead of being appended, and
+the merged body stays raw Julia AST so it can be printed for inspection.
+Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
+"""
+@testitem "slic: Base.merge typed-LHS override + printable spliced body" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    plain_base = @slic begin
+        log_rho ~ std_normal(; n=n_axes)
+        return log_rho
+    end
+    # Typed-LHS override against a PLAIN-LHS base: keyed on `log_rho`, so it
+    # REPLACES rather than being appended (which used to raise a bare
+    # `MethodError: no method matching usedin(::CanonicalExpr{Val{:(::)}}, …)`).
+    typed_override = Base.merge(plain_base, :(log_rho :: vector[n_axes] ~ normal(0.5, 2.0)))
+    printed = sprint(print, StanBlocks.model(typed_override))
+    @test occursin("normal(0.5, 2.0)", printed)
+    @test !occursin("std_normal", printed)
+    @test transpiles(typed_override(; n_axes=3))
+
+    # A spliced body is plain Julia AST — printable, with no traced-only node
+    # leaking into it (printing one used to die in the Stan emitter).
+    typed_base = @slic begin
+        log_rho :: vector[n_axes] ~ std_normal()
+        return log_rho
+    end
+    typed_typed = Base.merge(typed_base, :(log_rho :: vector[n_axes] ~ normal(0.5, 2.0)))
+    typed_printed = sprint(print, StanBlocks.model(typed_typed))
+    @test occursin("normal(0.5, 2.0)", typed_printed)
+    @test StanBlocks.model(typed_typed) isa Expr
+    @test all(a -> a isa Union{Expr,LineNumberNode}, StanBlocks.model(typed_typed).args)
+
+    # A non-statement splice is refused loudly rather than silently appended.
+    @test_throws ErrorException Base.merge(plain_base, :(log_rho + 1))
+end
+
+"""
 Verify `determinism: inline UDF + lifted closure` in an isolated test item.
 """
 @testitem "determinism: inline UDF + lifted closure" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin

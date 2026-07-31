@@ -193,9 +193,19 @@ StanModel(name=gensym("stan_model")) = StanModel(
     ),
 )
 replace_name(x::Expr) = replace_name(canonical(x))
-replace_name(x::Union{SamplingExpr,AssignmentExpr}) = x.args[1]
+replace_name(x::Union{SamplingExpr,AssignmentExpr}) = _replace_key(x.args[1])
 replace_name(::ReturnExpr) = RV_NAME
 replace_name(::Any) = missing
+# A statement's replacement KEY is what its LHS *names*, so a typed LHS keys on
+# the bare name: `beta::vector[k] ~ normal(…)` must override the base's
+# `beta ~ std_normal(…)`, which is the whole point of a `Base.merge` splice
+# (swap one statement's distribution, keep the rest). Keying on the whole
+# `DeclExpr` made those two look like different statements — the override was
+# appended instead of replacing, and the leftover key then reached `usedin`,
+# which is `Symbol`-only, as a bare `MethodError`.
+# Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
+_replace_key(x) = x
+_replace_key(x::DeclExpr) = x.args[1]
 usedin(s::Symbol) = Base.Fix1(usedin, s)
 usedin(s::Symbol, x::Expr) = any(usedin(s), x.args)
 usedin(s::Symbol, x::Symbol) = s == x
@@ -224,14 +234,34 @@ end
 # body statements whose LHS-name matches, append the rest. This REPLACES the old
 # positional-call splice (`submodel(quote … end)`); a positional sub-model call now
 # errors loudly (see the call operator below).
-_splice_body(x::SlicModel, args::Union{SamplingExpr,AssignmentExpr,ReturnExpr}...) = top_replace_components(model(x); rep=OrderedDict([
-    replace_name(arg)=>arg for arg in args
-]))
-unblock(x::BlockExpr) = mapreduce(unblock, vcat, x.args)
+unblock(x::BlockExpr) = mapreduce(unblock, vcat, x.args; init=[])
+unblock(x::Expr) = x.head === :block ? mapreduce(unblock, vcat, x.args; init=[]) : [x]
 unblock(x::LineNumberNode) = []
 unblock(x) = [x]
-_splice_body(x::SlicModel, args::Union{BlockExpr,SamplingExpr,AssignmentExpr,ReturnExpr}...) = _splice_body(x, mapreduce(unblock, vcat, args)...)
-_splice_body(x::SlicModel, args::Expr...) = _splice_body(x, canonical.(args)...)
+# Canonicalise ONLY to derive the replacement key and to validate the statement
+# shape — splice the argument through UNCHANGED. A `@slic` body is raw Julia AST,
+# so canonicalising the overrides used to leave `model(merged)` a MIXED tree, and
+# `show` on a `CanonicalExpr` is the *Stan* emitter (§R8): it assumes every node
+# has already been traced. Printing a spliced body to inspect it therefore died in
+# the emitter (`MethodError: no method matching type(::Symbol)`, show.jl's
+# `DeclExpr` method) — and making that emitter tolerate untraced nodes would hide
+# a genuine compiler bug, so the body is kept raw instead. `forward!(::SlicModel)`
+# canonicalises the whole body anyway, so nothing downstream loses information.
+# Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
+_check_splice_stmt(raw, ::Union{SamplingExpr,AssignmentExpr,ReturnExpr}) = raw
+_check_splice_stmt(raw, _canonical) = error(
+    "Base.merge(submodel, …): every spliced statement must be a sampling (`x ~ …`), ",
+    "an assignment (`x = …`) or a `return …`; got `", raw, "`."
+)
+_splice_body(x::SlicModel, args...) = begin
+    rep = OrderedDict{Any,Any}()
+    for raw in mapreduce(unblock, vcat, args; init=[])
+        c = canonical(raw)
+        _check_splice_stmt(raw, c)
+        rep[replace_name(c)] = raw
+    end
+    top_replace_components(model(x); rep)
+end
 Base.merge(x::SlicModel, args...) = SlicModel(_splice_body(x, args...), data(x), x.mod)
 
 _submodel_positional_error(args...) = error(

@@ -59,9 +59,28 @@ forward!(x::Colon; info) = x
 forward!(x::StanExpr{Symbol}; info) = x
 forward!(x::StanExpr; info) = x
 _forward_call_kwargs(x::CanonicalExpr, resolved_head; info) = forward!(x.kwargs; info)
+# Resolving a CALL's HEAD is not the same as forwarding a value. A sub-model in
+# head position is a callee to be EMBEDDED: its kwargs bind its data inputs, and
+# `stan_expr(::CanonicalExpr{<:Union{SlicModel,SubmodelFn}})` (passes.jl) applies
+# them by CALLING the head — so the head must still be the un-traced sub-model
+# when it gets there. `forward!(::SlicModel)` instead traces the body IMMEDIATELY
+# (tracing.jl), against a scope no kwarg has reached yet, so every data reference
+# in the sub-model dies with "Could not find <name> in model, builtin, …".
+#
+# The SYMBOL path already gets this right — `forward!(::Symbol)` routes a
+# module-level binding through `_forward_module_value`, whose `SlicModel` /
+# `SubmodelFn` methods return the value untraced. A head that is ALREADY such a
+# value (an `Expr`-spliced sub-model, the only way to reference one that has no
+# name — e.g. the result of `Base.merge` inside a generated body) skipped that
+# hook entirely and hit the eager tracer. Give it the same value semantics, so
+# `mu ~ $submodel(; X=Xdat)` behaves exactly like `mu ~ named_submodel(; X=Xdat)`.
+# Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
+_forward_head(v, info) = forward!(v; info)
+_forward_head(v::SlicModel, info) = v
+_forward_head(v::SubmodelFn, info) = v
 forward!(x::CanonicalExpr; info) = begin
     _push_expr!(info, x)
-    resolved_head = forward!(head(x); info)
+    resolved_head = _forward_head(head(x), info)
     resolved = CanonicalExpr(
         resolved_head,
         forward!(x.args; info)...;
