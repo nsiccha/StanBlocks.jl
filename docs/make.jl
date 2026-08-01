@@ -21,9 +21,10 @@ makedocs(
         devbranch = "devibe",
     ),
     pages = [
-        "Home"      => "index.md",
-        "Gallery"   => "gallery.md",
-        "API"       => "api.md",
+        "Home"              => "index.md",
+        "Authoring support" => "authoring.md",
+        "Gallery"           => "gallery.md",
+        "API"               => "api.md",
     ],
     checkdocs = :none,
     warnonly = true,

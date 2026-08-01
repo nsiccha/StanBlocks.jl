@@ -4,8 +4,11 @@
 [![CI](https://github.com/nsiccha/StanBlocks.jl/actions/workflows/test.yml/badge.svg)](https://github.com/nsiccha/StanBlocks.jl/actions/workflows/test.yml)
 
 Brings Julia syntax to Stan models by implementing a (limited) Julia to Stan transpilation with many caveats. 
-See [`test/slic.jl`](test/slic.jl) for implementations of a few simple [`posteriordb`](https://github.com/stan-dev/posteriordb) models
-and see [`src/slic_stan/builtin.jl`](src/slic_stan/builtin.jl) for a list of built-in functions and examples of user defined functions.
+See [`ext/PosteriorDBExt.jl`](ext/PosteriorDBExt.jl) for the shipped
+[`posteriordb`](https://github.com/stan-dev/posteriordb) models,
+[`test/items.jl`](test/items.jl) for their stanc gate and the executable feature
+specification, and [`src/slic_stan/builtin.jl`](src/slic_stan/builtin.jl) for
+built-in functions and user-defined-function examples.
 
 Current features include
 
@@ -17,8 +20,12 @@ Current features include
 * sub models,
 * post-hoc model adjustment,
 * (variadic) user defined functions,
-* named tuples,
+* first-class ragged data, ragged constrained parameters, and `EachCol` / `EachRow` views,
 * automatic posterior pointwise likelihood and predictive generation,
+* compiler-owned `plate` loops for scalar, fixed-vector, and selected ragged/constrained per-cell models,
+* distribution higher-order functions: `weighted`, `truncated`, `censored`, and `interval_censored`,
+* automatic imputation of partly missing continuous outcomes,
+* executable model descriptors with derived fit/predict/log-likelihood operations,
 * (approximate) automatic code formatting à la [Blue](https://github.com/JuliaDiff/BlueStyle),
 * and more.
 
@@ -31,27 +38,16 @@ Recently shipped:
 * `@inline` UDFs / trailing `!`: every call expands at the call site, no Stan `functions {}` entry — supports multi-statement bodies, varargs, higher-order arguments, and caller-scope mutation through `f!(buf, …)`-style helpers,
 * module-aware name resolution: `@deffun`s defined in package extensions are found automatically.
 
-Upcoming features, in rough priority order:
-
-* generated functions — already implicit (every call site re-traces with concrete arg types) but no compile-once cache,
-* model docstrings (top-level `@slic` doc-prefix propagation),
-* custom types (for method dispatch — would help "Julia-style" broadcasting, e.g. via `Ref`),
-* closures via Julia's [`Do-Block Syntax`](https://docs.julialang.org/en/v1/manual/functions/#Do-Block-Syntax-for-Function-Arguments) (to make within-chain parallelization via [`reduce_sum`](https://mc-stan.org/docs/stan-users-guide/parallelization.html#reduce-sum) less painful),
-* lower transpilation runtimes,
-* type annotations as transpile-time assertions,
-* automatic (runtime) shape-compatibility checks — auto-emit `if (rows(x) != rows(y)) reject(…)` at function entry,
-* a much better user experience,
-* more and better tests,
-* keyword + default arguments to `@deffun`,
-* `void` UDFs (side-effect-only functions),
-* easier custom parameter transformations (sampler parametrization ↔ user parametrization),
-* broader array-comprehension forms beyond the bounded one-dimensional `@deffun` subset,
-* a more complete (and more correct) coverage of built-in Stan functions,
-* elimination of unused (size) variables in UDFs,
-* and more.
+The current boundary is intentionally explicit: `@slic` is flat declarative
+code, deterministic control flow belongs in `@deffun`, and `plate` is an
+independent-cell parameter loop rather than a general scan. Matrix-valued plate
+cells, cell-to-cell dependencies, ragged integer observations, and general
+three-dimensional-and-higher Julia containers are not supported. See the
+[authoring support guide](https://nsiccha.github.io/StanBlocks.jl/dev/authoring)
+for the full works/does-not-work matrix.
 
 Almost anything that's possible in Julia should be possible to be transpiled to Stan. 
-Of course, unless Stan is much faster than Julia (+Mooncake or Enzyme) for the model in question, 
+Of course, unless Stan is much faster than Julia + Mooncake for the model in question,
 just sticking to Julia comes with many advantages. 
 
 Features which I am on the fence about, but currently not planning to implement:
