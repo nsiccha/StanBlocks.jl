@@ -4,12 +4,18 @@ A Julia → Stan transpiler. You write a probabilistic model in (a restricted su
 
 - automatic **block placement** — variables are routed to `data` / `transformed_data` / `parameters` / `transformed_parameters` / `model` / `generated_quantities` based on what they depend on
 - automatic **type, shape and constraint inference** — including for user-defined functions
-- automatic **posterior pointwise log-likelihoods** and **predictive draws** for every `~` statement
+- automatic **posterior pointwise log-likelihoods** and **predictive draws** when the observation shape and family provide the required companions
 - (limited) **higher-order user-defined functions** — `map`-, `reduce_sum`-, and `broadcast`-style patterns
 - full **Stan toolchain** — `stan_code(model)` to inspect, `stan_instantiate(model)` to compile via [BridgeStan](https://github.com/roualdes/bridgestan), then sample/score with anything that consumes [`LogDensityProblems`](https://github.com/tpapp/LogDensityProblems.jl)
 
 ::: warning Restricted syntax
 A `@slic` body is a **flat declarative block**: `~` and `=` statements only. No `for`/`while`/`if`/`&&`/`||`/ternary/comprehension at the model level — put those in [`@deffun`](#user-defined-functions-with-deffun) bodies. The transpiler errors with a pointer if you forget. See [Caveats](#caveats).
+:::
+
+::: tip Current feature boundary
+The [Authoring and feature support](authoring.md) page is the compact source for
+distribution combinators, missing outcomes, ragged data, executable descriptors,
+and the complete `plate` support/limitation matrix.
 :::
 
 ## Quick Start
@@ -128,13 +134,20 @@ m2 = sm(;y=randn(100))              # StanModel call: re-data only (cheap)
 
 For each `Vector` data kwarg `x`, an `Int` `x_n = length(x)` is added automatically; for each `Matrix`, both `x_m` and `x_n` are added. So you can refer to those names inside the model without ceremony. `Vector{<:AbstractVector{<:Real}}` data is automatically [encoded as a ragged vector](#ragged-vectors).
 
-You can also append/replace statements on a model after the fact by passing AST snippets:
+You can append or replace statements without mutating the base model through
+`Base.merge`:
 
 ```julia
-extended = base_model(:( y_pred = normal_rng(mu, sigma) ))
+extended = Base.merge(base_model, quote
+    beta ~ normal(0, 2; n=n_covariates)
+end)
 ```
 
-If a passed snippet has the same LHS as an existing statement, it replaces that statement; otherwise it's appended.
+If a merged statement has the same named LHS as an existing statement, it
+replaces it; otherwise it is appended. A typed-LHS override and a plain-LHS
+base match by the underlying name. The old positional splice
+`base_model(quote ... end)` is not an alias: model calls with kwargs bind data,
+while statement composition goes through `Base.merge`.
 
 ### Activity analysis
 
@@ -336,8 +349,8 @@ end
 
 For UDFs that you want to use via `~` (or whose pointwise/predictive companions need to be discoverable), opt in with these markers:
 
-- **[`@lpxf`](api#StanBlocks.@lpxf)** — register the three SLIC dispatch hooks (`lpxf_expr`, `rng_expr`, `likelihood_expr`) for one or more `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf` symbols. The companion `_rng` and `_lpdfs` (or `_lpmfs`/etc.) names must already exist.
-- **[`@lhs`](api#StanBlocks.@lhs)** — used **inside** a `@deffun` block, registers a method for base-level LHS inference (so `lhs ~ foo(args…)` works for that method). Without it, only the `_lpdf`-keyed tracetype is registered (so the method dispatches when called explicitly, but not via `~`). Compose with `@lpxf` in either order.
+- **[`@lpxf`](api.md#StanBlocks.@lpxf)** — register the three SLIC dispatch hooks (`lpxf_expr`, `rng_expr`, `likelihood_expr`) for one or more `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf` symbols. The companion `_rng` and `_lpdfs` (or `_lpmfs`/etc.) names must already exist.
+- **[`@lhs`](api.md#StanBlocks.@lhs)** — used **inside** a `@deffun` block, registers a method for base-level LHS inference (so `lhs ~ foo(args…)` works for that method). Without it, only the `_lpdf`-keyed tracetype is registered (so the method dispatches when called explicitly, but not via `~`). Compose with `@lpxf` in either order.
 
 ```julia
 @deffun begin
@@ -437,9 +450,32 @@ end
 end
 ```
 
+Anonymous and merged `SlicModel` values are first-class callees too. This is
+useful for generated model bodies where the variant has no module-level name:
+
+```julia
+variant = Base.merge(popefs, quote
+    beta_pop ~ normal(0, 2; n=n_covariates)
+end)
+
+# In generated Julia AST, interpolate the value into call-head position.
+body = quote
+    eta ~ $variant(; X=Xdata)
+    y   ~ normal(eta, 1)
+end
+generated_model = StanBlocks.SlicModel(body, Dict(:Xdata => X, :y => y), @__MODULE__)
+```
+
+The interpolated value has the same kwarg-binding and namespacing semantics as
+a symbol naming that model. Positional inputs belong to a named sub-model
+function (`@slic f(x::real) = ...`); anonymous sub-model values accept kwargs
+or enclosing-scope bindings only.
+
 ## Posterior pointwise likelihood and predictive draws
 
-For each `~` statement, StanBlocks automatically emits the corresponding pointwise log-likelihood and a predictive RNG draw into `generated_quantities`, using the `_lpdfs`/`_lpmfs`/`_rng` companions:
+For an ordinary top-level observation, StanBlocks automatically emits the
+corresponding pointwise log-likelihood and a predictive RNG draw into
+`generated_quantities`, using the `_lpdfs`/`_lpmfs`/`_rng` companions:
 
 ```julia
 m = @slic (;y=randn(10)) begin
@@ -449,13 +485,16 @@ m = @slic (;y=randn(10)) begin
 end
 ```
 
-The generated Stan exposes per-draw `log_lik_y[i]` and `y_pred[i]` — ready for PSIS-LOO / posterior predictive checks. Inspect via `stan_code(m)`.
+The generated Stan exposes `y_likelihood[i]` and `y_gen[i]` — ready for
+PSIS-LOO and posterior-predictive checks. Dense observations inside `plate` and
+ragged observations have deliberately different twin shapes; see
+[Generated observation twins](authoring.md#generated-observation-twins).
 
 For your own UDFs, the same machinery activates as soon as you provide the `_lpdfs` and `_rng` companions (manually or via `@lpxf`).
 
 ## Built-in Stan functions
 
-Several hundred built-in Stan functions and distributions are pre-registered with their type/shape signatures. The full list lives in [`src/slic_stan/builtin.jl`](https://github.com/nsiccha/StanBlocks.jl/blob/dev/src/slic_stan/builtin.jl). Highlights:
+Several hundred built-in Stan functions and distributions are pre-registered with their type/shape signatures. The full list lives in [`src/slic_stan/builtin.jl`](https://github.com/nsiccha/StanBlocks.jl/blob/devibe/src/slic_stan/builtin.jl). Highlights:
 
 - **Vector / matrix construction**: `rep_vector`, `rep_matrix`, `rep_array`, `linspaced_vector`, `linspaced_array`, `to_vector`, `to_row_vector`, `to_matrix`, `to_array_1d`, `diag_matrix`, `one_hot_vector`, `identity_matrix`
 - **Append / reshape**: `append_row`, `append_col`, `append_array`, `reshape`
@@ -575,10 +614,10 @@ Stan program.
 
 | API                                                          | Use                                                                                  |
 |--------------------------------------------------------------|--------------------------------------------------------------------------------------|
-| [`stan_code(model)`](api#StanBlocks.stan_code)               | Returns the generated Stan source as a `String`                                      |
-| [`stan_model(slic)`](api#StanBlocks.stan_model)              | Performs the trace once, returns a [`StanModel`](api#StanBlocks.StanModel) you can re-data via `model(; new_kwargs…)` |
+| [`stan_code(model)`](api.md#StanBlocks.stan_code)               | Returns the generated Stan source as a `String`                                      |
+| [`stan_model(slic)`](api.md#StanBlocks.stan_model)              | Performs the trace once, returns a [`StanModel`](api.md#StanBlocks.StanModel) you can re-data via `model(; new_kwargs…)` |
 | `StanBlocks.stan_data(model)`                                | The data dictionary that will be passed to BridgeStan                                |
-| [`stan_instantiate(model)`](api#StanBlocks.stan_instantiate) | Compiles via BridgeStan and returns a `StanLogDensityProblems.StanProblem`           |
+| [`stan_instantiate(model)`](api.md#StanBlocks.stan_instantiate) | Compiles via BridgeStan and returns a `StanLogDensityProblems.StanProblem`           |
 
 A `StanModel` returned by `stan_model` is **cheap to re-data**: `model(; y=new_y)` returns a new model that reuses the trace.
 
@@ -593,7 +632,7 @@ A `StanModel` returned by `stan_model` is **cheap to re-data**: `model(; y=new_y
 
 ## Errors
 
-Anything that goes wrong during transpilation, compilation, or evaluation is wrapped in a [`StanBlocksError`](api#StanBlocks.StanBlocksError):
+Anything that goes wrong during transpilation, compilation, or evaluation is wrapped in a [`StanBlocksError`](api.md#StanBlocks.StanBlocksError):
 
 - `phase::Symbol` — `:transpile`, `:compile`, or `:evaluate`
 - `context::String` — short description (e.g. `"model: eight_schools"`)
@@ -614,25 +653,24 @@ You generally don't call these — they're applied automatically when type/shape
 
 ### Ragged vectors
 
-A `Vector{<:AbstractVector{<:Real}}` data kwarg is automatically converted by `to_ragged` to a `(; mem, ends)` named tuple — `mem` is the concatenated memory, `ends` are inclusive 1-based end offsets per subvector. Use `ragged_n`, `ragged_total`, `ragged_start`, `ragged_end`, `ragged_length` to access subvectors:
+A `Vector{<:AbstractVector{<:Real}}` data kwarg becomes a nominal,
+first-class `RaggedVector`. Its backing representation is flat `mem` plus
+inclusive group `ends`, but ordinary model code indexes the logical container:
 
 ```julia
-@deffun reduce_ragged_lpdf(rag, n_groups::int)::real = begin
-    rv = 0.
-    for g in 1:n_groups
-        s, e = ragged_start(rag, g), ragged_end(rag, g)
-        rv += normal_lpdf(rag.mem[s:e], 0., 1.)
-    end
-    rv
-end
+groups = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]
 
-@slic (;y=[randn(3), randn(5), randn(2)]) begin
-    n_groups = ragged_n(y)
-    y ~ reduce_ragged(n_groups)     # `y` itself (the (mem, ends) ntup) is used as the LHS
+@slic (; groups, g = 2, obs = 0.0) begin
+    n_groups = length(groups)
+    selected = groups[g]
+    obs ~ normal(sum(selected) + n_groups, 1.0)
 end
 ```
 
-`ragged_start(x, i)` and `ragged_end(x, i)` take the whole `(; mem, ends)` named tuple as their first argument — not `ends` separately. See `src/slic_stan/builtin.jl` for the full set.
+`ragged_start`, `ragged_end`, and `ragged_length` expose offsets for UDF size
+math. Ragged observations, varying-size constrained parameters, generated
+twins, and `ModelOutput.segments` are documented under
+[Ragged data and container views](authoring.md#ragged-data-and-container-views).
 
 ## Caveats
 
@@ -701,7 +739,8 @@ The deployed catalog lives at <https://nsiccha.github.io/BayesianRegressionModel
 
 ## See also
 
-- [API Reference](api) — full list of exported functions and macros
+- [Authoring and feature support](authoring.md) — current HOF, ragged, missing-data, descriptor, and `plate` contracts
+- [API Reference](api.md) — full list of exported functions and macros
 - [Case Studies](https://nsiccha.github.io/StanBlocks.jl/slic/) — golf, radon, crowdsourcing, ISBA PCR, and more
 - [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl) ([catalog](https://nsiccha.github.io/BayesianRegressionModels.jl/)) — the canonical large-scale `@slic` / `@deffun` consumer
 - [Stan Documentation](https://mc-stan.org/docs/stan-users-guide/)
