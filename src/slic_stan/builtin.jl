@@ -1571,7 +1571,7 @@ end
 # falls through to normal integer indexing. This getindex overload is the ONLY
 # way `bool` differs from `int`; everywhere else `bool[n]` dispatches as `int[n]`.
 #
-# INSIDE A PLATE loop (`_plate_context() !== nothing`) the hoist is SUPPRESSED and
+# INSIDE A PLATE loop (`_plate_context(info) !== nothing`) the hoist is SUPPRESSED and
 # the `findall` stays inline: a per-cell mask is data-derived, so the hoisted `idx`
 # would land in the transformed-data COPY of the plate loop that `distribute!` splits
 # off — out of scope in the model COPY where the cmt-keyed obs uses it (stanc
@@ -1581,15 +1581,15 @@ end
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2,<:StanExpr2{<:types.bool}}}; info) = begin
     stan_ndim(type(x.args[2])) >= 1 || return fold_shape_query(stan_expr(x))
     idx_val = forward!(CanonicalExpr(Base.findall, x.args[2]); info)
-    pending = _get_inline_pending()
-    idx_ref = if pending === nothing || _plate_context() !== nothing
+    pending = _get_inline_pending(info)
+    idx_ref = if pending === nothing || _plate_context(info) !== nothing
         idx_val                                   # no statement context, or inside a plate
                                                   # loop → inline the findall (see above)
     else
-        id = _next_inline_id()
+        id = _next_inline_id(info)
         name = Symbol(:boolmask_idx_, id)
         while name in keys(info)
-            id = _next_inline_id(); name = Symbol(:boolmask_idx_, id)
+            id = _next_inline_id(info); name = Symbol(:boolmask_idx_, id)
         end
         push!(pending, forward!(CanonicalExpr(:(=), name, idx_val); info))
         info[name]
@@ -2476,12 +2476,12 @@ func_name(::typeof(jbroadcasted), args) = invoke(
     _jb_parent(first(args)),
     args,
 )
-_jb_infer(x::CanonicalExpr) = begin
+_jb_infer(x::CanonicalExpr, context=nothing) = begin
     f, dargs = x.args[1], x.args[2:end]
     ai = findfirst(_jb_iterated, dargs)
     isnothing(ai) && error("jbroadcasted: needs at least one iterated (vector/array) argument")
     n = stan_size(type(dargs[ai]), 1)
-    elem_rt = type(stan_expr(CanonicalExpr(f, map(_jb_elem, dargs)...)))
+    elem_rt = type(_stan_expr(CanonicalExpr(f, map(_jb_elem, dargs)...), context))
     stan_ndim(elem_rt) == 0 || error("jbroadcasted: `f` must return a scalar per element (got `$(sigtype(elem_rt))`)")
     # Preserve the exact int-family element center type: `int` stays `array[] int`
     # and `bool` (a comparison result) stays `array[] bool` (a mask), so
@@ -2489,12 +2489,14 @@ _jb_infer(x::CanonicalExpr) = begin
     container = center_type(elem_rt) <: types.int ? center_type(elem_rt) : types.vector
     (; f, dargs, ai, n, container)
 end
-tracetype(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
-    inf = _jb_infer(x)
+tracetype(x::CanonicalExpr{typeof(jbroadcasted)}) = _tracetype(x, nothing)
+_tracetype(x::CanonicalExpr{typeof(jbroadcasted)}, context) = begin
+    inf = _jb_infer(x, context)
     StanType(inf.container, (inf.n,))
 end
-fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
-    inf = _jb_infer(x)
+fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = _fundef(x, nothing)
+_fundef(x::CanonicalExpr{typeof(jbroadcasted)}, context) = begin
+    inf = _jb_infer(x, context)
     k = length(inf.dargs)
     argnames = [Symbol("x", i) for i in 1:k]
     f_ph = anon_expr(:f, inf.f)
@@ -2517,6 +2519,7 @@ fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
     for i in 1:k
         info[argnames[i]] = arg_phs[i]
     end
+    _attach_trace_context!(info, context)
     info[:__mod__] = parentmodule(typeof(jbroadcasted))
     n_decl = string("int n = dims(", argnames[inf.ai], ")[1];")
     StanFunction3(

@@ -651,8 +651,11 @@ begin
         xbody = Expr(:block, source, [
             xassign(xtuple(ensure_xlhs.(lhsi.args[2:end])...), :(stan_size(x.args[$i])))
             for (i, lhsi) in enumerate(lhs)
-        ]..., :(info = (;$(dim_names...),)), xsig_expr(rv))
-        :($stan.tracetype($xexpr) = $xbody)
+        ]..., :(info = (;$(dim_names...), __trace_context__ = $_context_or_new(context))), xsig_expr(rv))
+        quote
+            $stan.tracetype($xexpr) = $stan._tracetype(x, nothing)
+            $stan._tracetype($xexpr, context) = $xbody
+        end
     end
     funbody(x::Expr) = begin
         @assert x.head == :block "funbody expects a `begin ... end` block, got `$x` (head `$(x.head)`)."
@@ -730,14 +733,17 @@ begin
 
     hasvararg(args) = length(args) > 0 && Meta.isexpr(args[end], :(...))
     maybedoc(x::AbstractString) = length(strip(x)) == 0 ? "" : strip(replace("\n" * strip(x), "\n"=>"\n// ")) * "\n"
-    forward_return!(x; info) = task_local_storage(:_slic_inline_pending, Any[]) do
+    forward_return!(x; info) = begin
         # Isolate any inline-call pending statements from this throwaway
         # type-inference trace — they'd otherwise leak into the caller's
         # block (for non-inline UDFs whose tracetype evaluates an inlined
         # call as part of return-type inference).
         info = OrderedDict{Symbol,Any}(pairs(info))
-        forward!(x; info)
-        info[RV_NAME]
+        _trace_context(info) === nothing && _attach_trace_context!(info, nothing)
+        _with_trace_state(info, :inline_pending, Any[]) do
+            forward!(x; info)
+            info[RV_NAME]
+        end
     end
     # Walk a UDF body looking for forms StanBlocks deliberately does not
     # support inside `@deffun` definitions: sampling (`~`) and `target +=`
@@ -1544,6 +1550,7 @@ begin
         # convert to OrderedDict before injecting `:__mod__`. (`fundef`
         # uses `anon_deconstruct` which already does the conversion.)
         promote_info = :(info = $OrderedDict{Symbol,Any}(pairs(info)))
+        inject_context = :($_attach_trace_context!(info, context))
         if is_inline
             # Inline UDFs do not produce a Stan function (no `functions {}`
             # entry) and do not register `tracetype` — the call site fully
@@ -1575,10 +1582,14 @@ begin
             )))
         else
             push!(stmts, quote
-                $stan.tracetype($xexpr) = $(Expr(:block, source, capture_mod, deconstruct, promote_info, inject_mod, rv_expr))
+                $stan.tracetype($xexpr) = $stan._tracetype(x, nothing)
+                $stan._tracetype($xexpr, context) = $(Expr(:block, source, capture_mod, deconstruct, promote_info, inject_context, inject_mod, rv_expr))
             end)
             if !ismissing(body)
-                push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, source, capture_mod, anon_deconstruct, inject_mod, stan_fundef))))
+                push!(stmts, quote
+                    $stan.fundef($xexpr) = $stan._fundef(x, nothing)
+                    $stan._fundef($xexpr, context) = $(Expr(:block, source, capture_mod, anon_deconstruct, inject_context, inject_mod, stan_fundef))
+                end)
                 # Mark the NAME as UDF-backed. `fundef` alone cannot answer
                 # "should this function have had a Stan definition?" — it falls
                 # back to `nothing` both for a native Stan function (correct)
@@ -1634,7 +1645,8 @@ begin
             ))
             push!(stmts, :(function $base_f end))
             push!(stmts, quote
-                $stan.tracetype($base_xexpr) = $(Expr(:block, source, reconstruct, base_deconstruct, xsig_expr(y_type)))
+                $stan.tracetype($base_xexpr) = $stan._tracetype(_x, nothing)
+                $stan._tracetype($base_xexpr, context) = $(Expr(:block, source, reconstruct, base_deconstruct, xsig_expr(y_type)))
                 $stan.fundef($base_xexpr) = nothing
             end)
         end
@@ -1647,6 +1659,7 @@ begin
 end
 
 fundef(x) = nothing
+_fundef(x, _context) = fundef(x)
 
 # --- Provenance markers for `@deffun`-registered names ------------------------
 #
@@ -1712,7 +1725,7 @@ sig_expr(x::StanExpr2{<:types.closure}) = StanExpr(type(x).info.value.id, sig_ex
 fetch_functions!(x::CanonicalExpr; info) = begin
     sx = sig_expr(x)
     sx in keys(info) && return
-    info[sx] = fundef(x)
+    info[sx] = _fundef(x, _trace_context(info))
     isnothing(info[sx]) && return
     fetch_subfunctions!(info[sx].body; info)
 end
@@ -1792,17 +1805,15 @@ end
 # `vector[max(0, ends-start+1)]`), surfacing later as
 # `tracetype not defined for (anything - anything)`. The per-call `tok` keeps
 # each level's placeholders distinct so `deanon_size` only ever substitutes
-# the placeholders it actually introduced. The counter lives in per-trace
-# task-local storage (`_next_anon_id` + the seed-scope are defined centrally in
-# tracing.jl); the names never reach Stan output — they are always deanonymized
-# away, so the only out-of-trace caller (ad-hoc `stan_expr(::CanonicalExpr)`)
-# is determinism-irrelevant and falls to the lazy `get!` default.
+# the placeholders it actually introduced. The explicit TraceContext supplies
+# the counter; the names never reach Stan output because they are always
+# deanonymized away.
 anon_arg(x::StanExpr, i::Int, tok) = StanExpr(Symbol(:_arg, tok, :_, i), type(x))
 anon_arg(x, i::Int, tok) = x
-anon_canonical(x::CanonicalExpr, tok=_next_anon_id()) = remake(x, ntuple(i -> anon_arg(x.args[i], i, tok), length(x.args))...)
-anon_canonical(x::CanonicalExpr{Colon}, tok=_next_anon_id()) = x   # needs real args for range size
-anon_canonical(x::BlockExpr, tok=_next_anon_id()) = x               # args is Vector, not Tuple
-anon_canonical(x::CanonicalExprV{:nt}, tok=_next_anon_id()) = x     # preserve named tuple structure
+anon_canonical(x::CanonicalExpr, tok) = remake(x, ntuple(i -> anon_arg(x.args[i], i, tok), length(x.args))...)
+anon_canonical(x::CanonicalExpr{Colon}, tok) = x   # needs real args for range size
+anon_canonical(x::BlockExpr, tok) = x               # args is Vector, not Tuple
+anon_canonical(x::CanonicalExprV{:nt}, tok) = x     # preserve named tuple structure
 anon_info(x::NamedTuple) = (;[
     key=>anon_expr(key, value)
     for (key, value) in pairs(x)

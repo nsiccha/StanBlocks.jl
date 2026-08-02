@@ -13,9 +13,8 @@ _is_ntup_stan_expr(::StanExpr2{<:types.ntup}) = true
 
 # Per-`:->` counter so each `(x) -> body` site gets an id used both for
 # `func_name` mangling (so HOF receivers specialise per closure) and for
-# debugging closure flow through the tracer. Lives in per-trace task-local
-# storage — `_next_closure_id` + the seed-scope are defined centrally in
-# tracing.jl (so the id is fresh per transpilation, not session-global).
+# debugging closure flow through the tracer. The root model's TraceContext owns
+# the counter, so the id is fresh per transpilation rather than session-global.
 
 # Walk the un-canonicalised body collecting *all* Symbols that appear (as
 # uses or definitions). The closure builder subtracts bound names (params
@@ -87,7 +86,7 @@ forward!(x::CanonicalExprV{:->,A}; info) where {A} = begin
         captures[k] = info[k]
     end
 
-    id = _next_closure_id()
+    id = _next_closure_id(info)
     source = something(_get_lnn(info), LineNumberNode(0, :none))
     record = (
         arg_names  = Tuple(arg_names),
@@ -203,7 +202,8 @@ _usertype_field(stmt, typename) =
 # captures...)` shape that this `fundef` consumes — matching what a
 # `@deffun` UDF would consume but with the closure StanExpr at head and
 # the captures appended as trailing positional args.
-fundef(x::CanonicalExpr{<:StanExpr2{<:types.closure}}) = begin
+fundef(x::CanonicalExpr{<:StanExpr2{<:types.closure}}) = _fundef(x, nothing)
+_fundef(x::CanonicalExpr{<:StanExpr2{<:types.closure}}, context) = begin
     cl = type(head(x)).info.value
     arg_names = collect(cl.arg_names)
     n_params = length(arg_names)
@@ -217,6 +217,7 @@ fundef(x::CanonicalExpr{<:StanExpr2{<:types.closure}}) = begin
     # the function's parameter names rather than caller-side expressions.
     info_nt = (;[name => x.args[i] for (i, name) in enumerate(sig_names)]...)
     info = OrderedDict{Symbol,Any}(pairs(anon_info(info_nt)))
+    _attach_trace_context!(info, context)
     info[:__mod__] = cl.mod
 
     body_with_return = ensure_xreturn(cl.body)

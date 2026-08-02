@@ -28,6 +28,22 @@ struct SubModel#{P,N,L}
     name#::N
     locals#::L
 end
+
+# All mutable compiler scratch belongs to one explicit transpilation. Keeping it
+# on the model / UDF `info` graph makes nested tracing and re-entrancy visible in
+# the call graph; no state is inherited implicitly from the current Julia Task.
+mutable struct TraceContext
+    inline_counter::Int
+    closure_counter::Int
+    anon_counter::Int
+    expr_stack::Vector{Any}
+    current_lnn::Base.RefValue{Any}
+    inline_pending::Union{Nothing,Vector{Any}}
+    ragged_density_targets::Tuple
+    plate_context::Any
+end
+TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing)
+_context_or_new(context) = context === nothing ? TraceContext() : context
 """
 A named sub-model function, produced by `@slic f(args...) = body`. The singleton
 `SubmodelFn{:f}()` is bound to `f`; each `@slic f(...) = ...` adds a call method
@@ -101,12 +117,39 @@ SplatExpr{T} = CanonicalExprV{:...,T}
 model(x::SlicModel) = x.model
 data(x::SlicModel) = x.data
 meta(x::StanModel) = x.meta
-_expr_stack(x::StanModel) = get(x.meta, :_expr_stack, nothing)
+_trace_context(x::StanModel) = get(x.meta, :_trace_context, nothing)
+_trace_context(x::SubModel) = _trace_context(parent(x))
+_trace_context(x::AbstractDict) = get(x, :__trace_context__, nothing)
+_trace_context(x::NamedTuple) = get(x, :__trace_context__, nothing)
+_trace_context(_) = nothing
+_attach_trace_context!(info::AbstractDict, context) = begin
+    info[:__trace_context__] = _context_or_new(context)
+    info
+end
+_with_trace_state(body::Function, info, field::Symbol, value) = begin
+    context = _trace_context(info)
+    context === nothing && return body()
+    old = getfield(context, field)
+    setfield!(context, field, value)
+    try
+        body()
+    finally
+        setfield!(context, field, old)
+    end
+end
+_next_trace_id!(context::TraceContext, field::Symbol) = begin
+    id = getfield(context, field) + 1
+    setfield!(context, field, id)
+    id
+end
+_next_trace_id!(info, field::Symbol) = begin
+    context = _trace_context(info)
+    context === nothing && error("internal: trace state is missing while allocating `$field`.")
+    _next_trace_id!(context, field)
+end
+_expr_stack(x) = (context = _trace_context(x); context === nothing ? nothing : context.expr_stack)
 _expr_stack(x::SubModel) = _expr_stack(parent(x))
-_expr_stack(x) = nothing
-_current_lnn(x::StanModel) = get(x.meta, :_current_lnn, nothing)
-_current_lnn(x::SubModel) = _current_lnn(parent(x))
-_current_lnn(x) = nothing
+_current_lnn(x) = (context = _trace_context(x); context === nothing ? nothing : context.current_lnn)
 vars(x::StanModel) = x.vars
 blocks(x::StanModel) = x.blocks
 remake(x::StanModel; kwargs...) = StanModel((;x.meta..., kwargs...), x.vars, x.blocks)
@@ -180,7 +223,7 @@ head(::CanonicalExprV{H}) where {H} = H
 remake(x::CanonicalExpr, args...; kwargs...) = CanonicalExpr(head(x), args...; kwargs...)
 
 StanModel(name=gensym("stan_model")) = StanModel(
-    (;name),
+    (;name, _trace_context=TraceContext()),
     OrderedDict(),
     (;
         functions=StanBlock(:functions,OrderedDict()),

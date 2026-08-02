@@ -39,11 +39,14 @@ deanon_type(tt::StanType, x::CanonicalExpr, tok) = begin
         k => (k === :arg_types ? nat : v) for (k, v) in pairs(info(tt)) if k != :size
     ]...)
 end
-stan_expr(x::CanonicalExpr) = begin
-    tok = _next_anon_id()
-    tt = deanon_type(tracetype(anon_canonical(x, tok)), x, tok)
+_tracetype(x, _context) = tracetype(x)
+_stan_expr(x::CanonicalExpr, context) = begin
+    context = _context_or_new(context)
+    tok = _next_anon_id(context)
+    tt = deanon_type(_tracetype(anon_canonical(x, tok), context), x, tok)
     StanExpr(x, remake(tt; qual=maximum(qual, x.args; init=:data), cv=any(cv, x.args) || cv(tt)))
 end
+stan_expr(x::CanonicalExpr) = _stan_expr(x, TraceContext())
 # A @slic sub-model or named sub-model function in call position. For an anonymous
 # `SlicModel`, data flows via KEYWORDS — a positional call now errors (its call
 # operator points at `Base.merge` for splice overrides / `@slic f(...)=...` for
@@ -59,7 +62,7 @@ backward!(x::Union{String,Number,LineNumberNode,Symbol,Nothing,Colon}; info) = x
 backward!(x::CanonicalExpr; info) = remake(x, backward!(x.args; info)...)
 backward!(x::BlockExpr; info) = remake(x, reverse(backward!.(reverse(x.args); info))...)
 # The LHS of a compiler-injected slice/element fill (`out[a:b] = rhs`, hoisted
-# from an inlined mutating helper or a plate via `_slic_inline_pending`) is a
+# from an inlined mutating helper or a plate via the trace's pending buffer) is a
 # getindex expr, not a bare Symbol — but every `info` key is a Symbol. Resolve
 # the BASE variable being (partially) filled, "coarse-grained": discard *which*
 # elements are written and treat the whole base var as touched. A plain Symbol

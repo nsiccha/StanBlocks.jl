@@ -2235,6 +2235,20 @@ Verify `determinism: inline UDF + lifted closure` in an isolated test item.
     @test occursin("// lifted closure", a)
     # transpiling twice in one session must be byte-identical
     @test a == b
+
+    # Each concurrent transpilation owns its counters and scratch buffers. This
+    # exercises real parallelism when the test Julia has multiple threads and
+    # remains a separate-Task isolation check on a single-threaded runner.
+    concurrent = fetch.([
+        Threads.@spawn stan_code(stan_model(det_model)) for _ in 1:max(4, Threads.nthreads())
+    ])
+    @test all(==(a), concurrent)
+
+    # Keep the architectural requirement executable: no compiler source may
+    # silently reintroduce ambient Task-local state.
+    slic_src = joinpath(dirname(pathof(StanBlocks)), "slic_stan")
+    source_files = filter(endswith(".jl"), readdir(slic_src; join=true))
+    @test all(!occursin("task_local_storage", read(file, String)) for file in source_files)
 end
 
 """
