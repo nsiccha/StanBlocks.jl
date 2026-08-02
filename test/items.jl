@@ -6348,6 +6348,19 @@ is skipped for a ragged plate-sliced obs.
     ys = [randn(3) for _ in 1:4]
     xs = [randn(3) for _ in 1:4]
 
+    # Provenance is derived from exact-signature marker METHODS, not a mutable
+    # process-global registry. Multiple overloads of one function contribute
+    # multiple methods; the name-level query still distinguishes UDF-only,
+    # native-only, and mixed families.
+    sb = StanBlocks.stan
+    @test !isdefined(sb, :_marked_backed)
+    @test sb.udf_backed(sb.builtin.truncated_normal_lpdf)
+    @test !sb.native_backed(sb.builtin.truncated_normal_lpdf)
+    @test !sb.udf_backed(sb.builtin.normal_lpdf)
+    @test sb.native_backed(sb.builtin.normal_lpdf)
+    @test sb.udf_backed(sb.builtin.lkj_corr_cholesky_lpdf)
+    @test sb.native_backed(sb.builtin.lkj_corr_cholesky_lpdf)
+
     # --- POSITIVE: the registered ALL-VECTOR signature still resolves --------
     # Both in a ragged plate cell and at top level: the UDF is emitted and stanc
     # accepts. These are the shapes the guard must NOT touch.

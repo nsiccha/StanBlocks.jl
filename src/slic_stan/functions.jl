@@ -1583,14 +1583,14 @@ begin
                 # "should this function have had a Stan definition?" — it falls
                 # back to `nothing` both for a native Stan function (correct)
                 # and for a UDF whose signature simply did not match (a bug).
-                # These markers are per-name and shape-independent, which is
-                # exactly the question `_check_lpxf_resolves` needs to ask.
-                marker = _backed_marker(:udf_backed, f, ftype, def_mod, stan)
+                # Each marker is signature-specific; the name-level query below
+                # asks whether ANY such method exists for this function singleton.
+                marker = _backed_marker(:udf, f, xexpr, stan)
             else
                 # A body-less signature declares a function Stan ALREADY has —
                 # StanBlocks owes it no definition. See `_check_lpxf_resolves`
                 # for why a name needs both markers rather than one.
-                marker = _backed_marker(:native_backed, f, ftype, def_mod, stan)
+                marker = _backed_marker(:native, f, xexpr, stan)
             end
             isnothing(marker) || push!(stmts, marker)
         end
@@ -1666,34 +1666,30 @@ fundef(x) = nothing
 # array-of-factors helper. Only `udf_backed && !native_backed` — a name Stan has
 # never heard of — lets `_check_lpxf_resolves` conclude an unmatched shape is
 # unresolvable rather than merely unmodelled by SLIC's signature table.
-udf_backed(x) = false
-native_backed(x) = false
+# Provenance is recorded as one ordinary method PER REGISTERED SIGNATURE. That
+# makes every marker as unique as the `tracetype` / `fundef` method emitted beside
+# it: overloads of one name coexist without a mutable name-level dedup registry,
+# and package extensions can add markers through normal method registration.
+#
+# `_has_backing` asks the method table whether ANY signature for the exact
+# function singleton has the requested provenance. This query runs only on the
+# unresolved-density diagnostic path. The exact head parameter is important:
+# `CanonicalExpr{<:typeof(h)}` is a broad UnionAll in a `methods` query, while
+# `CanonicalExpr{typeof(h)}` excludes unrelated function singleton types.
+function _backing_provenance end
+_has_backing(kind, h::Function) = !isempty(methods(
+    _backing_provenance,
+    Tuple{Val{kind},CanonicalExpr{typeof(h)}},
+))
+_has_backing(_, _) = false
+udf_backed(h) = _has_backing(:udf, h)
+native_backed(h) = _has_backing(:native, h)
 
-# A marker is an ordinary top-level method definition, so it must be emitted AT
-# MOST ONCE per name: a name routinely carries several registrations
-# (`truncated_normal_lpdf` has two bodyful overloads, `simple_reduce_sum` more),
-# and re-defining an identical method is *method overwriting*, which Julia
-# forbids outright during precompilation.
-#
-# Dedup therefore happens at MACRO-EXPANSION time, keyed by defining module +
-# name. The obvious run-time alternative — look the method up, then `@eval` it if
-# absent — is unusable: `@deffun` is also called from package EXTENSIONS
-# (`ext/PosteriorDBExt.jl`), and an extension cannot `eval` into the by-then
-# closed `StanBlocks` module (Julia: "breaks incremental compilation"). A plain
-# top-level definition works from anywhere; only the duplicate must be avoided.
-#
-# Keying includes `def_mod` so two modules defining the same NAME never suppress
-# each other's markers. A name we cannot key (qualified or computed) simply gets
-# no marker — `udf_backed` stays `false` and `_check_lpxf_resolves` stays quiet,
-# which is the safe direction to fail.
-_marked_backed = Set{Tuple{Symbol,Any,Symbol}}()
-_backed_marker(kind, f, ftype, def_mod, stan) = begin
+_backed_marker(kind, f, xexpr, stan) = begin
     _is_symbol(f) || return nothing
-    key = (kind, def_mod, f)
-    key in _marked_backed && return nothing
-    push!(_marked_backed, key)
-    marker = Expr(:., stan, QuoteNode(kind))
-    :($marker(::$ftype) = true)
+    marker = Expr(:., stan, QuoteNode(:_backing_provenance))
+    kind_type = Expr(:curly, Val, QuoteNode(kind))
+    Expr(:(=), Expr(:call, marker, Expr(:(::), kind_type), xexpr), nothing)
 end
 sig_expr(x) = x
 sig_expr(x::Union{Tuple,NamedTuple,Vector}) = map(sig_expr, x)
