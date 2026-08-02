@@ -373,6 +373,11 @@ _plate_global_name(info::SubModel, name::Symbol) =
 _plate_context_entry(name::Symbol; info) = begin
     ctx = _plate_context()
     ctx === nothing && return nothing
+    # Return-type inference for a registered UDF re-traces its body with a
+    # function-local OrderedDict while retaining the caller task's TLS.  Those
+    # locals are emitted inside the Stan function and must never be promoted to
+    # the caller plate's outer storage; plate promotion is model/submodel-scoped.
+    info isa Union{StanModel,SubModel} || return nothing
     global_name = _plate_global_name(info, name)
     haskey(ctx.cell_types, global_name) || return nothing
     accessor = get(ctx.cell_accessors, global_name, nothing)

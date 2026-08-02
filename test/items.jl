@@ -1236,6 +1236,48 @@ end
         end
     end
 
+    # Snag `plate-context-le-919f23dc`: a registered (non-inline) UDF called
+    # from a plate cell traces its body in a function-local OrderedDict.  That
+    # scope must remain outside the caller's emit-time plate promotion context;
+    # only the call result (`conc`) and later cell locals are plate-promoted.
+    @deffun c3_plate_udf_locs(x::vector[n], log_Vc, log_k10) = begin
+        log_CL = log_Vc + log_k10
+        locs = x .* exp(log_CL)
+        locs
+    end
+    c3_plate_udf_model = @slic (;
+        xs=[[0.5, 0.7, 0.9], [0.4, 0.6]],
+        ys=[[-0.6, -0.2, 0.1], [-0.7, -0.3]],
+        nsub=2,
+    ) begin
+        log_Vc ~ normal(0.0, 1.0)
+        log_k10 ~ normal(0.0, 1.0)
+        sigma ~ exponential(1.0)
+        pk_loc ~ plate(xs, ys; outer=(nsub,)) do x, y
+            conc = c3_plate_udf_locs(x, log_Vc, log_k10)
+            qt_loc = log(conc)
+            y ~ normal(qt_loc, sigma)
+            conc
+        end
+    end
+    c3_plate_udf_flat_model = @slic (;
+        xs=[[0.5, 0.7, 0.9], [0.4, 0.6]],
+        ys=[[-0.6, -0.2, 0.1], [-0.7, -0.3]],
+        nsub=2,
+    ) begin
+        log_Vc ~ normal(0.0, 1.0)
+        log_k10 ~ normal(0.0, 1.0)
+        sigma ~ exponential(1.0)
+        pk_loc ~ plate(xs, ys; outer=(nsub,)) do x, y
+            log_CL = log_Vc + log_k10
+            locs = x .* exp(log_CL)
+            conc = locs
+            qt_loc = log(conc)
+            y ~ normal(qt_loc, sigma)
+            conc
+        end
+    end
+
     # The same promotion must preserve a vector-valued submodel cell: the internal
     # vector parameter and returned value collect as matrices and are indexed by
     # column in the emitted loop.
@@ -4202,6 +4244,35 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
         @test occursin(r"obs ~ normal\(z", stan_block(code, "model"))
     end
     @test LogDensityProblems.dimension(instantiate(priorlive)) == 5
+end
+
+@testitem "slic: plate context stops at registered UDF bodies" tags=[:slic, :plate, :ragged, :stanc, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    @test transpiles(c3_plate_udf_model)
+    @test stanc_compiles(c3_plate_udf_model)
+    code = stan_code(c3_plate_udf_model)
+
+    # UDF locals remain function-local.  Flattening the UDF into the plate cell
+    # would instead promote these names into outer per-cell storage.
+    functions = stan_block(code, "functions")
+    @test occursin("real log_CL = (log_Vc + log_k10);", functions)
+    @test occursin("vector[dims(x)[1]] locs = (x .* exp(log_CL));", functions)
+    @test !occursin("pk_loc_log_CL", code)
+    @test !occursin("pk_loc_locs", code)
+
+    # The source-level workaround does transpile, but changes the program: UDF
+    # locals become model outputs with per-cell storage.  Keep that measurable
+    # cost pinned so the supported form stays the registered UDF call.
+    @test transpiles(c3_plate_udf_flat_model)
+    flat_code = stan_code(c3_plate_udf_flat_model)
+    @test occursin("pk_loc_log_CL", flat_code)
+    @test occursin("pk_loc_locs", flat_code)
+
+    descriptor = stan_descriptor(c3_plate_udf_model; name=:plate_udf)
+    outputs = Dict(output.name => output for output in descriptor.outputs)
+    @test outputs[:ys_gen].source == :ys
+    @test outputs[:ys_likelihood].source == :ys
 end
 
 """
