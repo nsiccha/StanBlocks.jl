@@ -4738,6 +4738,48 @@ the density). Author syntax is unchanged. Contract defaults:
     # (B) group boundaries — inclusive 1-based ends of groups 3, 2 and 4 long.
     @test outs[:ys_gen].segments == [3, 5, 9]
 
+    # (F) The identical logical observation kept INSIDE the plate cell gets the
+    # same ragged storage contract. This is a distinct compiler path from the
+    # top-level broadcast above: the plate has already lowered `yy` to the exact
+    # backing-memory slice by the time distribution routing sees it.
+    dv = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]]
+    incell = @slic (; dv) begin
+        sigma ~ exponential(1.0)
+        cell_sum ~ plate(dv; outer = length(dv)) do yy
+            yy ~ normal(0.0, sigma)
+            sum(yy)
+        end
+    end
+    let gq = stan_block(stan_code(incell), "generated quantities")
+        @test occursin("vector[num_elements(dv.1)] dv_gen;", gq)
+        @test occursin("vector[num_elements(dv.2)] dv_likelihood;", gq)
+        @test occursin(r"dv_gen\[ragged_start\(dv\.2, plate_i\w*\):ragged_end\(dv\.2, plate_i\w*\)\] = normal_vector_rng\(", gq)
+        @test occursin(r"dv_likelihood\[plate_i\w*\] = normal_lpdf\(dv\.1\[", gq)
+        @test !occursin("normal_lpdfs", gq)
+    end
+    id = stan_descriptor(incell; name = :ragged_incell_twins)
+    iouts = Dict(o.name => o for o in id.outputs)
+    @test [o.name for o in id.outputs if o.generative == :draw] == [:dv_gen]
+    @test [o.name for o in id.outputs if o.generative == :pointwise_loglik] == [:dv_likelihood]
+    @test iouts[:dv_gen].source == :dv
+    @test iouts[:dv_likelihood].source == :dv
+    @test iouts[:dv_gen].segments == [3, 6, 9]
+    @test iouts[:dv_likelihood].segments == [3, 6, 9]
+    @test Set(op.name for op in id.operations) ⊇ Set((:predict, :pointwise_loglik))
+
+    # Consumer-facing execution shape: one flat draw over all nine values and
+    # one aggregate log density for each of the three logical groups.
+    ip = stan_execute(id, :fit)
+    idim = LogDensityProblems.dimension(ip)
+    ipred = stan_execute(id, :predict; problem = ip, draws = zeros(idim), seed = 6758)
+    ill = stan_execute(id, :pointwise_loglik; problem = ip, draws = zeros(idim), seed = 6758)
+    @test keys(ipred) == (:dv_gen,)
+    @test keys(ill) == (:dv_likelihood,)
+    @test length(ipred.dv_gen) == 9
+    @test length(ill.dv_likelihood) == 3
+    @test all(isfinite, ipred.dv_gen)
+    @test all(isfinite, ill.dv_likelihood)
+
     # End-to-end through BridgeStan.
     p = instantiate(model)
     sm = p.model
@@ -5998,19 +6040,24 @@ and the DENSE per-cell plate form were already correct, and must stay so.
     # The covariate is ALSO a RaggedVector — being ragged is not what makes a
     # column observed; appearing left of a `~` is.
     @test !Dict(i.name => i for i in d.inputs)[:ts].observed
-    # A ragged observation base still gets no `_gen` twin (no declarable Stan
-    # shape), so `:predict` must stay absent — conditioning on a column and
-    # being able to predict it are different questions.
-    @test :predict ∉ ops(d)
-    @test :pointwise_loglik ∉ ops(d)
+    # The plate accessor certifies the logical group boundaries, so the compiler
+    # can now expose a flat draw and one aggregate likelihood per group.
+    outs = Dict(o.name => o for o in d.outputs)
+    @test outs[:ys_gen].source == :ys
+    @test outs[:ys_likelihood].source == :ys
+    @test outs[:ys_gen].segments == [3, 5, 9]
+    @test outs[:ys_likelihood].segments == [3, 5, 9]
+    @test :predict in ops(d)
+    @test :pointwise_loglik in ops(d)
 
     # (2) Already-correct sibling: top-level ragged obs, broadcast across groups.
     do_ = stan_descriptor(c3_plate_ragged_obs_outside_model; name = :outside)
     @test obs(do_) == [:ys]
     @test :fit in ops(do_)
 
-    # (3) Already-correct sibling: a DENSE per-cell plate obs, which DOES get a
-    # `_gen` twin — the widened walk must not disturb it.
+    # (3) Already-correct sibling: a DENSE per-cell plate obs gets a `_gen`
+    # twin but deliberately no likelihood companion. The ragged-specific path
+    # must not change that contract.
     dense = @slic (; ys = [1.0, 2.0, 3.0], nsub = 3) begin
         sigma ~ exponential(1)
         mu ~ plate(; outer = (nsub,)) do i
@@ -6022,6 +6069,11 @@ and the DENSE per-cell plate form were already correct, and must stay so.
     dd = stan_descriptor(dense; name = :dense_cell)
     @test obs(dd) == [:ys]
     @test :fit in ops(dd)
+    douts = Dict(o.name => o for o in dd.outputs)
+    @test haskey(douts, :ys_gen)
+    @test !haskey(douts, :ys_likelihood)
+    @test :predict in ops(dd)
+    @test :pointwise_loglik ∉ ops(dd)
 
     # A compound (non-projection) sampling LHS must still NOT mark a base
     # observed — the walk was widened to structural projections only, not to

@@ -1996,9 +1996,11 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
 #     clone of the loop writes each draw into a compiler-owned `<obs>_gen` twin
 #     declared with the observation's own type (`_indexed_obs_gen_base` /
 #     `_push_obs_gen_decl!`, passes.jl). NOT covered: the pointwise
-#     `<obs>_likelihood` vector (the whole-LHS expansion's other half — the cell
-#     shape does not fix its container), and a RAGGED observation base, which has
-#     no declarable Stan twin and keeps the model-only routing.
+#     `<obs>_likelihood` vector for a DENSE base (the whole-LHS expansion's other
+#     half — the scalar/fixed cell shape does not fix its logical grouping).
+#     A RaggedVector base is the exception because its `ends` DO fix that grouping:
+#     its exact compiler-owned memory slice gets a flat `<obs>_gen` plus one
+#     aggregate `<obs>_likelihood` scalar per group.
 #   • cv/GQ taint does NOT flow through the outer sized declaration (same limit as
 #     typed-LHS ranefs — cv section / parked override feature); vararg do-block
 #     params (l.1193) and reduce_sum lowering are unimplemented.
