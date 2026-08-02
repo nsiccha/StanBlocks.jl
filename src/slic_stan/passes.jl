@@ -53,6 +53,8 @@ stan_expr(x::CanonicalExpr) = _stan_expr(x, TraceContext())
 # positional inputs). For a `SubmodelFn`, positional args ARE the inputs (bound by
 # its generated call method; Julia's own dispatch/arity handle them). Either way the
 # call yields a `SlicModel`, embedded via the existing `~`-rhs-is-`SlicModel` path.
+_stan_expr(x::CanonicalExpr{<:Union{SlicModel,SubmodelFn}}, _context) =
+    head(x)(x.args...; x.kwargs...)
 stan_expr(x::CanonicalExpr{<:Union{SlicModel,SubmodelFn}}) = head(x)(x.args...; x.kwargs...)
 
 backward!(x; info) = error("backward! not defined for value `$x` of type `$(typeof(x))` — no method matches a more specific signature.")
