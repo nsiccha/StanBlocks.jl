@@ -186,8 +186,8 @@ _supported_return_type(rt::StanType) = begin
     ct = center_type(rt)
     ct <: types.complex || ct <: types.any_vector || ct <: types.matrix
 end
-_checked_return_type(f, args) = begin
-    rt = type(stan_expr(CanonicalExpr(f, args...)))
+_checked_return_type(f, args, context=nothing) = begin
+    rt = type(_stan_expr(CanonicalExpr(f, args...), context))
     center_type(rt) === types.anything && throw(ArgumentError(
         "return_type_of could not infer a SLIC return type for $(f)(" *
         _return_type_signature(args) * "). Only non-inline @deffun functions and " *
@@ -203,15 +203,18 @@ end
 return_type_of(f::Function, args...) = _checked_return_type(
     f,
     ntuple(i -> _return_type_query_arg(i, args[i]), length(args)),
+    TraceContext(),
 )
 return_type_of(f, args...) = throw(ArgumentError(
     "return_type_of expects a non-inline @deffun or @defsig-registered Function " *
     "as its first argument, got $(typeof(f))."
 ))
 
-tracetype(x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}) = begin
+tracetype(x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}) =
+    _tracetype(x, nothing)
+_tracetype(x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}, context) = begin
     farg = x.args[1]
-    rt = _checked_return_type(getvalue(farg), x.args[2:end])
+    rt = _checked_return_type(getvalue(farg), x.args[2:end], context)
     ct = center_type(rt)
     StanType(types.tokenof{ct}, stan_size(rt); value=ct, qual=:data)
 end
@@ -238,9 +241,12 @@ _reject_scalar_array_elementwise(x::CanonicalExpr) = begin
         "function-body loop, or convert to a `vector` via `to_vector(...)` first."
     )
 end
-tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = if length(x.args) > 2
+tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = _tracetype(x, nothing)
+_tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}, context) = if length(x.args) > 2
+    context = _context_or_new(context)
     f = head(x)
-    tracetype(CanonicalExpr(f, x.args[1], stan_expr(CanonicalExpr(f, x.args[2:end]...))))
+    nested = _stan_expr(CanonicalExpr(f, x.args[2:end]...), context)
+    _tracetype(CanonicalExpr(f, x.args[1], nested), context)
 else
     _reject_scalar_array_elementwise(x)
     error("tracetype not defined for $(short_expr(x))!")

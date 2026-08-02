@@ -138,15 +138,15 @@ _lower_scalar_array_scale(x::CanonicalExpr; info) = begin
 end
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(+),typeof(-)}}; info) = begin
     rv = _lower_scalar_array_broadcast(x; info)
-    isnothing(rv) ? fold_shape_query(stan_expr(x)) : rv
+    isnothing(rv) ? fold_shape_query(_trace_stan_expr(x, info)) : rv
 end
 expand_inline_or_trace(x::CanonicalExpr{typeof(*)}; info) = begin
     rv = _lower_scalar_array_scale(x; info)
-    isnothing(rv) ? fold_shape_query(stan_expr(x)) : rv
+    isnothing(rv) ? fold_shape_query(_trace_stan_expr(x, info)) : rv
 end
 expand_inline_or_trace(x::CanonicalExpr{<:Base.BroadcastFunction}; info) = begin
     rv = _lower_scalar_array_broadcast(x; info)
-    isnothing(rv) ? fold_shape_query(stan_expr(x)) : rv
+    isnothing(rv) ? fold_shape_query(_trace_stan_expr(x, info)) : rv
 end
 # `isdefined(builtin, x)` returns true even for names inherited from Base
 # (e.g. `accumulate!`), which would mask user-defined SLIC UDFs that share
@@ -853,7 +853,7 @@ function forward!(x::ComprehensionExpr; info)
         ))
         info[result_name] = StanExpr(result_name, result_type)
         result = info[result_name]
-        declaration = stan_expr(CanonicalExpr(:(::), result))
+        declaration = _trace_stan_expr(CanonicalExpr(:(::), result), info)
 
         result_idxs = [_result_index(emitted_idxs[k], expr(ranges[k]).args[1]; info) for k in 1:ndim]
         fill = forward!(CanonicalExpr(:(=), CanonicalExpr(getindex, result, result_idxs...), value); info)
@@ -861,9 +861,9 @@ function forward!(x::ComprehensionExpr; info)
         # Nest the fill loops from the innermost generator outward.
         body = CanonicalExpr(:block, loop_stmts..., fill)
         for k in ndim:-1:1
-            body = stan_expr(CanonicalExpr(:for,
+            body = _trace_stan_expr(CanonicalExpr(:for,
                 CanonicalExpr(:(=), emitted_idxs[k], ranges[k]),
-                _is_block_canonical(body) ? body : CanonicalExpr(:block, body)))
+                _is_block_canonical(body) ? body : CanonicalExpr(:block, body)), info)
         end
 
         push!(pending, declaration, body)
@@ -1005,7 +1005,7 @@ forward!(x::AssignmentExpr; info) = begin
     # rewrites the emitted base to its flattened parent name while `keys(info)`
     # intentionally remains the local-name view.
     local_key = _base_lhs_symbol(x.args[1])
-    fwd = stan_expr(remake(x, forward!(x.args; info)...))
+    fwd = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
     lhs, rhs = expr(fwd).args
     lhs_raw isa DeclExpr && _check_typed_assignment(local_key, type(lhs), type(rhs); info)
     k = local_key in keys(info) ? local_key : _base_lhs_symbol(lhs)
@@ -1603,7 +1603,7 @@ _plate_constrain_decl(f, x, cons; info) = begin
     isempty(cons) && return x
     d = expr(x)
     info[f] = StanExpr(f, remake(type(d.args[1]); cons...))
-    stan_expr(remake(d, info[f]))
+    _trace_stan_expr(remake(d, info[f]), info)
 end
 
 _plate_cell_index(f, T::StanType, idxs) = begin
@@ -2339,9 +2339,9 @@ _forward_return!(x::ReturnExpr, info) = let rv = forward!(x.args[1]; info)
     remake(x, rv)
 end
 forward!(x::DocumentExpr; info) = remake(x, forward!(x.args; info)...)
-forward!(x::TupleExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
-forward!(x::KwExpr; info) = stan_expr(remake(x, x.args[1], forward!(x.args[2]; info)))
-forward!(x::NamedTupleExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+forward!(x::TupleExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+forward!(x::KwExpr; info) = _trace_stan_expr(remake(x, x.args[1], forward!(x.args[2]; info)), info)
+forward!(x::NamedTupleExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::GetPropertyExpr; info) = begin
     @assert length(x.args) == 2
     obj, name = forward!(x.args; info)
@@ -2354,8 +2354,8 @@ forward!(x::GetPropertyExpr; info) = begin
     # below — but the tracetype and method-dispatch lanes don't conflict.
     return forward!(CanonicalExpr(:getfield, x.args[1], findfirst(==(name), names)); info)
 end
-forward!(x::BracesExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
-forward!(x::VectExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+forward!(x::BracesExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+forward!(x::VectExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::DeclExpr; info) = begin
     @assert length(x.args) == 2
     lhs, type_ann = x.args
@@ -2391,7 +2391,7 @@ forward!(x::DeclExpr; info) = begin
     # `SubModel.setindex!` flattens the symbol into the parent. Put that stored
     # value into the declaration AST too, so later backward/distribution lookup
     # uses the same name as the parent model's `info` key.
-    stan_expr(remake(x, info[lhs]))
+    _trace_stan_expr(remake(x, info[lhs]), info)
 end
 # `types` is defined in functions.jl (included AFTER this file), so the token
 # check lives in the body (resolved at trace time), not the signature.
@@ -2464,7 +2464,7 @@ forward!(x::ForExpr; info) = begin
     emitted_idx = expr(info[idx])
     body = forward!(body; info)
     pop!(info, idx)
-    stan_expr(remake(x, remake(head, emitted_idx, idx_range), body))
+    _trace_stan_expr(remake(x, remake(head, emitted_idx, idx_range), body), info)
 end
 
 # Re-forward `x` (a ForExpr) as an ordinary index loop `for idx in range_raw` whose
@@ -2522,11 +2522,11 @@ forward!(x::WhileExpr; info) = begin
     head, body = x.args
     @assert _is_block_canonical(body)
     # body = forward!(body; info)
-    stan_expr(remake(x, forward!(x.args; info)...))
+    _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 end
-forward!(x::IfExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
-forward!(x::ElseIfExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
-forward!(x::BreakExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
-forward!(x::ContinueExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+forward!(x::IfExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+forward!(x::ElseIfExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+forward!(x::BreakExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+forward!(x::ContinueExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::QuoteExpr; info) = x.args[1]
 forward!(x::StringExpr; info) = join(map(stan_code, forward!(x.args; info)))

@@ -47,6 +47,16 @@ _stan_expr(x::CanonicalExpr, context) = begin
     StanExpr(x, remake(tt; qual=maximum(qual, x.args; init=:data), cv=any(cv, x.args) || cv(tt)))
 end
 stan_expr(x::CanonicalExpr) = _stan_expr(x, TraceContext())
+# Every compiler-internal conversion that runs while a trace is active must use
+# the trace's context. Starting a standalone context here would restart the anon
+# token counter at 1; a result type that already contains the outer trace's
+# `_arg1_…` placeholder could then be deanonymized against the wrong expression.
+_trace_stan_expr(x::CanonicalExpr, info) = _stan_expr(x, _trace_context(info))
+_trace_stan_arg(x::CanonicalExpr, info) = _trace_stan_expr(x, info)
+_trace_stan_arg(x, _info) = stan_expr(x)
+_trace_stan_call(f, args...; info) = _trace_stan_expr(
+    CanonicalExpr(f, map(a -> _trace_stan_arg(a, info), args)...), info
+)
 # A @slic sub-model or named sub-model function in call position. For an anonymous
 # `SlicModel`, data flows via KEYWORDS — a positional call now errors (its call
 # operator points at `Base.merge` for splice overrides / `@slic f(...)=...` for
@@ -712,8 +722,8 @@ _push_ragged_obs_decls!(b, k::Symbol; info) = begin
         StanExpr(1, StanType(types.int; value=1, qual=:data))), arg_types.mem)
     ends = StanExpr(CanonicalExpr(Base.getfield, base,
         StanExpr(2, StanType(types.int; value=2, qual=:data))), arg_types.ends)
-    gen_size = stan_call(builtin.num_elements, mem)
-    lik_size = stan_call(builtin.num_elements, ends)
+    gen_size = _trace_stan_call(builtin.num_elements, mem; info)
+    lik_size = _trace_stan_call(builtin.num_elements, ends; info)
     gen_type = StanType(types.vector, (gen_size,);
         value=missing, qual=:quantities, ragged_obs_source=k)
     lik_type = StanType(types.vector, (lik_size,);
