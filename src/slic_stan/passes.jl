@@ -248,9 +248,12 @@ distribution_blocks(x::SamplingExpr; info) = if qual(x) == :data
         # a whole-LHS observation whenever a generated-output shape is derivable
         # from the base declaration: the per-cell rng writes into a compiler-owned
         # `<base>_gen` twin of the base's declared type (`_indexed_obs_gen_base`).
-        # Bases with no natively declarable Stan shape (RaggedVector/RaggedMatrix
-        # views over flat memory) keep the model-only routing.
-        if _indexed_obs_gen_base(x.args[1]; info) === nothing
+        # Dense bases use the native declaration retarget below. A RaggedVector
+        # base has no declaration of its own, but its exact compiler-owned
+        # `mem[start(ends,g):end(ends,g)]` projection has a separate flat-twin
+        # plan (`_indexed_ragged_obs_slice`). Other tuple/usertype carriers keep
+        # the model-only routing.
+        if _indexed_obs_twin_target(x.args[1]; info) === nothing
             (:model,)
         elseif cv(x.args[1])
             (:generated_quantities,)
@@ -345,30 +348,31 @@ _loop_distribution_blocks(x::StanExpr{<:ForExpr}; info) = begin
 end
 _loop_distribution_blocks(x; info) = distribution_blocks(x; info)
 _loop_distribution_stmt(x, ::Val; info) = x
+_loop_distribution_stmts(x, v::Val; info) = Any[_loop_distribution_stmt(x, v; info)]
 _loop_distribution_stmt(x::StanExpr{<:ForExpr}, ::Val{B}; info) where {B} = begin
     fe = expr(x)
     head, body = fe.args
     selected = Any[]
     for stmt in body.args
         B in _loop_distribution_blocks(stmt; info) || continue
-        push!(selected, _loop_distribution_stmt(stmt, Val(B); info))
+        append!(selected, _loop_distribution_stmts(stmt, Val(B); info))
     end
     StanExpr(remake(fe, head, remake(body, selected...)), type(x))
 end
-_loop_distribution_stmt(x::SamplingExpr, ::Val{:generated_quantities}; info) = begin
-    expr(x.args[1]) isa Symbol && error(
-        "Compiler-owned loop contains a non-indexed generated-quantities sample. Plate locals must use an outer declaration and indexed sampling."
-    )
-    # A per-cell PARAMETER draw writes back into its own outer declaration; a
-    # per-cell DATA observation writes into the `<base>_gen` twin instead.
-    k = _indexed_obs_gen_base(x.args[1]; info)
-    k === nothing ? _indexed_rng_assignment(x) : _indexed_obs_gen_assignment(x, k)
-end
+_loop_distribution_stmts(x::SamplingExpr, ::Val{:generated_quantities}; info) =
+    _indexed_gq_assignments(x; info)
 distribute!(x::StanExpr{<:ForExpr}; info) = begin
     _push_expr!(info, x)
     try
         fe = expr(x)
         head, body = fe.args
+        # Assignment synthesis below needs the declared twin entries (notably
+        # their flat/vector types) while it rewrites the grouped statements.
+        # Declare them before grouping, still immediately before the eventual
+        # gq loop because this distribute call owns both operations.
+        for target in unique(_obs_twin_targets(x; info))
+            _push_indexed_obs_twin_decls!(block(info, :generated_quantities), target; info)
+        end
         grouped = OrderedDict{Symbol,Vector{Any}}()
         for stmt in body.args
             for b in _loop_distribution_blocks(stmt; info)
@@ -376,17 +380,12 @@ distribute!(x::StanExpr{<:ForExpr}; info) = begin
                     "Compiler-owned loop body statement `", stmt, "` tried to emit into declarative block `", b,
                     "`. Plate parameters must have an outer declaration before the loop and use indexed sampling inside it."
                 )
-                push!(get!(() -> Any[], grouped, b),
-                    _loop_distribution_stmt(stmt, Val(b); info))
+                append!(get!(() -> Any[], grouped, b),
+                    _loop_distribution_stmts(stmt, Val(b); info))
             end
         end
         for (b, stmts) in grouped
             loop = StanExpr(remake(fe, head, remake(body, stmts...)), type(x))
-            # The gq clone writes per-cell observation draws into `<base>_gen`
-            # twins; declare each one immediately before the loop that fills it.
-            b === :generated_quantities && for k in unique(_obs_gen_bases(x; info))
-                _push_obs_gen_decl!(block(info, b), k; info)
-            end
             push!(block(info, b), loop; info)
         end
     finally
@@ -491,10 +490,11 @@ Base.push!(b::GeneratedQuantitiesBlock,
     # Same split as the loop clone (`_loop_distribution_stmt`): a per-cell
     # PARAMETER redraw fills its own outer declaration, a per-cell DATA
     # observation fills the `<base>_gen` twin, which must be declared first.
-    k = _indexed_obs_gen_base(x.args[1]; info)
-    k === nothing && return push!(b, _indexed_rng_assignment(x); info)
-    _push_obs_gen_decl!(b, k; info)
-    push!(b, _indexed_obs_gen_assignment(x, k); info)
+    target = _indexed_obs_twin_target(x.args[1]; info)
+    target === nothing || _push_indexed_obs_twin_decls!(b, target; info)
+    for stmt in _indexed_gq_assignments(x; info)
+        push!(b, stmt; info)
+    end
 end
 _indexed_rng_assignment(x::SamplingExpr) = begin
     lhs, rhs = x.args
@@ -517,10 +517,10 @@ end
 # CELL shape, so each `*_rng` overload dispatches exactly as it does for a
 # prior-only plate parameter.
 #
-# Only a base with a natively declarable Stan shape qualifies. A RaggedVector /
-# RaggedMatrix base is a compile-time view over flat backing memory with no
-# declaration form, so the ragged obs-broadcast path (snag ragged-dist-arg) keeps
-# its model-only routing; same for any usertype/tuple carrier.
+# A natively declarable base qualifies for the ordinary whole-container retarget.
+# RaggedVector is handled separately below: it has no declaration form, but its
+# compiler-owned plate accessor exposes enough structure to declare flat storage.
+# RaggedMatrix and every other usertype/tuple carrier remain outside this path.
 _gen_twin_name(k::Symbol) = Symbol(k, "_gen")
 _is_gen_declarable(T) = T isa Type &&
     (T <: types.real || T <: types.any_vector || T <: types.matrix)
@@ -541,6 +541,58 @@ _indexed_obs_gen_base(lhs; info) = begin
     base = info[k]
     qual(base) == :data || return nothing
     _is_gen_declarable(center_type(base)) ? k : nothing
+end
+
+# STRICT RaggedVector plate-slice matcher. `_plate_input_accessor` lowers one
+# logical group `dv[g]` to exactly
+#
+#   dv.mem[ragged_start(dv.ends, g):ragged_end(dv.ends, g)]
+#
+# Match that entire shape — including the same named base and group index at
+# both bounds — rather than widening `_getindex_chain_base`. The dense retarget
+# must remain getindex-only, and an arbitrary tuple field / user-written slice
+# is not enough evidence that flat generated storage is semantically valid.
+_literal_int(x::StanExpr) = _literal_int(expr(x))
+_literal_int(x::Integer) = Int(x)
+_literal_int(::Any) = nothing
+_ragged_field_base(x, field::Int) = begin
+    x isa StanExpr || return nothing
+    e = expr(x)
+    e isa CanonicalExpr && head(e) === Base.getfield && length(e.args) == 2 || return nothing
+    _literal_int(e.args[2]) == field || return nothing
+    base = e.args[1]
+    base isa StanExpr && expr(base) isa Symbol ? expr(base) : nothing
+end
+_ragged_bound_group(x, bound, k::Symbol) = begin
+    x isa StanExpr || return nothing
+    e = expr(x)
+    e isa CanonicalExpr && head(e) === bound && length(e.args) == 2 || return nothing
+    _ragged_field_base(e.args[1], 2) === k || return nothing
+    e.args[2]
+end
+_indexed_ragged_obs_slice(lhs; info) = begin
+    lhs isa StanExpr || return nothing
+    e = expr(lhs)
+    e isa CanonicalExpr && head(e) === getindex && length(e.args) == 2 || return nothing
+    k = _ragged_field_base(e.args[1], 1)
+    (k isa Symbol && k in keys(info)) || return nothing
+    base = info[k]
+    T = center_type(base)
+    qual(base) == :data && T isa Type && T <: RaggedVector || return nothing
+    slice = e.args[2]
+    se = slice isa StanExpr ? expr(slice) : slice
+    se isa CanonicalExpr && head(se) isa Colon && length(se.args) == 2 || return nothing
+    lo_group = _ragged_bound_group(se.args[1], builtin.ragged_start, k)
+    hi_group = _ragged_bound_group(se.args[2], builtin.ragged_end, k)
+    lo_group === nothing || hi_group === nothing ||
+        isequal(expr(lo_group), expr(hi_group)) || return nothing
+    (; base=k, mem=e.args[1], group=lo_group, slice)
+end
+_indexed_obs_twin_target(lhs; info) = begin
+    k = _indexed_obs_gen_base(lhs; info)
+    k === nothing || return (; kind=:dense, base=k)
+    spec = _indexed_ragged_obs_slice(lhs; info)
+    spec === nothing ? nothing : (; kind=:ragged, base=spec.base)
 end
 # Rebuild an indexed LHS against a different base symbol, preserving every index
 # expression and the cell type (`y[i, j]` ⇒ `y_gen[i, j]`).
@@ -565,20 +617,65 @@ _indexed_obs_gen_assignment(x::SamplingExpr, k::Symbol) = begin
         StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
     CanonicalExpr(:(=), _rename_lhs_base(lhs, _gen_twin_name(k)), rng_expr(token, rhs))
 end
-# Walk a (possibly nested) compiler-owned loop for the bases needing a twin.
-_obs_gen_bases(::Union{LineNumberNode,Nothing}; info) = Symbol[]
-_obs_gen_bases(x; info) = Symbol[]
-_obs_gen_bases(x::StanExpr{<:ForExpr}; info) = begin
-    rv = Symbol[]
+# One RaggedVector group produces TWO generated-quantities assignments. The draw
+# uses the existing sized-token RNG protocol; the likelihood uses the aggregate
+# family density, never the elementwise `_lpdfs`, so joint families retain their
+# meaning. Dense per-cell observations continue to produce only the draw.
+_indexed_ragged_obs_assignments(x::SamplingExpr, spec; info) = begin
+    lhs, rhs = x.args
+    rhs_expr = expr(rhs)
+    rhs_expr isa CanonicalExpr || error(
+        "internal: ragged observation twin reached a non-call distribution rhs `", rhs_expr, "`.")
+    rhs_expr = _assert_ragged_continuous_family(rhs_expr)
+    # Preserve the ordinary sampling diagnostic as the first gate. Because the
+    # gq declarations/assignments are built before the model-loop clone is
+    # pushed, attempting the sized RNG first would mask an unresolved density
+    # signature with the less relevant "missing sized RNG" error.
+    density = lpxf_expr(lhs, rhs_expr)
+    _check_lpxf_resolves(density)
+    lhs_ct = center_type(lhs)
+    token = StanExpr(lhs_ct,
+        StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
+    draw = _ragged_group_rng(token, rhs_expr, lhs_ct)
+    gen = info[_gen_twin_name(spec.base)]
+    gen_lhs = StanExpr(
+        CanonicalExpr(getindex, gen, spec.slice),
+        remake(type(lhs); value=missing, qual=:quantities),
+    )
+    lik = info[Symbol(spec.base, "_likelihood")]
+    lik_lhs = StanExpr(
+        CanonicalExpr(getindex, lik, spec.group),
+        remake(type(density); value=missing, qual=:quantities),
+    )
+    Any[
+        CanonicalExpr(:(=), gen_lhs, draw),
+        CanonicalExpr(:(=), lik_lhs, density),
+    ]
+end
+_indexed_gq_assignments(x::SamplingExpr; info) = begin
+    expr(x.args[1]) isa Symbol && error(
+        "Compiler-owned loop contains a non-indexed generated-quantities sample. Plate locals must use an outer declaration and indexed sampling.")
+    k = _indexed_obs_gen_base(x.args[1]; info)
+    k === nothing || return Any[_indexed_obs_gen_assignment(x, k)]
+    spec = _indexed_ragged_obs_slice(x.args[1]; info)
+    spec === nothing ? Any[_indexed_rng_assignment(x)] :
+        _indexed_ragged_obs_assignments(x, spec; info)
+end
+
+# Walk a (possibly nested) compiler-owned loop for the bases needing twins.
+_obs_twin_targets(::Union{LineNumberNode,Nothing}; info) = NamedTuple[]
+_obs_twin_targets(x; info) = NamedTuple[]
+_obs_twin_targets(x::StanExpr{<:ForExpr}; info) = begin
+    rv = NamedTuple[]
     for stmt in expr(x).args[2].args
-        append!(rv, _obs_gen_bases(stmt; info))
+        append!(rv, _obs_twin_targets(stmt; info))
     end
     rv
 end
-_obs_gen_bases(x::SamplingExpr; info) = begin
-    qual(x) == :data || return Symbol[]
-    k = _indexed_obs_gen_base(x.args[1]; info)
-    k === nothing ? Symbol[] : Symbol[k]
+_obs_twin_targets(x::SamplingExpr; info) = begin
+    qual(x) == :data || return NamedTuple[]
+    target = _indexed_obs_twin_target(x.args[1]; info)
+    target === nothing ? NamedTuple[] : NamedTuple[target]
 end
 # Declare the twin once per model (a base observed by two plates must not emit
 # two declarations); registering it in `info` doubles as the dedup key.
@@ -590,6 +687,41 @@ _push_obs_gen_decl!(b, k::Symbol; info) = begin
     info[gen] = decl
     push!(b, StanExpr(CanonicalExpr(:(::), decl), t); info)
 end
+_push_ragged_obs_decls!(b, k::Symbol; info) = begin
+    gen = _gen_twin_name(k)
+    lik = Symbol(k, "_likelihood")
+    names = (gen, lik)
+    existing = filter(name -> name in keys(info), names)
+    if !isempty(existing)
+        certified = length(existing) == 2 && all(name ->
+            get(type(info[name]).info, :ragged_obs_source, nothing) === k, names)
+        certified && return
+        error(
+            "Ragged plate observation `", k, "[…] ~ …` needs compiler-owned names `",
+            gen, "` and `", lik, "`, but ", join(string.(existing), ", "),
+            " is already bound in this model. Rename that variable.")
+    end
+    base = info[k]
+    arg_types = type(base).info.arg_types
+    mem = StanExpr(CanonicalExpr(Base.getfield, base,
+        StanExpr(1, StanType(types.int; value=1, qual=:data))), arg_types.mem)
+    ends = StanExpr(CanonicalExpr(Base.getfield, base,
+        StanExpr(2, StanType(types.int; value=2, qual=:data))), arg_types.ends)
+    gen_size = stan_call(builtin.num_elements, mem)
+    lik_size = stan_call(builtin.num_elements, ends)
+    gen_type = StanType(types.vector, (gen_size,);
+        value=missing, qual=:quantities, ragged_obs_source=k)
+    lik_type = StanType(types.vector, (lik_size,);
+        value=missing, qual=:quantities, ragged_obs_source=k)
+    for decl in (StanExpr(gen, gen_type), StanExpr(lik, lik_type))
+        info[expr(decl)] = decl
+        push!(b, StanExpr(CanonicalExpr(:(::), decl), type(decl)); info)
+    end
+end
+_push_indexed_obs_twin_decls!(b, target; info) =
+    target.kind === :dense ? _push_obs_gen_decl!(b, target.base; info) :
+    target.kind === :ragged ? _push_ragged_obs_decls!(b, target.base; info) :
+    error("internal: unknown indexed observation twin kind `", target.kind, "`.")
 
 function lpxf_expr end
 function rng_expr end

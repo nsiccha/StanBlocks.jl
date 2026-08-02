@@ -252,11 +252,10 @@ _descriptor_constraints(i) = (; [
 # Which data variables the model CONDITIONS on takes TWO passes, because neither
 # alone is complete:
 #
-#  (1) the model block's `~` statements. Authoritative, and the only signal for
-#      a RAGGED observation, which has no declarable Stan shape and therefore no
-#      `_gen` twin at all — so pass (2) can never see one. Resolving the base of
-#      such an LHS needs `_obs_projection_base`, not the getindex-only matcher;
-#      see the note there.
+#  (1) the model block's `~` statements. Authoritative for every live likelihood
+#      and still required for observation shapes with no generated twin.
+#      Resolving a ragged plate slice needs `_obs_projection_base`, not the
+#      dense getindex-only retarget; see the note there.
 #  (2) the `<stem>_gen` / `<stem>_likelihood` declarations in generated
 #      quantities, WHERE `<stem>` IS ITSELF A DATA INPUT. Needed because a
 #      cv-held-out observation routes to generated quantities ONLY — and by then
@@ -289,13 +288,11 @@ _observed_bases(x::StanExpr{<:CanonicalExpr}, acc) = _observed_bases(expr(x), ac
 # stops dead at that `getfield` and reports the column as UNOBSERVED.
 #
 # Deliberately WIDER than `_getindex_chain_base` (passes.jl), which must stay
-# getindex-only: that matcher gates the compiler-owned `<base>_gen` retarget, and
-# a ragged base has no declarable Stan shape to retarget INTO, so it keeps its
-# model-only routing by design. Whether a model CONDITIONS on a column and
-# whether the compiler can PREDICT it are different questions — conflating them
-# is what hid BOTH `observed` and `:fit` from every ragged-observation model
-# (snag built-brm-s-desc-55d6d48c). `:predict` stays correctly absent here,
-# because it gates on a `:draw` output rather than on this walk.
+# getindex-only because it retargets a natively declarable dense base. Ragged
+# prediction uses a DIFFERENT strict matcher, `_indexed_ragged_obs_slice`, which
+# validates the complete compiler-owned `mem[start(ends,g):end(ends,g)]` shape
+# before declaring flat storage. This generic observation walk must not be used
+# as a predictive certificate: doing so would accept arbitrary tuple projections.
 _obs_projection_base(x::StanExpr) = _obs_projection_base(expr(x))
 _obs_projection_base(x::Symbol) = x
 _obs_projection_base(x::CanonicalExpr) =
