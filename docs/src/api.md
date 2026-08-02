@@ -5,6 +5,7 @@
 ```@docs
 StanBlocks.@slic
 StanBlocks.@deffun
+StanBlocks.@stanonly
 StanBlocks.@defsig
 StanBlocks.@usertype
 ```
@@ -30,6 +31,22 @@ StanBlocks.stan_code
 StanBlocks.stan_model
 StanBlocks.stan_instantiate
 StanBlocks.instantiate
+```
+
+## Model Descriptors
+
+```@docs
+StanBlocks.stan_descriptor
+StanBlocks.required_inputs
+StanBlocks.stan_definition
+StanBlocks.stan_definition_closure
+StanBlocks.stan_operation
+StanBlocks.stan_execute
+StanBlocks.ModelDescriptor
+StanBlocks.ModelInput
+StanBlocks.ModelOutput
+StanBlocks.ModelDefinition
+StanBlocks.ModelOperation
 ```
 
 ## Smoke Tests
