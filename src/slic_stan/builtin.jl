@@ -858,12 +858,17 @@ import Statistics
     bernoulli_logit_rng(::vector[n])::int[n]
     bernoulli_logit_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
     @stanonly bernoulli_logit_glm_rng(X::matrix[m,n], alpha::real, beta) = bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta)
-    normal_id_glm_rng(X::matrix[m,n], alpha, beta, sigma)::vector[m]
-    @stanonly normal_id_glm_rng(X::matrix[m,n], alpha::real, beta, sigma) = normal_id_glm_rng(X, rep_vector(alpha, m), beta, sigma)
-    poisson_log_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
-    @stanonly poisson_log_glm_rng(X::matrix[m,n], alpha::real, beta) = poisson_log_glm_rng(X, rep_vector(alpha, m), beta)
-    neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha, beta, phi)::int[m]
-    @stanonly neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::real, beta, phi) = neg_binomial_2_log_glm_rng(X, rep_vector(alpha, m), beta, phi)
+    # `bernoulli_logit_glm_rng` above is the ONLY `*_glm_rng` Stan Math ships
+    # (checked against `stanc --dump-stan-math-signatures`, 2.39.0). Declaring
+    # the other three GLM families' rngs as native would emit calls stanc
+    # rejects, so define them as SB functions over the linear predictor
+    # `alpha + X * beta` — the same lowering `binomial_logit_rng` gets below.
+    @stanonly normal_id_glm_rng(X::matrix[m,n], alpha::real, beta, sigma)::vector[m] = to_vector(normal_rng(rep_vector(alpha, m) + X * beta, sigma))
+    @stanonly normal_id_glm_rng(X::matrix[m,n], alpha::vector[m], beta, sigma)::vector[m] = to_vector(normal_rng(alpha + X * beta, sigma))
+    @stanonly poisson_log_glm_rng(X::matrix[m,n], alpha::real, beta)::int[m] = poisson_log_rng(rep_vector(alpha, m) + X * beta)
+    @stanonly poisson_log_glm_rng(X::matrix[m,n], alpha::vector[m], beta)::int[m] = poisson_log_rng(alpha + X * beta)
+    @stanonly neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::real, beta, phi)::int[m] = neg_binomial_2_log_rng(rep_vector(alpha, m) + X * beta, phi)
+    @stanonly neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::vector[m], beta, phi)::int[m] = neg_binomial_2_log_rng(alpha + X * beta, phi)
     beta_rng(args...)::real
     binomial_rng(args...)::int
     binomial_logit_rng(n::int[m], p::vector[m])::int[m]
@@ -1773,8 +1778,21 @@ end
 @deffun bernoulli_logit_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] =
     bernoulli_logit_glm_rng(X, alpha, beta)
 
-# binomial_logit: Stan ships `binomial_logit_lpmf` but NOT a matching
-# `binomial_logit_rng` (only the GLM-flavoured variant exists). Lower
+# The other three GLM families have no native Stan rng at all; their plain
+# forms (declared with bodies above) lower to the base family's rng over
+# `alpha + X * beta`. The token path just unwraps, exactly as bernoulli does.
+@deffun normal_id_glm_rng(vector[m], X::matrix[m,n], alpha, beta, sigma)::vector[m] =
+    normal_id_glm_rng(X, alpha, beta, sigma)
+@deffun normal_id_glm_rng(real[m], X::matrix[m,n], alpha, beta, sigma)::real[m] =
+    to_array_1d(normal_id_glm_rng(X, alpha, beta, sigma))
+@deffun poisson_log_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] =
+    poisson_log_glm_rng(X, alpha, beta)
+@deffun neg_binomial_2_log_glm_rng(int[m], X::matrix[m,n], alpha, beta, phi)::int[m] =
+    neg_binomial_2_log_glm_rng(X, alpha, beta, phi)
+
+# binomial_logit: Stan ships `binomial_logit_lpmf` (and a fused
+# `binomial_logit_glm_lpmf`) but NO `binomial_logit_rng` in any flavour —
+# `bernoulli_logit_glm_rng` is the only `*_glm_rng` in Stan Math at all. Lower
 # the token-path call to `binomial_rng(N, inv_logit(eta))` so SBBRMI's
 # generated_quantities for a `BinomialLogit(N, eta)` likelihood compile
 # under stanc.

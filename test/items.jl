@@ -6908,3 +6908,74 @@ self/cross covariance with scalar or per-axis length scales. SLIC spells an
     @test occursin("to_array_1d(length_scale)", stan_block(code, "functions"))
     @test stanc_compiles(model)
 end
+
+"""
+Regression for the three GLM families whose fused likelihood Stan ships but
+whose RNG it does NOT. `stanc --dump-stan-math-signatures` (2.39.0) lists
+exactly two `*_glm_rng` overloads, both `bernoulli_logit_glm_rng`; there is no
+`normal_id_glm_rng`, `poisson_log_glm_rng` or `neg_binomial_2_log_glm_rng`.
+A data-LHS `y ~ <family>_glm(...)` synthesizes a sized-token predictive draw,
+so each family needs BOTH a token overload and a plain form that lowers to the
+base family's RNG over `alpha + X * beta` — the `binomial_logit_rng` treatment.
+Emitting a native call instead transpiles green and is rejected by stanc, so
+this item gates on `stanc_compiles`, not `transpiles`.
+"""
+@testitem "slic: GLM families without a native rng lower their predictive draw" tags=[:slic, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+
+    X = [1.0 0.5; 0.25 -1.0; -0.5 0.75; 2.0 0.1]
+    y_real = [0.3, -1.2, 0.7, 1.9]
+    y_int = [1, 0, 3, 2]
+    alpha_vec = [0.1, -0.2, 0.3, 0.0]
+
+    normal_model = @slic (; X = X, y = y_real) begin
+        beta_pop ~ std_normal(; n = dims(X)[2])
+        sigma ~ exponential(1.0; lower = 0.0)
+        y ~ normal_id_glm(X, 0.0, beta_pop, sigma)
+    end
+    poisson_model = @slic (; X = X, y = y_int) begin
+        beta_pop ~ std_normal(; n = dims(X)[2])
+        y ~ poisson_log_glm(X, 0.0, beta_pop)
+    end
+    negbin_model = @slic (; X = X, y = y_int) begin
+        beta_pop ~ std_normal(; n = dims(X)[2])
+        phi ~ exponential(1.0; lower = 0.0)
+        y ~ neg_binomial_2_log_glm(X, 0.0, beta_pop, phi)
+    end
+    # A vector intercept must dispatch to the non-`rep_vector` plain form.
+    normal_vector_alpha = @slic (; X = X, y = y_real, a = alpha_vec) begin
+        beta_pop ~ std_normal(; n = dims(X)[2])
+        sigma ~ exponential(1.0; lower = 0.0)
+        y ~ normal_id_glm(X, a, beta_pop, sigma)
+    end
+
+    for (family, base_rng, model) in (
+        ("normal_id_glm", "normal_rng", normal_model),
+        ("poisson_log_glm", "poisson_log_rng", poisson_model),
+        ("neg_binomial_2_log_glm", "neg_binomial_2_log_rng", negbin_model),
+        ("normal_id_glm", "normal_rng", normal_vector_alpha),
+    )
+        code = stan_code(model)
+        functions = stan_block(code, "functions")
+        # The token wrapper exists and delegates to the plain form...
+        @test occursin("$(family)_rng(", functions)
+        # ...whose body draws from the BASE family, never a native `*_glm_rng`.
+        @test occursin("$(base_rng)(", functions)
+        outputs = Dict(output.name => output for output in stan_descriptor(model).outputs)
+        @test outputs[:y_gen].generative == :draw
+        @test outputs[:y_gen].size == (:X_m,)
+        @test outputs[:y_likelihood].generative == :pointwise_loglik
+        # stanc is the real gate: a phantom native call transpiles but does not compile.
+        @test stanc_compiles(model)
+    end
+
+    # Bernoulli is the one family Stan DOES ship an rng for; its token overload
+    # must still bottom out in the native call, not a lowered composition.
+    bernoulli_model = @slic (; X = X, y = [1, 0, 1, 0]) begin
+        beta_pop ~ std_normal(; n = dims(X)[2])
+        y ~ bernoulli_logit_glm(X, 0.0, beta_pop)
+    end
+    bernoulli_functions = stan_block(stan_code(bernoulli_model), "functions")
+    @test occursin("return bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta);", bernoulli_functions)
+    @test stanc_compiles(bernoulli_model)
+end
