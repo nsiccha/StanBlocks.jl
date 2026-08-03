@@ -186,8 +186,8 @@ _supported_return_type(rt::StanType) = begin
     ct = center_type(rt)
     ct <: types.complex || ct <: types.any_vector || ct <: types.matrix
 end
-_checked_return_type(f, args) = begin
-    rt = type(stan_expr(CanonicalExpr(f, args...)))
+_checked_return_type(f, args, context=nothing) = begin
+    rt = type(_stan_expr(CanonicalExpr(f, args...), context))
     center_type(rt) === types.anything && throw(ArgumentError(
         "return_type_of could not infer a SLIC return type for $(f)(" *
         _return_type_signature(args) * "). Only non-inline @deffun functions and " *
@@ -203,15 +203,18 @@ end
 return_type_of(f::Function, args...) = _checked_return_type(
     f,
     ntuple(i -> _return_type_query_arg(i, args[i]), length(args)),
+    TraceContext(),
 )
 return_type_of(f, args...) = throw(ArgumentError(
     "return_type_of expects a non-inline @deffun or @defsig-registered Function " *
     "as its first argument, got $(typeof(f))."
 ))
 
-tracetype(x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}) = begin
+tracetype(x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}) =
+    _tracetype(x, nothing)
+_tracetype(x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}, context) = begin
     farg = x.args[1]
-    rt = _checked_return_type(getvalue(farg), x.args[2:end])
+    rt = _checked_return_type(getvalue(farg), x.args[2:end], context)
     ct = center_type(rt)
     StanType(types.tokenof{ct}, stan_size(rt); value=ct, qual=:data)
 end
@@ -238,9 +241,12 @@ _reject_scalar_array_elementwise(x::CanonicalExpr) = begin
         "function-body loop, or convert to a `vector` via `to_vector(...)` first."
     )
 end
-tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = if length(x.args) > 2
+tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = _tracetype(x, nothing)
+_tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}, context) = if length(x.args) > 2
+    context = _context_or_new(context)
     f = head(x)
-    tracetype(CanonicalExpr(f, x.args[1], stan_expr(CanonicalExpr(f, x.args[2:end]...))))
+    nested = _stan_expr(CanonicalExpr(f, x.args[2:end]...), context)
+    _tracetype(CanonicalExpr(f, x.args[1], nested), context)
 else
     _reject_scalar_array_elementwise(x)
     error("tracetype not defined for $(short_expr(x))!")
@@ -651,8 +657,11 @@ begin
         xbody = Expr(:block, source, [
             xassign(xtuple(ensure_xlhs.(lhsi.args[2:end])...), :(stan_size(x.args[$i])))
             for (i, lhsi) in enumerate(lhs)
-        ]..., :(info = (;$(dim_names...),)), xsig_expr(rv))
-        :($stan.tracetype($xexpr) = $xbody)
+        ]..., :(info = (;$(dim_names...), __trace_context__ = $_context_or_new(context))), xsig_expr(rv))
+        quote
+            $stan.tracetype($xexpr) = $stan._tracetype(x, nothing)
+            $stan._tracetype($xexpr, context) = $xbody
+        end
     end
     funbody(x::Expr) = begin
         @assert x.head == :block "funbody expects a `begin ... end` block, got `$x` (head `$(x.head)`)."
@@ -730,14 +739,17 @@ begin
 
     hasvararg(args) = length(args) > 0 && Meta.isexpr(args[end], :(...))
     maybedoc(x::AbstractString) = length(strip(x)) == 0 ? "" : strip(replace("\n" * strip(x), "\n"=>"\n// ")) * "\n"
-    forward_return!(x; info) = task_local_storage(:_slic_inline_pending, Any[]) do
+    forward_return!(x; info) = begin
         # Isolate any inline-call pending statements from this throwaway
         # type-inference trace — they'd otherwise leak into the caller's
         # block (for non-inline UDFs whose tracetype evaluates an inlined
         # call as part of return-type inference).
         info = OrderedDict{Symbol,Any}(pairs(info))
-        forward!(x; info)
-        info[RV_NAME]
+        _trace_context(info) === nothing && _attach_trace_context!(info, nothing)
+        _with_trace_state(info, :inline_pending, Any[]) do
+            forward!(x; info)
+            info[RV_NAME]
+        end
     end
     # Walk a UDF body looking for forms StanBlocks deliberately does not
     # support inside `@deffun` definitions: sampling (`~`) and `target +=`
@@ -1544,6 +1556,7 @@ begin
         # convert to OrderedDict before injecting `:__mod__`. (`fundef`
         # uses `anon_deconstruct` which already does the conversion.)
         promote_info = :(info = $OrderedDict{Symbol,Any}(pairs(info)))
+        inject_context = :($_attach_trace_context!(info, context))
         if is_inline
             # Inline UDFs do not produce a Stan function (no `functions {}`
             # entry) and do not register `tracetype` — the call site fully
@@ -1575,22 +1588,26 @@ begin
             )))
         else
             push!(stmts, quote
-                $stan.tracetype($xexpr) = $(Expr(:block, source, capture_mod, deconstruct, promote_info, inject_mod, rv_expr))
+                $stan.tracetype($xexpr) = $stan._tracetype(x, nothing)
+                $stan._tracetype($xexpr, context) = $(Expr(:block, source, capture_mod, deconstruct, promote_info, inject_context, inject_mod, rv_expr))
             end)
             if !ismissing(body)
-                push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, source, capture_mod, anon_deconstruct, inject_mod, stan_fundef))))
+                push!(stmts, quote
+                    $stan.fundef($xexpr) = $stan._fundef(x, nothing)
+                    $stan._fundef($xexpr, context) = $(Expr(:block, source, capture_mod, anon_deconstruct, inject_context, inject_mod, stan_fundef))
+                end)
                 # Mark the NAME as UDF-backed. `fundef` alone cannot answer
                 # "should this function have had a Stan definition?" — it falls
                 # back to `nothing` both for a native Stan function (correct)
                 # and for a UDF whose signature simply did not match (a bug).
-                # These markers are per-name and shape-independent, which is
-                # exactly the question `_check_lpxf_resolves` needs to ask.
-                marker = _backed_marker(:udf_backed, f, ftype, def_mod, stan)
+                # Each marker is signature-specific; the name-level query below
+                # asks whether ANY such method exists for this function singleton.
+                marker = _backed_marker(:udf, f, xexpr, stan)
             else
                 # A body-less signature declares a function Stan ALREADY has —
                 # StanBlocks owes it no definition. See `_check_lpxf_resolves`
                 # for why a name needs both markers rather than one.
-                marker = _backed_marker(:native_backed, f, ftype, def_mod, stan)
+                marker = _backed_marker(:native, f, xexpr, stan)
             end
             isnothing(marker) || push!(stmts, marker)
         end
@@ -1634,7 +1651,8 @@ begin
             ))
             push!(stmts, :(function $base_f end))
             push!(stmts, quote
-                $stan.tracetype($base_xexpr) = $(Expr(:block, source, reconstruct, base_deconstruct, xsig_expr(y_type)))
+                $stan.tracetype($base_xexpr) = $stan._tracetype(_x, nothing)
+                $stan._tracetype($base_xexpr, context) = $(Expr(:block, source, reconstruct, base_deconstruct, xsig_expr(y_type)))
                 $stan.fundef($base_xexpr) = nothing
             end)
         end
@@ -1647,6 +1665,7 @@ begin
 end
 
 fundef(x) = nothing
+_fundef(x, _context) = fundef(x)
 
 # --- Provenance markers for `@deffun`-registered names ------------------------
 #
@@ -1666,34 +1685,30 @@ fundef(x) = nothing
 # array-of-factors helper. Only `udf_backed && !native_backed` — a name Stan has
 # never heard of — lets `_check_lpxf_resolves` conclude an unmatched shape is
 # unresolvable rather than merely unmodelled by SLIC's signature table.
-udf_backed(x) = false
-native_backed(x) = false
+# Provenance is recorded as one ordinary method PER REGISTERED SIGNATURE. That
+# makes every marker as unique as the `tracetype` / `fundef` method emitted beside
+# it: overloads of one name coexist without a mutable name-level dedup registry,
+# and package extensions can add markers through normal method registration.
+#
+# `_has_backing` asks the method table whether ANY signature for the exact
+# function singleton has the requested provenance. This query runs only on the
+# unresolved-density diagnostic path. The exact head parameter is important:
+# `CanonicalExpr{<:typeof(h)}` is a broad UnionAll in a `methods` query, while
+# `CanonicalExpr{typeof(h)}` excludes unrelated function singleton types.
+function _backing_provenance end
+_has_backing(kind, h::Function) = !isempty(methods(
+    _backing_provenance,
+    Tuple{Val{kind},CanonicalExpr{typeof(h)}},
+))
+_has_backing(_, _) = false
+udf_backed(h) = _has_backing(:udf, h)
+native_backed(h) = _has_backing(:native, h)
 
-# A marker is an ordinary top-level method definition, so it must be emitted AT
-# MOST ONCE per name: a name routinely carries several registrations
-# (`truncated_normal_lpdf` has two bodyful overloads, `simple_reduce_sum` more),
-# and re-defining an identical method is *method overwriting*, which Julia
-# forbids outright during precompilation.
-#
-# Dedup therefore happens at MACRO-EXPANSION time, keyed by defining module +
-# name. The obvious run-time alternative — look the method up, then `@eval` it if
-# absent — is unusable: `@deffun` is also called from package EXTENSIONS
-# (`ext/PosteriorDBExt.jl`), and an extension cannot `eval` into the by-then
-# closed `StanBlocks` module (Julia: "breaks incremental compilation"). A plain
-# top-level definition works from anywhere; only the duplicate must be avoided.
-#
-# Keying includes `def_mod` so two modules defining the same NAME never suppress
-# each other's markers. A name we cannot key (qualified or computed) simply gets
-# no marker — `udf_backed` stays `false` and `_check_lpxf_resolves` stays quiet,
-# which is the safe direction to fail.
-_marked_backed = Set{Tuple{Symbol,Any,Symbol}}()
-_backed_marker(kind, f, ftype, def_mod, stan) = begin
+_backed_marker(kind, f, xexpr, stan) = begin
     _is_symbol(f) || return nothing
-    key = (kind, def_mod, f)
-    key in _marked_backed && return nothing
-    push!(_marked_backed, key)
-    marker = Expr(:., stan, QuoteNode(kind))
-    :($marker(::$ftype) = true)
+    marker = Expr(:., stan, QuoteNode(:_backing_provenance))
+    kind_type = Expr(:curly, Val, QuoteNode(kind))
+    Expr(:(=), Expr(:call, marker, Expr(:(::), kind_type), xexpr), nothing)
 end
 sig_expr(x) = x
 sig_expr(x::Union{Tuple,NamedTuple,Vector}) = map(sig_expr, x)
@@ -1716,7 +1731,7 @@ sig_expr(x::StanExpr2{<:types.closure}) = StanExpr(type(x).info.value.id, sig_ex
 fetch_functions!(x::CanonicalExpr; info) = begin
     sx = sig_expr(x)
     sx in keys(info) && return
-    info[sx] = fundef(x)
+    info[sx] = _fundef(x, _trace_context(info))
     isnothing(info[sx]) && return
     fetch_subfunctions!(info[sx].body; info)
 end
@@ -1796,17 +1811,15 @@ end
 # `vector[max(0, ends-start+1)]`), surfacing later as
 # `tracetype not defined for (anything - anything)`. The per-call `tok` keeps
 # each level's placeholders distinct so `deanon_size` only ever substitutes
-# the placeholders it actually introduced. The counter lives in per-trace
-# task-local storage (`_next_anon_id` + the seed-scope are defined centrally in
-# tracing.jl); the names never reach Stan output — they are always deanonymized
-# away, so the only out-of-trace caller (ad-hoc `stan_expr(::CanonicalExpr)`)
-# is determinism-irrelevant and falls to the lazy `get!` default.
+# the placeholders it actually introduced. The explicit TraceContext supplies
+# the counter; the names never reach Stan output because they are always
+# deanonymized away.
 anon_arg(x::StanExpr, i::Int, tok) = StanExpr(Symbol(:_arg, tok, :_, i), type(x))
 anon_arg(x, i::Int, tok) = x
-anon_canonical(x::CanonicalExpr, tok=_next_anon_id()) = remake(x, ntuple(i -> anon_arg(x.args[i], i, tok), length(x.args))...)
-anon_canonical(x::CanonicalExpr{Colon}, tok=_next_anon_id()) = x   # needs real args for range size
-anon_canonical(x::BlockExpr, tok=_next_anon_id()) = x               # args is Vector, not Tuple
-anon_canonical(x::CanonicalExprV{:nt}, tok=_next_anon_id()) = x     # preserve named tuple structure
+anon_canonical(x::CanonicalExpr, tok) = remake(x, ntuple(i -> anon_arg(x.args[i], i, tok), length(x.args))...)
+anon_canonical(x::CanonicalExpr{Colon}, tok) = x   # needs real args for range size
+anon_canonical(x::BlockExpr, tok) = x               # args is Vector, not Tuple
+anon_canonical(x::CanonicalExprV{:nt}, tok) = x     # preserve named tuple structure
 anon_info(x::NamedTuple) = (;[
     key=>anon_expr(key, value)
     for (key, value) in pairs(x)

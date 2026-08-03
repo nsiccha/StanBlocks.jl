@@ -39,17 +39,32 @@ deanon_type(tt::StanType, x::CanonicalExpr, tok) = begin
         k => (k === :arg_types ? nat : v) for (k, v) in pairs(info(tt)) if k != :size
     ]...)
 end
-stan_expr(x::CanonicalExpr) = begin
-    tok = _next_anon_id()
-    tt = deanon_type(tracetype(anon_canonical(x, tok)), x, tok)
+_tracetype(x, _context) = tracetype(x)
+_stan_expr(x::CanonicalExpr, context) = begin
+    context = _context_or_new(context)
+    tok = _next_anon_id(context)
+    tt = deanon_type(_tracetype(anon_canonical(x, tok), context), x, tok)
     StanExpr(x, remake(tt; qual=maximum(qual, x.args; init=:data), cv=any(cv, x.args) || cv(tt)))
 end
+stan_expr(x::CanonicalExpr) = _stan_expr(x, TraceContext())
+# Every compiler-internal conversion that runs while a trace is active must use
+# the trace's context. Starting a standalone context here would restart the anon
+# token counter at 1; a result type that already contains the outer trace's
+# `_arg1_…` placeholder could then be deanonymized against the wrong expression.
+_trace_stan_expr(x::CanonicalExpr, info) = _stan_expr(x, _trace_context(info))
+_trace_stan_arg(x::CanonicalExpr, info) = _trace_stan_expr(x, info)
+_trace_stan_arg(x, _info) = stan_expr(x)
+_trace_stan_call(f, args...; info) = _trace_stan_expr(
+    CanonicalExpr(f, map(a -> _trace_stan_arg(a, info), args)...), info
+)
 # A @slic sub-model or named sub-model function in call position. For an anonymous
 # `SlicModel`, data flows via KEYWORDS — a positional call now errors (its call
 # operator points at `Base.merge` for splice overrides / `@slic f(...)=...` for
 # positional inputs). For a `SubmodelFn`, positional args ARE the inputs (bound by
 # its generated call method; Julia's own dispatch/arity handle them). Either way the
 # call yields a `SlicModel`, embedded via the existing `~`-rhs-is-`SlicModel` path.
+_stan_expr(x::CanonicalExpr{<:Union{SlicModel,SubmodelFn}}, _context) =
+    head(x)(x.args...; x.kwargs...)
 stan_expr(x::CanonicalExpr{<:Union{SlicModel,SubmodelFn}}) = head(x)(x.args...; x.kwargs...)
 
 backward!(x; info) = error("backward! not defined for value `$x` of type `$(typeof(x))` — no method matches a more specific signature.")
@@ -59,7 +74,7 @@ backward!(x::Union{String,Number,LineNumberNode,Symbol,Nothing,Colon}; info) = x
 backward!(x::CanonicalExpr; info) = remake(x, backward!(x.args; info)...)
 backward!(x::BlockExpr; info) = remake(x, reverse(backward!.(reverse(x.args); info))...)
 # The LHS of a compiler-injected slice/element fill (`out[a:b] = rhs`, hoisted
-# from an inlined mutating helper or a plate via `_slic_inline_pending`) is a
+# from an inlined mutating helper or a plate via the trace's pending buffer) is a
 # getindex expr, not a bare Symbol — but every `info` key is a Symbol. Resolve
 # the BASE variable being (partially) filled, "coarse-grained": discard *which*
 # elements are written and treat the whole base var as touched. A plain Symbol
@@ -707,8 +722,8 @@ _push_ragged_obs_decls!(b, k::Symbol; info) = begin
         StanExpr(1, StanType(types.int; value=1, qual=:data))), arg_types.mem)
     ends = StanExpr(CanonicalExpr(Base.getfield, base,
         StanExpr(2, StanType(types.int; value=2, qual=:data))), arg_types.ends)
-    gen_size = stan_call(builtin.num_elements, mem)
-    lik_size = stan_call(builtin.num_elements, ends)
+    gen_size = _trace_stan_call(builtin.num_elements, mem; info)
+    lik_size = _trace_stan_call(builtin.num_elements, ends; info)
     gen_type = StanType(types.vector, (gen_size,);
         value=missing, qual=:quantities, ragged_obs_source=k)
     lik_type = StanType(types.vector, (lik_size,);

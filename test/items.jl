@@ -2235,6 +2235,20 @@ Verify `determinism: inline UDF + lifted closure` in an isolated test item.
     @test occursin("// lifted closure", a)
     # transpiling twice in one session must be byte-identical
     @test a == b
+
+    # Each concurrent transpilation owns its counters and scratch buffers. This
+    # exercises real parallelism when the test Julia has multiple threads and
+    # remains a separate-Task isolation check on a single-threaded runner.
+    concurrent = fetch.([
+        Threads.@spawn stan_code(stan_model(det_model)) for _ in 1:max(4, Threads.nthreads())
+    ])
+    @test all(==(a), concurrent)
+
+    # Keep the architectural requirement executable: no compiler source may
+    # silently reintroduce ambient Task-local state.
+    slic_src = joinpath(dirname(pathof(StanBlocks)), "slic_stan")
+    source_files = filter(endswith(".jl"), readdir(slic_src; join=true))
+    @test all(!occursin("task_local_storage", read(file, String)) for file in source_files)
 end
 
 """
@@ -6347,6 +6361,19 @@ is skipped for a ragged plate-sliced obs.
 @testitem "slic: unresolved sampling distribution fails loudly" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     ys = [randn(3) for _ in 1:4]
     xs = [randn(3) for _ in 1:4]
+
+    # Provenance is derived from exact-signature marker METHODS, not a mutable
+    # process-global registry. Multiple overloads of one function contribute
+    # multiple methods; the name-level query still distinguishes UDF-only,
+    # native-only, and mixed families.
+    sb = StanBlocks.stan
+    @test !isdefined(sb, :_marked_backed)
+    @test sb.udf_backed(sb.builtin.truncated_normal_lpdf)
+    @test !sb.native_backed(sb.builtin.truncated_normal_lpdf)
+    @test !sb.udf_backed(sb.builtin.normal_lpdf)
+    @test sb.native_backed(sb.builtin.normal_lpdf)
+    @test sb.udf_backed(sb.builtin.lkj_corr_cholesky_lpdf)
+    @test sb.native_backed(sb.builtin.lkj_corr_cholesky_lpdf)
 
     # --- POSITIVE: the registered ALL-VECTOR signature still resolves --------
     # Both in a ragged plate cell and at top level: the UDF is emitted and stanc

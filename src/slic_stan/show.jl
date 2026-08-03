@@ -214,8 +214,8 @@ Base.show(io::IO, x::SamplingExpr) = print(io, Join(x.args, " ~ "))
 
 for f in (:+=,:-=,:*=)
     qf = Meta.quot(f)
-    @eval forward!(x::CanonicalExprV{$qf}; info) = stan_expr(remake(x, forward!(x.args; info)...))
+    @eval forward!(x::CanonicalExprV{$qf}; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
     @eval Base.show(io::IO, x::CanonicalExprV{$qf}) = print(io, Join(x.args, prettystring($qf)))
 end
-@eval forward!(x::CanonicalExprV{:(.=)}; info) = stan_expr(remake(x, forward!(x.args; info)...))
+@eval forward!(x::CanonicalExprV{:(.=)}; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 @eval Base.show(io::IO, x::CanonicalExprV{:(.=)}) = print(io, Join(x.args, " = "))

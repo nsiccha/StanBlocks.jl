@@ -1467,9 +1467,9 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_arg)}; info) = begi
         # distribution arguments because auto-indexing them would be ambiguous.
         mem = forward!(CanonicalExpr(Base.getfield, arg, 1); info)
         ends = forward!(CanonicalExpr(Base.getfield, arg, 2); info)
-        lo = stan_call(builtin.ragged_start, ends, g)
-        hi = stan_call(builtin.ragged_end, ends, g)
-        stan_call(getindex, mem, stan_call(Colon(), lo, hi))
+        lo = _trace_stan_call(builtin.ragged_start, ends, g; info)
+        hi = _trace_stan_call(builtin.ragged_end, ends, g; info)
+        _trace_stan_call(getindex, mem, _trace_stan_call(Colon(), lo, hi; info); info)
     else
         arg
     end
@@ -1571,7 +1571,7 @@ end
 # falls through to normal integer indexing. This getindex overload is the ONLY
 # way `bool` differs from `int`; everywhere else `bool[n]` dispatches as `int[n]`.
 #
-# INSIDE A PLATE loop (`_plate_context() !== nothing`) the hoist is SUPPRESSED and
+# INSIDE A PLATE loop (`_plate_context(info) !== nothing`) the hoist is SUPPRESSED and
 # the `findall` stays inline: a per-cell mask is data-derived, so the hoisted `idx`
 # would land in the transformed-data COPY of the plate loop that `distribute!` splits
 # off — out of scope in the model COPY where the cmt-keyed obs uses it (stanc
@@ -1579,17 +1579,17 @@ end
 # block; the plate emitter mirrors this for an explicit `idx = findall(...)` local
 # (forward.jl). Snag plate-cell-int.
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2,<:StanExpr2{<:types.bool}}}; info) = begin
-    stan_ndim(type(x.args[2])) >= 1 || return fold_shape_query(stan_expr(x))
+    stan_ndim(type(x.args[2])) >= 1 || return fold_shape_query(_trace_stan_expr(x, info))
     idx_val = forward!(CanonicalExpr(Base.findall, x.args[2]); info)
-    pending = _get_inline_pending()
-    idx_ref = if pending === nothing || _plate_context() !== nothing
+    pending = _get_inline_pending(info)
+    idx_ref = if pending === nothing || _plate_context(info) !== nothing
         idx_val                                   # no statement context, or inside a plate
                                                   # loop → inline the findall (see above)
     else
-        id = _next_inline_id()
+        id = _next_inline_id(info)
         name = Symbol(:boolmask_idx_, id)
         while name in keys(info)
-            id = _next_inline_id(); name = Symbol(:boolmask_idx_, id)
+            id = _next_inline_id(info); name = Symbol(:boolmask_idx_, id)
         end
         push!(pending, forward!(CanonicalExpr(:(=), name, idx_val); info))
         info[name]
@@ -1604,38 +1604,38 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:R
     if _is_ragged_construction(x.args[1])
         rv, i = x.args
         ends = _ragged_ends(rv)
-        lo = stan_call(builtin.ragged_start, ends, i)
-        hi = stan_call(builtin.ragged_end, ends, i)
-        stan_call(getindex, _ragged_mem(rv), stan_call(Colon(), lo, hi))
+        lo = _trace_stan_call(builtin.ragged_start, ends, i; info)
+        hi = _trace_stan_call(builtin.ragged_end, ends, i; info)
+        _trace_stan_call(getindex, _ragged_mem(rv), _trace_stan_call(Colon(), lo, hi; info); info)
     else
-        fold_shape_query(stan_expr(x))
+        fold_shape_query(_trace_stan_expr(x, info))
     end
 # `rm[i]` → reconstruct the selected flat slice with its data-only dimensions.
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
     if _is_ragged_construction(x.args[1])
         rv, i = x.args
         ends = _ragged_ends(rv)
-        lo = stan_call(builtin.ragged_start, ends, i)
-        hi = stan_call(builtin.ragged_end, ends, i)
-        slice = stan_call(getindex, _ragged_mem(rv), stan_call(Colon(), lo, hi))
-        nr = stan_call(getindex, _ragged_rows(rv), i)
-        nc = stan_call(getindex, _ragged_cols(rv), i)
-        stan_call(builtin.to_matrix, slice, nr, nc)
+        lo = _trace_stan_call(builtin.ragged_start, ends, i; info)
+        hi = _trace_stan_call(builtin.ragged_end, ends, i; info)
+        slice = _trace_stan_call(getindex, _ragged_mem(rv), _trace_stan_call(Colon(), lo, hi; info); info)
+        nr = _trace_stan_call(getindex, _ragged_rows(rv), i; info)
+        nc = _trace_stan_call(getindex, _ragged_cols(rv), i; info)
+        _trace_stan_call(builtin.to_matrix, slice, nr, nc; info)
     else
-        fold_shape_query(stan_expr(x))
+        fold_shape_query(_trace_stan_expr(x, info))
     end
 # `length(rv)` / `lastindex(rv)` → number of groups = `num_elements(ends)`.
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedVector}}}; info) =
-    _is_ragged_construction(x.args[1]) ? stan_call(length, _ragged_ends(x.args[1])) : fold_shape_query(stan_expr(x))
+    _is_ragged_construction(x.args[1]) ? _trace_stan_call(length, _ragged_ends(x.args[1]); info) : fold_shape_query(_trace_stan_expr(x, info))
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedMatrix}}}; info) =
-    _is_ragged_construction(x.args[1]) ? stan_call(length, _ragged_ends(x.args[1])) : fold_shape_query(stan_expr(x))
+    _is_ragged_construction(x.args[1]) ? _trace_stan_call(length, _ragged_ends(x.args[1]); info) : fold_shape_query(_trace_stan_expr(x, info))
 # `rv.mem` / `rv.ends` (and the matrix shape fields) → the stored component;
 # field access lowers to `getfield(rv, position)`, resolved against the
 # constructor arguments here.
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedVector},<:StanExpr2{<:types.int}}}; info) =
-    _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+    _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
-    _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+    _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
 
 # --- EachCol / EachRow — first-class column/row VIEWS of a matrix -------------
 # `EachCol(X)` / `EachRow(X)` make a matrix's columns / rows an indexable container
@@ -1687,19 +1687,19 @@ _view_mat(v::StanExpr) = expr(v).args[1]
 
 # `EachCol(X)[j]` → `col(X, j)`; `EachRow(X)[i]` → `row(X, i)` (construction case).
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:EachCol},<:StanExpr2{<:types.int}}}; info) =
-    _is_view_construction(x.args[1]) ? stan_call(builtin.col, _view_mat(x.args[1]), x.args[2]) : fold_shape_query(stan_expr(x))
+    _is_view_construction(x.args[1]) ? _trace_stan_call(builtin.col, _view_mat(x.args[1]), x.args[2]; info) : fold_shape_query(_trace_stan_expr(x, info))
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:EachRow},<:StanExpr2{<:types.int}}}; info) =
-    _is_view_construction(x.args[1]) ? stan_call(builtin.row, _view_mat(x.args[1]), x.args[2]) : fold_shape_query(stan_expr(x))
+    _is_view_construction(x.args[1]) ? _trace_stan_call(builtin.row, _view_mat(x.args[1]), x.args[2]; info) : fold_shape_query(_trace_stan_expr(x, info))
 # `length(EachCol(X))` / `lastindex` → `cols(X)`; EachRow → `rows(X)`.
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:EachCol}}}; info) =
-    _is_view_construction(x.args[1]) ? stan_call(builtin.cols, _view_mat(x.args[1])) : fold_shape_query(stan_expr(x))
+    _is_view_construction(x.args[1]) ? _trace_stan_call(builtin.cols, _view_mat(x.args[1]); info) : fold_shape_query(_trace_stan_expr(x, info))
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:EachRow}}}; info) =
-    _is_view_construction(x.args[1]) ? stan_call(builtin.rows, _view_mat(x.args[1])) : fold_shape_query(stan_expr(x))
+    _is_view_construction(x.args[1]) ? _trace_stan_call(builtin.rows, _view_mat(x.args[1]); info) : fold_shape_query(_trace_stan_expr(x, info))
 # `EachCol(X).X` / `EachRow(X).X` → the captured matrix (construction case).
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:EachCol},<:StanExpr2{<:types.int}}}; info) =
-    _is_view_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+    _is_view_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:EachRow},<:StanExpr2{<:types.int}}}; info) =
-    _is_view_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+    _is_view_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
 
 # --- Sized-token rng overloads (generated via @eval @deffun) -----------------
 # gq `x::T[n] ~ dist(args...)` synthesizes `dist_rng(T[n], args...)` which
@@ -2461,7 +2461,8 @@ tracetype(x::CanonicalExpr{typeof(pmx_solve_twocpt)}) = _pmx_solve_tracetype(x, 
 # Stan function is generated per call shape (mirrors the @deffun body build + the
 # reduce_sum trace-level fundef); `broadcasted_getindex` does the per-arg slice.
 _jb_iterated(a) = stan_ndim(type(a)) >= 1
-_jb_elem(a) = _jb_iterated(a) ? stan_expr(CanonicalExpr(getindex, a, stan_expr(1, 1))) : a
+_jb_elem(a, context) = _jb_iterated(a) ?
+    _stan_expr(CanonicalExpr(getindex, a, stan_expr(1, 1)), context) : a
 _jb_semantic_rng(f::StanExpr2{<:types.func}) =
     endswith(string(nameof(type(f).info.value)), "_rng")
 _jb_semantic_rng(_) = false
@@ -2476,12 +2477,13 @@ func_name(::typeof(jbroadcasted), args) = invoke(
     _jb_parent(first(args)),
     args,
 )
-_jb_infer(x::CanonicalExpr) = begin
+_jb_infer(x::CanonicalExpr, context=nothing) = begin
+    context = _context_or_new(context)
     f, dargs = x.args[1], x.args[2:end]
     ai = findfirst(_jb_iterated, dargs)
     isnothing(ai) && error("jbroadcasted: needs at least one iterated (vector/array) argument")
     n = stan_size(type(dargs[ai]), 1)
-    elem_rt = type(stan_expr(CanonicalExpr(f, map(_jb_elem, dargs)...)))
+    elem_rt = type(_stan_expr(CanonicalExpr(f, map(a -> _jb_elem(a, context), dargs)...), context))
     stan_ndim(elem_rt) == 0 || error("jbroadcasted: `f` must return a scalar per element (got `$(sigtype(elem_rt))`)")
     # Preserve the exact int-family element center type: `int` stays `array[] int`
     # and `bool` (a comparison result) stays `array[] bool` (a mask), so
@@ -2489,12 +2491,14 @@ _jb_infer(x::CanonicalExpr) = begin
     container = center_type(elem_rt) <: types.int ? center_type(elem_rt) : types.vector
     (; f, dargs, ai, n, container)
 end
-tracetype(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
-    inf = _jb_infer(x)
+tracetype(x::CanonicalExpr{typeof(jbroadcasted)}) = _tracetype(x, nothing)
+_tracetype(x::CanonicalExpr{typeof(jbroadcasted)}, context) = begin
+    inf = _jb_infer(x, context)
     StanType(inf.container, (inf.n,))
 end
-fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
-    inf = _jb_infer(x)
+fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = _fundef(x, nothing)
+_fundef(x::CanonicalExpr{typeof(jbroadcasted)}, context) = begin
+    inf = _jb_infer(x, context)
     k = length(inf.dargs)
     argnames = [Symbol("x", i) for i in 1:k]
     f_ph = anon_expr(:f, inf.f)
@@ -2517,6 +2521,7 @@ fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
     for i in 1:k
         info[argnames[i]] = arg_phs[i]
     end
+    _attach_trace_context!(info, context)
     info[:__mod__] = parentmodule(typeof(jbroadcasted))
     n_decl = string("int n = dims(", argnames[inf.ai], ")[1];")
     StanFunction3(

@@ -99,7 +99,7 @@ end
 inline_body(::Any) = nothing
 expand_inline_or_trace(x::CanonicalExpr; info) = begin
     meta = inline_body(x)
-    isnothing(meta) && return fold_shape_query(stan_expr(x))
+    isnothing(meta) && return fold_shape_query(_stan_expr(x, _trace_context(info)))
     expand_inline!(x, meta; info)
 end
 # ── Elementwise arithmetic on scalar arrays → lower to the `jbroadcasted` loop ──
@@ -138,15 +138,15 @@ _lower_scalar_array_scale(x::CanonicalExpr; info) = begin
 end
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(+),typeof(-)}}; info) = begin
     rv = _lower_scalar_array_broadcast(x; info)
-    isnothing(rv) ? fold_shape_query(stan_expr(x)) : rv
+    isnothing(rv) ? fold_shape_query(_trace_stan_expr(x, info)) : rv
 end
 expand_inline_or_trace(x::CanonicalExpr{typeof(*)}; info) = begin
     rv = _lower_scalar_array_scale(x; info)
-    isnothing(rv) ? fold_shape_query(stan_expr(x)) : rv
+    isnothing(rv) ? fold_shape_query(_trace_stan_expr(x, info)) : rv
 end
 expand_inline_or_trace(x::CanonicalExpr{<:Base.BroadcastFunction}; info) = begin
     rv = _lower_scalar_array_broadcast(x; info)
-    isnothing(rv) ? fold_shape_query(stan_expr(x)) : rv
+    isnothing(rv) ? fold_shape_query(_trace_stan_expr(x, info)) : rv
 end
 # `isdefined(builtin, x)` returns true even for names inherited from Base
 # (e.g. `accumulate!`), which would mask user-defined SLIC UDFs that share
@@ -232,7 +232,7 @@ expand_inline!(x::CanonicalExpr, meta; info) = begin
     meta.vararg_name !== nothing && push!(arg_set, meta.vararg_name)
     rename = Dict{Symbol,Symbol}()
     if !isempty(locals)
-        id = _next_inline_id()
+        id = _next_inline_id(info)
         for name in locals
             name in arg_set && continue
             rename[name] = Symbol(name, "__il_", id)
@@ -279,7 +279,7 @@ _retrace_inline_body(rewritten, mod; info) =
         end
     end
 _do_retrace_inline_body(rewritten; info) = begin
-    pending = _get_inline_pending()
+    pending = _get_inline_pending(info)
     for s in rewritten[1:end-1]
         result = forward!(canonical(s); info)
         pending !== nothing && push!(pending, result)
@@ -288,19 +288,23 @@ _do_retrace_inline_body(rewritten; info) = begin
 end
 
 # Per-callsite counter for locals (uniqueness within a trace is the only
-# requirement). Lives in per-trace task-local storage — `_next_inline_id` +
-# the seed-scope are defined centrally in tracing.jl.
+# requirement). The root model's TraceContext owns it.
 
-_get_inline_pending() = get(task_local_storage(), :_slic_inline_pending, nothing)
+_get_inline_pending(info) = begin
+    context = _trace_context(info)
+    context === nothing ? nothing : context.inline_pending
+end
 
 # Ragged informative priors are emitted as compiler-owned indexed sampling
-# statements over the constrained view.  Keep the certificate task-local: an
+# statements over the constrained view. Keep the certificate trace-local: an
 # ordinary user-authored `derived[i] ~ dist(...)` remains rejected by the
 # generic already-bound-LHS rule, while the lowering below may deliberately add
 # density to the transformed ragged value.
-_ragged_density_targets() =
-    get(task_local_storage(), :_slic_ragged_density_targets, ())
-_is_ragged_density_target(name::Symbol) = name in _ragged_density_targets()
+_ragged_density_targets(info) = begin
+    context = _trace_context(info)
+    context === nothing ? () : context.ragged_density_targets
+end
+_is_ragged_density_target(name::Symbol; info) = name in _ragged_density_targets(info)
 
 # Trace-time marker used only while rewriting distribution arguments for one
 # ragged group.  `builtin.jl` supplies the type-aware expansion after the
@@ -362,9 +366,12 @@ _ragged_group_marker(f, name, rhs::CanonicalExpr, g) = CanonicalExpr(
 
 # A plate's second trace runs inside the real model scope, but every discovered
 # cell-local binding is represented there by an outer array.  Keep the mapping
-# task-local so normal tracing stays untouched and submodels can participate:
+# trace-local so normal tracing stays untouched and submodels can participate:
 # their local `z` is mapped to the flattened outer key (`t_z`) before indexing.
-_plate_context() = get(task_local_storage(), :_slic_plate_context, nothing)
+_plate_context(info) = begin
+    context = _trace_context(info)
+    context === nothing ? nothing : context.plate_context
+end
 _plate_root_info(info::StanModel) = info
 _plate_root_info(info::SubModel) = _plate_root_info(parent(info))
 _plate_global_name(::StanModel, name::Symbol) = name
@@ -377,7 +384,7 @@ _plate_context_entry(name::Symbol; info) = begin
     # the Stan function and must never depend on or be promoted through ambient
     # caller state.  Plate promotion is model/submodel-scoped.
     info isa Union{StanModel,SubModel} || return nothing
-    ctx = _plate_context()
+    ctx = _plate_context(info)
     ctx === nothing && return nothing
     global_name = _plate_global_name(info, name)
     haskey(ctx.cell_types, global_name) || return nothing
@@ -396,7 +403,7 @@ _plate_promoted_reference(name::Symbol, info::Union{StanModel,SubModel}) = begin
     # Resolve the indexed expression against the top-level outer declaration.
     # Disable the context for this one lookup so resolving its base Symbol does
     # not recursively promote itself.
-    task_local_storage(:_slic_plate_context, nothing) do
+    _with_trace_state(info, :plate_context, nothing) do
         forward!(lhs; info=_plate_root_info(info))
     end
 end
@@ -412,7 +419,7 @@ _forward_plate_assignment!(x, name, lhs, rhs_raw; info) = begin
     )
     # `lhs` is already the promoted outer accessor. Suppress promotion while
     # forwarding it, otherwise its base Symbol becomes indexed a second time.
-    fwd = task_local_storage(:_slic_plate_context, nothing) do
+    fwd = _with_trace_state(info, :plate_context, nothing) do
         forward!(remake(x, lhs, rhs); info=_plate_root_info(info))
     end
     _plate_bind_local!(info, name, expr(fwd).args[1])
@@ -420,7 +427,7 @@ _forward_plate_assignment!(x, name, lhs, rhs_raw; info) = begin
 end
 
 _forward_plate_sampling!(x, name, lhs, rhs::StanExpr; info) = begin
-    fwd = task_local_storage(:_slic_plate_context, nothing) do
+    fwd = _with_trace_state(info, :plate_context, nothing) do
         forward!(remake(x, lhs, rhs); info=_plate_root_info(info))
     end
     _plate_bind_local!(info, name, fwd.args[1])
@@ -505,9 +512,9 @@ fold_shape_query(x::StanExpr) = x
 # scope, drains it between args, then pops on exit. This is what lets inline
 # UDFs hoist multi-statement bodies into the enclosing block without leaking
 # into sibling sub-blocks (for / while / if branches, nested blocks).
-forward!(x::BlockExpr; info) = task_local_storage(:_slic_inline_pending, Any[]) do
+forward!(x::BlockExpr; info) = _with_trace_state(info, :inline_pending, Any[]) do
     new_args = Any[]
-    pending = task_local_storage(:_slic_inline_pending)
+    pending = _get_inline_pending(info)
     for arg in x.args
         resolved = forward!(arg; info)
         if !isempty(pending)
@@ -518,7 +525,7 @@ forward!(x::BlockExpr; info) = task_local_storage(:_slic_inline_pending, Any[]) 
         # Stan-side meaning — they arise e.g. when an inline UDF whose final
         # expression is just one of its args (`f!(buf) = (mutate; buf)`) is
         # called at statement position. Skip them so we don't emit `name;`.
-        if _plate_context() !== nothing && resolved isa BlockExpr
+        if _plate_context(info) !== nothing && resolved isa BlockExpr
             # A submodel embedded inside a plate is an inline expansion. The
             # loop router consumes a flat statement list, so splice the traced
             # submodel block here rather than leaving a nested BlockExpr.
@@ -646,10 +653,10 @@ _is_value_iterable(x::StanExpr) =
 _is_value_iterable(::Any) = false
 
 function _fresh_value_index(info)
-    id = _next_inline_id()
+    id = _next_inline_id(info)
     vi = Symbol(:value_index__vi_, id)
     while vi in keys(info)
-        id = _next_inline_id()
+        id = _next_inline_id(info)
         vi = Symbol(:value_index__vi_, id)
     end
     vi
@@ -763,10 +770,10 @@ end
 
 # Fresh, non-underscore-leading comprehension result name.
 function _fresh_comprehension_result(info)
-    id = _next_inline_id()
+    id = _next_inline_id(info)
     name = Symbol(:comprehension_result__lc_, id)
     while name in keys(info)
-        id = _next_inline_id()
+        id = _next_inline_id(info)
         name = Symbol(:comprehension_result__lc_, id)
     end
     name
@@ -792,7 +799,7 @@ _result_index(emitted_idx, lo; info) = _is_literal_one(lo) ? emitted_idx :
 # containers are at most 2-D, so a 3-D+ comprehension rejects loudly.
 function forward!(x::ComprehensionExpr; info)
     value_raw, specs = _comprehension_generator_specs(x)
-    pending = _get_inline_pending()
+    pending = _get_inline_pending(info)
     pending === nothing && error(
         "@deffun array comprehension lowering requires a statement context; ",
         "bind or return the comprehension from an @deffun body."
@@ -817,7 +824,7 @@ function forward!(x::ComprehensionExpr; info)
         # Inline calls (and the element bindings) may contribute pre-statements.
         # Isolate them so they stay INSIDE the innermost loop instead of leaking
         # into the enclosing block.
-        value, loop_stmts = task_local_storage(:_slic_inline_pending, Any[]) do
+        value, loop_stmts = _with_trace_state(info, :inline_pending, Any[]) do
             for (k, p) in enumerate(plans)
                 idx_k = p[1]
                 info[idx_k] = StanExpr(idx_k, StanType(types.int; qual=:data))
@@ -831,7 +838,7 @@ function forward!(x::ComprehensionExpr; info)
                 "@deffun array comprehension: element expression forwarded to `",
                 typeof(value), "`, expected a scalar Stan expression."
             )
-            value, copy(task_local_storage(:_slic_inline_pending))
+            value, copy(_get_inline_pending(info))
         end
         value_type = type(value)
         (center_type(value_type) <: types.complex && stan_ndim(value_type) == 0) || error(
@@ -846,7 +853,7 @@ function forward!(x::ComprehensionExpr; info)
         ))
         info[result_name] = StanExpr(result_name, result_type)
         result = info[result_name]
-        declaration = stan_expr(CanonicalExpr(:(::), result))
+        declaration = _trace_stan_expr(CanonicalExpr(:(::), result), info)
 
         result_idxs = [_result_index(emitted_idxs[k], expr(ranges[k]).args[1]; info) for k in 1:ndim]
         fill = forward!(CanonicalExpr(:(=), CanonicalExpr(getindex, result, result_idxs...), value); info)
@@ -854,9 +861,9 @@ function forward!(x::ComprehensionExpr; info)
         # Nest the fill loops from the innermost generator outward.
         body = CanonicalExpr(:block, loop_stmts..., fill)
         for k in ndim:-1:1
-            body = stan_expr(CanonicalExpr(:for,
+            body = _trace_stan_expr(CanonicalExpr(:for,
                 CanonicalExpr(:(=), emitted_idxs[k], ranges[k]),
-                _is_block_canonical(body) ? body : CanonicalExpr(:block, body)))
+                _is_block_canonical(body) ? body : CanonicalExpr(:block, body)), info)
         end
 
         push!(pending, declaration, body)
@@ -998,7 +1005,7 @@ forward!(x::AssignmentExpr; info) = begin
     # rewrites the emitted base to its flattened parent name while `keys(info)`
     # intentionally remains the local-name view.
     local_key = _base_lhs_symbol(x.args[1])
-    fwd = stan_expr(remake(x, forward!(x.args; info)...))
+    fwd = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
     lhs, rhs = expr(fwd).args
     lhs_raw isa DeclExpr && _check_typed_assignment(local_key, type(lhs), type(rhs); info)
     k = local_key in keys(info) ? local_key : _base_lhs_symbol(lhs)
@@ -1079,7 +1086,7 @@ end
 # The draw preserves the OBSERVED `ends` exactly — Stan's generated-quantities block
 # is statically sized, so a variable-length predictive group has nowhere to live.
 _forward_ragged_obs_broadcast!(name, rhs_raw; info) = begin
-    id = _next_inline_id()
+    id = _next_inline_id(info)
     g   = Symbol(:g, "__ro_", id)
     gg  = Symbol(:g, "__rq_", id)
     gen = Symbol(name, :_gen)
@@ -1214,7 +1221,7 @@ end
 #     calling the built-in `<ct>_jacobian` (the jacobian accumulates directly in
 #     `transformed parameters`; routing landed on slic-model-slice @ 29c3b59)
 #   • a compile-time ragged pairing bound to `name`
-# All statements are injected via `_slic_inline_pending` (they never enter the raw
+# All statements are injected via the trace's pending buffer (they never enter the raw
 # body, so they bypass `_reject_model_control_flow`) and routed to their blocks by
 # `distribute!`. Informative RHS distributions add a second compiler-owned loop
 # after the view binding: `name[g] ~ dist(group_arg(args, g)...)`. The same
@@ -1247,11 +1254,11 @@ _ragged_density_stmt(name, Ks, rhs_raw, g) = _ragged_rhs_is_flat(rhs_raw) ?
                     $name[$g] ~ $(_ragged_group_rhs(rhs_raw, g))
                 end)
 _trace_ragged_stmts(stmts, name; info, certify_density::Bool=false) = begin
-    targets = (_ragged_density_targets()..., name)
-    traced = task_local_storage(:_slic_ragged_density_targets, targets) do
+    targets = (_ragged_density_targets(info)..., name)
+    traced = _with_trace_state(info, :ragged_density_targets, targets) do
         _do_retrace_inline_body(stmts; info)
     end
-    # The task-local certificate above is sufficient during `forward!`, but the
+    # The trace-local certificate above is sufficient during `forward!`, but the
     # backward likelihood-reachability pass runs after tracing has left that
     # dynamic scope.  Stamp the underlying constrained-memory declaration so an
     # indexed `mem[lo:hi] ~ prior(...)` remains recognisable as a compiler-owned
@@ -1278,7 +1285,7 @@ _forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info) = begin
     free_sizes = free_drop == 0 ? Ks : :($Ks .- $free_drop)
     # Stan-valid unique names (gensym's `#` is an illegal Stan identifier char);
     # `_next_inline_id` is the per-trace counter SB uses for inlined-local renames.
-    id = _next_inline_id()
+    id = _next_inline_id(info)
     pfree = Symbol(:p_free, "__rc_", id); pmem = Symbol(:p_mem, "__rc_", id)
     cend  = Symbol(:c_end, "__rc_", id);  fend = Symbol(:f_end, "__rc_", id)
     g     = Symbol(:g, "__rc_", id)
@@ -1314,7 +1321,7 @@ _forward_ragged_matrix_constrained!(name, ct, sizes, rhs_raw; info) = begin
     free_sizes = corr_family ? :(($Ks .* ($Ks .- 1)) .÷ 2) : :(($Ks .* ($Ks .+ 1)) .÷ 2)
     mem_sizes = :($Ks .* $Ks)
 
-    id = _next_inline_id()
+    id = _next_inline_id(info)
     pfree = Symbol(:p_free, "__rcm_", id); pmem = Symbol(:p_mem, "__rcm_", id)
     cend  = Symbol(:c_end, "__rcm_", id);  fend = Symbol(:f_end, "__rcm_", id)
     g     = Symbol(:g, "__rcm_", id)
@@ -1358,7 +1365,7 @@ _forward_indexed_sampling!(x; info) = begin
     lhs = forward!(lhs_raw; info)
     rhs = forward!(rhs_raw; info)::StanExpr
     base = info[k]
-    if _is_ragged_density_target(k)
+    if _is_ragged_density_target(k; info)
         (center_type(base) <: RaggedVector || center_type(base) <: RaggedMatrix) || error(
             "Compiler-certified ragged density target `", k,
             "` is not backed by a RaggedVector/RaggedMatrix."
@@ -1432,7 +1439,7 @@ forward!(x::SamplingExpr{<:CanonicalExprV{:getindex},<:StanExpr}; info) =
 # into the plate PRODUCER CONTRACT that the `~`-aware routing (landed on
 # slic-model-slice-b3a85769) consumes: outer `DeclExpr`s + a compiler-injected
 # certified `ForExpr` with indexed fresh samples, indexed observations, and an
-# indexed return fill — injected via `_slic_inline_pending` (so they bypass
+# indexed return fill — injected via the trace's pending buffer (so they bypass
 # `_reject_model_control_flow`, same as `_forward_ragged_constrained!`).
 #
 # Semantics (n35u3c): positional iterables are PER-CELL slices bound to the
@@ -1458,7 +1465,7 @@ _plate_fresh_info(s) = begin
     nothing
 end
 # Substitute only do-block parameters with their per-cell input accessors. Fresh
-# names are promoted during tracing via `_slic_plate_context`, which also reaches
+# names are promoted during tracing via the explicit plate context, which also reaches
 # names introduced inside an inlined submodel (not present in this raw AST).
 _subst_syms(x, m) = x
 _subst_syms(x::Symbol, m) = get(m, x, x)
@@ -1596,7 +1603,7 @@ _plate_constrain_decl(f, x, cons; info) = begin
     isempty(cons) && return x
     d = expr(x)
     info[f] = StanExpr(f, remake(type(d.args[1]); cons...))
-    stan_expr(remake(d, info[f]))
+    _trace_stan_expr(remake(d, info[f]), info)
 end
 
 _plate_cell_index(f, T::StanType, idxs) = begin
@@ -1728,7 +1735,7 @@ _plate_is_hoist_candidate(x) =
 # accept — a hoist must not change what the posterior admits.
 _plate_hoistable_center(T) = T === types.int || T === types.bool || T === types.real ||
     T === types.vector || T === types.row_vector || T === types.matrix
-_plate_probe_hoistable(e; info) = task_local_storage(:_slic_inline_pending, Any[]) do
+_plate_probe_hoistable(e; info) = _with_trace_state(info, :inline_pending, Any[]) do
     probe = _plate_probe(info)
     root = _plate_root_info(probe)
     before = Set(keys(root))
@@ -1742,7 +1749,7 @@ _plate_probe_hoistable(e; info) = task_local_storage(:_slic_inline_pending, Any[
     catch
         return false
     end
-    isempty(task_local_storage(:_slic_inline_pending)) || return false
+    isempty(_get_inline_pending(info)) || return false
     Set(keys(root)) == before || return false
     v isa StanExpr || return false
     _plate_hoistable_center(center_type(v))
@@ -1753,7 +1760,7 @@ end
 # Runs BEFORE `_plate_discover`, so a lifted name is already in `info` when
 # discovery snapshots `before` and is therefore never promoted to a cell.
 _plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs, id; info) = begin
-    pending = _get_inline_pending()
+    pending = _get_inline_pending(info)
     varying = Set{Symbol}(idxs)
     union!(varying, params)
     for s in body_stmts
@@ -1886,7 +1893,7 @@ end
 
 _plate_emit_vectorized_sample!(candidate, outer, index_aliases; info) = begin
     root = _plate_root_info(info)
-    rhs = task_local_storage(:_slic_plate_context, nothing) do
+    rhs = _with_trace_state(info, :plate_context, nothing) do
         forward!(canonical(candidate.rhs); info)
     end
     rhs isa StanExpr || error(
@@ -1924,11 +1931,11 @@ end
 # called `@slic` submodel discovers each cell under the SAME flattened name the
 # emit-time promotion context (`_plate_global_name`) will look it up by. For a
 # top-level plate the probe root IS the probe, so the global names equal the local
-# ones. `pending` is isolated in its own task-local; nothing is emitted and the
+# ones. `pending` is isolated in its own trace-context slot; nothing is emitted and the
 # probe is discarded. Returns (fresh::Vector{Pair{Symbol,StanType}} in body order
 # keyed by global name, ret_type).
 _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanModel,SubModel}) =
-    task_local_storage(:_slic_inline_pending, Any[]) do
+    _with_trace_state(info, :inline_pending, Any[]) do
         probe = _plate_probe(info)
         root = _plate_root_info(probe)
         before = Set(keys(root))
@@ -1977,7 +1984,7 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
 # ── Plate emitter entry: the public `rv ~ plate(iters…; outer=…) do … end`. ──
 # Trace-then-promote (decision 1vujeta): `_plate_discover` probes the body once to
 # find every fresh cell-local binding + the cell result type, then the loop is
-# re-traced under the task-local `_slic_plate_context` that maps each cell name to
+# re-traced under the explicit plate context that maps each cell name to
 # its outer array slot. VERIFIED contract boundary (BRM Complete-PLATE snag,
 # 2026-07-16) — consumers must not assume more than this is owned:
 #   • Cell VALUES: scalar or 1-D `vector[K]` (`_plate_cell_shape`, l.1052);
@@ -2059,7 +2066,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         )
     end
 
-    id = _next_inline_id()
+    id = _next_inline_id(info)
     idxs = if length(outer_dims) == 1
         Symbol[Symbol(:plate_i, "__pl_", id)]
     else
@@ -2209,7 +2216,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     )
 
     # Positional do-block params still lower syntactically to per-cell input
-    # accessors. Fresh names stay untouched: the task-local promotion context
+    # accessors. Fresh names stay untouched: the trace-local promotion context
     # rewrites them while tracing, including names hidden inside submodels.
     loop_body = Any[_subst_syms(s, input_subst) for s in body_stmts]
     ret_cell = _subst_syms(ret_expr, input_subst)
@@ -2229,7 +2236,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     # Hoist declarations into the enclosing block exactly like an inline UDF,
     # then trace ONLY the loop under promotion. `forward!(::ForExpr)` binds the
     # loop index before its body, so promoted references can resolve `f[idx]`.
-    pending = _get_inline_pending()
+    pending = _get_inline_pending(info)
     # Ragged vector cells get a data-sized flat-memory carrier. First materialise
     # each cell length in transformed data (this accepts arbitrary data-only size
     # expressions, not merely `K[i]`), then cumulative ends and flat storage.
@@ -2278,7 +2285,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     # plate keeps the raw dims (identity), leaving its emitted Stan byte-for-byte
     # unchanged.
     plate_outer = info isa SubModel ?
-        task_local_storage(:_slic_plate_context, nothing) do
+        _with_trace_state(info, :plate_context, nothing) do
             Any[forward!(canonical(d); info) for d in outer_dims]
         end : outer_dims
     for (f, T) in all_cell_types
@@ -2304,7 +2311,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
             Expr(:ref, vectorized_sample.global_name, global_idxs...)
     end
     ctx = (idxs=global_idxs, cell_types=cell_types, cell_accessors=cell_accessors)
-    emitted_loop = task_local_storage(:_slic_plate_context, ctx) do
+    emitted_loop = _with_trace_state(info, :plate_context, ctx) do
         forward!(canonical(loop); info)
     end
     for plan in values(ragged_plans)
@@ -2332,9 +2339,9 @@ _forward_return!(x::ReturnExpr, info) = let rv = forward!(x.args[1]; info)
     remake(x, rv)
 end
 forward!(x::DocumentExpr; info) = remake(x, forward!(x.args; info)...)
-forward!(x::TupleExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
-forward!(x::KwExpr; info) = stan_expr(remake(x, x.args[1], forward!(x.args[2]; info)))
-forward!(x::NamedTupleExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+forward!(x::TupleExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+forward!(x::KwExpr; info) = _trace_stan_expr(remake(x, x.args[1], forward!(x.args[2]; info)), info)
+forward!(x::NamedTupleExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::GetPropertyExpr; info) = begin
     @assert length(x.args) == 2
     obj, name = forward!(x.args; info)
@@ -2347,8 +2354,8 @@ forward!(x::GetPropertyExpr; info) = begin
     # below — but the tracetype and method-dispatch lanes don't conflict.
     return forward!(CanonicalExpr(:getfield, x.args[1], findfirst(==(name), names)); info)
 end
-forward!(x::BracesExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
-forward!(x::VectExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+forward!(x::BracesExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+forward!(x::VectExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::DeclExpr; info) = begin
     @assert length(x.args) == 2
     lhs, type_ann = x.args
@@ -2384,7 +2391,7 @@ forward!(x::DeclExpr; info) = begin
     # `SubModel.setindex!` flattens the symbol into the parent. Put that stored
     # value into the declaration AST too, so later backward/distribution lookup
     # uses the same name as the parent model's `info` key.
-    stan_expr(remake(x, info[lhs]))
+    _trace_stan_expr(remake(x, info[lhs]), info)
 end
 # `types` is defined in functions.jl (included AFTER this file), so the token
 # check lives in the body (resolved at trace time), not the signature.
@@ -2457,7 +2464,7 @@ forward!(x::ForExpr; info) = begin
     emitted_idx = expr(info[idx])
     body = forward!(body; info)
     pop!(info, idx)
-    stan_expr(remake(x, remake(head, emitted_idx, idx_range), body))
+    _trace_stan_expr(remake(x, remake(head, emitted_idx, idx_range), body), info)
 end
 
 # Re-forward `x` (a ForExpr) as an ordinary index loop `for idx in range_raw` whose
@@ -2515,11 +2522,11 @@ forward!(x::WhileExpr; info) = begin
     head, body = x.args
     @assert _is_block_canonical(body)
     # body = forward!(body; info)
-    stan_expr(remake(x, forward!(x.args; info)...))
+    _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 end
-forward!(x::IfExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
-forward!(x::ElseIfExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
-forward!(x::BreakExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
-forward!(x::ContinueExpr; info) = stan_expr(remake(x, forward!(x.args; info)...))
+forward!(x::IfExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+forward!(x::ElseIfExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+forward!(x::BreakExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+forward!(x::ContinueExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::QuoteExpr; info) = x.args[1]
 forward!(x::StringExpr; info) = join(map(stan_code, forward!(x.args; info)))
