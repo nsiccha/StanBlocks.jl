@@ -314,6 +314,14 @@ _family_probability_companion(family, suffix::Symbol) = begin
 end
 logcdf_expr(family) = _family_probability_companion(family, :_lcdf)
 logccdf_expr(family) = _family_probability_companion(family, :_lccdf)
+# `normal` overrides its Stan-native companions with the erfc reformulation
+# (builtin.jl): Stan Math's `normal_lcdf`/`normal_lccdf` reverse-mode AD rules
+# are inaccurate (~1e-6) and `normal_lccdf` diverges past ~9σ, so every
+# `censored`/`truncated`/`interval_censored(normal, …)` tail mass would inherit
+# a wrong gradient. The erfc form `log(0.5·erfc(∓z/√2))` autodiffs exactly and
+# is value-identical. See snag censored-normal-410c4e35.
+logcdf_expr(::typeof(builtin.normal)) = builtin.normal_lcdf_stable
+logccdf_expr(::typeof(builtin.normal)) = builtin.normal_lccdf_stable
 
 lpxf_expr(lhs, rhs::StanExpr) = lpxf_expr(lhs, expr(rhs))
 lpxf_expr(lhs, rhs::CanonicalExpr) = begin

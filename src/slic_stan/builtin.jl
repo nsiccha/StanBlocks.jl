@@ -223,6 +223,15 @@ end
     maybe_index
     merge_missing
 
+    # erfc-stable normal log-CDF/CCDF companions (`@deffun` bodies + full
+    # rationale beside the native CDF companions below). Selected for the
+    # `normal` family by `logcdf_expr`/`logccdf_expr` (lpxf_builtin.jl) so
+    # censored/truncated/interval-censored normal tail masses autodiff exactly.
+    # Must be registered here too: `@deffun` builtins are asserted against this
+    # manifest (`_assert_builtin_registered`). snag censored-normal-410c4e35.
+    normal_lcdf_stable
+    normal_lccdf_stable
+
     # bordet (generable) longitudinal-biomarker model-family port. The obs
     # model is a censored normal w/ limits of quantification (`truncated_normal`
     # — name kept to match the source fn even though semantics = censoring);
@@ -992,6 +1001,24 @@ import Statistics
     std_normal_lccdf(args...)
     normal_lcdf(args...)
     normal_lccdf(args...)
+    # Numerically stable erfc reformulation of the normal log-CDF/CCDF, selected
+    # for the `normal` family by `logcdf_expr`/`logccdf_expr` (lpxf_builtin.jl) so
+    # every `censored`/`truncated`/`interval_censored(normal, …)` tail mass emits
+    # these instead of Stan's native companions. Stan Math's own
+    # `normal_lcdf`/`normal_lccdf` reverse-mode AD rules are inaccurate (~1e-6 vs
+    # ~1e-14 finite-difference truth) in the practical regime, and `normal_lccdf`
+    # diverges (value -Inf, gradient +Inf) past ~9σ where the erfc form is still
+    # correct to ~37σ. `log(0.5·erfc(∓z/√2))` (z = (x-loc)/scale) autodiffs
+    # through exact-derivative primitives (`erfc`, `log`). `@stanonly`: the name
+    # is not in the probability family, so `@deffun` would otherwise install a
+    # Julia target calling the Stan-only `erfc` token — these are Stan-emission
+    # only. See snag censored-normal-410c4e35 for the isolated-kernel measurement.
+    @stanonly begin
+    normal_lcdf_stable(x::real, loc::real, scale::real)::real =
+        log(erfc(-(x - loc) / (scale * sqrt(2.)))) - log(2.)
+    normal_lccdf_stable(x::real, loc::real, scale::real)::real =
+        log(erfc((x - loc) / (scale * sqrt(2.)))) - log(2.)
+    end
     student_t_lcdf(args...)
     student_t_lccdf(args...)
     cauchy_lcdf(args...)
