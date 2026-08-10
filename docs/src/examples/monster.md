@@ -280,7 +280,192 @@ monster_direct_posterior = monster_direct(;
 
 ## BRM version
 
-The BRM/SBBRMI version uses the same physiological simulator but moves the
-population model into named formula predictors.  It is developed next so that
-the difference between the two generated Stan programs is the modeling
-interface—not a second independently guessed PBPK system.
+The BRM/SBBRMI version deliberately reuses `monster_experiment` rather than
+reimplementing the physiology.  The change is in how subject variation is
+declared:
+
+- each biological quantity is a named linear predictor, so population
+  locations can be inspected and given priors by name;
+- `(1 | subject)` adds an independent subject deviation to each raw-scale
+  quantity, replacing the direct model's hand-written `z` vector and scale
+  multiplication;
+- `kernel(...)` gathers one row per subject, runs the complete PBPK simulator,
+  and owns both ragged time-course likelihoods;
+- venous and exhaled measurements remain separate outputs.  They are not
+  interleaved behind a compartment mask, because separate observation columns
+  make their meaning and their posterior-predictive outputs explicit.
+
+The direct example gives all fifteen subject deviations a learned half-normal
+population scale.  BRM's plain random-intercept blocks use its standard scale
+prior instead.  This is an intentional prior-level difference, not a change to
+the state equations or observation means.
+
+The fixture below again contains two subjects, two exposure experiments, and
+four observation times.  `monster_subject_output` is only a layout adapter: it
+selects one of the two outputs while preserving experiment → time order for
+the ragged BRM columns.
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison data-stan-label="Generated BRM/SBBRMI model">
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(Main.FeatureAtlasDocs.example_module(:MonsterCaseStudy), raw"""
+using BayesianRegressionModels, Distributions
+
+@deffun @stanonly begin
+    monster_raw_params(
+        vpr::real, fwp::real, fpp::real, ff::real, fl::real,
+        vwp::real, vpp::real, vl::real,
+        pba::real, pwp::real, ppp::real, pf::real, pl::real,
+        vmi::real, kmi::real, n_param::int,
+    )::vector[n_param] = begin
+        raw_params::vector[n_param]
+        raw_params[1] = vpr
+        raw_params[2] = fwp
+        raw_params[3] = fpp
+        raw_params[4] = ff
+        raw_params[5] = fl
+        raw_params[6] = vwp
+        raw_params[7] = vpp
+        raw_params[8] = vl
+        raw_params[9] = pba
+        raw_params[10] = pwp
+        raw_params[11] = ppp
+        raw_params[12] = pf
+        raw_params[13] = pl
+        raw_params[14] = vmi
+        raw_params[15] = kmi
+        raw_params
+    end
+
+    monster_subject_output(
+        times::vector[n_time], exposures::vector[n_experiment],
+        raw_params::vector[n_param], measured::vector[n_measured],
+        output::int, n_state::int, n_output::int, n_subject_output::int,
+    )::vector[n_subject_output] = begin
+        prediction::vector[n_subject_output]
+        index = 1
+        for experiment in 1:n_experiment
+            experiment_prediction::matrix[n_time, n_output] = monster_experiment(
+                times, exposures[experiment], raw_params, measured,
+                n_state, n_output,
+            )
+            for time in 1:n_time
+                prediction[index] = experiment_prediction[time, output]
+                index += 1
+            end
+        end
+        prediction
+    end
+end
+
+venous_person_1 = vcat(person_1[1:4], person_1[9:12])
+venous_person_2 = vcat(person_2[1:4], person_2[9:12])
+exhaled_person_1 = vcat(person_1[5:8], person_1[13:16])
+exhaled_person_2 = vcat(person_2[5:8], person_2[13:16])
+n_subject_output = length(times) * length(exposures)
+
+monster_schedule = (;
+    subject = ["person-1", "person-2"],
+    times = [copy(times), copy(times)],
+    exposures = [copy(exposures), copy(exposures)],
+    measured = [collect(measured_params[1, :]), collect(measured_params[2, :])],
+    venous_y = [venous_person_1, venous_person_2],
+    exhaled_y = [exhaled_person_1, exhaled_person_2],
+    n_state = fill(n_state, n_person),
+    n_output = fill(n_output, n_person),
+    n_param = fill(n_param, n_person),
+    n_subject_output = fill(n_subject_output, n_person),
+)
+
+monster_brm = @brm monster_schedule begin
+    sigma_venous ~ Exponential(0.25)
+    sigma_exhaled ~ Exponential(0.25)
+
+    log_VPR ~ 1 + (1 | subject)
+    raw_Fwp ~ 1 + (1 | subject)
+    raw_Fpp ~ 1 + (1 | subject)
+    raw_Ff ~ 1 + (1 | subject)
+    raw_Fl ~ 1 + (1 | subject)
+    raw_Vwp ~ 1 + (1 | subject)
+    raw_Vpp ~ 1 + (1 | subject)
+    raw_Vl ~ 1 + (1 | subject)
+    log_Pba ~ 1 + (1 | subject)
+    log_Pwp ~ 1 + (1 | subject)
+    log_Ppp ~ 1 + (1 | subject)
+    log_Pf ~ 1 + (1 | subject)
+    log_Pl ~ 1 + (1 | subject)
+    log_VMI ~ 1 + (1 | subject)
+    log_KMI ~ 1 + (1 | subject)
+
+    effect(log_VPR, Intercept) ~ Normal(log(1.6), 0.35)
+    effect(raw_Fwp, Intercept) ~ Normal(log(0.48), 0.35)
+    effect(raw_Fpp, Intercept) ~ Normal(log(0.20), 0.35)
+    effect(raw_Ff, Intercept) ~ Normal(log(0.07), 0.35)
+    effect(raw_Fl, Intercept) ~ Normal(log(0.25), 0.35)
+    effect(raw_Vwp, Intercept) ~ Normal(log(0.28), 0.35)
+    effect(raw_Vpp, Intercept) ~ Normal(log(0.56), 0.35)
+    effect(raw_Vl, Intercept) ~ Normal(log(0.033 / (0.837 - 0.033)), 0.35)
+    effect(log_Pba, Intercept) ~ Normal(log(12.0), 0.35)
+    effect(log_Pwp, Intercept) ~ Normal(log(4.8), 0.35)
+    effect(log_Ppp, Intercept) ~ Normal(log(1.6), 0.35)
+    effect(log_Pf, Intercept) ~ Normal(log(125.0), 0.35)
+    effect(log_Pl, Intercept) ~ Normal(log(4.8), 0.35)
+    effect(log_VMI, Intercept) ~ Normal(log(0.042), 0.35)
+    effect(log_KMI, Intercept) ~ Normal(log(16.0), 0.35)
+
+    venous_prediction ~ kernel(
+        times, exposures, measured, venous_y, exhaled_y,
+        n_state, n_output, n_param, n_subject_output,
+        log_VPR, raw_Fwp, raw_Fpp, raw_Ff, raw_Fl,
+        raw_Vwp, raw_Vpp, raw_Vl,
+        log_Pba, log_Pwp, log_Ppp, log_Pf, log_Pl, log_VMI, log_KMI,
+    ) do ts, experiment_exposures, measured_values, venous_observed,
+         exhaled_observed, state_count, output_count, parameter_count,
+         subject_output_count, vpr, fwp, fpp, ff, fl, vwp, vpp, vl,
+         pba, pwp, ppp, pf, pl, vmi, kmi
+        raw_params = monster_raw_params(
+            vpr, fwp, fpp, ff, fl, vwp, vpp, vl,
+            pba, pwp, ppp, pf, pl, vmi, kmi, parameter_count,
+        )
+
+        venous = monster_subject_output(
+            ts, experiment_exposures, raw_params, measured_values,
+            1, state_count, output_count, subject_output_count,
+        )
+        exhaled = monster_subject_output(
+            ts, experiment_exposures, raw_params, measured_values,
+            2, state_count, output_count, subject_output_count,
+        )
+        venous_observed ~ lognormal(log(venous), sigma_venous)
+        exhaled_observed ~ lognormal(log(exhaled), sigma_exhaled)
+        venous
+    end
+end
+
+monster_brm_backend = SBBRMI(monster_brm; mod=@__MODULE__)
+monster_brm_posterior = monster_brm_backend.model
+""", :monster_brm_posterior)
+```
+
+```@raw html
+</div>
+```
+
+## What the two interfaces reveal
+
+Both generated programs solve the same exposure/washout ODE and derive the
+same venous and exhaled means.  The direct model makes the non-centred vector
+algebra compact and exposes complete control over its shared scale prior.  The
+BRM model spends more lines naming the fifteen quantities, but those names are
+then stable addresses for priors, posterior summaries, and future covariates.
+For example, adding a measured effect of body size to a parameter is a formula
+change to that one predictor rather than a rewrite of the PBPK kernel.
+
+The source repository's custom Strang splitting, likelihood-increment switches,
+and alternative centred hierarchy remain valuable performance and workflow
+experiments.  They are intentionally outside this first executable port.  The
+essential model is no longer a historical stub: both interfaces express the
+four-state mechanism, two experiments per subject, all fifteen individual
+parameters, and both observation channels as build-checked Stan programs.

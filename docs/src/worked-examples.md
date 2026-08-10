@@ -53,6 +53,9 @@ features that make it possible.
   abundance quantities.
 - [Soil carbon](examples/case-studies/soil.md) — a two-pool feedback ODE reused
   by direct-residual and latent measurement-error observation models.
+- [Monster pharmacokinetics](examples/monster.md) — a four-compartment PBPK
+  model expressed both directly in StanBlocks and through BRM's named
+  subject-level formula predictors and group-local kernel.
 
 ## Maintained implementation references
 
@@ -63,10 +66,9 @@ features that make it possible.
 ## Design and historical material
 
 - [The original `@slic` design overview](examples/slic-overview.md)
-- [Monster-model notebook](examples/monster.md)
 - [Simplex transform experiments](examples/simplex-transforms.md)
 
-These historical pages are curated records rather than raw dumps: each now says
+These historical pages are curated records rather than raw dumps: each says
 what the experiment was trying to demonstrate, which parts correspond to
-current StanBlocks features, and exactly why the remaining source is not an
-executable example.
+current StanBlocks features, and where the original exploration intentionally
+stopped.

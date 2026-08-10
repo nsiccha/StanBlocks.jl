@@ -14,6 +14,7 @@ FeatureAtlasDocs.validate_generated_templates(joinpath.(@__DIR__, "src", [
     "examples/case-studies/school.md",
     "examples/case-studies/species.md",
     "examples/case-studies/soil.md",
+    "examples/monster.md",
 ]))
 
 const DEVBRANCH = "devibe"
@@ -60,10 +61,10 @@ makedocs(
                 "Disease transmission" => "examples/case-studies/school.md",
                 "Species-site occupancy" => "examples/case-studies/species.md",
                 "Soil carbon" => "examples/case-studies/soil.md",
+                "Monster pharmacokinetics" => "examples/monster.md",
             ],
             "Design and historical material" => [
                 "Original @slic overview" => "examples/slic-overview.md",
-                "Monster-model notebook" => "examples/monster.md",
                 "Simplex experiments" => "examples/simplex-transforms.md",
             ],
             "Maintained implementation references" => [
