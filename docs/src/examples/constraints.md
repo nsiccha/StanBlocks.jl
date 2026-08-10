@@ -1,99 +1,78 @@
-# User defined reusable constraints
+# Reusable user-defined constraints
 
-The full Julia source is displayed below. The documentation build evaluates that
-exact source and includes every complete generated Stan program on this page.
+These examples show how a StanBlocks model can separate an unconstrained
+parameter, its density and Jacobian adjustment, and the deterministic transform
+that returns the constrained value. The source is adapted from an exploratory
+Quarto notebook, so this page distinguishes reusable compiler patterns from
+unfinished statistical definitions instead of presenting every historical
+fragment as a ready-made prior.
 
-## StanBlocks.jl implementation
+The documentation build evaluates each displayed `@eval` source block and
+calls `stan_code` on every resulting model. The generated-code tabs
+therefore contain complete programs; users do not have to execute the examples
+to see them.
 
-The function and model definitions below make use of
+## A two-dimensional disk transform
 
-* [Julia-style Named Tuples](https://docs.julialang.org/en/v1/base/base/#Core.NamedTuple) - allowing `.` syntax access to fields via names (instead of [via numbers as in Stan](https://mc-stan.org/docs/reference-manual/types.html#assigning-tuple-elements)).
+`uniform_disk_constrain` maps two unconstrained real values to polar
+coordinates:
 
-The migrated executable source adds the current explicit `@lhs @lpxf`
-registration to custom distributions; the legacy compiler inferred that hook
-implicitly. It also calls the notebook helper `legacy_simplex_constrain` to
-avoid colliding with the maintained builtin that now owns the original name.
+1. `radius = inv_logit(xi[1])` maps to `(0, 1)`;
+2. `angle = 2pi * inv_logit(xi[2])` maps to one full turn; and
+3. `x = radius * cos(angle)` and
+   `y = radius * sin(angle)` lie inside the unit disk.
 
-# A uniform prior on a disk
+The function returns `(; radius, angle, x, y)`. StanBlocks traces that
+Julia named tuple to a Stan tuple, while Julia field syntax such as
+`theta.x` remains available in the model definition.
 
-## Full Julia + StanBlocks.jl code to define the models
+`@lhs @lpxf uniform_disk_lpdf(xi::vector[n], n)` gives sampling syntax two
+pieces of information: `@lhs` declares an unconstrained vector of symbolic
+length `n`, and `@lpxf` registers the method as a target-density
+contribution. The `disk` submodel samples that vector at length two and
+returns the transformed tuple. A larger model can consequently write
+`theta ~ disk()` and consume `theta.x` and `theta.y` without
+repeating the transform.
 
-### Current status
+### Why the preserved source is not a uniform disk prior
 
-Currently, this is roughly how I'd add a custom constraining transform + prior on the constraint variables:
-
-```julia
-using StanBlocks
-
-@deffun begin 
-    """
-    This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform
-    (wrt to `x` and `y`) - I'll work it out another time.
-    """
-    @lhs @lpxf uniform_disk_lpdf(xi::vector[n], n) = 0.
-    """
-    This function returns the constrained parameters `x` and `y` together with the intermediate quantities `radius` and `angle` as a a Named Tuple, 
-    which for Stan will look like a regular Tuple. 
-    Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, 
-    e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.
-    """
-    uniform_disk_constrain(xi::vector[n]) = begin
-        radius = inv_logit(xi[1])
-        angle = 2pi * inv_logit(xi[2])
-        (;radius, angle, x=cos(angle) * radius, y=sin(angle) * radius)
-    end
-end
-
-disk = @slic begin
-    """
-    This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).
-
-    If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.
-    """
-    xi ~ uniform_disk(2)
-    """
-    This does the constraining.
-
-    It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..
-    """
-    return uniform_disk_constrain(xi)
-end
-```
-
-With the `disk` model defined (**by the user in this notebook - not in the back end**) as above, usage would look like this, 
-where `obs` and `obs_scale` come from somewhere else in this example:
+The historical method returns a constant zero:
 
 ```julia
-model_using_disk = @slic begin 
-    disk_parameters ~ disk()
-    obs ~ normal(
-        some_binary_function_working_on_disk_coordinates(
-            disk_parameters.x, disk_parameters.y
-        ), 
-        obs_scale
-    )
-end
+@lhs @lpxf uniform_disk_lpdf(xi::vector[n], n) = 0.
 ```
 
-### Future status
+That is a transform demonstration, not a proper uniform-area prior. Write
+`r = inv_logit(xi[1])` and `q = inv_logit(xi[2])`. The absolute
+Jacobian determinant from `xi` to `(x, y)` is
 
-TO DO: figure out a syntax which would make custom constraints even easier.
+`2pi * r^2 * (1-r) * q * (1-q)`.
 
-## Generated Stan code
+A density that is uniform with respect to disk area must include the log of
+that determinant in unconstrained coordinates (plus the constant disk
+density). Returning zero omits the adjustment and starts from an improper flat
+density on `xi`. It should not be used as a uniform prior in an analysis.
+A production version would put both the Jacobian and any desired density on
+`(x, y)` in the registered `_lpdf`, keeping
+`uniform_disk_constrain` as the single deterministic map.
 
-For the generated Stan code, the disk model has been spliced into a dummy model, resulting in a model definition equivalent to 
+### Why the generated example has a dummy likelihood
 
-```julia
-dummy_model = @slic begin 
-    "Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"
-    dummy_obs = 1. 
-    theta ~ disk()
-    "Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"
-    dummy_obs ~ dummy(theta)
-end
+The disk value otherwise affects no observation, so StanBlocks can legally
+place the prior-independent calculation in generated quantities. The
+`dummy` likelihood makes `theta` part of the model target and keeps
+the parameter-transform path visible in the emitted program. It is scaffolding
+for this compiler example, not a recommended observation model.
+
+The model also uses `Base.merge` to insert `theta ~ disk()` into that
+scaffold. This is the same fragment-reuse mechanism used by the model-family
+examples.
+
+## Generated disk model
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison data-stan-label="Generated Stan model">
 ```
-
-Without the dummy likelihood term, StanBlocks.jl would move `theta` to generated quantities, because it wouldn't affect the likelihood.
 
 ```@eval
 Main.FeatureAtlasDocs.comparisons(Main, raw"""
@@ -101,8 +80,9 @@ using StanBlocks
 
 @deffun begin 
     \"\"\"
-    This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform
-    (wrt to `x` and `y`) - I'll work it out another time.
+    Historical transform demonstration: this zero density omits the Jacobian of
+    `uniform_disk_constrain` and therefore does not define a uniform-area
+    prior on the disk. The surrounding documentation derives the missing term.
     \"\"\"
     @lhs @lpxf uniform_disk_lpdf(xi::vector[n], n) = 0.
     \"\"\"
@@ -127,15 +107,13 @@ end
 
 disk = @slic begin
     \"\"\"
-    This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).
-
-    If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.
+    This initializes the two unconstrained coordinates. In this preserved
+    demonstration, `uniform_disk_lpdf` contributes zero; a production
+    distribution must add its Jacobian and constrained-space prior there.
     \"\"\"
     xi ~ uniform_disk(2)
     \"\"\"
-    This does the constraining.
-
-    It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..
+    Apply the deterministic disk transform and return its named components.
     \"\"\"
     return uniform_disk_constrain(xi)
 end
@@ -155,88 +133,136 @@ disk_posteriors = (;
 """, :disk_posteriors)
 ```
 
-# (Adaptive?) centering for hierarchical models
+```@raw html
+</div>
+```
 
-If [this discourse thread](https://discourse.mc-stan.org/t/offset-multiplier-initialization/20712/20) is any indication, it looks like generally, it might be preferable to be able compute the Jacobian adjustment and the prior density together for the sake of numerical stability. 
-This is something that Stan's lack of compound declare-distribute statements "prevents" - see also [When to add a feature to Stan? The recurring issue of the compound declare-distribute statement](https://statmodeling.stat.columbia.edu/2018/02/01/stan-feature-declare-distribute/).
+## Centered and non-centered hierarchical parameters
 
-Furthermore, it's probably a good idea to be able to parametrize the constraining transformations, allowing to vary e.g. the centeredness after defining the model via `data` arguments.
+The original notebook left adaptive centering as a one-line reminder. The
+underlying issue is a useful application of the same transform-plus-density
+split.
 
-TO DO: elaborate
-
-
-# Various simplex constraining transformations
-
-The underlying code reproduces all transformations from [https://github.com/bob-carpenter/transforms](https://github.com/bob-carpenter/transforms).
-
-## Example Julia + StanBlocks.jl code to define the models
-
-### Current status
-
-It does so by first defining (**by the user in this notebook - not in the back end**) a general model
+For a hierarchical effect with location `mu` and scale `tau`, a
+centered parameterization samples the effect directly,
 
 ```julia
-any_simplex = @slic begin 
+theta ~ normal(mu, tau)
+```
+
+whereas a non-centered parameterization samples a standard-normal coordinate
+and transforms it:
+
+```julia
+z ~ std_normal()
+theta = mu + tau * z
+```
+
+These define the same prior on `theta` but different posterior geometries.
+A partial-centering control must preserve that equality. For example, if a
+data-supplied `rho` changes the scale in
+`theta = mu + tau^rho * z`, then the density of `z` must change
+correspondingly (or the change-of-variables Jacobian must be included). Merely
+changing the transform changes the statistical model.
+
+This is why it can be attractive to compute a custom transform's prior term and
+Jacobian together, as discussed in the
+[offset/multiplier thread](https://discourse.mc-stan.org/t/offset-multiplier-initialization/20712/20)
+and the article on
+[compound declare-distribute statements](https://statmodeling.stat.columbia.edu/2018/02/01/stan-feature-declare-distribute/).
+StanBlocks can express fixed centered and non-centered fragments today and
+select between reusable fragments with data or model construction. The
+preserved notebook does not implement or validate a general automatic adaptive
+centering transform, so there is deliberately no generated model for this
+design note.
+
+## Ten simplex transforms
+
+The second executable family reproduces the transformation experiments from
+[`bob-carpenter/transforms`](https://github.com/bob-carpenter/transforms).
+Each model returns a length-ten simplex but uses a different unconstrained
+coordinate system.
+
+The reusable `any_simplex` fragment has two function-valued inputs:
+
+```julia
+any_simplex = @slic begin
     xi ~ simplex_prior(constrain_f, prior_f, n)
     return legacy_simplex_constrain(xi, constrain_f, n)
 end
 ```
 
-where `n` is the dimension of the simplex and `constrain_f` and `prior_f` can be used to change the used constraining transform or the imposed prior.
+`constrain_f` maps unconstrained coordinates to a named tuple with fields
+`jac` and `x`. `prior_f` supplies a density on the constrained
+simplex; this page passes `uniform_simplex_lpdf`, whose contribution is
+zero because the transform's Jacobian already determines the intended base
+measure. Dispatch on `typeof(constrain_f)` selects
+`unconstrained_dim`, allowing some transforms to use `n-1`
+coordinates and others `n`.
 
-Defining a custom simplex constraining transform is then as easy as defining two functions,
+### What differs between the family members
 
-* a function `f` accepting the vector of unconstrained parameters and returning a Named Tuple with fields `jac` (the jacobian adjustment) and `x` (the constrained parameters) 
-(to be passed as the `constrain_f` argument),
-* and an overload of `unconstrained_dim(::typeof(f), n)` returning the dimension of the unconstrained parameters accepted by `f`.
+| Selector label | Coordinates and transform |
+|:--|:--|
+| **constrain_alr** | Additive log-ratio coordinates. It appends a reference log weight to `n-1` free log ratios, normalizes with log-sum-exp, and returns the softmax. |
+| **constrain_expanded_softmax** | `n` free log weights followed by softmax. Softmax has a translation redundancy, so the Jacobian term also gives the log normalizer a standard-normal density to make the expanded representation proper. |
+| **constrain_ilr** | An isometric log-ratio construction from `n-1` sequential balance coordinates, followed by softmax. |
+| **constrain_ilr_reflector** | A reflector-based ILR construction. It maps `n-1` coordinates into `n` log coordinates with a reflector basis before softmax. |
+| **constrain_normalized_exponential** | Maps `n` normal coordinates through the normal CDF and exponential quantile, then normalizes the resulting positive values. |
+| **constrain_stickbreaking_angular** | Uses `n-1` logistic coordinates as angles and squares spherical-coordinate components to obtain positive values summing to one. |
+| **constrain_stickbreaking_logistic** | A sequential stick-breaking map whose break fractions use shifted logistic coordinates. |
+| **constrain_stickbreaking_normal** | The corresponding sequential map using shifted normal-CDF break fractions. |
+| **constrain_stickbreaking_power_logistic** | A power stick-breaking construction driven by logistic-CDF values, with the remaining-stick powers depending on the component index. |
+| **constrain_stickbreaking_power_normal** | The same power construction driven by normal-CDF values. |
 
-See below for an example implementation for the ALR constraining transform:
+The selector labels intentionally retain the function names from the source
+repository. “ILR” means isometric log-ratio; “reflector” identifies the
+alternative ILR basis construction; “logistic” versus “normal” identifies the
+CDF used for a stick break; and “power” distinguishes the powered
+remaining-stick construction from the ordinary sequential version.
 
-```julia
-constrain_alr(xi::vector[n]) = begin
-    r = log1p_exp(log_sum_exp(xi))
-    (;
-        jac=sum(xi)-(n+1)*r, 
-        x=exp(append_row(xi - r, -r))
-    )
-end
-unconstrained_dim(::typeof(constrain_alr), n) = n-1
+### StanBlocks features in the generic implementation
+
+- The symbolic type
+  `vector[unconstrained_dim(constrain_f, n)]` is resolved through dispatch
+  on a function value. One model definition can therefore declare either
+  `n-1` or `n` unconstrained parameters.
+- `simplex_prior_lpdf` evaluates `constrain_f(xi)` once for its
+  `jac` and `x` fields, then adds `prior_f(tmp.x)`.
+  `@lhs @lpxf` registers both the parameter declaration and target
+  contribution.
+- `legacy_simplex_constrain` returns the constrained `vector[n]`.
+  The “legacy” prefix avoids colliding with the maintained StanBlocks builtin
+  that now owns the original helper name.
+- `@deffun @stanonly` says these definitions are emitted for Stan but are
+  not required to have executable Julia counterparts. This is appropriate for
+  helpers built directly from Stan probability and special functions.
+- Mapping over a named tuple of function values creates all ten models. The
+  comparison helper preserves those names as the generated-code selectors.
+- As in the disk example, `Base.merge` inserts the reusable simplex
+  fragment into a dummy likelihood scaffold so the compiler must retain the
+  parameter path.
+
+### The remaining duplicated work
+
+The density calls `constrain_f(xi)` to obtain the Jacobian and constrained
+value, and `legacy_simplex_constrain` calls it again to return the value to
+the model. The generated Stan program therefore expresses the transform twice.
+Keeping both operations in one named helper prevents their formulas from
+drifting, but it does not fuse their evaluations across the density and
+transformed value.
+
+A future compiler-level paired-transform abstraction could make that
+relationship explicit and reuse the intermediate. Until such an abstraction
+exists, the honest contract is the one shown here: one transform function,
+called in both contexts, with the extra evaluation visible in the generated
+program rather than hidden by notebook prose.
+
+## Generated simplex models
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison data-stan-label="Generated Stan models">
 ```
-
-The two functions used in the `any_simplex` model, `simplex_prior_lpdf` and `legacy_simplex_constrain` are defined (**by the user in this notebook - not in the back end**) as
-
-```julia
-@lhs @lpxf simplex_prior_lpdf(xi::vector[unconstrained_dim(constrain_f, n)], constrain_f, prior_f, n) = begin
-    tmp = constrain_f(xi)
-    tmp.jac + prior_f(tmp.x)
-end
-legacy_simplex_constrain(xi::vector[unconstrained_dim(constrain_f, n)], constrain_f, n)::vector[n] = constrain_f(xi).x
-```
-
-### Current limitations
-
-Currently, both the jacobian adjustment have to be computed twice - once in `simplex_prior_lpdf` and once in `legacy_simplex_constrain`.
-Ideally, this could be avoided.
-
-### Future status
-
-TO DO: Think about how to best prevent the double work. The main work would be to think about appropriate syntax signalling to StanBlocks.jl that these functions work together to compute the constraining and the jacobian adjustment.
-
-## Generated Stan code
-
-For the generated Stan code, the `any_simplex` model has been spliced into a dummy model, resulting in a model definition equivalent to 
-
-```julia
-dummy_simplex_model = @slic begin 
-    "Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"
-    dummy_obs = 1. 
-    theta ~ any_simplex(;constrain_f, prior_f, n=10)
-    "Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"
-    dummy_obs ~ dummy(theta)
-end
-```
-
-where again without the dummy likelihood StanBlocks.jl would move `theta` to generated quantities, because it wouldn't affect the likelihood.
 
 ```@eval
 Main.FeatureAtlasDocs.comparisons(Main, raw"""
@@ -371,4 +397,8 @@ simplex_posteriors = map((;
     dummy_simplex_model(;constrain_f, prior_f=uniform_simplex_lpdf)
 end
 """, :simplex_posteriors)
+```
+
+```@raw html
+</div>
 ```

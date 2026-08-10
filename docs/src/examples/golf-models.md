@@ -1,12 +1,67 @@
-# Golf models reimplementation
+# Building up a model of golf putting
 
-TO DO: elaborate
+This example follows the model-building sequence from the Stan case study
+[Model building and expansion for golf
+putting](https://mc-stan.org/learn-stan/case-studies/golf.html). The data record
+the distance `x`, number of attempts `n`, and number of successful putts
+`y` at each distance. Rather than presenting five unrelated programs, the
+StanBlocks implementation starts with a small model and reuses it as the
+physical assumptions become richer.
 
-## StanBlocks.jl implementation
+The first two models use the shorter `dataset1`. The angle-and-distance
+models use `dataset12`, the row-wise concatenation of both source datasets,
+because the longer-distance observations are where the additional mechanism
+matters.
 
-TO DO: elaborate
+## The five-model progression
+
+| Display label | Statistical model and what changes |
+|:--|:--|
+| **Logistic regression** | A descriptive baseline: the success log-odds are `a + b * x`. The flat priors make `a` and `b` free coefficients, but the model does not encode the geometry of a ball and cup. |
+| **Angle model** | Replaces the linear predictor with a geometric tolerance angle, `asin((R-r)/x)`. A putt succeeds when angular error falls inside that interval, with normally distributed error scale `sigma`. `2Phi(threshold/sigma)-1` is the corresponding success probability. `sigma_degrees` is a generated quantity for interpretation. |
+| **Angle and distance** | Keeps the angle calculation and adds an independent distance-success term. The two positive components of `sigma` control angular and distance error. In this variant, overshoot and distance tolerance are supplied constants. The final probability is `p_angle .* p_distance`. |
+| **Angle, distance, and residual variation** | Keeps the two-mechanism success probability but uses a normal approximation for the observed count. `sigma_y` adds extra-binomial variation to the count-scale standard deviation, allowing more dispersion than the binomial sampling term alone. |
+| **Estimated overshoot and tolerance** | Returns to the binomial angle-and-distance likelihood, but promotes `overshot` and `distance_tolerance` from fixed constants to positive parameters with weak normal priors. |
+
+The labels in the generated-code selector are therefore descriptions of the
+increment added at each stage. In the Julia source, the longer historical
+identifiers (`golf_angle_distance_2`,
+`golf_angle_distance_3_with_resids`, and
+`golf_angle_distance_4`) preserve the numbering used while the family was
+developed.
+
+## What StanBlocks is doing
+
+Each `@slic` block is a reusable model fragment. Names such as `x`,
+`n`, `y`, `r`, and `R` remain inputs until the fragment is
+instantiated with keyword arguments. Splatting `dataset1...` or
+`dataset12...` binds the data by name; the same mechanism supplies physical
+constants and the fixed overshoot assumptions.
+
+Several StanBlocks features make the progression concise:
+
+- `a ~ flat()` and `b ~ flat()` declare unconstrained parameters
+  without adding a prior density. Keyword constraints such as
+  `lower=0` become Stan parameter constraints.
+- Ordinary Julia scalar, vector, and element-wise expressions are traced into
+  Stan. Deterministic values are placed in the earliest legal Stan block, while
+  `sigma_degrees` is emitted after sampling as a generated quantity.
+- `Base.merge` derives a model by replacing or adding statements in a
+  quoted fragment. The angle calculation is written once and reused by all
+  three descendants; only the assumptions that differ appear in each merge.
+- The final named tuple is a family of independently instantiated models. The
+  build evaluates this exact displayed source, calls `stan_code` on every
+  member, and places each complete Stan program behind its descriptive label.
 
 ## Generated Stan models
+
+Use the **StanBlocks** and **Generated Stan** tabs to switch views. **Compare
+side by side** opens the same pair in a wide modal; the generated pane keeps
+all five labelled programs together.
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison data-stan-label="Generated Stan models">
+```
 
 ```@eval
 Main.FeatureAtlasDocs.comparisons(@__MODULE__, raw"""
@@ -81,4 +136,8 @@ golf_models = (;
     "Angle, distance, and residual variation" => :(golf_models.golf_angle_distance_3_with_resids),
     "Estimated overshoot and tolerance" => :(golf_models.golf_angle_distance_4),
 ])
+```
+
+```@raw html
+</div>
 ```

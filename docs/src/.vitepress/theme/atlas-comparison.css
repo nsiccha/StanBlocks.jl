@@ -75,6 +75,16 @@
   margin: 0.75rem 0 0;
 }
 
+.atlas-comparison__panel > h3 {
+  margin: 1rem 0 0.35rem;
+  border-top: 0;
+  font-size: 0.95rem;
+}
+
+.atlas-comparison__panel > h3:first-child {
+  margin-top: 0.75rem;
+}
+
 .atlas-comparison__dialog {
   width: min(96vw, 1600px);
   max-width: none;
