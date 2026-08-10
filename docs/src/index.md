@@ -15,7 +15,8 @@ A `@slic` body is a **flat declarative block**: `~` and `=` statements only. No 
 ::: tip Current feature boundary
 The [Authoring and feature support](authoring.md) page is the compact source for
 distribution combinators, missing outcomes, ragged data, executable descriptors,
-and the complete `plate` support/limitation matrix.
+and the complete `plate` support/limitation matrix. The [Feature atlas](feature-atlas.md)
+pairs representative StanBlocks programs with their essential generated Stan.
 :::
 
 ## Quick Start

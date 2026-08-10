@@ -367,7 +367,7 @@ submodels · `Base.merge` variants · custom distribution triads · censoring/tr
 :::
 ::::
 
-Companion reference: [feature atlas](feature-atlas.qmd)
+Companion reference: [feature atlas](https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas)
 
 ::: {.notes}
 Do not race through every item. The purpose is to update the audience's model
@@ -548,7 +548,8 @@ standard workflows above, inspectable compiler below.
 
 ### Links
 
-- Slides + feature atlas: <https://nsiccha.github.io/StanBlocks.jl/stancon-2026/>
+- Slides: <https://nsiccha.github.io/StanBlocks.jl/stancon-2026/>
+- Feature atlas: <https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas>
 - Package + source: <https://github.com/nsiccha/StanBlocks.jl>
 - Documentation: <https://nsiccha.github.io/StanBlocks.jl/dev/>
 - GitHub: [@nsiccha](https://github.com/nsiccha)
@@ -766,6 +767,6 @@ A small language is useful only when its “no” is explicit.
 - [SlicStan public repository](https://github.com/mgorinova/SlicStan).
 - [StanBlocks.jl source](https://github.com/nsiccha/StanBlocks.jl) and [authoring support guide](https://nsiccha.github.io/StanBlocks.jl/dev/authoring).
 - [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl) and its [worked model catalogue](https://nsiccha.github.io/BayesianRegressionModels.jl/).
-- Companion [StanCon 2026 feature atlas](feature-atlas.qmd).
+- Companion [StanCon 2026 feature atlas](https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas).
 
 <span class="small muted">Talk slot: 13:40–14:00, Tuesday 18 August 2026, Ångström Laboratory, Uppsala.</span>
