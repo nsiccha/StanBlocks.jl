@@ -330,4 +330,6 @@ raise on absent or ambiguous names/operations instead of guessing.
   for semantic changes, a BridgeStan log-density/gradient check.
 
 See the [Home guide](index.md) for the end-to-end workflow and the
-[Sandbox Gallery](gallery.md) for executable examples.
+[Sandbox Gallery](gallery.md) for short executable examples. The
+[Worked examples](worked-examples.md) contain the longer migrated model
+families and case studies, including their build-generated Stan programs.

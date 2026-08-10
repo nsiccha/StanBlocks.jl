@@ -4,7 +4,14 @@ Qualitatively reproduces [Charles C. Margossian's planetary motion case study](h
 
 Only one model definition is needed.
 
+::: warning Historical sketch
+This source intentionally preserves the original placeholder ODE function and
+syntax questions. Current StanBlocks cannot translate this unfinished sketch,
+so no generated program is claimed or hidden here.
+:::
+
 ```julia
+using StanBlocks
 data = (;
     sigma=.1,
     ode=1.,

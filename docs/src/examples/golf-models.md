@@ -8,8 +8,9 @@ TO DO: elaborate
 
 ## Generated Stan models
 
-```julia
-using StanBlocks, QuartoComponents
+```@eval
+Main.FeatureAtlasDocs.comparisons(@__MODULE__, raw"""
+using StanBlocks
 
 "Downloads and preprocesses the golf datasets"
 golf_data(url) = begin 
@@ -66,11 +67,18 @@ golf_angle_distance_4 = Base.merge(golf_angle_distance_2, quote
     distance_tolerance ~ normal(3, 5; lower=0)
 end)
 
-map(x->QuartoComponents.Code("stan", stan_code(x)), (;
+golf_models = (;
     golf_logistic=golf_logistic(;dataset1...),
     golf_angle=golf_angle(;r, R, dataset1...),
     golf_angle_distance_2=golf_angle_distance_2(;r, R, overshot, distance_tolerance, dataset12...),
     golf_angle_distance_3_with_resids=golf_angle_distance_3_with_resids(;r, R, overshot, distance_tolerance, dataset12...),
     golf_angle_distance_4=golf_angle_distance_4(;r, R, overshot, distance_tolerance, dataset12...),
-))|> QuartoComponents.Tabset 
+)
+""", [
+    "Logistic regression" => :(golf_models.golf_logistic),
+    "Angle model" => :(golf_models.golf_angle),
+    "Angle and distance" => :(golf_models.golf_angle_distance_2),
+    "Angle, distance, and residual variation" => :(golf_models.golf_angle_distance_3_with_resids),
+    "Estimated overshoot and tolerance" => :(golf_models.golf_angle_distance_4),
+])
 ```

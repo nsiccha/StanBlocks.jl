@@ -17,6 +17,9 @@ The [Authoring and feature support](authoring.md) page is the compact source for
 distribution combinators, missing outcomes, ragged data, executable descriptors,
 and the complete `plate` support/limitation matrix. The [Feature atlas](feature-atlas.md)
 pairs representative StanBlocks programs with their essential generated Stan.
+The [Worked examples](worked-examples.md) preserve the longer model families
+and case studies from the former Quarto documentation, with complete Stan
+programs generated from the displayed Julia source during the docs build.
 :::
 
 ## Quick Start

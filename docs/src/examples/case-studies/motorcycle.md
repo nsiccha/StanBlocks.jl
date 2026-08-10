@@ -4,7 +4,12 @@ Qualitatively reproduces [Aki Vehtari's motorcycle case study](https://users.aal
 
 ## HSGP building block (`hsgp` below)
 
-```julia
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(Main.FeatureAtlasDocs.example_module(:MotorcycleCaseStudy), raw"""
 using StanBlocks, Markdown
 x = randn(10)
 obs = randn(10)
@@ -26,24 +31,44 @@ hsgp = @slic begin
     "The final GP values"
     return (X * (scale .* unit_weight))
 end
-hsgp(;x)
+hsgp_posterior = hsgp(;x)
+""", :hsgp_posterior)
+```
+
+```@raw html
+</div>
 ```
 
 ## Homoskedastic model
 
-```julia
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(Main.FeatureAtlasDocs.example_module(:MotorcycleCaseStudy), raw"""
 homo = @slic begin 
     y_intercept ~ std_normal()
     dy ~ hsgp(;x)
     sigma ~ lognormal(-2, 1)
     obs ~ normal(y_intercept + dy, sigma)
 end
-homo(;x, obs)
+homo_posterior = homo(;x, obs)
+""", :homo_posterior)
+```
+
+```@raw html
+</div>
 ```
 
 ## Heteroskedastic model
 
-```julia
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(Main.FeatureAtlasDocs.example_module(:MotorcycleCaseStudy), raw"""
 hetero = @slic begin
     y_intercept ~ std_normal()
     dy ~ hsgp(;x)
@@ -51,31 +76,56 @@ hetero = @slic begin
     dlog_sigma ~ hsgp(;x)
     obs ~ normal(y_intercept + dy, exp(log_sigma_intercept + dlog_sigma))
 end
-hetero(;x,obs)
+hetero_posterior = hetero(;x,obs)
+""", :hetero_posterior)
+```
+
+```@raw html
+</div>
 ```
 
 ::: details Alternative heteroskedastic model using subsubmodels
 
 ### Submodel with submodel (`intercept_hsgp` below)
 
-```julia
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(Main.FeatureAtlasDocs.example_module(:MotorcycleCaseStudy), raw"""
 intercept_hsgp = @slic begin 
     intercept ~ std_normal()
     "Submodel uses `hsgp` as a submodel"
     d ~ hsgp(;x)
     return intercept + d
 end  
-intercept_hsgp(;x)
+intercept_hsgp_posterior = intercept_hsgp(;x)
+""", :intercept_hsgp_posterior)
+```
+
+```@raw html
+</div>
 ```
 
 ### Final model
 
-```julia
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(Main.FeatureAtlasDocs.example_module(:MotorcycleCaseStudy), raw"""
 hetero2 = @slic begin 
     y ~ intercept_hsgp(;x)
     log_sigma ~ intercept_hsgp(;x)
     obs ~ normal(y, exp(log_sigma))
 end
-hetero2(;x,obs) 
+hetero2_posterior = hetero2(;x,obs)
+""", :hetero2_posterior)
+```
+
+```@raw html
+</div>
 ```
 :::

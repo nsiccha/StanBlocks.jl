@@ -1,5 +1,11 @@
 # The `@slic` macro
 
+::: info Historical design document
+This page preserves the original `@slic` design overview, including its
+future-tense proposals. See [Authoring and feature support](../authoring.md) and
+the [Feature atlas](../feature-atlas.md) for the current executable surface.
+:::
+
 ## Supporting Bayesian Workflow
 
 Code up your model once - simplify, extend and use in multiple contexts efficiently.
@@ -200,3 +206,6 @@ The cross-validation activity analysis comes out of another pass through the mod
 There is nothing stopping us from allowing additional or alternative passes, and there should not be anything stopping you from implementing these custom passes.
 
 One possible custom pass would e.g. translate the `@slic` model to a Stan program.
+
+The complete standalone prototype that accompanied this design document is
+preserved as [`slicppl.jl`](https://github.com/nsiccha/StanBlocks.jl/blob/devibe/docs/src/public/examples/slicppl.jl).

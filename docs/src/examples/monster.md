@@ -1,5 +1,12 @@
 # Monster model notebook
 
+::: warning Incomplete historical notebook
+This source is preserved verbatim from the legacy notebook. It contains
+unresolved placeholders and an unfinished model invocation, so there is no
+honest build-generated Stan program to show for it. It is retained as design
+and data-preparation history, not presented as a runnable example.
+:::
+
 ```julia
 using StanBlocks, JSON, StanLogDensityProblems, WarmupHMC, Term
 @deffun begin 

@@ -2,7 +2,14 @@
 
 Qualitatively reproduces [Bob Carpenter's multiple species-site occupancy case study](https://mc-stan.org/learn-stan/case-studies/dorazio-royle-occupancy.html).
 
+::: warning Historical sketch
+The original notebook left its data tuple empty and used model-level loops that
+current `@slic` deliberately rejects. This page preserves the sketch without
+inventing missing data or pretending a generated program exists.
+:::
+
 ```julia
+using StanBlocks
 data = (;
     
 )

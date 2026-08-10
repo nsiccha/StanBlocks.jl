@@ -9,6 +9,11 @@ The function and model definitions below make use of
 
 * [Julia-style Named Tuples](https://docs.julialang.org/en/v1/base/base/#Core.NamedTuple) - allowing `.` syntax access to fields via names (instead of [via numbers as in Stan](https://mc-stan.org/docs/reference-manual/types.html#assigning-tuple-elements)).
 
+The migrated executable source adds the current explicit `@lhs @lpxf`
+registration to custom distributions; the legacy compiler inferred that hook
+implicitly. It also calls the notebook helper `legacy_simplex_constrain` to
+avoid colliding with the maintained builtin that now owns the original name.
+
 # A uniform prior on a disk
 
 ## Full Julia + StanBlocks.jl code to define the models
@@ -25,7 +30,7 @@ using StanBlocks
     This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform
     (wrt to `x` and `y`) - I'll work it out another time.
     """
-    uniform_disk_lpdf(xi::vector[n], n) = 0.
+    @lhs @lpxf uniform_disk_lpdf(xi::vector[n], n) = 0.
     """
     This function returns the constrained parameters `x` and `y` together with the intermediate quantities `radius` and `angle` as a a Named Tuple, 
     which for Stan will look like a regular Tuple. 
@@ -90,28 +95,29 @@ end
 
 Without the dummy likelihood term, StanBlocks.jl would move `theta` to generated quantities, because it wouldn't affect the likelihood.
 
-```julia
-using StanBlocks, QuartoComponents
+```@eval
+Main.FeatureAtlasDocs.comparisons(Main, raw"""
+using StanBlocks
 
 @deffun begin 
-    """
+    \"\"\"
     This function should of course actually return the jacobian adjustment of the `uniform_disk_constrain` transform
     (wrt to `x` and `y`) - I'll work it out another time.
-    """
-    uniform_disk_lpdf(xi::vector[n], n) = 0.
-    """
+    \"\"\"
+    @lhs @lpxf uniform_disk_lpdf(xi::vector[n], n) = 0.
+    \"\"\"
     This function returns the constrained parameters `x` and `y` together with the intermediate quantities `radius` and `angle` as a a Named Tuple, 
     which for Stan will look like a regular Tuple. 
     Within StanBlocks.jl, its possible to access the fields of the return value via `.` syntax, 
     e.g. `rv.radius` or `rv.x` after `rv = uniform_disk_constrain(xi)`.
-    """
+    \"\"\"
     uniform_disk_constrain(xi::vector[n]) = begin
         radius = inv_logit(xi[1])
         angle = 2pi * inv_logit(xi[2])
         (;radius, angle, x=cos(angle) * radius, y=sin(angle) * radius)
     end
     "Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"
-    dummy_lpdf(args...) = 0.
+    @lpxf dummy_lpdf(args...) = 0.
     "Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"
     dummy_lpdfs(args...) = 0.
     "Needed to prevent StanBlocks.jl from moving `theta` to generated quantities"
@@ -120,17 +126,17 @@ end
 
 
 disk = @slic begin
-    """
+    \"\"\"
     This initializes the unconstrained parameters and adds the jacobian adjustment (and any potential prior).
 
     If you want to also put a prior on `x` and `y`, you'd currently (in StanBlocks.jl) have to write a new `_lpdf` function - e.g. `non_uniform_disk_lpdf`.
-    """
+    \"\"\"
     xi ~ uniform_disk(2)
-    """
+    \"\"\"
     This does the constraining.
 
     It *would* be more convenient if there was an easier mechanism to combine (custom) "constraining" and "putting a prior on the constrained parameters"..
-    """
+    \"\"\"
     return uniform_disk_constrain(xi)
 end
 
@@ -146,10 +152,7 @@ disk_posteriors = (;
         theta ~ disk()
     end)
 )
-
-map(disk_posteriors) do posterior 
-    QuartoComponents.Code("stan", stan_code(posterior))
-end |> QuartoComponents.Tabset
+""", :disk_posteriors)
 ```
 
 # (Adaptive?) centering for hierarchical models
@@ -175,7 +178,7 @@ It does so by first defining (**by the user in this notebook - not in the back e
 ```julia
 any_simplex = @slic begin 
     xi ~ simplex_prior(constrain_f, prior_f, n)
-    return simplex_constrain(xi, constrain_f)
+    return legacy_simplex_constrain(xi, constrain_f, n)
 end
 ```
 
@@ -200,19 +203,19 @@ end
 unconstrained_dim(::typeof(constrain_alr), n) = n-1
 ```
 
-The two functions used in the `any_simplex` model, `simplex_prior_lpdf` and `simplex_constrain` are defined (**by the user in this notebook - not in the back end**) as 
+The two functions used in the `any_simplex` model, `simplex_prior_lpdf` and `legacy_simplex_constrain` are defined (**by the user in this notebook - not in the back end**) as
 
 ```julia
-simplex_prior_lpdf(xi::vector[unconstrained_dim(constrain_f, n)], constrain_f, prior_f, n) = begin
+@lhs @lpxf simplex_prior_lpdf(xi::vector[unconstrained_dim(constrain_f, n)], constrain_f, prior_f, n) = begin
     tmp = constrain_f(xi)
     tmp.jac + prior_f(tmp.x)
 end
-simplex_constrain(xi, constrain_f) = constrain_f(xi).x
+legacy_simplex_constrain(xi::vector[unconstrained_dim(constrain_f, n)], constrain_f, n)::vector[n] = constrain_f(xi).x
 ```
 
 ### Current limitations
 
-Currently, both the jacobian adjustment have to be computed twice - once in `simplex_prior_lpdf` and once in `simplex_constrain`.
+Currently, both the jacobian adjustment have to be computed twice - once in `simplex_prior_lpdf` and once in `legacy_simplex_constrain`.
 Ideally, this could be avoided.
 
 ### Future status
@@ -235,8 +238,10 @@ end
 
 where again without the dummy likelihood StanBlocks.jl would move `theta` to generated quantities, because it wouldn't affect the likelihood.
 
-```julia
-@deffun begin 
+```@eval
+Main.FeatureAtlasDocs.comparisons(Main, raw"""
+using StanBlocks
+@deffun @stanonly begin
     Base.reverse(x::vector[n])::vector[n]
     StanBlocks.stan.std_normal_lcdf(x)::real
     Base.log2()::real
@@ -244,11 +249,11 @@ where again without the dummy likelihood StanBlocks.jl would move `theta` to gen
     std_normal_lcdfs(x::vector[n]) = jbroadcasted(std_normal_lcdfs, x)
 
     unconstrained_dim(constrain_f, n) = reject(n)
-    simplex_prior_lpdf(xi::vector[unconstrained_dim(constrain_f, n)], constrain_f, prior_f, n) = begin
+    @lhs @lpxf simplex_prior_lpdf(xi::vector[unconstrained_dim(constrain_f, n)], constrain_f, prior_f, n) = begin
         tmp = constrain_f(xi)
         tmp.jac + prior_f(tmp.x)
     end
-    simplex_constrain(xi, constrain_f) = constrain_f(xi).x
+    legacy_simplex_constrain(xi::vector[unconstrained_dim(constrain_f, n)], constrain_f, n)::vector[n] = constrain_f(xi).x
     uniform_simplex_lpdf(xi) = 0.
     
     constrain_alr(xi::vector[n]) = begin
@@ -351,7 +356,7 @@ end
 
 any_simplex = @slic begin 
     xi ~ simplex_prior(constrain_f, prior_f, n)
-    return simplex_constrain(xi, constrain_f)
+    return legacy_simplex_constrain(xi, constrain_f, n)
 end
 dummy_simplex_model = Base.merge(dummy_model, quote 
     theta ~ any_simplex(;constrain_f, prior_f, n=10)
@@ -365,8 +370,5 @@ simplex_posteriors = map((;
     )) do constrain_f 
     dummy_simplex_model(;constrain_f, prior_f=uniform_simplex_lpdf)
 end
-
-map(simplex_posteriors) do posterior 
-    QuartoComponents.Code("stan", stan_code(posterior))
-end |> QuartoComponents.Tabset
+""", :simplex_posteriors)
 ```

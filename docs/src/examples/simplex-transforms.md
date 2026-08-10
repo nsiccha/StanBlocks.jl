@@ -1,5 +1,14 @@
 # The `@slic` macro
 
+::: warning Historical benchmark harness
+This notebook is preserved as the original simplex-transform experiment. It
+contains a host-specific BridgeStan path and runs warmup/MCMC benchmarks; the
+documentation build does not execute that environment-specific harness or
+pretend that its runtime output is a portable generated example. The maintained
+transpilation-only simplex family is shown with build-generated Stan on the
+[reusable constraints page](constraints.md#various-simplex-constraining-transformations).
+:::
+
 ```julia
 using StanBlocks, StanLogDensityProblems, JSON, Markdown, WarmupHMC, Random, Term, MCMCDiagnosticTools, DataFrames, BridgeStan, DataFrames
 BridgeStan.set_bridgestan_path!("/home/niko/github/roualdes/bridgestan")

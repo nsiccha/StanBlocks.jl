@@ -2,7 +2,14 @@
 
 Qualitatively reproduces [Léo Grinsztajn et al.'s disease transmissin case study](https://mc-stan.org/learn-stan/case-studies/boarding_school_case_study.html).
 
+::: warning Historical sketch
+These examples preserve the original placeholder `sir` ODE input and obsolete
+`integrate_ode_rk45` call. Current StanBlocks cannot translate these unfinished
+sketches, so no generated program is claimed or hidden here.
+:::
+
 ```julia
+using StanBlocks
 data = (;
     sir=1.,
     y0=[1., 1.],
