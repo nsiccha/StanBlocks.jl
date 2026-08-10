@@ -3,6 +3,7 @@ import { tabsMarkdownPlugin } from 'vitepress-plugin-tabs'
 import { mathjaxPlugin } from './mathjax-plugin'
 import footnote from "markdown-it-footnote";
 import path from 'path'
+import { stanLanguage } from './stan-language'
 
 const mathjax = mathjaxPlugin()
 
@@ -90,6 +91,7 @@ export default defineConfig({
       light: "github-light",
       dark: "github-dark"
     },
+    languages: [stanLanguage],
   },
   vite: {
     plugins: [

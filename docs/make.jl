@@ -1,5 +1,8 @@
 using Documenter, DocumenterVitepress, StanBlocks
 
+include("feature_atlas.jl")
+FeatureAtlasDocs.validate_template(joinpath(@__DIR__, "src", "feature-atlas.md"))
+
 const DEVBRANCH = "devibe"
 const STANCON_DIR = joinpath(dirname(@__DIR__), "presentations", "stancon-2026")
 const STANCON_BUILD = joinpath(@__DIR__, "build", "stancon-2026")
@@ -34,7 +37,10 @@ makedocs(
         "API"               => "api.md",
     ],
     checkdocs = :none,
-    warnonly = true,
+    # Generated atlas comparisons must fail the build if their executable source
+    # or Stan emission fails; silently publishing a stale hand-written excerpt is
+    # precisely what the atlas is designed to prevent.
+    warnonly = false,
 )
 
 # The presentation is a standalone Quarto site, not a VitePress page. Render it

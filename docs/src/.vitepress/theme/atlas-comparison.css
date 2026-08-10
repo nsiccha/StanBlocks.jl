@@ -1,0 +1,158 @@
+.atlas-comparison {
+  margin: 1.25rem 0 1.75rem;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-soft);
+  overflow: hidden;
+}
+
+.atlas-comparison__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+.atlas-comparison__tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.atlas-comparison__tab,
+.atlas-comparison__expand,
+.atlas-comparison__close {
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--vp-c-text-2);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.atlas-comparison__tab {
+  padding: 0.35rem 0.65rem;
+}
+
+.atlas-comparison__tab.is-active {
+  border-color: var(--vp-c-brand-1);
+  background: var(--vp-c-bg);
+  color: var(--vp-c-brand-1);
+}
+
+.atlas-comparison__expand,
+.atlas-comparison__close {
+  padding: 0.35rem 0.65rem;
+  border-color: var(--vp-c-divider);
+  background: var(--vp-c-bg);
+  color: var(--vp-c-text-1);
+}
+
+.atlas-comparison__tab:hover,
+.atlas-comparison__expand:hover,
+.atlas-comparison__close:hover {
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1);
+}
+
+.atlas-comparison__tab:focus-visible,
+.atlas-comparison__expand:focus-visible,
+.atlas-comparison__close:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+}
+
+.atlas-comparison__panel {
+  padding: 0.15rem 0.75rem 0.75rem;
+}
+
+.atlas-comparison__panel > div[class*='language-'],
+.atlas-comparison__column div[class*='language-'] {
+  margin: 0.75rem 0 0;
+}
+
+.atlas-comparison__dialog {
+  width: min(96vw, 1600px);
+  max-width: none;
+  height: min(92vh, 1050px);
+  max-height: none;
+  padding: 0;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 14px;
+  background: var(--vp-c-bg);
+  color: var(--vp-c-text-1);
+  box-shadow: var(--vp-shadow-5);
+}
+
+.atlas-comparison__dialog::backdrop {
+  background: rgb(0 0 0 / 0.62);
+}
+
+.atlas-comparison__dialog-frame {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.atlas-comparison__dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+.atlas-comparison__columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 0;
+  flex: 1;
+}
+
+.atlas-comparison__column {
+  min-width: 0;
+  overflow: auto;
+  padding: 0.8rem 1rem 1.25rem;
+}
+
+.atlas-comparison__column + .atlas-comparison__column {
+  border-left: 1px solid var(--vp-c-divider);
+}
+
+.atlas-comparison__column h3 {
+  margin: 0;
+  border: 0;
+  font-size: 0.9rem;
+  color: var(--vp-c-text-2);
+}
+
+@media (max-width: 700px) {
+  .atlas-comparison__toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .atlas-comparison__expand {
+    align-self: flex-start;
+  }
+
+  .atlas-comparison__columns {
+    display: block;
+    overflow: auto;
+  }
+
+  .atlas-comparison__column {
+    overflow: visible;
+  }
+
+  .atlas-comparison__column + .atlas-comparison__column {
+    border-top: 1px solid var(--vp-c-divider);
+    border-left: 0;
+  }
+}
