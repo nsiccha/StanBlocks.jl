@@ -138,12 +138,34 @@ downstream likelihood.
 mock values to establish the types and shapes, then rebind real data later:
 
 ```julia
-base = @slic (; y = [1], t = [1.0]) begin
-    n = dims(y)[1]
-    y ~ my_bernoulli(link_f, theta)
+base = @slic (; y = [1], x = [0.0]) begin
+    alpha ~ normal(0, 1)
+    y ~ bernoulli_logit(alpha + x)
 end
 
-posterior = base(; y = real_y, t = real_t, link_f = logit)
+posterior = base(; y = [1, 0, 1], x = [-1.0, 0.0, 1.0])
+```
+
+The rebinding changes data values but not the traced program:
+
+```stan
+data {
+  int y_n;
+  array[y_n] int y;
+  int x_n;
+  vector[x_n] x;
+}
+parameters {
+  real alpha;
+}
+model {
+  alpha ~ normal(0, 1);
+  y ~ bernoulli_logit(alpha + x);
+}
+generated quantities {
+  vector[y_n] y_likelihood = bernoulli_logit_lpmfs(y, alpha + x);
+  array[y_n] int y_gen = bernoulli_logit_int_rng(y_n, alpha + x);
+}
 ```
 
 | Julia value | Inferred Stan carrier |
@@ -288,6 +310,24 @@ m = @slic (; x, y) begin
 end
 ```
 
+Essential emission:
+
+```stan
+parameters {
+  real eta1_beta;
+  real eta2_alpha;
+}
+transformed parameters {
+  vector[x_n] eta1 = eta1_beta * x;
+  vector[x_n] eta2 = eta2_alpha + eta1;
+}
+model {
+  eta1_beta ~ normal(0, 1);
+  eta2_alpha ~ normal(0, 2);
+  y ~ normal(eta2, 1);
+}
+```
+
 Typed arguments select Julia methods on the traced Stan center type. Multiple
 definitions of `@slic f(::real)` and `@slic f(::int)` are distinct methods;
 untyped positional arguments match any traced value.
@@ -303,6 +343,18 @@ end
 wide = Base.merge(base, quote
     beta ~ normal(0, 5)
 end)
+```
+
+The replacement is visible directly in the emitted model block:
+
+```stan
+parameters {
+  real beta;
+}
+model {
+  beta ~ normal(0, 5);
+  y ~ normal(beta * x, 1);
+}
 ```
 
 The merged statement matches by the bare LHS name and replaces the original.
@@ -366,6 +418,48 @@ end
     [x[i] * y[j] for i in 1:n, j in 1:m]
 ```
 
+Essential emitted functions:
+
+```stan
+vector squares(vector x) {
+  vector[1 + (num_elements(x) - 1)] result;
+  for (i in 1:num_elements(x)) {
+    result[i] = x[i] * x[i];
+  }
+  return result;
+}
+
+real weighted_sum(vector x) {
+  real acc = 0.0;
+  for (i in 1:num_elements(x)) {
+    real xi = x[i];
+    acc += i * xi;
+  }
+  return acc;
+}
+
+vector products(vector a, vector b) {
+  int n = dims(a)[1];
+  if (dims(b)[1] != n)
+    reject("products: dimension mismatch");
+  vector[1 + (min(num_elements(a), num_elements(b)) - 1)] result;
+  for (i in 1:min(num_elements(a), num_elements(b))) {
+    result[i] = a[i] * b[i];
+  }
+  return result;
+}
+
+matrix outer(vector x, vector y) {
+  int n = dims(x)[1];
+  int m = dims(y)[1];
+  matrix[1 + (n - 1), 1 + (m - 1)] result;
+  for (i in 1:n) {
+    for (j in 1:m) result[i, j] = x[i] * y[j];
+  }
+  return result;
+}
+```
+
 Emission patterns:
 
 | Source form | Stan lowering |
@@ -386,16 +480,46 @@ flattened ragged comprehensions, and 3-D+ comprehensions reject explicitly.
 ### Positional defaults and keyword arguments
 
 ```julia
-@deffun affine(x::real, a::real = 2.0; b = 1.0)::real = a * x + b
-@deffun scale(x::vector[n]; factor)::vector[n] = factor * x
-@deffun shift(x::vector[n]; a, b = 2.0)::vector[n] = a * x .+ b
+@deffun affine(x::real, a::real = 2.0)::real = a * x + 1.0
+@deffun scale(x::vector[n]; factor, bias)::vector[n] = factor * x + bias
+@deffun shift(x::vector[n]; a, b = 2.0)::vector[n] = a * x + b
+
+@slic (; x = [1.0, 2.0], y = [0.0, 0.0]) begin
+    a1 = affine(3.0)             # default a=2
+    a2 = affine(3.0, 4.0)
+    s = scale(x; factor=0.5, bias=0.0) # required kwargs
+    z = shift(s; a=1.5)          # optional b defaults to 2
+    y ~ normal(z + a1 + a2, 1)
+end
 ```
 
-```julia
-affine(3.0)                    # default a=2, b=1
-affine(3.0, 4.0; b=2.0)
-scale(x; factor=0.5)           # required kwarg
-shift(x; a=1.5)                # optional b defaults to 2
+Defaults and kwargs are resolved before ordinary Stan calls are emitted:
+
+```stan
+functions {
+  real affine(real x, real a) {
+    return a * x + 1.0;
+  }
+  vector kwcall_scale(tuple(real, real) kw, vector x) {
+    real factor = kw.1;
+    real bias = kw.2;
+    return factor * x + bias;
+  }
+  vector kwcall_shift(tuple(real, real) kw, vector x) {
+    real a = kw.1;
+    real b = kw.2;
+    return a * x + b;
+  }
+}
+transformed data {
+  real a1 = affine(3.0, 2.0);
+  real a2 = affine(3.0, 4.0);
+  vector[x_n] s = kwcall_scale((0.5, 0.0), x);
+  vector[x_n] z = kwcall_shift((1.5, 2.0), s);
+}
+model {
+  y ~ normal(z + a1 + a2, 1);
+}
 ```
 
 Defaults are resolved at the call site; Stan receives a specialised call with
@@ -405,6 +529,8 @@ tracing rather than emitting an under-specified function call.
 ### Variadic and function-typed dispatch
 
 ```julia
+import StanBlocks.stan: logit
+
 @deffun begin
     my_bernoulli_lpmf(y, ::typeof(logit), eta) =
         bernoulli_logit_lpmf(y, eta)
@@ -417,6 +543,35 @@ tracing rather than emitting an under-specified function call.
 
     apply_twice(f, x::real)::real = f(f(x))
 end
+
+@slic (; y=1, eta=0.2, obs=0.0) begin
+    ll = my_bernoulli_lpmfs(y, logit, eta)
+    z = apply_twice(exp, eta)
+    obs ~ normal(ll + z, 1)
+end
+```
+
+Only the selected function-token specializations reach Stan:
+
+```stan
+functions {
+  real my_bernoulli_logit_lpmfs(int y, real eta) {
+    return my_bernoulli_logit_lpmf(y | eta);
+  }
+  real my_bernoulli_logit_lpmf(int y, real eta) {
+    return bernoulli_logit_lpmf(y | eta);
+  }
+  real apply_twice_exp(real x) {
+    return exp(exp(x));
+  }
+}
+transformed data {
+  real ll = my_bernoulli_logit_lpmfs(y, eta);
+  real z = apply_twice_exp(eta);
+}
+model {
+  obs ~ normal(ll + z, 1);
+}
 ```
 
 Function values are compile-time tokens. StanBlocks selects and emits the
@@ -433,6 +588,27 @@ specialised method; no runtime function object reaches Stan.
     )
     yobs ~ normal(y[1][1], 0.05)
 end
+```
+
+The captured parameter becomes an explicit trailing solver argument:
+
+```stan
+functions {
+  vector closure_1(real t, vector state, real lambda) {
+    return -lambda * state;
+  }
+}
+parameters {
+  real<lower=0.0> lambda;
+}
+transformed parameters {
+  array[ts_n] vector[1] y =
+      ode_rk45(closure_1, [1.0]', 0.0, to_array_1d(ts), lambda);
+}
+model {
+  lambda ~ exponential(1);
+  yobs ~ normal(y[1][1], 0.05);
+}
 ```
 
 The closure is lifted into a generated Stan function. Captured data and
@@ -455,6 +631,20 @@ end
 end
 ```
 
+The macro call is absent from Stan; only its expanded expression remains:
+
+```stan
+parameters {
+  real alpha;
+  real beta;
+}
+model {
+  alpha ~ normal(0, 1);
+  beta ~ normal(0, 1);
+  y ~ normal(alpha + beta * (x - mean(x)), 1);
+}
+```
+
 `@views`, `@.`, `@inbounds`, and user-defined Julia macros use the same route.
 They expand in the caller module; StanBlocks traces the expanded syntax.
 
@@ -467,6 +657,35 @@ They expand in the caller module; StanBlocks traces the expanded syntax.
     buf[1] = 42.0
     buf
 end
+
+@deffun mutate_scaled(x::vector[n])::vector[n] = begin
+    buf::vector[n] = scale(x, 2.0)
+    set_first!(buf)
+end
+
+@slic (; x=[1.0, 2.0], y=0.0) begin
+    changed = mutate_scaled(x)
+    y ~ normal(sum(changed), 1)
+end
+```
+
+The two inline helpers disappear into their caller:
+
+```stan
+functions {
+  vector mutate_scaled(vector x) {
+    int n = dims(x)[1];
+    vector[n] buf = x * 2.0;
+    buf[1] = 42.0;
+    return buf;
+  }
+}
+transformed data {
+  vector[x_n] changed = mutate_scaled(x);
+}
+model {
+  y ~ normal(sum(changed), 1);
+}
 ```
 
 Calls expand at the call site rather than producing a Stan `functions` entry.
@@ -491,13 +710,38 @@ if (!(x > 0)) reject("safe_log: x must be positive");
 ```julia
 @deffun element_type(x::real)::real = x
 
-@deffun copy_vec(x::vector[n]) = begin
+@deffun @stanonly copy_vec(x::vector[n]) = begin
     out::return_type_of(element_type, x[1])[n]
     for i in 1:n
         out[i] = x[i]
     end
     out
 end
+
+@slic (; x=[1.0, 2.0], y=[0.0, 0.0]) begin
+    copied = copy_vec(x)
+    y ~ normal(copied, 1)
+end
+```
+
+`return_type_of` determines the local carrier during tracing; it is not a Stan
+runtime call:
+
+```stan
+functions {
+  vector copy_vec(vector x) {
+    int n = dims(x)[1];
+    vector[n] out;
+    for (i in 1:n) out[i] = x[i];
+    return out;
+  }
+}
+transformed data {
+  vector[x_n] copied = copy_vec(x);
+}
+model {
+  y ~ normal(copied, 1);
+}
 ```
 
 `return_type_of` exposes the same registered inference table used by the
@@ -511,9 +755,26 @@ Eligible deterministic, bodyful `@deffun` definitions also install one Julia
 method. That supports ordinary unit tests of shared deterministic helpers:
 
 ```julia
-@deffun affine(x::real, a::real = 2.0; b = 1.0)::real = a * x + b
+@deffun affine(x::real, a::real = 2.0)::real = a * x + 1.0
 
 affine(3.0) == 7.0
+
+@slic (; y=0.0) begin
+    y ~ normal(affine(3.0), 1)
+end
+```
+
+The same definition supplies the emitted Stan function:
+
+```stan
+functions {
+  real affine(real x, real a) {
+    return a * x + 1.0;
+  }
+}
+model {
+  y ~ normal(affine(3.0, 2.0), 1);
+}
 ```
 
 Probability, RNG, ODE, and parallel builtins are outside the bounded Julia
@@ -543,6 +804,35 @@ end
 end
 ```
 
+All three registered companions are pulled into the emitted program:
+
+```stan
+functions {
+  real robust_lpdf(real y, real mu, real sigma) {
+    return student_t_lpdf(y | 4, mu, sigma);
+  }
+  real robust_lpdfs(real y, real mu, real sigma) {
+    return robust_lpdf(y | mu, sigma);
+  }
+  real robust_rng(real mu, real sigma) {
+    return student_t_rng(4, mu, sigma);
+  }
+}
+parameters {
+  real mu;
+  real<lower=0.0> sigma;
+}
+model {
+  mu ~ normal(0, 2);
+  sigma ~ exponential(1);
+  y ~ robust(mu, sigma);
+}
+generated quantities {
+  real y_likelihood = robust_lpdfs(y, mu, sigma);
+  real y_gen = robust_rng(mu, sigma);
+}
+```
+
 | Companion | Used for |
 |---|---|
 | `robust_lpdf` | joint sampling statement |
@@ -559,7 +849,8 @@ observation additionally needs the sized-token RNG form
 ### Distribution higher-order functions
 
 ```julia
-@slic (; y1, y2, y3, y4, w, lo, hi) begin
+@slic (; y1=0.1, y2=0.2, y3=0.3, y4=0.4,
+         w=2.0, lo=-1.0, hi=1.0) begin
     mu ~ normal(0, 1)
 
     y1 ~ weighted(normal, w, mu, 1)
@@ -578,16 +869,26 @@ Essential semantic lowering:
 | `censored` | tail mass at threshold atoms; density in interior | clamp base RNG |
 | `interval_censored` | `log(CDF(hi)-CDF(lo))` for `(lo,hi]` evidence | uncoarsened base RNG |
 
-For the concrete censored-normal MWE, the model block currently emits:
+The four source statements emit four specialised internal families:
 
 ```stan
 model {
   mu ~ normal(0, 1);
-  y ~ clamping_normal(lo, hi, mu, 1);
+  y1 ~ weighted_normal(w, mu, 1);
+  y2 ~ conditioning_normal(lo, hi, mu, 1);
+  y3 ~ clamping_normal(lo, hi, mu, 1);
+  y4 ~ interval_evidence_impl_normal(lo, hi, mu, 1);
 }
 generated quantities {
-  vector[y_n] y_likelihood = clamping_normal_lpdfs(y, lo, hi, mu, 1);
-  vector[y_n] y_gen = clamping_vector_normal_rng(y_n, lo, hi, mu, 1);
+  real y1_likelihood = weighted_normal_lpdfs(y1, w, mu, 1);
+  real y1_gen = weighted_normal_rng(w, mu, 1);
+  real y2_likelihood = conditioning_normal_lpdfs(y2, lo, hi, mu, 1);
+  real y2_gen = conditioning_normal_rng(lo, hi, mu, 1);
+  real y3_likelihood = clamping_normal_lpdfs(y3, lo, hi, mu, 1);
+  real y3_gen = clamping_normal_rng(lo, hi, mu, 1);
+  real y4_likelihood =
+      interval_evidence_impl_normal_lpdfs(y4, lo, hi, mu, 1);
+  real y4_gen = interval_evidence_impl_normal_rng(lo, hi, mu, 1);
 }
 ```
 
@@ -601,6 +902,59 @@ y ~ normal_id_glm(X, alpha, beta, sigma)
 y ~ bernoulli_logit_glm(X, alpha, beta)
 y ~ poisson_log_glm(X, alpha, beta)
 y ~ neg_binomial_2_log_glm(X, alpha, beta, phi)
+```
+
+Across four otherwise separate models, the corresponding likelihood and
+generated-output statements are:
+
+Normal:
+
+```stan
+model {
+  y ~ normal_id_glm(X, alpha, beta, sigma);
+}
+generated quantities {
+  vector[X_m] y_likelihood = normal_id_glm_lpdfs(y, X, alpha, beta, sigma);
+  vector[X_m] y_gen = normal_id_glm_vector_rng(y_n, X, alpha, beta, sigma);
+}
+```
+
+Bernoulli:
+
+```stan
+model {
+  y ~ bernoulli_logit_glm(X, alpha, beta);
+}
+generated quantities {
+  vector[X_m] y_likelihood = bernoulli_logit_glm_lpmfs(y, X, alpha, beta);
+  array[X_m] int y_gen = bernoulli_logit_glm_int_rng(y_n, X, alpha, beta);
+}
+```
+
+Poisson:
+
+```stan
+model {
+  y ~ poisson_log_glm(X, alpha, beta);
+}
+generated quantities {
+  vector[X_m] y_likelihood = poisson_log_glm_lpmfs(y, X, alpha, beta);
+  array[X_m] int y_gen = poisson_log_glm_int_rng(y_n, X, alpha, beta);
+}
+```
+
+Negative binomial:
+
+```stan
+model {
+  y ~ neg_binomial_2_log_glm(X, alpha, beta, phi);
+}
+generated quantities {
+  vector[X_m] y_likelihood =
+      neg_binomial_2_log_glm_lpmfs(y, X, alpha, beta, phi);
+  array[X_m] int y_gen =
+      neg_binomial_2_log_glm_int_rng(y_n, X, alpha, beta, phi);
+}
 ```
 
 The model block retains the fused Stan primitive. Where Stan has no matching
@@ -672,6 +1026,30 @@ array prefixes. Cells must remain independent: `plate` is not a scan.
 end
 ```
 
+Essential emission:
+
+```stan
+parameters {
+  cholesky_factor_corr[k] L;
+  vector<lower=0>[k] tau;
+  matrix[k, n_groups] b_z;
+}
+transformed parameters {
+  matrix[k, k] b__pl_inv1_1 = diag_pre_multiply(tau, L);
+  matrix[k, n_groups] b;
+  for (plate_i__pl_1 in 1:n_groups) {
+    b[:, plate_i__pl_1] = b__pl_inv1_1 * b_z[:, plate_i__pl_1];
+  }
+}
+model {
+  L ~ lkj_corr_cholesky(2);
+  tau ~ normal(0, 1);
+  for (plate_i__pl_1 in 1:n_groups) {
+    b_z[:, plate_i__pl_1] ~ std_normal();
+  }
+}
+```
+
 Both `z` and `b` have logical shape `matrix[k,n_groups]`; the per-group vectors
 occupy columns.
 
@@ -688,6 +1066,38 @@ groups = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]
 end
 ```
 
+Essential emission:
+
+```stan
+functions {
+  vector getindex_RaggedVector(tuple(vector, array[] int) rv, int i) {
+    return rv.1[
+      ragged_start_RaggedVector(rv, i):ragged_end_RaggedVector(rv, i)
+    ];
+  }
+  int num_elements_RaggedVector(tuple(vector, array[] int) rv) {
+    return size(rv.2);
+  }
+}
+data {
+  int groups_mem_n;
+  int groups_ends_n;
+  tuple(vector[groups_mem_n], array[groups_ends_n] int) groups;
+  int g;
+  real y;
+}
+transformed data {
+  vector[ragged_length_RaggedVector(groups, 1)] first =
+      getindex_RaggedVector(groups, 1);
+  vector[ragged_length_RaggedVector(groups, g)] selected =
+      getindex_RaggedVector(groups, g);
+  int ng = num_elements_RaggedVector(groups);
+}
+model {
+  y ~ normal(sum(first) + sum(selected) + ng, 1);
+}
+```
+
 The nested Julia vectors become a nominal carrier with flat `mem` and inclusive
 group `ends`. `groups[g]` lowers to a Stan helper that reconstructs the requested
 slice; `length(groups)` counts groups, not scalar elements.
@@ -701,6 +1111,36 @@ slice; `length(groups)` counts groups, not scalar elements.
 end
 ```
 
+Essential emission:
+
+```stan
+transformed data {
+  array[Ks_n] int c_end__rc_1 = cumulative_sum(Ks);
+  array[Ks_n] int f_end__rc_1 = cumulative_sum(jbroadcasted_sub(Ks, 1));
+}
+parameters {
+  vector[sum(jbroadcasted_sub(Ks, 1))] p_free__rc_1;
+}
+transformed parameters {
+  vector[sum(Ks)] p_mem__rc_1;
+  for (g__rc_1 in 1:num_elements(Ks)) {
+    p_mem__rc_1[
+      (c_end__rc_1[g__rc_1] - Ks[g__rc_1] + 1):c_end__rc_1[g__rc_1]
+    ] = simplex_jacobian(
+      p_free__rc_1[
+        (f_end__rc_1[g__rc_1] - (Ks[g__rc_1] - 1) + 1):f_end__rc_1[g__rc_1]
+      ]
+    );
+  }
+}
+model {
+  y ~ normal(
+    sum(p_mem__rc_1[ragged_start(c_end__rc_1, 1):ragged_end(c_end__rc_1, 1)]),
+    0.1
+  );
+}
+```
+
 Stan cannot declare a runtime-ragged pile of simplices. StanBlocks emits a flat
 unconstrained parameter, then a compiler-owned per-group constrain/Jacobian loop
 and a logical ragged view. The same route covers `ordered`, `positive_ordered`,
@@ -710,10 +1150,32 @@ requires BridgeStan 2.9 / Stan 2.39 or newer.
 ### Dense views and indexing
 
 ```julia
-cols = EachCol(X)
-rows = EachRow(X)
-
 @deffun col_sums(X::matrix[m,k]) = [sum(c) for c in EachCol(X)]
+
+@slic (; X=[1.0 2.0; 3.0 4.0], y=[0.0, 0.0]) begin
+    sums = col_sums(X)
+    y ~ normal(sums, 1)
+end
+```
+
+The view disappears into native `col` calls:
+
+```stan
+functions {
+  vector col_sums(matrix X) {
+    vector[1 + (cols(X) - 1)] result;
+    for (i in 1:cols(X)) {
+      result[i] = sum(col(X, i));
+    }
+    return result;
+  }
+}
+transformed data {
+  vector[1 + (cols(X) - 1)] sums = col_sums(X);
+}
+model {
+  y ~ normal(sums, 1);
+}
 ```
 
 | Source | Stan lowering |
@@ -731,7 +1193,41 @@ rows = EachRow(X)
 cross-validation marker can additionally taint a held-out input:
 
 ```julia
-held_out = model(; person = StanBlocks.stan.maybecv(:person, person_new))
+person = [1, 2, 1, 2]
+
+model = @slic (; person, y=[0.1, -0.2, 0.3, 0.0]) begin
+    n_person = maximum(person)
+    alpha ~ normal(0, 1; n=n_person)
+    y ~ normal(alpha[person], 1)
+end
+
+held_out = model(;
+    person=StanBlocks.stan.maybecv(:person, [1, 2, 1, 2]),
+)
+```
+
+With `person` marked, its dependent group effect and observation work move to
+generated quantities, leaving no fitting statement in this fully held-out MWE:
+
+```stan
+data {
+  int person_n;
+  array[person_n] int person;
+  int y_n;
+  vector[y_n] y;
+}
+transformed data {
+  int n_person = max(person);
+}
+parameters {
+}
+model {
+}
+generated quantities {
+  vector[n_person] alpha = normal_vector_rng(n_person, 0, 1);
+  vector[y_n] y_likelihood = normal_lpdfs(y, alpha[person], 1);
+  vector[y_n] y_gen = normal_vector_rng(y_n, alpha[person], 1);
+}
 ```
 
 Activity propagates from the marked input. Likelihood terms reached by the mark
@@ -801,6 +1297,38 @@ end
     )
     conc ~ lognormal(log(pred), sigma)
 end
+```
+
+Essential emission:
+
+```stan
+functions {
+  vector pk_rhs(real t, vector y, real ke) {
+    int ny = dims(y)[1];
+    vector[ny] dy;
+    dy[1] = -ke * y[1];
+    return dy;
+  }
+}
+parameters {
+  real<lower=0.0> ke;
+  real<lower=0.0> sigma;
+}
+transformed parameters {
+  vector[ts_n] pred = to_vector(
+    ode_rk45(pk_rhs, [1.0]', 0.0, to_array_1d(ts), ke)[:, 1]
+  );
+}
+model {
+  ke ~ lognormal(0, 0.5);
+  sigma ~ exponential(1);
+  conc ~ lognormal(log(pred), sigma);
+}
+generated quantities {
+  vector[conc_n] conc_likelihood = lognormal_lpdfs(conc, log(pred), sigma);
+  vector[conc_n] conc_gen =
+      lognormal_vector_rng(conc_n, log(pred), sigma);
+}
 ```
 
 `ode_rk45` is the default and `ode_bdf` the stiff escalation. Solver results are
