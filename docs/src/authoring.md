@@ -329,5 +329,6 @@ raise on absent or ambiguous names/operations instead of guessing.
 - `transpiles(model)` checks tracing only. Use `stanc_check`/`compiles` and,
   for semantic changes, a BridgeStan log-density/gradient check.
 
-See the [Home guide](index.md) for the end-to-end workflow and the
+See the [Home guide](index.md) for the end-to-end workflow, the
+[Worked model patterns](worked-examples.md) for applied compositions, and the
 [Sandbox Gallery](gallery.md) for executable examples.

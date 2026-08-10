@@ -308,7 +308,9 @@ end)
 The merged statement matches by the bare LHS name and replaces the original.
 Typed and untyped versions of the same LHS still match. Additional names append
 new statements. A merged `SlicModel` value can also be interpolated into the
-callee position of generated AST.
+callee position of generated AST. The crowdsourcing family in
+[Advanced composition patterns](advanced-patterns.md#Crowdsourcing-variants-with-Base.merge)
+shows chained assignment and sampling-statement variants in context.
 
 ## Deterministic programs with `@deffun`
 
