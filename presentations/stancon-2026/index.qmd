@@ -77,41 +77,57 @@ small: author in Julia syntax, emit normal Stan, keep Stan's toolchain.
 
 Why put a language in front of an already good language?
 
-## Julia's “1.5-language” problem
+## Julia + performant AD versus Stan
 
 :::: {.columns}
 ::: {.column width="48%"}
 
-### The language you write
+### Julia + performant AD
 
-- multiple dispatch
-- closures and higher-order functions
-- macros and generated syntax
-- reusable package code
-- one host language for data + models
+- expressive, general-purpose language
+- mathematical code may need expert rewriting
+- AD must cope with that full expressiveness
+- historically incomplete, wrong, or slow
+- Enzyme makes far more possible today
 
 :::
 ::: {.column width="48%"}
 
-### The extra half-language
+### Stan
 
-- what the selected AD stack can differentiate
-- which mutation and aliasing patterns survive
-- which types compile efficiently
-- which backend-specific failures appear only at runtime
+- restricted language for statistical models
+- obvious mathematical code is a strong baseline
+- AD is central to the inference stack
+- narrower target is easier to optimize reliably
+- generated code remains inspectable
 
 :::
 ::::
 
 ::: {.takeaway}
-The model author can end up reasoning about the statistical program **and** the admissible AD subset of Julia.
+Julia maximizes **expressive freedom**; Stan narrows the problem to make differentiable programs **predictable**.
 :::
 
 ::: {.notes}
-“1.5 languages” is a framing, not a language count. Julia is expressive; the
-trouble is that differentiable Julia is often a moving subset with another set
-of operational constraints. In this stack, Mooncake is the Julia AD backend;
-Stan's path is separate and uses Stan Math through BridgeStan.
+The first Julia bullet pair folds in Michael Tiemann's framing from
+[“Julia Solves the 2 Language Problem, However It Creates the 1.5 Language
+Problem”](https://www.youtube.com/watch?v=RUJFd-rEa0k): naive Julia can look
+like the mathematics yet be much slower than expert Julia, whose performant
+implementation may look very different. The detailed causes are not the point
+of this slide. The AD comparison is our synthesis, not Tiemann's framing.
+Historically, Julia AD has often felt incomplete, incorrect, or insufficiently
+performant. Julia did not bake one performant AD path into Core, while the
+language's generality already gives the primal compiler a difficult
+optimization problem. Differentiating the full language makes the analysis
+harder still. Stan accepts the opposite constraint: its narrower language and
+runtime are designed around differentiation for statistical inference.
+
+Enzyme changes what is possible in principle and can already match or beat Stan
+on some workloads. Do not turn that into “every Julia program always works
+today”: compilation, activity analysis, custom rules, library coverage, and
+workload-specific performance still matter. In StanBlocks today, Mooncake is
+the Julia AD backend; Stan's path is separate and uses Stan Math through
+BridgeStan.
 :::
 
 ## The Stan bargain
@@ -119,7 +135,7 @@ Stan's path is separate and uses Stan Math through BridgeStan.
 :::: {.card-grid}
 ::: {.card}
 
-### “Not ideal, but good” performance
+<div class="card-title">“Not ideal, but good” performance</div>
 
 Out of the box. Not always the theoretical optimum—but mature vectorisation,
 fused kernels, reverse-mode AD, and NUTS adaptation make “write the obvious
@@ -128,7 +144,7 @@ model” a strong baseline.
 :::
 ::: {.card .blue-card}
 
-### Reliability
+<div class="card-title">Reliability</div>
 
 Static checks, explicit constraints and Jacobians, a mature sampler, and years
 of use on difficult models.
@@ -136,7 +152,7 @@ of use on difficult models.
 :::
 ::: {.card .gold-card}
 
-### Stable semantics
+<div class="card-title">Stable semantics</div>
 
 The generated target is a small, explicit language designed around Bayesian
 computation rather than general-purpose execution.
@@ -144,7 +160,7 @@ computation rather than general-purpose execution.
 :::
 ::: {.card}
 
-### An inspectable boundary
+<div class="card-title">An inspectable boundary</div>
 
 `stan_code(model)` can be read, diffed, archived, checked by `stanc`, compiled,
 and handed to the ordinary Stan ecosystem.
@@ -264,21 +280,21 @@ full relevant declarations.
 :::: {.card-grid .three}
 ::: {.card}
 
-### Placement
+<div class="card-title">Placement</div>
 
 `data` · `transformed data` · `parameters` · `transformed parameters` · `model` · `generated quantities`
 
 :::
 ::: {.card .blue-card}
 
-### Representation
+<div class="card-title">Representation</div>
 
 types · shapes · constraints · function signatures · captured dimensions
 
 :::
 ::: {.card .gold-card}
 
-### Workflow outputs
+<div class="card-title">Workflow outputs</div>
 
 pointwise log likelihood · posterior predictive draws · executable model descriptor
 
@@ -348,21 +364,21 @@ They now sit beside:
 :::: {.card-grid .three}
 ::: {.card}
 
-### Julia-flavoured abstraction
+<div class="card-title">Julia-flavoured abstraction</div>
 
 closures · higher-order functions · variadics · required/optional kwargs · defaults · macro expansion · inline helpers
 
 :::
 ::: {.card .blue-card}
 
-### Statistical authoring
+<div class="card-title">Statistical authoring</div>
 
 submodels · `Base.merge` variants · custom distribution triads · censoring/truncation/weights · fused GLMs · CV taint
 
 :::
 ::: {.card .gold-card}
 
-### Structured models
+<div class="card-title">Structured models</div>
 
 `plate` · ragged data · constrained ragged parameters · missing outcomes · ODEs · Torsten signatures
 
@@ -543,7 +559,7 @@ standard workflows above, inspectable compiler below.
 
 ### The pitch
 
-1. **Julia is a great authoring language**, but Julia + AD can become 1.5 languages.
+1. **Julia + AD maximizes expressiveness; Stan narrows the problem** to make differentiable statistical programs predictable.
 2. **Stan is a strong inference target**: reliable, good out of the box, and explicit.
 3. **StanBlocks makes model families composable** while keeping generated Stan inspectable.
 4. **Agents strengthen the case for a compiler contract**, even as they weaken the case for mere syntax reduction.
@@ -767,8 +783,10 @@ A small language is useful only when its “no” is explicit.
 
 ## Backup · sources and further reading
 
-- Maria I. Gorinova, Andrew D. Gordon & Charles Sutton, [*Probabilistic Programming with Densities in SlicStan*](https://doi.org/10.1145/3290348), POPL 2019.
-- [SlicStan public repository](https://github.com/mgorinova/SlicStan).
+- Michael Tiemann, [*Julia Solves the 2 Language Problem, However It Creates the 1.5 Language Problem*](https://www.youtube.com/watch?v=RUJFd-rEa0k).
+- [Enzyme.jl documentation](https://enzyme.mit.edu/julia/stable/) and Turing's [March 2026 performance update](https://turinglang.org/news/posts/2026-03-09-newsletter-18/).
+- Community context: Julia Discourse on [performant programming](https://discourse.julialang.org/t/discussion-on-the-future-for-performant-programming-in-julia/99509) and [the 2024 AD landscape](https://discourse.julialang.org/t/state-of-ad-in-2024/112601); Hacker News on [AD correctness](https://news.ycombinator.com/item?id=45289829).
+- Maria I. Gorinova, Andrew D. Gordon & Charles Sutton, [*Probabilistic Programming with Densities in SlicStan*](https://doi.org/10.1145/3290348), POPL 2019; [source](https://github.com/mgorinova/SlicStan).
 - [StanBlocks.jl source](https://github.com/nsiccha/StanBlocks.jl) and [authoring support guide](https://nsiccha.github.io/StanBlocks.jl/dev/authoring).
 - [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl) and its [worked model catalogue](https://nsiccha.github.io/BayesianRegressionModels.jl/).
 - Companion [StanCon 2026 feature atlas](https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas).
