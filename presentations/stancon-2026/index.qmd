@@ -77,87 +77,57 @@ small: author in Julia syntax, emit normal Stan, keep Stan's toolchain.
 
 Why put a language in front of an already good language?
 
-## Julia's “1.5-language” problem
+## Julia + performant AD versus Stan
 
 :::: {.columns}
 ::: {.column width="48%"}
 
-### Working Julia
+### Julia + performant AD
 
-- multiple dispatch
-- closures and higher-order functions
-- macros and generated syntax
-- reusable package code
-- direct, readable implementations
+- expressive, general-purpose language
+- mathematical code may need expert rewriting
+- AD must cope with that full expressiveness
+- historically incomplete, wrong, or slow
+- Enzyme makes far more possible today
 
 :::
 ::: {.column width="48%"}
 
-### Efficient Julia
+### Stan
 
-- allocation and data-layout discipline
-- type stability across abstractions
-- specialization and compilation control
-- workload-specific performance knowledge
+- restricted language for statistical models
+- obvious mathematical code is a strong baseline
+- AD is central to the inference stack
+- narrower target is easier to optimize reliably
+- generated code remains inspectable
 
 :::
 ::::
 
 ::: {.takeaway}
-The gap is between Julia code that **works** and Julia code that **scales**.
+Julia maximizes **expressive freedom**; Stan narrows the problem to make differentiable programs **predictable**.
 :::
 
 ::: {.notes}
-This is Michael Tiemann's framing from
+The first Julia bullet pair folds in Michael Tiemann's framing from
 [“Julia Solves the 2 Language Problem, However It Creates the 1.5 Language
-Problem”](https://www.youtube.com/watch?v=RUJFd-rEa0k): the distance between a
-working Julia implementation and a very efficient one. It is not shorthand for
-“Julia plus AD.”
-:::
+Problem”](https://www.youtube.com/watch?v=RUJFd-rEa0k): naive Julia can look
+like the mathematics yet be much slower than expert Julia, whose performant
+implementation may look very different. The detailed causes are not the point
+of this slide. The AD comparison is our synthesis, not Tiemann's framing.
+Historically, Julia AD has often felt incomplete, incorrect, or insufficiently
+performant. Julia did not bake one performant AD path into Core, while the
+language's generality already gives the primal compiler a difficult
+optimization problem. Differentiating the full language makes the analysis
+harder still. Stan accepts the opposite constraint: its narrower language and
+runtime are designed around differentiation for statistical inference.
 
-## AD: from a subset toward the full language
-
-:::: {.columns}
-::: {.column width="48%"}
-
-### The historical half-language
-
-- what the selected AD stack can differentiate
-- which mutation and aliasing patterns survive
-- which types compile efficiently
-- backend failures that appear only at runtime
-
-:::
-::: {.column width="48%"}
-
-### Enzyme changes the target
-
-- LLVM-level differentiation
-- Julia features possible in principle
-- compilation and library coverage can still fail
-- performance remains workload-dependent
-- some models already match or beat Stan
-
-:::
-::::
-
-::: {.takeaway}
-The question is shifting from “which Julia subset?” to “will this full-language program compile and optimize well here?”
-:::
-
-::: {.notes}
-The left column describes a real user experience, even if it is increasingly
-historical. Enzyme changes the in-principle boundary by differentiating
-statically analyzable LLVM rather than defining a small Julia-language subset.
-Do not turn that into “every Julia program always works today”: compilation,
-activity analysis, custom rules, and library coverage still matter; Enzyme's
-own FAQ says some Julia linear algebra remains unsupported. Performance is also
-model-specific. Turing reports Mooncake/Enzyme matching or beating Stan on
-small eight-schools benchmarks, while StanBlocks' broader Julia-vs-Stan
-comparison contains wins and losses. The criticism is therefore not that AD was
-an afterthought: performant, reliable AD over Julia's generality has needed—and
-still needs—core-feature-level investment. In StanBlocks today, Mooncake is the
-Julia AD backend; Stan's path is separate and uses Stan Math through BridgeStan.
+Enzyme changes what is possible in principle and can already match or beat Stan
+on some workloads. Do not turn that into “every Julia program always works
+today”: compilation, activity analysis, custom rules, library coverage, and
+workload-specific performance still matter. In StanBlocks today, Mooncake is
+the Julia AD backend; Stan's path is separate and uses Stan Math through
+BridgeStan.
 :::
 
 ## The Stan bargain
@@ -589,7 +559,7 @@ standard workflows above, inspectable compiler below.
 
 ### The pitch
 
-1. **Julia is a great authoring language**, but performant Julia can feel like another dialect; Enzyme is narrowing the AD gap.
+1. **Julia + AD maximizes expressiveness; Stan narrows the problem** to make differentiable statistical programs predictable.
 2. **Stan is a strong inference target**: reliable, good out of the box, and explicit.
 3. **StanBlocks makes model families composable** while keeping generated Stan inspectable.
 4. **Agents strengthen the case for a compiler contract**, even as they weaken the case for mere syntax reduction.
