@@ -838,9 +838,9 @@ end
         return xx
     end
 
-    # chained + variable-bound splice (the documented crowdsourcing-family pattern).
+    # chained + variable-bound splice (the crowdsource.qmd composition pattern).
     # The 916f100 migration converted the inline splice sites but overlooked
-    # the legacy notebook, whose transforms were SEPARATELY-BOUND `quote` blocks doing
+    # crowdsource.qmd, whose transforms are SEPARATELY-BOUND `quote` blocks doing
     # ASSIGNMENT (`=`) overrides, CHAINED through `Base.merge`. issue12/issue15
     # cover only a single INLINE `Base.merge(base, quote…end)`; this fixture drives
     # the chained + variable-bound + assignment-override shape.
@@ -2061,8 +2061,8 @@ Verify `slic: chained + variable-bound Base.merge splice (crowdsource pattern)` 
     @test occursin("delta = rep_vector(1, n)", chained_code)    # delta→1
     @test !occursin("delta = rep_vector(2, n)", chained_code)   # original delta gone
     # each Base.merge returns a NEW model — the base is unchanged by the merges.
-    # (docs/src/advanced-patterns.md documents this same independently-consumed
-    # model-family shape, which the transpiles/stan_code checks above exercise.)
+    # (crowdsource.qmd consumes each merged model directly via `stan_code(posterior)`,
+    # which is exactly what the transpiles/stan_code checks above exercise.)
     base_code = stan_code(sm_splice_base(; n=3))
     @test occursin("lambda = rep_vector(1, n)", base_code)
     @test occursin("delta = rep_vector(2, n)", base_code)

@@ -31,8 +31,6 @@ makedocs(
         "Home"              => "index.md",
         "Authoring support" => "authoring.md",
         "Feature atlas"     => "feature-atlas.md",
-        "Worked examples"   => "worked-examples.md",
-        "Advanced patterns" => "advanced-patterns.md",
         "Gallery"           => "gallery.md",
         "API"               => "api.md",
     ],

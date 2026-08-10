@@ -1,0 +1,40 @@
+# Planetary motion
+
+Qualitatively reproduces [Charles C. Margossian's planetary motion case study](https://mc-stan.org/learn-stan/case-studies/planetary_motion.html).
+
+Only one model definition is needed.
+
+```{julia}
+data = (;
+    sigma=.1,
+    ode=1.,
+    x_i=[0],
+    time=[0., 1.],
+    rel_tol=1e-8,
+    abs_tol=1e-8,
+    max_steps=100_000
+)
+
+@slic data begin 
+    "Unsure what function definition syntax should look like: `ode(...) = ...`"
+    t0 = 0.
+    m = 1.
+    sigma_x = sigma
+    sigma_y = sigma
+    rel_tol = 1e-6
+    abs_tol = 1e-6
+    max_steps = 1000
+    "The below actually is a very informative prior."
+    k ~ normal(1, 1e-3; lower=0.)
+    p01 ~ normal(0, 1)
+    p02 ~ lognormal(0, 1)
+    "Should Stan's `array` definitions abuse Julia's Set definition syntax?"
+    p0 = {p01, p02}
+    q0 ~ normal(0, 1; n=2)
+    star ~ normal(0, .5)
+    y0 = append_array(q0, p0)
+    theta = append_array({k}, star)
+    y = integrate_ode_rk45(ode, y0, t0, to_array_1d(time), theta, {m}, x_i, rel_tol, abs_tol, max_steps)
+    q_obs ~ normal(y, sigma)
+end
+```
