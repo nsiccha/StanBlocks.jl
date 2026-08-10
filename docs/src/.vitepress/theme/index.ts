@@ -20,6 +20,7 @@ import { enhanceAppWithTabs } from 'vitepress-plugin-tabs/client'
 // `HTMXObjects.vitepress_theme_install` in make.jl. Don't edit in place
 // — edit the upstream and re-run make.jl.
 import { setupHtmxoEmbed } from './htmxo-embed'
+import { setupAtlasComparisons } from './atlas-comparison'
 
 import '@nolebase/vitepress-plugin-enhanced-readabilities/client/style.css'
 import './style.css' // You could setup your own, or else a default will be copied.
@@ -47,6 +48,7 @@ export const Theme: ThemeConfig = {
     // prefix to `/live-sb` (matches the Vite proxy in config.mts and
     // committed recordings under public/live-sb/).
     setupHtmxoEmbed(router, { proxyPrefix: '/live-sb' });
+    setupAtlasComparisons();
   }
 }
 export default Theme
