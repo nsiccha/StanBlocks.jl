@@ -788,6 +788,14 @@ end
         x ~ std_normal(;n)
         s = _scale_by_consts(x)
     end
+    # The constant-FUNCTION spelling `pi()` (Stan's spelling of pi) is REJECTED
+    # with an actionable error — the DSL stays Julia-idiomatic, so write bare `pi`
+    # (user decision `0wlv7e2`, snag `stan-pi-builtin`).
+    @deffun @inline _scale_by_const_call(x::vector[n])::vector[n] = (4. / pi()) * x
+    consts_call_model = @slic (;n=5) begin
+        x ~ std_normal(;n)
+        s = _scale_by_const_call(x)
+    end
     CONSTS_TEST_NUM = 2.5
     consts_bad_model = @slic (;n=5) begin
         x ~ std_normal(;n)
@@ -2310,6 +2318,21 @@ Verify `built-in constants resolve (pi, ℯ); arbitrary const errors` in an isol
     @test occursin("2.71828", code)   # ℯ
     # arbitrary module-level number is NOT a built-in constant → loud failure
     @test !transpiles(consts_bad_model; re=false)
+    # Constant-FUNCTION spelling `pi()` is REJECTED with an ACTIONABLE error
+    # (user decision `0wlv7e2`, snag `stan-pi-builtin`): the DSL stays
+    # Julia-idiomatic — write bare `pi`. Before the fix `pi()` failed with the
+    # opaque `tracetype not defined for (…::anything * ::real)`, naming neither
+    # `pi` nor the real problem.
+    @test !transpiles(consts_call_model; re=false)
+    call_err = try
+        stan_code(stan_model(consts_call_model)); nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test call_err !== nothing
+    @test occursin("pi", call_err)                 # names the offending constant
+    @test occursin("bare", call_err)               # points at the bare form
+    @test !occursin("tracetype not defined", call_err)  # NOT the opaque error
 end
 
 """
