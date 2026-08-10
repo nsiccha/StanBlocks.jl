@@ -20,7 +20,7 @@ format:
     hash-type: number
     code-overflow: wrap
     link-external-newwindow: true
-    footer: "StanBlocks.jl · StanCon 2026"
+    footer: "[Slides · nsiccha.github.io/StanBlocks.jl/stancon-2026/](https://nsiccha.github.io/StanBlocks.jl/stancon-2026/)"
 execute:
   enabled: false
 ---
@@ -550,21 +550,23 @@ standard workflows above, inspectable compiler below.
 
 ### Links
 
-- Slides: <https://nsiccha.github.io/StanBlocks.jl/stancon-2026/>
 - Feature atlas: <https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas>
 - Package + source: <https://github.com/nsiccha/StanBlocks.jl>
-- Documentation: <https://nsiccha.github.io/StanBlocks.jl/dev/>
 - GitHub: [@nsiccha](https://github.com/nsiccha)
 - Email: [nikolassiccha@gmail.com](mailto:nikolassiccha@gmail.com)
 
 :::
-::: {.column width="31%"}
+::: {.column .summary-contact width="31%"}
 
 <!-- Replace with an approved print-resolution local asset before PDF export if desired. -->
 ![](https://github.com/nsiccha.png?size=480){.headshot fig-alt="Headshot of Nikolas Siccha"}
 
 **Nikolas Siccha**<br>
 Generable Inc.
+
+[![](slides-qr.svg){.slides-qr fig-alt="QR code linking to the StanCon 2026 slides"}](https://nsiccha.github.io/StanBlocks.jl/stancon-2026/)
+
+<span class="qr-caption">Slides</span>
 
 :::
 ::::

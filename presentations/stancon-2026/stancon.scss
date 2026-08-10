@@ -225,12 +225,48 @@ $presentation-font-size-root: 34px;
   box-shadow: 0 0.2em 0.7em rgba(32, 36, 43, 0.16);
 }
 
+.reveal .summary-contact {
+  text-align: center;
+}
+
+.reveal .summary-slide .column:first-child {
+  font-size: 0.86em;
+}
+
+.reveal .summary-contact p {
+  margin: 0.28em 0;
+}
+
+.reveal .slides-qr {
+  display: block;
+  width: 7.4em;
+  height: 7.4em;
+  margin: 0.45em auto 0.1em;
+  padding: 0.18em;
+  background: #fff;
+  border: 0.08em solid rgba(179, 32, 37, 0.28);
+  border-radius: 0.22em;
+}
+
+.reveal .qr-caption {
+  color: var(--sb-muted);
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .reveal .contact a {
   overflow-wrap: anywhere;
 }
 
 .reveal .footer {
   color: var(--sb-muted);
+}
+
+.reveal .footer a {
+  color: var(--sb-red);
+  text-decoration: none;
 }
 
 @media (max-width: 1000px) {
