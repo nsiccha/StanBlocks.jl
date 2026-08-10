@@ -17,6 +17,9 @@ The [Authoring and feature support](authoring.md) page is the compact source for
 distribution combinators, missing outcomes, ragged data, executable descriptors,
 and the complete `plate` support/limitation matrix. The [Feature atlas](feature-atlas.md)
 pairs representative StanBlocks programs with their essential generated Stan.
+The [Worked model patterns](worked-examples.md) and
+[Advanced composition patterns](advanced-patterns.md) pages apply that surface
+to the case studies and model families from the original notebooks.
 :::
 
 ## Quick Start
@@ -741,8 +744,9 @@ The deployed catalog lives at <https://nsiccha.github.io/BayesianRegressionModel
 ## See also
 
 - [Authoring and feature support](authoring.md) — current HOF, ragged, missing-data, descriptor, and `plate` contracts
+- [Worked model patterns](worked-examples.md) — hierarchical, mechanistic, GP, and scientific case-study structures
+- [Advanced composition patterns](advanced-patterns.md) — link-specialized families, post-hoc variants, custom transforms, and PosteriorDB
 - [API Reference](api.md) — full list of exported functions and macros
-- [Case Studies](https://nsiccha.github.io/StanBlocks.jl/slic/) — golf, radon, crowdsourcing, ISBA PCR, and more
 - [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl) ([catalog](https://nsiccha.github.io/BayesianRegressionModels.jl/)) — the canonical large-scale `@slic` / `@deffun` consumer
 - [Stan Documentation](https://mc-stan.org/docs/stan-users-guide/)
 - [BridgeStan](https://github.com/roualdes/bridgestan) — Stan ↔ Julia bridge used for compilation
