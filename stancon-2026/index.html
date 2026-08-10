@@ -303,30 +303,31 @@ Nikolas Siccha · Generable Inc.
       }</style></aside>
 </section>
 <section class="slide level2">
-<h2>AD raises the stakes</h2>
+<h2>AD: from a subset toward the full language</h2>
 <div class="columns">
 <div class="column" style="width:48%;">
-<h3>Julia’s surface</h3>
+<h3>The historical half-language</h3>
 <ul>
-<li>multiple dispatch and rich types</li>
-<li>mutation, aliasing, closures, control flow</li>
-<li>generic package code</li>
-<li>compile-time specialization</li>
+<li>what the selected AD stack can differentiate</li>
+<li>which mutation and aliasing patterns survive</li>
+<li>which types compile efficiently</li>
+<li>backend failures that appear only at runtime</li>
 </ul>
 </div><div class="column" style="width:48%;">
-<h3>What performant AD must do</h3>
+<h3>Enzyme changes the target</h3>
 <ul>
-<li>preserve relevant semantics</li>
-<li>transform and optimize</li>
-<li>fail actionably</li>
-<li>track compiler internals and backend coverage</li>
+<li>LLVM-level differentiation</li>
+<li>Julia features possible in principle</li>
+<li>compilation and library coverage can still fail</li>
+<li>performance remains workload-dependent</li>
+<li>some models already match or beat Stan</li>
 </ul>
 </div></div>
 <div class="takeaway">
-<p>AD was not simply an afterthought—but performant AD over Julia’s full generality needs <strong>core-feature-level investment</strong>.</p>
+<p>The question is shifting from “which Julia subset?” to “will this full-language program compile and optimize well here?”</p>
 </div>
 <aside class="notes">
-<p>The criticism is not that Julia developers ignored AD. Julia has hosted several ambitious AD systems. The difficulty is that library-level AD is being asked to cover a highly dynamic general-purpose language while remaining fast, correct, composable, and debuggable. Public Discourse and Hacker News threads matter here as adoption evidence: backend restrictions, slow paths, confusing errors, and wrong-result reports have shaped Julia’s reputation even when individual reports have nuanced or non-AD root causes. In this stack, Mooncake is the Julia AD backend; Stan’s path is separate and uses Stan Math through BridgeStan.</p>
+<p>The left column describes a real user experience, even if it is increasingly historical. Enzyme changes the in-principle boundary by differentiating statically analyzable LLVM rather than defining a small Julia-language subset. Do not turn that into “every Julia program always works today”: compilation, activity analysis, custom rules, and library coverage still matter; Enzyme’s own FAQ says some Julia linear algebra remains unsupported. Performance is also model-specific. Turing reports Mooncake/Enzyme matching or beating Stan on small eight-schools benchmarks, while StanBlocks’ broader Julia-vs-Stan comparison contains wins and losses. The criticism is therefore not that AD was an afterthought: performant, reliable AD over Julia’s generality has needed—and still needs—core-feature-level investment. In StanBlocks today, Mooncake is the Julia AD backend; Stan’s path is separate and uses Stan Math through BridgeStan.</p>
 <style type="text/css">
         span.MJX_Assistive_MathML {
           position:absolute!important;
@@ -817,7 +818,7 @@ Nikolas Siccha · Generable Inc.
 <div class="column" style="width:65%;">
 <h3>The pitch</h3>
 <ol type="1">
-<li><strong>Julia is a great authoring language</strong>, but performant Julia can feel like another dialect—and AD raises the stakes.</li>
+<li><strong>Julia is a great authoring language</strong>, but performant Julia can feel like another dialect; Enzyme is narrowing the AD gap.</li>
 <li><strong>Stan is a strong inference target</strong>: reliable, good out of the box, and explicit.</li>
 <li><strong>StanBlocks makes model families composable</strong> while keeping generated Stan inspectable.</li>
 <li><strong>Agents strengthen the case for a compiler contract</strong>, even as they weaken the case for mere syntax reduction.</li>
@@ -1040,10 +1041,9 @@ Nikolas Siccha · Generable Inc.
 <h2>Backup · sources and further reading</h2>
 <ul>
 <li>Michael Tiemann, <a href="https://www.youtube.com/watch?v=RUJFd-rEa0k"><em>Julia Solves the 2 Language Problem, However It Creates the 1.5 Language Problem</em></a>.</li>
-<li>Julia Discourse: <a href="https://discourse.julialang.org/t/discussion-on-the-future-for-performant-programming-in-julia/99509"><em>Discussion on the future for performant programming in Julia</em></a> and <a href="https://discourse.julialang.org/t/state-of-ad-in-2024/112601"><em>State of AD in 2024</em></a>.</li>
-<li>Hacker News discussion: <a href="https://news.ycombinator.com/item?id=45289829"><em>Automatic differentiation can be incorrect</em></a>.</li>
-<li>Maria I. Gorinova, Andrew D. Gordon &amp; Charles Sutton, <a href="https://doi.org/10.1145/3290348"><em>Probabilistic Programming with Densities in SlicStan</em></a>, POPL 2019.</li>
-<li><a href="https://github.com/mgorinova/SlicStan">SlicStan public repository</a>.</li>
+<li><a href="https://enzyme.mit.edu/julia/stable/">Enzyme.jl documentation</a> and Turing’s <a href="https://turinglang.org/news/posts/2026-03-09-newsletter-18/">March 2026 performance update</a>.</li>
+<li>Community context: Julia Discourse on <a href="https://discourse.julialang.org/t/discussion-on-the-future-for-performant-programming-in-julia/99509">performant programming</a> and <a href="https://discourse.julialang.org/t/state-of-ad-in-2024/112601">the 2024 AD landscape</a>; Hacker News on <a href="https://news.ycombinator.com/item?id=45289829">AD correctness</a>.</li>
+<li>Maria I. Gorinova, Andrew D. Gordon &amp; Charles Sutton, <a href="https://doi.org/10.1145/3290348"><em>Probabilistic Programming with Densities in SlicStan</em></a>, POPL 2019; <a href="https://github.com/mgorinova/SlicStan">source</a>.</li>
 <li><a href="https://github.com/nsiccha/StanBlocks.jl">StanBlocks.jl source</a> and <a href="https://nsiccha.github.io/StanBlocks.jl/dev/authoring">authoring support guide</a>.</li>
 <li><a href="https://github.com/nsiccha/BayesianRegressionModels.jl">BayesianRegressionModels.jl</a> and its <a href="https://nsiccha.github.io/BayesianRegressionModels.jl/">worked model catalogue</a>.</li>
 <li>Companion <a href="https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas">StanCon 2026 feature atlas</a>.</li>
