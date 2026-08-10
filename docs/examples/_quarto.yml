@@ -16,6 +16,8 @@ website:
         href: slic/golf.qmd
       - text: "ISBA-2024"
         href: slic/isba-2024.qmd
+      - text: "StanCon 2026"
+        href: stancon-2026/
       - text: "Crowdsourcing"
         href: slic/crowdsource.qmd
       - icon: github
