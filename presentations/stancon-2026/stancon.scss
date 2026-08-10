@@ -136,9 +136,13 @@ $presentation-font-size-root: 34px;
   border-top-color: var(--sb-gold);
 }
 
-.reveal .card h3 {
+.reveal .card-title {
   margin: 0 0 0.2em;
+  color: $presentation-heading-color;
+  font-family: $presentation-heading-font;
   font-size: 1em;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .reveal .card p,
