@@ -2,7 +2,9 @@
 title: "StanBlocks.jl"
 subtitle: "A Julia frontend for writing and composing Stan models"
 author: "Nikolas Siccha · Generable Inc."
-date: "StanCon 2026 · Uppsala · 18 August 2026"
+institute: "StanCon 2026 · Uppsala"
+date: "2026-08-18"
+date-format: "D MMMM YYYY"
 format:
   revealjs:
     theme: [simple, stancon.scss]
