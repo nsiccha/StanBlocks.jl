@@ -213,13 +213,14 @@ end
 _control_flow_kind(::ForExpr) = "for"
 _control_flow_kind(::WhileExpr) = "while"
 _control_flow_kind(::IfExpr) = "if"
+_control_flow_kind(::TernaryExpr) = "ternary"
 _control_flow_kind(::ElseIfExpr) = "elseif"
 _control_flow_kind(::BreakExpr) = "break"
 _control_flow_kind(::ContinueExpr) = "continue"
 _control_flow_kind(::ComprehensionExpr) = "comprehension"
 _reject_model_control_flow(x) = x
 _reject_model_control_flow(x::CanonicalExpr) = (foreach(_reject_model_control_flow, x.args); x)
-_reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,ElseIfExpr,BreakExpr,ContinueExpr,ComprehensionExpr}) = error(
+_reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,TernaryExpr,ElseIfExpr,BreakExpr,ContinueExpr,ComprehensionExpr}) = error(
     "`$(_control_flow_kind(x))` control flow is not supported in @slic model bodies — ",
     "move the logic into an @deffun function body, or use a vectorised form."
 )
@@ -272,6 +273,16 @@ elseif x.head === :do
     @assert Meta.isexpr(call_expr, :call) "canonical(:do): first arg must be a `:call` Expr, got `$call_expr`."
     @assert Meta.isexpr(lambda, :->) "canonical(:do): second arg must be a `:->` lambda Expr, got `$lambda`."
     canonical(Expr(:call, call_expr.args[1], lambda, call_expr.args[2:end]...))
+elseif x.head === :if && length(x.args) == 3 &&
+        !Meta.isexpr(x.args[2], :block) && !Meta.isexpr(x.args[3], :block)
+    # Ternary conditional EXPRESSION `cond ? a : b`. Julia parses this to the
+    # same `Expr(:if, …)` as an `if`-STATEMENT, but a ternary's branches are
+    # bare VALUES whereas a statement's are `:block`s. Route the value form to
+    # its own `:ternary` head so it lowers to Stan's `cond ? a : b` operator
+    # (`show`/`tracetype`/`forward!` for `TernaryExpr`), instead of being
+    # (mis)handled as block-bodied control flow — which crashed in `show`
+    # while formatting the "tracetype not defined" rejection.
+    CanonicalExpr(:ternary, canonical.(x.args)...)
 else
     CanonicalExpr(x.head, canonical.(x.args)...)
 end

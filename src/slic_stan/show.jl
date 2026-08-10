@@ -186,6 +186,12 @@ Base.show(io::IO, x::IfExpr) = begin
         print(io, " else", _else_branch(x, x.args[3]))
     end
 end
+# Ternary conditional EXPRESSION → Stan's `cond ? a : b` operator. Unlike the
+# `if`-statement above, the branches are values (`x.args[2]`/`[3]`), not blocks,
+# so they render inline; the outer parens keep it safe in any expression
+# position (e.g. `real m = ((a < b) ? a : b);`).
+Base.show(io::IO, x::TernaryExpr) =
+    print(io, "(", x.args[1], " ? ", x.args[2], " : ", x.args[3], ")")
 Base.show(io::IO, x::CanonicalExpr{typeof(adjoint)}) = print(io, "(", x.args[1], "')")
 Base.show(io::IO, x::CanonicalExpr{typeof(range)}) = autoprint(io, "linspaced_vector(", Join((x.args[end], x.args[1], x.args[2]), ", "), ")")
 Base.show(io::IO, x::CanonicalExpr{typeof(getindex)}) = autoprint(io, x.args[1], "[", Join(x.args[2:end], ", "), "]")
