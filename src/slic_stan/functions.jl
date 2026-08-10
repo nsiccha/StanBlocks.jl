@@ -338,6 +338,19 @@ tracetype(x::ForExpr) = StanType(types.anything)
 tracetype(x::WhileExpr) = StanType(types.anything)
 tracetype(x::IfExpr) = StanType(types.anything)
 tracetype(x::ElseIfExpr) = StanType(types.anything)
+# A ternary `cond ? a : b` is a real EXPRESSION, so its result type is the join
+# of the two branch types (not the opaque `anything` an `if`-statement carries).
+# `typejoin` follows the SLIC lattice (`int <: real`, `bool <: int`, constrained
+# vectors `<: vector`, …), so `real ? real` → `real`, `int ? int` → `int`,
+# `int ? real` → `real`. The size is taken from the then-branch; a genuine
+# shape mismatch between branches is caught downstream by `stanc`. If either
+# branch is itself untyped (`anything`), the join is `anything` and the ordinary
+# `center_type != anything` assignment guard rejects it (now without crashing,
+# since `TernaryExpr` renders via its own `show`).
+tracetype(x::TernaryExpr) = StanType(
+    typejoin(center_type(x.args[2]), center_type(x.args[3])),
+    stan_size(x.args[2]),
+)
 tracetype(x::BlockExpr) = error("tracetype(::BlockExpr) not implemented — block expressions don't carry a result type; refactor the caller to trace the final expression instead.")#tracetype(expr(x.args[end]))
 
 autokwargs(::CanonicalExpr) = (;)
@@ -565,7 +578,19 @@ begin
     ensure_xreturn(x::Expr) = if x.head in (:block, :macrocall)
         Expr(x.head, x.args[1:end-1]..., ensure_xreturn(x.args[end]))
     elseif x.head == :if
-        Expr(x.head, x.args[1], ensure_xreturn.(x.args[2:end])...)
+        # A ternary `a ? b : c` also parses to `Expr(:if, …)` but with
+        # VALUE branches (a statement-`if` always wraps its then-branch in a
+        # `:block`). Distributing `return` INTO a ternary's value branches
+        # would desugar the expression into a statement and, worse, feed a
+        # `:return`-wrapped branch into `canonical`'s ternary detector. So
+        # return-wrap the ternary WHOLE (→ `return (a ? b : c);`); only
+        # distribute for a real statement-`if`/`elseif`. Same discriminator
+        # as `canonical(::Expr)`'s ternary branch (tracing.jl).
+        if length(x.args) == 3 && !Meta.isexpr(x.args[2], :block) && !Meta.isexpr(x.args[3], :block)
+            Expr(:return, x)
+        else
+            Expr(x.head, x.args[1], ensure_xreturn.(x.args[2:end])...)
+        end
     elseif x.head == :return
         x
     else
