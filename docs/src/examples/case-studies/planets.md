@@ -1,6 +1,6 @@
 # Planetary motion
 
-This page reproduces the three Stan programs from Charles C. Margossian and
+This page reproduces the three models from Charles C. Margossian and
 Andrew Gelman's [planetary-motion case study](https://mc-stan.org/learn-stan/case-studies/planetary_motion.html):
 the forward simulator, the one-parameter inverse problem, and the full model
 with unknown initial conditions and star position. The authoritative source is
@@ -10,7 +10,10 @@ The statistical progression is the important part of the case study. Start
 with a known orbit and simulate noisy positions; then infer only the
 gravitational interaction ``k``; finally unfix the initial position, initial
 momentum, and star position. Keeping the three models together makes it clear
-which additional posterior modes enter as parameters are released.
+which additional posterior modes enter as parameters are released. Unlike the
+three standalone upstream Stan files, the StanBlocks version defines the
+orbital model once and derives the simpler cases by replacing statements with
+`Base.merge`.
 
 ## Model sequence
 
@@ -37,23 +40,22 @@ tight `normal(1, 0.001)` prior.
 
 ## What changes in the StanBlocks spelling
 
-- The two Hamiltonian right-hand sides are ordinary typed `@deffun`
-  definitions. `ode_rk45_tol` and `ode_bdf_tol` use Stan's current variadic ODE
-  interface, so the legacy `theta`, `x_r`, and empty `x_i` packing arrays
-  disappear; physical arguments are passed by name and position.
-- The initial state and observation arrays are ordinary Julia data bound with
-  `model(; data...)`; StanBlocks emits the required Stan data and transformed
-  data declarations after tracing their use. In this documentation fixture,
-  constants that the original writes in `transformed data` are supplied as
-  Julia values with the same fixed shapes; the statistical model is unchanged,
-  although the generated data block is not textually identical.
-- In the simulation model, fresh `qx` and `qy` draws affect no likelihood.
-  StanBlocks' activity analysis therefore emits them as generated-quantity RNG
-  draws automatically. The original Stan file needed an unrelated dummy
-  parameter only to make the program sampleable.
-- The inverse models use the same coordinate-wise normal likelihood as the
-  originals. Writing `q_obs[:, 1] ~ ...` and `q_obs[:, 2] ~ ...` lets the
-  compiler generate the matching predictive quantities as well.
+- One typed `planetary_rhs` accepts the star coordinates explicitly. Fixing the
+  star at the origin gives the first two models; estimating it gives the third.
+  `ode_rk45_tol` and `ode_bdf_tol` use Stan's current variadic ODE interface, so
+  the legacy `theta`, `x_r`, and empty `x_i` packing arrays disappear.
+- `planetary` is the only `@slic` definition. `planetary_k_template` fixes the
+  initial state and star, changes the prior on `k`, and replaces the RK45 solve
+  with the source model's BDF solve. `planetary_sim_template` then fixes `k`
+  and restores the source simulator's RK45 solve. Each replacement is visible
+  in one short `Base.merge` fragment.
+- The common model names its coordinate observations `qx` and `qy`. Binding
+  those names as data produces the two inverse-model likelihoods. Leaving them
+  unbound in the simulator makes the same statements fresh draws, which
+  StanBlocks moves to generated quantities. No indexed sampling LHS is needed.
+- Constants that the originals write in `transformed data` are supplied as
+  Julia values with the same fixed shapes. The statistical models are
+  unchanged, although the generated data blocks are not textually identical.
 
 Use the tabs to switch between the exact Julia source evaluated by this docs
 build and all three complete generated Stan programs. **Compare side by side**
@@ -68,19 +70,7 @@ Main.FeatureAtlasDocs.comparisons(Main.FeatureAtlasDocs.example_module(:Planetar
 using StanBlocks
 
 @deffun @stanonly begin
-    planetary_origin_rhs(t::real, state::vector[ny], m::real, k::real)::vector[ny] = begin
-        q1 = state[1]
-        q2 = state[2]
-        r_cube = (q1^2 + q2^2)^1.5
-        dstate::vector[ny]
-        dstate[1] = state[3] / m
-        dstate[2] = state[4] / m
-        dstate[3] = -k * q1 / r_cube
-        dstate[4] = -k * q2 / r_cube
-        dstate
-    end
-
-    planetary_star_rhs(
+    planetary_rhs(
         t::real, state::vector[ny], k::real,
         star_x::real, star_y::real, m::real,
     )::vector[ny] = begin
@@ -98,30 +88,17 @@ end
 
 n = 4
 times = collect(0.1:0.1:0.4)
-q_obs = zeros(n, 2)
-initial_state = [1.0, 0.0, 0.0, 1.0]
+qx_obs = zeros(n)
+qy_obs = zeros(n)
+fixed_q0 = [1.0, 0.0]
+fixed_p01 = 0.0
+fixed_p02 = 1.0
+fixed_star = [0.0, 0.0]
+fixed_k = 1.0
 m = 1.0
 sigma_x = sigma_y = sigma = 0.01
 
-planetary_sim = @slic (; times, initial_state, m, sigma_x, sigma_y) begin
-    trajectory = ode_rk45(
-        planetary_origin_rhs, initial_state, 0.0, to_array_1d(times), m, 1.0,
-    )
-    qx ~ normal(to_vector(trajectory[:, 1]), sigma_x)
-    qy ~ normal(to_vector(trajectory[:, 2]), sigma_y)
-end
-
-planetary_k = @slic (; times, initial_state, m, q_obs, sigma_x, sigma_y) begin
-    k ~ normal(0, 1; lower=0)
-    trajectory = ode_bdf_tol(
-        planetary_origin_rhs, initial_state, 0.0, to_array_1d(times),
-        1e-6, 1e-6, 1000, m, k,
-    )
-    q_obs[:, 1] ~ normal(to_vector(trajectory[:, 1]), sigma_x)
-    q_obs[:, 2] ~ normal(to_vector(trajectory[:, 2]), sigma_y)
-end
-
-planetary_star = @slic (; times, m, q_obs, sigma) begin
+planetary = @slic begin
     k ~ normal(1, 0.001; lower=0)
     q0 ~ normal(0, 1; n=2)
     p01 ~ normal(0, 1)
@@ -129,14 +106,46 @@ planetary_star = @slic (; times, m, q_obs, sigma) begin
     star ~ normal(0, 0.5; n=2)
 
     p0 = append_row(rep_vector(p01, 1), p02)
-    y0 = append_row(q0, p0)
+    initial_state = append_row(q0, p0)
     trajectory = ode_rk45_tol(
-        planetary_star_rhs, y0, 0.0, to_array_1d(times),
+        planetary_rhs, initial_state, 0.0, to_array_1d(times),
         1e-6, 1e-6, 1000, k, star[1], star[2], m,
     )
-    q_obs[:, 1] ~ normal(to_vector(trajectory[:, 1]), sigma)
-    q_obs[:, 2] ~ normal(to_vector(trajectory[:, 2]), sigma)
+    qx ~ normal(to_vector(trajectory[:, 1]), sigma_x)
+    qy ~ normal(to_vector(trajectory[:, 2]), sigma_y)
 end
+
+planetary_k_template = Base.merge(planetary, quote
+    q0 = fixed_q0
+    p01 = fixed_p01
+    p02 = fixed_p02
+    star = fixed_star
+    k ~ normal(0, 1; lower=0)
+    trajectory = ode_bdf_tol(
+        planetary_rhs, initial_state, 0.0, to_array_1d(times),
+        1e-6, 1e-6, 1000, k, star[1], star[2], m,
+    )
+end)
+
+planetary_sim_template = Base.merge(planetary_k_template, quote
+    k = fixed_k
+    trajectory = ode_rk45(
+        planetary_rhs, initial_state, 0.0, to_array_1d(times),
+        k, star[1], star[2], m,
+    )
+end)
+
+planetary_sim = planetary_sim_template(;
+    times, fixed_q0, fixed_p01, fixed_p02, fixed_star, fixed_k,
+    m, sigma_x, sigma_y,
+)
+planetary_k = planetary_k_template(;
+    times, fixed_q0, fixed_p01, fixed_p02, fixed_star,
+    m, sigma_x, sigma_y, qx=qx_obs, qy=qy_obs,
+)
+planetary_star = planetary(;
+    times, m, sigma_x=sigma, sigma_y=sigma, qx=qx_obs, qy=qy_obs,
+)
 
 planetary_models = (;
     simulation=planetary_sim,
