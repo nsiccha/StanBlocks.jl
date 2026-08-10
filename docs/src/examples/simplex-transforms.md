@@ -1,4 +1,4 @@
-# The `@slic` macro
+# Simplex transform benchmark experiments
 
 ::: warning Historical benchmark harness
 This notebook is preserved as the original simplex-transform experiment. It
@@ -6,8 +6,47 @@ contains a host-specific BridgeStan path and runs warmup/MCMC benchmarks; the
 documentation build does not execute that environment-specific harness or
 pretend that its runtime output is a portable generated example. The maintained
 transpilation-only simplex family is shown with build-generated Stan on the
-[reusable constraints page](constraints.md#various-simplex-constraining-transformations).
+[reusable constraints page](constraints.md#ten-simplex-transforms).
 :::
+
+## What this experiment compares
+
+The harness investigates alternative maps from unconstrained Euclidean
+coordinates to a simplex, together with their Jacobian adjustments and
+sampling behaviour. The preserved source contains additive-log-ratio (ALR),
+isometric-log-ratio (ILR), expanded-softmax, normalized-exponential, and normal
+stick-breaking variants. The maintained executable page later expanded that
+set to ten transforms. Each family
+has three conceptual pieces:
+
+- a transform from sampler coordinates to the simplex;
+- a Jacobian contribution used in the target density; and
+- a Dirichlet-facing density wrapper that lets the transform introduce a
+  parameter in a model.
+
+The remainder of the notebook prepares model instances and defines the warmup,
+draw-constraining, and diagnostic machinery. The captured `sample` helper
+returns immediately after warmup, before the later draw/ESS code, so this is an
+unfinished benchmark harness rather than a preserved benchmark result. It is
+also host-specific: it pins a developer's local BridgeStan path and sampling
+stack.
+
+## How it maps to current StanBlocks
+
+The transform mathematics remains useful, but the original raw-string
+`@deffun` bodies predate the current typed Julia-shaped function surface. The
+[reusable constraints](constraints.md#ten-simplex-transforms)
+page ports the ten transform definitions to current `@deffun`, evaluates the
+displayed code at build time, and shows every complete generated Stan program.
+That page is the executable reference; this one preserves the benchmark design
+and the additional inference/diagnostic machinery.
+
+Notable current equivalents are function-valued `@deffun` arguments for
+selecting a transform, `@lhs @lpxf` for the parameter-introducing density,
+named-tuple returns for carrying both `x` and `jac`, and `@stanonly` when a
+Stan helper intentionally has no bounded Julia execution method.
+
+## Original benchmark source
 
 ```julia
 using StanBlocks, StanLogDensityProblems, JSON, Markdown, WarmupHMC, Random, Term, MCMCDiagnosticTools, DataFrames, BridgeStan, DataFrames

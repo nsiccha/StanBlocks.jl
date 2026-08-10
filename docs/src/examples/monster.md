@@ -1,11 +1,54 @@
 # Monster model notebook
 
 ::: warning Incomplete historical notebook
-This source is preserved verbatim from the legacy notebook. It contains
-unresolved placeholders and an unfinished model invocation, so there is no
-honest build-generated Stan program to show for it. It is retained as design
-and data-preparation history, not presented as a runnable example.
+This notebook records an unfinished pharmacokinetic/toxicokinetic model, not a
+working StanBlocks program. The source contains undefined interpolation
+anchors in `lambert_w0_exp`, the `FvP`/`FVP` name mismatch in
+`dydt_exposure`, an incomplete `monster_posterior` call, and a placeholder
+likelihood that never invokes the exposure dynamics. Those are
+model-definition gaps, so emitting Stan from a repaired-looking fragment would
+misrepresent what was actually implemented.
 :::
+
+## What the notebook was building
+
+The intended model has three layers:
+
+1. **Mechanistic dynamics.** `dydt_exposure` and `dydt_nonexposure` describe
+   four coupled concentration states. Exposure adds an external forcing term;
+   both phases include a saturating Michaelis--Menten elimination term.
+2. **Individual parameters.** Fifteen population locations and scales define
+   per-person latent parameters. `unit_params` is the non-centred standard
+   normal layer, reshaped and scaled into a parameter-by-person matrix.
+3. **Observation model.** The large data-preparation block reshapes assay,
+   experiment, person, time, and concentration measurements into a tidy table
+   and removes non-finite observations. The missing piece is the mapping from
+   those rows through alternating exposure/non-exposure trajectories into the
+   observation mean.
+
+## StanBlocks ideas exercised
+
+- `@deffun` is the right home for the branches and intermediate mutation in
+  the ODE helpers; model-level `@slic` remains straight-line.
+- `@slic` infers the population vector sizes from `n=no_latent_params` and the
+  individual latent size from `no_latent_params * no_persons`.
+- The `rep_matrix`/`diag_pre_multiply` expression is a non-centred
+  hierarchical parameterisation written as ordinary composed expressions.
+- Data preparation remains Julia code outside the probabilistic program. It
+  is useful historical material because it records the expected observation
+  indexing even though the final likelihood was never connected.
+
+## What is required to finish it
+
+A faithful completion needs explicit initial states and event schedules per
+person/experiment, a typed ODE RHS compatible with `ode_rk45`/`ode_bdf`, the
+exposure-switching logic, and a likelihood that indexes the predicted assay
+concentrations at the observed times. Only after those choices are specified
+can the unfinished call below be replaced by an executable comparison. The
+page therefore preserves the implementation notes and data transformation
+without claiming a generated model that the notebook never defined.
+
+## Preserved implementation notes
 
 ```julia
 using StanBlocks, JSON, StanLogDensityProblems, WarmupHMC, Term
