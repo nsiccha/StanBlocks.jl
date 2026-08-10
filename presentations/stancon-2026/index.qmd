@@ -82,36 +82,77 @@ Why put a language in front of an already good language?
 :::: {.columns}
 ::: {.column width="48%"}
 
-### The language you write
+### Working Julia
 
 - multiple dispatch
 - closures and higher-order functions
 - macros and generated syntax
 - reusable package code
-- one host language for data + models
+- direct, readable implementations
 
 :::
 ::: {.column width="48%"}
 
-### The extra half-language
+### Efficient Julia
 
-- what the selected AD stack can differentiate
-- which mutation and aliasing patterns survive
-- which types compile efficiently
-- which backend-specific failures appear only at runtime
+- allocation and data-layout discipline
+- type stability across abstractions
+- specialization and compilation control
+- workload-specific performance knowledge
 
 :::
 ::::
 
 ::: {.takeaway}
-The model author can end up reasoning about the statistical program **and** the admissible AD subset of Julia.
+The gap is between Julia code that **works** and Julia code that **scales**.
 :::
 
 ::: {.notes}
-“1.5 languages” is a framing, not a language count. Julia is expressive; the
-trouble is that differentiable Julia is often a moving subset with another set
-of operational constraints. In this stack, Mooncake is the Julia AD backend;
-Stan's path is separate and uses Stan Math through BridgeStan.
+This is Michael Tiemann's framing from
+[“Julia Solves the 2 Language Problem, However It Creates the 1.5 Language
+Problem”](https://www.youtube.com/watch?v=RUJFd-rEa0k): the distance between a
+working Julia implementation and a very efficient one. It is not shorthand for
+“Julia plus AD.”
+:::
+
+## AD raises the stakes
+
+:::: {.columns}
+::: {.column width="48%"}
+
+### Julia's surface
+
+- multiple dispatch and rich types
+- mutation, aliasing, closures, control flow
+- generic package code
+- compile-time specialization
+
+:::
+::: {.column width="48%"}
+
+### What performant AD must do
+
+- preserve relevant semantics
+- transform and optimize
+- fail actionably
+- track compiler internals and backend coverage
+
+:::
+::::
+
+::: {.takeaway}
+AD was not simply an afterthought—but performant AD over Julia's full generality needs **core-feature-level investment**.
+:::
+
+::: {.notes}
+The criticism is not that Julia developers ignored AD. Julia has hosted several
+ambitious AD systems. The difficulty is that library-level AD is being asked to
+cover a highly dynamic general-purpose language while remaining fast, correct,
+composable, and debuggable. Public Discourse and Hacker News threads matter
+here as adoption evidence: backend restrictions, slow paths, confusing errors,
+and wrong-result reports have shaped Julia's reputation even when individual
+reports have nuanced or non-AD root causes. In this stack, Mooncake is the Julia
+AD backend; Stan's path is separate and uses Stan Math through BridgeStan.
 :::
 
 ## The Stan bargain
@@ -543,7 +584,7 @@ standard workflows above, inspectable compiler below.
 
 ### The pitch
 
-1. **Julia is a great authoring language**, but Julia + AD can become 1.5 languages.
+1. **Julia is a great authoring language**, but performant Julia can feel like another dialect—and AD raises the stakes.
 2. **Stan is a strong inference target**: reliable, good out of the box, and explicit.
 3. **StanBlocks makes model families composable** while keeping generated Stan inspectable.
 4. **Agents strengthen the case for a compiler contract**, even as they weaken the case for mere syntax reduction.
@@ -767,6 +808,9 @@ A small language is useful only when its “no” is explicit.
 
 ## Backup · sources and further reading
 
+- Michael Tiemann, [*Julia Solves the 2 Language Problem, However It Creates the 1.5 Language Problem*](https://www.youtube.com/watch?v=RUJFd-rEa0k).
+- Julia Discourse: [*Discussion on the future for performant programming in Julia*](https://discourse.julialang.org/t/discussion-on-the-future-for-performant-programming-in-julia/99509) and [*State of AD in 2024*](https://discourse.julialang.org/t/state-of-ad-in-2024/112601).
+- Hacker News discussion: [*Automatic differentiation can be incorrect*](https://news.ycombinator.com/item?id=45289829).
 - Maria I. Gorinova, Andrew D. Gordon & Charles Sutton, [*Probabilistic Programming with Densities in SlicStan*](https://doi.org/10.1145/3290348), POPL 2019.
 - [SlicStan public repository](https://github.com/mgorinova/SlicStan).
 - [StanBlocks.jl source](https://github.com/nsiccha/StanBlocks.jl) and [authoring support guide](https://nsiccha.github.io/StanBlocks.jl/dev/authoring).
