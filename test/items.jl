@@ -603,6 +603,14 @@ end
         xi = (a - b) .* exp(c)
         xi
     end
+    # --- INTEGER-LITERAL dimension in a @deffun ARG declaration ---
+    # `vector[4]` is a compile-time-constant size: unlike the symbolic `vector[n]`
+    # form there is no size NAME to bind, so the literal dim destructures to `_`
+    # and the emitted UDF is byte-identical to the symbolic one modulo its name.
+    # (Regressed as an `ensure_xlhs(::Int64)` MethodError at macro-expand before
+    # the `ensure_xlhs(::Integer)` method in functions.jl.)
+    @deffun litdim_scale(x::vector[4]) = x * 2.0
+    @deffun symdim_scale(x::vector[n]) = x * 2.0
     # --- COMPOSITE (named-tuple) return whose ELEMENT sizes name the params ---
     # A ragged-map HOF: the returned `(;ends, mem)` has `mem` sized by a CALL over
     # the function's own params (`sum(ntd_sub_lengths(f, x, args...))`). At a call
@@ -3623,6 +3631,31 @@ Verify `slic: typed assignment compatibility` in an isolated test item.
     @test dim_err !== nothing
     @test occursin("Typed assignment", dim_err)
     @test occursin("dimension 1", dim_err)
+end
+
+@testitem "slic: integer-literal @deffun arg dimensions lower like symbolic dims" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # A `@deffun` argument declared with an integer-literal dimension
+    # (`litdim_scale(x::vector[4])`) must macro-expand and lower exactly like the
+    # symbolic `symdim_scale(x::vector[n])`. Before the `ensure_xlhs(::Integer)`
+    # method in functions.jl, the literal dim threw `MethodError:
+    # ensure_xlhs(::Int64; hidden=…)` at macro-expansion (the `make_deconstruct`
+    # arg-shape deconstruction).
+    litdim = @slic (; x = [1.0, 2.0, 3.0, 4.0]) begin
+        y = litdim_scale(x)
+        mu ~ normal(sum(y), 1.0)
+        mu
+    end
+    symdim = @slic (; x = [1.0, 2.0, 3.0, 4.0]) begin
+        y = symdim_scale(x)
+        mu ~ normal(sum(y), 1.0)
+        mu
+    end
+    @test transpiles(litdim)
+    @test stanc_compiles(litdim)
+    # The literal-dim UDF emits Stan byte-identical to the symbolic one modulo
+    # the function name — the whole point of admitting the literal dimension.
+    normname(code) = replace(code, "litdim_scale" => "F", "symdim_scale" => "F")
+    @test normname(stan_code(litdim)) == normname(stan_code(symdim))
 end
 
 @testitem "slic: typed assignment sized from a non-first signature arg" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin

@@ -736,6 +736,12 @@ begin
 
     ensure_xlhs(arg::Symbol; hidden=()) = arg in hidden ? Symbol("_") : arg
     ensure_xlhs(::Expr; kwargs...) = Symbol("_")
+    # An integer-literal dimension (`vector[4]`) is a compile-time constant with
+    # no size NAME to bind, so it destructures to `_` exactly like an `Expr` dim.
+    # The emitted UDF then lowers identically to the symbolic `vector[n]` form
+    # (modulo the function name). Shared by the `@deffun`/`@defsig` arg-shape
+    # deconstruction (`make_deconstruct`) and the `@lhs` base path.
+    ensure_xlhs(::Integer; kwargs...) = Symbol("_")
 
     hasvararg(args) = length(args) > 0 && Meta.isexpr(args[end], :(...))
     maybedoc(x::AbstractString) = length(strip(x)) == 0 ? "" : strip(replace("\n" * strip(x), "\n"=>"\n// ")) * "\n"
