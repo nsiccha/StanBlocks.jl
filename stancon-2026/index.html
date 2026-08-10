@@ -265,69 +265,33 @@ Nikolas Siccha · Generable Inc.
 <p>Why put a language in front of an already good language?</p>
 </section>
 <section class="slide level2">
-<h2>Julia’s “1.5-language” problem</h2>
+<h2>Julia + performant AD versus Stan</h2>
 <div class="columns">
 <div class="column" style="width:48%;">
-<h3>Working Julia</h3>
+<h3>Julia + performant AD</h3>
 <ul>
-<li>multiple dispatch</li>
-<li>closures and higher-order functions</li>
-<li>macros and generated syntax</li>
-<li>reusable package code</li>
-<li>direct, readable implementations</li>
+<li>expressive, general-purpose language</li>
+<li>mathematical code may need expert rewriting</li>
+<li>AD must cope with that full expressiveness</li>
+<li>historically incomplete, wrong, or slow</li>
+<li>Enzyme makes far more possible today</li>
 </ul>
 </div><div class="column" style="width:48%;">
-<h3>Efficient Julia</h3>
+<h3>Stan</h3>
 <ul>
-<li>allocation and data-layout discipline</li>
-<li>type stability across abstractions</li>
-<li>specialization and compilation control</li>
-<li>workload-specific performance knowledge</li>
+<li>restricted language for statistical models</li>
+<li>obvious mathematical code is a strong baseline</li>
+<li>AD is central to the inference stack</li>
+<li>narrower target is easier to optimize reliably</li>
+<li>generated code remains inspectable</li>
 </ul>
 </div></div>
 <div class="takeaway">
-<p>The gap is between Julia code that <strong>works</strong> and Julia code that <strong>scales</strong>.</p>
+<p>Julia maximizes <strong>expressive freedom</strong>; Stan narrows the problem to make differentiable programs <strong>predictable</strong>.</p>
 </div>
 <aside class="notes">
-<p>This is Michael Tiemann’s framing from <a href="https://www.youtube.com/watch?v=RUJFd-rEa0k">“Julia Solves the 2 Language Problem, However It Creates the 1.5 Language Problem”</a>: the distance between a working Julia implementation and a very efficient one. It is not shorthand for “Julia plus AD.”</p>
-<style type="text/css">
-        span.MJX_Assistive_MathML {
-          position:absolute!important;
-          clip: rect(1px, 1px, 1px, 1px);
-          padding: 1px 0 0 0!important;
-          border: 0!important;
-          height: 1px!important;
-          width: 1px!important;
-          overflow: hidden!important;
-          display:block!important;
-      }</style></aside>
-</section>
-<section class="slide level2">
-<h2>AD: from a subset toward the full language</h2>
-<div class="columns">
-<div class="column" style="width:48%;">
-<h3>The historical half-language</h3>
-<ul>
-<li>what the selected AD stack can differentiate</li>
-<li>which mutation and aliasing patterns survive</li>
-<li>which types compile efficiently</li>
-<li>backend failures that appear only at runtime</li>
-</ul>
-</div><div class="column" style="width:48%;">
-<h3>Enzyme changes the target</h3>
-<ul>
-<li>LLVM-level differentiation</li>
-<li>Julia features possible in principle</li>
-<li>compilation and library coverage can still fail</li>
-<li>performance remains workload-dependent</li>
-<li>some models already match or beat Stan</li>
-</ul>
-</div></div>
-<div class="takeaway">
-<p>The question is shifting from “which Julia subset?” to “will this full-language program compile and optimize well here?”</p>
-</div>
-<aside class="notes">
-<p>The left column describes a real user experience, even if it is increasingly historical. Enzyme changes the in-principle boundary by differentiating statically analyzable LLVM rather than defining a small Julia-language subset. Do not turn that into “every Julia program always works today”: compilation, activity analysis, custom rules, and library coverage still matter; Enzyme’s own FAQ says some Julia linear algebra remains unsupported. Performance is also model-specific. Turing reports Mooncake/Enzyme matching or beating Stan on small eight-schools benchmarks, while StanBlocks’ broader Julia-vs-Stan comparison contains wins and losses. The criticism is therefore not that AD was an afterthought: performant, reliable AD over Julia’s generality has needed—and still needs—core-feature-level investment. In StanBlocks today, Mooncake is the Julia AD backend; Stan’s path is separate and uses Stan Math through BridgeStan.</p>
+<p>The first Julia bullet pair folds in Michael Tiemann’s framing from <a href="https://www.youtube.com/watch?v=RUJFd-rEa0k">“Julia Solves the 2 Language Problem, However It Creates the 1.5 Language Problem”</a>: naive Julia can look like the mathematics yet be much slower than expert Julia, whose performant implementation may look very different. The detailed causes are not the point of this slide. The AD comparison is our synthesis, not Tiemann’s framing. Historically, Julia AD has often felt incomplete, incorrect, or insufficiently performant. Julia did not bake one performant AD path into Core, while the language’s generality already gives the primal compiler a difficult optimization problem. Differentiating the full language makes the analysis harder still. Stan accepts the opposite constraint: its narrower language and runtime are designed around differentiation for statistical inference.</p>
+<p>Enzyme changes what is possible in principle and can already match or beat Stan on some workloads. Do not turn that into “every Julia program always works today”: compilation, activity analysis, custom rules, library coverage, and workload-specific performance still matter. In StanBlocks today, Mooncake is the Julia AD backend; Stan’s path is separate and uses Stan Math through BridgeStan.</p>
 <style type="text/css">
         span.MJX_Assistive_MathML {
           position:absolute!important;
@@ -838,7 +802,7 @@ Structured models
 <div class="column" style="width:65%;">
 <h3>The pitch</h3>
 <ol type="1">
-<li><strong>Julia is a great authoring language</strong>, but performant Julia can feel like another dialect; Enzyme is narrowing the AD gap.</li>
+<li><strong>Julia + AD maximizes expressiveness; Stan narrows the problem</strong> to make differentiable statistical programs predictable.</li>
 <li><strong>Stan is a strong inference target</strong>: reliable, good out of the box, and explicit.</li>
 <li><strong>StanBlocks makes model families composable</strong> while keeping generated Stan inspectable.</li>
 <li><strong>Agents strengthen the case for a compiler contract</strong>, even as they weaken the case for mere syntax reduction.</li>
