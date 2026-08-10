@@ -72,7 +72,8 @@ The direct version mirrors the handwritten Stan organization:
   closed-form Michaelis--Menten update from the source;
 - `monster_experiment` transforms one subject's parameters, alternates those
   nonlinear half-steps with exact matrix-exponential transport steps, and
-  derives the two observables;
+  derives the two observables while carrying the trajectory and checkpoint
+  state through the source's nested `while` loops;
 - `monster_subject` evaluates both exposure experiments and flattens their
   outputs in a documented experiment → output → time order;
 - a subject `plate` supplies the non-centred 15-vector and collects one
@@ -122,10 +123,20 @@ using StanBlocks
         return km * monster_lambert_w0_exp(earg)
     end
 
+    monster_log_interpolate(
+        fraction::real, left::vector[n_state], right::vector[n_state],
+    )::vector[n_state] = begin
+        minimum_concentration = 1e-12
+        return exp(
+            (1 - fraction) * log(minimum_concentration + left) +
+            fraction * log(minimum_concentration + right)
+        )
+    end
+
     monster_experiment(
         times::vector[n_time], exposure::real,
         raw_params::vector[n_param], measured::vector[n_measured],
-        n_state::int, n_output::int, interval_substeps::int[n_time],
+        n_state::int, n_output::int, n_substeps::int,
     )::matrix[n_time, n_output] = begin
         minimum_concentration = 1e-12
         lean_body_mass = measured[1]
@@ -160,31 +171,49 @@ using StanBlocks
             flow_over_volume * flow_fraction', -flow_over_volume,
         )
         source_equilibrium = exposure_source * (transport \ flow_over_volume)
+        dt = times[1] / n_substeps
+        transition = matrix_exp(dt * transport)
+        transition_source = transition * source_equilibrium - source_equilibrium
 
         concentration = rep_vector(minimum_concentration, n_state)
+        last_concentration = concentration
         states::vector[n_time, n_state]
-        for time in 1:n_time
-            segment_start = time == 1 ? 0.0 : times[time - 1]
-            dt = (times[time] - segment_start) / interval_substeps[time]
-            transition = matrix_exp(dt * transport)
-            transition_source = transition * source_equilibrium - source_equilibrium
-            for step in 1:interval_substeps[time]
-                concentration[n_state] = monster_exact_mm_step(
-                    dt / 2, concentration[n_state], vmax, km,
+        last_time = 0.0
+        next_time = 0.0
+        time_index = 1
+        next_checkpoint = times[time_index]
+        while time_index <= n_time
+            next_time = last_time + dt
+            concentration[n_state] = monster_exact_mm_step(
+                dt / 2, concentration[n_state], vmax, km,
+            )
+            if time_index == 1
+                concentration = transition * concentration + transition_source
+            else
+                concentration = transition * concentration
+            end
+            concentration[n_state] = monster_exact_mm_step(
+                dt / 2, concentration[n_state], vmax, km,
+            )
+
+            while next_time >= next_checkpoint
+                states[time_index] = monster_log_interpolate(
+                    (next_checkpoint - last_time) / dt,
+                    last_concentration, concentration,
                 )
-                transported = time == 1 ?
-                    transition * concentration + transition_source :
-                    transition * concentration
-                for compartment in 1:n_state
-                    concentration[compartment] = transported[compartment]
+                if time_index == 1
+                    concentration = states[time_index]
+                    next_time = times[time_index]
                 end
-                concentration[n_state] = monster_exact_mm_step(
-                    dt / 2, concentration[n_state], vmax, km,
-                )
+                time_index = time_index + 1
+                if time_index <= n_time
+                    next_checkpoint = times[time_index]
+                else
+                    break
+                end
             end
-            for compartment in 1:n_state
-                states[time, compartment] = concentration[compartment]
-            end
+            last_time = next_time
+            last_concentration = concentration
         end
 
         prediction::matrix[n_time, n_output]
@@ -202,7 +231,7 @@ using StanBlocks
     monster_subject(
         times::vector[n_time], exposures::vector[n_experiment],
         raw_params::vector[n_param], measured::vector[n_measured],
-        n_state::int, n_output::int, interval_substeps::int[n_time],
+        n_state::int, n_output::int, n_substeps::int,
         n_subject_observation::int,
     )::vector[n_subject_observation] = begin
         prediction::vector[n_subject_observation]
@@ -210,7 +239,7 @@ using StanBlocks
         for experiment in 1:n_experiment
             experiment_prediction::matrix[n_time, n_output] = monster_experiment(
                 times, exposures[experiment], raw_params, measured,
-                n_state, n_output, interval_substeps,
+                n_state, n_output, n_substeps,
             )
             for output in 1:n_output
                 for time in 1:n_time
@@ -245,9 +274,7 @@ n_state = 4
 n_output = 2
 n_param = 15
 times = [240.0, 360.0, 1320.0, 2760.0]
-exposure_substeps = 240
-solver_dt = times[1] / exposure_substeps
-interval_substeps = round.(Int, diff(vcat(0.0, times)) ./ solver_dt)
+n_substeps = 240
 exposures = [0.488, 0.976]
 measured_params = [62.0 0.114 7.6; 71.0 0.134 11.6]
 n_subject_observation = length(times) * length(exposures) * n_output
@@ -280,7 +307,7 @@ monster_direct = @slic begin
         monster_subject(
             times, exposures,
             population_raw_location + population_raw_scale .* z,
-            to_vector(measured), n_state, n_output, interval_substeps,
+            to_vector(measured), n_state, n_output, n_substeps,
             n_subject_observation,
         )
     end
@@ -296,7 +323,7 @@ monster_direct = @slic begin
 end
 
 monster_direct_posterior = monster_direct(;
-    n_person, n_state, n_output, n_param, interval_substeps,
+    n_person, n_state, n_output, n_param, n_substeps,
     times, exposures, measured_params, n_subject_observation,
     observed, raw_prior_location,
 )
@@ -372,7 +399,7 @@ using BayesianRegressionModels, Distributions
         times::vector[n_time], exposures::vector[n_experiment],
         raw_params::vector[n_param], measured::vector[n_measured],
         output::int, n_state::int, n_output::int,
-        interval_substeps::int[n_time],
+        n_substeps::int,
         n_subject_output::int,
     )::vector[n_subject_output] = begin
         prediction::vector[n_subject_output]
@@ -380,7 +407,7 @@ using BayesianRegressionModels, Distributions
         for experiment in 1:n_experiment
             experiment_prediction::matrix[n_time, n_output] = monster_experiment(
                 times, exposures[experiment], raw_params, measured,
-                n_state, n_output, interval_substeps,
+                n_state, n_output, n_substeps,
             )
             for time in 1:n_time
                 prediction[index] = experiment_prediction[time, output]
@@ -407,7 +434,7 @@ monster_schedule = (;
     n_state = fill(n_state, n_person),
     n_output = fill(n_output, n_person),
     n_param = fill(n_param, n_person),
-    interval_substeps = [copy(interval_substeps) for _ in 1:n_person],
+    n_substeps = fill(n_substeps, n_person),
     n_subject_output = fill(n_subject_output, n_person),
 )
 
@@ -449,7 +476,7 @@ monster_brm = @brm monster_schedule begin
 
     venous_prediction ~ kernel(
         times, exposures, measured, venous_y, exhaled_y,
-        n_state, n_output, n_param, interval_substeps, n_subject_output,
+        n_state, n_output, n_param, n_substeps, n_subject_output,
         log_VPR, raw_Fwp, raw_Fpp, raw_Ff, raw_Fl,
         raw_Vwp, raw_Vpp, raw_Vl,
         log_Pba, log_Pwp, log_Ppp, log_Pf, log_Pl, log_VMI, log_KMI,
@@ -493,11 +520,13 @@ Michaelis--Menten update, advances the linear tissue transport exactly with
 `matrix_exp`, then applies the other nonlinear half.  The stable
 `lambert_w0(exp(x))` helper follows the source's separate ordinary, very large,
 and very small argument branches.  As in the repository's fitted-model path,
-240 substeps over the 240-minute exposure establish a one-minute grid.  The
-displayed fixture's later checkpoints also fall on that grid, so their interval
-step counts land on each requested time directly.  The general source routine
-also log-interpolates off-grid checkpoints; that extra bookkeeping is the only
-integration feature not reproduced here.
+240 substeps over the 240-minute exposure establish a one-minute grid, and that
+same step size continues through washout.  Whenever a step crosses an
+observation checkpoint, `monster_log_interpolate` geometrically interpolates
+the two positive concentration vectors.  At the first checkpoint it also
+anchors the trajectory exactly at the exposure/washout boundary.  This is the
+source program's global-grid and off-grid-checkpoint algorithm, not a separate
+per-observation approximation.
 
 The direct model makes the non-centred vector
 algebra compact and exposes complete control over its shared scale prior.  The
