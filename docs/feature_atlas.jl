@@ -31,6 +31,12 @@ function validate_generated_templates(paths)
         occursin("Main.FeatureAtlasDocs.", source) || error(
             "$(basename(path)) contains no build-generated example",
         )
+        generated = length(collect(eachmatch(r"Main\.FeatureAtlasDocs\.comparisons?\(", source)))
+        wrappers = length(collect(eachmatch(r"data-atlas-comparison", source)))
+        wrappers == generated || error(
+            "$(basename(path)) has $(generated) generated comparison(s) but " *
+            "$(wrappers) atlas UI wrapper(s)",
+        )
     end
     return nothing
 end

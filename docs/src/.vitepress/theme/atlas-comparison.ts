@@ -18,17 +18,22 @@ function enhanceComparison(root: HTMLElement) {
   let source = root.querySelector<HTMLElement>(':scope > [data-atlas-pane="source"]')
   let stan = root.querySelector<HTMLElement>(':scope > [data-atlas-pane="stan"]')
   if (!source || !stan) {
-    const sourceCode = root.querySelector<HTMLElement>(':scope > div[class*="language-julia"]')
-    const stanCode = root.querySelector<HTMLElement>(':scope > div[class*="language-stan"]')
-    if (sourceCode && stanCode) {
+    const directChildren = Array.from(root.children) as HTMLElement[]
+    const sourceIndex = directChildren.findIndex((child) =>
+      child.matches('div[class*="language-julia"]'),
+    )
+    const generated = sourceIndex < 0 ? [] : directChildren.slice(sourceIndex + 1)
+    const hasStan = generated.some((child) => child.matches('div[class*="language-stan"]'))
+    if (sourceIndex >= 0 && hasStan) {
+      const sourceCode = directChildren[sourceIndex]
       source = document.createElement('div')
       stan = document.createElement('div')
       source.dataset.atlasPane = 'source'
       stan.dataset.atlasPane = 'stan'
       sourceCode.before(source)
-      stanCode.before(stan)
+      generated[0].before(stan)
       source.appendChild(sourceCode)
-      stan.appendChild(stanCode)
+      generated.forEach((child) => stan!.appendChild(child))
     }
   }
   if (!source || !stan) return
@@ -100,14 +105,14 @@ function enhanceComparison(root: HTMLElement) {
 
   const dialog = document.createElement('dialog')
   dialog.className = 'atlas-comparison__dialog'
-  dialog.setAttribute('aria-label', 'StanBlocks and generated Stan comparison')
+  dialog.setAttribute('aria-label', `${labels.source} and ${labels.stan} comparison`)
 
   const frame = document.createElement('div')
   frame.className = 'atlas-comparison__dialog-frame'
   const header = document.createElement('header')
   header.className = 'atlas-comparison__dialog-header'
   const title = document.createElement('strong')
-  title.textContent = 'Source and generated program'
+  title.textContent = `${labels.source} and ${labels.stan}`
   const close = makeButton('Close', 'atlas-comparison__close')
   close.setAttribute('aria-label', 'Close side-by-side comparison')
   close.addEventListener('click', () => dialog.close())

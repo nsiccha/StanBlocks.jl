@@ -1,32 +1,124 @@
-# Reimplementing the Stan models from `crowdsource-computo-bayes`
+# A family of latent-truth crowdsourcing models
 
-Source: <https://github.com/seongwoohan/crowdsource-computo-bayes>
+This page ports the model family from
+[`crowdsource-computo-bayes`](https://github.com/seongwoohan/crowdsource-computo-bayes).
+Repeated binary ratings are observed, but the true class of each item is not.
+The family asks how much item-specific and rater-specific structure is needed
+to explain those ratings.
 
-The full Julia source is displayed below. The documentation build evaluates that
-exact source and includes every complete generated Stan program on this page.
+The complete Julia source is shown below. The documentation build evaluates
+that exact source, then obtains all 19 complete Stan programs from the resulting
+model family. The historical custom distribution name `no_good_name` is
+kept solely so the port remains traceable to its source; it represents the
+latent-truth, marginalized crowdsourcing likelihood described here.
 
-## StanBlocks.jl implementation
+## The full model
 
-The function and model definitions below make use of 
+Let `z_i` be the unobserved binary truth for item `i` and
+`pi_` its population prevalence. For rating `k`, write
+`i = item[k]` and `j = rater[k]`; those indices select the relevant
+parameters.
+Conditional on a positive truth, the probability of a positive rating is
 
-* higher-order user defined functions, 
-* variadic functions,
-* "Post-hoc model adjustment via model component replacement and splicing".
+`lambda[i] + (1 - lambda[i]) *
+inv_logit(delta[i] * (alpha_sens[j] - beta_[i]))`.
 
-The migrated executable source adds the current explicit `@lpxf` registration
-to the custom likelihood; the legacy compiler inferred that hook implicitly.
+Conditional on a negative truth, it is
 
-For an explanation of the first two, see [the ISBA 2024 example](isba-2024.md).
+`(1 - lambda[i]) *
+inv_logit(-delta[i] * (alpha_spec[j] - beta_[i]))`.
 
-### Post-hoc model adjustment via model component replacement and splicing
+Thus the full model contains:
 
-TO DO: elaborate
+- `pi_`, the prevalence of positive items;
+- `alpha_sens[j]` and `alpha_spec[j]`, separate sensitivity- and
+  specificity-side abilities for each rater;
+- `beta_[i]`, an item location or difficulty;
+- positive `delta[i]`, an item discrimination scale; and
+- `lambda[i]`, an item-specific response pathway that raises the
+  positive-truth probability while reducing the negative-truth probability.
+
+`no_good_name_lpmfs` integrates out each `z_i` analytically with
+`log_sum_exp`. It first accumulates the log probabilities of all ratings
+for an item under each possible truth, then mixes those two item-level terms
+with `log(pi_)` and `log1m(pi_)`. The generated quantities simulate
+ratings from the same model and compare observed and replicated vote totals by
+item and by rater.
+
+## From one model to 19 variants
+
+The short labels record which replacement transforms have been applied to
+`full`. Their letters have a precise meaning:
+
+| Transform | Restriction |
+|:--|:--|
+| `a` | Fix every `lambda[i]` to zero, removing the special response pathway. |
+| `b` | Fix every discrimination `delta[i]` to one. |
+| `c` | Fix every item location `beta_[i]` to zero. |
+| `d` | Replace separate sensitivity and specificity vectors with one positive per-rater accuracy vector. |
+| `de` | Replace both ability vectors with one positive scalar shared by every rater and both truth classes. This is one transform, not `d` followed by `e`. |
+| `e` | Keep distinct sensitivity and specificity abilities, but make each a scalar shared by every rater. |
+
+Concatenation means composition, so `abc` applies `a`, `b`,
+and `c` to the full model. Every displayed member is accounted for below:
+
+| Label | Resulting model |
+|:--|:--|
+| `full` | All item and rater effects vary. |
+| `a` | No `lambda` pathway. |
+| `ab` | No `lambda` pathway; discrimination fixed. |
+| `abc` | As `ab`; item location also fixed. |
+| `abcd` | As `abc`; one accuracy per rater. |
+| `abcde` | As `abc`; one accuracy shared globally. |
+| `abce` | As `abc`; global but distinct sensitivity and specificity. |
+| `abd` | As `ab`; one accuracy per rater. |
+| `abde` | As `ab`; one accuracy shared globally. |
+| `ac` | No `lambda` pathway or item location; discrimination varies. |
+| `acd` | As `ac`; one accuracy per rater. |
+| `ad` | No `lambda` pathway; one accuracy per rater; item location and discrimination vary. |
+| `b` | Discrimination fixed; all other full-model effects remain. |
+| `bc` | Discrimination and item location fixed. |
+| `bcd` | As `bc`; one accuracy per rater. |
+| `bd` | Discrimination fixed; one accuracy per rater; item location varies. |
+| `c` | Item location fixed; all other full-model effects remain. |
+| `cd` | Item location fixed; one accuracy per rater. |
+| `d` | One accuracy per rater; all item-level effects remain. |
+
+This construction isolates statistical comparisons: each derived model shows
+only the assumption that changed, while the custom likelihood and posterior
+predictive checks stay identical.
+
+## StanBlocks features used by the port
+
+- `@deffun` defines reusable Stan functions in Julia syntax. The two
+  `increment_at` methods demonstrate both ordinary multiple dispatch and
+  a higher-order method whose first argument is itself a function.
+- Sized arguments such as `item::int[n]` make the generated Stan signature
+  explicit. The vararg definition `args...` forwards the complete custom
+  distribution interface without repeating it.
+- `jbroadcasted` records element-wise calls when the element operation is
+  a function argument, as in the likelihood and replicated-data comparisons.
+- The `_lpmfs` helper returns one contribution per item;
+  `@lpxf no_good_name_lpmf` registers the scalar aggregate used by
+  `rating ~ no_good_name(...)`. Matching scalar and sized `_rng`
+  methods provide generated-data simulation.
+- `mock_data` supplies representative shapes and element types while the
+  family is traced. Real observations replace those values when a model is
+  instantiated.
+- `Base.merge` performs the post-hoc model adjustment. A replacement can
+  turn a sampled vector into a fixed vector, or replace two sampled vectors
+  with shared parameters, without copying the full model body. StanBlocks then
+  emits declarations from the dataflow of that derived model.
 
 
 ## Full Julia source and generated Stan code
 
 The build evaluates the displayed source once and emits all 19 named model
 variants from the resulting `posteriors` family.
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison data-stan-label="Generated Stan models">
+```
 
 ```@eval
 Main.FeatureAtlasDocs.comparisons(@__MODULE__, raw"""
@@ -156,4 +248,8 @@ posteriors = (;
     d,
 )
 """, :posteriors)
+```
+
+```@raw html
+</div>
 ```

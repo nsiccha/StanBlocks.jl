@@ -6,6 +6,26 @@ future-tense proposals. See [Authoring and feature support](../authoring.md) and
 the [Feature atlas](../feature-atlas.md) for the current executable surface.
 :::
 
+## Reading the original proposal today
+
+This document is useful because it states the design goals before the compiler
+surface settled. The table below separates those goals from today's spelling:
+
+| Original theme | Current status |
+| --- | --- |
+| Reusable model components | Shipped through anonymous and named `@slic` submodels; inputs are rebound with kwargs and results compose through `~`. |
+| Post-hoc adjustment | Shipped through `Base.merge(model, quote ... end)`, replacing statements by their bound name. |
+| Parameter pinning | Shipped for data/input rebinding with `model(; name=value)`; it is not a general deconditioning operator. |
+| Leave-X-out support | Shipped through `StanBlocks.stan.maybecv` on the held-out dimension/input, with qualifier propagation deciding what is redrawn. |
+| Activity analysis | Shipped: statements and prior-only quantities are distributed to the earliest valid Stan block, including generated quantities. |
+| Compound declarations and inferred constraints | Shipped for sampling declarations and explicit bare typed parameters; constraints may be inferred from distribution kwargs. |
+| Arbitrary Julia control flow in models | Deliberately not shipped. `@slic` stays straight-line; loops and branches belong in typed `@deffun` helpers or compiler primitives such as `plate`. |
+| Extensible tracing | Shipped internally through typed tracing and `@defsig`/`@deffun`; custom compiler passes are not a stable public plugin API. |
+
+The sections below remain in their original voice. Treat “will support” as a
+historical proposal and use the links above for the executable, current
+contract.
+
 ## Supporting Bayesian Workflow
 
 Code up your model once - simplify, extend and use in multiple contexts efficiently.

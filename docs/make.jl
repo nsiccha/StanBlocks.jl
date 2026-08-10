@@ -10,6 +10,9 @@ FeatureAtlasDocs.validate_generated_templates(joinpath.(@__DIR__, "src", [
     "examples/case-studies/golf.md",
     "examples/case-studies/motorcycle.md",
     "examples/case-studies/radon.md",
+    "examples/case-studies/planets.md",
+    "examples/case-studies/school.md",
+    "examples/case-studies/species.md",
     "examples/case-studies/soil.md",
 ]))
 
@@ -62,6 +65,8 @@ makedocs(
                 "Original @slic overview" => "examples/slic-overview.md",
                 "Monster-model notebook" => "examples/monster.md",
                 "Simplex experiments" => "examples/simplex-transforms.md",
+            ],
+            "Maintained implementation references" => [
                 "PosteriorDB implementations" => "examples/posteriordb-implementations.md",
             ],
         ],

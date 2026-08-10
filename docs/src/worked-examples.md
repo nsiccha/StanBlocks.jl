@@ -1,39 +1,72 @@
 # Worked examples
 
-These are the former Quarto notebooks, migrated page-for-page into the main
-documentation. Runnable model examples are evaluated during the documentation
-build: the Julia source shown on the page is the source that produced the
-complete Stan program shown beside or below it.
+These pages turn the former Quarto notebooks into a guided tour of model
+authoring with StanBlocks. Runnable examples are evaluated during the
+documentation build: the Julia source shown on a page is the exact source that
+produced the complete Stan program shown with it.
+
+## How to read the executable examples
+
+Every generated example uses the same presentation as the
+[feature atlas](feature-atlas.md):
+
+1. read the model in the **StanBlocks** tab;
+2. switch to **Generated Stan** to inspect the complete emitted program; or
+3. choose **Compare side by side** for a wide modal with both versions.
+
+Family pages evaluate one source block and label every resulting Stan program.
+Nothing asks the reader to run Julia in order to see the output. The prose
+before each block explains the statistical progression and calls out the DSL
+features that make it possible.
 
 ## Model families
 
-- [Golf models](examples/golf-models.md) reproduces five progressively richer
-  putting models.
-- [PCR sensitivity versus time](examples/isba-2024.md) contains the 2×5 model
-  matrix presented at ISBA 2024.
-- [Crowdsourced ratings](examples/crowdsource.md) builds the full model and its
-  18 post-hoc variants.
-- [Reusable constraints](examples/constraints.md) covers the disk constraint
-  and ten simplex transforms.
+- [Golf models](examples/golf-models.md) progresses from logistic regression to
+  geometry-based putting models, residual variation, and estimated physical
+  tolerances. It highlights `Base.merge`, inferred declarations, and ordinary
+  Julia preprocessing.
+- [PCR sensitivity versus time](examples/isba-2024.md) builds a 5×2 family from
+  five latent-time structures and two link functions. It highlights
+  `@deffun`, higher-order dispatch, varargs, custom likelihoods, and recursive
+  model-family construction.
+- [Crowdsourced ratings](examples/crowdsource.md) builds a latent-truth/rater
+  model and 18 restrictions of it. It highlights custom likelihood families,
+  generated checks, and post-hoc component replacement.
+- [Reusable constraints](examples/constraints.md) covers a disk transform and
+  ten simplex transforms. It highlights named-tuple returns, function-valued
+  arguments, custom parameter-introducing distributions, and Jacobian terms.
 
 ## Case studies
 
-- [Golf putting](examples/case-studies/golf.md)
-- [Motorcycle data](examples/case-studies/motorcycle.md)
-- [Multilevel radon regression](examples/case-studies/radon.md)
-- [Planetary motion](examples/case-studies/planets.md)
-- [Disease transmission](examples/case-studies/school.md)
-- [Multiple species-site occupancy](examples/case-studies/species.md)
-- [Soil carbon](examples/case-studies/soil.md)
+- [Golf putting](examples/case-studies/golf.md) — composition through reusable
+  probability submodels.
+- [Motorcycle data](examples/case-studies/motorcycle.md) — a Hilbert-space GP
+  component reused for both the mean and log scale.
+- [Multilevel radon regression](examples/case-studies/radon.md) — complete, no,
+  and partial pooling plus the CV marker.
+- [Planetary motion](examples/case-studies/planets.md) — the original forward
+  simulator, `k`-only inverse problem, and full unknown-star ODE model.
+- [Disease transmission](examples/case-studies/school.md) — an SIR system with
+  prevalence, incidence, and under-reported-incidence observation models.
+- [Multiple species-site occupancy](examples/case-studies/species.md) — the
+  original discrete-state-marginalized occupancy likelihood and generated
+  abundance quantities.
+- [Soil carbon](examples/case-studies/soil.md) — a two-pool feedback ODE reused
+  by direct-residual and latent measurement-error observation models.
+
+## Maintained implementation references
+
+- [PosteriorDB implementations](examples/posteriordb-implementations.md)
+  inventories the 77 current optional-extension models and explains how the
+  catalogue is organized without duplicating its maintained source file.
 
 ## Design and historical material
 
 - [The original `@slic` design overview](examples/slic-overview.md)
 - [Monster-model notebook](examples/monster.md)
 - [Simplex transform experiments](examples/simplex-transforms.md)
-- [PosteriorDB implementations](examples/posteriordb-implementations.md)
 
-The historical notebooks are retained as historical source when they contain
-unfinished experiments, proposed syntax, host-specific benchmark setup, or
-other material that cannot honestly be presented as a current executable
-example. Their pages say so explicitly rather than silently dropping them.
+These historical pages are curated records rather than raw dumps: each now says
+what the experiment was trying to demonstrate, which parts correspond to
+current StanBlocks features, and exactly why the remaining source is not an
+executable example.
