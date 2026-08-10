@@ -2,6 +2,16 @@ using Documenter, DocumenterVitepress, StanBlocks
 
 include("feature_atlas.jl")
 FeatureAtlasDocs.validate_template(joinpath(@__DIR__, "src", "feature-atlas.md"))
+FeatureAtlasDocs.validate_generated_templates(joinpath.(@__DIR__, "src", [
+    "examples/golf-models.md",
+    "examples/isba-2024.md",
+    "examples/crowdsource.md",
+    "examples/constraints.md",
+    "examples/case-studies/golf.md",
+    "examples/case-studies/motorcycle.md",
+    "examples/case-studies/radon.md",
+    "examples/case-studies/soil.md",
+]))
 
 const DEVBRANCH = "devibe"
 const STANCON_DIR = joinpath(dirname(@__DIR__), "presentations", "stancon-2026")
@@ -31,8 +41,30 @@ makedocs(
         "Home"              => "index.md",
         "Authoring support" => "authoring.md",
         "Feature atlas"     => "feature-atlas.md",
-        "Worked examples"   => "worked-examples.md",
-        "Advanced patterns" => "advanced-patterns.md",
+        "Worked examples"   => [
+            "Overview" => "worked-examples.md",
+            "Model families" => [
+                "Golf models" => "examples/golf-models.md",
+                "PCR sensitivity versus time" => "examples/isba-2024.md",
+                "Crowdsourced ratings" => "examples/crowdsource.md",
+                "Reusable constraints" => "examples/constraints.md",
+            ],
+            "Case studies" => [
+                "Golf putting" => "examples/case-studies/golf.md",
+                "Motorcycle data" => "examples/case-studies/motorcycle.md",
+                "Multilevel radon regression" => "examples/case-studies/radon.md",
+                "Planetary motion" => "examples/case-studies/planets.md",
+                "Disease transmission" => "examples/case-studies/school.md",
+                "Species-site occupancy" => "examples/case-studies/species.md",
+                "Soil carbon" => "examples/case-studies/soil.md",
+            ],
+            "Design and historical material" => [
+                "Original @slic overview" => "examples/slic-overview.md",
+                "Monster-model notebook" => "examples/monster.md",
+                "Simplex experiments" => "examples/simplex-transforms.md",
+                "PosteriorDB implementations" => "examples/posteriordb-implementations.md",
+            ],
+        ],
         "Gallery"           => "gallery.md",
         "API"               => "api.md",
     ],

@@ -1,0 +1,159 @@
+# Reimplementing the Stan models from `crowdsource-computo-bayes`
+
+Source: <https://github.com/seongwoohan/crowdsource-computo-bayes>
+
+The full Julia source is displayed below. The documentation build evaluates that
+exact source and includes every complete generated Stan program on this page.
+
+## StanBlocks.jl implementation
+
+The function and model definitions below make use of 
+
+* higher-order user defined functions, 
+* variadic functions,
+* "Post-hoc model adjustment via model component replacement and splicing".
+
+The migrated executable source adds the current explicit `@lpxf` registration
+to the custom likelihood; the legacy compiler inferred that hook implicitly.
+
+For an explanation of the first two, see [the ISBA 2024 example](isba-2024.md).
+
+### Post-hoc model adjustment via model component replacement and splicing
+
+TO DO: elaborate
+
+
+## Full Julia source and generated Stan code
+
+The build evaluates the displayed source once and emits all 19 named model
+variants from the resulting `posteriors` family.
+
+```@eval
+Main.FeatureAtlasDocs.comparisons(@__MODULE__, raw"""
+using StanBlocks
+
+@deffun begin 
+    increment_at(rv0, idxs::int[n], arg1) = begin 
+        rv = rv0
+        for i in 1:n
+            idx = idxs[i]
+            rv[idx] += arg1[idx]
+        end
+        rv
+    end
+    increment_at(f, rv0, idxs::int[n], arg1, arg2) = begin 
+        rv = rv0
+        for i in 1:n
+            idx = idxs[i]
+            rv[idx] += f(arg1[idx], arg2[idx])
+        end
+        rv
+    end
+    vote_count(rating, item, rater, I, J) = increment_at(
+        rep_array(0, J + 1), increment_at(rep_array(1, I), item, rating), rep_array(1, I)
+    )
+    rater_count(rating, rater, J) = increment_at(rep_array(0, J), rater, rating) 
+    lte_sim_rng(x, y) = if x == y
+        bernoulli_rng(.5)
+    else
+        x < y
+    end
+    lte_sim_rng(x::anything[_], y) = jbroadcasted(lte_sim_rng, x, y)
+    pos_probs(lambda, delta, alpha_sens, beta_, item, rater) = (
+        lambda[item] + (1 - lambda[item]) * inv_logit(delta[item] * (alpha_sens[rater] - beta_[item]))
+    )
+    neg_probs(lambda, delta, alpha_spec, beta_, item, rater) = (
+        (1 - lambda[item]) * inv_logit(-delta[item] * (alpha_spec[rater] - beta_[item]))
+    )
+    no_good_name_lpmfs(rating, I, item, rater, pi_, alpha_spec, alpha_sens, beta_, delta, lambda) = jbroadcasted(
+        log_sum_exp, 
+        increment_at(bernoulli_lpmf, rep_vector(log(pi_), I), item, rating, pos_probs(lambda, delta, alpha_sens, beta_, item, rater)),
+        increment_at(bernoulli_lpmf, rep_vector(log1m(pi_), I), item, rating, neg_probs(lambda, delta, alpha_spec, beta_, item, rater))
+    ) 
+    @lpxf no_good_name_lpmf(args...) = sum(no_good_name_lpmfs(args...))
+    no_good_name_rng(I, item::int[n], rater, pi_, alpha_spec, alpha_sens, beta_, delta, lambda)::int[n] = begin
+        z_sim = to_vector(bernoulli_rng(rep_vector(pi_, I)))
+        bernoulli_rng(
+            z_sim[item] .* pos_probs(lambda, delta, alpha_sens, beta_, item, rater)
+            + (1 - z_sim[item]) .* neg_probs(lambda, delta, alpha_spec, beta_, item, rater)
+        )
+    end
+    no_good_name_rng(int[n], I, item::int[n], rater, pi_, alpha_spec, alpha_sens, beta_, delta, lambda)::int[n] =
+        no_good_name_rng(I, item, rater, pi_, alpha_spec, alpha_sens, beta_, delta, lambda)
+    StanBlocks.stan.log_sum_exp(::real, ::real)::real
+end
+
+mock_data = (;I=1,J=1,item=[1],rater=[1],rating=[1])
+
+full = @slic mock_data begin 
+    votes_data = vote_count(rating, item, rater, I, J)
+    rater_data = rater_count(rating, rater, J)
+    pi_ ~ beta(2, 2)
+    alpha_spec ~ normal(2, 2; n=J)
+    alpha_sens ~ normal(1, 2; n=J, lower=-alpha_spec)
+    beta_ ~ normal(0, 1; n=I)
+    delta ~ lognormal(0, 0.25; n=I)
+    lambda ~ beta(2, 2; n=I)
+    rating ~ no_good_name(I, item, rater, pi_, alpha_spec, alpha_sens, beta_, delta, lambda)
+
+    rating_sim = no_good_name_rng(I, item, rater, pi_, alpha_spec, alpha_sens, beta_, delta, lambda)
+    votes_sim = vote_count(rating_sim, item, rater, I, J)
+    votes_sim_lt_data = lte_sim_rng(votes_sim, votes_data)
+    rater_sim = rater_count(rating_sim, rater, J)
+    rater_sim_lt_data = lte_sim_rng(rater_sim, rater_data)
+end
+
+a_transform = quote 
+    lambda = rep_vector(0, I)
+end
+b_transform = quote 
+    delta = rep_vector(1, I)
+end
+c_transform = quote 
+    beta_ = rep_vector(0, I)
+end
+d_transform = quote 
+    alpha_acc ~ normal(1, 2; n=J, lower=0)
+    alpha_sens = alpha_acc
+    alpha_spec = alpha_acc
+end
+de_transform = quote 
+    alpha_acc_scalar ~ normal(1, 2; lower=0)
+    alpha_sens = rep_vector(alpha_acc_scalar, J)
+    alpha_spec = rep_vector(alpha_acc_scalar, J)
+end
+e_transform = quote 
+    alpha_spec_scalar ~ normal(2, 2)
+    alpha_sens_scalar ~ normal(1, 2; lower=-alpha_spec_scalar)
+    alpha_spec = rep_vector(alpha_spec_scalar, J)
+    alpha_sens = rep_vector(alpha_sens_scalar, J)
+end
+
+a = Base.merge(full, a_transform)
+ab = Base.merge(a, b_transform)
+abc = Base.merge(ab, c_transform)
+abcd = Base.merge(abc, d_transform)
+abcde = Base.merge(abc, de_transform)
+abce = Base.merge(abc, e_transform)
+abd = Base.merge(ab, d_transform)
+abde = Base.merge(ab, de_transform)
+ac = Base.merge(a, c_transform)
+acd = Base.merge(ac, d_transform)
+ad = Base.merge(a, d_transform)
+b = Base.merge(full, b_transform)
+bc = Base.merge(b, c_transform)
+bcd = Base.merge(bc, d_transform)
+bd = Base.merge(b, d_transform)
+c = Base.merge(full, c_transform)
+cd_ = Base.merge(c, d_transform)
+d = Base.merge(full, d_transform)
+
+posteriors = (;
+    full,
+    a, ab, abc, abcd, abcde, abce, abd, abde, ac, acd, ad,
+    b, bc, bcd, bd,
+    c, cd=cd_,
+    d,
+)
+""", :posteriors)
+```
