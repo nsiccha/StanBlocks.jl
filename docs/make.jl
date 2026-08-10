@@ -1,5 +1,9 @@
 using Documenter, DocumenterVitepress, StanBlocks
 
+const DEVBRANCH = "devibe"
+const STANCON_DIR = joinpath(dirname(@__DIR__), "presentations", "stancon-2026")
+const STANCON_BUILD = joinpath(@__DIR__, "build", "stancon-2026")
+
 # Theme files synced from HTMXObjects/assets/vitepress/ (htmxo-embed.ts,
 # htmxo-gallery.css, htmxo-syntax.css) are tracked under
 # docs/src/.vitepress/theme/. Re-sync them locally via
@@ -18,7 +22,7 @@ makedocs(
         # latter moves: `dev` had fallen 217 commits behind `devibe`, so the
         # published docs were stale by that much while the URL stayed correct.
         # Decision `0xyqj00`.
-        devbranch = "devibe",
+        devbranch = DEVBRANCH,
     ),
     pages = [
         "Home"              => "index.md",
@@ -33,6 +37,16 @@ makedocs(
     warnonly = true,
 )
 
+# The presentation is a standalone Quarto site, not a VitePress page. Render it
+# into its own deployment target after `makedocs` has cleaned `docs/build/`.
+let quarto = Sys.which("quarto")
+    isnothing(quarto) && error("Quarto is required to build the StanCon presentation")
+    mkpath(STANCON_BUILD)
+    run(Cmd(`$quarto render index.qmd --output-dir $STANCON_BUILD`; dir=STANCON_DIR))
+    isfile(joinpath(STANCON_BUILD, "index.html")) ||
+        error("Quarto did not produce $(joinpath(STANCON_BUILD, "index.html"))")
+end
+
 # Ensure a root index.html redirect exists for when no stable version is deployed
 let redirect = joinpath(@__DIR__, "build", "index.html")
     isfile(redirect) || write(redirect, """
@@ -45,6 +59,20 @@ end
 
 DocumenterVitepress.deploydocs(
     repo = "github.com/nsiccha/StanBlocks.jl",
-    devbranch = "devibe",
+    devbranch = DEVBRANCH,
     push_preview = true,
 )
+
+# DocumenterVitepress deploys versioned documentation under `/dev/`, whereas
+# the public presentation URL is intentionally stable and unversioned. Publish
+# the independently rendered deck to `gh-pages/stancon-2026/` on devibe only.
+if get(ENV, "GITHUB_REF", "") == "refs/heads/$DEVBRANCH"
+    Documenter.deploydocs(
+        root = @__DIR__,
+        target = joinpath("build", "stancon-2026"),
+        dirname = "stancon-2026",
+        repo = "github.com/nsiccha/StanBlocks.jl",
+        devbranch = DEVBRANCH,
+        versions = nothing,
+    )
+end
