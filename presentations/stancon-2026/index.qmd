@@ -115,44 +115,49 @@ working Julia implementation and a very efficient one. It is not shorthand for
 “Julia plus AD.”
 :::
 
-## AD raises the stakes
+## AD: from a subset toward the full language
 
 :::: {.columns}
 ::: {.column width="48%"}
 
-### Julia's surface
+### The historical half-language
 
-- multiple dispatch and rich types
-- mutation, aliasing, closures, control flow
-- generic package code
-- compile-time specialization
+- what the selected AD stack can differentiate
+- which mutation and aliasing patterns survive
+- which types compile efficiently
+- backend failures that appear only at runtime
 
 :::
 ::: {.column width="48%"}
 
-### What performant AD must do
+### Enzyme changes the target
 
-- preserve relevant semantics
-- transform and optimize
-- fail actionably
-- track compiler internals and backend coverage
+- LLVM-level differentiation
+- Julia features possible in principle
+- compilation and library coverage can still fail
+- performance remains workload-dependent
+- some models already match or beat Stan
 
 :::
 ::::
 
 ::: {.takeaway}
-AD was not simply an afterthought—but performant AD over Julia's full generality needs **core-feature-level investment**.
+The question is shifting from “which Julia subset?” to “will this full-language program compile and optimize well here?”
 :::
 
 ::: {.notes}
-The criticism is not that Julia developers ignored AD. Julia has hosted several
-ambitious AD systems. The difficulty is that library-level AD is being asked to
-cover a highly dynamic general-purpose language while remaining fast, correct,
-composable, and debuggable. Public Discourse and Hacker News threads matter
-here as adoption evidence: backend restrictions, slow paths, confusing errors,
-and wrong-result reports have shaped Julia's reputation even when individual
-reports have nuanced or non-AD root causes. In this stack, Mooncake is the Julia
-AD backend; Stan's path is separate and uses Stan Math through BridgeStan.
+The left column describes a real user experience, even if it is increasingly
+historical. Enzyme changes the in-principle boundary by differentiating
+statically analyzable LLVM rather than defining a small Julia-language subset.
+Do not turn that into “every Julia program always works today”: compilation,
+activity analysis, custom rules, and library coverage still matter; Enzyme's
+own FAQ says some Julia linear algebra remains unsupported. Performance is also
+model-specific. Turing reports Mooncake/Enzyme matching or beating Stan on
+small eight-schools benchmarks, while StanBlocks' broader Julia-vs-Stan
+comparison contains wins and losses. The criticism is therefore not that AD was
+an afterthought: performant, reliable AD over Julia's generality has needed—and
+still needs—core-feature-level investment. In StanBlocks today, Mooncake is the
+Julia AD backend; Stan's path is separate and uses Stan Math through BridgeStan.
 :::
 
 ## The Stan bargain
@@ -584,7 +589,7 @@ standard workflows above, inspectable compiler below.
 
 ### The pitch
 
-1. **Julia is a great authoring language**, but performant Julia can feel like another dialect—and AD raises the stakes.
+1. **Julia is a great authoring language**, but performant Julia can feel like another dialect; Enzyme is narrowing the AD gap.
 2. **Stan is a strong inference target**: reliable, good out of the box, and explicit.
 3. **StanBlocks makes model families composable** while keeping generated Stan inspectable.
 4. **Agents strengthen the case for a compiler contract**, even as they weaken the case for mere syntax reduction.
@@ -809,10 +814,9 @@ A small language is useful only when its “no” is explicit.
 ## Backup · sources and further reading
 
 - Michael Tiemann, [*Julia Solves the 2 Language Problem, However It Creates the 1.5 Language Problem*](https://www.youtube.com/watch?v=RUJFd-rEa0k).
-- Julia Discourse: [*Discussion on the future for performant programming in Julia*](https://discourse.julialang.org/t/discussion-on-the-future-for-performant-programming-in-julia/99509) and [*State of AD in 2024*](https://discourse.julialang.org/t/state-of-ad-in-2024/112601).
-- Hacker News discussion: [*Automatic differentiation can be incorrect*](https://news.ycombinator.com/item?id=45289829).
-- Maria I. Gorinova, Andrew D. Gordon & Charles Sutton, [*Probabilistic Programming with Densities in SlicStan*](https://doi.org/10.1145/3290348), POPL 2019.
-- [SlicStan public repository](https://github.com/mgorinova/SlicStan).
+- [Enzyme.jl documentation](https://enzyme.mit.edu/julia/stable/) and Turing's [March 2026 performance update](https://turinglang.org/news/posts/2026-03-09-newsletter-18/).
+- Community context: Julia Discourse on [performant programming](https://discourse.julialang.org/t/discussion-on-the-future-for-performant-programming-in-julia/99509) and [the 2024 AD landscape](https://discourse.julialang.org/t/state-of-ad-in-2024/112601); Hacker News on [AD correctness](https://news.ycombinator.com/item?id=45289829).
+- Maria I. Gorinova, Andrew D. Gordon & Charles Sutton, [*Probabilistic Programming with Densities in SlicStan*](https://doi.org/10.1145/3290348), POPL 2019; [source](https://github.com/mgorinova/SlicStan).
 - [StanBlocks.jl source](https://github.com/nsiccha/StanBlocks.jl) and [authoring support guide](https://nsiccha.github.io/StanBlocks.jl/dev/authoring).
 - [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl) and its [worked model catalogue](https://nsiccha.github.io/BayesianRegressionModels.jl/).
 - Companion [StanCon 2026 feature atlas](https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas).
