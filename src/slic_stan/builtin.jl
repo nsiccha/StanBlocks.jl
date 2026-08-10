@@ -164,6 +164,7 @@ end
     is_inf is_nan
     Phi_approx inv_Phi
     erf erfc tgamma digamma trigamma
+    lambert_w0
     lbeta inc_beta gamma_p gamma_q
     bessel_first_kind bessel_second_kind
     modified_bessel_first_kind modified_bessel_second_kind
@@ -2048,7 +2049,7 @@ end
         log1p_exp, log1m_exp, Base.inv, Base.log1p,
         exp2, log2, cbrt, ceil, floor, round, trunc,
         square, erf, erfc, tgamma, digamma, trigamma,
-        Phi_approx, inv_Phi))...} => begin
+        Phi_approx, inv_Phi, lambert_w0))...} => begin
         (real,)=>real
         (vector[n],)=>vector[n]
         (row_vector[n],)=>row_vector[n]

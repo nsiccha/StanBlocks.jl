@@ -7002,3 +7002,47 @@ this item gates on `stanc_compiles`, not `transpiles`.
     @test occursin("return bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta);", bernoulli_functions)
     @test stanc_compiles(bernoulli_model)
 end
+
+"""
+`lambert_w0` is a native Stan Math function (element-wise: real / vector /
+row_vector / array / matrix). It must be registered on the builtin surface —
+in the `@builtin_module` name manifest AND the shared unary-math `@defsig`
+Union — so a `@stanonly @deffun` body may call it and lower to `lambert_w0(...)`.
+Regression for the `quarto-migration` monster port, whose exact
+Michaelis-Menten step (`exact_michaelis_menten_solution`) needs the closed-form
+`lambert_w0` rather than a numerical ODE fallback.
+"""
+@testitem "slic: native lambert_w0 builtin emits and compiles" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
+    # A `@defsig`-only native (no Julia method), so each definition that reaches
+    # for it opts out of Julia emission with `@stanonly`. Three statements,
+    # `exact_mm_step` cross-referencing the scalar `lambert_w0_exp` — the shape
+    # the monster model uses.
+    @deffun begin
+        @stanonly lambert_w0_exp(earg::real)::real = lambert_w0(exp(earg))
+        @stanonly exact_mm_step(K::real, earg::real)::real = K * lambert_w0_exp(earg)
+        @stanonly lambert_w0_vec(x::vector[n])::vector[n] = lambert_w0(x)
+    end
+
+    # Scalar: the closed-form Michaelis-Menten step.
+    scalar_model = @slic (; y = 1.5) begin
+        earg ~ normal(0., 1.)
+        K ~ lognormal(0., 1.)
+        mm = exact_mm_step(K, earg)
+        y ~ normal(mm, 1.0)
+    end
+    scalar_code = stan_code(scalar_model)
+    @test occursin("lambert_w0(", scalar_code)
+    @test occursin("return lambert_w0(exp(earg));", scalar_code)
+    @test stanc_check(scalar_code; warn_pedantic=false).ok
+
+    # Vectorized element-wise form.
+    vector_model = @slic (; n = 3, yv = [1.0, 2.0, 3.0]) begin
+        xv ~ normal(0., 1.; n = 3)
+        wv = lambert_w0_vec(xv)
+        yv ~ normal(wv, 1.0)
+    end
+    vector_code = stan_code(vector_model)
+    @test occursin("lambert_w0(", vector_code)
+    @test occursin("return lambert_w0(x);", vector_code)
+    @test stanc_check(vector_code; warn_pedantic=false).ok
+end
