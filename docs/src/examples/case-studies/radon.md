@@ -4,7 +4,7 @@ Qualitatively reproduces [Mitzi Morris' radon case study](https://mc-stan.org/le
 
 ## Complete pooling (`radon_cp` below)
 
-```{julia}
+```julia
 y = x = randn(10)
 county = rand(1:10, 10)
 radon_cp = @slic begin 
@@ -18,7 +18,7 @@ radon_cp(;y,x)
 
 ## No pooling
 
-```{julia}
+```julia
 radon_np = @slic begin 
     n_counties = max(county)
     alpha ~ normal(0, 10; n=n_counties)
@@ -33,7 +33,7 @@ radon_np(;y,x,county)
 
 ## Partial pooling
 
-```{julia}
+```julia
 radon_pp = @slic begin 
     n_counties = max(county)
     mu_alpha ~ normal(0, 10)
@@ -48,6 +48,6 @@ radon_pp(;y,x,county)
 
 ### Cross validation
 
-```{julia}
+```julia
 radon_pp(;y,x,county=StanBlocks.stan.maybecv(:county, county))
 ```

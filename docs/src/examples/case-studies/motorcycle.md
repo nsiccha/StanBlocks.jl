@@ -4,7 +4,7 @@ Qualitatively reproduces [Aki Vehtari's motorcycle case study](https://users.aal
 
 ## HSGP building block (`hsgp` below)
 
-```{julia}
+```julia
 using StanBlocks, Markdown
 x = randn(10)
 obs = randn(10)
@@ -31,7 +31,7 @@ hsgp(;x)
 
 ## Homoskedastic model
 
-```{julia}
+```julia
 homo = @slic begin 
     y_intercept ~ std_normal()
     dy ~ hsgp(;x)
@@ -43,7 +43,7 @@ homo(;x, obs)
 
 ## Heteroskedastic model
 
-```{julia}
+```julia
 hetero = @slic begin
     y_intercept ~ std_normal()
     dy ~ hsgp(;x)
@@ -54,13 +54,11 @@ end
 hetero(;x,obs)
 ```
 
-::: {.callout-note collapse="true"}
-
-## Alternative heteroskedastic model using subsubmodels
+::: details Alternative heteroskedastic model using subsubmodels
 
 ### Submodel with submodel (`intercept_hsgp` below)
 
-```{julia}
+```julia
 intercept_hsgp = @slic begin 
     intercept ~ std_normal()
     "Submodel uses `hsgp` as a submodel"
@@ -72,7 +70,7 @@ intercept_hsgp(;x)
 
 ### Final model
 
-```{julia}
+```julia
 hetero2 = @slic begin 
     y ~ intercept_hsgp(;x)
     log_sigma ~ intercept_hsgp(;x)

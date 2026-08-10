@@ -2,7 +2,7 @@
 
 Qualitatively reproduces [Bob Carpenter's multiple species-site occupancy case study](https://mc-stan.org/learn-stan/case-studies/dorazio-royle-occupancy.html).
 
-```{.julia}
+```julia
 data = (;
     
 )

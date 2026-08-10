@@ -2,7 +2,7 @@
 
 Qualitatively reproduces [Bob Carpenter's soil carbon modeling case study](https://mc-stan.org/learn-stan/case-studies/soil-knit.html).
 
-```{julia}
+```julia
 data = (;
     eCO2mean=[1.],    
     eCO2_hat=[1.],
@@ -21,7 +21,7 @@ data = (;
 end
 ```
 
-```{julia}
+```julia
 @slic data begin 
     k1 ~ std_normal(;lower=0)
     k2 ~ std_normal(;lower=0)

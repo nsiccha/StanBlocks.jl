@@ -1,11 +1,7 @@
----
-title: "User defined reusable constraints"
----
+# User defined reusable constraints
 
-The full Julia code for this notebook can be accessed via the top right corner (`</> Code`).
-
-The Julia packages needed to reproduce this document are [`StanBlocks.jl`](https://github.com/nsiccha/StanBlocks.jl) (for the model generation) and [`QuartoComponents.jl`](https://github.com/nsiccha/QuartoComponents.jl) (for the "pretty" printing). 
-Both packages have to be installed from the latest `main` branch (as of Oct 14th 2025).
+The full Julia source is displayed below. The documentation build evaluates that
+exact source and includes every complete generated Stan program on this page.
 
 ## StanBlocks.jl implementation
 
@@ -94,7 +90,7 @@ end
 
 Without the dummy likelihood term, StanBlocks.jl would move `theta` to generated quantities, because it wouldn't affect the likelihood.
 
-```{julia}
+```julia
 using StanBlocks, QuartoComponents
 
 @deffun begin 
@@ -239,7 +235,7 @@ end
 
 where again without the dummy likelihood StanBlocks.jl would move `theta` to generated quantities, because it wouldn't affect the likelihood.
 
-```{julia}
+```julia
 @deffun begin 
     Base.reverse(x::vector[n])::vector[n]
     StanBlocks.stan.std_normal_lcdf(x)::real

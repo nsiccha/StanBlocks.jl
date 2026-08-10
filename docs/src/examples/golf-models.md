@@ -1,6 +1,4 @@
----
-title: "Golf models reimplementation"
----
+# Golf models reimplementation
 
 TO DO: elaborate
 
@@ -10,7 +8,7 @@ TO DO: elaborate
 
 ## Generated Stan models
 
-```{julia}
+```julia
 using StanBlocks, QuartoComponents
 
 "Downloads and preprocesses the golf datasets"

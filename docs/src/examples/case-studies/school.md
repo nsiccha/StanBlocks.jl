@@ -2,7 +2,7 @@
 
 Qualitatively reproduces [Léo Grinsztajn et al.'s disease transmissin case study](https://mc-stan.org/learn-stan/case-studies/boarding_school_case_study.html).
 
-```{julia}
+```julia
 data = (;
     sir=1.,
     y0=[1., 1.],
@@ -24,7 +24,7 @@ data = (;
 end
 ```
 
-```{julia}
+```julia
 @slic data begin 
     beta ~ normal(2, 1; lower=0.)
     gamma ~ normal(0.4, 0.5; lower=0.)
@@ -38,7 +38,7 @@ end
 end
 ```
 
-```{julia}
+```julia
 @slic data begin 
     beta ~ normal(2, 1; lower=0.)
     gamma ~ normal(0.4, 0.5; lower=0.)

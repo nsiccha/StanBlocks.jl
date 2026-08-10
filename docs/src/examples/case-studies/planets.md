@@ -4,7 +4,7 @@ Qualitatively reproduces [Charles C. Margossian's planetary motion case study](h
 
 Only one model definition is needed.
 
-```{julia}
+```julia
 data = (;
     sigma=.1,
     ode=1.,

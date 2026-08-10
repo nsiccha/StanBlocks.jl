@@ -1,3 +1,4 @@
+# Historical SlicPPL prototype retained from docs/examples/slicppl.jl.
 using OrderedCollections
 using Distributions, Turing, LinearAlgebra, Tullio, LogExpFunctions
 

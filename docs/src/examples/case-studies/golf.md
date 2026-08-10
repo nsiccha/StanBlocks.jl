@@ -3,7 +3,7 @@
 Qualitatively reproduces [Andrew Gelman's golf putting case study](https://mc-stan.org/learn-stan/case-studies/golf.html).
 
 ## Logistic regression
-```{julia}
+```julia
 y = n = x = distance_tolerance = overshot = randn(10)
 R = r = 1.
 
@@ -21,7 +21,7 @@ logistic(;y,n,x)
 ### Submodels
 
 #### Angle submodel (`angle_submodel` below)
-```{julia}
+```julia
 angle_submodel = @slic begin 
     threshold_angle = asin((R - r) ./ x) 
     sigma ~ flat(;lower=0.)
@@ -32,7 +32,7 @@ angle_submodel(;R,r,x)
 ```
 
 #### Distance submodel (`distance_submodel` below)
-```{julia}
+```julia
 distance_submodel = @slic begin 
     sigma_distance ~ std_normal(;lower=0.)
     return Phi(
@@ -44,7 +44,7 @@ end
 distance_submodel(;distance_tolerance, overshot, x)
 ```
 ### Angle model
-```{julia}
+```julia
 angle = @slic begin 
     p ~ angle_submodel(;R,r,x)
     y ~ binomial(n, p)
@@ -54,7 +54,7 @@ angle(;R,r,x,y,n)
 
 ### Angle + distance model
 
-```{julia}
+```julia
 second_principles = @slic begin 
     p_angle ~ angle_submodel(;R,r,x)
     p_distance ~ distance_submodel(;distance_tolerance, overshot, x)
@@ -66,7 +66,7 @@ second_principles(;R,r,x,distance_tolerance, overshot,y,n,)
 
 ## Adding a fudge factor
 
-```{julia}
+```julia
 third_principles = @slic begin 
     raw_proportions = to_vector(y) ./ to_vector(n)
 

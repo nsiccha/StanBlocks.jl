@@ -1,8 +1,6 @@
----
-title: "The @slic macro"
----
+# The `@slic` macro
 
-# Supporting Bayesian Workflow
+## Supporting Bayesian Workflow
 
 Code up your model once - simplify, extend and use in multiple contexts efficiently.
 

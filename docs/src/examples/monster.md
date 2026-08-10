@@ -1,4 +1,6 @@
-```{julia}
+# Monster model notebook
+
+```julia
 using StanBlocks, JSON, StanLogDensityProblems, WarmupHMC, Term
 @deffun begin 
     dydt_exposure(t, concentration_out, FVP, FFPF, CFFPF, VMI, KMI) = FvP .* (
@@ -52,7 +54,7 @@ monster_posterior = monster_model(;
 WarmupHMC.adaptive_warmup_mcmc(Xoshiro(0), stan_instantiate(monster_posterior; nan_on_error=false); progress=Term.ProgressBar)
 ```
 
-```{julia}
+```julia
 using DataFrames
 exposures = [0.488, 0.976]
 measured_params = stack([[62.0, 0.114, 7.6], [71.0, 0.134, 11.6], [71.0, 0.134, 10.0], [74.0, 0.14, 11.3], [61.0, 0.09, 12.3], [61.0, 0.208, 8.8]])'

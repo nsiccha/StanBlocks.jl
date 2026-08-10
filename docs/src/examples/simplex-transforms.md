@@ -1,8 +1,6 @@
----
-title: "The @slic macro"
----
+# The `@slic` macro
 
-```{julia}
+```julia
 using StanBlocks, StanLogDensityProblems, JSON, Markdown, WarmupHMC, Random, Term, MCMCDiagnosticTools, DataFrames, BridgeStan, DataFrames
 BridgeStan.set_bridgestan_path!("/home/niko/github/roualdes/bridgestan")
 
