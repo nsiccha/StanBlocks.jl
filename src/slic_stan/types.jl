@@ -108,6 +108,13 @@ WhileExpr{T} = CanonicalExprV{:while,T}
 ColonExpr{T} = CanonicalExprV{:(:),T}
 IfExpr{T} = CanonicalExprV{:if,T}
 ElseIfExpr{T} = CanonicalExprV{:elseif,T}
+# A ternary conditional EXPRESSION `cond ? a : b` — distinct head from the
+# `if`-STATEMENT (`:if`). Julia parses both to `Expr(:if, …)`, but a ternary's
+# branches are bare VALUES while a statement's are `:block`s; `canonical` splits
+# them so the value form lowers to Stan's `cond ? a : b` operator (a real result
+# type from the branches) instead of being (mis)handled as block-bodied control
+# flow. See `canonical(::Expr)` (tracing.jl), `tracetype`/`forward!`/`show`.
+TernaryExpr{T} = CanonicalExprV{:ternary,T}
 BreakExpr{T} = CanonicalExprV{:break,T}
 ContinueExpr{T} = CanonicalExprV{:continue,T}
 StringExpr{T} = CanonicalExprV{:string,T}
