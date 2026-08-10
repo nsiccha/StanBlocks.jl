@@ -124,7 +124,7 @@ fused kernels, reverse-mode AD, and NUTS adaptation make “write the obvious
 model” a strong baseline.
 
 :::
-::: {.card blue-card}
+::: {.card .blue-card}
 
 ### Reliability
 
@@ -132,7 +132,7 @@ Static checks, explicit constraints and Jacobians, a mature sampler, and years
 of use on difficult models.
 
 :::
-::: {.card gold-card}
+::: {.card .gold-card}
 
 ### Stable semantics
 
@@ -259,7 +259,7 @@ full relevant declarations.
 
 ## What the compiler infers
 
-:::: {.card-grid three}
+:::: {.card-grid .three}
 ::: {.card}
 
 ### Placement
@@ -267,14 +267,14 @@ full relevant declarations.
 `data` · `transformed data` · `parameters` · `transformed parameters` · `model` · `generated quantities`
 
 :::
-::: {.card blue-card}
+::: {.card .blue-card}
 
 ### Representation
 
 types · shapes · constraints · function signatures · captured dimensions
 
 :::
-::: {.card gold-card}
+::: {.card .gold-card}
 
 ### Workflow outputs
 
@@ -343,7 +343,7 @@ The abstract listed closures, keyword/default arguments, and macros as possible 
 
 They now sit beside:
 
-:::: {.card-grid three}
+:::: {.card-grid .three}
 ::: {.card}
 
 ### Julia-flavoured abstraction
@@ -351,14 +351,14 @@ They now sit beside:
 closures · higher-order functions · variadics · required/optional kwargs · defaults · macro expansion · inline helpers
 
 :::
-::: {.card blue-card}
+::: {.card .blue-card}
 
 ### Statistical authoring
 
 submodels · `Base.merge` variants · custom distribution triads · censoring/truncation/weights · fused GLMs · CV taint
 
 :::
-::: {.card gold-card}
+::: {.card .gold-card}
 
 ### Structured models
 
