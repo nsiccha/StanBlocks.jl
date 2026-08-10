@@ -17,10 +17,10 @@ This page uses those programs as design sources rather than attempting a
 line-for-line translation.  The source repository includes alternative
 population parameterisations, centred/non-centred switches, prior-only and
 incremental-likelihood branches, a custom Strang-splitting integrator, and a
-BDF solver.  The examples below retain the scientific core while choosing one
-clear hierarchy and one numerical solver.  That makes the StanBlocks and BRM
-versions small enough to compare without presenting implementation switches as
-parts of the biological model.
+BDF solver.  The examples below retain the scientific core, choose one clear
+hierarchy, and port the source's Strang-splitting path.  That makes the
+StanBlocks and BRM versions small enough to compare without presenting
+implementation switches as parts of the biological model.
 
 ## From physiology to four state equations
 
@@ -68,9 +68,11 @@ flows inside the simulator; they are not additional fitted coefficients.
 
 The direct version mirrors the handwritten Stan organization:
 
-- `monster_rhs` is the shared four-state ODE right-hand side;
-- `monster_experiment` transforms one subject's parameters, solves exposure
-  and washout with `ode_bdf_tol`, and derives the two observables;
+- `monster_lambert_w0_exp` and `monster_exact_mm_step` implement the stable
+  closed-form Michaelis--Menten update from the source;
+- `monster_experiment` transforms one subject's parameters, alternates those
+  nonlinear half-steps with exact matrix-exponential transport steps, and
+  derives the two observables;
 - `monster_subject` evaluates both exposure experiments and flattens their
   outputs in a documented experiment → output → time order;
 - a subject `plate` supplies the non-centred 15-vector and collects one
@@ -92,27 +94,38 @@ Main.FeatureAtlasDocs.comparison(Main.FeatureAtlasDocs.example_module(:MonsterCa
 using StanBlocks
 
 @deffun @stanonly begin
-    monster_rhs(
-        t::real, concentration::vector[n_state],
-        flow_over_volume::vector[n_state],
-        flow_fraction::vector[n_state],
-        exposure_source::real, vmax::real, km::real,
-    )::vector[n_state] = begin
-        dconcentration::vector[n_state]
-        mixed = dot_product(flow_fraction, concentration) + exposure_source
-        for compartment in 1:n_state
-            dconcentration[compartment] = flow_over_volume[compartment] *
-                (mixed - concentration[compartment])
+    monster_lambert_w0_exp(earg::real)::real = begin
+        if is_nan(earg)
+            return earg
         end
-        dconcentration[n_state] +=
-            vmax * concentration[n_state] / (km + concentration[n_state])
-        dconcentration
+        if earg > 700
+            return lambert_w0(exp(700.0)) + (earg - 700.0) *
+                lambert_w0(exp(700.0)) / (lambert_w0(exp(700.0)) + 1)
+        end
+        if earg < -40
+            return lambert_w0(exp(-40.0)) * exp(earg + 40.0)
+        end
+        return lambert_w0(exp(earg))
+    end
+
+    monster_exact_mm_step(
+        dt::real, concentration::real, vmax::real, km::real,
+    )::real = begin
+        minimum_concentration = 1e-12
+        if concentration <= minimum_concentration
+            return minimum_concentration
+        end
+        if km == 0
+            return concentration - dt * vmax
+        end
+        earg = (dt * vmax + concentration) / km + log(concentration / km)
+        return km * monster_lambert_w0_exp(earg)
     end
 
     monster_experiment(
         times::vector[n_time], exposure::real,
         raw_params::vector[n_param], measured::vector[n_measured],
-        n_state::int, n_output::int,
+        n_state::int, n_output::int, interval_substeps::int[n_time],
     )::matrix[n_time, n_output] = begin
         minimum_concentration = 1e-12
         lean_body_mass = measured[1]
@@ -143,30 +156,41 @@ using StanBlocks
         vmax = -(lean_body_mass^0.7) * exp(raw_params[14]) / effective_volume[n_state]
         km = exp(raw_params[15]) / effective_volume[n_state]
 
-        initial_state = rep_vector(minimum_concentration, n_state)
-        exposure_end = ode_bdf_tol(
-            monster_rhs, initial_state, 0.0,
-            to_array_1d(rep_vector(times[1], 1)),
-            1e-6, 1e-8, 100000,
-            flow_over_volume, flow_fraction, exposure_source, vmax, km,
-        )[1]
-        washout = ode_bdf_tol(
-            monster_rhs, exposure_end, 0.0,
-            to_array_1d(times[2:n_time] - times[1]),
-            1e-6, 1e-8, 100000,
-            flow_over_volume, flow_fraction, 0.0, vmax, km,
+        transport = add_diag(
+            flow_over_volume * flow_fraction', -flow_over_volume,
         )
+        source_equilibrium = exposure_source * (transport \ flow_over_volume)
 
+        concentration = rep_vector(minimum_concentration, n_state)
         states::vector[n_time, n_state]
-        states[1] = exposure_end
-        for time in 2:n_time
-            states[time] = washout[time - 1]
+        for time in 1:n_time
+            segment_start = time == 1 ? 0.0 : times[time - 1]
+            dt = (times[time] - segment_start) / interval_substeps[time]
+            transition = matrix_exp(dt * transport)
+            transition_source = transition * source_equilibrium - source_equilibrium
+            for step in 1:interval_substeps[time]
+                concentration[n_state] = monster_exact_mm_step(
+                    dt / 2, concentration[n_state], vmax, km,
+                )
+                transported = time == 1 ?
+                    transition * concentration + transition_source :
+                    transition * concentration
+                for compartment in 1:n_state
+                    concentration[compartment] = transported[compartment]
+                end
+                concentration[n_state] = monster_exact_mm_step(
+                    dt / 2, concentration[n_state], vmax, km,
+                )
+            end
+            for compartment in 1:n_state
+                states[time, compartment] = concentration[compartment]
+            end
         end
 
         prediction::matrix[n_time, n_output]
         for time in 1:n_time
             venous = dot_product(unit_tissue_flow, states[time])
-            inhaled = exposure * (time == 1)
+            inhaled = time == 1 ? exposure : 0.0
             alveolar = (inhaled + venous) / (vpr + pba)
             exhaled = 0.7 * alveolar + 0.3 * inhaled
             prediction[time, 1] = minimum_concentration + venous
@@ -178,14 +202,15 @@ using StanBlocks
     monster_subject(
         times::vector[n_time], exposures::vector[n_experiment],
         raw_params::vector[n_param], measured::vector[n_measured],
-        n_state::int, n_output::int, n_subject_observation::int,
+        n_state::int, n_output::int, interval_substeps::int[n_time],
+        n_subject_observation::int,
     )::vector[n_subject_observation] = begin
         prediction::vector[n_subject_observation]
         index = 1
         for experiment in 1:n_experiment
             experiment_prediction::matrix[n_time, n_output] = monster_experiment(
                 times, exposures[experiment], raw_params, measured,
-                n_state, n_output,
+                n_state, n_output, interval_substeps,
             )
             for output in 1:n_output
                 for time in 1:n_time
@@ -220,6 +245,9 @@ n_state = 4
 n_output = 2
 n_param = 15
 times = [240.0, 360.0, 1320.0, 2760.0]
+exposure_substeps = 240
+solver_dt = times[1] / exposure_substeps
+interval_substeps = round.(Int, diff(vcat(0.0, times)) ./ solver_dt)
 exposures = [0.488, 0.976]
 measured_params = [62.0 0.114 7.6; 71.0 0.134 11.6]
 n_subject_observation = length(times) * length(exposures) * n_output
@@ -252,7 +280,8 @@ monster_direct = @slic begin
         monster_subject(
             times, exposures,
             population_raw_location + population_raw_scale .* z,
-            to_vector(measured), n_state, n_output, n_subject_observation,
+            to_vector(measured), n_state, n_output, interval_substeps,
+            n_subject_observation,
         )
     end
     sigma::vector[n_output] ~ normal(0, 0.25; lower=0)
@@ -267,7 +296,7 @@ monster_direct = @slic begin
 end
 
 monster_direct_posterior = monster_direct(;
-    n_person, n_state, n_output, n_param,
+    n_person, n_state, n_output, n_param, interval_substeps,
     times, exposures, measured_params, n_subject_observation,
     observed, raw_prior_location,
 )
@@ -342,14 +371,16 @@ using BayesianRegressionModels, Distributions
     monster_subject_output(
         times::vector[n_time], exposures::vector[n_experiment],
         raw_params::vector[n_param], measured::vector[n_measured],
-        output::int, n_state::int, n_output::int, n_subject_output::int,
+        output::int, n_state::int, n_output::int,
+        interval_substeps::int[n_time],
+        n_subject_output::int,
     )::vector[n_subject_output] = begin
         prediction::vector[n_subject_output]
         index = 1
         for experiment in 1:n_experiment
             experiment_prediction::matrix[n_time, n_output] = monster_experiment(
                 times, exposures[experiment], raw_params, measured,
-                n_state, n_output,
+                n_state, n_output, interval_substeps,
             )
             for time in 1:n_time
                 prediction[index] = experiment_prediction[time, output]
@@ -376,6 +407,7 @@ monster_schedule = (;
     n_state = fill(n_state, n_person),
     n_output = fill(n_output, n_person),
     n_param = fill(n_param, n_person),
+    interval_substeps = [copy(interval_substeps) for _ in 1:n_person],
     n_subject_output = fill(n_subject_output, n_person),
 )
 
@@ -417,13 +449,13 @@ monster_brm = @brm monster_schedule begin
 
     venous_prediction ~ kernel(
         times, exposures, measured, venous_y, exhaled_y,
-        n_state, n_output, n_param, n_subject_output,
+        n_state, n_output, n_param, interval_substeps, n_subject_output,
         log_VPR, raw_Fwp, raw_Fpp, raw_Ff, raw_Fl,
         raw_Vwp, raw_Vpp, raw_Vl,
         log_Pba, log_Pwp, log_Ppp, log_Pf, log_Pl, log_VMI, log_KMI,
     ) do ts, experiment_exposures, measured_values, venous_observed,
          exhaled_observed, state_count, output_count, parameter_count,
-         subject_output_count, vpr, fwp, fpp, ff, fl, vwp, vpp, vl,
+         substeps, subject_output_count, vpr, fwp, fpp, ff, fl, vwp, vpp, vl,
          pba, pwp, ppp, pf, pl, vmi, kmi
         raw_params = monster_raw_params(
             vpr, fwp, fpp, ff, fl, vwp, vpp, vl,
@@ -432,11 +464,11 @@ monster_brm = @brm monster_schedule begin
 
         venous = monster_subject_output(
             ts, experiment_exposures, raw_params, measured_values,
-            1, state_count, output_count, subject_output_count,
+            1, state_count, output_count, substeps, subject_output_count,
         )
         exhaled = monster_subject_output(
             ts, experiment_exposures, raw_params, measured_values,
-            2, state_count, output_count, subject_output_count,
+            2, state_count, output_count, substeps, subject_output_count,
         )
         venous_observed ~ lognormal(log(venous), sigma_venous)
         exhaled_observed ~ lognormal(log(exhaled), sigma_exhaled)
@@ -455,17 +487,29 @@ monster_brm_posterior = monster_brm_backend.model
 
 ## What the two interfaces reveal
 
-Both generated programs solve the same exposure/washout ODE and derive the
-same venous and exhaled means.  The direct model makes the non-centred vector
+Both generated programs run the same exposure/washout simulator and derive the
+same venous and exhaled means.  Its Strang split applies half of the nonlinear
+Michaelis--Menten update, advances the linear tissue transport exactly with
+`matrix_exp`, then applies the other nonlinear half.  The stable
+`lambert_w0(exp(x))` helper follows the source's separate ordinary, very large,
+and very small argument branches.  As in the repository's fitted-model path,
+240 substeps over the 240-minute exposure establish a one-minute grid.  The
+displayed fixture's later checkpoints also fall on that grid, so their interval
+step counts land on each requested time directly.  The general source routine
+also log-interpolates off-grid checkpoints; that extra bookkeeping is the only
+integration feature not reproduced here.
+
+The direct model makes the non-centred vector
 algebra compact and exposes complete control over its shared scale prior.  The
 BRM model spends more lines naming the fifteen quantities, but those names are
 then stable addresses for priors, posterior summaries, and future covariates.
 For example, adding a measured effect of body size to a parameter is a formula
 change to that one predictor rather than a rewrite of the PBPK kernel.
 
-The source repository's custom Strang splitting, likelihood-increment switches,
-and alternative centred hierarchy remain valuable performance and workflow
-experiments.  They are intentionally outside this first executable port.  The
+The source repository's BDF alternative, likelihood-increment switches, and
+alternative centred hierarchy remain valuable performance and workflow
+experiments.  They are intentionally outside this executable port.  The
 essential model is no longer a historical stub: both interfaces express the
-four-state mechanism, two experiments per subject, all fifteen individual
-parameters, and both observation channels as build-checked Stan programs.
+four-state mechanism, the source-inspired closed-form/Strang simulator, two
+experiments per subject, all fifteen individual parameters, and both
+observation channels as build-checked Stan programs.
