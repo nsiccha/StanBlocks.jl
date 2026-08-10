@@ -1,21 +1,8 @@
----
-title: "StanBlocks.jl feature atlas"
-subtitle: "StanCon 2026 companion: author source → essential Stan emission"
-author: "Nikolas Siccha"
-date: "2026-08-10"
-format:
-  html:
-    page-layout: full
-    toc: true
-    toc-depth: 3
-    code-tools: true
-    code-overflow: wrap
-    code-line-numbers: false
-execute:
-  enabled: false
----
+# StanBlocks.jl feature atlas
 
-[← Return to the StanCon 2026 slides](index.qmd)
+*StanCon 2026 companion: author source → essential Stan emission*
+
+[View the StanCon 2026 slides](https://nsiccha.github.io/StanBlocks.jl/stancon-2026/)
 
 This is the long-form companion to the talk. It inventories the **current
 author-visible language surface** reviewed against StanBlocks commit `e6f607d`
@@ -37,18 +24,18 @@ registered; the source of truth for those is
 
 | Area | Current surface | Detailed MWE |
 |---|---|---|
-| Model declarations | `@slic`, `~`, `=`, typed LHS, bare flat-prior parameters | [Core model](#one-model-block-placement-types-shapes-and-constraints) |
-| Analysis | block placement, type/shape/constraint inference, likelihood activity | [Core model](#one-model-block-placement-types-shapes-and-constraints) |
-| Composition | anonymous and named submodels, typed dispatch, `Base.merge`, data rebinding | [Composition](#composition-and-model-families) |
-| Deterministic helpers | `@deffun`, loops, branches, mutation, comprehensions, iteration | [`@deffun`](#deterministic-programs-with-deffun) |
-| Julia-like functions | closures, HOFs, varargs, positional defaults, required/optional kwargs | [Function signatures](#function-signatures-defaults-keywords-varargs-and-higher-order-functions) |
-| Metaprogramming | caller macros, `@inline`, trailing `!`, `@stan_assert`, `return_type_of` | [Expansion tools](#expansion-inlining-assertions-and-return-type-queries) |
-| Observation workflow | pointwise log likelihoods, predictive draws, missing-outcome imputation | [Generated outputs](#generated-observation-outputs) |
-| Distribution abstraction | custom `_lpdf`/`_lpdfs`/`_rng`, `@lpxf`, `@lhs`, weighted/truncated/censored/interval | [Distributions](#custom-and-higher-order-distributions) |
-| Structured data/models | `RaggedVector`, ragged constraints, `EachCol`/`EachRow`, fancy indexing, `plate` | [Structured models](#structured-data-and-compiler-owned-plates) |
-| Scientific models | ODE solvers, Torsten signatures, GP covariance, `reduce_sum`, fused GLMs | [Scientific surface](#scientific-computing-surface) |
-| Reflection/execution | descriptors, definition closure, derived operations, BridgeStan | [Descriptor](#executable-model-descriptors) |
-| Model variants | post-hoc overrides and lower-level cross-validation taint | [Variants](#post-hoc-variants-and-cross-validation-taint) |
+| Model declarations | `@slic`, `~`, `=`, typed LHS, bare flat-prior parameters | [Core model](#One-model:-block-placement,-types,-shapes,-and-constraints) |
+| Analysis | block placement, type/shape/constraint inference, likelihood activity | [Core model](#One-model:-block-placement,-types,-shapes,-and-constraints) |
+| Composition | anonymous and named submodels, typed dispatch, `Base.merge`, data rebinding | [Composition](#Composition-and-model-families) |
+| Deterministic helpers | `@deffun`, loops, branches, mutation, comprehensions, iteration | [`@deffun`](#Deterministic-programs-with-@deffun) |
+| Julia-like functions | closures, HOFs, varargs, positional defaults, required/optional kwargs | [Function signatures](#Function-signatures,-defaults,-keywords,-varargs,-and-higher-order-functions) |
+| Metaprogramming | caller macros, `@inline`, trailing `!`, `@stan_assert`, `return_type_of` | [Expansion tools](#Expansion,-inlining,-assertions,-and-return-type-queries) |
+| Observation workflow | pointwise log likelihoods, predictive draws, missing-outcome imputation | [Generated outputs](#Generated-observation-outputs) |
+| Distribution abstraction | custom `_lpdf`/`_lpdfs`/`_rng`, `@lpxf`, `@lhs`, weighted/truncated/censored/interval | [Distributions](#Custom-and-higher-order-distributions) |
+| Structured data/models | `RaggedVector`, ragged constraints, `EachCol`/`EachRow`, fancy indexing, `plate` | [Structured models](#Structured-data-and-compiler-owned-plates) |
+| Scientific models | ODE solvers, Torsten signatures, GP covariance, `reduce_sum`, fused GLMs | [Scientific surface](#Scientific-computing-surface) |
+| Reflection/execution | descriptors, definition closure, derived operations, BridgeStan | [Descriptor](#Executable-model-descriptors) |
+| Model variants | post-hoc overrides and lower-level cross-validation taint | [Variants](#Post-hoc-variants-and-cross-validation-taint) |
 
 ## One model: block placement, types, shapes, and constraints
 
@@ -896,4 +883,4 @@ sampled through the usual CmdStan workflow.
 - [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl)
   and the [worked model catalogue](https://nsiccha.github.io/BayesianRegressionModels.jl/).
 
-[← Return to the StanCon 2026 slides](index.qmd)
+[View the StanCon 2026 slides](https://nsiccha.github.io/StanBlocks.jl/stancon-2026/)
