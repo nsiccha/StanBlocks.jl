@@ -102,7 +102,7 @@
     code span.vs { color: #20794d; } /* VerbatimString */
     code span.wa { color: #5e5e5e; font-style: italic; } /* Warning */
   </style>
-  <link rel="stylesheet" href="index_files/libs/revealjs/dist/theme/quarto-0dbc1b7274ee156f53ad99041d47488c.css">
+  <link rel="stylesheet" href="index_files/libs/revealjs/dist/theme/quarto-fccba7202e1864720490d416063021ad.css">
   <link href="index_files/libs/revealjs/plugin/quarto-line-highlight/line-highlight.css" rel="stylesheet">
   <link href="index_files/libs/revealjs/plugin/reveal-menu/menu.css" rel="stylesheet">
   <link href="index_files/libs/revealjs/plugin/reveal-menu/quarto-menu.css" rel="stylesheet">
@@ -343,22 +343,30 @@ Nikolas Siccha · Generable Inc.
 <section class="slide level2">
 <h2>The Stan bargain</h2>
 <div class="card-grid">
-<section class="card">
-<h3>“Not ideal, but good” performance</h3>
+<div class="card">
+<div class="card-title">
+“Not ideal, but good” performance
+</div>
 <p>Out of the box. Not always the theoretical optimum—but mature vectorisation, fused kernels, reverse-mode AD, and NUTS adaptation make “write the obvious model” a strong baseline.</p>
-</section>
-<section class="card blue-card">
-<h3>Reliability</h3>
+</div>
+<div class="card blue-card">
+<div class="card-title">
+Reliability
+</div>
 <p>Static checks, explicit constraints and Jacobians, a mature sampler, and years of use on difficult models.</p>
-</section>
-<section class="card gold-card">
-<h3>Stable semantics</h3>
+</div>
+<div class="card gold-card">
+<div class="card-title">
+Stable semantics
+</div>
 <p>The generated target is a small, explicit language designed around Bayesian computation rather than general-purpose execution.</p>
-</section>
-<section class="card">
-<h3>An inspectable boundary</h3>
+</div>
+<div class="card">
+<div class="card-title">
+An inspectable boundary
+</div>
 <p><code>stan_code(model)</code> can be read, diffed, archived, checked by <code>stanc</code>, compiled, and handed to the ordinary Stan ecosystem.</p>
-</section>
+</div>
 </div>
 <aside class="notes">
 <p>Use the user’s wording verbally: “not ideal, but good performance out of the box.” The point is engineering leverage, not a benchmark claim that Stan wins every workload.</p>
@@ -465,18 +473,24 @@ Nikolas Siccha · Generable Inc.
 <section class="slide level2">
 <h2>What the compiler infers</h2>
 <div class="card-grid three">
-<section class="card">
-<h3>Placement</h3>
+<div class="card">
+<div class="card-title">
+Placement
+</div>
 <p><code>data</code> · <code>transformed data</code> · <code>parameters</code> · <code>transformed parameters</code> · <code>model</code> · <code>generated quantities</code></p>
-</section>
-<section class="card blue-card">
-<h3>Representation</h3>
+</div>
+<div class="card blue-card">
+<div class="card-title">
+Representation
+</div>
 <p>types · shapes · constraints · function signatures · captured dimensions</p>
-</section>
-<section class="card gold-card">
-<h3>Workflow outputs</h3>
+</div>
+<div class="card gold-card">
+<div class="card-title">
+Workflow outputs
+</div>
 <p>pointwise log likelihood · posterior predictive draws · executable model descriptor</p>
-</section>
+</div>
 </div>
 <p><span class="tag red">activity analysis</span> <span class="tag">type + shape inference</span> <span class="tag">constraint propagation</span> <span class="tag red">automatic GQ twins</span> <span class="tag">BridgeStan log density</span></p>
 </section>
@@ -518,18 +532,24 @@ Nikolas Siccha · Generable Inc.
 <p>The abstract listed closures, keyword/default arguments, and macros as possible future work.</p>
 <p>They now sit beside:</p>
 <div class="card-grid three">
-<section class="card">
-<h3>Julia-flavoured abstraction</h3>
+<div class="card">
+<div class="card-title">
+Julia-flavoured abstraction
+</div>
 <p>closures · higher-order functions · variadics · required/optional kwargs · defaults · macro expansion · inline helpers</p>
-</section>
-<section class="card blue-card">
-<h3>Statistical authoring</h3>
+</div>
+<div class="card blue-card">
+<div class="card-title">
+Statistical authoring
+</div>
 <p>submodels · <code>Base.merge</code> variants · custom distribution triads · censoring/truncation/weights · fused GLMs · CV taint</p>
-</section>
-<section class="card gold-card">
-<h3>Structured models</h3>
+</div>
+<div class="card gold-card">
+<div class="card-title">
+Structured models
+</div>
 <p><code>plate</code> · ragged data · constrained ragged parameters · missing outcomes · ODEs · Torsten signatures</p>
-</section>
+</div>
 </div>
 <p>Companion reference: <a href="https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas">feature atlas</a></p>
 <aside class="notes">
