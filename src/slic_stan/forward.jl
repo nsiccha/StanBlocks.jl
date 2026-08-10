@@ -934,6 +934,21 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args
     promoted = _plate_promoted_lhs(name; info)
     promoted === nothing || return _forward_plate_assignment!(x, name, promoted, rhs; info)
+    if name in keys(info) && !_is_model_decl_scope(info)
+        # `name` is already bound and we are inside a `@deffun` body → this is a
+        # REASSIGNMENT, not a fresh declaration. A bare-symbol `=` LHS otherwise renders
+        # as a Stan DECLARATION (`T name = rhs;`, show.jl `AssignmentExpr{<:StanExpr{Symbol}}`),
+        # which double-declares an existing local and stanc rejects it. Stan permits
+        # reassigning a local, so route through the SAME emission the broadcast-assign
+        # `.=` form uses — a `.=`-headed node renders bare (`name = rhs;`, show.jl
+        # `CanonicalExprV{:(.=)}`), keeping the original declaration in place. The
+        # binding's declared type is unchanged, matching both `.=` and Stan (a
+        # reassignment may not change a local's type). Loop-carried accumulation
+        # (`acc = acc + xi`) and scalar loop state (`t = t + dt` inside a `while`) both
+        # take this path. `@slic` model/submodel scope keeps single-assignment
+        # discipline via the assert below.
+        return _trace_stan_expr(CanonicalExpr(Symbol(".="), info[name], rhs), info)
+    end
     @assert name ∉ keys(info)
     info[name] = StanExpr(name, remake(type(rhs); value=missing))
     @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
