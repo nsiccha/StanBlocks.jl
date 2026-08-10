@@ -78,9 +78,34 @@ _forward_call_kwargs(x::CanonicalExpr, resolved_head; info) = forward!(x.kwargs;
 _forward_head(v, info) = forward!(v; info)
 _forward_head(v::SlicModel, info) = v
 _forward_head(v::SubmodelFn, info) = v
+# Julia's built-in constants (`pi`, `ℯ`, …) are `Irrational`s that RESOLVE to a
+# scalar real literal (decision `3bbtrv`, `_forward_module_value(::Irrational)`),
+# so the bare constant already works: `pi` emits `3.141592653589793`. Written
+# `pi()` — Stan's spelling of the constant as a nullary function — the head
+# resolves to that same scalar literal but the call carries an EMPTY arg list;
+# the tracer would otherwise build `CanonicalExpr(<π::real>)` with no args, lower
+# it to `()::anything`, and fail with the OPAQUE `tracetype not defined for
+# (…::anything * ::real)` (naming neither `pi` nor the real problem). StanBlocks
+# keeps `@slic`/`@deffun` bodies Julia-idiomatic (user decision `0wlv7e2`: reject,
+# don't trace — bare `pi` is the way): a nullary call on a scalar constant is
+# refused with an actionable message pointing at the bare form. Snag
+# `stan-pi-builtin`.
+_nullary_constant_call(x::CanonicalExpr, resolved_head) =
+    isempty(x.args) && isempty(x.kwargs) &&
+    resolved_head isa StanExpr && expr(resolved_head) isa Number
+_reject_nullary_constant_call(x::CanonicalExpr, resolved_head) = error(
+    "`", head(x), "()` is not supported in an `@slic`/`@deffun` body: `", head(x),
+    "` is a scalar constant (a Julia `Irrational`, resolving to ",
+    expr(resolved_head), "), not a callable function. Write the bare constant `",
+    head(x), "` instead — it already emits its real value. (Stan spells such ",
+    "constants as nullary functions like `pi()`; StanBlocks uses Julia's ",
+    "constant, so drop the parentheses.)"
+)
 forward!(x::CanonicalExpr; info) = begin
     _push_expr!(info, x)
     resolved_head = _forward_head(head(x), info)
+    _nullary_constant_call(x, resolved_head) &&
+        _reject_nullary_constant_call(x, resolved_head)
     resolved = CanonicalExpr(
         resolved_head,
         forward!(x.args; info)...;
