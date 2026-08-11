@@ -145,13 +145,26 @@ You can append or replace statements without mutating the base model through
 extended = Base.merge(base_model, quote
     beta ~ normal(0, 2; n=n_covariates)
 end)
+
+fixed = Base.merge(base_model, (; beta=[0.2, -0.1]))
+
+fixed_and_extended = Base.merge(base_model, quote
+    sigma ~ exponential(1)
+end, (; beta=[0.2, -0.1]))
 ```
 
 If a merged statement has the same named LHS as an existing statement, it
 replaces it; otherwise it is appended. A typed-LHS override and a plain-LHS
-base match by the underlying name. The old positional splice
-`base_model(quote ... end)` is not an alias: model calls with kwargs bind data,
-while statement composition goes through `Base.merge`.
+base match by the underlying name. A merged `NamedTuple` fixes its names: each
+matching sampling or assignment statement is removed, and the supplied value
+is stored as data. Fixed bindings are applied after statement replacements, so
+the mixed form above is unambiguous.
+
+This differs deliberately from `base_model(; beta=value)`, which only binds
+data and leaves an existing `beta ~ ...` statement contributing a likelihood.
+The old positional splice `base_model(quote ... end)` is not an alias: model
+calls with kwargs bind data, while structural composition and explicit fixing
+go through `Base.merge`.
 
 ### Activity analysis
 
@@ -195,7 +208,10 @@ You can additionally pass `n=…` or `m=…, n=…` on any prior to make the par
 
 ## User-defined functions with `@deffun`
 
-`@deffun` registers a Stan-compatible function with type-annotated arguments.
+`@deffun` registers a Stan-compatible function. Argument, return, and ordinary
+local type/shape annotations are optional: StanBlocks normally specialises the
+function at its call site and infers types and shapes from argument values and
+right-hand-side expressions.
 An eligible bodyful, bare-symbol definition emits **both** one callable Julia
 method and the existing Stan function by default. The Julia method comes from
 the original user-facing definition exactly once, so defaults and kwargs keep
@@ -269,7 +285,19 @@ end
 
 ### Type/shape annotations
 
-Annotations follow the pattern `name::type[size_args…]`. Size arguments introduced this way are **available as locals inside the function body**:
+Annotations are optional, especially in UDF signatures. Start without them:
+
+```julia
+@deffun twice(x) = 2 * x
+@deffun displaced_state(state, dx) = state + dx
+```
+
+Add an annotation only when it supplies information inference does not have or
+when you want it to be part of the function's contract: to select an overload,
+introduce named dimension locals, declare a fresh uninitialised buffer, or pin
+an otherwise ambiguous result. An annotation follows the pattern
+`name::type[size_args…]`. Size arguments introduced this way are **available as
+locals inside the function body**:
 
 ```julia
 @deffun mean_real_vector(x::vector[n])::real = sum(x) / n
@@ -281,6 +309,13 @@ Underscored names mean "I take this argument but ignore the value, just use its 
 ```julia
 @deffun pad_zero(_::vector[n])::vector[n+1] = append_row(rep_vector(0., n), 0.)
 ```
+
+The same inference-first rule applies inside the body. `out = expression`
+infers `out`'s type and shape; `out::vector[n]` is useful when there is no RHS
+yet because later statements fill `out` element by element. Model declarations
+follow the same principle: annotations are optional when a distribution or
+bound value already determines the type and shape, and useful when the
+declaration itself must provide them.
 
 ### Transpile-time return-type queries
 

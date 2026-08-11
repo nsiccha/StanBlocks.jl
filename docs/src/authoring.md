@@ -10,7 +10,7 @@ what ragged data means, and the exact boundary of `plate`.
 | Need | Surface | Contract |
 |---|---|---|
 | Declare a model or reusable sub-model | `@slic` | Flat, straight-line `~`, `=`, typed declarations, sub-model calls, and an optional trailing `return` |
-| Write deterministic control flow | `@deffun` | Stan-compatible loops, branches, mutation, iteration, and bounded comprehensions |
+| Write deterministic control flow | `@deffun` | Inference-first signatures with optional type/shape annotations; Stan-compatible loops, branches, mutation, iteration, and bounded comprehensions |
 | Repeat a parameter-generating cell | `plate(...) do ... end` | The compiler-owned model loop; fresh cell bindings are promoted to outer storage |
 | Combine a base distribution with observation semantics | `weighted`, `truncated`, `censored`, `interval_censored` | One base-family token; the compiler selects density, pointwise, CDF, and RNG companions |
 | Reflect or execute a traced declaration | `stan_descriptor`, `stan_execute` | Inputs, outputs, included definitions, and available operations are derived from the model |

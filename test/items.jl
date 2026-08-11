@@ -2085,6 +2085,59 @@ Verify `slic: chained + variable-bound Base.merge splice (crowdsource pattern)` 
 end
 
 """
+`Base.merge(model, (; x=value))` fixes a model name rather than conditioning on
+it: the matching sampling or assignment statement disappears, the concrete
+value becomes data, and downstream statements continue to refer to `x`.
+Statement splices and fixed bindings may be supplied together; fixed bindings
+are final, so a same-name spliced statement cannot survive as a likelihood.
+"""
+@testitem "slic: Base.merge fixed-value bindings replace statements with data" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    base = @slic begin
+        theta :: vector[2] ~ normal(0.0, 1.0)
+        mu = 2.0 * theta
+        y ~ normal(mu, 1.0)
+    end
+
+    fixed = Base.merge(base, (; theta=[0.25, -0.5]))(; y=[0.1, -0.2])
+    fixed_code = stan_code(fixed)
+    @test stanc_compiles(fixed)
+    @test occursin("vector[theta_n] theta;", stan_block(fixed_code, "data"))
+    @test !occursin("theta ~ normal", fixed_code)
+    @test occursin("mu = (2.0 * theta)", fixed_code)
+    @test StanBlocks.data(fixed)[:theta] == [0.25, -0.5]
+
+    rebound = fixed(; theta=[1.0, 2.0])
+    @test StanBlocks.data(rebound)[:theta] == [1.0, 2.0]
+    @test stan_code(rebound) == fixed_code
+
+    # A structural override and fixed bindings compose in one merge. Even when
+    # the quote mentions the same name, the concrete fixed value is final.
+    mixed = Base.merge(base, quote
+        theta ~ std_normal()
+        y ~ student_t(4.0, mu, 1.0)
+    end, (; theta=[0.25, -0.5]))(; y=[0.1, -0.2])
+    mixed_code = stan_code(mixed)
+    @test stanc_compiles(mixed)
+    @test !occursin("theta ~", mixed_code)
+    @test occursin("y ~ student_t(4.0, mu, 1.0)", mixed_code)
+
+    # Fixing a derived name replaces its assignment by the data binding too.
+    assigned_base = @slic begin
+        theta = 2.0 * seed
+        y ~ normal(theta, 1.0)
+    end
+    fixed_assignment = Base.merge(assigned_base, (; theta=0.75))(; y=0.1)
+    assigned_code = stan_code(fixed_assignment)
+    @test stanc_compiles(fixed_assignment)
+    @test !occursin("theta = (2.0 * seed)", assigned_code)
+    @test occursin("real theta;", stan_block(assigned_code, "data"))
+
+    # Every merge is functional: the base still declares and samples theta.
+    base_code = stan_code(base(; y=[0.1, -0.2]))
+    @test occursin("theta ~ normal(0.0, 1.0)", base_code)
+end
+
+"""
 A sub-model spliced into a generated body as a VALUE must behave exactly like a
 Symbol naming the same sub-model. This is the only way to embed a `Base.merge`
 result from an emitting package: the merged model exists only as a value at

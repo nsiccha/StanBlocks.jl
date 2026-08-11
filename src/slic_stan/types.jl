@@ -314,10 +314,20 @@ top_replace_components(x::Expr; rep::OrderedDict) = begin
     append!(args, values(rep))
     Expr(:block, args...)
 end
-# `Base.merge(submodel, stmts...)` — statement-splice composition: override the
-# body statements whose LHS-name matches, append the rest. This REPLACES the old
-# positional-call splice (`submodel(quote … end)`); a positional sub-model call now
-# errors loudly (see the call operator below).
+# `Base.merge(submodel, stmts..., fixed::NamedTuple)` — model composition:
+#
+# - statement arguments override body statements whose LHS-name matches and
+#   append the rest;
+# - NamedTuple arguments FIX their names: matching sampling/assignment
+#   statements are removed and the supplied values become model data.
+#
+# Fixed bindings are applied after all statement splices, independent of their
+# argument position. This makes the mixed form unambiguous: in
+# `Base.merge(model, :(x ~ prior()), (; x=value))`, the explicit value wins and
+# `x ~ prior()` does not survive as a likelihood contribution.
+#
+# This REPLACES the old positional-call splice (`submodel(quote … end)`); a
+# positional sub-model call now errors loudly (see the call operator below).
 unblock(x::BlockExpr) = mapreduce(unblock, vcat, x.args; init=[])
 unblock(x::Expr) = x.head === :block ? mapreduce(unblock, vcat, x.args; init=[]) : [x]
 unblock(x::LineNumberNode) = []
@@ -346,7 +356,32 @@ _splice_body(x::SlicModel, args...) = begin
     end
     top_replace_components(model(x); rep)
 end
-Base.merge(x::SlicModel, args...) = SlicModel(_splice_body(x, args...), data(x), x.mod)
+_without_fixed_components(x::Expr, fixed_names) = begin
+    @assert x.head == :block "_without_fixed_components expects a `begin ... end` block, got `$x` (head `$(x.head)`)."
+    Expr(:block, filter(x.args) do arg
+        key = replace_name(arg)
+        ismissing(key) || !(key in fixed_names)
+    end...)
+end
+_merge_parts(args) = begin
+    stmts = Any[]
+    fixed = NamedTuple()
+    for arg in args
+        if arg isa NamedTuple
+            fixed = merge(fixed, arg)
+        else
+            push!(stmts, arg)
+        end
+    end
+    stmts, fixed
+end
+Base.merge(x::SlicModel, args...) = begin
+    stmts, fixed = _merge_parts(args)
+    body = _splice_body(x, stmts...)
+    isempty(fixed) && return SlicModel(body, data(x), x.mod)
+    body = _without_fixed_components(body, keys(fixed))
+    SlicModel(body, merge(data(x), pairs(fixed)), x.mod)
+end
 
 _submodel_positional_error(args...) = error(
     "A @slic sub-model was called with positional argument(s). ",
