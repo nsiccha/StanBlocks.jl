@@ -351,6 +351,32 @@ _ragged_group_rhs(rhs::CanonicalExpr, g) = CanonicalExpr(
 _ragged_rhs_is_flat(rhs) = _is_canonical_expr(rhs) && head(rhs) === :flat &&
     isempty(rhs.args) && isempty(rhs.kwargs)
 
+# Is the ragged density argument cv-tainted (cross-validation held-out)? A ragged
+# plate result sampled from a cv-marked group count moves its flat backing
+# (`<name>__pl_mem_<id>`) to `generated quantities`; a per-group MODEL-block
+# density loop over it then references a GQ-only symbol and stanc rejects it as
+# out of scope (snag ragged-obs-not-c-5b1180c7). Detect the taint the same way
+# `stan_expr(::CanonicalExpr)` contagion would compute it from the FORWARDED args
+# — any referenced value is cv — but do it SYNTACTICALLY over the RAW rhs: a
+# `forward!` of the whole-vector distribution aborts on the ragged args (the very
+# reason this broadcast exists, snag ragged-dist-arg-dcffbc1b), so walk the
+# argument symbols and consult their info entries instead. Fails closed: an
+# unrecognised leaf shape misses the taint (the stanc error resurfaces) rather
+# than dropping a live likelihood.
+_ragged_obs_collect_syms!(acc, _) = acc
+_ragged_obs_collect_syms!(acc, x::Symbol) = (push!(acc, x); acc)
+_ragged_obs_collect_syms!(acc, x::Expr) =
+    (for a in x.args; _ragged_obs_collect_syms!(acc, a); end; acc)
+_ragged_obs_collect_syms!(acc, x::CanonicalExpr) = begin
+    for a in x.args; _ragged_obs_collect_syms!(acc, a); end
+    for v in values(x.kwargs); _ragged_obs_collect_syms!(acc, v); end
+    acc
+end
+_ragged_obs_rhs_cv(rhs_raw; info) =
+    any(_ragged_obs_collect_syms!(Symbol[], rhs_raw)) do s
+        s in keys(info) && cv(info[s])
+    end
+
 # Trace-time markers for the generated-quantities half of a ragged observation
 # (snag ragged-observati-6a26481b). A ragged `~` lowers to a compiler-owned
 # per-group loop, so its predictive draw and pointwise log-likelihood must be
@@ -1137,6 +1163,19 @@ _forward_ragged_obs_broadcast!(name, rhs_raw; info) = begin
             "`, which is already bound in this model. Rename that variable."
         )
     end
+    # cv taint propagation, mirroring the scalar (`SamplingExpr{Symbol,<:StanExpr}`
+    # ~line 1168) and indexed (`_forward_indexed_sampling!` ~line 1450) paths: when
+    # the ragged density argument is cv-tainted — a plate result whose flat backing
+    # moved to `generated quantities` under cross-validation — mark the ragged
+    # response cv too. `distribution_blocks` then leaves the held-out per-group
+    # density loop OUT of the model block (where it would reference the GQ-only
+    # backing and stanc-reject as out of scope) while the GQ twins below carry the
+    # held-out prediction (snag ragged-obs-not-c-5b1180c7). Flip BEFORE tracing so
+    # the loop's `name[g]` LHS picks the taint up, and KEEP the density statement in
+    # the trace: `backward!` reads it to hold every population/hyper parameter it
+    # touches (e.g. the noise scale) in the sampled set, exactly as the in-cell
+    # obs control does — dropping the statement outright would demote them to GQ.
+    _ragged_obs_rhs_cv(rhs_raw; info) && (info[name] = remake(info[name]; cv=true))
     stmts = Any[
         :(for $g in 1:length($name)
               $name[$g] ~ $(_ragged_group_rhs(rhs_raw, g))
