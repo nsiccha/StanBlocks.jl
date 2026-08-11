@@ -432,18 +432,31 @@ const APPDATA = SbAppData()
                 end
                 m = rv::StanBlocks.stan.SlicModel
                 # Descriptor-driven transpile (the SbPMX pattern): build the
-                # model's `stan_descriptor` and run its `:transpile` operation
-                # for the Stan source, rather than calling `stan_code` directly.
+                # model's `stan_descriptor`, read its derived operations / model
+                # inputs / outputs, and run the `:transpile` operation for the
+                # Stan source — rather than calling `stan_code` directly.
                 # `invokelatest` because the eval above may define new @deffun
-                # methods the descriptor has to dispatch on.
+                # methods the descriptor has to dispatch on; the whole read runs
+                # inside one closure so it all sees the latest world.
                 descriptor = Base.invokelatest(stan_descriptor, m)
-                (model=m, descriptor=descriptor,
-                 code=Base.invokelatest(stan_execute, descriptor, :transpile))
+                meta = Base.invokelatest(descriptor) do d
+                    (operations=join(string.(getproperty.(d.operations, :name)), ", "),
+                     inputs=join([string(i.name) for i in d.inputs if !i.derived && !i.inlined], ", "),
+                     outputs=join(string.(getproperty.(d.outputs, :name)), ", "),
+                     code=stan_execute(d, :transpile))
+                end
+                (model=m, descriptor=descriptor, operations=meta.operations,
+                 inputs=meta.inputs, outputs=meta.outputs, code=meta.code)
             end
 
             output = h.div(; id="sandbox-output")(
                 SemanticGroup(
                     SemanticStatus(:ok; detail="transpiled to Stan"),
+                    SemanticFields(
+                        operations=result.operations,
+                        inputs=isempty(result.inputs) ? "—" : result.inputs,
+                        outputs=isempty(result.outputs) ? "—" : result.outputs,
+                    ),
                     SemanticCode(:stan, result.code),
                 ),
             )
@@ -854,7 +867,13 @@ const APPDATA = SbAppData()
 end
 
 function __init__()
-    route!(AppContext())
+    # Mount with the operation transport SbPMX uses (src/SbPMX.jl __init__).
+    # `:auto` is already the framework default — a route that declares nothing
+    # polls without blocking — so this is the explicit, self-documenting form:
+    # slow sandbox operations (transpile + stanc + BridgeStan) poll for progress
+    # rather than blocking the request past the grace window.
+    route!(AppContext();
+        operation_policy=OperationPolicy(:auto; poll_interval="200ms", keep_progress=true))
 end
 
 end # module PosteriorDBWeb
