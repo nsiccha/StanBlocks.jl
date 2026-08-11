@@ -79,17 +79,23 @@ Alternative syntax proposals are appreciated!
 
 ### Post-hoc model component pinning
 
-Like Turing.jl's [Conditioning](https://turinglang.org/docs/usage/probability-interface/index.html#conditioning-and-deconditioning) or this [Stan PR](https://github.com/stan-dev/design-docs/pull/56).
-
 Ever wanted to pin hierarchical scale parameters?
-`@slic` will support pinning arbitrary model components: 
+Use an explicit fixed-value merge:
 
 ```julia
 "The `hierarchical_model` with the hierarchical scale parameter fixed to 1."
-semihierarchical_model = hierarchical_model(;obs_location_scale=1.)
+semihierarchical_model = Base.merge(
+    hierarchical_model,
+    (; obs_location_scale=1.0),
+)
 ```
 
-Turing's [Deconditioning](https://turinglang.org/docs/usage/probability-interface/index.html#conditioning-and-deconditioning) could also easily be supported, but as always syntax proposals are appreciated!
+This removes the matching top-level sampling or assignment statement and binds
+the supplied value as model data. In contrast,
+`hierarchical_model(; obs_location_scale=1.0)` is ordinary conditioning: the
+sampling statement remains and contributes its likelihood. Structural quoted
+merges and fixed bindings can be combined as
+`Base.merge(model, quote ... end, (; x=value))`.
 
 ### Leave-X-out cross-validation support
 
