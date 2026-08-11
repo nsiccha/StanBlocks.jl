@@ -307,6 +307,10 @@ wide = Base.merge(base, quote
 end)
 
 wide_model = wide(; x=[-1.0, 0.0, 1.0], y=[0.1, -0.2, 0.4])
+
+fixed_model = Base.merge(base, (; beta=0.25))(
+    ; x=[-1.0, 0.0, 1.0], y=[0.1, -0.2, 0.4],
+)
 """, :wide_model)
 ```
 
@@ -316,13 +320,20 @@ wide_model = wide(; x=[-1.0, 0.0, 1.0], y=[0.1, -0.2, 0.4])
 
 The merged statement matches by the bare LHS name and replaces the original.
 Typed and untyped versions of the same LHS still match. Additional names append
-new statements. A merged `SlicModel` value can also be interpolated into the
-callee position of generated AST.
+new statements. A merged `NamedTuple`, such as `(; beta=0.25)`, instead removes
+the matching statement and stores the supplied value as data: this fixes the
+name without retaining its prior as a likelihood. Statement replacements and
+fixed bindings may be combined in one `Base.merge` call. Ordinary model kwargs
+only bind data and do not remove statements. A merged `SlicModel` value can also
+be interpolated into the callee position of generated AST.
 
 ## Deterministic programs with `@deffun`
 
 `@slic` is a flat declaration language. `@deffun` is where deterministic
-control flow, mutation, and local allocation live.
+control flow, mutation, and local allocation live. Type and shape annotations
+on UDF arguments, returns, and ordinary assigned locals are optional; inference
+specialises them from the call site and RHS. Annotate only for dispatch, named
+dimension locals, fresh uninitialised storage, or an otherwise ambiguous result.
 
 ### Value iteration and accumulation
 
