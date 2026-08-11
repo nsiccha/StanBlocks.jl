@@ -269,7 +269,14 @@ distribution_blocks(x::SamplingExpr; info) = if qual(x) == :data
         # plan (`_indexed_ragged_obs_slice`). Other tuple/usertype carriers keep
         # the model-only routing.
         if _indexed_obs_twin_target(x.args[1]; info) === nothing
-            (:model,)
+            # A cv-tainted held-out obs with no gq twin (a top-level ragged
+            # observation whose per-group density loop the broadcast lowered — its
+            # predictive/pointwise twins are emitted separately) contributes no
+            # model likelihood: emitting it in the model block would reference the
+            # density argument's GQ-only backing and stanc-reject as out of scope.
+            # Drop it from emission; `backward!` has already run, so any population
+            # parameter it touches stays sampled (snag ragged-obs-not-c-5b1180c7).
+            cv(x.args[1]) ? () : (:model,)
         elseif cv(x.args[1])
             (:generated_quantities,)
         else

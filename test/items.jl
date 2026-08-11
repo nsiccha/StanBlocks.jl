@@ -5092,6 +5092,98 @@ the density). Author syntax is unchanged. Contract defaults:
     end
 end
 
+"""
+Verify `slic: ragged obs cv-taint routes the held-out density loop out of the model block`.
+
+Snag ragged-obs-not-c-5b1180c7. A top-level ragged observation `ys ~ dist(mu, …)`
+whose density argument `mu` is a ragged plate result sized from a CV-marked group
+count: under resample (`maybecv` on the group count) the plate parameter — hence
+`mu`'s flat backing `mu__pl_mem_<id>` — moves to `generated quantities`. The
+per-group MODEL-block density loop
+`getindex_RaggedVector(ys, g) ~ dist(mu__pl_mem_<id>[…], …)` then referenced a
+GQ-only symbol and stanc rejected the program (`Identifier not in scope`), while
+the FIT (no cv) is stanc-valid.
+
+The fix mirrors the scalar (`SamplingExpr{Symbol,<:StanExpr}`) and indexed
+(`_forward_indexed_sampling!`) cv paths: `_forward_ragged_obs_broadcast!` marks the
+ragged response cv when its density argument is cv, so `distribution_blocks` leaves
+the held-out per-group density loop OUT of the model block. The density statement
+STAYS in the trace, so `backward!` keeps every population parameter it touches (here
+the noise scale `sigma`) in the sampled set — exactly as the obs-in-cell control
+does — and the gq twins (`ys_gen` / `ys_likelihood`) carry the held-out prediction.
+The non-cv path is byte-unchanged.
+"""
+@testitem "slic: ragged obs cv-taint routes the held-out density loop out of the model block" tags=[:slic, :plate, :ragged, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    maybecv = StanBlocks.stan.maybecv
+    ts = [[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]]
+    ys = [[0.6, 0.8, 1.0], [0.5, 0.7], [0.4, 0.9, 1.1, 1.3]]
+
+    # A ragged plate result `mu` derived from a per-cell PARAMETER `b`, observed by a
+    # TOP-LEVEL ragged obs. Marking the group count `nsub` cv (resample) moves the
+    # plate parameter — and `mu`'s backing — to generated quantities.
+    outside = @slic (; ts, ys, nsub = 3) begin
+        sigma ~ exponential(1)
+        mu ~ plate(ts; outer = (nsub,)) do t
+            b ~ normal(0.0, 1.0)
+            m::typeof(t) = b .* t
+            m
+        end
+        ys ~ normal(mu, sigma)
+    end
+    # The reporter's working CONTROL: the SAME observation kept INSIDE the plate cell.
+    incell = @slic (; ts, ys, nsub = 3) begin
+        sigma ~ exponential(1)
+        mu ~ plate(ts, ys; outer = (nsub,)) do t, y
+            b ~ normal(0.0, 1.0)
+            m::typeof(t) = b .* t
+            y ~ normal(m, sigma)
+            m
+        end
+    end
+
+    # FIT (no cv): the held-out density loop IS the model likelihood, stanc-valid.
+    @test occursin(
+        r"getindex_RaggedVector\(ys, g__ro_\d+\) ~ normal\(mu__pl_mem_\d+\[",
+        stan_block(stan_code(outside), "model"),
+    )
+    @test stanc_compiles(outside)
+
+    # RESAMPLE (group count cv): the backing moves to generated quantities and the
+    # held-out density loop is DROPPED from the model block — stanc-valid.
+    resampled = outside(; nsub = maybecv(:nsub, 3))
+    code = stan_code(resampled)
+    @test first(stanc_check(code; warn_pedantic = false))
+    let mb = stan_block(code, "model"),
+        tp = stan_block(code, "transformed parameters"),
+        gq = stan_block(code, "generated quantities"),
+        par = stan_block(code, "parameters")
+
+        # the held-out per-group density loop is gone from the model block ...
+        @test !occursin("getindex_RaggedVector(ys", mb)
+        @test !occursin("mu__pl_mem", mb)
+        # ... and its backing is declared ONLY in generated quantities.
+        @test occursin(r"vector\[sum\(mu__pl_len_\d+\)\] mu__pl_mem_\d+;", gq)
+        @test !occursin("mu__pl_mem", tp)
+        # The population noise scale stays SAMPLED (reused from the original fit): the
+        # density statement survived `backward!` even though it is not emitted.
+        @test occursin("real<lower=0.0> sigma;", par)
+        @test occursin("sigma ~ exponential(1)", mb)
+        # The held-out prediction + pointwise loglik remain in generated quantities.
+        @test occursin(r"ys_gen\[.*\] = normal_vector_rng\(", gq)
+        @test occursin(
+            r"ys_likelihood\[g__rq_\d+\] = normal_lpdf\(getindex_RaggedVector\(ys, g__rq_\d+\)",
+            gq,
+        )
+    end
+
+    # Semantic equivalence to the working obs-in-cell control: the top-level form now
+    # resamples to a stanc-valid program with the SAME sampled parameter set.
+    incell_rs = incell(; nsub = maybecv(:nsub, 3))
+    @test first(stanc_check(stan_code(incell_rs); warn_pedantic = false))
+    @test stan_block(code, "parameters") == stan_block(stan_code(incell_rs), "parameters")
+end
+
 @testitem "slic: cmt-keyed boolean-mask obs inside a plate cell" tags=[:slic, :plate, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Snag plate-cell-int: a per-cell `findall`/boolean-mask INDEX array (`array[] int`)
     # feeding cmt-keyed multi-output do-block obs. Both the auto-sugar `y[c .== 1]` and
