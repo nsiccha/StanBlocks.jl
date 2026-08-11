@@ -20,25 +20,25 @@ pdb() = PosteriorDB.database()
 
 
 # --- Stanc badge/error helpers (used in stanc @include, card.index, and gallery_card) ---
+#
+# Rendered via HTMXObjects' semantic vocabulary (`SemanticStatus` /
+# `SemanticSection` + `SemanticCode`), the ten-element set SbPMX upstreamed: a
+# stanc verdict is a genuine status, and the rejection text is compiler output
+# shown as a code block. Styling keys off the meaning, not hand-rolled markup.
 
-# Render a stanc pass/fail badge from a Bool. `nothing` → empty string (no sidecar yet).
+# Render a stanc pass/fail status from a Bool. `nothing` → empty string (no sidecar yet).
 stanc_badge(ok::Bool) = ok ?
-    h.span("stanc ✓"; data_status="success",
-        title="Stan compiler (stanc) accepted the generated code") :
-    h.span("stanc ✗"; data_status="error",
-        title="Stan compiler (stanc) rejected the generated code — see error below")
+    SemanticStatus(:ok; detail="stanc accepted the generated Stan code") :
+    SemanticStatus(:fail; detail="stanc rejected the generated Stan code — see error below")
 stanc_badge(::Nothing) = ""
 stanc_badge(sidecar::AbstractString) = stanc_badge(sidecar == "OK")
 
-# Render a stanc error block. Returns `""` for nothing/empty/"OK";
-# otherwise renders the error output in a card-error div.
+# Render a stanc error section. Returns `""` for nothing/empty/"OK";
+# otherwise shows the compiler output as a code block.
 stanc_error_block(::Nothing) = ""
 function stanc_error_block(sidecar::AbstractString)
     (isempty(sidecar) || sidecar == "OK") && return ""
-    h.div(class="htmxo-card-error")(
-        h.strong("stanc rejected the generated Stan code:"),
-        h.pre(h.code(sidecar)),
-    )
+    SemanticDisclosure("stanc rejected the generated Stan code", SemanticCode(:text, sidecar))
 end
 
 
@@ -431,13 +431,20 @@ const APPDATA = SbAppData()
                     rv = Base.eval(@__MODULE__, expr)
                 end
                 m = rv::StanBlocks.stan.SlicModel
-                (code=Base.invokelatest(stan_code, m),)
+                # Descriptor-driven transpile (the SbPMX pattern): build the
+                # model's `stan_descriptor` and run its `:transpile` operation
+                # for the Stan source, rather than calling `stan_code` directly.
+                # `invokelatest` because the eval above may define new @deffun
+                # methods the descriptor has to dispatch on.
+                descriptor = Base.invokelatest(stan_descriptor, m)
+                (model=m, descriptor=descriptor,
+                 code=Base.invokelatest(stan_execute, descriptor, :transpile))
             end
 
             output = h.div(; id="sandbox-output")(
-                h.div(
-                    h.p(h.strong("Transpilation: "), h.span("PASS"; data_status="success")),
-                    h.pre(h.code(result.code; class="language-stan"); class="pdb-code-large"),
+                SemanticGroup(
+                    SemanticStatus(:ok; detail="transpiled to Stan"),
+                    SemanticCode(:stan, result.code),
                 ),
             )
 
@@ -563,9 +570,8 @@ const APPDATA = SbAppData()
                     write("$file_path.stanc", sc.ok ? "OK" : sc.output)
                     refresh_url = standalone ? snippet_url : snippet_url/"refresh"
                     badge = should_fail ?
-                        h.span("XPASS"; data_status="warning",
-                            title="Expected failure but transpiled — toggle 'should pass' if intentional") :
-                        h.span("PASS"; data_status="success")
+                        SemanticStatus(:warn; detail="XPASS — expected failure but transpiled; toggle 'should pass' if intentional") :
+                        SemanticStatus(:ok; detail="PASS")
                     h.div(; id, class="htmxo-status-banner", data_status="success")(
                         snippet_header(
                             h.strong(name; contenteditable="true", class="pdb-name-input",
@@ -593,9 +599,9 @@ const APPDATA = SbAppData()
                         status == "PASS" ? "success" :
                         should_fail ? "warning" : "error"
                     badge = isnothing(status) ? "" :
-                        status == "PASS" ? h.span("PASS"; data_status="success") :
-                        should_fail ? h.span("XFAIL"; data_status="warning") :
-                        h.span("FAIL"; data_status="error", title=status)
+                        status == "PASS" ? SemanticStatus(:ok; detail="PASS") :
+                        should_fail ? SemanticStatus(:warn; detail="XFAIL") :
+                        SemanticStatus(:fail; detail=status)
                     h.div(; id, class="htmxo-status-banner", data_status=banner_status)(
                         snippet_header(
                             h.strong(name),
@@ -652,30 +658,28 @@ const APPDATA = SbAppData()
         # (`.jl.stan` written by `snippet(name).card` on editor view, or by
         # the recording flow). Eval-into-`Main` is too expensive +
         # state-polluting to run 132× on every gallery render.
+        # Read-only gallery card, composed from HTMXObjects' semantic vocabulary
+        # (`SemanticCard` / `SemanticStatus` / `SemanticSection` / `SemanticCode`) —
+        # the SbPMX presentation pattern. Interactive editing lives on `/sandbox`;
+        # here each snippet is pure presentation reading its cached sidecars.
         gallery_card(item) = safely(; obj=__self__, req=__req__) do
             s = snippet(item.id)
-            ok_pass = s.status == "PASS"
-            status_data = isnothing(s.status) ? "muted" :
-                          ok_pass ? "success" : "error"
-            status_text = isnothing(s.status) ? "?" :
-                          ok_pass ? "PASS" : "FAIL"
-            h.article(; id=item.id)(
-                h.h4(
-                    h.a(item.title; href=__self__/"snippet/$(item.id)", target="_blank"),
-                    h.span(status_text; data_status=status_data),
-                    s.stanc.badge,
-                ),
-                isempty(item.description) ? h.span() : h.p(item.description),
-                h.h5("SLIC source"),
-                h.pre(h.code(s.code; class="language-julia")),
-                isnothing(s.stan_sidecar) ? h.span() : h.div(
-                    h.h5("Generated Stan"),
-                    h.pre(h.code(s.stan_sidecar; class="language-stan")),
-                ),
-                (!isnothing(s.status) && !ok_pass) ?
-                    h.p(; class="htmxo-card-error")(h.code(strip(s.status))) : h.span(),
-                s.stanc.error_block,
-            )
+            transpile_state = isnothing(s.status) ? :pending :
+                              s.status == "PASS" ? :ok : :fail
+            transpile_detail = isnothing(s.status) ? "not compiled" :
+                               s.status == "PASS" ? "transpiles" : "transpile failed"
+            head = Any[SemanticStatus(transpile_state; detail=transpile_detail)]
+            s.stanc.badge == "" || push!(head, s.stanc.badge)
+            push!(head, SemanticLink("View snippet", __self__/"snippet/$(item.id)"))
+            children = Any[SemanticGroup(head...)]
+            isempty(item.description) || push!(children, SemanticProse(item.description))
+            push!(children, SemanticCode(:julia, s.code))
+            transpile_state == :fail &&
+                push!(children, SemanticDisclosure("Transpile error", SemanticCode(:text, strip(s.status))))
+            isnothing(s.stan_sidecar) ||
+                push!(children, SemanticDisclosure("Generated Stan", SemanticCode(:stan, s.stan_sidecar)))
+            s.stanc.error_block == "" || push!(children, s.stanc.error_block)
+            SemanticCard(item.title, children...; anchor=item.id)
         end
 
         # Per-snippet `safely` wrap: a broken probe (its card-task throwing
