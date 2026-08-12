@@ -8,6 +8,7 @@ export StanBlocksError
 
 using OrderedCollections, JSON, StanLogDensityProblems, LogDensityProblems, Markdown
 using BridgeStan
+import Tables   # light interface package: lets a DataFrame / Tables.jl source be a data kwarg (see `_table_stan_type`)
 
 # --- Error type for StanBlocks computations (defined early so submodules can use it) ---
 
