@@ -401,6 +401,22 @@ _plate_layout_value(x::StanExpr, env, mod) = begin
 end
 _plate_layout_ragged_value(x) =
     x isa NamedTuple && haskey(x, :mem) && haskey(x, :ends)
+
+# Canonical global calls normally enter Julia through `jcall(Val(name), mod,
+# ...)`, which supplies Stan-compatible collection semantics such as
+# `max(vector) -> maximum(vector)`.  Layout recipes retain resolved function
+# heads, so recover that route when the function is still its module's binding;
+# closures and callable values keep the ordinary direct-call fallback.
+_plate_layout_jcall(f, args...; kwargs...) = jcall(f, args...; kwargs...)
+_plate_layout_jcall(f::Function, args...; kwargs...) = begin
+    name = nameof(f)
+    owner = parentmodule(f)
+    if isdefined(owner, name) && getproperty(owner, name) === f
+        return jcall(Val(name), owner, args...; kwargs...)
+    end
+    jcall(f, args...; kwargs...)
+end
+
 _plate_layout_call(f, mod, args...; kwargs...) = begin
     if (f === length || f === lastindex) && length(args) == 1 &&
             _plate_layout_ragged_value(args[1])
@@ -415,7 +431,7 @@ _plate_layout_call(f, mod, args...; kwargs...) = begin
         ends, i = _plate_layout_ragged_value(args[1]) ? args[1].ends : args[1], args[2]
         return ends[i] - (i == 1 ? 0 : ends[i - 1])
     end
-    jcall(f, args...; kwargs...)
+    _plate_layout_jcall(f, args...; kwargs...)
 end
 _plate_layout_call(f::Symbol, mod, args...; kwargs...) = begin
     if f in (:length, :lastindex) && length(args) == 1 &&
@@ -426,13 +442,12 @@ _plate_layout_call(f::Symbol, mod, args...; kwargs...) = begin
             (f === :ragged_end ? ragged_end : ragged_length)
         return _plate_layout_call(callable, mod, args...; kwargs...)
     end
-    callable = isdefined(Base, f) ? getproperty(Base, f) :
-        (isdefined(mod, f) ? getproperty(mod, f) :
-         (isdefined(builtin, f) ? getproperty(builtin, f) : nothing))
-    callable === nothing && error(
+    owner = isdefined(Base, f) ? Base :
+        (isdefined(mod, f) ? mod : (isdefined(builtin, f) ? builtin : nothing))
+    owner === nothing && error(
         "stan_descriptor: cannot evaluate ragged plate layout function `$f`."
     )
-    jcall(callable, args...; kwargs...)
+    jcall(Val(f), owner, args...; kwargs...)
 end
 _plate_layout_value(x::CanonicalExpr, env, mod) = begin
     args = map(a -> _plate_layout_value(a, env, mod), x.args)
