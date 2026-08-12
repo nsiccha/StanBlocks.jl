@@ -4777,7 +4777,7 @@ end
 """
 Verify `slic: public plate emits heterogeneous vector cells` in an isolated test item.
 """
-@testitem "slic: public plate emits heterogeneous vector cells" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: public plate emits heterogeneous vector cells" tags=[:slic, :plate, :ragged, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     for model in (c3_plate_ragged_model, c3_plate_ragged_submodel_model)
         @test transpiles(model)
         @test stanc_compiles(model)
@@ -4860,6 +4860,37 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
     ))
     @test rebound_input_carrier("y_z").segments == [1, 4]
     @test rebound_input_carrier("y").segments == [1, 4]
+
+    # Reporter-shaped layout: a named dense workspace is sized with Stan's
+    # collection `max`, then projected onto the ragged observation indices.
+    # The workspace and projection deliberately have different group axes.
+    max_shaped = @slic (;
+        qt_idx = [[3], [3, 4], [3, 4, 5]],
+    ) begin
+        qbase ~ std_normal()
+        pk_loc ~ plate(qt_idx; outer = length(qt_idx)) do qidx
+            dense_conc = rep_vector(qbase, max(qidx))
+            dense_conc[qidx]
+        end
+    end
+    max_outputs = collect(stan_descriptor(max_shaped; name = :max_shaped).outputs)
+    max_carrier(stem) = only(filter(
+        o -> startswith(string(o.name), stem * "__pl_mem_"), max_outputs,
+    ))
+    @test max_carrier("pk_loc_dense_conc").segments == [3, 7, 12]
+    @test max_carrier("pk_loc").segments == [1, 3, 6]
+
+    rebound_max = StanBlocks.stan_model(max_shaped)(;
+        qt_idx = [[2], [2, 3, 4, 5]],
+    )
+    rebound_max_outputs = collect(stan_descriptor(
+        rebound_max; name = :rebound_max_shaped,
+    ).outputs)
+    rebound_max_carrier(stem) = only(filter(
+        o -> startswith(string(o.name), stem * "__pl_mem_"), rebound_max_outputs,
+    ))
+    @test rebound_max_carrier("pk_loc_dense_conc").segments == [2, 7]
+    @test rebound_max_carrier("pk_loc").segments == [1, 5]
 end
 
 """
