@@ -410,7 +410,20 @@ cv(x) = false
 cv(x::StanExpr) = cv(type(x))
 cv(x::StanType) = get(info(x), :cv, false) || any(cv, stan_size(x))
 
-stan_type(expr, value; kwargs...) = error("Do not know how to handle `stan_type($expr, $value)`")
+# Foreign (non-native) data-ingest hook. The fallback `stan_type` cannot see a
+# `DataFrame` / Tables.jl source (no Tables dep in the core), so an extension
+# (`TablesExt`) registers an ingester `(expr, value; kwargs...) -> StanType | nothing`
+# here at load time; the first that accepts `value` wins, otherwise we error as
+# before. This keeps table support optional (weakdep) while letting a table be an
+# ordinary data kwarg. Registry is `const` (a stable hook list, never Revised).
+const _FOREIGN_DATA_INGESTERS = Function[]
+stan_type(expr, value; kwargs...) = begin
+    for _ingest in _FOREIGN_DATA_INGESTERS
+        st = _ingest(expr, value; kwargs...)
+        st === nothing || return st
+    end
+    error("Do not know how to handle `stan_type($expr, $value)`")
+end
 stan_type(expr, value::Integer; kwargs...) = StanType(types.int; value, kwargs..., qual=:data)
 stan_type(expr, value::AbstractFloat; kwargs...) = StanType(types.real; value, kwargs...)
 stan_type(expr, value::AbstractVector{<:Real}; kwargs...) = StanType(
