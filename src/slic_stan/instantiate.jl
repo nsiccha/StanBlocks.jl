@@ -117,16 +117,38 @@ stan_data(x::StanModel) = Dict([
     if !always_inline(value)
 ])
 
-_record_size_kwargs!(d, key, v::AbstractVector) = (d[Symbol(key, "_n")] = length(v); nothing)
-_record_size_kwargs!(d, key, v::AbstractMatrix) =
-    ((d[Symbol(key, "_m")], d[Symbol(key, "_n")]) = size(v); nothing)
-_record_size_kwargs!(args...) = nothing
+# Re-bind (`new_model = model(; x=new_x)`) MUST ingest a value the same way init
+# does, or a value init normalizes — a table → its columns; a ragged
+# vector-of-vectors → flat `mem`/`ends` — reaches `prepare_for_stan` un-normalized
+# on re-bind and dies (and its derived sizes go stale). So re-bind routes every
+# rebound DATA var back through the SAME `stan_type` chokepoint used at init and
+# reads off the normalized value plus every derived size (`<x>_n`, a matrix's
+# `<x>_m`/`<x>_n`, a table's shared `<x>_nrow`, a ragged carrier's
+# `<x>_mem_n`/`<x>_ends_n`) from the resulting type — one path for every carrier,
+# present and future. A kwarg that is NOT itself a data var (e.g. a partly-missing
+# vector, split into other data vars at trace time) is left untouched here.
+_collect_data_entry!(d, s::StanExpr) =
+    (expr(s) isa Symbol && hasvalue(s) && (d[expr(s)] = getvalue(s)); nothing)
+_collect_data_entry!(d, s) = nothing
+_collect_derived_sizes!(d, st::StanType) = begin
+    foreach(s -> _collect_data_entry!(d, s), stan_size(st))
+    ats = get(info(st), :arg_types, nothing)
+    ats === nothing || foreach(at -> _collect_derived_sizes!(d, at), values(ats))
+    nothing
+end
+_rebind_data_entries!(d, key, value) = begin
+    st = stan_type(key, value)
+    d[key] = getvalue(st)
+    _collect_derived_sizes!(d, st)
+    nothing
+end
 
 "StanModels can update the associated data (via `new_model = model(;x=new_x)`)."
 (x::StanModel)(;kwargs...) = begin
     xkwargs = Dict{Symbol,Any}(pairs(kwargs))
+    datakeys = keys(block(x, :data).content)
     for (key, value) in pairs(kwargs)
-        _record_size_kwargs!(xkwargs, key, value)
+        key in datakeys && _rebind_data_entries!(xkwargs, key, value)
     end
     StanModel(x.meta, x.vars, merge(x.blocks, (;data=StanBlock(:data,OrderedDict([
         key=>StanExpr(expr(x), remake(type(x); value=get(xkwargs, key, getvalue(x))))
