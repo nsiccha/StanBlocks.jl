@@ -214,7 +214,7 @@ blocks that own the declarations, fills, densities, and generated quantities.
 | Lexically captured values | ✅ | Shared across cells; loop-invariant expressions are hoisted when safe |
 | Fresh scalar `~` or `=` binding | ✅ | Collected as a `vector[N]` for one outer axis; additional axes use matrix/array storage |
 | Fixed `vector[K]` binding/result | ✅ | Collected as `matrix[K,N]` for one outer axis; extra axes add Stan array prefixes |
-| Varying-length plain `vector[K[i]]` cell | ✅, narrow | One-dimensional outer shape and data-computable lengths only; represented by flat memory plus group ends |
+| Varying-length plain `vector[K[i]]` cell | ✅, narrow | One-dimensional outer shape and data-computable lengths only; represented by flat memory whose descriptor output carries that result/member's own inclusive group ends in `segments` |
 | Fixed native-constrained vector cell | ✅ | `simplex[K]`, `ordered[K]`, and `positive_ordered[K]`; emitted as `array[outer...] <type>[K]` |
 | Shared scalar constraints | ✅ | `lower`, `upper`, `offset`, and `multiplier` are preserved when they do not depend on the cell position |
 | Cell-position-dependent constraint | ❌ | Rejected because the promoted declaration lives outside the loop |
@@ -304,6 +304,14 @@ d.operations   # derived :transpile/:instantiate/:fit/:predict/:pointwise_loglik
 The operation list fails closed and is derived from what the model can actually
 do. `:fit` requires both a parameter and a live likelihood; `:predict` requires
 a predictive draw; `:pointwise_loglik` requires a likelihood twin.
+
+`ModelOutput.segments` is `nothing` for every dense output. For a ragged
+observation twin or an emitted flat-memory carrier belonging to a ragged plate
+result/member, it contains that exact output's inclusive 1-based group ends.
+Different named members of one plate may use different ragged axes, so use the
+`segments` on each output entry itself; do not parse `__pl_*` names or borrow a
+sibling/input layout. Re-binding a `StanModel`'s data updates these reflected
+boundaries.
 
 ```julia
 problem = stan_execute(d, :fit)

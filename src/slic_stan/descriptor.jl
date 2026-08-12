@@ -97,17 +97,16 @@ StanBlocks.stan_descriptor).
     cv-flipped re-draw of a latent, a model `return` value.
 - `source::Union{Symbol,Nothing}` — the observation a `:draw` /
   `:pointwise_loglik` derives from; `nothing` otherwise.
-- `segments::Union{Nothing,Vector{Int}}` — group boundaries, when this quantity
-  is the twin of a **ragged** observation; `nothing` for every dense quantity.
-  A `RaggedVector` is a compile-time pairing that materialises as
-  `tuple(vector[total], array[k] int)`, so its `<obs>_gen` is emitted FLAT — one
-  `vector` holding every group end to end — while its `<obs>_likelihood` holds
-  one scalar per group. The entries are the **inclusive 1-based end index of
-  each group** (the carrier's own `ends`), so group `g` of a `:draw` occupies
-  `segments[g-1]+1 : segments[g]` (with `segments[0] ≡ 0`) and group `g` of a
-  `:pointwise_loglik` is element `g`. Publishing them here is what lets a
-  consumer of `stan_execute(d, :predict)` cut a flat draw back into groups
-  without reaching into the data's carrier tuple.
+- `segments::Union{Nothing,Vector{Int}}` — group boundaries when this quantity
+  is either the twin of a **ragged** observation or the emitted flat-memory
+  carrier of a ragged plate result/member; `nothing` for every dense quantity.
+  The entries are the carrier's own **inclusive 1-based end indices**, so group
+  `g` of a flat carrier or `:draw` occupies
+  `segments[g-1]+1 : segments[g]` (with `segments[0] ≡ 0`), while group `g` of a
+  `:pointwise_loglik` is element `g`. Each ragged plate member reports its own
+  layout; members may have different axes, so consumers must not copy segments
+  from a sibling or an input. Publishing the layout here lets consumers restore
+  groups without reaching into compiler-owned names or carrier tuples.
 """
 struct ModelOutput
     name::Symbol
@@ -374,6 +373,108 @@ end
 _output_segments(source, data) =
     source === nothing || !haskey(data, source) ? nothing : _ragged_segments(data[source])
 
+# A ragged plate's transformed-data `ends = cumulative_sum(lens)` has no Julia
+# value on the traced StanExpr.  Lowering therefore retains the equivalent
+# data-computable recipe on each emitted memory carrier.  Evaluate only that
+# bounded expression graph here, resolving symbols through the descriptor's
+# CURRENT data block so a rebound `StanModel` reports rebound boundaries.
+_plate_layout_value(x, env, mod) = x
+_plate_layout_value(x::QuoteNode, env, mod) = x.value
+_plate_layout_value(x::Symbol, env, mod) = begin
+    haskey(env, x) || return x
+    bound = env[x]
+    bound isa StanExpr && hasvalue(bound) && return getvalue(bound)
+    bound isa StanExpr ? _plate_layout_value(bound, env, mod) : bound
+end
+_plate_layout_value(x::StanExpr, env, mod) = begin
+    e = expr(x)
+    if e isa Symbol && haskey(env, e)
+        bound = env[e]
+        bound isa StanExpr && hasvalue(bound) && return getvalue(bound)
+        bound isa StanExpr || return bound
+    end
+    # A composite data expression may retain the value inferred while the model
+    # was first traced. Re-evaluate its graph so `StanModel(; data=...)` cannot
+    # leak those stale values into the rebound descriptor.
+    e isa CanonicalExpr && return _plate_layout_value(e, env, mod)
+    hasvalue(x) ? getvalue(x) : _plate_layout_value(e, env, mod)
+end
+_plate_layout_ragged_value(x) =
+    x isa NamedTuple && haskey(x, :mem) && haskey(x, :ends)
+_plate_layout_call(f, mod, args...; kwargs...) = begin
+    if (f === length || f === lastindex) && length(args) == 1 &&
+            _plate_layout_ragged_value(args[1])
+        return length(args[1].ends)
+    elseif f === ragged_start && length(args) == 2
+        ends, i = _plate_layout_ragged_value(args[1]) ? args[1].ends : args[1], args[2]
+        return i == 1 ? 1 : ends[i - 1] + 1
+    elseif f === ragged_end && length(args) == 2
+        ends, i = _plate_layout_ragged_value(args[1]) ? args[1].ends : args[1], args[2]
+        return ends[i]
+    elseif f === ragged_length && length(args) == 2
+        ends, i = _plate_layout_ragged_value(args[1]) ? args[1].ends : args[1], args[2]
+        return ends[i] - (i == 1 ? 0 : ends[i - 1])
+    end
+    jcall(f, args...; kwargs...)
+end
+_plate_layout_call(f::Symbol, mod, args...; kwargs...) = begin
+    if f in (:length, :lastindex) && length(args) == 1 &&
+            _plate_layout_ragged_value(args[1])
+        return length(args[1].ends)
+    elseif f in (:ragged_start, :ragged_end, :ragged_length)
+        callable = f === :ragged_start ? ragged_start :
+            (f === :ragged_end ? ragged_end : ragged_length)
+        return _plate_layout_call(callable, mod, args...; kwargs...)
+    end
+    callable = isdefined(Base, f) ? getproperty(Base, f) :
+        (isdefined(mod, f) ? getproperty(mod, f) :
+         (isdefined(builtin, f) ? getproperty(builtin, f) : nothing))
+    callable === nothing && error(
+        "stan_descriptor: cannot evaluate ragged plate layout function `$f`."
+    )
+    jcall(callable, args...; kwargs...)
+end
+_plate_layout_value(x::CanonicalExpr, env, mod) = begin
+    args = map(a -> _plate_layout_value(a, env, mod), x.args)
+    kwargs = (; (k => _plate_layout_value(v, env, mod) for (k, v) in pairs(x.kwargs))...)
+    _plate_layout_call(head(x), mod, args...; kwargs...)
+end
+
+_ragged_plate_segments(m::StanModel, name::Symbol, data) = begin
+    haskey(vars(m), name) || return nothing
+    layout = get(info(type(vars(m)[name])), :ragged_plate_layout, nothing)
+    layout === nothing && return nothing
+
+    env = Dict{Symbol,Any}(pairs(data))
+    mod = get(meta(m), :mod, @__MODULE__)
+    n = _plate_layout_value(layout.outer, env, mod)
+    n isa Integer || error(
+        "stan_descriptor: ragged plate carrier `$name` has a non-integer outer size `$n`."
+    )
+    n >= 0 || error(
+        "stan_descriptor: ragged plate carrier `$name` has a negative outer size `$n`."
+    )
+    lengths = Int[]
+    sizehint!(lengths, n)
+    for i in 1:n
+        env[layout.index] = i
+        len = _plate_layout_value(layout.cell_size, env, mod)
+        len isa Integer || error(
+            "stan_descriptor: ragged plate carrier `$name` has non-integer cell size `$len` at group $i."
+        )
+        len >= 0 || error(
+            "stan_descriptor: ragged plate carrier `$name` has negative cell size `$len` at group $i."
+        )
+        push!(lengths, Int(len))
+    end
+    cumsum(lengths)
+end
+
+_output_segments(m::StanModel, name::Symbol, source, data) = begin
+    observed = _output_segments(source, data)
+    observed === nothing ? _ragged_plate_segments(m, name, data) : observed
+end
+
 _block_outputs(m::StanModel, blockname::Symbol, kind::Symbol, data) = begin
     acc = OrderedDict{Symbol,Any}()
     _output_symbols(block(m, blockname), acc)
@@ -386,7 +487,7 @@ _block_outputs(m::StanModel, blockname::Symbol, kind::Symbol, data) = begin
         push!(rv, ModelOutput(
             name, kind, _descriptor_type(x), _descriptor_size(x),
             _descriptor_constraints(x), generative, source,
-            _output_segments(source, data),
+            _output_segments(m, name, source, data),
         ))
     end
     rv
