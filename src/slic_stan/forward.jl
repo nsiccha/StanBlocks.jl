@@ -2342,6 +2342,22 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
             pending !== nothing && push!(pending, emitted)
             emitted = forward!(canonical(:($(plan.mem) :: vector[sum($(plan.lens))])); info)
             pending !== nothing && push!(pending, emitted)
+            # Retain the carrier's OWN data-computable layout recipe for public
+            # descriptor reflection.  The logical RaggedVector binding below
+            # already preserves `(mem, ends)`, but `ends` is a transformed-data
+            # value and therefore has no trace-time Julia value.  Keeping the
+            # outer axis + per-cell size expression on the emitted memory
+            # carrier lets `stan_descriptor` materialise inclusive ends against
+            # the model's CURRENT data (including after `model(; data=...)`),
+            # without parsing compiler-owned `__pl_*` names or borrowing a
+            # sibling plate member's potentially different axis.
+            info[plan.mem] = remake(info[plan.mem]; ragged_plate_layout=(;
+                logical=plan.logical,
+                ends=plan.ends,
+                outer=outer_dims[1],
+                index=idxs[1],
+                cell_size=plan.size_expr,
+            ))
         end
     end
     # Outer collection declarations. FRESH cell collections carry GLOBAL names, so

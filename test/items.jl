@@ -4801,6 +4801,65 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
     @test occursin(r"vector\[sum\(b_cell_z__pl_len_\d+\)\] b_cell_z__pl_mem_\d+", stan_block(called, "parameters"))
     @test occursin(r"(?s)b_cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", stan_block(called, "model"))
     @test occursin(r"(?s)b__pl_mem_\d+\[.*?\]\s*=\s*b_cell__pl_mem_\d+\[", stan_block(called, "transformed parameters"))
+
+    # Descriptor ownership is per emitted carrier, not per plate or first input:
+    # two named members may have different ragged axes, while dense members stay
+    # unsegmented.  The returned `b` follows the axis of the value it collects.
+    layouts = @slic (; K = [2, 3, 4], J = [1, 4, 2]) begin
+        b ~ plate(; outer = length(K)) do g
+            z::vector[K[g]] ~ std_normal()
+            w::vector[J[g]] ~ std_normal()
+            q ~ std_normal()
+            z
+        end
+    end
+    outputs = collect(stan_descriptor(layouts; name = :ragged_layouts).outputs)
+    carrier(stem) = only(filter(o -> startswith(string(o.name), stem * "__pl_mem_"), outputs))
+    @test carrier("b_z").segments == [2, 5, 9]
+    @test carrier("b_w").segments == [1, 5, 7]
+    @test carrier("b").segments == [2, 5, 9]
+    @test only(filter(o -> o.name == :b_q, outputs)).segments === nothing
+
+    # Segment values are evaluated against the current data, not frozen at the
+    # original trace. Re-binding changes each carrier independently.
+    rebound = StanBlocks.stan_model(layouts)(; K = [1, 1, 3], J = [2, 2, 2])
+    rebound_outputs = collect(stan_descriptor(rebound; name = :rebound_layouts).outputs)
+    rebound_carrier(stem) = only(filter(
+        o -> startswith(string(o.name), stem * "__pl_mem_"), rebound_outputs,
+    ))
+    @test rebound_carrier("b_z").segments == [1, 2, 5]
+    @test rebound_carrier("b_w").segments == [2, 4, 6]
+    @test rebound_carrier("b").segments == [1, 2, 5]
+
+    # A nested-vector input is represented internally as `(mem, ends)`, but its
+    # SLIC `length` is the number of logical groups — not the tuple field count.
+    # This is the common BRM shape: a result/member inherits each input slice's
+    # length, and a rebind can change both boundaries and group count.
+    input_shaped = @slic (; xs = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]) begin
+        a ~ std_normal()
+        y ~ plate(xs; outer = length(xs)) do x
+            z::typeof(x) = a .* x
+            z
+        end
+    end
+    input_outputs = collect(stan_descriptor(input_shaped; name = :input_shaped).outputs)
+    input_carrier(stem) = only(filter(
+        o -> startswith(string(o.name), stem * "__pl_mem_"), input_outputs,
+    ))
+    @test input_carrier("y_z").segments == [2, 3, 6]
+    @test input_carrier("y").segments == [2, 3, 6]
+
+    rebound_input = StanBlocks.stan_model(input_shaped)(;
+        xs = [[1.0], [2.0, 3.0, 4.0]],
+    )
+    rebound_input_outputs = collect(stan_descriptor(
+        rebound_input; name = :rebound_input_shaped,
+    ).outputs)
+    rebound_input_carrier(stem) = only(filter(
+        o -> startswith(string(o.name), stem * "__pl_mem_"), rebound_input_outputs,
+    ))
+    @test rebound_input_carrier("y_z").segments == [1, 4]
+    @test rebound_input_carrier("y").segments == [1, 4]
 end
 
 """
