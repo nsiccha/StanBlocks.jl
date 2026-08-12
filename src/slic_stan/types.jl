@@ -410,7 +410,33 @@ cv(x) = false
 cv(x::StanExpr) = cv(type(x))
 cv(x::StanType) = get(info(x), :cv, false) || any(cv, stan_size(x))
 
-stan_type(expr, value; kwargs...) = error("Do not know how to handle `stan_type($expr, $value)`")
+# Generic fallback. The one non-native value we accept is a Tables.jl source (a
+# `DataFrame`, a row/column table, …). Tables.jl is an INTERFACE package (traits
+# + generic access, no shared supertype), so there is nothing to dispatch on —
+# the idiomatic consumer check is the `Tables.istable` trait. It lives here in
+# the generic fallback, so every more-specific value (Integer, vectors,
+# NamedTuple, the ragged carrier) still dispatches natively and only a
+# genuinely-unknown value reaches the trait check; a non-table still errors.
+stan_type(expr, value; kwargs...) =
+    Tables.istable(value) ? _table_stan_type(expr, value; kwargs...) :
+    error("Do not know how to handle `stan_type($expr, $value)`")
+
+# A table is special: all its columns share ONE length (the row count). So it
+# ingests as a single `ntup` whose fields are the columns, ALL keyed off one
+# shared row-count size `<name>_nrow` — never independent per-column sizes. Each
+# column reuses the ordinary column ingest (`stan_type(col)`: float→`vector`,
+# int→`array[] int`, with the right qual) with only its size swapped to the
+# shared `nrow`, so the column→Stan-type mapping stays single-sourced. Columns
+# are addressed by name in the body (`df.age`) via the existing ntup field access.
+_table_column_type(name, col, nrow) = remake(stan_type(name, col), nrow)
+_table_stan_type(expr, tbl; kwargs...) = begin
+    cols = Tables.columntable(tbl)   # NamedTuple of columns, equal-length by the Tables contract
+    isempty(cols) && error("StanBlocks: table `$expr` has no columns; nothing to ingest.")
+    nrow = stan_expr(Symbol(expr, "_nrow"), length(first(cols)))
+    arg_types = (; (name => _table_column_type(Symbol(expr, "_", name), col, nrow)
+                    for (name, col) in pairs(cols))...)
+    StanType(types.ntup, tuple(); arg_types, value=cols, kwargs...)
+end
 stan_type(expr, value::Integer; kwargs...) = StanType(types.int; value, kwargs..., qual=:data)
 stan_type(expr, value::AbstractFloat; kwargs...) = StanType(types.real; value, kwargs...)
 stan_type(expr, value::AbstractVector{<:Real}; kwargs...) = StanType(
