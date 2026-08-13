@@ -1,7 +1,7 @@
 module StanBlocks
 
 export @slic, @defsig, @deffun, @stanonly, @lpxf, @lhs, @stan_assert
-export return_type_of, stan_code, stan_model, stan_instantiate, stanc_check
+export return_type_of, stan_code, stan_model, compile_slic_bundle, stan_instantiate, stanc_check
 export stan_descriptor, stan_definition, stan_definition_closure, stan_operation, stan_execute
 export ModelDescriptor, ModelInput, ModelOutput, ModelDefinition, ModelOperation
 export StanBlocksError, StanBlocksDiagnostic, diagnostic

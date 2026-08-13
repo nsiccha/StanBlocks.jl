@@ -510,6 +510,31 @@ a symbol naming that model. Positional inputs belong to a named sub-model
 function (`@slic f(x::real) = ...`); anonymous sub-model values accept kwargs
 or enclosing-scope bindings only.
 
+Interactive authoring tools that already parsed and validated several named
+sub-model definitions can compile the whole workspace without constructing
+macro calls or managing an evaluation module themselves:
+
+```julia
+definitions = [:(latent(scale) = begin
+    z ~ normal(0, scale)
+    return z
+end)]
+body = quote
+    mu ~ latent(1.0)
+    y ~ normal(mu, 1.0)
+end
+
+result = compile_slic_bundle((; y=[0.1, -0.2]), definitions, body;
+    name=:authoring_workspace)
+result.code
+result.descriptor
+```
+
+`compile_slic_bundle` evaluates definitions in the supplied order in one fresh
+module and traces the parent once. It accepts trusted expressions rather than
+source text: it neither parses nor sandboxes input, and macros inside those
+expressions retain ordinary Julia macro-expansion semantics.
+
 ## Posterior pointwise likelihood and predictive draws
 
 For an ordinary top-level observation, StanBlocks automatically emits the

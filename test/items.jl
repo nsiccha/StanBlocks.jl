@@ -2188,6 +2188,54 @@ Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
 end
 
 """
+`compile_slic_bundle` owns the fresh-module / ordered-`@slic` integration that
+interactive authoring consumers otherwise have to reproduce with synthetic
+macrocalls and `Core.eval`. It traces once, then returns the ordinary model,
+descriptor, and source surfaces used for a single anonymous model.
+Snag `first-class-slic-d83cfbea`, reported by SlicTranspiler.
+"""
+@testitem "slic: compile a trusted bundle of named submodels and a parent" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    definitions = [
+        :(bundle_latent(scale) = begin
+            z ~ normal(0, scale)
+            return z
+        end),
+        :(bundle_shifted(scale, offset) = begin
+            z ~ bundle_latent(scale)
+            return z + offset
+        end),
+    ]
+    body = quote
+        mu ~ bundle_shifted(1.0, 0.5)
+        y ~ normal(mu, 1.0)
+    end
+
+    result = compile_slic_bundle((; y=[0.1, -0.2, 0.4]), definitions, body;
+        name=:bundle_parent)
+
+    @test result.model isa StanBlocks.StanModel
+    @test result.descriptor isa StanBlocks.ModelDescriptor
+    @test result.descriptor.name == :bundle_parent
+    @test result.code == stan_code(result.model)
+    @test occursin("mu_z_z ~ normal(0, 1.0);", result.code)
+    @test occursin("y ~ normal(mu, 1.0);", result.code)
+    @test StanBlocks.required_inputs(result.descriptor) == (:y,)
+    @test stanc_compiles(result.model)
+
+    # Validate the whole definition list before mutating a workspace.
+    bad = Any[first(definitions), :(not_a_definition)]
+    err = try
+        compile_slic_bundle((; y=0.0), bad, :(y ~ normal(0, 1)))
+        nothing
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    @test occursin("definition 2 must be a named SLIC definition", sprint(showerror, err))
+    @test_throws ErrorException compile_slic_bundle((; y=0.0), definitions, :not_an_expr)
+end
+
+"""
 `Base.merge` keys a spliced statement on what its LHS NAMES, so a typed-LHS
 override replaces the base's plain-LHS statement instead of being appended, and
 the merged body stays raw Julia AST so it can be printed for inspection.

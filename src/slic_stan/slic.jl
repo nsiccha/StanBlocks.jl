@@ -14,6 +14,7 @@ include("lpxf_builtin.jl")
 include("show.jl")
 include("instantiate.jl")
 include("descriptor.jl")
+include("bundle.jl")
 
 include("test.jl")
 
