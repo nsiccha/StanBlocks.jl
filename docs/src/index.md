@@ -253,14 +253,36 @@ comprehensions reject explicitly. The body is also transpiled to Stan.
 UDF bodies must not contain `~` sampling statements or `target +=` increments — UDFs cannot introduce parameters or directly manipulate the log density. The macro errors at expansion time if either is found.
 
 ```julia
-@deffun garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
-    sigma2 = alpha0
-    rv = 0.
-    for t in 1:T
-        rv += normal_lpdf(y[t], mu, sqrt(sigma2))
-        sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
+@deffun begin
+    @lhs @lpxf garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
+        sigma2 = alpha0
+        rv = 0.
+        for t in 1:T
+            rv += normal_lpdf(y[t], mu, sqrt(sigma2))
+            sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
+        end
+        return rv
     end
-    return rv
+
+    garch11_lpdfs(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::vector[T] = begin
+        sigma2 = alpha0
+        rv::vector[T]
+        for t in 1:T
+            rv[t] = normal_lpdf(y[t], mu, sqrt(sigma2))
+            sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
+        end
+        return rv
+    end
+
+    garch11_rng(vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::vector[T] = begin
+        sigma2 = alpha0
+        rv::vector[T]
+        for t in 1:T
+            rv[t] = normal_rng(mu, sqrt(sigma2))
+            sigma2 = alpha0 + alpha1 * square(rv[t] - mu) + beta1 * sigma2
+        end
+        return rv
+    end
 end
 ```
 
@@ -541,6 +563,14 @@ then the named SLIC definitions in their supplied order, in one fresh module,
 and traces the parent once. A bare expression remains supported; pairing any
 part as `source_part => expression` gives tracing and lowering failures from
 that part the same stable identity in `diagnostic(error)`.
+
+UDF annotations keep their ordinary `@deffun` meaning inside a bundle. A
+`foo_lpdf` name alone is an explicitly callable density helper; it does not opt
+`foo` into `y ~ foo(args...)`. For that sampling form, mark the density method
+`@lhs @lpxf` and provide matching `foo_lpdfs` and sized-token `foo_rng` bodies,
+as in the GARCH example above. Bundle compilation returns the ordinary model,
+descriptor, and generated-quantities source, so it requires the same complete
+distribution triad as a direct `@slic` model.
 
 The API accepts trusted expressions rather than source text: it neither parses
 nor sandboxes input, and macros inside those expressions retain ordinary Julia
