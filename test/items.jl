@@ -2336,6 +2336,117 @@ Snag `compile-slic-bun-83d3bfe1`, reported by SlicTranspiler.
 end
 
 """
+`compile_slic_bundle` accepts anonymous sub-model bodies and values as explicit
+workspace dependencies. The parent names each dependency structurally; callers
+do not need to evaluate `@slic` themselves or rewrite an anonymous model as a
+named method. Source and value inputs retain ordinary free-name kwarg binding
+and hygienic namespaces.
+Snag `compile-slic-bun-08d0bcdc`, reported by SlicTranspiler.
+"""
+@testitem "slic: compile anonymous submodel dependencies in a trusted bundle" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    data = (; y=0.2)
+    body = quote
+        left ~ local_prior(; mu=0.0, scale=1.0)
+        right ~ local_prior(; mu=1.0, scale=2.0)
+        y ~ normal(left + right, 1.0)
+    end
+
+    # Before the dependency channel, the parent symbol is intentionally absent
+    # from the owned workspace and cannot resolve a caller-local value.
+    missing = try
+        compile_slic_bundle(data, Expr[], body)
+        nothing
+    catch e
+        e
+    end
+    @test missing isa StanBlocksError
+    @test occursin("Could not find local_prior", sprint(showerror, missing))
+
+    source_dependency = "bundle-local-prior" => (:local_prior => quote
+        beta ~ normal(mu, scale)
+        return beta
+    end)
+    source_result = compile_slic_bundle(data, Expr[], body;
+        anonymous_submodels=[source_dependency], name=:anonymous_bundle)
+    @test source_result.descriptor.name == :anonymous_bundle
+    @test occursin("left_beta ~ normal(0.0, 1.0);", source_result.code)
+    @test occursin("right_beta ~ normal(1.0, 2.0);", source_result.code)
+    @test StanBlocks.required_inputs(source_result.descriptor) == (:y,)
+    @test stanc_compiles(source_result.model)
+
+    # CONTROL: direct value interpolation was the semantics-preserving
+    # workaround. Source and value dependencies must emit the identical model.
+    local_prior_value = @slic begin
+        beta ~ normal(mu, scale)
+        return beta
+    end
+    control_body = quote
+        left ~ $local_prior_value(; mu=0.0, scale=1.0)
+        right ~ $local_prior_value(; mu=1.0, scale=2.0)
+        y ~ normal(left + right, 1.0)
+    end
+    control_code = compile_slic_bundle(data, Expr[], control_body).code
+    value_code = compile_slic_bundle(data, Expr[], body;
+        anonymous_submodels=[:local_prior => local_prior_value]).code
+    @test source_result.code == control_code == value_code
+
+    # A body source is evaluated after the bundle UDFs and captures the owned
+    # workspace as its defining module.
+    udf_code = compile_slic_bundle(data, Expr[], body;
+        udf_definitions=[:(bundle_prior_location(x::real)::real = begin x + 0.25 end)],
+        anonymous_submodels=[:local_prior => quote
+            beta ~ normal(bundle_prior_location(mu), scale)
+            return beta
+        end]).code
+    @test occursin("left_beta ~ normal(bundle_prior_location(0.0), 1.0);", udf_code)
+
+    bad_body = "anonymous-prior-part" => (:bad_prior => quote
+        z ~ definitely_missing_anonymous_distribution(0.0)
+        return z
+    end)
+    bad_err = try
+        compile_slic_bundle((; y=0.0), Expr[], quote
+            mu ~ bad_prior()
+            y ~ normal(mu, 1.0)
+        end; anonymous_submodels=[bad_body])
+        nothing
+    catch e
+        e
+    end
+    @test diagnostic(bad_err).source_part == "anonymous-prior-part"
+
+    bad_value = @slic begin
+        z ~ definitely_missing_anonymous_value_distribution(0.0)
+        return z
+    end
+    bad_value_err = try
+        compile_slic_bundle((; y=0.0), Expr[], quote
+            mu ~ bad_prior_value()
+            y ~ normal(mu, 1.0)
+        end; anonymous_submodels=[
+            "anonymous-value-part" => (:bad_prior_value => bad_value),
+        ])
+        nothing
+    catch e
+        e
+    end
+    @test diagnostic(bad_value_err).source_part == "anonymous-value-part"
+
+    @test_throws ErrorException compile_slic_bundle(
+        data, Expr[], body; anonymous_submodels=[:local_prior => 42])
+    @test_throws ErrorException compile_slic_bundle(
+        data, Expr[], body; anonymous_submodels=["part" => ("not-a-symbol" => quote end)])
+    @test_throws ErrorException compile_slic_bundle(
+        data, Expr[], body; anonymous_submodels=[
+            :local_prior => local_prior_value,
+            :local_prior => local_prior_value,
+        ])
+    @test_throws ErrorException compile_slic_bundle(
+        data, [:(local_prior() = begin z ~ normal(0, 1); return z end)], body;
+        anonymous_submodels=[:local_prior => local_prior_value])
+end
+
+"""
 `compile_slic_bundle` preserves inline `@deffun` distribution annotations in
 its fresh module. A local density used through `~` needs the same explicit
 `@lhs @lpxf` registration and pointwise/predictive companions as a direct

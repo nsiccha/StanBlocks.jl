@@ -547,22 +547,35 @@ definitions = ["latent" => :(latent(scale) = begin
     z ~ normal(shift_zero(0.0), scale)
     return z
 end)]
+anonymous_submodels = ["local-prior" => (:local_prior => quote
+    z ~ normal(location, scale)
+    return z
+end)]
 body = "parent" => quote
     mu ~ latent(1.0)
-    y ~ normal(mu, 1.0)
+    offset ~ local_prior(; location=0.0, scale=1.0)
+    y ~ normal(mu + offset, 1.0)
 end
 
 result = compile_slic_bundle((; y=[0.1, -0.2]), definitions, body;
-    udf_definitions, name=:authoring_workspace)
+    udf_definitions, anonymous_submodels, name=:authoring_workspace)
 result.code
 result.descriptor
 ```
 
 `compile_slic_bundle` evaluates the dependency-ordered `udf_definitions` first,
-then the named SLIC definitions in their supplied order, in one fresh module,
-and traces the parent once. A bare expression remains supported; pairing any
-part as `source_part => expression` gives tracing and lowering failures from
-that part the same stable identity in `diagnostic(error)`.
+then the named SLIC definitions in their supplied order, then anonymous
+sub-model dependencies, in one fresh module, and traces the parent once. Each
+anonymous dependency is `name => body_or_value`, or
+`source_part => (name => body_or_value)` when it needs an editor identity. A
+body is the anonymous `@slic begin … end` contents without the outer macro; an
+existing `SlicModel` value is accepted too. The parent calls `name`, so anonymous
+free-name kwargs and per-LHS parameter namespaces are preserved without
+caller-side `Core.eval` or rewriting the model as a named method.
+
+A bare expression remains supported; pairing any ordinary part as
+`source_part => expression` gives tracing and lowering failures from that part
+the same stable identity in `diagnostic(error)`.
 
 UDF annotations keep their ordinary `@deffun` meaning inside a bundle. A
 `foo_lpdf` name alone is an explicitly callable density helper; it does not opt
