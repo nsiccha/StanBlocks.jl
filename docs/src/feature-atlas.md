@@ -586,6 +586,8 @@ end
 Calls expand at the call site rather than producing a Stan `functions` entry.
 Locals receive hygienic per-call names. A trailing `!` is the Julia-convention
 spelling for the same inline route and makes caller-buffer mutation expressible.
+At a `compile_slic_bundle` boundary, a macro-free UDF metadata entry with
+`markers=(:stanonly, :inline)` lowers to this same path.
 
 ### Runtime assertions
 
@@ -610,6 +612,11 @@ end
 ```@raw html
 </div>
 ```
+
+For `compile_slic_bundle`, the macro-free equivalent is an `assertions` record
+such as `((; condition=:(x > 0), message="safe_log: x must be positive"),)` on
+the UDF metadata entry. The compiler prepends the validated record to the
+bodyful definition using the same `@stan_assert` lowering.
 
 ### Transpile-time return type queries
 

@@ -577,17 +577,52 @@ A bare expression remains supported; pairing any ordinary part as
 `source_part => expression` gives tracing and lowering failures from that part
 the same stable identity in `diagnostic(error)`.
 
-UDF annotations keep their ordinary `@deffun` meaning inside a bundle. A
-`foo_lpdf` name alone is an explicitly callable density helper; it does not opt
-`foo` into `y ~ foo(args...)`. For that sampling form, mark the density method
-`@lhs @lpxf` and provide matching `foo_lpdfs` and sized-token `foo_rng` bodies,
+For an editable source that must remain macro-free, a UDF value may instead be
+a structured named tuple:
+
+```julia
+udf_definitions = [
+    "safe-log" => (;
+        definition=:(safe_log(x::real)::real = begin
+            log(x)
+        end),
+        markers=:stanonly,
+        assertions=((;
+            condition=:(x > 0),
+            message="safe_log: x must be positive",
+        ),),
+    ),
+    "scale" => (;
+        definition=:(scale(x::real, by::real)::real = begin
+            x * by
+        end),
+        markers=(:stanonly, :inline),
+    ),
+]
+```
+
+`definition` is required. `markers` accepts one Symbol or a tuple/vector drawn
+from `:stanonly`, `:juliacompat`, `:lhs`, `:lpxf`, and `:inline`. Each assertion
+has a `condition` AST and an optional string `message`; the compiler prepends it
+to one bodyful definition with `@stan_assert` semantics. Unknown fields,
+markers, duplicates, malformed assertions, and `:inline` combined with
+`:lhs`/`:lpxf` fail validation. The compiler lowers valid metadata to its own
+known macro forms, so consumers do not have to admit or synthesize macro AST.
+
+UDF annotations otherwise keep their ordinary `@deffun` meaning inside a
+bundle. A `foo_lpdf` name alone is an explicitly callable density helper; it
+does not opt `foo` into `y ~ foo(args...)`. For that sampling form, mark the
+density method with `markers=(:stanonly, :lhs, :lpxf)` (or the equivalent
+`@lhs @lpxf`) and provide matching `foo_lpdfs` and sized-token `foo_rng` bodies,
 as in the GARCH example above. Bundle compilation returns the ordinary model,
 descriptor, and generated-quantities source, so it requires the same complete
 distribution triad as a direct `@slic` model.
 
 The API accepts trusted expressions rather than source text: it neither parses
-nor sandboxes input, and macros inside those expressions retain ordinary Julia
-macro-expansion semantics.
+nor sandboxes input. Structured marker metadata avoids macros for the listed
+semantics, but does not make an otherwise arbitrary `definition` AST safe;
+macros inside supplied expressions retain ordinary Julia macro-expansion
+semantics.
 
 ## Posterior pointwise likelihood and predictive draws
 

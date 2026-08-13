@@ -10,12 +10,130 @@ _slic_bundle_definition(definition, index) = begin
     definition
 end
 
-_slic_bundle_udf_definition(definition, index) = begin
+const _SLIC_BUNDLE_UDF_METADATA_FIELDS = (:definition, :markers, :assertions)
+const _SLIC_BUNDLE_UDF_MARKERS = (:stanonly, :juliacompat, :lhs, :lpxf, :inline)
+const _SLIC_BUNDLE_ASSERTION_FIELDS = (:condition, :message)
+
+_slic_bundle_udf_marker_values(markers, index) = begin
+    marker_values = if markers isa Symbol
+        (markers,)
+    elseif markers isa Tuple || markers isa AbstractVector
+        Tuple(markers)
+    else
+        error(
+            "compile_slic_bundle: UDF definition $index markers must be a Symbol, " *
+            "tuple, or vector, got $(typeof(markers))."
+        )
+    end
+    for marker in marker_values
+        marker isa Symbol || error(
+            "compile_slic_bundle: UDF definition $index markers must be Symbols, " *
+            "got $(typeof(marker))."
+        )
+        marker in _SLIC_BUNDLE_UDF_MARKERS || error(
+            "compile_slic_bundle: UDF definition $index has unknown marker `$marker`; " *
+            "expected one of $(join(("`$value`" for value in _SLIC_BUNDLE_UDF_MARKERS), ", "))."
+        )
+    end
+    length(unique(marker_values)) == length(marker_values) || error(
+        "compile_slic_bundle: UDF definition $index markers must not contain duplicates."
+    )
+    (:inline in marker_values && (:lhs in marker_values || :lpxf in marker_values)) && error(
+        "compile_slic_bundle: UDF definition $index marker `inline` cannot be combined " *
+        "with `lhs` or `lpxf`."
+    )
+    marker_values
+end
+
+_slic_bundle_assertion_macrocalls(assertions, index, source_part) = begin
+    (assertions isa Tuple || assertions isa AbstractVector) || error(
+        "compile_slic_bundle: UDF definition $index assertions must be a tuple or vector, " *
+        "got $(typeof(assertions))."
+    )
+    map(enumerate(assertions)) do (assertion_index, assertion)
+        assertion isa NamedTuple || error(
+            "compile_slic_bundle: UDF definition $index assertion $assertion_index must " *
+            "be a named tuple, got $(typeof(assertion))."
+        )
+        unknown = filter(field -> !(field in _SLIC_BUNDLE_ASSERTION_FIELDS), keys(assertion))
+        isempty(unknown) || error(
+            "compile_slic_bundle: UDF definition $index assertion $assertion_index has " *
+            "unknown field `$(first(unknown))`; expected `condition` and optional `message`."
+        )
+        haskey(assertion, :condition) || error(
+            "compile_slic_bundle: UDF definition $index assertion $assertion_index is " *
+            "missing required field `condition`."
+        )
+        condition = assertion.condition
+        (condition isa Expr || condition isa Symbol || condition isa Bool) || error(
+            "compile_slic_bundle: UDF definition $index assertion $assertion_index " *
+            "condition must be an Expr, Symbol, or Bool, got $(typeof(condition))."
+        )
+        if haskey(assertion, :message)
+            assertion.message isa AbstractString || error(
+                "compile_slic_bundle: UDF definition $index assertion $assertion_index " *
+                "message must be a string, got $(typeof(assertion.message))."
+            )
+            _slic_bundle_macrocall(
+                Symbol("@stan_assert"), source_part, condition, assertion.message)
+        else
+            _slic_bundle_macrocall(Symbol("@stan_assert"), source_part, condition)
+        end
+    end
+end
+
+_slic_bundle_insert_assertions(definition, assertions, index) = begin
+    isempty(assertions) && return definition
+    Meta.isexpr(definition, :(=)) && length(definition.args) == 2 || error(
+        "compile_slic_bundle: UDF definition $index assertions require one bodyful " *
+        "function definition."
+    )
+    signature, body = definition.args
+    Meta.isexpr(body, :block) || error(
+        "compile_slic_bundle: UDF definition $index assertions require a `begin ... end` body."
+    )
+    Expr(:(=), signature, Expr(:block, assertions..., body.args...))
+end
+
+_slic_bundle_udf_marker_call(marker, source_part, definition) = Expr(
+    :macrocall,
+    Symbol("@", string(marker)),
+    LineNumberNode(0, source_part),
+    definition,
+)
+
+_slic_bundle_udf_definition(definition, index, _source_part) = begin
     definition isa Expr || error(
         "compile_slic_bundle: UDF definition $index must be an expression accepted by " *
-        "`@deffun`, got $(typeof(definition))."
+        "`@deffun` or a marker-metadata named tuple, got $(typeof(definition))."
     )
     definition
+end
+
+_slic_bundle_udf_definition(metadata::NamedTuple, index, source_part) = begin
+    unknown = filter(field -> !(field in _SLIC_BUNDLE_UDF_METADATA_FIELDS), keys(metadata))
+    isempty(unknown) || error(
+        "compile_slic_bundle: UDF definition $index marker metadata has unknown field " *
+        "`$(first(unknown))`; expected `definition`, optional `markers`, and optional `assertions`."
+    )
+    haskey(metadata, :definition) || error(
+        "compile_slic_bundle: UDF definition $index marker metadata is missing required " *
+        "field `definition`."
+    )
+    definition = metadata.definition
+    definition isa Expr || error(
+        "compile_slic_bundle: UDF definition $index metadata field `definition` must be " *
+        "an expression accepted by `@deffun`, got $(typeof(definition))."
+    )
+    markers = _slic_bundle_udf_marker_values(
+        haskey(metadata, :markers) ? metadata.markers : (), index)
+    assertions = _slic_bundle_assertion_macrocalls(
+        haskey(metadata, :assertions) ? metadata.assertions : (), index, source_part)
+    lowered = _slic_bundle_insert_assertions(definition, assertions, index)
+    for marker in reverse(markers)
+        lowered = _slic_bundle_udf_marker_call(marker, source_part, lowered)
+    end
+    lowered
 end
 
 _slic_bundle_with_source_part(x, _source_part) = x
@@ -44,7 +162,7 @@ _slic_bundle_part(value, label, index=nothing) = begin
     )
     source_part = Symbol(source_part)
     expression = labeled ? _slic_bundle_with_source_part(expression, source_part) : expression
-    (; source_part, expression)
+    (; source_part, expression, labeled)
 end
 
 _slic_bundle_macrocall(macro_name, source_part, args...) = Expr(
@@ -111,15 +229,24 @@ end
 
 Compile an ordered collection of `@deffun` UDF definitions, named SLIC
 sub-model definitions, anonymous sub-model dependencies, and one parent SLIC
-model body. `udf_definitions` contains expressions accepted by `@deffun`;
-`definitions` contains expressions shaped like `f(args...) = begin ... end`
-(without an outer `@slic` macro call); `anonymous_submodels` contains
-`name => body_or_value` pairs, where `name` is the Symbol used by the parent and
-the value is either an anonymous SLIC body expression (without an outer `@slic`)
-or an existing `SlicModel`; and `body` is the parent model expression. UDFs are
-installed first in their supplied order, then named SLIC definitions, then
-anonymous dependencies, in a fresh module. The parent is traced exactly once in
-that same module.
+model body. Each `udf_definitions` value is either an expression accepted by
+`@deffun` or a named tuple with a required `definition` expression plus optional
+`markers` and `assertions`. `definitions` contains expressions shaped like
+`f(args...) = begin ... end` (without an outer `@slic` macro call);
+`anonymous_submodels` contains `name => body_or_value` pairs, where `name` is
+the Symbol used by the parent and the value is either an anonymous SLIC body
+expression (without an outer `@slic`) or an existing `SlicModel`; and `body` is
+the parent model expression. UDFs are installed first in their supplied order,
+then named SLIC definitions, then anonymous dependencies, in a fresh module. The
+parent is traced exactly once in that same module.
+
+Structured UDF metadata is the macro-free spelling of trusted compiler-owned
+annotations. `markers` accepts one Symbol or a tuple/vector drawn from
+`:stanonly`, `:juliacompat`, `:lhs`, `:lpxf`, and `:inline`; `:inline` cannot be
+combined with `:lhs` or `:lpxf`. `assertions` is a tuple/vector of named tuples
+with a `condition` AST and optional string `message`. Assertions are prepended
+to one bodyful definition with the semantics of [`@stan_assert`](@ref). Unknown
+fields, markers, duplicates, and malformed assertions fail before evaluation.
 
 Each UDF or SLIC definition, and the parent body, may be written as either a
 bare expression or `source_part => expression`, where `source_part` is a
@@ -161,7 +288,16 @@ anonymous_submodels = ["local-prior" => (:local_prior => quote
 end)]
 udf_definitions = ["shift-zero" => :(shift_zero(x::real)::real = begin
     x + 0.25
-end)]
+end), "safe-log" => (;
+    definition=:(safe_log(x::real)::real = begin
+        log(x)
+    end),
+    markers=:stanonly,
+    assertions=((;
+        condition=:(x > 0),
+        message="safe_log: x must be positive",
+    ),),
+)]
 body = "parent" => quote
     mu ~ latent(1.0)
     offset ~ local_prior(; location=0.0, scale=1.0)
@@ -178,8 +314,12 @@ function compile_slic_bundle(data, definitions, body;
         udf_definitions=(), anonymous_submodels=(), name=nothing)
     checked_udfs = map(enumerate(collect(udf_definitions))) do (index, definition)
         part = _slic_bundle_part(definition, "UDF definition", index)
+        expression = _slic_bundle_udf_definition(
+            part.expression, index, part.source_part)
+        part.labeled && (expression = _slic_bundle_with_source_part(
+            expression, part.source_part))
         (; part.source_part,
-           expression=_slic_bundle_udf_definition(part.expression, index))
+           expression)
     end
     checked_definitions = map(enumerate(collect(definitions))) do (index, definition)
         part = _slic_bundle_part(definition, "definition", index)
