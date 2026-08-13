@@ -7060,6 +7060,129 @@ isolated test item.
     @test !occursin("<unrenderable", oshown)
 end
 
+"""
+Verify `slic: structured diagnostics preserve source-part provenance` in an
+isolated test item.
+"""
+@testitem "slic: structured diagnostics preserve source-part provenance" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Parser diagnostics come from JuliaSyntax's structured byte location, not
+    # from the rendered `# Error @ none:L:C` text. The offset maps the trusted
+    # leading `begin` wrapper back onto the submitted editor source.
+    parse_err = try
+        Meta.parse("begin\nx = )\nend")
+        nothing
+    catch err
+        err
+    end
+    parsed = diagnostic(parse_err; source_part="parent", line_offset=-1)
+    @test parsed isa StanBlocksDiagnostic
+    @test parsed.source_part == "parent"
+    @test parsed.line == 1
+    @test parsed.column == 5
+    @test parsed.code == :slic_parse_error
+    @test occursin("unexpected `)`", parsed.message)
+    @test diagnostic(ArgumentError("outside StanBlocks")) === nothing
+
+    # Existing three-element cause tuples remain readable; callers adopting
+    # the new accessor do not require every producer to switch atomically.
+    legacy = StanBlocksError(
+        :transpile,
+        "model",
+        (ErrorException("legacy transpile failure"), nothing, Any[]),
+    )
+    legacy_diag = diagnostic(legacy; source_part="legacy-part")
+    @test legacy_diag.source_part == "legacy-part"
+    @test legacy_diag.code == :slic_transpile_error
+    @test legacy_diag.message == "legacy transpile failure"
+
+    eval_slic(part, source) = Core.eval(
+        @__MODULE__,
+        Expr(:macrocall, Symbol("@slic"), LineNumberNode(0, Symbol(part)), Meta.parse(source)),
+    )
+
+    # A tracing failure points at the editor part supplied on the trusted
+    # macrocall. Julia's lowered AST has line numbers but no expression columns,
+    # so `column === nothing` is the honest structured value.
+    trace_model = eval_slic("parent-model", """begin
+        theta ~ normal(0.0, 1.0)
+        y ~ definitely_missing_diagnostic_call(theta)
+    end""")
+    trace_err = try
+        stan_code(trace_model)
+        nothing
+    catch err
+        err
+    end
+    traced = diagnostic(trace_err; line_offset=-1)
+    @test trace_err isa StanBlocksError
+    @test traced.source_part == "parent-model"
+    @test traced.line == 2
+    @test traced.column === nothing
+    @test traced.code == :slic_trace_error
+    @test occursin("definitely_missing_diagnostic_call", traced.message)
+
+    # A failure after forward tracing has completed is classified separately as
+    # lowering. A bare non-void expression is traceable but cannot be assigned
+    # to a Stan block at statement position.
+    lower_model = eval_slic("lowering-part", """begin
+        1 + 2
+    end""")
+    lower_err = try
+        stan_code(lower_model)
+        nothing
+    catch err
+        err
+    end
+    lowered = diagnostic(lower_err; line_offset=-1)
+    @test lower_err isa StanBlocksError
+    @test lowered.source_part == "lowering-part"
+    @test lowered.line == 1
+    @test lowered.code == :slic_lowering_error
+
+    # Named @slic definitions and @deffun bodies inherit their own macrocall
+    # source part even when their parsed child LineNumberNodes said `none`.
+    sub_def = Meta.parse("""diagnostic_submodel(x::real) = begin
+        z ~ definitely_missing_submodel_call(x)
+    end""")
+    Core.eval(@__MODULE__, Expr(
+        :macrocall, Symbol("@slic"), LineNumberNode(0, Symbol("submodel-definition")), sub_def,
+    ))
+    sub_parent = eval_slic("submodel-parent", """begin
+        child ~ diagnostic_submodel(0.0)
+    end""")
+    sub_err = try
+        stan_code(sub_parent)
+        nothing
+    catch err
+        err
+    end
+    sub_diag = diagnostic(sub_err; line_offset=-1)
+    @test sub_diag.source_part == "submodel-definition"
+    @test sub_diag.line == 1
+    @test sub_diag.code == :slic_trace_error
+
+    udf_def = Meta.parse("""diagnostic_udf(x::real)::real = begin
+        definitely_missing_udf_call(x)
+    end""")
+    Core.eval(@__MODULE__, Expr(
+        :macrocall, Symbol("@deffun"), LineNumberNode(0, Symbol("udf-definition")), udf_def,
+    ))
+    udf_parent = eval_slic("udf-parent", """begin
+        mu = diagnostic_udf(0.0)
+        y ~ normal(mu, 1.0)
+    end""")
+    udf_err = try
+        stan_code(udf_parent)
+        nothing
+    catch err
+        err
+    end
+    udf_diag = diagnostic(udf_err; line_offset=-1)
+    @test udf_diag.source_part == "udf-definition"
+    @test udf_diag.line == 1
+    @test udf_diag.code == :slic_lowering_error
+end
+
 @testitem "slic: plate carries cell constraints through promotion" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block, msg
     G, lamv = 4, fill(0.5, 4)

@@ -386,14 +386,26 @@ struct StanFunction3
     parent
     args::NamedTuple
     body::Vector
+    source::Union{Nothing,LineNumberNode}
 end
+StanFunction3(docstring, rv_type, parent, args, body) =
+    StanFunction3(docstring, rv_type, parent, args, body, nothing)
 
-Base.show(io::IO, f::StanFunction3) = autoprint(
-    io,
-    f.docstring,
-    sigtype(f.rv_type), " ", func_name(f.parent, f.args), "(", func_args(f.args), ")",
-    StanBlock(Symbol(), f.body)
-)
+function Base.show(io::IO, f::StanFunction3)
+    try
+        autoprint(
+            io,
+            f.docstring,
+            sigtype(f.rv_type), " ", func_name(f.parent, f.args), "(", func_args(f.args), ")",
+            StanBlock(Symbol(), f.body),
+        )
+    catch e
+        _is_stanblocks_error(e) && rethrow()
+        bt = catch_backtrace()
+        structured = _diagnostic_from_error(:slic_lowering_error, e, f.source)
+        throw(StanBlocksError(:transpile, "function", (e, bt, Any[], structured)))
+    end
+end
 
 # Runtime half of the bounded Julia target for `@deffun`.  The macro-side
 # lowering below routes global calls through `jcall(Val(name), def_mod, ...)`:
@@ -1206,6 +1218,7 @@ begin
     else
         # @assert x.head == :(=)
         fsig, body = ensure_xassign(x).args
+        definition_lnn = ismissing(body) ? source : something(_last_source_lnn(body), source)
         fcall, rv = ensure_xtyped(fsig).args
         @assert Meta.isexpr(fcall, :call) "@deffun: function signature must be a `:call` expression like `f(args...)::T`, got `$fcall`."
         f, all_args... = fcall.args
@@ -1547,7 +1560,8 @@ begin
                     $(collect(values(fun_sizes))),
                     $(fun_checks),
                     $forward!($(canonical(body)); info)
-                )
+                ),
+                $stan._deref_lnn($stan._current_lnn(info)),
             ))
         end
 
@@ -1625,7 +1639,14 @@ begin
             if !ismissing(body)
                 push!(stmts, quote
                     $stan.fundef($xexpr) = $stan._fundef(x, nothing)
-                    $stan._fundef($xexpr, context) = $(Expr(:block, source, capture_mod, anon_deconstruct, inject_context, inject_mod, stan_fundef))
+                    $stan._fundef($xexpr, context) = $stan._with_slic_diagnostic(
+                        :slic_lowering_error,
+                        "function",
+                        context,
+                        $(QuoteNode(definition_lnn)),
+                    ) do
+                        $(Expr(:block, source, capture_mod, anon_deconstruct, inject_context, inject_mod, stan_fundef))
+                    end
                 end)
                 # Mark the NAME as UDF-backed. `fundef` alone cannot answer
                 # "should this function have had a Stan definition?" — it falls

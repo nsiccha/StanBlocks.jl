@@ -11,15 +11,17 @@ macro slic(model)
     # `@slic f(args...) = body` — a NAMED sub-model function (see `_slic_fn`);
     # everything else is an anonymous `SlicModel` value.
     if Meta.isexpr(model, :(=)) && Meta.isexpr(model.args[1], :call)
-        return _slic_fn(model, __module__)
+        return _slic_fn(_inherit_source_file(model, __source__), __module__)
     end
-    expanded = lower_string_interp(slic_macroexpand(__module__, model))
+    expanded = _inherit_source_file(
+        lower_string_interp(slic_macroexpand(__module__, model)), __source__)
     doc, stripped = extract_leading_docstring(expanded)
     SlicModel(stripped, Dict{Symbol,Any}(:docstring => doc), __module__)
 end
 macro slic(data, model)
     mod = @__MODULE__
-    expanded = lower_string_interp(slic_macroexpand(__module__, model))
+    expanded = _inherit_source_file(
+        lower_string_interp(slic_macroexpand(__module__, model)), __source__)
     doc, stripped = extract_leading_docstring(expanded)
     qmodel = Meta.quot(stripped)
     if isempty(doc)
@@ -188,7 +190,9 @@ end
 See `src/slic_stan/builtin.jl` for many more examples.
 """
 macro deffun(x)
-    esc(deffun(lower_string_interp(slic_macroexpand(__module__, x)); source=__source__, def_mod=__module__))
+    expanded = _inherit_source_file(
+        lower_string_interp(slic_macroexpand(__module__, x)), __source__)
+    esc(deffun(expanded; source=__source__, def_mod=__module__))
 end
 
 """
