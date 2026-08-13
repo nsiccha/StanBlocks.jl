@@ -339,6 +339,11 @@ function compile_slic_bundle(data, definitions, body;
     )
 
     workspace = Module(gensym(:StanBlocksSlicBundle))
+    # UDFs installed in this fresh module must see public transpile-time
+    # helpers without depending on which StanBlocks exports happen to exist in
+    # `Main`. Bind the package function itself before evaluating definitions.
+    Core.eval(workspace, Expr(:const, Expr(:(=), :return_type_of,
+        GlobalRef(@__MODULE__, :return_type_of))))
     for definition in checked_udfs
         Core.eval(workspace, _slic_bundle_macrocall(
             Symbol("@deffun"), definition.source_part, definition.expression))
