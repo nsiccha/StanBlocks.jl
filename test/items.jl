@@ -7876,3 +7876,25 @@ in both the builtin name manifest and the native signature block so a
     @test occursin("return not_a_number();", code)
     @test stanc_check(code; warn_pedantic=false).ok
 end
+
+"""
+Stan overloads `log2`: `log2(x)` is the ordinary unary logarithm, while
+zero-argument `log2()` is the real constant `log(2)`. The shared unary-math
+signature covers only the former, so the latter needs its own native signature.
+Regression for Helpful Stan Functions' student-t log-CDF/log-CCDF helpers.
+"""
+@testitem "slic: native zero-argument log2 builtin emits and compiles" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
+    @deffun begin
+        @stanonly student_t_tail_probe(lval::real)::real = lval - log2()
+        @stanonly unary_log2_probe(x::real)::real = log2(x)
+    end
+
+    model = @slic (; y = 0.0) begin
+        theta ~ lognormal(0.0, 1.0)
+        y ~ normal(student_t_tail_probe(theta) + unary_log2_probe(theta), 1.0)
+    end
+    code = stan_code(model)
+    @test occursin("return (lval - log2());", code)
+    @test occursin("return log2(x);", code)
+    @test stanc_check(code; warn_pedantic=false).ok
+end

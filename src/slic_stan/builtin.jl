@@ -149,6 +149,9 @@ end
     dims rows cols
     reject
     positive_infinity negative_infinity not_a_number
+    # Stan also exposes a zero-argument `log2()` constant; registering the
+    # shared name here keeps both it and the unary overload on one callable.
+    log2
 
     reduce_sum reduce_sum_static reduce_sum_reconstruct simple_reduce_sum simple_reduce_sum_helper
 
@@ -293,6 +296,7 @@ import Statistics
     positive_infinity()::real
     negative_infinity()::real
     not_a_number()::real
+    log2()::real
     reject(args...)::anything
     # --- Stan 2.37 exposed constraint-transform functions (Feature 1: ragged
     # non-trivial constrained parameters). Bodyless — these are Stan built-ins
