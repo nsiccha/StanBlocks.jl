@@ -611,6 +611,23 @@ end
     # the `ensure_xlhs(::Integer)` method in functions.jl.)
     @deffun litdim_scale(x::vector[4]) = x * 2.0
     @deffun symdim_scale(x::vector[n]) = x * 2.0
+    # A raw `matrix` keeps its final two dimensions as the native matrix core;
+    # every leading dimension is a Stan array prefix. Default Julia emission
+    # represents the same rectangular value as an equal-rank dense array.
+    @deffun nested_matrix_result(x::matrix[n, j])::matrix[2, n, j] = begin
+        out::matrix[2, n, j]
+        for k in 1:2
+            for i in 1:n
+                for q in 1:j
+                    out[k, i, q] = x[i, q]
+                end
+            end
+        end
+        out
+    end
+    @deffun nested_matrix_input(x::matrix[m, two, n, j])::real = begin
+        sum(x[1, 1, :, :])
+    end
     # --- COMPOSITE (named-tuple) return whose ELEMENT sizes name the params ---
     # A ragged-map HOF: the returned `(;ends, mem)` has `mem` sized by a CALL over
     # the function's own params (`sum(ntd_sub_lengths(f, x, args...))`). At a call
@@ -3837,6 +3854,40 @@ end
     # the function name — the whole point of admitting the literal dimension.
     normname(code) = replace(code, "litdim_scale" => "F", "symdim_scale" => "F")
     @test normname(stan_code(litdim)) == normname(stan_code(symdim))
+end
+
+@testitem "slic: @deffun nested array-of-matrix signatures" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    x = reshape(collect(1.0:6.0), 2, 3)
+    result = nested_matrix_result(x)
+    @test size(result) == (2, 2, 3)
+    @test result[1, :, :] == x
+    @test result[2, :, :] == x
+
+    nested = reshape(collect(1.0:48.0), 2, 2, 3, 4)
+    @test nested_matrix_input(nested) == sum(nested[1, 1, :, :])
+
+    function synthetic_arg(name, center, sizes)
+        dims = map(sizes) do size
+            StanBlocks.StanExpr(size, StanBlocks.StanType(StanBlocks.types.int))
+        end
+        StanBlocks.StanExpr(name, StanBlocks.StanType(center, Tuple(dims)))
+    end
+    function stan_render(value)
+        io = IOBuffer()
+        show(StanBlocks.StanIO(io), value)
+        String(take!(io))
+    end
+
+    matrix_arg = synthetic_arg(:x, StanBlocks.types.matrix, (:n, :j))
+    nested_arg = synthetic_arg(:x, StanBlocks.types.matrix, (:m, :two, :n, :j))
+    result_udf = stan_render(StanBlocks.fundef(StanBlocks.CanonicalExpr(nested_matrix_result, matrix_arg)))
+    input_udf = stan_render(StanBlocks.fundef(StanBlocks.CanonicalExpr(nested_matrix_input, nested_arg)))
+    @test occursin("array[] matrix nested_matrix_result(", result_udf)
+    @test occursin("real nested_matrix_input(array[, ] matrix x)", input_udf)
+
+    code = "functions {\n$result_udf\n$input_udf\n}\nmodel {}\n"
+    checked = stanc_check(code; warn_pedantic=false)
+    @test checked.ok
 end
 
 @testitem "slic: typed assignment sized from a non-first signature arg" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin

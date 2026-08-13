@@ -288,6 +288,13 @@ that automatically skips Julia emission. This Julia target is useful for unit
 tests, but it is not a promise of full Julia runtime parity for every Stan
 builtin.
 
+For a raw `matrix`, the final two annotation dimensions are the native matrix
+shape and every leading dimension is a Stan array prefix. Thus
+`matrix[K,N,J]` emits `array[] matrix`, while `matrix[M,K,N,J]` emits
+`array[,] matrix`. These annotations work on arguments, returns, and fresh
+locals; the default Julia method represents them as equal-rank dense arrays, so
+use cross-target indexing such as `x[m,k,:,:]` when selecting a nested matrix.
+
 ## Executable model descriptors
 
 `stan_descriptor(model)` turns the traced model into read-only structured data:
