@@ -7701,3 +7701,26 @@ Michaelis-Menten step (`exact_michaelis_menten_solution`) needs the closed-form
     @test occursin("return lambert_w0(x);", vector_code)
     @test stanc_check(vector_code; warn_pedantic=false).ok
 end
+
+"""
+`not_a_number()` is a zero-argument native Stan function. It must be registered
+in both the builtin name manifest and the native signature block so a
+`@stanonly @deffun` body can resolve and emit the call.
+"""
+@testitem "slic: native not_a_number builtin emits and compiles" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
+    @deffun begin
+        @stanonly not_a_number_probe(x::real)::real = if is_inf(x)
+            not_a_number()
+        else
+            x
+        end
+    end
+
+    model = @slic (; y = 0.0) begin
+        theta ~ normal(0.0, 1.0)
+        y ~ normal(not_a_number_probe(theta), 1.0)
+    end
+    code = stan_code(model)
+    @test occursin("return not_a_number();", code)
+    @test stanc_check(code; warn_pedantic=false).ok
+end
