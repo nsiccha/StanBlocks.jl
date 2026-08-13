@@ -599,7 +599,7 @@ begin
     ensure_xvect(x) = Meta.isexpr(x, :vect) ? x : xvect(x)
     ensure_xreturn(x::Expr) = if x.head in (:block, :macrocall)
         Expr(x.head, x.args[1:end-1]..., ensure_xreturn(x.args[end]))
-    elseif x.head == :if
+    elseif x.head in (:if, :elseif)
         # A ternary `a ? b : c` also parses to `Expr(:if, …)` but with
         # VALUE branches (a statement-`if` always wraps its then-branch in a
         # `:block`). Distributing `return` INTO a ternary's value branches
@@ -608,7 +608,8 @@ begin
         # return-wrap the ternary WHOLE (→ `return (a ? b : c);`); only
         # distribute for a real statement-`if`/`elseif`. Same discriminator
         # as `canonical(::Expr)`'s ternary branch (tracing.jl).
-        if length(x.args) == 3 && !Meta.isexpr(x.args[2], :block) && !Meta.isexpr(x.args[3], :block)
+        if x.head === :if && length(x.args) == 3 &&
+                !Meta.isexpr(x.args[2], :block) && !Meta.isexpr(x.args[3], :block)
             Expr(:return, x)
         else
             Expr(x.head, x.args[1], ensure_xreturn.(x.args[2:end])...)
