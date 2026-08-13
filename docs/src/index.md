@@ -510,30 +510,38 @@ a symbol naming that model. Positional inputs belong to a named sub-model
 function (`@slic f(x::real) = ...`); anonymous sub-model values accept kwargs
 or enclosing-scope bindings only.
 
-Interactive authoring tools that already parsed and validated several named
+Interactive authoring tools that already parsed and validated UDFs and named
 sub-model definitions can compile the whole workspace without constructing
 macro calls or managing an evaluation module themselves:
 
 ```julia
-definitions = [:(latent(scale) = begin
-    z ~ normal(0, scale)
+udf_definitions = ["shift-zero" => :(shift_zero(x::real)::real = begin
+    x + 0.25
+end)]
+definitions = ["latent" => :(latent(scale) = begin
+    z ~ normal(shift_zero(0.0), scale)
     return z
 end)]
-body = quote
+body = "parent" => quote
     mu ~ latent(1.0)
     y ~ normal(mu, 1.0)
 end
 
 result = compile_slic_bundle((; y=[0.1, -0.2]), definitions, body;
-    name=:authoring_workspace)
+    udf_definitions, name=:authoring_workspace)
 result.code
 result.descriptor
 ```
 
-`compile_slic_bundle` evaluates definitions in the supplied order in one fresh
-module and traces the parent once. It accepts trusted expressions rather than
-source text: it neither parses nor sandboxes input, and macros inside those
-expressions retain ordinary Julia macro-expansion semantics.
+`compile_slic_bundle` evaluates the dependency-ordered `udf_definitions` first,
+then the named SLIC definitions in their supplied order, in one fresh module,
+and traces the parent once. A bare expression remains supported; pairing any
+part as `source_part => expression` gives tracing and lowering failures from
+that part the same stable identity in `diagnostic(error)`.
+
+The API accepts trusted expressions rather than source text: it neither parses
+nor sandboxes input, and macros inside those expressions retain ordinary Julia
+macro-expansion semantics.
 
 ## Posterior pointwise likelihood and predictive draws
 

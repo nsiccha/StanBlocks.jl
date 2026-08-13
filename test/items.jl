@@ -2188,16 +2188,26 @@ Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
 end
 
 """
-`compile_slic_bundle` owns the fresh-module / ordered-`@slic` integration that
-interactive authoring consumers otherwise have to reproduce with synthetic
-macrocalls and `Core.eval`. It traces once, then returns the ordinary model,
-descriptor, and source surfaces used for a single anonymous model.
+`compile_slic_bundle` owns the fresh-module / ordered-`@deffun` / ordered-`@slic`
+integration that interactive authoring consumers otherwise have to reproduce
+with synthetic macrocalls and `Core.eval`. It traces once, then returns the
+ordinary model, descriptor, and source surfaces used for a single anonymous
+model.
 Snag `first-class-slic-d83cfbea`, reported by SlicTranspiler.
+Snag `compile-slic-bun-83d3bfe1`, reported by SlicTranspiler.
 """
 @testitem "slic: compile a trusted bundle of named submodels and a parent" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    udf_definitions = [
+        "bundle-offset" => :(bundle_offset(x::real)::real = begin
+            x + 0.25
+        end),
+        "bundle-shift" => :(bundle_shift(x::real)::real = begin
+            bundle_offset(x)
+        end),
+    ]
     definitions = [
         :(bundle_latent(scale) = begin
-            z ~ normal(0, scale)
+            z ~ normal(bundle_shift(0.0), scale)
             return z
         end),
         :(bundle_shifted(scale, offset) = begin
@@ -2211,16 +2221,82 @@ Snag `first-class-slic-d83cfbea`, reported by SlicTranspiler.
     end
 
     result = compile_slic_bundle((; y=[0.1, -0.2, 0.4]), definitions, body;
-        name=:bundle_parent)
+        udf_definitions, name=:bundle_parent)
 
     @test result.model isa StanBlocks.StanModel
     @test result.descriptor isa StanBlocks.ModelDescriptor
     @test result.descriptor.name == :bundle_parent
     @test result.code == stan_code(result.model)
-    @test occursin("mu_z_z ~ normal(0, 1.0);", result.code)
+    @test occursin("real bundle_offset(real x)", result.code)
+    @test occursin("real bundle_shift(real x)", result.code)
+    @test occursin("mu_z_z ~ normal(bundle_shift(0.0), 1.0);", result.code)
     @test occursin("y ~ normal(mu, 1.0);", result.code)
     @test StanBlocks.required_inputs(result.descriptor) == (:y,)
     @test stanc_compiles(result.model)
+
+    # CONTROL: this is the consumer-owned integration the bundle API replaces.
+    # Installing the same parsed parts manually must produce byte-identical Stan.
+    control_udf = :(bundle_control_shift(x::real)::real = begin
+        x + 0.25
+    end)
+    control_body = quote
+        mu ~ normal(bundle_control_shift(0.0), 1.0)
+        y ~ normal(mu, 1.0)
+    end
+    control_data = (; y=[0.1, -0.2, 0.4])
+    workspace = Module(gensym(:SlicBundleControl))
+    Core.eval(workspace, Expr(
+        :macrocall, GlobalRef(StanBlocks, Symbol("@deffun")),
+        LineNumberNode(0, Symbol("bundle-control-udf")), control_udf,
+    ))
+    manual_slic = Core.eval(workspace, Expr(
+        :macrocall, GlobalRef(StanBlocks, Symbol("@slic")),
+        LineNumberNode(0, :slic_bundle), QuoteNode(control_data), control_body,
+    ))
+    manual_code = Base.invokelatest(() -> stan_code(manual_slic))
+    api_code = compile_slic_bundle(control_data, Expr[], control_body;
+        udf_definitions=["bundle-control-udf" => control_udf]).code
+    @test api_code == manual_code
+
+    # Each trusted workspace part carries its own editor identity through the
+    # ordinary structured-diagnostic path.
+    bad_udf = "bundle-udf" => :(bundle_bad(x::real)::real = begin
+        definitely_missing_bundle_udf(x)
+    end)
+    udf_err = try
+        compile_slic_bundle((; y=0.1), Expr[], "bundle-parent" => quote
+            mu = bundle_bad(0.0)
+            y ~ normal(mu, 1.0)
+        end; udf_definitions=[bad_udf])
+        nothing
+    catch e
+        e
+    end
+    @test diagnostic(udf_err).source_part == "bundle-udf"
+
+    definition_err = try
+        compile_slic_bundle((; y=0.1), ["bundle-definition" => :(bundle_bad_model() = begin
+            z ~ definitely_missing_bundle_distribution(0.0)
+            return z
+        end)], "bundle-parent" => quote
+            mu ~ bundle_bad_model()
+            y ~ normal(mu, 1.0)
+        end)
+        nothing
+    catch e
+        e
+    end
+    @test diagnostic(definition_err).source_part == "bundle-definition"
+
+    parent_err = try
+        compile_slic_bundle((; y=0.1), Expr[], "bundle-parent" => quote
+            y ~ definitely_missing_bundle_parent(0.0)
+        end)
+        nothing
+    catch e
+        e
+    end
+    @test diagnostic(parent_err).source_part == "bundle-parent"
 
     # Validate the whole definition list before mutating a workspace.
     bad = Any[first(definitions), :(not_a_definition)]
@@ -2232,6 +2308,10 @@ Snag `first-class-slic-d83cfbea`, reported by SlicTranspiler.
     end
     @test err isa ErrorException
     @test occursin("definition 2 must be a named SLIC definition", sprint(showerror, err))
+    @test_throws ErrorException compile_slic_bundle(
+        (; y=0.0), definitions, body; udf_definitions=[:not_an_expression])
+    @test_throws ErrorException compile_slic_bundle(
+        (; y=0.0), [42 => first(definitions)], body)
     @test_throws ErrorException compile_slic_bundle((; y=0.0), definitions, :not_an_expr)
 end
 
