@@ -2542,6 +2542,72 @@ Verify `built-in constants resolve (pi, ℯ); arbitrary const errors` in an isol
 end
 
 """
+Julia's short-circuit AST heads must lower directly to Stan `&&` / `||` inside
+`@deffun` bodies. They are not callable Base functions and must not fall through
+the ordinary function-head resolver (which used to fail with `Could not find &&`).
+"""
+@testitem "slic: @deffun short-circuit boolean operators" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports] begin
+    @deffun begin
+        # Mirrors helpful_stan_functions@583d31de's gpareto_lpdf support check.
+        @stanonly short_circuit_guard(x::vector[n], ymin::real, k::real, sigma::real)::real = begin
+            inv_k = inv(k)
+            if k < 0 && max(x - ymin) / sigma > -inv_k
+                return -1.0
+            end
+            if sigma <= 0 || ymin < 0
+                return 0.0
+            end
+            1.0
+        end
+
+        # The default Julia emission must keep Julia's lazy RHS evaluation too.
+        short_circuit_julia_or(x::real)::real = begin
+            if x > 0 || error("short-circuit OR evaluated its RHS")
+                return x
+            end
+            0.0
+        end
+        short_circuit_julia_and(x::real)::real = begin
+            if x < 0 && error("short-circuit AND evaluated its RHS")
+                return -x
+            end
+            x
+        end
+    end
+
+    model = @slic (; x=[0.1, 0.2, 0.3], y=0.0) begin
+        k ~ std_normal()
+        sigma ~ lognormal(0.0, 1.0)
+        y ~ normal(short_circuit_guard(x, 0.0, k, sigma), 1.0)
+    end
+    code = stan_code(model)
+    @test occursin(" && ", code)
+    @test occursin(" || ", code)
+    @test stanc_check(code; warn_pedantic=false).ok
+
+    @test short_circuit_julia_or(1.0) == 1.0
+    @test short_circuit_julia_and(1.0) == 1.0
+    @test_throws ErrorException short_circuit_julia_or(-1.0)
+    @test_throws ErrorException short_circuit_julia_and(-1.0)
+
+    # `@slic` remains straight-line: the same expression is supported only in
+    # a UDF body, and now rejects at the structural gate instead of symbol lookup.
+    bad = @slic (;) begin
+        z = 1 < 2 && 2 < 3
+        y ~ normal(z, 1.0)
+    end
+    bad_error = try
+        stan_code(bad)
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test bad_error !== nothing
+    @test occursin("`&&` control flow is not supported in @slic model bodies", bad_error)
+    @test !occursin("Could not find &&", bad_error)
+end
+
+"""
 Verify scalar-array elementwise arithmetic against the shipped generalized lowering.
 """
 @testitem "slic: scalar-array elementwise arithmetic" tags=[:slic, :regression, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin

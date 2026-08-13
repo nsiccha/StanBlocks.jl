@@ -2625,6 +2625,8 @@ forward!(x::WhileExpr; info) = begin
 end
 forward!(x::IfExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::TernaryExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+forward!(x::Union{LogicalAndExpr,LogicalOrExpr}; info) =
+    _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::ElseIfExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::BreakExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::ContinueExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
