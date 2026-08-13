@@ -192,6 +192,8 @@ end
 # position (e.g. `real m = ((a < b) ? a : b);`).
 Base.show(io::IO, x::TernaryExpr) =
     print(io, "(", x.args[1], " ? ", x.args[2], " : ", x.args[3], ")")
+Base.show(io::IO, x::LogicalAndExpr) = print(io, "(", Join(x.args, " && "), ")")
+Base.show(io::IO, x::LogicalOrExpr) = print(io, "(", Join(x.args, " || "), ")")
 Base.show(io::IO, x::CanonicalExpr{typeof(adjoint)}) = print(io, "(", x.args[1], "')")
 Base.show(io::IO, x::CanonicalExpr{typeof(range)}) = autoprint(io, "linspaced_vector(", Join((x.args[end], x.args[1], x.args[2]), ", "), ")")
 Base.show(io::IO, x::CanonicalExpr{typeof(getindex)}) = autoprint(io, x.args[1], "[", Join(x.args[2:end], ", "), "]")

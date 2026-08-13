@@ -249,13 +249,15 @@ _control_flow_kind(::ForExpr) = "for"
 _control_flow_kind(::WhileExpr) = "while"
 _control_flow_kind(::IfExpr) = "if"
 _control_flow_kind(::TernaryExpr) = "ternary"
+_control_flow_kind(::LogicalAndExpr) = "&&"
+_control_flow_kind(::LogicalOrExpr) = "||"
 _control_flow_kind(::ElseIfExpr) = "elseif"
 _control_flow_kind(::BreakExpr) = "break"
 _control_flow_kind(::ContinueExpr) = "continue"
 _control_flow_kind(::ComprehensionExpr) = "comprehension"
 _reject_model_control_flow(x) = x
 _reject_model_control_flow(x::CanonicalExpr) = (foreach(_reject_model_control_flow, x.args); x)
-_reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,TernaryExpr,ElseIfExpr,BreakExpr,ContinueExpr,ComprehensionExpr}) = error(
+_reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,TernaryExpr,LogicalAndExpr,LogicalOrExpr,ElseIfExpr,BreakExpr,ContinueExpr,ComprehensionExpr}) = error(
     "`$(_control_flow_kind(x))` control flow is not supported in @slic model bodies — ",
     "move the logic into an @deffun function body, or use a vectorised form."
 )

@@ -108,6 +108,8 @@ WhileExpr{T} = CanonicalExprV{:while,T}
 ColonExpr{T} = CanonicalExprV{:(:),T}
 IfExpr{T} = CanonicalExprV{:if,T}
 ElseIfExpr{T} = CanonicalExprV{:elseif,T}
+LogicalAndExpr{T} = CanonicalExprV{:&&,T}
+LogicalOrExpr{T} = CanonicalExprV{:||,T}
 # A ternary conditional EXPRESSION `cond ? a : b` — distinct head from the
 # `if`-STATEMENT (`:if`). Julia parses both to `Expr(:if, …)`, but a ternary's
 # branches are bare VALUES while a statement's are `:block`s; `canonical` splits

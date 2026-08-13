@@ -338,6 +338,10 @@ tracetype(x::ForExpr) = StanType(types.anything)
 tracetype(x::WhileExpr) = StanType(types.anything)
 tracetype(x::IfExpr) = StanType(types.anything)
 tracetype(x::ElseIfExpr) = StanType(types.anything)
+# Julia gives short-circuit operators dedicated AST heads (`:&&` / `:||`),
+# rather than callable function heads like `&` / `|`. Their Stan result is a
+# scalar boolean (rendered as `int` elsewhere in the SLIC type system).
+tracetype(x::Union{LogicalAndExpr,LogicalOrExpr}) = StanType(types.bool)
 # A ternary `cond ? a : b` is a real EXPRESSION, so its result type is the join
 # of the two branch types (not the opaque `anything` an `if`-statement carries).
 # `typejoin` follows the SLIC lattice (`int <: real`, `bool <: int`, constrained
