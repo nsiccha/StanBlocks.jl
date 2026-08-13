@@ -2336,6 +2336,47 @@ Snag `compile-slic-bun-83d3bfe1`, reported by SlicTranspiler.
 end
 
 """
+Bundle UDFs resolve the same public transpile-time helpers as ordinary
+`@deffun` authoring without relying on exports that happen to be bound in
+`Main`. The public `return_type_of` spelling must produce the same Stan as the
+direct `typeof` spelling for this scalar-element copy and remain stanc-valid.
+Snag `compile-slic-bun-b7eb93b5`, reported by SlicTranspiler.
+"""
+@testitem "slic: bundle UDFs resolve public transpile-time helpers" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    data = (; x=[0.1, -0.2], y=[0.0, 0.1])
+    body = quote
+        mu = bundle_copy_vec(x)
+        y ~ normal(mu, 1.0)
+    end
+    element_type_udf = "bundle-element-type" =>
+        :(bundle_element_type(x::real)::real = x)
+    copy_udf = "bundle-copy-vec" => :(bundle_copy_vec(x::vector[n]) = begin
+        out::return_type_of(bundle_element_type, x[1])[n]
+        for i in 1:n
+            out[i] = x[i]
+        end
+        out
+    end)
+    workaround_udf = "bundle-copy-vec-workaround" =>
+        :(bundle_copy_vec(x::vector[n]) = begin
+            out::typeof(x[1])[n]
+            for i in 1:n
+                out[i] = x[i]
+            end
+            out
+        end)
+
+    result = compile_slic_bundle(data, Expr[], body;
+        udf_definitions=[element_type_udf, copy_udf])
+    workaround = compile_slic_bundle(data, Expr[], body;
+        udf_definitions=[element_type_udf, workaround_udf])
+
+    @test result.code == workaround.code
+    @test occursin("vector[n] out;", result.code)
+    @test stanc_compiles(result.model)
+end
+
+"""
 `compile_slic_bundle` accepts anonymous sub-model bodies and values as explicit
 workspace dependencies. The parent names each dependency structurally; callers
 do not need to evaluate `@slic` themselves or rewrite an anonymous model as a

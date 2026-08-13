@@ -1,5 +1,7 @@
 using TestItemRunner
-using StanBlocks
+# Load the package without copying its exports into `Main`. Fresh-workspace
+# integration tests must not pass through `forward!`'s last-resort Main lookup.
+import StanBlocks
 
 function option_value(args, i, name)
     i < length(args) || error("Missing value for $name")
