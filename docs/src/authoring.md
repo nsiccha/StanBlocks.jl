@@ -282,11 +282,12 @@ Filtered, stepped, flattened-ragged, and three-or-more-dimensional
 comprehensions reject explicitly. `if`/`else` works; write nested `if` blocks
 instead of an `elseif` chain. UDFs cannot contain `~` or `target +=`.
 
-Bodyful deterministic `@deffun` definitions also install a bounded Julia method
-unless they are marked `@stanonly` or belong to a probability/RNG/ODE family
-that automatically skips Julia emission. This Julia target is useful for unit
-tests, but it is not a promise of full Julia runtime parity for every Stan
-builtin.
+Bodyful deterministic `@deffun` definitions are Stan-only by default. Add
+`@juliacompat` to install a bounded Julia method for a helper that should also
+be unit-tested directly. Probability/RNG/ODE families remain Stan-only, and the
+opt-in target is not a promise of full Julia runtime parity for every Stan
+builtin. `@stanonly` can document the default or opt one definition out of a
+surrounding `@juliacompat` group.
 
 For a raw `matrix`, the final two annotation dimensions are the native matrix
 shape and every leading dimension is a Stan array prefix. Thus

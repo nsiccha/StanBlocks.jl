@@ -1582,7 +1582,7 @@ end
 
     const julia_emission_fixture_module = @__MODULE__
 
-    @deffun begin
+    @deffun @juliacompat begin
         julia_shift(x::real, a::real)::real = x + a
         julia_apply(f, x::vector[n], args...)::vector[n] = begin
             out::vector[n]
@@ -1612,6 +1612,8 @@ end
         julia_signature_only(x::real)::real
         julia_sized_token(vector[n], x::vector[n])::vector[n] = x
     end
+
+    @deffun julia_default_stan_only(x::real)::real = x + 1.0
 
     @deffun @stanonly julia_branch_mutate_stanonly(
         x::vector[n], y::vector[n]
@@ -1693,9 +1695,9 @@ end
 end
 
 """
-Verify bounded default Julia emission from `@deffun` in an isolated test item.
+Verify explicit bounded Julia emission from `@deffun @juliacompat` in an isolated test item.
 """
-@testitem "slic: bounded default Julia emission from @deffun" tags=[:slic, :stanc] setup=[StanBlocksImports, JuliaEmissionFixtures] begin
+@testitem "slic: explicit bounded Julia emission from @deffun @juliacompat" tags=[:slic, :stanc] setup=[StanBlocksImports, JuliaEmissionFixtures] begin
     @test julia_shift(2.0, 3.0) == 5.0
     @test julia_nested([1.0, 2.0, 3.0], 0.5) == [1.5, 2.5, 3.5]
     @test julia_branch_mutate([1.0, -2.0], [3.0, 4.0]) == [4.0, 4.0]
@@ -1713,6 +1715,7 @@ Verify bounded default Julia emission from `@deffun` in an isolated test item.
     @test occursin("julia_branch_mutate", sprint(showerror, err))
 
     @test !hasmethod(julia_stan_only, Tuple{Float64})
+    @test !hasmethod(julia_default_stan_only, Tuple{Float64})
     @test !hasmethod(julia_signature_only, Tuple{Float64})
     @test isempty(methods(julia_sized_token))
     @test existing_julia_function("abc") == 3
@@ -1722,8 +1725,8 @@ Verify bounded default Julia emission from `@deffun` in an isolated test item.
     collision = try
         Core.eval(julia_emission_fixture_module, quote
             @deffun begin
-                julia_collision(x::vector[n])::vector[n] = x
-                julia_collision(x::row_vector[n])::row_vector[n] = x
+                @juliacompat julia_collision(x::vector[n])::vector[n] = x
+                @juliacompat julia_collision(x::row_vector[n])::row_vector[n] = x
             end
         end)
         nothing
@@ -1731,7 +1734,7 @@ Verify bounded default Julia emission from `@deffun` in an isolated test item.
         e
     end
     @test occursin("Julia emission collision", sprint(showerror, collision))
-    @test occursin("@stanonly", sprint(showerror, collision))
+    @test occursin("Remove `@juliacompat`", sprint(showerror, collision))
 
     # A *deterministically named* definition that reaches for a probability
     # primitive still errors: the name says it was meant to be callable, so a
@@ -1739,14 +1742,14 @@ Verify bounded default Julia emission from `@deffun` in an isolated test item.
     unsupported = try
         Core.eval(
             julia_emission_fixture_module,
-            :(@deffun julia_bad_draw(x::real)::real = normal_rng(x, 1.0)),
+            :(@deffun @juliacompat julia_bad_draw(x::real)::real = normal_rng(x, 1.0)),
         )
         nothing
     catch e
         e
     end
     @test occursin("does not implement `normal_rng`", sprint(showerror, unsupported))
-    @test occursin("@stanonly", sprint(showerror, unsupported))
+    @test occursin("remove the explicit `@juliacompat` opt-in", sprint(showerror, unsupported))
 
     # …but a probability-family *definition* is outside the layer by
     # construction, so it loads unannotated and simply gets no Julia method.
@@ -7811,20 +7814,20 @@ end
 `lambert_w0` is a native Stan Math function (element-wise: real / vector /
 row_vector / array / matrix). It must be registered on the builtin surface —
 in the `@builtin_module` name manifest AND the shared unary-math `@defsig`
-Union — so a `@stanonly @deffun` body may call it and lower to `lambert_w0(...)`.
+Union — so a Stan-only `@deffun` body may call it and lower to `lambert_w0(...)`.
 Regression for the `quarto-migration` monster port, whose exact
 Michaelis-Menten step (`exact_michaelis_menten_solution`) needs the closed-form
 `lambert_w0` rather than a numerical ODE fallback.
 """
 @testitem "slic: native lambert_w0 builtin emits and compiles" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
-    # A `@defsig`-only native (no Julia method), so each definition that reaches
-    # for it opts out of Julia emission with `@stanonly`. Three statements,
+    # A `@defsig`-only native (no Julia method); the default Stan-only emission
+    # therefore accepts each definition without an annotation. Three statements,
     # `exact_mm_step` cross-referencing the scalar `lambert_w0_exp` — the shape
     # the monster model uses.
     @deffun begin
-        @stanonly lambert_w0_exp(earg::real)::real = lambert_w0(exp(earg))
-        @stanonly exact_mm_step(K::real, earg::real)::real = K * lambert_w0_exp(earg)
-        @stanonly lambert_w0_vec(x::vector[n])::vector[n] = lambert_w0(x)
+        lambert_w0_exp(earg::real)::real = lambert_w0(exp(earg))
+        exact_mm_step(K::real, earg::real)::real = K * lambert_w0_exp(earg)
+        lambert_w0_vec(x::vector[n])::vector[n] = lambert_w0(x)
     end
 
     # Scalar: the closed-form Michaelis-Menten step.

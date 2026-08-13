@@ -558,7 +558,7 @@ _register_deffun_julia_signature!(f, julia_key, slic_key) = begin
         registered[julia_key] == slic_key || error(
             "@deffun Julia emission collision for `$(nameof(f))`: SLIC signatures ",
             "$(registered[julia_key]) and $slic_key both map to $julia_key. ",
-            "Mark one definition `@stanonly` or make its Julia dispatch distinguishable."
+            "Remove `@juliacompat` from one definition or make its Julia dispatch distinguishable."
         )
     else
         registered[julia_key] = slic_key
@@ -865,7 +865,8 @@ begin
         cur = x
         while Meta.isexpr(cur, :macrocall) && (
                 _is_lhs_macrocall(cur) || _is_lpxf_macrocall(cur) ||
-                _is_at_inline_macrocall(cur) || _is_stanonly_macrocall(cur)
+                _is_at_inline_macrocall(cur) || _is_juliacompat_macrocall(cur) ||
+                _is_stanonly_macrocall(cur)
             )
             is_lhs    |= _is_lhs_macrocall(cur)
             is_lpxf   |= _is_lpxf_macrocall(cur)
@@ -893,6 +894,7 @@ begin
     _ast_mentions(x, s::Symbol) = x isa Symbol ? x === s :
         (x isa Expr ? any(a -> _ast_mentions(a, s), x.args) : false)
 
+    _is_juliacompat_macrocall(x) = _is_inline_macrocall(x, Symbol("@juliacompat"))
     _is_stanonly_macrocall(x) = _is_inline_macrocall(x, Symbol("@stanonly"))
 
     _julia_arg_name(x::Symbol) = x
@@ -973,7 +975,7 @@ begin
         jt, jk, sk, dims = _deffun_julia_type(t)
         jk[1] === :unsupported && error(
             "@deffun Julia emission: unsupported argument type `$t`. ",
-            "Mark this definition `@stanonly` if the signature is intentionally Stan-only."
+            "Remove `@juliacompat` if the signature is intentionally Stan-only."
         )
         mapped = if isnothing(name)
             isnothing(jt) ? arg : Expr(:(::), jt)
@@ -1019,13 +1021,12 @@ begin
     # `reduce_sum` family sits outside the deterministic compatibility layer by
     # construction: the same predicate that rejects such a *call* settles the
     # *definition* too, and a `foo_lpmf` overload that recurses into `foo_lpmf`
-    # can never obtain a Julia method however it is annotated.  These auto-skip
-    # the Julia target — exactly like signature-only stubs, type-token glue and
-    # qualified/existing-function extensions — instead of demanding a
-    # per-definition `@stanonly`.  The elementwise `_lpdfs`/`_lpmfs` companions
-    # belong to the same families.  Note this is deliberately *only* a
-    # definition-name test: `_deffun_julia_unsupported_call` above is unchanged,
-    # so no call that is accepted today starts being rejected.
+    # can never obtain a Julia method however it is annotated.  Even an explicit
+    # `@juliacompat` therefore skips the Julia target, exactly like signature-only
+    # stubs, type-token glue, and qualified/existing-function extensions.  The
+    # elementwise `_lpdfs`/`_lpmfs` companions belong to the same families.
+    # Note this is deliberately *only* a definition-name test:
+    # `_deffun_julia_unsupported_call` above is unchanged.
     _deffun_julia_excluded_definition(s::Symbol) =
         any(
             suffix -> endswith(string(s), suffix),
@@ -1054,7 +1055,7 @@ begin
         !isnothing(s) && _deffun_julia_unsupported_call(s) && error(
             "@deffun ($fname): Julia emission does not implement `$s`. ",
             "Probability, RNG, ODE, and reduce_sum parity is outside the deterministic compatibility layer; ",
-            "mark this definition `@stanonly`."
+            "remove the explicit `@juliacompat` opt-in."
         )
         if f isa Symbol && f in locals
             Expr(:call, :($stan.jcall), params..., f, positional...)
@@ -1077,7 +1078,7 @@ begin
             lhs, rhs = x.args
             name, t = lhs.args
             name isa Symbol || error(
-                "@deffun ($fname): Julia emission supports typed local declarations only for bare-symbol locals; mark the definition `@stanonly`."
+                "@deffun ($fname): Julia emission supports typed local declarations only for bare-symbol locals; remove `@juliacompat`."
             )
             ct, dims = _deffun_julia_local_type(t)
             rhs = _deffun_julia_transform(rhs, locals, def_mod, fname, promote_args)
@@ -1095,7 +1096,7 @@ begin
             name, t = x.args
             ct, dims = _deffun_julia_local_type(t)
             isempty(dims) && error(
-                "@deffun ($fname): Julia emission cannot allocate unsized local `$name::$t`; initialize it or mark the definition `@stanonly`."
+                "@deffun ($fname): Julia emission cannot allocate unsized local `$name::$t`; initialize it or remove `@juliacompat`."
             )
             tdims = map(d -> _deffun_julia_transform(d, locals, def_mod, fname, promote_args), dims)
             if ct isa Symbol
@@ -1108,7 +1109,7 @@ begin
                 return Expr(:(=), name, :($stan._deffun_julia_alloc_type($type_expr, ($(tdims...),))))
             end
             error(
-                "@deffun ($fname): Julia emission cannot allocate computed local type `$t`; mark the definition `@stanonly`."
+                "@deffun ($fname): Julia emission cannot allocate computed local type `$t`; remove `@juliacompat`."
             )
         elseif x.head === :call
             f = x.args[1]
@@ -1162,7 +1163,7 @@ begin
             isnothing(name) && continue
             name === :_ && begin
                 any(dim -> dim isa Symbol && _ast_mentions(julia_source_body, dim), item[4]) && error(
-                    "@deffun ($f): Julia emission cannot bind a body-used dimension from anonymous argument `$arg`; name the argument or mark the definition `@stanonly`."
+                    "@deffun ($f): Julia emission cannot bind a body-used dimension from anonymous argument `$arg`; name the argument or remove `@juliacompat`."
                 )
                 continue
             end
@@ -1178,7 +1179,7 @@ begin
                     syms = _deffun_julia_dim_symbols!(Set{Symbol}(), dim)
                     unknown = setdiff(syms, known)
                     isempty(unknown) || error(
-                        "@deffun ($f): Julia emission cannot derive dimension expression `$dim`; unknown symbols $(collect(unknown)). Mark the definition `@stanonly`."
+                        "@deffun ($f): Julia emission cannot derive dimension expression `$dim`; unknown symbols $(collect(unknown)). Remove `@juliacompat`."
                     )
                     push!(dim_preamble, :($stan._deffun_julia_check_dim(
                         $name, $i, $dim, $(QuoteNode(f)), $(QuoteNode(name))
@@ -1199,7 +1200,7 @@ begin
         end
     end
 
-    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, is_stanonly=false, emit_julia=true, _shim_kwarg_specs=nothing, def_mod=nothing) = if x.head == :block
+    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, is_juliacompat=false, is_stanonly=false, emit_julia=true, _shim_kwarg_specs=nothing, def_mod=nothing) = if x.head == :block
         seen_lpxf_bases = Set{Symbol}()
         for arg in x.args
             _is_expr(arg) || continue
@@ -1213,21 +1214,26 @@ begin
             )
             push!(seen_lpxf_bases, base)
         end
-        Expr(:block, deffun.(x.args; docstring, source, is_lhs, is_lpxf, is_inline, is_stanonly, emit_julia, def_mod)...)
-    elseif x.head == :macrocall && (_is_lpxf_macrocall(x) || _is_lhs_macrocall(x) || _is_at_inline_macrocall(x) || _is_stanonly_macrocall(x))
+        Expr(:block, deffun.(x.args; docstring, source, is_lhs, is_lpxf, is_inline, is_juliacompat, is_stanonly, emit_julia, def_mod)...)
+    elseif x.head == :macrocall && (
+            _is_lpxf_macrocall(x) || _is_lhs_macrocall(x) ||
+            _is_at_inline_macrocall(x) || _is_juliacompat_macrocall(x) ||
+            _is_stanonly_macrocall(x)
+        )
         inner_source = _macrocall_source(x.args[2], source)
         new_is_lhs    = is_lhs    || _is_lhs_macrocall(x)
         new_is_lpxf   = is_lpxf   || _is_lpxf_macrocall(x)
         new_is_inline = is_inline || _is_at_inline_macrocall(x)
+        new_is_juliacompat = is_juliacompat || _is_juliacompat_macrocall(x)
         new_is_stanonly = is_stanonly || _is_stanonly_macrocall(x)
-        deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf, is_inline=new_is_inline, is_stanonly=new_is_stanonly, emit_julia, _shim_kwarg_specs, def_mod)
+        deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf, is_inline=new_is_inline, is_juliacompat=new_is_juliacompat, is_stanonly=new_is_stanonly, emit_julia, _shim_kwarg_specs, def_mod)
     elseif x.head == :macrocall
         _is_doc_macrocall(x) || error(
-            "@deffun: unexpected macrocall head `$(x.args[1])` (expected `@doc` / `@inline` / `@stanonly` / `@lpxf` / `@lhs`). ",
+            "@deffun: unexpected macrocall head `$(x.args[1])` (expected `@doc` / `@inline` / `@juliacompat` / `@stanonly` / `@lpxf` / `@lhs`). ",
             "If a new doc-providing or annotation macro should be allowed, extend the predicate at functions.jl:_is_doc_macrocall / _is_inline_macrocall."
         )
         # @assert x.args[3] isa String
-        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf, is_inline, is_stanonly, emit_julia, _shim_kwarg_specs, def_mod)
+        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf, is_inline, is_juliacompat, is_stanonly, emit_julia, _shim_kwarg_specs, def_mod)
     else
         # @assert x.head == :(=)
         fsig, body = ensure_xassign(x).args
@@ -1235,7 +1241,8 @@ begin
         fcall, rv = ensure_xtyped(fsig).args
         @assert Meta.isexpr(fcall, :call) "@deffun: function signature must be a `:call` expression like `f(args...)::T`, got `$fcall`."
         f, all_args... = fcall.args
-        julia_surface = emit_julia && !is_stanonly ? _deffun_julia_expr(fcall, rv, body; source, def_mod) : nothing
+        julia_surface = emit_julia && is_juliacompat && !is_stanonly ?
+            _deffun_julia_expr(fcall, rv, body; source, def_mod) : nothing
 
         # Kwargs (`f(x; sigma=1.0, alpha=2.0) = body`) mirror Julia's own
         # lowering: emit a canonical body method
@@ -1317,9 +1324,9 @@ begin
                 # `::typeof(f)` dispatch can reference it.
                 Expr(:function, f),
                 isnothing(julia_surface) ? nothing : julia_surface,
-                deffun(canonical_def; docstring, source, is_lhs=false, is_lpxf=false, is_inline=false, is_stanonly, emit_julia=false, def_mod),
+                deffun(canonical_def; docstring, source, is_lhs=false, is_lpxf=false, is_inline=false, is_juliacompat, is_stanonly, emit_julia=false, def_mod),
                 deffun(inline_shim; docstring, source, is_lhs, is_lpxf, is_inline=true,
-                    is_stanonly, emit_julia=false, _shim_kwarg_specs=kwarg_specs, def_mod),
+                    is_juliacompat, is_stanonly, emit_julia=false, _shim_kwarg_specs=kwarg_specs, def_mod),
             )
         end
 
@@ -1363,7 +1370,7 @@ begin
                 Expr(:function, f),
                 isnothing(julia_surface) ? nothing : julia_surface,
                 [
-                    deffun(d; docstring, source, is_lhs, is_lpxf, is_inline, is_stanonly, emit_julia=false, def_mod) for d in defs
+                    deffun(d; docstring, source, is_lhs, is_lpxf, is_inline, is_juliacompat, is_stanonly, emit_julia=false, def_mod) for d in defs
                 ]...,
             )
         end

@@ -125,24 +125,24 @@ end
 """
     @deffun function_definition
 
-Define a Stan-compatible function with type inference and dual code generation.
+Define a Stan-compatible function with type inference and Stan code generation.
 
 Parses a Julia-style function definition (with type-annotated arguments and return type),
 generates the corresponding Stan function, and registers type-inference signatures so the
-transpiler can propagate types through calls to this function. Eligible bodyful bare-symbol
-definitions also install one callable Julia method from the original user-facing definition.
-Signature-only/type-token glue, qualified or pre-existing function extensions, and
-definitions whose own name is in the probability/RNG/ODE/`reduce_sum` family
-(`*_lpdf`, `*_lpmf`, `*_lcdf`, `*_lccdf`, `*_cdf`, `*_rng`, the elementwise `*_lpdfs`/
-`*_lpmfs`/… companions, and `ode_*`) skip the Julia target automatically.
+transpiler can propagate types through calls to this function. Definitions are Stan-only by
+default. Add `@juliacompat` to an eligible bodyful bare-symbol definition to install one
+callable Julia method from the original user-facing definition as well. Signature-only/type-
+token glue, qualified or pre-existing function extensions, and definitions whose own name is
+in the probability/RNG/ODE/`reduce_sum` family (`*_lpdf`, `*_lpmf`, `*_lcdf`, `*_lccdf`,
+`*_cdf`, `*_rng`, the elementwise `*_lpdfs`/`*_lpmfs`/… companions, and `ode_*`) remain
+Stan-only even when annotated.
 
-The Julia target is a bounded deterministic compatibility layer: supported signatures,
-symbolic dimension checks, typed locals, control flow/mutation, nested deterministic calls,
-higher-order arguments, and varargs. In a *deterministically named* definition, a direct
-probability/RNG/ODE/`reduce_sum` primitive call requires the explicit `@stanonly` opt-out
-and otherwise errors at expansion time — the name says the function was meant to be
-callable, so a silent skip would hide a mistake. A probability-family definition is
-outside the layer by construction and needs no annotation.
+The opt-in Julia target is a bounded deterministic compatibility layer: supported
+signatures, symbolic dimension checks, typed locals, control flow/mutation, nested
+deterministic calls, higher-order arguments, and varargs. In a `@juliacompat` definition,
+a direct probability/RNG/ODE/`reduce_sum` primitive call errors at expansion time. Remove
+the annotation when the definition is intentionally Stan-only. A probability-family
+definition is outside the layer by construction and gets no Julia method.
 
 For functions ending in `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf`, the return type is automatically
 set to `real` and companion `_lpdfs`/`_rng` stubs are generated for use in `generated_quantities`.
@@ -176,7 +176,7 @@ the enclosing block.
 # Example
 
 ```julia
-@deffun @stanonly garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
+@deffun garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
     sigma2 = alpha0
     rv = 0.
     for t in 1:T
@@ -196,22 +196,37 @@ macro deffun(x)
 end
 
 """
+    @juliacompat definition
+
+Opt an eligible bodyful `@deffun` definition into the bounded deterministic
+Julia compatibility target while retaining the same SLIC/Stan lowering:
+
+```julia
+@deffun @juliacompat affine(x::real, a::real)::real = a * x + 1.0
+```
+
+It may wrap one definition or a `begin ... end` group inside `@deffun`.
+Signature-only/type-token glue, qualified or pre-existing function extensions,
+and probability/RNG/ODE/`reduce_sum`-family definitions remain Stan-only.
+Within a `@juliacompat begin ... end` group, a nested `@stanonly` definition
+explicitly opts that member back out.
+"""
+macro juliacompat(x)
+    error("@juliacompat may only appear inside an @deffun block")
+end
+
+"""
     @stanonly definition
 
-Opt a bodyful `@deffun` definition out of its default Julia method while
-retaining the existing SLIC/Stan lowering. Use it for deliberately Stan-only
-semantics outside the bounded deterministic Julia compatibility layer:
+Explicitly mark a `@deffun` definition as Stan-only. This is the default, so
+the annotation is normally optional; it remains useful as documentation and
+to opt one member out of a surrounding `@juliacompat begin ... end` group:
 
 ```julia
 @deffun @stanonly foo_rng(x::real)::real = stan_rng_primitive(x)
 ```
 
 It may wrap one definition or a `begin ... end` group inside `@deffun`.
-Signature-only and type-token compiler-glue definitions — and any definition
-whose own name is in the probability/RNG/ODE/`reduce_sum` family — already skip
-Julia emission automatically, so `@stanonly` is redundant on those (harmless,
-but unnecessary). Reach for it when a *deterministically named* definition is
-intentionally Stan-only.
 """
 macro stanonly(x)
     error("@stanonly may only appear inside an @deffun block")

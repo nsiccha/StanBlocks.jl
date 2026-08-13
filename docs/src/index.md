@@ -212,10 +212,11 @@ You can additionally pass `n=…` or `m=…, n=…` on any prior to make the par
 local type/shape annotations are optional: StanBlocks normally specialises the
 function at its call site and infers types and shapes from argument values and
 right-hand-side expressions.
-An eligible bodyful, bare-symbol definition emits **both** one callable Julia
-method and the existing Stan function by default. The Julia method comes from
-the original user-facing definition exactly once, so defaults and kwargs keep
-ordinary Julia behaviour while internal SLIC trampolines remain compiler-only.
+Definitions emit Stan by default. Add `@juliacompat` to an eligible bodyful,
+bare-symbol definition to emit **both** one callable Julia method and the Stan
+function. The Julia method comes from the original user-facing definition
+exactly once, so defaults and kwargs keep ordinary Julia behaviour while
+internal SLIC trampolines remain compiler-only.
 
 The Julia target is deliberately deterministic and bounded. It supports scalar,
 vector, matrix, and scalar-array signatures; symbolic dimensions (with
@@ -226,22 +227,23 @@ small internal compatibility dispatch supplies Stan spellings such as
 piracy. Distinct SLIC overloads that collapse to the same Julia container
 signature error instead of silently overwriting a method.
 
-Use `@stanonly` for an intentionally Stan-only body:
+Use `@juliacompat` when a helper should also be callable from Julia:
 
 ```julia
-@deffun @stanonly my_normal_rng(mu::real, sigma::real)::real = normal_rng(mu, sigma)
+@deffun @juliacompat affine(x::real, a::real)::real = a * x + 1.0
 ```
 
-`@stanonly` may wrap one definition or a `begin ... end` group. Signature-only
-stubs, bare type-token/compiler-glue forms, qualified or pre-existing function
-extensions, and definitions whose own name is in the probability/RNG/ODE family
-(`*_lpdf`, `*_lpmf`, `*_lcdf`, `*_lccdf`, `*_cdf`, `*_rng`, the elementwise
-`*_lpdfs`/`*_lpmfs`/… companions, and `ode_*`) skip Julia emission
-automatically — so a user-defined `_lpmf` that calls Stan probability
-primitives needs no annotation. A *deterministically named* body that directly
-calls an unsupported probability, RNG, ODE, or `reduce_sum` primitive still
-errors at expansion with a pointer to `@stanonly`; full runtime parity for those
-Stan facilities is not part of this compatibility layer.
+`@juliacompat` may wrap one definition or a `begin ... end` group. A nested
+`@stanonly` explicitly opts one member back out; outside such a group,
+`@stanonly` documents the default. Signature-only stubs, bare type-token/
+compiler-glue forms, qualified or pre-existing function extensions, and
+definitions whose own name is in the probability/RNG/ODE family (`*_lpdf`,
+`*_lpmf`, `*_lcdf`, `*_lccdf`, `*_cdf`, `*_rng`, the elementwise `*_lpdfs`/
+`*_lpmfs`/… companions, and `ode_*`) remain Stan-only. An opted-in,
+deterministically named body that directly calls an unsupported probability,
+RNG, ODE, or `reduce_sum` primitive errors at expansion and should drop
+`@juliacompat`; full runtime parity for those Stan facilities is not part of
+this compatibility layer.
 
 Bodies may use `for`/`while`/nested `if`, mutation, index or value iteration,
 `enumerate`/`zip`, one-line nested loops, and rectangular comprehensions with at
@@ -251,7 +253,7 @@ comprehensions reject explicitly. The body is also transpiled to Stan.
 UDF bodies must not contain `~` sampling statements or `target +=` increments — UDFs cannot introduce parameters or directly manipulate the log density. The macro errors at expansion time if either is found.
 
 ```julia
-@deffun @stanonly garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
+@deffun garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
     sigma2 = alpha0
     rv = 0.
     for t in 1:T
@@ -359,8 +361,8 @@ For functions whose name ends in one of `_lpdf` / `_lpmf` / `_lcdf` / `_lccdf`:
 - companion `_lpdfs` / `_lpmfs` / `_lcdfs` / `_lccdfs` (pointwise) and `_rng` (predictive) stubs are generated automatically and used by [posterior pointwise likelihood / predictive generation](#posterior-pointwise-likelihood-and-predictive-draws)
 
 ```julia
-@deffun @stanonly my_normal_lpdf(y, mu, sigma) = normal_lpdf(y, mu, sigma)
-@deffun @stanonly my_normal_rng(mu, sigma)::real = normal_rng(mu, sigma)
+@deffun my_normal_lpdf(y, mu, sigma) = normal_lpdf(y, mu, sigma)
+@deffun my_normal_rng(mu, sigma)::real = normal_rng(mu, sigma)
 ```
 
 ### Variadic and higher-order functions
@@ -448,8 +450,9 @@ Restrictions:
 
 Standard Julia macros (`@views`, `@.`, `@inbounds`, user-defined macros) are
 expanded against the calling module before tracing, so they work
-transparently. SLIC-internal markers (`@doc`, `@lpxf`, `@lhs`, `@inline`) are
-preserved verbatim and handled structurally by the parser.
+transparently. SLIC-internal markers (`@doc`, `@lpxf`, `@lhs`, `@inline`,
+`@juliacompat`, `@stanonly`) are preserved verbatim and handled structurally
+by the parser.
 
 ```julia
 macro center(x); :($x - mean($x)); end
