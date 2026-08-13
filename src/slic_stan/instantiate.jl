@@ -20,9 +20,17 @@ compile the generated code via BridgeStan.
 function stan_code end
 
 stan_code(x::StanModel) = begin 
-    buf = IOBuffer()
-    show(StanIO(buf), x)
-    String(take!(buf))
+    try
+        buf = IOBuffer()
+        show(StanIO(buf), x)
+        String(take!(buf))
+    catch e
+        _is_stanblocks_error(e) && rethrow()
+        bt = catch_backtrace()
+        lnn = get(meta(x), :_source_lnn, nothing)
+        structured = _diagnostic_from_error(:slic_lowering_error, e, lnn)
+        throw(StanBlocksError(:transpile, "model", (e, bt, Any[], structured)))
+    end
 end
 stan_code(x::SlicModel) = stan_code(stan_model(x))
 prepare_for_stan(x::Dict) = Dict(key => prepare_for_stan(value) for (key, value) in x)

@@ -37,6 +37,20 @@ const _StanBlocksError = StanBlocksError
 _is_stanblocks_error(e::_StanBlocksError) = true
 _is_stanblocks_error(_) = false
 
+function _with_slic_diagnostic(f::Function, code, label, context, fallback)
+    try
+        f()
+    catch e
+        bt = catch_backtrace()
+        _is_stanblocks_error(e) && rethrow()
+        expr_stack = context isa TraceContext ? copy(context.expr_stack) : Any[]
+        current = context isa TraceContext ? _deref_lnn(context.current_lnn) : nothing
+        lnn = _diagnostic_lnn_for_source(expr_stack, current, fallback)
+        structured = _diagnostic_from_error(code, e, lnn)
+        throw(_StanBlocksError(:transpile, label, (e, bt, expr_stack, structured)))
+    end
+end
+
 # --- Per-trace monotonic id counters (explicit + deterministic) --------------
 # `_next_inline_id`/`_next_closure_id` hand out the ids used for
 # inlined-UDF local renames (`name__il_<id>`, forward.jl), lifted-closure Stan
@@ -53,16 +67,37 @@ _next_anon_id(context::TraceContext) = _next_trace_id!(context, :anon_counter)
 stan_model(x::SlicModel; info=StanModel()) = begin
     context = TraceContext()
     info = remake(info; _trace_context=context)
+    source_lnn = _first_source_lnn(model(x))
+    stage = :trace
     try
-        distribute!(backward!(forward!(x; info); info); info)
-        remake(info; docstring=get(x.data, :docstring, ""))
+        traced = forward!(x; info)
+        stage = :lowering
+        lowered = backward!(traced; info)
+        distribute!(lowered; info)
+        emission_lnn = _diagnostic_lnn(
+            context.expr_stack,
+            _deref_lnn(context.current_lnn),
+            source_lnn,
+        )
+        remake(info; docstring=get(x.data, :docstring, ""), _source_lnn=emission_lnn)
     catch e
         _is_stanblocks_error(e) && rethrow()
         bt = catch_backtrace()
+        code = stage === :trace ? :slic_trace_error : :slic_lowering_error
+        lnn = _diagnostic_lnn(
+            context.expr_stack,
+            _deref_lnn(context.current_lnn),
+            source_lnn,
+        )
+        structured = _diagnostic_from_error(code, e, lnn)
         # Keep the raw (exception, backtrace, expr_stack) tuple so the
         # display layer can show the Julia traceback alongside the
-        # SLIC-level expression trace.
-        throw(_StanBlocksError(:transpile, "model", (e, bt, copy(context.expr_stack))))
+        # SLIC-level expression trace. The fourth element is a supported,
+        # machine-readable diagnostic; the first three retain compatibility.
+        throw(_StanBlocksError(
+            :transpile, "model",
+            (e, bt, copy(context.expr_stack), structured),
+        ))
     end
 end
 maybedata!(x::StanModel, key, value) = x[key] = maybedata(key, value)
