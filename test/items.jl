@@ -2512,6 +2512,127 @@ quantities. Snag `compile-slic-bun-4bc9aa10`, reported by SlicTranspiler.
 end
 
 """
+`compile_slic_bundle` accepts validated, macro-free metadata for trusted UDF
+annotations and assertions, then lowers it to the existing `@deffun` forms.
+The structured form must emit byte-identical Stan to the macro-bearing
+workaround while preserving inline, runtime-assertion, and local-distribution
+registration semantics. Snag `compile-slic-bun-0d501bc1`, reported by
+SlicTranspiler.
+"""
+@testitem "slic: compile macro-free UDF marker metadata" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    inline_definition = :(bundle_safe_scale(x::real)::real = begin
+        sqrt(square(x) + 0.01)
+    end)
+    lpdfs_definition = :(bundle_safe_lpdfs(
+        y::vector[T], mu::real, sigma::real,
+    )::vector[T] = begin
+        rv::vector[T]
+        for t in 1:T
+            rv[t] = normal_lpdf(y[t], mu, sigma)
+        end
+        return rv
+    end)
+    rng_definition = :(bundle_safe_rng(
+        vector[T], mu::real, sigma::real,
+    )::vector[T] = begin
+        rv::vector[T]
+        for t in 1:T
+            rv[t] = normal_rng(mu, sigma)
+        end
+        return rv
+    end)
+    lpdf_definition = :(bundle_safe_lpdf(
+        y::vector[T], mu::real, sigma::real,
+    )::real = begin
+        return normal_lpdf(y, mu, sigma)
+    end)
+    assertion_macrocall = Expr(
+        :macrocall,
+        GlobalRef(StanBlocks, Symbol("@stan_assert")),
+        LineNumberNode(0, Symbol("bundle-lpdf")),
+        :(sigma > 0),
+        "bundle_safe_lpdf: sigma must be positive",
+    )
+    default_assertion_macrocall = Expr(
+        :macrocall,
+        GlobalRef(StanBlocks, Symbol("@stan_assert")),
+        LineNumberNode(0, Symbol("bundle-lpdf")),
+        :(sigma < 100),
+    )
+    macro_udfs = [
+        "bundle-inline" => :(@stanonly @inline $inline_definition),
+        "bundle-lpdfs" => :(@stanonly $lpdfs_definition),
+        "bundle-rng" => :(@stanonly $rng_definition),
+        "bundle-lpdf" => :(@stanonly @lhs @lpxf bundle_safe_lpdf(
+            y::vector[T], mu::real, sigma::real,
+        )::real = begin
+            $assertion_macrocall
+            $default_assertion_macrocall
+            return normal_lpdf(y, mu, sigma)
+        end),
+    ]
+    metadata_udfs = [
+        "bundle-inline" => (;
+            definition=inline_definition,
+            markers=(:stanonly, :inline),
+        ),
+        "bundle-lpdfs" => (;
+            definition=lpdfs_definition,
+            markers=:stanonly,
+        ),
+        "bundle-rng" => (;
+            definition=rng_definition,
+            markers=:stanonly,
+        ),
+        "bundle-lpdf" => (;
+            definition=lpdf_definition,
+            markers=(:stanonly, :lhs, :lpxf),
+            assertions=((;
+                condition=:(sigma > 0),
+                message="bundle_safe_lpdf: sigma must be positive",
+            ), (; condition=:(sigma < 100))),
+        ),
+    ]
+    body = quote
+        mu ~ std_normal()
+        sigma ~ std_normal(; lower=0.0)
+        y ~ bundle_safe(mu, bundle_safe_scale(sigma))
+    end
+    data = (; y=randn(6))
+
+    workaround = compile_slic_bundle(data, Expr[], body;
+        udf_definitions=macro_udfs, name=:bundle_macro_markers)
+    structured = compile_slic_bundle(data, Expr[], body;
+        udf_definitions=metadata_udfs, name=:bundle_metadata_markers)
+
+    @test structured.code == workaround.code
+    @test occursin("bundle_safe_lpdf: sigma must be positive", structured.code)
+    @test occursin("assertion failed: sigma < 100", structured.code)
+    @test !occursin("bundle_safe_scale(", structured.code)
+    @test occursin("y ~ bundle_safe(mu,", structured.code)
+    @test occursin("y_likelihood = bundle_safe_lpdfs(", structured.code)
+    @test occursin("y_gen = bundle_safe_vector_rng(", structured.code)
+    @test stanc_check(structured.code; warn_pedantic=false).ok
+
+    metadata_error(spec) = try
+        compile_slic_bundle(data, Expr[], body; udf_definitions=[spec])
+        ""
+    catch e
+        sprint(showerror, e)
+    end
+    @test occursin("unknown field `surprise`", metadata_error((;
+        definition=inline_definition, surprise=true,
+    )))
+    @test occursin("unknown marker `eval`", metadata_error((;
+        definition=inline_definition, markers=(:inline, :eval),
+    )))
+    @test occursin("assertion 1 message must be a string", metadata_error((;
+        definition=lpdf_definition,
+        assertions=((; condition=:(sigma > 0), message=42),),
+    )))
+end
+
+"""
 `Base.merge` keys a spliced statement on what its LHS NAMES, so a typed-LHS
 override replaces the base's plain-LHS statement instead of being appended, and
 the merged body stays raw Julia AST so it can be printed for inspection.
