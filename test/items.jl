@@ -2188,16 +2188,26 @@ Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
 end
 
 """
-`compile_slic_bundle` owns the fresh-module / ordered-`@slic` integration that
-interactive authoring consumers otherwise have to reproduce with synthetic
-macrocalls and `Core.eval`. It traces once, then returns the ordinary model,
-descriptor, and source surfaces used for a single anonymous model.
+`compile_slic_bundle` owns the fresh-module / ordered-`@deffun` / ordered-`@slic`
+integration that interactive authoring consumers otherwise have to reproduce
+with synthetic macrocalls and `Core.eval`. It traces once, then returns the
+ordinary model, descriptor, and source surfaces used for a single anonymous
+model.
 Snag `first-class-slic-d83cfbea`, reported by SlicTranspiler.
+Snag `compile-slic-bun-83d3bfe1`, reported by SlicTranspiler.
 """
 @testitem "slic: compile a trusted bundle of named submodels and a parent" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    udf_definitions = [
+        "bundle-offset" => :(bundle_offset(x::real)::real = begin
+            x + 0.25
+        end),
+        "bundle-shift" => :(bundle_shift(x::real)::real = begin
+            bundle_offset(x)
+        end),
+    ]
     definitions = [
         :(bundle_latent(scale) = begin
-            z ~ normal(0, scale)
+            z ~ normal(bundle_shift(0.0), scale)
             return z
         end),
         :(bundle_shifted(scale, offset) = begin
@@ -2211,16 +2221,82 @@ Snag `first-class-slic-d83cfbea`, reported by SlicTranspiler.
     end
 
     result = compile_slic_bundle((; y=[0.1, -0.2, 0.4]), definitions, body;
-        name=:bundle_parent)
+        udf_definitions, name=:bundle_parent)
 
     @test result.model isa StanBlocks.StanModel
     @test result.descriptor isa StanBlocks.ModelDescriptor
     @test result.descriptor.name == :bundle_parent
     @test result.code == stan_code(result.model)
-    @test occursin("mu_z_z ~ normal(0, 1.0);", result.code)
+    @test occursin("real bundle_offset(real x)", result.code)
+    @test occursin("real bundle_shift(real x)", result.code)
+    @test occursin("mu_z_z ~ normal(bundle_shift(0.0), 1.0);", result.code)
     @test occursin("y ~ normal(mu, 1.0);", result.code)
     @test StanBlocks.required_inputs(result.descriptor) == (:y,)
     @test stanc_compiles(result.model)
+
+    # CONTROL: this is the consumer-owned integration the bundle API replaces.
+    # Installing the same parsed parts manually must produce byte-identical Stan.
+    control_udf = :(bundle_control_shift(x::real)::real = begin
+        x + 0.25
+    end)
+    control_body = quote
+        mu ~ normal(bundle_control_shift(0.0), 1.0)
+        y ~ normal(mu, 1.0)
+    end
+    control_data = (; y=[0.1, -0.2, 0.4])
+    workspace = Module(gensym(:SlicBundleControl))
+    Core.eval(workspace, Expr(
+        :macrocall, GlobalRef(StanBlocks, Symbol("@deffun")),
+        LineNumberNode(0, Symbol("bundle-control-udf")), control_udf,
+    ))
+    manual_slic = Core.eval(workspace, Expr(
+        :macrocall, GlobalRef(StanBlocks, Symbol("@slic")),
+        LineNumberNode(0, :slic_bundle), QuoteNode(control_data), control_body,
+    ))
+    manual_code = Base.invokelatest(() -> stan_code(manual_slic))
+    api_code = compile_slic_bundle(control_data, Expr[], control_body;
+        udf_definitions=["bundle-control-udf" => control_udf]).code
+    @test api_code == manual_code
+
+    # Each trusted workspace part carries its own editor identity through the
+    # ordinary structured-diagnostic path.
+    bad_udf = "bundle-udf" => :(bundle_bad(x::real)::real = begin
+        definitely_missing_bundle_udf(x)
+    end)
+    udf_err = try
+        compile_slic_bundle((; y=0.1), Expr[], "bundle-parent" => quote
+            mu = bundle_bad(0.0)
+            y ~ normal(mu, 1.0)
+        end; udf_definitions=[bad_udf])
+        nothing
+    catch e
+        e
+    end
+    @test diagnostic(udf_err).source_part == "bundle-udf"
+
+    definition_err = try
+        compile_slic_bundle((; y=0.1), ["bundle-definition" => :(bundle_bad_model() = begin
+            z ~ definitely_missing_bundle_distribution(0.0)
+            return z
+        end)], "bundle-parent" => quote
+            mu ~ bundle_bad_model()
+            y ~ normal(mu, 1.0)
+        end)
+        nothing
+    catch e
+        e
+    end
+    @test diagnostic(definition_err).source_part == "bundle-definition"
+
+    parent_err = try
+        compile_slic_bundle((; y=0.1), Expr[], "bundle-parent" => quote
+            y ~ definitely_missing_bundle_parent(0.0)
+        end)
+        nothing
+    catch e
+        e
+    end
+    @test diagnostic(parent_err).source_part == "bundle-parent"
 
     # Validate the whole definition list before mutating a workspace.
     bad = Any[first(definitions), :(not_a_definition)]
@@ -2232,6 +2308,10 @@ Snag `first-class-slic-d83cfbea`, reported by SlicTranspiler.
     end
     @test err isa ErrorException
     @test occursin("definition 2 must be a named SLIC definition", sprint(showerror, err))
+    @test_throws ErrorException compile_slic_bundle(
+        (; y=0.0), definitions, body; udf_definitions=[:not_an_expression])
+    @test_throws ErrorException compile_slic_bundle(
+        (; y=0.0), [42 => first(definitions)], body)
     @test_throws ErrorException compile_slic_bundle((; y=0.0), definitions, :not_an_expr)
 end
 
@@ -7299,6 +7379,142 @@ end
     @test !occursin("lam", stan_code(literal_only))
     @test occursin("lower=0.0", stan_block(stan_code(literal_only), "parameters"))
     @test stanc_compiles(literal_only)
+
+    # Control: a DISTRIBUTION-implied bound. `autokwargs` supplies these as raw
+    # Julia values (`exponential`→`lower=0.0`), not as StanExprs like an
+    # author-written `lower=` — so descending into constraints hit
+    # `fetch_data! not defined for value 0.0` on every implied-bound
+    # distribution. The author-written control above does NOT cover this: it
+    # reaches the constraint already wrapped.
+    for (nm, m) in ("exponential" => (@slic (; y) begin
+                        s ~ exponential(1.); y ~ normal(0., s); s end),
+                    "gamma" => (@slic (; y) begin
+                        s ~ gamma(2., 2.); y ~ normal(0., s); s end),
+                    "beta" => (@slic (; y) begin
+                        p ~ beta(2., 2.); y ~ normal(p, 1.); p end))
+        @test occursin("lower=0", stan_block(stan_code(m), "parameters"))
+        @test stanc_compiles(m)
+    end
+end
+
+@testitem "slic: a bound and an affine transform cannot share a declaration" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    y, K = randn(20), 3
+    # `StanBlocksError` wraps the cause, so match on the rendered text — the
+    # same shape the other rejection items in this file use.
+    reject(f) = try; f(); nothing; catch e; sprint(showerror, e) end
+
+    # `real<lower=0, multiplier=s> x;` is a stanc SYNTAX error, so left to reach
+    # the emitter it surfaced as an unattributed parse failure on generated
+    # source the author never wrote. Both folding paths must reject it at trace
+    # time — the bare-LHS one (`autotype`) and the typed-LHS one.
+    bare = reject(() -> stan_code(@slic (; y) begin
+        m ~ normal(0., 1.)
+        s ~ normal(0., 1.; lower = 0., multiplier = m)
+        y ~ normal(0., s); s
+    end))
+    @test bare !== nothing
+    @test occursin("cannot combine a bound with an affine transform", bare)
+    @test occursin("`lower=`", bare)
+    @test occursin("`multiplier=`", bare)
+
+    typed = reject(() -> stan_code(@slic (; y, K) begin
+        m ~ normal(0., 1.)
+        s::vector[K] ~ normal(0., 1.; lower = 0., multiplier = m)
+        y ~ normal(0., sum(s)); s
+    end))
+    @test typed !== nothing
+    @test occursin("cannot combine a bound with an affine transform", typed)
+    @test occursin("on `s`", typed)   # typed path names the parameter
+
+    upoff = reject(() -> stan_code(@slic (; y) begin
+        m ~ normal(0., 1.)
+        s ~ normal(0., 1.; upper = 1., offset = m)
+        y ~ normal(0., s); s
+    end))
+    @test upoff !== nothing
+    @test occursin("`upper=`", upoff)
+    @test occursin("`offset=`", upoff)
+
+    # A DISTRIBUTION-implied bound collides just as really, but blaming the
+    # author for a `lower=` they never wrote is the confusing half.
+    impl = reject(() -> stan_code(@slic (; y) begin
+        m ~ normal(0., 1.)
+        s ~ exponential(1.; multiplier = m)
+        y ~ normal(0., s); s
+    end))
+    @test impl !== nothing
+    @test occursin("implied by the distribution", impl)
+
+    # Controls: each family alone is legal, and both must still compile.
+    bound_only = @slic (; y) begin
+        s ~ normal(0., 1.; lower = 0., upper = 1.); y ~ normal(0., s); s
+    end
+    @test occursin("lower=0.0", stan_block(stan_code(bound_only), "parameters"))
+    @test stanc_compiles(bound_only)
+
+    affine_only = @slic (; y) begin
+        m ~ normal(0., 1.)
+        t ~ normal(0., 1.; lower = 0.)
+        s ~ normal(m, t; offset = m, multiplier = t)
+        y ~ normal(s, 1.); s
+    end
+    affine_params = stan_block(stan_code(affine_only), "parameters")
+    @test occursin("offset=m", affine_params)
+    @test occursin("multiplier=t", affine_params)
+    @test !occursin("lower=0.0>[", affine_params)   # `s` itself stays unbounded
+    @test stanc_compiles(affine_only)
+end
+
+@testitem "slic: parameter constraints reject transformed-parameter dependencies" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    y = randn(20)
+    reject(f) = try; f(); nothing; catch e; sprint(showerror, e) end
+
+    # Both declarations are `:parameter`-qualified while tracing, but `shifted`
+    # is emitted in transformed parameters and therefore is not in scope from a
+    # parameter declaration. Exercise one bound and one affine constraint so
+    # the rule covers the full declaration-constraint family independently of
+    # the bound+affine combination check above.
+    bound = reject(() -> stan_code(@slic (; y) begin
+        a ~ normal(0., 1.)
+        shifted = exp(a)
+        b ~ normal(0., 1.; lower = shifted)
+        y ~ normal(b, 1.); b
+    end))
+    @test bound !== nothing
+    @test occursin("Parameter `b`", bound)
+    @test occursin("`lower=shifted`", bound)
+    @test occursin("depends on `shifted`", bound)
+    @test occursin("transformed-parameter value", bound)
+
+    affine = reject(() -> stan_code(@slic (; y) begin
+        a ~ normal(0., 1.)
+        shifted = exp(a)
+        b ~ normal(0., 1.; multiplier = shifted)
+        y ~ normal(b, 1.); b
+    end))
+    @test affine !== nothing
+    @test occursin("`multiplier=shifted`", affine)
+
+    # Positive controls: direct data, transformed data, and an earlier sampled
+    # parameter are all available when Stan declares a later parameter.
+    earlier_parameter = @slic (; y) begin
+        a ~ normal(0., 1.; lower = 0.)
+        b ~ normal(0., 1.; lower = a)
+        y ~ normal(a + b, 1.); b
+    end
+    earlier_params = stan_block(stan_code(earlier_parameter), "parameters")
+    @test occursin("real<lower=a> b;", earlier_params)
+    @test stanc_compiles(earlier_parameter)
+
+    transformed_data = @slic (; y) begin
+        lo = y[1]
+        b ~ normal(0., 1.; lower = lo)
+        y ~ normal(b, 1.); b
+    end
+    @test occursin("real<lower=lo> b;", stan_block(stan_code(transformed_data), "parameters"))
+    @test stanc_compiles(transformed_data)
 end
 
 """

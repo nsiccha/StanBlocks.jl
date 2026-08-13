@@ -976,13 +976,19 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
         return _trace_stan_expr(CanonicalExpr(Symbol(".="), info[name], rhs), info)
     end
     @assert name ∉ keys(info)
-    info[name] = StanExpr(name, remake(type(rhs); value=missing))
+    # A model-scope `name = rhs` is emitted in transformed data / transformed
+    # parameters / generated quantities, never in the parameters block. Keep
+    # that declaration provenance on the binding itself: its qualifier alone
+    # cannot distinguish a sampled parameter from a parameter-dependent
+    # transformed value, and parameter constraints need exactly that scope
+    # distinction.
+    info[name] = StanExpr(name, remake(type(rhs); value=missing, decl_role=:derived))
     @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
     rv = remake(x, info[name], rhs)
     info[name] = StanExpr(name, remake(type(rhs), [
         maybe_lazy_size(name, i, sizei; info)
         for (i, sizei) in enumerate(stan_size(type(rhs)))
-    ]...; value=missing))
+    ]...; value=missing, decl_role=:derived))
     rv
 end
 # Fallback: a compiler-injected slice/element fill `out[i] = rhs` (getindex LHS —
@@ -1209,7 +1215,7 @@ forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
         autotype = stan.autotype(rhs)
         cv = stan.cv(autotype) || stan.cv(rhs)
         qual = cv ? :quantities : :parameter
-        info[name] = StanExpr(name, remake(autotype; qual, cv))
+        info[name] = StanExpr(name, remake(autotype; qual, cv, decl_role=:sampled))
     end
     validate_sampling_rhs(info[name], rhs; info)
     remake(x, info[name], rhs)
@@ -1277,15 +1283,13 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # `tau::vector[K] ~ normal(0,1; lower=0)` emitted an UNCONSTRAINED
     # `vector[K] tau`. Native-constrained centers (simplex/cholesky/…) carry no
     # bound autokwargs and take no user bounds, so `cons` is empty for them.
-    cons_kw = merge(autokwargs(rhs_canonical), (; kwargs_resolved...))
-    cons = (;[
-        key => getindex(cons_kw, key)
-        for key in (:lower, :upper, :offset, :multiplier) if key in keys(cons_kw)
-    ]...)
+    implied_kw = autokwargs(rhs_canonical)
+    cons_kw = merge(implied_kw, (; kwargs_resolved...))
+    cons = _fold_constraints(name, cons_kw; implied=keys(implied_kw))
     base_lhs_type = StanType(ct_resolved, sizes_forwarded; cons...)
     cv_args = any(stan.cv, args_resolved)
     qual = cv_args ? :quantities : :parameter
-    info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args))
+    info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args, decl_role=:sampled))
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     validate_sampling_rhs(info[name], rhs_stan; info)
     remake(x, info[name], rhs_stan)

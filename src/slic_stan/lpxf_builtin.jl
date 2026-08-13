@@ -207,7 +207,50 @@ _validate_distribution_hof(spec, lhs, rhs::CanonicalExpr) = begin
     end
     nothing
 end
+
+# Stan emits every parameter declaration before its transformed-parameters
+# block. Consequently a parameter constraint may depend on data (including a
+# transformed-data binding) or an earlier genuine parameter, but never on a
+# parameter-dependent assignment. Qualifiers alone cannot express that
+# distinction: both sampled parameters and transformed-parameter values are
+# `:parameter`-qualified, so `forward!` records their declaration provenance in
+# `decl_role` and this sampling chokepoint validates the resolved leaves.
+_constraint_dependencies!(deps, x::StanExpr{Symbol}) = (push!(deps, x); deps)
+_constraint_dependencies!(deps, x::StanExpr) = _constraint_dependencies!(deps, expr(x))
+_constraint_dependencies!(deps, x::CanonicalExpr) = begin
+    _constraint_dependencies!(deps, x.args)
+    _constraint_dependencies!(deps, values(x.kwargs))
+end
+_constraint_dependencies!(deps, x::Union{Tuple,AbstractArray}) = begin
+    foreach(v -> _constraint_dependencies!(deps, v), x)
+    deps
+end
+_constraint_dependencies!(deps, x::NamedTuple) = _constraint_dependencies!(deps, values(x))
+_constraint_dependencies!(deps, x) = deps
+
+_validate_parameter_constraint_scope(lhs) = begin
+    for (key, constraint) in pairs(constraints(type(lhs)))
+        dependencies = StanExpr[]
+        _constraint_dependencies!(dependencies, constraint)
+        for dependency in dependencies
+            dependency_qual = qual(dependency)
+            dependency_role = _decl_role(dependency)
+            in_scope = dependency_qual === :data ||
+                (dependency_qual === :parameter && dependency_role in (:sampled, :unfilled))
+            in_scope && continue
+            error(
+                "Parameter `$(expr(lhs))` has `$(key)=$(expr(constraint))`, but its " *
+                "constraint depends on `$(expr(dependency))`, a transformed-parameter " *
+                "value. Stan parameter declarations precede transformed parameters; " *
+                "a constraint may reference only data or an earlier sampled parameter."
+            )
+        end
+    end
+    nothing
+end
+
 validate_sampling_rhs(lhs, rhs::StanExpr{<:CanonicalExpr}; info) = begin
+    _validate_parameter_constraint_scope(lhs)
     canonical = expr(rhs)
     spec = _distribution_hof(head(canonical))
     isnothing(spec) || _validate_distribution_hof(spec, lhs, canonical)
