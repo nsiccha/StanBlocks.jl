@@ -949,6 +949,9 @@ begin
             return (jt, (:array, nd), slic_key, dims)
         elseif _julia_vector_type(ct) && nd == 1
             return (:(AbstractVector{<:Real}), (:real_array, 1), slic_key, dims)
+        elseif ct === :matrix && nd >= 2
+            jt = nd == 2 ? :(AbstractMatrix{<:Real}) : :(AbstractArray{<:Real,$nd})
+            return (jt, (:real_array, nd), slic_key, dims)
         elseif _julia_matrix_type(ct) && nd == 2
             return (:(AbstractMatrix{<:Real}), (:real_array, 2), slic_key, dims)
         elseif (_julia_vector_type(ct) || _julia_matrix_type(ct))
