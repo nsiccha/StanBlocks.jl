@@ -976,13 +976,19 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
         return _trace_stan_expr(CanonicalExpr(Symbol(".="), info[name], rhs), info)
     end
     @assert name ∉ keys(info)
-    info[name] = StanExpr(name, remake(type(rhs); value=missing))
+    # A model-scope `name = rhs` is emitted in transformed data / transformed
+    # parameters / generated quantities, never in the parameters block. Keep
+    # that declaration provenance on the binding itself: its qualifier alone
+    # cannot distinguish a sampled parameter from a parameter-dependent
+    # transformed value, and parameter constraints need exactly that scope
+    # distinction.
+    info[name] = StanExpr(name, remake(type(rhs); value=missing, decl_role=:derived))
     @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
     rv = remake(x, info[name], rhs)
     info[name] = StanExpr(name, remake(type(rhs), [
         maybe_lazy_size(name, i, sizei; info)
         for (i, sizei) in enumerate(stan_size(type(rhs)))
-    ]...; value=missing))
+    ]...; value=missing, decl_role=:derived))
     rv
 end
 # Fallback: a compiler-injected slice/element fill `out[i] = rhs` (getindex LHS —
@@ -1209,7 +1215,7 @@ forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
         autotype = stan.autotype(rhs)
         cv = stan.cv(autotype) || stan.cv(rhs)
         qual = cv ? :quantities : :parameter
-        info[name] = StanExpr(name, remake(autotype; qual, cv))
+        info[name] = StanExpr(name, remake(autotype; qual, cv, decl_role=:sampled))
     end
     validate_sampling_rhs(info[name], rhs; info)
     remake(x, info[name], rhs)
@@ -1283,7 +1289,7 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     base_lhs_type = StanType(ct_resolved, sizes_forwarded; cons...)
     cv_args = any(stan.cv, args_resolved)
     qual = cv_args ? :quantities : :parameter
-    info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args))
+    info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args, decl_role=:sampled))
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     validate_sampling_rhs(info[name], rhs_stan; info)
     remake(x, info[name], rhs_stan)

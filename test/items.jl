@@ -7386,6 +7386,57 @@ end
     @test stanc_compiles(affine_only)
 end
 
+@testitem "slic: parameter constraints reject transformed-parameter dependencies" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    y = randn(20)
+    reject(f) = try; f(); nothing; catch e; sprint(showerror, e) end
+
+    # Both declarations are `:parameter`-qualified while tracing, but `shifted`
+    # is emitted in transformed parameters and therefore is not in scope from a
+    # parameter declaration. Exercise one bound and one affine constraint so
+    # the rule covers the full declaration-constraint family independently of
+    # the bound+affine combination check above.
+    bound = reject(() -> stan_code(@slic (; y) begin
+        a ~ normal(0., 1.)
+        shifted = exp(a)
+        b ~ normal(0., 1.; lower = shifted)
+        y ~ normal(b, 1.); b
+    end))
+    @test bound !== nothing
+    @test occursin("Parameter `b`", bound)
+    @test occursin("`lower=shifted`", bound)
+    @test occursin("depends on `shifted`", bound)
+    @test occursin("transformed-parameter value", bound)
+
+    affine = reject(() -> stan_code(@slic (; y) begin
+        a ~ normal(0., 1.)
+        shifted = exp(a)
+        b ~ normal(0., 1.; multiplier = shifted)
+        y ~ normal(b, 1.); b
+    end))
+    @test affine !== nothing
+    @test occursin("`multiplier=shifted`", affine)
+
+    # Positive controls: direct data, transformed data, and an earlier sampled
+    # parameter are all available when Stan declares a later parameter.
+    earlier_parameter = @slic (; y) begin
+        a ~ normal(0., 1.; lower = 0.)
+        b ~ normal(0., 1.; lower = a)
+        y ~ normal(a + b, 1.); b
+    end
+    earlier_params = stan_block(stan_code(earlier_parameter), "parameters")
+    @test occursin("real<lower=a> b;", earlier_params)
+    @test stanc_compiles(earlier_parameter)
+
+    transformed_data = @slic (; y) begin
+        lo = y[1]
+        b ~ normal(0., 1.; lower = lo)
+        y ~ normal(b, 1.); b
+    end
+    @test occursin("real<lower=lo> b;", stan_block(stan_code(transformed_data), "parameters"))
+    @test stanc_compiles(transformed_data)
+end
+
 """
 Snag regression (skew-double-expo-e093bd49): the native Stan
 `skew_double_exponential` family must complete the observation triad for a
