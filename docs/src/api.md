@@ -27,6 +27,7 @@ StanBlocks.@stan_assert
 
 ```@docs
 StanBlocks.return_type_of
+StanBlocks.compile_slic_bundle
 StanBlocks.stan_code
 StanBlocks.stan_model
 StanBlocks.stan_instantiate
