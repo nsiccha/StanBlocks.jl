@@ -177,15 +177,28 @@ Base.show(io::IO, x::WhileExpr) = begin
     head, body = x.args
     print(io, "while(", head, ")", StanBlock(Symbol(), body.args))
 end
-_else_branch(_x, e::BlockExpr) = StanBlock(Symbol(), e.args)
-_else_branch(x, e) = error("if/elseif rendering: else branch is not a BlockExpr (got `$(typeof(e))` from `$x`).")
+_else_branch(e::BlockExpr) = (" else", StanBlock(Symbol(), e.args))
+_else_branch(e::StanExpr{<:ElseIfExpr}) = (" else ", e)
+_else_branch(e::ElseIfExpr) = (" else ", e)
+_else_branch(e) = error("if/elseif rendering: expected a BlockExpr or ElseIfExpr branch, got `$(typeof(e))`.")
 
-Base.show(io::IO, x::IfExpr) = begin
-    print(io, "if(", x.args[1], ")", StanBlock(Symbol(), x.args[2].args))
+_if_condition(x::IfExpr) = x.args[1]
+_if_condition(x::ElseIfExpr) = _elseif_condition(x.args[1])
+_elseif_condition(x::BlockExpr) = begin
+    args = filter(a -> !(a isa LineNumberNode), x.args)
+    length(args) == 1 || error("if/elseif rendering: expected one expression in an elseif condition, got $(length(args)).")
+    only(args)
+end
+_elseif_condition(x) = error("if/elseif rendering: expected a BlockExpr elseif condition, got `$(typeof(x))`.")
+
+_show_if(io::IO, x::Union{IfExpr,ElseIfExpr}) = begin
+    print(io, "if(", _if_condition(x), ")", StanBlock(Symbol(), x.args[2].args))
     if length(x.args) == 3
-        print(io, " else", _else_branch(x, x.args[3]))
+        print(io, _else_branch(x.args[3])...)
     end
 end
+Base.show(io::IO, x::IfExpr) = _show_if(io, x)
+Base.show(io::IO, x::ElseIfExpr) = _show_if(io, x)
 # Ternary conditional EXPRESSION → Stan's `cond ? a : b` operator. Unlike the
 # `if`-statement above, the branches are values (`x.args[2]`/`[3]`), not blocks,
 # so they render inline; the outer parens keep it safe in any expression

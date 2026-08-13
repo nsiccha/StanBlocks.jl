@@ -7898,3 +7898,52 @@ Regression for Helpful Stan Functions' student-t log-CDF/log-CCDF helpers.
     @test occursin("return log2(x);", code)
     @test stanc_check(code; warn_pedantic=false).ok
 end
+
+"""
+Statement `if`/`elseif`/`else` chains in a Stan-only `@deffun` must render as
+Stan's ordinary `else if` syntax.  The equivalent nested-`if` workaround stays
+valid, but should retain its visibly nested block structure.
+"""
+@testitem "slic: Stan-only @deffun elseif chains render and compile" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports] begin
+    @deffun begin
+        @stanonly hsf_elseif_probe(x::real, df::real)::real = begin
+            if is_inf(x)
+                return x
+            elseif is_inf(df)
+                return df
+            else
+                return x + df
+            end
+        end
+
+        @stanonly hsf_nested_if_probe(x::real, df::real)::real = begin
+            if is_inf(x)
+                return x
+            else
+                if is_inf(df)
+                    return df
+                else
+                    return x + df
+                end
+            end
+        end
+    end
+
+    elseif_model = @slic (; y = 0.0) begin
+        x ~ normal(0.0, 1.0)
+        df ~ lognormal(0.0, 1.0)
+        y ~ normal(hsf_elseif_probe(x, df), 1.0)
+    end
+    nested_if_model = @slic (; y = 0.0) begin
+        x ~ normal(0.0, 1.0)
+        df ~ lognormal(0.0, 1.0)
+        y ~ normal(hsf_nested_if_probe(x, df), 1.0)
+    end
+
+    elseif_code = stan_code(elseif_model)
+    nested_if_code = stan_code(nested_if_model)
+    @test occursin(" else if(", elseif_code)
+    @test !occursin(" else if(", nested_if_code)
+    @test stanc_check(elseif_code; warn_pedantic=false).ok
+    @test stanc_check(nested_if_code; warn_pedantic=false).ok
+end
