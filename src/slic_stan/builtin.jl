@@ -148,7 +148,7 @@ end
     dot_product rows_dot_product
     dims rows cols
     reject
-    positive_infinity negative_infinity
+    positive_infinity negative_infinity not_a_number
 
     reduce_sum reduce_sum_static reduce_sum_reconstruct simple_reduce_sum simple_reduce_sum_helper
 
@@ -160,7 +160,7 @@ end
     density pointwise predictive logcdf logccdf
 
     # Unary math (Stan-specific, not Julia builtins)
-    square log_diff_exp log_mix atan2
+    square inv_sqrt log_diff_exp log_mix atan2
     is_inf is_nan
     Phi_approx inv_Phi
     erf erfc tgamma digamma trigamma
@@ -292,6 +292,7 @@ import Statistics
     end
     positive_infinity()::real
     negative_infinity()::real
+    not_a_number()::real
     reject(args...)::anything
     # --- Stan 2.37 exposed constraint-transform functions (Feature 1: ragged
     # non-trivial constrained parameters). Bodyless — these are Stan built-ins
@@ -2043,7 +2044,7 @@ end
 end
 
 @defsig begin
-    Union{typeof.((sqrt, exp, log, log10, sin, cos, asin, acos, tan, atan,
+    Union{typeof.((sqrt, inv_sqrt, exp, log, log10, sin, cos, asin, acos, tan, atan,
         cosh, sinh, tanh, acosh, asinh, atanh,
         log1m, inv_logit, logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs,
         log1p_exp, log1m_exp, Base.inv, Base.log1p,
