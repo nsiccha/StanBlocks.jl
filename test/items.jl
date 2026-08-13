@@ -2336,6 +2336,71 @@ Snag `compile-slic-bun-83d3bfe1`, reported by SlicTranspiler.
 end
 
 """
+`compile_slic_bundle` preserves inline `@deffun` distribution annotations in
+its fresh module. A local density used through `~` needs the same explicit
+`@lhs @lpxf` registration and pointwise/predictive companions as a direct
+`@slic` model; the bundle must emit all three UDFs and stanc-valid generated
+quantities. Snag `compile-slic-bun-4bc9aa10`, reported by SlicTranspiler.
+"""
+@testitem "slic: compile a local distribution triad in a trusted bundle" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    udf_definitions = ["bundle-garch" => :(@stanonly begin
+        @lhs @lpxf bundle_garch_lpdf(
+            y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real,
+        )::real = begin
+            sigma2 = alpha0
+            rv = 0.0
+            for t in 1:T
+                rv += normal_lpdf(y[t], mu, sqrt(sigma2))
+                sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
+            end
+            return rv
+        end
+
+        bundle_garch_lpdfs(
+            y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real,
+        )::vector[T] = begin
+            sigma2 = alpha0
+            rv::vector[T]
+            for t in 1:T
+                rv[t] = normal_lpdf(y[t], mu, sqrt(sigma2))
+                sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
+            end
+            return rv
+        end
+
+        bundle_garch_rng(
+            vector[T], mu::real, alpha0::real, alpha1::real, beta1::real,
+        )::vector[T] = begin
+            sigma2 = alpha0
+            rv::vector[T]
+            for t in 1:T
+                rv[t] = normal_rng(mu, sqrt(sigma2))
+                sigma2 = alpha0 + alpha1 * square(rv[t] - mu) + beta1 * sigma2
+            end
+            return rv
+        end
+    end)]
+    body = quote
+        mu ~ std_normal()
+        alpha0 ~ std_normal(; lower=0.0)
+        alpha1 ~ uniform(0.0, 1.0)
+        beta1 ~ uniform(0.0, 1.0)
+        y ~ bundle_garch(mu, alpha0, alpha1, beta1)
+    end
+
+    result = compile_slic_bundle((; y=randn(8)), Expr[], body;
+        udf_definitions, name=:bundle_garch_parent)
+
+    @test occursin("real bundle_garch_lpdf(", result.code)
+    @test occursin("vector bundle_garch_lpdfs(", result.code)
+    @test occursin("vector bundle_garch_vector_rng(", result.code)
+    @test occursin("y ~ bundle_garch(mu, alpha0, alpha1, beta1);", result.code)
+    @test occursin("y_likelihood = bundle_garch_lpdfs(", result.code)
+    @test occursin("y_gen = bundle_garch_vector_rng(", result.code)
+    @test stanc_check(result.code; warn_pedantic=false).ok
+end
+
+"""
 `Base.merge` keys a spliced statement on what its LHS NAMES, so a typed-LHS
 override replaces the base's plain-LHS statement instead of being appended, and
 the merged body stays raw Julia AST so it can be printed for inspection.
