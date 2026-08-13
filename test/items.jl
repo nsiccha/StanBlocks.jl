@@ -7659,6 +7659,38 @@ this item gates on `stanc_compiles`, not `transpiles`.
 end
 
 """
+`inv_sqrt` is a native element-wise Stan Math function. Register it in both
+the `@builtin_module` name manifest and the shared unary-math `@defsig` Union
+so `@stanonly @deffun` bodies can call it. Regression for Helpful Stan
+Functions' `variance_adjusted_sgt`, whose infinite-q branch calls
+`inv_sqrt(real)`.
+"""
+@testitem "slic: native inv_sqrt builtin emits and compiles" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
+    @deffun begin
+        @stanonly variance_adjusted_sgt_scale(q::real)::real = inv_sqrt(q)
+        @stanonly inv_sqrt_vec(x::vector[n])::vector[n] = inv_sqrt(x)
+    end
+
+    scalar_model = @slic (; y = 0.5) begin
+        q ~ lognormal(0., 1.)
+        adjusted = variance_adjusted_sgt_scale(q)
+        y ~ normal(adjusted, 1.)
+    end
+    scalar_code = stan_code(scalar_model)
+    @test occursin("return inv_sqrt(q);", scalar_code)
+    @test stanc_check(scalar_code; warn_pedantic=false).ok
+
+    vector_model = @slic (; y = [0.5, 1.0, 1.5]) begin
+        q ~ lognormal(0., 1.; n = 3)
+        adjusted = inv_sqrt_vec(q)
+        y ~ normal(adjusted, 1.)
+    end
+    vector_code = stan_code(vector_model)
+    @test occursin("return inv_sqrt(x);", vector_code)
+    @test stanc_check(vector_code; warn_pedantic=false).ok
+end
+
+"""
 `lambert_w0` is a native Stan Math function (element-wise: real / vector /
 row_vector / array / matrix). It must be registered on the builtin surface —
 in the `@builtin_module` name manifest AND the shared unary-math `@defsig`
