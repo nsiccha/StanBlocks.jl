@@ -260,7 +260,10 @@ forward!(x::StanExpr{Symbol,<:StanType{<:types.closure}}; info) = x
 
 # `slic_macroexpand` and the user-facing macros must exist before
 # `include("builtin.jl")`, which uses `@deffun` extensively at load time.
-const _SLIC_RESERVED_MACROS = (Symbol("@doc"), Symbol("@lpxf"), Symbol("@lhs"), Symbol("@inline"), Symbol("@stanonly"))
+const _SLIC_RESERVED_MACROS = (
+    Symbol("@doc"), Symbol("@lpxf"), Symbol("@lhs"), Symbol("@inline"),
+    Symbol("@juliacompat"), Symbol("@stanonly"),
+)
 
 _is_reserved_slic_macro(::Any) = false
 _is_reserved_slic_macro(head::Symbol) = head in _SLIC_RESERVED_MACROS

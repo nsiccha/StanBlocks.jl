@@ -645,9 +645,10 @@ transpiler. Computed `typeof(f(x[1]))[n]` annotations provide a related
 higher-order form: a real-valued `f` produces a `vector`, while an integer-valued
 `f` produces `array[] int`.
 
-### Dual Julia and Stan emission
+### Opt-in Julia and Stan emission
 
-Eligible deterministic, bodyful `@deffun` definitions also install one Julia
+`@deffun` definitions are Stan-only by default. Eligible deterministic,
+bodyful definitions annotated with `@juliacompat` also install one Julia
 method. That supports ordinary unit tests of shared deterministic helpers:
 
 ```@raw html
@@ -656,7 +657,7 @@ method. That supports ordinary unit tests of shared deterministic helpers:
 
 ```@eval
 Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-@deffun affine(x::real, a::real = 2.0)::real = a * x + 1.0
+@deffun @juliacompat affine(x::real, a::real = 2.0)::real = a * x + 1.0
 
 affine(3.0) == 7.0
 
@@ -671,8 +672,9 @@ end
 ```
 
 Probability, RNG, ODE, and parallel builtins are outside the bounded Julia
-target. Their own `_lpdf`/`_rng`-family definitions skip Julia emission
-automatically; use `@stanonly` for another intentionally Stan-only helper.
+target. Their own `_lpdf`/`_rng`-family definitions remain Stan-only even when
+annotated. `@stanonly` can document an intentionally Stan-only helper or opt
+one member out of a surrounding `@juliacompat` group.
 
 ## Custom and higher-order distributions
 

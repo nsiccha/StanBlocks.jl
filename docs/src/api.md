@@ -5,6 +5,7 @@
 ```@docs
 StanBlocks.@slic
 StanBlocks.@deffun
+StanBlocks.@juliacompat
 StanBlocks.@stanonly
 StanBlocks.@defsig
 StanBlocks.@usertype

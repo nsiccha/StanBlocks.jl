@@ -283,7 +283,7 @@ import Statistics
     # `simple_reduce_sum(f, ::any_vector, ...)` directly. `any_vector` covers
     # all 1-d vector-like Stan types in the SLIC hierarchy.
     @stanonly simple_reduce_sum(f, x::any_vector[n], args...)::real = reduce_sum(simple_reduce_sum_helper, to_array_1d(x), 1, f, args...)
-    simple_reduce_sum_helper(x_slice::anything[n], slice_start, slice_end, f, args...)::real = begin 
+    @juliacompat simple_reduce_sum_helper(x_slice::anything[n], slice_start, slice_end, f, args...)::real = begin
         rv = 0.
         for i in 1:n
             rv += f(x_slice[i], args...)
@@ -884,8 +884,8 @@ import Statistics
     binomial_rng(args...)::int
     binomial_logit_rng(n::int[m], p::vector[m])::int[m]
     binomial_logit_rng(n::vector[m], p::vector[m])::int[m]
-    broadcasted_getindex(x, i) = x
-    broadcasted_getindex(x::anything[m], i) = x[i]
+    @juliacompat broadcasted_getindex(x, i) = x
+    @juliacompat broadcasted_getindex(x::anything[m], i) = x[i]
     # `jbroadcasted(f, args...)` is a TRACE-LEVEL construct (custom tracetype +
     # fundef below, not a fixed-arity @deffun): arbitrary arity, any array-arg
     # positions, and an INFERRED output container (int element → array[] int,
@@ -1085,20 +1085,20 @@ import Statistics
     discrete_range_lccdf(args...)
     student_t_cdf(args...)
 
-    append_row(x, y, z, args...) = append_row(append_row(x, y), z, args...)
-    append_col(x, y, z, args...) = append_col(append_col(x, y), z, args...)
+    @juliacompat append_row(x, y, z, args...) = append_row(append_row(x, y), z, args...)
+    @juliacompat append_col(x, y, z, args...) = append_col(append_col(x, y), z, args...)
 
     # hcat for building a design matrix from column vectors. Narrow on purpose:
     # Stan's matrix / array-of-vectors / array-of-ints are distinct types, so
     # add more signatures only as sbimpl (or other callers) actually need them.
-    hcat(x::vector[n])::matrix[n,1] = to_matrix(x, n, 1)
-    hcat(x::vector[n], y::vector[n])::matrix[n,2] = append_col(x, y)
-    hcat(x::matrix[m, n], y::vector[m])::matrix[m, n+1] = append_col(x, y)
-    hcat(x, y, z, args...) = hcat(hcat(x, y), z, args...)
+    @juliacompat hcat(x::vector[n])::matrix[n,1] = to_matrix(x, n, 1)
+    @juliacompat hcat(x::vector[n], y::vector[n])::matrix[n,2] = append_col(x, y)
+    @juliacompat hcat(x::matrix[m, n], y::vector[m])::matrix[m, n+1] = append_col(x, y)
+    @juliacompat hcat(x, y, z, args...) = hcat(hcat(x, y), z, args...)
 
     # reshape: vector -> matrix only, matching Base.reshape(v, m, k) with fully
     # specified dims. Grow as needed.
-    reshape(v::vector[n], m::int, k::int)::matrix[m, k] = to_matrix(v, m, k)
+    @juliacompat reshape(v::vector[n], m::int, k::int)::matrix[m, k] = to_matrix(v, m, k)
 
     # `jmap(f, x)` — element-wise map whose output CONTAINER is inferred from
     # `f`'s per-element return type (`typeof(f(x[1]))`): an `int`-returning `f`
@@ -1107,7 +1107,7 @@ import Statistics
     # separate real `map` / int `imap` (`ibroadcasted`) variants are needed
     # (prong 3). `x::anything[n]` accepts a `vector` / `row_vector` / `array[] T`
     # (1-dim); `jbroadcasted` remains the arbitrary-arity elementwise construct.
-    jmap(f, x::anything[n]) = begin
+    @juliacompat jmap(f, x::anything[n]) = begin
         rv::typeof(f(x[1]))[n]
         for i in 1:n
             rv[i] = f(x[i])
@@ -1276,7 +1276,7 @@ import Statistics
     # Assemble a full vector from observed and imputed-missing parts.
     # Emitted into `transformed_parameters` by the body pre-pass when a
     # partly-missing data vector is detected (auto-detect Union{Missing}).
-    merge_missing(y_obs::vector[n_obs], y_mis::vector[n_mis], ii_obs::int[n_obs], ii_mis::int[n_mis])::vector[n_obs+n_mis] = begin
+    @juliacompat merge_missing(y_obs::vector[n_obs], y_mis::vector[n_mis], ii_obs::int[n_obs], ii_mis::int[n_mis])::vector[n_obs+n_mis] = begin
         y::vector[n_obs+n_mis]
         for i in 1:n_obs
             y[ii_obs[i]] = y_obs[i]
@@ -1407,18 +1407,18 @@ end
 # declarations. Overloads of the legacy `x::ntup` accessors above — additive,
 # so no `@builtin_module` manifest edit (and no live-app const wedge, §R13).
 @deffun begin
-    ragged_start(ends::int[k], i::int)::int = if i == 1
+    @juliacompat ragged_start(ends::int[k], i::int)::int = if i == 1
         1
     else
         1 + ends[i-1]
     end
-    ragged_end(ends::int[k], i::int)::int = ends[i]
+    @juliacompat ragged_end(ends::int[k], i::int)::int = ends[i]
     # Data-qualified group length: `ragged_length(ends, g)` is legal in a Stan
     # size declaration, so a downstream `z::vector[ragged_length(ends, g)]` param
     # can be sized by a group. (`length(rv[g])` would instead be `num_elements`
     # of a parameter-valued slice, which — like `length(<any param vector>)` —
     # is not folded to a data size, §R9; size from `ends` for a top-level decl.)
-    ragged_length(ends::int[k], i::int)::int = ragged_end(ends, i) - ragged_start(ends, i) + 1
+    @juliacompat ragged_length(ends::int[k], i::int)::int = ragged_end(ends, i) - ragged_start(ends, i) + 1
 end
 
 # Tuple-representation accessors (retained). These fire when a RaggedVector is
@@ -1987,12 +1987,12 @@ end
     # Single-peak time response: with xi = (log t - loc)*exp(log_slope), the
     # value exp(log_inv_logit(xi)+log_inv_logit(-xi))*mag peaks once at log t=loc
     # and →0 as t→0 or t→∞ (log_slope stored unconstrained → exp() positive).
-    bordet_time_response(log_time::vector[n], loc::vector[n], log_slope::vector[n], mag::vector[n])::vector[n] = begin
+    @juliacompat bordet_time_response(log_time::vector[n], loc::vector[n], log_slope::vector[n], mag::vector[n])::vector[n] = begin
         xi::vector[n] = (log_time - loc) .* exp(log_slope)
         exp(log_inv_logit(xi) + log_inv_logit(-xi)) .* mag
     end
     # Log dose response (sigmoid in log space): caller exp()s it in the compose.
-    bordet_dose_response(log_dose::vector[n], loc::vector[n], log_slope::vector[n])::vector[n] = begin
+    @juliacompat bordet_dose_response(log_dose::vector[n], loc::vector[n], log_slope::vector[n])::vector[n] = begin
         xi::vector[n] = (log_dose - loc) .* exp(log_slope)
         log_inv_logit(xi)
     end
@@ -2000,7 +2000,7 @@ end
     # --- index / broadcast helpers (transformed-data) ------------------------
     # Column-major linear indices: `xy` with `vec(M)[xy] == M[x,y]` for an
     # (max(x) × max(y)) matrix `M`.
-    linear_idxs(x::int[n], y::int[n])::int[n] = begin
+    @juliacompat linear_idxs(x::int[n], y::int[n])::int[n] = begin
         m = max(x)
         rv::int[n]
         for i in 1:n
@@ -2009,14 +2009,14 @@ end
         rv
     end
     # Elementwise max(x[i], y) / (x[i] > y) for a vector x and scalar y.
-    broadcasted_max(x::vector[n], y::real)::vector[n] = begin
+    @juliacompat broadcasted_max(x::vector[n], y::real)::vector[n] = begin
         rv::vector[n]
         for i in 1:n
             rv[i] = fmax(x[i], y)
         end
         rv
     end
-    broadcasted_gt(x::vector[n], y::real)::vector[n] = begin
+    @juliacompat broadcasted_gt(x::vector[n], y::real)::vector[n] = begin
         rv::vector[n]
         for i in 1:n
             rv[i] = x[i] > y
