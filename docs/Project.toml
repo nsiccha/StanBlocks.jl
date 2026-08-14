@@ -8,7 +8,8 @@ OutputSignatures = "86cfaae4-1704-4c69-ba62-d919d81ae5f8"
 StanBlocks = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
 
 [sources.BayesianRegressionModels]
-url = "https://github.com/nsiccha/BayesianRegressionModels.jl"
+url = "https://github.com/JuliaBayes/BayesianRegressionModels.jl"
+rev = "ns/devibe"
 
 [sources.MutatingFunctions]
 url = "https://github.com/nsiccha/MutatingFunctions.jl"
