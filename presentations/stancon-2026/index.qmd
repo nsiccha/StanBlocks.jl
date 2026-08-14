@@ -69,7 +69,7 @@ model {
 StanBlocks is a frontend, not a replacement for Stan.
 :::
 
-<p class="small muted">… with quality-of-life improvements such as activity analysis, submodels, user-defined types (currently enabling e.g. NamedTuples and ragged data structures), higher-order user-defined functions, automatic but optional type &amp; shape inference, (ragged) inference plates, metaprogramming, Julia-style multiple dispatch, and more.</p>
+<p class="small muted">… with quality-of-life improvements such as activity analysis, submodels, user-defined types (currently enabling e.g. NamedTuples and ragged data structures), higher-order user-defined functions, automatic but optional type &amp; shape inference, plates (ours can be ragged), metaprogramming, Julia-style multiple dispatch, and more.</p>
 
 ::: {.notes}
 Open with the boundary, not the feature list. The promise is deliberately
