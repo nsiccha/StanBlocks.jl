@@ -1231,6 +1231,57 @@ end
 _is_native_constrained_ct(T) = T isa Type && (
     (T <: types.vector && T !== types.vector) || T <: types.square_matrix
 )
+# Decision `0909w6i` ("the lhs is always right"): the DECLARED LHS type must be
+# PRODUCIBLE by the RHS distribution's support. Two mismatches are unconditional
+# — no broadcast / outer-array vectorisation path reconciles them — and today
+# they either crash inside RNG emission (`n::vector ~ poisson`,
+# `y::vector ~ categorical_logit`) or silently override the annotation
+# (`z::int ~ normal`, `p::real ~ dirichlet`):
+#   1. ELEMENT KIND — a DISCRETE distribution (int support) cannot fill a
+#      CONTINUOUS LHS, nor a continuous distribution an integer LHS;
+#   2. a CONTAINER-valued support (`dirichlet`→`vector`, …) cannot fill a
+#      SCALAR LHS.
+# Everything else stays valid — the LHS drives the RHS path: a scalar-support
+# distribution BROADCASTS over a container LHS (`x::vector[n] ~ std_normal()`),
+# and a container support VECTORISES over an outer array dimension
+# (`array[N] vector[K] ~ multi_normal(…)`), so we deliberately do NOT require
+# equal ranks or matching center families beyond these two hard cases.
+# The element-kind (discrete-vs-continuous) signal comes from the distribution
+# HEAD's lpxf family (`_lpmf`→discrete, `_lpdf`→continuous), resolved HERE at
+# forward time; the natural tracetype (`type(rhs_forwarded)`) is `anything` for
+# scalar-support distributions at this stage, so it cannot supply it. Returns
+# `missing` when the family is unclassifiable (an unregistered head, or a HOF
+# like `truncated`/`censored` whose head has no direct lpxf) — the discrete
+# check is then skipped, which is safe (those wrap a matching underlying kind).
+_rhs_is_discrete(rhs_canonical) =
+    try _probability_kind(head(rhs_canonical)) === :lpmf catch; missing end
+# `support` is the distribution's natural tracetype (`type(rhs_forwarded)`),
+# read BEFORE it is re-typed to the LHS annotation at the `rhs_stan` line — it is
+# resolved (a `vector`/`simplex`/…) for container-valued distributions and
+# `anything`/rank-0 for scalar ones, which is exactly what the scalar-vs-
+# container rule below needs.
+_check_lhs_rhs_support(lhs_type, support, rhs_discrete, name, type_expr) = begin
+    lhs_discrete = center_type(lhs_type) <: types.int
+    if rhs_discrete !== missing && lhs_discrete != rhs_discrete
+        error(
+            "Typed-LHS sampling `", name, "::", pretty_type_expr(type_expr), "` is ",
+            lhs_discrete ? "integer" : "continuous", "-valued, but its distribution ",
+            "produces ", rhs_discrete ? "integer (discrete)" : "continuous", " draws. ",
+            "LHS type and distribution support must agree on discrete-vs-continuous: ",
+            "declare `", name, "` with a ",
+            rhs_discrete ? "discrete (`int`) center" : "continuous (`real`/`vector`/…) center",
+            ", or change the distribution."
+        )
+    end
+    (stan_ndim(support) > 0 && stan_ndim(lhs_type) == 0) && error(
+        "Typed-LHS sampling `", name, "::", pretty_type_expr(type_expr), "` declares ",
+        "a SCALAR, but its distribution's support is `", sigtype(support), "` (a ",
+        stan_ndim(support) == 1 ? "vector" : string(stan_ndim(support), "-D"),
+        " value) — a scalar LHS cannot hold it. Declare `", name,
+        "` with the matching container shape."
+    )
+    nothing
+end
 forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     decl, rhs_raw = x.args
     name = decl.args[1]
@@ -1287,6 +1338,11 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     cons_kw = merge(implied_kw, (; kwargs_resolved...))
     cons = _fold_constraints(name, cons_kw; implied=keys(implied_kw))
     base_lhs_type = StanType(ct_resolved, sizes_forwarded; cons...)
+    # Reject a typed LHS whose support disagrees with the RHS distribution's
+    # element kind (container-into-scalar, discrete-into-continuous, …) at trace
+    # time, before the constraint fold and cv routing below act on it.
+    _check_lhs_rhs_support(base_lhs_type, type(rhs_forwarded),
+        _rhs_is_discrete(rhs_canonical), name, type_expr)
     # A parameter whose DECLARED SIZE is cv-tainted must relocate to generated
     # quantities exactly like the bare-LHS path — a held-out size (`J =
     # maximum(subject)` under CV) means nothing informs the parameter, so it is a
