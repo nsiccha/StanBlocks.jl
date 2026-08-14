@@ -304,6 +304,48 @@ $presentation-font-size-root: 34px;
   }
 }
 
+/* Three QR codes injected onto the title slide (see qr-title.html). */
+.reveal .title-qr {
+  position: absolute;
+  bottom: 0.25em;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 1.6em;
+}
+
+.reveal .title-qr .title-qr-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-decoration: none;
+  color: var(--sb-ink);
+}
+
+.reveal .title-qr .title-qr-item img {
+  width: 4em;
+  height: 4em;
+  background: #fff;
+  padding: 0.14em;
+  border: 0.08em solid rgba(179, 32, 37, 0.28);
+  border-radius: 0.18em;
+}
+
+.reveal .title-qr .title-qr-cap {
+  margin-top: 0.28em;
+  font-size: 0.52em;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  color: var(--sb-ink);
+}
+
+.reveal .title-qr .title-qr-cap .u {
+  color: var(--sb-muted);
+  font-weight: 600;
+}
+
 .reveal .summary-contact {
   text-align: center;
 }

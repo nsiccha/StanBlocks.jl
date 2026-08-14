@@ -20,6 +20,7 @@ format:
     hash-type: number
     code-overflow: wrap
     link-external-newwindow: true
+    include-after-body: qr-title.html
     footer: "[Slides · nsiccha.github.io/StanBlocks.jl/stancon-2026/](https://nsiccha.github.io/StanBlocks.jl/stancon-2026/)"
 execute:
   enabled: false
