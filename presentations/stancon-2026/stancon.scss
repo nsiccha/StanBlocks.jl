@@ -178,6 +178,28 @@ $presentation-font-size-root: 34px;
   z-index: 2;
 }
 
+/* Semi-thick brand-colored borders: standard Julia colors for the Julia
+   layers, Stan's maroon for the BridgeStan.jl (Stan boundary) box. */
+.reveal .flow .step.j-red {
+  border: 0.14em solid #cb3c33;
+}
+
+.reveal .flow .step.j-green {
+  border: 0.14em solid #389826;
+}
+
+.reveal .flow .step.j-purple {
+  border: 0.14em solid #9558b2;
+}
+
+.reveal .flow .step.j-blue {
+  border: 0.14em solid #4063d8;
+}
+
+.reveal .flow .step.stan {
+  border: 0.14em solid var(--sb-red);
+}
+
 .reveal .tag {
   display: inline-block;
   border-radius: 999px;

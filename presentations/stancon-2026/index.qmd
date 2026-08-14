@@ -528,13 +528,13 @@ feasible to build while raising expectations for its contracts.
 
 Move up a layer without hiding the layer below.
 
-## StanBlocks as the compiler layer
+## StanBlocks as *one* compiler layer
 
 <div class="flow">
-  <div class="step"><strong>BRM.jl</strong><br>formulae, terms, priors, model-family vocabulary</div>
-  <div class="step"><strong>StanBlocks.jl</strong><br>composition, tracing, block/type/shape inference</div>
-  <div class="step"><strong>Stan</strong><br>compiler, AD, HMC/NUTS, generated quantities</div>
-  <div class="step"><strong>JuliaBayes.jl</strong><br>shared Julia-facing workflow and ecosystem integration</div>
+  <div class="step j-red"><strong>BRM.jl</strong><br>formulae, terms, priors, model-family vocabulary</div>
+  <div class="step j-green"><strong>StanBlocks.jl</strong><br>composition, tracing, block/type/shape inference</div>
+  <div class="step stan"><strong>BridgeStan.jl</strong><br>compiled Stan model — log density &amp; gradients (AD)</div>
+  <div class="step j-purple"><strong>JuliaBayes.jl</strong><br>shared Julia-facing workflow and ecosystem integration</div>
 </div>
 
 The largest current consumer is [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl): a formula layer that lowers real model families into `@slic` and `@deffun` components.
