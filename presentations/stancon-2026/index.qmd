@@ -546,6 +546,18 @@ Near-term priorities:
 3. Keep StanBlocks available for bespoke PKPD and other compositional models.
 4. Connect through JuliaBayes interfaces rather than inventing another closed workflow.
 
+<div class="contributors-band">
+<p class="band-label">JuliaBayes contributors</p>
+<div class="contributors">
+  <div class="person"><img src="https://github.com/nsiccha.png?size=200" alt="Nikolas Siccha"><p class="who">Nikolas Siccha</p><p class="aff">Generable Inc.</p></div>
+  <div class="person"><img src="img/penelopeysm.webp" alt="Penelope Yong"><p class="who">Penelope Yong</p><p class="aff">Alan Turing Institute</p></div>
+  <div class="person"><img src="https://github.com/PTWaade.png?size=200" alt="Peter Thestrup Waade"><p class="who">Peter Thestrup Waade</p><p class="aff">TNU, ETH Zürich</p></div>
+  <div class="person"><img src="https://github.com/rsenne.png?size=200" alt="Ryan Senne"><p class="who">Ryan Senne</p><p class="aff">Boston University</p></div>
+  <div class="person"><img src="https://github.com/seabbs.png?size=200" alt="Sam Abbott"><p class="who">Sam Abbott</p><p class="aff">epinowcast · epiforecasts</p></div>
+  <div class="person"><img src="https://github.com/simonsteiger.png?size=200" alt="Simon Steiger"><p class="who">Simon Steiger</p><p class="aff">Karolinska Institutet</p></div>
+</div>
+</div>
+
 ::: {.notes}
 JuliaBayes is intentionally phrased as ecosystem direction rather than a claim
 about a settled package API. The architectural principle is more important:

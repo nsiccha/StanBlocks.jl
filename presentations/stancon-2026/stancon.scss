@@ -229,6 +229,59 @@ $presentation-font-size-root: 34px;
   box-shadow: 0 0.2em 0.7em rgba(32, 36, 43, 0.16);
 }
 
+.reveal .contributors-band {
+  margin-top: 0.7em;
+}
+
+.reveal .contributors-band .band-label {
+  color: var(--sb-muted);
+  font-size: 0.6em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 0.35em;
+}
+
+.reveal .contributors {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.5em;
+  align-items: start;
+}
+
+.reveal .contributors .person {
+  text-align: center;
+  line-height: 1.15;
+}
+
+.reveal .contributors .person img {
+  width: 2.4em;
+  height: 2.4em;
+  object-fit: cover;
+  border-radius: 50%;
+  border: 0.1em solid var(--sb-red);
+  box-shadow: 0 0.12em 0.4em rgba(32, 36, 43, 0.16);
+}
+
+.reveal .contributors .person .who {
+  margin: 0.22em 0 0;
+  font-size: 0.5em;
+  font-weight: 700;
+  color: var(--sb-ink);
+}
+
+.reveal .contributors .person .aff {
+  margin: 0.06em 0 0;
+  font-size: 0.44em;
+  color: var(--sb-muted);
+}
+
+@media (max-width: 1000px) {
+  .reveal .contributors {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 .reveal .summary-contact {
   text-align: center;
 }
