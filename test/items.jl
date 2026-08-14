@@ -1826,6 +1826,82 @@ end
 end
 
 """
+Verify `slic: typed-LHS sampling requires LHS-RHS support agreement` in an isolated test item.
+
+Regression for decision `0909w6i` ("the lhs is always right"): a typed-LHS
+`name::T ~ dist(...)` must have `T` PRODUCIBLE by the distribution's support.
+Two mismatches are unconditional and previously either crashed inside RNG
+emission or silently overrode the annotation (`_check_lhs_rhs_support`,
+`forward.jl`):
+  1. ELEMENT KIND — a discrete (`_lpmf`) distribution cannot fill a continuous
+     LHS, nor a continuous (`_lpdf`) one an integer LHS. The signal is the
+     distribution head's lpxf family (`_probability_kind`), because the natural
+     tracetype is `anything` for scalar-support distributions at forward time.
+  2. CONTAINER support — a `vector`-valued support (`dirichlet`) cannot fill a
+     SCALAR LHS.
+Broadcast (`x::vector[n] ~ std_normal()`) and native-constrained containers
+(`p::simplex[K] ~ dirichlet`) stay valid — the LHS drives the RHS path.
+"""
+@testitem "slic: typed-LHS sampling requires LHS-RHS support agreement" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+
+    # --- NEGATIVE: element-kind + shape mismatches must error cleanly ---------
+    # discrete dist (poisson) into a continuous vector LHS (was: internal crash)
+    m_pois = @slic (; N = 3, lambda = 2.0) begin
+        n::vector[N] ~ poisson(lambda)
+        n
+    end
+    @test !transpiles(m_pois; re=false)
+    @test occursin("produces integer (discrete) draws", errmsg(m_pois))
+
+    # discrete dist (categorical_logit) into a continuous vector LHS (was: crash)
+    m_cat = @slic (; N = 4, K = 3, logits = zeros(3)) begin
+        y::vector[N] ~ categorical_logit(logits)
+        y
+    end
+    @test !transpiles(m_cat; re=false)
+    @test occursin("produces integer (discrete) draws", errmsg(m_cat))
+
+    # continuous dist (normal) into an integer LHS (was: silent override to real)
+    m_norm = @slic (; N = 3) begin
+        z::int[N] ~ normal(0, 1)
+        z
+    end
+    @test !transpiles(m_norm; re=false)
+    @test occursin("produces continuous draws", errmsg(m_norm))
+
+    # container support (dirichlet -> vector) into a scalar LHS (was: override)
+    m_dir = @slic (;) begin
+        p::real ~ dirichlet([1.0, 1.0, 1.0])
+        p
+    end
+    @test !transpiles(m_dir; re=false)
+    @test occursin("a scalar LHS cannot hold it", errmsg(m_dir))
+
+    # --- POSITIVE: the LHS still drives valid broadcast / container paths -----
+    # scalar-support distribution broadcasts over a container LHS
+    @test transpiles(@slic (; n = 4) begin
+        x::vector[n] ~ std_normal()
+        x
+    end)
+    # container support into a matching native-constrained container LHS
+    @test transpiles(@slic (; K = 3, alpha = ones(3)) begin
+        p::simplex[K] ~ dirichlet(alpha)
+        p
+    end)
+    # discrete dist into a matching integer LHS
+    @test transpiles(@slic (; N = 3, lambda = 2.0) begin
+        nn::int[N] ~ poisson(lambda)
+        nn
+    end)
+    # constrained broadcast keeps working
+    @test transpiles(@slic (; K = 3) begin
+        tau::vector[K] ~ normal(0, 1; lower = 0)
+        tau
+    end)
+end
+
+"""
 Verify `slic: simple` in an isolated test item.
 """
 @testitem "slic: simple" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
