@@ -7096,7 +7096,7 @@ all three paths: density, auto-RNG prediction, and pointwise log likelihood.
     K = 3
     model = @slic (; x = [-1.0, -0.25, 0.5, 1.25], y = [1, 2, 3, 2], N, K) begin
         beta::vector[K-1] ~ std_normal()
-        logits::vector[K] ~ plate(x; outer = (N,)) do xi
+        logits::matrix[K,N] ~ plate(x; outer = (N,)) do xi
             append_row(0.0, beta * xi)
         end
         y ~ categorical_logit(logits)

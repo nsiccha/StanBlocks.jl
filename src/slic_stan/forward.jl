@@ -1565,12 +1565,76 @@ _subst_syms(x, m) = x
 _subst_syms(x::Symbol, m) = get(m, x, x)
 _subst_syms(x::Expr, m) = Expr(x.head, Any[_subst_syms(a, m) for a in x.args]...)
 
-# Resolve a legacy typed plate-result override to the same per-cell StanType the
-# discovery trace produces. Bare result LHSs use discovery's `ret_type` directly.
+# Resolve a typed plate-result annotation to a StanType. Bare result LHSs use
+# discovery's `ret_type` directly.
 _plate_annotation_type(type_expr; info) = begin
     ct, sizes... = _is_getindex_expr(type_expr) ? type_expr.args : (type_expr,)
     ct isa Symbol || error("plate: result type center must be a Symbol, got `$ct`.")
     StanType(gettype(ct), forward!.(sizes; info))
+end
+
+# Decision `0909w6i`, option 1 — "the lhs is always right": the plate result
+# annotation is read as the COLLECTED type (`logits::matrix[K,N]`), and the
+# per-cell type is DERIVED from it by stripping the plate's `outer` axes. This is
+# the spelling in which the `~` LHS agrees with the RHS (the plate produces the
+# collected result). The pre-existing per-cell spelling (`logits::vector[K]`,
+# where the annotation names one CELL and the bound value is the collected
+# `matrix[K,N]`) is still accepted for now — the two are disambiguated by rank:
+# for the shipped dense 1-D `outer`, a scalar cell collects to `vector[N]` and a
+# `vector[K]` cell to `matrix[K,N]`, so the collected annotation always carries
+# exactly one more axis than the cell annotation.
+#
+# Returns the PER-CELL StanType to use for emission (the rest of `_forward_plate!`
+# is cell-type-driven). `C` is the cell type discovered from the do-block body.
+_plate_resolve_cell_type(type_expr, C, outer_dims, rv; info) = begin
+    A = _plate_annotation_type(type_expr; info)
+    length(outer_dims) == 1 || return A            # multi-axis outer: legacy per-cell only
+    cn = stan_ndim(C)
+    an = stan_ndim(A)
+    collected_rank = cn + 1                         # dense 1-D outer adds exactly one axis
+    if an == collected_rank
+        return _plate_cell_from_collected(A, C, rv) # collected spelling: derive the cell
+    elseif an == cn
+        return A                                    # legacy per-cell annotation
+    end
+    error(
+        "plate: `", rv, "` declared `", sigtype(A), "` (rank ", an, "), which is neither the ",
+        "per-cell type the do-block returns (`", sigtype(C), "`, rank ", cn, ") nor its ",
+        "collected shape over `outer` (rank ", collected_rank, "). Declare the collected type, ",
+        "or drop the annotation and let it be inferred."
+    )
+end
+# Derive the per-cell StanType from a declared COLLECTED type over a dense 1-D
+# `outer`: `matrix[K,N]` → `vector[K]`, `vector[N]` → scalar. Sizes are the
+# annotation's (the lhs is right).
+_plate_cell_from_collected(A, C, rv) = begin
+    ac = center_type(A)
+    cell = if ac === types.matrix && stan_ndim(A) == 2
+        StanType(types.vector, (stan_size(A)[1],))
+    elseif ac === types.vector && stan_ndim(A) == 1
+        StanType(types.real, ())
+    else
+        error(
+            "plate: `", rv, "` declared collected type `", sigtype(A), "`; the collected form ",
+            "for a 1-D `outer` must be `vector[N]` (scalar cells) or `matrix[K,N]` (vector ",
+            "cells). For other cell shapes, drop the annotation and let it be inferred."
+        )
+    end
+    _plate_check_collected_agreement(cell, C, A, rv)
+    cell
+end
+# The collected annotation implies a per-cell shape; the do-block body must
+# actually produce a cell of that shape. Sizes are the annotation's (the lhs is
+# right), so the check is on the center-type family and rank only.
+_plate_check_collected_agreement(cell, C, A, rv) = begin
+    (stan_ndim(cell) == stan_ndim(C) &&
+        (center_type(cell) === center_type(C) || stan_ndim(cell) == 0)) || error(
+        "plate: `", rv, "` declared collected type `", sigtype(A), "`, which implies a `",
+        sigtype(cell), "` per-cell result, but the do-block body produces a `", sigtype(C),
+        "` cell. Declare the collected type that matches the cell the body returns, or drop ",
+        "the annotation and let it be inferred."
+    )
+    nothing
 end
 
 _plate_cell_shape(T, name) = begin
@@ -2291,7 +2355,8 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     # trace below uses these StanTypes rather than re-parsing LHS syntax.
     discovered = _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info)
     fresh = discovered.fresh
-    rv_type = rv_ct === nothing ? discovered.ret_type : _plate_annotation_type(rv_ct; info)
+    rv_type = rv_ct === nothing ? discovered.ret_type :
+        _plate_resolve_cell_type(rv_ct, discovered.ret_type, outer_dims, rv; info)
 
     # An `array[] int` cell-local is an EPHEMERAL per-cell INDEX array — a
     # `findall`/boolean-mask result such as an explicit `idx = findall(c .== 1)`, or

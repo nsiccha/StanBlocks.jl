@@ -256,23 +256,26 @@ array sample for `multi_normal`, `multi_normal_prec`,
 
 Prefer a top-level observation over the collected plate result when the family
 already supports the collected shape. That spelling gets both generated twins.
-For varying categorical logits, for example, collect a `vector[K]` per row and
-keep the categorical observation top-level:
+For varying categorical logits, for example, collect the per-row logits into a
+`matrix[K,N]` and keep the categorical observation top-level:
 
 ```julia
 @slic (; x, y, N, K) begin
     beta::vector[K-1] ~ std_normal()
-    logits::vector[K] ~ plate(x; outer = N) do xi
+    logits::matrix[K,N] ~ plate(x; outer = N) do xi
         append_row(0.0, beta * xi)
     end
     y ~ categorical_logit(logits)
 end
 ```
 
-`logits` has logical shape `matrix[K,N]`, `y_gen` is `int[N]`, and
-`y_likelihood` is `vector[N]`. Put an observation inside the cell when slicing
-or cell-specific structure requires it, accepting the generated-quantity limits
-in the table above.
+The plate result LHS names the **collected** type, so `logits::matrix[K,N]`
+agrees with the value it binds (the `~` LHS and RHS types match); the do-block
+returns one `vector[K]` cell per row and the compiler derives that cell shape by
+stripping the `outer` axis. `y_gen` is `int[N]` and `y_likelihood` is
+`vector[N]`. Put an observation inside the cell when slicing or cell-specific
+structure requires it, accepting the generated-quantity limits in the table
+above.
 
 ## `@deffun` iteration boundary
 
