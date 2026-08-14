@@ -304,15 +304,27 @@ $presentation-font-size-root: 34px;
   }
 }
 
-/* Three QR codes injected onto the title slide (see qr-title.html). */
+/* Three QR codes injected onto the title slide (see qr-title.html).
+   The title block is made full-height with its text vertically centred, so
+   the QR strip can be pinned to the actual bottom of the slide -- clear of
+   the title text, never floating over it. */
+.reveal .slides > section.quarto-title-block {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
 .reveal .title-qr {
   position: absolute;
-  bottom: 0.25em;
+  bottom: 1.8em;
   left: 0;
   right: 0;
   display: flex;
   justify-content: center;
   gap: 1.6em;
+  margin: 0;
 }
 
 .reveal .title-qr .title-qr-item {
