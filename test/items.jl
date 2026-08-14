@@ -1713,6 +1713,12 @@ Verify explicit bounded Julia emission from `@deffun @juliacompat` in an isolate
     end
     @test err isa DimensionMismatch
     @test occursin("julia_branch_mutate", sprint(showerror, err))
+    # Same enrichment as the Stan-emission `reject`: name the inference source
+    # and list every site's size (user request 2026-08-14).
+    err_msg = sprint(showerror, err)
+    @test occursin("does not match `n` (= 2)", err_msg)
+    @test occursin("inferred from `x` dim 1", err_msg)
+    @test occursin("`n` sizes: `x` dim 1 (= 2), `y` dim 1 (= 1).", err_msg)
 
     @test !hasmethod(julia_stan_only, Tuple{Float64})
     @test !hasmethod(julia_default_stan_only, Tuple{Float64})
@@ -1998,6 +2004,12 @@ Verify dead UDF signature dimensions are not emitted while required bindings rem
     @test occursin("int return_n = dims(x)[1];", functions)
     @test occursin("int checked_n = dims(x)[1];", functions)
     @test occursin("if (dims(y)[1] != checked_n) reject", functions)
+    # The equal-size rejection names WHERE the dim was inferred and lists every
+    # site's runtime size (user request 2026-08-14).
+    @test occursin("does not match `checked_n`", functions)
+    @test occursin("inferred from `x` dim 1", functions)
+    @test occursin("`checked_n` sizes: `x` dim 1 (= ", functions)
+    @test occursin(", `y` dim 1 (= ", functions)
 end
 
 """
@@ -4381,6 +4393,13 @@ end
     @test transpiles(multi)
     @test stanc_compiles(multi)
     @test !occursin("\"dims(", stan_code(multi))
+    # A 3-site shared dim: each equal-size reject names the inference source
+    # (`a`) and lists ALL three sizes (user request 2026-08-14).
+    multi_functions = stan_block(stan_code(multi), "functions")
+    @test occursin("inferred from `a` dim 1", multi_functions)
+    @test occursin("`n` sizes: `a` dim 1 (= ", multi_functions)
+    @test occursin(", `b` dim 1 (= ", multi_functions)
+    @test occursin(", `c` dim 1 (= ", multi_functions)
 end
 
 @testitem "slic: composite return type deanonymizes nested element sizes" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
