@@ -70,4 +70,6 @@ StanBlocks.StanModel
 
 ```@docs
 StanBlocks.StanBlocksError
+StanBlocks.StanBlocksDiagnostic
+StanBlocks.diagnostic
 ```
