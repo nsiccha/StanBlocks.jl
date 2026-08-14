@@ -552,7 +552,7 @@ Near-term priorities:
 <p class="band-label">JuliaBayes contributors</p>
 <div class="contributors">
   <div class="person"><img src="https://github.com/nsiccha.png?size=200" alt="Nikolas Siccha"><p class="who">Nikolas Siccha</p><p class="aff">Generable Inc.</p></div>
-  <div class="person"><img src="https://github.com/penelopeysm.png?size=200" alt="Penelope Yong"><p class="who">Penelope Yong</p><p class="aff">Alan Turing Institute</p></div>
+  <div class="person"><img src="img/penelopeysm.webp" style="object-position: 66% 32%;" alt="Penelope Yong"><p class="who">Penelope Yong</p><p class="aff">Alan Turing Institute</p></div>
   <div class="person"><img src="https://github.com/PTWaade.png?size=200" alt="Peter Thestrup Waade"><p class="who">Peter Thestrup Waade</p><p class="aff">TNU, ETH Zürich</p></div>
   <div class="person"><img src="https://github.com/rsenne.png?size=200" alt="Ryan Senne"><p class="who">Ryan Senne</p><p class="aff">Boston University</p></div>
   <div class="person"><img src="https://github.com/seabbs.png?size=200" alt="Sam Abbott"><p class="who">Sam Abbott</p><p class="aff">LSHTM (epinowcast · epiforecasts)</p></div>
@@ -580,6 +580,7 @@ standard workflows above, inspectable compiler below.
 
 ### Links
 
+- Live transpiler: <https://sb.siccha.de>
 - Feature atlas: <https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas>
 - Package + source: <https://github.com/nsiccha/StanBlocks.jl>
 - Email: [nikolassiccha@gmail.com](mailto:nikolassiccha@gmail.com)
