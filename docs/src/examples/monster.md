@@ -300,7 +300,7 @@ raw_prior_location[8] = log(reference[8] / (0.837 - reference[8]))
 monster_direct = @slic begin
     population_raw_location::vector[n_param] ~ normal(raw_prior_location, 0.35)
     population_raw_scale::vector[n_param] ~ normal(0, 0.30; lower=0)
-    prediction::vector[n_subject_observation] ~ plate(
+    prediction::matrix[n_subject_observation, n_person] ~ plate(
         EachRow(measured_params); outer=n_person,
     ) do measured
         z::vector[n_param] ~ std_normal()

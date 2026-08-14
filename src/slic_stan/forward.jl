@@ -1629,37 +1629,59 @@ _plate_annotation_type(type_expr; info) = begin
     StanType(gettype(ct), forward!.(sizes; info))
 end
 
-# Decision `0909w6i`, option 1 — "the lhs is always right": the plate result
-# annotation is read as the COLLECTED type (`logits::matrix[K,N]`), and the
-# per-cell type is DERIVED from it by stripping the plate's `outer` axes. This is
-# the spelling in which the `~` LHS agrees with the RHS (the plate produces the
-# collected result). The pre-existing per-cell spelling (`logits::vector[K]`,
-# where the annotation names one CELL and the bound value is the collected
-# `matrix[K,N]`) is still accepted for now — the two are disambiguated by rank:
-# for the shipped dense 1-D `outer`, a scalar cell collects to `vector[N]` and a
-# `vector[K]` cell to `matrix[K,N]`, so the collected annotation always carries
-# exactly one more axis than the cell annotation.
+# Decision `0909w6i`, option 1 — "the lhs is always right" (FULL CUTOVER): a
+# plate result annotation MUST name the COLLECTED type it binds
+# (`logits::matrix[K,N]`), so the `~` LHS agrees with the RHS (the plate produces
+# the collected result). The per-cell type is DERIVED from it by stripping the
+# plate's `outer` axes. The pre-existing per-cell spelling (`logits::vector[K]`,
+# where the annotation named one CELL while the bound value is the collected
+# `matrix[K,N]`) is now a HARD ERROR — that LHS/RHS disagreement is exactly what
+# this rule removes. Drop the annotation (`logits ~ plate(...)`) to have the
+# collected type inferred, or spell out the collected type.
 #
 # Returns the PER-CELL StanType to use for emission (the rest of `_forward_plate!`
 # is cell-type-driven). `C` is the cell type discovered from the do-block body.
 _plate_resolve_cell_type(type_expr, C, outer_dims, rv; info) = begin
     A = _plate_annotation_type(type_expr; info)
-    length(outer_dims) == 1 || return A            # multi-axis outer: legacy per-cell only
+    length(outer_dims) == 1 || error(
+        "plate: `", rv, "` has a multi-axis `outer` (", length(outer_dims), " axes), for ",
+        "which a typed result annotation has no collected spelling. Drop the annotation ",
+        "and let the collected type be inferred (`", rv, " ~ plate(...)`)."
+    )
     cn = stan_ndim(C)
     an = stan_ndim(A)
     collected_rank = cn + 1                         # dense 1-D outer adds exactly one axis
-    if an == collected_rank
-        return _plate_cell_from_collected(A, C, rv) # collected spelling: derive the cell
-    elseif an == cn
-        return A                                    # legacy per-cell annotation
-    end
+    an == collected_rank && return _plate_cell_from_collected(A, C, rv)
     error(
-        "plate: `", rv, "` declared `", sigtype(A), "` (rank ", an, "), which is neither the ",
-        "per-cell type the do-block returns (`", sigtype(C), "`, rank ", cn, ") nor its ",
-        "collected shape over `outer` (rank ", collected_rank, "). Declare the collected type, ",
-        "or drop the annotation and let it be inferred."
+        "plate: `", rv, "` declared `", sigtype(A), "` (rank ", an, "), but a plate result LHS ",
+        "must name the COLLECTED type it binds — the do-block cell shape with the `outer` axis ",
+        "prepended (rank ", collected_rank, "). ",
+        an == cn ?
+            string("`", sigtype(A), "` is the PER-CELL type the do-block returns; write ",
+                _plate_collected_hint(type_expr, outer_dims), " instead") :
+            "the ranks do not match",
+        ", or drop the annotation and let the collected type be inferred (`", rv, " ~ plate(...)`)."
     )
 end
+# Best-effort collected-type spelling for a per-cell → collected migration error,
+# built from the RAW annotation the user wrote (`type_expr`) so the suggested
+# names are clean and copy-pasteable: a scalar cell over `outer=(N,)` collects to
+# `vector[N]`, a `vector[K]` cell to `matrix[K,N]`. Defensive — the hint must
+# never itself throw inside the error.
+_plate_collected_hint(type_expr, outer_dims) =
+    try
+        n = string(outer_dims[1])
+        ct, sizes... = _is_getindex_expr(type_expr) ? type_expr.args : (type_expr,)
+        if (ct === :real || ct === :int) && isempty(sizes)
+            string("`vector[", n, "]`")
+        elseif ct === :vector && length(sizes) == 1
+            string("`matrix[", sizes[1], ", ", n, "]`")
+        else
+            string("the collected shape with `", n, "` prepended to the cell")
+        end
+    catch
+        "the collected shape with the `outer` axis prepended"
+    end
 # Derive the per-cell StanType from a declared COLLECTED type over a dense 1-D
 # `outer`: `matrix[K,N]` → `vector[K]`, `vector[N]` → scalar. Sizes are the
 # annotation's (the lhs is right).
@@ -2300,8 +2322,11 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
 # The StanBlocks primer's plate sections hold the acceptance-ladder roadmap.
 forward!(x::SamplingExpr{Symbol,<:CanonicalExprV{:plate}}; info) =
     _forward_plate!(x.args[1], nothing, x.args[2]; info)
-# Typed-LHS plate result `b::vector[K] ~ plate(…)` ⇒ vector cell output collected
-# as `matrix[K, N]`. The DeclExpr LHS carries the per-cell result type.
+# Typed-LHS plate result: the DeclExpr LHS names the COLLECTED type the plate
+# binds (`b::matrix[K,N] ~ plate(…)` for a `vector[K]` cell collected over
+# `outer=(N,)`), so the `~` LHS agrees with the RHS (decision `0909w6i`). The
+# per-cell spelling (`b::vector[K]`) is rejected by `_plate_resolve_cell_type`,
+# which derives the emission cell type back out of the collected annotation.
 forward!(x::SamplingExpr{<:DeclExpr,<:CanonicalExprV{:plate}}; info) = begin
     decl = x.args[1]
     (decl.args[1] isa Symbol) || error("plate: typed-LHS result must name a Symbol, got `$(decl.args[1])`.")

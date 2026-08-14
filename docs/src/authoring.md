@@ -238,7 +238,7 @@ blocks that own the declarations, fills, densities, and generated quantities.
     L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2)
     tau::vector[k] ~ normal(0, 1; lower = 0)
 
-    b::vector[k] ~ plate(; outer = n_groups) do g
+    b::matrix[k, n_groups] ~ plate(; outer = n_groups) do g
         z::vector[k] ~ std_normal()
         diag_pre_multiply(tau, L) * z
     end
