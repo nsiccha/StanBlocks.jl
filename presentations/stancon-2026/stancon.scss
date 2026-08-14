@@ -308,12 +308,14 @@ $presentation-font-size-root: 34px;
    The title block is made full-height with its text vertically centred, so
    the QR strip can be pinned to the actual bottom of the slide -- clear of
    the title text, never floating over it. */
+/* Full slide height so the QR strip's absolute bottom offset anchors to the
+   real bottom of the slide. reveal sets display:block inline on the active
+   slide (beats CSS flex), so we lift the title off the very top with
+   padding-top rather than flex-centering. */
 .reveal .slides > section.quarto-title-block {
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
   box-sizing: border-box;
+  padding-top: 5.5em;
 }
 
 .reveal .title-qr {
