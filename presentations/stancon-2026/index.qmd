@@ -489,7 +489,7 @@ Yes, but the value proposition changes.
 <div class="timeline">
   <div><strong>Oct 2024</strong>Initial repository: block inference, Julia syntax, Stan emission.</div>
   <div><strong>2025</strong>Production-shaped models, generated quantities, broader Stan surface.</div>
-  <div><strong>2026</strong>Agent-assisted expansion: descriptors, <code>plate</code>, ragged models, closures, HOFs, hardening.</div>
+  <div><strong>2026</strong>Agent-assisted expansion: <code>plate</code>s, closures, higher-order functions, hardening.</div>
 </div>
 
 :::: {.columns}
@@ -511,7 +511,6 @@ Yes, but the value proposition changes.
 - one source for a family of model variants
 - a reusable statistical vocabulary
 - generated Stan that humans and tools can inspect
-- model-wide extras and rewrites, handled in one place
 
 :::
 ::::
