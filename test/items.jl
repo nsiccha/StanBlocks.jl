@@ -612,9 +612,9 @@ end
     @deffun litdim_scale(x::vector[4]) = x * 2.0
     @deffun symdim_scale(x::vector[n]) = x * 2.0
     # A raw `matrix` keeps its final two dimensions as the native matrix core;
-    # every leading dimension is a Stan array prefix. Default Julia emission
-    # represents the same rectangular value as an equal-rank dense array.
-    @deffun nested_matrix_result(x::matrix[n, j])::matrix[2, n, j] = begin
+    # every leading dimension is a Stan array prefix. `@juliacompat` Julia
+    # emission represents the same rectangular value as an equal-rank dense array.
+    @deffun @juliacompat nested_matrix_result(x::matrix[n, j])::matrix[2, n, j] = begin
         out::matrix[2, n, j]
         for k in 1:2
             for i in 1:n
@@ -625,7 +625,7 @@ end
         end
         out
     end
-    @deffun nested_matrix_input(x::matrix[m, two, n, j])::real = begin
+    @deffun @juliacompat nested_matrix_input(x::matrix[m, two, n, j])::real = begin
         sum(x[1, 1, :, :])
     end
     # --- COMPOSITE (named-tuple) return whose ELEMENT sizes name the params ---
@@ -1713,6 +1713,12 @@ Verify explicit bounded Julia emission from `@deffun @juliacompat` in an isolate
     end
     @test err isa DimensionMismatch
     @test occursin("julia_branch_mutate", sprint(showerror, err))
+    # Same enrichment as the Stan-emission `reject`: name the inference source
+    # and list every site's size (user request 2026-08-14).
+    err_msg = sprint(showerror, err)
+    @test occursin("does not match `n` (= 2)", err_msg)
+    @test occursin("inferred from `x` dim 1", err_msg)
+    @test occursin("`n` sizes: `x` dim 1 (= 2), `y` dim 1 (= 1).", err_msg)
 
     @test !hasmethod(julia_stan_only, Tuple{Float64})
     @test !hasmethod(julia_default_stan_only, Tuple{Float64})
@@ -1998,6 +2004,12 @@ Verify dead UDF signature dimensions are not emitted while required bindings rem
     @test occursin("int return_n = dims(x)[1];", functions)
     @test occursin("int checked_n = dims(x)[1];", functions)
     @test occursin("if (dims(y)[1] != checked_n) reject", functions)
+    # The equal-size rejection names WHERE the dim was inferred and lists every
+    # site's runtime size (user request 2026-08-14).
+    @test occursin("does not match `checked_n`", functions)
+    @test occursin("inferred from `x` dim 1", functions)
+    @test occursin("`checked_n` sizes: `x` dim 1 (= ", functions)
+    @test occursin(", `y` dim 1 (= ", functions)
 end
 
 """
@@ -2888,7 +2900,7 @@ Julia's short-circuit AST heads must lower directly to Stan `&&` / `||` inside
 the ordinary function-head resolver (which used to fail with `Could not find &&`).
 """
 @testitem "slic: @deffun short-circuit boolean operators" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports] begin
-    @deffun begin
+    @deffun @juliacompat begin
         # Mirrors helpful_stan_functions@583d31de's gpareto_lpdf support check.
         @stanonly short_circuit_guard(x::vector[n], ymin::real, k::real, sigma::real)::real = begin
             inv_k = inv(k)
@@ -2901,7 +2913,7 @@ the ordinary function-head resolver (which used to fail with `Could not find &&`
             1.0
         end
 
-        # The default Julia emission must keep Julia's lazy RHS evaluation too.
+        # The `@juliacompat` Julia emission must keep Julia's lazy RHS evaluation too.
         short_circuit_julia_or(x::real)::real = begin
             if x > 0 || error("short-circuit OR evaluated its RHS")
                 return x
@@ -4381,6 +4393,13 @@ end
     @test transpiles(multi)
     @test stanc_compiles(multi)
     @test !occursin("\"dims(", stan_code(multi))
+    # A 3-site shared dim: each equal-size reject names the inference source
+    # (`a`) and lists ALL three sizes (user request 2026-08-14).
+    multi_functions = stan_block(stan_code(multi), "functions")
+    @test occursin("inferred from `a` dim 1", multi_functions)
+    @test occursin("`n` sizes: `a` dim 1 (= ", multi_functions)
+    @test occursin(", `b` dim 1 (= ", multi_functions)
+    @test occursin(", `c` dim 1 (= ", multi_functions)
 end
 
 @testitem "slic: composite return type deanonymizes nested element sizes" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
@@ -7765,7 +7784,7 @@ end
         stan_code(@slic (; G, obs = obs_pos, lamv) begin
             m0 ~ normal(sum(lamv), 1.)
             s ~ plate(lamv; outer = G) do l
-                c::real ~ normal(m0, 1.; lower = 0., multiplier = exp(l))
+                c::real ~ normal(m0, 1.; multiplier = exp(l))
                 c
             end
             obs ~ normal(s, 1.)
