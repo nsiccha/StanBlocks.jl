@@ -522,6 +522,25 @@ _deffun_julia_check_dim(x, i::Integer, expected, fname, argname) = begin
     ))
     nothing
 end
+# Rich variant for a SIZE-INFERRED shared dimension: names the argument the
+# dim was inferred from and lists every site that must share it with its
+# actual runtime size. `sites` is a tuple of `(argname, dimindex, size)`
+# triples the caller precomputes at the check point (all site args in scope).
+_deffun_julia_check_dim(x, i::Integer, expected, fname, argname, dimname, origin_argname, origin_i, sites) = begin
+    actual = size(x, i)
+    actual == expected && return nothing
+    sizes_clause = join(
+        (string("`", s[1], "` dim ", s[2], " (= ", s[3], ")") for s in sites),
+        ", ",
+    )
+    throw(DimensionMismatch(
+        string(fname, ": dim mismatch — `", argname, "` dim ", i,
+               " (= ", actual, ") does not match `", dimname, "` (= ", expected,
+               "), inferred from `", origin_argname, "` dim ", origin_i,
+               ". `", dimname, "` sizes: ", sizes_clause, ".")
+    ))
+    nothing
+end
 
 _deffun_julia_validate(x, ::Val{:int}, dims::Tuple, name) = begin
     isempty(dims) ? (x isa Integer || throw(ArgumentError("$name must be an integer"))) :
@@ -1156,6 +1175,20 @@ begin
         _deffun_julia_local_names!(locals, julia_source_body)
         promote_args = Any[n for n in arg_names if n !== :_]
 
+        # Size-inferred shared dimensions: a dim SYMBOL that is not itself an
+        # argument name is bound from the first array arg that carries it and
+        # checked against every later one. Collect all its sites up front so a
+        # failing check can name the inference source and list every site's
+        # size (mirrors the Stan-emission `reject`; user request 2026-08-14).
+        julia_dim_sites = OrderedDict{Symbol,Vector{Tuple{Symbol,Int}}}()
+        for (arg, item) in zip(flat_args, mapped)
+            name = _julia_arg_name(arg)
+            (isnothing(name) || name === :_) && continue
+            for (i, dim) in enumerate(item[4])
+                (dim isa Symbol && dim !== :(_) && !(dim in arg_names)) || continue
+                push!(get!(julia_dim_sites, dim, Tuple{Symbol,Int}[]), (name, i))
+            end
+        end
         known = Set{Symbol}(arg_names)
         dim_preamble = Any[]
         seen_dims = Set{Symbol}()
@@ -1182,9 +1215,24 @@ begin
                     isempty(unknown) || error(
                         "@deffun ($f): Julia emission cannot derive dimension expression `$dim`; unknown symbols $(collect(unknown)). Remove `@juliacompat`."
                     )
-                    push!(dim_preamble, :($stan._deffun_julia_check_dim(
-                        $name, $i, $dim, $(QuoteNode(f)), $(QuoteNode(name))
-                    )))
+                    if dim isa Symbol && haskey(julia_dim_sites, dim)
+                        # A size-inferred shared dim: name where it came from
+                        # and list every site's size. `sites_expr` reads each
+                        # site's runtime size at the check point.
+                        origin_arg, origin_i = first(julia_dim_sites[dim])
+                        sites_expr = Expr(:tuple, (
+                            :(($(QuoteNode(an)), $ii, size($an, $ii)))
+                            for (an, ii) in julia_dim_sites[dim]
+                        )...)
+                        push!(dim_preamble, :($stan._deffun_julia_check_dim(
+                            $name, $i, $dim, $(QuoteNode(f)), $(QuoteNode(name)),
+                            $(QuoteNode(dim)), $(QuoteNode(origin_arg)), $origin_i, $sites_expr
+                        )))
+                    else
+                        push!(dim_preamble, :($stan._deffun_julia_check_dim(
+                            $name, $i, $dim, $(QuoteNode(f)), $(QuoteNode(name))
+                        )))
+                    end
                 end
             end
         end
@@ -1461,35 +1509,63 @@ begin
         # a runtime shape check that aborts with a `reject` message
         # naming the offending arg / dim.
         fun_checks = String[]
+        # Pass 1 — collect every signature-dimension occurrence in signature
+        # order, keeping the Stan expression that reads its runtime size. A dim
+        # that appears N times has ONE binding site (the first) and N-1 shape
+        # checks. Collecting the full site list up front lets each `reject`
+        # name WHERE the dim was inferred and enumerate EVERY argument that
+        # must share it, each with its actual runtime size — a check exists
+        # only when a dim has >= 2 sites, so the enumeration is always
+        # meaningful (user request 2026-08-14).
+        fun_size_sites = OrderedDict{Symbol,Vector{Any}}()
         for (arg_name, arg_type, tok) in zip(arg_names, arg_types, is_token)
             for (i, dim_name) in enumerate(arg_type.args[2:end])
                 _is_symbol(dim_name) || continue
                 dim_name == :(_) && continue
                 dim_name in arg_names && continue
-                if haskey(fun_size_candidates, dim_name)
-                    # Token-arg dims are encoded differently; skip the
-                    # check for those — usually internal dispatch glue.
-                    tok && continue
-                    push!(required_fun_sizes, dim_name)
-                    access = string("dims(", arg_name, ")[", i, "]")
-                    # Sound because of the `reject` emitted immediately below.
-                    fun_size_alias_names[Symbol(access)] = dim_name
-                    msg = string("\"", f, ": dim mismatch — `", arg_name,
-                                 "` dim ", i, " (= \", ", access,
-                                 ", \") does not match `", dim_name, "` (= \", ", dim_name, ", \")\"")
-                    push!(fun_checks, string("if (", access, " != ", dim_name, ") reject(", msg, ");"))
+                access = if tok
+                    # Stan has no 1-element tuple type — single-dim tokens are passed
+                    # as a plain `int`, so unpack without `.1` indexing.
+                    ndims = length(arg_type.args) - 1
+                    ndims == 1 ? string(arg_name) : string(arg_name, ".", i)
                 else
-                    access = if tok
-                        # Stan has no 1-element tuple type — single-dim tokens are passed
-                        # as a plain `int`, so unpack without `.1` indexing.
-                        ndims = length(arg_type.args) - 1
-                        ndims == 1 ? string(arg_name) : string(arg_name, ".", i)
-                    else
-                        string("dims(", arg_name, ")[", i, "]")
-                    end
-                    fun_size_alias_names[Symbol(access)] = dim_name
-                    fun_size_candidates[dim_name] = "int $dim_name = $access;"
+                    string("dims(", arg_name, ")[", i, "]")
                 end
+                push!(get!(fun_size_sites, dim_name, Any[]), (arg_name, i, access, tok))
+            end
+        end
+        # Pass 2 — the FIRST occurrence binds the dim (`int n = dims(x)[1];`);
+        # each SUBSEQUENT non-token occurrence becomes a runtime shape check
+        # that aborts with a `reject` naming the offending arg/dim, the
+        # argument the dim was inferred from, and every site's actual size.
+        # Token args are excluded from the check (usually internal dispatch
+        # glue) but still listed among the sizes.
+        for (dim_name, sites) in pairs(fun_size_sites)
+            origin_arg, origin_i, origin_access, _ = first(sites)
+            # Sound because of the `reject`s emitted below: the first
+            # occurrence defines the binding and every later non-token
+            # occurrence is guarded against it.
+            fun_size_alias_names[Symbol(origin_access)] = dim_name
+            fun_size_candidates[dim_name] = "int $dim_name = $origin_access;"
+            # A Stan `reject` argument list: literal text with each size access
+            # spliced as its own expression (`… (= ", dims(x)[1], ") …`).
+            sizes_clause = join(
+                (string("`", an, "` dim ", ii, " (= \", ", acc, ", \")")
+                 for (an, ii, acc, _t) in sites),
+                ", ",
+            )
+            for (arg_name, i, access, tok) in Iterators.drop(sites, 1)
+                tok && continue
+                push!(required_fun_sizes, dim_name)
+                fun_size_alias_names[Symbol(access)] = dim_name
+                msg = string(
+                    "\"", f, ": dim mismatch — `", arg_name, "` dim ", i,
+                    " (= \", ", access, ", \") does not match `", dim_name,
+                    "` (= \", ", dim_name, ", \"), inferred from `", origin_arg,
+                    "` dim ", origin_i, ". `", dim_name, "` sizes: ",
+                    sizes_clause, ".\"",
+                )
+                push!(fun_checks, string("if (", access, " != ", dim_name, ") reject(", msg, ");"))
             end
         end
         for dim_name in keys(fun_size_candidates)
