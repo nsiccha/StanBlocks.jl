@@ -22,6 +22,22 @@ builtin. Several hundred Stan functions and distribution signatures are
 registered; the source of truth for those is
 [`src/slic_stan/builtin.jl`](https://github.com/nsiccha/StanBlocks.jl/blob/devibe/src/slic_stan/builtin.jl).
 
+## Overview
+
+The StanCon 2026 "quality-of-life improvements" from the opening slide, in that
+order — each with the one detail worth remembering and a link to its worked
+example:
+
+1. **Activity analysis** — A backward likelihood-reachability pass marks every binding that can affect an observed quantity, which is what lets the compiler choose `transformed data` vs `transformed parameters` placement and move prior-only computations into `generated quantities`. → [Core model](#One-model:-block-placement,-types,-shapes,-and-constraints)
+2. **Submodels** — Reusable model fragments (anonymous `@slic (…)` blocks and named `@slic f(…)=…` functions) compose into larger models with automatic parameter namespacing (e.g. `eta_beta`). → [Composition](#Composition-and-model-families)
+3. **User-defined types** — `@usertype` lets author-defined structured types (currently NamedTuples and ragged containers) flow through tracing, data binding, and Stan emission as first-class shapes. → [Structured data](#Structured-data-and-compiler-owned-plates)
+4. **Higher-order user-defined functions** — Functions (distributions included) can take and return other functions, so combinators like `weighted`/`truncated`/`censored` and custom HOFs are authored once and reused. → [Function signatures](#Function-signatures,-defaults,-keywords,-varargs,-and-higher-order-functions)
+5. **Automatic but optional type & shape inference** — The compiler infers scalar types, array shapes, and constraints from data and usage, but you can always pin them explicitly (typed LHS, sized signatures). → [Core model](#One-model:-block-placement,-types,-shapes,-and-constraints)
+6. **(Ragged) plates** — `plate(…) do` is a compiler-owned sampling loop that promotes fresh per-cell variables to outer storage and supports ragged (uneven-length) cells without hand-written index bookkeeping. → [Structured data](#Structured-data-and-compiler-owned-plates)
+7. **Metaprogramming** — Caller-side macros expand before tracing, and `@inline` helpers, trailing-`!` mutation, `@stan_assert`, and `return_type_of` queries let you compute model structure at transpile time. → [Expansion tools](#Expansion,-inlining,-assertions,-and-return-type-queries)
+8. **Julia-style multiple dispatch** — Named submodels and helpers dispatch on positional argument types (variadic and function-typed included), so one name resolves to different fragments by the shapes it is called with. → [Typed dispatch](#Named-submodels:-typed-positional-dispatch)
+9. **…and more** — Generated observation outputs (pointwise log-likelihood, predictive draws, missing-outcome imputation), custom distribution triads, fused GLMs, post-hoc `Base.merge` variants and cross-validation taint, executable descriptors, and the scientific-computing surface (ODEs, Torsten, GP, `reduce_sum`) — plus the honest current boundaries, in the sections below the capability walkthrough.
+
 ## Feature map
 
 | Area | Current surface | Detailed MWE |
@@ -29,15 +45,15 @@ registered; the source of truth for those is
 | Model declarations | `@slic`, `~`, `=`, typed LHS, bare flat-prior parameters | [Core model](#One-model:-block-placement,-types,-shapes,-and-constraints) |
 | Analysis | block placement, type/shape/constraint inference, likelihood activity | [Core model](#One-model:-block-placement,-types,-shapes,-and-constraints) |
 | Composition | anonymous and named submodels, typed dispatch, `Base.merge`, data rebinding | [Composition](#Composition-and-model-families) |
-| Deterministic helpers | `@deffun`, loops, branches, mutation, comprehensions, iteration | [`@deffun`](#Deterministic-programs-with-@deffun) |
-| Julia-like functions | closures, HOFs, varargs, positional defaults, required/optional kwargs | [Function signatures](#Function-signatures,-defaults,-keywords,-varargs,-and-higher-order-functions) |
-| Metaprogramming | caller macros, `@inline`, trailing `!`, `@stan_assert`, `return_type_of` | [Expansion tools](#Expansion,-inlining,-assertions,-and-return-type-queries) |
-| Observation workflow | pointwise log likelihoods, predictive draws, missing-outcome imputation | [Generated outputs](#Generated-observation-outputs) |
-| Distribution abstraction | custom `_lpdf`/`_lpdfs`/`_rng`, `@lpxf`, `@lhs`, weighted/truncated/censored/interval | [Distributions](#Custom-and-higher-order-distributions) |
 | Structured data/models | `RaggedVector`, ragged constraints, `EachCol`/`EachRow`, fancy indexing, `plate` | [Structured models](#Structured-data-and-compiler-owned-plates) |
-| Scientific models | ODE solvers, Torsten signatures, GP covariance, `reduce_sum`, fused GLMs | [Scientific surface](#Scientific-computing-surface) |
-| Reflection/execution | descriptors, definition closure, derived operations, BridgeStan | [Descriptor](#Executable-model-descriptors) |
+| Julia-like functions | closures, HOFs, varargs, positional defaults, required/optional kwargs | [Function signatures](#Function-signatures,-defaults,-keywords,-varargs,-and-higher-order-functions) |
+| Distribution abstraction | custom `_lpdf`/`_lpdfs`/`_rng`, `@lpxf`, `@lhs`, weighted/truncated/censored/interval | [Distributions](#Custom-and-higher-order-distributions) |
+| Metaprogramming | caller macros, `@inline`, trailing `!`, `@stan_assert`, `return_type_of` | [Expansion tools](#Expansion,-inlining,-assertions,-and-return-type-queries) |
+| Deterministic helpers | `@deffun`, loops, branches, mutation, comprehensions, iteration | [`@deffun`](#Deterministic-programs-with-@deffun) |
+| Observation workflow | pointwise log likelihoods, predictive draws, missing-outcome imputation | [Generated outputs](#Generated-observation-outputs) |
 | Model variants | post-hoc overrides and lower-level cross-validation taint | [Variants](#Post-hoc-variants-and-cross-validation-taint) |
+| Reflection/execution | descriptors, definition closure, derived operations, BridgeStan | [Descriptor](#Executable-model-descriptors) |
+| Scientific models | ODE solvers, Torsten signatures, GP covariance, `reduce_sum`, fused GLMs | [Scientific surface](#Scientific-computing-surface) |
 
 ## One model: block placement, types, shapes, and constraints
 
@@ -111,112 +127,6 @@ a local that the function must fill. Native constrained types use the same LHS
 surface, for example
 `L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2)` when `L` participates in a
 downstream likelihood.
-
-## Data binding and mock shapes
-
-`@slic` captures a model body before it needs the final dataset. Bind minimal
-mock values to establish the types and shapes, then rebind real data later:
-
-```@raw html
-<div class="atlas-comparison" data-atlas-comparison>
-```
-
-```@eval
-Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-base = @slic (; y = [1], x = [0.0]) begin
-    alpha ~ normal(0, 1)
-    y ~ bernoulli_logit(alpha + x)
-end
-
-posterior = base(; y = [1, 0, 1], x = [-1.0, 0.0, 1.0])
-""", :posterior)
-```
-
-```@raw html
-</div>
-```
-
-| Julia value | Inferred Stan carrier |
-|---|---|
-| `1` / `1.0` | `int` / `real` |
-| `[1, 2]` | `array[2] int` |
-| `[1.0, 2.0]` | `vector[2]` |
-| `Matrix{Float64}` | `matrix[m,n]` (transposed during Stan data preparation) |
-| `Vector{Vector{<:Real}}` | `RaggedVector` carrier, not a dense 2-D array |
-
-Calling a traced `StanModel` with new data reuses the trace and replaces only
-the values. Changing a structure that affects tracing—such as whether an
-outcome contains missing entries—requires a new trace.
-
-## Generated observation outputs
-
-For an ordinary top-level dense observation, qualitatively:
-
-```julia
-y ~ normal(mu, sigma)
-```
-
-The complete minimal model makes the generated helper definitions and both
-derived outputs visible:
-
-```@raw html
-<div class="atlas-comparison" data-atlas-comparison>
-```
-
-```@eval
-Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-dense_output_model = @slic (; y=[0.1, -0.2, 0.4]) begin
-    mu ~ normal(0, 1)
-    sigma ~ exponential(1)
-    y ~ normal(mu, sigma)
-end
-""", :dense_output_model)
-```
-
-```@raw html
-</div>
-```
-
-The current shape contract is:
-
-| Observation form | Predictive output | Log-likelihood output |
-|---|---|---|
-| Dense, top-level | observation-shaped draw | elementwise |
-| Dense, inside `plate` | filled per cell | not synthesized |
-| Ragged, top-level | flat draw + descriptor `segments` | one aggregate per group |
-| Ragged compiler-owned slice inside `plate` | flat draw + `segments` | one aggregate per group |
-
-Consumers should use descriptor fields `generative` and `source`, not parse the
-`_gen` or `_likelihood` suffixes.
-
-### Missing continuous outcomes
-
-Author source:
-
-```@raw html
-<div class="atlas-comparison" data-atlas-comparison>
-```
-
-```@eval
-Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-y = Union{Missing,Float64}[1.0, missing, 3.0]
-
-m = @slic (; y) begin
-    mu ~ normal(0, 2)
-    sigma ~ exponential(1)
-    y ~ normal(mu, sigma)
-end
-""", :m)
-```
-
-```@raw html
-</div>
-```
-
-The usual imputation does not enlarge the HMC parameter vector: missing values
-are posterior-predictive draws unless the completed outcome feeds another live
-likelihood. Missing predictors, discrete missing outcomes, and inherently joint
-outcomes such as `multi_normal` require an explicit model.
 
 ## Composition and model families
 
@@ -327,15 +237,9 @@ fixed bindings may be combined in one `Base.merge` call. Ordinary model kwargs
 only bind data and do not remove statements. A merged `SlicModel` value can also
 be interpolated into the callee position of generated AST.
 
-## Deterministic programs with `@deffun`
+## Structured data and compiler-owned plates
 
-`@slic` is a flat declaration language. `@deffun` is where deterministic
-control flow, mutation, and local allocation live. Type and shape annotations
-on UDF arguments, returns, and ordinary assigned locals are optional; inference
-specialises them from the call site and RHS. Annotate only for dispatch, named
-dimension locals, fresh uninitialised storage, or an otherwise ambiguous result.
-
-### Value iteration and accumulation
+### `plate`: an independent-cell loop that may introduce parameters
 
 StanBlocks source:
 
@@ -345,27 +249,28 @@ StanBlocks source:
 
 ```@eval
 Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-@deffun centered_sum(x::vector[n])::real = begin
-    xbar = mean(x)
-    acc = 0.0
-    for xi in x
-        acc += xi - xbar
-    end
-    acc
-end
+plate_model = @slic (; y = randn(4), mu0 = 0.5) begin
+    sigma ~ exponential(1)
 
-centered_model = @slic (; x=[1.0, 2.0, 4.0], y=0.0) begin
-    centered = centered_sum(x)
-    y ~ normal(centered, 1)
+    theta ~ plate(y; outer = 4) do yi
+        t ~ normal(mu0, 1)
+        yi ~ normal(t, sigma)
+        t
+    end
 end
-""", :centered_model)
+""", :plate_model)
 ```
 
 ```@raw html
 </div>
 ```
 
-### Supported iteration forms
+Positional inputs are sliced; lexical captures are shared; fresh cell bindings
+are promoted to outer storage; the trailing expression becomes the cell output.
+Fixed vector cells become columns of a matrix. Additional outer axes add Stan
+array prefixes. Cells must remain independent: `plate` is not a scan.
+
+### Vector-valued plate cells
 
 ```@raw html
 <div class="atlas-comparison" data-atlas-comparison>
@@ -373,52 +278,106 @@ end
 
 ```@eval
 Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-@deffun squares(x::vector[n]) = [xi * xi for xi in x]
+vector_plate_model = @slic (; n_groups = 8, k = 3) begin
+    L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2)
+    tau::vector[k] ~ normal(0, 1; lower=0)
 
-@deffun weighted_sum(x::vector[n])::real = begin
-    acc = 0.0
-    for (i, xi) in enumerate(x)
-        acc += i * xi
+    b::vector[k] ~ plate(; outer=n_groups) do g
+        z::vector[k] ~ std_normal()
+        diag_pre_multiply(tau, L) * z
     end
-    acc
 end
-
-@deffun products(a::vector[n], b::vector[n]) =
-    [ai * bi for (ai, bi) in zip(a, b)]
-
-@deffun outer(x::vector[n], y::vector[m]) =
-    [x[i] * y[j] for i in 1:n, j in 1:m]
-
-iteration_model = @slic (
-    ; x=[1.0, 2.0], a=[2.0, 3.0], b=[4.0, 5.0], y=0.0,
-) begin
-    sq = squares(x)
-    ws = weighted_sum(x)
-    ps = products(a, b)
-    op = outer(x, b)
-    y ~ normal(sum(sq) + ws + sum(ps) + sum(to_vector(op)), 1)
-end
-""", :iteration_model)
+""", :vector_plate_model)
 ```
 
 ```@raw html
 </div>
 ```
 
-Emission patterns:
+Both `z` and `b` have logical shape `matrix[k,n_groups]`; the per-group vectors
+occupy columns.
 
-| Source form | Stan lowering |
+### Ragged data
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
+groups = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]
+
+ragged_model = @slic (; groups, g=2, y=0.0) begin
+    first = groups[1]
+    selected = groups[g]
+    ng = length(groups)
+    y ~ normal(sum(first) + sum(selected) + ng, 1)
+end
+""", :ragged_model)
+```
+
+```@raw html
+</div>
+```
+
+The nested Julia vectors become a nominal carrier with flat `mem` and inclusive
+group `ends`. `groups[g]` lowers to a Stan helper that reconstructs the requested
+slice; `length(groups)` counts groups, not scalar elements.
+
+### Ragged constrained parameters
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
+ragged_constraint_model = @slic (; Ks=[2, 3, 4], y=0.3) begin
+    p::simplex[Ks] ~ flat()
+    y ~ normal(sum(p[1]), 0.1)
+end
+""", :ragged_constraint_model)
+```
+
+```@raw html
+</div>
+```
+
+Stan cannot declare a runtime-ragged pile of simplices. StanBlocks emits a flat
+unconstrained parameter, then a compiler-owned per-group constrain/Jacobian loop
+and a logical ragged view. The same route covers `ordered`, `positive_ordered`,
+`cholesky_factor_corr`, and square `cholesky_factor_cov` groups. This feature
+requires BridgeStan 2.9 / Stan 2.39 or newer.
+
+### Dense views and indexing
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
+@deffun col_sums(X::matrix[m,k]) = [sum(c) for c in EachCol(X)]
+
+views_model = @slic (; X=[1.0 2.0; 3.0 4.0], y=[0.0, 0.0]) begin
+    sums = col_sums(X)
+    y ~ normal(sums, 1)
+end
+""", :views_model)
+```
+
+```@raw html
+</div>
+```
+
+| Source | Stan lowering |
 |---|---|
-| `for xi in x` | index loop plus `xi = x[i]` |
-| `enumerate(x)` | 1-based index and element bindings |
-| `zip(a,b,...)` | loop to the shortest container |
-| one-axis real comprehension | allocated `vector` plus fill loop |
-| two-axis real comprehension | allocated `matrix` plus nested fill loops |
-| integer-valued comprehension | `array[] int`, preserving index usability |
-
-Nested `if`/`else`, `for`, `while`, `=`, `+=`, `-=`, `*=`, `.=` and indexed
-assignment work in `@deffun`. `elseif` chains, filtered/stepped generators,
-flattened ragged comprehensions, and 3-D+ comprehensions reject explicitly.
+| `EachCol(X)[j]` | `col(X,j)` |
+| `EachRow(X)[i]` | `row(X,i)` |
+| `length(EachCol(X))` | `cols(X)` |
+| `length(EachRow(X))` | `rows(X)` |
+| `alpha[county_idx]` | vectorised integer-array indexing |
+| `X[i,:,:]`, `X[:,:,k]`, `L[i,:,:]` | resolved multi-colon slice |
 
 ## Function signatures, defaults, keywords, varargs, and higher-order functions
 
@@ -519,169 +478,6 @@ end
 The closure is lifted into a generated Stan function. Captured data and
 parameters become explicit trailing arguments, and likelihood activity follows
 through those captures so `lambda` stays a live parameter.
-
-## Expansion, inlining, assertions, and return-type queries
-
-### Caller macros expand before tracing
-
-```@raw html
-<div class="atlas-comparison" data-atlas-comparison>
-```
-
-```@eval
-Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-macro center(x)
-    :($x - mean($x))
-end
-
-x = [-1.0, 0.0, 1.0]
-y = [0.1, -0.2, 0.4]
-
-macro_model = @slic (; x, y) begin
-    alpha ~ normal(0, 1)
-    beta ~ normal(0, 1)
-    y ~ normal(alpha + beta * @center(x), 1)
-end
-""", :macro_model)
-```
-
-```@raw html
-</div>
-```
-
-`@views`, `@.`, `@inbounds`, and user-defined Julia macros use the same route.
-They expand in the caller module; StanBlocks traces the expanded syntax.
-
-### Inline helpers and caller-scope mutation
-
-```@raw html
-<div class="atlas-comparison" data-atlas-comparison>
-```
-
-```@eval
-Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-@deffun @inline scale(x::vector[n], s::real)::vector[n] = x * s
-
-@deffun set_first!(buf::vector[n])::vector[n] = begin
-    buf[1] = 42.0
-    buf
-end
-
-@deffun mutate_scaled(x::vector[n])::vector[n] = begin
-    buf::vector[n] = scale(x, 2.0)
-    set_first!(buf)
-end
-
-inline_model = @slic (; x=[1.0, 2.0], y=0.0) begin
-    changed = mutate_scaled(x)
-    y ~ normal(sum(changed), 1)
-end
-""", :inline_model)
-```
-
-```@raw html
-</div>
-```
-
-Calls expand at the call site rather than producing a Stan `functions` entry.
-Locals receive hygienic per-call names. A trailing `!` is the Julia-convention
-spelling for the same inline route and makes caller-buffer mutation expressible.
-At a `compile_slic_bundle` boundary, a macro-free UDF metadata entry with
-`markers=(:stanonly, :inline)` lowers to this same path.
-
-### Runtime assertions
-
-```@raw html
-<div class="atlas-comparison" data-atlas-comparison>
-```
-
-```@eval
-Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-@deffun safe_log(x::real)::real = begin
-    @stan_assert x > 0 "safe_log: x must be positive"
-    log(x)
-end
-
-assertion_model = @slic (; x=1.0, y=0.0) begin
-    logged = safe_log(x)
-    y ~ normal(logged, 1)
-end
-""", :assertion_model)
-```
-
-```@raw html
-</div>
-```
-
-For `compile_slic_bundle`, the macro-free equivalent is an `assertions` record
-such as `((; condition=:(x > 0), message="safe_log: x must be positive"),)` on
-the UDF metadata entry. The compiler prepends the validated record to the
-bodyful definition using the same `@stan_assert` lowering.
-
-### Transpile-time return type queries
-
-```@raw html
-<div class="atlas-comparison" data-atlas-comparison>
-```
-
-```@eval
-Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-@deffun element_type(x::real)::real = x
-
-@deffun @stanonly copy_vec(x::vector[n]) = begin
-    out::return_type_of(element_type, x[1])[n]
-    for i in 1:n
-        out[i] = x[i]
-    end
-    out
-end
-
-return_type_model = @slic (; x=[1.0, 2.0], y=[0.0, 0.0]) begin
-    copied = copy_vec(x)
-    y ~ normal(copied, 1)
-end
-""", :return_type_model)
-```
-
-```@raw html
-</div>
-```
-
-`return_type_of` exposes the same registered inference table used by the
-transpiler. Computed `typeof(f(x[1]))[n]` annotations provide a related
-higher-order form: a real-valued `f` produces a `vector`, while an integer-valued
-`f` produces `array[] int`.
-
-### Opt-in Julia and Stan emission
-
-`@deffun` definitions are Stan-only by default. Eligible deterministic,
-bodyful definitions annotated with `@juliacompat` also install one Julia
-method. That supports ordinary unit tests of shared deterministic helpers:
-
-```@raw html
-<div class="atlas-comparison" data-atlas-comparison>
-```
-
-```@eval
-Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-@deffun @juliacompat affine(x::real, a::real = 2.0)::real = a * x + 1.0
-
-affine(3.0) == 7.0
-
-dual_model = @slic (; y=0.0) begin
-    y ~ normal(affine(3.0), 1)
-end
-""", :dual_model)
-```
-
-```@raw html
-</div>
-```
-
-Probability, RNG, ODE, and parallel builtins are outside the bounded Julia
-target. Their own `_lpdf`/`_rng`-family definitions remain Stan-only even when
-annotated. `@stanonly` can document an intentionally Stan-only helper or opt
-one member out of a surrounding `@juliacompat` group.
 
 ## Custom and higher-order distributions
 
@@ -980,9 +776,284 @@ The model block retains the fused Stan primitive. Where Stan has no matching
 fused RNG, StanBlocks expands only the predictive draw to the base-family RNG
 at `alpha + X * beta`; the likelihood remains fused.
 
-## Structured data and compiler-owned plates
+## Expansion, inlining, assertions, and return-type queries
 
-### `plate`: an independent-cell loop that may introduce parameters
+### Caller macros expand before tracing
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
+macro center(x)
+    :($x - mean($x))
+end
+
+x = [-1.0, 0.0, 1.0]
+y = [0.1, -0.2, 0.4]
+
+macro_model = @slic (; x, y) begin
+    alpha ~ normal(0, 1)
+    beta ~ normal(0, 1)
+    y ~ normal(alpha + beta * @center(x), 1)
+end
+""", :macro_model)
+```
+
+```@raw html
+</div>
+```
+
+`@views`, `@.`, `@inbounds`, and user-defined Julia macros use the same route.
+They expand in the caller module; StanBlocks traces the expanded syntax.
+
+### Inline helpers and caller-scope mutation
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
+@deffun @inline scale(x::vector[n], s::real)::vector[n] = x * s
+
+@deffun set_first!(buf::vector[n])::vector[n] = begin
+    buf[1] = 42.0
+    buf
+end
+
+@deffun mutate_scaled(x::vector[n])::vector[n] = begin
+    buf::vector[n] = scale(x, 2.0)
+    set_first!(buf)
+end
+
+inline_model = @slic (; x=[1.0, 2.0], y=0.0) begin
+    changed = mutate_scaled(x)
+    y ~ normal(sum(changed), 1)
+end
+""", :inline_model)
+```
+
+```@raw html
+</div>
+```
+
+Calls expand at the call site rather than producing a Stan `functions` entry.
+Locals receive hygienic per-call names. A trailing `!` is the Julia-convention
+spelling for the same inline route and makes caller-buffer mutation expressible.
+At a `compile_slic_bundle` boundary, a macro-free UDF metadata entry with
+`markers=(:stanonly, :inline)` lowers to this same path.
+
+### Runtime assertions
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
+@deffun safe_log(x::real)::real = begin
+    @stan_assert x > 0 "safe_log: x must be positive"
+    log(x)
+end
+
+assertion_model = @slic (; x=1.0, y=0.0) begin
+    logged = safe_log(x)
+    y ~ normal(logged, 1)
+end
+""", :assertion_model)
+```
+
+```@raw html
+</div>
+```
+
+For `compile_slic_bundle`, the macro-free equivalent is an `assertions` record
+such as `((; condition=:(x > 0), message="safe_log: x must be positive"),)` on
+the UDF metadata entry. The compiler prepends the validated record to the
+bodyful definition using the same `@stan_assert` lowering.
+
+### Transpile-time return type queries
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
+@deffun element_type(x::real)::real = x
+
+@deffun @stanonly copy_vec(x::vector[n]) = begin
+    out::return_type_of(element_type, x[1])[n]
+    for i in 1:n
+        out[i] = x[i]
+    end
+    out
+end
+
+return_type_model = @slic (; x=[1.0, 2.0], y=[0.0, 0.0]) begin
+    copied = copy_vec(x)
+    y ~ normal(copied, 1)
+end
+""", :return_type_model)
+```
+
+```@raw html
+</div>
+```
+
+`return_type_of` exposes the same registered inference table used by the
+transpiler. Computed `typeof(f(x[1]))[n]` annotations provide a related
+higher-order form: a real-valued `f` produces a `vector`, while an integer-valued
+`f` produces `array[] int`.
+
+### Opt-in Julia and Stan emission
+
+`@deffun` definitions are Stan-only by default. Eligible deterministic,
+bodyful definitions annotated with `@juliacompat` also install one Julia
+method. That supports ordinary unit tests of shared deterministic helpers:
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
+@deffun @juliacompat affine(x::real, a::real = 2.0)::real = a * x + 1.0
+
+affine(3.0) == 7.0
+
+dual_model = @slic (; y=0.0) begin
+    y ~ normal(affine(3.0), 1)
+end
+""", :dual_model)
+```
+
+```@raw html
+</div>
+```
+
+Probability, RNG, ODE, and parallel builtins are outside the bounded Julia
+target. Their own `_lpdf`/`_rng`-family definitions remain Stan-only even when
+annotated. `@stanonly` can document an intentionally Stan-only helper or opt
+one member out of a surrounding `@juliacompat` group.
+
+## Data binding and mock shapes
+
+`@slic` captures a model body before it needs the final dataset. Bind minimal
+mock values to establish the types and shapes, then rebind real data later:
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
+base = @slic (; y = [1], x = [0.0]) begin
+    alpha ~ normal(0, 1)
+    y ~ bernoulli_logit(alpha + x)
+end
+
+posterior = base(; y = [1, 0, 1], x = [-1.0, 0.0, 1.0])
+""", :posterior)
+```
+
+```@raw html
+</div>
+```
+
+| Julia value | Inferred Stan carrier |
+|---|---|
+| `1` / `1.0` | `int` / `real` |
+| `[1, 2]` | `array[2] int` |
+| `[1.0, 2.0]` | `vector[2]` |
+| `Matrix{Float64}` | `matrix[m,n]` (transposed during Stan data preparation) |
+| `Vector{Vector{<:Real}}` | `RaggedVector` carrier, not a dense 2-D array |
+
+Calling a traced `StanModel` with new data reuses the trace and replaces only
+the values. Changing a structure that affects tracing—such as whether an
+outcome contains missing entries—requires a new trace.
+
+## Generated observation outputs
+
+For an ordinary top-level dense observation, qualitatively:
+
+```julia
+y ~ normal(mu, sigma)
+```
+
+The complete minimal model makes the generated helper definitions and both
+derived outputs visible:
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
+dense_output_model = @slic (; y=[0.1, -0.2, 0.4]) begin
+    mu ~ normal(0, 1)
+    sigma ~ exponential(1)
+    y ~ normal(mu, sigma)
+end
+""", :dense_output_model)
+```
+
+```@raw html
+</div>
+```
+
+The current shape contract is:
+
+| Observation form | Predictive output | Log-likelihood output |
+|---|---|---|
+| Dense, top-level | observation-shaped draw | elementwise |
+| Dense, inside `plate` | filled per cell | not synthesized |
+| Ragged, top-level | flat draw + descriptor `segments` | one aggregate per group |
+| Ragged compiler-owned slice inside `plate` | flat draw + `segments` | one aggregate per group |
+
+Consumers should use descriptor fields `generative` and `source`, not parse the
+`_gen` or `_likelihood` suffixes.
+
+### Missing continuous outcomes
+
+Author source:
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
+y = Union{Missing,Float64}[1.0, missing, 3.0]
+
+m = @slic (; y) begin
+    mu ~ normal(0, 2)
+    sigma ~ exponential(1)
+    y ~ normal(mu, sigma)
+end
+""", :m)
+```
+
+```@raw html
+</div>
+```
+
+The usual imputation does not enlarge the HMC parameter vector: missing values
+are posterior-predictive draws unless the completed outcome feeds another live
+likelihood. Missing predictors, discrete missing outcomes, and inherently joint
+outcomes such as `multi_normal` require an explicit model.
+
+## Deterministic programs with `@deffun`
+
+`@slic` is a flat declaration language. `@deffun` is where deterministic
+control flow, mutation, and local allocation live. Type and shape annotations
+on UDF arguments, returns, and ordinary assigned locals are optional; inference
+specialises them from the call site and RHS. Annotate only for dispatch, named
+dimension locals, fresh uninitialised storage, or an otherwise ambiguous result.
+
+### Value iteration and accumulation
 
 StanBlocks source:
 
@@ -992,28 +1063,27 @@ StanBlocks source:
 
 ```@eval
 Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-plate_model = @slic (; y = randn(4), mu0 = 0.5) begin
-    sigma ~ exponential(1)
-
-    theta ~ plate(y; outer = 4) do yi
-        t ~ normal(mu0, 1)
-        yi ~ normal(t, sigma)
-        t
+@deffun centered_sum(x::vector[n])::real = begin
+    xbar = mean(x)
+    acc = 0.0
+    for xi in x
+        acc += xi - xbar
     end
+    acc
 end
-""", :plate_model)
+
+centered_model = @slic (; x=[1.0, 2.0, 4.0], y=0.0) begin
+    centered = centered_sum(x)
+    y ~ normal(centered, 1)
+end
+""", :centered_model)
 ```
 
 ```@raw html
 </div>
 ```
 
-Positional inputs are sliced; lexical captures are shared; fresh cell bindings
-are promoted to outer storage; the trailing expression becomes the cell output.
-Fixed vector cells become columns of a matrix. Additional outer axes add Stan
-array prefixes. Cells must remain independent: `plate` is not a scan.
-
-### Vector-valued plate cells
+### Supported iteration forms
 
 ```@raw html
 <div class="atlas-comparison" data-atlas-comparison>
@@ -1021,106 +1091,52 @@ array prefixes. Cells must remain independent: `plate` is not a scan.
 
 ```@eval
 Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-vector_plate_model = @slic (; n_groups = 8, k = 3) begin
-    L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2)
-    tau::vector[k] ~ normal(0, 1; lower=0)
+@deffun squares(x::vector[n]) = [xi * xi for xi in x]
 
-    b::vector[k] ~ plate(; outer=n_groups) do g
-        z::vector[k] ~ std_normal()
-        diag_pre_multiply(tau, L) * z
+@deffun weighted_sum(x::vector[n])::real = begin
+    acc = 0.0
+    for (i, xi) in enumerate(x)
+        acc += i * xi
     end
+    acc
 end
-""", :vector_plate_model)
+
+@deffun products(a::vector[n], b::vector[n]) =
+    [ai * bi for (ai, bi) in zip(a, b)]
+
+@deffun outer(x::vector[n], y::vector[m]) =
+    [x[i] * y[j] for i in 1:n, j in 1:m]
+
+iteration_model = @slic (
+    ; x=[1.0, 2.0], a=[2.0, 3.0], b=[4.0, 5.0], y=0.0,
+) begin
+    sq = squares(x)
+    ws = weighted_sum(x)
+    ps = products(a, b)
+    op = outer(x, b)
+    y ~ normal(sum(sq) + ws + sum(ps) + sum(to_vector(op)), 1)
+end
+""", :iteration_model)
 ```
 
 ```@raw html
 </div>
 ```
 
-Both `z` and `b` have logical shape `matrix[k,n_groups]`; the per-group vectors
-occupy columns.
+Emission patterns:
 
-### Ragged data
-
-```@raw html
-<div class="atlas-comparison" data-atlas-comparison>
-```
-
-```@eval
-Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-groups = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]
-
-ragged_model = @slic (; groups, g=2, y=0.0) begin
-    first = groups[1]
-    selected = groups[g]
-    ng = length(groups)
-    y ~ normal(sum(first) + sum(selected) + ng, 1)
-end
-""", :ragged_model)
-```
-
-```@raw html
-</div>
-```
-
-The nested Julia vectors become a nominal carrier with flat `mem` and inclusive
-group `ends`. `groups[g]` lowers to a Stan helper that reconstructs the requested
-slice; `length(groups)` counts groups, not scalar elements.
-
-### Ragged constrained parameters
-
-```@raw html
-<div class="atlas-comparison" data-atlas-comparison>
-```
-
-```@eval
-Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-ragged_constraint_model = @slic (; Ks=[2, 3, 4], y=0.3) begin
-    p::simplex[Ks] ~ flat()
-    y ~ normal(sum(p[1]), 0.1)
-end
-""", :ragged_constraint_model)
-```
-
-```@raw html
-</div>
-```
-
-Stan cannot declare a runtime-ragged pile of simplices. StanBlocks emits a flat
-unconstrained parameter, then a compiler-owned per-group constrain/Jacobian loop
-and a logical ragged view. The same route covers `ordered`, `positive_ordered`,
-`cholesky_factor_corr`, and square `cholesky_factor_cov` groups. This feature
-requires BridgeStan 2.9 / Stan 2.39 or newer.
-
-### Dense views and indexing
-
-```@raw html
-<div class="atlas-comparison" data-atlas-comparison>
-```
-
-```@eval
-Main.FeatureAtlasDocs.comparison(@__MODULE__, raw"""
-@deffun col_sums(X::matrix[m,k]) = [sum(c) for c in EachCol(X)]
-
-views_model = @slic (; X=[1.0 2.0; 3.0 4.0], y=[0.0, 0.0]) begin
-    sums = col_sums(X)
-    y ~ normal(sums, 1)
-end
-""", :views_model)
-```
-
-```@raw html
-</div>
-```
-
-| Source | Stan lowering |
+| Source form | Stan lowering |
 |---|---|
-| `EachCol(X)[j]` | `col(X,j)` |
-| `EachRow(X)[i]` | `row(X,i)` |
-| `length(EachCol(X))` | `cols(X)` |
-| `length(EachRow(X))` | `rows(X)` |
-| `alpha[county_idx]` | vectorised integer-array indexing |
-| `X[i,:,:]`, `X[:,:,k]`, `L[i,:,:]` | resolved multi-colon slice |
+| `for xi in x` | index loop plus `xi = x[i]` |
+| `enumerate(x)` | 1-based index and element bindings |
+| `zip(a,b,...)` | loop to the shortest container |
+| one-axis real comprehension | allocated `vector` plus fill loop |
+| two-axis real comprehension | allocated `matrix` plus nested fill loops |
+| integer-valued comprehension | `array[] int`, preserving index usability |
+
+Nested `if`/`else`, `for`, `while`, `=`, `+=`, `-=`, `*=`, `.=` and indexed
+assignment work in `@deffun`. `elseif` chains, filtered/stepped generators,
+flattened ragged comprehensions, and 3-D+ comprehensions reject explicitly.
 
 ## Post-hoc variants and cross-validation taint
 
