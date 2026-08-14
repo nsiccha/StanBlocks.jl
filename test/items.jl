@@ -612,9 +612,9 @@ end
     @deffun litdim_scale(x::vector[4]) = x * 2.0
     @deffun symdim_scale(x::vector[n]) = x * 2.0
     # A raw `matrix` keeps its final two dimensions as the native matrix core;
-    # every leading dimension is a Stan array prefix. Default Julia emission
-    # represents the same rectangular value as an equal-rank dense array.
-    @deffun nested_matrix_result(x::matrix[n, j])::matrix[2, n, j] = begin
+    # every leading dimension is a Stan array prefix. `@juliacompat` Julia
+    # emission represents the same rectangular value as an equal-rank dense array.
+    @deffun @juliacompat nested_matrix_result(x::matrix[n, j])::matrix[2, n, j] = begin
         out::matrix[2, n, j]
         for k in 1:2
             for i in 1:n
@@ -625,7 +625,7 @@ end
         end
         out
     end
-    @deffun nested_matrix_input(x::matrix[m, two, n, j])::real = begin
+    @deffun @juliacompat nested_matrix_input(x::matrix[m, two, n, j])::real = begin
         sum(x[1, 1, :, :])
     end
     # --- COMPOSITE (named-tuple) return whose ELEMENT sizes name the params ---
@@ -2900,7 +2900,7 @@ Julia's short-circuit AST heads must lower directly to Stan `&&` / `||` inside
 the ordinary function-head resolver (which used to fail with `Could not find &&`).
 """
 @testitem "slic: @deffun short-circuit boolean operators" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports] begin
-    @deffun begin
+    @deffun @juliacompat begin
         # Mirrors helpful_stan_functions@583d31de's gpareto_lpdf support check.
         @stanonly short_circuit_guard(x::vector[n], ymin::real, k::real, sigma::real)::real = begin
             inv_k = inv(k)
@@ -2913,7 +2913,7 @@ the ordinary function-head resolver (which used to fail with `Could not find &&`
             1.0
         end
 
-        # The default Julia emission must keep Julia's lazy RHS evaluation too.
+        # The `@juliacompat` Julia emission must keep Julia's lazy RHS evaluation too.
         short_circuit_julia_or(x::real)::real = begin
             if x > 0 || error("short-circuit OR evaluated its RHS")
                 return x
@@ -7784,7 +7784,7 @@ end
         stan_code(@slic (; G, obs = obs_pos, lamv) begin
             m0 ~ normal(sum(lamv), 1.)
             s ~ plate(lamv; outer = G) do l
-                c::real ~ normal(m0, 1.; lower = 0., multiplier = exp(l))
+                c::real ~ normal(m0, 1.; multiplier = exp(l))
                 c
             end
             obs ~ normal(s, 1.)
