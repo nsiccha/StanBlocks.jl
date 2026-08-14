@@ -305,7 +305,7 @@ pointwise log likelihood · posterior predictive draws · executable model descr
 <span class="tag red">activity analysis</span>
 <span class="tag">type + shape inference</span>
 <span class="tag">constraint propagation</span>
-<span class="tag red">automatic GQ twins</span>
+<span class="tag red">automatic generated-quantity twins</span>
 <span class="tag">BridgeStan log density</span>
 
 ## Composition is the reason for the frontend
@@ -327,7 +327,7 @@ m = @slic (; x, y) begin
 end
 ```
 
-Emits a namespaced parameter `eta_beta`.
+Emits a prefixed parameter `eta_beta`.
 
 :::
 ::: {.column width="47%"}
@@ -345,8 +345,8 @@ The matching `beta` statement is replaced; the base model stays unchanged.
 The same mechanism supports:
 
 - nested submodels
-- data rebinding
-- typed positional dispatch
+- swapping in new data
+- typed positional arguments
 - generated model variants
 
 :::
@@ -400,7 +400,7 @@ Julia syntax on the front, SlicStan's information-flow idea in the middle, Stan 
 
 ## The intellectual lineage: SlicStan
 
-[Gorinova, Gordon & Sutton (POPL 2019)](https://doi.org/10.1145/3290348) asked:
+[Gorinova, Gordon & Sutton (POPL 2019)](https://doi.org/10.1145/3290348) asked (not verbatim):
 
 > What if a Stan-like language were compositional and blockless, then translated back to Stan?
 
@@ -426,9 +426,9 @@ semantics-preserving translation; StanBlocks does not claim that formal result.
 | | SlicStan | StanBlocks.jl |
 |---|---|---|
 | Frontend | A new Stan-like language | A restricted Julia macro DSL |
-| Core analysis | Information-flow type system | Forward trace + reverse likelihood activity |
+| Core analysis | Information-flow type system | Forward trace + reverse likelihood tracking |
 | Abstraction | Flexible model functions | Julia dispatch, closures, kwargs, macros, `@slic` submodels |
-| Distinctive reach | Formal semantics; finite discrete-parameter elimination | Auto GQ, model variants, descriptors, BridgeStan/Julia integration |
+| Distinctive reach | Formal semantics; marginalizing out discrete parameters | Auto generated quantities, model variants, descriptors, BridgeStan/Julia integration |
 | Implementation posture | Research implementation in F# | Julia package used by larger Julia model DSLs |
 | Output | Stan | Stan |
 
@@ -499,6 +499,7 @@ Yes, but the value proposition changes.
 - translate a sketch into a full model
 - generate repetitive signatures and tests
 - explore compiler edge cases quickly
+- producing, finding, and fixing bugs
 
 :::
 ::: {.column width="49%"}
@@ -508,7 +509,7 @@ Yes, but the value proposition changes.
 - one source for a family of model variants
 - a reusable statistical vocabulary
 - generated Stan that humans and tools can inspect
-- compiler-owned cross-cutting outputs and rewrites
+- model-wide extras and rewrites, handled in one place
 
 :::
 ::::
