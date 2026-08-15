@@ -98,10 +98,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bridgestan
-          key: bridgestan-v2-${{ runner.os }}-${{ hashFiles('Project.toml') }}
-          restore-keys: bridgestan-v2-${{ runner.os }}-
+          key: bridgestan-v3-${{ runner.os }}-${{ hashFiles('Project.toml') }}
+          restore-keys: bridgestan-v3-${{ runner.os }}-
       - name: Download BridgeStan
-        run: julia --project=test -e 'using BridgeStan; path = BridgeStan.get_bridgestan_path(; download=true); stanc = joinpath(path, "bin", "stanc"); isfile(stanc) || error("BridgeStan download has no stanc binary at $stanc"); open(ENV["GITHUB_ENV"], "a") do io; println(io, "BRIDGESTAN=", path); println(io, "STANC_PATH=", stanc); end; println(path)'
+        run: julia --project=test -e 'using BridgeStan; path = BridgeStan.get_bridgestan_path(; download=true); stanc = joinpath(path, "bin", "stanc"); isfile(stanc) || run(`make -C $path bin/stanc`); isfile(stanc) || error("BridgeStan setup has no stanc binary at $stanc"); open(ENV["GITHUB_ENV"], "a") do io; println(io, "BRIDGESTAN=", path); println(io, "STANC_PATH=", stanc); end; println(path)'
       # Compiled models land in `tmp/<hash(stan_code)>.stan` + its shared
       # library, keyed by a hash of the GENERATED SOURCE — so a model whose Stan
       # is unchanged reuses its build across runs. Partial hits are the norm and
