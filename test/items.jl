@@ -1793,7 +1793,7 @@ end
 """
 Verify `slic: normal(loc,scale)` in an isolated test item.
 """
-@testitem "slic: normal(loc,scale)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: normal(loc,scale)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         scale ~ std_normal(;lower=0.)
@@ -1828,7 +1828,7 @@ end
 """
 Verify `slic: simple` in an isolated test item.
 """
-@testitem "slic: simple" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: simple" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ simple(loc)
@@ -1838,7 +1838,7 @@ end
 """
 Verify `slic: vararg` in an isolated test item.
 """
-@testitem "slic: vararg" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: vararg" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ vararg(loc)
@@ -1848,7 +1848,7 @@ end
 """
 Verify `slic: fof(simple)` in an isolated test item.
 """
-@testitem "slic: fof(simple)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: fof(simple)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ fof(simple, loc)
@@ -1901,7 +1901,7 @@ end
 """
 Verify `slic: srs2(vararg)` in an isolated test item.
 """
-@testitem "slic: srs2(vararg)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: srs2(vararg)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ srs2(vararg, loc)
@@ -1911,7 +1911,7 @@ end
 """
 Verify `slic: srs2(vararg, extra)` in an isolated test item.
 """
-@testitem "slic: srs2(vararg, extra)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: srs2(vararg, extra)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ srs2(vararg, loc, (1, 2, 3))
@@ -1921,7 +1921,7 @@ end
 """
 Verify `slic: stan_model re-data` in an isolated test item.
 """
-@testitem "slic: stan_model re-data" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: stan_model re-data" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(stan_model(@slic (;obs=randn(5)) begin
         loc ~ std_normal()
         scale ~ std_normal(;lower=0.)
@@ -1932,7 +1932,7 @@ end
 """
 Verify `slic: @slic f(…)=… sub-model functions` in an isolated test item.
 """
-@testitem "slic: @slic f(…)=… sub-model functions" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: @slic f(…)=… sub-model functions" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # positional 1-arg: `mu ~ linpred(x)` binds x into the sub-model's data.
     @test stanc_compiles(@slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
         mu ~ linpred(x)
@@ -1960,7 +1960,7 @@ end
 """
 Verify `issue9` in an isolated test item.
 """
-@testitem "issue9" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue9" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;n=10) begin
         x ~ issue9(n)
     end)
@@ -1973,7 +1973,7 @@ end
 """
 Verify `issue10` in an isolated test item.
 """
-@testitem "issue10" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue10" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;n=10) begin
         y ~ std_normal(;n)
         x = issue10a(y)
@@ -2061,7 +2061,7 @@ end
 """
 Verify `issue12` in an isolated test item.
 """
-@testitem "issue12" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue12" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stan_code(Base.merge(sm12a, quote
         return x
     end)(; n=10, y=1.)) == stan_code(sm12b(; n=10, y=1.))
@@ -2078,7 +2078,7 @@ end
 """
 Verify `issue15` in an isolated test item.
 """
-@testitem "issue15" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue15" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stan_code(Base.merge(sm15a, quote
         xx = append_row(x, x)
         return xx
@@ -2123,7 +2123,7 @@ value becomes data, and downstream statements continue to refer to `x`.
 Statement splices and fixed bindings may be supplied together; fixed bindings
 are final, so a same-name spliced statement cannot survive as a likelihood.
 """
-@testitem "slic: Base.merge fixed-value bindings replace statements with data" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: Base.merge fixed-value bindings replace statements with data" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     base = @slic begin
         theta :: vector[2] ~ normal(0.0, 1.0)
         mu = 2.0 * theta
@@ -2228,7 +2228,7 @@ model.
 Snag `first-class-slic-d83cfbea`, reported by SlicTranspiler.
 Snag `compile-slic-bun-83d3bfe1`, reported by SlicTranspiler.
 """
-@testitem "slic: compile a trusted bundle of named submodels and a parent" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: compile a trusted bundle of named submodels and a parent" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     udf_definitions = [
         "bundle-offset" => :(bundle_offset(x::real)::real = begin
             x + 0.25
@@ -2354,7 +2354,7 @@ Bundle UDFs resolve the same public transpile-time helpers as ordinary
 direct `typeof` spelling for this scalar-element copy and remain stanc-valid.
 Snag `compile-slic-bun-b7eb93b5`, reported by SlicTranspiler.
 """
-@testitem "slic: bundle UDFs resolve public transpile-time helpers" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: bundle UDFs resolve public transpile-time helpers" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     data = (; x=[0.1, -0.2], y=[0.0, 0.1])
     body = quote
         mu = bundle_copy_vec(x)
@@ -2396,7 +2396,7 @@ named method. Source and value inputs retain ordinary free-name kwarg binding
 and hygienic namespaces.
 Snag `compile-slic-bun-08d0bcdc`, reported by SlicTranspiler.
 """
-@testitem "slic: compile anonymous submodel dependencies in a trusted bundle" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: compile anonymous submodel dependencies in a trusted bundle" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     data = (; y=0.2)
     body = quote
         left ~ local_prior(; mu=0.0, scale=1.0)
@@ -2822,7 +2822,7 @@ end
 Verify `slic: ODE closure-captured param feeding a likelihood stays a parameter`
 in an isolated test item.
 """
-@testitem "slic: ODE closure-captured param feeding a likelihood stays a parameter" tags=[:slic, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ODE closure-captured param feeding a likelihood stays a parameter" tags=[:slic, :regression, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Snag `ode-closure-capt`: a parameter captured by an ODE-RHS closure whose
     # solve feeds a downstream likelihood must remain a SAMPLED parameter. The
     # §9 prior-but-no-downstream-use → GQ `_rng` analysis must follow the closure
@@ -2844,7 +2844,7 @@ end
 Verify `slic: ODE closure-captured DATA value is declared in the data block`
 in an isolated test item.
 """
-@testitem "slic: ODE closure-captured DATA value is declared in the data block" tags=[:slic, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ODE closure-captured DATA value is declared in the data block" tags=[:slic, :regression, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Snag `ode-closure-capt` DATA-side twin: a data value (`k`) captured only
     # inside a lifted ODE-RHS closure is threaded as a trailing solver arg, so
     # `fetch_data!(closure)` must follow captures and declare it — else dead-data
@@ -2963,7 +2963,7 @@ end
 """
 Verify scalar-array elementwise arithmetic against the shipped generalized lowering.
 """
-@testitem "slic: scalar-array elementwise arithmetic" tags=[:slic, :regression, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: scalar-array elementwise arithmetic" tags=[:slic, :regression, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Array-operand elementwise arithmetic on scalar arrays (`array[] int` /
     # `array[] real`) lowers to the `jbroadcasted` element loop and preserves
     # the element kind (int → array[] int, real → vector). Guarded by stanc,
@@ -2996,7 +2996,7 @@ end
 """
 Verify `issue17` in an isolated test item.
 """
-@testitem "issue17" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue17" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;n=10, y=1.) begin
         x ~ issue17(;n)
         y ~ simple(x)
@@ -3006,7 +3006,7 @@ end
 """
 Verify `issue18` in an isolated test item.
 """
-@testitem "issue18" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue18" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;n=10, y=1.) begin
         x ~ issue18(;n)
         y ~ simple(x)
@@ -3016,7 +3016,7 @@ end
 """
 Verify `issue19` in an isolated test item.
 """
-@testitem "issue19" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue19" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;n=10, y=1.) begin
         x ~ sm19a(;n)
         y ~ simple(x)
@@ -3030,7 +3030,7 @@ end
 """
 Verify `issue20` in an isolated test item.
 """
-@testitem "issue20" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue20" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(m20.model(;n=10))
     @test stanc_compiles(m20.modela(;n=10))
     @test stanc_compiles(m20.modelb(;n=10))
@@ -3093,7 +3093,7 @@ end
 """
 Verify `partly-missing: vector dist arg (regression check)` in an isolated test item.
 """
-@testitem "partly-missing: vector dist arg (regression check)" tags=[:slic, :regression, :missing, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "partly-missing: vector dist arg (regression check)" tags=[:slic, :regression, :missing, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # This exercises the getindex branch of maybe_index — previously broken
     # because the node was built with Symbol :getindex instead of Function.
     m = @slic (;x=collect(1.:6.), y=[1., missing, 3., missing, 5., missing]) begin
@@ -3131,7 +3131,7 @@ end
 """
 Verify `partly-missing: regression — all-observed vector unaffected` in an isolated test item.
 """
-@testitem "partly-missing: regression — all-observed vector unaffected" tags=[:slic, :regression, :missing] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "partly-missing: regression — all-observed vector unaffected" tags=[:slic, :regression, :missing, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;y=[1.0, 2.0, 3.0]) begin
         mu    ~ normal(0., 10.)
         sigma ~ gamma(2., 1.)
@@ -3237,7 +3237,7 @@ end
 """
 Verify `slic: standalone bare typed model parameters` in an isolated test item.
 """
-@testitem "slic: standalone bare typed model parameters" tags=[:slic, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: standalone bare typed model parameters" tags=[:slic, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     y = [0.2, -0.1, 0.4]
     model = @slic (;y) begin
         alpha::real
@@ -3599,7 +3599,7 @@ end
 """
 Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolated test item.
 """
-@testitem "slic: scalar-array elementwise broadcasting (jbroadcasted)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: scalar-array elementwise broadcasting (jbroadcasted)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Generalised trace-level `jbroadcasted` (f4b601f): elementwise arithmetic on
     # scalar arrays (`array[] int` / `array[] real` — what a `Vector{Int}` /
     # `Vector{Float64}` data input becomes; NOT a native `vector`) has no Stan
@@ -3703,7 +3703,7 @@ Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolat
     end
 end
 
-@testitem "slic: boolean-mask indexing via comparison broadcast + findall" tags=[:slic, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: boolean-mask indexing via comparison broadcast + findall" tags=[:slic, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Stan has no boolean-mask indexing (`v[mask]`). Instead, element-wise
     # comparison on a DATA scalar array (`cmt .== 1`, cmt an `array[] int`) lowers
     # via `jbroadcasted` to a 0/1 `array[] int` mask, and `findall(mask)`
@@ -3807,7 +3807,7 @@ end
 """
 Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated test item.
 """
-@testitem "slic: bounded one-dimensional @deffun comprehensions" tags=[:slic, :shapes, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: bounded one-dimensional @deffun comprehensions" tags=[:slic, :shapes, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @testset "canonicalization preserves the comprehension/generator structure" begin
         c = StanBlocks.stan.canonical(Meta.parse("[x[i] * x[i] for i in 1:n]"))
         @test c isa StanBlocks.stan.ComprehensionExpr
@@ -3989,7 +3989,7 @@ Verify the enumerate/zip/N-D/nested iteration-protocol extensions (devibe
 `@deffun` bodies, gated on `stanc_compiles` with BridgeStan lp/gradient spot
 checks, plus the 3-D and flattened-generator rejections.
 """
-@testitem "slic: enumerate / zip / N-D comprehension iteration" tags=[:slic, :shapes, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: enumerate / zip / N-D comprehension iteration" tags=[:slic, :shapes, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     iter_error(f) = try (f(); nothing) catch e sprint(showerror, e) end
 
     @testset "enumerate binds (index, element)" begin
@@ -4101,7 +4101,7 @@ end
 Verify `return_type_of(f, args...)` exposes the existing SLIC inference table
 both as a direct public query and as a computed `@deffun` type annotation.
 """
-@testitem "slic: public return_type_of transpile-time query" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: public return_type_of transpile-time query" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     scalar_rt = return_type_of(return_type_scalar, 1.0)
     vector_rt = return_type_of(return_type_vector, [1.0, 2.0, 3.0])
 
@@ -4130,7 +4130,7 @@ end
 """
 Verify `slic: computed type annotations (@deffun container inference)` in an isolated test item.
 """
-@testitem "slic: computed type annotations (@deffun container inference)" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: computed type annotations (@deffun container inference)" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # `@deffun` accepts a COMPUTED type annotation — `typeof(f(x[1]))[dims]` — in
     # both a body decl (`umap`) and the `::ret` position (`umap_r`). The output
     # container is INFERRED from `f`'s per-element return type: a `real` element →
@@ -4201,7 +4201,7 @@ end
 """
 Verify `slic: typed assignment compatibility` in an isolated test item.
 """
-@testitem "slic: typed assignment compatibility" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: typed assignment compatibility" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     good = @slic (;x=[1.0, 2.0, 3.0], ii=[1, 2, 3]) begin
         # Known-value equality: the literal 3 matches the data-size symbol x_n.
         direct::vector[3] = x
@@ -4309,7 +4309,7 @@ end
     @test checked.ok
 end
 
-@testitem "slic: typed assignment sized from a non-first signature arg" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: typed assignment sized from a non-first signature arg" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Regression for the signature-dimension alias gap: the all-vector `_rng`
     # idiom `draws::vector[n] = to_vector(normal_rng(loc, scale))` infers its size
     # from `scale` — the SECOND `vector[n]` arg — and the alias table used to
@@ -4367,7 +4367,7 @@ end
     @test !occursin(r"!= anontok__\d+\) reject", tok_code)
 end
 
-@testitem "slic: bare whole-vector local (broadcast RHS) emits unquoted size" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: bare whole-vector local (broadcast RHS) emits unquoted size" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Regression for the inferred whole-vector-local snag: a bare (un-annotated)
     # intermediate local whose RHS is a broadcast must emit a VALID unquoted size
     # `vector[dims(a)[1]]`, not the invalid quoted `vector["dims(a)[1]"]` that
@@ -4402,7 +4402,7 @@ end
     @test occursin(", `c` dim 1 (= ", multi_functions)
 end
 
-@testitem "slic: composite return type deanonymizes nested element sizes" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: composite return type deanonymizes nested element sizes" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Regression for the leaked-gensym snag: a `@deffun` returning a (named)
     # tuple whose ELEMENT sizes are calls over its own params. Those sizes live
     # in the type's `info.arg_types`; the tup/ntup's own `stan_size` is empty, so
@@ -4435,7 +4435,7 @@ end
 """
 Verify `slic: jmap (inference-driven element-wise map)` in an isolated test item.
 """
-@testitem "slic: jmap (inference-driven element-wise map)" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: jmap (inference-driven element-wise map)" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # `jmap(f, x::anything[n])` maps `f` over `x`, inferring the output CONTAINER
     # from `f`'s per-element return type (`typeof(f(x[1]))`): a `real`-returning
     # `f` → `vector[n]`, an `int`-returning `f` → `array[] int`. ONE definition
@@ -4630,7 +4630,7 @@ end
 """
 Verify `slic: compiler-injected fresh-result slice-fills (case-3)` in an isolated test item.
 """
-@testitem "slic: compiler-injected fresh-result slice-fills (case-3)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: compiler-injected fresh-result slice-fills (case-3)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # PARAM input: fresh result filled from a parameter → transformed parameters.
     param_model = @slic (;y=randn(3)) begin
         x ~ std_normal(;n=3)
@@ -4700,7 +4700,7 @@ end
 """
 Verify `slic: ragged lowering adopts a bare free parameter` in an isolated test item.
 """
-@testitem "slic: ragged lowering adopts a bare free parameter" tags=[:slic, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ragged lowering adopts a bare free parameter" tags=[:slic, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     ragged_model = @slic (;Ks=[2, 3], y=0.2) begin
         p::simplex[Ks] ~ flat()
         y ~ normal(sum(p[1]), 1.0)
@@ -4775,7 +4775,7 @@ end
 """
 Verify `slic: compiler-injected for-loop + range fresh-result fills (case-3 C.1/C.2)` in an isolated test item.
 """
-@testitem "slic: compiler-injected for-loop + range fresh-result fills (case-3 C.1/C.2)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: compiler-injected for-loop + range fresh-result fills (case-3 C.1/C.2)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # C.1 PARAM: for-loop fresh fill from a parameter → loop+decl+bind in transformed parameters.
     forfill_param = @slic (;y=randn(3)) begin
         x ~ std_normal(;n=3)
@@ -4827,7 +4827,7 @@ end
 """
 Verify `slic: mixed sampling/fill routing in compiler-owned plate loop` in an isolated test item.
 """
-@testitem "slic: mixed sampling/fill routing in compiler-owned plate loop" tags=[:slic, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: mixed sampling/fill routing in compiler-owned plate loop" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(c3_plate_router_model)
     @test stanc_compiles(c3_plate_router_model)
     code = stan_code(c3_plate_router_model)
@@ -4863,7 +4863,7 @@ end
 """
 Verify `slic: public plate() do-block emitter` in an isolated test item.
 """
-@testitem "slic: public plate() do-block emitter" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: public plate() do-block emitter" tags=[:slic, :plate, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # 1. Scalar-per-cell plate with a live per-cell likelihood → vector result.
     doblock = @slic (; y = randn(6), mu0 = 0.5) begin
         sigma ~ normal(0.0, 1.0; lower = 0.0)
@@ -5022,7 +5022,7 @@ cell-invariant arguments, and their internal samples must nonetheless stay per-c
 (`vector[6] theta_cell_z`, `matrix[k, n] theta_cell_z`) — a `~`-bearing submodel call
 is never lifted, however invariant its arguments look.
 """
-@testitem "slic: plate hoists loop-invariant cell-body expressions" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: plate hoists loop-invariant cell-body expressions" tags=[:slic, :plate, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # 1. NON-CENTERED (BRM `ranef_correlated`): the scale is written inline in the
     #    cell body. It must be bound once before the loop, and the result must be
     #    indistinguishable from writing that binding by hand.
@@ -5213,7 +5213,7 @@ carriers, not collide. Before the multiple-plate-l snag fix the second plate's
 discovery saw the first plate's leaked `z` and rejected `z ~ …` as "LHS bound to a
 parameter-qualified value". Regression for the BRM crossed-effects use case.
 """
-@testitem "slic: multiple plates reuse cell-local names hygienically" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: multiple plates reuse cell-local names hygienically" tags=[:slic, :plate, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # BRM crossed-effects shape: two grouping factors, each its own plate, both
     # using the natural fresh cell-local name `z`, then a JOINT likelihood.
     crossed = @slic (; y = [0.2, -0.1, 0.3, 0.0], subject = [1, 1, 2, 2], item = [1, 2, 1, 2]) begin
@@ -5287,7 +5287,7 @@ end
 """
 Verify `slic: public plate promotes called-submodel bindings` in an isolated test item.
 """
-@testitem "slic: public plate promotes called-submodel bindings" tags=[:slic, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: public plate promotes called-submodel bindings" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(c3_plate_submodel_model)
     @test stanc_compiles(c3_plate_submodel_model)
     code = stan_code(c3_plate_submodel_model)
@@ -5319,7 +5319,7 @@ end
 """
 Verify `slic: public plate emits N-dimensional outer loops` in an isolated test item.
 """
-@testitem "slic: public plate emits N-dimensional outer loops" tags=[:slic, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: public plate emits N-dimensional outer loops" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(c3_plate_outer_int_model)
     @test stanc_compiles(c3_plate_outer_int_model)
     int_code = stan_code(c3_plate_outer_int_model)
@@ -5382,7 +5382,7 @@ end
 """
 Verify `slic: public plate emits heterogeneous vector cells` in an isolated test item.
 """
-@testitem "slic: public plate emits heterogeneous vector cells" tags=[:slic, :plate, :ragged, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: public plate emits heterogeneous vector cells" tags=[:slic, :plate, :ragged, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     for model in (c3_plate_ragged_model, c3_plate_ragged_submodel_model)
         @test transpiles(model)
         @test stanc_compiles(model)
@@ -5524,7 +5524,7 @@ Correctness for BOTH:
   multivariate observation with its own group vector `mu[g]`, NOT a flattened
   backing (which would silently change the model).
 """
-@testitem "slic: ragged obs broadcasts a distribution across groups (obs-outside)" tags=[:slic, :plate, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ragged obs broadcasts a distribution across groups (obs-outside)" tags=[:slic, :plate, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # (A) univariate normal — per-group broadcast, equal to the obs-in-cell twin.
     model = c3_plate_ragged_obs_outside_model
     @test transpiles(model)
@@ -5591,7 +5591,7 @@ the density). Author syntax is unchanged. Contract defaults:
 - **E** — a discrete family over a ragged carrier is rejected (a `RaggedVector`
   stores its groups in a real `vector`, so there is no integer carrier yet).
 """
-@testitem "slic: ragged observation twins" tags=[:slic, :plate, :ragged, :descriptor, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ragged observation twins" tags=[:slic, :plate, :ragged, :descriptor, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     ts = [[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]]
     ys = [[0.6, 0.8, 1.0], [0.5, 0.7], [0.4, 0.9, 1.1, 1.3]]
     nlpdf(y, m, s) = -0.5 * log(2pi) - log(s) - 0.5 * abs2((y - m) / s)
@@ -5879,7 +5879,7 @@ The non-cv path is byte-unchanged.
     @test stan_block(code, "parameters") == stan_block(stan_code(incell_rs), "parameters")
 end
 
-@testitem "slic: cmt-keyed boolean-mask obs inside a plate cell" tags=[:slic, :plate, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: cmt-keyed boolean-mask obs inside a plate cell" tags=[:slic, :plate, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Snag plate-cell-int: a per-cell `findall`/boolean-mask INDEX array (`array[] int`)
     # feeding cmt-keyed multi-output do-block obs. Both the auto-sugar `y[c .== 1]` and
     # the explicit `idx = findall(c .== 1)` forms used to abort with `plate: unsupported
@@ -5970,7 +5970,7 @@ Out of scope by design and asserted as such: the pointwise `<obs>_likelihood`
 companion, and RAGGED observation bases (a RaggedVector is a compile-time view
 over flat memory with no declarable Stan twin, so it keeps the model-only route).
 """
-@testitem "slic: plate per-cell observations emit a _gen twin; lkj gq redraw" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: plate per-cell observations emit a _gen twin; lkj gq redraw" tags=[:slic, :plate, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # (A) per-cell observation inside a plate → `y_gen` in generated quantities.
     obs_plate = @slic (; n_groups = 5, k = 3, y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
         L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
@@ -6057,7 +6057,7 @@ Stan applies the constraint transform + jacobian per cell. Dense simplex / order
 ragged constrained cells (`K` per plate index) and constrained MATRIX families
 (cholesky_*) remain rejected pending follow-up.
 """
-@testitem "slic: plate supports dense native-constrained vector cells" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: plate supports dense native-constrained vector cells" tags=[:slic, :plate, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     simplex_cell = @slic (; n = 3, k = 3) begin
         p ~ plate(; outer = (n,)) do g
             cell::simplex[k] ~ dirichlet(rep_vector(1.0, k))
@@ -6125,7 +6125,7 @@ end
 """
 Verify `slic: BRM-shaped ragged constraints compose with plate` in an isolated test item.
 """
-@testitem "slic: BRM-shaped ragged constraints compose with plate" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: BRM-shaped ragged constraints compose with plate" tags=[:slic, :plate, :ragged, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(c3_plate_ragged_brm_model)
     @test stanc_compiles(c3_plate_ragged_brm_model)
     code = stan_code(c3_plate_ragged_brm_model)
@@ -6149,7 +6149,7 @@ end
 """
 Verify `slic: fixed-width constrained matrix accepted by matrix-typed plate cell` in an isolated test item.
 """
-@testitem "slic: fixed-width constrained matrix accepted by matrix-typed plate cell" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: fixed-width constrained matrix accepted by matrix-typed plate cell" tags=[:slic, :plate, :ragged, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(c3_plate_fixed_correlated_model)
     @test stanc_compiles(c3_plate_fixed_correlated_model)
     code = stan_code(c3_plate_fixed_correlated_model)
@@ -6163,7 +6163,7 @@ end
 """
 Verify `slic: public plate inside a called submodel` in an isolated test item.
 """
-@testitem "slic: public plate inside a called submodel" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: public plate inside a called submodel" tags=[:slic, :plate, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Snag regression (plate-inside-cal-69cec8bc): a fixed-vector plate in a CALLED
     # submodel body. Previously threw `TypeError: ... expected StanModel, got
     # SubModel` at `_plate_discover`. Fresh cell collections discover + emit under
@@ -6248,7 +6248,7 @@ end
 """
 Verify `slic: ragged simplex uses TP-inlined constraint transforms` in an isolated test item.
 """
-@testitem "slic: ragged simplex uses TP-inlined constraint transforms" tags=[:slic, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ragged simplex uses TP-inlined constraint transforms" tags=[:slic, :ragged, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(c3_ragged_simplex_model)
     @test stanc_compiles(c3_ragged_simplex_model)
     code = stan_code(c3_ragged_simplex_model)
@@ -6274,7 +6274,7 @@ end
 """
 Verify `slic: ragged Cholesky factors use flattened matrix carriers` in an isolated test item.
 """
-@testitem "slic: ragged Cholesky factors use flattened matrix carriers" tags=[:slic, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ragged Cholesky factors use flattened matrix carriers" tags=[:slic, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     cases = (
         (c3_ragged_cholesky_corr_model, "cholesky_factor_corr_jacobian", 4),
         (c3_ragged_cholesky_cov_model, "cholesky_factor_cov_jacobian", 10),
@@ -6331,7 +6331,7 @@ end
 """
 Verify `slic: ragged ordered constrained parameters` in an isolated test item.
 """
-@testitem "slic: ragged ordered constrained parameters" tags=[:slic, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ragged ordered constrained parameters" tags=[:slic, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     Ks = [1, 2, 4]
     ordered_model = @slic (;Ks, y=0.2) begin
         p::ordered[Ks] ~ flat()
@@ -6390,7 +6390,7 @@ own getindex/length UDFs firing on a bound (non-construction) data name. This is
 non-plate regression the plate testitems above never exercised (their ragged carriers
 are PARAMETERS built by the plate, not ingested `Vector{Vector}` DATA).
 """
-@testitem "slic: ragged data indexes as a first-class container outside a plate" tags=[:slic, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ragged data indexes as a first-class container outside a plate" tags=[:slic, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     ragged = [[0.1, 0.2], [0.3, 0.4, 0.5], [0.6]]
 
     # `y[g]` (literal AND data-driven index) + `length(y)`, all OUTSIDE any plate.
@@ -6439,7 +6439,7 @@ lowers to Stan's native `col(X, j)`, `EachRow(X)[i]` to `row(X, i)`, and
 `length(EachCol(X))` to `cols(X)`. Pairs with `plate` to broadcast a submodel over
 columns. (EachSlice deferred — it would need 3-D+ container support.)
 """
-@testitem "slic: EachCol / EachRow are first-class column/row matrix views" tags=[:slic, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: EachCol / EachRow are first-class column/row matrix views" tags=[:slic, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     X = reshape(collect(1.0:15.0), 3, 5)   # deterministic 3×5
 
     # (1) column/row indexing OUTSIDE a plate, end-to-end through BridgeStan.
