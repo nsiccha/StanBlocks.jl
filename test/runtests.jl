@@ -89,10 +89,19 @@ function annotate_github_failure(err)
     get(ENV, "GITHUB_ACTIONS", "") == "true" || return
 
     # The public Actions API exposes annotations even when GitHub withholds the
-    # raw job log. Preserve TestItemRunner's complete failure report in one
-    # queryable annotation; workflow-command messages require percent/newline
-    # escaping. Keep below GitHub's annotation payload ceiling.
-    report = sprint(showerror, err)
+    # raw job log. A TestSetException's normal display contains only aggregate
+    # counts, while `errors_and_fails` carries the actionable nested exception
+    # and backtrace. Preserve a few of those in one queryable annotation;
+    # workflow-command messages require percent/newline escaping. Keep below
+    # GitHub's annotation payload ceiling.
+    report = sprint() do io
+        showerror(io, err)
+        hasproperty(err, :errors_and_fails) || return
+        for (i, failure) in enumerate(Iterators.take(err.errors_and_fails, 3))
+            println(io, "\n\nFailure $i:")
+            show(io, failure)
+        end
+    end
     message = first(report, min(length(report), 60_000))
     escaped = replace(message, '%' => "%25", '\r' => "%0D", '\n' => "%0A")
     println("::error title=StanBlocks test failure::", escaped)
