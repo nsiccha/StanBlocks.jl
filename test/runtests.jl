@@ -85,4 +85,22 @@ function selected(ti)
     return matches
 end
 
-@run_package_tests filter=selected verbose=true
+function annotate_github_failure(err)
+    get(ENV, "GITHUB_ACTIONS", "") == "true" || return
+
+    # The public Actions API exposes annotations even when GitHub withholds the
+    # raw job log. Preserve TestItemRunner's complete failure report in one
+    # queryable annotation; workflow-command messages require percent/newline
+    # escaping. Keep below GitHub's annotation payload ceiling.
+    report = sprint(showerror, err)
+    message = first(report, min(length(report), 60_000))
+    escaped = replace(message, '%' => "%25", '\r' => "%0D", '\n' => "%0A")
+    println("::error title=StanBlocks test failure::", escaped)
+end
+
+try
+    @run_package_tests filter=selected verbose=true
+catch err
+    annotate_github_failure(err)
+    rethrow()
+end
