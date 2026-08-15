@@ -23,24 +23,23 @@ permissions:
 # Two jobs, because the suite splits cleanly in two and the halves have very
 # different costs (decision `1t5p8ee`):
 #
-#   `transpile` — everything except `:bridgestan`. MEASURED: 45 of 87 items
-#     need only the `stanc` BINARY (shipped inside BridgeStan's download —
-#     no compilation), and 15 need nothing external at all. So this job
-#     downloads BridgeStan but never invokes the C++ toolchain. Cheap enough
-#     for all three OSes x all three Julia versions.
+#   `transpile` — everything except `:bridgestan` and `:stanc`: the portable
+#     Julia/tracing suite, with no external Stan binary or C++ toolchain. Cheap
+#     enough for all three OSes x all three Julia versions.
 #   `stan` — the full suite, including the 27 items that call
 #     `instantiate`/`compiles` and therefore drive BridgeStan's C++ build.
-#     Real coverage of emission -> stanc acceptance -> log-density, which is
-#     the half most likely to break. ubuntu-only, and cached.
+#     It also covers every `:stanc` item. Real coverage of emission -> stanc
+#     acceptance -> log-density, which is the half most likely to break.
+#     ubuntu-only, and cached.
 #
 # Splitting them is what `--skip-tag` was added for: `--tag` is an AND-selection
 # and cannot express "everything except X".
 #
-# `:bridgestan` is LOAD-BEARING for this split — it decides which items the
-# cross-platform job skips. Two items called `instantiate` without carrying it
-# and were retagged in the same commit. If you add an item that calls
-# `instantiate` or `compiles`, TAG IT, or the `transpile` job will try to build
-# Stan on Windows and fail there.
+# `:bridgestan` and `:stanc` are LOAD-BEARING for this split — they decide which
+# items the cross-platform job skips. If you add an item that calls
+# `instantiate`/`compiles`, tag it `:bridgestan`; if it invokes `stanc_check`,
+# tag it `:stanc`. Otherwise the portable job will reach for a Stan tool on
+# Windows and macOS.
 
 jobs:
   transpile:
@@ -70,20 +69,8 @@ jobs:
       # it — the same invocation used locally.
       - name: Instantiate test environment
         run: julia --project=test -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
-      # Most of these items call `stanc_compiles`, which resolves `stanc`
-      # through `BridgeStan.get_bridgestan_path(; download=false)`. That is the
-      # shipped stanc3 BINARY, not a build — the download is a tarball fetch, so
-      # this stays fast and needs no C++ toolchain.
-      - name: Cache BridgeStan (stanc binary)
-        uses: actions/cache@v4
-        with:
-          path: ~/.bridgestan
-          key: bridgestan-${{ runner.os }}-${{ hashFiles('Project.toml') }}
-          restore-keys: bridgestan-${{ runner.os }}-
-      - name: Download BridgeStan
-        run: julia --project=test -e 'using BridgeStan; println(BridgeStan.get_bridgestan_path(; download=true))'
       - name: Run tests that need no Stan build
-        run: julia --project=test -e 'include("test/runtests.jl")' -- --skip-tag=bridgestan
+        run: julia --project=test -e 'include("test/runtests.jl")' -- --skip-tag=bridgestan --skip-tag=stanc
 
   stan:
     name: stan (BridgeStan toolchain)
@@ -101,20 +88,20 @@ jobs:
       - uses: julia-actions/cache@v2
       - name: Instantiate test environment
         run: julia --project=test -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
-      # Same download as the `transpile` job, but THIS job also drives the C++
-      # build: `instantiate` compiles each model through BridgeStan's Makefile,
-      # which builds Stan's objects under `~/.bridgestan` on first use. Caching
-      # that directory is what turns a cold multi-minute Stan build into a warm
-      # one. `Project.toml` carries the `[compat] BridgeStan` bound, so hashing
-      # it invalidates the cache when the pinned version moves.
+      # `instantiate` compiles each model through BridgeStan's Makefile, which
+      # builds Stan's objects under `~/.bridgestan` on first use. Caching that
+      # directory is what turns a cold multi-minute Stan build into a warm one.
+      # The schema token is deliberate: BridgeStan only validates the cached
+      # Makefile, so an older incomplete cache can look installed while lacking
+      # `bin/stanc`. Bump the token whenever this cache contract changes.
       - name: Cache BridgeStan toolchain
         uses: actions/cache@v4
         with:
           path: ~/.bridgestan
-          key: bridgestan-${{ runner.os }}-${{ hashFiles('Project.toml') }}
-          restore-keys: bridgestan-${{ runner.os }}-
+          key: bridgestan-v2-${{ runner.os }}-${{ hashFiles('Project.toml') }}
+          restore-keys: bridgestan-v2-${{ runner.os }}-
       - name: Download BridgeStan
-        run: julia --project=test -e 'using BridgeStan; println(BridgeStan.get_bridgestan_path(; download=true))'
+        run: julia --project=test -e 'using BridgeStan; path = BridgeStan.get_bridgestan_path(; download=true); stanc = joinpath(path, "bin", "stanc"); isfile(stanc) || error("BridgeStan download has no stanc binary at $stanc"); open(ENV["GITHUB_ENV"], "a") do io; println(io, "BRIDGESTAN=", path); println(io, "STANC_PATH=", stanc); end; println(path)'
       # Compiled models land in `tmp/<hash(stan_code)>.stan` + its shared
       # library, keyed by a hash of the GENERATED SOURCE — so a model whose Stan
       # is unchanged reuses its build across runs. Partial hits are the norm and
