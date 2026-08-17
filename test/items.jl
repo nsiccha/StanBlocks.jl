@@ -2868,6 +2868,59 @@ Verify `in-body @doc docstring renders (StanExpr unwrap)` in an isolated test it
 end
 
 """
+Verify `documented submodel call transpiles at any doc-stacking depth` in an
+isolated test item. A `#`/`@doc` comment before a submodel CALL (`mu ~
+linpred(x)`, whose body inlines to a multi-statement `:block`) accrues one
+`:document` wrapper per surviving comment. With ≥2 wrappers around the inlined
+block, `distribute!` used to route the nested document through
+`distribution_blocks`, which bottomed out at `distribution_blocks(::BlockExpr)`
+— undefined, so transpilation crashed with an internal `MethodError` (snag
+`doc-submodel-cal`). Every stacking depth must now transpile, the emitted Stan
+must be identical to the undocumented model apart from the surviving `//`
+comment line, and a documented submodel call preceded by another statement
+(which adds a wrapper) must also transpile.
+"""
+@testitem "documented submodel call transpiles at any doc-stacking depth" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    strip_comments(code) = join(
+        filter(l -> !startswith(strip(l), "//"), split(code, '\n')), '\n'
+    )
+    undoc_code = stan_code(@slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        mu ~ linpred(x)
+        y ~ normal(mu, 1)
+    end)
+
+    d1 = @slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        @doc "one" mu ~ linpred(x)
+        y ~ normal(mu, 1)
+    end
+    d2 = @slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        @doc "one" @doc "two" mu ~ linpred(x)
+        y ~ normal(mu, 1)
+    end
+    d3 = @slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        @doc "one" @doc "two" @doc "three" mu ~ linpred(x)
+        y ~ normal(mu, 1)
+    end
+    # Regression floor: `d3` (and `preceded` below) crashed before the fix.
+    for m in (d1, d2, d3)
+        @test transpiles(m)
+        # Emitted Stan differs from the undocumented model ONLY by `//` comment
+        # lines — the fix changes nothing semantic, it just stops the crash.
+        @test strip_comments(stan_code(m)) == strip_comments(undoc_code)
+    end
+    @test occursin("// one", stan_code(d3))
+
+    # A preceding statement adds another `:document` wrapper around the inlined
+    # block; this variant also used to crash with only two `@doc`s.
+    preceded = @slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        s ~ normal(0, 1)
+        @doc "one" @doc "two" mu ~ linpred(x)
+        y ~ normal(mu + s, 1)
+    end
+    @test transpiles(preceded)
+end
+
+"""
 Verify `built-in constants resolve (pi, ℯ); arbitrary const errors` in an isolated test item.
 """
 @testitem "built-in constants resolve (pi, ℯ); arbitrary const errors" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
