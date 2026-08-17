@@ -7499,6 +7499,62 @@ is skipped for a ragged plate-sliced obs.
     @test stanc_compiles(native_both)
 end
 
+@testitem "slic: cv-tainted typed-LHS size re-draws the parameter in gq" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    # Two DOCUMENTED-EQUIVALENT spellings of ONE model (stanblocks-use §4:
+    # `name::Type[dims] ~ dist(...)` desugars to `name ~ dist(...; n=...)`). Under
+    # CV the size `J = maximum(subject)` is held out, so nothing informs `alpha`
+    # and it must leave `parameters` and re-draw in generated quantities — exactly
+    # as the `n=` spelling already did. The typed-LHS forward pass read cv off the
+    # DISTRIBUTION ARGS only (`mu, tau`), never off the declared size, so it stayed
+    # a fitted parameter: a prior draw dressed up as a fit (snag typed-lhs-size).
+    subject = [1, 1, 2, 2, 3, 3]
+    y = [0.2, -0.1, 0.3, 0.0, 0.4, -0.2]
+    typed = @slic (; y, subject) begin
+        J = maximum(subject); mu ~ normal(0, 1); tau ~ exponential(1)
+        alpha :: vector[J] ~ normal(mu, tau)
+        sigma ~ exponential(1); y ~ normal(alpha[subject], sigma)
+    end
+    kwarg = @slic (; y, subject) begin
+        J = maximum(subject); mu ~ normal(0, 1); tau ~ exponential(1)
+        alpha ~ normal(mu, tau; n = J)
+        sigma ~ exponential(1); y ~ normal(alpha[subject], sigma)
+    end
+    mark(m) = m(; y = y, subject = StanBlocks.stan.maybecv(:subject, subject))
+    plain(m) = m(; y = y, subject = subject)
+
+    # --- UNMARKED: an ordinary fit is untouched; `alpha` stays a parameter. ------
+    let code = stan_code(plain(typed))
+        @test stanc_compiles(plain(typed))
+        @test occursin("vector[J] alpha", stan_block(code, "parameters"))
+        @test occursin(r"alpha ~ normal\(mu, tau\)", stan_block(code, "model"))
+        @test occursin(r"y ~ normal\(alpha\[subject\], sigma\)", stan_block(code, "model"))
+    end
+    # The two spellings agree WITHOUT cv too — the fix must not perturb the fit.
+    @test stan_code(plain(typed)) == stan_code(plain(kwarg))
+
+    # --- MARKED: the typed-LHS spelling now matches the `n=` spelling exactly. ---
+    @test stan_code(mark(typed)) == stan_code(mark(kwarg))
+    let code = stan_code(mark(typed))
+        @test transpiles(mark(typed))
+        @test stanc_compiles(mark(typed))
+        params, gq, mdl = stan_block(code, "parameters"),
+                          stan_block(code, "generated quantities"),
+                          stan_block(code, "model")
+        # `alpha` leaves `parameters` and re-draws from its hyperprior in gq.
+        @test !occursin("alpha", params)
+        @test occursin(r"vector\[J\] alpha = normal_vector_rng\(J, mu, tau\)", gq)
+        # The held-out likelihood and the prior `~` both leave the model block.
+        @test !occursin("alpha ~", mdl)
+        @test !occursin(r"y ~ normal", mdl)
+        # The untainted hyperparameters stay fitted.
+        @test occursin("real mu", params)
+        @test occursin("tau", params)
+        @test occursin("sigma", params)
+    end
+end
+
 """
 Snag plate-silently-i-e41ed2f0 (reported by BRM, found handling its own cv snag
 build-a-cv-out-o-5a22814d): a cv-tainted size reaching a plate-internal FRESH

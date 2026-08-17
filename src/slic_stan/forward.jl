@@ -1287,7 +1287,18 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     cons_kw = merge(implied_kw, (; kwargs_resolved...))
     cons = _fold_constraints(name, cons_kw; implied=keys(implied_kw))
     base_lhs_type = StanType(ct_resolved, sizes_forwarded; cons...)
-    cv_args = any(stan.cv, args_resolved)
+    # A parameter whose DECLARED SIZE is cv-tainted must relocate to generated
+    # quantities exactly like the bare-LHS path — a held-out size (`J =
+    # maximum(subject)` under CV) means nothing informs the parameter, so it is a
+    # prior draw, not a fit. The bare-LHS path (`SamplingExpr{Symbol,<:StanExpr}`
+    # above) catches this via `stan.cv(autotype)`, whose `stan_size` carries the
+    # size taint. The typed-LHS path historically read cv only off the
+    # DISTRIBUTION ARGS (`mu, tau` here — never the size), so
+    # `alpha::vector[J] ~ normal(mu, tau)` stayed a `parameter` while the
+    # documented-equivalent `alpha ~ normal(mu, tau; n=J)` correctly moved to
+    # generated quantities (snag typed-lhs-size). `stan.cv(base_lhs_type)` folds
+    # in the same `any(cv, stan_size)` the autotype path uses.
+    cv_args = any(stan.cv, args_resolved) || stan.cv(base_lhs_type)
     qual = cv_args ? :quantities : :parameter
     info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args, decl_role=:sampled))
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
