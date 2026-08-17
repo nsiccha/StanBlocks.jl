@@ -237,7 +237,31 @@ backward!(x::StanType; info) = remake(x; lqual=:affects_likelihood)
 distribute!(x::BlockExpr; info) = distribute!.(x.args; info)
 distribute!(x::Union{LineNumberNode,Nothing}; info) = nothing
 distribute!(x::DocumentExpr{<:Any,<:BlockExpr}; info) = distribute!(x.args[2]; info)
-distribute!(x; info) = begin
+# A documented statement whose inlined body is a multi-statement `:block` (a
+# submodel call — its declarations/samplings/return land in DIFFERENT Stan
+# blocks, so the block has no single distribution target). ONE `#`/`@doc`
+# comment gives `document(block)` (method above); STACKED comments — or a
+# comment plus a preceding statement in the same body — accrue MORE `:document`
+# wrappers: `document(document(…(block)))`. Peel every layer and distribute the
+# innermost block's statements individually, exactly as the single-layer method
+# and a bare inlined block (`distribute!(::BlockExpr)`) do. Without this, the
+# generic method below routes the nested document through `distribution_blocks`,
+# whose `:document` method (`passes.jl` ~line 298) peels each layer and finally
+# calls `distribution_blocks` on the inner `:block` — for which no method exists
+# (snag `doc-submodel-cal`; 3 stacked `#` comments before a submodel call, one
+# consumed into the model docstring, leaving `document(document(block))`). A
+# `:document` wrapping a NORMAL statement (plain `=`/`~`) never reaches here —
+# `_document_inner_block` returns `nothing`, so it keeps flowing through the
+# generic `distribute!`/`push!` path, which re-homes and renders its comment.
+_document_inner_block(x::DocumentExpr) = _document_inner_block(x.args[2])
+_document_inner_block(x::BlockExpr) = x
+_document_inner_block(x) = nothing
+distribute!(x::DocumentExpr{<:Any,<:DocumentExpr}; info) = begin
+    inner = _document_inner_block(x)
+    inner === nothing ? _distribute_statement!(x; info) : distribute!(inner; info)
+end
+distribute!(x; info) = _distribute_statement!(x; info)
+_distribute_statement!(x; info) = begin
     _push_expr!(info, x)
     for b in distribution_blocks(x; info)
         push!(block(info, b), x; info)
