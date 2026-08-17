@@ -160,11 +160,10 @@ keeps its `~` statement as a likelihood; `Base.merge(m, (; theta = value))` inst
 **removes** the statement and stores the value as data. See
 [Data binding](index.md#data-binding).
 
-## Caveat: typed-LHS size does not yet carry cv taint
+## Both size spellings carry the taint
 
-`alpha ~ normal(mu, tau; n = J)` propagates the cross-validation mark through the
-size `J`, as shown above. The typed-LHS spelling `alpha :: vector[J] ~ normal(mu,
-tau)` currently does **not** — the mark does not reach through the declared size, so
-a `maybecv` on the size input is ignored and `alpha` stays fitted. The two spellings
-are otherwise equivalent; until this is aligned, prefer the `; n = J` form when the
-size input may be marked.
+`alpha ~ normal(mu, tau; n = J)` and the typed-LHS `alpha :: vector[J] ~ normal(mu,
+tau)` behave identically, including under cross-validation: a `maybecv` mark on the
+size input `J` propagates through the declared size either way, so `alpha` relocates
+to `generated quantities` — re-drawn from its prior — the same in both spellings. Use
+whichever reads better.
