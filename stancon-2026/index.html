@@ -102,7 +102,7 @@
     code span.vs { color: #20794d; } /* VerbatimString */
     code span.wa { color: #5e5e5e; font-style: italic; } /* Warning */
   </style>
-  <link rel="stylesheet" href="index_files/libs/revealjs/dist/theme/quarto-fccba7202e1864720490d416063021ad.css">
+  <link rel="stylesheet" href="index_files/libs/revealjs/dist/theme/quarto-83d49cabfc4ca30f97ed84334b42a4ff.css">
   <link href="index_files/libs/revealjs/plugin/quarto-line-highlight/line-highlight.css" rel="stylesheet">
   <link href="index_files/libs/revealjs/plugin/reveal-menu/menu.css" rel="stylesheet">
   <link href="index_files/libs/revealjs/plugin/reveal-menu/quarto-menu.css" rel="stylesheet">
@@ -245,6 +245,9 @@ Nikolas Siccha · Generable Inc.
 <div class="takeaway">
 <p>StanBlocks is a frontend, not a replacement for Stan.</p>
 </div>
+<p class="small muted">
+… with quality-of-life improvements such as activity analysis, submodels, user-defined types (currently enabling e.g.&nbsp;NamedTuples and ragged data structures), higher-order user-defined functions, automatic but optional type &amp; shape inference, (ragged) plates, metaprogramming, Julia-style multiple dispatch, and more.
+</p>
 <aside class="notes">
 <p>Open with the boundary, not the feature list. The promise is deliberately small: author in Julia syntax, emit normal Stan, keep Stan’s toolchain.</p>
 <style type="text/css">
@@ -456,7 +459,7 @@ Workflow outputs
 <p>pointwise log likelihood · posterior predictive draws · executable model descriptor</p>
 </div>
 </div>
-<p><span class="tag red">activity analysis</span> <span class="tag">type + shape inference</span> <span class="tag">constraint propagation</span> <span class="tag red">automatic GQ twins</span> <span class="tag">BridgeStan log density</span></p>
+<p><span class="tag red">activity analysis</span> <span class="tag">type + shape inference</span> <span class="tag">constraint propagation</span> <span class="tag red">automatic generated-quantity twins</span> <span class="tag">BridgeStan log density</span></p>
 </section>
 <section class="slide level2">
 <h2>Composition is the reason for the frontend</h2>
@@ -472,7 +475,7 @@ Workflow outputs
 <span id="cb6-7"><a href="" aria-label="7"></a>    eta <span class="op">~</span> <span class="fu">random_slope</span>(x)</span>
 <span id="cb6-8"><a href="" aria-label="8"></a>    y <span class="op">~</span> <span class="fu">normal</span>(eta, <span class="fl">1</span>)</span>
 <span id="cb6-9"><a href="" aria-label="9"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
-<p>Emits a namespaced parameter <code>eta_beta</code>.</p>
+<p>Emits a prefixed parameter <code>eta_beta</code>.</p>
 </div><div class="column" style="width:47%;">
 <h3>Post-hoc variant</h3>
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb7"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb7-1"><a href="" aria-label="1"></a>wide_prior <span class="op">=</span> <span class="bu">Base</span>.<span class="fu">merge</span>(base_model, <span class="kw">quote</span></span>
@@ -482,8 +485,8 @@ Workflow outputs
 <p>The same mechanism supports:</p>
 <ul>
 <li>nested submodels</li>
-<li>data rebinding</li>
-<li>typed positional dispatch</li>
+<li>swapping in new data</li>
+<li>typed positional arguments</li>
 <li>generated model variants</li>
 </ul>
 </div></div>
@@ -537,7 +540,7 @@ Structured models
 </section>
 <section class="slide level2">
 <h2>The intellectual lineage: SlicStan</h2>
-<p><a href="https://doi.org/10.1145/3290348">Gorinova, Gordon &amp; Sutton (POPL 2019)</a> asked:</p>
+<p><a href="https://doi.org/10.1145/3290348">Gorinova, Gordon &amp; Sutton (POPL 2019)</a> asked (not verbatim):</p>
 <blockquote>
 <p>What if a Stan-like language were compositional and blockless, then translated back to Stan?</p>
 </blockquote>
@@ -589,7 +592,7 @@ Structured models
 <tr class="even">
 <td>Core analysis</td>
 <td>Information-flow type system</td>
-<td>Forward trace + reverse likelihood activity</td>
+<td>Forward trace + reverse likelihood tracking</td>
 </tr>
 <tr class="odd">
 <td>Abstraction</td>
@@ -598,8 +601,8 @@ Structured models
 </tr>
 <tr class="even">
 <td>Distinctive reach</td>
-<td>Formal semantics; finite discrete-parameter elimination</td>
-<td>Auto GQ, model variants, descriptors, BridgeStan/Julia integration</td>
+<td>Formal semantics; marginalizing out discrete parameters</td>
+<td>Auto generated quantities, model variants, descriptors, BridgeStan/Julia integration</td>
 </tr>
 <tr class="odd">
 <td>Implementation posture</td>
@@ -714,7 +717,7 @@ Structured models
 <strong>2025</strong>Production-shaped models, generated quantities, broader Stan surface.
 </div>
 <div>
-<strong>2026</strong>Agent-assisted expansion: descriptors, <code>plate</code>, ragged models, closures, HOFs, hardening.
+<strong>2026</strong>Agent-assisted expansion: <code>plate</code>s, closures, higher-order functions, hardening.
 </div>
 </div>
 <div class="columns">
@@ -725,15 +728,14 @@ Structured models
 <li>translate a sketch into a full model</li>
 <li>generate repetitive signatures and tests</li>
 <li>explore compiler edge cases quickly</li>
+<li>producing, finding, and fixing bugs</li>
 </ul>
 </div><div class="column" style="width:49%;">
 <h3>Agents do not make this disappear</h3>
 <ul>
 <li>one source for a family of model variants</li>
 <li>a reusable statistical vocabulary</li>
-<li>explicit, fail-closed authoring boundaries</li>
 <li>generated Stan that humans and tools can inspect</li>
-<li>compiler-owned cross-cutting outputs and rewrites</li>
 </ul>
 </div></div>
 <div class="takeaway">
@@ -759,22 +761,22 @@ Structured models
 <p>Move up a layer without hiding the layer below.</p>
 </section>
 <section class="slide level2">
-<h2>StanBlocks as the compiler layer</h2>
+<h2>StanBlocks as <em>one</em> compiler layer</h2>
 <div class="flow">
-<div class="step">
+<div class="step j-red">
 <strong>BRM.jl</strong><br>formulae, terms, priors, model-family vocabulary
 </div>
-<div class="step">
+<div class="step j-green">
 <strong>StanBlocks.jl</strong><br>composition, tracing, block/type/shape inference
 </div>
-<div class="step">
-<strong>Stan</strong><br>compiler, AD, HMC/NUTS, generated quantities
+<div class="step stan">
+<strong>BridgeStan.jl</strong><br>compiled Stan model — log density &amp; gradients (AD)
 </div>
-<div class="step">
+<div class="step j-purple">
 <strong>JuliaBayes.jl</strong><br>shared Julia-facing workflow and ecosystem integration
 </div>
 </div>
-<p>The largest current consumer is <a href="https://github.com/nsiccha/BayesianRegressionModels.jl">BayesianRegressionModels.jl</a>: a formula layer that lowers real model families into <code>@slic</code> and <code>@deffun</code> components.</p>
+<p>The largest current public consumer is <a href="https://github.com/nsiccha/BayesianRegressionModels.jl">BayesianRegressionModels.jl</a>: a formula layer that lowers real model families into <code>@slic</code> and <code>@deffun</code> components.</p>
 <p>Near-term priorities:</p>
 <ol type="1">
 <li>Stabilise the small public authoring contract and document every sharp edge.</li>
@@ -782,6 +784,67 @@ Structured models
 <li>Keep StanBlocks available for bespoke PKPD and other compositional models.</li>
 <li>Connect through JuliaBayes interfaces rather than inventing another closed workflow.</li>
 </ol>
+<div class="contributors-band">
+<p class="band-label">
+JuliaBayes contributors
+</p>
+<div class="contributors">
+<div class="person">
+<img src="https://github.com/nsiccha.png?size=200" alt="Nikolas Siccha">
+<p class="who">
+Nikolas Siccha
+</p>
+<p class="aff">
+Generable Inc.
+</p>
+</div>
+<div class="person">
+<img src="img/penelopeysm.webp" style="object-position: 66% 32%;" alt="Penelope Yong">
+<p class="who">
+Penelope Yong
+</p>
+<p class="aff">
+Alan Turing Institute
+</p>
+</div>
+<div class="person">
+<img src="https://github.com/PTWaade.png?size=200" alt="Peter Thestrup Waade">
+<p class="who">
+Peter Thestrup Waade
+</p>
+<p class="aff">
+TNU, ETH Zürich
+</p>
+</div>
+<div class="person">
+<img src="https://github.com/rsenne.png?size=200" alt="Ryan Senne">
+<p class="who">
+Ryan Senne
+</p>
+<p class="aff">
+Boston University
+</p>
+</div>
+<div class="person">
+<img src="https://github.com/seabbs.png?size=200" alt="Sam Abbott">
+<p class="who">
+Sam Abbott
+</p>
+<p class="aff">
+LSHTM (epinowcast · epiforecasts)
+</p>
+</div>
+<div class="person">
+<img src="https://github.com/simonsteiger.png?size=200" alt="Simon Steiger">
+<p class="who">
+Simon Steiger
+</p>
+<p class="aff">
+Karolinska Institutet
+</p>
+</div>
+</div>
+</div>
 <aside class="notes">
 <p>JuliaBayes is intentionally phrased as ecosystem direction rather than a claim about a settled package API. The architectural principle is more important: standard workflows above, inspectable compiler below.</p>
 <style type="text/css">
@@ -809,9 +872,9 @@ Structured models
 </ol>
 <h3>Links</h3>
 <ul>
+<li>Live transpiler: <a href="https://sb.siccha.de" class="uri">https://sb.siccha.de</a></li>
 <li>Feature atlas: <a href="https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas" class="uri">https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas</a></li>
 <li>Package + source: <a href="https://github.com/nsiccha/StanBlocks.jl" class="uri">https://github.com/nsiccha/StanBlocks.jl</a></li>
-<li>GitHub: <a href="https://github.com/nsiccha"><span class="citation" data-cites="nsiccha">@nsiccha</span></a></li>
 <li>Email: <a href="mailto:nikolassiccha@gmail.com">nikolassiccha@gmail.com</a></li>
 </ul>
 </div><div class="column summary-contact" style="width:31%;">
@@ -1249,6 +1312,43 @@ Structured models
           RevealZoom
         ]
       });
+    </script>
+    <!-- Injected onto the auto-generated Quarto title slide: three QR codes
+         (live transpiler, feature atlas, these slides). Kept inert in a
+         <template> and cloned into section.quarto-title-block on load so it
+         does not appear as a page-level overlay on other slides. -->
+    <template id="qr-title-tpl">
+      <div class="title-qr">
+        <a class="title-qr-item" href="https://sb.siccha.de">
+          <img src="img/qr-app.svg" alt="QR code linking to the live StanBlocks transpiler at sb.siccha.de">
+          <span class="title-qr-cap">Live transpiler<br><span class="u">sb.siccha.de</span></span>
+        </a>
+        <a class="title-qr-item" href="https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas">
+          <img src="img/qr-atlas.svg" alt="QR code linking to the StanBlocks feature atlas">
+          <span class="title-qr-cap">Feature atlas</span>
+        </a>
+        <a class="title-qr-item" href="https://nsiccha.github.io/StanBlocks.jl/stancon-2026/">
+          <img src="img/qr-slides.svg" alt="QR code linking to these slides">
+          <span class="title-qr-cap">These slides</span>
+        </a>
+      </div>
+    </template>
+    <script>
+      (function () {
+        function place() {
+          var host = document.querySelector('section.quarto-title-block')
+                  || document.getElementById('title-slide');
+          var tpl = document.getElementById('qr-title-tpl');
+          if (host && tpl && !host.querySelector('.title-qr')) {
+            host.appendChild(tpl.content.cloneNode(true));
+          }
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', place);
+        } else {
+          place();
+        }
+      })();
     </script>
     <script id="quarto-html-after-body" type="application/javascript">
       window.document.addEventListener("DOMContentLoaded", function (event) {
