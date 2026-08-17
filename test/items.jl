@@ -1781,12 +1781,23 @@ Verify explicit bounded Julia emission from `@deffun @juliacompat` in an isolate
     @test dual_code == stanonly_code
     @test stanc_check(dual_code; warn_pedantic=false).ok
 
-    @test StanBlocks.builtin.bordet_time_response(
+    @test StanBlocks.builtin.biomarker_time_response(
         [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [1.0, 1.0],
     ) ≈ [0.25, inv(1 + exp(-1.0)) * inv(1 + exp(1.0))]
-    @test StanBlocks.builtin.bordet_dose_response(
+    @test StanBlocks.builtin.biomarker_dose_response(
         [0.0, 1.0], [0.0, 0.0], [0.0, 0.0],
     ) ≈ [-log(2.0), -log1p(exp(-1.0))]
+    # Deprecated `bordet_*` aliases still delegate (kept until BRM's emit switch).
+    @test StanBlocks.builtin.bordet_time_response(
+        [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [1.0, 1.0],
+    ) ≈ StanBlocks.builtin.biomarker_time_response(
+        [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [1.0, 1.0],
+    )
+    @test StanBlocks.builtin.bordet_dose_response(
+        [0.0, 1.0], [0.0, 0.0], [0.0, 0.0],
+    ) ≈ StanBlocks.builtin.biomarker_dose_response(
+        [0.0, 1.0], [0.0, 0.0], [0.0, 0.0],
+    )
     @test StanBlocks.builtin.linear_idxs([1, 2, 1], [1, 1, 2]) == [1, 2, 3]
 end
 

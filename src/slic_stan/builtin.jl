@@ -236,18 +236,22 @@ end
     normal_lcdf_stable
     normal_lccdf_stable
 
-    # bordet (generable) longitudinal-biomarker model-family port. The obs
+    # Longitudinal-biomarker (generable) model-family port. The obs
     # model is a censored normal w/ limits of quantification (`truncated_normal`
     # — name kept to match the source fn even though semantics = censoring);
     # `truncated_normal_lpdf` auto-expands to the
     # truncated_normal / _lpdfs / _rng / _cdf / _lccdf / _lcdf family. The mean
-    # kernels (`bordet_time_response` single-peak bump, `bordet_dose_response`
-    # log-sigmoid) + index/broadcast helpers are composed by BRM's `bordet_*`
+    # kernels (`biomarker_time_response` single-peak bump, `biomarker_dose_response`
+    # log-sigmoid) + index/broadcast helpers are composed by BRM's biomarker
     # term (contract cut (b): kernels here, BRM composes log_y).
     # `truncated_student_t_lpdf` = the heavy-tailed obs variant (generated family;
     # same censoring contract, + a leading `dof` arg, branches on the LOQ limits).
+    # `bordet_time_response`/`bordet_dose_response` remain as temporary
+    # deprecated aliases until BRM's emit sites switch to `biomarker_*`.
     truncated_normal_lpdf
     truncated_student_t_lpdf
+    biomarker_time_response
+    biomarker_dose_response
     bordet_time_response
     bordet_dose_response
     linear_idxs
@@ -1881,9 +1885,9 @@ end
     lkj_corr_cholesky_rng(n, eta)
 
 # =============================================================================
-# bordet (generable) longitudinal-biomarker model-family port.
-# Contract (room `bordet-in-brm`, cut (b)): StanBlocks ships the obs-model
-# triad + the parametric mean KERNELS + index/broadcast helpers; BRM's `bordet_*`
+# Longitudinal-biomarker (generable) model-family port.
+# Contract (cut (b)): StanBlocks ships the obs-model
+# triad + the parametric mean KERNELS + index/broadcast helpers; BRM's biomarker
 # term composes `log_y = baseline[series] + affectable .* time_resp .* exp(dose_resp)`
 # and wires the floor hierarchy. All resolve via the builtin path (no import).
 # =============================================================================
@@ -1940,7 +1944,7 @@ end
     truncated_normal_rng(vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] =
         truncated_normal_rng(loc, scale, lloq, uloq)
 
-    # Heavy-tailed censored obs model (generated bordet family). Direct analog of
+    # Heavy-tailed censored obs model (generated biomarker family). Direct analog of
     # `truncated_normal` + a leading `dof` arg. NOTE the censored branches use the
     # LOQ LIMITS (`lloq`/`uloq`) inside lcdf/lccdf — faithful to the generated
     # source (`truncated_normal` used `obs`; the two source files genuinely differ,
@@ -1991,15 +1995,23 @@ end
     # Single-peak time response: with xi = (log t - loc)*exp(log_slope), the
     # value exp(log_inv_logit(xi)+log_inv_logit(-xi))*mag peaks once at log t=loc
     # and →0 as t→0 or t→∞ (log_slope stored unconstrained → exp() positive).
-    @juliacompat bordet_time_response(log_time::vector[n], loc::vector[n], log_slope::vector[n], mag::vector[n])::vector[n] = begin
+    @juliacompat biomarker_time_response(log_time::vector[n], loc::vector[n], log_slope::vector[n], mag::vector[n])::vector[n] = begin
         xi::vector[n] = (log_time - loc) .* exp(log_slope)
         exp(log_inv_logit(xi) + log_inv_logit(-xi)) .* mag
     end
     # Log dose response (sigmoid in log space): caller exp()s it in the compose.
-    @juliacompat bordet_dose_response(log_dose::vector[n], loc::vector[n], log_slope::vector[n])::vector[n] = begin
+    @juliacompat biomarker_dose_response(log_dose::vector[n], loc::vector[n], log_slope::vector[n])::vector[n] = begin
         xi::vector[n] = (log_dose - loc) .* exp(log_slope)
         log_inv_logit(xi)
     end
+    # DEPRECATED temporary aliases off the old internal project name. Kept so
+    # BRM's emitted `bordet_*` calls keep resolving (Stan lowering + Julia
+    # method) until its emit sites switch to `biomarker_*`; remove once nothing
+    # emits them (lockstep with the BRM-side scrub).
+    @juliacompat bordet_time_response(log_time::vector[n], loc::vector[n], log_slope::vector[n], mag::vector[n])::vector[n] =
+        biomarker_time_response(log_time, loc, log_slope, mag)
+    @juliacompat bordet_dose_response(log_dose::vector[n], loc::vector[n], log_slope::vector[n])::vector[n] =
+        biomarker_dose_response(log_dose, loc, log_slope)
 
     # --- index / broadcast helpers (transformed-data) ------------------------
     # Column-major linear indices: `xy` with `vec(M)[xy] == M[x,y]` for an
