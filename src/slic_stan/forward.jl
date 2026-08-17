@@ -1658,24 +1658,84 @@ end
 #
 # A constraint referencing the plate's own per-cell position cannot be promoted
 # verbatim: the promoted declaration is emitted OUTSIDE the loop, so a cell
-# `multiplier=exp(l)` would render with `l` unbound. Promoting it needs the whole
-# constraint vector materialised over the outer axis first, and Stan additionally
-# forbids a constraint referencing a transformed parameter — so only the
-# data-qualified case is hoistable at all. Until that hoist lands, refuse loudly:
-# a wrong model that compiles is the failure mode being removed here.
+# `multiplier=exp(l)` would render with `l` unbound. Split the constraints by how
+# they can survive promotion, returning `(kept, hoist)`:
+#
+#   • index-INDEPENDENT → carried verbatim in `kept`; renders fine outside the loop.
+#   • index-DEPENDENT, DATA-qualified → HOISTABLE (`hoist`): the whole per-cell
+#     constraint is materialised over the outer axis in `transformed data`, and the
+#     promoted declaration references that carrier by name. The emit site does this
+#     (`_plate_hoist_cell_constraints!`), since it has `info`/`pending`; here we only
+#     classify (D2b).
+#   • index-DEPENDENT, PARAMETER-qualified → REFUSED: Stan requires a promoted
+#     constraint over the outer axis to be data-computable, and a per-cell
+#     parameter-dependent bound/scale is not. A wrong model that compiles is the
+#     failure mode being removed. (D3's rule, applied on the plate path — plate cells
+#     return early before the ordinary sampling scope check.)
 _plate_promoted_constraints(f, T::StanType, index_aliases) = begin
     cons = constraints(T)
+    isempty(cons) && return (cons, Pair{Symbol,Any}[])
+    kept = Pair{Symbol,Any}[]
+    hoist = Pair{Symbol,Any}[]
     for (key, value) in pairs(cons)
-        _plate_depends_on(value, index_aliases) || continue
-        error(
-            "plate: cell `", f, "`'s `", key, "=` constraint depends on the plate's ",
-            "per-cell position, but the promoted declaration is emitted outside the ",
-            "loop, where that position does not exist. Compute the full `", key,
-            "` over the outer axis BEFORE the plate and pass that name, or declare ",
-            "`", f, "` at model scope."
-        )
+        if !_plate_depends_on(value, index_aliases)
+            push!(kept, key => value)
+        elseif qual(value) === :data
+            push!(hoist, key => value)
+        else
+            error(
+                "plate: cell `", f, "`'s `", key, "=` constraint depends on the plate's ",
+                "per-cell position AND on a parameter, so it cannot be materialised over ",
+                "the outer axis as `transformed data` (Stan requires a promoted ",
+                "constraint to be data-computable). Make the `", key, "` data-only, or ",
+                "declare `", f, "` at model scope."
+            )
+        end
     end
-    cons
+    ((; kept...), hoist)
+end
+
+# D2b: materialise each index-dependent, DATA-qualified cell constraint over the
+# plate's outer axis into a `transformed data` vector, then reference that carrier
+# by name on the promoted declaration. Mirrors the ragged flat-memory emission — a
+# bare carrier decl plus a data `for` loop that fills it — so `distribute!` routes
+# the carrier to `transformed data` ahead of the `parameters` block that names it.
+# Re-tracing the constraint's raw expression inside the fill loop rebinds the plate
+# index (`idxs[1]`) the loop introduces, exactly as the ragged sizing loop rebinds
+# it for `plan.size_expr`. Scope (MVP): one outer axis and a scalar cell (promoted
+# to `vector[outer]`, so a `vector[outer]` carrier aligns elementwise) — the
+# submodel and non-scalar cases stay a loud error at the call site. Returns the
+# merged constraint NamedTuple (kept + carrier references).
+_plate_hoist_cell_constraints!(f, T::StanType, kept, hoist, idxs, outer_dims, id; info, pending) = begin
+    length(outer_dims) == 1 || error(
+        "plate: hoisting an index-dependent constraint on `", f, "` currently requires ",
+        "a one-dimensional `outer`; got ", length(outer_dims), " axes."
+    )
+    _plate_cell_shape(T, f) === :scalar || error(
+        "plate: index-dependent constraint on non-scalar cell `", f, "` is not supported ",
+        "yet — use a scalar cell, or declare `", f, "` at model scope."
+    )
+    outer = outer_dims[1]
+    idx = idxs[1]
+    out = Pair{Symbol,Any}[k => v for (k, v) in pairs(kept)]
+    for (key, value) in hoist
+        center_type(value) <: types.int && error(
+            "plate: index-dependent `", key, "=` constraint on `", f, "` resolves to an ",
+            "integer expression; only real-valued constraint hoisting is supported."
+        )
+        carrier = Symbol(f, :__pl_, key, :_, id)
+        emitted = forward!(canonical(:($carrier :: vector[$outer])); info)
+        pending !== nothing && push!(pending, emitted)
+        fill_loop = Expr(
+            :for,
+            Expr(:(=), idx, :(1:$outer)),
+            Expr(:block, :($carrier[$idx] = $(expr(value)))),
+        )
+        emitted = forward!(canonical(fill_loop); info)
+        pending !== nothing && push!(pending, emitted)
+        push!(out, key => info[carrier])
+    end
+    (; out...)
 end
 
 # Merge promoted constraints into an already-emitted declaration, mirroring the
@@ -1996,8 +2056,14 @@ _plate_emit_vectorized_sample!(candidate, outer, index_aliases; info) = begin
         ));
         info=root,
     )
-    cons = _plate_promoted_constraints(
+    cons, hoist = _plate_promoted_constraints(
         candidate.global_name, candidate.cell_type, index_aliases,
+    )
+    isempty(hoist) || error(
+        "plate: an index-dependent `", first(first(hoist)), "=` constraint on the ",
+        "vectorised multivariate cell `", candidate.global_name, "` is not supported — ",
+        "its promoted declaration is a whole-array sample; declare `",
+        candidate.global_name, "` at model scope."
     )
     _plate_constrain_decl(candidate.global_name, emitted_decl, cons; info=root)
     root[candidate.global_name] = remake(
@@ -2391,7 +2457,17 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         haskey(ragged_plans, f) && continue
         (vectorized_sample !== nothing && f === vectorized_sample.global_name) && continue
         tgt = f === rv ? info : root
-        cons = _plate_promoted_constraints(f, T, index_aliases)
+        cons, hoist = _plate_promoted_constraints(f, T, index_aliases)
+        if !isempty(hoist)
+            info isa SubModel && error(
+                "plate: hoisting an index-dependent constraint on `", f, "` inside a ",
+                "called @slic submodel is not supported yet — declare `", f,
+                "` at model scope."
+            )
+            cons = _plate_hoist_cell_constraints!(
+                f, T, cons, hoist, idxs, outer_dims, id; info=tgt, pending,
+            )
+        end
         emitted = forward!(canonical(_plate_outer_decl(f, T, plate_outer)); info=tgt)
         emitted = _plate_constrain_decl(f, emitted, cons; info=tgt)
         pending !== nothing && push!(pending, emitted)

@@ -2252,6 +2252,16 @@ end
         (matrix[m,n,k], int, int[o], int) => vector[o]
         (matrix[m,n,k], int, int, int[p]) => row_vector[p]
         (matrix[m,n,k], int, int[o], int[p]) => matrix[o,p]
+        # A single natively-constrained square matrix (`cholesky_factor_corr` /
+        # `cholesky_factor_cov`) is SIZED by one dim (`<ct>[K]`, since
+        # `r_ndim(square_matrix) == 1`) but is logically K-by-K: scalar element
+        # access is a `real`, exactly as for a plain `matrix[K,K]`. Without an entry
+        # here the l_ndim-peeling getindex rule (functions.jl, `l_ndim > 0` branch)
+        # reads the first index as an array-prefix selector and the result degrades
+        # to `anything` (defect D5). The `[m,n]` entries below are the plate
+        # (array-of-cells) case, indexed by the outer axis first.
+        (cholesky_factor_corr[m], int, int) => real
+        (cholesky_factor_cov[m], int, int) => real
         (cholesky_factor_corr[m,n], int, int, int) => real
         (cholesky_factor_corr[m,n], int, int[o], int) => vector[o]
         (cholesky_factor_corr[m,n], int, int, int[p]) => row_vector[p]
