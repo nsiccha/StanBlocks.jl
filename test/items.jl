@@ -635,7 +635,7 @@ end
     # live in the ntup's `info.arg_types`, NOT in its (empty) `stan_size` — so
     # `deanon_type` has to recurse into the element types or they reach Stan
     # verbatim (undeclared identifier in a size position + a phantom `data` decl).
-    # Shape lifted from Bruno's `ragged_imap1` / `groupedby_idxs`.
+    # Shape lifted from a production PKPD model's `ragged_imap1` / `groupedby_idxs`.
     @deffun begin
         ntd_filter_n(f, x::anything[n], args...) = begin
             rv = 0
@@ -7591,7 +7591,7 @@ isolated test item.
     # `:tuple`/`:block` head. Before the fix that throw escaped `showerror`
     # itself, replacing a perfectly good diagnostic with an unrelated crash
     # (and killing Julia's top-level error printer outright).
-    # Reported by Bruno as snag `error-formatter-79e40522`.
+    # Reported via snag `error-formatter-79e40522`.
     unrenderable = @slic begin
         x::real ~ normal(0, 1)
         y ~ definitely_not_a_slic_function(g -> g + x)
