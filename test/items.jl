@@ -2198,6 +2198,66 @@ are final, so a same-name spliced statement cannot survive as a likelihood.
 end
 
 """
+`Base.merge(base, other::SlicModel)` composes two WHOLE models: `other`'s body
+statements splice in (same-LHS override + append, exactly like a spliced
+statement AST), and `other`'s bound data merges into the result. Unlike a fixed
+NamedTuple binding, a merged model's data names KEEP their likelihood statements
+— they are observations, not parameters pinned to a value.
+"""
+@testitem "slic: Base.merge composes two whole sb models" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    m1 = @slic (; y1 = [0.1, 0.2, -0.1]) begin
+        mu ~ normal(0.0, 1.0)
+        y1 ~ normal(mu, 1.0)
+    end
+    m2 = @slic (; y2 = [0.3, -0.4]) begin
+        sigma ~ normal(0.0, 1.0; lower = 0.0)
+        y2 ~ normal(0.0, sigma)
+    end
+
+    merged = Base.merge(m1, m2)
+    merged_code = stan_code(merged)
+    @test stanc_compiles(merged)
+    # Both models' parameters and data survive the merge…
+    params = stan_block(merged_code, "parameters")
+    @test occursin("real mu;", params)
+    @test occursin("real<lower=0.0> sigma;", params)
+    dat = stan_block(merged_code, "data")
+    @test occursin("vector[y1_n] y1;", dat)
+    @test occursin("vector[y2_n] y2;", dat)
+    # …and BOTH likelihoods are kept (a merged model's data is not `fixed`).
+    @test occursin("y1 ~ normal(mu, 1.0)", merged_code)
+    @test occursin("y2 ~ normal(0.0, sigma)", merged_code)
+    # Both models' bound data lands in the merged model's data.
+    @test StanBlocks.data(merged)[:y1] == [0.1, 0.2, -0.1]
+    @test StanBlocks.data(merged)[:y2] == [0.3, -0.4]
+
+    # The overlay wins on a same-LHS collision, exactly like a spliced statement.
+    m2b = @slic (; y2 = [0.3, -0.4]) begin
+        mu    ~ normal(5.0, 0.1)
+        sigma ~ normal(0.0, 1.0; lower = 0.0)
+        y2    ~ normal(mu, sigma)
+    end
+    overridden = Base.merge(m1, m2b)
+    overridden_code = stan_code(overridden)
+    @test stanc_compiles(overridden)
+    @test occursin("mu ~ normal(5.0, 0.1)", overridden_code)
+    @test !occursin("mu ~ normal(0.0, 1.0)", overridden_code)
+
+    # A model overlay composes with a statement overlay in one call; later wins.
+    mixed = Base.merge(m1, m2, :(mu ~ normal(1.0, 0.5)))
+    mixed_code = stan_code(mixed)
+    @test stanc_compiles(mixed)
+    @test occursin("mu ~ normal(1.0, 0.5)", mixed_code)
+    @test occursin("y2 ~ normal(0.0, sigma)", mixed_code)
+
+    # Every merge is functional: the inputs are unmutated.
+    @test occursin("mu ~ normal(0.0, 1.0)", stan_code(m1))
+    @test !occursin("sigma", stan_code(m1))
+end
+
+"""
 A sub-model spliced into a generated body as a VALUE must behave exactly like a
 Symbol naming the same sub-model. This is the only way to embed a `Base.merge`
 result from an emitting package: the merged model exists only as a value at
