@@ -1,108 +1,175 @@
-# StanBlocks.jl (Stan backend)
+# StanBlocks.jl
 
 [![Dev Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://nsiccha.github.io/StanBlocks.jl/dev/)
 [![CI](https://github.com/nsiccha/StanBlocks.jl/actions/workflows/test.yml/badge.svg)](https://github.com/nsiccha/StanBlocks.jl/actions/workflows/test.yml)
 
-Brings Julia syntax to Stan models by implementing a (limited) Julia to Stan transpilation with many caveats. 
-See [`ext/PosteriorDBExt.jl`](ext/PosteriorDBExt.jl) for the shipped
-[`posteriordb`](https://github.com/stan-dev/posteriordb) models,
-[`test/items.jl`](test/items.jl) for their stanc gate and the executable feature
-specification, and [`src/slic_stan/builtin.jl`](src/slic_stan/builtin.jl) for
-built-in functions and user-defined-function examples.
-
-Current features include
-
-* activity analysis (automatically determines what is `data`, `transformed_data`, `parameters`, `transformed parameters`, `model`, or `generated quantities`),
-* automatically inferred types, shapes and constraints - including for user defined functions (including the function arguments, function body, and function return type),
-* higher order (user defined) functions (such as `map`, `broadcasted`, `sum` and more),
-* (limited) dynamic dispatch - it's currently possible to dispatch on type (base type + number of dimensions), just the number of dimensions, and function argument types for higher order functions à la `f(::typeof(g)) = x`,
-* automatic extraction of shapes for user defined functions - define a function like `f(x::vector[n]) = ...` and `n` will be available in the function body,
-* sub models,
-* post-hoc model adjustment,
-* (variadic) user defined functions,
-* first-class ragged data, ragged constrained parameters, and `EachCol` / `EachRow` views,
-* automatic posterior pointwise likelihood and predictive generation,
-* compiler-owned `plate` loops for scalar, fixed-vector, and selected ragged/constrained per-cell models,
-* distribution higher-order functions: `weighted`, `truncated`, `censored`, and `interval_censored`,
-* automatic imputation of partly missing continuous outcomes,
-* executable model descriptors with derived fit/predict/log-likelihood operations,
-* (approximate) automatic code formatting à la [Blue](https://github.com/JuliaDiff/BlueStyle),
-* and more.
-
-
-Recently shipped:
-
-* `return_type_of(f, args...)` — public transpile-time return-type and shape queries for registered SLIC callables,
-* user-defined Julia macros expand transparently inside `@slic` / `@deffun` bodies (`@views`, `@.`, `@inbounds`, anything),
-* `@stan_assert cond [msg]` — runtime assertion that lowers to `if !cond reject(msg)`,
-* `@inline` UDFs / trailing `!`: every call expands at the call site, no Stan `functions {}` entry — supports multi-statement bodies, varargs, higher-order arguments, and caller-scope mutation through `f!(buf, …)`-style helpers,
-* module-aware name resolution: `@deffun`s defined in package extensions are found automatically.
-
-The current boundary is intentionally explicit: `@slic` is flat declarative
-code, deterministic control flow belongs in `@deffun`, and `plate` is an
-independent-cell parameter loop rather than a general scan. Matrix-valued plate
-cells, cell-to-cell dependencies, ragged integer observations, and general
-three-dimensional-and-higher Julia containers are not supported. See the
-[authoring support guide](https://nsiccha.github.io/StanBlocks.jl/dev/authoring)
-for the full works/does-not-work matrix.
-
-Almost anything that's possible in Julia should be possible to be transpiled to Stan. 
-Of course, unless Stan is much faster than Julia + Mooncake for the model in question,
-just sticking to Julia comes with many advantages. 
-
-Features which I am on the fence about, but currently not planning to implement:
-
-* full Julia runtime parity for Stan probability, RNG, ODE, and parallel built-ins,
-* `target +=` statements,
-* top level control flow,
-* top level mutability,
-* getting rid of superfluous parentheses.
-
-`@deffun` definitions are Stan-only by default. Add `@juliacompat` to an
-eligible deterministic, bodyful bare-symbol definition to install one callable
-Julia method from the original user-facing signature while retaining the same
-Stan lowering. `@stanonly` remains available as an explicit marker. Signature-
-only/type-token glue, qualified existing-function extensions, and probability/
-RNG/ODE-family definitions (`*_lpdf`, `*_lpmf`, `*_rng`, `ode_*`, …) remain
-Stan-only.
-
-Features which are **NOT** planned:
-
-* (automatically) transpiling Julia functions which have not been defined via `@deffun`. 
-
-The `earn_height.stan` model below becomes 
+**A Julia frontend for writing and composing Stan models.** Write a model once
+in Julia syntax; StanBlocks transpiles it to Stan source *and* — through
+[BridgeStan](https://github.com/roualdes/bridgestan) — hands you a
+differentiable log-density you can sample or optimise directly. It is a
+deliberately modest promise: a *frontend*, not a replacement for Stan. The
+generated Stan code is part of the product, meant to be read.
 
 ```julia
 using StanBlocks
 import PosteriorDB, StanLogDensityProblems, JSON
 
-# Get data from PosteriorDB
+# Data from PosteriorDB
 pdb = PosteriorDB.database()
 post = PosteriorDB.posterior(pdb, "earnings-earn_height")
 (;earn, height) = (;Dict([Symbol(k)=>v for (k, v) in pairs(PosteriorDB.load(PosteriorDB.dataset(post)))])...)
 
-# Model definition
-earn_height_model = @slic begin 
+# The whole model — no `data`/`parameters`/`model` blocks to write by hand
+earn_height_model = @slic begin
     beta ~ flat(;n=2)
     sigma ~ flat(;lower=0.)
     earn ~ normal(beta[1]+beta[2]*to_vector(height), sigma)
 end
-# Not compiled yet
-earn_height_posterior = earn_height_model(; earn, height)
-# Prints the Stan model code
-println(stan_code(earn_height_posterior))
-# Compiled (requires StanLogDensityProblems and JSON)
-earn_height_problem = stan_instantiate(earn_height_posterior)
+
+earn_height_posterior = earn_height_model(; earn, height)  # bind data
+println(stan_code(earn_height_posterior))                  # read the Stan
+earn_height_problem = stan_instantiate(earn_height_posterior)  # compile + differentiate
 ```
 
-See the [user guide](https://nsiccha.github.io/StanBlocks.jl/dev/) for `@deffun`, `@inline` UDFs, sub-models, posterior pointwise likelihood / predictive draws, the full built-in catalog, and a Bruno- / BRM-scale example.
+`stanc` never sees a block you wrote: **activity analysis** decides what is
+`data`, `transformed data`, `parameters`, `transformed parameters`, `model`, or
+`generated quantities`, and **type/shape/constraint inference** fills in every
+declaration — for model bodies *and* user-defined functions (arguments, body,
+and return type alike).
+
+## What it does
+
+StanBlocks is one small compiler with a wide surface. The
+[feature atlas](https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas) is the
+canonical works / does-not-work matrix; the highlights:
+
+**Activity analysis & inference** — automatic block placement; inferred types,
+shapes, and constraints; a single dependency graph evaluated at several
+execution times (data, transformed data, parameters, …, generated quantities).
+
+**Composition — the reason for a frontend** — anonymous sub-models, named
+typed-positional sub-models, and post-hoc `Base.merge` variants that graft new
+statements onto an existing model. Cross-validation is a first-class post-hoc
+variant (the `cv` flag), with correct density-taint handling.
+
+**Structured data & compiler-owned `plate` loops** — first-class ragged data and
+ragged *constrained* parameters, `EachCol` / `EachRow` dense views, and `plate`
+loops over independent per-cell parameters (scalar, fixed-vector, and selected
+ragged/constrained cells).
+
+**Functions** — positional defaults, keyword arguments, varargs, and
+higher-order functions (`map`, `broadcasted`, `sum`, …); `à-la-Julia` multiple
+dispatch (on base type + dimensionality, on dimensionality alone, or on a
+higher-order function argument via `f(::typeof(g)) = …`); automatic shape
+extraction (`f(x::vector[n]) = …` makes `n` available in the body); `@deffun`
+for deterministic control-flow programs; `@inline` UDFs with caller-scope
+mutation; `@stan_assert`; and `return_type_of(f, args...)` for transpile-time
+type/shape queries.
+
+**Closures** — see [below](#closures); a headline capability, especially for
+scientific models.
+
+**Distributions** — author your own distribution triad (`_lpdf` / `_lpdfs` /
+`_rng`, opted into `~` sampling with `@lhs`/`@lpxf`); distribution
+higher-order functions `weighted`, `truncated`, `censored`, and
+`interval_censored`; and fused GLM families (`normal_id`, `bernoulli_logit`,
+`poisson_log`, `neg_binomial_2_log`).
+
+**Scientific-computing surface** — ODE solvers (`ode_rk45`, `ode_bdf`, …),
+[Torsten](https://metrumresearchgroup.github.io/Torsten/)-style pharmacometrics
+signatures, Gaussian-process helpers, and `reduce_sum` for within-chain
+parallelism.
+
+**Generated quantities, for free** — automatic pointwise log-likelihood and
+posterior-predictive draws, plus automatic imputation of partly-missing
+*continuous* outcomes (Turing-style).
+
+**Reflection & ergonomics** — executable model descriptors with derived
+fit / predict / log-likelihood operations; user-defined types (`@usertype`,
+NamedTuples, ragged carriers); user-written Julia macros expand transparently
+inside `@slic` / `@deffun` bodies (`@views`, `@.`, `@inbounds`, …); and
+approximate automatic formatting à la
+[Blue](https://github.com/JuliaDiff/BlueStyle).
+
+## Closures
+
+Closures ship, and they are what make scientific models — ODEs above all —
+read like ordinary Julia:
+
+```julia
+closure_model = @slic (; ts, yobs) begin
+    lambda ~ exponential(1)
+    y = ode_rk45(
+        (t, state) -> -lambda * state,
+        [1.0], 0.0, to_array_1d(ts),
+    )
+    yobs ~ normal(y[1][1], 0.05)
+end
+```
+
+The closure `(t, state) -> -lambda * state` is **lifted into a generated Stan
+function**. Captured data and parameters become explicit trailing arguments, and
+likelihood activity follows *through* those captures — so `lambda` stays a live
+parameter of the model even though it is only referenced from inside the closure
+handed to the solver. No runtime function object ever reaches Stan.
+
+## How it works
+
+StanBlocks descends from [SlicStan](https://github.com/mgorinova/SlicStan): the
+same destination (clean Stan), a different route. One traced model is lowered by
+four compiler verbs — **`capture`**, **`forward!`**, **`backward!`**, and
+**`distribute!`** — into a single dependency graph, then emitted (via
+`Base.show`) at each execution time. Downstream, the compiled log-density is
+differentiated with [Mooncake](https://github.com/chalk-lab/Mooncake.jl).
+
+Almost anything expressible in Julia can be transpiled to Stan. Whether you
+*should* is a separate question: unless Stan is meaningfully faster than
+Julia + Mooncake for your model, staying in Julia keeps many advantages.
+
+See the [user guide](https://nsiccha.github.io/StanBlocks.jl/dev/) for `@deffun`,
+`@inline` UDFs, sub-models, posterior pointwise likelihood / predictive draws,
+the full built-in catalog, and a regression-DSL-scale worked example.
+
+## Honest current boundaries
+
+The boundary is intentional and explicit: `@slic` is flat declarative code,
+deterministic control flow belongs in `@deffun`, and `plate` is an
+independent-cell parameter loop rather than a general scan. Not supported:
+
+* ordinary `for` / `if` / `while` / `&&` / `||` / ternary / comprehensions in a
+  `@slic` body — move them into a `@deffun`, or use a vectorised form;
+* a scan whose cell `i` consumes cell `i-1`;
+* matrix-valued `plate` cells and cell-to-cell dependencies;
+* general 3-D-and-higher Julia containers;
+* missing *predictors* or *discrete* outcomes; ragged *integer* observations;
+* `target +=` in a UDF, and top-level control flow / mutability;
+* auto-transpiling Julia functions not defined via `@deffun`;
+* full Julia-runtime parity for Stan's probability / RNG / ODE / parallel
+  built-ins.
+
+See the [authoring support guide](https://nsiccha.github.io/StanBlocks.jl/dev/authoring)
+for the full works / does-not-work matrix.
+
+`@deffun` definitions are Stan-only by default. Add `@juliacompat` to an
+eligible deterministic, bodyful bare-symbol definition to also install one
+callable Julia method from the user-facing signature, while keeping the same
+Stan lowering; `@stanonly` is the explicit opt-out marker. Signature-only /
+type-token glue, qualified extensions of existing functions, and
+probability / RNG / ODE-family definitions (`*_lpdf`, `*_lpmf`, `*_rng`,
+`ode_*`, …) remain Stan-only.
 
 # Caveats
 
 ## Constant terms in the log density
 
-Stan's `~` statement [drops constants](https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement). StanBlocks does **not** — it always emits the full log density. The absolute value differs from a hand-written Stan model, but the posterior geometry is identical and sampling is unaffected.
+Stan's `~` statement
+[drops constants](https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement).
+StanBlocks does **not** — it always emits the full log density. The absolute
+value differs from a hand-written Stan model, but the posterior geometry is
+identical and sampling is unaffected.
 
 ## No control flow at the model level
 
-`for`/`while`/`if`/`&&`/`||`/ternary/comprehensions are not allowed in `@slic` bodies. Move that logic into a `@deffun` body, or use a vectorised form.
+`for` / `while` / `if` / `&&` / `||` / ternary / comprehensions are not allowed
+in `@slic` bodies. Move that logic into a `@deffun` body, or use a vectorised
+form.
