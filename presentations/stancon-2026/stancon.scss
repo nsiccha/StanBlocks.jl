@@ -178,6 +178,28 @@ $presentation-font-size-root: 34px;
   z-index: 2;
 }
 
+/* Semi-thick brand-colored borders: standard Julia colors for the Julia
+   layers, Stan's maroon for the BridgeStan.jl (Stan boundary) box. */
+.reveal .flow .step.j-red {
+  border: 0.14em solid #cb3c33;
+}
+
+.reveal .flow .step.j-green {
+  border: 0.14em solid #389826;
+}
+
+.reveal .flow .step.j-purple {
+  border: 0.14em solid #9558b2;
+}
+
+.reveal .flow .step.j-blue {
+  border: 0.14em solid #4063d8;
+}
+
+.reveal .flow .step.stan {
+  border: 0.14em solid var(--sb-red);
+}
+
 .reveal .tag {
   display: inline-block;
   border-radius: 999px;
@@ -227,6 +249,115 @@ $presentation-font-size-root: 34px;
   border-radius: 50%;
   border: 0.16em solid var(--sb-red);
   box-shadow: 0 0.2em 0.7em rgba(32, 36, 43, 0.16);
+}
+
+.reveal .contributors-band {
+  margin-top: 0.7em;
+}
+
+.reveal .contributors-band .band-label {
+  color: var(--sb-muted);
+  font-size: 0.6em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 0.35em;
+}
+
+.reveal .contributors {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.5em;
+  align-items: start;
+}
+
+.reveal .contributors .person {
+  text-align: center;
+  line-height: 1.15;
+}
+
+.reveal .contributors .person img {
+  width: 2.4em;
+  height: 2.4em;
+  object-fit: cover;
+  border-radius: 50%;
+  border: 0.1em solid var(--sb-red);
+  box-shadow: 0 0.12em 0.4em rgba(32, 36, 43, 0.16);
+}
+
+.reveal .contributors .person .who {
+  margin: 0.22em 0 0;
+  font-size: 0.5em;
+  font-weight: 700;
+  color: var(--sb-ink);
+}
+
+.reveal .contributors .person .aff {
+  margin: 0.06em 0 0;
+  font-size: 0.44em;
+  color: var(--sb-muted);
+}
+
+@media (max-width: 1000px) {
+  .reveal .contributors {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Three QR codes injected onto the title slide (see qr-title.html).
+   The title block is made full-height with its text vertically centred, so
+   the QR strip can be pinned to the actual bottom of the slide -- clear of
+   the title text, never floating over it. */
+/* Full slide height so the QR strip's absolute bottom offset anchors to the
+   real bottom of the slide. reveal sets display:block inline on the active
+   slide (beats CSS flex), so we lift the title off the very top with
+   padding-top rather than flex-centering. */
+.reveal .slides > section.quarto-title-block {
+  height: 100%;
+  box-sizing: border-box;
+  padding-top: 5.5em;
+}
+
+.reveal .title-qr {
+  position: absolute;
+  bottom: 1.8em;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 1.6em;
+  margin: 0;
+}
+
+.reveal .title-qr .title-qr-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-decoration: none;
+  color: var(--sb-ink);
+}
+
+.reveal .title-qr .title-qr-item img {
+  width: 4em;
+  height: 4em;
+  background: #fff;
+  padding: 0.14em;
+  border: 0.08em solid rgba(179, 32, 37, 0.28);
+  border-radius: 0.18em;
+}
+
+.reveal .title-qr .title-qr-cap {
+  margin-top: 0.28em;
+  font-size: 0.52em;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  color: var(--sb-ink);
+}
+
+.reveal .title-qr .title-qr-cap .u {
+  color: var(--sb-muted);
+  font-weight: 600;
 }
 
 .reveal .summary-contact {

@@ -20,6 +20,7 @@ format:
     hash-type: number
     code-overflow: wrap
     link-external-newwindow: true
+    include-after-body: qr-title.html
     footer: "[Slides · nsiccha.github.io/StanBlocks.jl/stancon-2026/](https://nsiccha.github.io/StanBlocks.jl/stancon-2026/)"
 execute:
   enabled: false
@@ -67,6 +68,8 @@ model {
 ::: {.takeaway}
 StanBlocks is a frontend, not a replacement for Stan.
 :::
+
+<p class="small muted">… with quality-of-life improvements such as activity analysis, submodels, user-defined types (currently enabling e.g. NamedTuples and ragged data structures), higher-order user-defined functions, automatic but optional type &amp; shape inference, (ragged) plates, metaprogramming, Julia-style multiple dispatch, and more.</p>
 
 ::: {.notes}
 Open with the boundary, not the feature list. The promise is deliberately
@@ -304,7 +307,7 @@ pointwise log likelihood · posterior predictive draws · executable model descr
 <span class="tag red">activity analysis</span>
 <span class="tag">type + shape inference</span>
 <span class="tag">constraint propagation</span>
-<span class="tag red">automatic GQ twins</span>
+<span class="tag red">automatic generated-quantity twins</span>
 <span class="tag">BridgeStan log density</span>
 
 ## Composition is the reason for the frontend
@@ -326,7 +329,7 @@ m = @slic (; x, y) begin
 end
 ```
 
-Emits a namespaced parameter `eta_beta`.
+Emits a prefixed parameter `eta_beta`.
 
 :::
 ::: {.column width="47%"}
@@ -344,8 +347,8 @@ The matching `beta` statement is replaced; the base model stays unchanged.
 The same mechanism supports:
 
 - nested submodels
-- data rebinding
-- typed positional dispatch
+- swapping in new data
+- typed positional arguments
 - generated model variants
 
 :::
@@ -399,7 +402,7 @@ Julia syntax on the front, SlicStan's information-flow idea in the middle, Stan 
 
 ## The intellectual lineage: SlicStan
 
-[Gorinova, Gordon & Sutton (POPL 2019)](https://doi.org/10.1145/3290348) asked:
+[Gorinova, Gordon & Sutton (POPL 2019)](https://doi.org/10.1145/3290348) asked (not verbatim):
 
 > What if a Stan-like language were compositional and blockless, then translated back to Stan?
 
@@ -425,9 +428,9 @@ semantics-preserving translation; StanBlocks does not claim that formal result.
 | | SlicStan | StanBlocks.jl |
 |---|---|---|
 | Frontend | A new Stan-like language | A restricted Julia macro DSL |
-| Core analysis | Information-flow type system | Forward trace + reverse likelihood activity |
+| Core analysis | Information-flow type system | Forward trace + reverse likelihood tracking |
 | Abstraction | Flexible model functions | Julia dispatch, closures, kwargs, macros, `@slic` submodels |
-| Distinctive reach | Formal semantics; finite discrete-parameter elimination | Auto GQ, model variants, descriptors, BridgeStan/Julia integration |
+| Distinctive reach | Formal semantics; marginalizing out discrete parameters | Auto generated quantities, model variants, descriptors, BridgeStan/Julia integration |
 | Implementation posture | Research implementation in F# | Julia package used by larger Julia model DSLs |
 | Output | Stan | Stan |
 
@@ -486,7 +489,7 @@ Yes, but the value proposition changes.
 <div class="timeline">
   <div><strong>Oct 2024</strong>Initial repository: block inference, Julia syntax, Stan emission.</div>
   <div><strong>2025</strong>Production-shaped models, generated quantities, broader Stan surface.</div>
-  <div><strong>2026</strong>Agent-assisted expansion: descriptors, <code>plate</code>, ragged models, closures, HOFs, hardening.</div>
+  <div><strong>2026</strong>Agent-assisted expansion: <code>plate</code>s, closures, higher-order functions, hardening.</div>
 </div>
 
 :::: {.columns}
@@ -498,6 +501,7 @@ Yes, but the value proposition changes.
 - translate a sketch into a full model
 - generate repetitive signatures and tests
 - explore compiler edge cases quickly
+- producing, finding, and fixing bugs
 
 :::
 ::: {.column width="49%"}
@@ -506,9 +510,7 @@ Yes, but the value proposition changes.
 
 - one source for a family of model variants
 - a reusable statistical vocabulary
-- explicit, fail-closed authoring boundaries
 - generated Stan that humans and tools can inspect
-- compiler-owned cross-cutting outputs and rewrites
 
 :::
 ::::
@@ -528,16 +530,16 @@ feasible to build while raising expectations for its contracts.
 
 Move up a layer without hiding the layer below.
 
-## StanBlocks as the compiler layer
+## StanBlocks as *one* compiler layer
 
 <div class="flow">
-  <div class="step"><strong>BRM.jl</strong><br>formulae, terms, priors, model-family vocabulary</div>
-  <div class="step"><strong>StanBlocks.jl</strong><br>composition, tracing, block/type/shape inference</div>
-  <div class="step"><strong>Stan</strong><br>compiler, AD, HMC/NUTS, generated quantities</div>
-  <div class="step"><strong>JuliaBayes.jl</strong><br>shared Julia-facing workflow and ecosystem integration</div>
+  <div class="step j-red"><strong>BRM.jl</strong><br>formulae, terms, priors, model-family vocabulary</div>
+  <div class="step j-green"><strong>StanBlocks.jl</strong><br>composition, tracing, block/type/shape inference</div>
+  <div class="step stan"><strong>BridgeStan.jl</strong><br>compiled Stan model — log density &amp; gradients (AD)</div>
+  <div class="step j-purple"><strong>JuliaBayes.jl</strong><br>shared Julia-facing workflow and ecosystem integration</div>
 </div>
 
-The largest current consumer is [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl): a formula layer that lowers real model families into `@slic` and `@deffun` components.
+The largest current public consumer is [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl): a formula layer that lowers real model families into `@slic` and `@deffun` components.
 
 Near-term priorities:
 
@@ -545,6 +547,18 @@ Near-term priorities:
 2. Make BRM.jl the ergonomic route for standard regression families.
 3. Keep StanBlocks available for bespoke PKPD and other compositional models.
 4. Connect through JuliaBayes interfaces rather than inventing another closed workflow.
+
+<div class="contributors-band">
+<p class="band-label">JuliaBayes contributors</p>
+<div class="contributors">
+  <div class="person"><img src="https://github.com/nsiccha.png?size=200" alt="Nikolas Siccha"><p class="who">Nikolas Siccha</p><p class="aff">Generable Inc.</p></div>
+  <div class="person"><img src="img/penelopeysm.webp" style="object-position: 66% 32%;" alt="Penelope Yong"><p class="who">Penelope Yong</p><p class="aff">Alan Turing Institute</p></div>
+  <div class="person"><img src="https://github.com/PTWaade.png?size=200" alt="Peter Thestrup Waade"><p class="who">Peter Thestrup Waade</p><p class="aff">TNU, ETH Zürich</p></div>
+  <div class="person"><img src="https://github.com/rsenne.png?size=200" alt="Ryan Senne"><p class="who">Ryan Senne</p><p class="aff">Boston University</p></div>
+  <div class="person"><img src="https://github.com/seabbs.png?size=200" alt="Sam Abbott"><p class="who">Sam Abbott</p><p class="aff">LSHTM (epinowcast · epiforecasts)</p></div>
+  <div class="person"><img src="https://github.com/simonsteiger.png?size=200" alt="Simon Steiger"><p class="who">Simon Steiger</p><p class="aff">Karolinska Institutet</p></div>
+</div>
+</div>
 
 ::: {.notes}
 JuliaBayes is intentionally phrased as ecosystem direction rather than a claim
@@ -566,9 +580,9 @@ standard workflows above, inspectable compiler below.
 
 ### Links
 
+- Live transpiler: <https://sb.siccha.de>
 - Feature atlas: <https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas>
 - Package + source: <https://github.com/nsiccha/StanBlocks.jl>
-- GitHub: [@nsiccha](https://github.com/nsiccha)
 - Email: [nikolassiccha@gmail.com](mailto:nikolassiccha@gmail.com)
 
 :::

@@ -1,0 +1,37 @@
+<!-- Injected onto the auto-generated Quarto title slide: three QR codes
+     (live transpiler, feature atlas, these slides). Kept inert in a
+     <template> and cloned into section.quarto-title-block on load so it
+     does not appear as a page-level overlay on other slides. -->
+<template id="qr-title-tpl">
+  <div class="title-qr">
+    <a class="title-qr-item" href="https://sb.siccha.de">
+      <img src="img/qr-app.svg" alt="QR code linking to the live StanBlocks transpiler at sb.siccha.de">
+      <span class="title-qr-cap">Live transpiler<br><span class="u">sb.siccha.de</span></span>
+    </a>
+    <a class="title-qr-item" href="https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas">
+      <img src="img/qr-atlas.svg" alt="QR code linking to the StanBlocks feature atlas">
+      <span class="title-qr-cap">Feature atlas</span>
+    </a>
+    <a class="title-qr-item" href="https://nsiccha.github.io/StanBlocks.jl/stancon-2026/">
+      <img src="img/qr-slides.svg" alt="QR code linking to these slides">
+      <span class="title-qr-cap">These slides</span>
+    </a>
+  </div>
+</template>
+<script>
+  (function () {
+    function place() {
+      var host = document.querySelector('section.quarto-title-block')
+              || document.getElementById('title-slide');
+      var tpl = document.getElementById('qr-title-tpl');
+      if (host && tpl && !host.querySelector('.title-qr')) {
+        host.appendChild(tpl.content.cloneNode(true));
+      }
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', place);
+    } else {
+      place();
+    }
+  })();
+</script>
