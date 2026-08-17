@@ -7858,14 +7858,43 @@ end
     @test occursin("multiplier=tau", affine_params)
     @test stanc_compiles(affine_model)
 
-    # A constraint naming the plate's per-cell position cannot be promoted: the
-    # promoted declaration is emitted OUTSIDE the loop, where that position does
-    # not exist. Refuse loudly rather than emit a model that compiles and is wrong.
-    idx_dependent = try
+    # D2b: a constraint reaching the plate's per-cell position through DATA (here
+    # `l` slices the data vector `lamv`, so `exp(l)` is data-computable) is HOISTED:
+    # the whole `multiplier` is materialised over the outer axis in `transformed
+    # data`, and the promoted `vector[G]` declaration references that carrier BY
+    # NAME. The pre-D2b behaviour was a loud refusal; the wrong alternative — a
+    # silent drop — samples a different posterior with no diagnostic.
+    hoisted_model = @slic (; G, obs = obs_pos, lamv) begin
+        m0 ~ normal(sum(lamv), 1.)
+        s ~ plate(lamv; outer = G) do l
+            c::real ~ normal(m0, 1.; multiplier = exp(l))
+            c
+        end
+        obs ~ normal(s, 1.)
+        s
+    end
+    hoisted_code   = stan_code(hoisted_model)
+    hoisted_tdata  = stan_block(hoisted_code, "transformed data")
+    hoisted_params = stan_block(hoisted_code, "parameters")
+    # The carrier is declared and filled over the outer axis in transformed data…
+    @test occursin(r"vector\[G\] s_c__pl_multiplier_\d+;", hoisted_tdata)
+    @test occursin("exp(lamv[", hoisted_tdata)
+    # …and referenced by NAME on the promoted declaration, never re-inlined into
+    # the parameters block (a per-cell constraint expression there is not valid Stan).
+    @test occursin(r"vector<multiplier=s_c__pl_multiplier_\d+>\[G\] s_c;", hoisted_params)
+    @test !occursin("exp(lamv", hoisted_params)
+    @test stanc_compiles(hoisted_model)
+
+    # A constraint that is index-dependent AND references a PARAMETER (`tau`) cannot
+    # be materialised as transformed data — Stan requires a promoted constraint to be
+    # data-computable. Refuse loudly (D3's rule on the plate path) rather than emit a
+    # model that compiles and is wrong.
+    param_dependent = try
         stan_code(@slic (; G, obs = obs_pos, lamv) begin
-            m0 ~ normal(sum(lamv), 1.)
+            m0  ~ normal(sum(lamv), 1.)
+            tau ~ normal(0., 1.; lower = 0.)
             s ~ plate(lamv; outer = G) do l
-                c::real ~ normal(m0, 1.; multiplier = exp(l))
+                c::real ~ normal(m0, 1.; multiplier = tau * l)
                 c
             end
             obs ~ normal(s, 1.)
@@ -7875,9 +7904,9 @@ end
     catch e
         sprint(showerror, e)
     end
-    @test idx_dependent !== nothing
-    @test occursin("per-cell position", idx_dependent)
-    @test occursin("multiplier", idx_dependent)
+    @test param_dependent !== nothing
+    @test occursin("parameter", param_dependent)
+    @test occursin("multiplier", param_dependent)
 
     # Negative control: a constraint-free plate is untouched by any of this.
     plain_model = @slic (; G, obs = obs_any, lamv) begin
