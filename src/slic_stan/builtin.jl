@@ -246,14 +246,10 @@ end
     # term (contract cut (b): kernels here, BRM composes log_y).
     # `truncated_student_t_lpdf` = the heavy-tailed obs variant (generated family;
     # same censoring contract, + a leading `dof` arg, branches on the LOQ limits).
-    # `bordet_time_response`/`bordet_dose_response` remain as temporary
-    # deprecated aliases until BRM's emit sites switch to `biomarker_*`.
     truncated_normal_lpdf
     truncated_student_t_lpdf
     biomarker_time_response
     biomarker_dose_response
-    bordet_time_response
-    bordet_dose_response
     linear_idxs
     broadcasted_max
     broadcasted_gt
@@ -2004,14 +2000,6 @@ end
         xi::vector[n] = (log_dose - loc) .* exp(log_slope)
         log_inv_logit(xi)
     end
-    # DEPRECATED temporary aliases off the old internal project name. Kept so
-    # BRM's emitted `bordet_*` calls keep resolving (Stan lowering + Julia
-    # method) until its emit sites switch to `biomarker_*`; remove once nothing
-    # emits them (lockstep with the BRM-side scrub).
-    @juliacompat bordet_time_response(log_time::vector[n], loc::vector[n], log_slope::vector[n], mag::vector[n])::vector[n] =
-        biomarker_time_response(log_time, loc, log_slope, mag)
-    @juliacompat bordet_dose_response(log_dose::vector[n], loc::vector[n], log_slope::vector[n])::vector[n] =
-        biomarker_dose_response(log_dose, loc, log_slope)
 
     # --- index / broadcast helpers (transformed-data) ------------------------
     # Column-major linear indices: `xy` with `vec(M)[xy] == M[x,y]` for an
