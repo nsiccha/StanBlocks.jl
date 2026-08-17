@@ -160,14 +160,6 @@ probability / RNG / ODE-family definitions (`*_lpdf`, `*_lpmf`, `*_rng`,
 
 # Caveats
 
-## Constant terms in the log density
-
-Stan's `~` statement
-[drops constants](https://mc-stan.org/docs/reference-manual/statements.html#log-probability-increment-vs.-distribution-statement).
-StanBlocks does **not** — it always emits the full log density. The absolute
-value differs from a hand-written Stan model, but the posterior geometry is
-identical and sampling is unaffected.
-
 ## No control flow at the model level
 
 `for` / `while` / `if` / `&&` / `||` / ternary / comprehensions are not allowed
