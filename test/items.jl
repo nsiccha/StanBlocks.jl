@@ -2058,6 +2058,34 @@ Verify an `@lhs` observation dimension the UDF body never reads still resolves.
     @test !occursin("lhs_all_n", all_hidden_functions)
 end
 
+@testitem "slic: cholesky_factor scalar element access has a tracetype (D5)" tags=[:slic, :regression, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    # Defect D5: a single natively-constrained square matrix
+    # (`cholesky_factor_corr` / `cholesky_factor_cov`, sized `<ct>[K]` — one size
+    # dim, since `r_ndim(square_matrix) == 1`) had no getindex tracetype for scalar
+    # element access, so `L[i, j]` degraded to `anything` and USING the element
+    # threw "tracetype not defined" before any Stan was emitted. It is logically
+    # K-by-K: `L[i, j]` must be a `real`, exactly as the plain `matrix[K, K]` control.
+    # (The plate case `array[G] cholesky_factor_corr[K]` — indexed `L[g, i, j]` —
+    # already worked via the `[m, n]` signature; this guards the single value.)
+    corr_model = @slic (; y = 0.3) begin
+        L::cholesky_factor_corr[3] ~ lkj_corr_cholesky(2.0)
+        y ~ normal(L[2, 1], 1.0)
+    end
+    corr_code = stan_code(corr_model)
+    @test occursin("cholesky_factor_corr[3] L;", stan_block(corr_code, "parameters"))
+    @test stanc_compiles(corr_model)
+
+    cov_model = @slic (; y = 0.3) begin
+        L::cholesky_factor_cov[3] ~ flat()
+        y ~ normal(L[2, 1], 1.0)
+    end
+    cov_code = stan_code(cov_model)
+    @test occursin("cholesky_factor_cov[3] L;", stan_block(cov_code, "parameters"))
+    @test stanc_compiles(cov_model)
+end
+
 """
 Verify `issue12` in an isolated test item.
 """
