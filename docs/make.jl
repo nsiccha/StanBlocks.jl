@@ -44,6 +44,7 @@ makedocs(
     pages = [
         "Home"              => "index.md",
         "Authoring support" => "authoring.md",
+        "Activity analysis" => "activity-analysis.md",
         "Feature atlas"     => "feature-atlas.md",
         "Worked examples"   => [
             "Overview" => "worked-examples.md",
