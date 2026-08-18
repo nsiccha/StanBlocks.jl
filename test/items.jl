@@ -1414,7 +1414,7 @@ end
     c3_plate_fixed_correlated_model = @slic (;n_groups=5, k=3, y=[0.2, -0.1, 0.3, 0.0, 0.4]) begin
         L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
         tau::vector[k] ~ normal(0.0, 1.0; lower=0.0)
-        b::vector[k] ~ plate(y; outer=(n_groups,)) do yi
+        b::matrix[k, n_groups] ~ plate(y; outer=(n_groups,)) do yi
             cell ~ c3_plate_fixed_correlated_cell(k, L, tau)
             yi ~ normal(cell[1], 0.5)
             cell
@@ -1433,7 +1433,7 @@ end
     @slic c3_plate_in_sub_draws(n_groups::int, k::int) = begin
         L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
         tau::vector[k] ~ std_normal(; lower=0.0)
-        b::vector[k] ~ plate(; outer=(n_groups,)) do g
+        b::matrix[k, n_groups] ~ plate(; outer=(n_groups,)) do g
             z::vector[k] ~ std_normal()
             diag_pre_multiply(tau, L) * z
         end
@@ -1449,7 +1449,7 @@ end
     c3_plate_in_submodel_reference = @slic (;n_groups=4, k=3, y=[0.2, -0.1, 0.3, 0.0]) begin
         L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
         tau::vector[k] ~ std_normal(; lower=0.0)
-        b::vector[k] ~ plate(; outer=(n_groups,)) do g
+        b::matrix[k, n_groups] ~ plate(; outer=(n_groups,)) do g
             z::vector[k] ~ std_normal()
             diag_pre_multiply(tau, L) * z
         end
@@ -1471,7 +1471,7 @@ end
     c3_plate_in_submodel_renamed_reference = @slic (;G=4, P=3, y=[0.2, -0.1, 0.3, 0.0]) begin
         L::cholesky_factor_corr[P] ~ lkj_corr_cholesky(2.0)
         tau::vector[P] ~ std_normal(; lower=0.0)
-        b::vector[P] ~ plate(; outer=(G,)) do g
+        b::matrix[P, G] ~ plate(; outer=(G,)) do g
             z::vector[P] ~ std_normal()
             diag_pre_multiply(tau, L) * z
         end
@@ -1823,6 +1823,140 @@ end
         x ~ std_normal(;n)
         s = kw_req_opt(x; b=1.0)
     end)
+end
+
+"""
+Verify `slic: typed-LHS sampling requires LHS-RHS support agreement` in an isolated test item.
+
+Regression for decision `0909w6i` ("the lhs is always right"): a typed-LHS
+`name::T ~ dist(...)` must have `T` PRODUCIBLE by the distribution's support.
+Two mismatches are unconditional and previously either crashed inside RNG
+emission or silently overrode the annotation (`_check_lhs_rhs_support`,
+`forward.jl`):
+  1. ELEMENT KIND — a discrete (`_lpmf`) distribution cannot fill a continuous
+     LHS, nor a continuous (`_lpdf`) one an integer LHS. The signal is the
+     distribution head's lpxf family (`_probability_kind`), because the natural
+     tracetype is `anything` for scalar-support distributions at forward time.
+  2. CONTAINER support — a `vector`-valued support (`dirichlet`) cannot fill a
+     SCALAR LHS.
+Broadcast (`x::vector[n] ~ std_normal()`) and native-constrained containers
+(`p::simplex[K] ~ dirichlet`) stay valid — the LHS drives the RHS path.
+"""
+@testitem "slic: typed-LHS sampling requires LHS-RHS support agreement" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+
+    # --- NEGATIVE: element-kind + shape mismatches must error cleanly ---------
+    # discrete dist (poisson) into a continuous vector LHS (was: internal crash)
+    m_pois = @slic (; N = 3, lambda = 2.0) begin
+        n::vector[N] ~ poisson(lambda)
+        n
+    end
+    @test !transpiles(m_pois; re=false)
+    @test occursin("produces integer (discrete) draws", errmsg(m_pois))
+
+    # discrete dist (categorical_logit) into a continuous vector LHS (was: crash)
+    m_cat = @slic (; N = 4, K = 3, logits = zeros(3)) begin
+        y::vector[N] ~ categorical_logit(logits)
+        y
+    end
+    @test !transpiles(m_cat; re=false)
+    @test occursin("produces integer (discrete) draws", errmsg(m_cat))
+
+    # continuous dist (normal) into an integer LHS (was: silent override to real)
+    m_norm = @slic (; N = 3) begin
+        z::int[N] ~ normal(0, 1)
+        z
+    end
+    @test !transpiles(m_norm; re=false)
+    @test occursin("produces continuous draws", errmsg(m_norm))
+
+    # container support (dirichlet -> vector) into a scalar LHS (was: override)
+    m_dir = @slic (;) begin
+        p::real ~ dirichlet([1.0, 1.0, 1.0])
+        p
+    end
+    @test !transpiles(m_dir; re=false)
+    @test occursin("a scalar LHS cannot hold it", errmsg(m_dir))
+
+    # --- POSITIVE: the LHS still drives valid broadcast / container paths -----
+    # scalar-support distribution broadcasts over a container LHS
+    @test transpiles(@slic (; n = 4) begin
+        x::vector[n] ~ std_normal()
+        x
+    end)
+    # container support into a matching native-constrained container LHS
+    @test transpiles(@slic (; K = 3, alpha = ones(3)) begin
+        p::simplex[K] ~ dirichlet(alpha)
+        p
+    end)
+    # discrete dist into a matching integer LHS
+    @test transpiles(@slic (; N = 3, lambda = 2.0) begin
+        nn::int[N] ~ poisson(lambda)
+        nn
+    end)
+    # constrained broadcast keeps working
+    @test transpiles(@slic (; K = 3) begin
+        tau::vector[K] ~ normal(0, 1; lower = 0)
+        tau
+    end)
+end
+
+"""
+Verify `slic: plate result LHS must name the collected type` in an isolated test item.
+
+Regression for decision `0909w6i` FULL CUTOVER: the per-cell plate annotation
+(`b::vector[K] ~ plate(…)`, where the LHS names one CELL but binds the collected
+`matrix[K,N]`) is now a hard error directing to the collected spelling or the
+bare form (`_plate_resolve_cell_type`, `forward.jl`). The collected and bare
+forms both still transpile.
+"""
+@testitem "slic: plate result LHS must name the collected type" tags=[:slic, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+
+    # per-cell annotation (vector[k] cell, collected as matrix[k, n]) now errors,
+    # with a hint naming the collected spelling to write instead.
+    m_percell = @slic (; n = 5, k = 3) begin
+        b::vector[k] ~ plate(; outer = (n,)) do g
+            z::vector[k] ~ std_normal()
+            z
+        end
+        b
+    end
+    @test !transpiles(m_percell; re=false)
+    let e = errmsg(m_percell)
+        @test occursin("must name the COLLECTED type", e)
+        @test occursin("matrix[k, n]", e)          # copy-pasteable migration hint
+    end
+
+    # the collected spelling transpiles
+    @test transpiles(@slic (; n = 5, k = 3) begin
+        b::matrix[k, n] ~ plate(; outer = (n,)) do g
+            z::vector[k] ~ std_normal()
+            z
+        end
+        b
+    end)
+
+    # dropping the annotation (bare form) transpiles
+    @test transpiles(@slic (; n = 5, k = 3) begin
+        b ~ plate(; outer = (n,)) do g
+            z::vector[k] ~ std_normal()
+            z
+        end
+        b
+    end)
+
+    # a typed annotation on a MULTI-AXIS outer errors (no collected spelling) and
+    # directs to the bare form.
+    m_multi = @slic (; n = 3, m = 2, k = 3) begin
+        b::vector[k] ~ plate(; outer = (n, m)) do g, h
+            z::vector[k] ~ std_normal()
+            z
+        end
+        b
+    end
+    @test !transpiles(m_multi; re=false)
+    @test occursin("multi-axis", errmsg(m_multi))
 end
 
 """
@@ -5036,7 +5170,7 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
     vec_cell = @slic (; n_series = 8) begin
         L::cholesky_factor_corr[6] ~ lkj_corr_cholesky(2.0)   # shared, captured
         tau::vector[6] ~ normal(0.0, 1.0; lower = 0.0)        # shared, captured
-        b::vector[6] ~ plate(; outer = (n_series,)) do s
+        b::matrix[6, n_series] ~ plate(; outer = (n_series,)) do s
             z::vector[6] ~ std_normal()                       # fresh per-cell vector
             diag_pre_multiply(tau, L) * z                     # vector[6] cell output
         end
@@ -5170,7 +5304,7 @@ is never lifted, however invariant its arguments look.
     inline_nc = @slic (; n_terms = 3, n_groups = 5) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
-        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+        b::matrix[n_terms, n_groups] ~ plate(; outer = (n_groups,)) do g
             z::vector[n_terms] ~ std_normal()
             diag_pre_multiply(tau, L) * z
         end
@@ -5179,7 +5313,7 @@ is never lifted, however invariant its arguments look.
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
         S = diag_pre_multiply(tau, L)                 # the hand-hoisted spelling
-        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+        b::matrix[n_terms, n_groups] ~ plate(; outer = (n_groups,)) do g
             z::vector[n_terms] ~ std_normal()
             S * z
         end
@@ -5207,7 +5341,7 @@ is never lifted, however invariant its arguments look.
     inline_c = @slic (; n_terms = 3, n_groups = 5) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
-        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+        b::matrix[n_terms, n_groups] ~ plate(; outer = (n_groups,)) do g
             bc::vector[n_terms] ~ multi_normal_cholesky(rep_vector(0.0, n_terms), diag_pre_multiply(tau, L))
             bc
         end
@@ -5217,7 +5351,7 @@ is never lifted, however invariant its arguments look.
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
         mu0 = rep_vector(0.0, n_terms)
         S = diag_pre_multiply(tau, L)
-        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+        b::matrix[n_terms, n_groups] ~ plate(; outer = (n_groups,)) do g
             bc::vector[n_terms] ~ multi_normal_cholesky(mu0, S)
             bc
         end
@@ -5263,7 +5397,7 @@ is never lifted, however invariant its arguments look.
     passA = @slic (; n_terms = 3, n_groups = 5) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
-        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+        b::matrix[n_terms, n_groups] ~ plate(; outer = (n_groups,)) do g
             S = diag_pre_multiply(tau, L)             # invariant, but written per-cell
             z::vector[n_terms] ~ std_normal()
             S * z
@@ -5296,7 +5430,7 @@ is never lifted, however invariant its arguments look.
     #    A cell-varying multivariate argument must keep the matrix carrier and
     #    indexed loop, and a vectorised UNIVARIATE family is outside this pass.
     varying_mv = @slic (; scales = ones(4), n_terms = 2) begin
-        b::vector[n_terms] ~ plate(scales; outer = length(scales)) do s
+        b::matrix[n_terms, length(scales)] ~ plate(scales; outer = length(scales)) do s
             bc::vector[n_terms] ~ multi_normal_cholesky(
                 rep_vector(0.0, n_terms),
                 diag_matrix(rep_vector(s, n_terms)),
@@ -5305,7 +5439,7 @@ is never lifted, however invariant its arguments look.
         end
     end
     iid_uni = @slic (; n_groups = 4, n_terms = 2) begin
-        b::vector[n_terms] ~ plate(; outer = n_groups) do g
+        b::matrix[n_terms, n_groups] ~ plate(; outer = n_groups) do g
             z::vector[n_terms] ~ normal(0.0, 1.0)
             z
         end
@@ -5323,7 +5457,7 @@ is never lifted, however invariant its arguments look.
     # 7. A plate inside a called submodel resolves its local dimensions and
     #    flattened names before the same vectorised sample is emitted at root.
     @slic centered_plate(k::int, n::int, mu::vector[k], S::matrix[k,k]) = begin
-        b::vector[k] ~ plate(; outer = n) do g
+        b::matrix[k, n] ~ plate(; outer = n) do g
             bc::vector[k] ~ multi_normal_cholesky(mu, S)
             bc
         end
@@ -6116,7 +6250,7 @@ over flat memory with no declarable Stan twin, so it keeps the model-only route)
     obs_plate = @slic (; n_groups = 5, k = 3, y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
         L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
         tau::vector[k] ~ normal(0.0, 1.0; lower = 0.0)
-        b::vector[k] ~ plate(y; outer = (n_groups,)) do yi
+        b::matrix[k, n_groups] ~ plate(y; outer = (n_groups,)) do yi
             cell ~ c3_plate_fixed_correlated_cell(k, L, tau)
             yi ~ normal(cell[1], 0.5)
             cell
@@ -7096,7 +7230,7 @@ all three paths: density, auto-RNG prediction, and pointwise log likelihood.
     K = 3
     model = @slic (; x = [-1.0, -0.25, 0.5, 1.25], y = [1, 2, 3, 2], N, K) begin
         beta::vector[K-1] ~ std_normal()
-        logits::vector[K] ~ plate(x; outer = (N,)) do xi
+        logits::matrix[K,N] ~ plate(x; outer = (N,)) do xi
             append_row(0.0, beta * xi)
         end
         y ~ categorical_logit(logits)
@@ -7283,7 +7417,7 @@ group boundaries as `ModelOutput.segments`.
     obs_plate = @slic (; n_groups = 5, k = 3, y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
         L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
         tau::vector[k] ~ normal(0.0, 1.0; lower = 0.0)
-        b::vector[k] ~ plate(y; outer = (n_groups,)) do yi
+        b::matrix[k, n_groups] ~ plate(y; outer = (n_groups,)) do yi
             cell ~ c3_plate_fixed_correlated_cell(k, L, tau)
             yi ~ normal(cell[1], 0.5)
             cell

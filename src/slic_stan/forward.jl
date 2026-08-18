@@ -1231,6 +1231,57 @@ end
 _is_native_constrained_ct(T) = T isa Type && (
     (T <: types.vector && T !== types.vector) || T <: types.square_matrix
 )
+# Decision `0909w6i` ("the lhs is always right"): the DECLARED LHS type must be
+# PRODUCIBLE by the RHS distribution's support. Two mismatches are unconditional
+# — no broadcast / outer-array vectorisation path reconciles them — and today
+# they either crash inside RNG emission (`n::vector ~ poisson`,
+# `y::vector ~ categorical_logit`) or silently override the annotation
+# (`z::int ~ normal`, `p::real ~ dirichlet`):
+#   1. ELEMENT KIND — a DISCRETE distribution (int support) cannot fill a
+#      CONTINUOUS LHS, nor a continuous distribution an integer LHS;
+#   2. a CONTAINER-valued support (`dirichlet`→`vector`, …) cannot fill a
+#      SCALAR LHS.
+# Everything else stays valid — the LHS drives the RHS path: a scalar-support
+# distribution BROADCASTS over a container LHS (`x::vector[n] ~ std_normal()`),
+# and a container support VECTORISES over an outer array dimension
+# (`array[N] vector[K] ~ multi_normal(…)`), so we deliberately do NOT require
+# equal ranks or matching center families beyond these two hard cases.
+# The element-kind (discrete-vs-continuous) signal comes from the distribution
+# HEAD's lpxf family (`_lpmf`→discrete, `_lpdf`→continuous), resolved HERE at
+# forward time; the natural tracetype (`type(rhs_forwarded)`) is `anything` for
+# scalar-support distributions at this stage, so it cannot supply it. Returns
+# `missing` when the family is unclassifiable (an unregistered head, or a HOF
+# like `truncated`/`censored` whose head has no direct lpxf) — the discrete
+# check is then skipped, which is safe (those wrap a matching underlying kind).
+_rhs_is_discrete(rhs_canonical) =
+    try _probability_kind(head(rhs_canonical)) === :lpmf catch; missing end
+# `support` is the distribution's natural tracetype (`type(rhs_forwarded)`),
+# read BEFORE it is re-typed to the LHS annotation at the `rhs_stan` line — it is
+# resolved (a `vector`/`simplex`/…) for container-valued distributions and
+# `anything`/rank-0 for scalar ones, which is exactly what the scalar-vs-
+# container rule below needs.
+_check_lhs_rhs_support(lhs_type, support, rhs_discrete, name, type_expr) = begin
+    lhs_discrete = center_type(lhs_type) <: types.int
+    if rhs_discrete !== missing && lhs_discrete != rhs_discrete
+        error(
+            "Typed-LHS sampling `", name, "::", pretty_type_expr(type_expr), "` is ",
+            lhs_discrete ? "integer" : "continuous", "-valued, but its distribution ",
+            "produces ", rhs_discrete ? "integer (discrete)" : "continuous", " draws. ",
+            "LHS type and distribution support must agree on discrete-vs-continuous: ",
+            "declare `", name, "` with a ",
+            rhs_discrete ? "discrete (`int`) center" : "continuous (`real`/`vector`/…) center",
+            ", or change the distribution."
+        )
+    end
+    (stan_ndim(support) > 0 && stan_ndim(lhs_type) == 0) && error(
+        "Typed-LHS sampling `", name, "::", pretty_type_expr(type_expr), "` declares ",
+        "a SCALAR, but its distribution's support is `", sigtype(support), "` (a ",
+        stan_ndim(support) == 1 ? "vector" : string(stan_ndim(support), "-D"),
+        " value) — a scalar LHS cannot hold it. Declare `", name,
+        "` with the matching container shape."
+    )
+    nothing
+end
 forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     decl, rhs_raw = x.args
     name = decl.args[1]
@@ -1287,6 +1338,11 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     cons_kw = merge(implied_kw, (; kwargs_resolved...))
     cons = _fold_constraints(name, cons_kw; implied=keys(implied_kw))
     base_lhs_type = StanType(ct_resolved, sizes_forwarded; cons...)
+    # Reject a typed LHS whose support disagrees with the RHS distribution's
+    # element kind (container-into-scalar, discrete-into-continuous, …) at trace
+    # time, before the constraint fold and cv routing below act on it.
+    _check_lhs_rhs_support(base_lhs_type, type(rhs_forwarded),
+        _rhs_is_discrete(rhs_canonical), name, type_expr)
     # A parameter whose DECLARED SIZE is cv-tainted must relocate to generated
     # quantities exactly like the bare-LHS path — a held-out size (`J =
     # maximum(subject)` under CV) means nothing informs the parameter, so it is a
@@ -1565,12 +1621,98 @@ _subst_syms(x, m) = x
 _subst_syms(x::Symbol, m) = get(m, x, x)
 _subst_syms(x::Expr, m) = Expr(x.head, Any[_subst_syms(a, m) for a in x.args]...)
 
-# Resolve a legacy typed plate-result override to the same per-cell StanType the
-# discovery trace produces. Bare result LHSs use discovery's `ret_type` directly.
+# Resolve a typed plate-result annotation to a StanType. Bare result LHSs use
+# discovery's `ret_type` directly.
 _plate_annotation_type(type_expr; info) = begin
     ct, sizes... = _is_getindex_expr(type_expr) ? type_expr.args : (type_expr,)
     ct isa Symbol || error("plate: result type center must be a Symbol, got `$ct`.")
     StanType(gettype(ct), forward!.(sizes; info))
+end
+
+# Decision `0909w6i`, option 1 — "the lhs is always right" (FULL CUTOVER): a
+# plate result annotation MUST name the COLLECTED type it binds
+# (`logits::matrix[K,N]`), so the `~` LHS agrees with the RHS (the plate produces
+# the collected result). The per-cell type is DERIVED from it by stripping the
+# plate's `outer` axes. The pre-existing per-cell spelling (`logits::vector[K]`,
+# where the annotation named one CELL while the bound value is the collected
+# `matrix[K,N]`) is now a HARD ERROR — that LHS/RHS disagreement is exactly what
+# this rule removes. Drop the annotation (`logits ~ plate(...)`) to have the
+# collected type inferred, or spell out the collected type.
+#
+# Returns the PER-CELL StanType to use for emission (the rest of `_forward_plate!`
+# is cell-type-driven). `C` is the cell type discovered from the do-block body.
+_plate_resolve_cell_type(type_expr, C, outer_dims, rv; info) = begin
+    A = _plate_annotation_type(type_expr; info)
+    length(outer_dims) == 1 || error(
+        "plate: `", rv, "` has a multi-axis `outer` (", length(outer_dims), " axes), for ",
+        "which a typed result annotation has no collected spelling. Drop the annotation ",
+        "and let the collected type be inferred (`", rv, " ~ plate(...)`)."
+    )
+    cn = stan_ndim(C)
+    an = stan_ndim(A)
+    collected_rank = cn + 1                         # dense 1-D outer adds exactly one axis
+    an == collected_rank && return _plate_cell_from_collected(A, C, rv)
+    error(
+        "plate: `", rv, "` declared `", sigtype(A), "` (rank ", an, "), but a plate result LHS ",
+        "must name the COLLECTED type it binds — the do-block cell shape with the `outer` axis ",
+        "prepended (rank ", collected_rank, "). ",
+        an == cn ?
+            string("`", sigtype(A), "` is the PER-CELL type the do-block returns; write ",
+                _plate_collected_hint(type_expr, outer_dims), " instead") :
+            "the ranks do not match",
+        ", or drop the annotation and let the collected type be inferred (`", rv, " ~ plate(...)`)."
+    )
+end
+# Best-effort collected-type spelling for a per-cell → collected migration error,
+# built from the RAW annotation the user wrote (`type_expr`) so the suggested
+# names are clean and copy-pasteable: a scalar cell over `outer=(N,)` collects to
+# `vector[N]`, a `vector[K]` cell to `matrix[K,N]`. Defensive — the hint must
+# never itself throw inside the error.
+_plate_collected_hint(type_expr, outer_dims) =
+    try
+        n = string(outer_dims[1])
+        ct, sizes... = _is_getindex_expr(type_expr) ? type_expr.args : (type_expr,)
+        if (ct === :real || ct === :int) && isempty(sizes)
+            string("`vector[", n, "]`")
+        elseif ct === :vector && length(sizes) == 1
+            string("`matrix[", sizes[1], ", ", n, "]`")
+        else
+            string("the collected shape with `", n, "` prepended to the cell")
+        end
+    catch
+        "the collected shape with the `outer` axis prepended"
+    end
+# Derive the per-cell StanType from a declared COLLECTED type over a dense 1-D
+# `outer`: `matrix[K,N]` → `vector[K]`, `vector[N]` → scalar. Sizes are the
+# annotation's (the lhs is right).
+_plate_cell_from_collected(A, C, rv) = begin
+    ac = center_type(A)
+    cell = if ac === types.matrix && stan_ndim(A) == 2
+        StanType(types.vector, (stan_size(A)[1],))
+    elseif ac === types.vector && stan_ndim(A) == 1
+        StanType(types.real, ())
+    else
+        error(
+            "plate: `", rv, "` declared collected type `", sigtype(A), "`; the collected form ",
+            "for a 1-D `outer` must be `vector[N]` (scalar cells) or `matrix[K,N]` (vector ",
+            "cells). For other cell shapes, drop the annotation and let it be inferred."
+        )
+    end
+    _plate_check_collected_agreement(cell, C, A, rv)
+    cell
+end
+# The collected annotation implies a per-cell shape; the do-block body must
+# actually produce a cell of that shape. Sizes are the annotation's (the lhs is
+# right), so the check is on the center-type family and rank only.
+_plate_check_collected_agreement(cell, C, A, rv) = begin
+    (stan_ndim(cell) == stan_ndim(C) &&
+        (center_type(cell) === center_type(C) || stan_ndim(cell) == 0)) || error(
+        "plate: `", rv, "` declared collected type `", sigtype(A), "`, which implies a `",
+        sigtype(cell), "` per-cell result, but the do-block body produces a `", sigtype(C),
+        "` cell. Declare the collected type that matches the cell the body returns, or drop ",
+        "the annotation and let it be inferred."
+    )
+    nothing
 end
 
 _plate_cell_shape(T, name) = begin
@@ -2180,8 +2322,11 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
 # The StanBlocks primer's plate sections hold the acceptance-ladder roadmap.
 forward!(x::SamplingExpr{Symbol,<:CanonicalExprV{:plate}}; info) =
     _forward_plate!(x.args[1], nothing, x.args[2]; info)
-# Typed-LHS plate result `b::vector[K] ~ plate(…)` ⇒ vector cell output collected
-# as `matrix[K, N]`. The DeclExpr LHS carries the per-cell result type.
+# Typed-LHS plate result: the DeclExpr LHS names the COLLECTED type the plate
+# binds (`b::matrix[K,N] ~ plate(…)` for a `vector[K]` cell collected over
+# `outer=(N,)`), so the `~` LHS agrees with the RHS (decision `0909w6i`). The
+# per-cell spelling (`b::vector[K]`) is rejected by `_plate_resolve_cell_type`,
+# which derives the emission cell type back out of the collected annotation.
 forward!(x::SamplingExpr{<:DeclExpr,<:CanonicalExprV{:plate}}; info) = begin
     decl = x.args[1]
     (decl.args[1] isa Symbol) || error("plate: typed-LHS result must name a Symbol, got `$(decl.args[1])`.")
@@ -2291,7 +2436,8 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     # trace below uses these StanTypes rather than re-parsing LHS syntax.
     discovered = _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info)
     fresh = discovered.fresh
-    rv_type = rv_ct === nothing ? discovered.ret_type : _plate_annotation_type(rv_ct; info)
+    rv_type = rv_ct === nothing ? discovered.ret_type :
+        _plate_resolve_cell_type(rv_ct, discovered.ret_type, outer_dims, rv; info)
 
     # An `array[] int` cell-local is an EPHEMERAL per-cell INDEX array — a
     # `findall`/boolean-mask result such as an explicit `idx = findall(c .== 1)`, or
