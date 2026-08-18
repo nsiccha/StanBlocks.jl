@@ -102,7 +102,7 @@
     code span.vs { color: #20794d; } /* VerbatimString */
     code span.wa { color: #5e5e5e; font-style: italic; } /* Warning */
   </style>
-  <link rel="stylesheet" href="index_files/libs/revealjs/dist/theme/quarto-83d49cabfc4ca30f97ed84334b42a4ff.css">
+  <link rel="stylesheet" href="index_files/libs/revealjs/dist/theme/quarto-c98ab8cc205e4d0f13cdb05037bebfe5.css">
   <link href="index_files/libs/revealjs/plugin/quarto-line-highlight/line-highlight.css" rel="stylesheet">
   <link href="index_files/libs/revealjs/plugin/reveal-menu/menu.css" rel="stylesheet">
   <link href="index_files/libs/revealjs/plugin/reveal-menu/quarto-menu.css" rel="stylesheet">
@@ -227,7 +227,7 @@ Nikolas Siccha · Generable Inc.
 <span id="cb1-4"><a href="" aria-label="4"></a>    sigma <span class="op">~</span> <span class="fu">exponential</span>(<span class="fl">1</span>)</span>
 <span id="cb1-5"><a href="" aria-label="5"></a>    y <span class="op">~</span> <span class="fu">normal</span>(alpha <span class="op">+</span> beta <span class="op">*</span> x, sigma)</span>
 <span id="cb1-6"><a href="" aria-label="6"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
-</div><div class="column" style="width:42%;">
+</div><div class="column fragment" style="width:42%;">
 <p>Get ordinary, inspectable Stan:</p>
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb2-1"><a href="" aria-label="1"></a><span class="kw">parameters</span> {</span>
 <span id="cb2-2"><a href="" aria-label="2"></a>  <span class="dt">real</span> alpha;</span>
@@ -242,11 +242,11 @@ Nikolas Siccha · Generable Inc.
 <span id="cb2-11"><a href="" aria-label="11"></a>             sigma);</span>
 <span id="cb2-12"><a href="" aria-label="12"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </div></div>
-<div class="takeaway">
+<div class="takeaway fragment">
 <p>StanBlocks is a frontend, not a replacement for Stan.</p>
 </div>
-<p class="small muted">
-… with quality-of-life improvements such as activity analysis, submodels, user-defined types (currently enabling e.g.&nbsp;NamedTuples and ragged data structures), higher-order user-defined functions, automatic but optional type &amp; shape inference, (ragged) plates, metaprogramming, Julia-style multiple dispatch, and more.
+<p class="small muted fragment">
+… with quality-of-life improvements such as activity analysis, submodels, user-defined types (currently enabling e.g.&nbsp;NamedTuples and ragged data structures), higher-order user-defined functions, closures, keyword &amp; default arguments, automatic but optional type &amp; shape inference, (ragged) plates, metaprogramming, Julia-style multiple dispatch, and more.
 </p>
 <aside class="notes">
 <p>Open with the boundary, not the feature list. The promise is deliberately small: author in Julia syntax, emit normal Stan, keep Stan’s toolchain.</p>
@@ -279,7 +279,7 @@ Nikolas Siccha · Generable Inc.
 <li>historically incomplete, wrong, or slow</li>
 <li>Enzyme makes far more possible today</li>
 </ul>
-</div><div class="column" style="width:48%;">
+</div><div class="column fragment" style="width:48%;">
 <h3>Stan</h3>
 <ul>
 <li>restricted language for statistical models</li>
@@ -289,7 +289,7 @@ Nikolas Siccha · Generable Inc.
 <li>generated code remains inspectable</li>
 </ul>
 </div></div>
-<div class="takeaway">
+<div class="takeaway fragment">
 <p>Julia maximizes <strong>expressive freedom</strong>; Stan narrows the problem to make differentiable programs <strong>predictable</strong>.</p>
 </div>
 <aside class="notes">
@@ -316,24 +316,27 @@ Nikolas Siccha · Generable Inc.
 </div>
 <p>Out of the box. Not always the theoretical optimum—but mature vectorisation, fused kernels, reverse-mode AD, and NUTS adaptation make “write the obvious model” a strong baseline.</p>
 </div>
-<div class="card blue-card">
+<div class="card blue-card fragment">
 <div class="card-title">
 Reliability
 </div>
 <p>Static checks, explicit constraints and Jacobians, a mature sampler, and years of use on difficult models.</p>
 </div>
-<div class="card gold-card">
+<div class="card gold-card fragment">
 <div class="card-title">
 Stable semantics
 </div>
 <p>The generated target is a small, explicit language designed around Bayesian computation rather than general-purpose execution.</p>
 </div>
-<div class="card">
+<div class="card fragment">
 <div class="card-title">
-An inspectable boundary
+A review boundary
 </div>
-<p><code>stan_code(model)</code> can be read, diffed, archived, checked by <code>stanc</code>, compiled, and handed to the ordinary Stan ecosystem.</p>
+<p><code>stan_code(model)</code> is the boundary between a compositional authoring language and a mature inference language — read it, diff it, archive it, check it with <code>stanc</code>, hand it to the Stan ecosystem.</p>
 </div>
+</div>
+<div class="takeaway fragment">
+<p>“Generated” does not have to mean “opaque.”</p>
 </div>
 <aside class="notes">
 <p>Use the user’s wording verbally: “not ideal, but good performance out of the box.” The point is engineering leverage, not a benchmark claim that Stan wins every workload.</p>
@@ -348,31 +351,6 @@ An inspectable boundary
           overflow: hidden!important;
           display:block!important;
       }</style></aside>
-</section>
-<section class="slide level2">
-<h2>Generated code is part of the product</h2>
-<div class="columns">
-<div class="column" style="width:46%;">
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb3-1"><a href="" aria-label="1"></a><span class="fu">stan_code</span>(model)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
-<p>is not a debugging afterthought.</p>
-<p>It is the review boundary between:</p>
-<ul>
-<li>a compositional authoring language, and</li>
-<li>a mature inference language.</li>
-</ul>
-</div><div class="column" style="width:50%;">
-<p>The emitted program answers concrete questions:</p>
-<ul>
-<li>Which variables are parameters?</li>
-<li>Which computations run once vs.&nbsp;per gradient?</li>
-<li>Were constraints transferred correctly?</li>
-<li>What pointwise likelihood and predictive draws were added?</li>
-<li>Did a post-hoc model rewrite change only what we intended?</li>
-</ul>
-</div></div>
-<div class="takeaway">
-<p>“Generated” does not have to mean “opaque.”</p>
-</div>
 </section></section>
 <section>
 <section class="title-slide slide level1 section-slide center">
@@ -384,47 +362,66 @@ An inspectable boundary
 <div class="columns">
 <div class="column" style="width:47%;">
 <h3>StanBlocks source</h3>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb4"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb4-1"><a href="" aria-label="1"></a>m <span class="op">=</span> <span class="pp">@slic</span> (; x, y) <span class="cf">begin</span></span>
-<span id="cb4-2"><a href="" aria-label="2"></a>    alpha <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">2</span>)</span>
-<span id="cb4-3"><a href="" aria-label="3"></a>    beta  <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">1</span>)</span>
-<span id="cb4-4"><a href="" aria-label="4"></a>    sigma <span class="op">~</span> <span class="fu">exponential</span>(<span class="fl">1</span>)</span>
-<span id="cb4-5"><a href="" aria-label="5"></a></span>
-<span id="cb4-6"><a href="" aria-label="6"></a>    mu <span class="op">=</span> alpha <span class="op">+</span> beta <span class="op">*</span> x</span>
-<span id="cb4-7"><a href="" aria-label="7"></a>    y <span class="op">~</span> <span class="fu">normal</span>(mu, sigma)</span>
-<span id="cb4-8"><a href="" aria-label="8"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb3-1"><a href="" aria-label="1"></a>m <span class="op">=</span> <span class="pp">@slic</span> (; x, y) <span class="cf">begin</span></span>
+<span id="cb3-2"><a href="" aria-label="2"></a>    alpha <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">2</span>)</span>
+<span id="cb3-3"><a href="" aria-label="3"></a>    beta  <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">1</span>)</span>
+<span id="cb3-4"><a href="" aria-label="4"></a>    sigma <span class="op">~</span> <span class="fu">exponential</span>(<span class="fl">1</span>)</span>
+<span id="cb3-5"><a href="" aria-label="5"></a></span>
+<span id="cb3-6"><a href="" aria-label="6"></a>    mu <span class="op">=</span> alpha <span class="op">+</span> beta <span class="op">*</span> x</span>
+<span id="cb3-7"><a href="" aria-label="7"></a>    y <span class="op">~</span> <span class="fu">normal</span>(mu, sigma)</span>
+<span id="cb3-8"><a href="" aria-label="8"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <p>What is missing?</p>
 <ul>
 <li>block declarations</li>
-<li>explicit scalar types</li>
-<li>vector sizes</li>
-<li>replicated generated quantities</li>
+<li>types and shapes</li>
 </ul>
-</div><div class="column" style="width:49%;">
+<p><em>Main caveat</em> — model-level control flow: keep <code>@slic</code> flat; use <code>@deffun</code> or <code>plate</code>.</p>
+</div><div class="column fragment" style="width:49%;">
 <h3>Essential Stan emission</h3>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb5"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb5-1"><a href="" aria-label="1"></a><span class="kw">data</span> {</span>
-<span id="cb5-2"><a href="" aria-label="2"></a>  <span class="dt">int</span> x_n; <span class="dt">vector</span>[x_n] x;</span>
-<span id="cb5-3"><a href="" aria-label="3"></a>  <span class="dt">int</span> y_n; <span class="dt">vector</span>[y_n] y;</span>
-<span id="cb5-4"><a href="" aria-label="4"></a>}</span>
-<span id="cb5-5"><a href="" aria-label="5"></a><span class="kw">parameters</span> {</span>
-<span id="cb5-6"><a href="" aria-label="6"></a>  <span class="dt">real</span> alpha; <span class="dt">real</span> beta;</span>
-<span id="cb5-7"><a href="" aria-label="7"></a>  <span class="dt">real</span>&lt;<span class="kw">lower</span>=<span class="dv">0</span>&gt; sigma;</span>
-<span id="cb5-8"><a href="" aria-label="8"></a>}</span>
-<span id="cb5-9"><a href="" aria-label="9"></a><span class="kw">transformed parameters</span> {</span>
-<span id="cb5-10"><a href="" aria-label="10"></a>  <span class="dt">vector</span>[x_n] mu = alpha + beta * x;</span>
-<span id="cb5-11"><a href="" aria-label="11"></a>}</span>
-<span id="cb5-12"><a href="" aria-label="12"></a><span class="kw">model</span> {</span>
-<span id="cb5-13"><a href="" aria-label="13"></a>  alpha ~ normal(<span class="dv">0</span>, <span class="dv">2</span>);</span>
-<span id="cb5-14"><a href="" aria-label="14"></a>  beta ~ normal(<span class="dv">0</span>, <span class="dv">1</span>);</span>
-<span id="cb5-15"><a href="" aria-label="15"></a>  sigma ~ exponential(<span class="dv">1</span>);</span>
-<span id="cb5-16"><a href="" aria-label="16"></a>  y ~ normal(mu, sigma);</span>
-<span id="cb5-17"><a href="" aria-label="17"></a>}</span>
-<span id="cb5-18"><a href="" aria-label="18"></a><span class="kw">generated quantities</span> {</span>
-<span id="cb5-19"><a href="" aria-label="19"></a>  <span class="dt">vector</span>[y_n] y_likelihood = ...;</span>
-<span id="cb5-20"><a href="" aria-label="20"></a>  <span class="dt">vector</span>[y_n] y_gen = ...;</span>
-<span id="cb5-21"><a href="" aria-label="21"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb4"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb4-1"><a href="" aria-label="1"></a><span class="kw">data</span> {</span>
+<span id="cb4-2"><a href="" aria-label="2"></a>  <span class="dt">int</span> x_n; <span class="dt">vector</span>[x_n] x;</span>
+<span id="cb4-3"><a href="" aria-label="3"></a>  <span class="dt">int</span> y_n; <span class="dt">vector</span>[y_n] y;</span>
+<span id="cb4-4"><a href="" aria-label="4"></a>}</span>
+<span id="cb4-5"><a href="" aria-label="5"></a><span class="kw">parameters</span> {</span>
+<span id="cb4-6"><a href="" aria-label="6"></a>  <span class="dt">real</span> alpha; <span class="dt">real</span> beta;</span>
+<span id="cb4-7"><a href="" aria-label="7"></a>  <span class="dt">real</span>&lt;<span class="kw">lower</span>=<span class="dv">0</span>&gt; sigma;</span>
+<span id="cb4-8"><a href="" aria-label="8"></a>}</span>
+<span id="cb4-9"><a href="" aria-label="9"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb4-10"><a href="" aria-label="10"></a>  <span class="dt">vector</span>[x_n] mu = alpha + beta * x;</span>
+<span id="cb4-11"><a href="" aria-label="11"></a>}</span>
+<span id="cb4-12"><a href="" aria-label="12"></a><span class="kw">model</span> {</span>
+<span id="cb4-13"><a href="" aria-label="13"></a>  alpha ~ normal(<span class="dv">0</span>, <span class="dv">2</span>);</span>
+<span id="cb4-14"><a href="" aria-label="14"></a>  beta ~ normal(<span class="dv">0</span>, <span class="dv">1</span>);</span>
+<span id="cb4-15"><a href="" aria-label="15"></a>  sigma ~ exponential(<span class="dv">1</span>);</span>
+<span id="cb4-16"><a href="" aria-label="16"></a>  y ~ normal(mu, sigma);</span>
+<span id="cb4-17"><a href="" aria-label="17"></a>}</span>
+<span id="cb4-18"><a href="" aria-label="18"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb4-19"><a href="" aria-label="19"></a>  <span class="dt">vector</span>[y_n] y_likelihood = ...;</span>
+<span id="cb4-20"><a href="" aria-label="20"></a>  <span class="dt">vector</span>[y_n] y_gen = ...;</span>
+<span id="cb4-21"><a href="" aria-label="21"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </div></div>
+<div class="card-grid three compact-cards">
+<div class="card fragment">
+<div class="card-title">
+Placement
+</div>
+<p><code>data</code> · <code>transformed data</code> · <code>parameters</code> · <code>transformed parameters</code> · <code>model</code> · <code>generated quantities</code></p>
+</div>
+<div class="card blue-card fragment">
+<div class="card-title">
+Representation
+</div>
+<p>types · shapes · constraints · function signatures · captured dimensions</p>
+</div>
+<div class="card gold-card fragment">
+<div class="card-title">
+Workflow outputs
+</div>
+<p>pointwise log likelihood · posterior predictive draws · executable model descriptor</p>
+</div>
+</div>
 <aside class="notes">
-<p>This output was generated from the current checkout. “Essential” means helper functions in the functions block are omitted on this slide; the backup has the full relevant declarations.</p>
+<p>This output was generated from the current checkout. “Essential” means helper functions in the functions block are omitted on this slide; the backup has the full relevant declarations. The three cards are what the compiler INFERS from the one declaration: block placement; representation (types, shapes, constraints, function signatures, captured dimensions); and workflow outputs (pointwise log-likelihood, posterior-predictive draws, the executable descriptor). The one real restriction is model-level control flow — <span class="citation" data-cites="slic">@slic</span> bodies are straight-line; loops and branches live in <span class="citation" data-cites="deffun">@deffun</span> or plate.</p>
 <style type="text/css">
         span.MJX_Assistive_MathML {
           position:absolute!important;
@@ -438,50 +435,26 @@ An inspectable boundary
       }</style></aside>
 </section>
 <section class="slide level2">
-<h2>What the compiler infers</h2>
-<div class="card-grid three">
-<div class="card">
-<div class="card-title">
-Placement
-</div>
-<p><code>data</code> · <code>transformed data</code> · <code>parameters</code> · <code>transformed parameters</code> · <code>model</code> · <code>generated quantities</code></p>
-</div>
-<div class="card blue-card">
-<div class="card-title">
-Representation
-</div>
-<p>types · shapes · constraints · function signatures · captured dimensions</p>
-</div>
-<div class="card gold-card">
-<div class="card-title">
-Workflow outputs
-</div>
-<p>pointwise log likelihood · posterior predictive draws · executable model descriptor</p>
-</div>
-</div>
-<p><span class="tag red">activity analysis</span> <span class="tag">type + shape inference</span> <span class="tag">constraint propagation</span> <span class="tag red">automatic generated-quantity twins</span> <span class="tag">BridgeStan log density</span></p>
-</section>
-<section class="slide level2">
 <h2>Composition is the reason for the frontend</h2>
 <div class="columns">
 <div class="column" style="width:49%;">
 <h3>Reusable submodel</h3>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb6"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb6-1"><a href="" aria-label="1"></a><span class="pp">@slic</span> <span class="fu">random_slope</span>(x<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
-<span id="cb6-2"><a href="" aria-label="2"></a>    beta <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">1</span>)</span>
-<span id="cb6-3"><a href="" aria-label="3"></a>    <span class="cf">return</span> beta <span class="op">*</span> x</span>
-<span id="cb6-4"><a href="" aria-label="4"></a><span class="cf">end</span></span>
-<span id="cb6-5"><a href="" aria-label="5"></a></span>
-<span id="cb6-6"><a href="" aria-label="6"></a>m <span class="op">=</span> <span class="pp">@slic</span> (; x, y) <span class="cf">begin</span></span>
-<span id="cb6-7"><a href="" aria-label="7"></a>    eta <span class="op">~</span> <span class="fu">random_slope</span>(x)</span>
-<span id="cb6-8"><a href="" aria-label="8"></a>    y <span class="op">~</span> <span class="fu">normal</span>(eta, <span class="fl">1</span>)</span>
-<span id="cb6-9"><a href="" aria-label="9"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb5"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb5-1"><a href="" aria-label="1"></a><span class="pp">@slic</span> <span class="fu">random_slope</span>(x<span class="op">::</span><span class="dt">vector</span>[n]) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb5-2"><a href="" aria-label="2"></a>    beta <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">1</span>)</span>
+<span id="cb5-3"><a href="" aria-label="3"></a>    <span class="cf">return</span> beta <span class="op">*</span> x</span>
+<span id="cb5-4"><a href="" aria-label="4"></a><span class="cf">end</span></span>
+<span id="cb5-5"><a href="" aria-label="5"></a></span>
+<span id="cb5-6"><a href="" aria-label="6"></a>m <span class="op">=</span> <span class="pp">@slic</span> (; x, y) <span class="cf">begin</span></span>
+<span id="cb5-7"><a href="" aria-label="7"></a>    eta <span class="op">~</span> <span class="fu">random_slope</span>(x)</span>
+<span id="cb5-8"><a href="" aria-label="8"></a>    y <span class="op">~</span> <span class="fu">normal</span>(eta, <span class="fl">1</span>)</span>
+<span id="cb5-9"><a href="" aria-label="9"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <p>Emits a prefixed parameter <code>eta_beta</code>.</p>
-</div><div class="column" style="width:47%;">
+</div><div class="column fragment" style="width:47%;">
 <h3>Post-hoc variant</h3>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb7"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb7-1"><a href="" aria-label="1"></a>wide_prior <span class="op">=</span> <span class="bu">Base</span>.<span class="fu">merge</span>(base_model, <span class="kw">quote</span></span>
-<span id="cb7-2"><a href="" aria-label="2"></a>    beta <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">5</span>)</span>
-<span id="cb7-3"><a href="" aria-label="3"></a><span class="kw">end</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
-<p>The matching <code>beta</code> statement is replaced; the base model stays unchanged.</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb6"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb6-1"><a href="" aria-label="1"></a>wide_prior <span class="op">=</span> <span class="bu">Base</span>.<span class="fu">merge</span>(random_slope, <span class="kw">quote</span></span>
+<span id="cb6-2"><a href="" aria-label="2"></a>    beta <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">5</span>)</span>
+<span id="cb6-3"><a href="" aria-label="3"></a><span class="kw">end</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>The matching <code>beta</code> statement is replaced; <code>random_slope</code> stays unchanged.</p>
 <p>The same mechanism supports:</p>
 <ul>
 <li>nested submodels</li>
@@ -490,48 +463,9 @@ Workflow outputs
 <li>generated model variants</li>
 </ul>
 </div></div>
-<div class="takeaway">
+<div class="takeaway fragment">
 <p>The payoff grows with a <em>family</em> of bespoke models, not with the first ten-line model.</p>
 </div>
-</section>
-<section class="slide level2">
-<h2>The submitted abstract is already historical</h2>
-<p>The abstract listed closures, keyword/default arguments, and macros as possible future work.</p>
-<p>They now sit beside:</p>
-<div class="card-grid three">
-<div class="card">
-<div class="card-title">
-Julia-flavoured abstraction
-</div>
-<p>closures · higher-order functions · variadics · required/optional kwargs · defaults · macro expansion · inline helpers</p>
-</div>
-<div class="card blue-card">
-<div class="card-title">
-Statistical authoring
-</div>
-<p>submodels · <code>Base.merge</code> variants · custom distribution triads · censoring/truncation/weights · fused GLMs · CV taint</p>
-</div>
-<div class="card gold-card">
-<div class="card-title">
-Structured models
-</div>
-<p><code>plate</code> · ragged data · constrained ragged parameters · missing outcomes · ODEs · Torsten signatures</p>
-</div>
-</div>
-<p>Companion reference: <a href="https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas">feature atlas</a></p>
-<aside class="notes">
-<p>Do not race through every item. The purpose is to update the audience’s model of the package since submission; the companion page and backups carry the catalogue.</p>
-<style type="text/css">
-        span.MJX_Assistive_MathML {
-          position:absolute!important;
-          clip: rect(1px, 1px, 1px, 1px);
-          padding: 1px 0 0 0!important;
-          border: 0!important;
-          height: 1px!important;
-          width: 1px!important;
-          overflow: hidden!important;
-          display:block!important;
-      }</style></aside>
 </section></section>
 <section>
 <section class="title-slide slide level1 section-slide center">
@@ -540,36 +474,8 @@ Structured models
 </section>
 <section class="slide level2">
 <h2>The intellectual lineage: SlicStan</h2>
-<p><a href="https://doi.org/10.1145/3290348">Gorinova, Gordon &amp; Sutton (POPL 2019)</a> asked (not verbatim):</p>
-<blockquote>
-<p>What if a Stan-like language were compositional and blockless, then translated back to Stan?</p>
-</blockquote>
-<p>Shared ideas:</p>
-<ul>
-<li>no author-written Stan blocks</li>
-<li>infer placement from information flow</li>
-<li>make model fragments composable</li>
-<li>preserve Stan as the inference target</li>
-</ul>
-<div class="takeaway">
-<p>StanBlocks is directly inspired by SlicStan; it is not a port of SlicStan’s formal language or proofs.</p>
-</div>
-<aside class="notes">
-<p>Credit Maria Gorinova explicitly. SlicStan is “Slightly Less Intensely Constrained Stan.” Its paper gives an operational density semantics and a semantics-preserving translation; StanBlocks does not claim that formal result.</p>
-<style type="text/css">
-        span.MJX_Assistive_MathML {
-          position:absolute!important;
-          clip: rect(1px, 1px, 1px, 1px);
-          padding: 1px 0 0 0!important;
-          border: 0!important;
-          height: 1px!important;
-          width: 1px!important;
-          overflow: hidden!important;
-          display:block!important;
-      }</style></aside>
-</section>
-<section class="slide level2">
-<h2>Same destination, different route</h2>
+<p>StanBlocks is directly inspired by <a href="https://doi.org/10.1145/3290348">Gorinova, Gordon &amp; Sutton (POPL 2019)</a>. Shared ideas: no author-written Stan blocks, placement inferred from information flow, composable model fragments, and Stan preserved as the inference target.</p>
+<div class="fragment">
 <table class="caption-top">
 <colgroup>
 <col style="width: 33%">
@@ -580,7 +486,7 @@ Structured models
 <tr class="header">
 <th></th>
 <th>SlicStan</th>
-<th>StanBlocks.jl</th>
+<th>StanBlocks.jl (MlicStan?)</th>
 </tr>
 </thead>
 <tbody>
@@ -616,28 +522,9 @@ Structured models
 </tr>
 </tbody>
 </table>
-<p><span class="small muted">SlicStan comparison based on the POPL paper and its public repository.</span></p>
-</section>
-<section class="slide level2">
-<h2>Four compiler verbs</h2>
-<div class="flow">
-<div class="step">
-<strong>1 · capture</strong><br><code><span class="citation" data-cites="slic">@slic</span></code> stores Julia AST + bound data + defining module
 </div>
-<div class="step">
-<strong>2 · forward!</strong><br>resolve calls; infer type, shape, constraints, captures
-</div>
-<div class="step">
-<strong>3 · backward!</strong><br>mark everything that can affect a live likelihood
-</div>
-<div class="step">
-<strong>4 · distribute!</strong><br>route declarations and statements into Stan blocks
-</div>
-</div>
-<p>Then <code>show</code>/<code>stan_code</code> emits Stan source; <code>instantiate</code> compiles it through BridgeStan.</p>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb8"><pre class="sourceCode numberSource text number-lines code-with-copy"><code class="sourceCode"><span id="cb8-1"><a href="" aria-label="1"></a>@slic model → StanModel → stan_code → stanc / BridgeStan / CmdStan</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <aside class="notes">
-<p>These names come directly from the current source. Base.show is the emitter. The backward pass is why prior-only values can move to generated quantities and why transformed-data vs transformed-parameter placement follows likelihood reachability.</p>
+<p>Credit Maria Gorinova explicitly. SlicStan is “Slightly Less Intensely Constrained Stan.” Its paper gives an operational density semantics and a semantics-preserving translation; StanBlocks does not claim that formal result.</p>
 <style type="text/css">
         span.MJX_Assistive_MathML {
           position:absolute!important;
@@ -651,56 +538,57 @@ Structured models
       }</style></aside>
 </section>
 <section class="slide level2">
-<h2>One dependency graph, several execution times</h2>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb9"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb9-1"><a href="" aria-label="1"></a>mx <span class="op">=</span> <span class="fu">mean</span>(x)                 <span class="co"># data only</span></span>
-<span id="cb9-2"><a href="" aria-label="2"></a>alpha <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">2</span>)         <span class="co"># affects y</span></span>
-<span id="cb9-3"><a href="" aria-label="3"></a>beta  <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">1</span>)         <span class="co"># affects y</span></span>
-<span id="cb9-4"><a href="" aria-label="4"></a>mu <span class="op">=</span> alpha <span class="op">+</span> beta <span class="op">*</span> (x <span class="op">-</span> mx) <span class="co"># parameter dependent</span></span>
-<span id="cb9-5"><a href="" aria-label="5"></a>y <span class="op">~</span> <span class="fu">normal</span>(mu, <span class="fl">1</span>)            <span class="co"># observed</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
-<table class="caption-top">
-<colgroup>
-<col style="width: 33%">
-<col style="width: 33%">
-<col style="width: 33%">
-</colgroup>
-<thead>
-<tr class="header">
-<th>Binding</th>
-<th>Compiler conclusion</th>
-<th>Stan destination</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td><code>x</code>, <code>y</code></td>
-<td>supplied values</td>
-<td><code>data</code></td>
-</tr>
-<tr class="even">
-<td><code>mx</code></td>
-<td>data-only computation</td>
-<td><code>transformed data</code></td>
-</tr>
-<tr class="odd">
-<td><code>alpha</code>, <code>beta</code></td>
-<td>sampled and likelihood-relevant</td>
-<td><code>parameters</code> + <code>model</code></td>
-</tr>
-<tr class="even">
-<td><code>mu</code></td>
-<td>deterministic and parameter-dependent</td>
-<td><code>transformed parameters</code></td>
-</tr>
-<tr class="odd">
-<td><code>y_likelihood</code>, <code>y_gen</code></td>
-<td>post-fit workflow outputs</td>
-<td><code>generated quantities</code></td>
-</tr>
-</tbody>
-</table>
-<div class="takeaway">
-<p>The source reads in model order; the compiler schedules it in inference order.</p>
+<h2>One model, three activity analyses</h2>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb7"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb7-1"><a href="" aria-label="1"></a>m <span class="op">=</span> <span class="pp">@slic</span> (; y, subject) <span class="cf">begin</span></span>
+<span id="cb7-2"><a href="" aria-label="2"></a>    J     <span class="op">=</span> <span class="fu">maximum</span>(subject)</span>
+<span id="cb7-3"><a href="" aria-label="3"></a>    mu    <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">1</span>)</span>
+<span id="cb7-4"><a href="" aria-label="4"></a>    tau   <span class="op">~</span> <span class="fu">exponential</span>(<span class="fl">1</span>)</span>
+<span id="cb7-5"><a href="" aria-label="5"></a>    alpha <span class="op">::</span><span class="dt"> vector</span>[J] <span class="op">~</span> <span class="fu">normal</span>(mu, tau)   <span class="co"># per-subject effect</span></span>
+<span id="cb7-6"><a href="" aria-label="6"></a>    sigma <span class="op">~</span> <span class="fu">exponential</span>(<span class="fl">1</span>)</span>
+<span id="cb7-7"><a href="" aria-label="7"></a>    y <span class="op">~</span> <span class="fu">normal</span>(alpha[subject], sigma)</span>
+<span id="cb7-8"><a href="" aria-label="8"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Same source. Only the <strong>data you bind</strong> changes — activity analysis and metadata decide, per statement, where each sampling statement ends up.</p>
+<div class="card-grid three">
+<div class="card gold-card fragment">
+<div class="card-title">
+Prior prediction
 </div>
+<p>Bind <strong>no outcome</strong> — <code>m(; subject)</code>.</p>
+<p>Nothing to condition on, so the whole model forward-simulates in <code>generated quantities</code> — <code>mu, tau, alpha, sigma</code>, and <code>y</code> itself.</p>
+</div>
+<div class="card blue-card fragment">
+<div class="card-title">
+Posterior fit
+</div>
+<p>Bind <strong><code>y</code> observed</strong>.</p>
+<p><code>y ~ normal(alpha[subject], sigma)</code> becomes the likelihood; <code>mu, tau, alpha, sigma</code> are fitted, and <code>y_gen</code> is the posterior-predictive replica.</p>
+</div>
+<div class="card fragment">
+<div class="card-title">
+Population prediction · CV
+</div>
+<p>Bind <strong><code>maybecv(:subject, subject)</code></strong>.</p>
+<p>Taint flows from the grouping into <code>alpha</code>: the per-subject effects leave <code>parameters</code> and re-draw from <code>normal(mu, tau)</code> in <code>generated quantities</code>, while <code>mu, tau, sigma</code> stay fitted.</p>
+</div>
+</div>
+<p class="stan-modal-cta fragment">
+<button type="button" class="stan-modal-trigger" onclick="event.stopPropagation(); window.openStanModal('prior-posterior');">
+  See the generated Stan, side by side&nbsp;→
+</button>
+</p>
+<aside class="notes">
+<p>The SAME <span class="citation" data-cites="slic">@slic</span> source is all three models; only the data binding differs, and two mechanisms do the work. (1) Dead-parameter elimination: bind y and <code>y ~</code> is a live likelihood, so mu, tau, alpha, sigma are fitted parameters; OMIT y and there is no likelihood at all, so the whole model forward-simulates in generated quantities (y is generated too — this is the prior predictive). (2) cv taint: maybecv on the subject index taints everything it reaches — the y likelihood (dropped) and, because alpha’s size J = maximum(subject) is tainted, alpha itself, which relocates to generated quantities and re-draws from normal(mu, tau). mu, tau, sigma are untainted, so they stay parameters. That is leave-a-group-out / population prediction. The typed <code>alpha :: vector[J] ~ normal(mu, tau)</code> and the <code>; n=J</code> spelling now emit byte-identical Stan under cv taint — the declared size carries the taint too (StanBlocks fix, snag <code>typed-lhs-size-c-8a7fbfb2</code>). The modal shows the real distilled <code>stan_code</code>.</p>
+<style type="text/css">
+        span.MJX_Assistive_MathML {
+          position:absolute!important;
+          clip: rect(1px, 1px, 1px, 1px);
+          padding: 1px 0 0 0!important;
+          border: 0!important;
+          height: 1px!important;
+          width: 1px!important;
+          overflow: hidden!important;
+          display:block!important;
+      }</style></aside>
 </section></section>
 <section>
 <section class="title-slide slide level1 section-slide center">
@@ -721,7 +609,7 @@ Structured models
 </div>
 </div>
 <div class="columns">
-<div class="column" style="width:47%;">
+<div class="column fragment" style="width:47%;">
 <h3>Agents make this cheaper</h3>
 <ul>
 <li>write Stan boilerplate</li>
@@ -730,7 +618,7 @@ Structured models
 <li>explore compiler edge cases quickly</li>
 <li>producing, finding, and fixing bugs</li>
 </ul>
-</div><div class="column" style="width:49%;">
+</div><div class="column fragment" style="width:49%;">
 <h3>Agents do not make this disappear</h3>
 <ul>
 <li>one source for a family of model variants</li>
@@ -738,7 +626,7 @@ Structured models
 <li>generated Stan that humans and tools can inspect</li>
 </ul>
 </div></div>
-<div class="takeaway">
+<div class="takeaway fragment">
 <p>Agents reduce the cost of writing code. StanBlocks reduces the amount of <em>independent model meaning</em> we have to maintain.</p>
 </div>
 <aside class="notes">
@@ -763,28 +651,31 @@ Structured models
 <section class="slide level2">
 <h2>StanBlocks as <em>one</em> compiler layer</h2>
 <div class="flow">
-<div class="step j-red">
+<div class="step j-blue">
 <strong>BRM.jl</strong><br>formulae, terms, priors, model-family vocabulary
 </div>
-<div class="step j-green">
+<div class="step stan">
 <strong>StanBlocks.jl</strong><br>composition, tracing, block/type/shape inference
 </div>
-<div class="step stan">
+<div class="step j-green">
 <strong>BridgeStan.jl</strong><br>compiled Stan model — log density &amp; gradients (AD)
 </div>
 <div class="step j-purple">
 <strong>JuliaBayes.jl</strong><br>shared Julia-facing workflow and ecosystem integration
 </div>
 </div>
-<p>The largest current public consumer is <a href="https://github.com/nsiccha/BayesianRegressionModels.jl">BayesianRegressionModels.jl</a>: a formula layer that lowers real model families into <code>@slic</code> and <code>@deffun</code> components.</p>
+<div class="fragment">
+<p>The largest current public (but unregistered) consumer is <a href="https://github.com/nsiccha/BayesianRegressionModels.jl">BayesianRegressionModels.jl</a>: a <code>brms</code>-like formula layer that <em>currently</em> lowers into Stan via StanBlocks.jl, but will target Julia via Turing.jl as well in the future.</p>
+</div>
+<div class="fragment">
 <p>Near-term priorities:</p>
 <ol type="1">
-<li>Stabilise the small public authoring contract and document every sharp edge.</li>
 <li>Make BRM.jl the ergonomic route for standard regression families.</li>
 <li>Keep StanBlocks available for bespoke PKPD and other compositional models.</li>
 <li>Connect through JuliaBayes interfaces rather than inventing another closed workflow.</li>
 </ol>
-<div class="contributors-band">
+</div>
+<div class="contributors-band fragment">
 <p class="band-label">
 JuliaBayes contributors
 </p>
@@ -798,7 +689,7 @@ Nikolas Siccha
 Generable Inc.
 </p>
 </div>
-<div class="person">
+<div class="person j-blue">
 <img src="img/penelopeysm.webp" style="object-position: 66% 32%;" alt="Penelope Yong">
 <p class="who">
 Penelope Yong
@@ -807,7 +698,7 @@ Penelope Yong
 Alan Turing Institute
 </p>
 </div>
-<div class="person">
+<div class="person j-green">
 <img src="https://github.com/PTWaade.png?size=200" alt="Peter Thestrup Waade">
 <p class="who">
 Peter Thestrup Waade
@@ -816,7 +707,7 @@ Peter Thestrup Waade
 TNU, ETH Zürich
 </p>
 </div>
-<div class="person">
+<div class="person j-purple">
 <img src="https://github.com/rsenne.png?size=200" alt="Ryan Senne">
 <p class="who">
 Ryan Senne
@@ -825,7 +716,7 @@ Ryan Senne
 Boston University
 </p>
 </div>
-<div class="person">
+<div class="person j-red">
 <img src="https://github.com/seabbs.png?size=200" alt="Sam Abbott">
 <p class="who">
 Sam Abbott
@@ -834,7 +725,7 @@ Sam Abbott
 LSHTM (epinowcast · epiforecasts)
 </p>
 </div>
-<div class="person">
+<div class="person j-blue">
 <img src="https://github.com/simonsteiger.png?size=200" alt="Simon Steiger">
 <p class="who">
 Simon Steiger
@@ -903,110 +794,98 @@ Karolinska Institutet
 <h1>Backup</h1>
 <p>Source-to-emission examples and the honest edges of the current language.</p>
 </section>
-<section class="slide level2 tiny-code">
-<h2>Backup · exact core emission</h2>
-<p>The main example currently emits (helper <code>functions</code> omitted):</p>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb10"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb10-1"><a href="" aria-label="1"></a><span class="kw">data</span> {</span>
-<span id="cb10-2"><a href="" aria-label="2"></a>    <span class="dt">int</span> x_n;</span>
-<span id="cb10-3"><a href="" aria-label="3"></a>    <span class="dt">vector</span>[x_n] x;</span>
-<span id="cb10-4"><a href="" aria-label="4"></a>    <span class="dt">int</span> y_n;</span>
-<span id="cb10-5"><a href="" aria-label="5"></a>    <span class="dt">vector</span>[y_n] y;</span>
-<span id="cb10-6"><a href="" aria-label="6"></a>}</span>
-<span id="cb10-7"><a href="" aria-label="7"></a><span class="kw">transformed data</span> {</span>
-<span id="cb10-8"><a href="" aria-label="8"></a>}</span>
-<span id="cb10-9"><a href="" aria-label="9"></a><span class="kw">parameters</span> {</span>
-<span id="cb10-10"><a href="" aria-label="10"></a>    <span class="dt">real</span> alpha;</span>
-<span id="cb10-11"><a href="" aria-label="11"></a>    <span class="dt">real</span> beta;</span>
-<span id="cb10-12"><a href="" aria-label="12"></a>    <span class="dt">real</span>&lt;<span class="kw">lower</span>=<span class="fl">0.0</span>&gt; sigma;</span>
-<span id="cb10-13"><a href="" aria-label="13"></a>}</span>
-<span id="cb10-14"><a href="" aria-label="14"></a><span class="kw">transformed parameters</span> {</span>
-<span id="cb10-15"><a href="" aria-label="15"></a>    <span class="dt">vector</span>[x_n] mu = (alpha + (beta * x));</span>
-<span id="cb10-16"><a href="" aria-label="16"></a>}</span>
-<span id="cb10-17"><a href="" aria-label="17"></a><span class="kw">model</span> {</span>
-<span id="cb10-18"><a href="" aria-label="18"></a>    alpha ~ normal(<span class="dv">0</span>, <span class="dv">2</span>);</span>
-<span id="cb10-19"><a href="" aria-label="19"></a>    beta ~ normal(<span class="dv">0</span>, <span class="dv">1</span>);</span>
-<span id="cb10-20"><a href="" aria-label="20"></a>    sigma ~ exponential(<span class="dv">1</span>);</span>
-<span id="cb10-21"><a href="" aria-label="21"></a>    y ~ normal(mu, sigma);</span>
-<span id="cb10-22"><a href="" aria-label="22"></a>}</span>
-<span id="cb10-23"><a href="" aria-label="23"></a><span class="kw">generated quantities</span> {</span>
-<span id="cb10-24"><a href="" aria-label="24"></a>    <span class="dt">vector</span>[y_n] y_likelihood = normal_lpdfs(y, mu, sigma);</span>
-<span id="cb10-25"><a href="" aria-label="25"></a>    <span class="dt">vector</span>[y_n] y_gen = normal_vector_rng(y_n, mu, sigma);</span>
-<span id="cb10-26"><a href="" aria-label="26"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
-</section>
 <section class="slide level2">
 <h2>Backup · deterministic control flow belongs in <code>@deffun</code></h2>
 <div class="columns">
 <div class="column" style="width:49%;">
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb11"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb11-1"><a href="" aria-label="1"></a><span class="pp">@deffun</span> <span class="fu">centered_sum</span>(x<span class="op">::</span><span class="dt">vector</span>[n])<span class="op">::</span><span class="dt">real </span><span class="op">=</span> <span class="cf">begin</span></span>
-<span id="cb11-2"><a href="" aria-label="2"></a>    xbar <span class="op">=</span> <span class="fu">mean</span>(x)</span>
-<span id="cb11-3"><a href="" aria-label="3"></a>    acc <span class="op">=</span> <span class="fl">0.0</span></span>
-<span id="cb11-4"><a href="" aria-label="4"></a>    <span class="cf">for</span> xi <span class="kw">in</span> x</span>
-<span id="cb11-5"><a href="" aria-label="5"></a>        acc <span class="op">+=</span> xi <span class="op">-</span> xbar</span>
-<span id="cb11-6"><a href="" aria-label="6"></a>    <span class="cf">end</span></span>
-<span id="cb11-7"><a href="" aria-label="7"></a>    acc</span>
-<span id="cb11-8"><a href="" aria-label="8"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb8"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb8-1"><a href="" aria-label="1"></a><span class="pp">@deffun</span> <span class="fu">centered_sum</span>(x) <span class="op">=</span> <span class="cf">begin</span></span>
+<span id="cb8-2"><a href="" aria-label="2"></a>    xbar <span class="op">=</span> <span class="fu">mean</span>(x)</span>
+<span id="cb8-3"><a href="" aria-label="3"></a>    acc <span class="op">=</span> <span class="fl">0.0</span></span>
+<span id="cb8-4"><a href="" aria-label="4"></a>    <span class="cf">for</span> xi <span class="kw">in</span> x</span>
+<span id="cb8-5"><a href="" aria-label="5"></a>        acc <span class="op">+=</span> xi <span class="op">-</span> xbar</span>
+<span id="cb8-6"><a href="" aria-label="6"></a>    <span class="cf">end</span></span>
+<span id="cb8-7"><a href="" aria-label="7"></a>    acc</span>
+<span id="cb8-8"><a href="" aria-label="8"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </div><div class="column" style="width:47%;">
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb12"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb12-1"><a href="" aria-label="1"></a><span class="dt">real</span> centered_sum(<span class="dt">vector</span> x) {</span>
-<span id="cb12-2"><a href="" aria-label="2"></a>  <span class="dt">real</span> xbar = mean(x);</span>
-<span id="cb12-3"><a href="" aria-label="3"></a>  <span class="dt">real</span> acc = <span class="fl">0.0</span>;</span>
-<span id="cb12-4"><a href="" aria-label="4"></a>  <span class="cf">for</span> (i <span class="cf">in</span> <span class="dv">1</span>:num_elements(x)) {</span>
-<span id="cb12-5"><a href="" aria-label="5"></a>    <span class="dt">real</span> xi = x[i];</span>
-<span id="cb12-6"><a href="" aria-label="6"></a>    acc += xi - xbar;</span>
-<span id="cb12-7"><a href="" aria-label="7"></a>  }</span>
-<span id="cb12-8"><a href="" aria-label="8"></a>  <span class="cf">return</span> acc;</span>
-<span id="cb12-9"><a href="" aria-label="9"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb9"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb9-1"><a href="" aria-label="1"></a><span class="dt">real</span> centered_sum(<span class="dt">vector</span> x) {</span>
+<span id="cb9-2"><a href="" aria-label="2"></a>  <span class="dt">real</span> xbar = mean(x);</span>
+<span id="cb9-3"><a href="" aria-label="3"></a>  <span class="dt">real</span> acc = <span class="fl">0.0</span>;</span>
+<span id="cb9-4"><a href="" aria-label="4"></a>  <span class="cf">for</span> (i <span class="cf">in</span> <span class="dv">1</span>:num_elements(x)) {</span>
+<span id="cb9-5"><a href="" aria-label="5"></a>    <span class="dt">real</span> xi = x[i];</span>
+<span id="cb9-6"><a href="" aria-label="6"></a>    acc += xi - xbar;</span>
+<span id="cb9-7"><a href="" aria-label="7"></a>  }</span>
+<span id="cb9-8"><a href="" aria-label="8"></a>  <span class="cf">return</span> acc;</span>
+<span id="cb9-9"><a href="" aria-label="9"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </div></div>
 <p><code>@slic</code> stays flat; <code>@deffun</code> owns loops, branches, mutation, iteration, and bounded comprehensions.</p>
+</section>
+<section class="slide level2">
+<h2>Backup · higher-order functions specialize at compile time</h2>
+<div class="columns">
+<div class="column" style="width:49%;">
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb10"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb10-1"><a href="" aria-label="1"></a><span class="pp">@deffun</span> <span class="fu">apply_twice</span>(f, x) <span class="op">=</span> <span class="fu">f</span>(<span class="fu">f</span>(x))</span>
+<span id="cb10-2"><a href="" aria-label="2"></a></span>
+<span id="cb10-3"><a href="" aria-label="3"></a><span class="co"># f is passed like data — pick any callee</span></span>
+<span id="cb10-4"><a href="" aria-label="4"></a>z <span class="op">=</span> <span class="fu">apply_twice</span>(exp, mu)   <span class="co"># ⇒ exp(exp(mu))</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div><div class="column" style="width:47%;">
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb11"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb11-1"><a href="" aria-label="1"></a><span class="dt">real</span> apply_twice_exp(<span class="dt">real</span> x) {</span>
+<span id="cb11-2"><a href="" aria-label="2"></a>  <span class="cf">return</span> exp(exp(x));</span>
+<span id="cb11-3"><a href="" aria-label="3"></a>}</span>
+<span id="cb11-4"><a href="" aria-label="4"></a></span>
+<span id="cb11-5"><a href="" aria-label="5"></a><span class="co">// at the call site:</span></span>
+<span id="cb11-6"><a href="" aria-label="6"></a><span class="dt">real</span> z = apply_twice_exp(mu);</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div></div>
+<p>The function argument is resolved at compile time: StanBlocks emits one specialized Stan function per callee (<code>apply_twice_exp</code>), so no runtime function object ever reaches Stan.</p>
 </section>
 <section class="slide level2">
 <h2>Backup · <code>plate</code> is the loop that samples</h2>
 <div class="columns">
 <div class="column" style="width:49%;">
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb13"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb13-1"><a href="" aria-label="1"></a>theta <span class="op">~</span> <span class="fu">plate</span>(y; outer <span class="op">=</span> <span class="fl">4</span>) <span class="cf">do</span> yi</span>
-<span id="cb13-2"><a href="" aria-label="2"></a>    t <span class="op">~</span> <span class="fu">normal</span>(mu0, <span class="fl">1</span>)</span>
-<span id="cb13-3"><a href="" aria-label="3"></a>    yi <span class="op">~</span> <span class="fu">normal</span>(t, sigma)</span>
-<span id="cb13-4"><a href="" aria-label="4"></a>    t</span>
-<span id="cb13-5"><a href="" aria-label="5"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb12"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb12-1"><a href="" aria-label="1"></a>theta <span class="op">~</span> <span class="fu">plate</span>(y; outer <span class="op">=</span> <span class="fl">4</span>) <span class="cf">do</span> yi</span>
+<span id="cb12-2"><a href="" aria-label="2"></a>    t <span class="op">~</span> <span class="fu">normal</span>(mu0, <span class="fl">1</span>)</span>
+<span id="cb12-3"><a href="" aria-label="3"></a>    yi <span class="op">~</span> <span class="fu">normal</span>(t, sigma)</span>
+<span id="cb12-4"><a href="" aria-label="4"></a>    t</span>
+<span id="cb12-5"><a href="" aria-label="5"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </div><div class="column" style="width:47%;">
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb14"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb14-1"><a href="" aria-label="1"></a><span class="kw">parameters</span> {</span>
-<span id="cb14-2"><a href="" aria-label="2"></a>  <span class="dt">vector</span>[<span class="dv">4</span>] theta_t;</span>
-<span id="cb14-3"><a href="" aria-label="3"></a>}</span>
-<span id="cb14-4"><a href="" aria-label="4"></a><span class="kw">transformed parameters</span> {</span>
-<span id="cb14-5"><a href="" aria-label="5"></a>  <span class="cf">for</span> (i <span class="cf">in</span> <span class="dv">1</span>:<span class="dv">4</span>)</span>
-<span id="cb14-6"><a href="" aria-label="6"></a>    theta[i] = theta_t[i];</span>
-<span id="cb14-7"><a href="" aria-label="7"></a>}</span>
-<span id="cb14-8"><a href="" aria-label="8"></a><span class="kw">model</span> {</span>
-<span id="cb14-9"><a href="" aria-label="9"></a>  <span class="cf">for</span> (i <span class="cf">in</span> <span class="dv">1</span>:<span class="dv">4</span>) {</span>
-<span id="cb14-10"><a href="" aria-label="10"></a>    theta_t[i] ~ normal(mu0, <span class="dv">1</span>);</span>
-<span id="cb14-11"><a href="" aria-label="11"></a>    y[i] ~ normal(theta_t[i], sigma);</span>
-<span id="cb14-12"><a href="" aria-label="12"></a>  }</span>
-<span id="cb14-13"><a href="" aria-label="13"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb13"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb13-1"><a href="" aria-label="1"></a><span class="kw">parameters</span> {</span>
+<span id="cb13-2"><a href="" aria-label="2"></a>  <span class="dt">vector</span>[<span class="dv">4</span>] theta_t;</span>
+<span id="cb13-3"><a href="" aria-label="3"></a>}</span>
+<span id="cb13-4"><a href="" aria-label="4"></a><span class="kw">transformed parameters</span> {</span>
+<span id="cb13-5"><a href="" aria-label="5"></a>  <span class="cf">for</span> (i <span class="cf">in</span> <span class="dv">1</span>:<span class="dv">4</span>)</span>
+<span id="cb13-6"><a href="" aria-label="6"></a>    theta[i] = theta_t[i];</span>
+<span id="cb13-7"><a href="" aria-label="7"></a>}</span>
+<span id="cb13-8"><a href="" aria-label="8"></a><span class="kw">model</span> {</span>
+<span id="cb13-9"><a href="" aria-label="9"></a>  <span class="cf">for</span> (i <span class="cf">in</span> <span class="dv">1</span>:<span class="dv">4</span>) {</span>
+<span id="cb13-10"><a href="" aria-label="10"></a>    theta_t[i] ~ normal(mu0, <span class="dv">1</span>);</span>
+<span id="cb13-11"><a href="" aria-label="11"></a>    y[i] ~ normal(theta_t[i], sigma);</span>
+<span id="cb13-12"><a href="" aria-label="12"></a>  }</span>
+<span id="cb13-13"><a href="" aria-label="13"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </div></div>
 <p><code>plate</code> promotes fresh cell variables to outer storage and clones the compiler-owned loop into the Stan blocks that need it.</p>
 </section>
 <section class="slide level2">
 <h2>Backup · missing continuous outcomes</h2>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb15"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb15-1"><a href="" aria-label="1"></a>m <span class="op">=</span> <span class="pp">@slic</span> (; y <span class="op">=</span> <span class="dt">Union</span>{<span class="dt">Missing</span>,<span class="dt">Float64</span>}[<span class="fl">1.0</span>, <span class="cn">missing</span>, <span class="fl">3.0</span>]) <span class="cf">begin</span></span>
-<span id="cb15-2"><a href="" aria-label="2"></a>    mu <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">2</span>)</span>
-<span id="cb15-3"><a href="" aria-label="3"></a>    sigma <span class="op">~</span> <span class="fu">exponential</span>(<span class="fl">1</span>)</span>
-<span id="cb15-4"><a href="" aria-label="4"></a>    y <span class="op">~</span> <span class="fu">normal</span>(mu, sigma)</span>
-<span id="cb15-5"><a href="" aria-label="5"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb14"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb14-1"><a href="" aria-label="1"></a>m <span class="op">=</span> <span class="pp">@slic</span> (; y <span class="op">=</span> <span class="dt">Union</span>{<span class="dt">Missing</span>,<span class="dt">Float64</span>}[<span class="fl">1.0</span>, <span class="cn">missing</span>, <span class="fl">3.0</span>]) <span class="cf">begin</span></span>
+<span id="cb14-2"><a href="" aria-label="2"></a>    mu <span class="op">~</span> <span class="fu">normal</span>(<span class="fl">0</span>, <span class="fl">2</span>)</span>
+<span id="cb14-3"><a href="" aria-label="3"></a>    sigma <span class="op">~</span> <span class="fu">exponential</span>(<span class="fl">1</span>)</span>
+<span id="cb14-4"><a href="" aria-label="4"></a>    y <span class="op">~</span> <span class="fu">normal</span>(mu, sigma)</span>
+<span id="cb14-5"><a href="" aria-label="5"></a><span class="cf">end</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <p>Essential rewrite:</p>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb16"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb16-1"><a href="" aria-label="1"></a><span class="kw">data</span> { <span class="dt">vector</span>[y_obs_n] y_obs; <span class="dt">array</span>[...] <span class="dt">int</span> y_ii_obs; <span class="dt">array</span>[...] <span class="dt">int</span> y_ii_mis; }</span>
-<span id="cb16-2"><a href="" aria-label="2"></a><span class="kw">parameters</span> { <span class="dt">real</span> mu; <span class="dt">real</span>&lt;<span class="kw">lower</span>=<span class="dv">0</span>&gt; sigma; }</span>
-<span id="cb16-3"><a href="" aria-label="3"></a><span class="kw">model</span> { y_obs ~ normal(mu, sigma); }</span>
-<span id="cb16-4"><a href="" aria-label="4"></a><span class="kw">generated quantities</span> {</span>
-<span id="cb16-5"><a href="" aria-label="5"></a>  <span class="dt">vector</span>[y_ii_mis_n] y_mis = normal_vector_rng(y_ii_mis_n, mu, sigma);</span>
-<span id="cb16-6"><a href="" aria-label="6"></a>  <span class="dt">vector</span>[...] y = merge_missing(y_obs, y_mis, y_ii_obs, y_ii_mis);</span>
-<span id="cb16-7"><a href="" aria-label="7"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb15"><pre class="sourceCode numberSource stan number-lines code-with-copy"><code class="sourceCode stan"><span id="cb15-1"><a href="" aria-label="1"></a><span class="kw">data</span> { <span class="dt">vector</span>[y_obs_n] y_obs; <span class="dt">array</span>[...] <span class="dt">int</span> y_ii_obs; <span class="dt">array</span>[...] <span class="dt">int</span> y_ii_mis; }</span>
+<span id="cb15-2"><a href="" aria-label="2"></a><span class="kw">parameters</span> { <span class="dt">real</span> mu; <span class="dt">real</span>&lt;<span class="kw">lower</span>=<span class="dv">0</span>&gt; sigma; }</span>
+<span id="cb15-3"><a href="" aria-label="3"></a><span class="kw">model</span> { y_obs ~ normal(mu, sigma); }</span>
+<span id="cb15-4"><a href="" aria-label="4"></a><span class="kw">generated quantities</span> {</span>
+<span id="cb15-5"><a href="" aria-label="5"></a>  <span class="dt">vector</span>[y_ii_mis_n] y_mis = normal_vector_rng(y_ii_mis_n, mu, sigma);</span>
+<span id="cb15-6"><a href="" aria-label="6"></a>  <span class="dt">vector</span>[...] y = merge_missing(y_obs, y_mis, y_ii_obs, y_ii_mis);</span>
+<span id="cb15-7"><a href="" aria-label="7"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <p>The usual case adds no missing-value sampler dimensions: imputed values are posterior-predictive generated quantities.</p>
 </section>
 <section class="slide level2">
 <h2>Backup · observation semantics compose with a base family</h2>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb17"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb17-1"><a href="" aria-label="1"></a>y_weighted  <span class="op">~</span> <span class="fu">weighted</span>(normal, w, mu, sigma)</span>
-<span id="cb17-2"><a href="" aria-label="2"></a>y_truncated <span class="op">~</span> <span class="fu">truncated</span>(normal, mu, sigma; lower<span class="op">=</span>lo, upper<span class="op">=</span>hi)</span>
-<span id="cb17-3"><a href="" aria-label="3"></a>y_censored  <span class="op">~</span> <span class="fu">censored</span>(normal, mu, sigma; lower<span class="op">=</span>lo, upper<span class="op">=</span>hi)</span>
-<span id="cb17-4"><a href="" aria-label="4"></a>y_interval  <span class="op">~</span> <span class="fu">interval_censored</span>(normal, lo, hi, mu, sigma)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb16"><pre class="sourceCode numberSource julia number-lines code-with-copy"><code class="sourceCode julia"><span id="cb16-1"><a href="" aria-label="1"></a>y_weighted  <span class="op">~</span> <span class="fu">weighted</span>(normal, w, mu, sigma)</span>
+<span id="cb16-2"><a href="" aria-label="2"></a>y_truncated <span class="op">~</span> <span class="fu">truncated</span>(normal, mu, sigma; lower<span class="op">=</span>lo, upper<span class="op">=</span>hi)</span>
+<span id="cb16-3"><a href="" aria-label="3"></a>y_censored  <span class="op">~</span> <span class="fu">censored</span>(normal, mu, sigma; lower<span class="op">=</span>lo, upper<span class="op">=</span>hi)</span>
+<span id="cb16-4"><a href="" aria-label="4"></a>y_interval  <span class="op">~</span> <span class="fu">interval_censored</span>(normal, lo, hi, mu, sigma)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <p>The compiler selects the matching:</p>
 <ul>
 <li>aggregate density/mass function</li>
@@ -1019,17 +898,17 @@ Karolinska Institutet
 <section class="slide level2">
 <h2>Backup · executable descriptor</h2>
 <p>For the regression example:</p>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb18"><pre class="sourceCode numberSource text number-lines code-with-copy"><code class="sourceCode"><span id="cb18-1"><a href="" aria-label="1"></a>inputs:</span>
-<span id="cb18-2"><a href="" aria-label="2"></a>  y      observed=true</span>
-<span id="cb18-3"><a href="" aria-label="3"></a>  x      observed=false</span>
-<span id="cb18-4"><a href="" aria-label="4"></a></span>
-<span id="cb18-5"><a href="" aria-label="5"></a>outputs:</span>
-<span id="cb18-6"><a href="" aria-label="6"></a>  alpha, beta, sigma   parameter / posterior</span>
-<span id="cb18-7"><a href="" aria-label="7"></a>  y_likelihood        generated_quantity / pointwise_loglik / source=y</span>
-<span id="cb18-8"><a href="" aria-label="8"></a>  y_gen               generated_quantity / draw / source=y</span>
-<span id="cb18-9"><a href="" aria-label="9"></a></span>
-<span id="cb18-10"><a href="" aria-label="10"></a>operations:</span>
-<span id="cb18-11"><a href="" aria-label="11"></a>  transpile · instantiate · fit · predict · pointwise_loglik</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb17"><pre class="sourceCode numberSource text number-lines code-with-copy"><code class="sourceCode"><span id="cb17-1"><a href="" aria-label="1"></a>inputs:</span>
+<span id="cb17-2"><a href="" aria-label="2"></a>  y      observed=true</span>
+<span id="cb17-3"><a href="" aria-label="3"></a>  x      observed=false</span>
+<span id="cb17-4"><a href="" aria-label="4"></a></span>
+<span id="cb17-5"><a href="" aria-label="5"></a>outputs:</span>
+<span id="cb17-6"><a href="" aria-label="6"></a>  alpha, beta, sigma   parameter / posterior</span>
+<span id="cb17-7"><a href="" aria-label="7"></a>  y_likelihood        generated_quantity / pointwise_loglik / source=y</span>
+<span id="cb17-8"><a href="" aria-label="8"></a>  y_gen               generated_quantity / draw / source=y</span>
+<span id="cb17-9"><a href="" aria-label="9"></a></span>
+<span id="cb17-10"><a href="" aria-label="10"></a>operations:</span>
+<span id="cb17-11"><a href="" aria-label="11"></a>  transpile · instantiate · fit · predict · pointwise_loglik</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <p>Consumers do not need a parallel registry of what a model can do.</p>
 </section>
 <section class="slide level2">
@@ -1320,15 +1199,15 @@ Karolinska Institutet
     <template id="qr-title-tpl">
       <div class="title-qr">
         <a class="title-qr-item" href="https://sb.siccha.de">
-          <img src="img/qr-app.svg" alt="QR code linking to the live StanBlocks transpiler at sb.siccha.de">
+          <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2MDAiIGhlaWdodD0iNjAwIiB2aWV3Qm94PSIwIDAgMzMgMzMiIHNoYXBlLXJlbmRlcmluZz0iY3Jpc3BFZGdlcyI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTAgMGgzM3YzM0gweiIvPjxwYXRoIHN0cm9rZT0iIzAwMDAwMCIgZD0iTTQgNC41aDdNMTMgNC41aDFNMTcgNC41aDFNMjIgNC41aDdNNCA1LjVoMU0xMCA1LjVoMU0xNiA1LjVoNU0yMiA1LjVoMU0yOCA1LjVoMU00IDYuNWgxTTYgNi41aDNNMTAgNi41aDFNMTIgNi41aDFNMTkgNi41aDFNMjIgNi41aDFNMjQgNi41aDNNMjggNi41aDFNNCA3LjVoMU02IDcuNWgzTTEwIDcuNWgxTTEyIDcuNWgyTTE2IDcuNWg0TTIyIDcuNWgxTTI0IDcuNWgzTTI4IDcuNWgxTTQgOC41aDFNNiA4LjVoM00xMCA4LjVoMU0xMiA4LjVoMU0xNSA4LjVoMk0yMCA4LjVoMU0yMiA4LjVoMU0yNCA4LjVoM00yOCA4LjVoMU00IDkuNWgxTTEwIDkuNWgxTTEyIDkuNWgxTTE0IDkuNWgxTTE4IDkuNWgyTTIyIDkuNWgxTTI4IDkuNWgxTTQgMTAuNWg3TTEyIDEwLjVoMU0xNCAxMC41aDFNMTYgMTAuNWgxTTE4IDEwLjVoMU0yMCAxMC41aDFNMjIgMTAuNWg3TTEyIDExLjVoM00xNiAxMS41aDFNMTkgMTEuNWgxTTQgMTIuNWgxTTYgMTIuNWg1TTE1IDEyLjVoNE0yMiAxMi41aDVNNCAxMy41aDFNNyAxMy41aDFNMTMgMTMuNWgxTTE1IDEzLjVoMk0yMCAxMy41aDFNMjMgMTMuNWgxTTI3IDEzLjVoMU00IDE0LjVoMU04IDE0LjVoMU0xMCAxNC41aDJNMTMgMTQuNWgyTTE4IDE0LjVoM00yMiAxNC41aDRNMjcgMTQuNWgyTTkgMTUuNWgxTTExIDE1LjVoMk0xNSAxNS41aDJNMTggMTUuNWgxTTI4IDE1LjVoMU00IDE2LjVoM00xMCAxNi41aDFNMTMgMTYuNWgyTTE5IDE2LjVoMU0yMiAxNi41aDNNMjYgMTYuNWgzTTQgMTcuNWgyTTcgMTcuNWgxTTEzIDE3LjVoMk0xNiAxNy41aDJNMjAgMTcuNWgxTTIzIDE3LjVoMU0yNSAxNy41aDFNMjcgMTcuNWgxTTQgMTguNWgxTTYgMTguNWgyTTkgMTguNWgyTTE3IDE4LjVoNU0yMyAxOC41aDNNMjcgMTguNWgyTTQgMTkuNWgxTTggMTkuNWgxTTExIDE5LjVoMU0xNiAxOS41aDJNMjMgMTkuNWgyTTI4IDE5LjVoMU00IDIwLjVoMU02IDIwLjVoMU04IDIwLjVoMU0xMCAyMC41aDJNMTYgMjAuNWgxTTE4IDIwLjVoN00yNiAyMC41aDFNMTIgMjEuNWgzTTE5IDIxLjVoMk0yNCAyMS41aDJNNCAyMi41aDdNMTUgMjIuNWgyTTIwIDIyLjVoMU0yMiAyMi41aDFNMjQgMjIuNWgxTTI2IDIyLjVoM000IDIzLjVoMU0xMCAyMy41aDFNMTIgMjMuNWgxTTE1IDIzLjVoMU0xOCAyMy41aDFNMjAgMjMuNWgxTTI0IDIzLjVoMk0yOCAyMy41aDFNNCAyNC41aDFNNiAyNC41aDNNMTAgMjQuNWgxTTEyIDI0LjVoMU0xNCAyNC41aDJNMTkgMjQuNWg2TTI2IDI0LjVoM000IDI1LjVoMU02IDI1LjVoM00xMCAyNS41aDFNMTIgMjUuNWgyTTE2IDI1LjVoM00yMSAyNS41aDJNMjQgMjUuNWg1TTQgMjYuNWgxTTYgMjYuNWgzTTEwIDI2LjVoMU0xMiAyNi41aDJNMTcgMjYuNWg1TTI1IDI2LjVoMk0yOCAyNi41aDFNNCAyNy41aDFNMTAgMjcuNWgxTTE2IDI3LjVoMk0xOSAyNy41aDJNMjIgMjcuNWg0TTI4IDI3LjVoMU00IDI4LjVoN00xMiAyOC41aDJNMTYgMjguNWgxTTE4IDI4LjVoMU0yMSAyOC41aDFNMjMgMjguNWg2Ii8+PC9zdmc+Cg==" alt="QR code linking to the live StanBlocks transpiler at sb.siccha.de">
           <span class="title-qr-cap">Live transpiler<br><span class="u">sb.siccha.de</span></span>
         </a>
         <a class="title-qr-item" href="https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas">
-          <img src="img/qr-atlas.svg" alt="QR code linking to the StanBlocks feature atlas">
+          <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2MDAiIGhlaWdodD0iNjAwIiB2aWV3Qm94PSIwIDAgNDEgNDEiIHNoYXBlLXJlbmRlcmluZz0iY3Jpc3BFZGdlcyI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTAgMGg0MXY0MUgweiIvPjxwYXRoIHN0cm9rZT0iIzAwMDAwMCIgZD0iTTQgNC41aDdNMTQgNC41aDFNMjAgNC41aDFNMjIgNC41aDRNMjcgNC41aDFNMzAgNC41aDdNNCA1LjVoMU0xMCA1LjVoMU0xMyA1LjVoMU0xNSA1LjVoMU0xOSA1LjVoMk0yMiA1LjVoMU0yNCA1LjVoMU0yNiA1LjVoMU0zMCA1LjVoMU0zNiA1LjVoMU00IDYuNWgxTTYgNi41aDNNMTAgNi41aDFNMTIgNi41aDVNMTggNi41aDJNMjQgNi41aDJNMjcgNi41aDJNMzAgNi41aDFNMzIgNi41aDNNMzYgNi41aDFNNCA3LjVoMU02IDcuNWgzTTEwIDcuNWgxTTEyIDcuNWgxTTE0IDcuNWgxTTE2IDcuNWgxTTE5IDcuNWgxTTIxIDcuNWgxTTI2IDcuNWgxTTI4IDcuNWgxTTMwIDcuNWgxTTMyIDcuNWgzTTM2IDcuNWgxTTQgOC41aDFNNiA4LjVoM00xMCA4LjVoMU0xMiA4LjVoMU0xNSA4LjVoNk0yMyA4LjVoMk0yNyA4LjVoMU0zMCA4LjVoMU0zMiA4LjVoM00zNiA4LjVoMU00IDkuNWgxTTEwIDkuNWgxTTEyIDkuNWg0TTE3IDkuNWgyTTIxIDkuNWgyTTI0IDkuNWgyTTMwIDkuNWgxTTM2IDkuNWgxTTQgMTAuNWg3TTEyIDEwLjVoMU0xNCAxMC41aDFNMTYgMTAuNWgxTTE4IDEwLjVoMU0yMCAxMC41aDFNMjIgMTAuNWgxTTI0IDEwLjVoMU0yNiAxMC41aDFNMjggMTAuNWgxTTMwIDEwLjVoN00xMiAxMS41aDVNMjAgMTEuNWgxTTIyIDExLjVoMU0yNCAxMS41aDJNMjcgMTEuNWgxTTQgMTIuNWgxTTYgMTIuNWg1TTEzIDEyLjVoMk0xNiAxMi41aDFNMTggMTIuNWgxTTIxIDEyLjVoNE0yNiAxMi41aDNNMzAgMTIuNWg1TTUgMTMuNWgxTTcgMTMuNWgyTTExIDEzLjVoMU0xMyAxMy41aDFNMTUgMTMuNWgxTTE3IDEzLjVoMU0yMCAxMy41aDFNMjIgMTMuNWg0TTI3IDEzLjVoMU0zMCAxMy41aDJNMzMgMTMuNWgyTTM2IDEzLjVoMU00IDE0LjVoNE0xMCAxNC41aDFNMTIgMTQuNWgxTTE0IDE0LjVoMU0xNyAxNC41aDNNMjUgMTQuNWgyTTI5IDE0LjVoMk0zMiAxNC41aDFNMzQgMTQuNWgyTTQgMTUuNWgyTTcgMTUuNWgxTTExIDE1LjVoMU0xNCAxNS41aDRNMTkgMTUuNWgyTTIyIDE1LjVoMU0yNSAxNS41aDRNMzIgMTUuNWg1TTYgMTYuNWgzTTEwIDE2LjVoMU0xNCAxNi41aDFNMTYgMTYuNWgxTTE4IDE2LjVoNE0yMyAxNi41aDFNMjYgMTYuNWgxTTI4IDE2LjVoMU0zMSAxNi41aDNNMzUgMTYuNWgyTTggMTcuNWgxTTExIDE3LjVoMU0xMyAxNy41aDNNMTcgMTcuNWgxTTE5IDE3LjVoMU0yMSAxNy41aDNNMjUgMTcuNWgxTTI3IDE3LjVoMk0zMCAxNy41aDFNMzQgMTcuNWgzTTQgMTguNWgzTTggMTguNWgxTTEwIDE4LjVoM00xNSAxOC41aDJNMTkgMTguNWgzTTI0IDE4LjVoMk0yOCAxOC41aDZNMzUgMTguNWgxTTUgMTkuNWgyTTEzIDE5LjVoMk0xNiAxOS41aDRNMjIgMTkuNWgxTTI0IDE5LjVoNE0yOSAxOS41aDZNNSAyMC41aDZNMTMgMjAuNWgxTTE3IDIwLjVoNU0yOCAyMC41aDJNMzEgMjAuNWgyTTM2IDIwLjVoMU00IDIxLjVoNU0xMSAyMS41aDJNMTUgMjEuNWgxTTE3IDIxLjVoMk0yMCAyMS41aDZNMjcgMjEuNWgxTTMwIDIxLjVoMk0zMyAyMS41aDJNMzYgMjEuNWgxTTUgMjIuNWgzTTEwIDIyLjVoMU0xMiAyMi41aDJNMTUgMjIuNWgzTTE5IDIyLjVoMk0yNSAyMi41aDFNMjkgMjIuNWg0TTM0IDIyLjVoMk02IDIzLjVoMU05IDIzLjVoMU0xMSAyMy41aDJNMTYgMjMuNWgyTTIyIDIzLjVoMU0yNCAyMy41aDNNMjggMjMuNWg3TTUgMjQuNWgyTTkgMjQuNWg0TTE0IDI0LjVoMk0xOSAyNC41aDFNMjEgMjQuNWgxTTI2IDI0LjVoMk0yOSAyNC41aDFNMzEgMjQuNWgzTTM1IDI0LjVoMk00IDI1LjVoMk0xMyAyNS41aDJNMTcgMjUuNWg4TTI2IDI1LjVoMk0zMCAyNS41aDFNMzYgMjUuNWgxTTQgMjYuNWgxTTYgMjYuNWgyTTkgMjYuNWgzTTEzIDI2LjVoMk0xOCAyNi41aDFNMjIgMjYuNWgxTTI2IDI2LjVoMU0yOSAyNi41aDVNMzUgMjYuNWgxTTQgMjcuNWgxTTYgMjcuNWgxTTkgMjcuNWgxTTE2IDI3LjVoMU0xOCAyNy41aDFNMjAgMjcuNWgxTTIzIDI3LjVoMU0yNSAyNy41aDFNMzAgMjcuNWgxTTMyIDI3LjVoNE00IDI4LjVoMU03IDI4LjVoNk0xNSAyOC41aDFNMTcgMjguNWgxTTIwIDI4LjVoMk0yNCAyOC41aDFNMjYgMjguNWgxTTI4IDI4LjVoNk0zNiAyOC41aDFNMTIgMjkuNWg0TTE3IDI5LjVoNE0yMiAyOS41aDRNMjggMjkuNWgxTTMyIDI5LjVoMU0zNCAyOS41aDFNMzYgMjkuNWgxTTQgMzAuNWg3TTEzIDMwLjVoMk0xNiAzMC41aDFNMTkgMzAuNWgyTTIyIDMwLjVoMU0yNCAzMC41aDVNMzAgMzAuNWgxTTMyIDMwLjVoMU0zNCAzMC41aDJNNCAzMS41aDFNMTAgMzEuNWgxTTEyIDMxLjVoMk0xNSAzMS41aDNNMjAgMzEuNWgxTTI1IDMxLjVoMU0yNyAzMS41aDJNMzIgMzEuNWgzTTM2IDMxLjVoMU00IDMyLjVoMU02IDMyLjVoM00xMCAzMi41aDFNMTIgMzIuNWgxTTE1IDMyLjVoM00yMSAzMi41aDFNMjMgMzIuNWgyTTI2IDMyLjVoMU0yOCAzMi41aDZNNCAzMy41aDFNNiAzMy41aDNNMTAgMzMuNWgxTTEyIDMzLjVoMU0xNCAzMy41aDZNMjEgMzMuNWgxTTIzIDMzLjVoNU0yOSAzMy41aDFNMzIgMzMuNWgxTTM0IDMzLjVoM000IDM0LjVoMU02IDM0LjVoM00xMCAzNC41aDFNMTIgMzQuNWgxTTE0IDM0LjVoMU0xNyAzNC41aDVNMjQgMzQuNWgxTTI2IDM0LjVoMU0yOCAzNC41aDRNMzMgMzQuNWgxTTQgMzUuNWgxTTEwIDM1LjVoMU0xMyAzNS41aDJNMTYgMzUuNWgyTTI0IDM1LjVoM00yOSAzNS41aDFNMzIgMzUuNWgxTTM0IDM1LjVoMU00IDM2LjVoN00xMiAzNi41aDFNMTQgMzYuNWg0TTE5IDM2LjVoMU0yMSAzNi41aDJNMjYgMzYuNWgzTTMxIDM2LjVoMU0zNSAzNi41aDEiLz48L3N2Zz4K" alt="QR code linking to the StanBlocks feature atlas">
           <span class="title-qr-cap">Feature atlas</span>
         </a>
         <a class="title-qr-item" href="https://nsiccha.github.io/StanBlocks.jl/stancon-2026/">
-          <img src="img/qr-slides.svg" alt="QR code linking to these slides">
+          <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2MDAiIGhlaWdodD0iNjAwIiB2aWV3Qm94PSIwIDAgNDEgNDEiIHNoYXBlLXJlbmRlcmluZz0iY3Jpc3BFZGdlcyI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTAgMGg0MXY0MUgweiIvPjxwYXRoIHN0cm9rZT0iIzAwMDAwMCIgZD0iTTQgNC41aDdNMTIgNC41aDFNMTQgNC41aDFNMTYgNC41aDFNMjAgNC41aDZNMjcgNC41aDFNMzAgNC41aDdNNCA1LjVoMU0xMCA1LjVoMU0xMiA1LjVoMk0xOCA1LjVoMU0yMCA1LjVoMU0yMiA1LjVoMU0yNSA1LjVoMU0yNyA1LjVoMk0zMCA1LjVoMU0zNiA1LjVoMU00IDYuNWgxTTYgNi41aDNNMTAgNi41aDFNMTMgNi41aDFNMTUgNi41aDFNMTcgNi41aDJNMjAgNi41aDFNMjIgNi41aDNNMjcgNi41aDFNMzAgNi41aDFNMzIgNi41aDNNMzYgNi41aDFNNCA3LjVoMU02IDcuNWgzTTEwIDcuNWgxTTEyIDcuNWgxTTE5IDcuNWgxTTIyIDcuNWgxTTI2IDcuNWgxTTI4IDcuNWgxTTMwIDcuNWgxTTMyIDcuNWgzTTM2IDcuNWgxTTQgOC41aDFNNiA4LjVoM00xMCA4LjVoMU0xNCA4LjVoNE0yMCA4LjVoMk0yMyA4LjVoM00yOCA4LjVoMU0zMCA4LjVoMU0zMiA4LjVoM00zNiA4LjVoMU00IDkuNWgxTTEwIDkuNWgxTTE0IDkuNWgyTTE4IDkuNWg0TTIzIDkuNWgxTTI2IDkuNWgxTTMwIDkuNWgxTTM2IDkuNWgxTTQgMTAuNWg3TTEyIDEwLjVoMU0xNCAxMC41aDFNMTYgMTAuNWgxTTE4IDEwLjVoMU0yMCAxMC41aDFNMjIgMTAuNWgxTTI0IDEwLjVoMU0yNiAxMC41aDFNMjggMTAuNWgxTTMwIDEwLjVoN00xMiAxMS41aDJNMTUgMTEuNWgyTTE4IDExLjVoNE0yMyAxMS41aDFNMjggMTEuNWgxTTQgMTIuNWgxTTYgMTIuNWgyTTkgMTIuNWgzTTE0IDEyLjVoOE0yMyAxMi41aDNNMjcgMTIuNWgxTTMwIDEyLjVoMU0zMyAxMi41aDFNMzUgMTIuNWgyTTYgMTMuNWgxTTkgMTMuNWgxTTExIDEzLjVoMk0xNiAxMy41aDJNMjAgMTMuNWg1TTI3IDEzLjVoMU0zMCAxMy41aDJNMzMgMTMuNWgyTTM2IDEzLjVoMU01IDE0LjVoNk0xMiAxNC41aDFNMTQgMTQuNWgxTTE3IDE0LjVoMU0yMiAxNC41aDFNMjQgMTQuNWg2TTMxIDE0LjVoM00zNSAxNC41aDJNNyAxNS41aDNNMTEgMTUuNWgyTTE1IDE1LjVoMk0yMSAxNS41aDFNMjMgMTUuNWgxTTI3IDE1LjVoMU0yOSAxNS41aDFNMzEgMTUuNWgxTTMzIDE1LjVoMU0zNiAxNS41aDFNNSAxNi41aDNNOSAxNi41aDRNMTQgMTYuNWgxTTE2IDE2LjVoMU0xOCAxNi41aDNNMjMgMTYuNWgyTTI2IDE2LjVoMU0yOCAxNi41aDFNMzEgMTYuNWgzTTM1IDE2LjVoMk00IDE3LjVoMU02IDE3LjVoMU04IDE3LjVoMk0xNCAxNy41aDNNMTggMTcuNWgxTTIzIDE3LjVoMk0yOCAxNy41aDFNMzEgMTcuNWgxTTMzIDE3LjVoMU0zNSAxNy41aDFNNyAxOC41aDFNOSAxOC41aDJNMTIgMTguNWgxTTE2IDE4LjVoM00yMSAxOC41aDNNMjYgMTguNWgxTTI4IDE4LjVoMU0zMCAxOC41aDFNMzMgMTguNWgyTTYgMTkuNWgyTTkgMTkuNWgxTTExIDE5LjVoMU0xMyAxOS41aDFNMTYgMTkuNWgxTTE4IDE5LjVoMk0yMiAxOS41aDJNMjUgMTkuNWgyTTI4IDE5LjVoN000IDIwLjVoMU05IDIwLjVoMk0xMiAyMC41aDFNMTcgMjAuNWgxTTIwIDIwLjVoMU0yMiAyMC41aDFNMjQgMjAuNWgyTTI3IDIwLjVoMU0yOSAyMC41aDJNMzIgMjAuNWgzTTQgMjEuNWgzTTggMjEuNWgyTTExIDIxLjVoMk0xNSAyMS41aDFNMTcgMjEuNWgzTTI0IDIxLjVoN00zMiAyMS41aDJNMzUgMjEuNWgyTTQgMjIuNWgyTTcgMjIuNWgxTTkgMjIuNWgyTTEyIDIyLjVoMU0xNCAyMi41aDNNMTkgMjIuNWgyTTIyIDIyLjVoMU0yNiAyMi41aDFNMjkgMjIuNWg0TTM0IDIyLjVoMk00IDIzLjVoM004IDIzLjVoMU0xMSAyMy41aDFNMTQgMjMuNWgxTTE3IDIzLjVoM00yMSAyMy41aDJNMjcgMjMuNWgxTTI5IDIzLjVoMU0zMiAyMy41aDFNMzYgMjMuNWgxTTQgMjQuNWgxTTYgMjQuNWg1TTEzIDI0LjVoNE0xOCAyNC41aDFNMjAgMjQuNWgxTTIzIDI0LjVoNU0zMyAyNC41aDJNMzYgMjQuNWgxTTQgMjUuNWgyTTcgMjUuNWgxTTkgMjUuNWgxTTEzIDI1LjVoMU0xNiAyNS41aDZNMjMgMjUuNWgxTTI3IDI1LjVoMU0yOSAyNS41aDJNMzYgMjUuNWgxTTYgMjYuNWgyTTEwIDI2LjVoMU0xMyAyNi41aDJNMTcgMjYuNWgzTTIxIDI2LjVoMU0yNCAyNi41aDRNMjkgMjYuNWgxTTMyIDI2LjVoMU0zNCAyNi41aDNNNSAyNy41aDJNMTEgMjcuNWgzTTE4IDI3LjVoMk0yMiAyNy41aDJNMjYgMjcuNWgxTTI4IDI3LjVoNE0zMyAyNy41aDFNNCAyOC41aDFNOCAyOC41aDFNMTAgMjguNWg0TTE1IDI4LjVoMU0xNyAyOC41aDJNMjAgMjguNWgyTTI0IDI4LjVoMU0yNiAyOC41aDFNMjggMjguNWg2TTM1IDI4LjVoMU0xMiAyOS41aDJNMTUgMjkuNWgzTTIwIDI5LjVoMU0yMyAyOS41aDFNMjUgMjkuNWgxTTI3IDI5LjVoMk0zMiAyOS41aDJNNCAzMC41aDdNMTIgMzAuNWgxTTE2IDMwLjVoMU0xOCAzMC41aDFNMjEgMzAuNWg0TTI3IDMwLjVoMk0zMCAzMC41aDFNMzIgMzAuNWgxTTQgMzEuNWgxTTEwIDMxLjVoMU0xMiAzMS41aDRNMTcgMzEuNWgxTTIwIDMxLjVoM00yNSAzMS41aDRNMzIgMzEuNWgzTTM2IDMxLjVoMU00IDMyLjVoMU02IDMyLjVoM00xMCAzMi41aDFNMTMgMzIuNWgxTTE1IDMyLjVoMk0xOCAzMi41aDZNMjUgMzIuNWgxTTI3IDMyLjVoNk0zNCAzMi41aDFNMzYgMzIuNWgxTTQgMzMuNWgxTTYgMzMuNWgzTTEwIDMzLjVoMU0xMiAzMy41aDJNMTUgMzMuNWgxTTE3IDMzLjVoMU0yMCAzMy41aDJNMjcgMzMuNWgyTTMxIDMzLjVoMU0zNiAzMy41aDFNNCAzNC41aDFNNiAzNC41aDNNMTAgMzQuNWgxTTEyIDM0LjVoMU0xNSAzNC41aDdNMjYgMzQuNWgxTTI4IDM0LjVoNE0zMyAzNC41aDFNNCAzNS41aDFNMTAgMzUuNWgxTTEzIDM1LjVoMU0xNyAzNS41aDJNMjEgMzUuNWg0TTI2IDM1LjVoMU0yOCAzNS41aDFNMzAgMzUuNWg0TTM2IDM1LjVoMU00IDM2LjVoN00xMiAzNi41aDJNMTYgMzYuNWgxTTIwIDM2LjVoMk0yMyAzNi41aDFNMjUgMzYuNWgxTTI3IDM2LjVoMU0zMCAzNi41aDFNMzIgMzYuNWgxTTM0IDM2LjVoMSIvPjwvc3ZnPgo=" alt="QR code linking to these slides">
           <span class="title-qr-cap">These slides</span>
         </a>
       </div>
@@ -1347,6 +1226,284 @@ Karolinska Institutet
           document.addEventListener('DOMContentLoaded', place);
         } else {
           place();
+        }
+      })();
+    </script>
+    <!-- Body-level modal for the "three activity analyses" slide: the real,
+         distilled Stan the SAME @slic source emits under three data bindings,
+         shown as two panes with a Prior|Posterior / Posterior|CV toggle.
+         Lives outside .reveal so position:fixed is viewport-relative (Reveal
+         applies a transform to .slides that would otherwise capture it).
+         Opened via window.openStanModal(pair). -->
+    <div id="stan-modal" class="stan-modal" hidden="">
+      <div class="stan-modal-backdrop" data-close=""></div>
+      <div class="stan-modal-panel" role="dialog" aria-modal="true" aria-label="Generated Stan by data binding">
+        <div class="stan-modal-head">
+          <div class="stan-modal-toggle">
+            <button type="button" data-pair="prior-posterior">Prior&nbsp;→&nbsp;Posterior</button>
+            <button type="button" data-pair="posterior-cv">Posterior&nbsp;→&nbsp;CV</button>
+          </div>
+          <button type="button" class="stan-modal-x" data-close="" aria-label="Close">×</button>
+        </div>
+        <div class="stan-modal-body">
+          <div class="stan-pane" data-side="left"></div>
+          <div class="stan-pane" data-side="right"></div>
+        </div>
+        <div class="stan-modal-foot">
+          Real <code>stan_code(model)</code> output, distilled: the <code>functions{}</code> helper block and pointwise-likelihood diagnostics are omitted; observation count shown as <code>N</code>. Highlighted lines are what changed between the two bindings.
+        </div>
+      </div>
+    </div>
+
+    <style>
+      .stan-modal {
+        position: fixed; inset: 0; z-index: 3000;
+        display: flex; align-items: center; justify-content: center;
+        font-family: "Avenir Next", "Inter", "Helvetica Neue", sans-serif;
+      }
+      .stan-modal[hidden] { display: none; }
+      .stan-modal-backdrop {
+        position: absolute; inset: 0;
+        background: rgba(24, 20, 22, 0.55);
+        backdrop-filter: blur(2px);
+      }
+      .stan-modal-panel {
+        position: relative;
+        width: min(1400px, 94vw); max-height: 92vh;
+        display: flex; flex-direction: column;
+        background: #fbfaf7;
+        border: 1px solid #d8d1c6;
+        border-radius: 10px;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.4);
+        overflow: hidden;
+      }
+      .stan-modal-head {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 14px 18px;
+        border-bottom: 1px solid #d8d1c6;
+        background: #f1eee8;
+      }
+      .stan-modal-toggle { display: flex; gap: 8px; }
+      .stan-modal-toggle button {
+        font: inherit; font-size: 20px; font-weight: 600;
+        color: #6e1724;
+        padding: 8px 16px;
+        border: 1px solid #d8d1c6; border-radius: 999px;
+        background: #fbfaf7; cursor: pointer;
+        transition: background 0.12s, color 0.12s, border-color 0.12s;
+      }
+      .stan-modal-toggle button:hover { border-color: #8f1d2c; }
+      .stan-modal-toggle button.active {
+        background: #8f1d2c; color: #fbfaf7; border-color: #8f1d2c;
+      }
+      .stan-modal-x {
+        font: inherit; font-size: 30px; line-height: 1;
+        color: #666c75; background: none; border: none; cursor: pointer;
+        padding: 0 6px;
+      }
+      .stan-modal-x:hover { color: #8f1d2c; }
+      .stan-modal-body {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+        overflow: auto; background: #fbfaf7;
+      }
+      .stan-pane {
+        padding: 0; overflow: auto;
+        border-right: 1px solid #d8d1c6;
+      }
+      .stan-pane:last-child { border-right: none; }
+      .stan-pane .pane-title {
+        position: sticky; top: 0; z-index: 1;
+        padding: 10px 16px;
+        font-size: 19px; font-weight: 700; color: #fbfaf7;
+        background: #315d84;
+      }
+      .stan-pane[data-role="prior"] .pane-title { background: #a36a16; }
+      .stan-pane[data-role="posterior"] .pane-title { background: #315d84; }
+      .stan-pane[data-role="cv"] .pane-title { background: #8f1d2c; }
+      .stan-pane .pane-sub {
+        padding: 6px 16px 0;
+        font-size: 14px; color: #666c75;
+      }
+      .stan-pane pre {
+        margin: 8px 0 4px;
+        padding: 4px 16px 16px;
+        background: none; border: none; box-shadow: none;
+        font-family: "JuliaMono", "Iosevka", "SFMono-Regular", monospace;
+        font-size: 16px; line-height: 1.45;
+        white-space: pre; color: #20242b;
+      }
+      .stan-pane pre .ln { display: block; padding: 0 6px; border-radius: 3px; }
+      .stan-pane pre .ln.hl { background: #fbeecf; box-shadow: inset 3px 0 0 #a36a16; }
+      .stan-pane pre .cmt { color: #8a8f98; }
+
+      @media (prefers-color-scheme: dark) {
+        .stan-modal-panel { background: #1c2026; border-color: #3a3f47; }
+        .stan-modal-head { background: #23272e; border-color: #3a3f47; }
+        .stan-modal-toggle button { background: #1c2026; color: #e7a7b0; border-color: #3a3f47; }
+        .stan-modal-toggle button.active { background: #8f1d2c; color: #fbfaf7; border-color: #8f1d2c; }
+        .stan-modal-body, .stan-pane pre { background: #1c2026; color: #e6e3dd; }
+        .stan-pane { border-color: #3a3f47; }
+        .stan-pane pre .ln.hl { background: #3a3320; box-shadow: inset 3px 0 0 #d09b3c; }
+        .stan-pane pre .cmt { color: #8a8f98; }
+        .stan-modal-foot { background: #23272e; border-color: #3a3f47; }
+      }
+
+      .stan-modal-foot {
+        padding: 9px 18px; font-size: 14px; color: #666c75;
+        border-top: 1px solid #d8d1c6; background: #f1eee8;
+      }
+      .stan-modal-foot code { font-family: "JuliaMono", monospace; font-size: 13px; }
+    </style>
+
+    <script>
+      (function () {
+        var CODES = {
+          prior: {
+            title: "Prior — omit y",
+            sub: "m(; subject) — bind no outcome",
+            lines: [
+              "data {",
+              "  array[N] int subject;",
+              "}",
+              "transformed data {",
+              "  int J = max(subject);",
+              "}",
+              "parameters {",
+              "}",
+              "model {",
+              "}",
+              "generated quantities {",
+              "  real mu    = normal_rng(0, 1);",
+              "  real tau   = exponential_rng(1);",
+              "  vector[J] alpha = normal_rng(rep_vector(mu, J), tau);",
+              "  real sigma = exponential_rng(1);",
+              "  array[N] real y = normal_rng(alpha[subject], sigma);",
+              "}"
+            ]
+          },
+          posterior: {
+            title: "Posterior — y observed",
+            sub: "m(; y, subject) — condition on y",
+            lines: [
+              "data {",
+              "  array[N] int subject;",
+              "  vector[N] y;",
+              "}",
+              "transformed data {",
+              "  int J = max(subject);",
+              "}",
+              "parameters {",
+              "  real mu;",
+              "  real<lower=0> tau;",
+              "  vector[J] alpha;",
+              "  real<lower=0> sigma;",
+              "}",
+              "model {",
+              "  mu    ~ normal(0, 1);",
+              "  tau   ~ exponential(1);",
+              "  alpha ~ normal(mu, tau);",
+              "  sigma ~ exponential(1);",
+              "  y ~ normal(alpha[subject], sigma);",
+              "}",
+              "generated quantities {",
+              "  vector[N] y_gen = normal_rng(alpha[subject], sigma);",
+              "}"
+            ]
+          },
+          cv: {
+            title: "Cross-validation — hold out the grouping",
+            sub: "m(; y, subject = maybecv(:subject, subject))",
+            lines: [
+              "data {",
+              "  array[N] int subject;",
+              "  vector[N] y;",
+              "}",
+              "transformed data {",
+              "  int J = max(subject);",
+              "}",
+              "parameters {",
+              "  real mu;",
+              "  real<lower=0> tau;",
+              "  real<lower=0> sigma;",
+              "}",
+              "model {",
+              "  mu    ~ normal(0, 1);",
+              "  tau   ~ exponential(1);",
+              "  sigma ~ exponential(1);",
+              "}",
+              "generated quantities {",
+              "  vector[J] alpha = normal_rng(rep_vector(mu, J), tau);",
+              "  vector[N] y_gen = normal_rng(alpha[subject], sigma);",
+              "}"
+            ]
+          }
+        };
+        var PAIRS = {
+          "prior-posterior": ["prior", "posterior"],
+          "posterior-cv": ["posterior", "cv"]
+        };
+
+        function esc(s) {
+          return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+        function norm(s) { return s.replace(/\s+/g, " ").trim(); }
+        function renderCode(lines, otherLines) {
+          var otherSet = {};
+          otherLines.forEach(function (l) { var k = norm(l); if (k) otherSet[k] = true; });
+          return lines.map(function (l) {
+            var k = norm(l);
+            var changed = k && !otherSet[k];
+            var html = esc(l);
+            var ci = html.indexOf("//");
+            if (ci >= 0) html = html.slice(0, ci) + '<span class="cmt">' + html.slice(ci) + "</span>";
+            return '<span class="ln' + (changed ? " hl" : "") + '">' + (html || " ") + "</span>";
+          }).join("");
+        }
+        function fillPane(paneEl, key, otherKey) {
+          var c = CODES[key], o = CODES[otherKey];
+          paneEl.setAttribute("data-role", key);
+          paneEl.innerHTML =
+            '<div class="pane-title">' + esc(c.title) + "</div>" +
+            '<div class="pane-sub"><code>' + esc(c.sub) + "</code></div>" +
+            "<pre>" + renderCode(c.lines, o.lines) + "</pre>";
+        }
+        function show(pair) {
+          var m = document.getElementById("stan-modal");
+          if (!m) return;
+          var keys = PAIRS[pair] || PAIRS["prior-posterior"];
+          fillPane(m.querySelector('.stan-pane[data-side="left"]'), keys[0], keys[1]);
+          fillPane(m.querySelector('.stan-pane[data-side="right"]'), keys[1], keys[0]);
+          m.querySelectorAll(".stan-modal-toggle button").forEach(function (b) {
+            b.classList.toggle("active", b.getAttribute("data-pair") === pair);
+          });
+          m.hidden = false;
+        }
+        function hide() { var m = document.getElementById("stan-modal"); if (m) m.hidden = true; }
+
+        window.openStanModal = function (pair) { show(pair || "prior-posterior"); };
+
+        function wire() {
+          var m = document.getElementById("stan-modal");
+          if (!m) return;
+          m.querySelectorAll("[data-close]").forEach(function (el) {
+            el.addEventListener("click", function (e) { e.stopPropagation(); hide(); });
+          });
+          m.querySelectorAll(".stan-modal-toggle button").forEach(function (b) {
+            b.addEventListener("click", function (e) {
+              e.stopPropagation(); show(b.getAttribute("data-pair"));
+            });
+          });
+          // Keep Reveal from acting on keys while the modal is open.
+          document.addEventListener("keydown", function (e) {
+            if (m.hidden) return;
+            if (e.key === "Escape") { hide(); }
+            e.stopPropagation();
+          }, true);
+        }
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", wire);
+        } else {
+          wire();
         }
       })();
     </script>
