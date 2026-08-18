@@ -82,6 +82,27 @@ $presentation-font-size-root: 34px;
   font-size: 0.58em;
 }
 
+/* Inference cards under the two-column split on the combined declaration
+   slide: tighten padding/typography so all three fit below the code. */
+.reveal .compact-cards {
+  gap: 0.4em;
+  margin-top: 0.35em;
+}
+
+.reveal .compact-cards .card {
+  padding: 0.38em 0.55em;
+}
+
+.reveal .compact-cards .card-title {
+  font-size: 0.9em;
+  margin-bottom: 0.1em;
+}
+
+.reveal .compact-cards .card p {
+  font-size: 0.64em;
+  margin: 0;
+}
+
 .reveal .small {
   font-size: 0.78em;
 }
@@ -150,6 +171,27 @@ $presentation-font-size-root: 34px;
   font-size: 0.72em;
 }
 
+.reveal .stan-modal-cta {
+  margin-top: 0.5em;
+}
+
+.reveal .stan-modal-trigger {
+  font-family: $presentation-heading-font;
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--sb-paper);
+  background: var(--sb-red);
+  border: 0;
+  border-radius: 999px;
+  padding: 0.4em 1em;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.reveal .stan-modal-trigger:hover {
+  background: #741624;
+}
+
 .reveal .flow {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -178,8 +220,9 @@ $presentation-font-size-root: 34px;
   z-index: 2;
 }
 
-/* Semi-thick brand-colored borders: standard Julia colors for the Julia
-   layers, Stan's maroon for the BridgeStan.jl (Stan boundary) box. */
+/* Semi-thick brand-colored borders: standard Julia colors for every layer
+   EXCEPT StanBlocks.jl itself, which carries Stan's maroon and is emphasised
+   (thicker border + light red tint) as the subject of the talk. */
 .reveal .flow .step.j-red {
   border: 0.14em solid #cb3c33;
 }
@@ -197,7 +240,8 @@ $presentation-font-size-root: 34px;
 }
 
 .reveal .flow .step.stan {
-  border: 0.14em solid var(--sb-red);
+  border: 0.22em solid var(--sb-red);
+  background: var(--sb-red-soft);
 }
 
 .reveal .tag {
@@ -214,6 +258,14 @@ $presentation-font-size-root: 34px;
 .reveal .tag.red {
   background: var(--sb-red-soft);
   color: var(--sb-red);
+}
+
+.reveal .tag.off {
+  background: transparent;
+  color: var(--sb-muted);
+  border: 1px dashed var(--sb-line);
+  text-decoration: line-through;
+  font-weight: 600;
 }
 
 .reveal table {
@@ -285,6 +337,13 @@ $presentation-font-size-root: 34px;
   box-shadow: 0 0.12em 0.4em rgba(32, 36, 43, 0.16);
 }
 
+/* Contributors other than Niko each carry one Julia colour on their circle;
+   Niko keeps Stan's maroon (the base rule above). */
+.reveal .contributors .person.j-blue img   { border-color: #4063d8; }
+.reveal .contributors .person.j-green img  { border-color: #389826; }
+.reveal .contributors .person.j-purple img { border-color: #9558b2; }
+.reveal .contributors .person.j-red img    { border-color: #cb3c33; }
+
 .reveal .contributors .person .who {
   margin: 0.22em 0 0;
   font-size: 0.5em;
@@ -296,12 +355,6 @@ $presentation-font-size-root: 34px;
   margin: 0.06em 0 0;
   font-size: 0.44em;
   color: var(--sb-muted);
-}
-
-@media (max-width: 1000px) {
-  .reveal .contributors {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }
 
 /* Three QR codes injected onto the title slide (see qr-title.html).
@@ -402,12 +455,4 @@ $presentation-font-size-root: 34px;
 .reveal .footer a {
   color: var(--sb-red);
   text-decoration: none;
-}
-
-@media (max-width: 1000px) {
-  .reveal .card-grid.three,
-  .reveal .flow,
-  .reveal .timeline {
-    grid-template-columns: 1fr 1fr;
-  }
 }
