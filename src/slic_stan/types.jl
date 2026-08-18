@@ -377,12 +377,46 @@ _merge_parts(args) = begin
     end
     stmts, fixed
 end
+# A `SlicModel` argument contributes its whole self: its body statements splice
+# like any other override/append override, and its bound data merges into the
+# result's data. That data does NOT go through the `fixed` path — a `fixed` name
+# has its defining statement REMOVED (fixing a parameter to a value), but a
+# merged model's data names are OBSERVATIONS whose likelihood statements must
+# survive the merge. `docstring` is model metadata carried inside `data`, not a
+# data binding, so it is dropped (the base model `x` keeps its own).
+_model_data_only(x::SlicModel) = (;
+    (k => v for (k, v) in pairs(data(x)) if k !== :docstring)...
+)
+# `Base.merge(base, overlays...)` — model composition. Each overlay is one of:
+#
+# - a statement AST (`:(x ~ …)`, `quote … end`): overrides the base statement
+#   whose LHS-name matches and appends the rest;
+# - a `NamedTuple`: FIXES its names — matching sampling/assignment statements are
+#   removed and the supplied values become model data;
+# - another `SlicModel`: its body statements splice as above, and its bound data
+#   merges in as data bindings (NOT fixed — its likelihoods survive).
+#
+# Fixed bindings are applied after all statement splices, independent of argument
+# position, so the mixed form stays unambiguous: in `Base.merge(model, :(x ~
+# prior()), (; x=value))` the explicit value wins and `x ~ prior()` does not
+# survive as a likelihood contribution.
 Base.merge(x::SlicModel, args...) = begin
-    stmts, fixed = _merge_parts(args)
+    model_data = NamedTuple()
+    parts = Any[]
+    for arg in args
+        if arg isa SlicModel
+            append!(parts, unblock(model(arg)))
+            model_data = merge(model_data, _model_data_only(arg))
+        else
+            push!(parts, arg)
+        end
+    end
+    stmts, fixed = _merge_parts(parts)
     body = _splice_body(x, stmts...)
-    isempty(fixed) && return SlicModel(body, data(x), x.mod)
+    merged_data = merge(data(x), pairs(model_data))
+    isempty(fixed) && return SlicModel(body, merged_data, x.mod)
     body = _without_fixed_components(body, keys(fixed))
-    SlicModel(body, merge(data(x), pairs(fixed)), x.mod)
+    SlicModel(body, merge(merged_data, pairs(fixed)), x.mod)
 end
 
 _submodel_positional_error(args...) = error(

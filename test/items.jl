@@ -635,7 +635,7 @@ end
     # live in the ntup's `info.arg_types`, NOT in its (empty) `stan_size` — so
     # `deanon_type` has to recurse into the element types or they reach Stan
     # verbatim (undeclared identifier in a size position + a phantom `data` decl).
-    # Shape lifted from Bruno's `ragged_imap1` / `groupedby_idxs`.
+    # Shape lifted from a production PKPD model's `ragged_imap1` / `groupedby_idxs`.
     @deffun begin
         ntd_filter_n(f, x::anything[n], args...) = begin
             rv = 0
@@ -1781,10 +1781,10 @@ Verify explicit bounded Julia emission from `@deffun @juliacompat` in an isolate
     @test dual_code == stanonly_code
     @test stanc_check(dual_code; warn_pedantic=false).ok
 
-    @test StanBlocks.builtin.bordet_time_response(
+    @test StanBlocks.builtin.biomarker_time_response(
         [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [1.0, 1.0],
     ) ≈ [0.25, inv(1 + exp(-1.0)) * inv(1 + exp(1.0))]
-    @test StanBlocks.builtin.bordet_dose_response(
+    @test StanBlocks.builtin.biomarker_dose_response(
         [0.0, 1.0], [0.0, 0.0], [0.0, 0.0],
     ) ≈ [-log(2.0), -log1p(exp(-1.0))]
     @test StanBlocks.builtin.linear_idxs([1, 2, 1], [1, 1, 2]) == [1, 2, 3]
@@ -2058,6 +2058,34 @@ Verify an `@lhs` observation dimension the UDF body never reads still resolves.
     @test !occursin("lhs_all_n", all_hidden_functions)
 end
 
+@testitem "slic: cholesky_factor scalar element access has a tracetype (D5)" tags=[:slic, :regression, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    # Defect D5: a single natively-constrained square matrix
+    # (`cholesky_factor_corr` / `cholesky_factor_cov`, sized `<ct>[K]` — one size
+    # dim, since `r_ndim(square_matrix) == 1`) had no getindex tracetype for scalar
+    # element access, so `L[i, j]` degraded to `anything` and USING the element
+    # threw "tracetype not defined" before any Stan was emitted. It is logically
+    # K-by-K: `L[i, j]` must be a `real`, exactly as the plain `matrix[K, K]` control.
+    # (The plate case `array[G] cholesky_factor_corr[K]` — indexed `L[g, i, j]` —
+    # already worked via the `[m, n]` signature; this guards the single value.)
+    corr_model = @slic (; y = 0.3) begin
+        L::cholesky_factor_corr[3] ~ lkj_corr_cholesky(2.0)
+        y ~ normal(L[2, 1], 1.0)
+    end
+    corr_code = stan_code(corr_model)
+    @test occursin("cholesky_factor_corr[3] L;", stan_block(corr_code, "parameters"))
+    @test stanc_compiles(corr_model)
+
+    cov_model = @slic (; y = 0.3) begin
+        L::cholesky_factor_cov[3] ~ flat()
+        y ~ normal(L[2, 1], 1.0)
+    end
+    cov_code = stan_code(cov_model)
+    @test occursin("cholesky_factor_cov[3] L;", stan_block(cov_code, "parameters"))
+    @test stanc_compiles(cov_model)
+end
+
 """
 Verify `issue12` in an isolated test item.
 """
@@ -2167,6 +2195,66 @@ are final, so a same-name spliced statement cannot survive as a likelihood.
     # Every merge is functional: the base still declares and samples theta.
     base_code = stan_code(base(; y=[0.1, -0.2]))
     @test occursin("theta ~ normal(0.0, 1.0)", base_code)
+end
+
+"""
+`Base.merge(base, other::SlicModel)` composes two WHOLE models: `other`'s body
+statements splice in (same-LHS override + append, exactly like a spliced
+statement AST), and `other`'s bound data merges into the result. Unlike a fixed
+NamedTuple binding, a merged model's data names KEEP their likelihood statements
+— they are observations, not parameters pinned to a value.
+"""
+@testitem "slic: Base.merge composes two whole sb models" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    m1 = @slic (; y1 = [0.1, 0.2, -0.1]) begin
+        mu ~ normal(0.0, 1.0)
+        y1 ~ normal(mu, 1.0)
+    end
+    m2 = @slic (; y2 = [0.3, -0.4]) begin
+        sigma ~ normal(0.0, 1.0; lower = 0.0)
+        y2 ~ normal(0.0, sigma)
+    end
+
+    merged = Base.merge(m1, m2)
+    merged_code = stan_code(merged)
+    @test stanc_compiles(merged)
+    # Both models' parameters and data survive the merge…
+    params = stan_block(merged_code, "parameters")
+    @test occursin("real mu;", params)
+    @test occursin("real<lower=0.0> sigma;", params)
+    dat = stan_block(merged_code, "data")
+    @test occursin("vector[y1_n] y1;", dat)
+    @test occursin("vector[y2_n] y2;", dat)
+    # …and BOTH likelihoods are kept (a merged model's data is not `fixed`).
+    @test occursin("y1 ~ normal(mu, 1.0)", merged_code)
+    @test occursin("y2 ~ normal(0.0, sigma)", merged_code)
+    # Both models' bound data lands in the merged model's data.
+    @test StanBlocks.data(merged)[:y1] == [0.1, 0.2, -0.1]
+    @test StanBlocks.data(merged)[:y2] == [0.3, -0.4]
+
+    # The overlay wins on a same-LHS collision, exactly like a spliced statement.
+    m2b = @slic (; y2 = [0.3, -0.4]) begin
+        mu    ~ normal(5.0, 0.1)
+        sigma ~ normal(0.0, 1.0; lower = 0.0)
+        y2    ~ normal(mu, sigma)
+    end
+    overridden = Base.merge(m1, m2b)
+    overridden_code = stan_code(overridden)
+    @test stanc_compiles(overridden)
+    @test occursin("mu ~ normal(5.0, 0.1)", overridden_code)
+    @test !occursin("mu ~ normal(0.0, 1.0)", overridden_code)
+
+    # A model overlay composes with a statement overlay in one call; later wins.
+    mixed = Base.merge(m1, m2, :(mu ~ normal(1.0, 0.5)))
+    mixed_code = stan_code(mixed)
+    @test stanc_compiles(mixed)
+    @test occursin("mu ~ normal(1.0, 0.5)", mixed_code)
+    @test occursin("y2 ~ normal(0.0, sigma)", mixed_code)
+
+    # Every merge is functional: the inputs are unmutated.
+    @test occursin("mu ~ normal(0.0, 1.0)", stan_code(m1))
+    @test !occursin("sigma", stan_code(m1))
 end
 
 """
@@ -2865,6 +2953,59 @@ Verify `in-body @doc docstring renders (StanExpr unwrap)` in an isolated test it
 @testitem "in-body @doc docstring renders (StanExpr unwrap)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(doc_model)
     @test occursin("// documented local declaration", stan_code(stan_model(doc_model)))
+end
+
+"""
+Verify `documented submodel call transpiles at any doc-stacking depth` in an
+isolated test item. A `#`/`@doc` comment before a submodel CALL (`mu ~
+linpred(x)`, whose body inlines to a multi-statement `:block`) accrues one
+`:document` wrapper per surviving comment. With ≥2 wrappers around the inlined
+block, `distribute!` used to route the nested document through
+`distribution_blocks`, which bottomed out at `distribution_blocks(::BlockExpr)`
+— undefined, so transpilation crashed with an internal `MethodError` (snag
+`doc-submodel-cal`). Every stacking depth must now transpile, the emitted Stan
+must be identical to the undocumented model apart from the surviving `//`
+comment line, and a documented submodel call preceded by another statement
+(which adds a wrapper) must also transpile.
+"""
+@testitem "documented submodel call transpiles at any doc-stacking depth" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    strip_comments(code) = join(
+        filter(l -> !startswith(strip(l), "//"), split(code, '\n')), '\n'
+    )
+    undoc_code = stan_code(@slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        mu ~ linpred(x)
+        y ~ normal(mu, 1)
+    end)
+
+    d1 = @slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        @doc "one" mu ~ linpred(x)
+        y ~ normal(mu, 1)
+    end
+    d2 = @slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        @doc "one" @doc "two" mu ~ linpred(x)
+        y ~ normal(mu, 1)
+    end
+    d3 = @slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        @doc "one" @doc "two" @doc "three" mu ~ linpred(x)
+        y ~ normal(mu, 1)
+    end
+    # Regression floor: `d3` (and `preceded` below) crashed before the fix.
+    for m in (d1, d2, d3)
+        @test transpiles(m)
+        # Emitted Stan differs from the undocumented model ONLY by `//` comment
+        # lines — the fix changes nothing semantic, it just stops the crash.
+        @test strip_comments(stan_code(m)) == strip_comments(undoc_code)
+    end
+    @test occursin("// one", stan_code(d3))
+
+    # A preceding statement adds another `:document` wrapper around the inlined
+    # block; this variant also used to crash with only two `@doc`s.
+    preceded = @slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        s ~ normal(0, 1)
+        @doc "one" @doc "two" mu ~ linpred(x)
+        y ~ normal(mu + s, 1)
+    end
+    @test transpiles(preceded)
 end
 
 """
@@ -7358,6 +7499,62 @@ is skipped for a ragged plate-sliced obs.
     @test stanc_compiles(native_both)
 end
 
+@testitem "slic: cv-tainted typed-LHS size re-draws the parameter in gq" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    # Two DOCUMENTED-EQUIVALENT spellings of ONE model (stanblocks-use §4:
+    # `name::Type[dims] ~ dist(...)` desugars to `name ~ dist(...; n=...)`). Under
+    # CV the size `J = maximum(subject)` is held out, so nothing informs `alpha`
+    # and it must leave `parameters` and re-draw in generated quantities — exactly
+    # as the `n=` spelling already did. The typed-LHS forward pass read cv off the
+    # DISTRIBUTION ARGS only (`mu, tau`), never off the declared size, so it stayed
+    # a fitted parameter: a prior draw dressed up as a fit (snag typed-lhs-size).
+    subject = [1, 1, 2, 2, 3, 3]
+    y = [0.2, -0.1, 0.3, 0.0, 0.4, -0.2]
+    typed = @slic (; y, subject) begin
+        J = maximum(subject); mu ~ normal(0, 1); tau ~ exponential(1)
+        alpha :: vector[J] ~ normal(mu, tau)
+        sigma ~ exponential(1); y ~ normal(alpha[subject], sigma)
+    end
+    kwarg = @slic (; y, subject) begin
+        J = maximum(subject); mu ~ normal(0, 1); tau ~ exponential(1)
+        alpha ~ normal(mu, tau; n = J)
+        sigma ~ exponential(1); y ~ normal(alpha[subject], sigma)
+    end
+    mark(m) = m(; y = y, subject = StanBlocks.stan.maybecv(:subject, subject))
+    plain(m) = m(; y = y, subject = subject)
+
+    # --- UNMARKED: an ordinary fit is untouched; `alpha` stays a parameter. ------
+    let code = stan_code(plain(typed))
+        @test stanc_compiles(plain(typed))
+        @test occursin("vector[J] alpha", stan_block(code, "parameters"))
+        @test occursin(r"alpha ~ normal\(mu, tau\)", stan_block(code, "model"))
+        @test occursin(r"y ~ normal\(alpha\[subject\], sigma\)", stan_block(code, "model"))
+    end
+    # The two spellings agree WITHOUT cv too — the fix must not perturb the fit.
+    @test stan_code(plain(typed)) == stan_code(plain(kwarg))
+
+    # --- MARKED: the typed-LHS spelling now matches the `n=` spelling exactly. ---
+    @test stan_code(mark(typed)) == stan_code(mark(kwarg))
+    let code = stan_code(mark(typed))
+        @test transpiles(mark(typed))
+        @test stanc_compiles(mark(typed))
+        params, gq, mdl = stan_block(code, "parameters"),
+                          stan_block(code, "generated quantities"),
+                          stan_block(code, "model")
+        # `alpha` leaves `parameters` and re-draws from its hyperprior in gq.
+        @test !occursin("alpha", params)
+        @test occursin(r"vector\[J\] alpha = normal_vector_rng\(J, mu, tau\)", gq)
+        # The held-out likelihood and the prior `~` both leave the model block.
+        @test !occursin("alpha ~", mdl)
+        @test !occursin(r"y ~ normal", mdl)
+        # The untainted hyperparameters stay fitted.
+        @test occursin("real mu", params)
+        @test occursin("tau", params)
+        @test occursin("sigma", params)
+    end
+end
+
 """
 Snag plate-silently-i-e41ed2f0 (reported by BRM, found handling its own cv snag
 build-a-cv-out-o-5a22814d): a cv-tainted size reaching a plate-internal FRESH
@@ -7580,7 +7777,7 @@ isolated test item.
     # `:tuple`/`:block` head. Before the fix that throw escaped `showerror`
     # itself, replacing a perfectly good diagnostic with an unrelated crash
     # (and killing Julia's top-level error printer outright).
-    # Reported by Bruno as snag `error-formatter-79e40522`.
+    # Reported via snag `error-formatter-79e40522`.
     unrenderable = @slic begin
         x::real ~ normal(0, 1)
         y ~ definitely_not_a_slic_function(g -> g + x)
@@ -7777,14 +7974,43 @@ end
     @test occursin("multiplier=tau", affine_params)
     @test stanc_compiles(affine_model)
 
-    # A constraint naming the plate's per-cell position cannot be promoted: the
-    # promoted declaration is emitted OUTSIDE the loop, where that position does
-    # not exist. Refuse loudly rather than emit a model that compiles and is wrong.
-    idx_dependent = try
+    # D2b: a constraint reaching the plate's per-cell position through DATA (here
+    # `l` slices the data vector `lamv`, so `exp(l)` is data-computable) is HOISTED:
+    # the whole `multiplier` is materialised over the outer axis in `transformed
+    # data`, and the promoted `vector[G]` declaration references that carrier BY
+    # NAME. The pre-D2b behaviour was a loud refusal; the wrong alternative — a
+    # silent drop — samples a different posterior with no diagnostic.
+    hoisted_model = @slic (; G, obs = obs_pos, lamv) begin
+        m0 ~ normal(sum(lamv), 1.)
+        s ~ plate(lamv; outer = G) do l
+            c::real ~ normal(m0, 1.; multiplier = exp(l))
+            c
+        end
+        obs ~ normal(s, 1.)
+        s
+    end
+    hoisted_code   = stan_code(hoisted_model)
+    hoisted_tdata  = stan_block(hoisted_code, "transformed data")
+    hoisted_params = stan_block(hoisted_code, "parameters")
+    # The carrier is declared and filled over the outer axis in transformed data…
+    @test occursin(r"vector\[G\] s_c__pl_multiplier_\d+;", hoisted_tdata)
+    @test occursin("exp(lamv[", hoisted_tdata)
+    # …and referenced by NAME on the promoted declaration, never re-inlined into
+    # the parameters block (a per-cell constraint expression there is not valid Stan).
+    @test occursin(r"vector<multiplier=s_c__pl_multiplier_\d+>\[G\] s_c;", hoisted_params)
+    @test !occursin("exp(lamv", hoisted_params)
+    @test stanc_compiles(hoisted_model)
+
+    # A constraint that is index-dependent AND references a PARAMETER (`tau`) cannot
+    # be materialised as transformed data — Stan requires a promoted constraint to be
+    # data-computable. Refuse loudly (D3's rule on the plate path) rather than emit a
+    # model that compiles and is wrong.
+    param_dependent = try
         stan_code(@slic (; G, obs = obs_pos, lamv) begin
-            m0 ~ normal(sum(lamv), 1.)
+            m0  ~ normal(sum(lamv), 1.)
+            tau ~ normal(0., 1.; lower = 0.)
             s ~ plate(lamv; outer = G) do l
-                c::real ~ normal(m0, 1.; multiplier = exp(l))
+                c::real ~ normal(m0, 1.; multiplier = tau * l)
                 c
             end
             obs ~ normal(s, 1.)
@@ -7794,9 +8020,9 @@ end
     catch e
         sprint(showerror, e)
     end
-    @test idx_dependent !== nothing
-    @test occursin("per-cell position", idx_dependent)
-    @test occursin("multiplier", idx_dependent)
+    @test param_dependent !== nothing
+    @test occursin("parameter", param_dependent)
+    @test occursin("multiplier", param_dependent)
 
     # Negative control: a constraint-free plate is untouched by any of this.
     plain_model = @slic (; G, obs = obs_any, lamv) begin

@@ -1,4 +1,4 @@
-# Bruno-inspired composite: hierarchical regression that uses several
+# PKPD-inspired composite: hierarchical regression that uses several
 # inline helpers (mutation, HOF, vararg). Each call inlines, so no helper
 # pollutes Stan's `functions {}` block.
 
