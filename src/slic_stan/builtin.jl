@@ -1774,7 +1774,18 @@ for dist in (:exponential, :chi_square, :inv_chi_square, :rayleigh)
     @eval @deffun $drng(vector[n], a)::vector[n] = to_vector($drng(a))
 end
 
-# 3-arg continuous (the leading arg is scalar in this registry's supported signatures)
+# 3-arg continuous families. Two leading-arg regimes:
+#   - SCALAR leading arg (`nu::real`) — `student_t`'s dof, or a scalar location:
+#     rep_vector the SECOND arg in the all-scalar case so Stan has a shape to
+#     draw against; a vector second/third arg broadcasts natively.
+#   - VECTOR leading arg — a per-observation LOCATION. `skew_double_exponential`
+#     / `skew_normal` / `exp_mod_normal` / `pareto_type_2` in a regression emit
+#     `dist(mu_vec, sigma_vec, tau)`, so the auto-GQ sized-token draw is
+#     `dist_rng(<token>, vector, vector, real)`. Both leading args are already
+#     `vector[n]`, so delegate straight to native — the family's `@defsig` below
+#     lists `(vector[n], vector[n], real)` / `(vector[n], vector[n], vector[n])`.
+#     Without these two overloads that draw matches no method and the
+#     generated-quantities block fails to trace (snag stanblocks-skew).
 for dist in (:student_t, :skew_normal, :exp_mod_normal,
              :skew_double_exponential, :pareto_type_2)
     drng = Symbol(dist, :_rng)
@@ -1782,6 +1793,9 @@ for dist in (:student_t, :skew_normal, :exp_mod_normal,
     @eval @deffun $drng(vector[n], nu::real, a::real, b::real)::vector[n] = to_vector($drng(nu, rep_vector(a, n), b))
     @eval @deffun $drng(real[n],   nu::real, a, b)::real[n]   = $drng(nu, a, b)
     @eval @deffun $drng(vector[n], nu::real, a, b)::vector[n] = to_vector($drng(nu, a, b))
+    # Vector LEADING arg (per-observation location): both leading args are vectors.
+    @eval @deffun $drng(real[n],   loc::vector[n], scale::vector[n], b)::real[n]   = $drng(loc, scale, b)
+    @eval @deffun $drng(vector[n], loc::vector[n], scale::vector[n], b)::vector[n] = to_vector($drng(loc, scale, b))
 end
 
 # 1-arg discrete families (output is int[n]; no to_vector wrap)

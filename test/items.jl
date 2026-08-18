@@ -110,6 +110,58 @@ the original family supplies pointwise likelihoods and predictive draws.
 end
 
 """
+Location-first 3-arg continuous families (`skew_double_exponential`,
+`skew_normal`, `exp_mod_normal`, `pareto_type_2`) sampled with a per-observation
+VECTOR location — `y ~ dist(mu_vec, sigma_vec, tau)` — synthesize the sized-token
+gq predictive draw `dist_rng(<token>, vector, vector, real)`. The sized-token
+`@deffun` overloads must cover a vector LEADING arg (not only `student_t`'s
+scalar dof), matching the family's native `@defsig` which already lists
+`(vector[n], vector[n], real)`. Snag `stanblocks-skew`: without the vector-leading
+overloads the draw matched no method and the generated-quantities block failed to
+trace (`AssertionError: tracetype not defined for … skew_double_exponential_rng(
+::array[] tokenof, ::vector, ::vector, ::real)`).
+"""
+@testitem "slic: location-first 3-arg rng gq draw with a vector location" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    y_val   = [0.2, -0.1, 0.4, 0.5]
+    mu_val  = [1.0, 2.0, 3.0, 4.0]
+    sig_val = [0.5, 0.6, 0.7, 0.8]
+
+    # The sized-token gq draw for a vector location traces AND emits valid Stan.
+    # (`stan_code` itself THREW pre-fix, so `stanc_compiles` returning is the
+    #  regression signal; the `occursin` pins the specific `_rng` draw.)
+    function check(model, dist)
+        gq = stan_block(stan_code(model), "generated quantities")
+        @test occursin(Regex(dist * raw"\w*_rng\("), gq)
+        @test stanc_compiles(model)
+    end
+
+    check((@slic (; y = y_val, mu = mu_val, sigma = sig_val) begin
+        a ~ normal(0.0, 1.0); y ~ skew_double_exponential(mu .+ a, sigma, 0.25); a
+    end), "skew_double_exponential")
+    check((@slic (; y = y_val, mu = mu_val, sigma = sig_val) begin
+        a ~ normal(0.0, 1.0); y ~ skew_normal(mu .+ a, sigma, 0.25); a
+    end), "skew_normal")
+    check((@slic (; y = y_val, mu = mu_val, sigma = sig_val) begin
+        a ~ normal(0.0, 1.0); y ~ exp_mod_normal(mu .+ a, sigma, 0.25); a
+    end), "exp_mod_normal")
+    check((@slic (; y = y_val, mu = mu_val, sigma = sig_val) begin
+        a ~ normal(0.0, 1.0); y ~ pareto_type_2(mu .+ a, sigma, 1.5); a
+    end), "pareto_type_2")
+
+    # Regression guards for the still-scalar-leading paths: student_t keeps its
+    # scalar dof, and an all-scalar location still draws.
+    @test stanc_compiles(@slic (; y = y_val, mu = mu_val, sigma = sig_val) begin
+        a ~ normal(0.0, 1.0); y ~ student_t(3.0, mu .+ a, sigma); a
+    end)
+    @test stanc_compiles(@slic (; y = y_val) begin
+        a ~ normal(0.0, 1.0); s ~ normal(0.0, 1.0)
+        y ~ skew_double_exponential(a, exp(s), 0.25); a
+    end)
+end
+
+"""
 Truncation, threshold censoring, and interval observations are distribution
 HOFs selected from one base-family token. Optional bounds are compile-time
 syntax: omission and explicit `nothing` choose the same side-specific Stan
