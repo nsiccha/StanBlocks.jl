@@ -20,7 +20,7 @@ format:
     hash-type: number
     code-overflow: wrap
     link-external-newwindow: true
-    include-after-body: qr-title.html
+    include-after-body: [qr-title.html, three-modal.html]
     footer: "[Slides · nsiccha.github.io/StanBlocks.jl/stancon-2026/](https://nsiccha.github.io/StanBlocks.jl/stancon-2026/)"
 execute:
   enabled: false
@@ -43,7 +43,7 @@ end
 ```
 
 :::
-::: {.column width="42%"}
+::: {.column .fragment width="42%"}
 
 Get ordinary, inspectable Stan:
 
@@ -65,11 +65,11 @@ model {
 :::
 ::::
 
-::: {.takeaway}
+::: {.takeaway .fragment}
 StanBlocks is a frontend, not a replacement for Stan.
 :::
 
-<p class="small muted">… with quality-of-life improvements such as activity analysis, submodels, user-defined types (currently enabling e.g. NamedTuples and ragged data structures), higher-order user-defined functions, automatic but optional type &amp; shape inference, (ragged) plates, metaprogramming, Julia-style multiple dispatch, and more.</p>
+<p class="small muted fragment">… with quality-of-life improvements such as activity analysis, submodels, user-defined types (currently enabling e.g. NamedTuples and ragged data structures), higher-order user-defined functions, closures, keyword &amp; default arguments, automatic but optional type &amp; shape inference, (ragged) plates, metaprogramming, Julia-style multiple dispatch, and more.</p>
 
 ::: {.notes}
 Open with the boundary, not the feature list. The promise is deliberately
@@ -94,7 +94,7 @@ Why put a language in front of an already good language?
 - Enzyme makes far more possible today
 
 :::
-::: {.column width="48%"}
+::: {.column .fragment width="48%"}
 
 ### Stan
 
@@ -107,7 +107,7 @@ Why put a language in front of an already good language?
 :::
 ::::
 
-::: {.takeaway}
+::: {.takeaway .fragment}
 Julia maximizes **expressive freedom**; Stan narrows the problem to make differentiable programs **predictable**.
 :::
 
@@ -145,7 +145,7 @@ fused kernels, reverse-mode AD, and NUTS adaptation make “write the obvious
 model” a strong baseline.
 
 :::
-::: {.card .blue-card}
+::: {.card .blue-card .fragment}
 
 <div class="card-title">Reliability</div>
 
@@ -153,7 +153,7 @@ Static checks, explicit constraints and Jacobians, a mature sampler, and years
 of use on difficult models.
 
 :::
-::: {.card .gold-card}
+::: {.card .gold-card .fragment}
 
 <div class="card-title">Stable semantics</div>
 
@@ -161,54 +161,25 @@ The generated target is a small, explicit language designed around Bayesian
 computation rather than general-purpose execution.
 
 :::
-::: {.card}
+::: {.card .fragment}
 
-<div class="card-title">An inspectable boundary</div>
+<div class="card-title">A review boundary</div>
 
-`stan_code(model)` can be read, diffed, archived, checked by `stanc`, compiled,
-and handed to the ordinary Stan ecosystem.
+`stan_code(model)` is the boundary between a compositional authoring language
+and a mature inference language — read it, diff it, archive it, check it with
+`stanc`, hand it to the Stan ecosystem.
 
 :::
 ::::
+
+::: {.takeaway .fragment}
+“Generated” does not have to mean “opaque.”
+:::
 
 ::: {.notes}
 Use the user's wording verbally: “not ideal, but good performance out of the
 box.” The point is engineering leverage, not a benchmark claim that Stan wins
 every workload.
-:::
-
-## Generated code is part of the product
-
-:::: {.columns}
-::: {.column width="46%"}
-
-```julia
-stan_code(model)
-```
-
-is not a debugging afterthought.
-
-It is the review boundary between:
-
-- a compositional authoring language, and
-- a mature inference language.
-
-:::
-::: {.column width="50%"}
-
-The emitted program answers concrete questions:
-
-- Which variables are parameters?
-- Which computations run once vs. per gradient?
-- Were constraints transferred correctly?
-- What pointwise likelihood and predictive draws were added?
-- Did a post-hoc model rewrite change only what we intended?
-
-:::
-::::
-
-::: {.takeaway}
-“Generated” does not have to mean “opaque.”
 :::
 
 # 2. What? {.section-slide}
@@ -236,12 +207,12 @@ end
 What is missing?
 
 - block declarations
-- explicit scalar types
-- vector sizes
-- replicated generated quantities
+- types and shapes
+
+*Main caveat* — model-level control flow: keep `@slic` flat; use `@deffun` or `plate`.
 
 :::
-::: {.column width="49%"}
+::: {.column .fragment width="49%"}
 
 ### Essential Stan emission
 
@@ -272,30 +243,22 @@ generated quantities {
 :::
 ::::
 
-::: {.notes}
-This output was generated from the current checkout. “Essential” means helper
-functions in the functions block are omitted on this slide; the backup has the
-full relevant declarations.
-:::
-
-## What the compiler infers
-
-:::: {.card-grid .three}
-::: {.card}
+:::: {.card-grid .three .compact-cards}
+::: {.card .fragment}
 
 <div class="card-title">Placement</div>
 
 `data` · `transformed data` · `parameters` · `transformed parameters` · `model` · `generated quantities`
 
 :::
-::: {.card .blue-card}
+::: {.card .blue-card .fragment}
 
 <div class="card-title">Representation</div>
 
 types · shapes · constraints · function signatures · captured dimensions
 
 :::
-::: {.card .gold-card}
+::: {.card .gold-card .fragment}
 
 <div class="card-title">Workflow outputs</div>
 
@@ -304,11 +267,16 @@ pointwise log likelihood · posterior predictive draws · executable model descr
 :::
 ::::
 
-<span class="tag red">activity analysis</span>
-<span class="tag">type + shape inference</span>
-<span class="tag">constraint propagation</span>
-<span class="tag red">automatic generated-quantity twins</span>
-<span class="tag">BridgeStan log density</span>
+::: {.notes}
+This output was generated from the current checkout. “Essential” means helper
+functions in the functions block are omitted on this slide; the backup has the
+full relevant declarations. The three cards are what the compiler INFERS from
+the one declaration: block placement; representation (types, shapes,
+constraints, function signatures, captured dimensions); and workflow outputs
+(pointwise log-likelihood, posterior-predictive draws, the executable
+descriptor). The one real restriction is model-level control flow — @slic
+bodies are straight-line; loops and branches live in @deffun or plate.
+:::
 
 ## Composition is the reason for the frontend
 
@@ -332,17 +300,17 @@ end
 Emits a prefixed parameter `eta_beta`.
 
 :::
-::: {.column width="47%"}
+::: {.column .fragment width="47%"}
 
 ### Post-hoc variant
 
 ```julia
-wide_prior = Base.merge(base_model, quote
+wide_prior = Base.merge(random_slope, quote
     beta ~ normal(0, 5)
 end)
 ```
 
-The matching `beta` statement is replaced; the base model stays unchanged.
+The matching `beta` statement is replaced; `random_slope` stays unchanged.
 
 The same mechanism supports:
 
@@ -354,46 +322,8 @@ The same mechanism supports:
 :::
 ::::
 
-::: {.takeaway}
+::: {.takeaway .fragment}
 The payoff grows with a *family* of bespoke models, not with the first ten-line model.
-:::
-
-## The submitted abstract is already historical
-
-The abstract listed closures, keyword/default arguments, and macros as possible future work.
-
-They now sit beside:
-
-:::: {.card-grid .three}
-::: {.card}
-
-<div class="card-title">Julia-flavoured abstraction</div>
-
-closures · higher-order functions · variadics · required/optional kwargs · defaults · macro expansion · inline helpers
-
-:::
-::: {.card .blue-card}
-
-<div class="card-title">Statistical authoring</div>
-
-submodels · `Base.merge` variants · custom distribution triads · censoring/truncation/weights · fused GLMs · CV taint
-
-:::
-::: {.card .gold-card}
-
-<div class="card-title">Structured models</div>
-
-`plate` · ragged data · constrained ragged parameters · missing outcomes · ODEs · Torsten signatures
-
-:::
-::::
-
-Companion reference: [feature atlas](https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas)
-
-::: {.notes}
-Do not race through every item. The purpose is to update the audience's model
-of the package since submission; the companion page and backups carry the
-catalogue.
 :::
 
 # 3. How? {.section-slide}
@@ -402,19 +332,17 @@ Julia syntax on the front, SlicStan's information-flow idea in the middle, Stan 
 
 ## The intellectual lineage: SlicStan
 
-[Gorinova, Gordon & Sutton (POPL 2019)](https://doi.org/10.1145/3290348) asked (not verbatim):
+StanBlocks is directly inspired by [Gorinova, Gordon & Sutton (POPL 2019)](https://doi.org/10.1145/3290348). Shared ideas: no author-written Stan blocks, placement inferred from information flow, composable model fragments, and Stan preserved as the inference target.
 
-> What if a Stan-like language were compositional and blockless, then translated back to Stan?
-
-Shared ideas:
-
-- no author-written Stan blocks
-- infer placement from information flow
-- make model fragments composable
-- preserve Stan as the inference target
-
-::: {.takeaway}
-StanBlocks is directly inspired by SlicStan; it is not a port of SlicStan's formal language or proofs.
+::: {.fragment}
+| | SlicStan | StanBlocks.jl (MlicStan?) |
+|---|---|---|
+| Frontend | A new Stan-like language | A restricted Julia macro DSL |
+| Core analysis | Information-flow type system | Forward trace + reverse likelihood tracking |
+| Abstraction | Flexible model functions | Julia dispatch, closures, kwargs, macros, `@slic` submodels |
+| Distinctive reach | Formal semantics; marginalizing out discrete parameters | Auto generated quantities, model variants, descriptors, BridgeStan/Julia integration |
+| Implementation posture | Research implementation in F# | Julia package used by larger Julia model DSLs |
+| Output | Stan | Stan |
 :::
 
 ::: {.notes}
@@ -423,61 +351,79 @@ Constrained Stan.” Its paper gives an operational density semantics and a
 semantics-preserving translation; StanBlocks does not claim that formal result.
 :::
 
-## Same destination, different route
+## One model, three activity analyses
 
-| | SlicStan | StanBlocks.jl |
-|---|---|---|
-| Frontend | A new Stan-like language | A restricted Julia macro DSL |
-| Core analysis | Information-flow type system | Forward trace + reverse likelihood tracking |
-| Abstraction | Flexible model functions | Julia dispatch, closures, kwargs, macros, `@slic` submodels |
-| Distinctive reach | Formal semantics; marginalizing out discrete parameters | Auto generated quantities, model variants, descriptors, BridgeStan/Julia integration |
-| Implementation posture | Research implementation in F# | Julia package used by larger Julia model DSLs |
-| Output | Stan | Stan |
+```julia
+m = @slic (; y, subject) begin
+    J     = maximum(subject)
+    mu    ~ normal(0, 1)
+    tau   ~ exponential(1)
+    alpha :: vector[J] ~ normal(mu, tau)   # per-subject effect
+    sigma ~ exponential(1)
+    y ~ normal(alpha[subject], sigma)
+end
+```
 
-<span class="small muted">SlicStan comparison based on the POPL paper and its public repository.</span>
+Same source. Only the **data you bind** changes — activity analysis and metadata
+decide, per statement, where each sampling statement ends up.
 
-## Four compiler verbs
+:::: {.card-grid .three}
+::: {.card .gold-card .fragment}
 
-<div class="flow">
-  <div class="step"><strong>1 · capture</strong><br><code>@slic</code> stores Julia AST + bound data + defining module</div>
-  <div class="step"><strong>2 · forward!</strong><br>resolve calls; infer type, shape, constraints, captures</div>
-  <div class="step"><strong>3 · backward!</strong><br>mark everything that can affect a live likelihood</div>
-  <div class="step"><strong>4 · distribute!</strong><br>route declarations and statements into Stan blocks</div>
-</div>
+<div class="card-title">Prior prediction</div>
 
-Then `show`/`stan_code` emits Stan source; `instantiate` compiles it through BridgeStan.
+Bind **no outcome** — `m(; subject)`.
 
-```text
-@slic model → StanModel → stan_code → stanc / BridgeStan / CmdStan
+Nothing to condition on, so the whole model forward-simulates in `generated
+quantities` — `mu, tau, alpha, sigma`, and `y` itself.
+
+:::
+::: {.card .blue-card .fragment}
+
+<div class="card-title">Posterior fit</div>
+
+Bind **`y` observed**.
+
+`y ~ normal(alpha[subject], sigma)` becomes the likelihood; `mu, tau, alpha,
+sigma` are fitted, and `y_gen` is the posterior-predictive replica.
+
+:::
+::: {.card .fragment}
+
+<div class="card-title">Population prediction · CV</div>
+
+Bind **`maybecv(:subject, subject)`**.
+
+Taint flows from the grouping into `alpha`: the per-subject effects leave
+`parameters` and re-draw from `normal(mu, tau)` in `generated quantities`,
+while `mu, tau, sigma` stay fitted.
+
+:::
+::::
+
+```{=html}
+<p class="stan-modal-cta fragment">
+<button type="button" class="stan-modal-trigger"
+  onclick="event.stopPropagation(); window.openStanModal('prior-posterior');">
+  See the generated Stan, side by side&nbsp;→
+</button>
+</p>
 ```
 
 ::: {.notes}
-These names come directly from the current source. Base.show is the emitter.
-The backward pass is why prior-only values can move to generated quantities and
-why transformed-data vs transformed-parameter placement follows likelihood
-reachability.
-:::
-
-## One dependency graph, several execution times
-
-```julia
-mx = mean(x)                 # data only
-alpha ~ normal(0, 2)         # affects y
-beta  ~ normal(0, 1)         # affects y
-mu = alpha + beta * (x - mx) # parameter dependent
-y ~ normal(mu, 1)            # observed
-```
-
-| Binding | Compiler conclusion | Stan destination |
-|---|---|---|
-| `x`, `y` | supplied values | `data` |
-| `mx` | data-only computation | `transformed data` |
-| `alpha`, `beta` | sampled and likelihood-relevant | `parameters` + `model` |
-| `mu` | deterministic and parameter-dependent | `transformed parameters` |
-| `y_likelihood`, `y_gen` | post-fit workflow outputs | `generated quantities` |
-
-::: {.takeaway}
-The source reads in model order; the compiler schedules it in inference order.
+The SAME @slic source is all three models; only the data binding differs, and
+two mechanisms do the work. (1) Dead-parameter elimination: bind y and `y ~`
+is a live likelihood, so mu, tau, alpha, sigma are fitted parameters; OMIT y
+and there is no likelihood at all, so the whole model forward-simulates in
+generated quantities (y is generated too — this is the prior predictive). (2)
+cv taint: maybecv on the subject index taints everything it reaches — the y
+likelihood (dropped) and, because alpha's size J = maximum(subject) is tainted,
+alpha itself, which relocates to generated quantities and re-draws from
+normal(mu, tau). mu, tau, sigma are untainted, so they stay parameters. That is
+leave-a-group-out / population prediction. The typed `alpha :: vector[J] ~
+normal(mu, tau)` and the `; n=J` spelling now emit byte-identical Stan under cv
+taint — the declared size carries the taint too (StanBlocks fix, snag
+`typed-lhs-size-c-8a7fbfb2`). The modal shows the real distilled `stan_code`.
 :::
 
 # 4. Started pre-agents — still relevant? {.section-slide}
@@ -493,7 +439,7 @@ Yes, but the value proposition changes.
 </div>
 
 :::: {.columns}
-::: {.column width="47%"}
+::: {.column .fragment width="47%"}
 
 ### Agents make this cheaper
 
@@ -504,7 +450,7 @@ Yes, but the value proposition changes.
 - producing, finding, and fixing bugs
 
 :::
-::: {.column width="49%"}
+::: {.column .fragment width="49%"}
 
 ### Agents do not make this disappear
 
@@ -515,7 +461,7 @@ Yes, but the value proposition changes.
 :::
 ::::
 
-::: {.takeaway}
+::: {.takeaway .fragment}
 Agents reduce the cost of writing code. StanBlocks reduces the amount of *independent model meaning* we have to maintain.
 :::
 
@@ -533,30 +479,33 @@ Move up a layer without hiding the layer below.
 ## StanBlocks as *one* compiler layer
 
 <div class="flow">
-  <div class="step j-red"><strong>BRM.jl</strong><br>formulae, terms, priors, model-family vocabulary</div>
-  <div class="step j-green"><strong>StanBlocks.jl</strong><br>composition, tracing, block/type/shape inference</div>
-  <div class="step stan"><strong>BridgeStan.jl</strong><br>compiled Stan model — log density &amp; gradients (AD)</div>
+  <div class="step j-blue"><strong>BRM.jl</strong><br>formulae, terms, priors, model-family vocabulary</div>
+  <div class="step stan"><strong>StanBlocks.jl</strong><br>composition, tracing, block/type/shape inference</div>
+  <div class="step j-green"><strong>BridgeStan.jl</strong><br>compiled Stan model — log density &amp; gradients (AD)</div>
   <div class="step j-purple"><strong>JuliaBayes.jl</strong><br>shared Julia-facing workflow and ecosystem integration</div>
 </div>
 
-The largest current public consumer is [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl): a formula layer that lowers real model families into `@slic` and `@deffun` components.
+::: {.fragment}
+The largest current public (but unregistered) consumer is [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl): a `brms`-like formula layer that _currently_ lowers into Stan via StanBlocks.jl, but will target Julia via Turing.jl as well in the future.
+:::
 
+::: {.fragment}
 Near-term priorities:
 
-1. Stabilise the small public authoring contract and document every sharp edge.
-2. Make BRM.jl the ergonomic route for standard regression families.
-3. Keep StanBlocks available for bespoke PKPD and other compositional models.
-4. Connect through JuliaBayes interfaces rather than inventing another closed workflow.
+1. Make BRM.jl the ergonomic route for standard regression families.
+2. Keep StanBlocks available for bespoke PKPD and other compositional models.
+3. Connect through JuliaBayes interfaces rather than inventing another closed workflow.
+:::
 
-<div class="contributors-band">
+<div class="contributors-band fragment">
 <p class="band-label">JuliaBayes contributors</p>
 <div class="contributors">
   <div class="person"><img src="https://github.com/nsiccha.png?size=200" alt="Nikolas Siccha"><p class="who">Nikolas Siccha</p><p class="aff">Generable Inc.</p></div>
-  <div class="person"><img src="img/penelopeysm.webp" style="object-position: 66% 32%;" alt="Penelope Yong"><p class="who">Penelope Yong</p><p class="aff">Alan Turing Institute</p></div>
-  <div class="person"><img src="https://github.com/PTWaade.png?size=200" alt="Peter Thestrup Waade"><p class="who">Peter Thestrup Waade</p><p class="aff">TNU, ETH Zürich</p></div>
-  <div class="person"><img src="https://github.com/rsenne.png?size=200" alt="Ryan Senne"><p class="who">Ryan Senne</p><p class="aff">Boston University</p></div>
-  <div class="person"><img src="https://github.com/seabbs.png?size=200" alt="Sam Abbott"><p class="who">Sam Abbott</p><p class="aff">LSHTM (epinowcast · epiforecasts)</p></div>
-  <div class="person"><img src="https://github.com/simonsteiger.png?size=200" alt="Simon Steiger"><p class="who">Simon Steiger</p><p class="aff">Karolinska Institutet</p></div>
+  <div class="person j-blue"><img src="img/penelopeysm.webp" style="object-position: 66% 32%;" alt="Penelope Yong"><p class="who">Penelope Yong</p><p class="aff">Alan Turing Institute</p></div>
+  <div class="person j-green"><img src="https://github.com/PTWaade.png?size=200" alt="Peter Thestrup Waade"><p class="who">Peter Thestrup Waade</p><p class="aff">TNU, ETH Zürich</p></div>
+  <div class="person j-purple"><img src="https://github.com/rsenne.png?size=200" alt="Ryan Senne"><p class="who">Ryan Senne</p><p class="aff">Boston University</p></div>
+  <div class="person j-red"><img src="https://github.com/seabbs.png?size=200" alt="Sam Abbott"><p class="who">Sam Abbott</p><p class="aff">LSHTM (epinowcast · epiforecasts)</p></div>
+  <div class="person j-blue"><img src="https://github.com/simonsteiger.png?size=200" alt="Simon Steiger"><p class="who">Simon Steiger</p><p class="aff">Karolinska Institutet</p></div>
 </div>
 </div>
 
@@ -610,46 +559,13 @@ for questions. Verify the final public slides URL before publication.
 
 Source-to-emission examples and the honest edges of the current language.
 
-## Backup · exact core emission {.tiny-code}
-
-The main example currently emits (helper `functions` omitted):
-
-```stan
-data {
-    int x_n;
-    vector[x_n] x;
-    int y_n;
-    vector[y_n] y;
-}
-transformed data {
-}
-parameters {
-    real alpha;
-    real beta;
-    real<lower=0.0> sigma;
-}
-transformed parameters {
-    vector[x_n] mu = (alpha + (beta * x));
-}
-model {
-    alpha ~ normal(0, 2);
-    beta ~ normal(0, 1);
-    sigma ~ exponential(1);
-    y ~ normal(mu, sigma);
-}
-generated quantities {
-    vector[y_n] y_likelihood = normal_lpdfs(y, mu, sigma);
-    vector[y_n] y_gen = normal_vector_rng(y_n, mu, sigma);
-}
-```
-
 ## Backup · deterministic control flow belongs in `@deffun`
 
 :::: {.columns}
 ::: {.column width="49%"}
 
 ```julia
-@deffun centered_sum(x::vector[n])::real = begin
+@deffun centered_sum(x) = begin
     xbar = mean(x)
     acc = 0.0
     for xi in x
@@ -678,6 +594,35 @@ real centered_sum(vector x) {
 ::::
 
 `@slic` stays flat; `@deffun` owns loops, branches, mutation, iteration, and bounded comprehensions.
+
+## Backup · higher-order functions specialize at compile time
+
+:::: {.columns}
+::: {.column width="49%"}
+
+```julia
+@deffun apply_twice(f, x) = f(f(x))
+
+# f is passed like data — pick any callee
+z = apply_twice(exp, mu)   # ⇒ exp(exp(mu))
+```
+
+:::
+::: {.column width="47%"}
+
+```stan
+real apply_twice_exp(real x) {
+  return exp(exp(x));
+}
+
+// at the call site:
+real z = apply_twice_exp(mu);
+```
+
+:::
+::::
+
+The function argument is resolved at compile time: StanBlocks emits one specialized Stan function per callee (`apply_twice_exp`), so no runtime function object ever reaches Stan.
 
 ## Backup · `plate` is the loop that samples
 
