@@ -4,6 +4,29 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.1 — observation submodels, matrix `plate` LHS, location-first rng overloads
+
+**Non-breaking** — additive to the `v0.2.0` transpiler API.
+
+- **Observation / likelihood submodels — `data ~ submodel(...)`.** A submodel
+  can now be embedded with observed data on the LHS: it `return`s its single
+  internal sampling statement (the *observation slot*) that the outer data binds
+  to, so the submodel emits its own `obs ~ family(...)` likelihood and carries
+  its own observation-model parameters. Each observation stream becomes one
+  removable line (`some_data ~ some_stream(; state...)`) with no `Base.merge`.
+  The existing kwarg form (`nominal ~ submodel(; data, ...)`) is unchanged, and
+  the resulting log-density is byte-identical to the hand-written `Base.merge`
+  composition.
+- **Collected-type `plate` LHS — `rv::matrix[K,N] ~ plate(...)`.** A `plate`
+  result may be declared with its collected type; the per-cell result form is
+  now rejected with a clear error. A typed-LHS `~` distribution additionally
+  checks support agreement and errors on a mismatch.
+- **Location-first sized-token `_rng` overloads.** Generated-quantities `_rng`
+  overloads for the location-first 3-arg families (`skew_normal`,
+  `exp_mod_normal`, `skew_double_exponential`, `pareto_type_2`, and `student_t`)
+  now accept a vector leading location, fixing GQ draws for regression-style
+  likelihoods such as `y ~ skew_double_exponential(mu_vec, sigma_vec, tau)`.
+
 ## v0.2.0 — StanBlocks is now a Julia→Stan transpiler
 
 **Breaking.** StanBlocks has been rebuilt around a single purpose: a Julia
