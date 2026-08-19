@@ -1222,7 +1222,63 @@ forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
 end
 forward!(x::SamplingExpr{Symbol,<:SlicModel}; info) = begin
     name, rhs = x.args
+    # `<data> ~ submodel(...)` — the OBSERVATION-submodel form. When the outer LHS
+    # is a DATA variable, the submodel acts as a parameterised family: its own `~`
+    # priors still contribute, and the internal sampling statement its `return`
+    # names becomes the data-likelihood over the outer LHS (with the usual auto
+    # `<obs>_gen`/`<obs>_likelihood` twins). A non-DATA LHS keeps the ordinary
+    # latent-generating semantics below (`return` binds the LHS to a value), so
+    # this branch is purely additive — a data LHS previously hit the model-scope
+    # single-assignment assert inside `_forward_return!` and errored.
+    if name in keys(info) && stan.qual(info[name]) == :data
+        return _forward_observation_submodel!(name, rhs; info)
+    end
     forward!(rhs; info=SubModel(info, name, Dict()))
+end
+# Embed an observation submodel: bind the outer DATA to the submodel's
+# return-connected sampling LHS (so that `~` becomes the data-likelihood) and
+# drop the `return` (its value IS the observation, not a value to bind). Every
+# other statement — the submodel's own parameter priors and any transformed
+# quantities — traces exactly as in the ordinary embed.
+_forward_observation_submodel!(name, rhs; info) = begin
+    slot = _submodel_observation_slot(rhs)
+    stripped = _strip_submodel_returns(rhs)
+    forward!(stripped; info=SubModel(info, name, Dict{Any,Any}(slot => info[name])))
+end
+_block_statements(b::Expr) = b.head === :block ? b.args : Any[b]
+_block_statements(b) = Any[b]
+_is_tilde_call(s) = Meta.isexpr(s, :call) && length(s.args) == 3 && s.args[1] === :~
+# Identify the OBSERVATION SLOT of a submodel embedded on a data LHS: the bare
+# name its `return` names, which must be the LHS of exactly one `~` statement.
+# Anything else is an actionable error — a data-LHS embed has no other reading.
+_submodel_observation_slot(rhs::SlicModel) = begin
+    stmts = _block_statements(model(rhs))
+    returns = [s for s in stmts if Meta.isexpr(s, :return)]
+    isempty(returns) && error(
+        "`<data> ~ submodel(...)`: to observe data through a submodel, the submodel must ",
+        "`return <name>` — the LHS of exactly one of its `~` statements — and that statement ",
+        "becomes the likelihood for the observed data. This submodel has no `return`. ",
+        "(A submodel whose value you bind instead uses a NON-data LHS: `latent ~ submodel(...)`.)")
+    length(returns) == 1 || error(
+        "`<data> ~ submodel(...)`: the submodel has ", length(returns), " `return` statements; ",
+        "exactly one is required, naming the observation slot.")
+    ret = only(returns).args[1]
+    ret isa Symbol || error(
+        "`<data> ~ submodel(...)`: the submodel's `return` must be a bare name that is a `~` LHS ",
+        "(got `return ", ret, "`). The returned name selects which internal sampling statement ",
+        "the outer data observes; a computed return has no unique slot.")
+    slots = [s for s in stmts if _is_tilde_call(s) && s.args[2] === ret]
+    length(slots) == 1 || error(
+        "`<data> ~ submodel(...)`: the returned name `", ret, "` must be the LHS of exactly one ",
+        "`~` statement in the submodel (found ", length(slots), "). That statement becomes the ",
+        "data-likelihood over the observed data.")
+    ret
+end
+_strip_submodel_returns(rhs::SlicModel) = begin
+    b = model(rhs)
+    (b isa Expr && b.head === :block) || return rhs
+    kept = Any[s for s in b.args if !Meta.isexpr(s, :return)]
+    SlicModel(Expr(:block, kept...), data(rhs), rhs.mod)
 end
 # A native constrained center type carries an implicit Stan constraint
 # transform (simplex/ordered/positive_ordered — proper subtypes of `vector` —
