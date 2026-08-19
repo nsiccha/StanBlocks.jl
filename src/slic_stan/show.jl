@@ -121,7 +121,13 @@ Base.show(io::StanIO, x::StanType{<:types.tup}) = begin
 end
 Base.show(io::IO, x::AssignmentExpr{<:StanExpr{Symbol}}) = begin
     name, rhs = x.args
-    @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
+    # A `short_expr` display placeholder carries a `StringStanType` rhs and is
+    # only ever rendered by the error formatter itself (functions.jl:127). Skip
+    # the code-emission assert for it so formatting a genuinely-untypeable
+    # assignment cannot crash on `center_type(::StringStanType)` — same class as
+    # snag `error-formatter-79e40522` (snag `multinomial-cust-59569d79`).
+    type(rhs) isa StringStanType ||
+        @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
     print(io, type(rhs), " ", name, " = ", rhs)
 end
 Base.show(io::IO, x::AssignmentExpr) = print(io, x.args[1], " = ", x.args[2])

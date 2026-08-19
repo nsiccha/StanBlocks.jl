@@ -8033,6 +8033,89 @@ isolated test item.
 end
 
 """
+Verify `slic: int/real 2-d array row-slice + sub-array getindex` in an isolated
+test item.
+"""
+@testitem "slic: int/real 2-d array row-slice + sub-array getindex" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # `y[i, :]` on an `int[m,n]` / `real[m,n]` array desugars (functions.jl
+    # colon rules) to `getindex(<arr>[m,n], int, int[o])`, and `y[a, b]` to
+    # `(<arr>[m,n], int[o], int[p])`. Those rows mirror the `matrix[m,n]` ones
+    # but were missing for the array center types, so a row-slice degraded to
+    # `anything` and an int-array row-slice ASSIGNMENT inside a custom `_rng`
+    # (e.g. `y[i,:] = multinomial_rng(...)`) failed to transpile. Snag
+    # `multinomial-cust-59569d79`.
+    @deffun begin
+        ia_row(y::int[m,n], i::int)::int[n]  = y[i, :]
+        ia_col(y::int[m,n], j::int)::int[m]  = y[:, j]
+        isub(y::int[m,n], a::int[o], b::int[p])::int[o,p] = y[a, b]
+    end
+    @test string(StanBlocks.return_type_of(ia_row, zeros(Int,2,3), 1)) == "array[3] int"
+    @test string(StanBlocks.return_type_of(ia_col, zeros(Int,2,3), 1)) == "array[2] int"
+    @test string(StanBlocks.return_type_of(isub, zeros(Int,3,4), [1,2], [1,2,3])) == "array[2, 3] int"
+
+    # `real[m,n]` (array-of-real) is not constructible from a Julia value (a
+    # Matrix{Float64} is Stan `matrix`), so exercise its slice rows through a
+    # @deffun arg typed `real[m,n]` and transpile a model that reads them.
+    @deffun begin
+        rrow(y::real[m,n], i::int)::real[n]                 = y[i, :]
+        rsub(y::real[m,n], a::int[o], b::int[p])::real[o,p] = y[a, b]
+    end
+    m = @slic (; rr = [1,2], cc = [1,2]) begin
+        Xa :: real[2,3]
+        r  = rrow(Xa, 1)          # real[3]
+        s  = rsub(Xa, rr, cc)     # real[2,2]
+        mu :: real ~ normal(sum(r) + sum(s[1, :]), 1.0)
+    end
+    @test transpiles(m)
+
+    # The int-array row-slice rng from the snag now transpiles end to end.
+    @deffun begin
+        @lhs @lpxf mnomx_lpmf(obs::int[n_obs, K], probs::vector[K])::real = begin
+            lp = 0.0
+            for i in 1:n_obs; lp += multinomial_lpmf(obs[i, :], probs); end
+            lp
+        end
+        mnomx_lpmfs(obs::int[n_obs, K], probs::vector[K])::vector[n_obs] = begin
+            ll::vector[n_obs]
+            for i in 1:n_obs; ll[i] = multinomial_lpmf(obs[i, :], probs); end
+            ll
+        end
+        mnomx_rng(int[n_obs, K], probs::vector[K])::int[n_obs, K] = begin
+            y::int[n_obs, K]
+            for i in 1:n_obs; y[i, :] = multinomial_rng(probs, 100); end
+            y
+        end
+    end
+    mm = @slic (; obs = [3 5 2; 4 4 2], K = 3) begin
+        probs :: simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        obs ~ mnomx(probs)
+    end
+    @test transpiles(mm)
+end
+
+"""
+Verify `slic: tracetype-not-defined assignment formats without crashing` in an
+isolated test item.
+"""
+@testitem "slic: tracetype-not-defined assignment formats without crashing" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # The generic `tracetype(::CanonicalExpr)` fallback (functions.jl) builds its
+    # "tracetype not defined" message by rendering a `short_expr` copy of the
+    # offending node, whose rhs becomes a `StringStanType` placeholder. Rendering
+    # a `= ` assignment with such a placeholder must NOT crash on
+    # `center_type(::StringStanType)`; the guard in `show(::AssignmentExpr{...})`
+    # skips the code-emission assert for the display placeholder. Same class as
+    # `slic: error formatter never destroys the error it formats` (snag
+    # `error-formatter-79e40522`); reported via snag `multinomial-cust-59569d79`.
+    lhs  = StanBlocks.StanExpr(:y_gen, StanBlocks.StanType(StanBlocks.types.anything))
+    rhs  = StanBlocks.StanExpr(:draw,
+        StanBlocks.StanType(StanBlocks.types.int,
+            (StanBlocks.StanExpr(3, StanBlocks.StanType(StanBlocks.types.int)),)))
+    node = StanBlocks.CanonicalExpr(:(=), lhs, StanBlocks.short_expr(rhs))
+    rendered = string(node)                   # regressed => MethodError here errors the item
+    @test occursin("y_gen", rendered)         # the offending lhs still named
+end
+
+"""
 Verify `slic: structured diagnostics preserve source-part provenance` in an
 isolated test item.
 """

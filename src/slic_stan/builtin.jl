@@ -2255,13 +2255,22 @@ end
     typeof(getindex) => begin 
         (int[m], int) => int
         (int[m], int[n]) => int[n]
-        (int[m,n], int) => int[n] 
-        (int[m,n], int[o], int) => int[o] 
-        (int[m,n], int, int) => int 
+        (int[m,n], int) => int[n]
+        (int[m,n], int[o], int) => int[o]
+        (int[m,n], int, int) => int
+        # Array row-slice (`y[i, :]` desugars to `y[i, 1:n]`) and sub-array
+        # (`y[a:b, c:d]`), mirroring the `matrix[m,n]` rows below. Without the
+        # `(int[m,n], int, int[o])` row an int-array row-slice assignment
+        # `y[i, :] = multinomial_rng(...)` degraded to `anything` (snag
+        # multinomial-cust-59569d79).
+        (int[m,n], int, int[o]) => int[o]
+        (int[m,n], int[o], int[p]) => int[o, p]
         (real[m], int) => real
         (real[m], int[n]) => real[n]
-        (real[m,n], int) => real[n] 
-        (real[m,n], int[o], int) => real[o] 
+        (real[m,n], int) => real[n]
+        (real[m,n], int[o], int) => real[o]
+        (real[m,n], int, int[o]) => real[o]
+        (real[m,n], int[o], int[p]) => real[o, p]
         (vector[m], int[n]) => vector[n]
         (any_vector[m], int) => real
         (vector[m,n], int) => vector[n]
