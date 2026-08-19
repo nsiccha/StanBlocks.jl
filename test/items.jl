@@ -3786,6 +3786,38 @@ Verify `shapes: append functions` in an isolated test item.
         @test check_type(model, :v3, "vector")
         @test stanc_compiles(model)
     end
+    @testset "append_col(r1::row_vector[m], r2::row_vector[n]) :: row_vector[m+n]" begin
+        # Two row_vectors concatenate COLUMN-wise into a longer row_vector, NOT
+        # a matrix (that would be append_row's row-stacking). Regression for the
+        # grey-seal IPM `multinomial_allocation` chain: reference_logit[1] ++
+        # logits[3] -> row_vector[4], then softmax(logits')' back to row_vector.
+        model = @slic (;m=1, n=3, obs=randn(4)) begin
+            r1     = rep_row_vector(0., m)
+            r2     = rep_row_vector(1., n)
+            logits = append_col(r1, r2)
+            alloc  = softmax(logits')'
+            obs   ~ normal(alloc', 1.)
+        end
+        @test check_type(model, :logits, "row_vector")
+        @test check_type(model, :alloc, "row_vector")
+        @test stanc_compiles(model)
+    end
+    @testset "append_col(r::row_vector[n], x::real) / (x::real, r::row_vector[n]) :: row_vector[n+1]" begin
+        append_model = @slic (;n=3, obs=randn(4)) begin
+            r   = rep_row_vector(0., n)
+            r2  = append_col(r, 1.)
+            obs ~ normal(r2', 1.)
+        end
+        @test check_type(append_model, :r2, "row_vector")
+        @test stanc_compiles(append_model)
+        prepend_model = @slic (;n=3, obs=randn(4)) begin
+            r   = rep_row_vector(0., n)
+            r2  = append_col(1., r)
+            obs ~ normal(r2', 1.)
+        end
+        @test check_type(prepend_model, :r2, "row_vector")
+        @test stanc_compiles(prepend_model)
+    end
 end
 
 """

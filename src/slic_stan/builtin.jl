@@ -362,6 +362,12 @@ import Statistics
     append_col(x::matrix[m, n1], y::matrix[m, n2])::matrix[m, n1+n2]
     append_col(x::anything[m], y::matrix[m, n2])::matrix[m, 1+n2]
     append_col(x::matrix[m, n1], y::anything[m])::matrix[m, n1+1]
+    # Two row_vectors concatenate COLUMN-wise into a longer row_vector (NOT a
+    # matrix — that is `append_row`'s row-stacking). These forms are strictly
+    # more specific than the `anything[n]` rule above, so they dispatch first.
+    append_col(x::row_vector[m], y::row_vector[n])::row_vector[m+n]
+    append_col(x::row_vector[n], y::real)::row_vector[n+1]
+    append_col(x::real, y::row_vector[n])::row_vector[n+1]
     append_array(lhs::anything[m],rhs::anything[n])::real[m+n]
     append_array(lhs::anything[m],rhs::real)::real[m+1]
     append_row(lhs::vector[m],rhs::real)::vector[m+1]
