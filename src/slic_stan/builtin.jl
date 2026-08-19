@@ -2200,6 +2200,7 @@ end
     Union{typeof.((+, -, ^, *, /))...} => begin
         (real,) => real
         (vector[n],) => vector[n]
+        (row_vector[n],) => row_vector[n]
         (int, real) => real
         (int, int) => int
         (real, int) => real
@@ -2211,12 +2212,15 @@ end
         # rather than silently emitting invalid Stan. Do not re-add them.
         (int, vector[n]) => vector[n]
         (real, vector[n]) => vector[n]
+        (int, row_vector[n]) => row_vector[n]
+        (real, row_vector[n]) => row_vector[n]
         (real, matrix[m,n]) => matrix[m,n]
         (vector[n], real) => vector[n]
         (vector[n], int) => vector[n]
         (vector[n], vector[m]) => vector[n]
         (row_vector[n], real) => row_vector[n]
         (row_vector[n], int) => row_vector[n]
+        (row_vector[n], row_vector[m]) => row_vector[n]
         (matrix[m,n], real) => matrix[m,n]
     end
     Union{typeof.((+, -))...} => begin 
@@ -2225,6 +2229,7 @@ end
     Union{typeof.((*, ))...} => begin
         (vector[m], row_vector[n]) => matrix[m,n]
         (row_vector[n], vector[n]) => real
+        (row_vector[m], matrix[m,n]) => row_vector[n]
         (matrix[m,n], vector[n]) => vector[m]
         (matrix[m,n], matrix[n,o]) => matrix[m,o]
         (cholesky_factor_corr[m],matrix[m,n]) => matrix[m,n]
