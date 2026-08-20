@@ -328,6 +328,19 @@ locals inside the function body**:
 @deffun mean_matrix(A::matrix[m, n])::real   = sum(A) / (m * n)
 ```
 
+### Data-only UDF arguments are compiler-inferred, not user-annotated
+
+Stan permits `data` qualifiers on user-defined-function arguments, and some
+Stan functions require particular inputs to be data-only. StanBlocks currently
+does not infer and emit those UDF qualifiers, so a wrapper that needs them is
+not expressible through `@deffun` today.
+
+This is intentionally **not** a user-facing annotation surface. If StanBlocks
+adds support, the compiler must derive data-only arguments from qualifier
+information it already tracks and emit the Stan `data` keywords automatically.
+Authors will continue to write ordinary annotations such as `x::vector[n]` and
+`tol::real`; forms such as `x::data(vector[n])` are not part of the API.
+
 Underscored names mean "I take this argument but ignore the value, just use its shape":
 
 ```julia
