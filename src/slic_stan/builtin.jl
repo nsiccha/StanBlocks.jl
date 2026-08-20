@@ -940,6 +940,38 @@ import Statistics
     binomial_lpmfs(y::int[n], args...) = jbroadcasted(binomial_lpmfs, y, args...)
     binomial_logit_lpmfs(args...) = binomial_logit_lpmf(args...)
     binomial_logit_lpmfs(y::int[n], args...) = jbroadcasted(binomial_logit_lpmfs, y, args...)
+    # Stan's native multinomial density omits the total count N because it is
+    # recoverable as sum(obs), while multinomial_rng requires N. SLIC's auto-GQ
+    # contract forwards exactly the density-family arguments, so expose an
+    # explicit-N overload that keeps density and predictive calls symmetric.
+    # The batched form is one composition per row and produces one pointwise
+    # likelihood value / predictive draw per row.
+    @lhs multinomial_lpmf(obs::int[K], probs::vector[K], N::int)::real = begin
+        if sum(obs) != N
+            reject("multinomial: explicit N must equal sum(obs)")
+        end
+        multinomial_lpmf(obs, probs)
+    end
+    multinomial_lpmfs(obs::int[K], probs::vector[K], N::int)::real =
+        multinomial_lpmf(obs, probs, N)
+    @lhs multinomial_lpmf(obs::int[n,K], probs::vector[K], row_N::int[n])::real =
+        sum(multinomial_lpmfs(obs, probs, row_N))
+    multinomial_lpmfs(obs::int[n,K], probs::vector[K], row_N::int[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = multinomial_lpmf(obs[i, :], probs, row_N[i])
+        end
+        rv
+    end
+    multinomial_rng(int[K], probs::vector[K], N::int)::int[K] =
+        multinomial_rng(probs, N)
+    multinomial_rng(int[n,K], probs::vector[K], row_N::int[n])::int[n,K] = begin
+        rv::int[n,K]
+        for i in 1:n
+            rv[i, :] = multinomial_rng(probs, row_N[i])
+        end
+        rv
+    end
     # A vector-valued plate cell is collected as matrix[k, n], one observation
     # per column. Stan's categorical-logit primitive accepts only one vector of
     # logits at a time, so provide the density and pointwise companions for the

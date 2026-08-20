@@ -8104,6 +8104,48 @@ test item.
     draw = StanBlocks.stan_call(mnomx_rng, token, fill(1 / 3, 3), [10, 10])
     @test StanBlocks.center_type(draw) === StanBlocks.types.int
     @test length(StanBlocks.stan_size(draw)) == 2
+
+    # The built-in multinomial family provides the same explicit-N contract, so
+    # the common row-batched case needs no custom @lpxf wrapper. Its density
+    # validates each supplied total, pointwise GQ emits one value per row, and
+    # predictive GQ can draw from family arguments alone.
+    builtin_mm = @slic (; builtin_obs = [3 5 2; 4 4 2], row_N = [10, 10], K = 3) begin
+        probs :: simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        builtin_obs ~ multinomial(probs, row_N)
+    end
+    builtin_code = stan_code(builtin_mm)
+    @test occursin("builtin_obs ~ multinomial(probs, row_N);", builtin_code)
+    @test occursin("multinomial_lpmfs(builtin_obs, probs, row_N)", builtin_code)
+    @test occursin(r"builtin_obs_gen\s*=\s*multinomial_int_rng\([^;]*probs, row_N\)", builtin_code)
+    @test transpiles(builtin_mm)
+
+    single_mm = @slic (; counts = [3, 5, 2], N = 10, K = 3) begin
+        probs :: simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        counts ~ multinomial(probs, N)
+    end
+    single_code = stan_code(single_mm)
+    @test occursin("counts ~ multinomial(probs, N);", single_code)
+    @test occursin(r"counts_gen\s*=\s*multinomial_int_rng\([^;]*probs, N\)", single_code)
+    @test occursin("multinomial: explicit N must equal sum(obs)", single_code)
+    @test transpiles(single_mm)
+
+    # No observed LHS is required: @lhs infers int[K] from (probs, N), and the
+    # prior-predictive model draws the fresh composition directly in GQ.
+    prior_mm = @slic (; N = 10, K = 3) begin
+        probs :: simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        counts ~ multinomial(probs, N)
+    end
+    prior_code = stan_code(prior_mm)
+    @test occursin(r"counts\s*=\s*multinomial_int_rng\([^;]*probs, N\)", prior_code)
+    @test transpiles(prior_mm)
+
+    prior_batch_mm = @slic (; row_N = [10, 12], K = 3) begin
+        probs :: simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        counts ~ multinomial(probs, row_N)
+    end
+    prior_batch_code = stan_code(prior_batch_mm)
+    @test occursin(r"counts\s*=\s*multinomial_int_rng\([^;]*probs, row_N\)", prior_batch_code)
+    @test transpiles(prior_batch_mm)
 end
 
 """
