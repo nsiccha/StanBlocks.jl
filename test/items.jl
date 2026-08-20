@@ -8070,27 +8070,40 @@ test item.
 
     # The int-array row-slice rng from the snag now transpiles end to end.
     @deffun begin
-        @lhs @lpxf mnomx_lpmf(obs::int[n_obs, K], probs::vector[K])::real = begin
+        @lhs @lpxf mnomx_lpmf(obs::int[n_obs, K], probs::vector[K], row_N::int[n_obs])::real = begin
             lp = 0.0
             for i in 1:n_obs; lp += multinomial_lpmf(obs[i, :], probs); end
             lp
         end
-        mnomx_lpmfs(obs::int[n_obs, K], probs::vector[K])::vector[n_obs] = begin
+        mnomx_lpmfs(obs::int[n_obs, K], probs::vector[K], row_N::int[n_obs])::vector[n_obs] = begin
             ll::vector[n_obs]
             for i in 1:n_obs; ll[i] = multinomial_lpmf(obs[i, :], probs); end
             ll
         end
-        mnomx_rng(int[n_obs, K], probs::vector[K])::int[n_obs, K] = begin
+        # Auto-GQ deliberately forwards only the density arguments. A count
+        # total needed by the RNG must therefore be an explicit family argument,
+        # even when the density body itself can infer it from the observation.
+        mnomx_rng(int[n_obs, K], probs::vector[K], row_N::int[n_obs])::int[n_obs, K] = begin
             y::int[n_obs, K]
-            for i in 1:n_obs; y[i, :] = multinomial_rng(probs, 100); end
+            for i in 1:n_obs; y[i, :] = multinomial_rng(probs, row_N[i]); end
             y
         end
     end
-    mm = @slic (; obs = [3 5 2; 4 4 2], K = 3) begin
+    mm = @slic (; obs = [3 5 2; 4 4 2], row_N = [10, 10], K = 3) begin
         probs :: simplex[K] ~ dirichlet(rep_vector(1.0, K))
-        obs ~ mnomx(probs)
+        obs ~ mnomx(probs, row_N)
     end
+    code = stan_code(mm)
+    @test occursin(r"obs_gen\s*=\s*mnomx_int_rng\([^;]*probs, row_N\)", code)
     @test transpiles(mm)
+
+    # The RNG contract cannot depend on an observed LHS existing. Exercise the
+    # sized call directly with only its type token and explicit family args.
+    token = StanBlocks.stan_call(
+        getindex, StanBlocks.stan_expr(StanBlocks.types.int), 2, 3)
+    draw = StanBlocks.stan_call(mnomx_rng, token, fill(1 / 3, 3), [10, 10])
+    @test StanBlocks.center_type(draw) === StanBlocks.types.int
+    @test length(StanBlocks.stan_size(draw)) == 2
 end
 
 """
