@@ -1826,6 +1826,11 @@ end
 
 _plate_cell_shape(T, name) = begin
     stan_ndim(T) == 0 && return :scalar
+    # A deterministic `array[T] vector[K]` cell (the native result of Stan's ODE
+    # solvers) is collected as `array[outer..., T] vector[K]`. Indexing the
+    # leading plate axes then recovers the original per-cell trajectory, so it
+    # can be bound once and consumed by later statements in the same cell.
+    center_type(T) === types.vector && stan_ndim(T) == 2 && return :array_vector
     if center_type(T) <: types.vector && stan_ndim(T) == 1
         # A native-constrained vector cell (simplex/ordered/positive_ordered) is
         # stored as a Stan `array[N…] <ct>[K]` so Stan applies the constraint
@@ -1835,7 +1840,7 @@ _plate_cell_shape(T, name) = begin
     end
     error(
         "plate: unsupported per-cell type `", sigtype(T), "` for `", name,
-        "` — scalar or vector[K] only (MVP)."
+        "` — scalar, vector[K], or array[T] vector[K] only (MVP)."
     )
 end
 
@@ -1890,6 +1895,15 @@ _plate_outer_decl(f, T::StanType, outer) = begin
         length(outer) == 1 && return Expr(:(::), f, _plate_type_expr(:vector, outer))
         sizes = Any[outer[3:end]...; outer[1]; outer[2]]
         return Expr(:(::), f, _plate_type_expr(:matrix, sizes))
+    end
+    if shape === :array_vector
+        # SLIC `vector[outer..., T, K]` renders as the Stan declaration
+        # `array[outer..., T] vector[K]`: all dimensions except the vector
+        # center's final K are array axes.
+        return Expr(
+            :(::), f,
+            _plate_type_expr(:vector, Any[outer...; stan_size(T)...]),
+        )
     end
     # Keep `K` as the traced StanExpr (not its bare `expr`). A submodel arg-derived
     # size resolves to a CALLER-scope name (`n_terms` ⇒ the caller's `P`); as a bare
@@ -2022,7 +2036,7 @@ _plate_cell_index(f, T::StanType, idxs) = begin
     # A native-constrained `array[N…] <ct>[K]` cell is indexed by its plate axes
     # as a whole element (`cell[g]`); the plain-vector matrix packing takes a
     # column (`cell[:, g]`) instead.
-    shape === :constrained_vector && return Expr(:ref, f, idxs...)
+    shape in (:constrained_vector, :array_vector) && return Expr(:ref, f, idxs...)
     indices = Any[idxs[2:end]...; Symbol(":"); idxs[1]]
     Expr(:ref, f, indices...)
 end
