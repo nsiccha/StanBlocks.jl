@@ -864,6 +864,7 @@ import Statistics
     poisson_log_glm_lpmf(args...)
     neg_binomial_2_log_glm_lpmf(args...)
     @lhs multi_normal_lpdf(obs::vector[n], loc::vector[n], cov)
+    @lhs multi_normal_cholesky_lpdf(obs::vector[n], loc::vector[n], scale)
     @lhs dirichlet_lpdf(w::simplex[n], alpha::vector[n])
     @lhs lkj_corr_lpdf(L::corr_matrix, x::real)
     @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, x::real)
@@ -997,6 +998,7 @@ import Statistics
     # parameter inside a plate (`cell[g] ~ dirichlet(…)`) fetched `dirichlet_lpdfs`
     # (snag plate-constraine-90607054).
     multi_normal_lpdfs(args...)::real = multi_normal_lpdf(args...)
+    multi_normal_cholesky_lpdfs(args...)::real = multi_normal_cholesky_lpdf(args...)
     dirichlet_lpdfs(args...)::real = dirichlet_lpdf(args...)
     @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr[m,n], x::real, m::int, n::int)::real = begin
         rv = 0.0
