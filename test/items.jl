@@ -8605,6 +8605,61 @@ vector observation: model density, predictive RNG, and pointwise log likelihood.
 end
 
 """
+Snag regression (multi-normal-cho-25292199): the native Stan
+`multi_normal_cholesky` family must complete the observation triad for one
+vector observation. Grouped observations use the supported top-level ragged
+shape and retain one joint likelihood scalar per group.
+"""
+@testitem "slic: multi-normal-cholesky supports density pointwise and predictive paths" tags=[:slic, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    single = @slic (; y = [0.1, -0.2], mu = [0.0, 0.0], L = [1.0 0.0; 0.2 0.9]) begin
+        y ~ multi_normal_cholesky(mu, L)
+    end
+
+    d = stan_descriptor(single; name = :multi_normal_cholesky)
+    outs = Dict(output.name => output for output in d.outputs)
+    @test outs[:y_gen].type == :vector
+    @test outs[:y_gen].size == (:mu_n,)
+    @test outs[:y_gen].generative == :draw
+    @test outs[:y_likelihood].type == :real
+    @test outs[:y_likelihood].size == ()
+    @test outs[:y_likelihood].generative == :pointwise_loglik
+    @test stan_operation(d, :predict).outputs == (:y_gen,)
+    @test stan_operation(d, :pointwise_loglik).outputs == (:y_likelihood,)
+
+    code = stan_code(single)
+    @test occursin("y ~ multi_normal_cholesky(mu, L);", code)
+    @test occursin(r"y_gen\s*=\s*multi_normal_cholesky_vector_rng\(", code)
+    @test occursin(r"y_likelihood\s*=\s*multi_normal_cholesky_lpdfs\(y,", code)
+    @test stanc_compiles(single)
+
+    grouped = @slic (;
+        ys = [[0.1, -0.2], [0.3, 0.4]],
+        mus = [[0.0, 0.0], [0.0, 0.0]],
+        L = [1.0 0.0; 0.2 0.9],
+    ) begin
+        ys ~ multi_normal_cholesky(mus, L)
+    end
+
+    gd = stan_descriptor(grouped; name = :grouped_multi_normal_cholesky)
+    gouts = Dict(output.name => output for output in gd.outputs)
+    @test gouts[:ys_gen].type == :vector
+    @test gouts[:ys_gen].segments == [2, 4]
+    @test gouts[:ys_gen].generative == :draw
+    @test gouts[:ys_likelihood].type == :vector
+    @test occursin("num_elements_RaggedVector", string(gouts[:ys_likelihood].size[1]))
+    @test gouts[:ys_likelihood].segments == [2, 4]
+    @test gouts[:ys_likelihood].generative == :pointwise_loglik
+
+    grouped_code = stan_code(grouped)
+    grouped_gq = stan_block(grouped_code, "generated quantities")
+    @test occursin(r"ys_likelihood\[g__rq_\d+\]\s*=\s*multi_normal_cholesky_lpdf\(", grouped_gq)
+    @test occursin(r"ys_gen\[ragged_start\(", grouped_gq)
+    @test stanc_compiles(grouped)
+end
+
+"""
 Snag regression (gp-exp-quad-mult-43b54b48): Stan's multidimensional
 `gp_exp_quad_cov` consumes `array[] vector` locations and supports both
 self/cross covariance with scalar or per-axis length scales. SLIC spells an
