@@ -16,6 +16,7 @@ FeatureAtlasDocs.validate_generated_templates(joinpath.(@__DIR__, "src", [
     "examples/case-studies/soil.md",
     "examples/case-studies/wastewater.md",
     "examples/case-studies/episewer.md",
+    "examples/case-studies/grey-seal-ipm.md",
     "examples/monster.md",
 ]))
 
@@ -66,6 +67,7 @@ makedocs(
                 "Soil carbon" => "examples/case-studies/soil.md",
                 "Wastewater renewal model" => "examples/case-studies/wastewater.md",
                 "EpiSewer composable library" => "examples/case-studies/episewer.md",
+                "Grey-seal IPM" => "examples/case-studies/grey-seal-ipm.md",
                 "Monster pharmacokinetics" => "examples/monster.md",
             ],
             "Design and historical material" => [
