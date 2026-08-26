@@ -17,6 +17,14 @@ at documentation-build time, so the displayed Julia is the exact source that
 produced the Stan beside it. The small arrays are build fixtures, not real
 surveillance data.
 
+!!! note "Companion port in BayesianRegressionModels.jl"
+    The **same** CDC `ww-inference-model` is also ported in BRM, onto its
+    StanBlocks backend (`@slic` + `@deffun`):
+    [The full CDC `ww-inference-model`](https://nsiccha.github.io/BayesianRegressionModels.jl/dev/wastewater-cdc).
+    Both target the identical upstream model — this page as a standalone
+    StanBlocks modeling ladder, the BRM page from the `@brm` / StanBlocks layer
+    boundary.
+
 ## Two observation streams, two removable submodels
 
 The joint model observes two data streams. Each is an **observation submodel**
@@ -218,8 +226,11 @@ sub-epidemics and aggregates them to the state level. The capstone below carries
 that structure faithfully and showcases the remaining features:
 
 - a **tuple-returning** `@deffun` — `cdc_subpop_renewal` returns
-  `tuple(infections, effective_Rt)`, one column per sub-epidemic, exactly as the
-  CDC `generate_infections` does; the caller unpacks it with `getfield`;
+  `tuple(infections, effective_Rt)`, one column per sub-epidemic, mirroring the
+  CDC `generate_infections`, which is declared `tuple(vector, vector)` (Stan
+  tuples are *positional* — there are no named tuples — so a faithful port of
+  that signature is a positional tuple, accessed with Stan's `.1` / `.2`); the
+  caller unpacks it with `p[i]`;
 - **per-subpopulation `Rt`** — a reference weekly random walk plus a stationary
   AR(1) deviation per subpopulation (`segment`-sliced from one flat innovation
   vector), and **infection feedback** in the renewal recurrence;
@@ -274,7 +285,8 @@ using StanBlocks
     end
     "Multi-subpopulation renewal. Returns a TUPLE (infections, effective-Rt), one
      column per sub-epidemic — faithful to the CDC `generate_infections`, which
-     returns tuple(infections, Rt). Accessed with getfield / p[i] downstream."
+     is declared tuple(vector, vector). Stan tuples are positional; accessed with
+     p[i] (Stan .1/.2) downstream."
     cdc_subpop_renewal(log_i0::vector[S], growth::vector[S], log_rt::matrix[nt, S],
                        gen_int::vector[gmax], fb_pmf::vector[fl], feedback::real, uot::int) = begin
         M::matrix[nt, S]
@@ -400,8 +412,8 @@ cdc_capstone = @slic (;
     growth   :: vector[S] ~ normal(0.0, 0.05)
     feedback ~ normal(0.0, 0.01; lower = 0.0)
     renewed  = cdc_subpop_renewal(log_i0, growth, log_rt_daily, gen_int, fb_pmf, feedback, uot)
-    M = getfield(renewed, 1)          # infections matrix
-    # (getfield(renewed, 2) is the effective-Rt matrix, available for reporting)
+    M = renewed[1]                    # infections matrix (Stan renewed.1)
+    # (renewed[2] is the effective-Rt matrix, available for reporting)
     state_inf = M * pop_frac          # aggregate per-capita infections
 
     exp_hosp_pc = cdc_conv(state_inf, inf_to_hosp, ot, uot)
@@ -426,7 +438,8 @@ end
   into one shared core, dissolving the source's runtime-flag monolith into a
   construction-time modeling ladder.
 - **Tuple return** from a `@deffun` (`tuple(infections, Rt)`, unpacked with
-  `getfield`) — a faithful port of `generate_infections`.
+  `p[i]`) — a faithful port of `generate_infections`, whose Stan signature is
+  the positional `tuple(vector, vector)`.
 - The **sparse CSR** primitive `csr_matrix_times_vector` for the spline Rt
   process, and a **parametric shedding kernel** built in a `@deffun`.
 - **`@deffun` scans** for the renewal recurrence, the random-walk and AR(1) /
