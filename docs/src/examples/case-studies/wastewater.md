@@ -225,15 +225,15 @@ The published model is not single-population: it runs several coupled
 sub-epidemics and aggregates them to the state level. The capstone below carries
 that structure faithfully and showcases the remaining features:
 
-- a **tuple-returning** `@deffun` — `cdc_subpop_renewal` returns
-  `tuple(infections, effective_Rt)`, one column per sub-epidemic, mirroring the
-  CDC `generate_infections`, which is declared `tuple(vector, vector)` (Stan
-  tuples are *positional* — there are no named tuples — so a faithful port of
-  that signature is a positional tuple, accessed with Stan's `.1` / `.2`); the
-  caller unpacks it with `p[i]`;
-- **per-subpopulation `Rt`** — a reference weekly random walk plus a stationary
-  AR(1) deviation per subpopulation (`segment`-sliced from one flat innovation
-  vector), and **infection feedback** in the renewal recurrence;
+- a **`plate` over sub-epidemics** — each cell samples that subpopulation's own
+  initial size, growth, and weekly AR(1) innovations and returns its infection
+  column; the `vector[nt]` cell outputs collect into a `matrix[nt, S]`. The
+  unavoidable within-subpop *time* recurrence (a scan) lives in a `@deffun` the
+  cell calls; the subpopulation axis is the plate. This matches the companion
+  BRM port, which expresses the same subpop axis as a `plate`;
+- **per-subpopulation `Rt`** — a shared reference weekly random walk plus a
+  stationary AR(1) deviation per subpopulation (its own innovations sampled
+  inside the plate cell), and **infection feedback** in the renewal recurrence;
 - **aggregation** to admissions by a matrix-vector product `M * pop_frac`, and
   per-subpopulation wastewater **gathered** at the sampled `(subpopulation, day)`
   pairs;
@@ -283,49 +283,35 @@ using StanBlocks
         end
         out
     end
-    "Multi-subpopulation renewal. Returns a TUPLE (infections, effective-Rt), one
-     column per sub-epidemic — faithful to the CDC `generate_infections`, which
-     is declared tuple(vector, vector). Stan tuples are positional; accessed with
-     p[i] (Stan .1/.2) downstream."
-    cdc_subpop_renewal(log_i0::vector[S], growth::vector[S], log_rt::matrix[nt, S],
-                       gen_int::vector[gmax], fb_pmf::vector[fl], feedback::real, uot::int) = begin
-        M::matrix[nt, S]
-        R::matrix[nt, S]
-        for s in 1:S
-            for t in 1:uot
-                M[t, s] = exp(log_i0[s] + growth[s] * (t - 1))
-                R[t, s] = 1.0
-            end
-            for t in (uot + 1):nt
-                infness = 0.0
-                kmax = min(gmax, t - 1)
-                for k in 1:kmax
-                    infness = infness + M[t - k, s] * gen_int[k]
-                end
-                fbk = 0.0
-                fmax = min(fl, t - 1)
-                for k in 1:fmax
-                    fbk = fbk + M[t - k, s] * fb_pmf[k]
-                end
-                rt_eff = exp(log_rt[t, s] - feedback * fbk)
-                R[t, s] = rt_eff
-                M[t, s] = rt_eff * infness
-            end
+    "Single sub-epidemic renewal for ONE `plate` cell: the subpop's daily log-Rt
+     (shared reference weekly RW + that subpop's AR(1) deviation) drives the
+     feedback-renewal scan. Returns the subpop's daily infection vector[nt]. The
+     subpop LOOP is the `plate` below; this @deffun owns only the unavoidable
+     within-subpop TIME recurrence (a scan, which a plate cell cannot express)."
+    cdc_subpop_cell(log_i0::real, growth::real, log_rt_ref::vector[nw], z::vector[nz],
+                    ac::real, sd::real, week_of_day::int[nt],
+                    gen_int::vector[gmax], fb_pmf::vector[fl], feedback::real, uot::int)::vector[nt] = begin
+        dev = cdc_ar1(ac, sd, z)
+        M::vector[nt]
+        for t in 1:uot
+            M[t] = exp(log_i0 + growth * (t - 1))
         end
-        (M, R)
-    end
-    "Daily per-subpop log-Rt: reference weekly RW + per-subpop AR(1) deviation."
-    cdc_subpop_rt(ref_weekly::vector[nw], z::vector[nz], S::int, ac::real, sd::real,
-                  week_of_day::int[nt])::matrix[nt, S] = begin
-        W::matrix[nt, S]
-        for s in 1:S
-            dev = cdc_ar1(ac, sd, segment(z, (s - 1) * nw + 1, nw))
-            for t in 1:nt
-                wk = week_of_day[t]
-                W[t, s] = ref_weekly[wk] + dev[wk]
+        for t in (uot + 1):nt
+            infness = 0.0
+            kmax = min(gmax, t - 1)
+            for k in 1:kmax
+                infness = infness + M[t - k] * gen_int[k]
             end
+            fbk = 0.0
+            fmax = min(fl, t - 1)
+            for k in 1:fmax
+                fbk = fbk + M[t - k] * fb_pmf[k]
+            end
+            wk = week_of_day[t]
+            rt_eff = exp((log_rt_ref[wk] + dev[wk]) - feedback * fbk)
+            M[t] = rt_eff * infness
         end
-        W
+        M
     end
     "Per-subpop net shedding convolution -> nt x S log-scale matrix (the log10_g
      genome-scaling is added downstream in the wastewater stream)."
@@ -397,29 +383,32 @@ cdc_capstone = @slic (;
     n_weeks = maximum(week_of_day)
     S = dims(pop_frac)[1]
 
-    # reference weekly log-Rt (RW) + per-subpop AR(1) deviations -> daily matrix
+    # shared reference weekly log-Rt (random walk), captured by every subpop cell
     log_r0 ~ normal(0.0, 0.2)
     eta_sd ~ normal(0.0, 0.1; lower = 0.0)
     w_ref :: vector[n_weeks - 1] ~ std_normal()
     autoreg ~ beta(2.0, 2.0)
     sigma_subpop ~ normal(0.0, 0.1; lower = 0.0)
-    z_subpop :: vector[n_weeks * S] ~ std_normal()
-    log_rt_ref = cdc_rw(log_r0, eta_sd, w_ref)
-    log_rt_daily = cdc_subpop_rt(log_rt_ref, z_subpop, S, autoreg, sigma_subpop, week_of_day)
-
-    # per-subpop renewal via a TUPLE-returning UDF; unpack with p[i] (getindex)
-    log_i0   :: vector[S] ~ normal(-13.0, 1.0)
-    growth   :: vector[S] ~ normal(0.0, 0.05)
     feedback ~ normal(0.0, 0.01; lower = 0.0)
-    renewed  = cdc_subpop_renewal(log_i0, growth, log_rt_daily, gen_int, fb_pmf, feedback, uot)
-    M = renewed[1]                    # infections matrix (Stan renewed.1)
-    # (renewed[2] is the effective-Rt matrix, available for reporting)
-    state_inf = M * pop_frac          # aggregate per-capita infections
+    log_rt_ref = cdc_rw(log_r0, eta_sd, w_ref)
+
+    # per-subpop renewal as a `plate` over the S sub-epidemics: each cell samples
+    # its OWN initial size / growth / weekly AR(1) innovations and returns that
+    # subpop's infection column. Shared pieces (log_rt_ref, feedback, autoreg, …)
+    # are captured; the vector[nt] cell outputs collect into I_mat :: matrix[nt, S].
+    I_mat :: matrix[nt, S] ~ plate(; outer = (S,)) do s
+        log_i0_s ~ normal(-13.0, 1.0)
+        growth_s ~ normal(0.0, 0.05)
+        z_s :: vector[n_weeks] ~ std_normal()
+        cdc_subpop_cell(log_i0_s, growth_s, log_rt_ref, z_s, autoreg, sigma_subpop,
+                        week_of_day, gen_int, fb_pmf, feedback, uot)
+    end
+    state_inf = I_mat * pop_frac       # aggregate per-capita infections
 
     exp_hosp_pc = cdc_conv(state_inf, inf_to_hosp, ot, uot)
     hosp ~ admissions_stream(; day_of_week, state_pop, exp_hosp_pc)
 
-    conc_matrix    = cdc_shed_conc(M, shed, mwpd)        # net shed; log10_g added in the stream
+    conc_matrix    = cdc_shed_conc(I_mat, shed, mwpd)    # net shed; log10_g added in the stream
     model_log_conc = cdc_gather(conc_matrix, ww_subpop, ww_day)
     ww_conc ~ wastewater_site_stream(; model_log_conc, ww_site, n_sites, lod = ww_lod)
 end
@@ -437,9 +426,11 @@ end
 - **Composition** — `Base.merge` swaps the Rt process and the shedding kernel
   into one shared core, dissolving the source's runtime-flag monolith into a
   construction-time modeling ladder.
-- **Tuple return** from a `@deffun` (`tuple(infections, Rt)`, unpacked with
-  `p[i]`) — a faithful port of `generate_infections`, whose Stan signature is
-  the positional `tuple(vector, vector)`.
+- **`plate` over sub-epidemics** — per-subpopulation `~` parameters (initial
+  size, growth, weekly AR(1) innovations) introduced *inside* the cell, with a
+  shared reference-Rt random walk captured from the enclosing scope; the
+  `vector[nt]` cell outputs collect into a `matrix[nt, S]`, matching the BRM
+  companion port's subpop-axis structure.
 - The **sparse CSR** primitive `csr_matrix_times_vector` for the spline Rt
   process, and a **parametric shedding kernel** built in a `@deffun`.
 - **`@deffun` scans** for the renewal recurrence, the random-walk and AR(1) /
