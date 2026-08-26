@@ -8181,6 +8181,55 @@ test item.
     @test transpiles(prior_batch_mm)
 end
 
+@testitem "slic: plain-tuple getindex `p[i]` agrees with getfield" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    # Julia allows `p[i]` on a tuple, and it must behave exactly like
+    # `getfield(p, i)`: BOTH the emitted Stan (positional `p.N`, never the
+    # generic `p[i]` bracket, which stanc rejects on a tuple) AND the resolved
+    # element type (the tuple's `arg_types[i]`, not `anything`). Before the fix
+    # `p[i]` fell to the generic getindex rule: it emitted an invalid bracket
+    # AND typed the element as `anything`, so it transpiled but stanc-failed in a
+    # `sum(...)` context and threw a cryptic `anything`-arithmetic tracetype
+    # error the moment the element was used directly (e.g. `p[1] .+ p[2]`).
+    # Snag `tuple-getindex-e-32be6638`.
+    @deffun pair_test(x::vector[n]) = (x .+ 1.0, x .* 2.0)
+    xv = [1.0, 2.0, 3.0]; yv = [0.5, 0.6, 0.7]
+
+    # (a) scalar `sum(p[i])` context — needs the emission fix.
+    m_sum = @slic (; x = xv, y = yv) begin
+        mu ~ normal(0.0, 1.0)
+        p = pair_test(x)
+        y ~ normal(mu + sum(p[1]) + sum(p[2]), 1.0)
+        mu
+    end
+    code_sum = stan_code(m_sum)
+    @test occursin("p.1", code_sum)
+    @test occursin("p.2", code_sum)
+    @test !occursin("p[1]", code_sum)
+    @test !occursin("p[2]", code_sum)
+    @test stanc_compiles(m_sum)
+
+    # (b) direct element use `p[1] .+ p[2]` — needs the tracetype fix (the
+    # element must resolve to `vector`, not `anything`).
+    m_vec = @slic (; x = xv, y = yv) begin
+        mu ~ normal(0.0, 1.0)
+        p = pair_test(x)
+        y ~ normal(mu .+ p[1] .+ p[2], 1.0)
+        mu
+    end
+    @test transpiles(m_vec)
+    @test stanc_compiles(m_vec)
+
+    # (c) `p[i]` and `getfield(p, i)` emit identical Stan.
+    m_gf = @slic (; x = xv, y = yv) begin
+        mu ~ normal(0.0, 1.0)
+        p = pair_test(x)
+        y ~ normal(mu + sum(getfield(p, 1)) + sum(getfield(p, 2)), 1.0)
+        mu
+    end
+    @test stan_code(m_gf) == code_sum
+end
+
 """
 Verify `slic: tracetype-not-defined assignment formats without crashing` in an
 isolated test item.
