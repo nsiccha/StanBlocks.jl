@@ -3742,6 +3742,23 @@ Verify `shapes: conversions` in an isolated test item.
         @test transpiles(model)
         @test check_type(model, :rv, "row_vector")
     end
+    @testset "to_int(x::real) :: int and to_int(x::real[n]) :: int[n]" begin
+        # Data-side real->int (e.g. dPCR partition counts). Stan's `to_int`
+        # requires a data-qualified argument; a deterministic function of data
+        # lands in `transformed data`, so the contract is satisfied.
+        scalar = @slic (;conc=5.7, obs=0.) begin
+            n_pos = to_int(round(conc))
+            obs   ~ normal(0.1 * n_pos, 1.)
+        end
+        @test occursin(r"\bint n_pos\b", stan_code(scalar))
+        @test stanc_compiles(scalar)
+        arr = @slic (;concs=[5.7, 2.3, 8.9], obs=0.) begin
+            counts = to_int(round(to_array_1d(concs)))
+            obs    ~ normal(0.1 * sum(counts), 1.)
+        end
+        @test occursin(r"\barray\[[^\]]*\] int counts\b", stan_code(arr))
+        @test stanc_compiles(arr)
+    end
 end
 
 """

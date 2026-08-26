@@ -106,6 +106,7 @@ end
     linspaced_vector
     to_array_1d
     to_array_2d
+    to_int
     cholesky_decompose
     diag_pre_multiply
     diag_post_multiply
@@ -2114,6 +2115,14 @@ end
         (row_vector[n],)=>row_vector[n]
         (real[n],)=>real[n]
         (matrix[m,n],)=>matrix[m,n]
+    end
+    # real -> int conversion. Stan's `to_int` requires a `data`-qualified
+    # argument; StanBlocks places deterministic functions of data in
+    # `transformed data`, where the argument is data-qualified, so a data-side
+    # `to_int(round(...))` (dPCR partition counts) satisfies Stan's contract.
+    typeof(to_int) => begin
+        (real,) => int
+        (real[n],) => int[n]
     end
     Union{typeof.((log_sum_exp, ))...} => begin
         (real, real) => real
