@@ -53,6 +53,11 @@ features that make it possible.
   abundance quantities.
 - [Soil carbon](examples/case-studies/soil.md) — a two-pool feedback ODE reused
   by direct-residual and latent measurement-error observation models.
+- [Wastewater renewal model](examples/case-studies/wastewater.md) — the CDC
+  `ww-inference-model` core: an infection renewal recurrence and two delay
+  convolutions in `@deffun` scans, jointly fitting hospital admissions
+  (`neg_binomial_2`) and below-LOD-censored wastewater concentration, with the
+  `erfc`-stable log-CDF the `censored(normal, …)` HOF emits.
 - [Monster pharmacokinetics](examples/monster.md) — a four-compartment PBPK
   model expressed both directly in StanBlocks and through BRM's named
   subject-level formula predictors and group-local kernel.
