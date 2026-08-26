@@ -1469,6 +1469,47 @@ begin
         arg_names = map(arg->arg.args[1], args)
         sig_names = copy(arg_names)
         arg_types = map(arg->ensure_xref(arg.args[2]), args)
+        # A sized container center type (`matrix`, `vector`, `row_vector`,
+        # `cholesky_factor_corr`, `simplex`, …) carries an inherent rank
+        # `r_ndim(ct) >= 1`, so a `@deffun` argument must spell at least that many
+        # bracket dimensions (`vector[n]`, `matrix[m, n]`). A DIMENSIONLESS
+        # container arg (`I_mat::matrix`) registers a `tracetype` (or `inline_body`)
+        # method keyed on `ndim == 0` via `xsig_type`, which no real
+        # matrix/vector argument (`ndim >= 1`) can ever match: the call falls
+        # through to the generic `tracetype(::CanonicalExpr)` fallback, resolves
+        # to `::anything`, and only surfaces LATER as the opaque `tracetype not
+        # defined for … = f(::matrix, ::vector)::anything!` assertion
+        # (`forward.jl`), naming neither the argument nor the fix. Reject it HERE,
+        # at signature parse, with an author-facing message that does. Skip a
+        # type-token arg and the `@lhs` observation argument (arg 1): an
+        # `@lhs`-annotated `_lpdf` intentionally leaves its bare observation
+        # container unsized — its shape is driven from the sampled LHS and the arg
+        # is dropped from the base tracetype dispatch (builtin
+        # `lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, …)`).
+        for (i, (arg, arg_type, tok)) in enumerate(zip(args, arg_types, is_token))
+            tok && continue
+            (is_lhs && i == 1) && continue
+            ct_sym = arg_type.args[1]
+            (_is_symbol(ct_sym) && isdefined(types, ct_sym)) || continue
+            ct = getproperty(types, ct_sym)
+            (ct isa Type && hasmethod(r_ndim, Tuple{Type{ct}})) || continue
+            rn = r_ndim(ct)
+            nbrackets = length(arg_type.args) - 1
+            if rn > nbrackets
+                dims = rn == 1 ? "n" : rn == 2 ? "m, n" : join(("n$k" for k in 1:rn), ", ")
+                error(
+                    "@deffun ", f, ": argument `", arg.args[1], "::", ct_sym,
+                    "` needs explicit dimensions — a `", ct_sym, "` is a sized ",
+                    "container of rank ", rn, ", so spell it `", arg.args[1], "::",
+                    ct_sym, "[", dims, "]`. A dimensionless `matrix`/`vector`/",
+                    "`row_vector` (or other sized-container) argument cannot be ",
+                    "dispatched: it resolves to `anything` and only surfaces later ",
+                    "as the opaque `tracetype not defined for … ::anything!` ",
+                    "assertion. Add the dims, e.g. `vector[n]`, `matrix[m, n]`, ",
+                    "`cholesky_factor_corr[n]`.",
+                )
+            end
+        end
         lhs_type = map(zip(arg_types, is_token)) do (at, tok)
             tok ? xsig_type_token(at) : xsig_type(at)
         end
