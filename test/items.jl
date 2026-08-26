@@ -3723,6 +3723,22 @@ Verify `shapes: matrix creation` in an isolated test item.
         @test check_type(model, :A, "matrix")
         @test stanc_compiles(model)
     end
+    @testset "csr_matrix_times_vector(m,n,w,v,u,b) :: vector[m]" begin
+        # A*b for a sparse m x n matrix A in compressed-row form. Here a 3x4
+        # banded basis (spline-Rt shape): row i has cols (i, i+1) each 0.5.
+        model = @slic (;
+            w = [0.5,0.5, 0.5,0.5, 0.5,0.5],  # nonzero values (nnz=6)
+            v = [1,2, 2,3, 3,4],              # 1-based column indices
+            u = [1,3,5,7],                    # 1-based row pointers (rows+1)
+            y = [0.1, 0.2, 0.3], n_days = 3, n_basis = 4,
+        ) begin
+            beta :: vector[n_basis] ~ std_normal()
+            log_rt = csr_matrix_times_vector(n_days, n_basis, w, v, u, beta)
+            y ~ normal(log_rt, 0.1)
+        end
+        @test check_type(model, :log_rt, "vector")
+        @test stanc_compiles(model)
+    end
 end
 
 """
