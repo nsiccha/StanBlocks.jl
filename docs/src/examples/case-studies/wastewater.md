@@ -8,13 +8,14 @@ concentration in wastewater. It is a *renewal* model: today's infections are
 generated from recent infections and a time-varying reproduction number, rather
 than from a mechanistic compartmental system.
 
-The published model runs several coupled sub-epidemics and aggregates them. The
-port below is the **single-population core**, which preserves every ingredient
-that makes the model interesting — the renewal recurrence with infection
-feedback, a time-varying `Rt`, two delay convolutions, a day-of-week reporting
-effect, and censored wastewater observations below the limit of detection. The
-multi-subpopulation aggregation is a mechanical extension (one more outer index)
-and is left out here to keep the generated program readable.
+The published model runs several coupled sub-epidemics and aggregates them to
+the state level. This page ports it in two steps. First a **single-population
+core**, which preserves every ingredient that makes the model interesting — the
+renewal recurrence with infection feedback, a time-varying `Rt`, two delay
+convolutions, a day-of-week reporting effect, and censored wastewater
+observations below the limit of detection — and keeps the generated program
+small enough to read. Then the **full multi-subpopulation model**, which adds
+the coupled sub-epidemics and their aggregation.
 
 The small arrays below are build fixtures, not real surveillance data. As on the
 other case-study pages, the build evaluates the exact displayed Julia source and
@@ -227,6 +228,194 @@ end
 </div>
 ```
 
+## The full multi-subpopulation model
+
+The published model is not single-population: it runs several coupled
+sub-epidemics and aggregates them to the state level. The faithful port below
+carries that structure. Each subpopulation has its own renewal recurrence and
+its own reproduction number — a reference subpopulation whose weekly `log(Rt)`
+follows a random walk, and the others tracking it through a stationary AR(1)
+deviation. A single `@deffun` returns the whole `nt x S` infection matrix, so
+both the aggregate admissions signal (`M * pop_frac`, a matrix-vector product)
+and the per-subpopulation wastewater concentrations derive from one value —
+avoiding the tuple return the original `generate_infections` uses.
+
+Wastewater samples carry a subpopulation label as well as a day, so the
+observation vector is *gathered* out of the `nt x S` concentration matrix at the
+sampled `(subpopulation, day)` pairs (`ww_gather`). The admissions and
+LOD-censored wastewater likelihoods are exactly as in the single-population
+core.
+
+```@raw html
+<div class="atlas-comparison" data-atlas-comparison>
+```
+
+```@eval
+Main.FeatureAtlasDocs.comparison(Main.FeatureAtlasDocs.example_module(:WastewaterMultiSubpop), raw"""
+using StanBlocks
+
+@deffun begin
+    ww_conv_at(x::vector[nx], pmf::vector[np], t::int)::real = begin
+        acc = 0.0
+        kmax = min(np, t - 1)
+        for k in 1:kmax
+            acc = acc + x[t - k] * pmf[k]
+        end
+        acc
+    end
+    ww_conv(x::vector[nx], pmf::vector[np], out_n::int, off::int)::vector[out_n] = begin
+        out::vector[out_n]
+        for i in 1:out_n
+            out[i] = ww_conv_at(x, pmf, i + off)
+        end
+        out
+    end
+    ww_rw(x0::real, sd::real, z::vector[m])::vector[m+1] = begin
+        out::vector[m+1]
+        out[1] = x0
+        for i in 1:m
+            out[i+1] = out[i] + sd * z[i]
+        end
+        out
+    end
+    "Stationary AR(1) around 0: dev[1] = sd/sqrt(1-ac^2) * z[1]; dev[t] = ac*dev[t-1] + sd*z[t]."
+    ww_ar1(ac::real, sd::real, z::vector[m])::vector[m] = begin
+        out::vector[m]
+        out[1] = sd / sqrt(1.0 - ac * ac) * z[1]
+        for t in 2:m
+            out[t] = ac * out[t-1] + sd * z[t]
+        end
+        out
+    end
+    "Per-subpopulation renewal. Returns the nt x S infection matrix (each column
+     one sub-epidemic's scan), so the aggregate and per-subpop wastewater both
+     derive from it with no tuple return."
+    subpop_infections(log_i0::vector[S], growth::vector[S], log_rt::matrix[nt, S],
+                      gen_int::vector[gmax], fb_pmf::vector[fl],
+                      feedback::real, uot::int)::matrix[nt, S] = begin
+        M::matrix[nt, S]
+        for s in 1:S
+            for t in 1:uot
+                M[t, s] = exp(log_i0[s] + growth[s] * (t - 1))
+            end
+            for t in (uot + 1):nt
+                infness = 0.0
+                kmax = min(gmax, t - 1)
+                for k in 1:kmax
+                    infness = infness + M[t - k, s] * gen_int[k]
+                end
+                fbk = 0.0
+                fmax = min(fl, t - 1)
+                for k in 1:fmax
+                    fbk = fbk + M[t - k, s] * fb_pmf[k]
+                end
+                rt_eff = exp(log_rt[t, s] - feedback * fbk)
+                M[t, s] = rt_eff * infness
+            end
+        end
+        M
+    end
+    "Gather per-subpop wastewater log-concentration at observation (subpop, day) pairs."
+    ww_gather(conc::matrix[nt, S], subpop::int[nobs], day::int[nobs])::vector[nobs] = begin
+        out::vector[nobs]
+        for i in 1:nobs
+            out[i] = conc[day[i], subpop[i]]
+        end
+        out
+    end
+    "Daily per-subpop log-Rt = reference weekly RW + per-subpop AR(1) weekly
+     deviation, expanded to daily via the week-of-day index. Returns nt x S."
+    ww_subpop_daily_rt(ref_weekly::vector[nw], z::vector[nz], S::int, ac::real, sd::real,
+                       week_of_day::int[nt])::matrix[nt, S] = begin
+        W::matrix[nt, S]
+        for s in 1:S
+            dev = ww_ar1(ac, sd, segment(z, (s - 1) * nw + 1, nw))  # vector[nw] for subpop s
+            for t in 1:nt
+                wk = week_of_day[t]
+                W[t, s] = ref_weekly[wk] + dev[wk]
+            end
+        end
+        W
+    end
+    "Per-subpop shedding convolution -> nt x S log-concentration matrix."
+    ww_shed_conc(M::matrix[nt, S], shed::vector[ns], log10_g::real, mwpd::real)::matrix[nt, S] = begin
+        C::matrix[nt, S]
+        for s in 1:S
+            for t in 1:nt
+                net = 0.0
+                kmax = min(ns, t)
+                for k in 1:kmax
+                    net = net + M[t - k + 1, s] * shed[k]
+                end
+                C[t, s] = log(10.0) * log10_g + log(net + 1.0e-8) - log(mwpd)
+            end
+        end
+        C
+    end
+end
+
+ww_multi = @slic (;
+    week_of_day = repeat(1:5, inner = 7),      # int[35] day -> week
+    day_of_week = repeat(1:7, outer = 4),      # int[28] observed day-of-week
+    hosp        = fill(20, 28),                # int[28] state admissions
+    gen_int     = [0.15, 0.30, 0.30, 0.15, 0.10],
+    fb_pmf      = [0.5, 0.3, 0.2],
+    inf_to_hosp = [0.02, 0.1, 0.2, 0.25, 0.2, 0.12, 0.07, 0.04],
+    shed        = [0.05, 0.15, 0.25, 0.2, 0.15, 0.1, 0.07, 0.03],
+    pop_frac    = [0.6, 0.4],                  # 2 subpopulations
+    ww_conc     = [3.4, 2.0, 4.1, 3.8, 2.0, 3.2, 4.4, 3.9, 2.0, 3.1, 4.0, 3.7],
+    ww_lod      = fill(2.0, 12),
+    ww_day      = [3, 7, 10, 14, 17, 21, 24, 5, 9, 13, 19, 23],   # observed day per ww sample
+    ww_subpop   = [1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2],           # subpop per ww sample
+    state_pop   = 1.0e5, mwpd = 1.0e6,
+) begin
+    nt      = dims(week_of_day)[1]
+    ot      = dims(hosp)[1]
+    uot     = nt - ot
+    n_weeks = maximum(week_of_day)
+    S       = dims(pop_frac)[1]
+
+    # --- reference weekly log-Rt: random walk; per-subpop AR(1) deviations ---
+    log_r0 ~ normal(0.0, 0.2)
+    eta_sd ~ normal(0.0, 0.1; lower = 0.0)
+    w_ref :: vector[n_weeks - 1] ~ std_normal()
+    autoreg ~ beta(2.0, 2.0)
+    sigma_subpop ~ normal(0.0, 0.1; lower = 0.0)
+    z_subpop :: vector[n_weeks * S] ~ std_normal()            # per-subpop weekly innovations
+    log_rt_ref_weekly = ww_rw(log_r0, eta_sd, w_ref)          # vector[n_weeks]
+    # build the daily per-subpop log-Rt matrix
+    log_rt_daily = ww_subpop_daily_rt(log_rt_ref_weekly, z_subpop, S, autoreg, sigma_subpop, week_of_day)
+
+    # --- per-subpop renewal + aggregation ---
+    log_i0   :: vector[S] ~ normal(-13.0, 1.0)
+    growth   :: vector[S] ~ normal(0.0, 0.05)
+    feedback ~ normal(0.0, 0.01; lower = 0.0)
+    M = subpop_infections(log_i0, growth, log_rt_daily, gen_int, fb_pmf, feedback, uot)  # matrix[nt,S]
+    state_inf = M * pop_frac                                   # vector[nt] aggregate per-capita
+
+    # --- hospital admissions (state level): neg-binomial + day-of-week simplex ---
+    ihr ~ beta(2.0, 20.0)
+    phi ~ gamma(2.0, 0.1)
+    hosp_wday_effect :: simplex[7] ~ dirichlet(rep_vector(1.0, 7))
+    wday        = 7.0 * hosp_wday_effect[day_of_week]
+    exp_hosp_pc = ww_conv(state_inf, inf_to_hosp, ot, uot)
+    exp_hosp    = (state_pop * ihr) * exp_hosp_pc .* wday
+    hosp ~ neg_binomial_2(exp_hosp, phi)
+
+    # --- wastewater (per subpopulation): LOD-censored normal on log-conc ---
+    log10_g ~ normal(9.0, 1.0)
+    sigma_ww ~ normal(0.0, 1.0; lower = 0.0)
+    conc_matrix = ww_shed_conc(M, shed, log10_g, mwpd)         # matrix[nt,S]
+    model_conc  = ww_gather(conc_matrix, ww_subpop, ww_day)    # vector[nobs]
+    ww_conc ~ censored(normal, model_conc, sigma_ww; lower = ww_lod)
+end
+""", :ww_multi)
+```
+
+```@raw html
+</div>
+```
+
 ## What this exercises
 
 - A **`@deffun` scan** for the renewal recurrence and the weekly random walk —
@@ -239,3 +428,9 @@ end
   posterior-predictive and pointwise-likelihood generated quantities.
 - The **`erfc`-stable** log-CDF for the below-LOD contribution — a more accurate
   gradient than the hand-written `target += normal_lcdf` in the original source.
+- In the multi-subpopulation model: a **matrix-returning `@deffun`** for the
+  per-subpopulation renewal (so the aggregate and the per-subpopulation
+  wastewater derive from one value, avoiding a tuple return), a **matrix-vector
+  aggregation** `M * pop_frac`, `segment` slicing of a flat innovation vector,
+  and a **gather** of the observation vector out of the concentration matrix at
+  the sampled `(subpopulation, day)` pairs.
