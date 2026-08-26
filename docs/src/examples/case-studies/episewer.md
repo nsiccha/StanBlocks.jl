@@ -15,6 +15,12 @@ that library — one renewal core, a swappable Rt process, and a swappable
 observation family — and transpiles three assembled configurations to three
 focused Stan programs. The arrays are build fixtures, not real data.
 
+!!! note "Companion port in BayesianRegressionModels.jl"
+    BRM ports the same EpiSewer renewal core through its formula interface:
+    [Wastewater-based Rt inference (EpiSewer / `ww-inference-model`)](https://nsiccha.github.io/BayesianRegressionModels.jl/dev/wastewater).
+    That page frames the renewal model as a `@brm` `kernel(...)` term; this page
+    shows the pure-StanBlocks `@slic` / `@deffun` library the same backend emits.
+
 ## One renewal core, swappable Rt process and observation family
 
 Two axes vary here, both by composition:
