@@ -6342,6 +6342,66 @@ end
     end
 end
 
+@testitem "slic: ragged plate result rejects whole-object arithmetic with an actionable error" tags=[:slic, :plate, :ragged, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Snag plate-return-tup-5c3fa1c8 (reported by BRM): a plate cell whose width is
+    # inferred to vary per cell (it slices a ragged input) collects to a RaggedVector
+    # (`tuple(vector, array[] int)`). The author's downstream `pred * w` / `pred .* w`
+    # then failed with the OPAQUE `tracetype not defined for (... .* ...)` / `::anything`,
+    # naming neither the RaggedVector nor the remedy. It must now reject with a message
+    # that names the RaggedVector AND the fix (annotate the collected matrix type).
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+
+    # The reporter's downstream shape: ragged pred, then broadcast by a weight vector.
+    ragged_broadcast = @slic (; nsub = 2, tcol = [[0.1, 0.2, 0.3], [0.4, 0.5]], w = [1.0, 1.0]) begin
+        a ~ std_normal()
+        pred ~ plate(tcol; outer = (nsub,)) do t
+            a .* t
+        end
+        I_agg = pred .* w
+        I_agg
+    end
+    let e = errmsg(ragged_broadcast)
+        @test occursin("RaggedVector", e)
+        @test occursin("matrix[K, N]", e)          # the annotate-collected-type remedy
+        @test !occursin("tracetype not defined", e) # no longer the opaque floor message
+    end
+
+    # Plain `*` (matmul) on the ragged result gets the same actionable error.
+    ragged_matmul = @slic (; nsub = 2, tcol = [[0.1, 0.2, 0.3], [0.4, 0.5]], w = [1.0, 1.0]) begin
+        a ~ std_normal()
+        pred ~ plate(tcol; outer = (nsub,)) do t
+            a .* t
+        end
+        I_agg = pred * w
+        I_agg
+    end
+    @test occursin("RaggedVector", errmsg(ragged_matmul))
+
+    # The remedy transpiles: annotating the COLLECTED matrix type forces a fixed-width
+    # `matrix[K, N]` result that supports `*` (data is balanced: 4 rows per subject).
+    remedy = @slic (; nsub = 2, nt = 4, ntot = 8, rows_mat = [1 2 3 4; 5 6 7 8],
+                       w = [1.0, 2.0], y = [0.1, 0.2, 0.3, 0.4]) begin
+        log_rt::vector[ntot] ~ std_normal()
+        pred::matrix[nt, nsub] ~ plate(; outer = (nsub,)) do g
+            log_rt[rows_mat[g]]
+        end
+        I_agg = pred * w
+        y ~ normal(I_agg, 1.0)
+    end
+    @test transpiles(remedy)
+
+    # Regressions: ordinary matrix*vector and RaggedVector indexing are NOT caught.
+    @test transpiles(@slic (; X = [1.0 2.0; 3.0 4.0; 5.0 6.0], y = [0.1, 0.2, 0.3]) begin
+        beta::vector[2] ~ std_normal()
+        y ~ normal(X * beta, 1.0)
+    end)
+    @test transpiles(@slic (; doses = [[1.0, 2.0, 3.0], [4.0]], g = 1) begin
+        a ~ std_normal()
+        d = doses[g]
+        a
+    end)
+end
+
 """
 Snag build-a-declarat-ab2d2471 (reported by BRM): a declaration-driven prior /
 posterior generative artifact needs two things StanBlocks did not give it.
