@@ -3723,6 +3723,22 @@ Verify `shapes: matrix creation` in an isolated test item.
         @test check_type(model, :A, "matrix")
         @test stanc_compiles(model)
     end
+    @testset "csr_matrix_times_vector(m,n,w,v,u,b) :: vector[m]" begin
+        # A*b for a sparse m x n matrix A in compressed-row form. Here a 3x4
+        # banded basis (spline-Rt shape): row i has cols (i, i+1) each 0.5.
+        model = @slic (;
+            w = [0.5,0.5, 0.5,0.5, 0.5,0.5],  # nonzero values (nnz=6)
+            v = [1,2, 2,3, 3,4],              # 1-based column indices
+            u = [1,3,5,7],                    # 1-based row pointers (rows+1)
+            y = [0.1, 0.2, 0.3], n_days = 3, n_basis = 4,
+        ) begin
+            beta :: vector[n_basis] ~ std_normal()
+            log_rt = csr_matrix_times_vector(n_days, n_basis, w, v, u, beta)
+            y ~ normal(log_rt, 0.1)
+        end
+        @test check_type(model, :log_rt, "vector")
+        @test stanc_compiles(model)
+    end
 end
 
 """
@@ -3741,6 +3757,23 @@ Verify `shapes: conversions` in an isolated test item.
         model = @slic (;x=randn(5)) begin rv = to_row_vector(x) end
         @test transpiles(model)
         @test check_type(model, :rv, "row_vector")
+    end
+    @testset "to_int(x::real) :: int and to_int(x::real[n]) :: int[n]" begin
+        # Data-side real->int (e.g. dPCR partition counts). Stan's `to_int`
+        # requires a data-qualified argument; a deterministic function of data
+        # lands in `transformed data`, so the contract is satisfied.
+        scalar = @slic (;conc=5.7, obs=0.) begin
+            n_pos = to_int(round(conc))
+            obs   ~ normal(0.1 * n_pos, 1.)
+        end
+        @test occursin(r"\bint n_pos\b", stan_code(scalar))
+        @test stanc_compiles(scalar)
+        arr = @slic (;concs=[5.7, 2.3, 8.9], obs=0.) begin
+            counts = to_int(round(to_array_1d(concs)))
+            obs    ~ normal(0.1 * sum(counts), 1.)
+        end
+        @test occursin(r"\barray\[[^\]]*\] int counts\b", stan_code(arr))
+        @test stanc_compiles(arr)
     end
 end
 

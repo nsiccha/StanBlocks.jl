@@ -106,6 +106,8 @@ end
     linspaced_vector
     to_array_1d
     to_array_2d
+    to_int
+    csr_matrix_times_vector
     cholesky_decompose
     diag_pre_multiply
     diag_post_multiply
@@ -347,6 +349,10 @@ import Statistics
     end
     linspaced_vector(n, x, y)::vector[n]
     to_matrix(v, m, n)::matrix[m,n]
+    # Sparse CSR matrix-vector product: A*b for an m x n matrix A supplied in
+    # compressed-row form (w = nonzero values, v = column indices, u = row start
+    # pointers). Result size is the int arg `m` (size-from-int-arg, cf. range).
+    csr_matrix_times_vector(m::int, n::int, w::vector[nw], v::int[nv], u::int[nu], b::vector[nb])::vector[m]
     rep_array(x::int, n)::int[n]
     rep_array(x::int, m, n)::int[m, n]
     rep_array(x::real, n)::real[n]
@@ -2114,6 +2120,14 @@ end
         (row_vector[n],)=>row_vector[n]
         (real[n],)=>real[n]
         (matrix[m,n],)=>matrix[m,n]
+    end
+    # real -> int conversion. Stan's `to_int` requires a `data`-qualified
+    # argument; StanBlocks places deterministic functions of data in
+    # `transformed data`, where the argument is data-qualified, so a data-side
+    # `to_int(round(...))` (dPCR partition counts) satisfies Stan's contract.
+    typeof(to_int) => begin
+        (real,) => int
+        (real[n],) => int[n]
     end
     Union{typeof.((log_sum_exp, ))...} => begin
         (real, real) => real
