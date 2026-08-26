@@ -220,6 +220,13 @@ Base.show(io::IO, x::CanonicalExpr{typeof(getindex)}) = autoprint(io, x.args[1],
 # `Base.getfield(obj, position)`) renders as Stan's positional tuple
 # access `obj.N`.
 Base.show(io::IO, x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = print(io, x.args[1], ".", x.args[2])
+# Julia tuple indexing `p[i]` on a plain positional tuple is the same
+# positional access as `getfield(p, i)` — Julia permits both on a tuple — so
+# it must render as Stan's `p.N`, not the generic `p[i]` bracket above (which
+# is invalid on a tuple: stanc rejects it). The `<:types.usertype` getindex
+# method below is strictly more specific, so a usertype's element access still
+# routes to its Stan helper rather than positional access.
+Base.show(io::IO, x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = print(io, x.args[1], ".", x.args[2])
 # User-defined `Base.getindex(::usertype, ::int)` methods (e.g.
 # `RaggedVector` group access) route through a real Stan helper function
 # rather than Stan's native `r[i]` (which on a tuple-rendered usertype
