@@ -254,15 +254,16 @@ _reject_ragged_vector_arithmetic(x::CanonicalExpr) = begin
     error(
         "`", short_expr(x), "` applies arithmetic to a whole ragged `RaggedVector` (stored as ",
         "`tuple(vector, array[] int)` — flat memory + inclusive group ends), which has no ",
-        "whole-object `+`/`-`/`*`/`.*` etc. A `plate` result becomes a RaggedVector when its ",
-        "cell width is inferred to VARY per cell — e.g. the cell slices a ragged / ",
-        "vector-of-vectors input (`log_rt[rows]`), which stays ragged even when every group is ",
-        "the same length. To aggregate across cells as a matrix, annotate the plate RESULT LHS ",
-        "with its COLLECTED type (`result::matrix[K, N] ~ plate(...)`) so it collects as a ",
-        "`matrix[K, N]` that supports `*`/`.*`; equivalently, pass the width-driving input as a ",
-        "fixed-width container (an int `Matrix` of per-cell indices). For a genuinely ",
-        "varying-width RaggedVector, index one group with `rv[g]` or process per group via the ",
-        "descriptor's `segments`."
+        "whole-object `+`/`-`/`*`/`.*` etc. A `plate` returns a RaggedVector by default when its ",
+        "cell width is not statically fixed — e.g. the cell slices a ragged / vector-of-vectors ",
+        "input (`log_rt[rows]`), which stays ragged even when every group is the same length. ",
+        "If you KNOW every group is the same length, cast it to a matrix downstream with ",
+        "`as_matrix(rv)` (e.g. `as_matrix(pred) * w`) — it views the flat memory as a ",
+        "`matrix[K, N]` (column i = group i) with a runtime equal-length check; or assert it at ",
+        "the plate LHS (`result::matrix[K, N] ~ ",
+        "plate(...)`), or pass the width-driving input as a fixed-width container (an int `Matrix` ",
+        "of per-cell indices). For a genuinely varying-width RaggedVector, keep it ragged — index ",
+        "one group with `rv[g]` or process per group via the descriptor's `segments`."
     )
 end
 tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = _tracetype(x, nothing)

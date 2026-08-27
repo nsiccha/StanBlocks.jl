@@ -6362,6 +6362,7 @@ end
     end
     let e = errmsg(ragged_broadcast)
         @test occursin("RaggedVector", e)
+        @test occursin("as_matrix", e)             # the downstream cast remedy
         @test occursin("matrix[K, N]", e)          # the annotate-collected-type remedy
         @test !occursin("tracetype not defined", e) # no longer the opaque floor message
     end
@@ -6389,6 +6390,25 @@ end
         y ~ normal(I_agg, 1.0)
     end
     @test transpiles(remedy)
+
+    # The DOWNSTREAM cast: `as_matrix(pred)` on a ragged plate result — no annotation —
+    # views it as a `matrix[K, N]` (column i = group i) and supports `* w`. The result
+    # size is the DATA `ends`, so stanc accepts the `matrix[ragged_length(ends,1), n]` decl.
+    downstream = @slic (; nsub = 2, tcol = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+                          w = [1.0, 2.0], y = [0.1, 0.2, 0.3]) begin
+        a ~ std_normal()
+        pred ~ plate(tcol; outer = (nsub,)) do t
+            a .* t                       # ragged cell — pred is a RaggedVector
+        end
+        I_agg = as_matrix(pred) * w      # cast downstream; NO annotation
+        y ~ normal(I_agg, 1.0)
+    end
+    @test transpiles(downstream)
+    @test occursin("matrix as_matrix(", stan_code(downstream))          # emitted cast fn
+    @test occursin("reject(", stan_code(downstream))                     # runtime equal-width guard
+    # The cast fn declares `matrix[ragged_length(ends, 1), n]` off the DATA ends, so the
+    # collected result never puts the parameter `mem` in a size declaration.
+    @test !occursin("ragged_length((", stan_code(downstream))            # not sized off the tuple
 
     # Regressions: ordinary matrix*vector and RaggedVector indexing are NOT caught.
     @test transpiles(@slic (; X = [1.0 2.0; 3.0 4.0; 5.0 6.0], y = [0.1, 0.2, 0.3]) begin
