@@ -110,10 +110,12 @@ the `truncated(...)` distribution combinator uses, never a bare `std_normal_rng(
 (which would be negative half the time). Bounds the family already implies
 (`exponential` ⇒ `lower = 0`) need no truncation and draw natively.
 
-This holds for the whole program, not only for leaf parameters: a `plate` (its
-fresh per-cell samples, collected result and compiler-owned loop), an inlined
-helper's element fills, and every transformed-parameter chain feeding them lower
-to `generated quantities` together. The compiled program therefore has
+This holds for the whole program. What relocates is decided by likelihood
+reachability — any parameter no likelihood reaches, however deep in a transform
+chain — never by whether a parameter is a "leaf". So a `plate` (its fresh
+per-cell samples, collected result and compiler-owned loop), an inlined helper's
+element fills, and every transformed-parameter chain feeding them lower to
+`generated quantities` together. The compiled program therefore has
 `LogDensityProblems.dimension(prob) == 0` and is Stan's `fixed_param` case — draw
 exact prior samples in milliseconds with an empty parameter vector, no
 adaptation:
