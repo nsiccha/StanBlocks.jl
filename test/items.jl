@@ -5728,8 +5728,11 @@ Verify `slic: public plate promotes called-submodel bindings` in an isolated tes
     let tp = stan_block(code, "transformed parameters")
         @test occursin(r"theta_cell_shifted\[plate_i__pl_\d+\]\s*=", tp)
         @test occursin(r"theta_cell\[plate_i__pl_\d+\]\s*=", tp)
-        @test occursin(r"theta\[plate_i__pl_\d+\]\s*=\s*theta_cell\[plate_i__pl_\d+\]", tp)
+        # The collected `theta` feeds nothing (the likelihood reads the cell), so
+        # its return fill is prior-only and lands in generated quantities.
+        @test !occursin(r"theta\[plate_i__pl_\d+\]\s*=", tp)
     end
+    @test occursin(r"theta\[plate_i__pl_\d+\]\s*=\s*theta_cell\[plate_i__pl_\d+\]", stan_block(code, "generated quantities"))
     let model_block = stan_block(code, "model")
         @test occursin(r"theta_cell_z\[plate_i__pl_\d+\]\s*~\s*std_normal", model_block)
         @test occursin(r"y\[plate_i__pl_\d+\]\s*~\s*normal\(theta_cell\[plate_i__pl_\d+\]", model_block)
@@ -5738,9 +5741,25 @@ Verify `slic: public plate promotes called-submodel bindings` in an isolated tes
     @test transpiles(c3_plate_vector_submodel_model)
     @test stanc_compiles(c3_plate_vector_submodel_model)
     vector_code = stan_code(c3_plate_vector_submodel_model)
-    @test occursin("matrix[k, n] theta_cell_z", stan_block(vector_code, "parameters"))
-    @test occursin(r"theta_cell_z\[:, plate_i__pl_\d+\]\s*~\s*std_normal", stan_block(vector_code, "model"))
-    @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*theta_cell\[:, plate_i__pl_\d+\]", stan_block(vector_code, "transformed parameters"))
+    # This model has no likelihood at all: a prior-predictive program, so the
+    # promoted submodel vector parameter re-draws per column in generated
+    # quantities and the collected result is filled there too.
+    @test strip(stan_block(vector_code, "parameters")) == "{\n}"
+    @test strip(stan_block(vector_code, "model")) == "{\n}"
+    let gq = stan_block(vector_code, "generated quantities")
+        @test occursin("matrix[k, n] theta_cell_z", gq)
+        @test occursin(r"theta_cell_z\[:, plate_i__pl_\d+\]\s*=\s*std_normal_vector_rng\(k\)", gq)
+        @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*theta_cell\[:, plate_i__pl_\d+\]", gq)
+    end
+    # …and with a likelihood on the result it is the sampled matrix parameter.
+    vector_fit = Base.merge(c3_plate_vector_submodel_model, quote
+        obs ~ normal(theta[:, 1], 1.0)
+    end)(; obs = [0.1, -0.2])
+    let fit_code = stan_code(vector_fit)
+        @test occursin("matrix[k, n] theta_cell_z", stan_block(fit_code, "parameters"))
+        @test occursin(r"theta_cell_z\[:, plate_i__pl_\d+\]\s*~\s*std_normal", stan_block(fit_code, "model"))
+        @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*theta_cell\[:, plate_i__pl_\d+\]", stan_block(fit_code, "transformed parameters"))
+    end
 end
 
 """
@@ -5751,14 +5770,16 @@ Verify `slic: public plate emits N-dimensional outer loops` in an isolated test 
     @test stanc_compiles(c3_plate_outer_int_model)
     int_code = stan_code(c3_plate_outer_int_model)
     @test occursin("vector[4] theta_z", stan_block(int_code, "parameters"))
-    @test occursin("vector[4] theta", stan_block(int_code, "transformed parameters"))
+    # The collected `theta` feeds no likelihood (the cell does), so its fill is a
+    # generated quantity in every shape below; the sample stays a parameter.
+    @test occursin("vector[4] theta;", stan_block(int_code, "generated quantities"))
     @test occursin(r"for\(plate_i__pl_\d+ in 1:4\)", stan_block(int_code, "model"))
 
     @test transpiles(c3_plate_outer_2d_scalar_model)
     @test stanc_compiles(c3_plate_outer_2d_scalar_model)
     scalar2_code = stan_code(c3_plate_outer_2d_scalar_model)
     @test occursin("matrix[2, 3] theta_z", stan_block(scalar2_code, "parameters"))
-    @test occursin("matrix[2, 3] theta", stan_block(scalar2_code, "transformed parameters"))
+    @test occursin("matrix[2, 3] theta;", stan_block(scalar2_code, "generated quantities"))
     let model_block = stan_block(scalar2_code, "model")
         @test occursin(r"for\(plate_i1__pl_\d+ in 1:2\)", model_block)
         @test occursin(r"for\(plate_i2__pl_\d+ in 1:3\)", model_block)
@@ -5770,7 +5791,7 @@ Verify `slic: public plate emits N-dimensional outer loops` in an isolated test 
     @test stanc_compiles(c3_plate_outer_2d_vector_model)
     vector2_code = stan_code(c3_plate_outer_2d_vector_model)
     @test occursin("array[3] matrix[k, 2] theta_z", stan_block(vector2_code, "parameters"))
-    @test occursin("array[3] matrix[k, 2] theta", stan_block(vector2_code, "transformed parameters"))
+    @test occursin("array[3] matrix[k, 2] theta;", stan_block(vector2_code, "generated quantities"))
     @test occursin(
         r"theta_z\[plate_i2__pl_\d+, :, plate_i1__pl_\d+\]\s*~\s*std_normal",
         stan_block(vector2_code, "model"),
@@ -7639,7 +7660,10 @@ group boundaries as `ModelOutput.segments`.
     # dropped by the same bug that dropped `y_gen` — assert them so a future
     # skip-the-DeclExpr regression fails here loudly rather than silently
     # shrinking every plate model's output set.
-    @test outs[:b].kind == :transformed_parameter
+    # The likelihood reads the cell, not the collected `b`: `b` is an unconsumed
+    # fill and therefore a (derived) generated quantity; the cell chain is sampled.
+    @test outs[:b].kind == :generated_quantity
+    @test outs[:b].generative == :derived
     @test outs[:b_cell].kind == :transformed_parameter
     @test outs[:b_cell_z].kind == :parameter
 
