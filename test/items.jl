@@ -8978,7 +8978,10 @@ end
 """
 Statement `if`/`elseif`/`else` chains in a Stan-only `@deffun` must render as
 Stan's ordinary `else if` syntax.  The equivalent nested-`if` workaround stays
-valid, but should retain its visibly nested block structure.
+valid, but should retain its visibly nested block structure.  The chain must
+also render when it sits INSIDE a `for` loop with compound-assign branches under
+`@lhs @lpxf` (BRM's `brm_ranef_sd_lpdf` shape) — that path never reaches the
+tail-position `ensure_xreturn` normalisation the `return`-branch probes exercise.
 """
 @testitem "slic: Stan-only @deffun elseif chains render and compile" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports] begin
     @deffun begin
@@ -9003,6 +9006,25 @@ valid, but should retain its visibly nested block structure.
                 end
             end
         end
+
+        # Snag `deffun-elseif-em-7310340a`: the chain nested inside a `for` loop,
+        # `+=` branches, implicit tail return, `@lhs @lpxf` — verbatim the shape
+        # of BRM's `brm_ranef_sd_lpdf` (sbimpl.jl), which the ARV-393 joint PK+QT
+        # spec emits for any shared-`|ID|` `sd(...)`.
+        @lhs @lpxf elseif_loop_sd_lpdf(tau::vector[n], family::vector[n],
+                                        rate::vector[n])::real = begin
+            rv = 0.
+            for i in 1:n
+                if family[i] == 0
+                    rv += std_normal_lpdf(tau[i])::real
+                elseif family[i] == 1
+                    rv += exponential_lpdf(tau[i], rate[i])::real
+                else
+                    rv += normal_lpdf(tau[i], 0., rate[i])::real
+                end
+            end
+            rv
+        end
     end
 
     elseif_model = @slic (; y = 0.0) begin
@@ -9016,10 +9038,18 @@ valid, but should retain its visibly nested block structure.
         y ~ normal(hsf_nested_if_probe(x, df), 1.0)
     end
 
+    elseif_loop_model = @slic (; sd_family = [0.0, 1.0, 2.0], sd_rate = [1.0, 2.0, 3.0], n_terms = 3, y = 0.0) begin
+        tau ~ elseif_loop_sd(sd_family, sd_rate; n=n_terms, lower=0.)
+        y ~ normal(sum(tau), 1.0)
+    end
+
     elseif_code = stan_code(elseif_model)
     nested_if_code = stan_code(nested_if_model)
+    elseif_loop_code = stan_code(elseif_loop_model)
     @test occursin(" else if(", elseif_code)
     @test !occursin(" else if(", nested_if_code)
+    @test occursin(" else if(", elseif_loop_code)
     @test stanc_check(elseif_code; warn_pedantic=false).ok
     @test stanc_check(nested_if_code; warn_pedantic=false).ok
+    @test stanc_check(elseif_loop_code; warn_pedantic=false).ok
 end
