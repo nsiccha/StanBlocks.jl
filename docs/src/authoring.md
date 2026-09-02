@@ -228,7 +228,7 @@ blocks that own the declarations, fills, densities, and generated quantities.
 | Dependency on a previous cell | ❌ | Cells are independent; use a deterministic `@deffun` recurrence for scans/folds |
 | Vararg do-block parameters | ❌ | Use a fixed positional argument list |
 | Body without trailing value | ❌ | The last expression must be the cell result, not `~` or `=` |
-| Fully dead/prior-only plate | ✅ | Fresh prior samples remain parameters so the collected transformed value stays valid |
+| Fully dead/prior-only plate | ✅ | The whole plate — fresh samples, collected result and loop — lowers to `generated quantities` with everything it reads; `parameters {}` stays empty |
 | Cross-validation taint | ✅ | Taint from `outer` sizes or a cell prior RHS moves the affected cell path to generated quantities |
 
 ### Vector cells and shared multivariate priors

@@ -426,25 +426,76 @@ likelihood_expr(rhs) = error("$rhs is missing `likelihood_expr`")
 # (for sized tokens — dispatched into per-shape `*_rng` @deffun overloads).
 # The token is a `tokenof{T}` StanExpr carrying the wanted output shape.
 rng_expr(token, rhs::StanExpr) = rng_expr(token, expr(rhs))
+# `std_normal` is Stan's one ZERO-argument family, and every distribution HOF's
+# rng body reaches its base draw as `predictive(family, args...)` — which with no
+# trailing args is the SELECTOR's token-returning form, not a call (the
+# `DistributionFamilySelector` contract below). So `lower_conditioning_rng(std_normal, lo)`
+# traced its draw as a `func`, and re-drawing a truncated `std_normal` prior died
+# in `fetch_functions!`/`sig_expr` with "NamedTuple has no field value". For the
+# RNG call only, spell the family as `normal(0, 1)` — the same law; the density
+# and pointwise companions keep emitting the `std_normal` forms they always did.
+# Family args are the TRAILING positional args of every HOF rng
+# (`<variant>_rng(family, bounds…, args...)`), so appending is layout-safe.
+_hof_rng_args(spec, rhs::CanonicalExpr) = begin
+    args = _hof_call_args(spec, rhs)
+    i = spec.family_arg
+    _family_function(args[i]) === builtin.std_normal || return args
+    (args[1:i-1]..., stan_expr(builtin.normal), args[i+1:end]..., stan_expr(0.0), stan_expr(1.0))
+end
 # Scalar token path: native Stan rng, no token forwarding.
 rng_expr(token::StanExpr2{<:types.tokenof,0}, rhs::CanonicalExpr) = begin
     spec = _distribution_hof(head(rhs))
     isnothing(spec) && return stan_call(rng_expr(head(rhs)), rhs.args...)
     _distribution_hof_family(spec, rhs)
-    stan_call(_hof_rng(spec, rhs), _hof_call_args(spec, rhs)...)
+    stan_call(_hof_rng(spec, rhs), _hof_rng_args(spec, rhs)...)
 end
 # Sized token path: prepend token so per-shape @deffun overloads dispatch.
 rng_expr(token::StanExpr2{<:types.tokenof}, rhs::CanonicalExpr) = begin
     spec = _distribution_hof(head(rhs))
     isnothing(spec) && return stan_call(rng_expr(head(rhs)), token, rhs.args...)
     _distribution_hof_family(spec, rhs)
-    stan_call(_hof_rng(spec, rhs), token, _hof_call_args(spec, rhs)...)
+    stan_call(_hof_rng(spec, rhs), token, _hof_rng_args(spec, rhs)...)
 end
 rng_expr(x) = begin
     spec = _distribution_hof(x)
     isnothing(spec) && error("$x is missing `rng_expr`")
     spec.rng
 end
+# A sampled symbol's own USER bound — `sigma ~ normal(0, 1; lower=0)`, the
+# half-normal — is a truncation of the family. In the model block it is spelled
+# as the parameter's `<lower=0>` declaration plus the bare `sigma ~ normal(0, 1)`
+# (Stan drops the constant normaliser), so the `~` never carries a `truncated`
+# head. When that symbol is RE-DRAWN in generated quantities — prior-only
+# lowering with no likelihood, or a cv-flipped re-draw — the draw must come from
+# the truncated prior: `normal_rng(0, 1)` for a `<lower=0>` half-normal is a
+# negative scale half the time, silently (snag prior-predictive-7e463983). Route
+# such a re-draw through the `truncated` HOF's rejection sampler, exactly as an
+# authored `sigma ~ truncated(normal, 0, 1; lower=0)` would draw. Bounds the
+# family already implies (`exponential` ⇒ `lower=0`) are not re-truncated; a bound
+# that merely restates one is skipped, a different one (`exponential(1; lower=0.5)`)
+# is honoured. `offset=`/`multiplier=` are reparameterisations, not truncations,
+# and never change the draw. An observation's `<obs>_gen` twin keeps the bare
+# family (`rng_expr`): its likelihood is the bare family too.
+_bound_value(x::StanExpr) = _bound_value(expr(x))
+_bound_value(x) = x
+_restates_implied_bound(user, implied) =
+    implied !== nothing && isequal(_bound_value(user), _bound_value(implied))
+_user_bounded_redraw(rhs::CanonicalExpr) = begin
+    isnothing(_distribution_hof(head(rhs))) || return rhs   # a HOF owns its own bounds
+    implied = autokwargs(rhs)
+    bounds = (; [
+        key => rhs.kwargs[key]
+        for key in (:lower, :upper)
+        if key in keys(rhs.kwargs) && !_restates_implied_bound(rhs.kwargs[key], get(implied, key, nothing))
+    ]...)
+    isempty(bounds) && return rhs
+    rng_expr(head(rhs))   # a family with no rng at all fails here, with its own message
+    spec = _distribution_hof(builtin.truncated)
+    call = CanonicalExpr(builtin.truncated, stan_expr(head(rhs)), rhs.args...; bounds...)
+    CanonicalExpr(_hof_variant(spec, call).head, _hof_call_args(spec, call)...)
+end
+redraw_rng_expr(token, rhs::StanExpr) = redraw_rng_expr(token, expr(rhs))
+redraw_rng_expr(token, rhs::CanonicalExpr) = rng_expr(token, _user_bounded_redraw(rhs))
 
 # Base-family companion selectors are compile-time calls. With no trailing
 # arguments they return the selected function token; with trailing arguments

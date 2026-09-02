@@ -5315,39 +5315,47 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
         @test !occursin("b[:", mb)                            # the b fill is NOT in model
     end
 
-    # 3. fspmjv regression: a FULLY prior-only dead plate (no likelihood anywhere
-    #    AND its output unused) must keep its fresh per-cell samples as PARAMETERS
-    #    (not prior-only-lowered to generated quantities), so the transformed-
-    #    parameters return-fill stays in scope. Before aef6a42 this emitted
-    #    invalid Stan — stanc: "Identifier w not in scope". `stanc_compiles`
-    #    is the guard that actually catches that regression.
+    # 3. A FULLY prior-only dead plate (no likelihood anywhere AND its output
+    #    unused) is a prior-predictive program: the WHOLE plate — its fresh
+    #    per-cell sample, the collected result and the compiler-owned loop — lowers
+    #    to generated quantities together with everything it reads, so
+    #    `parameters {}` and `model {}` are EMPTY and the program is a
+    #    `fixed_param` simulator. Two earlier states of this test are history:
+    #    before aef6a42 the sample was GQ-lowered while the return fill stayed in
+    #    transformed parameters (stanc: "Identifier w not in scope"); aef6a42 then
+    #    pinned the sample as a PARAMETER instead, which made a likelihood-free
+    #    program sample its prior with NUTS (snag prior-predictive-7e463983). The
+    #    fill now follows its sources to GQ. `stanc_compiles` guards the scope
+    #    half; the block assertions guard the routing half.
     priordead = @slic (;) begin
         tau ~ normal(0.0, 1.0; lower = 0.0)
         z ~ plate(; outer = (4,)) do i
-            w ~ normal(0.0, tau)              # fresh per-cell param — MUST stay a parameter
-            w                                 # cell output → z[i] (transformed parameters)
+            w ~ normal(0.0, tau)              # fresh per-cell param — re-drawn in GQ
+            w                                 # cell output → z[i] (also GQ)
         end
     end
     @test transpiles(priordead)
     @test stanc_compiles(priordead)
     let code = stan_code(priordead)
-        params = stan_block(code, "parameters")
-        @test occursin("vector[4] z_w", params)             # w stays a PARAMETER (the fix), namespaced under `z`
-        @test occursin(r"real<lower=0\.0> tau", params)
-        tp = stan_block(code, "transformed parameters")
-        @test occursin("vector[4] z", tp)
-        @test occursin(r"z\[plate_i\w*\] = z_w\[plate_i", tp)
-        # The bug: w was RNG-lowered to generated quantities while z (TP) still
-        # referenced it. Guard both the decl and the RNG draw are absent from GQ.
+        @test strip(stan_block(code, "parameters")) == "{\n}"
+        @test strip(stan_block(code, "transformed parameters")) == "{\n}"
+        @test strip(stan_block(code, "model")) == "{\n}"
         gq = stan_block(code, "generated quantities")
-        @test !occursin("w", gq)
+        # tau's USER bound is a truncation of its prior: the re-draw goes through
+        # the `truncated` rejection sampler, never a bare `normal_rng(0, 1)`.
+        @test occursin("real tau = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+        @test occursin("vector[4] z_w;", gq)
+        @test occursin("vector[4] z;", gq)
+        @test occursin(r"z_w\[plate_i\w*\] = normal_rng\(0\.0, tau\);", gq)
+        @test occursin(r"z\[plate_i\w*\] = z_w\[plate_i", gq)
     end
-    # dim = tau + w[4] = 5 (w is a real sampler dim; z is a deterministic TP fill).
-    @test LogDensityProblems.dimension(instantiate(priordead)) == 5
+    # Zero sampler dimensions: the whole program is generated quantities.
+    @test LogDensityProblems.dimension(instantiate(priordead)) == 0
 
-    # 4. Control for fspmjv: the moment the plate output feeds a likelihood, the
-    #    fresh sample is naturally a parameter and TP is valid — confirms the
-    #    fspmjv fix did not disturb the common (non-dead) path.
+    # 4. Control: the moment the plate output feeds a likelihood, the fresh
+    #    sample is a parameter and the return fill lands in transformed
+    #    parameters — the prior-only lowering above does not disturb the common
+    #    (non-dead) path.
     priorlive = @slic (; obs = randn(4)) begin
         tau ~ normal(0.0, 1.0; lower = 0.0)
         z ~ plate(; outer = (4,)) do i
@@ -9052,4 +9060,217 @@ tail-position `ensure_xreturn` normalisation the `return`-branch probes exercise
     @test stanc_check(elseif_code; warn_pedantic=false).ok
     @test stanc_check(nested_if_code; warn_pedantic=false).ok
     @test stanc_check(elseif_loop_code; warn_pedantic=false).ok
+end
+
+@testitem "slic: prior-only program lowers plates, fills and bounded priors to generated quantities" tags=[:slic, :plate, :ragged, :stanc, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    # Snag prior-predictive-7e463983 (reported from Bruno's `regime="prior"` PK/QT
+    # program). With NO likelihood, every parameter must be an `_rng` draw in
+    # generated quantities, in dependency order, followed by the transforms —
+    # `parameters {}` and `model {}` empty, so the program runs as `fixed_param`.
+    # Before the fix a prior-only compiler-injected slice fill (a plate's return
+    # fill / cell-local `=`, an inlined helper's `out[i] = …`) recursed into its
+    # RHS in `backward!` and pinned every source as a parameter: 21 of 24
+    # parameters of that program stayed sampled behind a 92-line transformed
+    # parameters block.
+    empty_block(code, name) = strip(stan_block(code, name)) == "{\n}"
+
+    # (a) The reporter's shape: correlated random-effect block, population
+    #     coefficients, a transformed-parameter chain, and a RAGGED plate with a
+    #     cell-local `=` plus a return fill. No likelihood ⇒ everything is GQ.
+    xs = [[0.1, 0.2, 0.3], [0.4, 0.5]]
+    prior_shape = @slic (; xs, subject_idx = [1, 2], n_subject = 2, X = [1.0 0.5; 1.0 -0.5]) begin
+        L::cholesky_factor_corr[2] ~ lkj_corr_cholesky(2.0)
+        tau::vector[2] ~ exponential(1.5)
+        z_flat ~ std_normal(; n = 2 * n_subject)
+        z = reshape(z_flat, 2, n_subject)
+        b = (diag_pre_multiply(tau, L) * z)'
+        beta_pop::vector[2] ~ normal([0.0, 0.0], [1.0, 0.5])
+        pop = X * beta_pop
+        r = b[subject_idx, 1]
+        k = exp(pop + r)
+        rho ~ uniform(0.4, 2.0)
+        sigma ~ exponential(1.0)
+        pred ~ plate(xs, k; outer = (n_subject,)) do xi, ki
+            conc = ki * xi * rho
+            conc
+        end
+    end
+    @test transpiles(prior_shape)
+    @test stanc_compiles(prior_shape)
+    let code = stan_code(prior_shape)
+        @test empty_block(code, "parameters")
+        @test empty_block(code, "transformed parameters")
+        @test empty_block(code, "model")
+        gq = stan_block(code, "generated quantities")
+        # every prior is an rng draw, in source (= dependency) order …
+        @test occursin("matrix[2, 2] L = lkj_corr_cholesky_cholesky_factor_corr_rng(2, 2.0);", gq)
+        @test occursin("vector[2] tau = exponential_vector_rng(2, 1.5);", gq)
+        @test occursin("real rho = uniform_rng(0.4, 2.0);", gq)
+        @test occursin("real sigma = exponential_rng(1.0);", gq)
+        # … the transforms follow them …
+        @test findfirst("matrix[n_subject, 2] b = ", gq) > findfirst("vector[2] tau = ", gq)
+        @test occursin("vector[X_m] k = exp(", gq)
+        # … and the ragged plate's carrier + loop are in GQ too.
+        @test occursin(r"vector\[sum\(pred__pl_len_\d+\)\] pred__pl_mem_\d+;", gq)
+        @test occursin(r"for\(plate_i__pl_\d+ in 1:n_subject\)", gq)
+    end
+    d = stan_descriptor(prior_shape; name = :prior_shape)
+    @test [op.name for op in d.operations] == [:transpile, :instantiate]
+    @test all(o.kind == :generated_quantity for o in d.outputs)
+
+    # (b) Control: a likelihood on the plate result keeps the whole chain sampled.
+    ys = [[1.0, 2.0, 3.0], [4.0, 5.0]]
+    fit_shape = Base.merge(prior_shape, quote
+        ys ~ normal(pred, sigma)
+    end)(; ys)
+    @test stanc_compiles(fit_shape)
+    let code = stan_code(fit_shape)
+        params = stan_block(code, "parameters")
+        for decl in ("cholesky_factor_corr[2] L;", "vector<lower=0.0>[2] tau;", "vector[2] beta_pop;",
+                     "real<lower=0.4, upper=2.0> rho;", "real<lower=0.0> sigma;")
+            @test occursin(decl, params)
+        end
+        @test occursin(r"vector\[sum\(pred__pl_len_\d+\)\] pred__pl_mem_\d+;", stan_block(code, "transformed parameters"))
+        @test occursin("~ normal(", stan_block(code, "model"))
+    end
+    @test :fit in [op.name for op in stan_descriptor(fit_shape; name = :fit_shape).operations]
+
+    # (c) An inlined mutating helper's `out[i] = …` fill is the same shape as a
+    #     plate fill: prior-only ⇒ the fill AND its source `u` land in GQ.
+    @deffun @inline pp_sq_fill!(x::vector[n])::vector[n] = begin
+        out::vector[n]
+        for i in 1:n
+            out[i] = x[i] * x[i]
+        end
+        return out
+    end
+    inline_prior = @slic (;) begin
+        u ~ normal(0.0, 1.0; n = 4)
+        v = pp_sq_fill!(u)
+        s ~ exponential(1.0)
+        t = v * s
+    end
+    @test stanc_compiles(inline_prior)
+    let code = stan_code(inline_prior)
+        @test empty_block(code, "parameters") && empty_block(code, "transformed parameters")
+        gq = stan_block(code, "generated quantities")
+        @test occursin("vector[4] u = normal_vector_rng(4, 0.0, 1.0);", gq)
+        @test occursin(r"out__il_\d+\[i__il_\d+\] = \(u\[i__il_\d+\] \* u\[i__il_\d+\]\);", gq)
+    end
+
+    # (d) Mixed: a plate feeding a likelihood stays sampled while a DEAD chain
+    #     beside it (`u` → inlined fill → `dead_fill`) lowers to GQ — the loop
+    #     grouping keeps each statement in its own block.
+    mixed = @slic (; obs = [0.1, -0.2, 0.3, 0.0]) begin
+        tau ~ normal(0.0, 1.0; lower = 0.0)
+        z ~ plate(; outer = (4,)) do i
+            w ~ normal(0.0, tau)
+            w
+        end
+        obs ~ normal(z, 1.0)
+        u ~ normal(0.0, 1.0; n = 4)
+        dead_fill = pp_sq_fill!(u)
+    end
+    @test stanc_compiles(mixed)
+    let code = stan_code(mixed)
+        params = stan_block(code, "parameters")
+        @test occursin("real<lower=0.0> tau;", params) && occursin("vector[4] z_w;", params)
+        @test !occursin("vector[4] u;", params)
+        @test occursin(r"z\[plate_i\w*\] = z_w\[plate_i", stan_block(code, "transformed parameters"))
+        gq = stan_block(code, "generated quantities")
+        @test occursin("vector[4] u = normal_vector_rng(4, 0.0, 1.0);", gq)
+        @test occursin(r"vector\[n__il_\d+\] dead_fill = out__il_\d+;", gq)
+    end
+
+    # (e) A sampled symbol's USER bound is a truncation of its prior. A re-draw
+    #     must come from the truncated law — `normal_rng(0, 1)` for a `<lower=0>`
+    #     half-normal is negative half the time. Scalar, typed-LHS vector, sized
+    #     kwarg vector, two-sided, a non-implied bound on a bounded family, and a
+    #     plate cell prior all route through the `truncated` rejection sampler;
+    #     a family-implied bound (`exponential` ⇒ `lower=0`) is NOT re-truncated.
+    bounded = @slic (; n_cell = 3) begin
+        tau ~ normal(0.0, 1.0; lower = 0.0)
+        v::vector[2] ~ normal(0.0, 1.0; lower = 0.0)
+        w ~ normal(0.0, 1.0; lower = -1.0, upper = 1.0, n = 2)
+        ex ~ exponential(1.0; lower = 0.5)
+        plain ~ exponential(2.0)
+        restated ~ exponential(2.0; lower = 0.0)
+        q ~ plate(; outer = (n_cell,)) do i
+            t ~ normal(0.0, tau; lower = 0.0)
+            t
+        end
+        s = v[1] + w[2] + tau + ex
+    end
+    @test stanc_compiles(bounded)
+    let gq = stan_block(stan_code(bounded), "generated quantities")
+        @test occursin("real tau = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+        @test occursin("vector[2] v = lower_conditioning_vector_normal_rng(2, 0.0, 0.0, 1.0);", gq)
+        @test occursin("vector[2] w = conditioning_vector_normal_rng(2, -1.0, 1.0, 0.0, 1.0);", gq)
+        @test occursin("real ex = lower_conditioning_exponential_rng(0.5, 1.0);", gq)
+        @test occursin("real plain = exponential_rng(2.0);", gq)
+        @test occursin("real restated = exponential_rng(2.0);", gq)
+        @test occursin(r"q_t\[plate_i\w*\] = lower_conditioning_normal_rng\(0\.0, 0\.0, tau\);", gq)
+    end
+
+    # (f) The same holds for a cv-flipped re-draw: `backward!` rebuilds the
+    #     sampling rhs, and the bound used to be lost with its kwargs.
+    cv_base = @slic (; subject = [1, 1, 2, 2, 3], y = [0.1, 0.2, -0.1, 0.0, 0.3]) begin
+        mu ~ std_normal()
+        J = maximum(subject)
+        alpha ~ normal(mu, 1.0; n = J, lower = -2.0)
+        y ~ normal(alpha[subject], 1.0)
+    end
+    cv_bounded = cv_base(; subject = StanBlocks.stan.maybecv(:subject, [1, 1, 2, 2, 3]))
+    @test stanc_compiles(cv_bounded)
+    let code = stan_code(cv_bounded)
+        @test occursin("real mu;", stan_block(code, "parameters"))
+        @test occursin("vector[J] alpha = lower_conditioning_vector_normal_rng(J, -2.0, mu, 1.0);",
+            stan_block(code, "generated quantities"))
+    end
+
+    # (g) `std_normal` is the one zero-argument family; inside a HOF rng body its
+    #     `predictive(family)` call is the token-returning selector form, so the
+    #     documented `tau ~ std_normal(; lower = 0.)` prior predictive used to die
+    #     in `sig_expr`. The rng call spells it as `normal(0, 1)`; the density
+    #     side (a fitted `truncated(std_normal; lower=…)`) is untouched.
+    radon_pp = @slic (; subject = [1, 1, 2, 2, 3]) begin
+        mu    ~ std_normal()
+        tau   ~ std_normal(; lower = 0.)
+        J     = maximum(subject)
+        alpha ~ normal(mu, tau; n = J)
+        sigma ~ std_normal(; lower = 0.)
+        y     ~ normal(alpha[subject], sigma)
+    end
+    @test stanc_compiles(radon_pp)
+    let gq = stan_block(stan_code(radon_pp), "generated quantities")
+        @test occursin("real mu = std_normal_rng();", gq)
+        @test occursin("real tau = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+        @test occursin("real sigma = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+        @test occursin("array[subject_n] real y = normal_rng(alpha[subject], sigma);", gq)
+    end
+    fitted_trunc = @slic (; y = [0.1, 0.2]) begin
+        tau ~ truncated(std_normal; lower = 0.0)
+        y ~ normal(0.0, tau)
+    end
+    @test stanc_compiles(fitted_trunc)
+    @test occursin("real lower_conditioning_std_normal_lpdf(", stan_code(fitted_trunc))
+
+    # (h) A custom family without an `_rng` for the re-drawn shape fails at
+    #     trace time with the family, the reason and the signature to add —
+    #     not as an internal `tracetype not defined` assertion at emission.
+    @deffun begin
+        @lhs @lpxf pp_halfnorm_sd_lpdf(x::vector[n], rate::real)::real = normal_lpdf(x, 0.0, rate)
+    end
+    no_rng = @slic (; n_sub = 2) begin
+        tau::vector[2] ~ pp_halfnorm_sd(1.5)
+        zz ~ plate(; outer = (n_sub,)) do i
+            w ~ normal(0.0, tau[1])
+            w
+        end
+    end
+    err = try; stan_code(no_rng); nothing; catch e; sprint(showerror, e); end
+    @test err !== nothing
+    @test occursin("`tau ~ pp_halfnorm_sd(…)` is re-drawn in generated quantities", err)
+    @test occursin("@deffun pp_halfnorm_sd_rng(vector[n], <the family's args…>)::vector[n]", err)
 end

@@ -1984,9 +1984,13 @@ fetch_functions!(x::SamplingExpr; info) = begin
         # Mirror the gq push: wrap `lhs` into a tokenof token so the per-shape
         # `*_rng` @deffun overloads dispatch. Without this, `rng_expr` misses
         # entirely — it no longer accepts plain StanExprs as the first arg.
+        # A parameter re-draw goes through `redraw_rng_expr` (bounds honoured),
+        # exactly as the gq push does, so the truncation helpers it emits are
+        # fetched too.
         lhs_ct = center_type(lhs)
         token = StanExpr(lhs_ct, StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
-        fetch_functions!(expr(rng_expr(token, rhs)); info)
+        draw = qual(lhs) == :data ? rng_expr(token, rhs) : redraw_rng_expr(token, rhs)
+        fetch_functions!(expr(draw); info)
     end
 end
 fetch_subfunctions!(;info) = x->fetch_subfunctions!(x; info)
