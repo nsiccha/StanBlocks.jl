@@ -179,7 +179,18 @@ _restore_sampling_kwargs(new::StanExpr, old::StanExpr) = begin
     StanExpr(remake(expr(new), expr(new).args...; expr(old).kwargs...), type(new))
 end
 _restore_sampling_kwargs(new, old) = new
-backward!(x::SamplingExpr{<:StanExpr{Symbol}}; info) = if qual(x.args[1]) == :data || lqual(info[expr(x.args[1])]) == :affects_likelihood
+# A prior-only sampled symbol is re-drawn in generated quantities from its
+# family's `_rng` — which must produce a value of the symbol's declared CENTER
+# type. For `simplex ~ dirichlet` / `cholesky_factor_corr ~ lkj_corr_cholesky`
+# the family rng does; for an `ordered` / `positive_ordered` prior no family rng
+# yields a sorted vector (a sorted iid draw is exact only for exchangeable
+# element densities, and nothing checks that yet). Such a symbol stays a SAMPLED
+# parameter — valid, descriptor-visible (`dimension > 0`), never a silently
+# unsorted draw that Stan rejects at the end of generated quantities. Ragged
+# constrained parameters take their own sampled path (`ragged_density`).
+_gq_redrawable(x::StanExpr) = !(center_type(x) in (types.ordered, types.positive_ordered))
+backward!(x::SamplingExpr{<:StanExpr{Symbol}}; info) = if qual(x.args[1]) == :data ||
+        lqual(info[expr(x.args[1])]) == :affects_likelihood || !_gq_redrawable(x.args[1])
     lhs, rhs = x.args
     remake(x, info[expr(x.args[1])], _restore_sampling_kwargs(backward!(rhs; info), rhs))
 else
@@ -190,7 +201,7 @@ backward!(x::SamplingExpr; info) = begin
     lhs, rhs = x.args
     key = _base_lhs_symbol(lhs)
     if key in keys(info) && _is_fresh_decl(info[key]) && _decl_role(info[key]) == :sampled
-        if lqual(info[key]) == :affects_likelihood && !cv(info[key])
+        if (lqual(info[key]) == :affects_likelihood || !_gq_redrawable(info[key])) && !cv(info[key])
             # A plate parameter used by a later likelihood remains a parameter;
             # propagate that reachability into its prior's RHS exactly like the
             # established bare-Symbol sampling path above.
@@ -569,8 +580,7 @@ Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     # An observation's `<obs>_gen` twin draws from the bare family (its likelihood
     # is the bare family); a PARAMETER re-draw must respect the sampled symbol's
     # own `lower=`/`upper=` bounds — see `redraw_rng_expr`.
-    rng_rhs = is_observation ? rng_expr(token, rhs) :
-        _check_redraw_resolves(lhs, rhs, redraw_rng_expr(token, rhs))
+    rng_rhs = is_observation ? rng_expr(token, rhs) : _gq_redraw(lhs, rhs, token)
     lhs = StanExpr(expr(lhs), remake(type(rng_rhs); value=missing))
     push!(b, CanonicalExpr(:(=), lhs, rng_rhs); info)
 end
@@ -595,7 +605,30 @@ _indexed_rng_assignment(x::SamplingExpr) = begin
     token = StanExpr(lhs_ct,
         StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
     # A per-cell PARAMETER re-draw: honour the cell prior's own bounds.
-    CanonicalExpr(:(=), lhs, _check_redraw_resolves(lhs, rhs, redraw_rng_expr(token, rhs)))
+    CanonicalExpr(:(=), lhs, _gq_redraw(lhs, rhs, token))
+end
+# The one generated-quantities re-draw of a sampled symbol (top-level or
+# per-cell): bounds honoured, and the two families that CANNOT be re-drawn fail
+# here with the reason rather than deep inside `tracetype`/emission.
+_gq_redraw(lhs, rhs, token) = begin
+    _check_redraw_improper(lhs, rhs)
+    _check_redraw_resolves(lhs, rhs, redraw_rng_expr(token, rhs))
+end
+# `flat()` is the improper-uniform base measure: it has no `_rng` because there
+# is nothing to draw from. A symbol whose only density is `flat` and which no
+# likelihood reaches is a prior-only program's unsimulable parameter — say so
+# (before this it died as `tracetype not defined … flat_rng(::array[] tokenof)`
+# at emission, or as a `jbroadcasted` type error once a bound was involved).
+_check_redraw_improper(lhs, rhs) = begin
+    _ragged_base_family(expr(rhs)) === builtin.flat || return nothing
+    name = _base_lhs_symbol(lhs)
+    error(
+        "`", name, " ~ flat(…)` is an improper prior and `", name, "` is re-drawn in ",
+        "generated quantities — no likelihood reaches it (a prior-only / prior-predictive ",
+        "program), or it is cv-held-out — but an improper prior has nothing to draw from. ",
+        "Give `", name, "` a proper prior (`", name, " ~ normal(…)`, `uniform(lo, hi)`, …), ",
+        "or bind the data whose likelihood informs it.",
+    )
 end
 # A sampled symbol that is RE-DRAWN in generated quantities — no likelihood
 # reaches it (prior-only / prior-predictive lowering), or it is cv-held-out — is

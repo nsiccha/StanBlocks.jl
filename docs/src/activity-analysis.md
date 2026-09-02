@@ -127,7 +127,13 @@ draw = BridgeStan.param_constrain(prob.model, Float64[]; include_tp = true, incl
 Every prior that is re-drawn needs its family's `_rng` companion for that shape
 (a custom `@lpxf foo_lpdf` family ships `foo_rng`, sized-token overload
 included); a missing one is a trace-time error naming the symbol, the family and
-the signature to add.
+the signature to add, and an improper `flat()` prior — nothing to draw from — is
+an error too. Two prior shapes deliberately stay *sampled* parameters instead,
+because no exact draw exists yet: an `ordered` / `positive_ordered` prior (no
+family rng yields a sorted vector) and a ragged constrained parameter with an
+informative prior (its per-group constrain step has no ragged rng). Everything
+prior-only around them still lowers to `generated quantities`; such a program
+merely keeps `dimension > 0`.
 
 Available operations shrink to `:transpile`, `:instantiate` — there is nothing to
 fit, only a prior to simulate.
