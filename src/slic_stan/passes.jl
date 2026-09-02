@@ -123,28 +123,76 @@ backward!(x::AssignmentExpr; info) = begin
         # Symbol LHS: swap in the updated info entry. Slice LHS: keep the getindex
         # LHS verbatim so the emitter renders `out[a:b] = rhs`.
         remake(x, slice ? lhs2 : info[key], backward!(rhs; info))
+    elseif slice && qual(info[key]) != :data
+        lhs2, rhs = x.args
+        # A PRIOR-ONLY compiler-injected slice fill (a plate's return `z[i] = w[i]`
+        # or cell-local `=`, an inlined helper's `out[i] = …`): nothing downstream
+        # of `key` reaches a likelihood, or its `lqual` would read
+        # `:affects_likelihood` above. The whole coarse-grained variable — its fresh
+        # declaration, every fill, and the enclosing compiler-owned loop — is routed
+        # by `info[key]`'s qualifier, NOT by this statement's remade LHS
+        # (`distribution_blocks(::StanExpr{<:DeclExpr})`, `_loop_distribution_blocks`).
+        # Flip THAT to `:quantities`, so the fill follows its consumers to generated
+        # quantities. Its sources are deliberately left UNMARKED: the ordinary
+        # prior-only lowering then moves them to generated quantities too — a sampled
+        # source becomes an `_rng` draw, an assigned one a plain gq assignment — in
+        # source order, ahead of this fill, exactly as a whole-variable assignment's
+        # sources do. A source that ALSO reaches a likelihood is marked by that path
+        # and stays a parameter, which generated quantities can read anyway.
+        #
+        # History: `aef6a42` recursed into the RHS here instead, pinning every source
+        # as a parameter so a TRANSFORMED-PARAMETERS fill kept its sources in scope.
+        # That was the conservative direction, but it made a likelihood-free program
+        # sample its prior with NUTS: the plate return fill of a prior-regime PK/QT
+        # model kept 21 parameters, a 92-line transformed parameters block and a full
+        # adaptation run (snag prior-predictive-7e463983). Moving the fill WITH its
+        # sources is what keeps `parameters {}` empty when there is no likelihood.
+        # A data-only fill (`qual == :data`, transformed data) needs neither.
+        info[key] = remake(info[key]; qual=:quantities)
+        remake(x, remake(lhs2, qual=:quantities), rhs)
     elseif qual(lhs) == :parameter
         lhs2, rhs = x.args
-        # A prior-only compiler-injected SLICE fill (e.g. a plate's return
-        # `z[i] = w[i]`) still consumes its RHS in transformed parameters: the
-        # enclosing compiler-owned loop is routed by the base variable's final
-        # `info` qualifier, not this remade LHS. Recurse only for that certified
-        # shape so its sources stay parameters and remain in scope there.
-        #
-        # An ordinary whole-variable assignment can move to generated quantities
-        # together with its dependencies. Recursing for that shape would wrongly
-        # pin prior-only sources as parameters — notably the missing-data rewrite's
-        # `y = merge_missing(..., y_mis, ...)`, whose `y_mis` should be a GQ draw
-        # unless completed `y` feeds a downstream likelihood.
-        rhs = slice ? backward!(rhs; info) : rhs
+        # An ordinary whole-variable prior-only assignment moves to generated
+        # quantities together with its dependencies. Recursing into the RHS here
+        # would wrongly pin prior-only sources as parameters — notably the
+        # missing-data rewrite's `y = merge_missing(..., y_mis, ...)`, whose `y_mis`
+        # should be a GQ draw unless completed `y` feeds a downstream likelihood.
+        # (A slice fill whose base is data-qualified but whose LHS still carries the
+        # declaration-time provisional `:parameter` qualifier lands here too; its
+        # routing reads the base's `:data` qualifier, so this is a no-op for it.)
         remake(x, remake(lhs2, qual=:quantities), rhs)
     else
         x
     end
 end
-backward!(x::SamplingExpr{<:StanExpr{Symbol}}; info) = if qual(x.args[1]) == :data || lqual(info[expr(x.args[1])]) == :affects_likelihood
+# `backward!(::CanonicalExpr)` rebuilds a call from its args and drops its kwargs.
+# For a SAMPLING rhs those kwargs carry the author's `lower=`/`upper=` bounds, and
+# a cv-flipped parameter that still reads `:affects_likelihood` (the reachability
+# pass runs over the unconditioned trace) is re-drawn in generated quantities
+# from exactly this rhs — with the bounds gone, `alpha ~ normal(mu, 1; lower=-2)`
+# re-drew as a plain `normal_rng`. Put the sampling call's kwargs back so
+# `redraw_rng_expr` can honour them; the model block never prints kwargs and the
+# density/pointwise companions take positional args only, so nothing else moves.
+_restore_sampling_kwargs(new::StanExpr, old::StanExpr) = begin
+    (expr(new) isa CanonicalExpr && expr(old) isa CanonicalExpr) || return new
+    isempty(expr(old).kwargs) && return new
+    StanExpr(remake(expr(new), expr(new).args...; expr(old).kwargs...), type(new))
+end
+_restore_sampling_kwargs(new, old) = new
+# A prior-only sampled symbol is re-drawn in generated quantities from its
+# family's `_rng` — which must produce a value of the symbol's declared CENTER
+# type. For `simplex ~ dirichlet` / `cholesky_factor_corr ~ lkj_corr_cholesky`
+# the family rng does; for an `ordered` / `positive_ordered` prior no family rng
+# yields a sorted vector (a sorted iid draw is exact only for exchangeable
+# element densities, and nothing checks that yet). Such a symbol stays a SAMPLED
+# parameter — valid, descriptor-visible (`dimension > 0`), never a silently
+# unsorted draw that Stan rejects at the end of generated quantities. Ragged
+# constrained parameters take their own sampled path (`ragged_density`).
+_gq_redrawable(x::StanExpr) = !(center_type(x) in (types.ordered, types.positive_ordered))
+backward!(x::SamplingExpr{<:StanExpr{Symbol}}; info) = if qual(x.args[1]) == :data ||
+        lqual(info[expr(x.args[1])]) == :affects_likelihood || !_gq_redrawable(x.args[1])
     lhs, rhs = x.args
-    remake(x, info[expr(x.args[1])], backward!(rhs; info))
+    remake(x, info[expr(x.args[1])], _restore_sampling_kwargs(backward!(rhs; info), rhs))
 else
     lhs, rhs = x.args
     remake(x, remake(lhs, qual=:quantities), rhs)
@@ -153,7 +201,7 @@ backward!(x::SamplingExpr; info) = begin
     lhs, rhs = x.args
     key = _base_lhs_symbol(lhs)
     if key in keys(info) && _is_fresh_decl(info[key]) && _decl_role(info[key]) == :sampled
-        if lqual(info[key]) == :affects_likelihood && !cv(info[key])
+        if (lqual(info[key]) == :affects_likelihood || !_gq_redrawable(info[key])) && !cv(info[key])
             # A plate parameter used by a later likelihood remains a parameter;
             # propagate that reachability into its prior's RHS exactly like the
             # established bare-Symbol sampling path above.
@@ -168,7 +216,7 @@ backward!(x::SamplingExpr; info) = begin
             # the declaration `:quantities` (see `_forward_indexed_sampling!` in
             # forward.jl); this is the matching half that turns the `~` itself
             # into the generated-quantities re-draw.
-            remake(x, lhs, backward!(rhs; info))
+            remake(x, lhs, _restore_sampling_kwargs(backward!(rhs; info), rhs))
         else
             # Prior-only plate locals are generated quantities, matching the
             # existing prior-predictive treatment of unused Symbol samples. The
@@ -513,7 +561,8 @@ end
 Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     lhs, rhs = x.args
     # if hasvalue(lhs)
-    if qual(lhs) == :data
+    is_observation = qual(lhs) == :data
+    if is_observation
         likelihood_rhs = likelihood_expr(lhs, rhs)
         push!(b, CanonicalExpr(
             :(=),
@@ -528,7 +577,10 @@ Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     # @deffun dispatch on the shape.
     lhs_ct = center_type(lhs)
     token = StanExpr(lhs_ct, StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
-    rng_rhs = rng_expr(token, rhs)
+    # An observation's `<obs>_gen` twin draws from the bare family (its likelihood
+    # is the bare family); a PARAMETER re-draw must respect the sampled symbol's
+    # own `lower=`/`upper=` bounds — see `redraw_rng_expr`.
+    rng_rhs = is_observation ? rng_expr(token, rhs) : _gq_redraw(lhs, rhs, token)
     lhs = StanExpr(expr(lhs), remake(type(rng_rhs); value=missing))
     push!(b, CanonicalExpr(:(=), lhs, rng_rhs); info)
 end
@@ -552,7 +604,57 @@ _indexed_rng_assignment(x::SamplingExpr) = begin
     lhs_ct = center_type(lhs)
     token = StanExpr(lhs_ct,
         StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
-    CanonicalExpr(:(=), lhs, rng_expr(token, rhs))
+    # A per-cell PARAMETER re-draw: honour the cell prior's own bounds.
+    CanonicalExpr(:(=), lhs, _gq_redraw(lhs, rhs, token))
+end
+# The one generated-quantities re-draw of a sampled symbol (top-level or
+# per-cell): bounds honoured, and the two families that CANNOT be re-drawn fail
+# here with the reason rather than deep inside `tracetype`/emission.
+_gq_redraw(lhs, rhs, token) = begin
+    _check_redraw_improper(lhs, rhs)
+    _check_redraw_resolves(lhs, rhs, redraw_rng_expr(token, rhs))
+end
+# `flat()` is the improper-uniform base measure: it has no `_rng` because there
+# is nothing to draw from. A symbol whose only density is `flat` and which no
+# likelihood reaches is a prior-only program's unsimulable parameter — say so
+# (before this it died as `tracetype not defined … flat_rng(::array[] tokenof)`
+# at emission, or as a `jbroadcasted` type error once a bound was involved).
+_check_redraw_improper(lhs, rhs) = begin
+    _ragged_base_family(expr(rhs)) === builtin.flat || return nothing
+    name = _base_lhs_symbol(lhs)
+    error(
+        "`", name, " ~ flat(…)` is an improper prior and `", name, "` is re-drawn in ",
+        "generated quantities — no likelihood reaches it (a prior-only / prior-predictive ",
+        "program), or it is cv-held-out — but an improper prior has nothing to draw from. ",
+        "Give `", name, "` a proper prior (`", name, " ~ normal(…)`, `uniform(lo, hi)`, …), ",
+        "or bind the data whose likelihood informs it.",
+    )
+end
+# A sampled symbol that is RE-DRAWN in generated quantities — no likelihood
+# reaches it (prior-only / prior-predictive lowering), or it is cv-held-out — is
+# the one place a custom family's `_rng` companion becomes mandatory for that
+# shape. Without it the failure used to surface at EMISSION as an internal
+# `AssertionError: tracetype not defined for tau::anything = foo_rng(::array[] tokenof, …)`,
+# naming neither why the symbol is drawn nor what to add (the BRM `brm_ranef_sd`
+# shape, snag prior-predictive-7e463983). Catch it where the family is known.
+_check_redraw_resolves(lhs, rhs, draw) = begin
+    center_type(draw) === types.anything || return draw
+    name = _base_lhs_symbol(lhs)
+    family = _ragged_base_family(expr(rhs))
+    rng = try string(nameof(rng_expr(head(expr(rhs))))) catch; string(nameof(family), "_rng") end
+    ct = center_type(lhs)
+    nd = stan_ndim(lhs)
+    shape = nd == 0 ? string(ct) : string(ct, "[", join(("n" for _ in 1:nd), ", "), "]")
+    signature = nd == 0 ? string(rng, "(<the family's args…>)::", shape) :
+        string(rng, "(", shape, ", <the family's args…>)::", shape)
+    error(
+        "`", name, " ~ ", nameof(family), "(…)` is re-drawn in generated quantities — ",
+        "no likelihood reaches `", name, "` (a prior-only / prior-predictive program), or ",
+        "it is cv-held-out — but its family has no predictive companion for a `", shape,
+        "`: `", rng, "` resolved to an untyped (`anything`) result. Add\n    @deffun ",
+        signature, " = …\nalongside the density (the sized-token protocol every ",
+        "vector-shaped predictive draw uses; see `normal_rng(vector[n], …)` in `builtin.jl`).",
+    )
 end
 
 # --- Per-cell DATA observations inside a plate: the `<base>_gen` twin ---------

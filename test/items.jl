@@ -5271,15 +5271,21 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
         params = stan_block(code, "parameters")
         @test occursin("vector[6] theta_t", params)    # fresh cell-local, namespaced under `theta`
         @test occursin(r"real<lower=0\.0> sigma", params)
-        @test !occursin("theta;", params)              # theta is a TP fill, not a param (theta_t is the cell)
-        tp = stan_block(code, "transformed parameters")
-        @test occursin("vector[6] theta", tp)
-        @test occursin(r"theta\[plate_i\w*\] = theta_t\[plate_i", tp)
+        @test !occursin("theta;", params)              # theta is a fill, not a param (theta_t is the cell)
+        # Nothing downstream consumes `theta`, so its return fill is a prior-only
+        # assignment: it lands in generated quantities (off the gradient tape),
+        # exactly as an unconsumed whole-variable assignment would — the
+        # per-cell sample it reads is a parameter regardless (the likelihood
+        # reaches it), and generated quantities can read parameters.
+        @test strip(stan_block(code, "transformed parameters")) == "{\n}"
+        gq = stan_block(code, "generated quantities")
+        @test occursin("vector[6] theta;", gq)
+        @test occursin(r"theta\[plate_i\w*\] = theta_t\[plate_i", gq)
         mb = stan_block(code, "model")
         @test occursin(r"theta_t\[plate_i\w*\] ~ normal\(mu0", mb)
         @test occursin(r"y\[plate_i\w*\] ~ normal\(theta_t\[plate_i", mb)
     end
-    # sampler dims = sigma + t[6]; theta is a deterministic TP fill, not a dim.
+    # sampler dims = sigma + t[6]; theta is a deterministic fill, not a dim.
     @test LogDensityProblems.dimension(instantiate(doblock)) == 7
 
     # 2. Vector-per-cell plate (BRM #1): typed fresh `vector[K]` param + typed
@@ -5295,59 +5301,74 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
     @test transpiles(vec_cell)
     @test stanc_compiles(vec_cell)
     let code = stan_code(vec_cell)
-        params = stan_block(code, "parameters")
-        @test occursin("matrix[6, n_series] b_z", params)     # per-cell vector → matrix column
-        tp = stan_block(code, "transformed parameters")
-        @test occursin("matrix[6, n_series] b", tp)
+        # No likelihood anywhere: a prior-predictive program. The shared `L`/`tau`
+        # draws, the hoisted invariant, the per-column cell re-draw and the
+        # collected `b` all lower to generated quantities; nothing is sampled.
+        @test strip(stan_block(code, "parameters")) == "{\n}"
+        @test strip(stan_block(code, "transformed parameters")) == "{\n}"
+        @test strip(stan_block(code, "model")) == "{\n}"
+        gq = stan_block(code, "generated quantities")
+        @test occursin("matrix[6, n_series] b_z;", gq)         # per-cell vector → matrix column
+        @test occursin("matrix[6, n_series] b;", gq)
+        @test occursin("vector[6] tau = lower_conditioning_vector_normal_rng(6, 0.0, 0.0, 1.0);", gq)
         # LICM: `diag_pre_multiply(tau, L)` does not depend on the cell, so the
         # emitter binds it ONCE before the compiler-owned loop rather than
-        # re-evaluating (and re-AD-taping) it per cell. Snag
+        # re-evaluating it per cell — in whichever block the plate lands. Snag
         # benchmarked-brm-20aa0361 measured ~2x per-gradient on a 1000-group
-        # correlated random effect purely from where this landed.
-        @test occursin(r"matrix\[6, 6\] b__pl_inv\d+_\d+ = diag_pre_multiply\(tau, L\);", tp)
-        @test occursin(r"b\[:, plate_i\w*\] = \(b__pl_inv\d+_\d+ \* b_z\[:, plate_i", tp)
+        # correlated random effect purely from where this landed (the fitted
+        # case is pinned by `slic: plate hoists loop-invariant cell-body
+        # expressions`).
+        @test occursin(r"matrix\[6, 6\] b__pl_inv\d+_\d+ = diag_pre_multiply\(tau, L\);", gq)
+        @test occursin(r"b\[:, plate_i\w*\] = \(b__pl_inv\d+_\d+ \* b_z\[:, plate_i", gq)
         # …and the loop itself is left with no copy of the invariant.
-        let li = findfirst("for(", tp)
-            @test li !== nothing && !occursin("diag_pre_multiply", tp[first(li):end])
+        let li = findfirst("for(", gq)
+            @test li !== nothing && !occursin("diag_pre_multiply", gq[first(li):end])
         end
-        mb = stan_block(code, "model")
-        @test occursin(r"b_z\[:, plate_i\w*\] ~ std_normal\(\)", mb)  # sampled per column
-        @test !occursin("b[:", mb)                            # the b fill is NOT in model
+        @test occursin(r"b_z\[:, plate_i\w*\] = std_normal_vector_rng\(6\);", gq)  # re-drawn per column
     end
+    @test LogDensityProblems.dimension(instantiate(vec_cell)) == 0
 
-    # 3. fspmjv regression: a FULLY prior-only dead plate (no likelihood anywhere
-    #    AND its output unused) must keep its fresh per-cell samples as PARAMETERS
-    #    (not prior-only-lowered to generated quantities), so the transformed-
-    #    parameters return-fill stays in scope. Before aef6a42 this emitted
-    #    invalid Stan — stanc: "Identifier w not in scope". `stanc_compiles`
-    #    is the guard that actually catches that regression.
+    # 3. A FULLY prior-only dead plate (no likelihood anywhere AND its output
+    #    unused) is a prior-predictive program: the WHOLE plate — its fresh
+    #    per-cell sample, the collected result and the compiler-owned loop — lowers
+    #    to generated quantities together with everything it reads, so
+    #    `parameters {}` and `model {}` are EMPTY and the program is a
+    #    `fixed_param` simulator. Two earlier states of this test are history:
+    #    before aef6a42 the sample was GQ-lowered while the return fill stayed in
+    #    transformed parameters (stanc: "Identifier w not in scope"); aef6a42 then
+    #    pinned the sample as a PARAMETER instead, which made a likelihood-free
+    #    program sample its prior with NUTS (snag prior-predictive-7e463983). The
+    #    fill now follows its sources to GQ. `stanc_compiles` guards the scope
+    #    half; the block assertions guard the routing half.
     priordead = @slic (;) begin
         tau ~ normal(0.0, 1.0; lower = 0.0)
         z ~ plate(; outer = (4,)) do i
-            w ~ normal(0.0, tau)              # fresh per-cell param — MUST stay a parameter
-            w                                 # cell output → z[i] (transformed parameters)
+            w ~ normal(0.0, tau)              # fresh per-cell param — re-drawn in GQ
+            w                                 # cell output → z[i] (also GQ)
         end
     end
     @test transpiles(priordead)
     @test stanc_compiles(priordead)
     let code = stan_code(priordead)
-        params = stan_block(code, "parameters")
-        @test occursin("vector[4] z_w", params)             # w stays a PARAMETER (the fix), namespaced under `z`
-        @test occursin(r"real<lower=0\.0> tau", params)
-        tp = stan_block(code, "transformed parameters")
-        @test occursin("vector[4] z", tp)
-        @test occursin(r"z\[plate_i\w*\] = z_w\[plate_i", tp)
-        # The bug: w was RNG-lowered to generated quantities while z (TP) still
-        # referenced it. Guard both the decl and the RNG draw are absent from GQ.
+        @test strip(stan_block(code, "parameters")) == "{\n}"
+        @test strip(stan_block(code, "transformed parameters")) == "{\n}"
+        @test strip(stan_block(code, "model")) == "{\n}"
         gq = stan_block(code, "generated quantities")
-        @test !occursin("w", gq)
+        # tau's USER bound is a truncation of its prior: the re-draw goes through
+        # the `truncated` rejection sampler, never a bare `normal_rng(0, 1)`.
+        @test occursin("real tau = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+        @test occursin("vector[4] z_w;", gq)
+        @test occursin("vector[4] z;", gq)
+        @test occursin(r"z_w\[plate_i\w*\] = normal_rng\(0\.0, tau\);", gq)
+        @test occursin(r"z\[plate_i\w*\] = z_w\[plate_i", gq)
     end
-    # dim = tau + w[4] = 5 (w is a real sampler dim; z is a deterministic TP fill).
-    @test LogDensityProblems.dimension(instantiate(priordead)) == 5
+    # Zero sampler dimensions: the whole program is generated quantities.
+    @test LogDensityProblems.dimension(instantiate(priordead)) == 0
 
-    # 4. Control for fspmjv: the moment the plate output feeds a likelihood, the
-    #    fresh sample is naturally a parameter and TP is valid — confirms the
-    #    fspmjv fix did not disturb the common (non-dead) path.
+    # 4. Control: the moment the plate output feeds a likelihood, the fresh
+    #    sample is a parameter and the return fill lands in transformed
+    #    parameters — the prior-only lowering above does not disturb the common
+    #    (non-dead) path.
     priorlive = @slic (; obs = randn(4)) begin
         tau ~ normal(0.0, 1.0; lower = 0.0)
         z ~ plate(; outer = (4,)) do i
@@ -5418,15 +5439,21 @@ is never lifted, however invariant its arguments look.
     # 1. NON-CENTERED (BRM `ranef_correlated`): the scale is written inline in the
     #    cell body. It must be bound once before the loop, and the result must be
     #    indistinguishable from writing that binding by hand.
-    inline_nc = @slic (; n_terms = 3, n_groups = 5) begin
+    # Every model here observes `obs ~ normal(b[:, 1], 1.0)`: without a likelihood
+    # the whole plate is a prior-predictive program and lowers to generated
+    # quantities (the hoist included, off the tape), which is not what these
+    # transformed-parameters assertions are about.
+    obs3 = [0.1, -0.2, 0.3]
+    inline_nc = @slic (; n_terms = 3, n_groups = 5, obs = obs3) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
         b::matrix[n_terms, n_groups] ~ plate(; outer = (n_groups,)) do g
             z::vector[n_terms] ~ std_normal()
             diag_pre_multiply(tau, L) * z
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
-    hoisted_nc = @slic (; n_terms = 3, n_groups = 5) begin
+    hoisted_nc = @slic (; n_terms = 3, n_groups = 5, obs = obs3) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
         S = diag_pre_multiply(tau, L)                 # the hand-hoisted spelling
@@ -5434,6 +5461,7 @@ is never lifted, however invariant its arguments look.
             z::vector[n_terms] ~ std_normal()
             S * z
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
     @test transpiles(inline_nc)
     @test stanc_compiles(inline_nc)
@@ -5455,15 +5483,16 @@ is never lifted, however invariant its arguments look.
     #    vector[n_terms]` carrier, so Stan pays the shared Cholesky log determinant
     #    once instead of once per group. The public plate result remains the same
     #    `matrix[n_terms,n_groups]`; only its internal sampled carrier changes.
-    inline_c = @slic (; n_terms = 3, n_groups = 5) begin
+    inline_c = @slic (; n_terms = 3, n_groups = 5, obs = obs3) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
         b::matrix[n_terms, n_groups] ~ plate(; outer = (n_groups,)) do g
             bc::vector[n_terms] ~ multi_normal_cholesky(rep_vector(0.0, n_terms), diag_pre_multiply(tau, L))
             bc
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
-    hoisted_c = @slic (; n_terms = 3, n_groups = 5) begin
+    hoisted_c = @slic (; n_terms = 3, n_groups = 5, obs = obs3) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
         mu0 = rep_vector(0.0, n_terms)
@@ -5472,6 +5501,7 @@ is never lifted, however invariant its arguments look.
             bc::vector[n_terms] ~ multi_normal_cholesky(mu0, S)
             bc
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
     @test transpiles(inline_c)
     @test stanc_compiles(inline_c)
@@ -5511,7 +5541,7 @@ is never lifted, however invariant its arguments look.
     # 4. PASS A: a cell-invariant ASSIGNMENT written inside the cell body is lifted
     #    WHOLE — one shared `matrix[n_terms, n_terms]`, not an `n_groups`-wide
     #    per-cell collection plus a fill loop.
-    passA = @slic (; n_terms = 3, n_groups = 5) begin
+    passA = @slic (; n_terms = 3, n_groups = 5, obs = obs3) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
         b::matrix[n_terms, n_groups] ~ plate(; outer = (n_groups,)) do g
@@ -5519,6 +5549,7 @@ is never lifted, however invariant its arguments look.
             z::vector[n_terms] ~ std_normal()
             S * z
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
     @test transpiles(passA)
     @test stanc_compiles(passA)
@@ -5546,7 +5577,8 @@ is never lifted, however invariant its arguments look.
     # 6. The collapse is semantic, not "one sample + return" syntax alone.
     #    A cell-varying multivariate argument must keep the matrix carrier and
     #    indexed loop, and a vectorised UNIVARIATE family is outside this pass.
-    varying_mv = @slic (; scales = ones(4), n_terms = 2) begin
+    obs2 = [0.1, -0.2]
+    varying_mv = @slic (; scales = ones(4), n_terms = 2, obs = obs2) begin
         b::matrix[n_terms, length(scales)] ~ plate(scales; outer = length(scales)) do s
             bc::vector[n_terms] ~ multi_normal_cholesky(
                 rep_vector(0.0, n_terms),
@@ -5554,12 +5586,14 @@ is never lifted, however invariant its arguments look.
             )
             bc
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
-    iid_uni = @slic (; n_groups = 4, n_terms = 2) begin
+    iid_uni = @slic (; n_groups = 4, n_terms = 2, obs = obs2) begin
         b::matrix[n_terms, n_groups] ~ plate(; outer = n_groups) do g
             z::vector[n_terms] ~ normal(0.0, 1.0)
             z
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
     for (m, carrier) in ((varying_mv, "b_bc"), (iid_uni, "b_z"))
         @test transpiles(m)
@@ -5580,10 +5614,11 @@ is never lifted, however invariant its arguments look.
         end
         return b
     end
-    called = @slic (; n_terms = 2, n_groups = 4) begin
+    called = @slic (; n_terms = 2, n_groups = 4, obs = obs2) begin
         mu = rep_vector(0.0, n_terms)
         S::matrix[n_terms,n_terms] = diag_matrix(rep_vector(1.0, n_terms))
         b ~ centered_plate(n_terms, n_groups, mu, S)
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
     @test transpiles(called)
     @test stanc_compiles(called)
@@ -5693,8 +5728,11 @@ Verify `slic: public plate promotes called-submodel bindings` in an isolated tes
     let tp = stan_block(code, "transformed parameters")
         @test occursin(r"theta_cell_shifted\[plate_i__pl_\d+\]\s*=", tp)
         @test occursin(r"theta_cell\[plate_i__pl_\d+\]\s*=", tp)
-        @test occursin(r"theta\[plate_i__pl_\d+\]\s*=\s*theta_cell\[plate_i__pl_\d+\]", tp)
+        # The collected `theta` feeds nothing (the likelihood reads the cell), so
+        # its return fill is prior-only and lands in generated quantities.
+        @test !occursin(r"theta\[plate_i__pl_\d+\]\s*=", tp)
     end
+    @test occursin(r"theta\[plate_i__pl_\d+\]\s*=\s*theta_cell\[plate_i__pl_\d+\]", stan_block(code, "generated quantities"))
     let model_block = stan_block(code, "model")
         @test occursin(r"theta_cell_z\[plate_i__pl_\d+\]\s*~\s*std_normal", model_block)
         @test occursin(r"y\[plate_i__pl_\d+\]\s*~\s*normal\(theta_cell\[plate_i__pl_\d+\]", model_block)
@@ -5703,9 +5741,25 @@ Verify `slic: public plate promotes called-submodel bindings` in an isolated tes
     @test transpiles(c3_plate_vector_submodel_model)
     @test stanc_compiles(c3_plate_vector_submodel_model)
     vector_code = stan_code(c3_plate_vector_submodel_model)
-    @test occursin("matrix[k, n] theta_cell_z", stan_block(vector_code, "parameters"))
-    @test occursin(r"theta_cell_z\[:, plate_i__pl_\d+\]\s*~\s*std_normal", stan_block(vector_code, "model"))
-    @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*theta_cell\[:, plate_i__pl_\d+\]", stan_block(vector_code, "transformed parameters"))
+    # This model has no likelihood at all: a prior-predictive program, so the
+    # promoted submodel vector parameter re-draws per column in generated
+    # quantities and the collected result is filled there too.
+    @test strip(stan_block(vector_code, "parameters")) == "{\n}"
+    @test strip(stan_block(vector_code, "model")) == "{\n}"
+    let gq = stan_block(vector_code, "generated quantities")
+        @test occursin("matrix[k, n] theta_cell_z", gq)
+        @test occursin(r"theta_cell_z\[:, plate_i__pl_\d+\]\s*=\s*std_normal_vector_rng\(k\)", gq)
+        @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*theta_cell\[:, plate_i__pl_\d+\]", gq)
+    end
+    # …and with a likelihood on the result it is the sampled matrix parameter.
+    vector_fit = Base.merge(c3_plate_vector_submodel_model, quote
+        obs ~ normal(theta[:, 1], 1.0)
+    end)(; obs = [0.1, -0.2])
+    let fit_code = stan_code(vector_fit)
+        @test occursin("matrix[k, n] theta_cell_z", stan_block(fit_code, "parameters"))
+        @test occursin(r"theta_cell_z\[:, plate_i__pl_\d+\]\s*~\s*std_normal", stan_block(fit_code, "model"))
+        @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*theta_cell\[:, plate_i__pl_\d+\]", stan_block(fit_code, "transformed parameters"))
+    end
 end
 
 """
@@ -5716,14 +5770,16 @@ Verify `slic: public plate emits N-dimensional outer loops` in an isolated test 
     @test stanc_compiles(c3_plate_outer_int_model)
     int_code = stan_code(c3_plate_outer_int_model)
     @test occursin("vector[4] theta_z", stan_block(int_code, "parameters"))
-    @test occursin("vector[4] theta", stan_block(int_code, "transformed parameters"))
+    # The collected `theta` feeds no likelihood (the cell does), so its fill is a
+    # generated quantity in every shape below; the sample stays a parameter.
+    @test occursin("vector[4] theta;", stan_block(int_code, "generated quantities"))
     @test occursin(r"for\(plate_i__pl_\d+ in 1:4\)", stan_block(int_code, "model"))
 
     @test transpiles(c3_plate_outer_2d_scalar_model)
     @test stanc_compiles(c3_plate_outer_2d_scalar_model)
     scalar2_code = stan_code(c3_plate_outer_2d_scalar_model)
     @test occursin("matrix[2, 3] theta_z", stan_block(scalar2_code, "parameters"))
-    @test occursin("matrix[2, 3] theta", stan_block(scalar2_code, "transformed parameters"))
+    @test occursin("matrix[2, 3] theta;", stan_block(scalar2_code, "generated quantities"))
     let model_block = stan_block(scalar2_code, "model")
         @test occursin(r"for\(plate_i1__pl_\d+ in 1:2\)", model_block)
         @test occursin(r"for\(plate_i2__pl_\d+ in 1:3\)", model_block)
@@ -5735,7 +5791,7 @@ Verify `slic: public plate emits N-dimensional outer loops` in an isolated test 
     @test stanc_compiles(c3_plate_outer_2d_vector_model)
     vector2_code = stan_code(c3_plate_outer_2d_vector_model)
     @test occursin("array[3] matrix[k, 2] theta_z", stan_block(vector2_code, "parameters"))
-    @test occursin("array[3] matrix[k, 2] theta", stan_block(vector2_code, "transformed parameters"))
+    @test occursin("array[3] matrix[k, 2] theta;", stan_block(vector2_code, "generated quantities"))
     @test occursin(
         r"theta_z\[plate_i2__pl_\d+, :, plate_i1__pl_\d+\]\s*~\s*std_normal",
         stan_block(vector2_code, "model"),
@@ -6459,13 +6515,28 @@ ragged constrained cells (`K` per plate index) and constrained MATRIX families
     @test transpiles(simplex_cell)
     @test stanc_compiles(simplex_cell)
     let code = stan_code(simplex_cell)
-        # cell-local `cell` is namespaced under the plate result `p` → `p_cell`.
-        @test occursin(r"array\[n\] simplex\[k\] p_cell", stan_block(code, "parameters"))
-        @test occursin(r"p_cell\[plate_i\w*\] ~ dirichlet", stan_block(code, "model"))
+        # No likelihood: a prior-predictive program. The native `array[n]
+        # simplex[k]` cell declaration survives the move to generated quantities,
+        # where the cell (namespaced under the plate result `p` → `p_cell`)
+        # re-draws from the family's constrained rng.
+        @test strip(stan_block(code, "parameters")) == "{\n}"
+        gq = stan_block(code, "generated quantities")
+        @test occursin(r"array\[n\] simplex\[k\] p_cell", gq)
+        @test occursin(r"p_cell\[plate_i\w*\] = dirichlet_\w*rng\(k, ", gq)
         @test !occursin("anything", code)           # the bug: anything-typed _lpdfs helper
     end
-    # Stan applies the simplex transform: n cells × (k-1) free coords each.
-    @test LogDensityProblems.dimension(instantiate(simplex_cell)) == 3 * (3 - 1)
+    @test LogDensityProblems.dimension(instantiate(simplex_cell)) == 0
+    # With a likelihood on the collected result it is the sampled parameter Stan
+    # constrains per cell: n cells × (k-1) free coords each.
+    simplex_fit = Base.merge(simplex_cell, quote
+        obs ~ normal(p[1], 0.5)
+    end)(; obs = [0.2, 0.3, 0.5])
+    @test stanc_compiles(simplex_fit)
+    let code = stan_code(simplex_fit)
+        @test occursin(r"array\[n\] simplex\[k\] p_cell", stan_block(code, "parameters"))
+        @test occursin(r"p_cell\[plate_i\w*\] ~ dirichlet", stan_block(code, "model"))
+    end
+    @test LogDensityProblems.dimension(instantiate(simplex_fit)) == 3 * (3 - 1)
 
     # `ordered` family: N cells × K free coords each.
     ordered_cell = @slic (; n = 2, k = 4) begin
@@ -6475,6 +6546,14 @@ ragged constrained cells (`K` per plate index) and constrained MATRIX families
         end
     end
     @test stanc_compiles(ordered_cell)
+    # An `ordered` prior has no exact re-draw (no family rng yields a sorted
+    # vector), so it deliberately STAYS a sampled parameter even with no
+    # likelihood; only the unconsumed collected result moves to gq.
+    let code = stan_code(ordered_cell)
+        @test occursin(r"array\[n\] ordered\[k\] p_c;", stan_block(code, "parameters"))
+        @test occursin(r"p_c\[plate_i\w*\] ~ normal", stan_block(code, "model"))
+        @test occursin(r"array\[n\] ordered\[k\] p;", stan_block(code, "generated quantities"))
+    end
     @test LogDensityProblems.dimension(instantiate(ordered_cell)) == 2 * 4
 
     # N-dimensional outer: `array[a, b] simplex[k]`.
@@ -6485,7 +6564,14 @@ ragged constrained cells (`K` per plate index) and constrained MATRIX families
         end
     end
     @test stanc_compiles(nd_cell)
-    @test occursin(r"array\[a, b\] simplex\[k\]", stan_block(stan_code(nd_cell), "parameters"))
+    # prior-only ⇒ the N-D constrained cell declaration lives in gq …
+    @test occursin(r"array\[a, b\] simplex\[k\] p_c;", stan_block(stan_code(nd_cell), "generated quantities"))
+    # … and is the sampled parameter once a likelihood consumes the result.
+    nd_fit = Base.merge(nd_cell, quote
+        obs ~ normal(p[1, 1], 0.5)
+    end)(; obs = [0.2, 0.3, 0.5])
+    @test stanc_compiles(nd_fit)
+    @test occursin(r"array\[a, b\] simplex\[k\]", stan_block(stan_code(nd_fit), "parameters"))
 
     # Control: an UNCONSTRAINED `vector[k]` cell keeps the dense `matrix[k,n]` packing.
     plain_cell = @slic (; n = 3, k = 3) begin
@@ -6495,7 +6581,7 @@ ragged constrained cells (`K` per plate index) and constrained MATRIX families
         end
     end
     @test transpiles(plain_cell)
-    @test occursin("matrix[k, n] p_z", stan_block(stan_code(plain_cell), "parameters"))
+    @test occursin("matrix[k, n] p_z", stan_block(stan_code(plain_cell), "generated quantities"))
 
     # Still-unsupported constrained cells reject cleanly (no invalid Stan):
     #   ragged simplex — Stan cannot declare `array[n] simplex[K[g]]` (varying K).
@@ -7574,7 +7660,10 @@ group boundaries as `ModelOutput.segments`.
     # dropped by the same bug that dropped `y_gen` — assert them so a future
     # skip-the-DeclExpr regression fails here loudly rather than silently
     # shrinking every plate model's output set.
-    @test outs[:b].kind == :transformed_parameter
+    # The likelihood reads the cell, not the collected `b`: `b` is an unconsumed
+    # fill and therefore a (derived) generated quantity; the cell chain is sampled.
+    @test outs[:b].kind == :generated_quantity
+    @test outs[:b].generative == :derived
     @test outs[:b_cell].kind == :transformed_parameter
     @test outs[:b_cell_z].kind == :parameter
 
@@ -9052,4 +9141,229 @@ tail-position `ensure_xreturn` normalisation the `return`-branch probes exercise
     @test stanc_check(elseif_code; warn_pedantic=false).ok
     @test stanc_check(nested_if_code; warn_pedantic=false).ok
     @test stanc_check(elseif_loop_code; warn_pedantic=false).ok
+end
+
+@testitem "slic: prior-only program lowers plates, fills and bounded priors to generated quantities" tags=[:slic, :plate, :ragged, :stanc, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    # Snag prior-predictive-7e463983 (reported from Bruno's `regime="prior"` PK/QT
+    # program). With NO likelihood, every parameter must be an `_rng` draw in
+    # generated quantities, in dependency order, followed by the transforms —
+    # `parameters {}` and `model {}` empty, so the program runs as `fixed_param`.
+    # Before the fix a prior-only compiler-injected slice fill (a plate's return
+    # fill / cell-local `=`, an inlined helper's `out[i] = …`) recursed into its
+    # RHS in `backward!` and pinned every source as a parameter: 21 of 24
+    # parameters of that program stayed sampled behind a 92-line transformed
+    # parameters block.
+    empty_block(code, name) = strip(stan_block(code, name)) == "{\n}"
+
+    # (a) The reporter's shape: correlated random-effect block, population
+    #     coefficients, a transformed-parameter chain, and a RAGGED plate with a
+    #     cell-local `=` plus a return fill. No likelihood ⇒ everything is GQ.
+    xs = [[0.1, 0.2, 0.3], [0.4, 0.5]]
+    prior_shape = @slic (; xs, subject_idx = [1, 2], n_subject = 2, X = [1.0 0.5; 1.0 -0.5]) begin
+        L::cholesky_factor_corr[2] ~ lkj_corr_cholesky(2.0)
+        tau::vector[2] ~ exponential(1.5)
+        z_flat ~ std_normal(; n = 2 * n_subject)
+        z = reshape(z_flat, 2, n_subject)
+        b = (diag_pre_multiply(tau, L) * z)'
+        beta_pop::vector[2] ~ normal([0.0, 0.0], [1.0, 0.5])
+        pop = X * beta_pop
+        r = b[subject_idx, 1]
+        k = exp(pop + r)
+        rho ~ uniform(0.4, 2.0)
+        sigma ~ exponential(1.0)
+        pred ~ plate(xs, k; outer = (n_subject,)) do xi, ki
+            conc = ki * xi * rho
+            conc
+        end
+    end
+    @test transpiles(prior_shape)
+    @test stanc_compiles(prior_shape)
+    let code = stan_code(prior_shape)
+        @test empty_block(code, "parameters")
+        @test empty_block(code, "transformed parameters")
+        @test empty_block(code, "model")
+        gq = stan_block(code, "generated quantities")
+        # every prior is an rng draw, in source (= dependency) order …
+        @test occursin("matrix[2, 2] L = lkj_corr_cholesky_cholesky_factor_corr_rng(2, 2.0);", gq)
+        @test occursin("vector[2] tau = exponential_vector_rng(2, 1.5);", gq)
+        @test occursin("real rho = uniform_rng(0.4, 2.0);", gq)
+        @test occursin("real sigma = exponential_rng(1.0);", gq)
+        # … the transforms follow them …
+        @test findfirst("matrix[n_subject, 2] b = ", gq) > findfirst("vector[2] tau = ", gq)
+        @test occursin("vector[X_m] k = exp(", gq)
+        # … and the ragged plate's carrier + loop are in GQ too.
+        @test occursin(r"vector\[sum\(pred__pl_len_\d+\)\] pred__pl_mem_\d+;", gq)
+        @test occursin(r"for\(plate_i__pl_\d+ in 1:n_subject\)", gq)
+    end
+    d = stan_descriptor(prior_shape; name = :prior_shape)
+    @test [op.name for op in d.operations] == [:transpile, :instantiate]
+    @test all(o.kind == :generated_quantity for o in d.outputs)
+
+    # (b) Control: a likelihood on the plate result keeps the whole chain sampled.
+    ys = [[1.0, 2.0, 3.0], [4.0, 5.0]]
+    fit_shape = Base.merge(prior_shape, quote
+        ys ~ normal(pred, sigma)
+    end)(; ys)
+    @test stanc_compiles(fit_shape)
+    let code = stan_code(fit_shape)
+        params = stan_block(code, "parameters")
+        for decl in ("cholesky_factor_corr[2] L;", "vector<lower=0.0>[2] tau;", "vector[2] beta_pop;",
+                     "real<lower=0.4, upper=2.0> rho;", "real<lower=0.0> sigma;")
+            @test occursin(decl, params)
+        end
+        @test occursin(r"vector\[sum\(pred__pl_len_\d+\)\] pred__pl_mem_\d+;", stan_block(code, "transformed parameters"))
+        @test occursin("~ normal(", stan_block(code, "model"))
+    end
+    @test :fit in [op.name for op in stan_descriptor(fit_shape; name = :fit_shape).operations]
+
+    # (c) An inlined mutating helper's `out[i] = …` fill is the same shape as a
+    #     plate fill: prior-only ⇒ the fill AND its source `u` land in GQ.
+    @deffun @inline pp_sq_fill!(x::vector[n])::vector[n] = begin
+        out::vector[n]
+        for i in 1:n
+            out[i] = x[i] * x[i]
+        end
+        return out
+    end
+    inline_prior = @slic (;) begin
+        u ~ normal(0.0, 1.0; n = 4)
+        v = pp_sq_fill!(u)
+        s ~ exponential(1.0)
+        t = v * s
+    end
+    @test stanc_compiles(inline_prior)
+    let code = stan_code(inline_prior)
+        @test empty_block(code, "parameters") && empty_block(code, "transformed parameters")
+        gq = stan_block(code, "generated quantities")
+        @test occursin("vector[4] u = normal_vector_rng(4, 0.0, 1.0);", gq)
+        @test occursin(r"out__il_\d+\[i__il_\d+\] = \(u\[i__il_\d+\] \* u\[i__il_\d+\]\);", gq)
+    end
+
+    # (d) Mixed: a plate feeding a likelihood stays sampled while a DEAD chain
+    #     beside it (`u` → inlined fill → `dead_fill`) lowers to GQ — the loop
+    #     grouping keeps each statement in its own block.
+    mixed = @slic (; obs = [0.1, -0.2, 0.3, 0.0]) begin
+        tau ~ normal(0.0, 1.0; lower = 0.0)
+        z ~ plate(; outer = (4,)) do i
+            w ~ normal(0.0, tau)
+            w
+        end
+        obs ~ normal(z, 1.0)
+        u ~ normal(0.0, 1.0; n = 4)
+        dead_fill = pp_sq_fill!(u)
+    end
+    @test stanc_compiles(mixed)
+    let code = stan_code(mixed)
+        params = stan_block(code, "parameters")
+        @test occursin("real<lower=0.0> tau;", params) && occursin("vector[4] z_w;", params)
+        @test !occursin("vector[4] u;", params)
+        @test occursin(r"z\[plate_i\w*\] = z_w\[plate_i", stan_block(code, "transformed parameters"))
+        gq = stan_block(code, "generated quantities")
+        @test occursin("vector[4] u = normal_vector_rng(4, 0.0, 1.0);", gq)
+        @test occursin(r"vector\[n__il_\d+\] dead_fill = out__il_\d+;", gq)
+    end
+
+    # (e) A sampled symbol's USER bound is a truncation of its prior. A re-draw
+    #     must come from the truncated law — `normal_rng(0, 1)` for a `<lower=0>`
+    #     half-normal is negative half the time. Scalar, typed-LHS vector, sized
+    #     kwarg vector, two-sided, a non-implied bound on a bounded family, and a
+    #     plate cell prior all route through the `truncated` rejection sampler;
+    #     a family-implied bound (`exponential` ⇒ `lower=0`) is NOT re-truncated.
+    bounded = @slic (; n_cell = 3) begin
+        tau ~ normal(0.0, 1.0; lower = 0.0)
+        v::vector[2] ~ normal(0.0, 1.0; lower = 0.0)
+        w ~ normal(0.0, 1.0; lower = -1.0, upper = 1.0, n = 2)
+        ex ~ exponential(1.0; lower = 0.5)
+        plain ~ exponential(2.0)
+        restated ~ exponential(2.0; lower = 0.0)
+        q ~ plate(; outer = (n_cell,)) do i
+            t ~ normal(0.0, tau; lower = 0.0)
+            t
+        end
+        s = v[1] + w[2] + tau + ex
+    end
+    @test stanc_compiles(bounded)
+    let gq = stan_block(stan_code(bounded), "generated quantities")
+        @test occursin("real tau = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+        @test occursin("vector[2] v = lower_conditioning_vector_normal_rng(2, 0.0, 0.0, 1.0);", gq)
+        @test occursin("vector[2] w = conditioning_vector_normal_rng(2, -1.0, 1.0, 0.0, 1.0);", gq)
+        @test occursin("real ex = lower_conditioning_exponential_rng(0.5, 1.0);", gq)
+        @test occursin("real plain = exponential_rng(2.0);", gq)
+        @test occursin("real restated = exponential_rng(2.0);", gq)
+        @test occursin(r"q_t\[plate_i\w*\] = lower_conditioning_normal_rng\(0\.0, 0\.0, tau\);", gq)
+    end
+
+    # (f) The same holds for a cv-flipped re-draw: `backward!` rebuilds the
+    #     sampling rhs, and the bound used to be lost with its kwargs.
+    cv_base = @slic (; subject = [1, 1, 2, 2, 3], y = [0.1, 0.2, -0.1, 0.0, 0.3]) begin
+        mu ~ std_normal()
+        J = maximum(subject)
+        alpha ~ normal(mu, 1.0; n = J, lower = -2.0)
+        y ~ normal(alpha[subject], 1.0)
+    end
+    cv_bounded = cv_base(; subject = StanBlocks.stan.maybecv(:subject, [1, 1, 2, 2, 3]))
+    @test stanc_compiles(cv_bounded)
+    let code = stan_code(cv_bounded)
+        @test occursin("real mu;", stan_block(code, "parameters"))
+        @test occursin("vector[J] alpha = lower_conditioning_vector_normal_rng(J, -2.0, mu, 1.0);",
+            stan_block(code, "generated quantities"))
+    end
+
+    # (g) `std_normal` is the one zero-argument family; inside a HOF rng body its
+    #     `predictive(family)` call is the token-returning selector form, so the
+    #     documented `tau ~ std_normal(; lower = 0.)` prior predictive used to die
+    #     in `sig_expr`. The rng call spells it as `normal(0, 1)`; the density
+    #     side (a fitted `truncated(std_normal; lower=…)`) is untouched.
+    radon_pp = @slic (; subject = [1, 1, 2, 2, 3]) begin
+        mu    ~ std_normal()
+        tau   ~ std_normal(; lower = 0.)
+        J     = maximum(subject)
+        alpha ~ normal(mu, tau; n = J)
+        sigma ~ std_normal(; lower = 0.)
+        y     ~ normal(alpha[subject], sigma)
+    end
+    @test stanc_compiles(radon_pp)
+    let gq = stan_block(stan_code(radon_pp), "generated quantities")
+        @test occursin("real mu = std_normal_rng();", gq)
+        @test occursin("real tau = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+        @test occursin("real sigma = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+        @test occursin("array[subject_n] real y = normal_rng(alpha[subject], sigma);", gq)
+    end
+    fitted_trunc = @slic (; y = [0.1, 0.2]) begin
+        tau ~ truncated(std_normal; lower = 0.0)
+        y ~ normal(0.0, tau)
+    end
+    @test stanc_compiles(fitted_trunc)
+    @test occursin("real lower_conditioning_std_normal_lpdf(", stan_code(fitted_trunc))
+
+    # (h) A custom family without an `_rng` for the re-drawn shape fails at
+    #     trace time with the family, the reason and the signature to add —
+    #     not as an internal `tracetype not defined` assertion at emission.
+    @deffun begin
+        @lhs @lpxf pp_halfnorm_sd_lpdf(x::vector[n], rate::real)::real = normal_lpdf(x, 0.0, rate)
+    end
+    no_rng = @slic (; n_sub = 2) begin
+        tau::vector[2] ~ pp_halfnorm_sd(1.5)
+        zz ~ plate(; outer = (n_sub,)) do i
+            w ~ normal(0.0, tau[1])
+            w
+        end
+    end
+    err = try; stan_code(no_rng); nothing; catch e; sprint(showerror, e); end
+    @test err !== nothing
+    @test occursin("`tau ~ pp_halfnorm_sd(…)` is re-drawn in generated quantities", err)
+    @test occursin("@deffun pp_halfnorm_sd_rng(vector[n], <the family's args…>)::vector[n]", err)
+
+    # (i) An IMPROPER `flat()` prior has nothing to draw from: a likelihood-free
+    #     program cannot simulate it, and it says so (it used to die as an
+    #     internal `tracetype not defined … flat_rng` assertion at emission).
+    flat_prior = @slic (;) begin
+        p::vector[2] ~ flat(; lower = 0.0)
+        q = p * 2.0
+    end
+    err = try; stan_code(flat_prior); nothing; catch e; sprint(showerror, e); end
+    @test err !== nothing
+    @test occursin("`p ~ flat(…)` is an improper prior", err)
+    @test occursin("nothing to draw from", err)
 end

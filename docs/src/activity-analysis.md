@@ -87,7 +87,8 @@ m(; subject)          # no `y`
 
 With no observation bound there is no likelihood, so *every* parameter is dead as a
 fit target. The `parameters` and `model` blocks are **empty**, and the entire model
-— parameters and the outcome `y` alike — forward-simulates in `generated_quantities`.
+— parameters and the outcome `y` alike — forward-simulates in `generated_quantities`,
+each prior as an `_rng` draw in dependency order, the transforms after them.
 
 ```stan
 parameters {
@@ -96,12 +97,43 @@ model {
 }
 generated quantities {
     real mu = std_normal_rng();
-    real tau = std_normal_rng();
+    real tau = lower_conditioning_normal_rng(0.0, 0.0, 1.0);
     vector[J] alpha = normal_vector_rng(J, mu, tau);
-    real sigma = std_normal_rng();
+    real sigma = lower_conditioning_normal_rng(0.0, 0.0, 1.0);
     array[subject_n] real y = normal_rng(alpha[subject], sigma);
 }
 ```
+
+A prior's own `lower=` / `upper=` bound is a truncation of it: `tau ~ std_normal(;
+lower = 0.)` is a half-normal, so its draw goes through the same rejection sampler
+the `truncated(...)` distribution combinator uses, never a bare `std_normal_rng()`
+(which would be negative half the time). Bounds the family already implies
+(`exponential` ⇒ `lower = 0`) need no truncation and draw natively.
+
+This holds for the whole program, not only for leaf parameters: a `plate` (its
+fresh per-cell samples, collected result and compiler-owned loop), an inlined
+helper's element fills, and every transformed-parameter chain feeding them lower
+to `generated quantities` together. The compiled program therefore has
+`LogDensityProblems.dimension(prob) == 0` and is Stan's `fixed_param` case — draw
+exact prior samples in milliseconds with an empty parameter vector, no
+adaptation:
+
+```julia
+prob = stan_instantiate(m(; subject))
+draw = BridgeStan.param_constrain(prob.model, Float64[]; include_tp = true, include_gq = true,
+                                  rng = BridgeStan.StanRNG(prob.model, seed))
+```
+
+Every prior that is re-drawn needs its family's `_rng` companion for that shape
+(a custom `@lpxf foo_lpdf` family ships `foo_rng`, sized-token overload
+included); a missing one is a trace-time error naming the symbol, the family and
+the signature to add, and an improper `flat()` prior — nothing to draw from — is
+an error too. Two prior shapes deliberately stay *sampled* parameters instead,
+because no exact draw exists yet: an `ordered` / `positive_ordered` prior (no
+family rng yields a sorted vector) and a ragged constrained parameter with an
+informative prior (its per-group constrain step has no ragged rng). Everything
+prior-only around them still lowers to `generated quantities`; such a program
+merely keeps `dimension > 0`.
 
 Available operations shrink to `:transpile`, `:instantiate` — there is nothing to
 fit, only a prior to simulate.
