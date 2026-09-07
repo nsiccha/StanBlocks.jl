@@ -173,6 +173,11 @@ end
     lbeta inc_beta gamma_p gamma_q
     bessel_first_kind bessel_second_kind
     modified_bessel_first_kind modified_bessel_second_kind
+    # Log-space first-kind modified Bessel (Stan >= 2.24; real order `v`).
+    # The form a periodic Hilbert-space GP basis needs so a small length
+    # scale cannot overflow `exp(1/rho^2)`. Shapes are in the `@defsig`
+    # block below, beside `log_sum_exp`.
+    log_modified_bessel_first_kind
     owens_t binary_log_loss
     fma fmin fmax fdim fmod cbrt
 
@@ -2132,6 +2137,26 @@ end
     Union{typeof.((log_sum_exp, ))...} => begin
         (real, real) => real
         (vector[n], vector[n]) => vector[n]
+    end
+    # `log_modified_bessel_first_kind(v, z)` — the log of the modified Bessel
+    # function of the first kind, order `v` (any real, not just int) at `z`.
+    # Stan vectorises it over both arguments. `types.int <: types.real`, so the
+    # single scalar row also covers every `(int, real)` / `(real, int)` /
+    # `(int, int)` mix (all return `real`), and the `real[n]` rows admit an
+    # `int[n]` argument in either slot — stanc's own table lists
+    # `(array[] int, real)`, `(real, array[] int)` and the same-kind array
+    # pairs, and it accepts the mixed `(array[] int, array[] real)` pair by
+    # int->real array promotion (verified on stanc3 v2.39.0), so every shape a
+    # row here admits is one stanc compiles. `row_vector` / `matrix` /
+    # nested-array forms are not registered.
+    typeof(log_modified_bessel_first_kind) => begin
+        (real, real) => real
+        (real, vector[n]) => vector[n]
+        (vector[n], real) => vector[n]
+        (vector[n], vector[n]) => vector[n]
+        (real, real[n]) => real[n]
+        (real[n], real) => real[n]
+        (real[n], real[n]) => real[n]
     end
     # Matrix reductions returning real
     Union{typeof.((trace, determinant, log_determinant, log_determinant_spd))...} => begin
