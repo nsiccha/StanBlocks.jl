@@ -9020,6 +9020,101 @@ Michaelis-Menten step (`exact_michaelis_menten_solution`) needs the closed-form
 end
 
 """
+`log_modified_bessel_first_kind(v, z)` is a native Stan Math function — the
+log-space twin of `modified_bessel_first_kind`, but with a REAL order `v` and
+vectorised over both arguments. It must be registered on the builtin surface —
+in the `@builtin_module` name manifest AND a binary-elementwise `@defsig`
+group — so a Stan-only `@deffun` body may call it and lower to
+`log_modified_bessel_first_kind(...)`. Regression for BRM's periodic
+Hilbert-space GP basis (`hsgp(x; cov=:periodic)`), whose spectral weights are
+`exp(base + 0.5 * log_modified_bessel_first_kind(harmonic, 1/rho^2))` — the
+log-space form so a small length scale cannot overflow `exp(1/rho^2)`. Before
+registration the trace failed with
+`Could not find log_modified_bessel_first_kind in model, builtin, … or Main!`
+(snag `log-modified-bes-60f43dd8`).
+
+Registered shapes: `(real, real) => real` — and because `types.int <:
+types.real` that one row also admits every `(int, real)` / `(real, int)` /
+`(int, int)` scalar mix; `(real, vector[n])` / `(vector[n], real)` /
+`(vector[n], vector[n]) => vector[n]`; `(real, real[n])` / `(real[n], real)` /
+`(real[n], real[n]) => real[n]`, so an `int[n]` harmonic array vectorises in
+either slot — stanc lists `(array[] int, real) => array[] real` and accepts the
+mixed `(array[] int, array[] real)` pair by int->real array promotion.
+"""
+@testitem "slic: native log_modified_bessel_first_kind builtin emits and compiles" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
+    # `@defsig`-only natives (no Julia method): the default Stan-only emission
+    # accepts each definition without an annotation.
+    @deffun begin
+        # BRM's exact periodic-HSGP shape: per-harmonic loop, int order.
+        hsgp_periodic_weights(rho::real, harmonics::int[k], base::real)::vector[k] = begin
+            a = 1.0 / (rho * rho)
+            rv::vector[k]
+            for b in 1:k
+                rv[b] = exp(base + 0.5 * log_modified_bessel_first_kind(harmonics[b], a))
+            end
+            rv
+        end
+        # The loop-free spelling: (array[] int, real) => array[] real.
+        hsgp_periodic_logw(rho::real, harmonics::int[k])::real[k] =
+            log_modified_bessel_first_kind(harmonics, 1.0 / (rho * rho))
+        # Real (non-integer) order — the shape `modified_bessel_first_kind(int, real)` cannot express.
+        log_bessel_real_order(v::real, z::real)::real = log_modified_bessel_first_kind(v, z)
+        log_bessel_vec(v::real, z::vector[n])::vector[n] = log_modified_bessel_first_kind(v, z)
+        log_bessel_vec2(v::vector[n], z::vector[n])::vector[n] = log_modified_bessel_first_kind(v, z)
+        # Mixed int-array order / real-array argument: the `(real[n], real[n])`
+        # row admits it, and stanc compiles it by array promotion.
+        log_bessel_mixed(v::int[n], z::vector[n])::real[n] =
+            log_modified_bessel_first_kind(v, to_array_1d(z))
+    end
+
+    loop_model = @slic (; harmonics = [1, 2, 3], y = [0.1, -0.2, 0.3]) begin
+        rho ~ lognormal(0.0, 1.0)
+        w = hsgp_periodic_weights(rho, harmonics, 0.5)
+        y ~ normal(w, 1.0)
+    end
+    loop_code = stan_code(loop_model)
+    @test occursin("log_modified_bessel_first_kind(harmonics[b], a)", loop_code)
+    @test stanc_check(loop_code; warn_pedantic=false).ok
+
+    array_model = @slic (; harmonics = [1, 2, 3], y = [0.1, -0.2, 0.3]) begin
+        rho ~ lognormal(0.0, 1.0)
+        lw = hsgp_periodic_logw(rho, harmonics)
+        y ~ normal(to_vector(lw), 1.0)
+    end
+    array_code = stan_code(array_model)
+    @test occursin("return log_modified_bessel_first_kind(harmonics, (1.0 / (rho * rho)));", array_code)
+    @test stanc_check(array_code; warn_pedantic=false).ok
+
+    scalar_model = @slic (; y = 0.4) begin
+        z ~ lognormal(0.0, 1.0)
+        v = log_bessel_real_order(0.5, z)
+        y ~ normal(v, 1.0)
+    end
+    scalar_code = stan_code(scalar_model)
+    @test occursin("return log_modified_bessel_first_kind(v, z);", scalar_code)
+    @test stanc_check(scalar_code; warn_pedantic=false).ok
+
+    vector_model = @slic (; y = [0.1, -0.2, 0.3], n = 3) begin
+        zv ~ lognormal(0.0, 1.0; n = 3)
+        v1 = log_bessel_vec(0.5, zv)
+        v2 = log_bessel_vec2(zv, zv)
+        y ~ normal(v1 + v2, 1.0)
+    end
+    vector_code = stan_code(vector_model)
+    @test count("return log_modified_bessel_first_kind(v, z);", vector_code) == 2
+    @test stanc_check(vector_code; warn_pedantic=false).ok
+
+    mixed_model = @slic (; hs = [1, 2], zs = [0.5, 1.5], y = 0.4) begin
+        s ~ lognormal(0.0, 1.0)
+        v = log_bessel_mixed(hs, zs)
+        y ~ normal(s + sum(v), 1.0)
+    end
+    mixed_code = stan_code(mixed_model)
+    @test occursin("return log_modified_bessel_first_kind(v, to_array_1d(z));", mixed_code)
+    @test stanc_check(mixed_code; warn_pedantic=false).ok
+end
+
+"""
 `not_a_number()` is a zero-argument native Stan function. It must be registered
 in both the builtin name manifest and the native signature block so a
 `@stanonly @deffun` body can resolve and emit the call.
