@@ -1840,13 +1840,53 @@ end
 for dist in (:student_t, :skew_normal, :exp_mod_normal,
              :skew_double_exponential, :pareto_type_2)
     drng = Symbol(dist, :_rng)
-    @eval @deffun $drng(real[n],   nu::real, a::real, b::real)::real[n]   = $drng(nu, rep_vector(a, n), b)
-    @eval @deffun $drng(vector[n], nu::real, a::real, b::real)::vector[n] = to_vector($drng(nu, rep_vector(a, n), b))
-    @eval @deffun $drng(real[n],   nu::real, a, b)::real[n]   = $drng(nu, a, b)
-    @eval @deffun $drng(vector[n], nu::real, a, b)::vector[n] = to_vector($drng(nu, a, b))
+    # Empty-segment guard (snag sized-rng-compan-225549a9): Stan Math ≤5.3.0
+    # sizes a vectorized draw off ALL args with scalars counting as size 1,
+    # so a scalar arg beside empty segments runs the draw loop once over a
+    # null data pointer (SIGSEGV — proven for student_t under ASan; the
+    # scalar `nu` is the whole family difference vs safe `normal_rng`).
+    # Fixed upstream in stan-dev/math@6db3b739, after the BridgeStan 2.9.0
+    # bundle — until a fixed BridgeStan ships, return the empty draw
+    # directly when the size token is 0. The `else` branch is the exact
+    # previous body, so non-empty draws are unchanged. Same `if n == 0`
+    # idiom as `robust_linspaced_int_array` above.
+    @eval @deffun $drng(real[n],   nu::real, a::real, b::real)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(nu, rep_vector(a, n), b)
+    end
+    @eval @deffun $drng(vector[n], nu::real, a::real, b::real)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(nu, rep_vector(a, n), b))
+    end
+    @eval @deffun $drng(real[n],   nu::real, a, b)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(nu, a, b)
+    end
+    @eval @deffun $drng(vector[n], nu::real, a, b)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(nu, a, b))
+    end
     # Vector LEADING arg (per-observation location): both leading args are vectors.
-    @eval @deffun $drng(real[n],   loc::vector[n], scale::vector[n], b)::real[n]   = $drng(loc, scale, b)
-    @eval @deffun $drng(vector[n], loc::vector[n], scale::vector[n], b)::vector[n] = to_vector($drng(loc, scale, b))
+    @eval @deffun $drng(real[n],   loc::vector[n], scale::vector[n], b)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(loc, scale, b)
+    end
+    @eval @deffun $drng(vector[n], loc::vector[n], scale::vector[n], b)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(loc, scale, b))
+    end
 end
 
 # 1-arg discrete families (output is int[n]; no to_vector wrap)

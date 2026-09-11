@@ -162,6 +162,65 @@ trace (`AssertionError: tracetype not defined for … skew_double_exponential_rn
 end
 
 """
+Sized 3-arg `_rng` companions must guard empty segments (snag
+`sized-rng-compan-225549a9`). Stan Math ≤5.3.0 sizes a vectorized draw off
+ALL args with scalars counting as size 1, so a scalar arg beside empty
+segments runs the draw loop once over a null data pointer (SIGSEGV —
+proven for `student_t` under ASan; the scalar `nu` is the whole family
+difference vs the safe `normal_rng`). The companions early-return the
+empty draw when the size token is 0; the `else` branch is the exact
+previous body, so non-empty draws are unchanged.
+"""
+@testitem "slic: sized 3-arg rng companions guard empty segments" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    # Catch-all (container args): the GQ draw still routes through the sized
+    # companion, the companion carries the token-0 guard, the `else` branch
+    # keeps the exact previous body, and the model passes stanc.
+    container_model = @slic (; y = [0.2, -0.1], mu = [1.0, 2.0], sigma = [0.5, 0.6]) begin
+        a ~ normal(0.0, 1.0); y ~ student_t(3.0, mu .+ a, sigma); a
+    end
+    container_code = stan_code(container_model)
+    @test occursin("student_t_vector_rng(", stan_block(container_code, "generated quantities"))
+    container_fns = stan_block(container_code, "functions")
+    @test occursin("n == 0", container_fns)
+    @test occursin("to_vector(student_t_rng(nu, a, b))", container_fns)
+    @test stanc_compiles(container_model)
+
+    # All-scalar args: same guard posture on the `rep_vector` overload.
+    scalar_model = @slic (; y = [0.2, -0.1]) begin
+        a ~ normal(0.0, 1.0); s ~ normal(0.0, 1.0)
+        y ~ student_t(3.0, a, exp(s)); a
+    end
+    scalar_code = stan_code(scalar_model)
+    @test occursin("student_t_vector_rng(", stan_block(scalar_code, "generated quantities"))
+    scalar_fns = stan_block(scalar_code, "functions")
+    @test occursin("n == 0", scalar_fns)
+    @test occursin("to_vector(student_t_rng(nu, rep_vector(a, n), b))", scalar_fns)
+    @test stanc_compiles(scalar_model)
+
+    # The zero-row shape itself: an empty observation vector transpiles and
+    # passes stanc — pre-fix this emitted the unguarded native call.
+    empty_model = @slic (; y = Float64[], mu = Float64[], sigma = Float64[]) begin
+        a ~ normal(0.0, 1.0); y ~ student_t(3.0, mu .+ a, sigma); a
+    end
+    @test stanc_compiles(empty_model)
+
+    # Live proof: instantiating the empty model and constraining with an RNG
+    # executes the guarded GQ draw and returns only `a` — pre-fix this call
+    # crashed the process inside `student_t_rng`.
+    empty_problem = instantiate(stan_model(empty_model))
+    empty_names = BridgeStan.param_names(empty_problem.model; include_tp = true, include_gq = true)
+    @test "a" in empty_names
+    empty_draw = BridgeStan.param_constrain(
+        empty_problem.model, zeros(LogDensityProblems.dimension(empty_problem));
+        include_tp = true, include_gq = true,
+        rng = BridgeStan.StanRNG(empty_problem.model, 1234),
+    )
+    @test length(empty_draw) == LogDensityProblems.dimension(empty_problem)
+end
+
+"""
 Truncation, threshold censoring, and interval observations are distribution
 HOFs selected from one base-family token. Optional bounds are compile-time
 syntax: omission and explicit `nothing` choose the same side-specific Stan
