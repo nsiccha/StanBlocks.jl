@@ -482,10 +482,33 @@ _check_constraint_combination(name, cons; implied=()) = begin
     )
 end
 
-# Project a kwarg bag onto the constraint keys, validating the combination.
-# Both folding sites call this, so the check cannot drift between them.
+# A custom distribution's `autokwargs` method runs as ordinary Julia, outside
+# the SLIC forward pass. Literal vector bounds therefore arrive here as runtime
+# vectors / `adjoint(vector)` wrappers (or, for callers constructing syntax,
+# bare `Expr(:vect, ...)`) rather than as typed `StanExpr`s. Preserve them as
+# native Stan VECTOR expressions before the constraint is stored in a
+# `StanType`: leaving the Julia carrier raw makes `fetch_data!` reject it, while
+# printing a raw `Expr(:vect, ...)` would use Stan's ARRAY-literal spelling.
+_constraint_value(x) = x
+_constraint_vector_literal(xs) = begin
+    vect = CanonicalExpr(:vect, xs...)
+    StanExpr(vect, tracetype(vect))
+end
+_constraint_value(x::AbstractVector{<:Real}) = _constraint_vector_literal(x)
+_constraint_value(x::AbstractMatrix{<:Real}) = begin
+    p = parent(x)
+    p isa AbstractVector && size(x) == (1, length(p)) ?
+        _constraint_vector_literal(p) : x
+end
+_constraint_value(x::Expr) =
+    x.head === :vect && all(a -> a isa Real, x.args) ?
+        _constraint_vector_literal(x.args) : x
+
+# Project a kwarg bag onto the constraint keys, normalising literal vector
+# expressions and validating the combination. Both folding sites call this, so
+# inferred and explicitly typed sampling declarations cannot drift.
 _fold_constraints(name, kw; implied=()) = _check_constraint_combination(
-    name, (;[key => kw[key] for key in CONSTRAINT_KEYS if key in keys(kw)]...); implied
+    name, (;[key => _constraint_value(kw[key]) for key in CONSTRAINT_KEYS if key in keys(kw)]...); implied
 )
 
 qual(x) = :data

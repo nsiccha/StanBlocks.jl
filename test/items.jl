@@ -8686,6 +8686,83 @@ end
     end
 end
 
+@testitem "slic: custom-family vector autokwargs preserve coordinate bounds" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    using LogDensityProblems
+    import BridgeStan
+
+    @deffun begin
+        @lpxf coordinate_bound_lpdf(x::vector[n])::real = std_normal_lpdf(x)
+        coordinate_bound_lpdfs(x::vector[n])::vector[n] = std_normal_lpdfs(x)
+        coordinate_bound_rng(vector[n])::vector[n] = begin
+            @stan_assert n == 2
+            out::vector[n]
+            out[1] = uniform_rng(0.2, 0.8)
+            out[2] = uniform_rng(0.3, 0.9)
+            out
+        end
+    end
+    StanBlocks.autokwargs(::StanBlocks.CanonicalExpr{typeof(coordinate_bound)}) =
+        (; lower=adjoint([0.2, 0.3]), upper=adjoint([0.8, 0.9]))
+
+    fitted = @slic (; y=[0.]) begin
+        beta ~ coordinate_bound(; n=2)
+        y ~ normal(sum(beta), 1.)
+        beta
+    end
+    typed = @slic (; y=[0.]) begin
+        beta::vector[2] ~ coordinate_bound()
+        y ~ normal(sum(beta), 1.)
+        beta
+    end
+    expected_decl = "vector<lower=[0.2, 0.3]', upper=[0.8, 0.9]'>[2] beta;"
+    for model in (fitted, typed)
+        code = stan_code(model)
+        @test occursin(expected_decl, stan_block(code, "parameters"))
+        @test stanc_compiles(model)
+    end
+
+    # Plain runtime vectors and syntax-producing extensions are normalised
+    # through the same fold; `Expr(:vect, ...)` must not survive as Stan array
+    # syntax.
+    for raw_bounds in ((; lower=[0.2, 0.3], upper=[0.8, 0.9]),
+                       (; lower=Expr(:vect, 0.2, 0.3),
+                          upper=Expr(:vect, 0.8, 0.9)))
+        bounds = StanBlocks._fold_constraints(:beta, raw_bounds)
+        bound_type = StanBlocks.StanType(StanBlocks.types.vector,
+            (StanBlocks.stan_expr(2, 2),); bounds...)
+        @test sprint(print, bound_type) ==
+            "vector<lower=[0.2, 0.3]', upper=[0.8, 0.9]'>[2]"
+    end
+
+    # Prior-only lowering has no constrained parameter declaration and remains
+    # a zero-dimensional generated-quantities program.
+    prior = @slic begin
+        beta ~ coordinate_bound(; n=2)
+        beta
+    end
+    prior_code = stan_code(prior)
+    @test !occursin("beta", stan_block(prior_code, "parameters"))
+    @test occursin("vector[2] beta = coordinate_bound_vector_rng(2)", prior_code)
+    @test stanc_compiles(prior)
+
+    mktempdir() do dir
+        cd(dir) do
+            problem = stan_instantiate(fitted)
+            @test LogDensityProblems.dimension(problem) == 2
+            @test BridgeStan.param_names(problem.model) == ["beta.1", "beta.2"]
+
+            # Stan applies each bound pair to the corresponding unconstrained
+            # coordinate. q = (0, 0) maps to the coordinate-wise midpoints;
+            # the asymmetric control detects a swapped or scalarised bound.
+            @test BridgeStan.param_constrain(problem.model, [0., 0.]) ≈ [0.5, 0.6] atol=1e-12
+            q = [-log(2.), log(3.)]
+            @test BridgeStan.param_constrain(problem.model, q) ≈ [0.4, 0.75] atol=1e-12
+            @test isfinite(LogDensityProblems.logdensity(problem, q))
+        end
+    end
+end
+
 @testitem "slic: a bound and an affine transform cannot share a declaration" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
     y, K = randn(20), 3
