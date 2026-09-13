@@ -246,6 +246,7 @@ StanModel(name=gensym("stan_model")) = StanModel(
 )
 replace_name(x::Expr) = replace_name(canonical(x))
 replace_name(x::Union{SamplingExpr,AssignmentExpr}) = _replace_key(x.args[1])
+replace_name(x::DeclExpr) = _replace_key(x)
 replace_name(::ReturnExpr) = RV_NAME
 replace_name(::Any) = missing
 # A statement's replacement KEY is what its LHS *names*, so a typed LHS keys on
@@ -288,20 +289,38 @@ _lhs_position(x) = 0
 # Snag `merge-plain-over-f228c5b2`, reported by BayesianRegressionModels.
 _inherit_lhs_decl(base::Expr, override::Expr) = begin
     bi, oi = _lhs_position(base), _lhs_position(override)
-    (bi == 0 || oi == 0) && return override
-    Meta.isexpr(base.args[bi], :(::)) || return override
+    oi == 0 && return override
+    declaration = Meta.isexpr(base, :(::), 2) ? base :
+        bi == 0 ? nothing : base.args[bi]
+    Meta.isexpr(declaration, :(::), 2) || return override
     Meta.isexpr(override.args[oi], :(::)) && return override
     out = copy(override)
-    out.args[oi] = base.args[bi]
+    out.args[oi] = declaration
     out
 end
 _inherit_lhs_decl(_base, override) = override
+# Only whole names have a safe insertion point before their first use. An
+# unmatched element is not a replacement of its vector's declaration/prior:
+# inserting it can double-count a density, lose bounds, or leave RNG holes.
+# Exact indexed statement replacements have already been consumed below.
+_check_splice_insertion(::Symbol, _raw) = nothing
+_check_splice_insertion(_key, raw) = throw(ArgumentError(
+    "Base.merge(submodel, …): cannot insert a spliced statement with an unmatched " *
+    "non-Symbol LHS: `" * sprint(print, raw) * "`. Indexed overrides require an " *
+    "existing statement with exactly the same LHS; they do not replace a whole " *
+    "vector prior or transfer element bounds to its declaration. For heterogeneous " *
+    "vector priors, replace the whole name with a custom @lpxf family, declare its " *
+    "support with StanBlocks.autokwargs, and provide its sized _rng companion."
+))
 top_replace_components(x::Expr; rep::OrderedDict) = begin
     @assert x.head == :block "top_replace_components expects a `begin ... end` block, got `$x` (head `$(x.head)`)."
     args = []
     for arg in x.args
         override = pop!(rep, replace_name(arg), nothing)
         push!(args, isnothing(override) ? arg : _inherit_lhs_decl(arg, override))
+    end
+    for (key, raw) in rep
+        _check_splice_insertion(key, raw)
     end
     i = 1
     while i <= length(args)
