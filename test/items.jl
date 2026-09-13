@@ -8806,6 +8806,92 @@ end
     @test stanc_compiles(transformed_data)
 end
 
+@testitem "slic: parameter constraint dependencies stay in the inferred density closure" tags=[:slic, :regression, :stanc, :bridgestan, :logdensity] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    y = [0.1, 0.5]
+    fitted = @slic (; y) begin
+        location ~ normal(0, 1)
+        bounded ~ normal(0.2, 0.7; lower = location, upper = location + 2)
+        y ~ normal(bounded, 0.8)
+    end
+    code = stan_code(fitted)
+    parameters = stan_block(code, "parameters")
+    model_block = stan_block(code, "model")
+    generated_quantities = stan_block(code, "generated quantities")
+
+    # `location` is used only by `bounded`'s declaration constraints. Those
+    # constraints define the unconstrained transform, so both variables must
+    # remain sampled parameters even though no artificial likelihood argument
+    # mentions `location`.
+    location_decl = findfirst("real location;", parameters)
+    bounded_decl = findfirst("real<lower=location, upper=(location + 2)> bounded;", parameters)
+    @test location_decl !== nothing
+    @test bounded_decl !== nothing
+    @test first(location_decl) < first(bounded_decl)
+    @test occursin("location ~ normal(0, 1);", model_block)
+    @test occursin("bounded ~ normal(0.2, 0.7);", model_block)
+    @test !occursin("location = normal_rng", generated_quantities)
+    @test stanc_compiles(fitted)
+
+    problem = instantiate(stan_model(fitted))
+    @test LogDensityProblems.dimension(problem) == 2
+    @test BridgeStan.param_names(problem.model) == ["location", "bounded"]
+    expected_logdensity(unconstrained) = begin
+        location = unconstrained[1]
+        unit = inv(1 + exp(-unconstrained[2]))
+        bounded = location + 2unit
+        log_jacobian = log(2unit * (1 - unit))
+        _stan_normal(location, 0, 1) +
+            _stan_normal(bounded, 0.2, 0.7) +
+            sum(_stan_normal.(y, bounded, 0.8)) + log_jacobian
+    end
+    reference = [0.0, 0.0]
+    reference_density = LogDensityProblems.logdensity(problem, reference)
+    reference_expected = expected_logdensity(reference)
+    for unconstrained in ([-0.4, 0.3], [0.7, -0.8])
+        # Stan's sampling statements may drop a fixed normalizing constant.
+        # Density differences retain every parameter-dependent prior,
+        # likelihood, transform, and moving-bound Jacobian contribution.
+        @test LogDensityProblems.logdensity(problem, unconstrained) - reference_density ≈
+            expected_logdensity(unconstrained) - reference_expected atol=1e-6
+    end
+
+    # With no likelihood, the same dependency chain remains prior-only. Source
+    # order must put `location` before the bounded RNG, and every draw must obey
+    # the dynamic interval without introducing sampler dimensions.
+    prior_only = @slic begin
+        location ~ normal(0, 1)
+        bounded ~ normal(0.2, 0.7; lower = location, upper = location + 2)
+    end
+    prior_code = stan_code(prior_only)
+    prior_parameters = stan_block(prior_code, "parameters")
+    @test !occursin("location", prior_parameters)
+    @test !occursin("bounded", prior_parameters)
+    prior_gq = stan_block(prior_code, "generated quantities")
+    location_draw = findfirst("real location = normal_rng(0, 1);", prior_gq)
+    bounded_draw = findfirst(
+        "real bounded = conditioning_normal_rng(location, (location + 2), 0.2, 0.7);",
+        prior_gq,
+    )
+    @test location_draw !== nothing
+    @test bounded_draw !== nothing
+    @test first(location_draw) < first(bounded_draw)
+    @test stanc_compiles(prior_only)
+
+    prior_problem = instantiate(stan_model(prior_only))
+    @test LogDensityProblems.dimension(prior_problem) == 0
+    names = BridgeStan.param_names(prior_problem.model; include_tp=true, include_gq=true)
+    @test names == ["location", "bounded"]
+    rng = BridgeStan.StanRNG(prior_problem.model, 7301)
+    draws = [
+        BridgeStan.param_constrain(
+            prior_problem.model, Float64[]; include_tp=true, include_gq=true, rng,
+        ) for _ in 1:128
+    ]
+    @test all(draw -> draw[1] <= draw[2] <= draw[1] + 2, draws)
+end
+
 """
 Snag regression (skew-double-expo-e093bd49): the native Stan
 `skew_double_exponential` family must complete the observation triad for a
