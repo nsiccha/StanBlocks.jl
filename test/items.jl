@@ -945,6 +945,7 @@ end
     # optional one (`b`), so the two paths coexist in one shim.
     @deffun kw_scale(x::vector[n]; scale)::vector[n] = scale * x
     @deffun kw_req_opt(x::vector[n]; a, b=2.0)::vector[n] = a * x .+ b
+    @deffun @juliacompat kw_prior_scale(value::real; extra=0.0)::real = value + extra
     # required kwarg provided → transpiles
     kw_required_model = @slic (;n=3) begin
         x ~ std_normal(;n)
@@ -959,6 +960,14 @@ end
     kw_opt_default_model = @slic (;n=3) begin
         x ~ std_normal(;n)
         s = kw_req_opt(x; a=1.5)
+    end
+    # One optional kwarg must cross the Stan UDF boundary as a scalar because
+    # Stan has no one-element tuple type. This mirrors the reporter's exact
+    # parameter-dependent call shape and keeps the explicit decimal value.
+    kw_single_optional_model = @slic (;y=[0.1, -0.1]) begin
+        sigma ~ lognormal(0.0, 0.3)
+        location ~ normal(0.0, kw_prior_scale(sigma; extra=0.2))
+        y ~ normal(location, 1.0)
     end
 
     # issue 12 sub-models
@@ -1934,6 +1943,26 @@ end
         x ~ std_normal(;n)
         s = kw_req_opt(x; b=1.0)
     end)
+end
+
+@testitem "slic: singleton @deffun kwarg uses scalar Stan argument" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    optional_code = stan_code(kw_single_optional_model)
+    required_code = stan_code(kw_required_model)
+    mixed_code = stan_code(kw_mixed_model)
+
+    # Optional and required singleton kwargs both scalarize. Preserve the
+    # explicit call-site value, and retain Julia keyword behavior for the
+    # `@juliacompat` surface.
+    @test !occursin("tuple(real) kw", optional_code)
+    @test !occursin("tuple(real) kw", required_code)
+    @test occursin("kwcall_kw_prior_scale(0.2, sigma)", optional_code)
+    @test kw_prior_scale(1.0; extra=0.2) == 1.2
+    @test stanc_check(optional_code; warn_pedantic=false).ok
+    @test stanc_check(required_code; warn_pedantic=false).ok
+
+    # Multiple kwargs still use the existing, valid Stan tuple representation.
+    @test occursin("tuple(real, real) kw", mixed_code)
+    @test stanc_check(mixed_code; warn_pedantic=false).ok
 end
 
 """

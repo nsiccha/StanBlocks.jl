@@ -1301,9 +1301,10 @@ begin
             _deffun_julia_expr(fcall, rv, body; source, def_mod) : nothing
 
         # Kwargs (`f(x; sigma=1.0, alpha=2.0) = body`) mirror Julia's own
-        # lowering: emit a canonical body method
-        # `Core.kwcall(kw::ntup, ::typeof(f), x)::T = begin sigma=kw.sigma; …; body end`
-        # plus an `@inline` shim `f(x) = Core.kwcall((;sigma=sigma, alpha=alpha), f, x)`
+        # lowering: emit a canonical body method. Multiple kwargs use
+        # `Core.kwcall(kw::ntup, ::typeof(f), x)::T = begin sigma=kw.sigma; …; body end`;
+        # because Stan has no singleton tuple, exactly one kwarg is passed as
+        # its scalar value instead. An `@inline` shim delegates to that method
         # whose inline_body carries the kwarg names + defaults so call-site
         # expansion fills them from call-site kwargs or the registered
         # defaults. A kwarg with no default (`f(x; sigma)`) is *required*:
@@ -1349,15 +1350,25 @@ begin
             positional_names = [_name_of(p) for p in canonical_positional]
             rv_part = rv === :anything ? () : (rv,)
 
-            # Canonical body method: `Core.kwcall(kw::ntup, ::typeof(f), positional...) = begin (unpack); body end`.
+            # Canonical body method. Stan has no singleton tuple type, so one
+            # kwarg crosses this internal boundary as a scalar; multiple kwargs
+            # retain the named-tuple payload and are unpacked in the body.
             # `Core.kwcall` is spliced as a bare Function value at args[1] of
             # the inner `:call` Expr; SLIC resolves it via `forward!(::Function)`.
             # Stan-side `func_name(::typeof(Core.kwcall))` mangles call sites
             # to `kwcall_<f>` via the type-token of `f`.
-            kw_unpacks = [Expr(:(=), s.name, Expr(:., :kw, QuoteNode(s.name))) for s in kwarg_specs]
+            singleton_kwarg = length(kwarg_specs) == 1
+            singleton_arg = if singleton_kwarg
+                p = only(params.args)
+                Meta.isexpr(p, :kw) ? p.args[1] : p
+            end
+            kw_unpacks = singleton_kwarg ? [] : [
+                Expr(:(=), s.name, Expr(:., :kw, QuoteNode(s.name)))
+                for s in kwarg_specs
+            ]
             canonical_body = Expr(:block, source, kw_unpacks..., body.args...)
             canonical_call = Expr(:call, Core.kwcall,
-                Expr(:(::), :kw, :ntup),
+                singleton_kwarg ? singleton_arg : Expr(:(::), :kw, :ntup),
                 Expr(:(::), Expr(:call, :typeof, f)),
                 canonical_positional...)
             canonical_sig = isempty(rv_part) ? canonical_call : Expr(:(::), canonical_call, rv_part[1])
@@ -1371,7 +1382,9 @@ begin
             nt_construct = Expr(:tuple, Expr(:parameters,
                 [Expr(:kw, s.name, s.name) for s in kwarg_specs]...))
             shim_body = Expr(:block, source,
-                Expr(:call, Core.kwcall, nt_construct, f, positional_names...))
+                Expr(:call, Core.kwcall,
+                    singleton_kwarg ? only(kwarg_specs).name : nt_construct,
+                    f, positional_names...))
             shim_def = Expr(:(=), shim_sig, shim_body)
             inline_shim = Expr(:macrocall, Symbol("@inline"), source, shim_def)
 
