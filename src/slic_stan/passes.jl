@@ -276,9 +276,19 @@ backward!(x::StanExpr{Symbol}; info) = begin
     # turned every such first binding into a `KeyError`; a submodel data input
     # reached through an indexed sampling LHS (`obs[i] ~ normal(...)`, where the
     # generic descent hits bare `obs`) is the live case. Absent name ⇒ bind `x`.
+    already_reached = key in keys(info) && lqual(info[key]) == :affects_likelihood
     certified = key in keys(info) && get(type(info[key]).info, :ragged_density, false)
     source = certified ? info[key] : x
-    info[key] = remake(source; lqual=:affects_likelihood)
+    reached = remake(source; lqual=:affects_likelihood)
+    info[key] = reached
+    # A parameter's declaration constraints participate in the unconstrained
+    # density through its transform/Jacobian. If a likelihood-reachable value
+    # has a bound or affine constraint that names another sampled variable,
+    # that dependency is therefore part of the same inferred density closure.
+    # Mark first, then descend only on the first visit so repeated references
+    # and even an invalid cyclic constraint graph cannot recurse forever.
+    already_reached || backward!(values(constraints(type(reached))); info)
+    reached
 end
 backward!(x::StanType; info) = remake(x; lqual=:affects_likelihood)
 
