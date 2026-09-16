@@ -1219,6 +1219,43 @@ end
 # The no-op floor keeps ordinary distributions byte-identical; registrations
 # live beside their lpxf/likelihood/RNG companion selection.
 validate_sampling_rhs(lhs, rhs; info) = nothing
+# An untyped fresh `~` LHS is typed by `autotype(rhs)`, which reads the
+# distribution CALL's tracetype return — the SCALAR log-density — so an
+# ELEMENTWISE family broadcast over vector/matrix arguments
+# (`yj ~ normal(hvec, 1.0)` with `hvec::vector[T]`) mis-typed the sampled LHS as
+# a SCALAR. That scalar binding then silently produced stanc-INVALID Stan
+# wherever it was consumed: a `plate`'s collection declaration
+# (`vector[S] yy_yj` fed an `array[] real` draw), a `sum`, a `return`, or a
+# downstream likelihood — inside a plate AND at top level (snag
+# plate-untyped-ve-819ecfff). Joint families (`multi_normal`/`dirichlet`)
+# already carry the event shape via `@lhs`, so their autotype is non-scalar and
+# is left untouched here; a scalar-sample family (`categorical`) genuinely
+# samples a scalar. The tell that separates "elementwise family broadcasting to
+# a vector" from those is the family's own PREDICTIVE DRAW: the same scalar-token
+# `rng_expr` the generated-quantities redraw builds (passes.jl) returns
+# `array[T] real` for `normal(vector, real)` but a scalar `int` for
+# `categorical`. So: ONLY when the autotype is scalar AND the family's draw is
+# non-scalar, adopt the draw's SIZE as the natural container (real→vector /
+# matrix, matching `autotype`'s own container rule at functions.jl and the typed
+# spelling `yj::vector[T]`), preserving `at`'s folded constraints via its info.
+# A family whose `_rng` does not resolve for this shape (`rng_expr` throws) keeps
+# the scalar autotype unchanged — the author must annotate, exactly as before.
+_broadcast_fresh_sample_type(at, rhs) = begin
+    stan_ndim(at) == 0 || return at
+    ct0 = center_type(at)
+    draw = try
+        token = StanExpr(ct0, StanType(types.tokenof{ct0}, (); value=ct0, qual=:data))
+        rng_expr(token, rhs)
+    catch
+        return at
+    end
+    sz = stan_size(type(draw))
+    (1 <= length(sz) <= 2) || return at
+    dct = center_type(type(draw))
+    newct = dct in (types.anything, types.real) ?
+        (types.real, types.vector, types.matrix)[1 + length(sz)] : dct
+    StanType(newct, sz, info(at))
+end
 forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args
     promoted = _plate_promoted_lhs(name; info)
@@ -1228,7 +1265,7 @@ forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
         q == :data || error("Sampling statement `$name ~ ...` has LHS bound to a $q-qualified value — only data-qualified LHS is supported here (submodel kwargs typically refer to caller-provided data).")
         stan.cv(rhs) && (info[name] = remake(info[name]; cv=true))
     else
-        autotype = stan.autotype(rhs)
+        autotype = _broadcast_fresh_sample_type(stan.autotype(rhs), rhs)
         cv = stan.cv(autotype) || stan.cv(rhs)
         qual = cv ? :quantities : :parameter
         info[name] = StanExpr(name, remake(autotype; qual, cv, decl_role=:sampled))
