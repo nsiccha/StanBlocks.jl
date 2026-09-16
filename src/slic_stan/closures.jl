@@ -263,6 +263,9 @@ forward!(x::StanExpr{Symbol,<:StanType{<:types.closure}}; info) = x
 const _SLIC_RESERVED_MACROS = (
     Symbol("@doc"), Symbol("@lpxf"), Symbol("@lhs"), Symbol("@inline"),
     Symbol("@juliacompat"), Symbol("@stanonly"),
+    # Annotated top-level model loops; `canonical` (tracing.jl) turns them into
+    # `:plate_loop` / `:scan_block` nodes with a RAW body for the inliner.
+    Symbol("@plate"), Symbol("@scan"),
 )
 
 _is_reserved_slic_macro(::Any) = false

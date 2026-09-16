@@ -436,11 +436,20 @@ _plate_context_entry(name::Symbol; info) = begin
     # caller state.  Plate promotion is model/submodel-scoped.
     info isa Union{StanModel,SubModel} || return nothing
     ctx = _plate_context(info)
-    ctx === nothing && return nothing
     global_name = _plate_global_name(info, name)
-    haskey(ctx.cell_types, global_name) || return nothing
-    accessor = get(ctx.cell_accessors, global_name, nothing)
-    (global_name=global_name, cell_type=ctx.cell_types[global_name], idxs=ctx.idxs, accessor)
+    # Innermost context first, then the enclosing ones (`parent`): an annotated
+    # loop nested in a plate cell / another annotated loop resolves a name the
+    # OUTER loop promoted to that loop's accessor, and its own indices compose
+    # with it in `forward!(::CanonicalExprV{:getindex})`.
+    while ctx !== nothing
+        if haskey(ctx.cell_types, global_name)
+            accessor = get(ctx.cell_accessors, global_name, nothing)
+            return (global_name=global_name, cell_type=ctx.cell_types[global_name],
+                    idxs=ctx.idxs, accessor, owner=ctx)
+        end
+        ctx = get(ctx, :parent, nothing)
+    end
+    nothing
 end
 _plate_promoted_lhs(name::Symbol; info) = begin
     entry = _plate_context_entry(name; info)
@@ -2118,7 +2127,7 @@ end
 # in the enclosing block) and returns the rewritten `(body_stmts, ret_expr)`.
 # Runs BEFORE `_plate_discover`, so a lifted name is already in `info` when
 # discovery snapshots `before` and is therefore never promoted to a cell.
-_plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs, id; info) = begin
+_plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs, id; info, keep=Set{Symbol}()) = begin
     pending = _get_inline_pending(info)
     varying = Set{Symbol}(idxs)
     union!(varying, params)
@@ -2139,7 +2148,9 @@ _plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs, id; info) = begi
     kept = Any[]
     for s in body_stmts
         name = (s isa Expr && s.head === :(=) && s.args[1] isa Symbol) ? s.args[1] : nothing
-        if name !== nothing && !(name in keys(info)) &&
+        # `keep`: the sugar's model-scope arrays (`y[i] = f(shared)` desugars to a
+        # bare `y = …`) — the user declared an array, so never lift them to a scalar.
+        if name !== nothing && !(name in keys(info)) && !(name in keep) &&
             _plate_is_invariant(s.args[2], varying) && _plate_probe_hoistable(s.args[2]; info)
             emit_hoist!(s)
             delete!(varying, name)
@@ -2157,7 +2168,9 @@ _plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs, id; info) = begi
         (_plate_is_hoist_candidate(e) && _plate_is_invariant(e, varying) &&
             _plate_probe_hoistable(e; info)) || return nothing
         n[] += 1
-        name = Symbol(rv, :__pl_inv, n[], :_, id)
+        # The do-form tags hoists with the trace id; the annotated sugar passes
+        # `id === nothing` for STABLE names (a nested loop is traced twice).
+        name = id === nothing ? Symbol(rv, :__pl_inv, n[]) : Symbol(rv, :__pl_inv, n[], :_, id)
         emit_hoist!(Expr(:(=), name, e))
         cache[e] = name
     end
@@ -2333,7 +2346,8 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
         # Trace as a BLOCK (not per-statement) so submodel embedding binds its
         # flattened result the same way the real model-body trace does.
         isempty(body_stmts) || forward!(canonical(Expr(:block, body_stmts...)); info=probe)
-        ret = forward!(canonical(ret_expr); info=probe)
+        # The annotated-loop sugar has no collected result (`ret_expr === nothing`).
+        ret = ret_expr === nothing ? nothing : forward!(canonical(ret_expr); info=probe)
         # idx/param helper bindings flatten to their global names in the root; skip
         # those (and everything present before the trace) so only body-introduced
         # cell bindings remain.
@@ -2343,7 +2357,7 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
             (k in before || k in helpers) && continue
             push!(fresh, k => type(root[k]))
         end
-        (fresh=fresh, ret_type=type(ret))
+        (fresh=fresh, ret_type=ret === nothing ? nothing : type(ret))
     end
 
 # ── Plate emitter entry: the public `rv ~ plate(iters…; outer=…) do … end`. ──
@@ -2458,6 +2472,48 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         "plate: the do-block must END with a cell-output VALUE expression, not a `~`/`=` statement."
     )
 
+    _forward_loop_core!(;
+        kind=:plate, rv, rv_ct, id, idxs, outer_dims, outer_lo=Any[1 for _ in outer_dims],
+        params, iterables, input_subst, body_stmts, ret_expr,
+        setup_stmts=Any[], public=Set{Symbol}(), probe_transform=nothing,
+        probe_exclude=Set{Symbol}(), scan_arrays=Set{Symbol}(), info,
+    )
+end
+
+# The shared compiler-owned-loop core behind BOTH the `plate(...) do` primitive
+# and the annotated `@plate for … end` / `@scan begin … end` sugar (decisions
+# `10mrh0f`, `1375uo5`): neither form is a HOF at lowering time — the loop body
+# is traced once in isolation to discover its fresh bindings, every discovered
+# binding is promoted to an outer collection, and the loop is emitted directly
+# into the Stan blocks. Parameters beyond the do-form's:
+#
+#   • `rv`/`rv_ct`/`ret_expr` — `nothing` for the sugar, which has no collected
+#     result: its model-scope arrays are the indexed-by-loop-var LHS names in
+#     `public` (registered under their own names, never hygiene-renamed).
+#   • `outer_lo` — per-axis loop lower bound (`1` for a plate; a scan's
+#     recurrence runs `lo:hi` while its arrays are sized by `hi`).
+#   • `setup_stmts` — a scan's initial-state statements (`x[1] ~ …`), traced at
+#     model scope AFTER the outer declarations and BEFORE the loop.
+#   • `probe_transform(setup_stmts, body_stmts)` — rewrites both into the shape
+#     the discovery probe can type (lag reads → bare element names, repeated
+#     fills of one array → throwaway names); `nothing` keeps the do-form probe.
+#   • `probe_exclude` — names the probe binds that are NOT per-cell bindings: an
+#     ordinary setup statement (`eps1 ~ std_normal()`) is model-scope code traced
+#     before the loop, so it must not receive an outer collection declaration.
+#   • `scan_arrays` — global names whose lag reads `x[i-k]` the emit trace
+#     resolves against the OUTER declaration (`forward!(::CanonicalExprV{:getindex})`).
+_forward_loop_core!(;
+    kind, rv, rv_ct, id, idxs, outer_dims, outer_lo, params, iterables, input_subst,
+    body_stmts, ret_expr, setup_stmts, public, probe_transform, probe_exclude,
+    scan_arrays, info, ns=nothing, hoist_tag=id,
+) = begin
+    # Namespace for hygiene renames and hoisted invariants: the do-form's result
+    # name; the sugar passes its own STABLE prefix (a nested loop is traced twice —
+    # in the enclosing loop's discovery probe and in its emit — and the names the
+    # enclosing loop promotes from the first pass must match the second).
+    ns = ns !== nothing ? ns : rv !== nothing ? rv :
+        isempty(public) ? Symbol(:loop, id) : first(sort!(collect(public)))
+
     # HYGIENE (multiple-plate snag): a fresh cell-local (`z ~ std_normal()`) emits
     # a model-scope Stan parameter named exactly `z` and binds `info[:z]`. Two
     # independent plates that reuse the same cell-local name then collide — the
@@ -2480,8 +2536,8 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         fi = _plate_fresh_info(s)
         fi === nothing && continue
         f = fi[1]
-        (f in params || f in keys(info) || haskey(fresh_rename, f)) && continue
-        fresh_rename[f] = Symbol(rv, :_, f)
+        (f in params || f in public || f in keys(info) || haskey(fresh_rename, f)) && continue
+        fresh_rename[f] = Symbol(ns, :_, f)
     end
     if !isempty(fresh_rename)
         body_stmts = Any[_subst_syms(s, fresh_rename) for s in body_stmts]
@@ -2492,14 +2548,19 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     # anything else looks at the body, so discovery never sees a lifted name and
     # never promotes it to a per-cell collection. Emits into `info` + `pending`.
     body_stmts, ret_expr =
-        _plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs, id; info)
+        _plate_hoist_invariants(body_stmts, ret_expr, ns, params, idxs, hoist_tag; info, keep=public)
 
     # Trace once in isolation to discover EVERY fresh binding — including
     # submodel-internal flattened names — and the cell result type. The emit
     # trace below uses these StanTypes rather than re-parsing LHS syntax.
-    discovered = _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info)
-    fresh = discovered.fresh
-    rv_type = rv_ct === nothing ? discovered.ret_type :
+    probe_body = probe_transform === nothing ? body_stmts :
+        probe_transform(setup_stmts, body_stmts)
+    discovered = _plate_discover(probe_body, ret_expr, params, iterables, idxs; info)
+    fresh = probe_transform === nothing ? discovered.fresh :
+        Pair{Symbol,Any}[p for p in discovered.fresh
+                         if !_is_probe_junk_name(p.first) && !(p.first in probe_exclude)]
+    rv_type = rv === nothing ? nothing :
+        rv_ct === nothing ? discovered.ret_type :
         _plate_resolve_cell_type(rv_ct, discovered.ret_type, outer_dims, rv; info)
 
     # An `array[] int` cell-local is an EPHEMERAL per-cell INDEX array — a
@@ -2541,17 +2602,19 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     # top-level plate these coincide, so the collision check compares rv's global
     # name against the fresh set.
     cell_types = Dict{Symbol,Any}(fresh)
-    global_rv = _plate_global_name(info, rv)
-    haskey(cell_types, global_rv) && error("plate: result `$rv` collides with a fresh binding in the do-block.")
-    rv in keys(info) && error("plate: result `$rv` is already bound in model scope.")
     all_cell_types = copy(cell_types)
-    all_cell_types[rv] = rv_type
+    if rv !== nothing
+        global_rv = _plate_global_name(info, rv)
+        haskey(cell_types, global_rv) && error("plate: result `$rv` collides with a fresh binding in the do-block.")
+        rv in keys(info) && error("plate: result `$rv` is already bound in model scope.")
+        all_cell_types[rv] = rv_type
+    end
 
     # Collapse exactly one direct fixed-vector multivariate prior into a whole-
     # array sample. Discovery has already proved the cell type; recognition now
     # decides representation and removes only that `~` from the loop. The return
     # fill stays, preserving the public `matrix[K,N]` plate result.
-    vectorized_sample = _plate_vectorized_sample(
+    vectorized_sample = ret_expr === nothing ? nothing : _plate_vectorized_sample(
         body_stmts, ret_expr, params, idxs, outer_dims, cell_types; info,
     )
     vectorized_sample === nothing || (body_stmts = Any[])
@@ -2588,18 +2651,20 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     # accessors. Fresh names stay untouched: the trace-local promotion context
     # rewrites them while tracing, including names hidden inside submodels.
     loop_body = Any[_subst_syms(s, input_subst) for s in body_stmts]
-    ret_cell = _subst_syms(ret_expr, input_subst)
-    rv_accessor = haskey(ragged_plans, rv) ?
-        ragged_plans[rv].accessor : _plate_cell_index(rv, rv_type, idxs)
-    push!(loop_body, :($rv_accessor = $ret_cell))
+    if rv !== nothing
+        ret_cell = _subst_syms(ret_expr, input_subst)
+        rv_accessor = haskey(ragged_plans, rv) ?
+            ragged_plans[rv].accessor : _plate_cell_index(rv, rv_type, idxs)
+        push!(loop_body, :($rv_accessor = $ret_cell))
+    end
 
-    # NB: build each iteration spec as `Expr(:(=), idx, 1:N)` — a hand-built
+    # NB: build each iteration spec as `Expr(:(=), idx, lo:N)` — a hand-built
     # `Expr(:for, :(idx in 1:N), …)` yields an `:in` CALL spec, not the `:(=)`
     # form `forward!(::ForExpr)` asserts (a quoted `for` auto-normalizes it).
     loop = nothing
-    for (idx, dim) in reverse(collect(zip(idxs, outer_dims)))
+    for (idx, lo, dim) in reverse(collect(zip(idxs, outer_lo, outer_dims)))
         body = loop === nothing ? Expr(:block, loop_body...) : Expr(:block, loop)
-        loop = Expr(:for, Expr(:(=), idx, :(1:$dim)), body)
+        loop = Expr(:for, Expr(:(=), idx, :($lo:$dim)), body)
     end
 
     # Hoist declarations into the enclosing block exactly like an inline UDF,
@@ -2673,10 +2738,22 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         _with_trace_state(info, :plate_context, nothing) do
             Any[forward!(canonical(d); info) for d in outer_dims]
         end : outer_dims
+    # A scan whose recurrence runs `lo:hi` with `lo > 1` sizes its per-iteration
+    # LOCALS by the iteration count and indexes them by `idx - (lo - 1)`: a local
+    # exists only for the iterations that run, so `vector[hi]` storage would leave
+    # `1:lo-1` as never-sampled improper-flat coordinates. The loop's own
+    # model-scope arrays keep `hi` — the setup fills their `1:lo-1`.
+    public_global = Set{Symbol}(_plate_global_name(info, p) for p in public)
+    offset_axes = Bool[lo != 1 for lo in outer_lo]
+    lo_offset(lo) = lo isa Integer ? lo - 1 : :($lo - 1)      # fold a literal `lo`
+    local_outer = any(offset_axes) ?
+        Any[lo == 1 ? d : :($d - $(lo_offset(lo))) for (d, lo) in zip(plate_outer, outer_lo)] :
+        plate_outer
     for (f, T) in all_cell_types
         haskey(ragged_plans, f) && continue
         (vectorized_sample !== nothing && f === vectorized_sample.global_name) && continue
         tgt = f === rv ? info : root
+        outer_for_f = (f === rv || f in public_global) ? plate_outer : local_outer
         cons, hoist = _plate_promoted_constraints(f, T, index_aliases)
         if !isempty(hoist)
             info isa SubModel && error(
@@ -2688,7 +2765,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
                 f, T, cons, hoist, idxs, outer_dims, id; info=tgt, pending,
             )
         end
-        emitted = forward!(canonical(_plate_outer_decl(f, T, plate_outer)); info=tgt)
+        emitted = forward!(canonical(_plate_outer_decl(f, T, outer_for_f)); info=tgt)
         emitted = _plate_constrain_decl(f, emitted, cons; info=tgt)
         pending !== nothing && push!(pending, emitted)
     end
@@ -2698,6 +2775,13 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         )
         pending !== nothing && push!(pending, emitted)
     end
+    # A scan's initial state (`x[1] ~ …`) is ordinary model-scope code on the
+    # outer declarations just emitted: indexed sampling / fill on a fresh
+    # declaration, traced here with no promotion context, in source order.
+    for s in setup_stmts
+        emitted = forward!(canonical(s); info)
+        pending !== nothing && push!(pending, emitted)
+    end
     # The emit trace forwards each promoted cell accessor at the root, where the
     # loop index is bound under its flattened name; key the context idxs to match.
     global_idxs = Symbol[_plate_global_name(info, idx) for idx in idxs]
@@ -2705,7 +2789,18 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         cell_accessors[vectorized_sample.global_name] =
             Expr(:ref, vectorized_sample.global_name, global_idxs...)
     end
-    ctx = (idxs=global_idxs, cell_types=cell_types, cell_accessors=cell_accessors)
+    if any(offset_axes)
+        shifted = Any[lo == 1 ? gi : :($gi - $(lo_offset(lo))) for (gi, lo) in zip(global_idxs, outer_lo)]
+        for (f, T) in cell_types
+            (f in public_global || haskey(cell_accessors, f)) && continue
+            cell_accessors[f] = _plate_cell_index(f, T, shifted)
+        end
+    end
+    ctx = (
+        idxs=global_idxs, cell_types=cell_types, cell_accessors=cell_accessors,
+        kind=kind, scan_arrays=Set{Symbol}(_plate_global_name(info, a) for a in scan_arrays),
+        parent=_plate_context(info),      # an enclosing loop's context, for nested loops
+    )
     emitted_loop = _with_trace_state(info, :plate_context, ctx) do
         forward!(canonical(loop); info)
     end
@@ -2714,6 +2809,367 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     end
     emitted_loop
 end
+# ── Annotated top-level loops: `@plate for … end` / `@scan begin … end` ──────
+# Sugar over the shared inliner above (decisions `10mrh0f`, `1ntdzr8`,
+# `1rgglep`, `1375uo5`). `canonical` keeps the annotated body RAW (like a
+# do-block) so this pre-pass can classify statements syntactically:
+#
+#   x[i] ~ …  /  y[i] = …   indexed by the loop var → a MODEL-SCOPE array,
+#                           registered under its own name (`public`), visible
+#                           after the loop; every element assigned exactly once
+#   t ~ …  /  tmp = …       bare fresh            → a per-iteration LOCAL,
+#                           hoisted like a do-block cell binding (hygienic name)
+#   y[i] ~ …  with `y` DATA                        → an observation
+#   any write to an OUTER name                     → rejected (models never mutate)
+#   x[i-k]  (`@scan` only)                         → a lag read of a carried array,
+#                           resolved against the outer declaration (below)
+#
+# Current-index accesses `x[i]` of the loop's own arrays are desugared to the
+# bare name, so the existing promotion context yields `x[i]` back at emit time;
+# lag reads stay indexed. A `@scan` block's setup statements (`x[1] ~ …`) keep
+# their literal indices and are traced at model scope before the loop.
+_is_probe_junk_name(f::Symbol) = startswith(String(f), "__loopprobe_")
+
+_annotated_ref_base(lhs) =
+    (lhs isa Expr && lhs.head === :ref && lhs.args[1] isa Symbol) ? lhs.args[1] : nothing
+_annotated_untyped(lhs) = (lhs isa Expr && lhs.head === :(::)) ? lhs.args[1] : lhs
+_annotated_rhs(s) =
+    (s isa Expr && s.head === :(=)) ? s.args[2] :
+    (s isa Expr && s.head === :call && length(s.args) >= 3 && s.args[1] === :~) ? s.args[3] : s
+# `i - k` with `k` a literal Int ≥ 1 (bounds-checked) or a Symbol (a data int,
+# resolved at trace time). Returns `k`, or `nothing` when `ix` is not a lag.
+_annotated_lag(ix, idx::Symbol) = begin
+    (ix isa Expr && ix.head === :call && length(ix.args) == 3 && ix.args[1] === :- &&
+        ix.args[2] === idx) || return nothing
+    k = ix.args[3]
+    (k isa Integer && k >= 1) && return k
+    k isa Symbol && return k
+    nothing
+end
+
+_forward_annotated_loop!(kind::Symbol, raw; info) = begin
+    label = kind === :plate ? "@plate" : "@scan"
+    # ── 1. Split the annotated form into setup statements + the loop ─────────
+    if kind === :plate
+        (raw isa Expr && raw.head === :for) || error(
+            label, ": expected `@plate for i in 1:N … end`, got `", raw, "`.")
+        setup_raw = Any[]
+        forx = raw
+    else
+        (raw isa Expr && raw.head === :block) || error(
+            label, ": expected `@scan begin <setup…>; for i in lo:hi … end end`, got `", raw, "`.")
+        stmts = Any[s for s in raw.args if !(s isa LineNumberNode)]
+        isempty(stmts) && error(label, ": empty block.")
+        (stmts[end] isa Expr && stmts[end].head === :for) || error(
+            label, ": the block must END with the recurrence `for` loop; setup statements go before it.")
+        any(s -> s isa Expr && s.head === :for, stmts[1:end-1]) && error(
+            label, ": exactly one `for` loop, and it must be the LAST statement of the block.")
+        setup_raw = stmts[1:end-1]
+        forx = stmts[end]
+    end
+    head_raw, body = forx.args
+    (body isa Expr && body.head === :block) || error(label, ": the loop body must be a block.")
+    binds = (head_raw isa Expr && head_raw.head === :block) ? head_raw.args : Any[head_raw]
+    binds = Any[b for b in binds if !(b isa LineNumberNode)]
+    # ── 2. Iteration head: ranges (`1:N`, `lo:hi`) or ONE container clause ──
+    id = _next_inline_id(info)
+    idxs = Symbol[]; outer_lo = Any[]; outer_dims = Any[]
+    params = Symbol[]; iterables = Any[]
+    for b in binds
+        (b isa Expr && b.head === :(=) && b.args[1] isa Symbol) || error(
+            label, ": each loop clause must bind `var in <range or container>`, got `", b, "`.")
+        var, src = b.args
+        var in keys(info) && error(label, ": loop variable `", var, "` is already bound in model scope.")
+        if src isa Expr && src.head === :call && length(src.args) == 3 && src.args[1] === :(:)
+            lo, hi = src.args[2], src.args[3]
+            kind === :plate && lo != 1 && error(
+                label, ": a plate iterates a full `1:N` range (got `", src,
+                "`); use `@scan` for a recurrence over `lo:hi`.")
+            push!(idxs, var); push!(outer_lo, lo); push!(outer_dims, hi)
+        else
+            kind === :scan && error(label, ": iterate over a range `lo:hi`, not a container (`", src, "`).")
+            push!(params, var); push!(iterables, src)
+        end
+    end
+    if !isempty(params)
+        (isempty(idxs) && length(params) == 1) || error(
+            label, ": mixing range axes with a container clause is not supported — ",
+            "iterate ONE container (`for di in doses`) or ranges.")
+        push!(idxs, Symbol(:plate_i, "__pl_", id))
+        push!(outer_lo, 1); push!(outer_dims, :(length($(iterables[1]))))
+    end
+    (kind === :plate || length(idxs) == 1) || error(label, ": a scan has exactly one axis.")
+    input_subst = Dict{Symbol,Any}()
+    for (a, it) in zip(params, iterables)
+        input_subst[a] = _plate_input_accessor(it, idxs, info)
+    end
+    body_raw = Any[s for s in body.args if !(s isa LineNumberNode)]
+    isempty(body_raw) && error(label, ": empty loop body.")
+    is_data(name) = name in keys(info) && qual(info[name]) == :data
+    # NESTED loops: this loop is traced twice by an enclosing plate / annotated
+    # loop — first in its discovery probe (no enclosing context: we declare our
+    # arrays and locals as usual, the enclosing loop discovers and promotes them
+    # to per-cell storage), then in its emit trace, where every such name is
+    # already OWNED by the enclosing context. Owned names are neither rejected as
+    # outer writes nor re-declared; their accesses stay indexed and compose with
+    # the enclosing accessor (`forward!(::CanonicalExprV{:getindex})`).
+    owned(name) = _plate_context(info) !== nothing && _plate_context_entry(name; info) !== nothing
+    idx_list = join(idxs, ", ")
+    # The index of a fill this loop owns: the loop index itself (a scalar cell), or
+    # — for one axis — the plate's own vector-cell accessor `[:, j]` (a `vector`
+    # per cell, collected as a matrix with cells in columns; the desugared bare
+    # binding is the cell, exactly as the do-form's fresh `z::vector[K]`).
+    is_cell_index(ix) = ix == idxs || (length(idxs) == 1 && ix == Any[Symbol(":"), idxs[1]])
+    # ── 3. Classify LHS forms of the loop body ───────────────────────────────
+    public = Set{Symbol}()            # model-scope arrays this loop declares
+    owned_arrays = Set{Symbol}()      # arrays an enclosing loop already promoted
+    filled_in_body = Set{Symbol}()
+    locals = Symbol[]
+    for s in body_raw
+        lhs = _plate_stmt_lhs(s)
+        lhs === nothing && continue
+        tl = _annotated_untyped(lhs)
+        base = _annotated_ref_base(tl)
+        if base !== nothing
+            is_data(base) && continue                       # `y[i] ~ …`: an observation
+            owned(base) || base in keys(info) && error(
+                label, ": `", base, "[…]` writes to a value bound outside the loop — ",
+                "SB models never mutate; give the loop its own array.")
+            is_cell_index(tl.args[2:end]) || error(
+                label, ": `", tl, "`: an array this loop fills is written only at the loop index ",
+                "(`", base, "[", idx_list, "]`, or a whole vector cell `", base, "[:, ", idx_list,
+                "]`) — every element exactly once.")
+            base in filled_in_body && error(
+                label, ": `", base, "[…]` is assigned twice in the loop body — every element exactly once.")
+            push!(owned(base) ? owned_arrays : public, base); push!(filled_in_body, base)
+        elseif tl isa Symbol
+            if tl in params
+                # `d ~ dist(…)` on the container clause's element is an observation
+                # on the per-cell slice (the do-form's `yi ~ …`); assigning it is not.
+                (s isa Expr && s.head === :call) || error(
+                    label, ": cannot assign the container element `", tl, "`.")
+                continue
+            end
+            tl in keys(info) && error(
+                label, ": `", tl, "` is bound outside the loop — SB models never mutate; ",
+                "index it (`", tl, "[", idx_list, "]`) for a per-cell array, or move it outside.")
+            tl in idxs && error(label, ": cannot assign the loop variable `", tl, "`.")
+            push!(locals, tl)   # a bare fresh name: a per-iteration local (`1rgglep`)
+        else
+            error(label, ": unsupported statement LHS `", lhs, "`.")
+        end
+    end
+    # ── 4. Setup statements (scan): literal-index fills of the loop's arrays ─
+    setup_cover = Dict{Symbol,Set{Int}}()
+    setup_stmts = Any[]
+    setup_plain = Set{Symbol}()       # ordinary setup statements' LHS (model-scope, not per-cell)
+    for s in setup_raw
+        lhs = _plate_stmt_lhs(s)
+        tl = lhs === nothing ? nothing : _annotated_untyped(lhs)
+        base = _annotated_ref_base(tl)
+        if base !== nothing
+            is_data(base) && error(label, ": setup `", tl, "`: `", base, "` is data.")
+            owned(base) || base in keys(info) && error(
+                label, ": setup `", tl, "` writes to a value bound outside the block — SB models never mutate.")
+            ix = tl.args[2:end]
+            (length(ix) == 1 && ix[1] isa Integer && ix[1] >= 1) || error(
+                label, ": a setup fill uses a literal index (`", base, "[1] ~ …`); got `", tl,
+                "`. (Slice and nested `@plate` setup fills are not supported yet.)")
+            cov = get!(setup_cover, base, Set{Int}())
+            ix[1] in cov && error(label, ": setup assigns `", base, "[", ix[1], "]` twice.")
+            push!(cov, ix[1]); push!(owned(base) ? owned_arrays : public, base)
+        elseif tl isa Symbol
+            owned(tl) || (tl in keys(info) && error(
+                label, ": setup `", tl, "` writes to a value bound outside the block — SB models never mutate."))
+            owned(tl) || push!(setup_plain, tl)
+        end
+        push!(setup_stmts, s)   # traced at model scope, in order, before the loop
+    end
+    arrays = union(public, owned_arrays)   # every array this loop fills
+    for f in arrays
+        f in filled_in_body || error(
+            label, ": `", f, "` is filled only in the setup — fill it in the loop too, ",
+            "or declare it outside the block.")
+    end
+    # ── 5. Reads: bare array names error; lag reads only under `@scan` ───────
+    lags = Dict{Symbol,Int}()   # max literal lag per array
+    check_reads!(e, in_ref_base::Bool, setup::Bool) = begin
+        if e isa Symbol
+            (e in arrays && !in_ref_base) && error(
+                label, ": `", e, "` is an array this loop fills — read it indexed (`", e, "[", idx_list, "]`",
+                kind === :scan ? " or at a lag `$(e)[$(idxs[1]) - k]`" : "", ").")
+        elseif e isa Expr
+            if e.head === :ref && e.args[1] isa Symbol && e.args[1] in arrays
+                ix = e.args[2:end]
+                if !is_cell_index(ix) && !(setup && length(ix) == 1 && ix[1] isa Integer)
+                    kind === :scan || error(
+                        label, ": `", e, "` reads another cell of an array this loop fills — ",
+                        "plate cells are independent; use `@scan` for a recurrence.")
+                    k = length(ix) == 1 ? _annotated_lag(ix[1], idxs[1]) : nothing
+                    k === nothing && error(
+                        label, ": `", e, "`: a scan reads its arrays at the loop index or at a lag `",
+                        e.args[1], "[", idxs[1], " - k]` with `k ≥ 1`; forward and non-index reads are not a scan.")
+                    k isa Integer && (lags[e.args[1]] = max(get(lags, e.args[1], 0), k))
+                end
+                for a in ix; check_reads!(a, false, setup); end
+            else
+                for (n, a) in enumerate(e.args)
+                    check_reads!(a, e.head === :ref && n == 1, setup)
+                end
+            end
+        end
+        nothing
+    end
+    for s in body_raw;     check_reads!(_annotated_rhs(s), false, false); end
+    for s in setup_stmts;  check_reads!(_annotated_rhs(s), false, true);  end
+    # ── 6. Coverage / lag bounds (decidable literal cases; `1ntdzr8`) ────────
+    if kind === :scan
+        lo = outer_lo[1]
+        for f in arrays
+            cov = get(setup_cover, f, Set{Int}())
+            m = length(cov)
+            cov == Set(1:m) || error(
+                label, ": the setup for `", f, "` must fill `1:m` contiguously, got indices ",
+                sort!(collect(cov)), ".")
+            (lo isa Integer && lo != m + 1) && error(
+                label, ": the loop starts at ", lo, " but the setup fills `", f, "[1:", m,
+                "]` — every element exactly once means the loop must start at ", m + 1, ".")
+            k = get(lags, f, 0)
+            k > m && error(
+                label, ": `", f, "[", idxs[1], " - ", k, "]` reads before the setup — the setup fills `",
+                f, "[1:", m, "]`, so only lags up to ", m, " are covered.")
+        end
+    end
+    # ── 7. Desugar current-index accesses of the loop's own arrays ───────────
+    desugar(e) = begin
+        e isa Expr || return e
+        (e.head === :ref && e.args[1] isa Symbol && e.args[1] in public && is_cell_index(e.args[2:end])) &&
+            return e.args[1]
+        Expr(e.head, Any[desugar(a) for a in e.args]...)
+    end
+    body_stmts = Any[desugar(s) for s in body_raw]
+    # A STABLE namespace for the loop's hoisted locals / invariants: the same in
+    # the enclosing loop's probe pass (where our arrays are `public`) and in its
+    # emit pass (where they are `owned`) — the union is identical in both.
+    ns = isempty(arrays) ? Symbol(:loop_, join(idxs, "_")) : first(sort!(collect(arrays)))
+    # Nested emit pass: a local the enclosing loop already promoted (from our
+    # probe-pass declaration, under its hygienic name `ns_f`) is not re-declared;
+    # its bare references become explicit inner-indexed accesses of that name,
+    # which compose with the enclosing accessor.
+    owned_locals = Dict{Symbol,Any}()
+    if !isempty(locals)
+        lo_off(lo) = lo isa Integer ? lo - 1 : :($lo - 1)
+        inner_ix = Any[lo == 1 ? idx : :($idx - $(lo_off(lo))) for (idx, lo) in zip(idxs, outer_lo)]
+        for f in locals
+            hygienic = Symbol(ns, :_, f)
+            owned(hygienic) || continue
+            any(s -> (l = _plate_stmt_lhs(s); l isa Expr && l.head === :(::) && l.args[1] === f), body_raw) &&
+                error(label, ": a typed local (`", f, "::…`) inside a nested annotated loop is not supported yet.")
+            owned_locals[f] = Expr(:ref, hygienic, inner_ix...)
+        end
+        isempty(owned_locals) || (body_stmts = Any[_subst_syms(s, owned_locals) for s in body_stmts])
+    end
+    # Nested control flow inside the body is still model-body control flow (§R3).
+    # Check each statement's RHS (and a bare statement whole): the loop licenses
+    # its own indexed LHS forms, which the model-body pass would reject.
+    for s in body_stmts
+        _reject_model_control_flow(canonical(_annotated_rhs(s)))
+    end
+    # ── 8. Probe transform: what the discovery trace can type ────────────────
+    # Lag / literal-index reads of a loop array → the bare element name; a
+    # repeated fill of one array (setup `x[1] ~ …` then the loop's `x ~ …`) →
+    # a throwaway LHS, so the probe never re-samples a bound name.
+    probe_transform = (setup, body) -> begin
+        bound = Set{Symbol}()
+        n = Ref(0)
+        lagfree(e) = begin
+            e isa Expr || return e
+            (e.head === :ref && e.args[1] isa Symbol && e.args[1] in public) && return e.args[1]
+            Expr(e.head, Any[lagfree(a) for a in e.args]...)
+        end
+        out = Any[]
+        for s in Iterators.flatten((setup, body))
+            lhs = _plate_stmt_lhs(s)
+            if lhs === nothing
+                push!(out, lagfree(s)); continue
+            end
+            tl = _annotated_untyped(lhs)
+            base = _annotated_ref_base(tl)
+            name = base === nothing ? tl : base
+            is_tilde = s.head === :call
+            rhs = lagfree(_annotated_rhs(s))
+            newlhs = lhs
+            if name isa Symbol && name in public
+                newlhs = name in bound ? Symbol(:__loopprobe_, n[] += 1) : name
+                push!(bound, name)
+                (lhs isa Expr && lhs.head === :(::)) && (newlhs = Expr(:(::), newlhs, lhs.args[2]))
+            end
+            push!(out, is_tilde ? Expr(:call, :~, newlhs, rhs) : Expr(:(=), newlhs, rhs))
+        end
+        out
+    end
+    _forward_loop_core!(;
+        kind, rv=nothing, rv_ct=nothing, id, idxs, outer_dims, outer_lo,
+        params, iterables, input_subst, body_stmts, ret_expr=nothing,
+        setup_stmts, public, probe_transform, probe_exclude=setup_plain,
+        scan_arrays=(kind === :scan ? public : Set{Symbol}()), info,
+        ns, hoist_tag=nothing,
+    )
+end
+
+forward!(x::CanonicalExprV{:plate_loop}; info) = _forward_annotated_loop!(:plate, x.args[1]; info)
+forward!(x::CanonicalExprV{:scan_block}; info) = _forward_annotated_loop!(:scan, x.args[1]; info)
+
+# A lag read `x[i-k]` inside a `@scan` body. `_plate_promoted_reference` fires
+# on the BARE symbol only, so without this hook `x` would resolve to the current
+# cell `x[i]` and the lag would index THAT. Resolve the base against the outer
+# declaration at the root (context disabled, exactly as the promoted accessor
+# does) and index it with the forwarded lag; everything else takes the generic
+# call path unchanged. The syntactic lag/window contract was already checked by
+# the pre-pass; current-index accesses never arrive here (desugared to bare).
+forward!(x::CanonicalExprV{:getindex}; info) = begin
+    base = x.args[1]
+    # Only a model/submodel scope carries a promotion context; a registered UDF's
+    # return-type inference traces with a function-local `OrderedDict` and must
+    # never consult ambient plate state (cf. `_plate_context_entry`).
+    if base isa Symbol && info isa Union{StanModel,SubModel} && _plate_context(info) !== nothing
+        ctx = _plate_context(info)
+        gname = _plate_global_name(info, base)
+        if length(x.args) == 2 && haskey(ctx, :scan_arrays) && gname in ctx.scan_arrays
+            base_decl = _with_trace_state(info, :plate_context, nothing) do
+                forward!(base; info=_plate_root_info(info))
+            end
+            lag = forward!(x.args[2]; info)
+            return invoke(forward!, Tuple{CanonicalExpr}, CanonicalExpr(:getindex, base_decl, lag); info)
+        end
+        # Nested loops: an index on an array the ENCLOSING loop promoted composes
+        # with that loop's accessor — the outer `h[:, j]` (a `vector[T]` cell of a
+        # subject plate) indexed by the inner `t` is `h[t, j]`, one Stan variable
+        # with both indices (a slice-then-index `h[:, j][t]` would not be
+        # assignable). The composed reference is forwarded at the root with the
+        # contexts disabled, exactly like a promoted accessor.
+        entry = _plate_context_entry(base; info)
+        if entry !== nothing && entry.accessor === nothing
+            raw = _plate_cell_index(entry.global_name, entry.cell_type, entry.idxs)
+            slots = findall(a -> a === Symbol(":"), raw.args[2:end])
+            if !isempty(slots)
+                length(slots) == length(x.args) - 1 || error(
+                    "`", base, "[…]`: indexes a `", sigtype(entry.cell_type), "` cell of an enclosing ",
+                    "loop with ", length(x.args) - 1, " index(es), but the cell has ", length(slots),
+                    " free axis(es).")
+                inner = forward!(x.args[2:end]; info)
+                composed = Any[raw.args[2:end]...]
+                for (s, ix) in zip(slots, inner); composed[s] = ix; end
+                return _with_trace_state(info, :plate_context, nothing) do
+                    invoke(forward!, Tuple{CanonicalExpr},
+                        CanonicalExpr(:getindex, base, composed...); info=_plate_root_info(info))
+                end
+            end
+        end
+    end
+    invoke(forward!, Tuple{CanonicalExpr}, x; info)
+end
+
 forward!(x::SamplingExpr; info) = begin
     lhs, rhs = forward!(x.args; info)
     forward!(remake(x, lhs, rhs::StanExpr); info)
