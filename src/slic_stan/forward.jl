@@ -1191,11 +1191,18 @@ _forward_ragged_obs_broadcast!(name, rhs_raw; info) = begin
     # touches (e.g. the noise scale) in the sampled set, exactly as the in-cell
     # obs control does — dropping the statement outright would demote them to GQ.
     _ragged_obs_rhs_cv(rhs_raw; info) && (info[name] = remake(info[name]; cv=true))
+    # `<obs>_gen` carries the per-group predictive DRAW, so its element type must
+    # match the observation's carrier: an integer ragged observation
+    # (`mem::array[] int`) draws into `array[] int` (`int[…]`), a real one into
+    # `vector` (snag ragged-int-obser-771dd259). `_likelihood` stays real — it
+    # holds per-group density scalars.
+    _mem_at = get(type(info[name]).info, :arg_types, nothing)
+    gen_elt = (_mem_at !== nothing && center_type(_mem_at.mem) === types.int) ? :int : :vector
     stmts = Any[
         :(for $g in 1:length($name)
               $name[$g] ~ $(_ragged_group_rhs(rhs_raw, g))
           end),
-        :($gen :: vector[num_elements($name.mem)]),
+        :($gen :: $gen_elt[num_elements($name.mem)]),
         :($lik :: vector[length($name)]),
         CanonicalExpr(_ragged_gq_pin, gen),
         CanonicalExpr(_ragged_gq_pin, lik),

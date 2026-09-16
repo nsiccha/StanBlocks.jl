@@ -480,6 +480,24 @@ get_module(info::SubModel) = get_module(parent(info))
 # compiler-owned loop.  The forward layer adds the StanModel/SubModel method;
 # this floor keeps ordinary symbol resolution independent of that feature.
 _plate_promoted_reference(x, info) = nothing
+# A module-level binding whose type SLIC deliberately does not resolve in a
+# model / `@deffun` body. Only `Function` / `SlicModel` / `SubmodelFn` /
+# built-in `Irrational` (π, ℯ, …) bindings resolve to a value; a plain numeric
+# `const` does NOT — user decision `3bbtrv` ("only pi and e or other built in
+# constants"), so there is intentionally no `::Number` resolution. Keep that
+# rejection loud AND actionable (cf. `eccfc8a` for `pi()`): name the type, the
+# rule, and — for a number — the supported named-constant idiom.
+_unresolved_module_binding_error(x, mod, Mx) = begin
+    base = "Found `$x` in $(mod) of type $(typeof(Mx)); an @slic/@deffun body " *
+           "resolves only Function / SlicModel / built-in Irrational (π, ℯ, …) " *
+           "module bindings — a $(typeof(Mx)) does not (deliberate; StanBlocks " *
+           "decision `3bbtrv`)."
+    Mx isa Number || return base
+    tystr = Mx isa Integer ? "int" : "real"
+    base * " To reuse a named numeric constant, inline the literal, use a Julia " *
+           "`Irrational`, or define a zero-arg Stan function and call it: " *
+           "`@deffun $(x)()::$(tystr) = $(Mx)` then `$(x)()`."
+end
 forward!(x::Symbol; info) = begin
     # A ragged plate logical cell has no dense top-level declaration: the emit
     # context maps it straight to a certified flat-memory slice. Consult that
@@ -495,13 +513,13 @@ forward!(x::Symbol; info) = begin
     if isdefined(mod, x)
         Mx = getproperty(mod, x)
         rv = _forward_module_value(Mx, info)
-        rv === nothing && error("Found $x in $(mod), but is of type $(typeof(Mx))!")
+        rv === nothing && error(_unresolved_module_binding_error(x, mod, Mx))
         return rv
     end
     if mod !== Main && isdefined(Main, x)
         Mx = getproperty(Main, x)
         rv = _forward_module_value(Mx, info)
-        rv === nothing && error("Found $x in Main, but is of type $(typeof(Mx))!")
+        rv === nothing && error(_unresolved_module_binding_error(x, Main, Mx))
         return rv
     end
     error("Could not find $(x) in model, builtin, $(mod) or Main!")

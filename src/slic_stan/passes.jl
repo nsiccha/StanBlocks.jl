@@ -789,14 +789,14 @@ _indexed_ragged_obs_assignments(x::SamplingExpr, spec; info) = begin
     rhs_expr = expr(rhs)
     rhs_expr isa CanonicalExpr || error(
         "internal: ragged observation twin reached a non-call distribution rhs `", rhs_expr, "`.")
-    rhs_expr = _assert_ragged_continuous_family(rhs_expr)
+    lhs_ct = center_type(lhs)
+    rhs_expr = _assert_ragged_family_carrier(rhs_expr, lhs_ct)
     # Preserve the ordinary sampling diagnostic as the first gate. Because the
     # gq declarations/assignments are built before the model-loop clone is
     # pushed, attempting the sized RNG first would mask an unresolved density
     # signature with the less relevant "missing sized RNG" error.
     density = lpxf_expr(lhs, rhs_expr)
     _check_lpxf_resolves(density)
-    lhs_ct = center_type(lhs)
     token = StanExpr(lhs_ct,
         StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
     draw = _ragged_group_rng(token, rhs_expr, lhs_ct)
@@ -872,7 +872,11 @@ _push_ragged_obs_decls!(b, k::Symbol; info) = begin
         StanExpr(2, StanType(types.int; value=2, qual=:data))), arg_types.ends)
     gen_size = _trace_stan_call(builtin.num_elements, mem; info)
     lik_size = _trace_stan_call(builtin.num_elements, ends; info)
-    gen_type = StanType(types.vector, (gen_size,);
+    # `<obs>_gen` carries the per-group predictive DRAW, so its center type must
+    # match the observation's own carrier: an integer ragged observation
+    # (`mem::array[] int`) draws into `array[] int`, a real one into `vector`.
+    # (`_likelihood` below stays real — it holds per-group density scalars.)
+    gen_type = StanType(center_type(arg_types.mem), (gen_size,);
         value=missing, qual=:quantities, ragged_obs_source=k)
     lik_type = StanType(types.vector, (lik_size,);
         value=missing, qual=:quantities, ragged_obs_source=k)

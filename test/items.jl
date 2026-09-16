@@ -2042,6 +2042,59 @@ Broadcast (`x::vector[n] ~ std_normal()`) and native-constrained containers
 end
 
 """
+Regression for snag `deffun-numeric-c-016cfc57` (reported from BRM's Kalman
+`@deffun`s): a bare module-level numeric `const` referenced in a model or
+`@deffun` body is DELIBERATELY not resolved (user decision `3bbtrv` — only
+built-in `Irrational`s do). The rejection must be loud AND actionable — name
+the deliberate design and the supported named-constant idiom (a zero-arg
+`@deffun`), rather than the opaque `Found X in <mod>, but is of type Float64!`
+the reporter hit twice. The idiom itself must transpile.
+"""
+@testitem "slic: numeric const rejection is actionable; zero-arg @deffun idiom works" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+
+    const NUMERIC_CONST = 1.8378770664093453
+
+    # --- NEGATIVE: a Float64 const referenced directly in the @slic body ------
+    m_slic = @slic (; y = [0.1, -0.2, 0.3]) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ normal(mu + NUMERIC_CONST, 1.0)
+    end
+    @test !transpiles(m_slic; re=false)
+    msg_slic = errmsg(m_slic)
+    @test occursin("3bbtrv", msg_slic)
+    @test occursin("@deffun", msg_slic)          # points at the idiom
+    @test occursin("1.8378770664093453", msg_slic)
+
+    # --- NEGATIVE: the same const referenced inside a @deffun body ------------
+    @deffun begin
+        scale_with_const(base::real)::real = base + NUMERIC_CONST
+    end
+    m_deffun = @slic (; y = [0.1, -0.2, 0.3]) begin
+        mu ~ normal(0.0, 1.0)
+        s = scale_with_const(1.0)
+        y ~ normal(mu, s)
+    end
+    @test !transpiles(m_deffun; re=false)
+    @test occursin("3bbtrv", errmsg(m_deffun))
+
+    # --- POSITIVE: the documented remedy — a zero-arg @deffun constant --------
+    @deffun begin
+        num_const()::real = 1.8378770664093453
+        scale_with_fn(base::real)::real = base + num_const()
+    end
+    m_fn = @slic (; y = [0.1, -0.2, 0.3]) begin
+        mu ~ normal(0.0, 1.0)
+        s = scale_with_fn(1.0)
+        y ~ normal(mu, s)
+    end
+    @test transpiles(m_fn)
+    code = stan_code(m_fn)
+    @test occursin("num_const", code)
+    @test occursin("1.8378770664093453", code)   # baked in the emitted function
+end
+
+"""
 Verify `slic: plate result LHS must name the collected type` in an isolated test item.
 
 Regression for decision `0909w6i` FULL CUTOVER: the per-cell plate annotation
@@ -6324,6 +6377,120 @@ the density). Author syntax is unchanged. Contract defaults:
 end
 
 """
+Verify `slic: discrete family over an integer ragged observation`.
+
+Snag `ragged-int-obser-771dd259` (from BRM `:ssm` — a per-subject binary/count
+indicator). A `Vector{Vector{Int}}` observation ingests with an INTEGER-backed
+`RaggedVector` (`mem::array[] int`), so a discrete family (`bernoulli_logit`,
+`poisson_log`, …) over it now lowers exactly like a real one instead of being
+rejected: the group getindex (`typeof(rv.mem[1])`-computed return) reads the group
+as `array[] int`, the sized-token RNG picks the discrete `foo_rng(int[n],…)::int[n]`
+overload, and the `<obs>_gen` twin is declared `array[] int`. `<obs>_likelihood`
+stays real (per-group density scalars). The carrier/family MISMATCH stays a loud,
+carrier-aware error: a discrete family on a REAL ragged obs, and a continuous
+family on an INTEGER ragged obs, both reject at tracing. Covers the in-cell
+(plate-cell) and obs-outside spellings.
+"""
+@testitem "slic: discrete family over an integer ragged observation" tags=[:slic, :plate, :ragged, :descriptor, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    ts = [[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]]
+    smoked = [[1, 0, 1], [0, 1], [1, 1, 0, 1]]      # per-subject binary indicator
+
+    # (A) obs-outside: `smoked ~ bernoulli_logit(eta)` over an integer ragged obs.
+    outside = @slic (; ts = ts, smoked = smoked, nsub = 3) begin
+        l31 ~ normal(0.0, 1.0)
+        eta ~ plate(ts; outer = (nsub,)) do t
+            m::typeof(t) = l31 .* t
+            m
+        end
+        smoked ~ bernoulli_logit(eta)
+    end
+    @test transpiles(outside)
+    @test stanc_compiles(outside)
+    let gq = stan_block(stan_code(outside), "generated quantities")
+        # The predictive draw carrier is an INTEGER array (not `vector`), filled
+        # by the discrete sized RNG; the per-group loglik is a real scalar.
+        @test occursin("int smoked_gen", gq)
+        @test !occursin("vector[num_elements(smoked.1)] smoked_gen", gq)
+        @test occursin(r"smoked_gen\[.*\] = bernoulli_logit_int_rng\(", gq)
+        @test occursin(r"smoked_likelihood\[.*\] = bernoulli_logit_lpmf\(", gq)
+    end
+    let mb = stan_block(stan_code(outside), "model")
+        @test !occursin("_rng", mb)
+    end
+    d = stan_descriptor(outside; name = :ragged_int_obs)
+    outs = Dict(o.name => o for o in d.outputs)
+    @test outs[:smoked_gen].generative == :draw && outs[:smoked_gen].source == :smoked
+    @test outs[:smoked_gen].segments == [3, 5, 9]
+    @test outs[:smoked_likelihood].generative == :pointwise_loglik
+    let ops = [op.name for op in d.operations]
+        @test :fit in ops && :predict in ops && :pointwise_loglik in ops
+    end
+    # End-to-end: finite log-density + gradient, and the predictive draws are
+    # integers over the flat backing memory.
+    p = instantiate(outside)
+    lp, grad = LogDensityProblems.logdensity_and_gradient(p, 0.1 .* randn(LogDensityProblems.dimension(p)))
+    @test isfinite(lp) && all(isfinite, grad)
+    let sm = p.model,
+        names = BridgeStan.param_names(p.model; include_tp = true, include_gq = true)
+        gi = findall(n -> startswith(n, "smoked_gen"), names)
+        @test length(gi) == sum(length, smoked)            # flat over every element
+        c = BridgeStan.param_constrain(sm, [0.2]; include_tp = true, include_gq = true,
+            rng = BridgeStan.StanRNG(sm, 771))
+        @test all(v -> v == round(v), c[gi])               # integer draws (0/1)
+    end
+
+    # (B) in-cell: the identical observation kept inside the plate cell.
+    incell = @slic (; ts = ts, smoked = smoked, nsub = 3) begin
+        threshold ~ normal(0.0, 1.0); l31 ~ normal(0.0, 1.0)
+        mu ~ plate(ts, smoked; outer = (nsub,)) do t, sm
+            m::typeof(t) = l31 .* t
+            sm ~ bernoulli_logit(m .+ threshold)
+            m
+        end
+    end
+    @test transpiles(incell)
+    @test stanc_compiles(incell)
+    let gq = stan_block(stan_code(incell), "generated quantities")
+        @test occursin("int smoked_gen", gq)
+        @test occursin("bernoulli_logit_int_rng(", gq)
+    end
+    let ip = instantiate(incell)
+        ilp, igrad = LogDensityProblems.logdensity_and_gradient(ip, 0.1 .* randn(LogDensityProblems.dimension(ip)))
+        @test isfinite(ilp) && all(isfinite, igrad)
+    end
+
+    # (C) `poisson_log` — the capability is general across discrete families.
+    counts = [[1, 0, 2], [3, 1], [0, 1, 2, 4]]
+    pois = @slic (; ts = ts, counts = counts, nsub = 3) begin
+        l ~ normal(0.0, 1.0)
+        eta ~ plate(ts; outer = (nsub,)) do t
+            m::typeof(t) = l .* t
+            m
+        end
+        counts ~ poisson_log(eta)
+    end
+    @test transpiles(pois)
+    @test stanc_compiles(pois)
+    @test occursin("int counts_gen", stan_block(stan_code(pois), "generated quantities"))
+
+    # (D) MISMATCH stays a loud, carrier-aware error, both directions.
+    #  discrete family on a REAL ragged obs …
+    let bad = @slic (; ys = [[0.6, 0.8], [0.5, 0.7, 0.9]]) begin
+            lam ~ exponential(1)
+            ys ~ poisson_log(lam)
+        end
+        @test_throws "real-valued" stan_code(bad)
+    end
+    #  … and a continuous family on an INTEGER ragged obs.
+    let bad = @slic (; ks = [[1, 2], [3, 4, 5]]) begin
+            mu ~ normal(0.0, 1.0); sigma ~ exponential(1)
+            ks ~ normal(mu, sigma)
+        end
+        @test_throws "integer-valued" stan_code(bad)
+    end
+end
+
+"""
 Verify `slic: ragged obs cv-taint routes the held-out density loop out of the model block`.
 
 Snag ragged-obs-not-c-5b1180c7. A top-level ragged observation `ys ~ dist(mu, …)`
@@ -6978,10 +7145,15 @@ are PARAMETERS built by the plate, not ingested `Vector{Vector}` DATA).
     @test occursin(r"tuple\(vector\[y_mem_n\], array\[y_ends_n\] int\) y;", stan_block(code, "data"))
     let td = stan_block(code, "transformed data")
         # `y[g]` routes through RaggedVector's getindex UDF (a bound data name is NOT a
-        # construction), sized by the data-qualified per-group length.
+        # construction), sized by the data-qualified per-group length. A real-backed
+        # group reads as a `vector` (the UDF's element type is now computed from the
+        # carrier — `typeof(rv.mem[1])` — so an int-backed group would read as
+        # `array[] int`; snag ragged-int-obser-771dd259). The size expression is the
+        # group length, whether spelled as the `ragged_length_RaggedVector(y, 1)` UDF
+        # call or its inlined `ragged_end - ragged_start + 1` equivalent.
         @test occursin("getindex_RaggedVector(y, 1)", td)
         @test occursin("getindex_RaggedVector(y, g)", td)
-        @test occursin(r"vector\[ragged_length_RaggedVector\(y, 1\)\]", td)
+        @test occursin(r"vector\[[^\n]*RaggedVector\(y, 1\)[^\n]*\] first_group", td)
         # `length(y)` counts groups via `size(ends)`.
         @test occursin("num_elements_RaggedVector(y)", td)
     end
