@@ -5444,6 +5444,67 @@ Verify `slic: mixed sampling/fill routing in compiler-owned plate loop` in an is
 end
 
 """
+Regression (snag plate-untyped-ve-819ecfff): an UNTYPED fresh `~` cell whose
+ELEMENTWISE family broadcasts over vector-shaped arguments
+(`yj ~ normal(hvec, 1.0)`, `hvec::vector[T]`) infers a `vector[T]` sampled shape
+— identical to the typed `yj::vector[T]` spelling and to the joint families
+(`multi_normal`/`dirichlet`), instead of being mis-typed SCALAR and silently
+emitting stanc-invalid Stan wherever consumed. Guards both the plate collection
+and a consumed top-level binding, plus the non-regression of scalar-argument and
+scalar-sample (`categorical`) families.
+"""
+@testitem "slic: untyped vector-shaped elementwise ~ infers the broadcast shape" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # 1. Plate, prior-only: untyped cell collects as matrix[T, S] and stanc-passes,
+    #    byte-identically to the typed spelling (the annotation was purely ergonomic).
+    untyped = @slic (; S = 3, T = 4) begin
+        hvec ~ normal(0.0, 1.0; n = T)
+        yy ~ plate(; outer = (S,)) do j
+            yj ~ normal(hvec, 1.0)
+            yj
+        end
+    end
+    typed = @slic (; S = 3, T = 4) begin
+        hvec ~ normal(0.0, 1.0; n = T)
+        yy ~ plate(; outer = (S,)) do j
+            yj::vector[T] ~ normal(hvec, 1.0)
+            yj
+        end
+    end
+    @test transpiles(untyped)
+    @test stanc_compiles(untyped)
+    @test stan_code(untyped) == stan_code(typed)
+    @test occursin("matrix[T, S] yy_yj", stan_code(untyped))
+
+    # 2. Top-level, consumed downstream (yj reaches a likelihood → a vector param).
+    toplevel = @slic (; T = 4, w = 0.5) begin
+        hvec ~ normal(0.0, 1.0; n = T)
+        yj ~ normal(hvec, 1.0)
+        w ~ normal(sum(yj), 1.0)
+    end
+    @test transpiles(toplevel)
+    @test stanc_compiles(toplevel)
+    @test occursin(r"vector\[T\] yj", stan_block(stan_code(toplevel), "parameters"))
+
+    # 3. No over-widening: a scalar-argument family stays scalar.
+    scalar = @slic (;) begin
+        z ~ normal(0.0, 1.0)
+        return z
+    end
+    @test stanc_compiles(scalar)
+    @test occursin("real z", stan_code(scalar))
+
+    # 4. No false-widening: `categorical` samples a scalar `int` from a vector
+    #    argument — only the DRAW shape drives inference, not an argument's shape.
+    cat = @slic (; K = 3) begin
+        theta::simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        c ~ categorical(theta)
+        return c
+    end
+    @test stanc_compiles(cat)
+    @test occursin("int c", stan_code(cat))
+end
+
+"""
 Verify `slic: public plate() do-block emitter` in an isolated test item.
 """
 @testitem "slic: public plate() do-block emitter" tags=[:slic, :plate, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
@@ -9896,7 +9957,15 @@ end
         @test occursin("real mu = std_normal_rng();", gq)
         @test occursin("real tau = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
         @test occursin("real sigma = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
-        @test occursin("array[subject_n] real y = normal_rng(alpha[subject], sigma);", gq)
+        # `y ~ normal(alpha[subject], sigma)` is an untyped fresh cell whose
+        # elementwise family broadcasts over the vector `alpha[subject]`, so its
+        # sampled shape is `vector[subject_n]` — the SAME type `y` carries as a
+        # data outcome in the posterior spelling (case f), now that the fresh-`~`
+        # autotype infers the broadcast shape (snag plate-untyped-ve-819ecfff).
+        # Previously it was mis-typed scalar and emitted `array[subject_n] real`,
+        # valid here only because nothing consumes `y`; the vector spelling is the
+        # consistent one and draws identically.
+        @test occursin("vector[subject_n] y = normal_vector_rng(subject_n, alpha[subject], sigma);", gq)
     end
     fitted_trunc = @slic (; y = [0.1, 0.2]) begin
         tau ~ truncated(std_normal; lower = 0.0)
