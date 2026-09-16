@@ -47,6 +47,10 @@ end
     conditioning_outside
     lower_clamping_cell_rng upper_clamping_cell_rng clamping_cell_rng
     jbroadcasted_rng
+    # Sequential-marginalization families (forward filter): the general
+    # `marginalize` HOF and the matrix-parameterized `kalman` instance.
+    marginalize_lpdf marginalize_lpdfs marginalize_rng
+    kalman_lpdf kalman_lpdfs kalman_rng
     flat_lpdf
     std_normal_lpdf
     normal_lpdf
@@ -1340,6 +1344,100 @@ import Statistics
             y[ii_mis[i]] = y_mis[i]
         end
         y
+    end
+end
+
+# --- Sequential marginalization ------------------------------------------------
+# `marginalize` is the general "integrate out a sequential latent" combinator: a
+# forward filter over an observation series `y`, taking user PREDICT / OBSERVE /
+# SIMULATE functions rather than fixed linear-algebra objects. Given an initial
+# belief `b0` and
+#   predict  :: belief -> belief             one-step state prediction
+#   observe  :: (belief, yₜ) -> (belief, ℓₜ) condition on yₜ; ℓₜ = log p(yₜ|y₁:ₜ₋₁)
+#   simulate :: belief -> (belief, yₜ)       draw yₜ from the one-step predictive
+# it provides the marginal log-density ∑ₜ ℓₜ (`_lpdf`), the per-observation
+# leave-future-out conditionals [ℓ₁ … ℓ_T] (`_lpdfs`) and forward-simulated
+# predictive draws (`_rng`). `belief` may be any value (scalar, tuple, vector …)
+# so long as the three functions agree on its type. Because Stan has no
+# first-class functions the closures are resolved at trace time and inlined into
+# one generated UDF per call site (the capture-dedup in `func_args` /
+# `expand_call_args` lets predict/observe/simulate share captured parameters).
+# NOTE: a belief whose SIZE derives from a captured matrix (e.g. a Kalman `(m,P)`
+# tuple where `m = A*m` is sized by the captured `A`) currently hits a captured-
+# matrix dimension-symbol scoping gap; use the matrix-parameterized `kalman`
+# family below for that case.
+@deffun @stanonly begin
+    @lpxf marginalize_lpdf(y::anything[T], b0, predict, observe, simulate)::real =
+        sum(marginalize_lpdfs(y, b0, predict, observe, simulate))
+    marginalize_lpdfs(y::anything[T], b0, predict, observe, simulate)::vector[T] = begin
+        ll::vector[T]
+        b = b0
+        for t in 1:T
+            bp = predict(b)
+            r = observe(bp, y[t])
+            b = r[1]
+            ll[t] = r[2]
+        end
+        ll
+    end
+    marginalize_rng(vector[T], b0, predict, observe, simulate)::vector[T] = begin
+        yy::vector[T]
+        b = b0
+        for t in 1:T
+            bp = predict(b)
+            r = simulate(bp)
+            b = r[1]
+            yy[t] = r[2]
+        end
+        yy
+    end
+end
+
+# --- Kalman filter (linear-Gaussian, univariate observation) -------------------
+# Matrix-parameterized convenience family: `y ~ kalman(m0, P0, A, Q, c, r)` for a
+# K-dimensional latent state and SCALAR observations yₜ = c'·zₜ + N(0, r), zₜ =
+# A·zₜ₋₁ + N(0, Q). Declared matrix dims keep the state size in UDF scope (unlike
+# the closure route above). Returns the exact marginal log-density; `_lpdfs` gives
+# the per-step one-step-ahead conditionals and `_rng` forward-simulates the series.
+# (Multivariate observations — matrix C / R — are a follow-up.)
+@deffun @stanonly begin
+    @lpxf kalman_lpdf(y::vector[T], m0::vector[K], P0::matrix[K,K],
+                      A::matrix[K,K], Q::matrix[K,K], c::vector[K], r::real)::real =
+        sum(kalman_lpdfs(y, m0, P0, A, Q, c, r))
+    kalman_lpdfs(y::vector[T], m0::vector[K], P0::matrix[K,K],
+                 A::matrix[K,K], Q::matrix[K,K], c::vector[K], r::real)::vector[T] = begin
+        ll::vector[T]
+        m = m0
+        P = P0
+        for t in 1:T
+            mp = A * m
+            Pp = quad_form_sym(P, A') + Q
+            yhat = c' * mp
+            S = quad_form_sym(Pp, c) + r
+            Kg = Pp * c / S
+            m = mp + Kg * (y[t] - yhat)
+            P = Pp - Kg * (c' * Pp)
+            ll[t] = normal_lpdf(y[t], yhat, sqrt(S))
+        end
+        ll
+    end
+    kalman_rng(vector[T], m0::vector[K], P0::matrix[K,K],
+               A::matrix[K,K], Q::matrix[K,K], c::vector[K], r::real)::vector[T] = begin
+        yy::vector[T]
+        m = m0
+        P = P0
+        for t in 1:T
+            mp = A * m
+            Pp = quad_form_sym(P, A') + Q
+            yhat = c' * mp
+            S = quad_form_sym(Pp, c) + r
+            yt = normal_rng(yhat, sqrt(S))
+            Kg = Pp * c / S
+            m = mp + Kg * (yt - yhat)
+            P = Pp - Kg * (c' * Pp)
+            yy[t] = yt
+        end
+        yy
     end
 end
 
