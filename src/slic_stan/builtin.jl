@@ -401,12 +401,18 @@ import Statistics
         weight * density(family, y, args...)
     weighted_lpmf(y, family, weight::real, args...) =
         weight * density(family, y, args...)
+    # `lp` is deliberately UNannotated: `pointwise` carries its own size. A
+    # builtin family sizes it by `y` (= `n`), but a custom `@lpxf` family whose
+    # `_lpdfs`/`_lpmfs` twin is sized by one of ITS OWN arg tokens infers a
+    # different-but-runtime-equal size (e.g. `vector[dims(args3)[1]]`). Forcing
+    # `lp::vector[n]` here rejects that custom case at trace time; the
+    # `weight .* lp` runtime dim-guard still enforces the equality.
     weighted_lpdf(y::anything[n], family, weight::vector[n], args...) = begin
-        lp::vector[n] = pointwise(family, y, args...)
+        lp = pointwise(family, y, args...)
         sum(weight .* lp)
     end
     weighted_lpmf(y::anything[n], family, weight::vector[n], args...) = begin
-        lp::vector[n] = pointwise(family, y, args...)
+        lp = pointwise(family, y, args...)
         sum(weight .* lp)
     end
     weighted_lpdfs(y, family, weight::real, args...) =
@@ -414,11 +420,11 @@ import Statistics
     weighted_lpmfs(y, family, weight::real, args...) =
         weight * pointwise(family, y, args...)
     weighted_lpdfs(y::anything[n], family, weight::vector[n], args...)::vector[n] = begin
-        lp::vector[n] = pointwise(family, y, args...)
+        lp = pointwise(family, y, args...)
         weight .* lp
     end
     weighted_lpmfs(y::anything[n], family, weight::vector[n], args...)::vector[n] = begin
-        lp::vector[n] = pointwise(family, y, args...)
+        lp = pointwise(family, y, args...)
         weight .* lp
     end
     weighted_rng(family, weight, args...) =
