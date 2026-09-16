@@ -297,3 +297,49 @@ macro stan_assert(cond, msg=nothing)
     msg_expr = msg === nothing ? string("assertion failed: ", cond) : msg
     esc(:(if !($cond); reject($msg_expr); end))
 end
+
+"""
+    @plate for i in 1:N
+        x[i] ~ dist(…)          # a model-scope array, one element per cell
+        t ~ dist(…)             # a per-cell local (hoisted, hygienic name)
+        y[i] ~ dist(x[i], t)    # an observation on data `y`
+    end
+
+The annotated independent-cell loop of a `@slic` model body: sugar for the
+`plate(...) do … end` primitive (the tracer inlines both; neither is a HOF).
+Arrays indexed by the loop variable are model-scope arrays visible after the
+loop; bare fresh names are per-iteration locals; writes to names bound outside
+the loop are rejected — SB models never mutate. Cells are independent: a read
+at any other index than the loop variable's is an error (use `@scan`).
+`for i in 1:N, j in 1:M` gives an N-D outer shape; `for di in doses` iterates
+the values of a container (a `RaggedVector` group per cell).
+
+Only meaningful inside a `@slic` model body, where it is a reserved form.
+"""
+macro plate(x)
+    error("`@plate` may only appear inside a `@slic` model body, as `@plate for i in 1:N … end`.")
+end
+
+"""
+    @scan begin
+        x[1] ~ dist0(…)                     # setup: the initial state(s)
+        for i in 2:T
+            x[i] ~ dist(x[i-1], …)          # the recurrence: lag reads `x[i-k]`
+        end
+    end
+
+The annotated sequential loop of a `@slic` model body (a sampled-states
+recurrence; decision `17cilkc`): one block whose trailing `for` is the
+recurrence and whose preceding statements are the setup. Arrays indexed by the
+loop variable are model-scope arrays; inside the loop they may be read at the
+current index or at a fixed lag `x[i - k]` (`k ≥ 1`), never ahead. Every
+element is assigned exactly once across setup + loop (the setup fills `x[1:m]`
+and the loop starts at `m+1`). Per-iteration locals and observations behave as
+in `@plate`. Lowers to a plain Stan `for` loop; a prior-only or cross-validated
+model re-draws the whole block in `generated quantities` in step order.
+
+Only meaningful inside a `@slic` model body, where it is a reserved form.
+"""
+macro scan(x)
+    error("`@scan` may only appear inside a `@slic` model body, as `@scan begin <setup>; for i in lo:hi … end end`.")
+end
