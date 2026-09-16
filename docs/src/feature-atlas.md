@@ -268,7 +268,8 @@ end
 Positional inputs are sliced; lexical captures are shared; fresh cell bindings
 are promoted to outer storage; the trailing expression becomes the cell output.
 Fixed vector cells become columns of a matrix. Additional outer axes add Stan
-array prefixes. Cells must remain independent: `plate` is not a scan.
+array prefixes. Cells must remain independent: `plate` is not a scan — the
+annotated `@scan begin … end` loop is (see Authoring support).
 
 ### Vector-valued plate cells
 
@@ -1297,9 +1298,9 @@ sampled through the usual CmdStan workflow.
 
 | Requested construct | Current answer |
 |---|---|
-| Ordinary `for`/`if` in `@slic` | No: put deterministic control flow in `@deffun` |
-| A loop that introduces independent parameters | Use compiler-owned `plate` |
-| A scan where cell `i` consumes cell `i-1` | No: write a deterministic recurrence in `@deffun` |
+| Ordinary `for`/`if` in `@slic` | No: deterministic control flow goes in `@deffun`; a top-level loop that introduces parameters is the annotated `@plate for … end` / `@scan begin … end` |
+| A loop that introduces independent parameters | `plate(...) do … end`, or its sugar `@plate for i in 1:N … end` |
+| A scan where cell `i` consumes cell `i-1` | Yes: `@scan begin <setup>; for i in lo:hi … end end` (sampled states, backward-only fixed-lag reads) |
 | Matrix-valued plate cell | No: shared matrix outside, scalar/vector cell result |
 | General 3-D+ Julia container | No |
 | Filtered/stepped/ragged comprehension | No; write an explicit supported loop |
