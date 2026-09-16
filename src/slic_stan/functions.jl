@@ -2137,8 +2137,32 @@ for (f, nm) in (
 )
     @eval func_name(::typeof($f)) = $nm
 end
-func_args(args::NamedTuple) = Join(mapreduce(func_args, vcat, pairs(args); init=[]), ", ")
+func_args(args::NamedTuple) = begin
+    # Dedup captured params by NAME across all closure args. A captured model
+    # variable is the same value whichever closure captured it, so it must be
+    # threaded exactly once; otherwise a UDF receiving two closures that capture
+    # the same variable (e.g. a `marginalize` observe/simulate pair both closing
+    # over `sigma`) emits duplicate parameter identifiers and stanc rejects it
+    # ("All function arguments must have distinct identifiers"). `expand_call_args`
+    # performs the matching dedup so definition and call stay positionally aligned.
+    seen = Set{Symbol}()
+    parts = []
+    for (k, v) in pairs(args)
+        parts = vcat(parts, _dedup_func_args!(seen, k, v))
+    end
+    Join(parts, ", ")
+end
 func_args(arg::Pair) = func_args(arg...)
+_dedup_func_args!(seen::Set{Symbol}, name, x::StanExpr2{<:types.closure}) = begin
+    rv = String[]
+    for (k, v) in pairs(type(x).info.value.captures)
+        (k in seen) && continue
+        push!(seen, k)
+        push!(rv, sigtype(v) * " " * string(k))
+    end
+    rv
+end
+_dedup_func_args!(seen::Set{Symbol}, name, value) = func_args(name, value)
 func_args(name, ::StanExpr2{<:types.func}) = []
 # Closure phase 2: a closure passed to a Stan-emitted UDF lifts its
 # captures into positional args appended to the receiver's signature.
@@ -2158,14 +2182,24 @@ func_args(name, x::StanExpr2{<:types.closure}) = [
 # splice each capture value as a positional arg.
 expand_call_args(args) = begin
     rv = Any[]
+    seen = Set{Symbol}()
     for a in args
-        _splat_or_keep!(rv, a)
+        _splat_or_keep!(rv, seen, a)
     end
     rv
 end
-_splat_or_keep!(rv, a::StanExpr2{<:types.closure}) =
-    (append!(rv, values(type(a).info.value.captures)); nothing)
-_splat_or_keep!(rv, a) = (push!(rv, a); nothing)
+# Dedup capture VALUES by capture name, mirroring `func_args`'s definition-side
+# dedup so a UDF receiving multiple closures that share a captured variable gets
+# that value threaded exactly once, keeping call and signature aligned.
+_splat_or_keep!(rv, seen::Set{Symbol}, a::StanExpr2{<:types.closure}) = begin
+    for (k, v) in pairs(type(a).info.value.captures)
+        (k in seen) && continue
+        push!(seen, k)
+        push!(rv, v)
+    end
+    nothing
+end
+_splat_or_keep!(rv, seen::Set{Symbol}, a) = (push!(rv, a); nothing)
 # What `Base.show(::CanonicalExpr)` (and its `<:ODESolver` / `<:ReduceSumFunction`
 # specialisations) want as the rendered Stan-side arg list: closures expanded
 # to their capture values, then `always_inline`-typed StanExprs (functions,
