@@ -1368,34 +1368,44 @@ end
 # first-class functions the closures are resolved at trace time and inlined into
 # one generated UDF per call site (the capture-dedup in `func_args` /
 # `expand_call_args` lets predict/observe/simulate share captured parameters).
-# NOTE: a belief whose SIZE derives from a captured matrix (e.g. a Kalman `(m,P)`
-# tuple where `m = A*m` is sized by the captured `A`) currently hits a captured-
-# matrix dimension-symbol scoping gap; use the matrix-parameterized `kalman`
-# family below for that case.
+# A belief whose SIZE derives from a captured matrix (e.g. a Kalman `(m,P)` tuple
+# where `m = A*m` is sized by the captured `A`) is fully supported: the hoisted
+# capture's dims are materialized at the UDF body top (`int A_m = dims(A)[1];`,
+# `functions.jl` `_capture_dim_binds`), so an EKF / matrix-Kalman expressed
+# through this HOF transpiles and compiles. (The matrix-parameterized `kalman`
+# family below remains the ergonomic shortcut for the linear-Gaussian case.)
 @deffun @stanonly begin
     @lpxf sequential_marginalize_lpdf(y::anything[T], b0, predict, observe, simulate)::real =
         sum(sequential_marginalize_lpdfs(y, b0, predict, observe, simulate))
     sequential_marginalize_lpdfs(y::anything[T], b0, predict, observe, simulate)::vector[T] = begin
-        ll::vector[T]
-        b = b0
-        for t in 1:T
-            bp = predict(b)
-            r = observe(bp, y[t])
-            b = r[1]
-            ll[t] = r[2]
+        # Internal locals are `sm_`-prefixed so they never collide with a hoisted
+        # closure capture: predict/observe/simulate close over model variables
+        # whose names the user chose, and those captures become positional Stan
+        # parameters of THIS generated UDF (func_args). A bare `r`/`b`/`t` here
+        # would clash with a capture of the same name ("Identifier r is already
+        # in use"). The `sm_` prefix keeps the body hygienic against any
+        # realistic capture name.
+        sm_ll::vector[T]
+        sm_b = b0
+        for sm_t in 1:T
+            sm_bp = predict(sm_b)
+            sm_step = observe(sm_bp, y[sm_t])
+            sm_b = sm_step[1]
+            sm_ll[sm_t] = sm_step[2]
         end
-        ll
+        sm_ll
     end
     sequential_marginalize_rng(vector[T], b0, predict, observe, simulate)::vector[T] = begin
-        yy::vector[T]
-        b = b0
-        for t in 1:T
-            bp = predict(b)
-            r = simulate(bp)
-            b = r[1]
-            yy[t] = r[2]
+        # See `_lpdfs` above: `sm_`-prefixed locals stay clear of hoisted captures.
+        sm_yy::vector[T]
+        sm_b = b0
+        for sm_t in 1:T
+            sm_bp = predict(sm_b)
+            sm_step = simulate(sm_bp)
+            sm_b = sm_step[1]
+            sm_yy[sm_t] = sm_step[2]
         end
-        yy
+        sm_yy
     end
 end
 

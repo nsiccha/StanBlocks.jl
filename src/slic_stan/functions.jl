@@ -408,13 +408,69 @@ end
 StanFunction3(docstring, rv_type, parent, args, body) =
     StanFunction3(docstring, rv_type, parent, args, body, nothing)
 
+# A closure captured a sized value (e.g. a `matrix A`) whose type still carries
+# its ORIGINAL model-scope dim symbols (`A_m`, `A_n`). `func_args` hoists that
+# capture into the receiver UDF's signature as a bare `matrix A` — but Stan
+# function parameters are unsized, so those dim symbols are NOT in scope inside
+# the body. A belief size derived from the capture (`vector[A_m] bp = A * b;`)
+# then references an out-of-scope symbol and stanc rejects it. Declared args
+# avoid this because their dims are materialized (`int T = dims(y)[1];`, via
+# `fun_sizes`); hoisted captures never pass through that machinery.
+#
+# Bind the referenced capture dims ONCE at the body top, mirroring the
+# declared-arg preamble: `int A_m = dims(A)[1];`. Only bare-Symbol dims (a
+# literal or an already-`dims(...)` size needs nothing), only those actually
+# referenced in the rendered body (no dead locals), deduped across every
+# closure arg (predict + observe may share a captured `A`) and never
+# re-declaring a dim the body already binds. Non-capturing functions produce no
+# binds, so their output is byte-identical to before.
+_capture_dim_binds(f::StanFunction3) = begin
+    # Cheap first pass, no body render: every bare-Symbol dim of a sized closure
+    # capture is a candidate `int <dim> = dims(<cap>)[<i>];`, deduped by dim name
+    # (a capture shared by two closures binds once). A non-capturing function has
+    # no candidates and returns immediately, so its render is untouched.
+    cands = Pair{Symbol,String}[]
+    seen = Set{Symbol}()
+    for (_, v) in pairs(f.args)
+        v isa StanExpr2{<:types.closure} || continue
+        for (k, cap) in pairs(type(v).info.value.captures)
+            cap isa StanExpr || continue
+            for (i, sz) in enumerate(stan_size(cap))
+                e = expr(sz)
+                (e isa Symbol && !(e in seen)) || continue
+                push!(seen, e)
+                push!(cands, e => "int $(e) = dims($(k))[$(i)];")
+            end
+        end
+    end
+    isempty(cands) && return String[]
+    # Second pass keeps only dims actually referenced in the body, and never a
+    # dim the body already binds (defensive against a signature-dim collision).
+    body_str = sprint(io0 -> show(StanIO(io0), StanBlock(Symbol(), f.body)))
+    binds = String[]
+    for (e, bind) in cands
+        occursin(Regex("\\b" * string(e) * "\\b"), body_str) || continue
+        occursin(Regex("\\bint\\s+" * string(e) * "\\b"), body_str) && continue
+        push!(binds, bind)
+    end
+    binds
+end
+
 function Base.show(io::IO, f::StanFunction3)
     try
+        # Materialize any referenced captured-param dims at the body top so a
+        # `vector[A_m]`-style belief size (A a hoisted closure capture) resolves.
+        binds = try
+            _capture_dim_binds(f)
+        catch
+            String[]
+        end
+        body = isempty(binds) ? f.body : vcat(binds, f.body)
         autoprint(
             io,
             f.docstring,
             sigtype(f.rv_type), " ", func_name(f.parent, f.args), "(", func_args(f.args), ")",
-            StanBlock(Symbol(), f.body),
+            StanBlock(Symbol(), body),
         )
     catch e
         _is_stanblocks_error(e) && rethrow()
