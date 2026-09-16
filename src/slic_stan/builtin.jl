@@ -1485,7 +1485,7 @@ end
 @deffun begin
     Base.length(rv::RaggedVector)::int = size(rv.ends)
     Base.lastindex(rv::RaggedVector)::int = size(rv.ends)
-    Base.getindex(rv::RaggedVector, i::int)::vector[ragged_length(rv, i)] =
+    Base.getindex(rv::RaggedVector, i::int)::typeof(rv.mem[1])[ragged_length(rv, i)] =
         rv.mem[ragged_start(rv, i):ragged_end(rv, i)]
     Base.length(rv::RaggedMatrix)::int = size(rv.ends)
     Base.lastindex(rv::RaggedMatrix)::int = size(rv.ends)
@@ -1583,17 +1583,29 @@ _ragged_base_family(rhs::CanonicalExpr) = begin
     spec = _distribution_hof(head(rhs))
     isnothing(spec) ? head(rhs) : _distribution_hof_family(spec, rhs)
 end
-# A ragged carrier's backing memory is a Stan `vector`, so a DISCRETE family would
-# have to coerce its integer draw into real storage — silently, and only for the
-# ragged spelling. Reject at tracing with the family named rather than emit it.
-_assert_ragged_continuous_family(rhs::CanonicalExpr) = begin
+# A ragged observation's carrier and its family's probability KIND must agree: a
+# discrete family (`_lpmf`) needs an INTEGER-valued group (an int-backed
+# `RaggedVector` — `mem::array[] int`), a continuous family (`_lpdf`) a real
+# `vector` group. A discrete draw into a real carrier (or a real draw into an
+# int carrier) has no valid Stan form, so reject the MISMATCH at tracing with
+# both the family and the carrier named. `ct` is the center type of the group
+# slice (int for an integer ragged observation), so a discrete family over an
+# integer ragged observation now lowers exactly like a real one (snag
+# ragged-int-obser-771dd259 — the integer ragged carrier).
+_ragged_carrier_kind(ct) = ct === types.int ? :lpmf : :lpdf
+_assert_ragged_family_carrier(rhs::CanonicalExpr, ct) = begin
     family = _ragged_base_family(rhs)
-    _probability_kind(family) === :lpdf || error(
-        "Ragged observation: family `", nameof(family), "` is discrete (resolves to ",
-        nameof(lpxf_expr(family)), "). A `RaggedVector` stores its groups in a real ",
-        "`vector`, so an integer-valued ragged observation/prediction has no carrier ",
-        "yet. Use a dense `int[n]` observation, or open a decision for an integer ",
-        "ragged carrier."
+    kind = _probability_kind(family)
+    kind === _ragged_carrier_kind(ct) || error(
+        kind === :lpmf ?
+        string("Ragged observation: family `", nameof(family), "` is discrete (resolves to ",
+            nameof(lpxf_expr(family)), "), but the ragged observation is real-valued (`", ct,
+            "`). A discrete family needs an INTEGER-valued ragged observation — pass ",
+            "`Vector{Vector{Int}}` data (its groups then back an `array[] int`).") :
+        string("Ragged observation: family `", nameof(family), "` is continuous (resolves to ",
+            nameof(lpxf_expr(family)), "), but the ragged observation is integer-valued. Its ",
+            "predictive draw has no integer form — pass real (`Float64`) ragged data, or use ",
+            "a discrete family."),
     )
     rhs
 end
@@ -1632,16 +1644,18 @@ _ragged_group_rng(token, rhs::CanonicalExpr, ct) = begin
 end
 expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_draw)}; info) = begin
     proto = x.args[1]
-    rhs = _assert_ragged_continuous_family(_ragged_group_call(x))
     ct = center_type(proto)
+    rhs = _assert_ragged_family_carrier(_ragged_group_call(x), ct)
     # Sized token — the SAME protocol every other vector-shaped predictive draw
     # uses, so a custom `@lpxf` family only needs its ordinary sized
-    # `foo_rng(vector[n], args…)::vector[n]` companion (stanblocks-use §8).
+    # `foo_rng(vector[n], args…)::vector[n]` companion (stanblocks-use §8). For an
+    # integer ragged observation `ct` is `int`, so the token selects the discrete
+    # `foo_rng(int[n], …)::int[n]` overload (builtin.jl `$drng(int[n], …)` block).
     token = StanExpr(ct, StanType(types.tokenof{ct}, stan_size(proto); value=ct, qual=:data))
     _ragged_group_rng(token, rhs, ct)
 end
 expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_density)}; info) = begin
-    rhs = _assert_ragged_continuous_family(_ragged_group_call(x))
+    rhs = _assert_ragged_family_carrier(_ragged_group_call(x), center_type(x.args[1]))
     # The AGGREGATE density of the whole group — one scalar. Never `_lpdfs`.
     lpxf_expr(x.args[1], rhs)
 end
