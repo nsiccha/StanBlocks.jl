@@ -259,8 +259,14 @@ _reject_model_control_flow(x) = x
 _reject_model_control_flow(x::CanonicalExpr) = (foreach(_reject_model_control_flow, x.args); x)
 _reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,TernaryExpr,LogicalAndExpr,LogicalOrExpr,ElseIfExpr,BreakExpr,ContinueExpr,ComprehensionExpr}) = error(
     "`$(_control_flow_kind(x))` control flow is not supported in @slic model bodies — ",
-    "move the logic into an @deffun function body, or use a vectorised form."
+    "move the logic into an @deffun function body, or use a vectorised form. ",
+    "A top-level loop that introduces parameters is written `@plate for i in 1:N … end` ",
+    "(independent cells) or `@scan begin <setup>; for i in lo:hi … end end` (a recurrence)."
 )
+# The annotated loops are compiler-owned: the annotation licenses the loop and
+# the inliner (`_forward_annotated_loop!`) re-checks the BODY statements itself.
+_reject_model_control_flow(x::CanonicalExprV{:plate_loop}) = x
+_reject_model_control_flow(x::CanonicalExprV{:scan_block}) = x
 # Slice/element assignment (`v[a:b] = …`, `v[i] = …`) is declare-then-fill: the
 # indexed LHS forwards to a non-Symbol expr that is never registered in `info`,
 # so the backward pass would otherwise die with a raw `KeyError` from the
@@ -293,6 +299,18 @@ end
 isexpr(h) = Base.Fix2(isexpr, h)
 isexpr(x, h) = false
 isexpr(x::CanonicalExpr, h) = head(x) == h
+# `@plate` / `@scan` annotations on a top-level `@slic` loop. They are reserved
+# macros (`_SLIC_RESERVED_MACROS`, so `slic_macroexpand` keeps them) and are
+# recognised here by head — bare, `Module.@plate`, or a `GlobalRef` — BEFORE
+# their argument is canonicalised, because the inliner needs the RAW loop AST
+# for its syntactic pre-pass (the same reason a lambda's body stays raw).
+_annotated_loop_kind(::Any) = nothing
+_annotated_loop_kind(head::Symbol) =
+    head === Symbol("@plate") ? :plate : head === Symbol("@scan") ? :scan : nothing
+_annotated_loop_kind(head::GlobalRef) = _annotated_loop_kind(head.name)
+_annotated_loop_kind(head::Expr) =
+    (head.head === :. && length(head.args) == 2 && head.args[2] isa QuoteNode) ?
+        _annotated_loop_kind(head.args[2].value) : nothing
 canonical(x) = x
 canonical(x::Expr) = if x.head === :->
     # Lambdas (`(x) -> body`): keep `lhs` and `body` as raw, un-canonicalised
@@ -300,6 +318,15 @@ canonical(x::Expr) = if x.head === :->
     # later substitution — `inline_substitute` walks Expr/Symbol, not
     # CanonicalExpr.
     CanonicalExpr(x.head, x.args...)
+elseif x.head === :macrocall && _annotated_loop_kind(x.args[1]) !== nothing
+    kind = _annotated_loop_kind(x.args[1])
+    args = Any[a for a in x.args[3:end] if !(a isa LineNumberNode)]
+    length(args) == 1 || error(
+        "`@", kind, "` takes exactly one argument (",
+        kind === :plate ? "`@plate for i in 1:N … end`" : "`@scan begin <setup>; for i in lo:hi … end end`",
+        "), got ", length(args), "."
+    )
+    CanonicalExpr(kind === :plate ? :plate_loop : :scan_block, args[1])
 elseif x.head === :do
     # `f(args) do x; body end` parses to `Expr(:do, Expr(:call, f, args...),
     # Expr(:->, Expr(:tuple, x), body))`. Desugar to the equivalent

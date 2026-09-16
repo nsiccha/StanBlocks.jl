@@ -9935,3 +9935,344 @@ end
     @test occursin("`p ~ flat(…)` is an improper prior", err)
     @test occursin("nothing to draw from", err)
 end
+
+"""
+Annotated top-level model loops — `@plate for … end` and `@scan begin … end` —
+are sugar over the shared compiler-owned-loop inliner (`_forward_loop_core!`),
+never HOFs: the tracer inlines both (decisions `10mrh0f`, `1375uo5`). Arrays
+indexed by the loop variable are model-scope arrays; bare fresh names are
+per-iteration locals (`1rgglep`); a scan's setup is its initial state
+(`1ntdzr8`); scan lowers to a plain Stan model-block loop with backward-only
+lag reads (`17cilkc`).
+"""
+@testitem "slic: annotated @plate for / @scan loops emit and stanc-compile" tags=[:slic, :plate, :scan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    import StanBlocks.stan: maybecv
+
+    # 1. `@plate for`: a model-scope array (own name), a hoisted local (hygienic
+    #    name, constraint carried), an observation; the user's loop variable is
+    #    the emitted index.
+    pf = @slic (; y = randn(6), mu0 = 0.5) begin
+        sigma ~ normal(0.0, 1.0; lower = 0.0)
+        @plate for i in 1:6
+            x[i] ~ normal(mu0, 1.0)
+            t ~ exponential(1.0)
+            y[i] ~ normal(x[i] + t, sigma)
+        end
+        z ~ normal(sum(x), 1.0)
+    end
+    @test transpiles(pf)
+    @test stanc_compiles(pf)
+    let code = stan_code(pf)
+        params = stan_block(code, "parameters")
+        @test occursin("vector[6] x;", params)
+        @test occursin("vector<lower=0.0>[6] x_t;", params)
+        mb = stan_block(code, "model")
+        @test occursin("for(i in 1:6)", mb)
+        @test occursin("x[i] ~ normal(mu0, 1.0);", mb)
+        @test occursin("x_t[i] ~ exponential(1.0);", mb)
+        @test occursin("y[i] ~ normal((x[i] + x_t[i]), sigma);", mb)
+        # `z` reaches no likelihood: a generated quantity reading the collected array.
+        @test occursin("real z = normal_rng(sum(x), 1.0);", stan_block(code, "generated quantities"))
+    end
+
+    # 2. `@scan`: AR(1) with the observation outside — the hand-written Stan.
+    ar1_model(data) = @slic data begin
+        phi ~ normal(0.0, 0.5)
+        s ~ exponential(1.0)
+        @scan begin
+            h[1] ~ normal(0.0, 1.0)
+            for t in 2:T
+                h[t] ~ normal(phi * h[t-1], s)
+            end
+        end
+        y ~ normal(h, 1.0)
+    end
+    ar1 = ar1_model((; y = randn(5), T = 5))
+    @test transpiles(ar1)
+    @test stanc_compiles(ar1)
+    let code = stan_code(ar1)
+        @test occursin("vector[T] h;", stan_block(code, "parameters"))
+        mb = stan_block(code, "model")
+        @test occursin("h[1] ~ normal(0.0, 1.0);", mb)
+        @test occursin("for(t in 2:T)", mb)
+        @test occursin("h[t] ~ normal((phi * h[(t - 1)]), s);", mb)
+        @test occursin("y ~ normal(h, 1.0);", mb)
+    end
+
+    # 3. Prior-only (`y` unbound): the whole block re-draws in generated
+    #    quantities in step order; nothing is sampled.
+    prior = ar1_model((; T = 5))
+    @test stanc_compiles(prior)
+    let code = stan_code(prior)
+        @test strip(stan_block(code, "parameters")) == "{\n}"
+        @test strip(stan_block(code, "model")) == "{\n}"
+        gq = stan_block(code, "generated quantities")
+        i1 = findfirst("h[1] = normal_rng(0.0, 1.0);", gq)
+        i2 = findfirst("h[t] = normal_rng((phi * h[(t - 1)]), s);", gq)
+        @test i1 !== nothing && i2 !== nothing && first(i1) < first(i2)
+    end
+
+    # 4. cv-tainted size: the chain leaves `parameters`, `y ~` leaves the model
+    #    block, the predictive twins remain (the plate rule, applied as one unit).
+    cvm = ar1_model((; y = randn(5), T = maybecv(:T, 5)))
+    @test stanc_compiles(cvm)
+    let code = stan_code(cvm)
+        @test !occursin("h[t] ~", stan_block(code, "model"))
+        gq = stan_block(code, "generated quantities")
+        @test occursin("h[t] = normal_rng((phi * h[(t - 1)]), s);", gq)
+        @test occursin("y_gen", gq) && occursin("y_likelihood", gq)
+    end
+
+    # 5. Two carried states, lag 2, setup fills `1:2`, loop from 3.
+    two = @slic (; y1 = randn(6), y2 = randn(6), T = 6) begin
+        a ~ normal(0.0, 1.0); b ~ normal(0.0, 1.0); s ~ exponential(1.0)
+        @scan begin
+            u[1] ~ normal(0.0, 1.0); v[1] ~ normal(0.0, 1.0)
+            u[2] ~ normal(0.0, 1.0); v[2] ~ normal(0.0, 1.0)
+            for t in 3:T
+                u[t] ~ normal(u[t-1] + a * v[t-2], s)
+                v[t] ~ normal(v[t-1] + b * u[t-1], s)
+            end
+        end
+        y1 ~ normal(u, 0.5); y2 ~ normal(v, 0.5)
+    end
+    @test stanc_compiles(two)
+    let mb = stan_block(stan_code(two), "model")
+        @test occursin("for(t in 3:T)", mb)
+        @test occursin("u[t] ~ normal((u[(t - 1)] + (a * v[(t - 2)])), s);", mb)
+        @test occursin("v[t] ~ normal((v[(t - 1)] + (b * u[(t - 1)])), s);", mb)
+    end
+
+    # 6. Non-centered: the per-step local innovation is sized by the ITERATION
+    #    count and indexed with the offset — no never-sampled coordinate.
+    nc = @slic (; y = randn(5), T = 5) begin
+        phi ~ normal(0.0, 0.5); s ~ exponential(1.0)
+        @scan begin
+            eps1 ~ std_normal()
+            x[1] = s * eps1
+            for t in 2:T
+                eps ~ std_normal()
+                x[t] = phi * x[t-1] + s * eps
+            end
+        end
+        y ~ normal(x, 1.0)
+    end
+    @test stanc_compiles(nc)
+    let code = stan_code(nc)
+        params = stan_block(code, "parameters")
+        @test occursin("vector[(T - 1)] x_eps;", params)
+        @test occursin("real eps1;", params)
+        tp = stan_block(code, "transformed parameters")
+        @test occursin("vector[T] x;", tp)
+        @test occursin("x[1] = (s * eps1);", tp)
+        @test occursin("x[t] = ((phi * x[(t - 1)]) + (s * x_eps[(t - 1)]));", tp)
+        @test occursin("x_eps[(t - 1)] ~ std_normal();", stan_block(code, "model"))
+    end
+
+    # 7. N-D `@plate for`, and value iteration over a ragged container with the
+    #    observation on the per-cell slice.
+    nd = @slic (; y = randn(3, 2), N = 3, M = 2) begin
+        @plate for i in 1:N, j in 1:M
+            w[i, j] ~ normal(0.0, 1.0)
+            y[i, j] ~ normal(w[i, j], 1.0)
+        end
+    end
+    @test stanc_compiles(nd)
+    @test occursin("matrix[N, M] w;", stan_block(stan_code(nd), "parameters"))
+    vi = @slic (; doses = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]) begin
+        @plate for d in doses
+            m ~ normal(0.0, 1.0)
+            d ~ normal(m, 1.0)
+        end
+    end
+    @test stanc_compiles(vi)
+
+    # 8. Rejections — every contract violation is a loud trace-time error.
+    rejects(m, needle) = try
+        stan_code(m); false
+    catch e
+        occursin(needle, sprint(showerror, e))
+    end
+    bare_for = @slic (; y = randn(3)) begin
+        for i in 1:3; y[i] ~ normal(0.0, 1.0); end
+    end
+    @test rejects(bare_for, "`@plate for i in 1:N … end`")
+    plate_lag = @slic (; T = 4) begin
+        @plate for i in 1:T; x[i] ~ normal(0.0, 1.0); z[i] = x[i-1]; end
+    end
+    @test rejects(plate_lag, "plate cells are independent; use `@scan`")
+    scan_fwd = @slic (; T = 4) begin
+        @scan begin; x[1] ~ normal(0.0, 1.0); for i in 2:T; x[i] ~ normal(x[i+1], 1.0); end; end
+    end
+    @test rejects(scan_fwd, "forward and non-index reads are not a scan")
+    outer_write = @slic (; T = 4) begin
+        sigma ~ exponential(1.0)
+        @plate for i in 1:T; sigma ~ exponential(2.0); x[i] ~ normal(0.0, sigma); end
+    end
+    @test rejects(outer_write, "SB models never mutate")
+    double_fill = @slic (; T = 4) begin
+        @plate for i in 1:T; x[i] ~ normal(0.0, 1.0); x[i] ~ normal(1.0, 1.0); end
+    end
+    @test rejects(double_fill, "assigned twice")
+    lag_beyond = @slic (; T = 4) begin
+        @scan begin; x[1] ~ normal(0.0, 1.0); for i in 2:T; x[i] ~ normal(x[i-2], 1.0); end; end
+    end
+    @test rejects(lag_beyond, "reads before the setup")
+    bad_start = @slic (; T = 4) begin
+        @scan begin; x[1] ~ normal(0.0, 1.0); for i in 3:T; x[i] ~ normal(x[i-1], 1.0); end; end
+    end
+    @test rejects(bad_start, "the loop must start at 2")
+    bare_read = @slic (; T = 4) begin
+        @plate for i in 1:T; x[i] ~ normal(0.0, 1.0); z[i] = sum(x); end
+    end
+    @test rejects(bare_read, "read it indexed")
+end
+
+"""
+Annotated loops build through BridgeStan with the expected sampler dimension:
+model-scope arrays and per-iteration locals are real parameters, a scan's
+prior-only program has none, and a scan's local innovations count only the
+iterations that run.
+"""
+@testitem "slic: annotated loops instantiate with the expected dimensions" tags=[:slic, :plate, :scan, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+    ar1_model(data) = @slic data begin
+        phi ~ normal(0.0, 0.5)
+        s ~ exponential(1.0)
+        @scan begin
+            h[1] ~ normal(0.0, 1.0)
+            for t in 2:T
+                h[t] ~ normal(phi * h[t-1], s)
+            end
+        end
+        y ~ normal(h, 1.0)
+    end
+    ar1 = ar1_model((; y = randn(5), T = 5))
+    p = instantiate(ar1)
+    @test LogDensityProblems.dimension(p) == 2 + 5          # phi, s, h[1:5]
+    @test isfinite(LogDensityProblems.logdensity(p, 0.1 .* randn(7)))
+    @test LogDensityProblems.dimension(instantiate(ar1_model((; T = 5)))) == 0   # prior-only: fixed_param
+    nc = @slic (; y = randn(5), T = 5) begin
+        phi ~ normal(0.0, 0.5); s ~ exponential(1.0)
+        @scan begin
+            eps1 ~ std_normal()
+            x[1] = s * eps1
+            for t in 2:T
+                eps ~ std_normal()
+                x[t] = phi * x[t-1] + s * eps
+            end
+        end
+        y ~ normal(x, 1.0)
+    end
+    @test LogDensityProblems.dimension(instantiate(nc)) == 2 + 1 + 4   # phi, s, eps1, eps[2:5]
+    nested = @slic (; y = randn(4, 3), S = 3, T = 4) begin
+        phi ~ normal(0.0, 0.5); s ~ exponential(1.0)
+        @plate for j in 1:S
+            @scan begin
+                h[1] ~ normal(0.0, 1.0)
+                for t in 2:T
+                    h[t] ~ normal(phi * h[t-1], s)
+                end
+            end
+            y[:, j] ~ normal(h, 1.0)
+        end
+    end
+    pn = instantiate(nested)
+    @test LogDensityProblems.dimension(pn) == 2 + 4 * 3               # phi, s, h[T, S]
+    @test isfinite(LogDensityProblems.logdensity(pn, 0.1 .* randn(14)))
+end
+
+"""
+Annotated loops nest: a `@scan` inside a `@plate for` is the per-subject
+state-space shape. The enclosing loop discovers the inner loop's arrays and
+locals in its probe pass and promotes them to per-subject storage; in its emit
+pass the inner loop re-declares nothing and its indices COMPOSE with the
+enclosing accessor (`h[t]` under `h[:, j]` → `h[t, j]`), so all three modes
+(posterior / prior-only / cv population prediction) hold as one unit.
+"""
+@testitem "slic: annotated loops nest — a @scan inside a @plate for" tags=[:slic, :plate, :scan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    import StanBlocks.stan: maybecv
+    nest_model(data) = @slic data begin
+        phi ~ normal(0.0, 0.5); s ~ exponential(1.0)
+        @plate for j in 1:S
+            @scan begin
+                h[1] ~ normal(0.0, 1.0)
+                for t in 2:T
+                    h[t] ~ normal(phi * h[t-1], s)
+                end
+            end
+            y[:, j] ~ normal(h, 1.0)
+        end
+    end
+    # posterior: one matrix parameter, composed indices, the observation per column
+    post = nest_model((; y = randn(4, 3), S = 3, T = 4))
+    @test stanc_compiles(post)
+    let code = stan_code(post)
+        @test occursin("matrix[T, S] h;", stan_block(code, "parameters"))
+        mb = stan_block(code, "model")
+        @test occursin("for(j in 1:S)", mb)
+        @test occursin("h[1, j] ~ normal(0.0, 1.0);", mb)
+        @test occursin("h[t, j] ~ normal((phi * h[(t - 1), j]), s);", mb)
+        @test occursin("y[:, j] ~ normal(h[:, j], 1.0);", mb)
+        @test occursin("y_gen[:, j] = normal_vector_rng(y_m, h[:, j], 1.0);", stan_block(code, "generated quantities"))
+    end
+    # cv-tainted subject count: the whole per-subject chain re-draws in gq
+    cvm = nest_model((; y = randn(4, 3), S = maybecv(:S, 3), T = 4))
+    @test stanc_compiles(cvm)
+    let code = stan_code(cvm)
+        @test !occursin("h[t, j] ~", stan_block(code, "model"))
+        gq = stan_block(code, "generated quantities")
+        @test occursin("h[1, j] = normal_rng(0.0, 1.0);", gq)
+        @test occursin("h[t, j] = normal_rng((phi * h[(t - 1), j]), s);", gq)
+    end
+    # prior-only with a TYPED observation cell (an untyped vector-shaped fresh
+    # cell is a separate, pre-existing plate typing defect — snagged)
+    prior = @slic (; S = 3, T = 4) begin
+        phi ~ normal(0.0, 0.5); s ~ exponential(1.0)
+        @plate for j in 1:S
+            @scan begin
+                h[1] ~ normal(0.0, 1.0)
+                for t in 2:T
+                    h[t] ~ normal(phi * h[t-1], s)
+                end
+            end
+            y[:, j]::vector[T] ~ normal(h, 1.0)
+        end
+    end
+    @test stanc_compiles(prior)
+    let code = stan_code(prior)
+        @test strip(stan_block(code, "parameters")) == "{\n}"
+        gq = stan_block(code, "generated quantities")
+        @test occursin("matrix[T, S] y;", gq)
+        @test occursin("y[:, j] = normal_vector_rng(T, h[:, j], 1.0);", gq)
+    end
+    # non-centered inside the plate: per-subject locals, sized by the iteration count
+    nc = @slic (; y = randn(4, 3), S = 3, T = 4) begin
+        phi ~ normal(0.0, 0.5); s ~ exponential(1.0)
+        @plate for j in 1:S
+            @scan begin
+                e1 ~ std_normal()
+                x[1] = s * e1
+                for t in 2:T
+                    eps ~ std_normal()
+                    x[t] = phi * x[t-1] + s * eps
+                end
+            end
+            y[:, j] ~ normal(x, 1.0)
+        end
+    end
+    @test stanc_compiles(nc)
+    let code = stan_code(nc)
+        params = stan_block(code, "parameters")
+        @test occursin("vector[S] e1;", params)
+        @test occursin("matrix[(T - 1), S] x_eps;", params)
+        tp = stan_block(code, "transformed parameters")
+        @test occursin("x[1, j] = (s * e1[j]);", tp)
+        @test occursin("x[t, j] = ((phi * x[(t - 1), j]) + (s * x_eps[(t - 1), j]));", tp)
+        mb = stan_block(code, "model")
+        @test occursin("e1[j] ~ std_normal();", mb)
+        @test occursin("x_eps[(t - 1), j] ~ std_normal();", mb)
+    end
+end
