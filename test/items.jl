@@ -3274,6 +3274,56 @@ in an isolated test item.
     @test isfinite(LogDensityProblems.logdensity(p, [0.5]))
 end
 
+@testitem "slic: marginalize sequential HOF (scalar belief) + capture dedup" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # General sequential-marginalization combinator: `y ~ marginalize(b0, predict,
+    # observe, simulate)` — a forward filter integrating out a latent state. Here
+    # an AR(1) marginal likelihood with a scalar belief. This ALSO guards the
+    # closure capture-dedup fix (functions.jl `func_args` / `expand_call_args`):
+    # `observe` and `simulate` both close over `sigma`, so a naive per-closure
+    # capture splice would emit a UDF with a duplicate `sigma` parameter that stanc
+    # rejects ("All function arguments must have distinct identifiers").
+    model = @slic (; y = [0.5, -0.3, 1.2, 0.1, 0.8, -0.2]) begin
+        rho ~ std_normal()
+        sigma ~ std_normal()
+        y ~ marginalize(0.0,
+            bb -> rho * bb,
+            (bb, yy) -> (bb + yy, normal_lpdf(yy, bb, exp(sigma))),
+            bb -> (bb + normal_rng(bb, exp(sigma)), normal_rng(bb, exp(sigma))))
+    end
+    @test stanc_compiles(model)
+    sc = stan_code(model)
+    @test occursin("marginalize", sc)
+    @test occursin("_lpdfs(", sc)   # per-observation one-step-ahead conditionals
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 2
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.3, 0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
+@testitem "slic: kalman filter (univariate obs, k-state)" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Matrix-parameterized linear-Gaussian Kalman marginal likelihood. Declared
+    # matrix dims keep the state size in UDF scope (the closure route's captured-
+    # matrix size gap does not apply here). Local-linear-trend: k=2 state, scalar
+    # observation yₜ = c'·zₜ + N(0, r).
+    A  = [1.0 1.0; 0.0 1.0]
+    c  = [1.0, 0.0]
+    m0 = [0.0, 0.0]
+    P0 = [1.0 0.0; 0.0 1.0]
+    y  = [0.2, 0.5, 0.3, 0.9, 1.1, 1.0, 1.4]
+    model = @slic (; y, m0, P0, A, c) begin
+        logq ~ std_normal()
+        logr ~ std_normal()
+        y ~ kalman(m0, P0, A, exp(logq) * diag_matrix(rep_vector(1.0, 2)), c, exp(logr))
+    end
+    @test stanc_compiles(model)
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 2
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.1, 0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
 """
 Verify `in-body @doc docstring renders (StanExpr unwrap)` in an isolated test item.
 """
