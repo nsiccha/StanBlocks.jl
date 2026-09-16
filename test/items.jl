@@ -109,6 +109,37 @@ the original family supplies pointwise likelihoods and predictive draws.
         occursin("parameter-dependent likelihood weights", parameter_weight_error)
 end
 
+# snag `weighted-custom-33d611a8` (reported from BRM): `weighted(...)` over a
+# custom `@lpxf` family whose pointwise twin is sized by one of its OWN arg
+# tokens (not by `y`) transpiled-errored with `Typed assignment lp::vector[n] =
+# ... is incompatible with inferred RHS type vector[dims(argK)[1]]`. The internal
+# `lp` local in the four `y::anything[n]` weighted methods was over-annotated
+# `::vector[n]`; a builtin family's pointwise happens to be sized by `y` so it
+# unified, but a custom family sized by a different arg (runtime-equal but a
+# distinct size token) could not. The wrapper's own runtime dim-guard already
+# enforces `dims(weight)[1] == n`, so `lp` takes the pointwise result's own size.
+@testitem "slic: weighted HOF over a custom family sized by a non-y arg" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    d_val = [1, 2, 0, 3]
+    window_val = [0.5, 1.0, 1.5, 2.0]
+    w_val = [1.0, 2.0, 1.0, 3.0]
+    model = @slic (; d = d_val, window = window_val, w = w_val) begin
+        mu ~ normal(0.0, 1.0)
+        sigma ~ exponential(1.0)
+        d ~ weighted(wcustom, w, mu, sigma, window)
+    end
+    code = stan_code(model)
+    @test occursin("weighted_wcustom_lpmf", code)
+    @test occursin("weighted_wcustom_lpmfs", code)
+    @test occursin("weighted_int_wcustom_rng", code)
+    # The internal `lp` local is NOT forced to the wrapper's `n`; it takes the
+    # pointwise result's own (window-sized) type. If a future edit re-adds the
+    # `::vector[n]` annotation, `stan_code` above throws and this test errors.
+    @test occursin("lp = wcustom_lpmfs", code)
+    @test stanc_compiles(model)
+end
+
 """
 Location-first 3-arg continuous families (`skew_double_exponential`,
 `skew_normal`, `exp_mod_normal`, `pareto_type_2`) sampled with a per-observation
@@ -580,6 +611,34 @@ end
         srs2_helper(y, f, args...) = my_lpdf(y, f, args...)
         srs2_lpdfs(y, f, args...) = 0.
         srs2_rng(f, args...) = 0.
+        # A custom @lpxf family whose pointwise `_lpmfs` twin is sized by its OWN
+        # `window::vector[N]` arg, NOT by `y`. Under `weighted(..., w)` the emitted
+        # wrapper binds an internal `lp` from that pointwise result, whose inferred
+        # size token (`dims(<window-arg>)[1]`) is runtime-equal to but distinct from
+        # the wrapper's `n` (= `dims(y)[1]`). Forcing `lp::vector[n]` on that local
+        # rejected the case at trace time — snag `weighted-custom-33d611a8`
+        # (reported from BRM's `weighted(dic_lognormal(...), fweights(n))`).
+        @lhs @lpxf wcustom_lpmf(d::int[N], mu::real, sigma::real, window::vector[N])::real = begin
+            rv = 0.
+            for i in 1:N
+                rv += lognormal_lpdf(window[i] + d[i], mu, sigma)
+            end
+            rv
+        end
+        wcustom_lpmfs(d::int[N], mu::real, sigma::real, window::vector[N])::vector[N] = begin
+            out::vector[N]
+            for i in 1:N
+                out[i] = lognormal_lpdf(window[i] + d[i], mu, sigma)
+            end
+            out
+        end
+        wcustom_rng(int[N], mu::real, sigma::real, window::vector[N])::int[N] = begin
+            out::int[N]
+            for i in 1:N
+                out[i] = 1
+            end
+            out
+        end
         end
     end
 
