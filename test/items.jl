@@ -2042,6 +2042,59 @@ Broadcast (`x::vector[n] ~ std_normal()`) and native-constrained containers
 end
 
 """
+Regression for snag `deffun-numeric-c-016cfc57` (reported from BRM's Kalman
+`@deffun`s): a bare module-level numeric `const` referenced in a model or
+`@deffun` body is DELIBERATELY not resolved (user decision `3bbtrv` — only
+built-in `Irrational`s do). The rejection must be loud AND actionable — name
+the deliberate design and the supported named-constant idiom (a zero-arg
+`@deffun`), rather than the opaque `Found X in <mod>, but is of type Float64!`
+the reporter hit twice. The idiom itself must transpile.
+"""
+@testitem "slic: numeric const rejection is actionable; zero-arg @deffun idiom works" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+
+    const NUMERIC_CONST = 1.8378770664093453
+
+    # --- NEGATIVE: a Float64 const referenced directly in the @slic body ------
+    m_slic = @slic (; y = [0.1, -0.2, 0.3]) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ normal(mu + NUMERIC_CONST, 1.0)
+    end
+    @test !transpiles(m_slic; re=false)
+    msg_slic = errmsg(m_slic)
+    @test occursin("3bbtrv", msg_slic)
+    @test occursin("@deffun", msg_slic)          # points at the idiom
+    @test occursin("1.8378770664093453", msg_slic)
+
+    # --- NEGATIVE: the same const referenced inside a @deffun body ------------
+    @deffun begin
+        scale_with_const(base::real)::real = base + NUMERIC_CONST
+    end
+    m_deffun = @slic (; y = [0.1, -0.2, 0.3]) begin
+        mu ~ normal(0.0, 1.0)
+        s = scale_with_const(1.0)
+        y ~ normal(mu, s)
+    end
+    @test !transpiles(m_deffun; re=false)
+    @test occursin("3bbtrv", errmsg(m_deffun))
+
+    # --- POSITIVE: the documented remedy — a zero-arg @deffun constant --------
+    @deffun begin
+        num_const()::real = 1.8378770664093453
+        scale_with_fn(base::real)::real = base + num_const()
+    end
+    m_fn = @slic (; y = [0.1, -0.2, 0.3]) begin
+        mu ~ normal(0.0, 1.0)
+        s = scale_with_fn(1.0)
+        y ~ normal(mu, s)
+    end
+    @test transpiles(m_fn)
+    code = stan_code(m_fn)
+    @test occursin("num_const", code)
+    @test occursin("1.8378770664093453", code)   # baked in the emitted function
+end
+
+"""
 Verify `slic: plate result LHS must name the collected type` in an isolated test item.
 
 Regression for decision `0909w6i` FULL CUTOVER: the per-cell plate annotation
