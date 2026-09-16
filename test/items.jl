@@ -10296,8 +10296,8 @@ enclosing accessor (`h[t]` under `h[:, j]` → `h[t, j]`), so all three modes
         @test occursin("h[1, j] = normal_rng(0.0, 1.0);", gq)
         @test occursin("h[t, j] = normal_rng((phi * h[(t - 1), j]), s);", gq)
     end
-    # prior-only with a TYPED observation cell (an untyped vector-shaped fresh
-    # cell is a separate, pre-existing plate typing defect — snagged)
+    # prior-only with an UNTYPED observation cell: the vector-shaped fresh `~`
+    # cell infers `vector[T]` (snag plate-untyped-ve-819ecfff, fixed 8086402)
     prior = @slic (; S = 3, T = 4) begin
         phi ~ normal(0.0, 0.5); s ~ exponential(1.0)
         @plate for j in 1:S
@@ -10307,7 +10307,7 @@ enclosing accessor (`h[t]` under `h[:, j]` → `h[t, j]`), so all three modes
                     h[t] ~ normal(phi * h[t-1], s)
                 end
             end
-            y[:, j]::vector[T] ~ normal(h, 1.0)
+            y[:, j] ~ normal(h, 1.0)
         end
     end
     @test stanc_compiles(prior)
