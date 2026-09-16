@@ -3383,6 +3383,32 @@ end
     @test all(isfinite, g)
 end
 
+@testitem "slic: kalman filter (multivariate obs)" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Multivariate-observation overload of `kalman`: C::matrix[d,K], R::matrix[d,d],
+    # y::matrix[T,d] (row t = yₜ = C·zₜ + N(0, R)). Shares the base `kalman` family
+    # with the scalar overload (dispatch selects on the matrix argument shapes) and
+    # is immune to the captured-matrix size gap (declared matrix dims).
+    A  = [1.0 1.0; 0.0 1.0]
+    C  = [1.0 0.0; 0.0 1.0]
+    m0 = [0.0, 0.0]
+    P0 = [1.0 0.0; 0.0 1.0]
+    y  = [0.2 0.1; 0.5 0.3; 0.3 0.4; 0.9 0.7; 1.1 0.6]   # T=5, d=2
+    model = @slic (; y, m0, P0, A, C) begin
+        logq ~ std_normal()
+        logr ~ std_normal()
+        y ~ kalman(m0, P0, A, exp(logq) * diag_matrix(rep_vector(1.0, 2)),
+                   C, exp(logr) * diag_matrix(rep_vector(1.0, 2)))
+    end
+    @test stanc_compiles(model)
+    sc = stan_code(model)
+    @test occursin("multi_normal_lpdf", sc)   # multivariate innovation density
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 2
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.1, 0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
 """
 Verify `in-body @doc docstring renders (StanExpr unwrap)` in an isolated test item.
 """

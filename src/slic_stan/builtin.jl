@@ -1399,13 +1399,16 @@ end
     end
 end
 
-# --- Kalman filter (linear-Gaussian, univariate observation) -------------------
-# Matrix-parameterized convenience family: `y ~ kalman(m0, P0, A, Q, c, r)` for a
-# K-dimensional latent state and SCALAR observations yₜ = c'·zₜ + N(0, r), zₜ =
-# A·zₜ₋₁ + N(0, Q). Declared matrix dims keep the state size in UDF scope (unlike
-# the closure route above). Returns the exact marginal log-density; `_lpdfs` gives
-# the per-step one-step-ahead conditionals and `_rng` forward-simulates the series.
-# (Multivariate observations — matrix C / R — are a follow-up.)
+# --- Kalman filter (linear-Gaussian) -------------------------------------------
+# Matrix-parameterized convenience family with two observation shapes:
+#   SCALAR obs      `y ~ kalman(m0, P0, A, Q, c, r)` — yₜ = c'·zₜ + N(0, r),
+#                    c::vector[K], r::real, y::vector[T].
+#   MULTIVARIATE obs `y ~ kalman(m0, P0, A, Q, C, R)` — yₜ = C·zₜ + N(0, R),
+#                    C::matrix[d,K], R::matrix[d,d], y::matrix[T,d] (row t = yₜ).
+# zₜ = A·zₜ₋₁ + N(0, Q). Declared matrix dims keep the state size in UDF scope
+# (unlike the closure route above). Returns the exact marginal log-density;
+# `_lpdfs` gives the per-step one-step-ahead conditionals and `_rng`
+# forward-simulates the series.
 @deffun @stanonly begin
     @lpxf kalman_lpdf(y::vector[T], m0::vector[K], P0::matrix[K,K],
                       A::matrix[K,K], Q::matrix[K,K], c::vector[K], r::real)::real =
@@ -1442,6 +1445,52 @@ end
             m = mp + Kg * (yt - yhat)
             P = Pp - Kg * (c' * Pp)
             yy[t] = yt
+        end
+        yy
+    end
+end
+
+# Multivariate-observation overloads of `kalman` (C::matrix[d,K], R::matrix[d,d];
+# y::matrix[T,d], row t = yₜ). `@lhs` — not `@lpxf` — registers the base tracetype
+# for this signature; the scalar block above already registered kalman's
+# lpxf/rng/likelihood dispatch hooks, and one @lpxf per base name is the limit.
+# Multiple dispatch selects this overload from the matrix argument shapes.
+@deffun @stanonly begin
+    @lhs kalman_lpdf(y::matrix[T,d], m0::vector[K], P0::matrix[K,K],
+                     A::matrix[K,K], Q::matrix[K,K], C::matrix[d,K], R::matrix[d,d])::real =
+        sum(kalman_lpdfs(y, m0, P0, A, Q, C, R))
+    kalman_lpdfs(y::matrix[T,d], m0::vector[K], P0::matrix[K,K],
+                 A::matrix[K,K], Q::matrix[K,K], C::matrix[d,K], R::matrix[d,d])::vector[T] = begin
+        ll::vector[T]
+        m = m0
+        P = P0
+        for t in 1:T
+            mp = A * m
+            Pp = quad_form_sym(P, A') + Q
+            yhat = C * mp
+            S = quad_form_sym(Pp, C') + R
+            Kg = mdivide_right_spd(Pp * C', S)
+            m = mp + Kg * (row(y, t)' - yhat)
+            P = Pp - Kg * C * Pp
+            ll[t] = multi_normal_lpdf(row(y, t)', yhat, S)
+        end
+        ll
+    end
+    kalman_rng(matrix[T,d], m0::vector[K], P0::matrix[K,K],
+               A::matrix[K,K], Q::matrix[K,K], C::matrix[d,K], R::matrix[d,d])::matrix[T,d] = begin
+        yy::matrix[T,d]
+        m = m0
+        P = P0
+        for t in 1:T
+            mp = A * m
+            Pp = quad_form_sym(P, A') + Q
+            yhat = C * mp
+            S = quad_form_sym(Pp, C') + R
+            yt = multi_normal_rng(yhat, S)
+            Kg = mdivide_right_spd(Pp * C', S)
+            m = mp + Kg * (yt - yhat)
+            P = Pp - Kg * C * Pp
+            yy[t,:] = yt'
         end
         yy
     end
