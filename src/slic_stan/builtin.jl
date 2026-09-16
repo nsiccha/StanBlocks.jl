@@ -48,8 +48,8 @@ end
     lower_clamping_cell_rng upper_clamping_cell_rng clamping_cell_rng
     jbroadcasted_rng
     # Sequential-marginalization families (forward filter): the general
-    # `marginalize` HOF and the matrix-parameterized `kalman` instance.
-    marginalize_lpdf marginalize_lpdfs marginalize_rng
+    # `sequential_marginalize` HOF and the matrix-parameterized `kalman` instance.
+    sequential_marginalize_lpdf sequential_marginalize_lpdfs sequential_marginalize_rng
     kalman_lpdf kalman_lpdfs kalman_rng
     flat_lpdf
     std_normal_lpdf
@@ -1348,7 +1348,7 @@ import Statistics
 end
 
 # --- Sequential marginalization ------------------------------------------------
-# `marginalize` is the general "integrate out a sequential latent" combinator: a
+# `sequential_marginalize` is the general "integrate out a sequential latent" combinator: a
 # forward filter over an observation series `y`, taking user PREDICT / OBSERVE /
 # SIMULATE functions rather than fixed linear-algebra objects. Given an initial
 # belief `b0` and
@@ -1367,9 +1367,9 @@ end
 # matrix dimension-symbol scoping gap; use the matrix-parameterized `kalman`
 # family below for that case.
 @deffun @stanonly begin
-    @lpxf marginalize_lpdf(y::anything[T], b0, predict, observe, simulate)::real =
-        sum(marginalize_lpdfs(y, b0, predict, observe, simulate))
-    marginalize_lpdfs(y::anything[T], b0, predict, observe, simulate)::vector[T] = begin
+    @lpxf sequential_marginalize_lpdf(y::anything[T], b0, predict, observe, simulate)::real =
+        sum(sequential_marginalize_lpdfs(y, b0, predict, observe, simulate))
+    sequential_marginalize_lpdfs(y::anything[T], b0, predict, observe, simulate)::vector[T] = begin
         ll::vector[T]
         b = b0
         for t in 1:T
@@ -1380,7 +1380,7 @@ end
         end
         ll
     end
-    marginalize_rng(vector[T], b0, predict, observe, simulate)::vector[T] = begin
+    sequential_marginalize_rng(vector[T], b0, predict, observe, simulate)::vector[T] = begin
         yy::vector[T]
         b = b0
         for t in 1:T

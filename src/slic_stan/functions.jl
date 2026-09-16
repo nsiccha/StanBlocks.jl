@@ -2141,7 +2141,7 @@ func_args(args::NamedTuple) = begin
     # Dedup captured params by NAME across all closure args. A captured model
     # variable is the same value whichever closure captured it, so it must be
     # threaded exactly once; otherwise a UDF receiving two closures that capture
-    # the same variable (e.g. a `marginalize` observe/simulate pair both closing
+    # the same variable (e.g. a `sequential_marginalize` observe/simulate pair both closing
     # over `sigma`) emits duplicate parameter identifiers and stanc rejects it
     # ("All function arguments must have distinct identifiers"). `expand_call_args`
     # performs the matching dedup so definition and call stay positionally aligned.

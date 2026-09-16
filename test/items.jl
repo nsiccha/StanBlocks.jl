@@ -3274,8 +3274,8 @@ in an isolated test item.
     @test isfinite(LogDensityProblems.logdensity(p, [0.5]))
 end
 
-@testitem "slic: marginalize sequential HOF (scalar belief) + capture dedup" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
-    # General sequential-marginalization combinator: `y ~ marginalize(b0, predict,
+@testitem "slic: sequential_marginalize sequential HOF (scalar belief) + capture dedup" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # General sequential-marginalization combinator: `y ~ sequential_marginalize(b0, predict,
     # observe, simulate)` — a forward filter integrating out a latent state. Here
     # an AR(1) marginal likelihood with a scalar belief. This ALSO guards the
     # closure capture-dedup fix (functions.jl `func_args` / `expand_call_args`):
@@ -3285,14 +3285,14 @@ end
     model = @slic (; y = [0.5, -0.3, 1.2, 0.1, 0.8, -0.2]) begin
         rho ~ std_normal()
         sigma ~ std_normal()
-        y ~ marginalize(0.0,
+        y ~ sequential_marginalize(0.0,
             bb -> rho * bb,
             (bb, yy) -> (bb + yy, normal_lpdf(yy, bb, exp(sigma))),
             bb -> (bb + normal_rng(bb, exp(sigma)), normal_rng(bb, exp(sigma))))
     end
     @test stanc_compiles(model)
     sc = stan_code(model)
-    @test occursin("marginalize", sc)
+    @test occursin("sequential_marginalize", sc)
     @test occursin("_lpdfs(", sc)   # per-observation one-step-ahead conditionals
     p = instantiate(stan_model(model))
     @test LogDensityProblems.dimension(p) == 2
