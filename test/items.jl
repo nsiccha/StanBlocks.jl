@@ -3409,6 +3409,82 @@ end
     @test all(isfinite, g)
 end
 
+@testitem "slic: sequential_marginalize captured-matrix belief (capture-dim binds)" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # A belief sized by a CAPTURED matrix through the general HOF: `predict = b -> A*b`
+    # closes over the data matrix `A`. `func_args` hoists that capture into the receiver
+    # UDF's signature as a bare (unsized) `matrix A`, so a belief size derived from it —
+    # `vector[A_m] bp = A*b;`, where `A_m` is A's ORIGINAL data-block dim symbol —
+    # referenced an identifier out of scope inside the Stan function and stanc rejected
+    # it. The fix (`_capture_dim_binds` in `Base.show(::StanFunction3)`, functions.jl)
+    # materializes the referenced capture dim at the body top (`int A_m = dims(A)[1];`),
+    # mirroring the declared-arg preamble; it guards both the `_lpdfs` (density) and
+    # `_rng` (forward-sim) bodies.
+    A  = [0.9 0.0; 0.1 0.8]
+    b0 = [0.0, 0.0]
+    y  = [0.5, -0.3, 1.2, 0.1, 0.8, -0.2]
+    model = @slic (; y, A, b0) begin
+        sigma ~ std_normal()
+        y ~ sequential_marginalize(b0,
+            b -> A * b,
+            (b, yy) -> (b, normal_lpdf(yy, b[1], exp(sigma))),
+            b -> (b, normal_rng(b[1], exp(sigma))))
+    end
+    @test stanc_compiles(model)
+    sc = stan_code(model)
+    @test occursin("int A_m = dims(A)[1];", sc)   # the capture-dim bind lands
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 1
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
+@testitem "slic: matrix-covariance Kalman through the sequential_marginalize HOF" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # The headline the captured-matrix fix unlocks: a full matrix-covariance Kalman
+    # filter — belief `(mean::vector, cov::matrix)` — expressed through the GENERAL
+    # `sequential_marginalize` HOF (rather than the built-in `kalman` family). `predict`
+    # closes over the transition `A` / process noise `Q`; the belief's mean and
+    # covariance sizes derive from those captured matrices, exercising the capture-dim
+    # binding (`int A_m`/`Q_m`/`Q_n = dims(...);`). It ALSO names the observation-noise
+    # capture `r`, guarding the internal-name-hygiene fix: the HOF's own body locals are
+    # `sm_`-prefixed, so a capture named `r` no longer collides with the per-step result
+    # local ("Identifier r is already in use").
+    A  = [0.9 0.0; 0.1 0.8]
+    Q  = [0.1 0.0; 0.0 0.1]
+    c  = [1.0, 0.0]
+    m0 = [0.0, 0.0]
+    P0 = [1.0 0.0; 0.0 1.0]
+    y  = [0.5, -0.3, 1.2, 0.1, 0.8, -0.2]
+    model = @slic (; y, A, Q, c, m0, P0) begin
+        logr ~ std_normal()
+        r = exp(logr)
+        y ~ sequential_marginalize((m0, P0),
+            b -> (A * b[1], A * b[2] * A' + Q),
+            (b, yy) -> begin
+                yhat = c' * b[1]
+                S = c' * b[2] * c + r
+                K = b[2] * c / S
+                ((b[1] + K * (yy - yhat), b[2] - K * (c' * b[2])), normal_lpdf(yy, yhat, sqrt(S)))
+            end,
+            b -> begin
+                yhat = c' * b[1]
+                S = c' * b[2] * c + r
+                yd = normal_rng(yhat, sqrt(S))
+                K = b[2] * c / S
+                ((b[1] + K * (yd - yhat), b[2] - K * (c' * b[2])), yd)
+            end)
+    end
+    @test stanc_compiles(model)
+    sc = stan_code(model)
+    @test occursin("int Q_m = dims(Q)[1];", sc)   # captured-matrix dims bind
+    @test occursin("sm_step", sc)                 # hygienic internal locals (no `r` clash)
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 1
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
 """
 Verify `in-body @doc docstring renders (StanExpr unwrap)` in an isolated test item.
 """
