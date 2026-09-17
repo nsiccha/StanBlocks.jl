@@ -52,6 +52,7 @@ end
     sequential_marginalize_lpdf sequential_marginalize_lpdfs sequential_marginalize_rng
     kalman_lpdf kalman_lpdfs kalman_rng
     hmm_forward_lpdf hmm_forward_lpdfs hmm_forward_rng
+    hmm_forward_lpmf
     flat_lpdf
     std_normal_lpdf
     normal_lpdf
@@ -1523,19 +1524,20 @@ end
 # (`Gamma[m,n] = p(zₜ=n | zₜ₋₁=m)`), matching Stan's `hmm_marginal` convention.
 # Internal locals are `hmm_`-prefixed (the `sm_` hygiene rationale in
 # `sequential_marginalize`: a capture named `r`/`b`/`t` must never collide).
-# KNOWN LIMITATION (shared HOF gap, not hmm-specific): integer observations are
-# rejected. Closure specialisation (`func_name`, functions.jl) keeps the
-# enclosing wrapper's `_lpdf` suffix, so an int `y` emits
-# `..._lpdf(array[] int y, …)`, which Stan forbids (density variates must be
-# real — observed via a Poisson-emission probe). The SHIPPED
-# `sequential_marginalize` wrapper fails for int `y` too (already at transpile:
-# no int rng overload — plus the same wrapper rule; observed via a /tmp probe,
-# never committed). Discrete support needs an `_lpmf` wrapper variant plus
-# lhs-type-dependent density selection — shared-compiler work, queued as a
-# follow-up; the `_lpdfs` leg below is already obs-generic (`anything[T]`).
+# DISCRETE observations use the SAME bare spelling (`y ~ hmm_forward(…)`): Stan
+# resolves a bare `~` to the `_lpdf`/`_lpmf` specialization by the variate type
+# itself. The `hmm_forward_lpmf` wrapper below exists so the fetch can pull the
+# `_lpmf` specialization INSTEAD of the `_lpdf` one for int lhs (a
+# closure-specialised `_lpdf` wrapper with an int first arg is illegal Stan;
+# see `_dual_lpmf_call`, lpxf_builtin.jl). Plain `@deffun`, deliberately NOT
+# `@lpxf` (that would overwrite the base hooks). The `_lpdfs` leg is shared and
+# obs-generic (`anything[T]`); the `int[T]` rng overload serves the GQ draw.
 @deffun @stanonly begin
     @lpxf hmm_forward_lpdf(y::anything[T], rho::vector[K], Gamma::matrix[K,K],
                            emit, emit_rng)::real =
+        sum(hmm_forward_lpdfs(y, rho, Gamma, emit, emit_rng))
+    hmm_forward_lpmf(y::int[T], rho::vector[K], Gamma::matrix[K,K],
+                     emit, emit_rng)::real =
         sum(hmm_forward_lpdfs(y, rho, Gamma, emit, emit_rng))
     hmm_forward_lpdfs(y::anything[T], rho::vector[K], Gamma::matrix[K,K],
                       emit, emit_rng)::vector[T] = begin
@@ -1553,6 +1555,19 @@ end
     hmm_forward_rng(vector[T], rho::vector[K], Gamma::matrix[K,K],
                     emit, emit_rng)::vector[T] = begin
         hmm_yy::vector[T]
+        hmm_alpha = rho
+        for hmm_t in 1:T
+            hmm_ap = Gamma' * hmm_alpha
+            hmm_z = categorical_rng(hmm_ap)
+            hmm_yt = emit_rng(hmm_z)
+            hmm_alpha = one_hot_vector(rows(rho), hmm_z)
+            hmm_yy[hmm_t] = hmm_yt
+        end
+        hmm_yy
+    end
+    hmm_forward_rng(int[T], rho::vector[K], Gamma::matrix[K,K],
+                    emit, emit_rng)::int[T] = begin
+        hmm_yy::int[T]
         hmm_alpha = rho
         for hmm_t in 1:T
             hmm_ap = Gamma' * hmm_alpha

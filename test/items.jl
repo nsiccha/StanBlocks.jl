@@ -3485,6 +3485,34 @@ end
     @test all(isfinite, g)
 end
 
+@testitem "slic: hmm_forward discrete emission (Poisson HMM)" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # SAME bare spelling over count data: Stan resolves `y ~ hmm_forward(…)` to
+    # the `_lpmf` specialization by the int variate, while the fetch pulls that
+    # specialization instead of the `_lpdf` one (`_dual_lpmf_call`). Integer `y`
+    # routes the GQ redraw through the `int[T]` rng overload (a real draw into
+    # an int carrier has no valid Stan form). Emission scale is captured.
+    Gamma = [0.9 0.1; 0.2 0.8]
+    rho = [0.5, 0.5]
+    lam = [1.0, 5.0]
+    y = [1, 0, 2, 6, 4, 1]
+    model = @slic (; y, Gamma, rho, lam) begin
+        logr ~ std_normal()
+        s = exp(logr)
+        y ~ hmm_forward(rho, Gamma,
+            yt -> [poisson_lpmf(yt, lam[1] * s), poisson_lpmf(yt, lam[2] * s)],
+            k -> poisson_rng(lam[k] * s))
+    end
+    @test stanc_compiles(model)
+    sc = stan_code(model)
+    @test occursin("hmm_forward", sc)
+    @test occursin("_lpmf(", sc)   # discrete specialization behind the bare `~`
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 1
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
 @testitem "slic: hmm_forward emission-closure family (Gaussian HMM)" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Option-A family (decision 07j39xa): the user supplies only the emission
     # closure `emit(yₜ)::vector[K]`; the package owns the log-space forward
