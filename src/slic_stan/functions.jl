@@ -241,6 +241,31 @@ _reject_scalar_array_elementwise(x::CanonicalExpr) = begin
         "function-body loop, or convert to a `vector` via `to_vector(...)` first."
     )
 end
+# A `RaggedVector` (a ragged `plate` result, or ragged `Vector{<:AbstractVector}`
+# data — both stored as `tuple(vector, array[] int)`: flat memory + inclusive group
+# ends) has NO whole-object arithmetic, so `pred * w` / `pred .* w` / `pred .+ x`
+# otherwise fall through to the opaque `tracetype not defined` / `::anything` floor.
+# Name the RaggedVector and the actual remedy instead (snag plate-return-tup, reported
+# by BRM: a plate cell that slices a ragged input collects to a RaggedVector, and the
+# author's downstream `pred * w` failed with a message that named neither).
+_is_ragged_vector(t::StanType) = center_type(t) <: builtin.RaggedVector
+_reject_ragged_vector_arithmetic(x::CanonicalExpr) = begin
+    any(a -> a isa StanExpr && _is_ragged_vector(type(a)), x.args) || return nothing
+    error(
+        "`", short_expr(x), "` applies arithmetic to a whole ragged `RaggedVector` (stored as ",
+        "`tuple(vector, array[] int)` — flat memory + inclusive group ends), which has no ",
+        "whole-object `+`/`-`/`*`/`.*` etc. A `plate` returns a RaggedVector by default when its ",
+        "cell width is not statically fixed — e.g. the cell slices a ragged / vector-of-vectors ",
+        "input (`log_rt[rows]`), which stays ragged even when every group is the same length. ",
+        "If you KNOW every group is the same length, cast it to a matrix downstream with ",
+        "`as_matrix(rv)` (e.g. `as_matrix(pred) * w`) — it views the flat memory as a ",
+        "`matrix[K, N]` (column i = group i) with a runtime equal-length check; or assert it at ",
+        "the plate LHS (`result::matrix[K, N] ~ ",
+        "plate(...)`), or pass the width-driving input as a fixed-width container (an int `Matrix` ",
+        "of per-cell indices). For a genuinely varying-width RaggedVector, keep it ragged — index ",
+        "one group with `rv[g]` or process per group via the descriptor's `segments`."
+    )
+end
 tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = _tracetype(x, nothing)
 _tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}, context) = if length(x.args) > 2
     context = _context_or_new(context)
@@ -249,6 +274,7 @@ _tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}, context) = if
     _tracetype(CanonicalExpr(f, x.args[1], nested), context)
 else
     _reject_scalar_array_elementwise(x)
+    _reject_ragged_vector_arithmetic(x)
     error("tracetype not defined for $(short_expr(x))!")
     StanType(types.anything)
 end
@@ -258,6 +284,7 @@ end
 # broadcasts (e.g. `matrix .* matrix`) keep their current inferred type.
 tracetype(x::CanonicalExpr{<:Base.BroadcastFunction}) = begin
     _reject_scalar_array_elementwise(x)
+    _reject_ragged_vector_arithmetic(x)
     invoke(tracetype, Tuple{CanonicalExpr}, x)
 end
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype(

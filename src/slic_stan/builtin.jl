@@ -135,7 +135,7 @@ end
     append_col
     hcat
     reshape
-    ragged_n ragged_total ragged_start ragged_end ragged_length
+    ragged_n ragged_total ragged_start ragged_end ragged_length as_matrix
     # Stan 2.37 exposed constraint transforms (Feature 1) — @deffun sigs below.
     simplex_constrain simplex_unconstrain simplex_jacobian
     ordered_constrain ordered_unconstrain ordered_jacobian
@@ -1732,6 +1732,25 @@ end
             rv.rows[i],
             rv.cols[i],
         )
+    # Downstream cast: view a ragged flat `(mem, ends)` — e.g. a ragged `plate`
+    # result — as a dense `matrix[K, N]`, column `i` = group `i`, WHEN every group
+    # is the same length `K`. A plate returns ragged by default (its cell width is
+    # not statically fixed); `as_matrix` is how the author ASSERTS uniformity so the
+    # result supports matrix arithmetic (`as_matrix(pred) * w`). The per-group
+    # equal-length loop `reject`s a genuinely ragged value at runtime; `mem` is
+    # group-concatenated, so column-major `to_matrix` lands each group in its own
+    # column. `ends` is data, so the `matrix[ragged_length(ends,1), n]` result size
+    # is data-qualified. The user-facing 1-arg `as_matrix(rv::RaggedVector)` is
+    # lowered to this 2-arg impl by the inline hook below. Snag
+    # plate-return-tup-5c3fa1c8 (BRM); NO auto-lowering — this is the explicit
+    # downstream override the plate contract intends.
+    as_matrix(mem::vector[m], ends::int[n])::matrix[ragged_length(ends, 1), n] = begin
+        k = ragged_length(ends, 1)
+        for i in 1:n
+            @stan_assert ragged_length(ends, i) == k "as_matrix: the ragged value is not a matrix — group i has a different length than group 1; every group must be the same length to view it as a matrix[K, N]. Keep it ragged (index per group with rv[g] / the descriptor's segments) if the widths genuinely differ."
+        end
+        to_matrix(mem, k, n)
+    end
 end
 
 # Constructors bind ragged StanExprs verbatim into `info` (mirrors the closure
@@ -1949,6 +1968,22 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:R
         _trace_stan_call(getindex, _ragged_mem(rv), _trace_stan_call(Colon(), lo, hi; info); info)
     else
         fold_shape_query(_trace_stan_expr(x, info))
+    end
+# `as_matrix(rv)` on a ragged CONSTRUCTION → lower to the 2-arg `as_matrix(mem, ends)`
+# impl on the bare components, so the `matrix[ragged_length(ends,1), n]` result size
+# references the DATA `ends` symbol directly (never the param-containing tuple, which
+# stanc rejects in a size declaration). The runtime uniform-width `reject` lives in
+# that impl. Snag plate-return-tup-5c3fa1c8.
+expand_inline_or_trace(x::CanonicalExpr{typeof(as_matrix),<:Tuple{<:StanExpr2{<:RaggedVector}}}; info) =
+    if _is_ragged_construction(x.args[1])
+        rv = x.args[1]
+        _trace_stan_call(builtin.as_matrix, _ragged_mem(rv), _ragged_ends(rv); info)
+    else
+        error(
+            "as_matrix: expected a ragged `plate` result / RaggedVector construction; got a ",
+            "bound RaggedVector value. Call `as_matrix` on the ragged result directly ",
+            "(`as_matrix(pred)`), not on a name rebound from one."
+        )
     end
 # `rm[i]` → reconstruct the selected flat slice with its data-only dimensions.
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
