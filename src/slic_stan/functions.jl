@@ -2045,7 +2045,8 @@ _check_lpxf_resolves(lpxf) = begin
 end
 fetch_functions!(x::SamplingExpr; info) = begin
     lhs, rhs = x.args
-    lpxf = lpxf_expr(lhs, rhs)
+    lpmf = _dual_lpmf_call(lhs, rhs)
+    lpxf = isnothing(lpmf) ? lpxf_expr(lhs, rhs) : lpmf
     _check_lpxf_resolves(lpxf)
     fetch_functions!(expr(lpxf); info)
     if qual(lhs) == :data || lqual(lhs) == :undefined

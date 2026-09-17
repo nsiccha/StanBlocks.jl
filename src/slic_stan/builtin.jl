@@ -51,6 +51,8 @@ end
     # `sequential_marginalize` HOF and the matrix-parameterized `kalman` instance.
     sequential_marginalize_lpdf sequential_marginalize_lpdfs sequential_marginalize_rng
     kalman_lpdf kalman_lpdfs kalman_rng
+    hmm_forward_lpdf hmm_forward_lpdfs hmm_forward_rng
+    hmm_forward_lpmf
     flat_lpdf
     std_normal_lpdf
     normal_lpdf
@@ -1503,6 +1505,78 @@ end
             yy[t,:] = yt'
         end
         yy
+    end
+end
+
+# --- Hidden Markov model (discrete latent states) -------------------------------
+# `y ~ hmm_forward(rho, Gamma, emit, emit_rng)` — forward-filter marginal
+# likelihood for a K-state HMM (user decision `07j39xa`, option A). The emission
+# is USER code: `emit(yₜ)::vector[K]` returns the per-state log-density row,
+# closing over emission parameters like any HOF closure. An HMM couples each
+# observation to the parameters through that user-chosen emission, so there is
+# no fixed linear-algebra object to take as args (the `kalman` mold does not
+# fit). The package owns the fixed forward recursion over the filtered state
+# probs `alpha::vector[K]`, in log space via `log_sum_exp`; `emit_rng(k)`
+# draws `yₜ | zₜ = k` for the `_rng` forward-simulation leg (`categorical_rng`
+# draws the state, `one_hot_vector` re-points the belief at the draw). `K`
+# unifies from the declared `rho::vector[K]` / `Gamma::matrix[K,K]` dims (the
+# kalman pattern — no capture scoping work). `Gamma` is row-stochastic
+# (`Gamma[m,n] = p(zₜ=n | zₜ₋₁=m)`), matching Stan's `hmm_marginal` convention.
+# Internal locals are `hmm_`-prefixed (the `sm_` hygiene rationale in
+# `sequential_marginalize`: a capture named `r`/`b`/`t` must never collide).
+# DISCRETE observations use the SAME bare spelling (`y ~ hmm_forward(…)`): Stan
+# resolves a bare `~` to the `_lpdf`/`_lpmf` specialization by the variate type
+# itself. The `hmm_forward_lpmf` wrapper below exists so the fetch can pull the
+# `_lpmf` specialization INSTEAD of the `_lpdf` one for int lhs (a
+# closure-specialised `_lpdf` wrapper with an int first arg is illegal Stan;
+# see `_dual_lpmf_call`, lpxf_builtin.jl). Plain `@deffun`, deliberately NOT
+# `@lpxf` (that would overwrite the base hooks). The `_lpdfs` leg is shared and
+# obs-generic (`anything[T]`); the `int[T]` rng overload serves the GQ draw.
+@deffun @stanonly begin
+    @lpxf hmm_forward_lpdf(y::anything[T], rho::vector[K], Gamma::matrix[K,K],
+                           emit, emit_rng)::real =
+        sum(hmm_forward_lpdfs(y, rho, Gamma, emit, emit_rng))
+    hmm_forward_lpmf(y::int[T], rho::vector[K], Gamma::matrix[K,K],
+                     emit, emit_rng)::real =
+        sum(hmm_forward_lpdfs(y, rho, Gamma, emit, emit_rng))
+    hmm_forward_lpdfs(y::anything[T], rho::vector[K], Gamma::matrix[K,K],
+                      emit, emit_rng)::vector[T] = begin
+        hmm_ll::vector[T]
+        hmm_alpha = rho
+        for hmm_t in 1:T
+            hmm_ap = Gamma' * hmm_alpha
+            hmm_joint = log(hmm_ap) + emit(y[hmm_t])
+            hmm_ell = log_sum_exp(hmm_joint)
+            hmm_alpha = exp(hmm_joint - hmm_ell)
+            hmm_ll[hmm_t] = hmm_ell
+        end
+        hmm_ll
+    end
+    hmm_forward_rng(vector[T], rho::vector[K], Gamma::matrix[K,K],
+                    emit, emit_rng)::vector[T] = begin
+        hmm_yy::vector[T]
+        hmm_alpha = rho
+        for hmm_t in 1:T
+            hmm_ap = Gamma' * hmm_alpha
+            hmm_z = categorical_rng(hmm_ap)
+            hmm_yt = emit_rng(hmm_z)
+            hmm_alpha = one_hot_vector(rows(rho), hmm_z)
+            hmm_yy[hmm_t] = hmm_yt
+        end
+        hmm_yy
+    end
+    hmm_forward_rng(int[T], rho::vector[K], Gamma::matrix[K,K],
+                    emit, emit_rng)::int[T] = begin
+        hmm_yy::int[T]
+        hmm_alpha = rho
+        for hmm_t in 1:T
+            hmm_ap = Gamma' * hmm_alpha
+            hmm_z = categorical_rng(hmm_ap)
+            hmm_yt = emit_rng(hmm_z)
+            hmm_alpha = one_hot_vector(rows(rho), hmm_z)
+            hmm_yy[hmm_t] = hmm_yt
+        end
+        hmm_yy
     end
 end
 

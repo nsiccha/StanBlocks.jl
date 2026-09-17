@@ -411,6 +411,29 @@ for lpxf_rhs in (
     @eval likelihood_expr(::typeof(builtin.$base_rhs)) = builtin.$lpxfs_rhs
 end
 
+# Dual-kind closure families: one bare `~` name serving BOTH real and integer
+# observations. Stan resolves a bare `y ~ foo(…)` to the `_lpdf`/`_lpmf`
+# specialization by the variate type itself (stanc: "`~` should refer to a
+# distribution without its suffix"), so the model emission needs no variant
+# selection — but the DEFINITIONS must match: a closure-specialised `_lpdf`
+# wrapper with an int first arg is illegal Stan, so for int lhs the fetch must
+# pull the `_lpmf` specialization INSTEAD of the `_lpdf` one. `_dual_lpmf_call`
+# builds that call; `fetch_functions!(::SamplingExpr)` consults it. The GQ
+# likelihood twin (`_lpdfs`, a plain function) and the rng draw (token
+# dispatch to the `int[T]` overload) need no selection. Families opt in by
+# defining the trait; everything else falls through to `nothing` (zero
+# behaviour change outside opt-in families).
+_dual_lpmf_variant(family) = nothing
+_dual_lpmf_variant(::typeof(builtin.hmm_forward)) = builtin.hmm_forward_lpmf
+_dual_lpmf_call(lhs, rhs::StanExpr) = _dual_lpmf_call(lhs, expr(rhs))
+_dual_lpmf_call(lhs, rhs::CanonicalExpr) = begin
+    variant = _dual_lpmf_variant(head(rhs))
+    isnothing(variant) && return nothing
+    center_type(lhs) <: types.int || return nothing
+    stan_call(variant, lhs, rhs.args...)
+end
+_dual_lpmf_call(lhs, rhs) = nothing
+
 lpxf_expr(x) = error("$x is missing `lpxf_expr`")
 likelihood_expr(lhs, rhs::StanExpr) = likelihood_expr(lhs, expr(rhs))
 likelihood_expr(lhs, rhs::CanonicalExpr) = begin
