@@ -44,12 +44,19 @@ autoprint(io, args...) = if maybreak(io)
         print(io, rv)
     else
         idx = findfirst(_is_join, args)
-        iio = indent(io)
-        print(io, args[1:idx-1]...)
-        print(io, "\n", current_indent(iio))
-        print(iio, Join(args[idx].iterator, rstrip(args[idx].delim) * "\n" * current_indent(iio)))
-        print(io, "\n", current_indent(io))
-        print(io, args[idx+1:end]...)
+        if isnothing(idx)
+            # No breakable join point — e.g. a 1-dim tokenof size expression
+            # built from ragged_start/ragged_end bounds (the single-arg call
+            # below). Emit the long line as-is: valid Stan, just unbroken.
+            print(io, rv)
+        else
+            iio = indent(io)
+            print(io, args[1:idx-1]...)
+            print(io, "\n", current_indent(iio))
+            print(iio, Join(args[idx].iterator, rstrip(args[idx].delim) * "\n" * current_indent(iio)))
+            print(io, "\n", current_indent(io))
+            print(io, args[idx+1:end]...)
+        end
     end
 else
     print(io, args...)
