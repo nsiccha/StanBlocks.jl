@@ -2154,6 +2154,48 @@ the reporter hit twice. The idiom itself must transpile.
 end
 
 """
+A Join-less `autoprint` argument list that renders past the 100-char line
+limit must emit the line unbroken — there is no join point to break at.
+
+Snag `stanblocks-ragge-ca3c9b73`: a 1-dim `tokenof` sized by a long
+`ragged_start`/`ragged_end` bounds expression (a joint-response BRM model
+lowered through the StanBlocks backend) crashed emission with
+`MethodError: no method matching -(::Nothing, ::Int64)`, because
+`findfirst(_is_join, args)` returned `nothing` and the wrap path indexed
+`args[1:idx-1]` unconditionally.
+"""
+@testitem "slic: autoprint emits a Join-less long line unbroken" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    function stan_render(value)
+        io = IOBuffer()
+        show(StanBlocks.StanIO(io), value)
+        String(take!(io))
+    end
+
+    # The reported path (show.jl 1-dim tokenof): a single size expression
+    # rendering past the line limit, with no Join in the argument list.
+    longname = Symbol("brm_joint_y1__y2_observed_ends_" * "0123456789_abcdefghij"^4)
+    @assert length(string(longname)) > 100
+    size_expr = StanBlocks.StanExpr(longname, StanBlocks.StanType(StanBlocks.types.int))
+    tok = StanBlocks.StanExpr(
+        :sometoken,
+        StanBlocks.StanType(StanBlocks.types.tokenof{StanBlocks.types.int}, (size_expr,)),
+    )
+    @test stan_render(tok) == string(longname)
+
+    # The same fallback through autoprint directly.
+    buf = IOBuffer()
+    StanBlocks.autoprint(StanBlocks.StanIO(buf), "x"^150)
+    @test String(take!(buf)) == "x"^150
+
+    # Control: a Join-carrying long line still wraps at the join point.
+    wrapbuf = IOBuffer()
+    StanBlocks.autoprint(
+        StanBlocks.StanIO(wrapbuf), "(", StanBlocks.Join(("x"^60, "y"^60), ", "), ")",
+    )
+    @test occursin("\n", String(take!(wrapbuf)))
+end
+
+"""
 Verify `slic: plate result LHS must name the collected type` in an isolated test item.
 
 Regression for decision `0909w6i` FULL CUTOVER: the per-cell plate annotation
