@@ -225,10 +225,10 @@ blocks that own the declarations, fills, densities, and generated quantities.
 | A plate inside a called sub-model | ✅, dense | Scalar and fixed-vector cells work and caller sizes are substituted correctly |
 | Ragged-vector plate inside a called sub-model | ❌ | Keep the ragged plate at model scope; a cell may still call a sub-model that returns a ragged-sized vector |
 | Several independent plates reusing local names | ✅ | Cell-local bindings are hygienically namespaced by plate result |
-| Dependency on a previous cell | ❌ | Cells are independent; use a deterministic `@deffun` recurrence for scans/folds |
+| Dependency on a previous cell | ❌ | Cells are independent; a recurrence that samples per step is the annotated `@scan begin … end` loop (below), a deterministic one a `@deffun` recurrence |
 | Vararg do-block parameters | ❌ | Use a fixed positional argument list |
 | Body without trailing value | ❌ | The last expression must be the cell result, not `~` or `=` |
-| Fully dead/prior-only plate | ✅ | Fresh prior samples remain parameters so the collected transformed value stays valid |
+| Fully dead/prior-only plate | ✅ | The whole plate — fresh samples, collected result and loop — lowers to `generated quantities` with everything it reads; `parameters {}` stays empty |
 | Cross-validation taint | ✅ | Taint from `outer` sizes or a cell prior RHS moves the affected cell path to generated quantities |
 
 ### Vector cells and shared multivariate priors
@@ -276,6 +276,87 @@ stripping the `outer` axis. `y_gen` is `int[N]` and `y_likelihood` is
 `vector[N]`. Put an observation inside the cell when slicing or cell-specific
 structure requires it, accepting the generated-quantity limits in the table
 above.
+
+## Annotated loops: `@plate for … end` and `@scan begin … end`
+
+A top-level model loop that introduces parameters is written as an
+*annotated* loop. Both forms are sugar over the compiler-owned loop behind
+`plate`: the tracer inlines them (neither is a function call), discovers the
+body's fresh bindings once, promotes them to outer storage and emits a plain
+Stan `for` loop into the blocks that own each statement. Inside the body:
+
+- an LHS indexed by the loop variable (`x[i] ~ …`, `y[i] = …`) is a
+  **model-scope array**, registered under its own name and visible after the
+  loop; a whole vector cell is written `v[:, i]`;
+- a bare fresh name (`t ~ …`, `tmp = …`) is a **per-iteration local**, hoisted
+  to per-cell storage under a hygienic name (`x_t`);
+- `y[i] ~ …` on data is an observation, with the usual `y_gen` twin;
+- a write to a name bound outside the loop is rejected — SB models never
+  mutate — and every element of a loop-filled array is assigned exactly once.
+
+`@plate for` is the independent-cell loop: reading one of the loop's own
+arrays at any index other than the loop variable's is an error.
+
+```julia
+@slic (; y = randn(6), mu0 = 0.5) begin
+    sigma ~ normal(0, 1; lower = 0)
+    @plate for i in 1:6
+        x[i] ~ normal(mu0, 1)         # vector[6] x
+        t ~ exponential(1)            # per-cell local → vector<lower=0>[6] x_t
+        y[i] ~ normal(x[i] + t, sigma)
+    end
+end
+```
+
+`for i in 1:N, j in 1:M` gives an N-dimensional outer shape; `for d in doses`
+iterates the values of a container (each cell receives one `RaggedVector`
+group, and `d ~ …` observes it).
+
+`@scan` is the sequential loop: one block whose trailing `for` is the
+recurrence and whose preceding statements are the initial state. The loop's
+arrays may be read at the current index or at a fixed lag `x[i - k]`
+(`k ≥ 1`, a literal or a data int), never ahead; the setup fills `x[1:m]` with
+literal indices and the loop starts at `m + 1`, so every element is assigned
+exactly once and no lag reads before the setup.
+
+```julia
+@slic (; y = randn(5), T = 5) begin
+    phi ~ normal(0, 0.5); s ~ exponential(1)
+    @scan begin
+        h[1] ~ normal(0, 1)
+        for t in 2:T
+            h[t] ~ normal(phi * h[t-1], s)   # vector[T] h; a plain Stan loop
+        end
+    end
+    y ~ normal(h, 1)
+end
+```
+
+Several carried arrays in one loop (`u[t] ~ f(u[t-1], v[t-2])`,
+`v[t] ~ g(…)`) are just several indexed LHS. Per-step locals are sized by the
+iteration count (`vector[T-1] x_eps` for a loop over `2:T`), so the
+non-centered spelling `eps ~ std_normal(); x[t] = phi * x[t-1] + s * eps`
+has no never-sampled coordinate.
+
+The annotation is a checked contract, not decoration, and it is
+mode-agnostic: activity analysis places the whole block as one unit. Bind the
+observation and the block is fitted (its per-step `~` are parameters, sampled
+in `model` in step order); leave the observation unbound and `parameters {}`
+is empty while the block re-draws in `generated quantities` in step order;
+mark a size or input with `maybecv` and the whole chain, observation
+included, moves to `generated quantities`.
+
+Annotated loops nest: a `@scan` inside a `@plate for j in 1:S` is the
+per-subject state-space shape. The enclosing loop promotes the inner arrays
+to per-subject storage and the indices compose into one Stan variable
+(`matrix[T, S] h`, `h[t, j] ~ normal(phi * h[t-1, j], s)`).
+
+Current limits: a setup fill uses a literal index (`x[1] ~ …`; slice and
+nested `@plate` setups are not supported yet); a `@scan` has one axis; an
+untyped fresh cell whose distribution arguments are vector-shaped must be
+annotated (`v[:, j]::vector[T] ~ …`) until the plate typing snag
+`plate-untyped-ve-819ecfff` lands; typed locals inside a nested loop are not
+supported yet. A bare `for` in a model body remains an error.
 
 ## `@deffun` iteration boundary
 
@@ -337,10 +418,12 @@ raise on absent or ambiguous names/operations instead of guessing.
 ## Current high-level limits
 
 - `@slic` remains flat: no ordinary model-level control flow, mutation, or
-  comprehension.
+  comprehension; the only model-level loops are the annotated `@plate for`
+  and `@scan begin … end` forms (and the `plate` primitive they sugar).
 - Only functions registered as builtins or defined through the SLIC macro
   surface can be traced.
-- `plate` is an independent-cell construct, not a general loop or scan.
+- `plate` / `@plate for` are independent-cell constructs; `@scan` is the
+  sequential form, with backward-only fixed-lag reads.
 - General three-dimensional-and-higher Julia containers and matrix-valued plate
   cells are not part of the current surface.
 - Ragged integer observations/predictive draws and per-element ragged

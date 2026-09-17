@@ -435,13 +435,69 @@ end
 StanFunction3(docstring, rv_type, parent, args, body) =
     StanFunction3(docstring, rv_type, parent, args, body, nothing)
 
+# A closure captured a sized value (e.g. a `matrix A`) whose type still carries
+# its ORIGINAL model-scope dim symbols (`A_m`, `A_n`). `func_args` hoists that
+# capture into the receiver UDF's signature as a bare `matrix A` — but Stan
+# function parameters are unsized, so those dim symbols are NOT in scope inside
+# the body. A belief size derived from the capture (`vector[A_m] bp = A * b;`)
+# then references an out-of-scope symbol and stanc rejects it. Declared args
+# avoid this because their dims are materialized (`int T = dims(y)[1];`, via
+# `fun_sizes`); hoisted captures never pass through that machinery.
+#
+# Bind the referenced capture dims ONCE at the body top, mirroring the
+# declared-arg preamble: `int A_m = dims(A)[1];`. Only bare-Symbol dims (a
+# literal or an already-`dims(...)` size needs nothing), only those actually
+# referenced in the rendered body (no dead locals), deduped across every
+# closure arg (predict + observe may share a captured `A`) and never
+# re-declaring a dim the body already binds. Non-capturing functions produce no
+# binds, so their output is byte-identical to before.
+_capture_dim_binds(f::StanFunction3) = begin
+    # Cheap first pass, no body render: every bare-Symbol dim of a sized closure
+    # capture is a candidate `int <dim> = dims(<cap>)[<i>];`, deduped by dim name
+    # (a capture shared by two closures binds once). A non-capturing function has
+    # no candidates and returns immediately, so its render is untouched.
+    cands = Pair{Symbol,String}[]
+    seen = Set{Symbol}()
+    for (_, v) in pairs(f.args)
+        v isa StanExpr2{<:types.closure} || continue
+        for (k, cap) in pairs(type(v).info.value.captures)
+            cap isa StanExpr || continue
+            for (i, sz) in enumerate(stan_size(cap))
+                e = expr(sz)
+                (e isa Symbol && !(e in seen)) || continue
+                push!(seen, e)
+                push!(cands, e => "int $(e) = dims($(k))[$(i)];")
+            end
+        end
+    end
+    isempty(cands) && return String[]
+    # Second pass keeps only dims actually referenced in the body, and never a
+    # dim the body already binds (defensive against a signature-dim collision).
+    body_str = sprint(io0 -> show(StanIO(io0), StanBlock(Symbol(), f.body)))
+    binds = String[]
+    for (e, bind) in cands
+        occursin(Regex("\\b" * string(e) * "\\b"), body_str) || continue
+        occursin(Regex("\\bint\\s+" * string(e) * "\\b"), body_str) && continue
+        push!(binds, bind)
+    end
+    binds
+end
+
 function Base.show(io::IO, f::StanFunction3)
     try
+        # Materialize any referenced captured-param dims at the body top so a
+        # `vector[A_m]`-style belief size (A a hoisted closure capture) resolves.
+        binds = try
+            _capture_dim_binds(f)
+        catch
+            String[]
+        end
+        body = isempty(binds) ? f.body : vcat(binds, f.body)
         autoprint(
             io,
             f.docstring,
             sigtype(f.rv_type), " ", func_name(f.parent, f.args), "(", func_args(f.args), ")",
-            StanBlock(Symbol(), f.body),
+            StanBlock(Symbol(), body),
         )
     catch e
         _is_stanblocks_error(e) && rethrow()
@@ -1328,9 +1384,10 @@ begin
             _deffun_julia_expr(fcall, rv, body; source, def_mod) : nothing
 
         # Kwargs (`f(x; sigma=1.0, alpha=2.0) = body`) mirror Julia's own
-        # lowering: emit a canonical body method
-        # `Core.kwcall(kw::ntup, ::typeof(f), x)::T = begin sigma=kw.sigma; …; body end`
-        # plus an `@inline` shim `f(x) = Core.kwcall((;sigma=sigma, alpha=alpha), f, x)`
+        # lowering: emit a canonical body method. Multiple kwargs use
+        # `Core.kwcall(kw::ntup, ::typeof(f), x)::T = begin sigma=kw.sigma; …; body end`;
+        # because Stan has no singleton tuple, exactly one kwarg is passed as
+        # its scalar value instead. An `@inline` shim delegates to that method
         # whose inline_body carries the kwarg names + defaults so call-site
         # expansion fills them from call-site kwargs or the registered
         # defaults. A kwarg with no default (`f(x; sigma)`) is *required*:
@@ -1376,15 +1433,25 @@ begin
             positional_names = [_name_of(p) for p in canonical_positional]
             rv_part = rv === :anything ? () : (rv,)
 
-            # Canonical body method: `Core.kwcall(kw::ntup, ::typeof(f), positional...) = begin (unpack); body end`.
+            # Canonical body method. Stan has no singleton tuple type, so one
+            # kwarg crosses this internal boundary as a scalar; multiple kwargs
+            # retain the named-tuple payload and are unpacked in the body.
             # `Core.kwcall` is spliced as a bare Function value at args[1] of
             # the inner `:call` Expr; SLIC resolves it via `forward!(::Function)`.
             # Stan-side `func_name(::typeof(Core.kwcall))` mangles call sites
             # to `kwcall_<f>` via the type-token of `f`.
-            kw_unpacks = [Expr(:(=), s.name, Expr(:., :kw, QuoteNode(s.name))) for s in kwarg_specs]
+            singleton_kwarg = length(kwarg_specs) == 1
+            singleton_arg = if singleton_kwarg
+                p = only(params.args)
+                Meta.isexpr(p, :kw) ? p.args[1] : p
+            end
+            kw_unpacks = singleton_kwarg ? [] : [
+                Expr(:(=), s.name, Expr(:., :kw, QuoteNode(s.name)))
+                for s in kwarg_specs
+            ]
             canonical_body = Expr(:block, source, kw_unpacks..., body.args...)
             canonical_call = Expr(:call, Core.kwcall,
-                Expr(:(::), :kw, :ntup),
+                singleton_kwarg ? singleton_arg : Expr(:(::), :kw, :ntup),
                 Expr(:(::), Expr(:call, :typeof, f)),
                 canonical_positional...)
             canonical_sig = isempty(rv_part) ? canonical_call : Expr(:(::), canonical_call, rv_part[1])
@@ -1398,7 +1465,9 @@ begin
             nt_construct = Expr(:tuple, Expr(:parameters,
                 [Expr(:kw, s.name, s.name) for s in kwarg_specs]...))
             shim_body = Expr(:block, source,
-                Expr(:call, Core.kwcall, nt_construct, f, positional_names...))
+                Expr(:call, Core.kwcall,
+                    singleton_kwarg ? only(kwarg_specs).name : nt_construct,
+                    f, positional_names...))
             shim_def = Expr(:(=), shim_sig, shim_body)
             inline_shim = Expr(:macrocall, Symbol("@inline"), source, shim_def)
 
@@ -1496,6 +1565,47 @@ begin
         arg_names = map(arg->arg.args[1], args)
         sig_names = copy(arg_names)
         arg_types = map(arg->ensure_xref(arg.args[2]), args)
+        # A sized container center type (`matrix`, `vector`, `row_vector`,
+        # `cholesky_factor_corr`, `simplex`, …) carries an inherent rank
+        # `r_ndim(ct) >= 1`, so a `@deffun` argument must spell at least that many
+        # bracket dimensions (`vector[n]`, `matrix[m, n]`). A DIMENSIONLESS
+        # container arg (`I_mat::matrix`) registers a `tracetype` (or `inline_body`)
+        # method keyed on `ndim == 0` via `xsig_type`, which no real
+        # matrix/vector argument (`ndim >= 1`) can ever match: the call falls
+        # through to the generic `tracetype(::CanonicalExpr)` fallback, resolves
+        # to `::anything`, and only surfaces LATER as the opaque `tracetype not
+        # defined for … = f(::matrix, ::vector)::anything!` assertion
+        # (`forward.jl`), naming neither the argument nor the fix. Reject it HERE,
+        # at signature parse, with an author-facing message that does. Skip a
+        # type-token arg and the `@lhs` observation argument (arg 1): an
+        # `@lhs`-annotated `_lpdf` intentionally leaves its bare observation
+        # container unsized — its shape is driven from the sampled LHS and the arg
+        # is dropped from the base tracetype dispatch (builtin
+        # `lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, …)`).
+        for (i, (arg, arg_type, tok)) in enumerate(zip(args, arg_types, is_token))
+            tok && continue
+            (is_lhs && i == 1) && continue
+            ct_sym = arg_type.args[1]
+            (_is_symbol(ct_sym) && isdefined(types, ct_sym)) || continue
+            ct = getproperty(types, ct_sym)
+            (ct isa Type && hasmethod(r_ndim, Tuple{Type{ct}})) || continue
+            rn = r_ndim(ct)
+            nbrackets = length(arg_type.args) - 1
+            if rn > nbrackets
+                dims = rn == 1 ? "n" : rn == 2 ? "m, n" : join(("n$k" for k in 1:rn), ", ")
+                error(
+                    "@deffun ", f, ": argument `", arg.args[1], "::", ct_sym,
+                    "` needs explicit dimensions — a `", ct_sym, "` is a sized ",
+                    "container of rank ", rn, ", so spell it `", arg.args[1], "::",
+                    ct_sym, "[", dims, "]`. A dimensionless `matrix`/`vector`/",
+                    "`row_vector` (or other sized-container) argument cannot be ",
+                    "dispatched: it resolves to `anything` and only surfaces later ",
+                    "as the opaque `tracetype not defined for … ::anything!` ",
+                    "assertion. Add the dims, e.g. `vector[n]`, `matrix[m, n]`, ",
+                    "`cholesky_factor_corr[n]`.",
+                )
+            end
+        end
         lhs_type = map(zip(arg_types, is_token)) do (at, tok)
             tok ? xsig_type_token(at) : xsig_type(at)
         end
@@ -1962,7 +2072,8 @@ _check_lpxf_resolves(lpxf) = begin
 end
 fetch_functions!(x::SamplingExpr; info) = begin
     lhs, rhs = x.args
-    lpxf = lpxf_expr(lhs, rhs)
+    lpmf = _dual_lpmf_call(lhs, rhs)
+    lpxf = isnothing(lpmf) ? lpxf_expr(lhs, rhs) : lpmf
     _check_lpxf_resolves(lpxf)
     fetch_functions!(expr(lpxf); info)
     if qual(lhs) == :data || lqual(lhs) == :undefined
@@ -1970,9 +2081,13 @@ fetch_functions!(x::SamplingExpr; info) = begin
         # Mirror the gq push: wrap `lhs` into a tokenof token so the per-shape
         # `*_rng` @deffun overloads dispatch. Without this, `rng_expr` misses
         # entirely — it no longer accepts plain StanExprs as the first arg.
+        # A parameter re-draw goes through `redraw_rng_expr` (bounds honoured),
+        # exactly as the gq push does, so the truncation helpers it emits are
+        # fetched too.
         lhs_ct = center_type(lhs)
         token = StanExpr(lhs_ct, StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
-        fetch_functions!(expr(rng_expr(token, rhs)); info)
+        draw = qual(lhs) == :data ? rng_expr(token, rhs) : redraw_rng_expr(token, rhs)
+        fetch_functions!(expr(draw); info)
     end
 end
 fetch_subfunctions!(;info) = x->fetch_subfunctions!(x; info)
@@ -2106,8 +2221,32 @@ for (f, nm) in (
 )
     @eval func_name(::typeof($f)) = $nm
 end
-func_args(args::NamedTuple) = Join(mapreduce(func_args, vcat, pairs(args); init=[]), ", ")
+func_args(args::NamedTuple) = begin
+    # Dedup captured params by NAME across all closure args. A captured model
+    # variable is the same value whichever closure captured it, so it must be
+    # threaded exactly once; otherwise a UDF receiving two closures that capture
+    # the same variable (e.g. a `sequential_marginalize` observe/simulate pair both closing
+    # over `sigma`) emits duplicate parameter identifiers and stanc rejects it
+    # ("All function arguments must have distinct identifiers"). `expand_call_args`
+    # performs the matching dedup so definition and call stay positionally aligned.
+    seen = Set{Symbol}()
+    parts = []
+    for (k, v) in pairs(args)
+        parts = vcat(parts, _dedup_func_args!(seen, k, v))
+    end
+    Join(parts, ", ")
+end
 func_args(arg::Pair) = func_args(arg...)
+_dedup_func_args!(seen::Set{Symbol}, name, x::StanExpr2{<:types.closure}) = begin
+    rv = String[]
+    for (k, v) in pairs(type(x).info.value.captures)
+        (k in seen) && continue
+        push!(seen, k)
+        push!(rv, sigtype(v) * " " * string(k))
+    end
+    rv
+end
+_dedup_func_args!(seen::Set{Symbol}, name, value) = func_args(name, value)
 func_args(name, ::StanExpr2{<:types.func}) = []
 # Closure phase 2: a closure passed to a Stan-emitted UDF lifts its
 # captures into positional args appended to the receiver's signature.
@@ -2127,14 +2266,24 @@ func_args(name, x::StanExpr2{<:types.closure}) = [
 # splice each capture value as a positional arg.
 expand_call_args(args) = begin
     rv = Any[]
+    seen = Set{Symbol}()
     for a in args
-        _splat_or_keep!(rv, a)
+        _splat_or_keep!(rv, seen, a)
     end
     rv
 end
-_splat_or_keep!(rv, a::StanExpr2{<:types.closure}) =
-    (append!(rv, values(type(a).info.value.captures)); nothing)
-_splat_or_keep!(rv, a) = (push!(rv, a); nothing)
+# Dedup capture VALUES by capture name, mirroring `func_args`'s definition-side
+# dedup so a UDF receiving multiple closures that share a captured variable gets
+# that value threaded exactly once, keeping call and signature aligned.
+_splat_or_keep!(rv, seen::Set{Symbol}, a::StanExpr2{<:types.closure}) = begin
+    for (k, v) in pairs(type(a).info.value.captures)
+        (k in seen) && continue
+        push!(seen, k)
+        push!(rv, v)
+    end
+    nothing
+end
+_splat_or_keep!(rv, seen::Set{Symbol}, a) = (push!(rv, a); nothing)
 # What `Base.show(::CanonicalExpr)` (and its `<:ODESolver` / `<:ReduceSumFunction`
 # specialisations) want as the rendered Stan-side arg list: closures expanded
 # to their capture values, then `always_inline`-typed StanExprs (functions,

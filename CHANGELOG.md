@@ -4,7 +4,7 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
-## v0.2.1 — observation submodels, matrix `plate` LHS, location-first rng overloads
+## v0.2.1 — additive transpiler features since v0.2.0
 
 **Non-breaking** — additive to the `v0.2.0` transpiler API.
 
@@ -26,6 +26,42 @@ breaking digit).
   `exp_mod_normal`, `skew_double_exponential`, `pareto_type_2`, and `student_t`)
   now accept a vector leading location, fixing GQ draws for regression-style
   likelihoods such as `y ~ skew_double_exponential(mu_vec, sigma_vec, tau)`.
+- **Prior-only programs lower to `generated quantities`.** A likelihood-free
+  (`data`-less) `@slic` program now lowers every parameter, plate and fill to a
+  `fixed_param` generated-quantities draw instead of running NUTS over the
+  prior. `ordered` / `positive_ordered` priors deliberately stay sampled (no
+  family `_rng` yields a sorted vector), and an improper `flat()` prior that
+  would be re-drawn now errors clearly at trace time.
+- **Explicit-`N` `multinomial` family.** A native `multinomial` family taking an
+  explicit trial count `N`, composable with custom count-composition densities.
+- **Complete `multi_normal_cholesky` likelihood triad.** Density, pointwise
+  log-likelihood (`_lpdfs`), and `_rng` for `multi_normal_cholesky`.
+- **`to_int` real→int conversion primitive.** Stan's `to_int` is registered as a
+  native builtin (scalar `(real,) => int`, array `(real[n],) => int[n]`). Because
+  StanBlocks places deterministic functions of data in `transformed data` (where
+  the argument is data-qualified), a data-side `to_int(round(x))` satisfies
+  Stan's data-qualifier contract with no annotation.
+- **`csr_matrix_times_vector` sparse-CSR product.**
+  `csr_matrix_times_vector(m, n, w, v, u, b) :: vector[m]` — the load-bearing
+  sparse `A*b` primitive for compressed-row processes (e.g. spline `Rt`).
+- **`row_vector` arithmetic + `append_col`.** The vector/matrix operator family
+  is mirrored onto `row_vector` (unary minus, scalar scaling, `±` same-shape,
+  `row_vector * matrix`), and `append_col` gains the column-wise
+  `row_vector ++ row_vector => row_vector` concatenation plus scalar
+  prepend/append forms.
+- **Tuple `p[i]` element access.** Indexing a positional tuple returned by a
+  `@deffun` with `p[i]` now agrees with `getfield`: it emits `p.N` and resolves
+  the element type from the tuple (previously it emitted an invalid bracket and
+  typed the element `anything`).
+- **int/real 2-D array row-slice `y[i, :]`.** Row-slicing an `int[m,n]` /
+  `real[m,n]` array is now typed (mirroring the existing `matrix` rows), so an
+  int-array row-slice assignment inside a custom `_rng` transpiles; the
+  `tracetype`-error formatter was hardened alongside.
+- **Clearer `@deffun` errors for dimensionless container args.** A bare,
+  dimensionless container argument (`I::matrix`, `w::vector`) in a `@deffun`
+  signature is now rejected at signature parse with a message naming the
+  argument and the required `matrix[m, n]` / `vector[n]` form, instead of
+  surfacing later as an opaque `::anything` tracetype error.
 
 ## v0.2.0 — StanBlocks is now a Julia→Stan transpiler
 

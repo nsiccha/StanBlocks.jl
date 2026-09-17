@@ -47,6 +47,12 @@ end
     conditioning_outside
     lower_clamping_cell_rng upper_clamping_cell_rng clamping_cell_rng
     jbroadcasted_rng
+    # Sequential-marginalization families (forward filter): the general
+    # `sequential_marginalize` HOF and the matrix-parameterized `kalman` instance.
+    sequential_marginalize_lpdf sequential_marginalize_lpdfs sequential_marginalize_rng
+    kalman_lpdf kalman_lpdfs kalman_rng
+    hmm_forward_lpdf hmm_forward_lpdfs hmm_forward_rng
+    hmm_forward_lpmf
     flat_lpdf
     std_normal_lpdf
     normal_lpdf
@@ -173,6 +179,11 @@ end
     lbeta inc_beta gamma_p gamma_q
     bessel_first_kind bessel_second_kind
     modified_bessel_first_kind modified_bessel_second_kind
+    # Log-space first-kind modified Bessel (Stan >= 2.24; real order `v`).
+    # The form a periodic Hilbert-space GP basis needs so a small length
+    # scale cannot overflow `exp(1/rho^2)`. Shapes are in the `@defsig`
+    # block below, beside `log_sum_exp`.
+    log_modified_bessel_first_kind
     owens_t binary_log_loss
     fma fmin fmax fdim fmod cbrt
 
@@ -392,12 +403,18 @@ import Statistics
         weight * density(family, y, args...)
     weighted_lpmf(y, family, weight::real, args...) =
         weight * density(family, y, args...)
+    # `lp` is deliberately UNannotated: `pointwise` carries its own size. A
+    # builtin family sizes it by `y` (= `n`), but a custom `@lpxf` family whose
+    # `_lpdfs`/`_lpmfs` twin is sized by one of ITS OWN arg tokens infers a
+    # different-but-runtime-equal size (e.g. `vector[dims(args3)[1]]`). Forcing
+    # `lp::vector[n]` here rejects that custom case at trace time; the
+    # `weight .* lp` runtime dim-guard still enforces the equality.
     weighted_lpdf(y::anything[n], family, weight::vector[n], args...) = begin
-        lp::vector[n] = pointwise(family, y, args...)
+        lp = pointwise(family, y, args...)
         sum(weight .* lp)
     end
     weighted_lpmf(y::anything[n], family, weight::vector[n], args...) = begin
-        lp::vector[n] = pointwise(family, y, args...)
+        lp = pointwise(family, y, args...)
         sum(weight .* lp)
     end
     weighted_lpdfs(y, family, weight::real, args...) =
@@ -405,11 +422,11 @@ import Statistics
     weighted_lpmfs(y, family, weight::real, args...) =
         weight * pointwise(family, y, args...)
     weighted_lpdfs(y::anything[n], family, weight::vector[n], args...)::vector[n] = begin
-        lp::vector[n] = pointwise(family, y, args...)
+        lp = pointwise(family, y, args...)
         weight .* lp
     end
     weighted_lpmfs(y::anything[n], family, weight::vector[n], args...)::vector[n] = begin
-        lp::vector[n] = pointwise(family, y, args...)
+        lp = pointwise(family, y, args...)
         weight .* lp
     end
     weighted_rng(family, weight, args...) =
@@ -1338,6 +1355,231 @@ import Statistics
     end
 end
 
+# --- Sequential marginalization ------------------------------------------------
+# `sequential_marginalize` is the general "integrate out a sequential latent" combinator: a
+# forward filter over an observation series `y`, taking user PREDICT / OBSERVE /
+# SIMULATE functions rather than fixed linear-algebra objects. Given an initial
+# belief `b0` and
+#   predict  :: belief -> belief             one-step state prediction
+#   observe  :: (belief, yₜ) -> (belief, ℓₜ) condition on yₜ; ℓₜ = log p(yₜ|y₁:ₜ₋₁)
+#   simulate :: belief -> (belief, yₜ)       draw yₜ from the one-step predictive
+# it provides the marginal log-density ∑ₜ ℓₜ (`_lpdf`), the per-observation
+# leave-future-out conditionals [ℓ₁ … ℓ_T] (`_lpdfs`) and forward-simulated
+# predictive draws (`_rng`). `belief` may be any value (scalar, tuple, vector …)
+# so long as the three functions agree on its type. Because Stan has no
+# first-class functions the closures are resolved at trace time and inlined into
+# one generated UDF per call site (the capture-dedup in `func_args` /
+# `expand_call_args` lets predict/observe/simulate share captured parameters).
+# A belief whose SIZE derives from a captured matrix (e.g. a Kalman `(m,P)` tuple
+# where `m = A*m` is sized by the captured `A`) is fully supported: the hoisted
+# capture's dims are materialized at the UDF body top (`int A_m = dims(A)[1];`,
+# `functions.jl` `_capture_dim_binds`), so an EKF / matrix-Kalman expressed
+# through this HOF transpiles and compiles. (The matrix-parameterized `kalman`
+# family below remains the ergonomic shortcut for the linear-Gaussian case.)
+@deffun @stanonly begin
+    @lpxf sequential_marginalize_lpdf(y::anything[T], b0, predict, observe, simulate)::real =
+        sum(sequential_marginalize_lpdfs(y, b0, predict, observe, simulate))
+    sequential_marginalize_lpdfs(y::anything[T], b0, predict, observe, simulate)::vector[T] = begin
+        # Internal locals are `sm_`-prefixed so they never collide with a hoisted
+        # closure capture: predict/observe/simulate close over model variables
+        # whose names the user chose, and those captures become positional Stan
+        # parameters of THIS generated UDF (func_args). A bare `r`/`b`/`t` here
+        # would clash with a capture of the same name ("Identifier r is already
+        # in use"). The `sm_` prefix keeps the body hygienic against any
+        # realistic capture name.
+        sm_ll::vector[T]
+        sm_b = b0
+        for sm_t in 1:T
+            sm_bp = predict(sm_b)
+            sm_step = observe(sm_bp, y[sm_t])
+            sm_b = sm_step[1]
+            sm_ll[sm_t] = sm_step[2]
+        end
+        sm_ll
+    end
+    sequential_marginalize_rng(vector[T], b0, predict, observe, simulate)::vector[T] = begin
+        # See `_lpdfs` above: `sm_`-prefixed locals stay clear of hoisted captures.
+        sm_yy::vector[T]
+        sm_b = b0
+        for sm_t in 1:T
+            sm_bp = predict(sm_b)
+            sm_step = simulate(sm_bp)
+            sm_b = sm_step[1]
+            sm_yy[sm_t] = sm_step[2]
+        end
+        sm_yy
+    end
+end
+
+# --- Kalman filter (linear-Gaussian) -------------------------------------------
+# Matrix-parameterized convenience family with two observation shapes:
+#   SCALAR obs      `y ~ kalman(m0, P0, A, Q, c, r)` — yₜ = c'·zₜ + N(0, r),
+#                    c::vector[K], r::real, y::vector[T].
+#   MULTIVARIATE obs `y ~ kalman(m0, P0, A, Q, C, R)` — yₜ = C·zₜ + N(0, R),
+#                    C::matrix[d,K], R::matrix[d,d], y::matrix[T,d] (row t = yₜ).
+# zₜ = A·zₜ₋₁ + N(0, Q). Declared matrix dims keep the state size in UDF scope
+# (unlike the closure route above). Returns the exact marginal log-density;
+# `_lpdfs` gives the per-step one-step-ahead conditionals and `_rng`
+# forward-simulates the series.
+@deffun @stanonly begin
+    @lpxf kalman_lpdf(y::vector[T], m0::vector[K], P0::matrix[K,K],
+                      A::matrix[K,K], Q::matrix[K,K], c::vector[K], r::real)::real =
+        sum(kalman_lpdfs(y, m0, P0, A, Q, c, r))
+    kalman_lpdfs(y::vector[T], m0::vector[K], P0::matrix[K,K],
+                 A::matrix[K,K], Q::matrix[K,K], c::vector[K], r::real)::vector[T] = begin
+        ll::vector[T]
+        m = m0
+        P = P0
+        for t in 1:T
+            mp = A * m
+            Pp = quad_form_sym(P, A') + Q
+            yhat = c' * mp
+            S = quad_form_sym(Pp, c) + r
+            Kg = Pp * c / S
+            m = mp + Kg * (y[t] - yhat)
+            P = Pp - Kg * (c' * Pp)
+            ll[t] = normal_lpdf(y[t], yhat, sqrt(S))
+        end
+        ll
+    end
+    kalman_rng(vector[T], m0::vector[K], P0::matrix[K,K],
+               A::matrix[K,K], Q::matrix[K,K], c::vector[K], r::real)::vector[T] = begin
+        yy::vector[T]
+        m = m0
+        P = P0
+        for t in 1:T
+            mp = A * m
+            Pp = quad_form_sym(P, A') + Q
+            yhat = c' * mp
+            S = quad_form_sym(Pp, c) + r
+            yt = normal_rng(yhat, sqrt(S))
+            Kg = Pp * c / S
+            m = mp + Kg * (yt - yhat)
+            P = Pp - Kg * (c' * Pp)
+            yy[t] = yt
+        end
+        yy
+    end
+end
+
+# Multivariate-observation overloads of `kalman` (C::matrix[d,K], R::matrix[d,d];
+# y::matrix[T,d], row t = yₜ). `@lhs` — not `@lpxf` — registers the base tracetype
+# for this signature; the scalar block above already registered kalman's
+# lpxf/rng/likelihood dispatch hooks, and one @lpxf per base name is the limit.
+# Multiple dispatch selects this overload from the matrix argument shapes.
+@deffun @stanonly begin
+    @lhs kalman_lpdf(y::matrix[T,d], m0::vector[K], P0::matrix[K,K],
+                     A::matrix[K,K], Q::matrix[K,K], C::matrix[d,K], R::matrix[d,d])::real =
+        sum(kalman_lpdfs(y, m0, P0, A, Q, C, R))
+    kalman_lpdfs(y::matrix[T,d], m0::vector[K], P0::matrix[K,K],
+                 A::matrix[K,K], Q::matrix[K,K], C::matrix[d,K], R::matrix[d,d])::vector[T] = begin
+        ll::vector[T]
+        m = m0
+        P = P0
+        for t in 1:T
+            mp = A * m
+            Pp = quad_form_sym(P, A') + Q
+            yhat = C * mp
+            S = quad_form_sym(Pp, C') + R
+            Kg = mdivide_right_spd(Pp * C', S)
+            m = mp + Kg * (row(y, t)' - yhat)
+            P = Pp - Kg * C * Pp
+            ll[t] = multi_normal_lpdf(row(y, t)', yhat, S)
+        end
+        ll
+    end
+    kalman_rng(matrix[T,d], m0::vector[K], P0::matrix[K,K],
+               A::matrix[K,K], Q::matrix[K,K], C::matrix[d,K], R::matrix[d,d])::matrix[T,d] = begin
+        yy::matrix[T,d]
+        m = m0
+        P = P0
+        for t in 1:T
+            mp = A * m
+            Pp = quad_form_sym(P, A') + Q
+            yhat = C * mp
+            S = quad_form_sym(Pp, C') + R
+            yt = multi_normal_rng(yhat, S)
+            Kg = mdivide_right_spd(Pp * C', S)
+            m = mp + Kg * (yt - yhat)
+            P = Pp - Kg * C * Pp
+            yy[t,:] = yt'
+        end
+        yy
+    end
+end
+
+# --- Hidden Markov model (discrete latent states) -------------------------------
+# `y ~ hmm_forward(rho, Gamma, emit, emit_rng)` — forward-filter marginal
+# likelihood for a K-state HMM (user decision `07j39xa`, option A). The emission
+# is USER code: `emit(yₜ)::vector[K]` returns the per-state log-density row,
+# closing over emission parameters like any HOF closure. An HMM couples each
+# observation to the parameters through that user-chosen emission, so there is
+# no fixed linear-algebra object to take as args (the `kalman` mold does not
+# fit). The package owns the fixed forward recursion over the filtered state
+# probs `alpha::vector[K]`, in log space via `log_sum_exp`; `emit_rng(k)`
+# draws `yₜ | zₜ = k` for the `_rng` forward-simulation leg (`categorical_rng`
+# draws the state, `one_hot_vector` re-points the belief at the draw). `K`
+# unifies from the declared `rho::vector[K]` / `Gamma::matrix[K,K]` dims (the
+# kalman pattern — no capture scoping work). `Gamma` is row-stochastic
+# (`Gamma[m,n] = p(zₜ=n | zₜ₋₁=m)`), matching Stan's `hmm_marginal` convention.
+# Internal locals are `hmm_`-prefixed (the `sm_` hygiene rationale in
+# `sequential_marginalize`: a capture named `r`/`b`/`t` must never collide).
+# DISCRETE observations use the SAME bare spelling (`y ~ hmm_forward(…)`): Stan
+# resolves a bare `~` to the `_lpdf`/`_lpmf` specialization by the variate type
+# itself. The `hmm_forward_lpmf` wrapper below exists so the fetch can pull the
+# `_lpmf` specialization INSTEAD of the `_lpdf` one for int lhs (a
+# closure-specialised `_lpdf` wrapper with an int first arg is illegal Stan;
+# see `_dual_lpmf_call`, lpxf_builtin.jl). Plain `@deffun`, deliberately NOT
+# `@lpxf` (that would overwrite the base hooks). The `_lpdfs` leg is shared and
+# obs-generic (`anything[T]`); the `int[T]` rng overload serves the GQ draw.
+@deffun @stanonly begin
+    @lpxf hmm_forward_lpdf(y::anything[T], rho::vector[K], Gamma::matrix[K,K],
+                           emit, emit_rng)::real =
+        sum(hmm_forward_lpdfs(y, rho, Gamma, emit, emit_rng))
+    hmm_forward_lpmf(y::int[T], rho::vector[K], Gamma::matrix[K,K],
+                     emit, emit_rng)::real =
+        sum(hmm_forward_lpdfs(y, rho, Gamma, emit, emit_rng))
+    hmm_forward_lpdfs(y::anything[T], rho::vector[K], Gamma::matrix[K,K],
+                      emit, emit_rng)::vector[T] = begin
+        hmm_ll::vector[T]
+        hmm_alpha = rho
+        for hmm_t in 1:T
+            hmm_ap = Gamma' * hmm_alpha
+            hmm_joint = log(hmm_ap) + emit(y[hmm_t])
+            hmm_ell = log_sum_exp(hmm_joint)
+            hmm_alpha = exp(hmm_joint - hmm_ell)
+            hmm_ll[hmm_t] = hmm_ell
+        end
+        hmm_ll
+    end
+    hmm_forward_rng(vector[T], rho::vector[K], Gamma::matrix[K,K],
+                    emit, emit_rng)::vector[T] = begin
+        hmm_yy::vector[T]
+        hmm_alpha = rho
+        for hmm_t in 1:T
+            hmm_ap = Gamma' * hmm_alpha
+            hmm_z = categorical_rng(hmm_ap)
+            hmm_yt = emit_rng(hmm_z)
+            hmm_alpha = one_hot_vector(rows(rho), hmm_z)
+            hmm_yy[hmm_t] = hmm_yt
+        end
+        hmm_yy
+    end
+    hmm_forward_rng(int[T], rho::vector[K], Gamma::matrix[K,K],
+                    emit, emit_rng)::int[T] = begin
+        hmm_yy::int[T]
+        hmm_alpha = rho
+        for hmm_t in 1:T
+            hmm_ap = Gamma' * hmm_alpha
+            hmm_z = categorical_rng(hmm_ap)
+            hmm_yt = emit_rng(hmm_z)
+            hmm_alpha = one_hot_vector(rows(rho), hmm_z)
+            hmm_yy[hmm_t] = hmm_yt
+        end
+        hmm_yy
+    end
+end
+
 # Elementwise vectorised-lpdf/lpmf companions — one top-level @eval @deffun loop
 # (mirrors the *_rng loop below). `deffun` maps over a begin-block statement-wise,
 # so lifting these out of the @deffun block above is equivalent; `$(params...)`
@@ -1480,7 +1722,7 @@ end
 @deffun begin
     Base.length(rv::RaggedVector)::int = size(rv.ends)
     Base.lastindex(rv::RaggedVector)::int = size(rv.ends)
-    Base.getindex(rv::RaggedVector, i::int)::vector[ragged_length(rv, i)] =
+    Base.getindex(rv::RaggedVector, i::int)::typeof(rv.mem[1])[ragged_length(rv, i)] =
         rv.mem[ragged_start(rv, i):ragged_end(rv, i)]
     Base.length(rv::RaggedMatrix)::int = size(rv.ends)
     Base.lastindex(rv::RaggedMatrix)::int = size(rv.ends)
@@ -1597,17 +1839,29 @@ _ragged_base_family(rhs::CanonicalExpr) = begin
     spec = _distribution_hof(head(rhs))
     isnothing(spec) ? head(rhs) : _distribution_hof_family(spec, rhs)
 end
-# A ragged carrier's backing memory is a Stan `vector`, so a DISCRETE family would
-# have to coerce its integer draw into real storage — silently, and only for the
-# ragged spelling. Reject at tracing with the family named rather than emit it.
-_assert_ragged_continuous_family(rhs::CanonicalExpr) = begin
+# A ragged observation's carrier and its family's probability KIND must agree: a
+# discrete family (`_lpmf`) needs an INTEGER-valued group (an int-backed
+# `RaggedVector` — `mem::array[] int`), a continuous family (`_lpdf`) a real
+# `vector` group. A discrete draw into a real carrier (or a real draw into an
+# int carrier) has no valid Stan form, so reject the MISMATCH at tracing with
+# both the family and the carrier named. `ct` is the center type of the group
+# slice (int for an integer ragged observation), so a discrete family over an
+# integer ragged observation now lowers exactly like a real one (snag
+# ragged-int-obser-771dd259 — the integer ragged carrier).
+_ragged_carrier_kind(ct) = ct === types.int ? :lpmf : :lpdf
+_assert_ragged_family_carrier(rhs::CanonicalExpr, ct) = begin
     family = _ragged_base_family(rhs)
-    _probability_kind(family) === :lpdf || error(
-        "Ragged observation: family `", nameof(family), "` is discrete (resolves to ",
-        nameof(lpxf_expr(family)), "). A `RaggedVector` stores its groups in a real ",
-        "`vector`, so an integer-valued ragged observation/prediction has no carrier ",
-        "yet. Use a dense `int[n]` observation, or open a decision for an integer ",
-        "ragged carrier."
+    kind = _probability_kind(family)
+    kind === _ragged_carrier_kind(ct) || error(
+        kind === :lpmf ?
+        string("Ragged observation: family `", nameof(family), "` is discrete (resolves to ",
+            nameof(lpxf_expr(family)), "), but the ragged observation is real-valued (`", ct,
+            "`). A discrete family needs an INTEGER-valued ragged observation — pass ",
+            "`Vector{Vector{Int}}` data (its groups then back an `array[] int`).") :
+        string("Ragged observation: family `", nameof(family), "` is continuous (resolves to ",
+            nameof(lpxf_expr(family)), "), but the ragged observation is integer-valued. Its ",
+            "predictive draw has no integer form — pass real (`Float64`) ragged data, or use ",
+            "a discrete family."),
     )
     rhs
 end
@@ -1646,16 +1900,18 @@ _ragged_group_rng(token, rhs::CanonicalExpr, ct) = begin
 end
 expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_draw)}; info) = begin
     proto = x.args[1]
-    rhs = _assert_ragged_continuous_family(_ragged_group_call(x))
     ct = center_type(proto)
+    rhs = _assert_ragged_family_carrier(_ragged_group_call(x), ct)
     # Sized token — the SAME protocol every other vector-shaped predictive draw
     # uses, so a custom `@lpxf` family only needs its ordinary sized
-    # `foo_rng(vector[n], args…)::vector[n]` companion (stanblocks-use §8).
+    # `foo_rng(vector[n], args…)::vector[n]` companion (stanblocks-use §8). For an
+    # integer ragged observation `ct` is `int`, so the token selects the discrete
+    # `foo_rng(int[n], …)::int[n]` overload (builtin.jl `$drng(int[n], …)` block).
     token = StanExpr(ct, StanType(types.tokenof{ct}, stan_size(proto); value=ct, qual=:data))
     _ragged_group_rng(token, rhs, ct)
 end
 expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_density)}; info) = begin
-    rhs = _assert_ragged_continuous_family(_ragged_group_call(x))
+    rhs = _assert_ragged_family_carrier(_ragged_group_call(x), center_type(x.args[1]))
     # The AGGREGATE density of the whole group — one scalar. Never `_lpdfs`.
     lpxf_expr(x.args[1], rhs)
 end
@@ -1870,13 +2126,53 @@ end
 for dist in (:student_t, :skew_normal, :exp_mod_normal,
              :skew_double_exponential, :pareto_type_2)
     drng = Symbol(dist, :_rng)
-    @eval @deffun $drng(real[n],   nu::real, a::real, b::real)::real[n]   = $drng(nu, rep_vector(a, n), b)
-    @eval @deffun $drng(vector[n], nu::real, a::real, b::real)::vector[n] = to_vector($drng(nu, rep_vector(a, n), b))
-    @eval @deffun $drng(real[n],   nu::real, a, b)::real[n]   = $drng(nu, a, b)
-    @eval @deffun $drng(vector[n], nu::real, a, b)::vector[n] = to_vector($drng(nu, a, b))
+    # Empty-segment guard (snag sized-rng-compan-225549a9): Stan Math ≤5.3.0
+    # sizes a vectorized draw off ALL args with scalars counting as size 1,
+    # so a scalar arg beside empty segments runs the draw loop once over a
+    # null data pointer (SIGSEGV — proven for student_t under ASan; the
+    # scalar `nu` is the whole family difference vs safe `normal_rng`).
+    # Fixed upstream in stan-dev/math@6db3b739, after the BridgeStan 2.9.0
+    # bundle — until a fixed BridgeStan ships, return the empty draw
+    # directly when the size token is 0. The `else` branch is the exact
+    # previous body, so non-empty draws are unchanged. Same `if n == 0`
+    # idiom as `robust_linspaced_int_array` above.
+    @eval @deffun $drng(real[n],   nu::real, a::real, b::real)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(nu, rep_vector(a, n), b)
+    end
+    @eval @deffun $drng(vector[n], nu::real, a::real, b::real)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(nu, rep_vector(a, n), b))
+    end
+    @eval @deffun $drng(real[n],   nu::real, a, b)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(nu, a, b)
+    end
+    @eval @deffun $drng(vector[n], nu::real, a, b)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(nu, a, b))
+    end
     # Vector LEADING arg (per-observation location): both leading args are vectors.
-    @eval @deffun $drng(real[n],   loc::vector[n], scale::vector[n], b)::real[n]   = $drng(loc, scale, b)
-    @eval @deffun $drng(vector[n], loc::vector[n], scale::vector[n], b)::vector[n] = to_vector($drng(loc, scale, b))
+    @eval @deffun $drng(real[n],   loc::vector[n], scale::vector[n], b)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(loc, scale, b)
+    end
+    @eval @deffun $drng(vector[n], loc::vector[n], scale::vector[n], b)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(loc, scale, b))
+    end
 end
 
 # 1-arg discrete families (output is int[n]; no to_vector wrap)
@@ -2167,6 +2463,26 @@ end
     Union{typeof.((log_sum_exp, ))...} => begin
         (real, real) => real
         (vector[n], vector[n]) => vector[n]
+    end
+    # `log_modified_bessel_first_kind(v, z)` — the log of the modified Bessel
+    # function of the first kind, order `v` (any real, not just int) at `z`.
+    # Stan vectorises it over both arguments. `types.int <: types.real`, so the
+    # single scalar row also covers every `(int, real)` / `(real, int)` /
+    # `(int, int)` mix (all return `real`), and the `real[n]` rows admit an
+    # `int[n]` argument in either slot — stanc's own table lists
+    # `(array[] int, real)`, `(real, array[] int)` and the same-kind array
+    # pairs, and it accepts the mixed `(array[] int, array[] real)` pair by
+    # int->real array promotion (verified on stanc3 v2.39.0), so every shape a
+    # row here admits is one stanc compiles. `row_vector` / `matrix` /
+    # nested-array forms are not registered.
+    typeof(log_modified_bessel_first_kind) => begin
+        (real, real) => real
+        (real, vector[n]) => vector[n]
+        (vector[n], real) => vector[n]
+        (vector[n], vector[n]) => vector[n]
+        (real, real[n]) => real[n]
+        (real[n], real) => real[n]
+        (real[n], real[n]) => real[n]
     end
     # Matrix reductions returning real
     Union{typeof.((trace, determinant, log_determinant, log_determinant_spd))...} => begin

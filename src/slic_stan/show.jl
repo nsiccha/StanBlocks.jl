@@ -44,12 +44,19 @@ autoprint(io, args...) = if maybreak(io)
         print(io, rv)
     else
         idx = findfirst(_is_join, args)
-        iio = indent(io)
-        print(io, args[1:idx-1]...)
-        print(io, "\n", current_indent(iio))
-        print(iio, Join(args[idx].iterator, rstrip(args[idx].delim) * "\n" * current_indent(iio)))
-        print(io, "\n", current_indent(io))
-        print(io, args[idx+1:end]...)
+        if isnothing(idx)
+            # No breakable join point — e.g. a 1-dim tokenof size expression
+            # built from ragged_start/ragged_end bounds (the single-arg call
+            # below). Emit the long line as-is: valid Stan, just unbroken.
+            print(io, rv)
+        else
+            iio = indent(io)
+            print(io, args[1:idx-1]...)
+            print(io, "\n", current_indent(iio))
+            print(iio, Join(args[idx].iterator, rstrip(args[idx].delim) * "\n" * current_indent(iio)))
+            print(io, "\n", current_indent(io))
+            print(io, args[idx+1:end]...)
+        end
     end
 else
     print(io, args...)
@@ -245,6 +252,26 @@ for f in (Meta.quot(:(~)), Meta.quot(:(=)))
     @eval Base.show(io::IO, x::CanonicalExprV{$f}) = print(io, Join(x.args, prettystring($f)))
 end
 Base.show(io::IO, x::SamplingExpr) = print(io, Join(x.args, " ~ "))
+# An explicit-suffix density head (`y ~ …_lpmf(…)`, `y ~ …_lpdf(…)`) must print
+# comma-separated in SAMPLING position: Stan requires the `|` bar only for
+# density calls in EXPRESSION position (`f(x) = … normal_lpdf(y | …)`), and
+# rejects it after `~` (stanc `Ill-formed expression`, observed 2026-09-17 —
+# the first valid program to put an explicit suffix in `~` position; bare
+# heads are unaffected either way). The generic `CanonicalExpr` printer above
+# keeps the bar for expression position, where it is mandatory.
+Base.show(io::StanIO, x::SamplingExpr) = begin
+    lhs, rhs = x.args
+    print(io, lhs, " ~ ")
+    rc = rhs isa CanonicalExpr ? rhs :
+        (rhs isa StanExpr && expr(rhs) isa CanonicalExpr ? expr(rhs) : nothing)
+    if !isnothing(rc) &&
+       endswith(string(func_name(head(rc), rc.args)), r"_lp[md]f|_l?c?cdf")
+        print(io, func_name(head(rc), rc.args), "(",
+              Join(stan_call_args(rc.args), ", "), ")")
+    else
+        print(io, rhs)
+    end
+end
 
 for f in (:+=,:-=,:*=)
     qf = Meta.quot(f)
