@@ -5898,6 +5898,116 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
     @test LogDensityProblems.dimension(instantiate(priorlive)) == 5
 end
 
+"""
+An ODE solver returns `array[] vector`. Plate collects that deterministic local
+with the plate axes prepended, then indexes those axes to recover the original
+trajectory inside the cell before selecting a state.
+"""
+@testitem "slic: plate collects an ODE array-vector cell local" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    @deffun plate_array_vector_rhs(t::real, y::vector[ny], ke::real)::vector[ny] = begin
+        dy::vector[ny]
+        dy[1] = -ke * y[1]
+        dy
+    end
+
+    data = (; ts = [0.5, 1.0], obs = [0.55, 0.35])
+    raw_local = @slic data begin
+        ke ~ lognormal(0.0, 0.5)
+        pred ~ plate(; outer = 2) do i
+            pd_pred_trajectory = ode_rk45_tol(
+                plate_array_vector_rhs,
+                rep_vector(1.0 * i, 1),
+                0.0,
+                to_array_1d(ts),
+                1.0e-6,
+                1.0e-6,
+                100_000,
+                ke,
+            )
+            selected = to_vector(pd_pred_trajectory[:, 1])
+            obs[i] ~ normal(selected[1], 0.1)
+            selected
+        end
+    end
+    @test transpiles(raw_local)
+    @test stanc_compiles(raw_local)
+    raw_code = stan_code(raw_local)
+    raw_tp = stan_block(raw_code, "transformed parameters")
+    @test occursin("array[2, ts_n] vector[1] pred_pd_pred_trajectory;", raw_tp)
+    @test occursin(r"pred_pd_pred_trajectory\[plate_i__pl_\d+\] = ode_rk45_tol\(", raw_tp)
+    @test occursin(r"to_vector\(pred_pd_pred_trajectory\[plate_i__pl_\d+\]\[:, 1\]\)", raw_code)
+
+    raw_result = @slic data begin
+        ke ~ lognormal(0.0, 0.5)
+        trajectories ~ plate(; outer = 2) do i
+            ode_rk45_tol(
+                plate_array_vector_rhs,
+                rep_vector(1.0 * i, 1),
+                0.0,
+                to_array_1d(ts),
+                1.0e-6,
+                1.0e-6,
+                100_000,
+                ke,
+            )
+        end
+        obs ~ normal(to_vector(trajectories[1][:, 1]), 0.1)
+    end
+    @test transpiles(raw_result)
+    @test stanc_compiles(raw_result)
+    @test occursin(
+        "array[2, ts_n] vector[1] trajectories;",
+        stan_block(stan_code(raw_result), "transformed parameters"),
+    )
+
+    multi_axis = @slic (; ts = data.ts) begin
+        ke ~ lognormal(0.0, 0.5)
+        pred ~ plate(; outer = (2, 2)) do i, j
+            trajectory = ode_rk45_tol(
+                plate_array_vector_rhs,
+                rep_vector(1.0 * (i + j), 1),
+                0.0,
+                to_array_1d(ts),
+                1.0e-6,
+                1.0e-6,
+                100_000,
+                ke,
+            )
+            to_vector(trajectory[:, 1])
+        end
+    end
+    @test transpiles(multi_axis)
+    @test stanc_compiles(multi_axis)
+    # Likelihood-free, so the carrier fill routes to generated quantities
+    # (§28: the return fill lands where a likelihood can read it, else GQ).
+    @test occursin(
+        "array[2, 2, ts_n] vector[1] pred_trajectory;",
+        stan_block(stan_code(multi_axis), "generated quantities"),
+    )
+
+    inline_selection = @slic data begin
+        ke ~ lognormal(0.0, 0.5)
+        pred ~ plate(; outer = 2) do i
+            selected = to_vector(ode_rk45_tol(
+                plate_array_vector_rhs,
+                rep_vector(1.0 * i, 1),
+                0.0,
+                to_array_1d(ts),
+                1.0e-6,
+                1.0e-6,
+                100_000,
+                ke,
+            )[:, 1])
+            obs[i] ~ normal(selected[1], 0.1)
+            selected
+        end
+    end
+    @test transpiles(inline_selection)
+    @test stanc_compiles(inline_selection)
+end
+
 @testitem "slic: plate context stops at registered UDF bodies" tags=[:slic, :plate, :ragged, :stanc, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
 

@@ -214,11 +214,12 @@ blocks that own the declarations, fills, densities, and generated quantities.
 | Lexically captured values | ✅ | Shared across cells; loop-invariant expressions are hoisted when safe |
 | Fresh scalar `~` or `=` binding | ✅ | Collected as a `vector[N]` for one outer axis; additional axes use matrix/array storage |
 | Fixed `vector[K]` binding/result | ✅ | Collected as `matrix[K,N]` for one outer axis; extra axes add Stan array prefixes |
+| Dense `array[T] vector[K]` binding/result | ✅ | Collected as `array[outer...,T] vector[K]`; includes a raw ODE trajectory bound once and consumed inside the cell |
 | Varying-length plain `vector[K[i]]` cell | ✅, narrow | One-dimensional outer shape and data-computable lengths only; represented by flat memory whose descriptor output carries that result/member's own inclusive group ends in `segments` |
 | Fixed native-constrained vector cell | ✅ | `simplex[K]`, `ordered[K]`, and `positive_ordered[K]`; emitted as `array[outer...] <type>[K]` |
 | Shared scalar constraints | ✅ | `lower`, `upper`, `offset`, and `multiplier` are preserved when they do not depend on the cell position |
 | Cell-position-dependent constraint | ❌ | Rejected because the promoted declaration lives outside the loop |
-| Matrix or higher-rank cell value | ❌ | Declare shared matrices outside the plate and return a scalar/vector cell |
+| Matrix or other higher-rank cell value | ❌ | Declare shared matrices outside the plate; the sole dense rank-2 cell form is `array[T] vector[K]` |
 | Varying-size constrained cell | ❌ | Declare the ragged constrained parameter at model scope, then index it in the plate |
 | Positional `RaggedVector`, `EachCol`, `EachRow` | ✅ | Each cell receives one ragged group, matrix column, or matrix row |
 | Named/anonymous `@slic` call inside the cell | ✅ | Internal fresh bindings are discovered, namespaced, and promoted per cell |
@@ -251,6 +252,24 @@ multivariate sample returned unchanged, StanBlocks can emit a single vectorized
 array sample for `multi_normal`, `multi_normal_prec`,
 `multi_normal_cholesky`, `multi_student_t`, or
 `multi_student_t_cholesky`. Cell-varying arguments keep the ordinary loop.
+
+A deterministic `array[T] vector[K]` cell value uses Stan's natural nested
+layout with the plate axes prepended. This lets an ODE solve be named and reused
+without wrapping the extraction in a separate `@deffun`:
+
+```julia
+pred ~ plate(; outer = N) do i
+    trajectory = ode_rk45(rhs, y0[i], 0.0, to_array_1d(ts), theta)
+    selected = to_vector(trajectory[:, 1])
+    y[i] ~ normal(selected[1], sigma)
+    selected
+end
+```
+
+Here `trajectory` is collected as `array[N,T] vector[K]`, and references inside
+the cell lower to `trajectory[i]`, recovering the original
+`array[T] vector[K]`. Matrix-per-cell and arbitrary nested-array values remain
+unsupported.
 
 ### Where to put an observation
 

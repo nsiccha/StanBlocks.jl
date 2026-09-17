@@ -290,15 +290,20 @@ end
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 1),))))
 )
-# Fully selecting the scalar array-prefix of an `array[...] vector/matrix`
-# leaves its native vector/matrix core. This general rule covers arbitrary
-# array depth (e.g. `array[N] matrix[K,M] x; x[n, :, m]`) beyond the finite
-# signature table below while preserving that table's core slice inference.
+# Selecting scalar indices from the leading array-prefix of an
+# `array[...] vector/matrix` peels those array dimensions. A partial selection
+# leaves a shallower array (e.g. `array[N,T] vector[K] x; x[n]` is
+# `array[T] vector[K]`); selecting the whole prefix leaves the native core. This
+# general rule covers arbitrary array depth beyond the finite signature table
+# below while preserving that table's core slice inference.
 tracetype(x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr,Vararg{Any}}}) = begin
     value = x.args[1]
     nl = l_ndim(type(value))
     indices = x.args[2:end]
-    if nl > 0 && length(indices) >= nl && all(i -> i isa StanExpr2{<:types.int,0}, indices[1:nl])
+    if nl > 0 && !isempty(indices) && length(indices) < nl &&
+        all(i -> i isa StanExpr2{<:types.int,0}, indices)
+        return remake(type(value), stan_size(type(value))[length(indices)+1:end]...)
+    elseif nl > 0 && length(indices) >= nl && all(i -> i isa StanExpr2{<:types.int,0}, indices[1:nl])
         core_type = remake(type(value), stan_size(type(value))[nl+1:end]...)
         rest = indices[nl+1:end]
         isempty(rest) && return core_type
