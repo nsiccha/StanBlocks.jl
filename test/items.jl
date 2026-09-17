@@ -3485,6 +3485,34 @@ end
     @test all(isfinite, g)
 end
 
+@testitem "slic: hmm_forward emission-closure family (Gaussian HMM)" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Option-A family (decision 07j39xa): the user supplies only the emission
+    # closure `emit(yₜ)::vector[K]`; the package owns the log-space forward
+    # recursion + `_lpdf` / `_lpdfs` / `_rng` triad. K=2 Gaussian HMM; `sigma`
+    # is a captured parameter (the emission-couples-y+params case the fixed-arg
+    # `kalman` mold cannot take).
+    Gamma = [0.9 0.1; 0.2 0.8]
+    rho = [0.5, 0.5]
+    mu = [-1.0, 2.0]
+    y = [0.3, -0.8, 1.9, 2.2, -1.1, 0.1]
+    model = @slic (; y, Gamma, rho, mu) begin
+        logsigma ~ std_normal()
+        s = exp(logsigma)
+        y ~ hmm_forward(rho, Gamma,
+            yt -> [normal_lpdf(yt, mu[1], s), normal_lpdf(yt, mu[2], s)],
+            k -> normal_rng(mu[k], s))
+    end
+    @test stanc_compiles(model)
+    sc = stan_code(model)
+    @test occursin("hmm_forward", sc)
+    @test occursin("_lpdfs(", sc)   # per-observation one-step-ahead conditionals
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 1
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
 """
 Verify `in-body @doc docstring renders (StanExpr unwrap)` in an isolated test item.
 """
