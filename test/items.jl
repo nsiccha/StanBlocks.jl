@@ -10794,3 +10794,46 @@ enclosing accessor (`h[t]` under `h[:, j]` → `h[t, j]`), so all three modes
         @test occursin("x_eps[(t - 1), j] ~ std_normal();", mb)
     end
 end
+
+"""
+`inv_cloglog` is a native Stan Math function (the inverse complementary
+log-log link, element-wise over real / vector / row_vector / array / matrix).
+It must be registered on the builtin surface — in the `@builtin_module` name
+manifest AND the shared unary-math `@defsig` Union — so a `@deffun` body may
+call it and lower to `inv_cloglog(...)`. Regression for snag
+stanblocks-trace-e1235cb1: a consumer `@lpxf` Bernoulli family calling
+`inv_cloglog(mu)` on a vector aborted at trace time with
+`tracetype not defined for p = inv_cloglog(::vector)::anything!`, because the
+bare name skipped the absent builtin and resolved to the consumer's own Julia
+fallback.
+"""
+@testitem "slic: native inv_cloglog builtin emits and compiles" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
+    # A `@defsig`-only native (no Julia method); the default Stan-only emission
+    # therefore accepts each definition without an annotation.
+    @deffun begin
+        cloglog_p(mu::real)::real = inv_cloglog(mu)
+        cloglog_vec(mu::vector[n])::vector[n] = inv_cloglog(mu)
+    end
+
+    # Scalar: the inverse-link evaluation.
+    scalar_model = @slic (; y = 1.5) begin
+        mm ~ normal(0., 1.)
+        ps = cloglog_p(mm)
+        y ~ normal(ps, 1.0)
+    end
+    scalar_code = stan_code(scalar_model)
+    @test occursin("inv_cloglog(", scalar_code)
+    @test occursin("return inv_cloglog(mu);", scalar_code)
+    @test stanc_check(scalar_code; warn_pedantic=false).ok
+
+    # Vectorized element-wise form.
+    vector_model = @slic (; n = 3, yv = [1, 0, 1]) begin
+        xv ~ normal(0., 1.; n = 3)
+        pv = cloglog_vec(xv)
+        yv ~ bernoulli(pv)
+    end
+    vector_code = stan_code(vector_model)
+    @test occursin("inv_cloglog(", vector_code)
+    @test occursin("return inv_cloglog(mu);", vector_code)
+    @test stanc_check(vector_code; warn_pedantic=false).ok
+end
