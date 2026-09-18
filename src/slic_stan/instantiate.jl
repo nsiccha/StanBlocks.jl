@@ -63,6 +63,14 @@ Compile `model` (a [`SlicModel`](@ref StanBlocks.SlicModel) or
 
 - `path::AbstractString` — where to write the `.stan` file. Defaults to
   `"tmp/<hash>.stan"`, so identical generated code is cached on disk.
+  An existing file with identical content is left untouched (preserving
+  the mtime-based rebuild cache); an existing file whose content differs
+  from the generated model is overwritten — with a warning naming the
+  path — so a changed model is always what gets compiled. If the previous
+  build is already loaded in this session, the new program is compiled from
+  a content-addressed copy under `tmp/` instead (an already-`dlopen`'ed
+  library path cannot reload in-process), with a warning; the file at `path`
+  still receives the new source.
 - `nan_on_error::Bool = true` — make BridgeStan return `NaN` instead of
   throwing on evaluation failures.
 - `make_args::Vector{String} = ["STAN_THREADS=true"]` — extra arguments
@@ -77,18 +85,61 @@ instantiate(x::Union{SlicModel,StanModel}; nan_on_error=true, make_args=["STAN_T
     _guard_ragged_stan_version(sc)
     stan_path = get(kwargs, :path, joinpath("tmp", string(hash(sc)) * ".stan"))
     mkpath(dirname(stan_path))
-    if !isfile(stan_path)
-        open(stan_path, "w") do fd
-            write(fd, sc)
-        end
-    end
+    wrote = _write_stan_source(stan_path, sc)
+    build_path = wrote ? _build_path_for(stan_path, sc) : stan_path
     StanLogDensityProblems.StanProblem(
-        stan_path,
+        build_path,
         bridgestan_data(stan_data(x));
         nan_on_error,
         make_args,
         warn
     )
+end
+"""
+    _write_stan_source(stan_path, sc) -> Bool
+
+Write generated Stan source `sc` to `stan_path`, invalidating a stale cache
+entry, and return whether bytes were written. An existing file with identical
+content is left untouched, preserving the mtime-based rebuild cache (BridgeStan
+`make` skips recompilation when neither source nor data changed). An existing
+file whose content differs is overwritten — with a warning naming the path —
+so a later `stan_instantiate(changed_model; path=same_path)` call compiles and
+samples the NEW program instead of silently reusing the old one.
+"""
+_write_stan_source(stan_path, sc) = begin
+    if isfile(stan_path)
+        read(stan_path, String) == sc && return false
+        @warn "stan_instantiate: overwriting stale Stan source" path = stan_path
+    end
+    open(stan_path, "w") do fd
+        write(fd, sc)
+    end
+    true
+end
+"""
+    _build_path_for(stan_path, sc) -> String
+
+Choose the `.stan` path to compile after `_write_stan_source` wrote new bytes
+at `stan_path`. Normally `stan_path` itself — except when the previous build
+is already loaded in this session: `dlopen` resolves an already-loaded `.so`
+path to the OLD handle, so even after `make` rebuilds it the new program
+would never load (BridgeStan warns about exactly this in `StanModel`). In that
+case the new program is built from a content-addressed copy under `tmp/`
+instead, which loads fresh. The copy equals `stan_path` itself when `stan_path`
+is already content-addressed (the default), in which case there is nothing
+safer available and `stan_path` is returned.
+"""
+_build_path_for(stan_path, sc) = begin
+    # Mirrors BridgeStan's `compile_model` `.so` derivation (`model.jl`
+    # compares the same `abspath` form against `dllist()`).
+    so = splitext(abspath(stan_path))[1] * "_model.so"
+    abspath(so) in Base.Libc.Libdl.dllist() || return stan_path
+    build_path = joinpath("tmp", string(hash(sc)) * ".stan")
+    build_path == stan_path && return stan_path
+    @warn "stan_instantiate: a build of the previous source is already loaded in this session; compiling the new program from a content-addressed copy" path = build_path
+    mkpath(dirname(build_path))
+    _write_stan_source(build_path, sc)
+    build_path
 end
 """
     _guard_ragged_stan_version(sc)

@@ -10934,3 +10934,72 @@ fallback.
     @test occursin("return inv_cloglog(mu);", vector_code)
     @test stanc_check(vector_code; warn_pedantic=false).ok
 end
+
+@testitem "slic: _write_stan_source invalidates a stale .stan file" tags=[:slic, :regression] setup=[StanBlocksImports] begin
+    using Logging
+    write_source = StanBlocks._write_stan_source
+    mktempdir() do dir
+        path = joinpath(dir, "model.stan")
+        v1 = "parameters { real logitp; }\n"
+        v2 = "parameters { real eta; }\n"
+        # Fresh path: written without complaint.
+        fresh_logs = TestLogger(; min_level=Logging.Info)
+        fresh_wrote = with_logger(fresh_logs) do
+            write_source(path, v1)
+        end
+        @test fresh_wrote === true
+        @test read(path, String) == v1
+        @test isempty(fresh_logs.logs)
+        # Identical content: untouched (mtime preserved, no warning), so the
+        # BridgeStan mtime-based rebuild cache keeps working.
+        m0 = mtime(path)
+        same_logs = TestLogger(; min_level=Logging.Info)
+        same_wrote = with_logger(same_logs) do
+            write_source(path, v1)
+        end
+        @test same_wrote === false
+        @test mtime(path) == m0
+        @test isempty(same_logs.logs)
+        # Differing content: overwritten, with a warning naming the path.
+        @test_logs (:warn, r"overwriting stale Stan source") write_source(path, v2)
+        @test read(path, String) == v2
+        # Nothing is loaded in this process, so a fresh write compiles from
+        # the path itself.
+        @test StanBlocks._build_path_for(path, v2) == path
+    end
+end
+
+@testitem "slic: stan_instantiate follows model edits on a shared explicit path" tags=[:slic, :regression, :bridgestan] setup=[StanBlocksImports] begin
+    # Same explicit `path`, model changes between calls (param rename): the
+    # on-disk source must follow the NEW model — never silently compile and
+    # sample the stale program.
+    v1 = @slic (; y = [1.0, 2.0]) begin
+        logitp ~ std_normal()
+        y ~ normal(logitp, 1.0)
+    end
+    v2 = @slic (; y = [1.0, 2.0]) begin
+        eta ~ std_normal()
+        y ~ normal(eta, 1.0)
+    end
+    mktempdir() do dir
+        path = joinpath(dir, "evolving.stan")
+        p1 = instantiate(v1; path=path)
+        @test read(path, String) == stan_code(v1)
+        @test BridgeStan.param_names(p1.model) == ["logitp"]
+        # Same path, changed model, previous build already loaded in this
+        # session: the file follows the new model and the compiled problem is
+        # the NEW program (built from a content-addressed copy, since the
+        # loaded `.so` path cannot reload in-process).
+        p2 = @test_logs (:warn, r"overwriting stale Stan source") (:warn, r"already loaded") instantiate(v2; path=path)
+        @test read(path, String) == stan_code(v2)
+        @test BridgeStan.param_names(p2.model) == ["eta"]
+        # Same shape, but nothing loaded (the cross-process reporter's case):
+        # the stale file is rewritten and the new program builds from the
+        # explicit path itself.
+        other = joinpath(dir, "other.stan")
+        write(other, stan_code(v1))
+        p3 = @test_logs (:warn, r"overwriting stale Stan source") instantiate(v2; path=other)
+        @test read(other, String) == stan_code(v2)
+        @test BridgeStan.param_names(p3.model) == ["eta"]
+    end
+end
