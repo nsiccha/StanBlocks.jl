@@ -193,6 +193,67 @@ trace (`AssertionError: tracetype not defined for … skew_double_exponential_rn
 end
 
 """
+Location-first 3-arg continuous families (`skew_double_exponential`,
+`skew_normal`, `exp_mod_normal`, `pareto_type_2`) sampled with a per-observation
+VECTOR location but a SCALAR scale — `y ~ dist(mu_vec, sigma, tau)`, the SBBRMI
+regression shape — synthesize the sized-token gq predictive draw
+`dist_rng(<token>, vector, real, real)`. That draw needs BOTH the sized-token
+`@deffun` overloads for `(token, loc::vector[n], scale::real, b)` AND the
+native `(vector[n], real, real)` / `(vector[n], real, vector[n])` `@defsig`
+rows: without the overloads the 4-arg token call matches no method and the
+generated-quantities block fails to trace (`AssertionError: tracetype not
+defined for … skew_double_exponential_rng(::array[] tokenof, ::vector, ::real,
+::real)`), and the `@defsig` rows alone do not fix it. Snag
+`sbbrmi-response-f3ed0938`.
+"""
+@testitem "slic: location-first 3-arg rng gq draw with a scalar scale" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    y_val  = [0.2, -0.1, 0.4, 0.5]
+    mu_val = [1.0, 2.0, 3.0, 4.0]
+
+    # The sized-token gq draw for a vector location + scalar scale traces AND
+    # emits valid Stan. (`stan_code` itself THREW pre-fix, so `stanc_compiles`
+    # returning is the regression signal; the `occursin` pins the `_rng` draw.)
+    function check(model, dist)
+        gq = stan_block(stan_code(model), "generated quantities")
+        @test occursin(Regex(dist * raw"\w*_rng\("), gq)
+        @test stanc_compiles(model)
+    end
+
+    check((@slic (; y = y_val, mu = mu_val) begin
+        a ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ skew_double_exponential(mu .+ a, sigma, 0.25); a
+    end), "skew_double_exponential")
+    check((@slic (; y = y_val, mu = mu_val) begin
+        a ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ skew_normal(mu .+ a, sigma, 0.25); a
+    end), "skew_normal")
+    check((@slic (; y = y_val, mu = mu_val) begin
+        a ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ exp_mod_normal(mu .+ a, sigma, 0.25); a
+    end), "exp_mod_normal")
+    check((@slic (; y = y_val, mu = mu_val) begin
+        a ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ pareto_type_2(mu .+ a, sigma, 1.5); a
+    end), "pareto_type_2")
+
+    # The vector-third-arg row `(vector[n], real, vector[n])` behind the
+    # untyped `b`: a per-observation tau draws and passes stanc.
+    @test stanc_compiles(@slic (; y = y_val, mu = mu_val, tau = [0.1, 0.2, 0.3, 0.4]) begin
+        a ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ skew_double_exponential(mu .+ a, sigma, tau); a
+    end)
+
+    # The zero-row shape transpiles and passes stanc through the same `n == 0`
+    # guard the other sized companions carry.
+    @test stanc_compiles(@slic (; y = Float64[], mu = Float64[]) begin
+        a ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ skew_double_exponential(mu .+ a, sigma, 0.1); a
+    end)
+end
+
+"""
 Sized 3-arg `_rng` companions must guard empty segments (snag
 `sized-rng-compan-225549a9`). Stan Math ≤5.3.0 sizes a vectorized draw off
 ALL args with scalars counting as size 1, so a scalar arg beside empty
