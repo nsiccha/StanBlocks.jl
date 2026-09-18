@@ -173,7 +173,7 @@ end
     # Unary math (Stan-specific, not Julia builtins)
     square inv_sqrt log_diff_exp log_mix atan2
     is_inf is_nan
-    Phi_approx inv_Phi
+    Phi_approx inv_Phi inv_cloglog
     erf erfc tgamma digamma trigamma
     lambert_w0
     lbeta inc_beta gamma_p gamma_q
@@ -2445,7 +2445,7 @@ end
         log1p_exp, log1m_exp, Base.inv, Base.log1p,
         exp2, log2, cbrt, ceil, floor, round, trunc,
         square, erf, erfc, tgamma, digamma, trigamma,
-        Phi_approx, inv_Phi, lambert_w0))...} => begin
+        Phi_approx, inv_Phi, inv_cloglog, lambert_w0))...} => begin
         (real,)=>real
         (vector[n],)=>vector[n]
         (row_vector[n],)=>row_vector[n]
