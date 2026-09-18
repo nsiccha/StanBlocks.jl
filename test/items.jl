@@ -9814,6 +9814,42 @@ shape and retain one joint likelihood scalar per group.
 end
 
 """
+Snag regression (joint-mvn-choles-bac744cf): a grouped (ragged)
+`multi_normal_cholesky` observation whose generated-quantities size token
+renders past the 100-char line limit must still emit. The 1-dim `tokenof`
+call-site form has no `Join` to break at, so before `10f2539` this crashed
+with `MethodError: -(::Nothing, ::Int64)` — the exact failure a BRM
+joint-response (`brm_joint_...`) model hit at StanBlocks pin `9a958f9`, where
+the long `ragged_end(...) - ragged_start(...) + 1` size expression is the
+token. The long names here stand in for that lowering; the crash fix itself
+is covered at the unit level by
+`slic: autoprint emits a Join-less long line unbroken`.
+"""
+@testitem "slic: grouped multi_normal_cholesky emits a long-token GQ draw" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    long_grouped = @slic (;
+        brm_joint_concentration__response_observed = [[0.1, -0.2], [0.3, 0.4]],
+        brm_joint_concentration__response_means = [[0.0, 0.0], [0.0, 0.0]],
+        L_res = [1.0 0.0; 0.2 0.9],
+    ) begin
+        brm_joint_concentration__response_observed ~ multi_normal_cholesky(
+            brm_joint_concentration__response_means, L_res)
+    end
+
+    long_code = stan_code(long_grouped)
+    long_gq = stan_block(long_code, "generated quantities")
+    @test occursin(r"multi_normal_cholesky_vector_rng\(", long_gq)
+    # The pin: the size-token line must actually exceed the wrap limit, or
+    # this test no longer exercises the Join-less path it guards.
+    @test any(
+        line -> length(line) > 100 && occursin("ragged_end", line),
+        split(long_gq, "\n"),
+    )
+    @test stanc_compiles(long_grouped)
+end
+
+"""
 Snag regression (gp-exp-quad-mult-43b54b48): Stan's multidimensional
 `gp_exp_quad_cov` consumes `array[] vector` locations and supports both
 self/cross covariance with scalar or per-axis length scales. SLIC spells an
