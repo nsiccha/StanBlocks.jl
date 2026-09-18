@@ -316,11 +316,47 @@ const CdfCapableBuiltinFamily = Union{typeof.((
 const OptionalBoundDistributionHOF = Union{
     typeof(builtin.truncated), typeof(builtin.censored)
 }
+# A distribution CALL in the family position — `censored(normal(mu, sigma);
+# lower=lo)` — desugars to the token form `censored(normal, mu, sigma;
+# lower=lo)` before the variant rewrite below. The family call's arguments are
+# appended AFTER the HOF's own remaining positionals, matching each combinator's
+# token-form layout (`weighted(fam, w, args...)`, `interval_censored(fam, lo, hi,
+# args...)`), so data/control argument positions are unchanged by the splice and
+# every downstream check (sampling validation, likelihood, RNG) sees exactly the
+# token form. A family that is neither a function token nor a call keeps the
+# loud `_family_function` refusal here instead of crashing in the re-trace's
+# `tracetype` (snag hof-call-form-fa-b2bfce08).
+_hof_call_family_splice(spec, x::CanonicalExpr) = begin
+    i = spec.family_arg
+    length(x.args) >= i || _distribution_hof_family(spec, x)
+    fam = x.args[i]
+    fam isa StanExpr2{<:types.func} && return nothing
+    inner = expr(fam)
+    inner isa CanonicalExpr || _distribution_hof_family(spec, x)
+    fam_head = head(inner)
+    fam_fn = fam_head isa StanExpr2{<:types.func} ? type(fam_head).info.value : fam_head
+    fam_fn isa Function || _distribution_hof_family(spec, x)
+    isempty(inner.kwargs) || error(
+        "$(spec.name): the family call `$(nameof(fam_fn))(...)` takes only " *
+        "positional arguments; keyword argument(s) " *
+        "`$(join(keys(inner.kwargs), ", "))` belong on `$(spec.name)` itself"
+    )
+    CanonicalExpr(
+        head(x),
+        x.args[1:i-1]...,
+        stan_expr(fam_fn),
+        x.args[i+1:end]...,
+        inner.args...;
+        x.kwargs...,
+    )
+end
 expand_inline_or_trace(
     x::CanonicalExpr{<:OptionalBoundDistributionHOF};
     info,
 ) = begin
     spec = _distribution_hof(head(x))
+    spliced = _hof_call_family_splice(spec, x)
+    spliced !== nothing && return forward!(spliced; info)
     variant = _hof_variant(spec, x)
     forward!(CanonicalExpr(
         variant.head,
@@ -331,11 +367,23 @@ end
 expand_inline_or_trace(
     x::CanonicalExpr{typeof(builtin.interval_censored)};
     info,
-) = forward!(CanonicalExpr(
-    builtin.interval_evidence_impl,
-    x.args...;
-    x.kwargs...,
-); info)
+) = begin
+    spliced = _hof_call_family_splice(_distribution_hof(head(x)), x)
+    spliced !== nothing && return forward!(spliced; info)
+    forward!(CanonicalExpr(
+        builtin.interval_evidence_impl,
+        x.args...;
+        x.kwargs...,
+    ); info)
+end
+expand_inline_or_trace(
+    x::CanonicalExpr{typeof(builtin.weighted)};
+    info,
+) = begin
+    spliced = _hof_call_family_splice(_distribution_hof(head(x)), x)
+    spliced !== nothing && return forward!(spliced; info)
+    invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info)
+end
 _family_probability_companion(family, suffix::Symbol) = begin
     if parentmodule(family) === builtin && !(family isa CdfCapableBuiltinFamily)
         error(

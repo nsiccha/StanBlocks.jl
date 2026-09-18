@@ -581,6 +581,122 @@ family, while no `Nothing` value or selector call survives code generation.
     @test all(x -> -0.5 <= x <= 0.5, censored_draw[censored_idx])
 end
 
+@testitem "slic: distribution HOFs accept a family call in the token position" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Snag hof-call-form-fa-b2bfce08: `y ~ censored(normal(mu, sigma); lower=lo)`
+    # died with `` `tracetype` not defined for _argN_1::anything! `` because the
+    # expansion-time rewrite re-traced before likelihood lowering's loud family
+    # check could run. The call form now desugars to the token form at expansion
+    # time, so each pair below emits byte-identical Stan (the token side stays
+    # covered by the :stanc/:bridgestan HOF items).
+    censored_call = stan_code(@slic (; y = 0.2) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ censored(normal(mu, 1.0); lower = -1.0)
+        mu
+    end)
+    censored_token = stan_code(@slic (; y = 0.2) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ censored(normal, mu, 1.0; lower = -1.0)
+        mu
+    end)
+    @test censored_call == censored_token
+    @test occursin("y_likelihood", censored_call)
+
+    truncated_call = stan_code(@slic (; y = 0.2) begin
+        theta ~ truncated(normal(0.0, 1.0); lower = 0.0)
+        y ~ normal(theta, 1.0)
+        theta
+    end)
+    truncated_token = stan_code(@slic (; y = 0.2) begin
+        theta ~ truncated(normal, 0.0, 1.0; lower = 0.0)
+        y ~ normal(theta, 1.0)
+        theta
+    end)
+    @test truncated_call == truncated_token
+
+    interval_call = stan_code(@slic (; y = 0.2) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ interval_censored(normal(mu, 1.0), -1.0, 1.0)
+        mu
+    end)
+    interval_token = stan_code(@slic (; y = 0.2) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ interval_censored(normal, -1.0, 1.0, mu, 1.0)
+        mu
+    end)
+    @test interval_call == interval_token
+
+    weighted_call = stan_code(@slic (; y = 0.2, w = 2.5) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ weighted(normal(mu, 1.0), w)
+        mu
+    end)
+    weighted_token = stan_code(@slic (; y = 0.2, w = 2.5) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ weighted(normal, w, mu, 1.0)
+        mu
+    end)
+    @test weighted_call == weighted_token
+
+    custom_call = stan_code(@slic (; y = 0.3, w = 0.75, x = 1.2) begin
+        y ~ weighted(simple(x), w)
+    end)
+    custom_token = stan_code(@slic (; y = 0.3, w = 0.75, x = 1.2) begin
+        y ~ weighted(simple, w, x)
+    end)
+    @test custom_call == custom_token
+
+    missing_family_error = try
+        stan_code(@slic (; y = 0.2) begin
+            y ~ censored(; lower = -1.0)
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(missing_family_error) &&
+        occursin("missing family argument", missing_family_error)
+
+    nontoken_error = try
+        stan_code(@slic (; y = 0.2) begin
+            mu ~ normal(0.0, 1.0)
+            y ~ censored(mu; lower = -1.0)
+            mu
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(nontoken_error) &&
+        occursin("expected a base distribution function token", nontoken_error)
+    @test !occursin("tracetype", nontoken_error)
+
+    family_kwargs_error = try
+        stan_code(@slic (; y = 0.2) begin
+            mu ~ normal(0.0, 1.0)
+            y ~ censored(normal(mu, 1.0; lower = 0.0); lower = -1.0)
+            mu
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(family_kwargs_error) &&
+        occursin("takes only positional arguments", family_kwargs_error)
+
+    weighted_nontoken_error = try
+        stan_code(@slic (; y = 0.2, w = 2.5) begin
+            mu ~ normal(0.0, 1.0)
+            y ~ weighted(mu, w)
+            mu
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(weighted_nontoken_error) &&
+        occursin("expected a base distribution function token", weighted_nontoken_error)
+end
+
 @testmodule StanBlocksTestSetup begin
     using Random, Statistics
     using StanBlocks
