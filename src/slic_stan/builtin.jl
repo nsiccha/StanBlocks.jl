@@ -2117,12 +2117,14 @@ end
 #     draw against; a vector second/third arg broadcasts natively.
 #   - VECTOR leading arg — a per-observation LOCATION. `skew_double_exponential`
 #     / `skew_normal` / `exp_mod_normal` / `pareto_type_2` in a regression emit
-#     `dist(mu_vec, sigma_vec, tau)`, so the auto-GQ sized-token draw is
-#     `dist_rng(<token>, vector, vector, real)`. Both leading args are already
-#     `vector[n]`, so delegate straight to native — the family's `@defsig` below
-#     lists `(vector[n], vector[n], real)` / `(vector[n], vector[n], vector[n])`.
-#     Without these two overloads that draw matches no method and the
-#     generated-quantities block fails to trace (snag stanblocks-skew).
+#     `dist(mu_vec, sigma, tau)` with a scalar OR vector scale, so the auto-GQ
+#     sized-token draw is `dist_rng(<token>, vector, scale, real)`. The location
+#     is already `vector[n]`, so delegate straight to native — the family's
+#     `@defsig` below lists `(vector[n], vector[n], real)` /
+#     `(vector[n], vector[n], vector[n])` and `(vector[n], real, real)` /
+#     `(vector[n], real, vector[n])`. Without these overloads that draw matches
+#     no method and the generated-quantities block fails to trace (snags
+#     stanblocks-skew, sbbrmi-response-f3ed0938).
 for dist in (:student_t, :skew_normal, :exp_mod_normal,
              :skew_double_exponential, :pareto_type_2)
     drng = Symbol(dist, :_rng)
@@ -2168,6 +2170,23 @@ for dist in (:student_t, :skew_normal, :exp_mod_normal,
         $drng(loc, scale, b)
     end
     @eval @deffun $drng(vector[n], loc::vector[n], scale::vector[n], b)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(loc, scale, b))
+    end
+    # Vector LOCATION with a scalar SCALE (`y ~ dist(mu_vec, sigma, tau)` —
+    # the SBBRMI regression shape, snag sbbrmi-response-f3ed0938): Stan
+    # broadcasts the scalar natively, so delegate straight through like the
+    # vector-vector overloads above (the family's `@defsig` lists
+    # `(vector[n], real, real)` / `(vector[n], real, vector[n])`).
+    @eval @deffun $drng(real[n],   loc::vector[n], scale::real, b)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(loc, scale, b)
+    end
+    @eval @deffun $drng(vector[n], loc::vector[n], scale::real, b)::vector[n] = if n == 0
         rv::vector[n]
         rv
     else
@@ -2742,6 +2761,8 @@ end
         (real, real, real) => real
         (real, vector[n], real) => real[n]
         (real, vector[n], vector[n]) => real[n]
+        (vector[n], real, real) => real[n]
+        (vector[n], real, vector[n]) => real[n]
         (vector[n], vector[n], real) => real[n]
         (vector[n], vector[n], vector[n]) => real[n]
     end
