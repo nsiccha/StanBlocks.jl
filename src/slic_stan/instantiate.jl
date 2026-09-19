@@ -62,13 +62,19 @@ Compile `model` (a [`SlicModel`](@ref StanBlocks.SlicModel) or
 # Keyword arguments
 
 - `path::AbstractString` — where to write the `.stan` file. Defaults to
-  `"tmp/<hash>.stan"`, so identical generated code is cached on disk.
+  `<build-dir>/<hash>.stan`, where `<build-dir>` is `STANBLOCKS_BUILD_DIR`
+  when set, else `joinpath(tempdir(), "stanblocks")` (`tempdir()` honours
+  `TMPDIR`) — so identical generated code is cached on disk OUTSIDE the
+  process working directory, and compiling never drops a stray `tmp/` into
+  the caller's cwd (in particular, never into a package worktree a bench is
+  run from). An explicit relative `path` still resolves against the cwd —
+  that is the caller's explicit choice.
   An existing file with identical content is left untouched (preserving
   the mtime-based rebuild cache); an existing file whose content differs
   from the generated model is overwritten — with a warning naming the
   path — so a changed model is always what gets compiled. If the previous
   build is already loaded in this session, the new program is compiled from
-  a content-addressed copy under `tmp/` instead (an already-`dlopen`'ed
+  a content-addressed copy under the same build dir instead (an already-`dlopen`'ed
   library path cannot reload in-process), with a warning; the file at `path`
   still receives the new source.
 - `nan_on_error::Bool = true` — make BridgeStan return `NaN` instead of
@@ -83,7 +89,7 @@ StanBlocks.StanBlocksError) tagged with `phase = :compile`.
 instantiate(x::Union{SlicModel,StanModel}; nan_on_error=true, make_args=["STAN_THREADS=true"], warn=false, kwargs...) = begin
     sc = stan_code(x)
     _guard_ragged_stan_version(sc)
-    stan_path = get(kwargs, :path, joinpath("tmp", string(hash(sc)) * ".stan"))
+    stan_path = get(kwargs, :path, _default_build_path(sc))
     mkpath(dirname(stan_path))
     wrote = _write_stan_source(stan_path, sc)
     build_path = wrote ? _build_path_for(stan_path, sc) : stan_path
@@ -95,6 +101,18 @@ instantiate(x::Union{SlicModel,StanModel}; nan_on_error=true, make_args=["STAN_T
         warn
     )
 end
+"""
+    _default_build_dir() -> String
+    _default_build_path(sc) -> String
+
+The default compile-output location: `STANBLOCKS_BUILD_DIR` when set, else
+`joinpath(tempdir(), "stanblocks")` (`tempdir()` honours `TMPDIR`). Absolute
+by construction, so a default-path `instantiate` never writes into the
+process working directory. Both the default `path` and the already-loaded
+content-addressed fallback in `_build_path_for` go through here.
+"""
+_default_build_dir() = get(ENV, "STANBLOCKS_BUILD_DIR", joinpath(tempdir(), "stanblocks"))
+_default_build_path(sc) = joinpath(_default_build_dir(), string(hash(sc)) * ".stan")
 """
     _write_stan_source(stan_path, sc) -> Bool
 
@@ -124,17 +142,17 @@ at `stan_path`. Normally `stan_path` itself — except when the previous build
 is already loaded in this session: `dlopen` resolves an already-loaded `.so`
 path to the OLD handle, so even after `make` rebuilds it the new program
 would never load (BridgeStan warns about exactly this in `StanModel`). In that
-case the new program is built from a content-addressed copy under `tmp/`
-instead, which loads fresh. The copy equals `stan_path` itself when `stan_path`
-is already content-addressed (the default), in which case there is nothing
-safer available and `stan_path` is returned.
+case the new program is built from a content-addressed copy under the default
+build dir instead, which loads fresh. The copy equals `stan_path` itself when
+`stan_path` is already content-addressed (the default), in which case there is
+nothing safer available and `stan_path` is returned.
 """
 _build_path_for(stan_path, sc) = begin
     # Mirrors BridgeStan's `compile_model` `.so` derivation (`model.jl`
     # compares the same `abspath` form against `dllist()`).
     so = splitext(abspath(stan_path))[1] * "_model.so"
     abspath(so) in Base.Libc.Libdl.dllist() || return stan_path
-    build_path = joinpath("tmp", string(hash(sc)) * ".stan")
+    build_path = _default_build_path(sc)
     build_path == stan_path && return stan_path
     @warn "stan_instantiate: a build of the previous source is already loaded in this session; compiling the new program from a content-addressed copy" path = build_path
     mkpath(dirname(build_path))
