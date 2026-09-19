@@ -11085,6 +11085,27 @@ end
     end
 end
 
+@testitem "slic: default instantiate path lives outside the cwd" tags=[:slic, :regression] setup=[StanBlocksImports] begin
+    # A default-path compile must never drop a stray `tmp/` into the process
+    # cwd (e.g. a package worktree a bench runs from). The default is absolute
+    # and rooted at tempdir()/stanblocks, honouring STANBLOCKS_BUILD_DIR.
+    sc = "parameters { real mu; }\n"
+    expected = joinpath(tempdir(), "stanblocks", string(hash(sc)) * ".stan")
+    defaulted = withenv("STANBLOCKS_BUILD_DIR" => nothing) do
+        StanBlocks._default_build_path(sc)
+    end
+    @test isabspath(defaulted)
+    @test defaulted == expected
+    mktempdir() do dir
+        @test withenv("STANBLOCKS_BUILD_DIR" => dir) do
+            StanBlocks._default_build_dir()
+        end == dir
+        @test withenv("STANBLOCKS_BUILD_DIR" => dir) do
+            StanBlocks._default_build_path(sc)
+        end == joinpath(dir, string(hash(sc)) * ".stan")
+    end
+end
+
 @testitem "slic: stan_instantiate follows model edits on a shared explicit path" tags=[:slic, :regression, :bridgestan] setup=[StanBlocksImports] begin
     # Same explicit `path`, model changes between calls (param rename): the
     # on-disk source must follow the NEW model — never silently compile and
