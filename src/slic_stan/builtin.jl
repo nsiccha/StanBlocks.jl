@@ -431,6 +431,8 @@ import Statistics
     end
     weighted_rng(family, weight, args...) =
         predictive(family, args...)
+    # Sized forms forward the token to the base family's own companion, so they
+    # inherit that family's guard — no guard here (audit todo 19n8abc).
     weighted_rng(real[n], family, weight, args...) =
         predictive(family, real[n], args...)
     weighted_rng(vector[n], family, weight, args...) =
@@ -485,6 +487,9 @@ import Statistics
     end
     lower_conditioning_cell_rng(dummy, family, lo, args...) =
         lower_conditioning_rng(family, lo, args...)
+    # `jbroadcasted` emits an explicit `for i in 1:n` loop of scalar cell draws,
+    # so an empty token runs zero iterations — no guard, here or in the five
+    # sibling HOF families below, which share this shape (todo 19n8abc).
     lower_conditioning_rng(vector[n], family, lo, args...)::vector[n] =
         jbroadcasted(lower_conditioning_cell_rng, rep_vector(0., n), family, lo, args...)
     lower_conditioning_rng(real[n], family, lo, args...)::real[n] =
@@ -841,6 +846,8 @@ import Statistics
         interval_evidence_impl_lpmf(y, family, lo, hi, args...)
     interval_evidence_impl_rng(family, lo, hi, args...) =
         predictive(family, args...)
+    # Sized forms forward the token to the base family's own companion — same
+    # inherited-guard posture as `weighted_rng` above (todo 19n8abc).
     interval_evidence_impl_rng(real[n], family, lo, hi, args...) =
         predictive(family, real[n], args...)
     interval_evidence_impl_rng(vector[n], family, lo, hi, args...) =
@@ -908,12 +915,45 @@ import Statistics
     # the other three GLM families' rngs as native would emit calls stanc
     # rejects, so define them as SB functions over the linear predictor
     # `alpha + X * beta` — the same lowering `binomial_logit_rng` gets below.
-    @stanonly normal_id_glm_rng(X::matrix[m,n], alpha::real, beta, sigma)::vector[m] = to_vector(normal_rng(rep_vector(alpha, m) + X * beta, sigma))
-    @stanonly normal_id_glm_rng(X::matrix[m,n], alpha::vector[m], beta, sigma)::vector[m] = to_vector(normal_rng(alpha + X * beta, sigma))
-    @stanonly poisson_log_glm_rng(X::matrix[m,n], alpha::real, beta)::int[m] = poisson_log_rng(rep_vector(alpha, m) + X * beta)
-    @stanonly poisson_log_glm_rng(X::matrix[m,n], alpha::vector[m], beta)::int[m] = poisson_log_rng(alpha + X * beta)
-    @stanonly neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::real, beta, phi)::int[m] = neg_binomial_2_log_rng(rep_vector(alpha, m) + X * beta, phi)
-    @stanonly neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::vector[m], beta, phi)::int[m] = neg_binomial_2_log_rng(alpha + X * beta, phi)
+    # Empty-segment guard (todo 19n8abc): a 0-row `X` with a scalar `sigma` /
+    # `phi` replays the 2-arg-loop segfault, so the lowered plain forms
+    # early-return exactly like their sized-token overloads below.
+    @stanonly normal_id_glm_rng(X::matrix[m,n], alpha::real, beta, sigma)::vector[m] = if m == 0
+        rv::vector[m]
+        rv
+    else
+        to_vector(normal_rng(rep_vector(alpha, m) + X * beta, sigma))
+    end
+    @stanonly normal_id_glm_rng(X::matrix[m,n], alpha::vector[m], beta, sigma)::vector[m] = if m == 0
+        rv::vector[m]
+        rv
+    else
+        to_vector(normal_rng(alpha + X * beta, sigma))
+    end
+    @stanonly poisson_log_glm_rng(X::matrix[m,n], alpha::real, beta)::int[m] = if m == 0
+        rv::int[m]
+        rv
+    else
+        poisson_log_rng(rep_vector(alpha, m) + X * beta)
+    end
+    @stanonly poisson_log_glm_rng(X::matrix[m,n], alpha::vector[m], beta)::int[m] = if m == 0
+        rv::int[m]
+        rv
+    else
+        poisson_log_rng(alpha + X * beta)
+    end
+    @stanonly neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::real, beta, phi)::int[m] = if m == 0
+        rv::int[m]
+        rv
+    else
+        neg_binomial_2_log_rng(rep_vector(alpha, m) + X * beta, phi)
+    end
+    @stanonly neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::vector[m], beta, phi)::int[m] = if m == 0
+        rv::int[m]
+        rv
+    else
+        neg_binomial_2_log_rng(alpha + X * beta, phi)
+    end
     beta_rng(args...)::real
     binomial_rng(args...)::int
     binomial_logit_rng(n::int[m], p::vector[m])::int[m]
@@ -925,7 +965,14 @@ import Statistics
     # positions, and an INFERRED output container (int element → array[] int,
     # real element → vector[n]). Its Stan function is generated per call shape.
     @stanonly begin
-    vector_std_normal_rng(n::int)::vector[n] = to_vector(normal_rng(rep_vector(0, n), 1))
+    # Empty-segment guard (todo 19n8abc): same scalar-`1` mix as the
+    # `std_normal_rng` sized overloads below — `n == 0` returns the empty draw.
+    vector_std_normal_rng(n::int)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector(normal_rng(rep_vector(0, n), 1))
+    end
     # Sized-token rng overloads are generated via `@eval @deffun` loops below
     # (after the block closes). See comment at the @eval block.
     bernoulli_lpmfs(args...) = bernoulli_lpmf(args...)
@@ -987,6 +1034,9 @@ import Statistics
         end
         rv
     end
+    # Single draw sized by the one container (`N` is a count, not a vectorized
+    # arg); the row form is an explicit loop — both outside the guarded class
+    # (audit todo 19n8abc).
     multinomial_rng(int[K], probs::vector[K], N::int)::int[K] =
         multinomial_rng(probs, N)
     multinomial_rng(int[n,K], probs::vector[K], row_N::int[n])::int[n,K] = begin
@@ -1047,7 +1097,9 @@ import Statistics
         end
         rv
     end
+    # Token form delegates to the explicit-loop form above — no guard (todo 19n8abc).
     ordered_logistic_rng(int[n], eta::vector[n], c::vector[m])::int[n] = ordered_logistic_rng(eta, c)
+    # Single native arg — same immunity as the 1-arg loops (todo 19n8abc).
     vector_exponential_rng(rate::real, n::int)::vector[n] = exponential_rng(rep_vector(rate, n))
     end
     # Stan's `lkj_corr_cholesky_rng(int K, real eta)` returns a K×K Cholesky
@@ -1397,6 +1449,8 @@ end
         end
         sm_ll
     end
+    # Explicit `for sm_t in 1:T` loop — empty input runs zero iterations, no
+    # guard (audit todo 19n8abc). Same for the `kalman` / `hmm_forward` draws.
     sequential_marginalize_rng(vector[T], b0, predict, observe, simulate)::vector[T] = begin
         # See `_lpdfs` above: `sm_`-prefixed locals stay clear of hoisted captures.
         sm_yy::vector[T]
@@ -2085,24 +2139,68 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr
 # path wraps continuous rngs in `to_vector`.
 
 # std_normal token (0-arg)
-@deffun std_normal_rng(real[n])::real[n] = normal_rng(rep_vector(0, n), 1)
-@deffun std_normal_rng(vector[n])::vector[n] = to_vector(normal_rng(rep_vector(0, n), 1))
+# Empty-segment guard (todo 19n8abc): the native call mixes a container with
+# the scalar `1`, so the token-0 draw needs the same early return as the 2-arg
+# loop below. (The zero-arg `std_normal_rng()` scalar form is unaffected.)
+@deffun std_normal_rng(real[n])::real[n] = if n == 0
+    rv::real[n]
+    rv
+else
+    normal_rng(rep_vector(0, n), 1)
+end
+@deffun std_normal_rng(vector[n])::vector[n] = if n == 0
+    rv::vector[n]
+    rv
+else
+    to_vector(normal_rng(rep_vector(0, n), 1))
+end
 
 # 2-arg continuous families. Two semantic cases:
 #   - all scalar: need `rep_vector` so Stan produces a shaped output
 #   - catch-all (at least one shape-[n] container): Stan native broadcasts
 # Julia dispatch picks the more-specific `(a::real, b::real)` when both scalar.
+# Empty-segment guard (todo 19n8abc — generalised from snag
+# sized-rng-compan-225549a9): Stan Math ≤5.3.0 sizes a vectorized draw off ALL
+# args with scalars counting as size 1, so a scalar arg beside an empty
+# segment runs the draw loop once over a null data pointer (SIGSEGV — proven
+# for student_t under ASan). Fixed upstream in stan-dev/math@6db3b739, after
+# the BridgeStan 2.9.0 bundle — until a fixed BridgeStan ships, return the
+# empty draw directly when the size token is 0. The `else` branch is the exact
+# previous body, so non-empty draws are unchanged. Same `if n == 0` idiom as
+# `robust_linspaced_int_array` above.
 for dist in (:normal, :cauchy, :lognormal, :gamma, :inv_gamma, :beta, :uniform,
              :weibull, :frechet, :double_exponential, :logistic, :gumbel,
              :pareto, :scaled_inv_chi_square, :von_mises, :loglogistic)
     drng = Symbol(dist, :_rng)
-    @eval @deffun $drng(real[n],   a::real, b::real)::real[n]   = $drng(rep_vector(a, n), b)
-    @eval @deffun $drng(vector[n], a::real, b::real)::vector[n] = to_vector($drng(rep_vector(a, n), b))
-    @eval @deffun $drng(real[n],   a, b)::real[n]   = $drng(a, b)
-    @eval @deffun $drng(vector[n], a, b)::vector[n] = to_vector($drng(a, b))
+    @eval @deffun $drng(real[n],   a::real, b::real)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(rep_vector(a, n), b)
+    end
+    @eval @deffun $drng(vector[n], a::real, b::real)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(rep_vector(a, n), b))
+    end
+    @eval @deffun $drng(real[n],   a, b)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(a, b)
+    end
+    @eval @deffun $drng(vector[n], a, b)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(a, b))
+    end
 end
 
-# 1-arg continuous families
+# 1-arg continuous families. Single native arg, so the draw loop is bound by
+# that arg's own size — no scalar can inflate it (audit todo 19n8abc): immune
+# by construction, no guard.
 for dist in (:exponential, :chi_square, :inv_chi_square, :rayleigh)
     drng = Symbol(dist, :_rng)
     @eval @deffun $drng(real[n],   a::real)::real[n]   = $drng(rep_vector(a, n))
@@ -2194,44 +2292,90 @@ for dist in (:student_t, :skew_normal, :exp_mod_normal,
     end
 end
 
-# 1-arg discrete families (output is int[n]; no to_vector wrap)
+# 1-arg discrete families (output is int[n]; no to_vector wrap). Single native
+# arg — same immunity as the 1-arg continuous loop above (todo 19n8abc).
 for dist in (:bernoulli, :bernoulli_logit, :poisson, :poisson_log)
     drng = Symbol(dist, :_rng)
     @eval @deffun $drng(int[n], p::real)::int[n] = $drng(rep_vector(p, n))
     @eval @deffun $drng(int[n], p)::int[n]       = $drng(p)
 end
 
-# 2-arg discrete families
+# 2-arg discrete families. Same scalar+container mix as the 2-arg continuous
+# loop (todo 19n8abc) — same empty-segment guard, `else` branch unchanged.
 for dist in (:neg_binomial, :neg_binomial_2, :neg_binomial_2_log)
     drng = Symbol(dist, :_rng)
-    @eval @deffun $drng(int[n], a::real, b::real)::int[n] = $drng(rep_vector(a, n), b)
-    @eval @deffun $drng(int[n], a, b)::int[n]             = $drng(a, b)
+    @eval @deffun $drng(int[n], a::real, b::real)::int[n] = if n == 0
+        rv::int[n]
+        rv
+    else
+        $drng(rep_vector(a, n), b)
+    end
+    @eval @deffun $drng(int[n], a, b)::int[n]             = if n == 0
+        rv::int[n]
+        rv
+    else
+        $drng(a, b)
+    end
 end
 
-# binomial: N::int[n] is already a container, so Stan broadcasts scalar p natively
-@deffun binomial_rng(int[n], N::int[n], p)::int[n] = binomial_rng(N, p)
+# binomial: N::int[n] is already a container, so Stan broadcasts scalar p natively.
+# Empty-segment guard (todo 19n8abc): a scalar `p` beside an empty `N`
+# replays the 2-arg-loop segfault, so both overloads early-return.
+@deffun binomial_rng(int[n], N::int[n], p)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    binomial_rng(N, p)
+end
 # The lpmf also broadcasts a scalar trial count across vector observations.
 # Expand it to the observation length so Stan's native RNG returns int[n]
 # instead of the token call falling through to the scalar catch-all.
-@deffun binomial_rng(int[n], N::int, p)::int[n] = binomial_rng(rep_array(N, n), p)
+@deffun binomial_rng(int[n], N::int, p)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    binomial_rng(rep_array(N, n), p)
+end
 
 # The native GLM RNG already returns one integer per design-matrix row. The
 # generated-quantities path also passes the observed int-array's sized token;
 # unwrap that token while asserting the output and matrix row counts agree.
-@deffun bernoulli_logit_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] =
+# Empty-segment guard (todo 19n8abc): a 0-row design matrix early-returns
+# the empty draw instead of reaching a vectorized native over `m` rows.
+@deffun bernoulli_logit_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] = if m == 0
+    rv::int[m]
+    rv
+else
     bernoulli_logit_glm_rng(X, alpha, beta)
+end
 
 # The other three GLM families have no native Stan rng at all; their plain
 # forms (declared with bodies above) lower to the base family's rng over
 # `alpha + X * beta`. The token path just unwraps, exactly as bernoulli does.
-@deffun normal_id_glm_rng(vector[m], X::matrix[m,n], alpha, beta, sigma)::vector[m] =
+@deffun normal_id_glm_rng(vector[m], X::matrix[m,n], alpha, beta, sigma)::vector[m] = if m == 0
+    rv::vector[m]
+    rv
+else
     normal_id_glm_rng(X, alpha, beta, sigma)
-@deffun normal_id_glm_rng(real[m], X::matrix[m,n], alpha, beta, sigma)::real[m] =
+end
+@deffun normal_id_glm_rng(real[m], X::matrix[m,n], alpha, beta, sigma)::real[m] = if m == 0
+    rv::real[m]
+    rv
+else
     to_array_1d(normal_id_glm_rng(X, alpha, beta, sigma))
-@deffun poisson_log_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] =
+end
+@deffun poisson_log_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] = if m == 0
+    rv::int[m]
+    rv
+else
     poisson_log_glm_rng(X, alpha, beta)
-@deffun neg_binomial_2_log_glm_rng(int[m], X::matrix[m,n], alpha, beta, phi)::int[m] =
+end
+@deffun neg_binomial_2_log_glm_rng(int[m], X::matrix[m,n], alpha, beta, phi)::int[m] = if m == 0
+    rv::int[m]
+    rv
+else
     neg_binomial_2_log_glm_rng(X, alpha, beta, phi)
+end
 
 # binomial_logit: Stan ships `binomial_logit_lpmf` (and a fused
 # `binomial_logit_glm_lpmf`) but NO `binomial_logit_rng` in any flavour —
@@ -2239,20 +2383,47 @@ end
 # the token-path call to `binomial_rng(N, inv_logit(eta))` so SBBRMI's
 # generated_quantities for a `BinomialLogit(N, eta)` likelihood compile
 # under stanc.
-@deffun binomial_logit_rng(int[n], N::int[n], eta)::int[n] = binomial_rng(N, inv_logit(eta))
+# Empty-segment guard (todo 19n8abc): same scalar-mix shape as `binomial_rng`
+# above — `inv_logit(eta)` is scalar whenever `eta` is.
+@deffun binomial_logit_rng(int[n], N::int[n], eta)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    binomial_rng(N, inv_logit(eta))
+end
 # Stan's lpmf also broadcasts a scalar trial count across vector observations.
 # Give the RNG an array-valued argument so it returns one draw per observation;
 # this covers both vector `eta` and the all-scalar `N`/`eta` case.
-@deffun binomial_logit_rng(int[n], N::int, eta)::int[n] = binomial_rng(rep_array(N, n), inv_logit(eta))
+@deffun binomial_logit_rng(int[n], N::int, eta)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    binomial_rng(rep_array(N, n), inv_logit(eta))
+end
 
-# beta_binomial: (trials, alpha, beta); trials always int[n]
-@deffun beta_binomial_rng(int[n], N::int[n], a::real, b::real)::int[n] = beta_binomial_rng(N, a, b)
-@deffun beta_binomial_rng(int[n], N::int[n], a, b)::int[n] = beta_binomial_rng(N, a, b)
+# beta_binomial: (trials, alpha, beta); trials always int[n]. Empty-segment
+# guard (todo 19n8abc): two scalar shape args beside the `N` container.
+@deffun beta_binomial_rng(int[n], N::int[n], a::real, b::real)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    beta_binomial_rng(N, a, b)
+end
+@deffun beta_binomial_rng(int[n], N::int[n], a, b)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    beta_binomial_rng(N, a, b)
+end
 
-# dirichlet: native already returns vector[n]; token path just unwraps
+# dirichlet: native already returns vector[n]; token path just unwraps. Single
+# draw sized by the one container arg — no scalar-inflated vectorized loop, so
+# outside the guarded class (audit todo 19n8abc).
 @deffun dirichlet_rng(vector[n], alpha::vector[n])::vector[n] = dirichlet_rng(alpha)
 
 # categorical / categorical_logit: repeat one shared probability/logit vector.
+# Explicit `for i in 1:n` loops with scalar native calls — empty input runs
+# zero iterations, so no guard (audit todo 19n8abc).
 @deffun categorical_rng(int[n], p::vector[k])::int[n] = begin
     rv::int[n]
     for i in 1:n
@@ -2278,7 +2449,9 @@ end
     rv
 end
 
-# multi_normal / multi_normal_cholesky: native already returns vector[n]
+# multi_normal / multi_normal_cholesky: native already returns vector[n].
+# Single draws sized by the location vector alone — no scalar-inflated
+# vectorized loop, so outside the guarded class (audit todo 19n8abc).
 @deffun multi_normal_rng(vector[n], loc::vector[n], cov)::vector[n]          = multi_normal_rng(loc, cov)
 @deffun multi_normal_cholesky_rng(vector[n], loc::vector[n], scale)::vector[n] = multi_normal_cholesky_rng(loc, scale)
 
@@ -2286,7 +2459,8 @@ end
 # (`tokenof{cholesky_factor_corr}` sized `(n,)` — `r_ndim(square_matrix) == 1`),
 # so the sized-token slot is written `cholesky_factor_corr[n]`, not
 # `matrix[n,n]`. Delegates to the native 2-arg form, whose first argument is the
-# DIMENSION (an int), not a container — hence `n` rather than the token.
+# DIMENSION (an int), not a container — hence `n` rather than the token. No
+# container is ever read, so outside the guarded class (todo 19n8abc).
 @deffun lkj_corr_cholesky_rng(cholesky_factor_corr[n], eta::real)::matrix[n,n] =
     lkj_corr_cholesky_rng(n, eta)
 
@@ -2347,6 +2521,7 @@ end
     end
     # Sized-token gq path (delegates to the native form; cf. multi_normal_rng).
     # Bare `vector[n]` (no `::`) is the token slot, matching the tokenof shape.
+    # The delegate is the explicit per-element loop above — no guard (todo 19n8abc).
     truncated_normal_rng(vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] =
         truncated_normal_rng(loc, scale, lloq, uloq)
 
@@ -2393,6 +2568,7 @@ end
     end
     # Sized-token gq path (delegates to the native form; cf. multi_normal_rng).
     # Bare `vector[n]` (no `::`) is the token slot, matching the tokenof shape.
+    # The delegate is the explicit per-element loop above — no guard (todo 19n8abc).
     truncated_student_t_rng(vector[n], dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] =
         truncated_student_t_rng(dof, loc, scale, lloq, uloq)
     end

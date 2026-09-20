@@ -313,6 +313,139 @@ previous body, so non-empty draws are unchanged.
 end
 
 """
+Generalized empty-segment audit (todo 19n8abc): every sized `_rng` companion
+whose native call mixes scalar and container args early-returns the empty draw
+when the size token is 0. Stan Math ≤5.3.0 sizes a vectorized draw off ALL args
+with scalars counting as size 1, so a scalar beside an empty segment runs the
+draw loop once over a null data pointer (the student-t SIGSEGV class, snag
+sized-rng-compan-225549a9). Each companion's `else` branch keeps its exact
+previous body, so non-empty draws are unchanged.
+"""
+@testitem "slic: sized rng companions guard empty segments (generalized audit)" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    # 2-arg continuous, catch-all scalar mix — the exact student-t replay shape
+    # (scalar scale beside a container location).
+    normal_model = @slic (; y = [0.2, -0.1], mu = [1.0, 2.0]) begin
+        a ~ normal(0.0, 1.0); s ~ normal(0.0, 1.0)
+        y ~ normal(mu .+ a, exp(s)); a
+    end
+    normal_code = stan_code(normal_model)
+    @test occursin("normal_vector_rng(", stan_block(normal_code, "generated quantities"))
+    normal_fns = stan_block(normal_code, "functions")
+    @test occursin("n == 0", normal_fns)
+    @test occursin("to_vector(normal_rng(a, b))", normal_fns)
+    @test stanc_compiles(normal_model)
+
+    # 2-arg continuous, all-scalar args: same guard on the `rep_vector` overload.
+    scalar_model = @slic (; y = [0.2, -0.1]) begin
+        a ~ normal(0.0, 1.0); s ~ normal(0.0, 1.0)
+        y ~ normal(a, exp(s)); a
+    end
+    scalar_fns = stan_block(stan_code(scalar_model), "functions")
+    @test occursin("n == 0", scalar_fns)
+    @test occursin("to_vector(normal_rng(rep_vector(a, n), b))", scalar_fns)
+    @test stanc_compiles(scalar_model)
+
+    # 2-arg discrete catch-all scalar mix.
+    nb_model = @slic (; z = [2, 5, 3], mu = [1.0, 2.0, 3.0]) begin
+        phi ~ normal(0.0, 1.0)
+        z ~ neg_binomial_2(mu, exp(phi)); phi
+    end
+    nb_code = stan_code(nb_model)
+    @test occursin("neg_binomial_2_int_rng(", stan_block(nb_code, "generated quantities"))
+    nb_fns = stan_block(nb_code, "functions")
+    @test occursin("n == 0", nb_fns)
+    @test occursin("neg_binomial_2_rng(a, b)", nb_fns)
+    @test stanc_compiles(nb_model)
+
+    # binomial / beta_binomial / binomial_logit: scalar-mix natives.
+    bin_model = @slic (; z = [2, 5, 3], N = [10, 10, 10]) begin
+        theta ~ beta(1.0, 1.0)
+        z ~ binomial(N, theta); theta
+    end
+    bin_fns = stan_block(stan_code(bin_model), "functions")
+    @test occursin("n == 0", bin_fns)
+    @test occursin("binomial_rng(N, p)", bin_fns)
+    @test stanc_compiles(bin_model)
+
+    bb_model = @slic (; z = [2, 5, 3], N = [10, 10, 10]) begin
+        a ~ normal(0.0, 1.0); b ~ normal(0.0, 1.0)
+        z ~ beta_binomial(N, exp(a), exp(b)); a
+    end
+    bb_fns = stan_block(stan_code(bb_model), "functions")
+    @test occursin("n == 0", bb_fns)
+    @test occursin("beta_binomial_rng(N, a, b)", bb_fns)
+    @test stanc_compiles(bb_model)
+
+    blogit_model = @slic (; z = [2, 5, 3], N = [10, 10, 10]) begin
+        a ~ normal(0.0, 1.0)
+        z ~ binomial_logit(N, a); a
+    end
+    blogit_fns = stan_block(stan_code(blogit_model), "functions")
+    @test occursin("n == 0", blogit_fns)
+    @test occursin("binomial_rng(N, inv_logit(eta))", blogit_fns)
+    @test stanc_compiles(blogit_model)
+
+    # GLM: a 0-row design matrix early-returns via `m == 0`.
+    glm_model = @slic (; X = zeros(0, 2), y = Float64[]) begin
+        beta_pop ~ std_normal(; n = dims(X)[2])
+        sigma ~ exponential(1.0; lower = 0.0)
+        y ~ normal_id_glm(X, 0.0, beta_pop, sigma)
+    end
+    glm_fns = stan_block(stan_code(glm_model), "functions")
+    @test occursin("m == 0", glm_fns)
+    @test occursin("normal_id_glm_rng(X, alpha, beta, sigma)", glm_fns)
+    @test stanc_compiles(glm_model)
+
+    # Sized std_normal draw: the vector-prior redraw routes through the guarded
+    # companion (`normal_rng` with the scalar `1` beside the sized container).
+    std_model = @slic (; n = 3) begin
+        x ~ std_normal(; n = n)
+        x
+    end
+    std_code = stan_code(std_model)
+    @test occursin("std_normal_vector_rng(", stan_block(std_code, "generated quantities"))
+    std_fns = stan_block(std_code, "functions")
+    @test occursin("n == 0", std_fns)
+    @test occursin("to_vector(normal_rng(rep_vector(0, n), 1))", std_fns)
+    @test stanc_compiles(std_model)
+
+    # `vector_std_normal_rng(n)` helper: same scalar-`1` mix, same guard.
+    vsn_model = @slic (; n = 5, obs = [0.1, -0.2, 0.3, -0.4, 0.5]) begin
+        mu ~ std_normal(; n = n)
+        obs ~ normal(mu, 1.0)
+        y_rep = vector_std_normal_rng(n)
+    end
+    vsn_fns = stan_block(stan_code(vsn_model), "functions")
+    @test occursin("vector_std_normal_rng(", vsn_fns)
+    @test occursin("n == 0", vsn_fns)
+    @test stanc_compiles(vsn_model)
+
+    # Live proof: the empty continuous + discrete model instantiates and the
+    # RNG constrain executes both guarded GQ draws — pre-fix this crashed the
+    # process inside the vectorized native.
+    empty_model = @slic (; y = Float64[], mu = Float64[], z = Int[], mu2 = Float64[]) begin
+        a ~ normal(0.0, 1.0)
+        s ~ normal(0.0, 1.0)
+        phi ~ normal(0.0, 1.0)
+        y ~ normal(mu .+ a, exp(s))
+        z ~ neg_binomial_2(mu2 .+ exp(a), exp(phi))
+        a
+    end
+    @test stanc_compiles(empty_model)
+    empty_problem = instantiate(stan_model(empty_model))
+    empty_names = BridgeStan.param_names(empty_problem.model; include_tp = true, include_gq = true)
+    @test "a" in empty_names
+    empty_draw = BridgeStan.param_constrain(
+        empty_problem.model, zeros(LogDensityProblems.dimension(empty_problem));
+        include_tp = true, include_gq = true,
+        rng = BridgeStan.StanRNG(empty_problem.model, 1234),
+    )
+    @test length(empty_draw) == LogDensityProblems.dimension(empty_problem)
+end
+
+"""
 Truncation, threshold censoring, and interval observations are distribution
 HOFs selected from one base-family token. Optional bounds are compile-time
 syntax: omission and explicit `nothing` choose the same side-specific Stan
