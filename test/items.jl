@@ -7716,13 +7716,24 @@ ragged constrained cells (`K` per plate index) and constrained MATRIX families
             c
         end
     end; re = false)
-    #   constrained MATRIX family — matrix cells are not yet supported in plate at all.
-    @test !transpiles(@slic (; n = 2, k = 3) begin
-        p ~ plate(; outer = (n,)) do g
-            L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
-            L
+
+    # A constrained MATRIX family cell now COLLECTS as
+    # `array[n] cholesky_factor_corr[k]` (snag stanblocks-plate-248f67d3 — the
+    # rejection asserted here before the capability landed).
+    let chol_cell = @slic (; n = 2, k = 3) begin
+            p ~ plate(; outer = (n,)) do g
+                L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
+                L
+            end
         end
-    end; re = false)
+        @test transpiles(chol_cell)
+        # Prior-only program: the whole plate lowers to generated quantities
+        # (the same rule the plain-vector control above follows).
+        @test occursin(
+            "array[n] cholesky_factor_corr[k] p_L",
+            stan_block(stan_code(chol_cell), "generated quantities"),
+        )
+    end
 end
 
 """
@@ -9297,6 +9308,107 @@ The unmarked emission must stay byte-identical; the flat spelling is the control
         @test !occursin("__pl_mem", stan_block(code, "parameters"))
         @test occursin("std_normal_vector_rng(", gq)
         @test occursin("__pl_mem", gq)
+    end
+end
+
+@testitem "slic: constrained-matrix (Cholesky) plate cells collect, sample, and route cv" tags=[:slic, :plate, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Snag stanblocks-plate-248f67d3 (BRM): the stratified correlated ranef
+    # `(e | gr(g, by=b))` needs ONE `cholesky_factor_corr[n_terms]` cell per
+    # stratum, collected as Stan `array[n_strata] cholesky_factor_corr[n_terms]`
+    # — the constrained-matrix analogue of the `:constrained_vector` increment
+    # (`921afb1`). Both cell spellings must reach the same promotion: the typed
+    # declaration and the untyped `n=`-kwarg family call.
+    n_strata, n_terms, n_groups, n_obs = 2, 2, 8, 40
+    sidx = repeat(1:n_strata; outer = div(n_groups, n_strata))
+    gidx = repeat(1:n_groups; inner = div(n_obs, n_groups))
+    data = (; stratum_idx = sidx, n_strata, n_terms, n_groups,
+              Z = randn(n_obs, n_terms), y = randn(n_obs), group_idx = gidx)
+
+    function stratified(decl)
+        if decl
+            @slic (; data...) begin
+                n_g = maximum(group_idx)
+                L ~ plate(; outer = (n_strata,)) do s
+                    L_s::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(1.)
+                    L_s
+                end
+                tau ~ std_normal(; n = n_terms, lower = 0.)
+                b_cols ~ plate(; outer = (n_g,)) do g
+                    z_g::vector[n_terms] ~ std_normal()
+                    diag_pre_multiply(tau, L[stratum_idx[g]]) * z_g
+                end
+                mu = rows_dot_product(Z, (b_cols')[group_idx, :])
+                y ~ normal(mu, 1.)
+            end
+        else
+            @slic (; data...) begin
+                n_g = maximum(group_idx)
+                L ~ plate(; outer = (n_strata,)) do s
+                    L_s ~ lkj_corr_cholesky(1.; n = n_terms)
+                    L_s
+                end
+                tau ~ std_normal(; n = n_terms, lower = 0.)
+                b_cols ~ plate(; outer = (n_g,)) do g
+                    z_g::vector[n_terms] ~ std_normal()
+                    diag_pre_multiply(tau, L[stratum_idx[g]]) * z_g
+                end
+                mu = rows_dot_product(Z, (b_cols')[group_idx, :])
+                y ~ normal(mu, 1.)
+            end
+        end
+    end
+
+    for decl in (true, false)
+        m = stratified(decl)
+        code = stan_code(m)
+        params = stan_block(code, "parameters")
+        tp = stan_block(code, "transformed parameters")
+        mdl = stan_block(code, "model")
+        # The cell storage is an ARRAY of constrained matrices: Stan applies the
+        # per-cell constraint transform + jacobian; the collected result copy in
+        # `transformed parameters` is validate-only.
+        @test occursin("array[n_strata] cholesky_factor_corr[n_terms]", params)
+        @test occursin("array[n_strata] cholesky_factor_corr[n_terms]", tp)
+        @test occursin(r"~ lkj_corr_cholesky\(1\.0\)", mdl)
+        @test stanc_compiles(m)
+    end
+
+    # End-to-end: the constrained array carries a finite log-density and finite
+    # analytic gradients through BridgeStan.
+    let problem = instantiate(stan_model(stratified(true)))
+        x0 = zeros(LogDensityProblems.dimension(problem))
+        @test isfinite(LogDensityProblems.logdensity(problem, x0))
+        lp2, grad = LogDensityProblems.logdensity_and_gradient(problem, x0)
+        @test isfinite(lp2)
+        @test all(isfinite, grad)
+    end
+
+    # cv: the STRATUM cells are not held out, so they stay fitted parameters;
+    # only the per-group draws (whose outer size is cv-tainted via
+    # `maximum(group_idx)`) re-draw in generated quantities.
+    let cv_model = stratified(true)(; group_idx = StanBlocks.stan.maybecv(:group_idx, gidx)),
+        code = stan_code(cv_model)
+        @test stanc_compiles(cv_model)
+        @test occursin("array[n_strata] cholesky_factor_corr[n_terms]", stan_block(code, "parameters"))
+        @test occursin("b_cols_z", stan_block(code, "generated quantities"))
+        @test !occursin("b_cols_z", stan_block(code, "parameters"))
+    end
+
+    # A varying-size constrained cell has no Stan declaration — refuse loudly
+    # instead of emitting `array[...] <ct>[K[plate_i]]` for stanc to reject.
+    let ragged_cholesky = @slic (; Ks = [2, 3]) begin
+            L ~ plate(; outer = (2,)) do g
+                L_g ~ lkj_corr_cholesky(1.; n = Ks[g])
+                L_g
+            end
+        end
+        err = try
+            stan_code(ragged_cholesky); nothing
+        catch e
+            e
+        end
+        @test err !== nothing
+        @test occursin("varying-size constrained cell", sprint(showerror, err))
     end
 end
 

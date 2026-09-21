@@ -1826,6 +1826,15 @@ end
 
 _plate_cell_shape(T, name) = begin
     stan_ndim(T) == 0 && return :scalar
+    # A NATIVE-constrained matrix family (cholesky_factor_corr/cholesky_factor_cov/
+    # corr_matrix/cov_matrix) carries ONE size parameter for its K×K value, so its
+    # type shape is 1-D and the collected form declares exactly like a constrained
+    # vector: `array[outer…] <ct>[K]`. The two-size `cholesky_factor_corr[m, n]`
+    # matrix-of-matrices extension stays rejected — there is no Stan
+    # array-of-constrained declaration for it (snag stanblocks-plate-248f67d3:
+    # BRM's stratified correlated floors).
+    stan_ndim(T) == 1 && _is_native_constrained_ct(center_type(T)) &&
+        !(center_type(T) <: types.vector) && return :constrained_matrix
     # A deterministic `array[T] vector[K]` cell (the native result of Stan's ODE
     # solvers) is collected as `array[outer..., T] vector[K]`. Indexing the
     # leading plate axes then recovers the original per-cell trajectory, so it
@@ -1912,7 +1921,7 @@ _plate_outer_decl(f, T::StanType, outer) = begin
     # it through idempotently in either scope. A top-level plate is unaffected (the
     # size renders identically either way).
     K = stan_size(T)[1]
-    if shape === :constrained_vector
+    if shape in (:constrained_vector, :constrained_matrix)
         # `array[outer…] <ct>[K]`: outer dims lead (Stan array), the constrained
         # core size K trails. `<ct>` (simplex/ordered/positive_ordered) declared
         # in `parameters` gets Stan's native constraint transform + jacobian; in
@@ -2036,7 +2045,8 @@ _plate_cell_index(f, T::StanType, idxs) = begin
     # A native-constrained `array[N…] <ct>[K]` cell is indexed by its plate axes
     # as a whole element (`cell[g]`); the plain-vector matrix packing takes a
     # column (`cell[:, g]`) instead.
-    shape in (:constrained_vector, :array_vector) && return Expr(:ref, f, idxs...)
+    shape in (:constrained_vector, :constrained_matrix, :array_vector) &&
+        return Expr(:ref, f, idxs...)
     indices = Any[idxs[2:end]...; Symbol(":"); idxs[1]]
     Expr(:ref, f, indices...)
 end
@@ -2425,8 +2435,13 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
 #     dense `matrix[K,N]` packing (snag plate-constraine-90607054), except that a
 #     single direct array-vectorizable multivariate sample uses an internal
 #     `array[N] vector[K]` carrier so Stan evaluates one vectorised lpdf. Still dropped:
-#     `~`-bound scalar constraints (lower/upper on a plain center) and constrained
-#     MATRIX families (cholesky/cov/corr) — declare those at model scope.
+#     `~`-bound scalar constraints (lower/upper on a plain center). Constrained
+#     MATRIX families with the family's single size (`cholesky_factor_corr[K]`,
+#     `cholesky_factor_cov[K]`, `corr_matrix[K]`, `cov_matrix[K]`) ARE carried
+#     now (`:constrained_matrix`, snag stanblocks-plate-248f67d3 — BRM's
+#     stratified correlated floors): same `array[N…] <ct>[K]` promotion as
+#     constrained vectors. The two-size `cholesky_factor_corr[m, n]`
+#     matrix-of-matrices form still rejects — declare those at model scope.
 #   • RAGGED cells: 1-D plain-vector with a DATA-computable per-cell length only
 #     (`_plate_is_ragged_cell` / `_plate_ragged_plan`). N-D/arbitrary raggedness
 #     and ragged CONSTRAINED cells (varying-`K` simplex/…) are rejected — Stan
@@ -2444,9 +2459,11 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
 #     A RaggedVector base is the exception because its `ends` DO fix that grouping:
 #     its exact compiler-owned memory slice gets a flat `<obs>_gen` plus one
 #     aggregate `<obs>_likelihood` scalar per group.
-#   • cv/GQ taint does NOT flow through the outer sized declaration (same limit as
-#     typed-LHS ranefs — cv section / parked override feature); vararg do-block
-#     params (l.1193) and reduce_sum lowering are unimplemented.
+#   • cv/GQ taint DOES flow through a cv-tainted outer size (or cell prior RHS):
+#     the fresh cell parameter re-draws in generated quantities together with its
+#     whole downstream chain (`9e8b84b`, test "cv-tainted plate outer size
+#     re-draws the cell parameter in gq"); vararg do-block params (l.1193) and
+#     reduce_sum lowering are unimplemented.
 # The StanBlocks primer's plate sections hold the acceptance-ladder roadmap.
 forward!(x::SamplingExpr{Symbol,<:CanonicalExprV{:plate}}; info) =
     _forward_plate!(x.args[1], nothing, x.args[2]; info)
@@ -2683,6 +2700,19 @@ _forward_loop_core!(;
     end
     ragged_plans = Dict{Symbol,Any}()
     for (f, T) in all_cell_types
+        # A constrained cell's single size parameter becomes a DIMENSION of the
+        # promoted Stan declaration (`array[N…] <ct>[K]`). Stan cannot declare a
+        # data-varying constrained dimension, so an index-dependent `K` must be
+        # refused loudly instead of emitting `array[n_g] cholesky_factor_corr[K[g]]`
+        # for stanc to reject (the same rule the ragged constrained plan states).
+        if _is_native_constrained_ct(center_type(T)) && stan_ndim(T) == 1 &&
+           _plate_depends_on(stan_size(T)[1], idxs)
+            error(
+                "plate: varying-size constrained cell `$f::$(sigtype(T))` is not ",
+                "supported — Stan cannot declare `array[...] <ct>[K[plate_i]]`. ",
+                "Declare the ragged constrained parameter at model scope and index it."
+            )
+        end
         _plate_is_ragged_cell(T, index_aliases) || continue
         ragged_plans[f] = _plate_ragged_plan(f, T, outer_dims, idxs, id)
     end
