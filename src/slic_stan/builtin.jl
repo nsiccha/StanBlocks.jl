@@ -1081,6 +1081,13 @@ import Statistics
         rv
     end
     lkj_corr_cholesky_lpdfs(args...)::real = lkj_corr_cholesky_lpdf(args...)
+    # A CONSTRAINED-MATRIX element (`cholesky_factor_corr[K]`, e.g. a per-stratum
+    # plate cell, snag stanblocks-plate-248f67d3) is itself ndim-1, so the
+    # `anything[n]` broadcast form below would steal the fetch from the scalar
+    # fallback and then broadcast over the constraint size — peeling the matrix
+    # to `anything`. Route the element to the density DIRECTLY: more specific
+    # center, same arity, so the ndim-2 whole-array broadcast is untouched.
+    lkj_corr_cholesky_lpdfs(L::cholesky_factor_corr[m], x::real)::real = lkj_corr_cholesky_lpdf(L, x)
     lkj_corr_cholesky_lpdfs(L::anything[n], x) = jbroadcasted(lkj_corr_cholesky_lpdfs, L, x)
     ordered_logistic_lpmfs(args...) = ordered_logistic_lpmf(args...)
     ordered_logistic_lpmfs(y::int[n], eta::vector[n], c::vector[m]) = begin
