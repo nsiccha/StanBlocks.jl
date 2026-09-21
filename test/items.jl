@@ -8481,6 +8481,73 @@ scalar. The scalar trial count must be expanded to make Stan return `int[n]`.
 end
 
 """
+Regression for a vector-valued native beta-binomial observation with scalar
+trials. Its generated-quantities draw carries the observation's sized token,
+so the scalar trial count must be expanded before calling the native RNG.
+"""
+@testitem "slic: beta-binomial scalar trials generate vector predictions" tags=[:slic, :descriptor, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    fixed = @slic (; y = [1, 2, 3]) begin
+        y ~ beta_binomial(8, 0.4, 5.0)
+    end
+    fixed_d = stan_descriptor(fixed; name = :beta_binomial_scalar_args)
+    fixed_outs = Dict(o.name => o for o in fixed_d.outputs)
+    @test fixed_outs[:y_gen].type == :int
+    @test fixed_outs[:y_gen].size == (:y_n,)
+    @test fixed_outs[:y_gen].generative == :draw
+    @test fixed_outs[:y_gen].source == :y
+    @test fixed_outs[:y_likelihood].type == :vector
+    @test fixed_outs[:y_likelihood].size == (:y_n,)
+    @test fixed_outs[:y_likelihood].generative == :pointwise_loglik
+    @test fixed_outs[:y_likelihood].source == :y
+    @test stan_operation(fixed_d, :predict).outputs == (:y_gen,)
+    @test stan_operation(fixed_d, :pointwise_loglik).outputs == (:y_likelihood,)
+    fixed_code = stan_code(fixed)
+    @test occursin("beta_binomial_int_rng(y_n, 8, 0.4, 5.0)",
+                   stan_block(fixed_code, "generated quantities"))
+    @test occursin("beta_binomial_rng(rep_array(N, n), a, b)",
+                   stan_block(fixed_code, "functions"))
+    @test stanc_compiles(fixed)
+
+    model = @slic (; y = [1, 2, 3]) begin
+        log_alpha ~ normal(0.0, 1.0)
+        log_beta ~ normal(0.0, 1.0)
+        y ~ beta_binomial(8, exp(log_alpha), exp(log_beta))
+    end
+    d = stan_descriptor(model; name = :beta_binomial_scalar_trials)
+    problem = stan_execute(d, :fit)
+    dim = LogDensityProblems.dimension(problem)
+    @test dim == 2
+    pred = stan_execute(d, :predict; problem, draws = zeros(dim), seed = 2026)
+    @test keys(pred) == (:y_gen,)
+    @test length(pred.y_gen) == 3
+    @test all(draw -> isinteger(draw) && 0 <= draw <= 8, pred.y_gen)
+    ll = stan_execute(d, :pointwise_loglik; problem, draws = zeros(dim), seed = 2026)
+    @test keys(ll) == (:y_likelihood,)
+    @test length(ll.y_likelihood) == 3
+    @test all(isfinite, ll.y_likelihood)
+
+    varying_alpha = @slic (; y = [1, 2, 3], alpha = [0.4, 0.8, 1.2]) begin
+        y ~ beta_binomial(8, alpha, 5.0)
+    end
+    varying_alpha_d = stan_descriptor(varying_alpha; name = :beta_binomial_vector_alpha)
+    varying_alpha_outs = Dict(o.name => o for o in varying_alpha_d.outputs)
+    @test varying_alpha_outs[:y_gen].type == :int
+    @test varying_alpha_outs[:y_gen].size == (:y_n,)
+    @test stanc_compiles(varying_alpha)
+
+    varying_trials = @slic (; y = [1, 2, 3], trials = [8, 8, 8]) begin
+        y ~ beta_binomial(trials, 0.4, 5.0)
+    end
+    varying_d = stan_descriptor(varying_trials; name = :beta_binomial_vector_trials)
+    varying_outs = Dict(o.name => o for o in varying_d.outputs)
+    @test varying_outs[:y_gen].type == :int
+    @test varying_outs[:y_gen].size == (:trials_n,)
+    @test stanc_compiles(varying_trials)
+end
+
+"""
 Regression for a vector-valued binomial-logit observation with scalar trials.
 The generated-quantities draw carries the observation's sized token, so its RNG
 signature is `(int[n], int, vector[n])` even though Stan broadcasts the scalar

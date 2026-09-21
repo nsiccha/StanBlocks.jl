@@ -2401,8 +2401,8 @@ else
     binomial_rng(rep_array(N, n), inv_logit(eta))
 end
 
-# beta_binomial: (trials, alpha, beta); trials always int[n]. Empty-segment
-# guard (todo 19n8abc): two scalar shape args beside the `N` container.
+# beta_binomial: (trials, alpha, beta). Empty-segment guard (todo 19n8abc):
+# scalar shape args beside the `N` container replay the scalar-mix failure.
 @deffun beta_binomial_rng(int[n], N::int[n], a::real, b::real)::int[n] = if n == 0
     rv::int[n]
     rv
@@ -2414,6 +2414,14 @@ end
     rv
 else
     beta_binomial_rng(N, a, b)
+end
+# The lpmf also broadcasts a scalar trial count across vector observations.
+# Expand it to the observation length so Stan's native RNG returns int[n].
+@deffun beta_binomial_rng(int[n], N::int, a, b)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    beta_binomial_rng(rep_array(N, n), a, b)
 end
 
 # dirichlet: native already returns vector[n]; token path just unwraps. Single
