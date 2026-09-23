@@ -1106,8 +1106,11 @@ import Statistics
     end
     # Token form delegates to the explicit-loop form above — no guard (todo 19n8abc).
     ordered_logistic_rng(int[n], eta::vector[n], c::vector[m])::int[n] = ordered_logistic_rng(eta, c)
-    # Single native arg — same immunity as the 1-arg loops (todo 19n8abc).
-    vector_exponential_rng(rate::real, n::int)::vector[n] = exponential_rng(rep_vector(rate, n))
+    # Single native arg — same immunity as the 1-arg loops (todo 19n8abc):
+    # no `n == 0` guard. The `to_vector` is load-bearing: the vectorized
+    # native returns `array[] real`, so without it stanc rejects the helper
+    # (snag replaying-a-zero-ab1b204c).
+    vector_exponential_rng(rate::real, n::int)::vector[n] = to_vector(exponential_rng(rep_vector(rate, n)))
     end
     # Stan's `lkj_corr_cholesky_rng(int K, real eta)` returns a K×K Cholesky
     # factor. WITHOUT the `::matrix[n,n]` the tracetype is `anything`, so the
