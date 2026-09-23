@@ -101,9 +101,63 @@ _reject_nullary_constant_call(x::CanonicalExpr, resolved_head) = error(
     "constants as nullary functions like `pi()`; StanBlocks uses Julia's ",
     "constant, so drop the parentheses.)"
 )
+# A user module's own `@deffun` must win over a same-named builtin when the
+# builtin has no matching signature — otherwise the call is emitted with no
+# definition behind it and only stanc objects (snag `module-deffun-sh-c54067c8`:
+# Bruno's 4-arg `truncated_normal_lpdf` was shadowed by the 5-arg builtin into
+# an undeclared-identifier stanc rejection). `forward!(::Symbol)` resolves
+# info → builtin → mod → Main, so the builtin claims the head before the
+# module is consulted; the mismatch only shows afterward as an `anything`-typed
+# call with no `fundef`. When THAT shape meets a udf-only builtin name (one
+# Stan has never heard of — the `_check_lpxf_resolves` criterion, so native
+# calls like `normal_lpdf` and dual-marked ones like `lkj_corr_cholesky_lpdf`
+# keep their emit-and-let-stanc-decide behavior) AND the trace module defines a
+# DIFFERENT function under the same name, re-trace the call against the
+# module's binding. If the module's overloads match, the module's definition is
+# emitted (Julia scoping, applied late); if they match nothing either, fail
+# HERE naming both definitions instead of emitting an undefined call. Names
+# Stan knows and non-colliding calls pass through untouched, so
+# previously-working traces cannot change behavior.
+_retry_shadowed_builtin_call(sym, resolved, rv; info) = begin
+    sym isa Symbol || return rv
+    _is_builtin_name(sym) || return rv
+    bv = head(resolved)
+    bv isa Function || return rv
+    bv === getproperty(builtin, sym) || return rv
+    rv isa StanExpr || return rv
+    center_type(rv) === types.anything || return rv
+    _fundef(resolved, _trace_context(info)) === nothing || return rv
+    (udf_backed(bv) && !native_backed(bv)) || return rv
+    mod = get_module(info)
+    isdefined(mod, sym) || return rv
+    mv = getproperty(mod, sym)
+    mv isa Function || return rv
+    mv === bv && return rv
+    retried = CanonicalExpr(forward!(mv; info), resolved.args...; resolved.kwargs...)
+    s = _get_expr_stack(info)
+    isnothing(s) || (s[end] = (retried, s[end][2]))
+    rv2 = expand_inline_or_trace(retried; info)
+    _retried_call_resolves(retried, rv2; info) && return rv2
+    error(
+        "slic: no registered signature matches `", short_expr(retried), "`.\n",
+        "The call resolved to `", parentmodule(typeof(bv)), ".", sym, "`, but every ",
+        "builtin overload declares a different argument shape, and `", mod, "` — which ",
+        "also defines `", sym, "` — has no matching overload either, so the call would be ",
+        "emitted with no function definition behind it and stanc would reject it as an ",
+        "undeclared identifier.\n",
+        "Fix: match a registered signature in one of the two modules — or add a `@deffun` ",
+        "overload for this shape.",
+    )
+end
+_retried_call_resolves(retried, rv2; info) = begin
+    rv2 isa StanExpr || return true
+    center_type(rv2) === types.anything || return true
+    _fundef(retried, _trace_context(info)) === nothing ? false : true
+end
 forward!(x::CanonicalExpr; info) = begin
     _push_expr!(info, x)
-    resolved_head = _forward_head(head(x), info)
+    sym = head(x)
+    resolved_head = _forward_head(sym, info)
     _nullary_constant_call(x, resolved_head) &&
         _reject_nullary_constant_call(x, resolved_head)
     resolved = CanonicalExpr(
@@ -114,6 +168,7 @@ forward!(x::CanonicalExpr; info) = begin
     s = _get_expr_stack(info)
     isnothing(s) || (s[end] = (resolved, s[end][2]))
     rv = expand_inline_or_trace(resolved; info)
+    rv = _retry_shadowed_builtin_call(sym, resolved, rv; info)
     _pop_expr!(info)
     rv
 end

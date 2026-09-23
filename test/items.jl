@@ -9102,6 +9102,150 @@ is skipped for a ragged plate-sliced obs.
     @test stanc_compiles(native_both)
 end
 
+"""
+A module's own `@deffun` resolves past a same-named builtin on arity mismatch.
+
+Regression for snag `module-deffun-sh-c54067c8` (reported by Bruno). Symbol
+resolution is info → builtin → mod → Main, so a DIRECT `_lpdf`/`_rng` call to a
+name the builtin owns NEVER consulted the defining module — even when no
+builtin overload matched the argument shapes. The call then traced to
+`anything` with no `fundef`, no definition was emitted, and (unlike the `~`
+form, which `_check_lpxf_resolves` guards) nothing raised: Bruno's 4-arg
+`truncated_normal_lpdf` call inside its own `@deffun` was shadowed by the 5-arg
+builtin into Stan that stanc rejected as an undeclared identifier.
+
+The fix re-traces such a call against the module's binding when the builtin
+yields `anything` with no `fundef` for a udf-only name; when the module's
+overloads match nothing either it fails loudly naming both definitions.
+"""
+@testitem "slic: module @deffun resolves past a same-named builtin on arity mismatch" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+
+    # Bruno's shape, replayed in this item's own module: a 4-arg left-censored
+    # `truncated_normal_lpdf` + 3-arg rng next to the builtin's 5-arg
+    # (lloq+uloq) overload of the same name.
+    @deffun @lhs @lpxf truncated_normal_lpdf(y::real, loc::real, scale::real, lloq::real)::real =
+        if y <= lloq
+            normal_lcdf(lloq, loc, scale)
+        else
+            normal_lpdf(y, loc, scale)
+        end
+    @deffun mymax(a::real, b::real)::real = if a > b
+        a
+    else
+        b
+    end
+    @deffun truncated_normal_rng(loc::real, scale::real, lloq::real)::real =
+        mymax(normal_rng(loc, scale), lloq)
+    @deffun addpropnormal_lpdfs(y::real, loc::real, add_scale::real, prop_scale::real, lloq::real)::real =
+        truncated_normal_lpdf(y, loc, sqrt(add_scale^2 + (loc * prop_scale)^2), lloq)
+    @deffun addpropnormal_lpdfs(y::vector[n], loc::vector[n], add_scale::vector[n], prop_scale::vector[n], lloq::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = addpropnormal_lpdfs(y[i], loc[i], add_scale[i], prop_scale[i], lloq[i])
+        end
+        rv
+    end
+    @deffun @lhs @lpxf addpropnormal_lpdf(y::vector[n], loc::vector[n], add_scale::vector[n], prop_scale::vector[n], lloq::vector[n])::real =
+        sum(addpropnormal_lpdfs(y, loc, add_scale, prop_scale, lloq))
+    @deffun addpropnormal_rng(loc::real, add_scale::real, prop_scale::real, lloq::real)::real =
+        truncated_normal_rng(loc, sqrt(add_scale^2 + (loc * prop_scale)^2), lloq)
+    @deffun addpropnormal_rng(loc::vector[n], add_scale::vector[n], prop_scale::vector[n], lloq::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = addpropnormal_rng(loc[i], add_scale[i], prop_scale[i], lloq[i])
+        end
+        rv
+    end
+    @deffun addpropnormal_rng(vector[n], loc::vector[n], add_scale::vector[n], prop_scale::vector[n], lloq::vector[n])::vector[n] =
+        addpropnormal_rng(loc, add_scale, prop_scale, lloq)
+
+    # --- POSITIVE: the module's definitions are emitted, stanc accepts ------
+    m = @slic (; y = [0.5, -0.2], lloq = [-1.0, -1.0]) begin
+        mu ~ normal(0.0, 1.0)
+        locv = mu .+ [0.0, 0.0]
+        y ~ addpropnormal(locv, [0.5, 0.5], [0.1, 0.1], lloq)
+        mu
+    end
+    code = stan_code(m)
+    @test occursin("real truncated_normal_lpdf(", code)
+    @test occursin("real truncated_normal_rng(", code)
+    # The MODULE's left-censored body — not the builtin's two-sided one.
+    @test occursin("if((y <= lloq))", code)
+    @test occursin("normal_lcdf(lloq | loc, scale)", code)
+    @test !occursin("normal_lccdf", code)
+    @test stanc_compiles(m)
+
+    # --- DIRECTION PIN: a matching builtin call is untouched by the retry ----
+    # From the SAME colliding module, the 5-arg shape still resolves to the
+    # builtin (its body uses `normal_lccdf`, which the module's never does).
+    @deffun both_lpdfs(y::real, loc::real, s::real, lo::real, hi::real)::real =
+        truncated_normal_lpdf(y, loc, s, lo, hi)
+    @deffun both_lpdfs(y::vector[n], loc::vector[n], s::vector[n], lo::vector[n], hi::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = both_lpdfs(y[i], loc[i], s[i], lo[i], hi[i])
+        end
+        rv
+    end
+    @deffun @lhs @lpxf both_lpdf(y::vector[n], loc::vector[n], s::vector[n], lo::vector[n], hi::vector[n])::real =
+        sum(both_lpdfs(y, loc, s, lo, hi))
+    @deffun both_rng(mu::real, s::real, lo::real, hi::real)::real = normal_rng(mu, s)
+    @deffun both_rng(mu::vector[n], s::vector[n], lo::vector[n], hi::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = both_rng(mu[i], s[i], lo[i], hi[i])
+        end
+        rv
+    end
+    @deffun both_rng(vector[n], mu::vector[n], s::vector[n], lo::vector[n], hi::vector[n])::vector[n] =
+        both_rng(mu, s, lo, hi)
+    m5 = @slic (; y = [0.5, -0.2]) begin
+        mu ~ normal(0.0, 1.0)
+        locv = mu .+ [0.0, 0.0]
+        y ~ both(locv, [0.5, 0.5], [-1.0, -1.0], [2.0, 2.0])
+        mu
+    end
+    code5 = stan_code(m5)
+    @test occursin("normal_lccdf", code5)
+    @test stanc_compiles(m5)
+
+    # --- NEGATIVE: no match in EITHER module fails loudly, naming both ------
+    # A 3-arg call matches neither the builtin 5-arg nor the module 4-arg
+    # overload. Before the fix this emitted an undefined call (stanc's problem);
+    # now tracing itself refuses with both definitions named.
+    @deffun bad_lpdfs(y::real, loc::real, s::real)::real =
+        truncated_normal_lpdf(y, loc, s)
+    @deffun bad_lpdfs(y::vector[n], loc::vector[n], s::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = bad_lpdfs(y[i], loc[i], s[i])
+        end
+        rv
+    end
+    @deffun @lhs @lpxf bad_lpdf(y::vector[n], loc::vector[n], s::vector[n])::real =
+        sum(bad_lpdfs(y, loc, s))
+    @deffun bad_rng(mu::real, s::real)::real = normal_rng(mu, s)
+    @deffun bad_rng(mu::vector[n], s::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = bad_rng(mu[i], s[i])
+        end
+        rv
+    end
+    @deffun bad_rng(vector[n], mu::vector[n], s::vector[n])::vector[n] =
+        bad_rng(mu, s)
+    bad_m = @slic (; y = [0.5, -0.2]) begin
+        mu ~ normal(0.0, 1.0)
+        locv = mu .+ [0.0, 0.0]
+        y ~ bad(locv, [0.5, 0.5])
+        mu
+    end
+    @test_throws "no registered signature matches" stan_code(bad_m)
+    @test_throws "truncated_normal_lpdf" stan_code(bad_m)
+    @test_throws "builtin" stan_code(bad_m)
+end
+
 @testitem "slic: cv-tainted typed-LHS size re-draws the parameter in gq" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
 
