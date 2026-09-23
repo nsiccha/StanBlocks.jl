@@ -446,6 +446,61 @@ previous body, so non-empty draws are unchanged.
 end
 
 """
+`vector_exponential_rng` is a single-native-arg companion, so the draw loop is
+bound by that arg's own size — the same immunity as the 1-arg loops (audit todo
+19n8abc), no `n == 0` guard. The `to_vector` wrapper is load-bearing instead:
+the vectorized native returns `array[] real`, so without it stanc rejects the
+emitted helper (snag replaying-a-zero-ab1b204c).
+"""
+@testitem "slic: vector_exponential_rng draws empty at n=0" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    exp_model = @slic (; n = 0) begin
+        s ~ normal(0.0, 1.0)
+        y_rep = vector_exponential_rng(exp(s), n)
+        y_rep
+    end
+    exp_code = stan_code(exp_model)
+    @test occursin("vector_exponential_rng(exp(s), n)", stan_block(exp_code, "generated quantities"))
+    exp_fns = stan_block(exp_code, "functions")
+    @test occursin("to_vector(exponential_rng(rep_vector(rate, n)))", exp_fns)
+    @test stanc_compiles(exp_model)
+
+    # Live proof: the empty GQ draw executes through the RNG constrain — the
+    # single native arg binds the loop to zero iterations, no scalar to replay
+    # the empty-segment SIGSEGV against.
+    exp_problem = instantiate(stan_model(exp_model))
+    exp_names = BridgeStan.param_names(exp_problem.model; include_tp = true, include_gq = true)
+    @test "s" in exp_names
+    exp_draw = BridgeStan.param_constrain(
+        exp_problem.model, zeros(LogDensityProblems.dimension(exp_problem));
+        include_tp = true, include_gq = true,
+        rng = BridgeStan.StanRNG(exp_problem.model, 1234),
+    )
+    # The draw carries the GQ scalars: `s` only — the empty `y_rep` draw
+    # contributes zero elements.
+    @test length(exp_draw) == 1
+    @test isfinite(exp_draw[1])
+
+    # Non-empty control: the `to_vector` wrap leaves ordinary draws working.
+    exp3_model = @slic (; n = 3) begin
+        s ~ normal(0.0, 1.0)
+        y_rep = vector_exponential_rng(exp(s), n)
+        y_rep
+    end
+    @test stanc_compiles(exp3_model)
+    exp3_problem = instantiate(stan_model(exp3_model))
+    exp3_draw = BridgeStan.param_constrain(
+        exp3_problem.model, zeros(LogDensityProblems.dimension(exp3_problem));
+        include_tp = true, include_gq = true,
+        rng = BridgeStan.StanRNG(exp3_problem.model, 1234),
+    )
+    # `s` plus the three exponential draws, all positive reals.
+    @test length(exp3_draw) == 4
+    @test all(x -> isfinite(x) && x > 0, exp3_draw[2:4])
+end
+
+"""
 Truncation, threshold censoring, and interval observations are distribution
 HOFs selected from one base-family token. Optional bounds are compile-time
 syntax: omission and explicit `nothing` choose the same side-specific Stan
