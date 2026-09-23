@@ -568,17 +568,38 @@ end
 Base.push!(b::ImperativeBlock, x::DocumentExpr; info) = begin
     push!(remake(b, remake(x, x.args[1], b)), x.args[2]; info)
 end
+# A compiler-owned `<stem>_gen` / `<stem>_likelihood` twin colliding with a USER
+# variable of the same name must fail HERE — loudly naming the twin — rather
+# than emitting a duplicate Stan declaration that only stanc rejects (same-block
+# twins are `get!`-deduped at reflection, so the descriptor cannot see the
+# collision). A DATA-qualified same-named var is exempt: it lands in another
+# block, and the descriptor's input/output clash check reports it with the
+# twin-aware message. Guards all three whole-LHS twin sites uniformly.
+_assert_twin_free(stem, suffix, info) = begin
+    stem isa Symbol || return nothing
+    twin = Symbol(stem, suffix)
+    twin in keys(info) || return nothing
+    qual(info[twin]) == :data && return nothing
+    error(
+        "Cannot emit the compiler-owned twin `", twin, "` for `", stem, " ~ …`: ",
+        "the model already defines `", twin, "`. `<stem>_gen` / ",
+        "`<stem>_likelihood` names are reserved for the compiler's predictive ",
+        "twins — rename the model's `", twin, "`.",
+    )
+end
 Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     lhs, rhs = x.args
     # if hasvalue(lhs)
     is_observation = qual(lhs) == :data
     if is_observation
         likelihood_rhs = likelihood_expr(lhs, rhs)
+        _assert_twin_free(expr(lhs), "_likelihood", info)
         push!(b, CanonicalExpr(
             :(=),
             StanExpr(Symbol(expr(lhs), "_likelihood"), remake(type(likelihood_rhs); value=missing)),
             likelihood_rhs
         ); info)
+        _assert_twin_free(expr(lhs), "_gen", info)
         lhs = StanExpr(Symbol(expr(lhs), "_gen"), remake(type(lhs); value=missing))
     end
     # Build a type token carrying the wanted output shape (from lhs, which is
@@ -593,6 +614,23 @@ Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     rng_rhs = is_observation ? rng_expr(token, rhs) : _gq_redraw(lhs, rhs, token)
     lhs = StanExpr(expr(lhs), remake(type(rng_rhs); value=missing))
     push!(b, CanonicalExpr(:(=), lhs, rng_rhs); info)
+    # A DECLARED-but-unbound observation (`SlicModel(…, observations)`; snag
+    # `unbound-observat-d32ac924`) re-draws above under its own name — and gets
+    # the same `<obs>_gen` twin a bound observation has, so downstream code
+    # reading `y_gen` works unchanged across fitted/prior programs. The twin
+    # ALIASES the one draw (`z_gen = z`): a second independent draw would cost
+    # another RNG call and dress simulation up as data-vs-simulation, while
+    # emitting ONLY the twin would break downstream reads of `z` (a chained
+    # unbound `w ~ family(z, …)` reads the draw). NO `_likelihood` twin —
+    # pointwise needs observed values. Bound observations never reach here
+    # (they twin in the branch above); a declared stem that stays a sampled
+    # parameter never reaches generated quantities at all — both correctly
+    # twinless.
+    if !is_observation && expr(lhs) isa Symbol && expr(lhs) in _model_observations(info)
+        _assert_twin_free(expr(lhs), "_gen", info)
+        twin = StanExpr(Symbol(expr(lhs), "_gen"), remake(type(lhs); value=missing))
+        push!(b, CanonicalExpr(:(=), twin, lhs); info)
+    end
 end
 # Prior-only indexed plate parameters are lowered cell-wise in generated
 # quantities: their outer declaration is already present there, so each loop

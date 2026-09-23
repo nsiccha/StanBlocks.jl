@@ -1331,7 +1331,7 @@ _strip_submodel_returns(rhs::SlicModel) = begin
     b = model(rhs)
     (b isa Expr && b.head === :block) || return rhs
     kept = Any[s for s in b.args if !Meta.isexpr(s, :return)]
-    SlicModel(Expr(:block, kept...), data(rhs), rhs.mod)
+    SlicModel(Expr(:block, kept...), data(rhs), rhs.mod, rhs.observations)
 end
 # A native constrained center type carries an implicit Stan constraint
 # transform (simplex/ordered/positive_ordered — proper subtypes of `vector` —

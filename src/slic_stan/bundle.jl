@@ -146,7 +146,7 @@ _slic_bundle_with_source_part(x::SlicModel, source_part) = begin
     body = Meta.isexpr(body, :block) ?
         Expr(:block, LineNumberNode(0, source_part), body.args...) :
         Expr(:block, LineNumberNode(0, source_part), body)
-    SlicModel(body, data(x), x.mod)
+    SlicModel(body, data(x), x.mod, x.observations)
 end
 
 _slic_bundle_part(value, label, index=nothing) = begin
