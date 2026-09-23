@@ -15,6 +15,31 @@ struct SlicModel#{M,D}
     model#::M
     data#::D
     mod::Module
+    observations
+    SlicModel(model, data, mod, observations=()) =
+        new(model, data, mod, _checked_observations(observations))
+end
+# Observation stems the producer declares for `~` targets that bind no data
+# (snag `unbound-observat-d32ac924`). The trace cannot tell an unbound
+# observation (`z ~ normal(…)` with no `z` column) from a prior — the two are
+# syntactically identical, and every syntactic rule misfires (a data-sized sink
+# prior would twin too) — so the identity is declared, never inferred. The
+# declaration tracks STATEMENTS, not bindings: a declared stem that IS bound
+# takes the ordinary bound path (twin + `_likelihood`, declaration ignored), a
+# declared stem that stays a sampled parameter (it feeds a bound likelihood)
+# gets no twin, and a declared stem with no `~` statement is silently ignored.
+_checked_observations(obs::Symbol) = (obs,)
+_checked_observations(obs::Tuple{Vararg{Symbol}}) = obs
+_checked_observations(obs) = begin
+    tup = Tuple(o for o in obs)
+    for o in tup
+        o isa Symbol || error(
+            "`SlicModel` observation declarations must be `Symbol`s, got `", o,
+            "` (`", typeof(o), "`). Declare the `~` target's bare name, e.g. ",
+            "`SlicModel(body, data, mod, (:z,))`."
+        )
+    end
+    tup
 end
 SlicModel(model, data) = SlicModel(model, data, Main)
 "The inferred Stan model, post-tracing. Can be instantiated via `stan_instantiate`."
@@ -126,6 +151,12 @@ SplatExpr{T} = CanonicalExprV{:...,T}
 model(x::SlicModel) = x.model
 data(x::SlicModel) = x.data
 meta(x::StanModel) = x.meta
+# Producer-declared observation stems for `~` targets that bind no data
+# (`SlicModel(…, observations)`; snag `unbound-observat-d32ac924`). Absent on
+# hand-built traces — default `()`, the no-declaration status quo.
+_model_observations(x::StanModel) = get(meta(x), :observations, ())
+_model_observations(x::SubModel) = _model_observations(parent(x))
+_model_observations(_) = ()
 _trace_context(x::StanModel) = get(x.meta, :_trace_context, nothing)
 _trace_context(x::SubModel) = _trace_context(parent(x))
 _trace_context(x::AbstractDict) = get(x, :__trace_context__, nothing)
@@ -421,11 +452,13 @@ _model_data_only(x::SlicModel) = (;
 # survive as a likelihood contribution.
 Base.merge(x::SlicModel, args...) = begin
     model_data = NamedTuple()
+    observations = Tuple(x.observations)
     parts = Any[]
     for arg in args
         if arg isa SlicModel
             append!(parts, unblock(model(arg)))
             model_data = merge(model_data, _model_data_only(arg))
+            observations = Tuple(union(observations, arg.observations))
         else
             push!(parts, arg)
         end
@@ -433,9 +466,14 @@ Base.merge(x::SlicModel, args...) = begin
     stmts, fixed = _merge_parts(parts)
     body = _splice_body(x, stmts...)
     merged_data = merge(data(x), pairs(model_data))
-    isempty(fixed) && return SlicModel(body, merged_data, x.mod)
+    # A fixed name's defining statement is REMOVED, so the observation ceases
+    # to exist as a statement — drop it from the declaration (which tracks
+    # statements, not bindings). A merely BOUND observation keeps its
+    # statement, so re-data preserves the declaration verbatim instead.
+    observations = Tuple(o for o in observations if !(o in keys(fixed)))
+    isempty(fixed) && return SlicModel(body, merged_data, x.mod, observations)
     body = _without_fixed_components(body, keys(fixed))
-    SlicModel(body, merge(merged_data, pairs(fixed)), x.mod)
+    SlicModel(body, merge(merged_data, pairs(fixed)), x.mod, observations)
 end
 
 _submodel_positional_error(args...) = error(
@@ -444,7 +482,8 @@ _submodel_positional_error(args...) = error(
     "now use `Base.merge(submodel, stmts...)` (e.g. `Base.merge(base, quote … end)`); and ",
     "positional scalar inputs require a named sub-model function declared with `@slic f(args...) = …`."
 )
-(x::SlicModel)(; kwargs...) = SlicModel(model(x), merge(data(x), kwargs), x.mod)
+(x::SlicModel)(; kwargs...) =
+    SlicModel(model(x), merge(data(x), kwargs), x.mod, x.observations)
 (x::SlicModel)(arg, args...; kwargs...) = _submodel_positional_error(arg, args...)
 
 # The four constraint keys a StanType carries in its `info` alongside its size.

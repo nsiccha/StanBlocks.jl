@@ -348,13 +348,20 @@ end
 
 # Generative role of a generated quantity: the compiler-owned twin of `stem`
 # when the name is `<stem>_gen` / `<stem>_likelihood` AND `stem` is a data input
-# of this model (pass (2) above), `:derived` otherwise.
-_generative_role(name::Symbol, datanames) = begin
+# of this model (pass (2) above) — or, for `_gen` only, a producer-declared
+# observation stem (`SlicModel(…, observations)`; snag
+# `unbound-observat-d32ac924`), whose twin aliases the forward-simulated draw.
+# `_likelihood` stays bound-only: pointwise needs observed values, and the
+# compiler never emits it for an unbound stem. `:derived` otherwise — in
+# particular a user variable that merely ends in `_gen` still needs its stem in
+# one of the two sets, so the suffix alone never classifies.
+_generative_role(name::Symbol, datanames, observations=()) = begin
     s = string(name)
     for (suffix, role) in (("_likelihood", :pointwise_loglik), ("_gen", :draw))
         endswith(s, suffix) || continue
         stem = Symbol(s[1:end-length(suffix)])
         stem in datanames && return (role, stem)
+        role === :draw && stem in observations && return (role, stem)
     end
     (:derived, nothing)
 end
@@ -494,11 +501,12 @@ _block_outputs(m::StanModel, blockname::Symbol, kind::Symbol, data) = begin
     acc = OrderedDict{Symbol,Any}()
     _output_symbols(block(m, blockname), acc)
     datanames = keys(data)
+    observations = _model_observations(m)
     rv = ModelOutput[]
     for (name, x) in pairs(acc)
         always_inline(x) && continue
         generative, source = kind === :generated_quantity ?
-            _generative_role(name, datanames) : (:posterior, nothing)
+            _generative_role(name, datanames, observations) : (:posterior, nothing)
         push!(rv, ModelOutput(
             name, kind, _descriptor_type(x), _descriptor_size(x),
             _descriptor_constraints(x), generative, source,

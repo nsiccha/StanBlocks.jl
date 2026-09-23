@@ -11452,3 +11452,207 @@ end
         @test BridgeStan.param_names(p3.model) == ["eta"]
     end
 end
+
+@testitem "slic: declared unbound observations emit a _gen twin covered by :predict" tags=[:slic, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Snag `unbound-observat-d32ac924` (BRM's one prior spelling: the response
+    # column omitted). An unbound `z ~ family(…)` is syntactically identical
+    # to a prior, so the producer DECLARES it
+    # (`StanBlocks.SlicModel(body, data, mod, (:z,))`); the compiler then emits
+    # the same `<obs>_gen` twin a bound observation has — aliasing the one
+    # forward-simulated draw, with NO `_likelihood` (pointwise needs observed
+    # values) — and the descriptor covers it under `:predict`. The emitted
+    # programs' stanc acceptance is pinned by the companion `:stanc` item.
+    mixed_base = @slic (; x = [-1.0, 0.0, 1.0, 2.0], y = [0.1, 0.8, 1.7, 2.6]) begin
+        mu = x .* 1.0
+        sigma_y ~ exponential(1.0)
+        sigma_z ~ exponential(1.0)
+        y ~ normal(mu, sigma_y)
+        z ~ normal(mu, sigma_z)
+    end
+    declare(model, observations) =
+        StanBlocks.SlicModel(model.model, model.data, model.mod, observations)
+
+    # Without the declaration the status quo holds exactly: `z`
+    # forward-simulates under its own name (`:derived`) and `:predict` covers
+    # the bound twin only. Nothing is inferred.
+    plain_code = stan_code(mixed_base)
+    @test !occursin("z_gen", plain_code)
+    plain_d = stan_descriptor(mixed_base; name = :mixed_plain)
+    plain_outs = Dict(o.name => o for o in plain_d.outputs)
+    @test plain_outs[:z].generative == :derived
+    @test stan_operation(plain_d, :predict).outputs == (:y_gen,)
+
+    # Declared: the twin aliases the draw, joins `:predict`, and no
+    # `_likelihood` appears; priors (`sigma_z`) correctly stay twinless.
+    mixed = declare(mixed_base, (:z,))
+    mixed_code = stan_code(mixed)
+    @test occursin(r"vector\[x_n\] z_gen = z;", mixed_code)
+    @test !occursin("z_likelihood", mixed_code)
+    @test !occursin("sigma_z_gen", mixed_code)
+    mixed_d = stan_descriptor(mixed; name = :mixed_declared)
+    mixed_outs = Dict(o.name => o for o in mixed_d.outputs)
+    @test mixed_outs[:z_gen].kind == :generated_quantity
+    @test mixed_outs[:z_gen].generative == :draw
+    @test mixed_outs[:z_gen].source == :z
+    @test mixed_outs[:z_gen].size == mixed_outs[:z].size
+    @test stan_operation(mixed_d, :predict).outputs == (:y_gen, :z_gen)
+    @test stan_operation(mixed_d, :pointwise_loglik).outputs == (:y_likelihood,)
+    @test :fit in [op.name for op in mixed_d.operations]
+
+    # Fully unconditioned (prior) program: empty `parameters`, no `:fit`, no
+    # `:pointwise_loglik` — but the twin and `:predict` appear.
+    prior_base = @slic (; x = [-1.0, 0.0, 1.0, 2.0]) begin
+        mu = x .* 1.0
+        sigma ~ exponential(1.0)
+        y ~ normal(mu, sigma)
+    end
+    prior = declare(prior_base, (:y,))
+    prior_code = stan_code(prior)
+    @test occursin(r"parameters\s*\{\s*\}", prior_code)
+    @test occursin(r"vector\[x_n\] y_gen = y;", prior_code)
+    @test !occursin("y_likelihood", prior_code)
+    prior_d = stan_descriptor(prior; name = :prior_declared)
+    @test [op.name for op in prior_d.operations] ==
+        [:transpile, :instantiate, :predict]
+    @test stan_operation(prior_d, :predict).outputs == (:y_gen,)
+
+    # A declared stem that IS bound takes the ordinary bound path (twin +
+    # `_likelihood`); the declaration is ignored, never duplicated.
+    bound = declare(mixed_base, (:y, :z))
+    bound_code = stan_code(bound)
+    @test length(collect(eachmatch(r"y_gen", bound_code))) == 1
+    @test occursin("y_likelihood", bound_code)
+    bound_d = stan_descriptor(bound; name = :bound_declared)
+    @test stan_operation(bound_d, :predict).outputs == (:y_gen, :z_gen)
+
+    # A declared stem that stays a sampled parameter (it feeds a bound
+    # likelihood) gets no twin: posterior draws of it come from the sampler.
+    latent_base = @slic (; x = [1.0, 2.0], w = [0.5, 1.5]) begin
+        mu = x .* 1.0
+        z ~ normal(mu, 1.0)
+        w ~ normal(z, 0.5)
+    end
+    latent = declare(latent_base, (:z,))
+    latent_code = stan_code(latent)
+    @test !occursin("z_gen", latent_code)
+    latent_d = stan_descriptor(latent; name = :latent_declared)
+    latent_outs = Dict(o.name => o for o in latent_d.outputs)
+    @test latent_outs[:z].kind == :parameter
+    @test stan_operation(latent_d, :predict).outputs == (:w_gen,)
+
+    # Chained unbound observations both twin, and the downstream twin reads
+    # the draw (the bare symbol must stay emitted).
+    chain_base = @slic (; x = [1.0, 2.0]) begin
+        mu = x .* 1.0
+        z ~ normal(mu, 1.0)
+        w ~ normal(z, 0.5)
+    end
+    chain = declare(chain_base, (:z, :w))
+    chain_code = stan_code(chain)
+    @test occursin(r"z_gen = z;", chain_code)
+    @test occursin(r"w_gen = w;", chain_code)
+    chain_d = stan_descriptor(chain; name = :chain_declared)
+    @test stan_operation(chain_d, :predict).outputs == (:z_gen, :w_gen)
+
+    # A declared stem with no `~` statement is silently ignored.
+    dangling = declare(mixed_base, (:nope,))
+    @test !occursin("nope_gen", stan_code(dangling))
+    dangling_d = stan_descriptor(dangling; name = :dangling_declared)
+    @test stan_operation(dangling_d, :predict).outputs == (:y_gen,)
+
+    # The declaration survives re-data and `Base.merge` (unioned); fixing a
+    # name removes its statement, so the fixed stem drops out.
+    @test mixed(; x = [-1.0, 0.0, 1.0, 2.0]).observations == (:z,)
+    other = declare(prior_base, (:w,))
+    @test Set(Base.merge(mixed, other).observations) == Set([:z, :w])
+    @test Base.merge(mixed, (; z = [1.0, 2.0, 3.0, 4.0])).observations == ()
+    # A bare `Symbol` declares one stem; anything else fails loudly.
+    @test declare(mixed_base, :z).observations == (:z,)
+    @test_throws "must be `Symbol`s" declare(mixed_base, ("z",))
+
+    # A user variable colliding with the twin fails fast at trace time naming
+    # the twin — instead of a duplicate Stan declaration only stanc rejects.
+    collide_base = @slic (; x = [1.0, 2.0]) begin
+        mu = x .* 1.0
+        sigma ~ exponential(1.0)
+        z ~ normal(mu, sigma)
+        z_gen = mu .* sigma
+    end
+    collide = declare(collide_base, (:z,))
+    @test_throws "Cannot emit the compiler-owned twin `z_gen`" stan_code(collide)
+
+    # The same fail-fast rule guards the bound twins uniformly: a user
+    # generated-quantity colliding with either twin errors at trace time.
+    bound_gen_collide = @slic (; x = [1.0, 2.0], y = [0.5, 1.5]) begin
+        mu = x .* 1.0
+        sigma ~ exponential(1.0)
+        y ~ normal(mu, sigma)
+        y_gen = mu .* sigma
+    end
+    @test_throws "Cannot emit the compiler-owned twin `y_gen`" stan_code(bound_gen_collide)
+    bound_lik_collide = @slic (; x = [1.0, 2.0], y = [0.5, 1.5]) begin
+        mu = x .* 1.0
+        sigma ~ exponential(1.0)
+        y ~ normal(mu, sigma)
+        y_likelihood = mu .* sigma
+    end
+    @test_throws "Cannot emit the compiler-owned twin `y_likelihood`" stan_code(bound_lik_collide)
+end
+
+@testitem "slic: declared unbound twins stanc-compile" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+    # Stanc acceptance for the programs the companion `:predict` item pins
+    # (kept separate so the transpile/descriptor pins run on the portable CI
+    # job, which skips `:stanc`).
+    declare(model, observations) =
+        StanBlocks.SlicModel(model.model, model.data, model.mod, observations)
+    mixed_base = @slic (; x = [-1.0, 0.0, 1.0, 2.0], y = [0.1, 0.8, 1.7, 2.6]) begin
+        mu = x .* 1.0
+        sigma_y ~ exponential(1.0)
+        sigma_z ~ exponential(1.0)
+        y ~ normal(mu, sigma_y)
+        z ~ normal(mu, sigma_z)
+    end
+    @test stanc_compiles(declare(mixed_base, (:z,)))
+    prior_base = @slic (; x = [-1.0, 0.0, 1.0, 2.0]) begin
+        mu = x .* 1.0
+        sigma ~ exponential(1.0)
+        y ~ normal(mu, sigma)
+    end
+    @test stanc_compiles(declare(prior_base, (:y,)))
+    chain_base = @slic (; x = [1.0, 2.0]) begin
+        mu = x .* 1.0
+        z ~ normal(mu, 1.0)
+        w ~ normal(z, 0.5)
+    end
+    @test stanc_compiles(declare(chain_base, (:z, :w)))
+end
+
+@testitem "slic: declared unbound twins execute through :predict" tags=[:slic, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # End-to-end companion to the `:predict` item above: the declared twin is
+    # served through the standard operation like any bound twin. Mirrors the
+    # `:predict` execution shape of "descriptor operations execute through
+    # BridgeStan" (NOT run on hosts without the BridgeStan toolchain; the
+    # stan CI job covers it).
+    mixed_base = @slic (; x = [-1.0, 0.0, 1.0, 2.0], y = [0.1, 0.8, 1.7, 2.6]) begin
+        mu = x .* 1.0
+        sigma_y ~ exponential(1.0)
+        sigma_z ~ exponential(1.0)
+        y ~ normal(mu, sigma_y)
+        z ~ normal(mu, sigma_z)
+    end
+    mixed = StanBlocks.SlicModel(
+        mixed_base.model, mixed_base.data, mixed_base.mod, (:z,))
+    d = stan_descriptor(mixed; name = :mixed_predict_exec)
+
+    prob = stan_execute(d, :fit)
+    dim = LogDensityProblems.dimension(prob)
+    @test isfinite(LogDensityProblems.logdensity(prob, zeros(dim)))
+
+    pred = stan_execute(d, :predict; problem = prob, draws = zeros(dim), seed = 1234)
+    @test keys(pred) == (:y_gen, :z_gen)
+    @test length(pred.z_gen) == 4
+    @test all(isfinite, pred.z_gen)
+    multi = stan_execute(d, :predict; problem = prob, draws = zeros(dim, 3), seed = 7)
+    @test size(multi.z_gen) == (4, 3)
+end

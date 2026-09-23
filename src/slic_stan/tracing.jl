@@ -66,7 +66,10 @@ _next_anon_id(context::TraceContext) = _next_trace_id!(context, :anon_counter)
 
 stan_model(x::SlicModel; info=StanModel()) = begin
     context = TraceContext()
-    info = remake(info; _trace_context=context)
+    # The producer's observation declaration rides in trace meta so both the
+    # GQ twin emission (`distribute!`) and the descriptor (`meta(m)`) see it.
+    # `remake` merges, so `forward!`'s local `mod` remake preserves it.
+    info = remake(info; _trace_context=context, observations=x.observations)
     source_lnn = _first_source_lnn(model(x))
     stage = :trace
     try
