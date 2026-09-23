@@ -11655,4 +11655,21 @@ end
     @test all(isfinite, pred.z_gen)
     multi = stan_execute(d, :predict; problem = prob, draws = zeros(dim, 3), seed = 7)
     @test size(multi.z_gen) == (4, 3)
+
+    # Fixed_param (fully unconditioned) program: `:predict` draws the twin
+    # over an empty parameter vector, like the §34 manual recipe.
+    prior_base = @slic (; x = [-1.0, 0.0, 1.0, 2.0]) begin
+        mu = x .* 1.0
+        sigma ~ exponential(1.0)
+        y ~ normal(mu, sigma)
+    end
+    prior = StanBlocks.SlicModel(
+        prior_base.model, prior_base.data, prior_base.mod, (:y,))
+    pd = stan_descriptor(prior; name = :prior_predict_exec)
+    pprob = stan_execute(pd, :instantiate)
+    @test LogDensityProblems.dimension(pprob) == 0
+    ppred = stan_execute(pd, :predict; problem = pprob, draws = Float64[], seed = 5)
+    @test keys(ppred) == (:y_gen,)
+    @test length(ppred.y_gen) == 4
+    @test all(isfinite, ppred.y_gen)
 end
