@@ -1947,6 +1947,11 @@ end
 
 _plate_cell_shape(T, name) = begin
     stan_ndim(T) == 0 && return :scalar
+    # A sampled 1-D int cell (a per-cell integer response) collects to a Stan
+    # `array[outer…, K] int`, indexed by its plate axes as a whole element.
+    # Deterministic int cells (findall/boolean-mask index arrays) never reach
+    # here — the loop core drops them from promotion (snag plate-cell-int).
+    center_type(T) === types.int && stan_ndim(T) == 1 && return :int_array
     # A NATIVE-constrained matrix family (cholesky_factor_corr/cholesky_factor_cov/
     # corr_matrix/cov_matrix) carries ONE size parameter for its K×K value, so its
     # type shape is 1-D and the collected form declares exactly like a constrained
@@ -1970,7 +1975,7 @@ _plate_cell_shape(T, name) = begin
     end
     error(
         "plate: unsupported per-cell type `", sigtype(T), "` for `", name,
-        "` — scalar, vector[K], or array[T] vector[K] only (MVP)."
+        "` — scalar, vector[K], int[K], or array[T] vector[K] only (MVP)."
     )
 end
 
@@ -1985,15 +1990,15 @@ _plate_depends_on(x::CanonicalExpr, idxs) = any(a -> _plate_depends_on(a, idxs),
 _plate_depends_on(x::Union{Tuple,NamedTuple,AbstractVector}, idxs) =
     any(a -> _plate_depends_on(a, idxs), x)
 _plate_is_ragged_cell(T::StanType, idxs) =
-    center_type(T) <: types.vector && stan_ndim(T) == 1 &&
-    _plate_depends_on(stan_size(T)[1], idxs)
+    stan_ndim(T) == 1 && _plate_depends_on(stan_size(T)[1], idxs) &&
+    (center_type(T) <: types.vector || center_type(T) === types.int)
 
 _plate_ragged_plan(f, T::StanType, outer, idxs, id) = begin
     length(outer) == 1 || error(
-        "plate: ragged vector cells currently require a one-dimensional `outer`; ",
+        "plate: ragged vector/int cells currently require a one-dimensional `outer`; ",
         "got $(length(outer)) axes for `$f`."
     )
-    center_type(T) === types.vector || error(
+    (center_type(T) === types.vector || center_type(T) === types.int) || error(
         "plate: ragged constrained cell `$f::$(sigtype(T))` needs the constrained-",
         "parameter transform path and is not represented as unconstrained flat memory. ",
         "Use a plain `vector[K[i]]` cell here, or declare the ragged constrained ",
@@ -2049,6 +2054,11 @@ _plate_outer_decl(f, T::StanType, outer) = begin
         # `transformed parameters` (the plate result copy) it is validate-only.
         ct = center_type(T).name.name
         return Expr(:(::), f, _plate_type_expr(ct, Any[outer...; K]))
+    end
+    if shape === :int_array
+        # `array[outer…, K] int`: outer dims lead (Stan array), the cell width
+        # K trails. A sampled per-cell integer response (snag omitted-integer).
+        return Expr(:(::), f, _plate_type_expr(:int, Any[outer...; K]))
     end
     length(outer) == 1 && return Expr(:(::), f, _plate_type_expr(:matrix, Any[K, outer[1]]))
     sizes = Any[outer[2:end]...; K; outer[1]]
@@ -2165,8 +2175,9 @@ _plate_cell_index(f, T::StanType, idxs) = begin
     end
     # A native-constrained `array[N…] <ct>[K]` cell is indexed by its plate axes
     # as a whole element (`cell[g]`); the plain-vector matrix packing takes a
-    # column (`cell[:, g]`) instead.
-    shape in (:constrained_vector, :constrained_matrix, :array_vector) &&
+    # column (`cell[:, g]`) instead. A fixed `array[N…] int[K]` cell likewise
+    # reads back as a whole element.
+    shape in (:constrained_vector, :constrained_matrix, :array_vector, :int_array) &&
         return Expr(:ref, f, idxs...)
     indices = Any[idxs[2:end]...; Symbol(":"); idxs[1]]
     Expr(:ref, f, indices...)
@@ -2548,8 +2559,10 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
 # re-traced under the explicit plate context that maps each cell name to
 # its outer array slot. VERIFIED contract boundary (BRM Complete-PLATE snag,
 # 2026-07-16) — consumers must not assume more than this is owned:
-#   • Cell VALUES: scalar or 1-D `vector[K]` (`_plate_cell_shape`, l.1052);
-#     `ndim≥2`/matrix cells error. A NATIVE-constrained 1-D vector center
+#   • Cell VALUES: scalar, 1-D `vector[K]`, or a SAMPLED 1-D `int[K]`
+#     (`_plate_cell_shape`); `ndim≥2`/matrix cells error, as does an int-array
+#     plate RESULT (sampled int SIDE cells promote; snag omitted-integer).
+#     A NATIVE-constrained 1-D vector center
 #     (simplex/ordered/positive_ordered, fixed `K`) IS carried now: it emits a
 #     Stan `array[N…] <ct>[K]` parameter (`:constrained_vector`) so Stan applies
 #     the per-cell constraint transform + jacobian; a plain `vector[K]` keeps the
@@ -2563,10 +2576,10 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
 #     stratified correlated floors): same `array[N…] <ct>[K]` promotion as
 #     constrained vectors. The two-size `cholesky_factor_corr[m, n]`
 #     matrix-of-matrices form still rejects — declare those at model scope.
-#   • RAGGED cells: 1-D plain-vector with a DATA-computable per-cell length only
-#     (`_plate_is_ragged_cell` / `_plate_ragged_plan`). N-D/arbitrary raggedness
-#     and ragged CONSTRAINED cells (varying-`K` simplex/…) are rejected — Stan
-#     cannot declare `array[N] simplex[K[g]]`.
+#   • RAGGED cells: 1-D plain-vector or sampled-`int` with a DATA-computable
+#     per-cell length only (`_plate_is_ragged_cell` / `_plate_ragged_plan`).
+#     N-D/arbitrary raggedness and ragged CONSTRAINED cells (varying-`K`
+#     simplex/…) are rejected — Stan cannot declare `array[N] simplex[K[g]]`.
 #   • Per-cell LIKELIHOOD: the pointwise DENSITY (lpdf/lpmf) loop is compiler-owned
 #     — an indexed data-LHS `obs[i] ~ dist(...)` routes to the model block — and a
 #     cv-flipped per-cell PARAMETER redraws in GQ (`_indexed_rng_assignment`).
@@ -2752,22 +2765,40 @@ _forward_loop_core!(;
         rv_ct === nothing ? discovered.ret_type :
         _plate_resolve_cell_type(rv_ct, discovered.ret_type, outer_dims, rv; info)
 
-    # An `array[] int` cell-local is an EPHEMERAL per-cell INDEX array — a
-    # `findall`/boolean-mask result such as an explicit `idx = findall(c .== 1)`, or
-    # the index `y[c .== 1]` lowers to. It is NEVER collected across cells (its length
-    # is `sum(mask)`, inherently ragged, and an int-array cell OUTPUT is unsupported
-    # anyway), so it must NOT become an outer collection. It also cannot survive as a
-    # loop-local: `distribute!` duplicates the plate loop into a transformed-data copy
-    # (where the data-derived index is computed) and a model copy (where the obs uses
-    # it), and a loop-local does not cross between those scopes (stanc "Identifier not
-    # in scope"). So drop it from the promoted set and INLINE its defining `name = rhs`
-    # into every use, recomputing the index in whichever block routes the use. The
-    # boolean-mask SUGAR (`y[c .== 1]`) has no source binding to inline — its `findall`
-    # is kept inline inside a plate by `expand_inline_or_trace` (builtin.jl) for the
-    # same reason — so here we only drop its discovered `boolmask_idx_*` entry. (Snag
+    # An int-array plate RESULT stays unsupported (MVP): sampled int SIDE cells
+    # promote, but collecting the loop's own return as an int array has no
+    # outer representation yet. Refuse loudly rather than emitting it.
+    if rv !== nothing && rv_type isa StanType &&
+            center_type(rv_type) <: types.int && stan_ndim(rv_type) >= 1
+        error("plate: unsupported per-cell type `", sigtype(rv_type), "` for `", rv,
+            "` — a plate cannot collect an int-array result (MVP); collect a ",
+            "scalar or vector cell, or declare the array at model scope.")
+    end
+
+    # A DETERMINISTIC (`=`-defined, `decl_role != :sampled`) `array[] int`
+    # cell-local is an EPHEMERAL per-cell INDEX array — a `findall`/boolean-mask
+    # result such as an explicit `idx = findall(c .== 1)`, or the index
+    # `y[c .== 1]` lowers to. It is NEVER collected across cells (its length is
+    # `sum(mask)`, inherently ragged), so it must NOT become an outer collection.
+    # It also cannot survive as a loop-local: `distribute!` duplicates the plate
+    # loop into a transformed-data copy (where the data-derived index is computed)
+    # and a model copy (where the obs uses it), and a loop-local does not cross
+    # between those scopes (stanc "Identifier not in scope"). So drop it from the
+    # promoted set and INLINE its defining `name = rhs` into every use,
+    # recomputing the index in whichever block routes the use. The boolean-mask
+    # SUGAR (`y[c .== 1]`) has no source binding to inline — its `findall` is kept
+    # inline inside a plate by `expand_inline_or_trace` (builtin.jl) for the same
+    # reason — so here we only drop its discovered `boolmask_idx_*` entry. (Snag
     # plate-cell-int: a per-cell index array feeding cmt-keyed do-block obs.)
+    #
+    # A SAMPLED (`~`-defined) `int[K]` cell is NOT an index array — it is a
+    # per-cell integer RESPONSE (an omitted response column in a kernel plate).
+    # It stays in the promoted set and collects to an outer `array[N…] int[K]`
+    # (fixed width) or a ragged flat-memory carrier (varying width), exactly like
+    # a continuous response cell. (Snag omitted-integer: Bruno TGI prior.)
     inline_int_names = Set{Symbol}(
-        f for (f, T) in fresh if center_type(T) <: types.int && stan_ndim(T) >= 1
+        f for (f, T) in fresh if center_type(T) <: types.int && stan_ndim(T) >= 1 &&
+            !(center_type(T) === types.int && _decl_role(T) === :sampled)
     )
     if !isempty(inline_int_names)
         fresh = Pair{Symbol,Any}[p for p in fresh if !(p.first in inline_int_names)]
@@ -2841,10 +2872,16 @@ _forward_loop_core!(;
     # plate's own `info` scope and indexed by the raw loop index; hoisting them out
     # of a called submodel (parent-scope carriers + flattened index) is not wired
     # yet. Fixed `vector[K]` and scalar cells ARE supported inside a submodel.
-    (info isa SubModel && !isempty(ragged_plans)) && error(
-        "plate: ragged vector cells inside a called @slic submodel are not supported yet — ",
-        "use a fixed `vector[K]` cell here, or lift the ragged plate to model scope."
-    )
+    if info isa SubModel && !isempty(ragged_plans)
+        # Name the actual ragged centers so the refusal stays precise for both
+        # the vector shape the contract pins and the newer int shape.
+        kinds = sort!(unique!([center_type(plan.cell_type) === types.int ? "int" : "vector"
+                               for plan in values(ragged_plans)]))
+        error(
+            "plate: ragged ", join(kinds, "/"), " cells inside a called @slic submodel are not supported yet — ",
+            "use a fixed `vector[K]` cell here, or lift the ragged plate to model scope."
+        )
+    end
     cell_accessors = Dict{Symbol,Any}(
         f => plan.accessor for (f, plan) in ragged_plans if haskey(cell_types, f)
     )
@@ -2897,7 +2934,11 @@ _forward_loop_core!(;
         for plan in values(ragged_plans)
             emitted = forward!(canonical(:($(plan.ends) = cumulative_sum($(plan.lens)))); info)
             pending !== nothing && push!(pending, emitted)
-            emitted = forward!(canonical(:($(plan.mem) :: vector[sum($(plan.lens))])); info)
+            # Flat storage follows the cell center: `vector[total]` for a
+            # continuous cell, `array[total] int` for a sampled integer cell.
+            mem_ct = center_type(plan.cell_type) === types.int ? :int : :vector
+            mem_decl = Expr(:(::), plan.mem, Expr(:ref, mem_ct, :(sum($(plan.lens)))))
+            emitted = forward!(canonical(mem_decl); info)
             pending !== nothing && push!(pending, emitted)
             # Retain the carrier's OWN data-computable layout recipe for public
             # descriptor reflection.  The logical RaggedVector binding below

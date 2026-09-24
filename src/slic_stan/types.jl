@@ -555,6 +555,7 @@ qual(x::StanExpr) = qual(type(x))
 qual(x::StanType) = get(info(x), :qual, :undefined)
 _is_fresh_decl(x::StanExpr) = get(info(type(x)), :fresh_decl, false)
 _decl_role(x::StanExpr) = get(info(type(x)), :decl_role, :none)
+_decl_role(x::StanType) = get(info(x), :decl_role, :none)
 lqual(x) = :undefined
 lqual(x::StanExpr) = lqual(type(x))
 lqual(x::StanType) = get(info(x), :lqual, :undefined) 
