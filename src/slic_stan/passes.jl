@@ -370,11 +370,27 @@ distribution_blocks(x::SamplingExpr; info) = if qual(x) == :data
         (:model, :generated_quantities)
     end
 elseif qual(x) == :parameter
+    validate_sampled_rhs(x.args...; info)
     # A plate producer emits the outer declaration separately; an indexed
     # sampling statement contributes only the model-side prior/likelihood.
     expr(x.args[1]) isa Symbol ? (:parameters, :model) : (:model,)
 else
     (:generated_quantities, )
+end
+validate_sampled_rhs(lhs, rhs; info) = nothing
+# A ragged twin aliases the completed flat draw, after its group loop. Keeping
+# this marker inert during backward analysis avoids making a latent response
+# likelihood-relevant merely because a predictive alias was requested.
+backward!(x::CanonicalExpr{typeof(_unbound_ragged_twin)}; info) = x
+distribute!(x::CanonicalExpr{typeof(_unbound_ragged_twin)}; info) = begin
+    name, memory = x.args
+    memory = info[expr(memory)]
+    qual(memory) == :quantities || return nothing
+    _assert_twin_free(name, "_gen", info)
+    gen = Symbol(name, :_gen)
+    twin = StanExpr(gen, remake(type(memory); value=missing))
+    info[gen] = twin
+    push!(block(info, :generated_quantities), CanonicalExpr(:(=), twin, memory); info)
 end
 distribution_blocks(x::ReturnExpr; info) = (:generated_quantities,)
 distribution_blocks(x::DocumentExpr; info) = distribution_blocks(x.args[2]; info)

@@ -1297,6 +1297,8 @@ validate_sampling_rhs(lhs, rhs; info) = nothing
 # the scalar autotype unchanged — the author must annotate, exactly as before.
 _broadcast_fresh_sample_type(at, rhs) = begin
     stan_ndim(at) == 0 || return at
+    hinted = _distribution_sample_shape(at, rhs)
+    stan_ndim(hinted) == 0 || return hinted
     ct0 = center_type(at)
     draw = try
         token = StanExpr(ct0, StanType(types.tokenof{ct0}, (); value=ct0, qual=:data))
@@ -1311,10 +1313,17 @@ _broadcast_fresh_sample_type(at, rhs) = begin
         (types.real, types.vector, types.matrix)[1 + length(sz)] : dct
     StanType(newct, sz, info(at))
 end
+# Distribution combinators may carry the observation axis in their controls
+# (for example a vector censoring threshold with scalar location and scale).
+_distribution_sample_shape(at, rhs) = at
 forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args
     promoted = _plate_promoted_lhs(name; info)
     promoted === nothing || return _forward_plate_sampling!(x, name, promoted, rhs; info)
+    if !(name in keys(info)) && name in _model_observations(info)
+        ragged = _unbound_ragged_arguments(rhs)
+        isempty(ragged) || return _forward_unbound_ragged!(name, rhs, ragged; info)
+    end
     if name in keys(info)
         q = stan.qual(info[name])
         q == :data || error("Sampling statement `$name ~ ...` has LHS bound to a $q-qualified value — only data-qualified LHS is supported here (submodel kwargs typically refer to caller-provided data).")
@@ -1327,6 +1336,63 @@ forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
     end
     validate_sampling_rhs(info[name], rhs; info)
     remake(x, info[name], rhs)
+end
+# Missing ragged observations have no data LHS to carry their layout. Retained
+# ragged arguments supply that layout; the ordinary certified indexed-sampling
+# path still owns likelihood reachability and prior-only RNG lowering.
+_unbound_ragged_arguments(rhs) = ()
+_unbound_ragged_arguments(rhs::StanExpr{<:CanonicalExpr}) =
+    filter(a -> center_type(a) <: RaggedVector, expr(rhs).args)
+function _unbound_observation_storage end
+function _unbound_ragged_twin end
+forward!(x::CanonicalExpr{typeof(_unbound_observation_storage)}; info) = begin
+    mem, name, prototype, rhs = x.args
+    cons = (; (k => (v isa StanExpr && center_type(v) <: RaggedVector ?
+        forward!(CanonicalExpr(Base.getfield, v, 1); info) : v)
+        for (k, v) in pairs(constraints(autotype(rhs))))...)
+    info[mem] = remake(info[mem]; cons..., unbound_observation=name)
+    prototype === nothing && return nothing
+    original = forward!(CanonicalExpr(Base.getfield, prototype, 1); info)
+    ends = forward!(CanonicalExpr(Base.getfield, prototype, 2); info)
+    key = _base_lhs_symbol(original)
+    layout = key in keys(info) ? get(type(info[key]).info, :ragged_plate_layout, nothing) : nothing
+    info[mem] = remake(info[mem];
+        ragged_observation_ends=ends, ragged_plate_layout=layout)
+    nothing
+end
+forward!(x::CanonicalExpr{typeof(_unbound_ragged_twin)}; info) =
+    CanonicalExpr(_unbound_ragged_twin, x.args[1], forward!(x.args[2]; info))
+_forward_unbound_ragged!(name, rhs, ragged; info) = begin
+    prototype = first(ragged)
+    backing = forward!(CanonicalExpr(Base.getfield, prototype, 1); info)
+    ends = forward!(CanonicalExpr(Base.getfield, prototype, 2); info)
+    qual(ends) == :data || error("Declared ragged observation `", name,
+        "` needs data-computable group boundaries.")
+    id = _next_inline_id(info)
+    mem = Symbol(name, :__obs_mem_, id)
+    g = Symbol(:g, :__obs_, id)
+    group_rhs = forward!(_ragged_group_rhs(expr(rhs), 1); info)
+    group_type = _broadcast_fresh_sample_type(autotype(group_rhs), group_rhs)
+    scalar_group = stan_ndim(group_type) == 0
+    ct = _probability_kind(_ragged_base_family(expr(rhs))) === :lpmf ? :int : :vector
+    outer = only(stan_size(ends))
+    n = scalar_group ? outer : only(stan_size(backing))
+    grouped = _ragged_group_rhs(expr(rhs), g)
+    index = scalar_group ? g : :(ragged_start($ends, $g):ragged_end($ends, $g))
+    result = scalar_group ? mem : :(RaggedVector($mem, $ends))
+    stmts = Any[
+        :($mem::$ct[$n]),
+        CanonicalExpr(_unbound_observation_storage, mem, name,
+            scalar_group ? nothing : prototype, rhs),
+        :(for $g in 1:$outer
+            $mem[$index] ~ $grouped
+        end),
+        :($name = $result),
+        CanonicalExpr(_unbound_ragged_twin, name, mem),
+    ]
+    # Return the complete expansion: a SlicModel can contain one statement
+    # without an enclosing block/pending-statements buffer.
+    forward!(canonical(Expr(:block, stmts...)); info)
 end
 forward!(x::SamplingExpr{Symbol,<:SlicModel}; info) = begin
     name, rhs = x.args

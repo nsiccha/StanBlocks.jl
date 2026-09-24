@@ -192,8 +192,8 @@ _distribution_hof_family(spec, rhs::CanonicalExpr) = begin
     )
     _family_function(rhs.args[spec.family_arg])
 end
-_validate_distribution_hof(spec, lhs, rhs::CanonicalExpr) = begin
-    if spec.requires_data_lhs && qual(lhs) != :data
+_validate_distribution_hof(spec, lhs, rhs::CanonicalExpr; unbound=false) = begin
+    if spec.requires_data_lhs && qual(lhs) != :data && !unbound
         error(
             "$(spec.name): observations must be data-qualified; $(spec.name) priors are not supported"
         )
@@ -250,11 +250,39 @@ _validate_parameter_constraint_scope(lhs) = begin
 end
 
 validate_sampling_rhs(lhs, rhs::StanExpr{<:CanonicalExpr}; info) = begin
-    _validate_parameter_constraint_scope(lhs)
+    unbound = _declared_observation_lhs(lhs; info)
+    unbound || _validate_parameter_constraint_scope(lhs)
     canonical = expr(rhs)
     spec = _distribution_hof(head(canonical))
-    isnothing(spec) || _validate_distribution_hof(spec, lhs, canonical)
+    isnothing(spec) || _validate_distribution_hof(spec, lhs, canonical; unbound)
     nothing
+end
+_declared_observation_lhs(lhs; info) = begin
+    key = _base_lhs_symbol(lhs)
+    key in _model_observations(info) && return true
+    key in keys(info) && get(type(info[key]).info, :unbound_observation, nothing) !== nothing
+end
+# Forward tracing cannot yet know whether a declared missing response is a draw
+# or a latent parameter. Recheck at block placement, after activity analysis.
+validate_sampled_rhs(lhs, rhs::StanExpr{<:CanonicalExpr}; info) = begin
+    _validate_parameter_constraint_scope(lhs)
+    spec = _distribution_hof(head(expr(rhs)))
+    isnothing(spec) || _validate_distribution_hof(spec, lhs, expr(rhs))
+    nothing
+end
+_distribution_sample_shape(at, rhs::StanExpr{<:CanonicalExpr}) = begin
+    spec = _distribution_hof(head(expr(rhs)))
+    isnothing(spec) && return at
+    # Likelihood weights do not introduce a predictive sample axis. The
+    # weighted RNG delegates to the base family and already exposes its shape.
+    spec.name === :weighted && return at
+    shaped = filter(a -> stan_ndim(a) > 0, expr(rhs).args)
+    isempty(shaped) && return at
+    shape = stan_size(first(shaped))
+    length(shape) == 1 || return at
+    ct = _probability_kind(_distribution_hof_family(spec, expr(rhs))) === :lpmf ?
+        types.int : types.vector
+    StanType(ct, shape, info(at))
 end
 _probability_kind(family) = begin
     probability = lpxf_expr(family)

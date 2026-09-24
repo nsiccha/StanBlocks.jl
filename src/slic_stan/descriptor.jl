@@ -494,7 +494,16 @@ end
 
 _output_segments(m::StanModel, name::Symbol, source, data) = begin
     observed = _output_segments(source, data)
-    observed === nothing ? _ragged_plate_segments(m, name, data) : observed
+    observed === nothing || return observed
+    layout = _ragged_plate_segments(m, name, data)
+    layout === nothing || return layout
+    haskey(vars(m), name) || return nothing
+    ends = get(type(vars(m)[name]).info, :ragged_observation_ends, nothing)
+    ends === nothing && return nothing
+    value = _plate_layout_value(ends, Dict{Symbol,Any}(pairs(data)), get(meta(m), :mod, @__MODULE__))
+    value isa AbstractVector{<:Integer} || error(
+        "stan_descriptor: ragged observation `", source, "` has non-integer group boundaries.")
+    collect(Int, value)
 end
 
 _block_outputs(m::StanModel, blockname::Symbol, kind::Symbol, data) = begin
