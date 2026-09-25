@@ -1037,6 +1037,14 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
         # (`acc = acc + xi`) and scalar loop state (`t = t + dt` inside a `while`) both
         # take this path. `@slic` model/submodel scope keeps single-assignment
         # discipline via the assert below.
+        # A reassigned local has no single defining expression, so a result
+        # size routed through it cannot be expressed in the UDF's arguments —
+        # tombstone any inference-trace def (functions.jl `forward_return!`
+        # refuses loudly on it). Only fresh-trace locals tombstone: an
+        # argument rebinding keeps its pre-trace (caller-valid) resolution.
+        let defs = _return_size_defs(info)
+            defs === nothing || (haskey(defs, name) && (defs[name] = nothing))
+        end
         return _trace_stan_expr(CanonicalExpr(Symbol(".="), info[name], rhs), info)
     end
     @assert name ∉ keys(info)
@@ -1048,6 +1056,13 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     # distinction.
     info[name] = StanExpr(name, remake(type(rhs); value=missing, decl_role=:derived))
     @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
+    # During a UDF return-type inference trace, record the single defining
+    # expression so a result size routed through this local can be
+    # substituted back to the arguments before it escapes to the caller
+    # (functions.jl `forward_return!`; snag `deffun-result-si-9d9eaab2`).
+    let defs = _return_size_defs(info)
+        defs === nothing || (defs[name] = rhs)
+    end
     rv = remake(x, info[name], rhs)
     info[name] = StanExpr(name, remake(type(rhs), [
         maybe_lazy_size(name, i, sizei; info)

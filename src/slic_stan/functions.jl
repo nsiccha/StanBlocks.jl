@@ -907,17 +907,153 @@ begin
 
     hasvararg(args) = length(args) > 0 && Meta.isexpr(args[end], :(...))
     maybedoc(x::AbstractString) = length(strip(x)) == 0 ? "" : strip(replace("\n" * strip(x), "\n"=>"\n// ")) * "\n"
-    forward_return!(x; info) = begin
+    # The collector `forward!(::AssignmentExpr)` (forward.jl) records
+    # `name => traced-RHS` into while a return-type inference trace runs, so
+    # body-local symbols can be resolved out of the inferred result size
+    # below. Absent outside inference (plain `get` default); model infos
+    # never carry it.
+    _return_size_defs(::Union{StanModel,SubModel}) = nothing
+    _return_size_defs(info) = get(info, :__return_size_defs__, nothing)
+    # An anonymized-arg placeholder (`_arg<tok>_<i>`, functions.jl
+    # `anon_canonical`) survives return-size resolution verbatim — a LATER
+    # `deanon_size` substitutes it against the real call args (passes.jl).
+    _is_return_size_placeholder(s::Symbol) = begin
+        es = string(s)
+        (length(es) > 5 && startswith(es, "_arg")) || return false
+        body = es[5:end]
+        us = findfirst(==('_'), body)
+        us === nothing && return false
+        tok, idx = body[1:us-1], body[us+1:end]
+        !isempty(tok) && !isempty(idx) && all(isdigit, tok) && all(isdigit, idx)
+    end
+    _throw_return_size_local(s::Symbol, fname, reason::Symbol) = error(
+        "@deffun ($fname): inferred result size references function-local `$s`, ",
+        reason === :reassigned ?
+            "which is reassigned in the body, so it cannot be expressed in the function's arguments. " :
+            "which cannot be expressed in the function's arguments (it is bound by a loop, a declaration, or an inner scope — not by a plain top-level `=` assignment). ",
+        "Spell the size in terms of the arguments instead of routing it through `$s`, or annotate the return type explicitly."
+    )
+    _resolve_return_size(s, table, fname, seen) = s
+    _resolve_return_size(s::StanExpr, table, fname, seen) = begin
+        e = expr(s)
+        ne = _resolve_return_size(e, table, fname, seen)
+        ne === e ? s : StanExpr(ne, type(s))
+    end
+    _resolve_return_size(e::Symbol, table, fname, seen) = begin
+        _is_return_size_placeholder(e) && return e
+        haskey(table, e) || _throw_return_size_local(e, fname, :unbound)
+        d = table[e]
+        d === nothing && _throw_return_size_local(e, fname, :reassigned)
+        ed = expr(d)
+        # A self-named binding (`StanExpr(:op_read_idx)` for key
+        # `:op_read_idx`) is already in emission form: the fundef path's
+        # anonymized args, or a caller variable that happens to share the
+        # callee's arg name — in scope wherever the size lands either way.
+        # Terminal, not a cycle.
+        ed === e && return e
+        e in seen && _throw_return_size_local(e, fname, :unbound)
+        _resolve_return_size(ed, table, fname, (seen..., e))
+    end
+    _resolve_return_size(e::CanonicalExpr, table, fname, seen) = begin
+        new_args = map(a -> _resolve_return_size(a, table, fname, seen), e.args)
+        new_args == e.args ? e : remake(e, new_args...)
+    end
+    _resolve_return_size_arg_types(at, table, fname) = at
+    _resolve_return_size_arg_types(at::Union{Tuple,NamedTuple}, table, fname) =
+        map(t -> _resolve_return_size_type(t, table, fname), at)
+    # Every bare Symbol reachable in a pre-trace binding's VALUE (the arg's
+    # expression and its type's sizes, e.g. a caller data size var `y_n` in
+    # `vector[y_n]`) is already caller-valid emission: seed it as a
+    # self-named terminal so resolution keeps it verbatim. Keys bind first
+    # (an arg name resolves to its anonymized value, never to itself), and
+    # the body's own defs overlay last (body scope is innermost).
+    _return_size_harvest!(out::Set{Symbol}, ::Any) = out
+    _return_size_harvest!(out::Set{Symbol}, s::Symbol) = push!(out, s)
+    _return_size_harvest!(out::Set{Symbol}, s::StanExpr) = begin
+        _return_size_harvest!(out, expr(s))
+        _return_size_harvest!(out, type(s))
+    end
+    _return_size_harvest!(out::Set{Symbol}, e::CanonicalExpr) = begin
+        foreach(a -> _return_size_harvest!(out, a), e.args)
+        out
+    end
+    _return_size_harvest!(out::Set{Symbol}, t::StanType) = begin
+        foreach(s -> _return_size_harvest!(out, s), stan_size(t))
+        at = get(info(t), :arg_types, nothing)
+        at === nothing || foreach(x -> _return_size_harvest!(out, x), at)
+        out
+    end
+    # A vararg pack binds as a TUPLE of (self-named) element StanExprs, both
+    # via plain destructure (tracetype path: placeholder/caller exprs) and
+    # via `anon_expr` (fundef path: `args1`, `args2`, …). Recurse so the
+    # elements' symbols seed as terminals; the pack itself never binds as a
+    # key (a size naming the whole pack has no Stan meaning).
+    _return_size_harvest!(out::Set{Symbol}, t::Union{Tuple,NamedTuple,AbstractVector}) = begin
+        foreach(x -> _return_size_harvest!(out, x), t)
+        out
+    end
+    _return_size_harvest!(out::Set{Symbol}, e::Expr) = begin
+        foreach(x -> _return_size_harvest!(out, x), e.args)
+        out
+    end
+    # Mirror of `deanon_type` (passes.jl): rewrite the sizes of an inferred
+    # return type through the resolution table instead of the call args.
+    _resolve_return_size_type(tt::StanType, table, fname) = begin
+        sz = stan_size(tt)
+        nsz = map(s -> _resolve_return_size(s, table, fname, ()), sz)
+        at = get(info(tt), :arg_types, nothing)
+        nat = _resolve_return_size_arg_types(at, table, fname)
+        sz == nsz && nat === at && return tt
+        StanType(center_type(tt), nsz; [
+            k => (k === :arg_types ? nat : v) for (k, v) in pairs(info(tt)) if k != :size
+        ]...)
+    end
+    forward_return!(x; info) = forward_return!(x, "?"; info)
+    forward_return!(x, fname::AbstractString; info) = begin
         # Isolate any inline-call pending statements from this throwaway
         # type-inference trace — they'd otherwise leak into the caller's
         # block (for non-inline UDFs whose tracetype evaluates an inlined
         # call as part of return-type inference).
         info = OrderedDict{Symbol,Any}(pairs(info))
         _trace_context(info) === nothing && _attach_trace_context!(info, nothing)
-        _with_trace_state(info, :inline_pending, Any[]) do
+        # The inferred return type escapes to the CALLER, where the body's
+        # locals are out of scope — but body locals bind as bare Symbols
+        # (`info[name] = StanExpr(name, …)`, forward.jl), so a size spelled
+        # through a local (`n_reads = max(idx); rep_vector(0., 2 * n_reads)`)
+        # would escape verbatim and `deanon_size` (which only rewrites
+        # `_arg<tok>_<i>` placeholders) lets it through: the caller then
+        # emits `vector[(2 * n_reads)]` with `n_reads` unbound, which
+        # `transpiles` accepts and stanc rejects (`Identifier "n_reads" not
+        # in scope`), and a plate reads the index-free size as cell-invariant
+        # and promotes a FIXED `matrix[K, N]` instead of ragged memory (snag
+        # `deffun-result-si-9d9eaab2`). Resolve every size symbol through the
+        # pre-trace bindings (args/size names) overlaid with the body's own
+        # `name => RHS` defs, plus every bare symbol already reachable in the
+        # pre-trace values (caller size vars like `y_n` in `vector[y_n]`,
+        # kept verbatim), so the escaping size is always expressed in
+        # arguments; refuse loudly when it cannot be.
+        # The table is built FRESH here (overwriting any inherited collector):
+        # a nested UDF call's own inference trace must not record into — or
+        # resolve through — this table.
+        table = OrderedDict{Symbol,Any}()
+        caller_syms = Set{Symbol}()
+        for (k, v) in pairs(info)
+            v isa StanExpr && (table[k] = v)
+            _return_size_harvest!(caller_syms, v)
+        end
+        for s in caller_syms
+            # The dummy type is never read: self-named entries terminate
+            # resolution before it is consulted.
+            haskey(table, s) || (table[s] = StanExpr(s, StanType(types.int)))
+        end
+        defs = OrderedDict{Symbol,Any}()
+        info[:__return_size_defs__] = defs
+        rv = _with_trace_state(info, :inline_pending, Any[]) do
             forward!(x; info)
             info[RV_NAME]
         end
+        merge!(table, defs)
+        StanExpr(expr(rv), _resolve_return_size_type(type(rv), table, fname))
     end
     # Walk a UDF body looking for forms StanBlocks deliberately does not
     # support inside `@deffun` definitions: sampling (`~`) and `target +=`
@@ -1793,7 +1929,7 @@ begin
                 body = ensure_xreturn(body)
             end
             sig_rv = if rv == :anything || _is_computed_ret_type(rv)
-                rv_expr = :($forward_return!($(canonical(body)); info).type)
+                rv_expr = :($forward_return!($(canonical(body)), $(string(f)); info).type)
                 :($rv_expr)
             else
                 make_stan_type(rv)

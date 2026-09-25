@@ -11877,3 +11877,145 @@ end
     @test length(ppred.y_gen) == 4
     @test all(isfinite, ppred.y_gen)
 end
+
+"""
+Verify `slic: deffun result size routed through a function-local`.
+
+Snag `deffun-result-si-9d9eaab2` (BRM `linear_pk_read_locs_auc_cell`): a
+`@deffun` whose result size is spelled through a FUNCTION-LOCAL int
+(`n_reads = max(op_read_idx); reads = rep_vector(0., 2 * n_reads)`)
+transpiled clean but emitted invalid Stan — the local's bare name escaped
+into the caller's storage declaration (`matrix[(2 * n_reads), N]`, which
+stanc rejects with `Identifier "n_reads" not in scope`), and the plate read
+the index-free size as cell-invariant so it promoted a FIXED `matrix[K, N]`
+instead of ragged memory. The inferred return type now substitutes each
+body-local def back to the arguments before it escapes (so the plate sees
+exactly what the arg-spelled sibling spells), and refuses loudly — naming
+the local and the function — when a size cannot be expressed in arguments
+(a reassigned/loop-carried local).
+"""
+@testitem "slic: deffun result size routed through a function-local" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    @deffun begin
+        si_read_cell(op_read_idx::int[n_ops], x::vector[n_ops]) = begin
+            n_reads = max(op_read_idx)
+            reads = rep_vector(0., 2 * n_reads)
+            for j in 1:n_ops
+                reads[n_reads + op_read_idx[j]] = x[j]
+            end
+            reads
+        end
+        si_read_cell_direct(op_read_idx::int[n_ops], x::vector[n_ops]) = begin
+            n_reads = max(op_read_idx)
+            reads = rep_vector(0., 2 * max(op_read_idx))
+            for j in 1:n_ops
+                reads[n_reads + op_read_idx[j]] = x[j]
+            end
+            reads
+        end
+        si_read_cell_chain(op_read_idx::int[n_ops], x::vector[n_ops]) = begin
+            n_reads = max(op_read_idx)
+            m = 2 * n_reads
+            reads = rep_vector(0., m)
+            for j in 1:n_ops
+                reads[n_reads + op_read_idx[j]] = x[j]
+            end
+            reads
+        end
+        si_read_cell_reassign(op_read_idx::int[n_ops], x::vector[n_ops]) = begin
+            a = 1
+            for j in 1:n_ops
+                a = a + 1
+            end
+            y = rep_vector(0., a)
+            y
+        end
+    end
+
+    D = (; read_idx = [[1, 2], [2, 1, 2]], xs = [[1.0, 2.0], [3.0, 1.0, 2.0]])
+    local_model = @slic (; D...) begin
+        pk_reads ~ plate(read_idx, xs; outer = length(read_idx)) do ridx, xv
+            pr = si_read_cell(ridx, xv)
+            pr
+        end
+    end
+    @test transpiles(local_model)
+    @test stanc_compiles(local_model)
+    code = stan_code(local_model)
+    # The plate sizes storage from the local's DEFINITION (`2 * max(...)`
+    # over the cell slice) and promotes ragged memory — never the bare
+    # local, never a fixed matrix.
+    @test occursin(r"__pl_len_1\[plate_i\w+\] = \(2 \* max\(read_idx", code)
+    @test occursin(
+        r"vector\[sum\(pk_reads_pr__pl_len_1\)\] pk_reads_pr__pl_mem_1", code,
+    )
+    td = stan_block(code, "transformed data")
+    @test !occursin("matrix[", td)
+    @test !occursin("n_reads", td)
+    # The emitted Stan function itself still uses the local — substitution
+    # applies to the escaping result size, not to the function body.
+    fns = stan_block(code, "functions")
+    @test occursin("int n_reads = max(op_read_idx);", fns)
+    @test occursin("vector[(2 * n_reads)] reads", fns)
+
+    # The local-spelled cell emits byte-identical plate storage to the
+    # arg-spelled sibling (modulo the UDF name): the fix converges on the
+    # documented workaround, it does not invent a second lowering.
+    sib_model = @slic (; D...) begin
+        pk_reads ~ plate(read_idx, xs; outer = length(read_idx)) do ridx, xv
+            pr = si_read_cell_direct(ridx, xv)
+            pr
+        end
+    end
+    @test transpiles(sib_model)
+    @test stanc_compiles(sib_model)
+    sib_td = stan_block(stan_code(sib_model), "transformed data")
+    @test replace(td, "si_read_cell" => "READCELL") ==
+          replace(sib_td, "si_read_cell_direct" => "READCELL")
+
+    # A size routed through a CHAIN of locals resolves transitively.
+    chain_model = @slic (; D...) begin
+        pk_reads ~ plate(read_idx, xs; outer = length(read_idx)) do ridx, xv
+            pr = si_read_cell_chain(ridx, xv)
+            pr
+        end
+    end
+    @test transpiles(chain_model)
+    @test stanc_compiles(chain_model)
+    @test occursin(r"__pl_len_1\[plate_i\w+\] = \(2 \* max\(read_idx", stan_code(chain_model))
+
+    # The same substitution applies outside a plate: a top-level caller's
+    # declaration carries the arg-expressed size.
+    top_model = @slic (; ridx = [1, 2], xv = [1.0, 2.0]) begin
+        pr = si_read_cell(ridx, xv)
+        s = sum(pr)
+        s ~ normal(0.0, 1.0)
+    end
+    @test transpiles(top_model)
+    @test stanc_compiles(top_model)
+    @test occursin("vector[(2 * max(ridx))] pr = si_read_cell(ridx, xv);", stan_code(top_model))
+
+    # A size routed through a REASSIGNED local cannot be expressed in the
+    # arguments: refuse loudly, naming the local and the function.
+    re_model = @slic (; D...) begin
+        pk_reads ~ plate(read_idx, xs; outer = length(read_idx)) do ridx, xv
+            pr = si_read_cell_reassign(ridx, xv)
+            pr
+        end
+    end
+    threw, msg = let
+        t = false
+        m = ""
+        try
+            stan_code(re_model)
+        catch e
+            t = true
+            m = sprint(showerror, e)
+        end
+        t, m
+    end
+    @test threw
+    @test occursin("function-local `a`", msg)
+    @test occursin("si_read_cell_reassign", msg)
+end
