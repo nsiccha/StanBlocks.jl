@@ -2176,17 +2176,20 @@ func_name(x::Expr) = if x.head == :.
 else
     error("func_name(::Expr) only handles `:.` heads (module-qualified refs), got head `$(x.head)` in `$x`.")
 end
+# Julia permits a leading underscore in a function binding; Stan does not.
+# Escape the receiver before suffix/specialisation mangling so definitions,
+# calls, descriptors, and dependency signatures all share the same legal name.
+_stan_callable_name(name::AbstractString) = startswith(name, "_") ? "u" * name : name
 func_name(f, args) = begin
     # Stan gives probability and RNG suffixes semantic meaning, so a UDF's
     # suffix must remain the final component after HOF-specialisation fragments.
     # Inspect the receiver alone: scanning the combined receiver + arguments
     # mistakes a function-valued argument such as `normal_lpdf` for the outer
     # function's suffix and makes call-site and definition names disagree.
-    receiver_parts = vcat(func_name(f))
-    receiver = join(receiver_parts, "_")
+    receiver = _stan_callable_name(join(vcat(func_name(f)), "_"))
     suffix_idxs = findfirst(r"_(rng|u?lp(m|d)fs?)$", receiver)
     if isnothing(suffix_idxs)
-        join(vcat(receiver_parts, func_name(args)), "_")
+        join(vcat(receiver, func_name(args)), "_")
     else
         suffix = receiver[suffix_idxs]
         base = receiver[1:suffix_idxs[1]-1]

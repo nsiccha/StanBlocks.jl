@@ -132,7 +132,8 @@ emitter itself prints. It is not reconstructed by parsing generated Stan.
 
 # Fields
 - `name::Symbol` — the exact emitted Stan callable name. This is the stable
-  public lookup key and preserves leading underscores.
+  public lookup key. A Julia binding that starts with `_` is emitted with a
+  leading `u` because Stan identifiers cannot start with an underscore.
 - `binding::Union{Symbol,Nothing}` — the author-side Julia binding when there
   is one. It can differ from `name` when StanBlocks specialises or renames a
   helper; compiler-lifted closures have no author binding and report `nothing`.
