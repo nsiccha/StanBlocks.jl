@@ -214,13 +214,16 @@ blocks that own the declarations, fills, densities, and generated quantities.
 | Lexically captured values | ✅ | Shared across cells; loop-invariant expressions are hoisted when safe |
 | Fresh scalar `~` or `=` binding | ✅ | Collected as a `vector[N]` for one outer axis; additional axes use matrix/array storage |
 | Fixed `vector[K]` binding/result | ✅ | Collected as `matrix[K,N]` for one outer axis; extra axes add Stan array prefixes |
+| Sampled fixed `int[K]` cell binding | ✅ | Sampled (`~`) side bindings collect as `array[N,K] int` for one outer axis; deterministic int cells (findall/boolean-mask index arrays) still inline at each use |
 | Dense `array[T] vector[K]` binding/result | ✅ | Collected as `array[outer...,T] vector[K]`; includes a raw ODE trajectory bound once and consumed inside the cell |
 | Varying-length plain `vector[K[i]]` cell | ✅, narrow | One-dimensional outer shape and data-computable lengths only; represented by flat memory whose descriptor output carries that result/member's own inclusive group ends in `segments` |
+| Varying-length `int[K[i]]` cell | ✅, narrow | One-dimensional outer shape and data-computable lengths only; flat-memory descriptor output carries inclusive group ends in `segments`, exactly like a varying-length vector cell |
 | Fixed native-constrained vector cell | ✅ | `simplex[K]`, `ordered[K]`, and `positive_ordered[K]`; emitted as `array[outer...] <type>[K]` |
 | Shared scalar constraints | ✅ | `lower`, `upper`, `offset`, and `multiplier` are preserved when they do not depend on the cell position |
 | Cell-position-dependent constraint | ❌ | Rejected because the promoted declaration lives outside the loop |
 | Matrix or other higher-rank cell value | ❌ | Declare shared matrices outside the plate; the sole dense rank-2 cell form is `array[T] vector[K]` |
 | Varying-size constrained cell | ❌ | Declare the ragged constrained parameter at model scope, then index it in the plate |
+| Int-array plate result | ❌ | MVP: sampled int side cells promote, but the loop's own return cannot collect as an int array; collect a scalar or vector cell instead |
 | Positional `RaggedVector`, `EachCol`, `EachRow` | ✅ | Each cell receives one ragged group, matrix column, or matrix row |
 | Named/anonymous `@slic` call inside the cell | ✅ | Internal fresh bindings are discovered, namespaced, and promoted per cell |
 | A plate inside a called sub-model | ✅, dense | Scalar and fixed-vector cells work and caller sizes are substituted correctly |
