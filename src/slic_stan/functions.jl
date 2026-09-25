@@ -961,6 +961,28 @@ begin
     _resolve_return_size_arg_types(at, table, fname) = at
     _resolve_return_size_arg_types(at::Union{Tuple,NamedTuple}, table, fname) =
         map(t -> _resolve_return_size_type(t, table, fname), at)
+    # Every bare Symbol reachable in a pre-trace binding's VALUE (the arg's
+    # expression and its type's sizes, e.g. a caller data size var `y_n` in
+    # `vector[y_n]`) is already caller-valid emission: seed it as a
+    # self-named terminal so resolution keeps it verbatim. Keys bind first
+    # (an arg name resolves to its anonymized value, never to itself), and
+    # the body's own defs overlay last (body scope is innermost).
+    _return_size_harvest!(out::Set{Symbol}, ::Any) = out
+    _return_size_harvest!(out::Set{Symbol}, s::Symbol) = push!(out, s)
+    _return_size_harvest!(out::Set{Symbol}, s::StanExpr) = begin
+        _return_size_harvest!(out, expr(s))
+        _return_size_harvest!(out, type(s))
+    end
+    _return_size_harvest!(out::Set{Symbol}, e::CanonicalExpr) = begin
+        foreach(a -> _return_size_harvest!(out, a), e.args)
+        out
+    end
+    _return_size_harvest!(out::Set{Symbol}, t::StanType) = begin
+        foreach(s -> _return_size_harvest!(out, s), stan_size(t))
+        at = get(info(t), :arg_types, nothing)
+        at === nothing || foreach(x -> _return_size_harvest!(out, x), at)
+        out
+    end
     # Mirror of `deanon_type` (passes.jl): rewrite the sizes of an inferred
     # return type through the resolution table instead of the call args.
     _resolve_return_size_type(tt::StanType, table, fname) = begin
@@ -992,15 +1014,26 @@ begin
         # in scope`), and a plate reads the index-free size as cell-invariant
         # and promotes a FIXED `matrix[K, N]` instead of ragged memory (snag
         # `deffun-result-si-9d9eaab2`). Resolve every size symbol through the
-        # pre-trace bindings (args/size names, already caller-valid) overlaid
-        # with the body's own `name => RHS` defs, so the escaping size is
-        # always expressed in arguments; refuse loudly when it cannot be.
+        # pre-trace bindings (args/size names) overlaid with the body's own
+        # `name => RHS` defs, plus every bare symbol already reachable in the
+        # pre-trace values (caller size vars like `y_n` in `vector[y_n]`,
+        # kept verbatim), so the escaping size is always expressed in
+        # arguments; refuse loudly when it cannot be.
         # The table is built FRESH here (overwriting any inherited collector):
         # a nested UDF call's own inference trace must not record into — or
         # resolve through — this table.
         table = OrderedDict{Symbol,Any}()
         for (k, v) in pairs(info)
             v isa StanExpr && (table[k] = v)
+        end
+        caller_syms = Set{Symbol}()
+        for v in values(table)
+            _return_size_harvest!(caller_syms, v)
+        end
+        for s in caller_syms
+            # The dummy type is never read: self-named entries terminate
+            # resolution before it is consulted.
+            haskey(table, s) || (table[s] = StanExpr(s, StanType(types.int)))
         end
         defs = OrderedDict{Symbol,Any}()
         info[:__return_size_defs__] = defs
