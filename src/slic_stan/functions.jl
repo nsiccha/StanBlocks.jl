@@ -983,6 +983,19 @@ begin
         at === nothing || foreach(x -> _return_size_harvest!(out, x), at)
         out
     end
+    # A vararg pack binds as a TUPLE of (self-named) element StanExprs, both
+    # via plain destructure (tracetype path: placeholder/caller exprs) and
+    # via `anon_expr` (fundef path: `args1`, `args2`, …). Recurse so the
+    # elements' symbols seed as terminals; the pack itself never binds as a
+    # key (a size naming the whole pack has no Stan meaning).
+    _return_size_harvest!(out::Set{Symbol}, t::Union{Tuple,NamedTuple,AbstractVector}) = begin
+        foreach(x -> _return_size_harvest!(out, x), t)
+        out
+    end
+    _return_size_harvest!(out::Set{Symbol}, e::Expr) = begin
+        foreach(x -> _return_size_harvest!(out, x), e.args)
+        out
+    end
     # Mirror of `deanon_type` (passes.jl): rewrite the sizes of an inferred
     # return type through the resolution table instead of the call args.
     _resolve_return_size_type(tt::StanType, table, fname) = begin
@@ -1023,11 +1036,9 @@ begin
         # a nested UDF call's own inference trace must not record into — or
         # resolve through — this table.
         table = OrderedDict{Symbol,Any}()
+        caller_syms = Set{Symbol}()
         for (k, v) in pairs(info)
             v isa StanExpr && (table[k] = v)
-        end
-        caller_syms = Set{Symbol}()
-        for v in values(table)
             _return_size_harvest!(caller_syms, v)
         end
         for s in caller_syms
