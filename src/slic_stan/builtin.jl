@@ -33,6 +33,26 @@ end
 @builtin_module [
     weighted_lpdf
     weighted_lpmf
+    # Public distribution-HOF tokens match Julia's distribution vocabulary;
+    # collision-free conditioning/clamping names remain implementation details.
+    truncated censored interval_censored
+    lower_conditioning_lpdf lower_conditioning_lpmf
+    upper_conditioning_lpdf upper_conditioning_lpmf
+    conditioning_lpdf conditioning_lpmf
+    lower_clamping_lpdf lower_clamping_lpmf
+    upper_clamping_lpdf upper_clamping_lpmf
+    clamping_lpdf clamping_lpmf
+    interval_evidence_impl_lpdf interval_evidence_impl_lpmf
+    lower_conditioning_cell_rng upper_conditioning_cell_rng conditioning_cell_rng
+    conditioning_outside
+    lower_clamping_cell_rng upper_clamping_cell_rng clamping_cell_rng
+    jbroadcasted_rng
+    # Sequential-marginalization families (forward filter): the general
+    # `sequential_marginalize` HOF and the matrix-parameterized `kalman` instance.
+    sequential_marginalize_lpdf sequential_marginalize_lpdfs sequential_marginalize_rng
+    kalman_lpdf kalman_lpdfs kalman_rng
+    hmm_forward_lpdf hmm_forward_lpdfs hmm_forward_rng
+    hmm_forward_lpmf
     flat_lpdf
     std_normal_lpdf
     normal_lpdf
@@ -92,6 +112,8 @@ end
     linspaced_vector
     to_array_1d
     to_array_2d
+    to_int
+    csr_matrix_times_vector
     cholesky_decompose
     diag_pre_multiply
     diag_post_multiply
@@ -113,7 +135,7 @@ end
     append_col
     hcat
     reshape
-    ragged_n ragged_total ragged_start ragged_end ragged_length
+    ragged_n ragged_total ragged_start ragged_end ragged_length as_matrix
     # Stan 2.37 exposed constraint transforms (Feature 1) — @deffun sigs below.
     simplex_constrain simplex_unconstrain simplex_jacobian
     ordered_constrain ordered_unconstrain ordered_jacobian
@@ -134,7 +156,10 @@ end
     dot_product rows_dot_product
     dims rows cols
     reject
-    positive_infinity negative_infinity
+    positive_infinity negative_infinity not_a_number
+    # Stan also exposes a zero-argument `log2()` constant; registering the
+    # shared name here keeps both it and the unary overload on one callable.
+    log2
 
     reduce_sum reduce_sum_static reduce_sum_reconstruct simple_reduce_sum simple_reduce_sum_helper
 
@@ -143,16 +168,22 @@ end
 
     # Compile-time distribution-family selectors. These consume a base family
     # token (e.g. `normal`) and disappear before Stan emission.
-    density pointwise predictive
+    density pointwise predictive logcdf logccdf
 
     # Unary math (Stan-specific, not Julia builtins)
-    square log_diff_exp log_mix atan2
+    square inv_sqrt log_diff_exp log_mix atan2
     is_inf is_nan
-    Phi_approx inv_Phi
+    Phi_approx inv_Phi inv_cloglog
     erf erfc tgamma digamma trigamma
+    lambert_w0
     lbeta inc_beta gamma_p gamma_q
     bessel_first_kind bessel_second_kind
     modified_bessel_first_kind modified_bessel_second_kind
+    # Log-space first-kind modified Bessel (Stan >= 2.24; real order `v`).
+    # The form a periodic Hilbert-space GP basis needs so a small length
+    # scale cannot overflow `exp(1/rho^2)`. Shapes are in the `@defsig`
+    # block below, beside `log_sum_exp`.
+    log_modified_bessel_first_kind
     owens_t binary_log_loss
     fma fmin fmax fdim fmod cbrt
 
@@ -209,20 +240,29 @@ end
     maybe_index
     merge_missing
 
-    # bordet (generable) longitudinal-biomarker model-family port. The obs
+    # erfc-stable normal log-CDF/CCDF companions (`@deffun` bodies + full
+    # rationale beside the native CDF companions below). Selected for the
+    # `normal` family by `logcdf_expr`/`logccdf_expr` (lpxf_builtin.jl) so
+    # censored/truncated/interval-censored normal tail masses autodiff exactly.
+    # Must be registered here too: `@deffun` builtins are asserted against this
+    # manifest (`_assert_builtin_registered`). snag censored-normal-410c4e35.
+    normal_lcdf_stable
+    normal_lccdf_stable
+
+    # Longitudinal-biomarker (generable) model-family port. The obs
     # model is a censored normal w/ limits of quantification (`truncated_normal`
     # — name kept to match the source fn even though semantics = censoring);
     # `truncated_normal_lpdf` auto-expands to the
     # truncated_normal / _lpdfs / _rng / _cdf / _lccdf / _lcdf family. The mean
-    # kernels (`bordet_time_response` single-peak bump, `bordet_dose_response`
-    # log-sigmoid) + index/broadcast helpers are composed by BRM's `bordet_*`
+    # kernels (`biomarker_time_response` single-peak bump, `biomarker_dose_response`
+    # log-sigmoid) + index/broadcast helpers are composed by BRM's biomarker
     # term (contract cut (b): kernels here, BRM composes log_y).
     # `truncated_student_t_lpdf` = the heavy-tailed obs variant (generated family;
     # same censoring contract, + a leading `dof` arg, branches on the LOQ limits).
     truncated_normal_lpdf
     truncated_student_t_lpdf
-    bordet_time_response
-    bordet_dose_response
+    biomarker_time_response
+    biomarker_dose_response
     linear_idxs
     broadcasted_max
     broadcasted_gt
@@ -259,7 +299,7 @@ import Statistics
     # `simple_reduce_sum(f, ::any_vector, ...)` directly. `any_vector` covers
     # all 1-d vector-like Stan types in the SLIC hierarchy.
     @stanonly simple_reduce_sum(f, x::any_vector[n], args...)::real = reduce_sum(simple_reduce_sum_helper, to_array_1d(x), 1, f, args...)
-    simple_reduce_sum_helper(x_slice::anything[n], slice_start, slice_end, f, args...)::real = begin 
+    @juliacompat simple_reduce_sum_helper(x_slice::anything[n], slice_start, slice_end, f, args...)::real = begin
         rv = 0.
         for i in 1:n
             rv += f(x_slice[i], args...)
@@ -268,6 +308,8 @@ import Statistics
     end
     positive_infinity()::real
     negative_infinity()::real
+    not_a_number()::real
+    log2()::real
     reject(args...)::anything
     # --- Stan 2.37 exposed constraint-transform functions (Feature 1: ragged
     # non-trivial constrained parameters). Bodyless — these are Stan built-ins
@@ -318,6 +360,10 @@ import Statistics
     end
     linspaced_vector(n, x, y)::vector[n]
     to_matrix(v, m, n)::matrix[m,n]
+    # Sparse CSR matrix-vector product: A*b for an m x n matrix A supplied in
+    # compressed-row form (w = nonzero values, v = column indices, u = row start
+    # pointers). Result size is the int arg `m` (size-from-int-arg, cf. range).
+    csr_matrix_times_vector(m::int, n::int, w::vector[nw], v::int[nv], u::int[nu], b::vector[nb])::vector[m]
     rep_array(x::int, n)::int[n]
     rep_array(x::int, m, n)::int[m, n]
     rep_array(x::real, n)::real[n]
@@ -333,6 +379,12 @@ import Statistics
     append_col(x::matrix[m, n1], y::matrix[m, n2])::matrix[m, n1+n2]
     append_col(x::anything[m], y::matrix[m, n2])::matrix[m, 1+n2]
     append_col(x::matrix[m, n1], y::anything[m])::matrix[m, n1+1]
+    # Two row_vectors concatenate COLUMN-wise into a longer row_vector (NOT a
+    # matrix — that is `append_row`'s row-stacking). These forms are strictly
+    # more specific than the `anything[n]` rule above, so they dispatch first.
+    append_col(x::row_vector[m], y::row_vector[n])::row_vector[m+n]
+    append_col(x::row_vector[n], y::real)::row_vector[n+1]
+    append_col(x::real, y::row_vector[n])::row_vector[n+1]
     append_array(lhs::anything[m],rhs::anything[n])::real[m+n]
     append_array(lhs::anything[m],rhs::real)::real[m+1]
     append_row(lhs::vector[m],rhs::real)::vector[m+1]
@@ -351,12 +403,18 @@ import Statistics
         weight * density(family, y, args...)
     weighted_lpmf(y, family, weight::real, args...) =
         weight * density(family, y, args...)
+    # `lp` is deliberately UNannotated: `pointwise` carries its own size. A
+    # builtin family sizes it by `y` (= `n`), but a custom `@lpxf` family whose
+    # `_lpdfs`/`_lpmfs` twin is sized by one of ITS OWN arg tokens infers a
+    # different-but-runtime-equal size (e.g. `vector[dims(args3)[1]]`). Forcing
+    # `lp::vector[n]` here rejects that custom case at trace time; the
+    # `weight .* lp` runtime dim-guard still enforces the equality.
     weighted_lpdf(y::anything[n], family, weight::vector[n], args...) = begin
-        lp::vector[n] = pointwise(family, y, args...)
+        lp = pointwise(family, y, args...)
         sum(weight .* lp)
     end
     weighted_lpmf(y::anything[n], family, weight::vector[n], args...) = begin
-        lp::vector[n] = pointwise(family, y, args...)
+        lp = pointwise(family, y, args...)
         sum(weight .* lp)
     end
     weighted_lpdfs(y, family, weight::real, args...) =
@@ -364,20 +422,437 @@ import Statistics
     weighted_lpmfs(y, family, weight::real, args...) =
         weight * pointwise(family, y, args...)
     weighted_lpdfs(y::anything[n], family, weight::vector[n], args...)::vector[n] = begin
-        lp::vector[n] = pointwise(family, y, args...)
+        lp = pointwise(family, y, args...)
         weight .* lp
     end
     weighted_lpmfs(y::anything[n], family, weight::vector[n], args...)::vector[n] = begin
-        lp::vector[n] = pointwise(family, y, args...)
+        lp = pointwise(family, y, args...)
         weight .* lp
     end
     weighted_rng(family, weight, args...) =
         predictive(family, args...)
+    # Sized forms forward the token to the base family's own companion, so they
+    # inherit that family's guard — no guard here (audit todo 19n8abc).
     weighted_rng(real[n], family, weight, args...) =
         predictive(family, real[n], args...)
     weighted_rng(vector[n], family, weight, args...) =
         predictive(family, vector[n], args...)
     weighted_rng(int[n], family, weight, args...) =
+        predictive(family, int[n], args...)
+
+    # Mathematical truncation (`truncated`) ---------------------------------
+    # Public optional kwargs select one of these lower/upper/two-sided
+    # implementation families at trace time. Only concrete bounds reach Stan.
+    lower_conditioning_lpdf(y::real, family, lo, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y >= lo
+            rv[1] = density(family, y, args...) - logccdf(family, lo, args...)
+        end
+        rv[1]
+    end
+    lower_conditioning_lpmf(y::int, family, lo, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y >= lo
+            rv[1] = density(family, y, args...) - logccdf(family, lo - 1, args...)
+        end
+        rv[1]
+    end
+    lower_conditioning_lpdf(y::anything[n], family, lo, args...)::real =
+        sum(lower_conditioning_lpdfs(y, family, lo, args...))
+    lower_conditioning_lpmf(y::anything[n], family, lo, args...)::real =
+        sum(lower_conditioning_lpmfs(y, family, lo, args...))
+    lower_conditioning_lpdfs(y::real, family, lo, args...) =
+        lower_conditioning_lpdf(y, family, lo, args...)
+    lower_conditioning_lpmfs(y::int, family, lo, args...) =
+        lower_conditioning_lpmf(y, family, lo, args...)
+    lower_conditioning_lpdfs(y::anything[n], family, lo, args...)::vector[n] =
+        jbroadcasted(lower_conditioning_lpdf, y, family, lo, args...)
+    lower_conditioning_lpmfs(y::anything[n], family, lo, args...)::vector[n] =
+        jbroadcasted(lower_conditioning_lpmf, y, family, lo, args...)
+    lower_conditioning_rng(family, lo, args...) = begin
+        draw::typeof(predictive(family, args...))[1]
+        attempts::int[1]
+        draw[1] = predictive(family, args...)
+        attempts[1] = 1
+        while draw[1] < lo
+            if attempts[1] >= 100000
+                reject("truncated: lower-tail rejection sampler exceeded 100000 draws")
+            end
+            draw[1] = predictive(family, args...)
+            attempts[1] = attempts[1] + 1
+        end
+        draw[1]
+    end
+    lower_conditioning_cell_rng(dummy, family, lo, args...) =
+        lower_conditioning_rng(family, lo, args...)
+    # `jbroadcasted` emits an explicit `for i in 1:n` loop of scalar cell draws,
+    # so an empty token runs zero iterations — no guard, here or in the five
+    # sibling HOF families below, which share this shape (todo 19n8abc).
+    lower_conditioning_rng(vector[n], family, lo, args...)::vector[n] =
+        jbroadcasted(lower_conditioning_cell_rng, rep_vector(0., n), family, lo, args...)
+    lower_conditioning_rng(real[n], family, lo, args...)::real[n] =
+        to_array_1d(jbroadcasted(lower_conditioning_cell_rng, rep_vector(0., n), family, lo, args...))
+    lower_conditioning_rng(int[n], family, lo, args...) =
+        jbroadcasted(lower_conditioning_cell_rng, rep_array(0, n), family, lo, args...)
+
+    upper_conditioning_lpdf(y::real, family, hi, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y <= hi
+            rv[1] = density(family, y, args...) - logcdf(family, hi, args...)
+        end
+        rv[1]
+    end
+    upper_conditioning_lpmf(y::int, family, hi, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y <= hi
+            rv[1] = density(family, y, args...) - logcdf(family, hi, args...)
+        end
+        rv[1]
+    end
+    upper_conditioning_lpdf(y::anything[n], family, hi, args...)::real =
+        sum(upper_conditioning_lpdfs(y, family, hi, args...))
+    upper_conditioning_lpmf(y::anything[n], family, hi, args...)::real =
+        sum(upper_conditioning_lpmfs(y, family, hi, args...))
+    upper_conditioning_lpdfs(y::real, family, hi, args...) =
+        upper_conditioning_lpdf(y, family, hi, args...)
+    upper_conditioning_lpmfs(y::int, family, hi, args...) =
+        upper_conditioning_lpmf(y, family, hi, args...)
+    upper_conditioning_lpdfs(y::anything[n], family, hi, args...)::vector[n] =
+        jbroadcasted(upper_conditioning_lpdf, y, family, hi, args...)
+    upper_conditioning_lpmfs(y::anything[n], family, hi, args...)::vector[n] =
+        jbroadcasted(upper_conditioning_lpmf, y, family, hi, args...)
+    upper_conditioning_rng(family, hi, args...) = begin
+        draw::typeof(predictive(family, args...))[1]
+        attempts::int[1]
+        draw[1] = predictive(family, args...)
+        attempts[1] = 1
+        while draw[1] > hi
+            if attempts[1] >= 100000
+                reject("truncated: upper-tail rejection sampler exceeded 100000 draws")
+            end
+            draw[1] = predictive(family, args...)
+            attempts[1] = attempts[1] + 1
+        end
+        draw[1]
+    end
+    upper_conditioning_cell_rng(dummy, family, hi, args...) =
+        upper_conditioning_rng(family, hi, args...)
+    upper_conditioning_rng(vector[n], family, hi, args...)::vector[n] =
+        jbroadcasted(upper_conditioning_cell_rng, rep_vector(0., n), family, hi, args...)
+    upper_conditioning_rng(real[n], family, hi, args...)::real[n] =
+        to_array_1d(jbroadcasted(upper_conditioning_cell_rng, rep_vector(0., n), family, hi, args...))
+    upper_conditioning_rng(int[n], family, hi, args...) =
+        jbroadcasted(upper_conditioning_cell_rng, rep_array(0, n), family, hi, args...)
+
+    # Two-sided inclusive truncation.
+    conditioning_lpdf(y::real, family, lo, hi, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if lo >= hi
+            reject("truncated: lower bound must be less than upper bound")
+        else
+            if y >= lo
+                if y <= hi
+                    rv[1] = density(family, y, args...) -
+                        log_diff_exp(logcdf(family, hi, args...), logcdf(family, lo, args...))
+                end
+            end
+        end
+        rv[1]
+    end
+    conditioning_lpmf(y::int, family, lo, hi, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if lo > hi
+            reject("truncated: lower bound must not exceed upper bound")
+        else
+            if y >= lo
+                if y <= hi
+                    rv[1] = density(family, y, args...) -
+                        log_diff_exp(logcdf(family, hi, args...), logcdf(family, lo - 1, args...))
+                end
+            end
+        end
+        rv[1]
+    end
+    conditioning_lpdf(y::anything[n], family, lo, hi, args...)::real =
+        sum(conditioning_lpdfs(y, family, lo, hi, args...))
+    conditioning_lpmf(y::anything[n], family, lo, hi, args...)::real =
+        sum(conditioning_lpmfs(y, family, lo, hi, args...))
+    conditioning_lpdfs(y::real, family, lo, hi, args...) =
+        conditioning_lpdf(y, family, lo, hi, args...)
+    conditioning_lpmfs(y::int, family, lo, hi, args...) =
+        conditioning_lpmf(y, family, lo, hi, args...)
+    conditioning_lpdfs(y::anything[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(conditioning_lpdf, y, family, lo, hi, args...)
+    conditioning_lpmfs(y::anything[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(conditioning_lpmf, y, family, lo, hi, args...)
+    conditioning_outside(x, lo, hi)::int = begin
+        rv::int[1]
+        rv[1] = 0
+        if x < lo
+            rv[1] = 1
+        else
+            if x > hi
+                rv[1] = 1
+            end
+        end
+        rv[1]
+    end
+    conditioning_rng(family, lo, hi, args...) = begin
+        draw::typeof(predictive(family, args...))[1]
+        attempts::int[1]
+        draw[1] = predictive(family, args...)
+        attempts[1] = 1
+        while conditioning_outside(draw[1], lo, hi) == 1
+            if attempts[1] >= 100000
+                reject("truncated: rejection sampler exceeded 100000 draws")
+            end
+            draw[1] = predictive(family, args...)
+            attempts[1] = attempts[1] + 1
+        end
+        draw[1]
+    end
+    conditioning_cell_rng(dummy, family, lo, hi, args...) =
+        conditioning_rng(family, lo, hi, args...)
+    conditioning_rng(vector[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(conditioning_cell_rng, rep_vector(0., n), family, lo, hi, args...)
+    conditioning_rng(real[n], family, lo, hi, args...)::real[n] =
+        to_array_1d(jbroadcasted(conditioning_cell_rng, rep_vector(0., n), family, lo, hi, args...))
+    conditioning_rng(int[n], family, lo, hi, args...)::int[n] =
+        jbroadcasted(conditioning_cell_rng, rep_array(0, n), family, lo, hi, args...)
+
+    # Threshold censoring (`censored`) --------------------------------------
+    lower_clamping_lpdf(y::real, family, lo, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y == lo
+            rv[1] = logcdf(family, lo, args...)
+        else
+            if y > lo
+                rv[1] = density(family, y, args...)
+            end
+        end
+        rv[1]
+    end
+    lower_clamping_lpmf(y::int, family, lo, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y == lo
+            rv[1] = logcdf(family, lo, args...)
+        else
+            if y > lo
+                rv[1] = density(family, y, args...)
+            end
+        end
+        rv[1]
+    end
+    lower_clamping_lpdf(y::anything[n], family, lo, args...)::real =
+        sum(lower_clamping_lpdfs(y, family, lo, args...))
+    lower_clamping_lpmf(y::anything[n], family, lo, args...)::real =
+        sum(lower_clamping_lpmfs(y, family, lo, args...))
+    lower_clamping_lpdfs(y::real, family, lo, args...) =
+        lower_clamping_lpdf(y, family, lo, args...)
+    lower_clamping_lpmfs(y::int, family, lo, args...) =
+        lower_clamping_lpmf(y, family, lo, args...)
+    lower_clamping_lpdfs(y::anything[n], family, lo, args...)::vector[n] =
+        jbroadcasted(lower_clamping_lpdf, y, family, lo, args...)
+    lower_clamping_lpmfs(y::anything[n], family, lo, args...)::vector[n] =
+        jbroadcasted(lower_clamping_lpmf, y, family, lo, args...)
+    lower_clamping_rng(family, lo, args...) = begin
+        draw::typeof(predictive(family, args...))[1]
+        draw[1] = predictive(family, args...)
+        if draw[1] < lo
+            draw[1] = lo
+        end
+        draw[1]
+    end
+    lower_clamping_cell_rng(dummy, family, lo, args...) =
+        lower_clamping_rng(family, lo, args...)
+    lower_clamping_rng(vector[n], family, lo, args...)::vector[n] =
+        jbroadcasted(lower_clamping_cell_rng, rep_vector(0., n), family, lo, args...)
+    lower_clamping_rng(real[n], family, lo, args...)::real[n] =
+        to_array_1d(jbroadcasted(lower_clamping_cell_rng, rep_vector(0., n), family, lo, args...))
+    lower_clamping_rng(int[n], family, lo, args...) =
+        jbroadcasted(lower_clamping_cell_rng, rep_array(0, n), family, lo, args...)
+
+    upper_clamping_lpdf(y::real, family, hi, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y == hi
+            rv[1] = logccdf(family, hi, args...)
+        else
+            if y < hi
+                rv[1] = density(family, y, args...)
+            end
+        end
+        rv[1]
+    end
+    upper_clamping_lpmf(y::int, family, hi, args...)::real = begin
+        rv::real[1]
+        rv[1] = negative_infinity()
+        if y == hi
+            rv[1] = logccdf(family, hi - 1, args...)
+        else
+            if y < hi
+                rv[1] = density(family, y, args...)
+            end
+        end
+        rv[1]
+    end
+    upper_clamping_lpdf(y::anything[n], family, hi, args...)::real =
+        sum(upper_clamping_lpdfs(y, family, hi, args...))
+    upper_clamping_lpmf(y::anything[n], family, hi, args...)::real =
+        sum(upper_clamping_lpmfs(y, family, hi, args...))
+    upper_clamping_lpdfs(y::real, family, hi, args...) =
+        upper_clamping_lpdf(y, family, hi, args...)
+    upper_clamping_lpmfs(y::int, family, hi, args...) =
+        upper_clamping_lpmf(y, family, hi, args...)
+    upper_clamping_lpdfs(y::anything[n], family, hi, args...)::vector[n] =
+        jbroadcasted(upper_clamping_lpdf, y, family, hi, args...)
+    upper_clamping_lpmfs(y::anything[n], family, hi, args...)::vector[n] =
+        jbroadcasted(upper_clamping_lpmf, y, family, hi, args...)
+    upper_clamping_rng(family, hi, args...) = begin
+        draw::typeof(predictive(family, args...))[1]
+        draw[1] = predictive(family, args...)
+        if draw[1] > hi
+            draw[1] = hi
+        end
+        draw[1]
+    end
+    upper_clamping_cell_rng(dummy, family, hi, args...) =
+        upper_clamping_rng(family, hi, args...)
+    upper_clamping_rng(vector[n], family, hi, args...)::vector[n] =
+        jbroadcasted(upper_clamping_cell_rng, rep_vector(0., n), family, hi, args...)
+    upper_clamping_rng(real[n], family, hi, args...)::real[n] =
+        to_array_1d(jbroadcasted(upper_clamping_cell_rng, rep_vector(0., n), family, hi, args...))
+    upper_clamping_rng(int[n], family, hi, args...) =
+        jbroadcasted(upper_clamping_cell_rng, rep_array(0, n), family, hi, args...)
+
+    # Two-sided censoring.
+    clamping_lpdf(y::real, family, lo, hi, args...)::real = begin
+        rv::real[1]
+        if lo >= hi
+            reject("censored: lower bound must be less than upper bound")
+        end
+        rv[1] = negative_infinity()
+        if y == lo
+            rv[1] = logcdf(family, lo, args...)
+        else
+            if y == hi
+                rv[1] = logccdf(family, hi, args...)
+            else
+                if y > lo
+                    if y < hi
+                        rv[1] = density(family, y, args...)
+                    end
+                end
+            end
+        end
+        rv[1]
+    end
+    clamping_lpmf(y::int, family, lo, hi, args...)::real = begin
+        rv::real[1]
+        if lo >= hi
+            reject("censored: lower bound must be less than upper bound")
+        end
+        rv[1] = negative_infinity()
+        if y == lo
+            rv[1] = logcdf(family, lo, args...)
+        else
+            if y == hi
+                rv[1] = logccdf(family, hi - 1, args...)
+            else
+                if y > lo
+                    if y < hi
+                        rv[1] = density(family, y, args...)
+                    end
+                end
+            end
+        end
+        rv[1]
+    end
+    clamping_lpdf(y::anything[n], family, lo, hi, args...)::real =
+        sum(clamping_lpdfs(y, family, lo, hi, args...))
+    clamping_lpmf(y::anything[n], family, lo, hi, args...)::real =
+        sum(clamping_lpmfs(y, family, lo, hi, args...))
+    clamping_lpdfs(y::real, family, lo, hi, args...) =
+        clamping_lpdf(y, family, lo, hi, args...)
+    clamping_lpmfs(y::int, family, lo, hi, args...) =
+        clamping_lpmf(y, family, lo, hi, args...)
+    clamping_lpdfs(y::anything[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(clamping_lpdf, y, family, lo, hi, args...)
+    clamping_lpmfs(y::anything[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(clamping_lpmf, y, family, lo, hi, args...)
+    clamping_rng(family, lo, hi, args...) = begin
+        draw::typeof(predictive(family, args...))[1]
+        draw[1] = predictive(family, args...)
+        if draw[1] < lo
+            draw[1] = lo
+        else
+            if draw[1] > hi
+                draw[1] = hi
+            end
+        end
+        draw[1]
+    end
+    clamping_cell_rng(dummy, family, lo, hi, args...) =
+        clamping_rng(family, lo, hi, args...)
+    clamping_rng(vector[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(clamping_cell_rng, rep_vector(0., n), family, lo, hi, args...)
+    clamping_rng(real[n], family, lo, hi, args...)::real[n] =
+        to_array_1d(jbroadcasted(clamping_cell_rng, rep_vector(0., n), family, lo, hi, args...))
+    clamping_rng(int[n], family, lo, hi, args...)::int[n] =
+        jbroadcasted(clamping_cell_rng, rep_array(0, n), family, lo, hi, args...)
+
+    # Genuine interval evidence: latent value is known only to lie in
+    # `(lower, upper]`. The observed marker drives shape; predictive draws stay
+    # on the uncoarsened base-family scale.
+    interval_evidence_impl_lpdf(y, family, lo, hi, args...)::real = begin
+        rv::real[1]
+        if lo >= hi
+            reject("interval_censored: lower bound must be less than upper bound")
+        end
+        rv[1] = log_diff_exp(
+            logcdf(family, hi, args...), logcdf(family, lo, args...)
+        )
+        rv[1]
+    end
+    interval_evidence_impl_lpmf(y, family, lo, hi, args...)::real = begin
+        rv::real[1]
+        if lo >= hi
+            reject("interval_censored: lower bound must be less than upper bound")
+        end
+        rv[1] = log_diff_exp(
+            logcdf(family, hi, args...), logcdf(family, lo, args...)
+        )
+        rv[1]
+    end
+    interval_evidence_impl_lpdf(y::anything[n], family, lo, hi, args...)::real =
+        sum(interval_evidence_impl_lpdfs(y, family, lo, hi, args...))
+    interval_evidence_impl_lpmf(y::anything[n], family, lo, hi, args...)::real =
+        sum(interval_evidence_impl_lpmfs(y, family, lo, hi, args...))
+    interval_evidence_impl_lpdfs(y::anything[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(interval_evidence_impl_lpdf, y, family, lo, hi, args...)
+    interval_evidence_impl_lpmfs(y::anything[n], family, lo, hi, args...)::vector[n] =
+        jbroadcasted(interval_evidence_impl_lpmf, y, family, lo, hi, args...)
+    interval_evidence_impl_lpdfs(y, family, lo, hi, args...) =
+        interval_evidence_impl_lpdf(y, family, lo, hi, args...)
+    interval_evidence_impl_lpmfs(y, family, lo, hi, args...) =
+        interval_evidence_impl_lpmf(y, family, lo, hi, args...)
+    interval_evidence_impl_rng(family, lo, hi, args...) =
+        predictive(family, args...)
+    # Sized forms forward the token to the base family's own companion — same
+    # inherited-guard posture as `weighted_rng` above (todo 19n8abc).
+    interval_evidence_impl_rng(real[n], family, lo, hi, args...) =
+        predictive(family, real[n], args...)
+    interval_evidence_impl_rng(vector[n], family, lo, hi, args...) =
+        predictive(family, vector[n], args...)
+    interval_evidence_impl_rng(int[n], family, lo, hi, args...) =
         predictive(family, int[n], args...)
     end
     # `dummy` no-op distribution: `y ~ dummy(args...)` contributes +0. Bodies
@@ -419,6 +894,7 @@ import Statistics
     poisson_log_glm_lpmf(args...)
     neg_binomial_2_log_glm_lpmf(args...)
     @lhs multi_normal_lpdf(obs::vector[n], loc::vector[n], cov)
+    @lhs multi_normal_cholesky_lpdf(obs::vector[n], loc::vector[n], scale)
     @lhs dirichlet_lpdf(w::simplex[n], alpha::vector[n])
     @lhs lkj_corr_lpdf(L::corr_matrix, x::real)
     @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, x::real)
@@ -434,24 +910,69 @@ import Statistics
     bernoulli_logit_rng(::vector[n])::int[n]
     bernoulli_logit_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
     @stanonly bernoulli_logit_glm_rng(X::matrix[m,n], alpha::real, beta) = bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta)
-    normal_id_glm_rng(X::matrix[m,n], alpha, beta, sigma)::vector[m]
-    @stanonly normal_id_glm_rng(X::matrix[m,n], alpha::real, beta, sigma) = normal_id_glm_rng(X, rep_vector(alpha, m), beta, sigma)
-    poisson_log_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
-    @stanonly poisson_log_glm_rng(X::matrix[m,n], alpha::real, beta) = poisson_log_glm_rng(X, rep_vector(alpha, m), beta)
-    neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha, beta, phi)::int[m]
-    @stanonly neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::real, beta, phi) = neg_binomial_2_log_glm_rng(X, rep_vector(alpha, m), beta, phi)
+    # `bernoulli_logit_glm_rng` above is the ONLY `*_glm_rng` Stan Math ships
+    # (checked against `stanc --dump-stan-math-signatures`, 2.39.0). Declaring
+    # the other three GLM families' rngs as native would emit calls stanc
+    # rejects, so define them as SB functions over the linear predictor
+    # `alpha + X * beta` — the same lowering `binomial_logit_rng` gets below.
+    # Empty-segment guard (todo 19n8abc): a 0-row `X` with a scalar `sigma` /
+    # `phi` replays the 2-arg-loop segfault, so the lowered plain forms
+    # early-return exactly like their sized-token overloads below.
+    @stanonly normal_id_glm_rng(X::matrix[m,n], alpha::real, beta, sigma)::vector[m] = if m == 0
+        rv::vector[m]
+        rv
+    else
+        to_vector(normal_rng(rep_vector(alpha, m) + X * beta, sigma))
+    end
+    @stanonly normal_id_glm_rng(X::matrix[m,n], alpha::vector[m], beta, sigma)::vector[m] = if m == 0
+        rv::vector[m]
+        rv
+    else
+        to_vector(normal_rng(alpha + X * beta, sigma))
+    end
+    @stanonly poisson_log_glm_rng(X::matrix[m,n], alpha::real, beta)::int[m] = if m == 0
+        rv::int[m]
+        rv
+    else
+        poisson_log_rng(rep_vector(alpha, m) + X * beta)
+    end
+    @stanonly poisson_log_glm_rng(X::matrix[m,n], alpha::vector[m], beta)::int[m] = if m == 0
+        rv::int[m]
+        rv
+    else
+        poisson_log_rng(alpha + X * beta)
+    end
+    @stanonly neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::real, beta, phi)::int[m] = if m == 0
+        rv::int[m]
+        rv
+    else
+        neg_binomial_2_log_rng(rep_vector(alpha, m) + X * beta, phi)
+    end
+    @stanonly neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::vector[m], beta, phi)::int[m] = if m == 0
+        rv::int[m]
+        rv
+    else
+        neg_binomial_2_log_rng(alpha + X * beta, phi)
+    end
     beta_rng(args...)::real
     binomial_rng(args...)::int
     binomial_logit_rng(n::int[m], p::vector[m])::int[m]
     binomial_logit_rng(n::vector[m], p::vector[m])::int[m]
-    broadcasted_getindex(x, i) = x
-    broadcasted_getindex(x::anything[m], i) = x[i]
+    @juliacompat broadcasted_getindex(x, i) = x
+    @juliacompat broadcasted_getindex(x::anything[m], i) = x[i]
     # `jbroadcasted(f, args...)` is a TRACE-LEVEL construct (custom tracetype +
     # fundef below, not a fixed-arity @deffun): arbitrary arity, any array-arg
     # positions, and an INFERRED output container (int element → array[] int,
     # real element → vector[n]). Its Stan function is generated per call shape.
     @stanonly begin
-    vector_std_normal_rng(n::int)::vector[n] = to_vector(normal_rng(rep_vector(0, n), 1))
+    # Empty-segment guard (todo 19n8abc): same scalar-`1` mix as the
+    # `std_normal_rng` sized overloads below — `n == 0` returns the empty draw.
+    vector_std_normal_rng(n::int)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector(normal_rng(rep_vector(0, n), 1))
+    end
     # Sized-token rng overloads are generated via `@eval @deffun` loops below
     # (after the block closes). See comment at the @eval block.
     bernoulli_lpmfs(args...) = bernoulli_lpmf(args...)
@@ -490,6 +1011,41 @@ import Statistics
     binomial_lpmfs(y::int[n], args...) = jbroadcasted(binomial_lpmfs, y, args...)
     binomial_logit_lpmfs(args...) = binomial_logit_lpmf(args...)
     binomial_logit_lpmfs(y::int[n], args...) = jbroadcasted(binomial_logit_lpmfs, y, args...)
+    # Stan's native multinomial density omits the total count N because it is
+    # recoverable as sum(obs), while multinomial_rng requires N. SLIC's auto-GQ
+    # contract forwards exactly the density-family arguments, so expose an
+    # explicit-N overload that keeps density and predictive calls symmetric.
+    # The batched form is one composition per row and produces one pointwise
+    # likelihood value / predictive draw per row.
+    @lhs multinomial_lpmf(obs::int[K], probs::vector[K], N::int)::real = begin
+        if sum(obs) != N
+            reject("multinomial: explicit N must equal sum(obs)")
+        end
+        multinomial_lpmf(obs, probs)
+    end
+    multinomial_lpmfs(obs::int[K], probs::vector[K], N::int)::real =
+        multinomial_lpmf(obs, probs, N)
+    @lhs multinomial_lpmf(obs::int[n,K], probs::vector[K], row_N::int[n])::real =
+        sum(multinomial_lpmfs(obs, probs, row_N))
+    multinomial_lpmfs(obs::int[n,K], probs::vector[K], row_N::int[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = multinomial_lpmf(obs[i, :], probs, row_N[i])
+        end
+        rv
+    end
+    # Single draw sized by the one container (`N` is a count, not a vectorized
+    # arg); the row form is an explicit loop — both outside the guarded class
+    # (audit todo 19n8abc).
+    multinomial_rng(int[K], probs::vector[K], N::int)::int[K] =
+        multinomial_rng(probs, N)
+    multinomial_rng(int[n,K], probs::vector[K], row_N::int[n])::int[n,K] = begin
+        rv::int[n,K]
+        for i in 1:n
+            rv[i, :] = multinomial_rng(probs, row_N[i])
+        end
+        rv
+    end
     # A vector-valued plate cell is collected as matrix[k, n], one observation
     # per column. Stan's categorical-logit primitive accepts only one vector of
     # logits at a time, so provide the density and pointwise companions for the
@@ -515,6 +1071,7 @@ import Statistics
     # parameter inside a plate (`cell[g] ~ dirichlet(…)`) fetched `dirichlet_lpdfs`
     # (snag plate-constraine-90607054).
     multi_normal_lpdfs(args...)::real = multi_normal_lpdf(args...)
+    multi_normal_cholesky_lpdfs(args...)::real = multi_normal_cholesky_lpdf(args...)
     dirichlet_lpdfs(args...)::real = dirichlet_lpdf(args...)
     @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr[m,n], x::real, m::int, n::int)::real = begin
         rv = 0.0
@@ -524,6 +1081,13 @@ import Statistics
         rv
     end
     lkj_corr_cholesky_lpdfs(args...)::real = lkj_corr_cholesky_lpdf(args...)
+    # A CONSTRAINED-MATRIX element (`cholesky_factor_corr[K]`, e.g. a per-stratum
+    # plate cell, snag stanblocks-plate-248f67d3) is itself ndim-1, so the
+    # `anything[n]` broadcast form below would steal the fetch from the scalar
+    # fallback and then broadcast over the constraint size — peeling the matrix
+    # to `anything`. Route the element to the density DIRECTLY: more specific
+    # center, same arity, so the ndim-2 whole-array broadcast is untouched.
+    lkj_corr_cholesky_lpdfs(L::cholesky_factor_corr[m], x::real)::real = lkj_corr_cholesky_lpdf(L, x)
     lkj_corr_cholesky_lpdfs(L::anything[n], x) = jbroadcasted(lkj_corr_cholesky_lpdfs, L, x)
     ordered_logistic_lpmfs(args...) = ordered_logistic_lpmf(args...)
     ordered_logistic_lpmfs(y::int[n], eta::vector[n], c::vector[m]) = begin
@@ -540,8 +1104,13 @@ import Statistics
         end
         rv
     end
+    # Token form delegates to the explicit-loop form above — no guard (todo 19n8abc).
     ordered_logistic_rng(int[n], eta::vector[n], c::vector[m])::int[n] = ordered_logistic_rng(eta, c)
-    vector_exponential_rng(rate::real, n::int)::vector[n] = exponential_rng(rep_vector(rate, n))
+    # Single native arg — same immunity as the 1-arg loops (todo 19n8abc):
+    # no `n == 0` guard. The `to_vector` is load-bearing: the vectorized
+    # native returns `array[] real`, so without it stanc rejects the helper
+    # (snag replaying-a-zero-ab1b204c).
+    vector_exponential_rng(rate::real, n::int)::vector[n] = to_vector(exponential_rng(rep_vector(rate, n)))
     end
     # Stan's `lkj_corr_cholesky_rng(int K, real eta)` returns a K×K Cholesky
     # factor. WITHOUT the `::matrix[n,n]` the tracetype is `anything`, so the
@@ -554,30 +1123,111 @@ import Statistics
     # unconstrained container, not the constrained parameter type.
     lkj_corr_cholesky_rng(n::int, eta::real)::matrix[n,n]
 
+    # Scalar log-CDF companion signatures used by distribution HOFs. The
+    # `@builtin_module` manifest declares names for every probability family,
+    # including families for which Stan has no CDF. Only this Stan-supported
+    # set is admitted by the capability gate in lpxf_builtin.jl.
     normal_cdf(args...)
+    std_normal_lcdf(args...)
+    std_normal_lccdf(args...)
     normal_lcdf(args...)
     normal_lccdf(args...)
-    # student_t cdf-family shape rules (the @builtin_module entry declares the
-    # NAMES; these register the tracetype — needed by `truncated_student_t_lpdf`'s
-    # censored branches). `_lcdf`/`_lccdf` suffix → auto return type `real`.
-    student_t_cdf(args...)
+    # Numerically stable erfc reformulation of the normal log-CDF/CCDF, selected
+    # for the `normal` family by `logcdf_expr`/`logccdf_expr` (lpxf_builtin.jl) so
+    # every `censored`/`truncated`/`interval_censored(normal, …)` tail mass emits
+    # these instead of Stan's native companions. Stan Math's own
+    # `normal_lcdf`/`normal_lccdf` reverse-mode AD rules are inaccurate (~1e-6 vs
+    # ~1e-14 finite-difference truth) in the practical regime, and `normal_lccdf`
+    # diverges (value -Inf, gradient +Inf) past ~9σ where the erfc form is still
+    # correct to ~37σ. `log(0.5·erfc(∓z/√2))` (z = (x-loc)/scale) autodiffs
+    # through exact-derivative primitives (`erfc`, `log`). `@stanonly`: the name
+    # is not in the probability family, so `@deffun` would otherwise install a
+    # Julia target calling the Stan-only `erfc` token — these are Stan-emission
+    # only. See snag censored-normal-410c4e35 for the isolated-kernel measurement.
+    @stanonly begin
+    normal_lcdf_stable(x::real, loc::real, scale::real)::real =
+        log(erfc(-(x - loc) / (scale * sqrt(2.)))) - log(2.)
+    normal_lccdf_stable(x::real, loc::real, scale::real)::real =
+        log(erfc((x - loc) / (scale * sqrt(2.)))) - log(2.)
+    end
     student_t_lcdf(args...)
     student_t_lccdf(args...)
+    cauchy_lcdf(args...)
+    cauchy_lccdf(args...)
+    beta_lcdf(args...)
+    beta_lccdf(args...)
+    beta_proportion_lcdf(args...)
+    beta_proportion_lccdf(args...)
+    lognormal_lcdf(args...)
+    lognormal_lccdf(args...)
+    exponential_lcdf(args...)
+    exponential_lccdf(args...)
+    gamma_lcdf(args...)
+    gamma_lccdf(args...)
+    inv_gamma_lcdf(args...)
+    inv_gamma_lccdf(args...)
+    weibull_lcdf(args...)
+    weibull_lccdf(args...)
+    uniform_lcdf(args...)
+    uniform_lccdf(args...)
+    chi_square_lcdf(args...)
+    chi_square_lccdf(args...)
+    inv_chi_square_lcdf(args...)
+    inv_chi_square_lccdf(args...)
+    scaled_inv_chi_square_lcdf(args...)
+    scaled_inv_chi_square_lccdf(args...)
+    frechet_lcdf(args...)
+    frechet_lccdf(args...)
+    rayleigh_lcdf(args...)
+    rayleigh_lccdf(args...)
+    von_mises_lcdf(args...)
+    von_mises_lccdf(args...)
+    double_exponential_lcdf(args...)
+    double_exponential_lccdf(args...)
+    logistic_lcdf(args...)
+    logistic_lccdf(args...)
+    gumbel_lcdf(args...)
+    gumbel_lccdf(args...)
+    skew_normal_lcdf(args...)
+    skew_normal_lccdf(args...)
+    exp_mod_normal_lcdf(args...)
+    exp_mod_normal_lccdf(args...)
+    skew_double_exponential_lcdf(args...)
+    skew_double_exponential_lccdf(args...)
+    pareto_lcdf(args...)
+    pareto_lccdf(args...)
+    pareto_type_2_lcdf(args...)
+    pareto_type_2_lccdf(args...)
+    bernoulli_lcdf(args...)
+    bernoulli_lccdf(args...)
+    binomial_lcdf(args...)
+    binomial_lccdf(args...)
+    beta_binomial_lcdf(args...)
+    beta_binomial_lccdf(args...)
+    neg_binomial_lcdf(args...)
+    neg_binomial_lccdf(args...)
+    neg_binomial_2_lcdf(args...)
+    neg_binomial_2_lccdf(args...)
+    poisson_lcdf(args...)
+    poisson_lccdf(args...)
+    discrete_range_lcdf(args...)
+    discrete_range_lccdf(args...)
+    student_t_cdf(args...)
 
-    append_row(x, y, z, args...) = append_row(append_row(x, y), z, args...)
-    append_col(x, y, z, args...) = append_col(append_col(x, y), z, args...)
+    @juliacompat append_row(x, y, z, args...) = append_row(append_row(x, y), z, args...)
+    @juliacompat append_col(x, y, z, args...) = append_col(append_col(x, y), z, args...)
 
     # hcat for building a design matrix from column vectors. Narrow on purpose:
     # Stan's matrix / array-of-vectors / array-of-ints are distinct types, so
     # add more signatures only as sbimpl (or other callers) actually need them.
-    hcat(x::vector[n])::matrix[n,1] = to_matrix(x, n, 1)
-    hcat(x::vector[n], y::vector[n])::matrix[n,2] = append_col(x, y)
-    hcat(x::matrix[m, n], y::vector[m])::matrix[m, n+1] = append_col(x, y)
-    hcat(x, y, z, args...) = hcat(hcat(x, y), z, args...)
+    @juliacompat hcat(x::vector[n])::matrix[n,1] = to_matrix(x, n, 1)
+    @juliacompat hcat(x::vector[n], y::vector[n])::matrix[n,2] = append_col(x, y)
+    @juliacompat hcat(x::matrix[m, n], y::vector[m])::matrix[m, n+1] = append_col(x, y)
+    @juliacompat hcat(x, y, z, args...) = hcat(hcat(x, y), z, args...)
 
     # reshape: vector -> matrix only, matching Base.reshape(v, m, k) with fully
     # specified dims. Grow as needed.
-    reshape(v::vector[n], m::int, k::int)::matrix[m, k] = to_matrix(v, m, k)
+    @juliacompat reshape(v::vector[n], m::int, k::int)::matrix[m, k] = to_matrix(v, m, k)
 
     # `jmap(f, x)` — element-wise map whose output CONTAINER is inferred from
     # `f`'s per-element return type (`typeof(f(x[1]))`): an `int`-returning `f`
@@ -586,7 +1236,7 @@ import Statistics
     # separate real `map` / int `imap` (`ibroadcasted`) variants are needed
     # (prong 3). `x::anything[n]` accepts a `vector` / `row_vector` / `array[] T`
     # (1-dim); `jbroadcasted` remains the arbitrary-arity elementwise construct.
-    jmap(f, x::anything[n]) = begin
+    @juliacompat jmap(f, x::anything[n]) = begin
         rv::typeof(f(x[1]))[n]
         for i in 1:n
             rv[i] = f(x[i])
@@ -755,7 +1405,7 @@ import Statistics
     # Assemble a full vector from observed and imputed-missing parts.
     # Emitted into `transformed_parameters` by the body pre-pass when a
     # partly-missing data vector is detected (auto-detect Union{Missing}).
-    merge_missing(y_obs::vector[n_obs], y_mis::vector[n_mis], ii_obs::int[n_obs], ii_mis::int[n_mis])::vector[n_obs+n_mis] = begin
+    @juliacompat merge_missing(y_obs::vector[n_obs], y_mis::vector[n_mis], ii_obs::int[n_obs], ii_mis::int[n_mis])::vector[n_obs+n_mis] = begin
         y::vector[n_obs+n_mis]
         for i in 1:n_obs
             y[ii_obs[i]] = y_obs[i]
@@ -764,6 +1414,233 @@ import Statistics
             y[ii_mis[i]] = y_mis[i]
         end
         y
+    end
+end
+
+# --- Sequential marginalization ------------------------------------------------
+# `sequential_marginalize` is the general "integrate out a sequential latent" combinator: a
+# forward filter over an observation series `y`, taking user PREDICT / OBSERVE /
+# SIMULATE functions rather than fixed linear-algebra objects. Given an initial
+# belief `b0` and
+#   predict  :: belief -> belief             one-step state prediction
+#   observe  :: (belief, yₜ) -> (belief, ℓₜ) condition on yₜ; ℓₜ = log p(yₜ|y₁:ₜ₋₁)
+#   simulate :: belief -> (belief, yₜ)       draw yₜ from the one-step predictive
+# it provides the marginal log-density ∑ₜ ℓₜ (`_lpdf`), the per-observation
+# leave-future-out conditionals [ℓ₁ … ℓ_T] (`_lpdfs`) and forward-simulated
+# predictive draws (`_rng`). `belief` may be any value (scalar, tuple, vector …)
+# so long as the three functions agree on its type. Because Stan has no
+# first-class functions the closures are resolved at trace time and inlined into
+# one generated UDF per call site (the capture-dedup in `func_args` /
+# `expand_call_args` lets predict/observe/simulate share captured parameters).
+# A belief whose SIZE derives from a captured matrix (e.g. a Kalman `(m,P)` tuple
+# where `m = A*m` is sized by the captured `A`) is fully supported: the hoisted
+# capture's dims are materialized at the UDF body top (`int A_m = dims(A)[1];`,
+# `functions.jl` `_capture_dim_binds`), so an EKF / matrix-Kalman expressed
+# through this HOF transpiles and compiles. (The matrix-parameterized `kalman`
+# family below remains the ergonomic shortcut for the linear-Gaussian case.)
+@deffun @stanonly begin
+    @lpxf sequential_marginalize_lpdf(y::anything[T], b0, predict, observe, simulate)::real =
+        sum(sequential_marginalize_lpdfs(y, b0, predict, observe, simulate))
+    sequential_marginalize_lpdfs(y::anything[T], b0, predict, observe, simulate)::vector[T] = begin
+        # Internal locals are `sm_`-prefixed so they never collide with a hoisted
+        # closure capture: predict/observe/simulate close over model variables
+        # whose names the user chose, and those captures become positional Stan
+        # parameters of THIS generated UDF (func_args). A bare `r`/`b`/`t` here
+        # would clash with a capture of the same name ("Identifier r is already
+        # in use"). The `sm_` prefix keeps the body hygienic against any
+        # realistic capture name.
+        sm_ll::vector[T]
+        sm_b = b0
+        for sm_t in 1:T
+            sm_bp = predict(sm_b)
+            sm_step = observe(sm_bp, y[sm_t])
+            sm_b = sm_step[1]
+            sm_ll[sm_t] = sm_step[2]
+        end
+        sm_ll
+    end
+    # Explicit `for sm_t in 1:T` loop — empty input runs zero iterations, no
+    # guard (audit todo 19n8abc). Same for the `kalman` / `hmm_forward` draws.
+    sequential_marginalize_rng(vector[T], b0, predict, observe, simulate)::vector[T] = begin
+        # See `_lpdfs` above: `sm_`-prefixed locals stay clear of hoisted captures.
+        sm_yy::vector[T]
+        sm_b = b0
+        for sm_t in 1:T
+            sm_bp = predict(sm_b)
+            sm_step = simulate(sm_bp)
+            sm_b = sm_step[1]
+            sm_yy[sm_t] = sm_step[2]
+        end
+        sm_yy
+    end
+end
+
+# --- Kalman filter (linear-Gaussian) -------------------------------------------
+# Matrix-parameterized convenience family with two observation shapes:
+#   SCALAR obs      `y ~ kalman(m0, P0, A, Q, c, r)` — yₜ = c'·zₜ + N(0, r),
+#                    c::vector[K], r::real, y::vector[T].
+#   MULTIVARIATE obs `y ~ kalman(m0, P0, A, Q, C, R)` — yₜ = C·zₜ + N(0, R),
+#                    C::matrix[d,K], R::matrix[d,d], y::matrix[T,d] (row t = yₜ).
+# zₜ = A·zₜ₋₁ + N(0, Q). Declared matrix dims keep the state size in UDF scope
+# (unlike the closure route above). Returns the exact marginal log-density;
+# `_lpdfs` gives the per-step one-step-ahead conditionals and `_rng`
+# forward-simulates the series.
+@deffun @stanonly begin
+    @lpxf kalman_lpdf(y::vector[T], m0::vector[K], P0::matrix[K,K],
+                      A::matrix[K,K], Q::matrix[K,K], c::vector[K], r::real)::real =
+        sum(kalman_lpdfs(y, m0, P0, A, Q, c, r))
+    kalman_lpdfs(y::vector[T], m0::vector[K], P0::matrix[K,K],
+                 A::matrix[K,K], Q::matrix[K,K], c::vector[K], r::real)::vector[T] = begin
+        ll::vector[T]
+        m = m0
+        P = P0
+        for t in 1:T
+            mp = A * m
+            Pp = quad_form_sym(P, A') + Q
+            yhat = c' * mp
+            S = quad_form_sym(Pp, c) + r
+            Kg = Pp * c / S
+            m = mp + Kg * (y[t] - yhat)
+            P = Pp - Kg * (c' * Pp)
+            ll[t] = normal_lpdf(y[t], yhat, sqrt(S))
+        end
+        ll
+    end
+    kalman_rng(vector[T], m0::vector[K], P0::matrix[K,K],
+               A::matrix[K,K], Q::matrix[K,K], c::vector[K], r::real)::vector[T] = begin
+        yy::vector[T]
+        m = m0
+        P = P0
+        for t in 1:T
+            mp = A * m
+            Pp = quad_form_sym(P, A') + Q
+            yhat = c' * mp
+            S = quad_form_sym(Pp, c) + r
+            yt = normal_rng(yhat, sqrt(S))
+            Kg = Pp * c / S
+            m = mp + Kg * (yt - yhat)
+            P = Pp - Kg * (c' * Pp)
+            yy[t] = yt
+        end
+        yy
+    end
+end
+
+# Multivariate-observation overloads of `kalman` (C::matrix[d,K], R::matrix[d,d];
+# y::matrix[T,d], row t = yₜ). `@lhs` — not `@lpxf` — registers the base tracetype
+# for this signature; the scalar block above already registered kalman's
+# lpxf/rng/likelihood dispatch hooks, and one @lpxf per base name is the limit.
+# Multiple dispatch selects this overload from the matrix argument shapes.
+@deffun @stanonly begin
+    @lhs kalman_lpdf(y::matrix[T,d], m0::vector[K], P0::matrix[K,K],
+                     A::matrix[K,K], Q::matrix[K,K], C::matrix[d,K], R::matrix[d,d])::real =
+        sum(kalman_lpdfs(y, m0, P0, A, Q, C, R))
+    kalman_lpdfs(y::matrix[T,d], m0::vector[K], P0::matrix[K,K],
+                 A::matrix[K,K], Q::matrix[K,K], C::matrix[d,K], R::matrix[d,d])::vector[T] = begin
+        ll::vector[T]
+        m = m0
+        P = P0
+        for t in 1:T
+            mp = A * m
+            Pp = quad_form_sym(P, A') + Q
+            yhat = C * mp
+            S = quad_form_sym(Pp, C') + R
+            Kg = mdivide_right_spd(Pp * C', S)
+            m = mp + Kg * (row(y, t)' - yhat)
+            P = Pp - Kg * C * Pp
+            ll[t] = multi_normal_lpdf(row(y, t)', yhat, S)
+        end
+        ll
+    end
+    kalman_rng(matrix[T,d], m0::vector[K], P0::matrix[K,K],
+               A::matrix[K,K], Q::matrix[K,K], C::matrix[d,K], R::matrix[d,d])::matrix[T,d] = begin
+        yy::matrix[T,d]
+        m = m0
+        P = P0
+        for t in 1:T
+            mp = A * m
+            Pp = quad_form_sym(P, A') + Q
+            yhat = C * mp
+            S = quad_form_sym(Pp, C') + R
+            yt = multi_normal_rng(yhat, S)
+            Kg = mdivide_right_spd(Pp * C', S)
+            m = mp + Kg * (yt - yhat)
+            P = Pp - Kg * C * Pp
+            yy[t,:] = yt'
+        end
+        yy
+    end
+end
+
+# --- Hidden Markov model (discrete latent states) -------------------------------
+# `y ~ hmm_forward(rho, Gamma, emit, emit_rng)` — forward-filter marginal
+# likelihood for a K-state HMM (user decision `07j39xa`, option A). The emission
+# is USER code: `emit(yₜ)::vector[K]` returns the per-state log-density row,
+# closing over emission parameters like any HOF closure. An HMM couples each
+# observation to the parameters through that user-chosen emission, so there is
+# no fixed linear-algebra object to take as args (the `kalman` mold does not
+# fit). The package owns the fixed forward recursion over the filtered state
+# probs `alpha::vector[K]`, in log space via `log_sum_exp`; `emit_rng(k)`
+# draws `yₜ | zₜ = k` for the `_rng` forward-simulation leg (`categorical_rng`
+# draws the state, `one_hot_vector` re-points the belief at the draw). `K`
+# unifies from the declared `rho::vector[K]` / `Gamma::matrix[K,K]` dims (the
+# kalman pattern — no capture scoping work). `Gamma` is row-stochastic
+# (`Gamma[m,n] = p(zₜ=n | zₜ₋₁=m)`), matching Stan's `hmm_marginal` convention.
+# Internal locals are `hmm_`-prefixed (the `sm_` hygiene rationale in
+# `sequential_marginalize`: a capture named `r`/`b`/`t` must never collide).
+# DISCRETE observations use the SAME bare spelling (`y ~ hmm_forward(…)`): Stan
+# resolves a bare `~` to the `_lpdf`/`_lpmf` specialization by the variate type
+# itself. The `hmm_forward_lpmf` wrapper below exists so the fetch can pull the
+# `_lpmf` specialization INSTEAD of the `_lpdf` one for int lhs (a
+# closure-specialised `_lpdf` wrapper with an int first arg is illegal Stan;
+# see `_dual_lpmf_call`, lpxf_builtin.jl). Plain `@deffun`, deliberately NOT
+# `@lpxf` (that would overwrite the base hooks). The `_lpdfs` leg is shared and
+# obs-generic (`anything[T]`); the `int[T]` rng overload serves the GQ draw.
+@deffun @stanonly begin
+    @lpxf hmm_forward_lpdf(y::anything[T], rho::vector[K], Gamma::matrix[K,K],
+                           emit, emit_rng)::real =
+        sum(hmm_forward_lpdfs(y, rho, Gamma, emit, emit_rng))
+    hmm_forward_lpmf(y::int[T], rho::vector[K], Gamma::matrix[K,K],
+                     emit, emit_rng)::real =
+        sum(hmm_forward_lpdfs(y, rho, Gamma, emit, emit_rng))
+    hmm_forward_lpdfs(y::anything[T], rho::vector[K], Gamma::matrix[K,K],
+                      emit, emit_rng)::vector[T] = begin
+        hmm_ll::vector[T]
+        hmm_alpha = rho
+        for hmm_t in 1:T
+            hmm_ap = Gamma' * hmm_alpha
+            hmm_joint = log(hmm_ap) + emit(y[hmm_t])
+            hmm_ell = log_sum_exp(hmm_joint)
+            hmm_alpha = exp(hmm_joint - hmm_ell)
+            hmm_ll[hmm_t] = hmm_ell
+        end
+        hmm_ll
+    end
+    hmm_forward_rng(vector[T], rho::vector[K], Gamma::matrix[K,K],
+                    emit, emit_rng)::vector[T] = begin
+        hmm_yy::vector[T]
+        hmm_alpha = rho
+        for hmm_t in 1:T
+            hmm_ap = Gamma' * hmm_alpha
+            hmm_z = categorical_rng(hmm_ap)
+            hmm_yt = emit_rng(hmm_z)
+            hmm_alpha = one_hot_vector(rows(rho), hmm_z)
+            hmm_yy[hmm_t] = hmm_yt
+        end
+        hmm_yy
+    end
+    hmm_forward_rng(int[T], rho::vector[K], Gamma::matrix[K,K],
+                    emit, emit_rng)::int[T] = begin
+        hmm_yy::int[T]
+        hmm_alpha = rho
+        for hmm_t in 1:T
+            hmm_ap = Gamma' * hmm_alpha
+            hmm_z = categorical_rng(hmm_ap)
+            hmm_yt = emit_rng(hmm_z)
+            hmm_alpha = one_hot_vector(rows(rho), hmm_z)
+            hmm_yy[hmm_t] = hmm_yt
+        end
+        hmm_yy
     end
 end
 
@@ -886,18 +1763,18 @@ end
 # declarations. Overloads of the legacy `x::ntup` accessors above — additive,
 # so no `@builtin_module` manifest edit (and no live-app const wedge, §R13).
 @deffun begin
-    ragged_start(ends::int[k], i::int)::int = if i == 1
+    @juliacompat ragged_start(ends::int[k], i::int)::int = if i == 1
         1
     else
         1 + ends[i-1]
     end
-    ragged_end(ends::int[k], i::int)::int = ends[i]
+    @juliacompat ragged_end(ends::int[k], i::int)::int = ends[i]
     # Data-qualified group length: `ragged_length(ends, g)` is legal in a Stan
     # size declaration, so a downstream `z::vector[ragged_length(ends, g)]` param
     # can be sized by a group. (`length(rv[g])` would instead be `num_elements`
     # of a parameter-valued slice, which — like `length(<any param vector>)` —
     # is not folded to a data size, §R9; size from `ends` for a top-level decl.)
-    ragged_length(ends::int[k], i::int)::int = ragged_end(ends, i) - ragged_start(ends, i) + 1
+    @juliacompat ragged_length(ends::int[k], i::int)::int = ragged_end(ends, i) - ragged_start(ends, i) + 1
 end
 
 # Tuple-representation accessors (retained). These fire when a RaggedVector is
@@ -909,7 +1786,7 @@ end
 @deffun begin
     Base.length(rv::RaggedVector)::int = size(rv.ends)
     Base.lastindex(rv::RaggedVector)::int = size(rv.ends)
-    Base.getindex(rv::RaggedVector, i::int)::vector[ragged_length(rv, i)] =
+    Base.getindex(rv::RaggedVector, i::int)::typeof(rv.mem[1])[ragged_length(rv, i)] =
         rv.mem[ragged_start(rv, i):ragged_end(rv, i)]
     Base.length(rv::RaggedMatrix)::int = size(rv.ends)
     Base.lastindex(rv::RaggedMatrix)::int = size(rv.ends)
@@ -919,6 +1796,25 @@ end
             rv.rows[i],
             rv.cols[i],
         )
+    # Downstream cast: view a ragged flat `(mem, ends)` — e.g. a ragged `plate`
+    # result — as a dense `matrix[K, N]`, column `i` = group `i`, WHEN every group
+    # is the same length `K`. A plate returns ragged by default (its cell width is
+    # not statically fixed); `as_matrix` is how the author ASSERTS uniformity so the
+    # result supports matrix arithmetic (`as_matrix(pred) * w`). The per-group
+    # equal-length loop `reject`s a genuinely ragged value at runtime; `mem` is
+    # group-concatenated, so column-major `to_matrix` lands each group in its own
+    # column. `ends` is data, so the `matrix[ragged_length(ends,1), n]` result size
+    # is data-qualified. The user-facing 1-arg `as_matrix(rv::RaggedVector)` is
+    # lowered to this 2-arg impl by the inline hook below. Snag
+    # plate-return-tup-5c3fa1c8 (BRM); NO auto-lowering — this is the explicit
+    # downstream override the plate contract intends.
+    as_matrix(mem::vector[m], ends::int[n])::matrix[ragged_length(ends, 1), n] = begin
+        k = ragged_length(ends, 1)
+        for i in 1:n
+            @stan_assert ragged_length(ends, i) == k "as_matrix: the ragged value is not a matrix — group i has a different length than group 1; every group must be the same length to view it as a matrix[K, N]. Keep it ragged (index per group with rv[g] / the descriptor's segments) if the widths genuinely differ."
+        end
+        to_matrix(mem, k, n)
+    end
 end
 
 # Constructors bind ragged StanExprs verbatim into `info` (mirrors the closure
@@ -980,12 +1876,108 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_arg)}; info) = begi
         # distribution arguments because auto-indexing them would be ambiguous.
         mem = forward!(CanonicalExpr(Base.getfield, arg, 1); info)
         ends = forward!(CanonicalExpr(Base.getfield, arg, 2); info)
-        lo = stan_call(builtin.ragged_start, ends, g)
-        hi = stan_call(builtin.ragged_end, ends, g)
-        stan_call(getindex, mem, stan_call(Colon(), lo, hi))
+        lo = _trace_stan_call(builtin.ragged_start, ends, g; info)
+        hi = _trace_stan_call(builtin.ragged_end, ends, g; info)
+        _trace_stan_call(getindex, mem, _trace_stan_call(Colon(), lo, hi; info); info)
     else
         arg
     end
+end
+
+# --- ragged observation: generated-quantities companions ---------------------
+# snag ragged-observati-6a26481b. `forward.jl` injects the gq twin loop as SOURCE,
+# but source cannot spell family-companion selection (`rng_expr` / `lpxf_expr`,
+# including the distribution-HOF specs in `lpxf_builtin.jl`). These two markers
+# carry `(group prototype, base-family token, per-group args…)` through the
+# retrace and rebuild the distribution call HERE, where the registry is in scope.
+#
+# Rebuilding the call rather than special-casing each family is what makes nested
+# base-family HOFs (`weighted`, `conditioned`, `clamped`, …) route through the
+# very same group RHS: `lpxf_expr`/`rng_expr`'s own HOF dispatch does the work.
+_ragged_group_call(x::CanonicalExpr) =
+    CanonicalExpr(_family_function(x.args[2]), x.args[3:end]...; x.kwargs...)
+# The BASE family of a group RHS — one level through a distribution HOF, so
+# `weighted(normal, w, …)` is judged by `normal`, exactly as `lpxf_expr` /
+# `likelihood_expr` resolve it. The HOF itself has no `lpxf_expr` method.
+_ragged_base_family(rhs::CanonicalExpr) = begin
+    spec = _distribution_hof(head(rhs))
+    isnothing(spec) ? head(rhs) : _distribution_hof_family(spec, rhs)
+end
+# A ragged observation's carrier and its family's probability KIND must agree: a
+# discrete family (`_lpmf`) needs an INTEGER-valued group (an int-backed
+# `RaggedVector` — `mem::array[] int`), a continuous family (`_lpdf`) a real
+# `vector` group. A discrete draw into a real carrier (or a real draw into an
+# int carrier) has no valid Stan form, so reject the MISMATCH at tracing with
+# both the family and the carrier named. `ct` is the center type of the group
+# slice (int for an integer ragged observation), so a discrete family over an
+# integer ragged observation now lowers exactly like a real one (snag
+# ragged-int-obser-771dd259 — the integer ragged carrier).
+_ragged_carrier_kind(ct) = ct === types.int ? :lpmf : :lpdf
+_assert_ragged_family_carrier(rhs::CanonicalExpr, ct) = begin
+    family = _ragged_base_family(rhs)
+    kind = _probability_kind(family)
+    kind === _ragged_carrier_kind(ct) || error(
+        kind === :lpmf ?
+        string("Ragged observation: family `", nameof(family), "` is discrete (resolves to ",
+            nameof(lpxf_expr(family)), "), but the ragged observation is real-valued (`", ct,
+            "`). A discrete family needs an INTEGER-valued ragged observation — pass ",
+            "`Vector{Vector{Int}}` data (its groups then back an `array[] int`).") :
+        string("Ragged observation: family `", nameof(family), "` is continuous (resolves to ",
+            nameof(lpxf_expr(family)), "), but the ragged observation is integer-valued. Its ",
+            "predictive draw has no integer form — pass real (`Float64`) ragged data, or use ",
+            "a discrete family."),
+    )
+    rhs
+end
+# A group draw is the ONE place a family's SIZED rng companion becomes mandatory:
+# a ragged group is a `vector`, so the scalar `foo_rng(args…)` Stan ships natively
+# is not enough. Without a `foo_rng(vector[n], args…)::vector[n]` overload the
+# failure surfaces from deep inside `tracetype` as an internal
+# `` `tracetype` not defined for _arg30_2::anything ``, which names neither the
+# family nor what is missing. Re-raise with both.
+_ragged_missing_sized_rng(rhs::CanonicalExpr, ct, detail) = begin
+    family = _ragged_base_family(rhs)
+    rng = try string(nameof(rng_expr(head(rhs)))) catch; string(nameof(family), "_rng") end
+    error(
+        "Ragged observation: family `", nameof(family), "` has no SIZED predictive ",
+        "companion, so its per-group draw cannot be built. A ragged group is a Stan ",
+        "`", ct, "`, not a scalar, so `", rng, "` needs the sized-token overload\n",
+        "    @deffun ", rng, "(", ct, "[n], <the family's args…>)::", ct, "[n] = …\n",
+        "alongside its scalar form — the same protocol every other vector-shaped ",
+        "predictive draw uses (see `normal_rng(vector[n], …)` in `builtin.jl`). ", detail,
+    )
+end
+_ragged_group_rng(token, rhs::CanonicalExpr, ct) = begin
+    rv = try
+        rng_expr(token, rhs)
+    catch e
+        _ragged_missing_sized_rng(rhs, ct, string("Underlying error: ", sprint(showerror, e)))
+    end
+    # A missing sized overload does not always THROW: `@deffun` dispatch can fall
+    # through to an untyped/vararg form that traces to `anything`, which only fails
+    # later, at the slice assignment, as an internal `` `tracetype` not defined for
+    # _argNN::anything ``. Catch that shape here, where the family is still known.
+    center_type(rv) === types.anything && _ragged_missing_sized_rng(
+        rhs, ct, "It resolved to an untyped (`anything`) result instead.",
+    )
+    rv
+end
+expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_draw)}; info) = begin
+    proto = x.args[1]
+    ct = center_type(proto)
+    rhs = _assert_ragged_family_carrier(_ragged_group_call(x), ct)
+    # Sized token — the SAME protocol every other vector-shaped predictive draw
+    # uses, so a custom `@lpxf` family only needs its ordinary sized
+    # `foo_rng(vector[n], args…)::vector[n]` companion (stanblocks-use §8). For an
+    # integer ragged observation `ct` is `int`, so the token selects the discrete
+    # `foo_rng(int[n], …)::int[n]` overload (builtin.jl `$drng(int[n], …)` block).
+    token = StanExpr(ct, StanType(types.tokenof{ct}, stan_size(proto); value=ct, qual=:data))
+    _ragged_group_rng(token, rhs, ct)
+end
+expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_density)}; info) = begin
+    rhs = _assert_ragged_family_carrier(_ragged_group_call(x), center_type(x.args[1]))
+    # The AGGREGATE density of the whole group — one scalar. Never `_lpdfs`.
+    lpxf_expr(x.args[1], rhs)
 end
 
 # `v[mask]` with `mask :: bool[n]` (an element-wise comparison result such as
@@ -1002,7 +1994,7 @@ end
 # falls through to normal integer indexing. This getindex overload is the ONLY
 # way `bool` differs from `int`; everywhere else `bool[n]` dispatches as `int[n]`.
 #
-# INSIDE A PLATE loop (`_plate_context() !== nothing`) the hoist is SUPPRESSED and
+# INSIDE A PLATE loop (`_plate_context(info) !== nothing`) the hoist is SUPPRESSED and
 # the `findall` stays inline: a per-cell mask is data-derived, so the hoisted `idx`
 # would land in the transformed-data COPY of the plate loop that `distribute!` splits
 # off — out of scope in the model COPY where the cmt-keyed obs uses it (stanc
@@ -1010,17 +2002,17 @@ end
 # block; the plate emitter mirrors this for an explicit `idx = findall(...)` local
 # (forward.jl). Snag plate-cell-int.
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2,<:StanExpr2{<:types.bool}}}; info) = begin
-    stan_ndim(type(x.args[2])) >= 1 || return fold_shape_query(stan_expr(x))
+    stan_ndim(type(x.args[2])) >= 1 || return fold_shape_query(_trace_stan_expr(x, info))
     idx_val = forward!(CanonicalExpr(Base.findall, x.args[2]); info)
-    pending = _get_inline_pending()
-    idx_ref = if pending === nothing || _plate_context() !== nothing
+    pending = _get_inline_pending(info)
+    idx_ref = if pending === nothing || _plate_context(info) !== nothing
         idx_val                                   # no statement context, or inside a plate
                                                   # loop → inline the findall (see above)
     else
-        id = _next_inline_id()
+        id = _next_inline_id(info)
         name = Symbol(:boolmask_idx_, id)
         while name in keys(info)
-            id = _next_inline_id(); name = Symbol(:boolmask_idx_, id)
+            id = _next_inline_id(info); name = Symbol(:boolmask_idx_, id)
         end
         push!(pending, forward!(CanonicalExpr(:(=), name, idx_val); info))
         info[name]
@@ -1035,38 +2027,54 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:R
     if _is_ragged_construction(x.args[1])
         rv, i = x.args
         ends = _ragged_ends(rv)
-        lo = stan_call(builtin.ragged_start, ends, i)
-        hi = stan_call(builtin.ragged_end, ends, i)
-        stan_call(getindex, _ragged_mem(rv), stan_call(Colon(), lo, hi))
+        lo = _trace_stan_call(builtin.ragged_start, ends, i; info)
+        hi = _trace_stan_call(builtin.ragged_end, ends, i; info)
+        _trace_stan_call(getindex, _ragged_mem(rv), _trace_stan_call(Colon(), lo, hi; info); info)
     else
-        fold_shape_query(stan_expr(x))
+        fold_shape_query(_trace_stan_expr(x, info))
+    end
+# `as_matrix(rv)` on a ragged CONSTRUCTION → lower to the 2-arg `as_matrix(mem, ends)`
+# impl on the bare components, so the `matrix[ragged_length(ends,1), n]` result size
+# references the DATA `ends` symbol directly (never the param-containing tuple, which
+# stanc rejects in a size declaration). The runtime uniform-width `reject` lives in
+# that impl. Snag plate-return-tup-5c3fa1c8.
+expand_inline_or_trace(x::CanonicalExpr{typeof(as_matrix),<:Tuple{<:StanExpr2{<:RaggedVector}}}; info) =
+    if _is_ragged_construction(x.args[1])
+        rv = x.args[1]
+        _trace_stan_call(builtin.as_matrix, _ragged_mem(rv), _ragged_ends(rv); info)
+    else
+        error(
+            "as_matrix: expected a ragged `plate` result / RaggedVector construction; got a ",
+            "bound RaggedVector value. Call `as_matrix` on the ragged result directly ",
+            "(`as_matrix(pred)`), not on a name rebound from one."
+        )
     end
 # `rm[i]` → reconstruct the selected flat slice with its data-only dimensions.
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
     if _is_ragged_construction(x.args[1])
         rv, i = x.args
         ends = _ragged_ends(rv)
-        lo = stan_call(builtin.ragged_start, ends, i)
-        hi = stan_call(builtin.ragged_end, ends, i)
-        slice = stan_call(getindex, _ragged_mem(rv), stan_call(Colon(), lo, hi))
-        nr = stan_call(getindex, _ragged_rows(rv), i)
-        nc = stan_call(getindex, _ragged_cols(rv), i)
-        stan_call(builtin.to_matrix, slice, nr, nc)
+        lo = _trace_stan_call(builtin.ragged_start, ends, i; info)
+        hi = _trace_stan_call(builtin.ragged_end, ends, i; info)
+        slice = _trace_stan_call(getindex, _ragged_mem(rv), _trace_stan_call(Colon(), lo, hi; info); info)
+        nr = _trace_stan_call(getindex, _ragged_rows(rv), i; info)
+        nc = _trace_stan_call(getindex, _ragged_cols(rv), i; info)
+        _trace_stan_call(builtin.to_matrix, slice, nr, nc; info)
     else
-        fold_shape_query(stan_expr(x))
+        fold_shape_query(_trace_stan_expr(x, info))
     end
 # `length(rv)` / `lastindex(rv)` → number of groups = `num_elements(ends)`.
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedVector}}}; info) =
-    _is_ragged_construction(x.args[1]) ? stan_call(length, _ragged_ends(x.args[1])) : fold_shape_query(stan_expr(x))
+    _is_ragged_construction(x.args[1]) ? _trace_stan_call(length, _ragged_ends(x.args[1]); info) : fold_shape_query(_trace_stan_expr(x, info))
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedMatrix}}}; info) =
-    _is_ragged_construction(x.args[1]) ? stan_call(length, _ragged_ends(x.args[1])) : fold_shape_query(stan_expr(x))
+    _is_ragged_construction(x.args[1]) ? _trace_stan_call(length, _ragged_ends(x.args[1]); info) : fold_shape_query(_trace_stan_expr(x, info))
 # `rv.mem` / `rv.ends` (and the matrix shape fields) → the stored component;
 # field access lowers to `getfield(rv, position)`, resolved against the
 # constructor arguments here.
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedVector},<:StanExpr2{<:types.int}}}; info) =
-    _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+    _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
-    _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+    _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
 
 # --- EachCol / EachRow — first-class column/row VIEWS of a matrix -------------
 # `EachCol(X)` / `EachRow(X)` make a matrix's columns / rows an indexable container
@@ -1118,19 +2126,19 @@ _view_mat(v::StanExpr) = expr(v).args[1]
 
 # `EachCol(X)[j]` → `col(X, j)`; `EachRow(X)[i]` → `row(X, i)` (construction case).
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:EachCol},<:StanExpr2{<:types.int}}}; info) =
-    _is_view_construction(x.args[1]) ? stan_call(builtin.col, _view_mat(x.args[1]), x.args[2]) : fold_shape_query(stan_expr(x))
+    _is_view_construction(x.args[1]) ? _trace_stan_call(builtin.col, _view_mat(x.args[1]), x.args[2]; info) : fold_shape_query(_trace_stan_expr(x, info))
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:EachRow},<:StanExpr2{<:types.int}}}; info) =
-    _is_view_construction(x.args[1]) ? stan_call(builtin.row, _view_mat(x.args[1]), x.args[2]) : fold_shape_query(stan_expr(x))
+    _is_view_construction(x.args[1]) ? _trace_stan_call(builtin.row, _view_mat(x.args[1]), x.args[2]; info) : fold_shape_query(_trace_stan_expr(x, info))
 # `length(EachCol(X))` / `lastindex` → `cols(X)`; EachRow → `rows(X)`.
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:EachCol}}}; info) =
-    _is_view_construction(x.args[1]) ? stan_call(builtin.cols, _view_mat(x.args[1])) : fold_shape_query(stan_expr(x))
+    _is_view_construction(x.args[1]) ? _trace_stan_call(builtin.cols, _view_mat(x.args[1]); info) : fold_shape_query(_trace_stan_expr(x, info))
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:EachRow}}}; info) =
-    _is_view_construction(x.args[1]) ? stan_call(builtin.rows, _view_mat(x.args[1])) : fold_shape_query(stan_expr(x))
+    _is_view_construction(x.args[1]) ? _trace_stan_call(builtin.rows, _view_mat(x.args[1]); info) : fold_shape_query(_trace_stan_expr(x, info))
 # `EachCol(X).X` / `EachRow(X).X` → the captured matrix (construction case).
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:EachCol},<:StanExpr2{<:types.int}}}; info) =
-    _is_view_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+    _is_view_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:EachRow},<:StanExpr2{<:types.int}}}; info) =
-    _is_view_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(stan_expr(x))
+    _is_view_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
 
 # --- Sized-token rng overloads (generated via @eval @deffun) -----------------
 # gq `x::T[n] ~ dist(args...)` synthesizes `dist_rng(T[n], args...)` which
@@ -1141,24 +2149,68 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr
 # path wraps continuous rngs in `to_vector`.
 
 # std_normal token (0-arg)
-@deffun std_normal_rng(real[n])::real[n] = normal_rng(rep_vector(0, n), 1)
-@deffun std_normal_rng(vector[n])::vector[n] = to_vector(normal_rng(rep_vector(0, n), 1))
+# Empty-segment guard (todo 19n8abc): the native call mixes a container with
+# the scalar `1`, so the token-0 draw needs the same early return as the 2-arg
+# loop below. (The zero-arg `std_normal_rng()` scalar form is unaffected.)
+@deffun std_normal_rng(real[n])::real[n] = if n == 0
+    rv::real[n]
+    rv
+else
+    normal_rng(rep_vector(0, n), 1)
+end
+@deffun std_normal_rng(vector[n])::vector[n] = if n == 0
+    rv::vector[n]
+    rv
+else
+    to_vector(normal_rng(rep_vector(0, n), 1))
+end
 
 # 2-arg continuous families. Two semantic cases:
 #   - all scalar: need `rep_vector` so Stan produces a shaped output
 #   - catch-all (at least one shape-[n] container): Stan native broadcasts
 # Julia dispatch picks the more-specific `(a::real, b::real)` when both scalar.
+# Empty-segment guard (todo 19n8abc — generalised from snag
+# sized-rng-compan-225549a9): Stan Math ≤5.3.0 sizes a vectorized draw off ALL
+# args with scalars counting as size 1, so a scalar arg beside an empty
+# segment runs the draw loop once over a null data pointer (SIGSEGV — proven
+# for student_t under ASan). Fixed upstream in stan-dev/math@6db3b739, after
+# the BridgeStan 2.9.0 bundle — until a fixed BridgeStan ships, return the
+# empty draw directly when the size token is 0. The `else` branch is the exact
+# previous body, so non-empty draws are unchanged. Same `if n == 0` idiom as
+# `robust_linspaced_int_array` above.
 for dist in (:normal, :cauchy, :lognormal, :gamma, :inv_gamma, :beta, :uniform,
              :weibull, :frechet, :double_exponential, :logistic, :gumbel,
              :pareto, :scaled_inv_chi_square, :von_mises, :loglogistic)
     drng = Symbol(dist, :_rng)
-    @eval @deffun $drng(real[n],   a::real, b::real)::real[n]   = $drng(rep_vector(a, n), b)
-    @eval @deffun $drng(vector[n], a::real, b::real)::vector[n] = to_vector($drng(rep_vector(a, n), b))
-    @eval @deffun $drng(real[n],   a, b)::real[n]   = $drng(a, b)
-    @eval @deffun $drng(vector[n], a, b)::vector[n] = to_vector($drng(a, b))
+    @eval @deffun $drng(real[n],   a::real, b::real)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(rep_vector(a, n), b)
+    end
+    @eval @deffun $drng(vector[n], a::real, b::real)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(rep_vector(a, n), b))
+    end
+    @eval @deffun $drng(real[n],   a, b)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(a, b)
+    end
+    @eval @deffun $drng(vector[n], a, b)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(a, b))
+    end
 end
 
-# 1-arg continuous families
+# 1-arg continuous families. Single native arg, so the draw loop is bound by
+# that arg's own size — no scalar can inflate it (audit todo 19n8abc): immune
+# by construction, no guard.
 for dist in (:exponential, :chi_square, :inv_chi_square, :rayleigh)
     drng = Symbol(dist, :_rng)
     @eval @deffun $drng(real[n],   a::real)::real[n]   = $drng(rep_vector(a, n))
@@ -1167,62 +2219,229 @@ for dist in (:exponential, :chi_square, :inv_chi_square, :rayleigh)
     @eval @deffun $drng(vector[n], a)::vector[n] = to_vector($drng(a))
 end
 
-# 3-arg continuous (the leading arg is scalar in this registry's supported signatures)
+# 3-arg continuous families. Two leading-arg regimes:
+#   - SCALAR leading arg (`nu::real`) — `student_t`'s dof, or a scalar location:
+#     rep_vector the SECOND arg in the all-scalar case so Stan has a shape to
+#     draw against; a vector second/third arg broadcasts natively.
+#   - VECTOR leading arg — a per-observation LOCATION. `skew_double_exponential`
+#     / `skew_normal` / `exp_mod_normal` / `pareto_type_2` in a regression emit
+#     `dist(mu_vec, sigma, tau)` with a scalar OR vector scale, so the auto-GQ
+#     sized-token draw is `dist_rng(<token>, vector, scale, real)`. The location
+#     is already `vector[n]`, so delegate straight to native — the family's
+#     `@defsig` below lists `(vector[n], vector[n], real)` /
+#     `(vector[n], vector[n], vector[n])` and `(vector[n], real, real)` /
+#     `(vector[n], real, vector[n])`. Without these overloads that draw matches
+#     no method and the generated-quantities block fails to trace (snags
+#     stanblocks-skew, sbbrmi-response-f3ed0938).
 for dist in (:student_t, :skew_normal, :exp_mod_normal,
              :skew_double_exponential, :pareto_type_2)
     drng = Symbol(dist, :_rng)
-    @eval @deffun $drng(real[n],   nu::real, a::real, b::real)::real[n]   = $drng(nu, rep_vector(a, n), b)
-    @eval @deffun $drng(vector[n], nu::real, a::real, b::real)::vector[n] = to_vector($drng(nu, rep_vector(a, n), b))
-    @eval @deffun $drng(real[n],   nu::real, a, b)::real[n]   = $drng(nu, a, b)
-    @eval @deffun $drng(vector[n], nu::real, a, b)::vector[n] = to_vector($drng(nu, a, b))
+    # Empty-segment guard (snag sized-rng-compan-225549a9): Stan Math ≤5.3.0
+    # sizes a vectorized draw off ALL args with scalars counting as size 1,
+    # so a scalar arg beside empty segments runs the draw loop once over a
+    # null data pointer (SIGSEGV — proven for student_t under ASan; the
+    # scalar `nu` is the whole family difference vs safe `normal_rng`).
+    # Fixed upstream in stan-dev/math@6db3b739, after the BridgeStan 2.9.0
+    # bundle — until a fixed BridgeStan ships, return the empty draw
+    # directly when the size token is 0. The `else` branch is the exact
+    # previous body, so non-empty draws are unchanged. Same `if n == 0`
+    # idiom as `robust_linspaced_int_array` above.
+    @eval @deffun $drng(real[n],   nu::real, a::real, b::real)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(nu, rep_vector(a, n), b)
+    end
+    @eval @deffun $drng(vector[n], nu::real, a::real, b::real)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(nu, rep_vector(a, n), b))
+    end
+    @eval @deffun $drng(real[n],   nu::real, a, b)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(nu, a, b)
+    end
+    @eval @deffun $drng(vector[n], nu::real, a, b)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(nu, a, b))
+    end
+    # Vector LEADING arg (per-observation location): both leading args are vectors.
+    @eval @deffun $drng(real[n],   loc::vector[n], scale::vector[n], b)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(loc, scale, b)
+    end
+    @eval @deffun $drng(vector[n], loc::vector[n], scale::vector[n], b)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(loc, scale, b))
+    end
+    # Vector LOCATION with a scalar SCALE (`y ~ dist(mu_vec, sigma, tau)` —
+    # the SBBRMI regression shape, snag sbbrmi-response-f3ed0938): Stan
+    # broadcasts the scalar natively, so delegate straight through like the
+    # vector-vector overloads above (the family's `@defsig` lists
+    # `(vector[n], real, real)` / `(vector[n], real, vector[n])`).
+    @eval @deffun $drng(real[n],   loc::vector[n], scale::real, b)::real[n]   = if n == 0
+        rv::real[n]
+        rv
+    else
+        $drng(loc, scale, b)
+    end
+    @eval @deffun $drng(vector[n], loc::vector[n], scale::real, b)::vector[n] = if n == 0
+        rv::vector[n]
+        rv
+    else
+        to_vector($drng(loc, scale, b))
+    end
 end
 
-# 1-arg discrete families (output is int[n]; no to_vector wrap)
+# 1-arg discrete families (output is int[n]; no to_vector wrap). Single native
+# arg — same immunity as the 1-arg continuous loop above (todo 19n8abc).
 for dist in (:bernoulli, :bernoulli_logit, :poisson, :poisson_log)
     drng = Symbol(dist, :_rng)
     @eval @deffun $drng(int[n], p::real)::int[n] = $drng(rep_vector(p, n))
     @eval @deffun $drng(int[n], p)::int[n]       = $drng(p)
 end
 
-# 2-arg discrete families
+# 2-arg discrete families. Same scalar+container mix as the 2-arg continuous
+# loop (todo 19n8abc) — same empty-segment guard, `else` branch unchanged.
 for dist in (:neg_binomial, :neg_binomial_2, :neg_binomial_2_log)
     drng = Symbol(dist, :_rng)
-    @eval @deffun $drng(int[n], a::real, b::real)::int[n] = $drng(rep_vector(a, n), b)
-    @eval @deffun $drng(int[n], a, b)::int[n]             = $drng(a, b)
+    @eval @deffun $drng(int[n], a::real, b::real)::int[n] = if n == 0
+        rv::int[n]
+        rv
+    else
+        $drng(rep_vector(a, n), b)
+    end
+    @eval @deffun $drng(int[n], a, b)::int[n]             = if n == 0
+        rv::int[n]
+        rv
+    else
+        $drng(a, b)
+    end
 end
 
-# binomial: N::int[n] is already a container, so Stan broadcasts scalar p natively
-@deffun binomial_rng(int[n], N::int[n], p)::int[n] = binomial_rng(N, p)
+# binomial: N::int[n] is already a container, so Stan broadcasts scalar p natively.
+# Empty-segment guard (todo 19n8abc): a scalar `p` beside an empty `N`
+# replays the 2-arg-loop segfault, so both overloads early-return.
+@deffun binomial_rng(int[n], N::int[n], p)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    binomial_rng(N, p)
+end
 # The lpmf also broadcasts a scalar trial count across vector observations.
 # Expand it to the observation length so Stan's native RNG returns int[n]
 # instead of the token call falling through to the scalar catch-all.
-@deffun binomial_rng(int[n], N::int, p)::int[n] = binomial_rng(rep_array(N, n), p)
+@deffun binomial_rng(int[n], N::int, p)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    binomial_rng(rep_array(N, n), p)
+end
 
 # The native GLM RNG already returns one integer per design-matrix row. The
 # generated-quantities path also passes the observed int-array's sized token;
 # unwrap that token while asserting the output and matrix row counts agree.
-@deffun bernoulli_logit_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] =
+# Empty-segment guard (todo 19n8abc): a 0-row design matrix early-returns
+# the empty draw instead of reaching a vectorized native over `m` rows.
+@deffun bernoulli_logit_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] = if m == 0
+    rv::int[m]
+    rv
+else
     bernoulli_logit_glm_rng(X, alpha, beta)
+end
 
-# binomial_logit: Stan ships `binomial_logit_lpmf` but NOT a matching
-# `binomial_logit_rng` (only the GLM-flavoured variant exists). Lower
+# The other three GLM families have no native Stan rng at all; their plain
+# forms (declared with bodies above) lower to the base family's rng over
+# `alpha + X * beta`. The token path just unwraps, exactly as bernoulli does.
+@deffun normal_id_glm_rng(vector[m], X::matrix[m,n], alpha, beta, sigma)::vector[m] = if m == 0
+    rv::vector[m]
+    rv
+else
+    normal_id_glm_rng(X, alpha, beta, sigma)
+end
+@deffun normal_id_glm_rng(real[m], X::matrix[m,n], alpha, beta, sigma)::real[m] = if m == 0
+    rv::real[m]
+    rv
+else
+    to_array_1d(normal_id_glm_rng(X, alpha, beta, sigma))
+end
+@deffun poisson_log_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] = if m == 0
+    rv::int[m]
+    rv
+else
+    poisson_log_glm_rng(X, alpha, beta)
+end
+@deffun neg_binomial_2_log_glm_rng(int[m], X::matrix[m,n], alpha, beta, phi)::int[m] = if m == 0
+    rv::int[m]
+    rv
+else
+    neg_binomial_2_log_glm_rng(X, alpha, beta, phi)
+end
+
+# binomial_logit: Stan ships `binomial_logit_lpmf` (and a fused
+# `binomial_logit_glm_lpmf`) but NO `binomial_logit_rng` in any flavour —
+# `bernoulli_logit_glm_rng` is the only `*_glm_rng` in Stan Math at all. Lower
 # the token-path call to `binomial_rng(N, inv_logit(eta))` so SBBRMI's
 # generated_quantities for a `BinomialLogit(N, eta)` likelihood compile
 # under stanc.
-@deffun binomial_logit_rng(int[n], N::int[n], eta)::int[n] = binomial_rng(N, inv_logit(eta))
+# Empty-segment guard (todo 19n8abc): same scalar-mix shape as `binomial_rng`
+# above — `inv_logit(eta)` is scalar whenever `eta` is.
+@deffun binomial_logit_rng(int[n], N::int[n], eta)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    binomial_rng(N, inv_logit(eta))
+end
 # Stan's lpmf also broadcasts a scalar trial count across vector observations.
 # Give the RNG an array-valued argument so it returns one draw per observation;
 # this covers both vector `eta` and the all-scalar `N`/`eta` case.
-@deffun binomial_logit_rng(int[n], N::int, eta)::int[n] = binomial_rng(rep_array(N, n), inv_logit(eta))
+@deffun binomial_logit_rng(int[n], N::int, eta)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    binomial_rng(rep_array(N, n), inv_logit(eta))
+end
 
-# beta_binomial: (trials, alpha, beta); trials always int[n]
-@deffun beta_binomial_rng(int[n], N::int[n], a::real, b::real)::int[n] = beta_binomial_rng(N, a, b)
-@deffun beta_binomial_rng(int[n], N::int[n], a, b)::int[n] = beta_binomial_rng(N, a, b)
+# beta_binomial: (trials, alpha, beta). Empty-segment guard (todo 19n8abc):
+# scalar shape args beside the `N` container replay the scalar-mix failure.
+@deffun beta_binomial_rng(int[n], N::int[n], a::real, b::real)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    beta_binomial_rng(N, a, b)
+end
+@deffun beta_binomial_rng(int[n], N::int[n], a, b)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    beta_binomial_rng(N, a, b)
+end
+# The lpmf also broadcasts a scalar trial count across vector observations.
+# Expand it to the observation length so Stan's native RNG returns int[n].
+@deffun beta_binomial_rng(int[n], N::int, a, b)::int[n] = if n == 0
+    rv::int[n]
+    rv
+else
+    beta_binomial_rng(rep_array(N, n), a, b)
+end
 
-# dirichlet: native already returns vector[n]; token path just unwraps
+# dirichlet: native already returns vector[n]; token path just unwraps. Single
+# draw sized by the one container arg — no scalar-inflated vectorized loop, so
+# outside the guarded class (audit todo 19n8abc).
 @deffun dirichlet_rng(vector[n], alpha::vector[n])::vector[n] = dirichlet_rng(alpha)
 
 # categorical / categorical_logit: repeat one shared probability/logit vector.
+# Explicit `for i in 1:n` loops with scalar native calls — empty input runs
+# zero iterations, so no guard (audit todo 19n8abc).
 @deffun categorical_rng(int[n], p::vector[k])::int[n] = begin
     rv::int[n]
     for i in 1:n
@@ -1248,7 +2467,9 @@ end
     rv
 end
 
-# multi_normal / multi_normal_cholesky: native already returns vector[n]
+# multi_normal / multi_normal_cholesky: native already returns vector[n].
+# Single draws sized by the location vector alone — no scalar-inflated
+# vectorized loop, so outside the guarded class (audit todo 19n8abc).
 @deffun multi_normal_rng(vector[n], loc::vector[n], cov)::vector[n]          = multi_normal_rng(loc, cov)
 @deffun multi_normal_cholesky_rng(vector[n], loc::vector[n], scale)::vector[n] = multi_normal_cholesky_rng(loc, scale)
 
@@ -1256,14 +2477,15 @@ end
 # (`tokenof{cholesky_factor_corr}` sized `(n,)` — `r_ndim(square_matrix) == 1`),
 # so the sized-token slot is written `cholesky_factor_corr[n]`, not
 # `matrix[n,n]`. Delegates to the native 2-arg form, whose first argument is the
-# DIMENSION (an int), not a container — hence `n` rather than the token.
+# DIMENSION (an int), not a container — hence `n` rather than the token. No
+# container is ever read, so outside the guarded class (todo 19n8abc).
 @deffun lkj_corr_cholesky_rng(cholesky_factor_corr[n], eta::real)::matrix[n,n] =
     lkj_corr_cholesky_rng(n, eta)
 
 # =============================================================================
-# bordet (generable) longitudinal-biomarker model-family port.
-# Contract (room `bordet-in-brm`, cut (b)): StanBlocks ships the obs-model
-# triad + the parametric mean KERNELS + index/broadcast helpers; BRM's `bordet_*`
+# Longitudinal-biomarker (generable) model-family port.
+# Contract (cut (b)): StanBlocks ships the obs-model
+# triad + the parametric mean KERNELS + index/broadcast helpers; BRM's biomarker
 # term composes `log_y = baseline[series] + affectable .* time_resp .* exp(dose_resp)`
 # and wires the floor hierarchy. All resolve via the builtin path (no import).
 # =============================================================================
@@ -1317,10 +2539,11 @@ end
     end
     # Sized-token gq path (delegates to the native form; cf. multi_normal_rng).
     # Bare `vector[n]` (no `::`) is the token slot, matching the tokenof shape.
+    # The delegate is the explicit per-element loop above — no guard (todo 19n8abc).
     truncated_normal_rng(vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] =
         truncated_normal_rng(loc, scale, lloq, uloq)
 
-    # Heavy-tailed censored obs model (generated bordet family). Direct analog of
+    # Heavy-tailed censored obs model (generated biomarker family). Direct analog of
     # `truncated_normal` + a leading `dof` arg. NOTE the censored branches use the
     # LOQ LIMITS (`lloq`/`uloq`) inside lcdf/lccdf — faithful to the generated
     # source (`truncated_normal` used `obs`; the two source files genuinely differ,
@@ -1363,6 +2586,7 @@ end
     end
     # Sized-token gq path (delegates to the native form; cf. multi_normal_rng).
     # Bare `vector[n]` (no `::`) is the token slot, matching the tokenof shape.
+    # The delegate is the explicit per-element loop above — no guard (todo 19n8abc).
     truncated_student_t_rng(vector[n], dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] =
         truncated_student_t_rng(dof, loc, scale, lloq, uloq)
     end
@@ -1371,12 +2595,12 @@ end
     # Single-peak time response: with xi = (log t - loc)*exp(log_slope), the
     # value exp(log_inv_logit(xi)+log_inv_logit(-xi))*mag peaks once at log t=loc
     # and →0 as t→0 or t→∞ (log_slope stored unconstrained → exp() positive).
-    bordet_time_response(log_time::vector[n], loc::vector[n], log_slope::vector[n], mag::vector[n])::vector[n] = begin
+    @juliacompat biomarker_time_response(log_time::vector[n], loc::vector[n], log_slope::vector[n], mag::vector[n])::vector[n] = begin
         xi::vector[n] = (log_time - loc) .* exp(log_slope)
         exp(log_inv_logit(xi) + log_inv_logit(-xi)) .* mag
     end
     # Log dose response (sigmoid in log space): caller exp()s it in the compose.
-    bordet_dose_response(log_dose::vector[n], loc::vector[n], log_slope::vector[n])::vector[n] = begin
+    @juliacompat biomarker_dose_response(log_dose::vector[n], loc::vector[n], log_slope::vector[n])::vector[n] = begin
         xi::vector[n] = (log_dose - loc) .* exp(log_slope)
         log_inv_logit(xi)
     end
@@ -1384,7 +2608,7 @@ end
     # --- index / broadcast helpers (transformed-data) ------------------------
     # Column-major linear indices: `xy` with `vec(M)[xy] == M[x,y]` for an
     # (max(x) × max(y)) matrix `M`.
-    linear_idxs(x::int[n], y::int[n])::int[n] = begin
+    @juliacompat linear_idxs(x::int[n], y::int[n])::int[n] = begin
         m = max(x)
         rv::int[n]
         for i in 1:n
@@ -1393,14 +2617,14 @@ end
         rv
     end
     # Elementwise max(x[i], y) / (x[i] > y) for a vector x and scalar y.
-    broadcasted_max(x::vector[n], y::real)::vector[n] = begin
+    @juliacompat broadcasted_max(x::vector[n], y::real)::vector[n] = begin
         rv::vector[n]
         for i in 1:n
             rv[i] = fmax(x[i], y)
         end
         rv
     end
-    broadcasted_gt(x::vector[n], y::real)::vector[n] = begin
+    @juliacompat broadcasted_gt(x::vector[n], y::real)::vector[n] = begin
         rv::vector[n]
         for i in 1:n
             rv[i] = x[i] > y
@@ -1428,22 +2652,50 @@ end
 end
 
 @defsig begin
-    Union{typeof.((sqrt, exp, log, log10, sin, cos, asin, acos, tan, atan,
+    Union{typeof.((sqrt, inv_sqrt, exp, log, log10, sin, cos, asin, acos, tan, atan,
         cosh, sinh, tanh, acosh, asinh, atanh,
         log1m, inv_logit, logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs,
         log1p_exp, log1m_exp, Base.inv, Base.log1p,
         exp2, log2, cbrt, ceil, floor, round, trunc,
         square, erf, erfc, tgamma, digamma, trigamma,
-        Phi_approx, inv_Phi))...} => begin
+        Phi_approx, inv_Phi, inv_cloglog, lambert_w0))...} => begin
         (real,)=>real
         (vector[n],)=>vector[n]
         (row_vector[n],)=>row_vector[n]
         (real[n],)=>real[n]
         (matrix[m,n],)=>matrix[m,n]
     end
+    # real -> int conversion. Stan's `to_int` requires a `data`-qualified
+    # argument; StanBlocks places deterministic functions of data in
+    # `transformed data`, where the argument is data-qualified, so a data-side
+    # `to_int(round(...))` (dPCR partition counts) satisfies Stan's contract.
+    typeof(to_int) => begin
+        (real,) => int
+        (real[n],) => int[n]
+    end
     Union{typeof.((log_sum_exp, ))...} => begin
         (real, real) => real
         (vector[n], vector[n]) => vector[n]
+    end
+    # `log_modified_bessel_first_kind(v, z)` — the log of the modified Bessel
+    # function of the first kind, order `v` (any real, not just int) at `z`.
+    # Stan vectorises it over both arguments. `types.int <: types.real`, so the
+    # single scalar row also covers every `(int, real)` / `(real, int)` /
+    # `(int, int)` mix (all return `real`), and the `real[n]` rows admit an
+    # `int[n]` argument in either slot — stanc's own table lists
+    # `(array[] int, real)`, `(real, array[] int)` and the same-kind array
+    # pairs, and it accepts the mixed `(array[] int, array[] real)` pair by
+    # int->real array promotion (verified on stanc3 v2.39.0), so every shape a
+    # row here admits is one stanc compiles. `row_vector` / `matrix` /
+    # nested-array forms are not registered.
+    typeof(log_modified_bessel_first_kind) => begin
+        (real, real) => real
+        (real, vector[n]) => vector[n]
+        (vector[n], real) => vector[n]
+        (vector[n], vector[n]) => vector[n]
+        (real, real[n]) => real[n]
+        (real[n], real) => real[n]
+        (real[n], real[n]) => real[n]
     end
     # Matrix reductions returning real
     Union{typeof.((trace, determinant, log_determinant, log_determinant_spd))...} => begin
@@ -1566,6 +2818,7 @@ end
     Union{typeof.((+, -, ^, *, /))...} => begin
         (real,) => real
         (vector[n],) => vector[n]
+        (row_vector[n],) => row_vector[n]
         (int, real) => real
         (int, int) => int
         (real, int) => real
@@ -1577,12 +2830,15 @@ end
         # rather than silently emitting invalid Stan. Do not re-add them.
         (int, vector[n]) => vector[n]
         (real, vector[n]) => vector[n]
+        (int, row_vector[n]) => row_vector[n]
+        (real, row_vector[n]) => row_vector[n]
         (real, matrix[m,n]) => matrix[m,n]
         (vector[n], real) => vector[n]
         (vector[n], int) => vector[n]
         (vector[n], vector[m]) => vector[n]
         (row_vector[n], real) => row_vector[n]
         (row_vector[n], int) => row_vector[n]
+        (row_vector[n], row_vector[m]) => row_vector[n]
         (matrix[m,n], real) => matrix[m,n]
     end
     Union{typeof.((+, -))...} => begin 
@@ -1591,6 +2847,7 @@ end
     Union{typeof.((*, ))...} => begin
         (vector[m], row_vector[n]) => matrix[m,n]
         (row_vector[n], vector[n]) => real
+        (row_vector[m], matrix[m,n]) => row_vector[n]
         (matrix[m,n], vector[n]) => vector[m]
         (matrix[m,n], matrix[n,o]) => matrix[m,o]
         (cholesky_factor_corr[m],matrix[m,n]) => matrix[m,n]
@@ -1610,13 +2867,22 @@ end
     typeof(getindex) => begin 
         (int[m], int) => int
         (int[m], int[n]) => int[n]
-        (int[m,n], int) => int[n] 
-        (int[m,n], int[o], int) => int[o] 
-        (int[m,n], int, int) => int 
+        (int[m,n], int) => int[n]
+        (int[m,n], int[o], int) => int[o]
+        (int[m,n], int, int) => int
+        # Array row-slice (`y[i, :]` desugars to `y[i, 1:n]`) and sub-array
+        # (`y[a:b, c:d]`), mirroring the `matrix[m,n]` rows below. Without the
+        # `(int[m,n], int, int[o])` row an int-array row-slice assignment
+        # `y[i, :] = multinomial_rng(...)` degraded to `anything` (snag
+        # multinomial-cust-59569d79).
+        (int[m,n], int, int[o]) => int[o]
+        (int[m,n], int[o], int[p]) => int[o, p]
         (real[m], int) => real
         (real[m], int[n]) => real[n]
-        (real[m,n], int) => real[n] 
-        (real[m,n], int[o], int) => real[o] 
+        (real[m,n], int) => real[n]
+        (real[m,n], int[o], int) => real[o]
+        (real[m,n], int, int[o]) => real[o]
+        (real[m,n], int[o], int[p]) => real[o, p]
         (vector[m], int[n]) => vector[n]
         (any_vector[m], int) => real
         (vector[m,n], int) => vector[n]
@@ -1632,6 +2898,16 @@ end
         (matrix[m,n,k], int, int[o], int) => vector[o]
         (matrix[m,n,k], int, int, int[p]) => row_vector[p]
         (matrix[m,n,k], int, int[o], int[p]) => matrix[o,p]
+        # A single natively-constrained square matrix (`cholesky_factor_corr` /
+        # `cholesky_factor_cov`) is SIZED by one dim (`<ct>[K]`, since
+        # `r_ndim(square_matrix) == 1`) but is logically K-by-K: scalar element
+        # access is a `real`, exactly as for a plain `matrix[K,K]`. Without an entry
+        # here the l_ndim-peeling getindex rule (functions.jl, `l_ndim > 0` branch)
+        # reads the first index as an array-prefix selector and the result degrades
+        # to `anything` (defect D5). The `[m,n]` entries below are the plate
+        # (array-of-cells) case, indexed by the outer axis first.
+        (cholesky_factor_corr[m], int, int) => real
+        (cholesky_factor_cov[m], int, int) => real
         (cholesky_factor_corr[m,n], int, int, int) => real
         (cholesky_factor_corr[m,n], int, int[o], int) => vector[o]
         (cholesky_factor_corr[m,n], int, int, int[p]) => row_vector[p]
@@ -1679,6 +2955,8 @@ end
         (real, real, real) => real
         (real, vector[n], real) => real[n]
         (real, vector[n], vector[n]) => real[n]
+        (vector[n], real, real) => real[n]
+        (vector[n], real, vector[n]) => real[n]
         (vector[n], vector[n], real) => real[n]
         (vector[n], vector[n], vector[n]) => real[n]
     end
@@ -1892,13 +3170,29 @@ tracetype(x::CanonicalExpr{typeof(pmx_solve_twocpt)}) = _pmx_solve_tracetype(x, 
 # Stan function is generated per call shape (mirrors the @deffun body build + the
 # reduce_sum trace-level fundef); `broadcasted_getindex` does the per-arg slice.
 _jb_iterated(a) = stan_ndim(type(a)) >= 1
-_jb_elem(a) = _jb_iterated(a) ? stan_expr(CanonicalExpr(getindex, a, stan_expr(1, 1))) : a
-_jb_infer(x::CanonicalExpr) = begin
+_jb_elem(a, context) = _jb_iterated(a) ?
+    _stan_expr(CanonicalExpr(getindex, a, stan_expr(1, 1)), context) : a
+_jb_semantic_rng(f::StanExpr2{<:types.func}) =
+    endswith(string(nameof(type(f).info.value)), "_rng")
+_jb_semantic_rng(_) = false
+_jb_parent(f) = _jb_semantic_rng(f) ? jbroadcasted_rng : jbroadcasted
+# Stan permits RNG calls only from generated quantities or from a user-defined
+# function whose own name ends `_rng`. A broadcasted RNG cell therefore uses a
+# semantic-suffix receiver for BOTH the call site and its generated definition;
+# ordinary deterministic `jbroadcasted` names stay byte-identical.
+func_name(::typeof(jbroadcasted), args) = invoke(
+    func_name,
+    Tuple{Any,Any},
+    _jb_parent(first(args)),
+    args,
+)
+_jb_infer(x::CanonicalExpr, context=nothing) = begin
+    context = _context_or_new(context)
     f, dargs = x.args[1], x.args[2:end]
     ai = findfirst(_jb_iterated, dargs)
     isnothing(ai) && error("jbroadcasted: needs at least one iterated (vector/array) argument")
     n = stan_size(type(dargs[ai]), 1)
-    elem_rt = type(stan_expr(CanonicalExpr(f, map(_jb_elem, dargs)...)))
+    elem_rt = type(_stan_expr(CanonicalExpr(f, map(a -> _jb_elem(a, context), dargs)...), context))
     stan_ndim(elem_rt) == 0 || error("jbroadcasted: `f` must return a scalar per element (got `$(sigtype(elem_rt))`)")
     # Preserve the exact int-family element center type: `int` stays `array[] int`
     # and `bool` (a comparison result) stays `array[] bool` (a mask), so
@@ -1906,12 +3200,14 @@ _jb_infer(x::CanonicalExpr) = begin
     container = center_type(elem_rt) <: types.int ? center_type(elem_rt) : types.vector
     (; f, dargs, ai, n, container)
 end
-tracetype(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
-    inf = _jb_infer(x)
+tracetype(x::CanonicalExpr{typeof(jbroadcasted)}) = _tracetype(x, nothing)
+_tracetype(x::CanonicalExpr{typeof(jbroadcasted)}, context) = begin
+    inf = _jb_infer(x, context)
     StanType(inf.container, (inf.n,))
 end
-fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
-    inf = _jb_infer(x)
+fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = _fundef(x, nothing)
+_fundef(x::CanonicalExpr{typeof(jbroadcasted)}, context) = begin
+    inf = _jb_infer(x, context)
     k = length(inf.dargs)
     argnames = [Symbol("x", i) for i in 1:k]
     f_ph = anon_expr(:f, inf.f)
@@ -1920,7 +3216,11 @@ fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
     # `nameof` gives the parseable type-token symbol for the body decl / return:
     # `:int`, `:vector`, or `:bool` (which renders as `int`). All are valid tokens.
     container_sym = nameof(inf.container)
-    slices = [:($broadcasted_getindex($(argnames[j]), i)) for j in 1:k]
+    slices = [
+        _jb_iterated(inf.dargs[j]) ?
+            :($broadcasted_getindex($(argnames[j]), i)) : argnames[j]
+        for j in 1:k
+    ]
     body_ast = Expr(:block,
         :(rv :: $container_sym[n]),
         Expr(:for, :(i = 1:n), Expr(:block, :(rv[i] = f($(slices...))))),
@@ -1930,10 +3230,11 @@ fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = begin
     for i in 1:k
         info[argnames[i]] = arg_phs[i]
     end
+    _attach_trace_context!(info, context)
     info[:__mod__] = parentmodule(typeof(jbroadcasted))
     n_decl = string("int n = dims(", argnames[inf.ai], ")[1];")
     StanFunction3(
-        "", StanType(inf.container, (n_expr,)), jbroadcasted,
+        "", StanType(inf.container, (n_expr,)), _jb_parent(inf.f),
         (; f=f_ph, (argnames[i] => arg_phs[i] for i in 1:k)...),
         [n_decl, forward!(canonical(ensure_xreturn(body_ast)); info)],
     )

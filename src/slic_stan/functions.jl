@@ -186,8 +186,8 @@ _supported_return_type(rt::StanType) = begin
     ct = center_type(rt)
     ct <: types.complex || ct <: types.any_vector || ct <: types.matrix
 end
-_checked_return_type(f, args) = begin
-    rt = type(stan_expr(CanonicalExpr(f, args...)))
+_checked_return_type(f, args, context=nothing) = begin
+    rt = type(_stan_expr(CanonicalExpr(f, args...), context))
     center_type(rt) === types.anything && throw(ArgumentError(
         "return_type_of could not infer a SLIC return type for $(f)(" *
         _return_type_signature(args) * "). Only non-inline @deffun functions and " *
@@ -203,15 +203,18 @@ end
 return_type_of(f::Function, args...) = _checked_return_type(
     f,
     ntuple(i -> _return_type_query_arg(i, args[i]), length(args)),
+    TraceContext(),
 )
 return_type_of(f, args...) = throw(ArgumentError(
     "return_type_of expects a non-inline @deffun or @defsig-registered Function " *
     "as its first argument, got $(typeof(f))."
 ))
 
-tracetype(x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}) = begin
+tracetype(x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}) =
+    _tracetype(x, nothing)
+_tracetype(x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}, context) = begin
     farg = x.args[1]
-    rt = _checked_return_type(getvalue(farg), x.args[2:end])
+    rt = _checked_return_type(getvalue(farg), x.args[2:end], context)
     ct = center_type(rt)
     StanType(types.tokenof{ct}, stan_size(rt); value=ct, qual=:data)
 end
@@ -238,11 +241,40 @@ _reject_scalar_array_elementwise(x::CanonicalExpr) = begin
         "function-body loop, or convert to a `vector` via `to_vector(...)` first."
     )
 end
-tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = if length(x.args) > 2
+# A `RaggedVector` (a ragged `plate` result, or ragged `Vector{<:AbstractVector}`
+# data — both stored as `tuple(vector, array[] int)`: flat memory + inclusive group
+# ends) has NO whole-object arithmetic, so `pred * w` / `pred .* w` / `pred .+ x`
+# otherwise fall through to the opaque `tracetype not defined` / `::anything` floor.
+# Name the RaggedVector and the actual remedy instead (snag plate-return-tup, reported
+# by BRM: a plate cell that slices a ragged input collects to a RaggedVector, and the
+# author's downstream `pred * w` failed with a message that named neither).
+_is_ragged_vector(t::StanType) = center_type(t) <: builtin.RaggedVector
+_reject_ragged_vector_arithmetic(x::CanonicalExpr) = begin
+    any(a -> a isa StanExpr && _is_ragged_vector(type(a)), x.args) || return nothing
+    error(
+        "`", short_expr(x), "` applies arithmetic to a whole ragged `RaggedVector` (stored as ",
+        "`tuple(vector, array[] int)` — flat memory + inclusive group ends), which has no ",
+        "whole-object `+`/`-`/`*`/`.*` etc. A `plate` returns a RaggedVector by default when its ",
+        "cell width is not statically fixed — e.g. the cell slices a ragged / vector-of-vectors ",
+        "input (`log_rt[rows]`), which stays ragged even when every group is the same length. ",
+        "If you KNOW every group is the same length, cast it to a matrix downstream with ",
+        "`as_matrix(rv)` (e.g. `as_matrix(pred) * w`) — it views the flat memory as a ",
+        "`matrix[K, N]` (column i = group i) with a runtime equal-length check; or assert it at ",
+        "the plate LHS (`result::matrix[K, N] ~ ",
+        "plate(...)`), or pass the width-driving input as a fixed-width container (an int `Matrix` ",
+        "of per-cell indices). For a genuinely varying-width RaggedVector, keep it ragged — index ",
+        "one group with `rv[g]` or process per group via the descriptor's `segments`."
+    )
+end
+tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = _tracetype(x, nothing)
+_tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}, context) = if length(x.args) > 2
+    context = _context_or_new(context)
     f = head(x)
-    tracetype(CanonicalExpr(f, x.args[1], stan_expr(CanonicalExpr(f, x.args[2:end]...))))
+    nested = _stan_expr(CanonicalExpr(f, x.args[2:end]...), context)
+    _tracetype(CanonicalExpr(f, x.args[1], nested), context)
 else
     _reject_scalar_array_elementwise(x)
+    _reject_ragged_vector_arithmetic(x)
     error("tracetype not defined for $(short_expr(x))!")
     StanType(types.anything)
 end
@@ -252,20 +284,26 @@ end
 # broadcasts (e.g. `matrix .* matrix`) keep their current inferred type.
 tracetype(x::CanonicalExpr{<:Base.BroadcastFunction}) = begin
     _reject_scalar_array_elementwise(x)
+    _reject_ragged_vector_arithmetic(x)
     invoke(tracetype, Tuple{CanonicalExpr}, x)
 end
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 1),))))
 )
-# Fully selecting the scalar array-prefix of an `array[...] vector/matrix`
-# leaves its native vector/matrix core. This general rule covers arbitrary
-# array depth (e.g. `array[N] matrix[K,M] x; x[n, :, m]`) beyond the finite
-# signature table below while preserving that table's core slice inference.
+# Selecting scalar indices from the leading array-prefix of an
+# `array[...] vector/matrix` peels those array dimensions. A partial selection
+# leaves a shallower array (e.g. `array[N,T] vector[K] x; x[n]` is
+# `array[T] vector[K]`); selecting the whole prefix leaves the native core. This
+# general rule covers arbitrary array depth beyond the finite signature table
+# below while preserving that table's core slice inference.
 tracetype(x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr,Vararg{Any}}}) = begin
     value = x.args[1]
     nl = l_ndim(type(value))
     indices = x.args[2:end]
-    if nl > 0 && length(indices) >= nl && all(i -> i isa StanExpr2{<:types.int,0}, indices[1:nl])
+    if nl > 0 && !isempty(indices) && length(indices) < nl &&
+        all(i -> i isa StanExpr2{<:types.int,0}, indices)
+        return remake(type(value), stan_size(type(value))[length(indices)+1:end]...)
+    elseif nl > 0 && length(indices) >= nl && all(i -> i isa StanExpr2{<:types.int,0}, indices[1:nl])
         core_type = remake(type(value), stan_size(type(value))[nl+1:end]...)
         rest = indices[nl+1:end]
         isempty(rest) && return core_type
@@ -308,6 +346,13 @@ tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any,<:Any}})
 # `Base.getindex(::usertype, ::int)` methods don't accidentally catch
 # field accesses on usertypes.
 tracetype(x::CanonicalExpr{<:typeof(Base.getfield),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = x.args[1].type.info.arg_types[x.args[2].type.info.value]
+# Julia tuple indexing `p[i]` on a plain positional tuple resolves to the same
+# element type as `getfield(p, i)` — Julia permits both — so it reads the type
+# from the tuple's `arg_types` rather than falling to the generic getindex rule
+# (which yields `anything` and blocks any downstream use beyond `sum`). The
+# user-defined `Base.getindex(::usertype, ::int)` methods register their own
+# strictly-more-specific tracetype, so a usertype's element access is unaffected.
+tracetype(x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = x.args[1].type.info.arg_types[x.args[2].type.info.value]
 # `T[d1, …, dS]`: getindex on a 0-dim type token upgrades it to a sized token.
 # Retained `value = T` carries the center Stan type across resizings.
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tokenof{T},0},Vararg{Any}}}) where {T} = StanType(
@@ -332,6 +377,23 @@ tracetype(x::ForExpr) = StanType(types.anything)
 tracetype(x::WhileExpr) = StanType(types.anything)
 tracetype(x::IfExpr) = StanType(types.anything)
 tracetype(x::ElseIfExpr) = StanType(types.anything)
+# Julia gives short-circuit operators dedicated AST heads (`:&&` / `:||`),
+# rather than callable function heads like `&` / `|`. Their Stan result is a
+# scalar boolean (rendered as `int` elsewhere in the SLIC type system).
+tracetype(x::Union{LogicalAndExpr,LogicalOrExpr}) = StanType(types.bool)
+# A ternary `cond ? a : b` is a real EXPRESSION, so its result type is the join
+# of the two branch types (not the opaque `anything` an `if`-statement carries).
+# `typejoin` follows the SLIC lattice (`int <: real`, `bool <: int`, constrained
+# vectors `<: vector`, …), so `real ? real` → `real`, `int ? int` → `int`,
+# `int ? real` → `real`. The size is taken from the then-branch; a genuine
+# shape mismatch between branches is caught downstream by `stanc`. If either
+# branch is itself untyped (`anything`), the join is `anything` and the ordinary
+# `center_type != anything` assignment guard rejects it (now without crashing,
+# since `TernaryExpr` renders via its own `show`).
+tracetype(x::TernaryExpr) = StanType(
+    typejoin(center_type(x.args[2]), center_type(x.args[3])),
+    stan_size(x.args[2]),
+)
 tracetype(x::BlockExpr) = error("tracetype(::BlockExpr) not implemented — block expressions don't carry a result type; refactor the caller to trace the final expression instead.")#tracetype(expr(x.args[end]))
 
 autokwargs(::CanonicalExpr) = (;)
@@ -340,7 +402,16 @@ autokwargs(::CanonicalExpr) = (;)
 # `StanType(ct, size; …)` receives a bare Type as it expects.
 _unwrap_type_kwarg(ct::StanExpr2{<:types.tokenof,0}) = type(ct).info.value
 _unwrap_type_kwarg(ct) = ct
-autotype(x::StanExpr) = autotype(type(x); merge(autokwargs(expr(x)), expr(x).kwargs)...)
+# Check the combination HERE, where the distribution-implied keys are still
+# distinguishable from the author's own, so the message can say which is which.
+# `autotype(::StanType)` re-checks (it has direct callers too); the second pass
+# is over an already-valid bag and is a no-op.
+autotype(x::StanExpr) = begin
+    implied = autokwargs(expr(x))
+    kw = merge(implied, expr(x).kwargs)
+    _fold_constraints(nothing, kw; implied=keys(implied))   # validates; result unused
+    autotype(type(x); kw...)
+end
 autotype(x::StanType; kwargs...) = begin
     ct = _unwrap_type_kwarg(get(kwargs, :type, center_type(x)))
     nsize = [
@@ -349,10 +420,7 @@ autotype(x::StanType; kwargs...) = begin
     ]
     size = length(nsize) > 0 ? (nsize..., ) : get(kwargs, :size, stan_size(x))
     (ct in (types.anything, types.real)) && (ct = [types.real, types.vector, types.matrix][1+length(size)])
-    cons = (;[
-        key=>getindex(kwargs, key)
-        for key in (:lower, :upper, :offset, :multiplier) if key in keys(kwargs)
-    ]...)
+    cons = _fold_constraints(nothing, kwargs)
     StanType(ct, size; cons...)
 end
 
@@ -367,14 +435,82 @@ struct StanFunction3
     parent
     args::NamedTuple
     body::Vector
+    source::Union{Nothing,LineNumberNode}
+end
+StanFunction3(docstring, rv_type, parent, args, body) =
+    StanFunction3(docstring, rv_type, parent, args, body, nothing)
+
+# A closure captured a sized value (e.g. a `matrix A`) whose type still carries
+# its ORIGINAL model-scope dim symbols (`A_m`, `A_n`). `func_args` hoists that
+# capture into the receiver UDF's signature as a bare `matrix A` — but Stan
+# function parameters are unsized, so those dim symbols are NOT in scope inside
+# the body. A belief size derived from the capture (`vector[A_m] bp = A * b;`)
+# then references an out-of-scope symbol and stanc rejects it. Declared args
+# avoid this because their dims are materialized (`int T = dims(y)[1];`, via
+# `fun_sizes`); hoisted captures never pass through that machinery.
+#
+# Bind the referenced capture dims ONCE at the body top, mirroring the
+# declared-arg preamble: `int A_m = dims(A)[1];`. Only bare-Symbol dims (a
+# literal or an already-`dims(...)` size needs nothing), only those actually
+# referenced in the rendered body (no dead locals), deduped across every
+# closure arg (predict + observe may share a captured `A`) and never
+# re-declaring a dim the body already binds. Non-capturing functions produce no
+# binds, so their output is byte-identical to before.
+_capture_dim_binds(f::StanFunction3) = begin
+    # Cheap first pass, no body render: every bare-Symbol dim of a sized closure
+    # capture is a candidate `int <dim> = dims(<cap>)[<i>];`, deduped by dim name
+    # (a capture shared by two closures binds once). A non-capturing function has
+    # no candidates and returns immediately, so its render is untouched.
+    cands = Pair{Symbol,String}[]
+    seen = Set{Symbol}()
+    for (_, v) in pairs(f.args)
+        v isa StanExpr2{<:types.closure} || continue
+        for (k, cap) in pairs(type(v).info.value.captures)
+            cap isa StanExpr || continue
+            for (i, sz) in enumerate(stan_size(cap))
+                e = expr(sz)
+                (e isa Symbol && !(e in seen)) || continue
+                push!(seen, e)
+                push!(cands, e => "int $(e) = dims($(k))[$(i)];")
+            end
+        end
+    end
+    isempty(cands) && return String[]
+    # Second pass keeps only dims actually referenced in the body, and never a
+    # dim the body already binds (defensive against a signature-dim collision).
+    body_str = sprint(io0 -> show(StanIO(io0), StanBlock(Symbol(), f.body)))
+    binds = String[]
+    for (e, bind) in cands
+        occursin(Regex("\\b" * string(e) * "\\b"), body_str) || continue
+        occursin(Regex("\\bint\\s+" * string(e) * "\\b"), body_str) && continue
+        push!(binds, bind)
+    end
+    binds
 end
 
-Base.show(io::IO, f::StanFunction3) = autoprint(
-    io,
-    f.docstring,
-    sigtype(f.rv_type), " ", func_name(f.parent, f.args), "(", func_args(f.args), ")",
-    StanBlock(Symbol(), f.body)
-)
+function Base.show(io::IO, f::StanFunction3)
+    try
+        # Materialize any referenced captured-param dims at the body top so a
+        # `vector[A_m]`-style belief size (A a hoisted closure capture) resolves.
+        binds = try
+            _capture_dim_binds(f)
+        catch
+            String[]
+        end
+        body = isempty(binds) ? f.body : vcat(binds, f.body)
+        autoprint(
+            io,
+            f.docstring,
+            sigtype(f.rv_type), " ", func_name(f.parent, f.args), "(", func_args(f.args), ")",
+            StanBlock(Symbol(), body),
+        )
+    catch e
+        _is_stanblocks_error(e) && rethrow()
+        bt = catch_backtrace()
+        structured = _diagnostic_from_error(:slic_lowering_error, e, f.source)
+        throw(StanBlocksError(:transpile, "function", (e, bt, Any[], structured)))
+    end
+end
 
 # Runtime half of the bounded Julia target for `@deffun`.  The macro-side
 # lowering below routes global calls through `jcall(Val(name), def_mod, ...)`:
@@ -481,6 +617,25 @@ _deffun_julia_check_dim(x, i::Integer, expected, fname, argname) = begin
     ))
     nothing
 end
+# Rich variant for a SIZE-INFERRED shared dimension: names the argument the
+# dim was inferred from and lists every site that must share it with its
+# actual runtime size. `sites` is a tuple of `(argname, dimindex, size)`
+# triples the caller precomputes at the check point (all site args in scope).
+_deffun_julia_check_dim(x, i::Integer, expected, fname, argname, dimname, origin_argname, origin_i, sites) = begin
+    actual = size(x, i)
+    actual == expected && return nothing
+    sizes_clause = join(
+        (string("`", s[1], "` dim ", s[2], " (= ", s[3], ")") for s in sites),
+        ", ",
+    )
+    throw(DimensionMismatch(
+        string(fname, ": dim mismatch — `", argname, "` dim ", i,
+               " (= ", actual, ") does not match `", dimname, "` (= ", expected,
+               "), inferred from `", origin_argname, "` dim ", origin_i,
+               ". `", dimname, "` sizes: ", sizes_clause, ".")
+    ))
+    nothing
+end
 
 _deffun_julia_validate(x, ::Val{:int}, dims::Tuple, name) = begin
     isempty(dims) ? (x isa Integer || throw(ArgumentError("$name must be an integer"))) :
@@ -517,7 +672,7 @@ _register_deffun_julia_signature!(f, julia_key, slic_key) = begin
         registered[julia_key] == slic_key || error(
             "@deffun Julia emission collision for `$(nameof(f))`: SLIC signatures ",
             "$(registered[julia_key]) and $slic_key both map to $julia_key. ",
-            "Mark one definition `@stanonly` or make its Julia dispatch distinguishable."
+            "Remove `@juliacompat` from one definition or make its Julia dispatch distinguishable."
         )
     else
         registered[julia_key] = slic_key
@@ -558,8 +713,21 @@ begin
     ensure_xvect(x) = Meta.isexpr(x, :vect) ? x : xvect(x)
     ensure_xreturn(x::Expr) = if x.head in (:block, :macrocall)
         Expr(x.head, x.args[1:end-1]..., ensure_xreturn(x.args[end]))
-    elseif x.head == :if
-        Expr(x.head, x.args[1], ensure_xreturn.(x.args[2:end])...)
+    elseif x.head in (:if, :elseif)
+        # A ternary `a ? b : c` also parses to `Expr(:if, …)` but with
+        # VALUE branches (a statement-`if` always wraps its then-branch in a
+        # `:block`). Distributing `return` INTO a ternary's value branches
+        # would desugar the expression into a statement and, worse, feed a
+        # `:return`-wrapped branch into `canonical`'s ternary detector. So
+        # return-wrap the ternary WHOLE (→ `return (a ? b : c);`); only
+        # distribute for a real statement-`if`/`elseif`. Same discriminator
+        # as `canonical(::Expr)`'s ternary branch (tracing.jl).
+        if x.head === :if && length(x.args) == 3 &&
+                !Meta.isexpr(x.args[2], :block) && !Meta.isexpr(x.args[3], :block)
+            Expr(:return, x)
+        else
+            Expr(x.head, x.args[1], ensure_xreturn.(x.args[2:end])...)
+        end
     elseif x.head == :return
         x
     else
@@ -651,8 +819,11 @@ begin
         xbody = Expr(:block, source, [
             xassign(xtuple(ensure_xlhs.(lhsi.args[2:end])...), :(stan_size(x.args[$i])))
             for (i, lhsi) in enumerate(lhs)
-        ]..., :(info = (;$(dim_names...),)), xsig_expr(rv))
-        :($stan.tracetype($xexpr) = $xbody)
+        ]..., :(info = (;$(dim_names...), __trace_context__ = $_context_or_new(context))), xsig_expr(rv))
+        quote
+            $stan.tracetype($xexpr) = $stan._tracetype(x, nothing)
+            $stan._tracetype($xexpr, context) = $xbody
+        end
     end
     funbody(x::Expr) = begin
         @assert x.head == :block "funbody expects a `begin ... end` block, got `$x` (head `$(x.head)`)."
@@ -727,17 +898,26 @@ begin
 
     ensure_xlhs(arg::Symbol; hidden=()) = arg in hidden ? Symbol("_") : arg
     ensure_xlhs(::Expr; kwargs...) = Symbol("_")
+    # An integer-literal dimension (`vector[4]`) is a compile-time constant with
+    # no size NAME to bind, so it destructures to `_` exactly like an `Expr` dim.
+    # The emitted UDF then lowers identically to the symbolic `vector[n]` form
+    # (modulo the function name). Shared by the `@deffun`/`@defsig` arg-shape
+    # deconstruction (`make_deconstruct`) and the `@lhs` base path.
+    ensure_xlhs(::Integer; kwargs...) = Symbol("_")
 
     hasvararg(args) = length(args) > 0 && Meta.isexpr(args[end], :(...))
     maybedoc(x::AbstractString) = length(strip(x)) == 0 ? "" : strip(replace("\n" * strip(x), "\n"=>"\n// ")) * "\n"
-    forward_return!(x; info) = task_local_storage(:_slic_inline_pending, Any[]) do
+    forward_return!(x; info) = begin
         # Isolate any inline-call pending statements from this throwaway
         # type-inference trace — they'd otherwise leak into the caller's
         # block (for non-inline UDFs whose tracetype evaluates an inlined
         # call as part of return-type inference).
         info = OrderedDict{Symbol,Any}(pairs(info))
-        forward!(x; info)
-        info[RV_NAME]
+        _trace_context(info) === nothing && _attach_trace_context!(info, nothing)
+        _with_trace_state(info, :inline_pending, Any[]) do
+            forward!(x; info)
+            info[RV_NAME]
+        end
     end
     # Walk a UDF body looking for forms StanBlocks deliberately does not
     # support inside `@deffun` definitions: sampling (`~`) and `target +=`
@@ -800,7 +980,8 @@ begin
         cur = x
         while Meta.isexpr(cur, :macrocall) && (
                 _is_lhs_macrocall(cur) || _is_lpxf_macrocall(cur) ||
-                _is_at_inline_macrocall(cur) || _is_stanonly_macrocall(cur)
+                _is_at_inline_macrocall(cur) || _is_juliacompat_macrocall(cur) ||
+                _is_stanonly_macrocall(cur)
             )
             is_lhs    |= _is_lhs_macrocall(cur)
             is_lpxf   |= _is_lpxf_macrocall(cur)
@@ -828,6 +1009,7 @@ begin
     _ast_mentions(x, s::Symbol) = x isa Symbol ? x === s :
         (x isa Expr ? any(a -> _ast_mentions(a, s), x.args) : false)
 
+    _is_juliacompat_macrocall(x) = _is_inline_macrocall(x, Symbol("@juliacompat"))
     _is_stanonly_macrocall(x) = _is_inline_macrocall(x, Symbol("@stanonly"))
 
     _julia_arg_name(x::Symbol) = x
@@ -888,6 +1070,9 @@ begin
             return (jt, (:array, nd), slic_key, dims)
         elseif _julia_vector_type(ct) && nd == 1
             return (:(AbstractVector{<:Real}), (:real_array, 1), slic_key, dims)
+        elseif ct === :matrix && nd >= 2
+            jt = nd == 2 ? :(AbstractMatrix{<:Real}) : :(AbstractArray{<:Real,$nd})
+            return (jt, (:real_array, nd), slic_key, dims)
         elseif _julia_matrix_type(ct) && nd == 2
             return (:(AbstractMatrix{<:Real}), (:real_array, 2), slic_key, dims)
         elseif (_julia_vector_type(ct) || _julia_matrix_type(ct))
@@ -905,7 +1090,7 @@ begin
         jt, jk, sk, dims = _deffun_julia_type(t)
         jk[1] === :unsupported && error(
             "@deffun Julia emission: unsupported argument type `$t`. ",
-            "Mark this definition `@stanonly` if the signature is intentionally Stan-only."
+            "Remove `@juliacompat` if the signature is intentionally Stan-only."
         )
         mapped = if isnothing(name)
             isnothing(jt) ? arg : Expr(:(::), jt)
@@ -951,13 +1136,12 @@ begin
     # `reduce_sum` family sits outside the deterministic compatibility layer by
     # construction: the same predicate that rejects such a *call* settles the
     # *definition* too, and a `foo_lpmf` overload that recurses into `foo_lpmf`
-    # can never obtain a Julia method however it is annotated.  These auto-skip
-    # the Julia target — exactly like signature-only stubs, type-token glue and
-    # qualified/existing-function extensions — instead of demanding a
-    # per-definition `@stanonly`.  The elementwise `_lpdfs`/`_lpmfs` companions
-    # belong to the same families.  Note this is deliberately *only* a
-    # definition-name test: `_deffun_julia_unsupported_call` above is unchanged,
-    # so no call that is accepted today starts being rejected.
+    # can never obtain a Julia method however it is annotated.  Even an explicit
+    # `@juliacompat` therefore skips the Julia target, exactly like signature-only
+    # stubs, type-token glue, and qualified/existing-function extensions.  The
+    # elementwise `_lpdfs`/`_lpmfs` companions belong to the same families.
+    # Note this is deliberately *only* a definition-name test:
+    # `_deffun_julia_unsupported_call` above is unchanged.
     _deffun_julia_excluded_definition(s::Symbol) =
         any(
             suffix -> endswith(string(s), suffix),
@@ -986,7 +1170,7 @@ begin
         !isnothing(s) && _deffun_julia_unsupported_call(s) && error(
             "@deffun ($fname): Julia emission does not implement `$s`. ",
             "Probability, RNG, ODE, and reduce_sum parity is outside the deterministic compatibility layer; ",
-            "mark this definition `@stanonly`."
+            "remove the explicit `@juliacompat` opt-in."
         )
         if f isa Symbol && f in locals
             Expr(:call, :($stan.jcall), params..., f, positional...)
@@ -1009,7 +1193,7 @@ begin
             lhs, rhs = x.args
             name, t = lhs.args
             name isa Symbol || error(
-                "@deffun ($fname): Julia emission supports typed local declarations only for bare-symbol locals; mark the definition `@stanonly`."
+                "@deffun ($fname): Julia emission supports typed local declarations only for bare-symbol locals; remove `@juliacompat`."
             )
             ct, dims = _deffun_julia_local_type(t)
             rhs = _deffun_julia_transform(rhs, locals, def_mod, fname, promote_args)
@@ -1027,7 +1211,7 @@ begin
             name, t = x.args
             ct, dims = _deffun_julia_local_type(t)
             isempty(dims) && error(
-                "@deffun ($fname): Julia emission cannot allocate unsized local `$name::$t`; initialize it or mark the definition `@stanonly`."
+                "@deffun ($fname): Julia emission cannot allocate unsized local `$name::$t`; initialize it or remove `@juliacompat`."
             )
             tdims = map(d -> _deffun_julia_transform(d, locals, def_mod, fname, promote_args), dims)
             if ct isa Symbol
@@ -1040,7 +1224,7 @@ begin
                 return Expr(:(=), name, :($stan._deffun_julia_alloc_type($type_expr, ($(tdims...),))))
             end
             error(
-                "@deffun ($fname): Julia emission cannot allocate computed local type `$t`; mark the definition `@stanonly`."
+                "@deffun ($fname): Julia emission cannot allocate computed local type `$t`; remove `@juliacompat`."
             )
         elseif x.head === :call
             f = x.args[1]
@@ -1086,6 +1270,20 @@ begin
         _deffun_julia_local_names!(locals, julia_source_body)
         promote_args = Any[n for n in arg_names if n !== :_]
 
+        # Size-inferred shared dimensions: a dim SYMBOL that is not itself an
+        # argument name is bound from the first array arg that carries it and
+        # checked against every later one. Collect all its sites up front so a
+        # failing check can name the inference source and list every site's
+        # size (mirrors the Stan-emission `reject`; user request 2026-08-14).
+        julia_dim_sites = OrderedDict{Symbol,Vector{Tuple{Symbol,Int}}}()
+        for (arg, item) in zip(flat_args, mapped)
+            name = _julia_arg_name(arg)
+            (isnothing(name) || name === :_) && continue
+            for (i, dim) in enumerate(item[4])
+                (dim isa Symbol && dim !== :(_) && !(dim in arg_names)) || continue
+                push!(get!(julia_dim_sites, dim, Tuple{Symbol,Int}[]), (name, i))
+            end
+        end
         known = Set{Symbol}(arg_names)
         dim_preamble = Any[]
         seen_dims = Set{Symbol}()
@@ -1094,7 +1292,7 @@ begin
             isnothing(name) && continue
             name === :_ && begin
                 any(dim -> dim isa Symbol && _ast_mentions(julia_source_body, dim), item[4]) && error(
-                    "@deffun ($f): Julia emission cannot bind a body-used dimension from anonymous argument `$arg`; name the argument or mark the definition `@stanonly`."
+                    "@deffun ($f): Julia emission cannot bind a body-used dimension from anonymous argument `$arg`; name the argument or remove `@juliacompat`."
                 )
                 continue
             end
@@ -1110,11 +1308,26 @@ begin
                     syms = _deffun_julia_dim_symbols!(Set{Symbol}(), dim)
                     unknown = setdiff(syms, known)
                     isempty(unknown) || error(
-                        "@deffun ($f): Julia emission cannot derive dimension expression `$dim`; unknown symbols $(collect(unknown)). Mark the definition `@stanonly`."
+                        "@deffun ($f): Julia emission cannot derive dimension expression `$dim`; unknown symbols $(collect(unknown)). Remove `@juliacompat`."
                     )
-                    push!(dim_preamble, :($stan._deffun_julia_check_dim(
-                        $name, $i, $dim, $(QuoteNode(f)), $(QuoteNode(name))
-                    )))
+                    if dim isa Symbol && haskey(julia_dim_sites, dim)
+                        # A size-inferred shared dim: name where it came from
+                        # and list every site's size. `sites_expr` reads each
+                        # site's runtime size at the check point.
+                        origin_arg, origin_i = first(julia_dim_sites[dim])
+                        sites_expr = Expr(:tuple, (
+                            :(($(QuoteNode(an)), $ii, size($an, $ii)))
+                            for (an, ii) in julia_dim_sites[dim]
+                        )...)
+                        push!(dim_preamble, :($stan._deffun_julia_check_dim(
+                            $name, $i, $dim, $(QuoteNode(f)), $(QuoteNode(name)),
+                            $(QuoteNode(dim)), $(QuoteNode(origin_arg)), $origin_i, $sites_expr
+                        )))
+                    else
+                        push!(dim_preamble, :($stan._deffun_julia_check_dim(
+                            $name, $i, $dim, $(QuoteNode(f)), $(QuoteNode(name))
+                        )))
+                    end
                 end
             end
         end
@@ -1131,7 +1344,7 @@ begin
         end
     end
 
-    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, is_stanonly=false, emit_julia=true, _shim_kwarg_specs=nothing, def_mod=nothing) = if x.head == :block
+    deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, is_juliacompat=false, is_stanonly=false, emit_julia=true, _shim_kwarg_specs=nothing, def_mod=nothing) = if x.head == :block
         seen_lpxf_bases = Set{Symbol}()
         for arg in x.args
             _is_expr(arg) || continue
@@ -1145,33 +1358,41 @@ begin
             )
             push!(seen_lpxf_bases, base)
         end
-        Expr(:block, deffun.(x.args; docstring, source, is_lhs, is_lpxf, is_inline, is_stanonly, emit_julia, def_mod)...)
-    elseif x.head == :macrocall && (_is_lpxf_macrocall(x) || _is_lhs_macrocall(x) || _is_at_inline_macrocall(x) || _is_stanonly_macrocall(x))
+        Expr(:block, deffun.(x.args; docstring, source, is_lhs, is_lpxf, is_inline, is_juliacompat, is_stanonly, emit_julia, def_mod)...)
+    elseif x.head == :macrocall && (
+            _is_lpxf_macrocall(x) || _is_lhs_macrocall(x) ||
+            _is_at_inline_macrocall(x) || _is_juliacompat_macrocall(x) ||
+            _is_stanonly_macrocall(x)
+        )
         inner_source = _macrocall_source(x.args[2], source)
         new_is_lhs    = is_lhs    || _is_lhs_macrocall(x)
         new_is_lpxf   = is_lpxf   || _is_lpxf_macrocall(x)
         new_is_inline = is_inline || _is_at_inline_macrocall(x)
+        new_is_juliacompat = is_juliacompat || _is_juliacompat_macrocall(x)
         new_is_stanonly = is_stanonly || _is_stanonly_macrocall(x)
-        deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf, is_inline=new_is_inline, is_stanonly=new_is_stanonly, emit_julia, _shim_kwarg_specs, def_mod)
+        deffun(x.args[3]; docstring, source=inner_source, is_lhs=new_is_lhs, is_lpxf=new_is_lpxf, is_inline=new_is_inline, is_juliacompat=new_is_juliacompat, is_stanonly=new_is_stanonly, emit_julia, _shim_kwarg_specs, def_mod)
     elseif x.head == :macrocall
         _is_doc_macrocall(x) || error(
-            "@deffun: unexpected macrocall head `$(x.args[1])` (expected `@doc` / `@inline` / `@stanonly` / `@lpxf` / `@lhs`). ",
+            "@deffun: unexpected macrocall head `$(x.args[1])` (expected `@doc` / `@inline` / `@juliacompat` / `@stanonly` / `@lpxf` / `@lhs`). ",
             "If a new doc-providing or annotation macro should be allowed, extend the predicate at functions.jl:_is_doc_macrocall / _is_inline_macrocall."
         )
         # @assert x.args[3] isa String
-        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf, is_inline, is_stanonly, emit_julia, _shim_kwarg_specs, def_mod)
+        deffun(x.args[4]; docstring=:($maybedoc($(x.args[3]))), source, is_lhs, is_lpxf, is_inline, is_juliacompat, is_stanonly, emit_julia, _shim_kwarg_specs, def_mod)
     else
         # @assert x.head == :(=)
         fsig, body = ensure_xassign(x).args
+        definition_lnn = ismissing(body) ? source : something(_last_source_lnn(body), source)
         fcall, rv = ensure_xtyped(fsig).args
         @assert Meta.isexpr(fcall, :call) "@deffun: function signature must be a `:call` expression like `f(args...)::T`, got `$fcall`."
         f, all_args... = fcall.args
-        julia_surface = emit_julia && !is_stanonly ? _deffun_julia_expr(fcall, rv, body; source, def_mod) : nothing
+        julia_surface = emit_julia && is_juliacompat && !is_stanonly ?
+            _deffun_julia_expr(fcall, rv, body; source, def_mod) : nothing
 
         # Kwargs (`f(x; sigma=1.0, alpha=2.0) = body`) mirror Julia's own
-        # lowering: emit a canonical body method
-        # `Core.kwcall(kw::ntup, ::typeof(f), x)::T = begin sigma=kw.sigma; …; body end`
-        # plus an `@inline` shim `f(x) = Core.kwcall((;sigma=sigma, alpha=alpha), f, x)`
+        # lowering: emit a canonical body method. Multiple kwargs use
+        # `Core.kwcall(kw::ntup, ::typeof(f), x)::T = begin sigma=kw.sigma; …; body end`;
+        # because Stan has no singleton tuple, exactly one kwarg is passed as
+        # its scalar value instead. An `@inline` shim delegates to that method
         # whose inline_body carries the kwarg names + defaults so call-site
         # expansion fills them from call-site kwargs or the registered
         # defaults. A kwarg with no default (`f(x; sigma)`) is *required*:
@@ -1217,15 +1438,25 @@ begin
             positional_names = [_name_of(p) for p in canonical_positional]
             rv_part = rv === :anything ? () : (rv,)
 
-            # Canonical body method: `Core.kwcall(kw::ntup, ::typeof(f), positional...) = begin (unpack); body end`.
+            # Canonical body method. Stan has no singleton tuple type, so one
+            # kwarg crosses this internal boundary as a scalar; multiple kwargs
+            # retain the named-tuple payload and are unpacked in the body.
             # `Core.kwcall` is spliced as a bare Function value at args[1] of
             # the inner `:call` Expr; SLIC resolves it via `forward!(::Function)`.
             # Stan-side `func_name(::typeof(Core.kwcall))` mangles call sites
             # to `kwcall_<f>` via the type-token of `f`.
-            kw_unpacks = [Expr(:(=), s.name, Expr(:., :kw, QuoteNode(s.name))) for s in kwarg_specs]
+            singleton_kwarg = length(kwarg_specs) == 1
+            singleton_arg = if singleton_kwarg
+                p = only(params.args)
+                Meta.isexpr(p, :kw) ? p.args[1] : p
+            end
+            kw_unpacks = singleton_kwarg ? [] : [
+                Expr(:(=), s.name, Expr(:., :kw, QuoteNode(s.name)))
+                for s in kwarg_specs
+            ]
             canonical_body = Expr(:block, source, kw_unpacks..., body.args...)
             canonical_call = Expr(:call, Core.kwcall,
-                Expr(:(::), :kw, :ntup),
+                singleton_kwarg ? singleton_arg : Expr(:(::), :kw, :ntup),
                 Expr(:(::), Expr(:call, :typeof, f)),
                 canonical_positional...)
             canonical_sig = isempty(rv_part) ? canonical_call : Expr(:(::), canonical_call, rv_part[1])
@@ -1239,7 +1470,9 @@ begin
             nt_construct = Expr(:tuple, Expr(:parameters,
                 [Expr(:kw, s.name, s.name) for s in kwarg_specs]...))
             shim_body = Expr(:block, source,
-                Expr(:call, Core.kwcall, nt_construct, f, positional_names...))
+                Expr(:call, Core.kwcall,
+                    singleton_kwarg ? only(kwarg_specs).name : nt_construct,
+                    f, positional_names...))
             shim_def = Expr(:(=), shim_sig, shim_body)
             inline_shim = Expr(:macrocall, Symbol("@inline"), source, shim_def)
 
@@ -1248,9 +1481,9 @@ begin
                 # `::typeof(f)` dispatch can reference it.
                 Expr(:function, f),
                 isnothing(julia_surface) ? nothing : julia_surface,
-                deffun(canonical_def; docstring, source, is_lhs=false, is_lpxf=false, is_inline=false, is_stanonly, emit_julia=false, def_mod),
+                deffun(canonical_def; docstring, source, is_lhs=false, is_lpxf=false, is_inline=false, is_juliacompat, is_stanonly, emit_julia=false, def_mod),
                 deffun(inline_shim; docstring, source, is_lhs, is_lpxf, is_inline=true,
-                    is_stanonly, emit_julia=false, _shim_kwarg_specs=kwarg_specs, def_mod),
+                    is_juliacompat, is_stanonly, emit_julia=false, _shim_kwarg_specs=kwarg_specs, def_mod),
             )
         end
 
@@ -1294,7 +1527,7 @@ begin
                 Expr(:function, f),
                 isnothing(julia_surface) ? nothing : julia_surface,
                 [
-                    deffun(d; docstring, source, is_lhs, is_lpxf, is_inline, is_stanonly, emit_julia=false, def_mod) for d in defs
+                    deffun(d; docstring, source, is_lhs, is_lpxf, is_inline, is_juliacompat, is_stanonly, emit_julia=false, def_mod) for d in defs
                 ]...,
             )
         end
@@ -1337,6 +1570,47 @@ begin
         arg_names = map(arg->arg.args[1], args)
         sig_names = copy(arg_names)
         arg_types = map(arg->ensure_xref(arg.args[2]), args)
+        # A sized container center type (`matrix`, `vector`, `row_vector`,
+        # `cholesky_factor_corr`, `simplex`, …) carries an inherent rank
+        # `r_ndim(ct) >= 1`, so a `@deffun` argument must spell at least that many
+        # bracket dimensions (`vector[n]`, `matrix[m, n]`). A DIMENSIONLESS
+        # container arg (`I_mat::matrix`) registers a `tracetype` (or `inline_body`)
+        # method keyed on `ndim == 0` via `xsig_type`, which no real
+        # matrix/vector argument (`ndim >= 1`) can ever match: the call falls
+        # through to the generic `tracetype(::CanonicalExpr)` fallback, resolves
+        # to `::anything`, and only surfaces LATER as the opaque `tracetype not
+        # defined for … = f(::matrix, ::vector)::anything!` assertion
+        # (`forward.jl`), naming neither the argument nor the fix. Reject it HERE,
+        # at signature parse, with an author-facing message that does. Skip a
+        # type-token arg and the `@lhs` observation argument (arg 1): an
+        # `@lhs`-annotated `_lpdf` intentionally leaves its bare observation
+        # container unsized — its shape is driven from the sampled LHS and the arg
+        # is dropped from the base tracetype dispatch (builtin
+        # `lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, …)`).
+        for (i, (arg, arg_type, tok)) in enumerate(zip(args, arg_types, is_token))
+            tok && continue
+            (is_lhs && i == 1) && continue
+            ct_sym = arg_type.args[1]
+            (_is_symbol(ct_sym) && isdefined(types, ct_sym)) || continue
+            ct = getproperty(types, ct_sym)
+            (ct isa Type && hasmethod(r_ndim, Tuple{Type{ct}})) || continue
+            rn = r_ndim(ct)
+            nbrackets = length(arg_type.args) - 1
+            if rn > nbrackets
+                dims = rn == 1 ? "n" : rn == 2 ? "m, n" : join(("n$k" for k in 1:rn), ", ")
+                error(
+                    "@deffun ", f, ": argument `", arg.args[1], "::", ct_sym,
+                    "` needs explicit dimensions — a `", ct_sym, "` is a sized ",
+                    "container of rank ", rn, ", so spell it `", arg.args[1], "::",
+                    ct_sym, "[", dims, "]`. A dimensionless `matrix`/`vector`/",
+                    "`row_vector` (or other sized-container) argument cannot be ",
+                    "dispatched: it resolves to `anything` and only surfaces later ",
+                    "as the opaque `tracetype not defined for … ::anything!` ",
+                    "assertion. Add the dims, e.g. `vector[n]`, `matrix[m, n]`, ",
+                    "`cholesky_factor_corr[n]`.",
+                )
+            end
+        end
         lhs_type = map(zip(arg_types, is_token)) do (at, tok)
             tok ? xsig_type_token(at) : xsig_type(at)
         end
@@ -1384,35 +1658,63 @@ begin
         # a runtime shape check that aborts with a `reject` message
         # naming the offending arg / dim.
         fun_checks = String[]
+        # Pass 1 — collect every signature-dimension occurrence in signature
+        # order, keeping the Stan expression that reads its runtime size. A dim
+        # that appears N times has ONE binding site (the first) and N-1 shape
+        # checks. Collecting the full site list up front lets each `reject`
+        # name WHERE the dim was inferred and enumerate EVERY argument that
+        # must share it, each with its actual runtime size — a check exists
+        # only when a dim has >= 2 sites, so the enumeration is always
+        # meaningful (user request 2026-08-14).
+        fun_size_sites = OrderedDict{Symbol,Vector{Any}}()
         for (arg_name, arg_type, tok) in zip(arg_names, arg_types, is_token)
             for (i, dim_name) in enumerate(arg_type.args[2:end])
                 _is_symbol(dim_name) || continue
                 dim_name == :(_) && continue
                 dim_name in arg_names && continue
-                if haskey(fun_size_candidates, dim_name)
-                    # Token-arg dims are encoded differently; skip the
-                    # check for those — usually internal dispatch glue.
-                    tok && continue
-                    push!(required_fun_sizes, dim_name)
-                    access = string("dims(", arg_name, ")[", i, "]")
-                    # Sound because of the `reject` emitted immediately below.
-                    fun_size_alias_names[Symbol(access)] = dim_name
-                    msg = string("\"", f, ": dim mismatch — `", arg_name,
-                                 "` dim ", i, " (= \", ", access,
-                                 ", \") does not match `", dim_name, "` (= \", ", dim_name, ", \")\"")
-                    push!(fun_checks, string("if (", access, " != ", dim_name, ") reject(", msg, ");"))
+                access = if tok
+                    # Stan has no 1-element tuple type — single-dim tokens are passed
+                    # as a plain `int`, so unpack without `.1` indexing.
+                    ndims = length(arg_type.args) - 1
+                    ndims == 1 ? string(arg_name) : string(arg_name, ".", i)
                 else
-                    access = if tok
-                        # Stan has no 1-element tuple type — single-dim tokens are passed
-                        # as a plain `int`, so unpack without `.1` indexing.
-                        ndims = length(arg_type.args) - 1
-                        ndims == 1 ? string(arg_name) : string(arg_name, ".", i)
-                    else
-                        string("dims(", arg_name, ")[", i, "]")
-                    end
-                    fun_size_alias_names[Symbol(access)] = dim_name
-                    fun_size_candidates[dim_name] = "int $dim_name = $access;"
+                    string("dims(", arg_name, ")[", i, "]")
                 end
+                push!(get!(fun_size_sites, dim_name, Any[]), (arg_name, i, access, tok))
+            end
+        end
+        # Pass 2 — the FIRST occurrence binds the dim (`int n = dims(x)[1];`);
+        # each SUBSEQUENT non-token occurrence becomes a runtime shape check
+        # that aborts with a `reject` naming the offending arg/dim, the
+        # argument the dim was inferred from, and every site's actual size.
+        # Token args are excluded from the check (usually internal dispatch
+        # glue) but still listed among the sizes.
+        for (dim_name, sites) in pairs(fun_size_sites)
+            origin_arg, origin_i, origin_access, _ = first(sites)
+            # Sound because of the `reject`s emitted below: the first
+            # occurrence defines the binding and every later non-token
+            # occurrence is guarded against it.
+            fun_size_alias_names[Symbol(origin_access)] = dim_name
+            fun_size_candidates[dim_name] = "int $dim_name = $origin_access;"
+            # A Stan `reject` argument list: literal text with each size access
+            # spliced as its own expression (`… (= ", dims(x)[1], ") …`).
+            sizes_clause = join(
+                (string("`", an, "` dim ", ii, " (= \", ", acc, ", \")")
+                 for (an, ii, acc, _t) in sites),
+                ", ",
+            )
+            for (arg_name, i, access, tok) in Iterators.drop(sites, 1)
+                tok && continue
+                push!(required_fun_sizes, dim_name)
+                fun_size_alias_names[Symbol(access)] = dim_name
+                msg = string(
+                    "\"", f, ": dim mismatch — `", arg_name, "` dim ", i,
+                    " (= \", ", access, ", \") does not match `", dim_name,
+                    "` (= \", ", dim_name, ", \"), inferred from `", origin_arg,
+                    "` dim ", origin_i, ". `", dim_name, "` sizes: ",
+                    sizes_clause, ".\"",
+                )
+                push!(fun_checks, string("if (", access, " != ", dim_name, ") reject(", msg, ");"))
             end
         end
         for dim_name in keys(fun_size_candidates)
@@ -1428,14 +1730,21 @@ begin
             Set(arg_names),
             setdiff(Set(keys(fun_size_candidates)), required_fun_sizes),
         )
-        deconstruct = Expr(:block, 
-            xassign(xtuple(arg_names..., (isnothing(vararg) ? () : (vararg,))...), :(x.args)), 
+        # The trace-time deconstruction binds exactly the size names this
+        # definition emits Stan bindings for; everything else destructures to
+        # `_`. The `@lhs` base tracetype below needs a DIFFERENT hidden set (it
+        # is a separate, Stan-less tracetype whose result reads the observation
+        # argument's declared shape), so build the block from a parameterised
+        # helper rather than baking one `hidden` in.
+        make_deconstruct(hidden) = Expr(:block,
+            xassign(xtuple(arg_names..., (isnothing(vararg) ? () : (vararg,))...), :(x.args)),
             [
-                xassign(xtuple(ensure_xlhs.(args_type.args[2:end]; hidden=hidden_size_names)...), :($stan_size($args_name)))
+                xassign(xtuple(ensure_xlhs.(args_type.args[2:end]; hidden)...), :($stan_size($args_name)))
                 for (args_name, args_type) in zip(arg_names, arg_types)
-            ]..., 
+            ]...,
             :(info = (;$(sig_names...), $(keys(fun_sizes)...),))
         )
+        deconstruct = make_deconstruct(hidden_size_names)
         size_aliases = (; fun_size_alias_names...)
         anon_deconstruct = Expr(
             :block,
@@ -1497,7 +1806,8 @@ begin
                     $(collect(values(fun_sizes))),
                     $(fun_checks),
                     $forward!($(canonical(body)); info)
-                )
+                ),
+                $stan._deref_lnn($stan._current_lnn(info)),
             ))
         end
 
@@ -1537,6 +1847,7 @@ begin
         # convert to OrderedDict before injecting `:__mod__`. (`fundef`
         # uses `anon_deconstruct` which already does the conversion.)
         promote_info = :(info = $OrderedDict{Symbol,Any}(pairs(info)))
+        inject_context = :($_attach_trace_context!(info, context))
         if is_inline
             # Inline UDFs do not produce a Stan function (no `functions {}`
             # entry) and do not register `tracetype` — the call site fully
@@ -1568,22 +1879,33 @@ begin
             )))
         else
             push!(stmts, quote
-                $stan.tracetype($xexpr) = $(Expr(:block, source, capture_mod, deconstruct, promote_info, inject_mod, rv_expr))
+                $stan.tracetype($xexpr) = $stan._tracetype(x, nothing)
+                $stan._tracetype($xexpr, context) = $(Expr(:block, source, capture_mod, deconstruct, promote_info, inject_context, inject_mod, rv_expr))
             end)
             if !ismissing(body)
-                push!(stmts, :($stan.fundef($xexpr) = $(Expr(:block, source, capture_mod, anon_deconstruct, inject_mod, stan_fundef))))
+                push!(stmts, quote
+                    $stan.fundef($xexpr) = $stan._fundef(x, nothing)
+                    $stan._fundef($xexpr, context) = $stan._with_slic_diagnostic(
+                        :slic_lowering_error,
+                        "function",
+                        context,
+                        $(QuoteNode(definition_lnn)),
+                    ) do
+                        $(Expr(:block, source, capture_mod, anon_deconstruct, inject_context, inject_mod, stan_fundef))
+                    end
+                end)
                 # Mark the NAME as UDF-backed. `fundef` alone cannot answer
                 # "should this function have had a Stan definition?" — it falls
                 # back to `nothing` both for a native Stan function (correct)
                 # and for a UDF whose signature simply did not match (a bug).
-                # These markers are per-name and shape-independent, which is
-                # exactly the question `_check_lpxf_resolves` needs to ask.
-                marker = _backed_marker(:udf_backed, f, ftype, def_mod, stan)
+                # Each marker is signature-specific; the name-level query below
+                # asks whether ANY such method exists for this function singleton.
+                marker = _backed_marker(:udf, f, xexpr, stan)
             else
                 # A body-less signature declares a function Stan ALREADY has —
                 # StanBlocks owes it no definition. See `_check_lpxf_resolves`
                 # for why a name needs both markers rather than one.
-                marker = _backed_marker(:native_backed, f, ftype, def_mod, stan)
+                marker = _backed_marker(:native, f, xexpr, stan)
             end
             isnothing(marker) || push!(stmts, marker)
         end
@@ -1605,9 +1927,30 @@ begin
                 StanType(getproperty(types, y_type.args[1]), ntuple(i->StanExpr(missing, StanType(types.int)), length(y_type.args)-1))
             )
             reconstruct = :(x = $CanonicalExpr($f, $y_expr, _x.args...))
+            # This tracetype RETURNS the observation argument's declared shape,
+            # so every signature dimension named in that shape must be bound —
+            # independently of whether the UDF body reads it. The `_lpdf`
+            # deconstruction hides a dimension the body never mentions, because
+            # there the binding's only purpose is the emitted `int n =
+            # dims(x)[i];` Stan local, which would be dead (§R5 addendum,
+            # `9335898`). Sharing one hidden set made `@lhs f(x::vector[m, n])`
+            # with an `n`-free body destructure `n` to `_` and then reference it
+            # here — `UndefVarError: n` at trace time, before any Stan is
+            # emitted (snag `deffun-hidden-si-facb90e5`). `base_f` has NO Stan
+            # definition (`fundef` is `nothing` right below), so unhiding here
+            # adds no dead local; the two blocks simply want different sets.
+            base_deconstruct = make_deconstruct(setdiff(
+                hidden_size_names,
+                Set{Symbol}(
+                    dim_name
+                    for dim_name in keys(fun_size_candidates)
+                    if _ast_mentions(y_type, dim_name)
+                ),
+            ))
             push!(stmts, :(function $base_f end))
             push!(stmts, quote
-                $stan.tracetype($base_xexpr) = $(Expr(:block, source, reconstruct, deconstruct, xsig_expr(y_type)))
+                $stan.tracetype($base_xexpr) = $stan._tracetype(_x, nothing)
+                $stan._tracetype($base_xexpr, context) = $(Expr(:block, source, reconstruct, base_deconstruct, xsig_expr(y_type)))
                 $stan.fundef($base_xexpr) = nothing
             end)
         end
@@ -1620,6 +1963,7 @@ begin
 end
 
 fundef(x) = nothing
+_fundef(x, _context) = fundef(x)
 
 # --- Provenance markers for `@deffun`-registered names ------------------------
 #
@@ -1639,34 +1983,30 @@ fundef(x) = nothing
 # array-of-factors helper. Only `udf_backed && !native_backed` — a name Stan has
 # never heard of — lets `_check_lpxf_resolves` conclude an unmatched shape is
 # unresolvable rather than merely unmodelled by SLIC's signature table.
-udf_backed(x) = false
-native_backed(x) = false
+# Provenance is recorded as one ordinary method PER REGISTERED SIGNATURE. That
+# makes every marker as unique as the `tracetype` / `fundef` method emitted beside
+# it: overloads of one name coexist without a mutable name-level dedup registry,
+# and package extensions can add markers through normal method registration.
+#
+# `_has_backing` asks the method table whether ANY signature for the exact
+# function singleton has the requested provenance. This query runs only on the
+# unresolved-density diagnostic path. The exact head parameter is important:
+# `CanonicalExpr{<:typeof(h)}` is a broad UnionAll in a `methods` query, while
+# `CanonicalExpr{typeof(h)}` excludes unrelated function singleton types.
+function _backing_provenance end
+_has_backing(kind, h::Function) = !isempty(methods(
+    _backing_provenance,
+    Tuple{Val{kind},CanonicalExpr{typeof(h)}},
+))
+_has_backing(_, _) = false
+udf_backed(h) = _has_backing(:udf, h)
+native_backed(h) = _has_backing(:native, h)
 
-# A marker is an ordinary top-level method definition, so it must be emitted AT
-# MOST ONCE per name: a name routinely carries several registrations
-# (`truncated_normal_lpdf` has two bodyful overloads, `simple_reduce_sum` more),
-# and re-defining an identical method is *method overwriting*, which Julia
-# forbids outright during precompilation.
-#
-# Dedup therefore happens at MACRO-EXPANSION time, keyed by defining module +
-# name. The obvious run-time alternative — look the method up, then `@eval` it if
-# absent — is unusable: `@deffun` is also called from package EXTENSIONS
-# (`ext/PosteriorDBExt.jl`), and an extension cannot `eval` into the by-then
-# closed `StanBlocks` module (Julia: "breaks incremental compilation"). A plain
-# top-level definition works from anywhere; only the duplicate must be avoided.
-#
-# Keying includes `def_mod` so two modules defining the same NAME never suppress
-# each other's markers. A name we cannot key (qualified or computed) simply gets
-# no marker — `udf_backed` stays `false` and `_check_lpxf_resolves` stays quiet,
-# which is the safe direction to fail.
-_marked_backed = Set{Tuple{Symbol,Any,Symbol}}()
-_backed_marker(kind, f, ftype, def_mod, stan) = begin
+_backed_marker(kind, f, xexpr, stan) = begin
     _is_symbol(f) || return nothing
-    key = (kind, def_mod, f)
-    key in _marked_backed && return nothing
-    push!(_marked_backed, key)
-    marker = Expr(:., stan, QuoteNode(kind))
-    :($marker(::$ftype) = true)
+    marker = Expr(:., stan, QuoteNode(:_backing_provenance))
+    kind_type = Expr(:curly, Val, QuoteNode(kind))
+    Expr(:(=), Expr(:call, marker, Expr(:(::), kind_type), xexpr), nothing)
 end
 sig_expr(x) = x
 sig_expr(x::Union{Tuple,NamedTuple,Vector}) = map(sig_expr, x)
@@ -1689,7 +2029,7 @@ sig_expr(x::StanExpr2{<:types.closure}) = StanExpr(type(x).info.value.id, sig_ex
 fetch_functions!(x::CanonicalExpr; info) = begin
     sx = sig_expr(x)
     sx in keys(info) && return
-    info[sx] = fundef(x)
+    info[sx] = _fundef(x, _trace_context(info))
     isnothing(info[sx]) && return
     fetch_subfunctions!(info[sx].body; info)
 end
@@ -1737,7 +2077,8 @@ _check_lpxf_resolves(lpxf) = begin
 end
 fetch_functions!(x::SamplingExpr; info) = begin
     lhs, rhs = x.args
-    lpxf = lpxf_expr(lhs, rhs)
+    lpmf = _dual_lpmf_call(lhs, rhs)
+    lpxf = isnothing(lpmf) ? lpxf_expr(lhs, rhs) : lpmf
     _check_lpxf_resolves(lpxf)
     fetch_functions!(expr(lpxf); info)
     if qual(lhs) == :data || lqual(lhs) == :undefined
@@ -1745,9 +2086,13 @@ fetch_functions!(x::SamplingExpr; info) = begin
         # Mirror the gq push: wrap `lhs` into a tokenof token so the per-shape
         # `*_rng` @deffun overloads dispatch. Without this, `rng_expr` misses
         # entirely — it no longer accepts plain StanExprs as the first arg.
+        # A parameter re-draw goes through `redraw_rng_expr` (bounds honoured),
+        # exactly as the gq push does, so the truncation helpers it emits are
+        # fetched too.
         lhs_ct = center_type(lhs)
         token = StanExpr(lhs_ct, StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
-        fetch_functions!(expr(rng_expr(token, rhs)); info)
+        draw = qual(lhs) == :data ? rng_expr(token, rhs) : redraw_rng_expr(token, rhs)
+        fetch_functions!(expr(draw); info)
     end
 end
 fetch_subfunctions!(;info) = x->fetch_subfunctions!(x; info)
@@ -1769,17 +2114,15 @@ end
 # `vector[max(0, ends-start+1)]`), surfacing later as
 # `tracetype not defined for (anything - anything)`. The per-call `tok` keeps
 # each level's placeholders distinct so `deanon_size` only ever substitutes
-# the placeholders it actually introduced. The counter lives in per-trace
-# task-local storage (`_next_anon_id` + the seed-scope are defined centrally in
-# tracing.jl); the names never reach Stan output — they are always deanonymized
-# away, so the only out-of-trace caller (ad-hoc `stan_expr(::CanonicalExpr)`)
-# is determinism-irrelevant and falls to the lazy `get!` default.
+# the placeholders it actually introduced. The explicit TraceContext supplies
+# the counter; the names never reach Stan output because they are always
+# deanonymized away.
 anon_arg(x::StanExpr, i::Int, tok) = StanExpr(Symbol(:_arg, tok, :_, i), type(x))
 anon_arg(x, i::Int, tok) = x
-anon_canonical(x::CanonicalExpr, tok=_next_anon_id()) = remake(x, ntuple(i -> anon_arg(x.args[i], i, tok), length(x.args))...)
-anon_canonical(x::CanonicalExpr{Colon}, tok=_next_anon_id()) = x   # needs real args for range size
-anon_canonical(x::BlockExpr, tok=_next_anon_id()) = x               # args is Vector, not Tuple
-anon_canonical(x::CanonicalExprV{:nt}, tok=_next_anon_id()) = x     # preserve named tuple structure
+anon_canonical(x::CanonicalExpr, tok) = remake(x, ntuple(i -> anon_arg(x.args[i], i, tok), length(x.args))...)
+anon_canonical(x::CanonicalExpr{Colon}, tok) = x   # needs real args for range size
+anon_canonical(x::BlockExpr, tok) = x               # args is Vector, not Tuple
+anon_canonical(x::CanonicalExprV{:nt}, tok) = x     # preserve named tuple structure
 anon_info(x::NamedTuple) = (;[
     key=>anon_expr(key, value)
     for (key, value) in pairs(x)
@@ -1886,8 +2229,32 @@ for (f, nm) in (
 )
     @eval func_name(::typeof($f)) = $nm
 end
-func_args(args::NamedTuple) = Join(mapreduce(func_args, vcat, pairs(args); init=[]), ", ")
+func_args(args::NamedTuple) = begin
+    # Dedup captured params by NAME across all closure args. A captured model
+    # variable is the same value whichever closure captured it, so it must be
+    # threaded exactly once; otherwise a UDF receiving two closures that capture
+    # the same variable (e.g. a `sequential_marginalize` observe/simulate pair both closing
+    # over `sigma`) emits duplicate parameter identifiers and stanc rejects it
+    # ("All function arguments must have distinct identifiers"). `expand_call_args`
+    # performs the matching dedup so definition and call stay positionally aligned.
+    seen = Set{Symbol}()
+    parts = []
+    for (k, v) in pairs(args)
+        parts = vcat(parts, _dedup_func_args!(seen, k, v))
+    end
+    Join(parts, ", ")
+end
 func_args(arg::Pair) = func_args(arg...)
+_dedup_func_args!(seen::Set{Symbol}, name, x::StanExpr2{<:types.closure}) = begin
+    rv = String[]
+    for (k, v) in pairs(type(x).info.value.captures)
+        (k in seen) && continue
+        push!(seen, k)
+        push!(rv, sigtype(v) * " " * string(k))
+    end
+    rv
+end
+_dedup_func_args!(seen::Set{Symbol}, name, value) = func_args(name, value)
 func_args(name, ::StanExpr2{<:types.func}) = []
 # Closure phase 2: a closure passed to a Stan-emitted UDF lifts its
 # captures into positional args appended to the receiver's signature.
@@ -1907,14 +2274,24 @@ func_args(name, x::StanExpr2{<:types.closure}) = [
 # splice each capture value as a positional arg.
 expand_call_args(args) = begin
     rv = Any[]
+    seen = Set{Symbol}()
     for a in args
-        _splat_or_keep!(rv, a)
+        _splat_or_keep!(rv, seen, a)
     end
     rv
 end
-_splat_or_keep!(rv, a::StanExpr2{<:types.closure}) =
-    (append!(rv, values(type(a).info.value.captures)); nothing)
-_splat_or_keep!(rv, a) = (push!(rv, a); nothing)
+# Dedup capture VALUES by capture name, mirroring `func_args`'s definition-side
+# dedup so a UDF receiving multiple closures that share a captured variable gets
+# that value threaded exactly once, keeping call and signature aligned.
+_splat_or_keep!(rv, seen::Set{Symbol}, a::StanExpr2{<:types.closure}) = begin
+    for (k, v) in pairs(type(a).info.value.captures)
+        (k in seen) && continue
+        push!(seen, k)
+        push!(rv, v)
+    end
+    nothing
+end
+_splat_or_keep!(rv, seen::Set{Symbol}, a) = (push!(rv, a); nothing)
 # What `Base.show(::CanonicalExpr)` (and its `<:ODESolver` / `<:ReduceSumFunction`
 # specialisations) want as the rendered Stan-side arg list: closures expanded
 # to their capture values, then `always_inline`-typed StanExprs (functions,

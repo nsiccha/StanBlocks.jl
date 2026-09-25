@@ -1,0 +1,278 @@
+<!-- Body-level modal for the "three activity analyses" slide: the real,
+     distilled Stan the SAME @slic source emits under three data bindings,
+     shown as two panes with a Prior|Posterior / Posterior|CV toggle.
+     Lives outside .reveal so position:fixed is viewport-relative (Reveal
+     applies a transform to .slides that would otherwise capture it).
+     Opened via window.openStanModal(pair). -->
+<div id="stan-modal" class="stan-modal" hidden>
+  <div class="stan-modal-backdrop" data-close></div>
+  <div class="stan-modal-panel" role="dialog" aria-modal="true" aria-label="Generated Stan by data binding">
+    <div class="stan-modal-head">
+      <div class="stan-modal-toggle">
+        <button type="button" data-pair="prior-posterior">Prior&nbsp;→&nbsp;Posterior</button>
+        <button type="button" data-pair="posterior-cv">Posterior&nbsp;→&nbsp;CV</button>
+      </div>
+      <button type="button" class="stan-modal-x" data-close aria-label="Close">&times;</button>
+    </div>
+    <div class="stan-modal-body">
+      <div class="stan-pane" data-side="left"></div>
+      <div class="stan-pane" data-side="right"></div>
+    </div>
+    <div class="stan-modal-foot">
+      Real <code>stan_code(model)</code> output, distilled: the <code>functions{}</code> helper block and pointwise-likelihood diagnostics are omitted; observation count shown as <code>N</code>. Highlighted lines are what changed between the two bindings.
+    </div>
+  </div>
+</div>
+
+<style>
+  .stan-modal {
+    position: fixed; inset: 0; z-index: 3000;
+    display: flex; align-items: center; justify-content: center;
+    font-family: "Avenir Next", "Inter", "Helvetica Neue", sans-serif;
+  }
+  .stan-modal[hidden] { display: none; }
+  .stan-modal-backdrop {
+    position: absolute; inset: 0;
+    background: rgba(24, 20, 22, 0.55);
+    backdrop-filter: blur(2px);
+  }
+  .stan-modal-panel {
+    position: relative;
+    width: min(1400px, 94vw); max-height: 92vh;
+    display: flex; flex-direction: column;
+    background: #fbfaf7;
+    border: 1px solid #d8d1c6;
+    border-radius: 10px;
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+  }
+  .stan-modal-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid #d8d1c6;
+    background: #f1eee8;
+  }
+  .stan-modal-toggle { display: flex; gap: 8px; }
+  .stan-modal-toggle button {
+    font: inherit; font-size: 20px; font-weight: 600;
+    color: #6e1724;
+    padding: 8px 16px;
+    border: 1px solid #d8d1c6; border-radius: 999px;
+    background: #fbfaf7; cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .stan-modal-toggle button:hover { border-color: #8f1d2c; }
+  .stan-modal-toggle button.active {
+    background: #8f1d2c; color: #fbfaf7; border-color: #8f1d2c;
+  }
+  .stan-modal-x {
+    font: inherit; font-size: 30px; line-height: 1;
+    color: #666c75; background: none; border: none; cursor: pointer;
+    padding: 0 6px;
+  }
+  .stan-modal-x:hover { color: #8f1d2c; }
+  .stan-modal-body {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+    overflow: auto; background: #fbfaf7;
+  }
+  .stan-pane {
+    padding: 0; overflow: auto;
+    border-right: 1px solid #d8d1c6;
+  }
+  .stan-pane:last-child { border-right: none; }
+  .stan-pane .pane-title {
+    position: sticky; top: 0; z-index: 1;
+    padding: 10px 16px;
+    font-size: 19px; font-weight: 700; color: #fbfaf7;
+    background: #315d84;
+  }
+  .stan-pane[data-role="prior"] .pane-title { background: #a36a16; }
+  .stan-pane[data-role="posterior"] .pane-title { background: #315d84; }
+  .stan-pane[data-role="cv"] .pane-title { background: #8f1d2c; }
+  .stan-pane .pane-sub {
+    padding: 6px 16px 0;
+    font-size: 14px; color: #666c75;
+  }
+  .stan-pane pre {
+    margin: 8px 0 4px;
+    padding: 4px 16px 16px;
+    background: none; border: none; box-shadow: none;
+    font-family: "JuliaMono", "Iosevka", "SFMono-Regular", monospace;
+    font-size: 16px; line-height: 1.45;
+    white-space: pre; color: #20242b;
+  }
+  .stan-pane pre .ln { display: block; padding: 0 6px; border-radius: 3px; }
+  .stan-pane pre .ln.hl { background: #fbeecf; box-shadow: inset 3px 0 0 #a36a16; }
+  .stan-pane pre .cmt { color: #8a8f98; }
+
+  @media (prefers-color-scheme: dark) {
+    .stan-modal-panel { background: #1c2026; border-color: #3a3f47; }
+    .stan-modal-head { background: #23272e; border-color: #3a3f47; }
+    .stan-modal-toggle button { background: #1c2026; color: #e7a7b0; border-color: #3a3f47; }
+    .stan-modal-toggle button.active { background: #8f1d2c; color: #fbfaf7; border-color: #8f1d2c; }
+    .stan-modal-body, .stan-pane pre { background: #1c2026; color: #e6e3dd; }
+    .stan-pane { border-color: #3a3f47; }
+    .stan-pane pre .ln.hl { background: #3a3320; box-shadow: inset 3px 0 0 #d09b3c; }
+    .stan-pane pre .cmt { color: #8a8f98; }
+    .stan-modal-foot { background: #23272e; border-color: #3a3f47; }
+  }
+
+  .stan-modal-foot {
+    padding: 9px 18px; font-size: 14px; color: #666c75;
+    border-top: 1px solid #d8d1c6; background: #f1eee8;
+  }
+  .stan-modal-foot code { font-family: "JuliaMono", monospace; font-size: 13px; }
+</style>
+
+<script>
+  (function () {
+    var CODES = {
+      prior: {
+        title: "Prior — omit y",
+        sub: "m(; subject) — bind no outcome",
+        lines: [
+          "data {",
+          "  array[N] int subject;",
+          "}",
+          "transformed data {",
+          "  int J = max(subject);",
+          "}",
+          "parameters {",
+          "}",
+          "model {",
+          "}",
+          "generated quantities {",
+          "  real mu    = normal_rng(0, 1);",
+          "  real tau   = exponential_rng(1);",
+          "  vector[J] alpha = normal_rng(rep_vector(mu, J), tau);",
+          "  real sigma = exponential_rng(1);",
+          "  array[N] real y = normal_rng(alpha[subject], sigma);",
+          "}"
+        ]
+      },
+      posterior: {
+        title: "Posterior — y observed",
+        sub: "m(; y, subject) — condition on y",
+        lines: [
+          "data {",
+          "  array[N] int subject;",
+          "  vector[N] y;",
+          "}",
+          "transformed data {",
+          "  int J = max(subject);",
+          "}",
+          "parameters {",
+          "  real mu;",
+          "  real<lower=0> tau;",
+          "  vector[J] alpha;",
+          "  real<lower=0> sigma;",
+          "}",
+          "model {",
+          "  mu    ~ normal(0, 1);",
+          "  tau   ~ exponential(1);",
+          "  alpha ~ normal(mu, tau);",
+          "  sigma ~ exponential(1);",
+          "  y ~ normal(alpha[subject], sigma);",
+          "}",
+          "generated quantities {",
+          "  vector[N] y_gen = normal_rng(alpha[subject], sigma);",
+          "}"
+        ]
+      },
+      cv: {
+        title: "Cross-validation — hold out the grouping",
+        sub: "m(; y, subject = maybecv(:subject, subject))",
+        lines: [
+          "data {",
+          "  array[N] int subject;",
+          "  vector[N] y;",
+          "}",
+          "transformed data {",
+          "  int J = max(subject);",
+          "}",
+          "parameters {",
+          "  real mu;",
+          "  real<lower=0> tau;",
+          "  real<lower=0> sigma;",
+          "}",
+          "model {",
+          "  mu    ~ normal(0, 1);",
+          "  tau   ~ exponential(1);",
+          "  sigma ~ exponential(1);",
+          "}",
+          "generated quantities {",
+          "  vector[J] alpha = normal_rng(rep_vector(mu, J), tau);",
+          "  vector[N] y_gen = normal_rng(alpha[subject], sigma);",
+          "}"
+        ]
+      }
+    };
+    var PAIRS = {
+      "prior-posterior": ["prior", "posterior"],
+      "posterior-cv": ["posterior", "cv"]
+    };
+
+    function esc(s) {
+      return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+    function norm(s) { return s.replace(/\s+/g, " ").trim(); }
+    function renderCode(lines, otherLines) {
+      var otherSet = {};
+      otherLines.forEach(function (l) { var k = norm(l); if (k) otherSet[k] = true; });
+      return lines.map(function (l) {
+        var k = norm(l);
+        var changed = k && !otherSet[k];
+        var html = esc(l);
+        var ci = html.indexOf("//");
+        if (ci >= 0) html = html.slice(0, ci) + '<span class="cmt">' + html.slice(ci) + "</span>";
+        return '<span class="ln' + (changed ? " hl" : "") + '">' + (html || " ") + "</span>";
+      }).join("");
+    }
+    function fillPane(paneEl, key, otherKey) {
+      var c = CODES[key], o = CODES[otherKey];
+      paneEl.setAttribute("data-role", key);
+      paneEl.innerHTML =
+        '<div class="pane-title">' + esc(c.title) + "</div>" +
+        '<div class="pane-sub"><code>' + esc(c.sub) + "</code></div>" +
+        "<pre>" + renderCode(c.lines, o.lines) + "</pre>";
+    }
+    function show(pair) {
+      var m = document.getElementById("stan-modal");
+      if (!m) return;
+      var keys = PAIRS[pair] || PAIRS["prior-posterior"];
+      fillPane(m.querySelector('.stan-pane[data-side="left"]'), keys[0], keys[1]);
+      fillPane(m.querySelector('.stan-pane[data-side="right"]'), keys[1], keys[0]);
+      m.querySelectorAll(".stan-modal-toggle button").forEach(function (b) {
+        b.classList.toggle("active", b.getAttribute("data-pair") === pair);
+      });
+      m.hidden = false;
+    }
+    function hide() { var m = document.getElementById("stan-modal"); if (m) m.hidden = true; }
+
+    window.openStanModal = function (pair) { show(pair || "prior-posterior"); };
+
+    function wire() {
+      var m = document.getElementById("stan-modal");
+      if (!m) return;
+      m.querySelectorAll("[data-close]").forEach(function (el) {
+        el.addEventListener("click", function (e) { e.stopPropagation(); hide(); });
+      });
+      m.querySelectorAll(".stan-modal-toggle button").forEach(function (b) {
+        b.addEventListener("click", function (e) {
+          e.stopPropagation(); show(b.getAttribute("data-pair"));
+        });
+      });
+      // Keep Reveal from acting on keys while the modal is open.
+      document.addEventListener("keydown", function (e) {
+        if (m.hidden) return;
+        if (e.key === "Escape") { hide(); }
+        e.stopPropagation();
+      }, true);
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", wire);
+    } else {
+      wire();
+    }
+  })();
+</script>

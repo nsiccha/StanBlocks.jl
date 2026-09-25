@@ -1,4 +1,4 @@
-# Closure + HOF, bruno-style: pass an `int[]` index array to
+# Closure + HOF, PKPD-style: pass an `int[]` index array to
 # `simple_reduce_sum`. Stan's `reduce_sum` accepts arrays, so the helper's
 # `x_slice::anything[n]` resolves to `array[] int` (not `vector`) and
 # stanc accepts the call.

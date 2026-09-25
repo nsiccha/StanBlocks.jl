@@ -5,6 +5,8 @@
 ```@docs
 StanBlocks.@slic
 StanBlocks.@deffun
+StanBlocks.@juliacompat
+StanBlocks.@stanonly
 StanBlocks.@defsig
 StanBlocks.@usertype
 ```
@@ -26,10 +28,27 @@ StanBlocks.@stan_assert
 
 ```@docs
 StanBlocks.return_type_of
+StanBlocks.compile_slic_bundle
 StanBlocks.stan_code
 StanBlocks.stan_model
 StanBlocks.stan_instantiate
 StanBlocks.instantiate
+```
+
+## Model Descriptors
+
+```@docs
+StanBlocks.stan_descriptor
+StanBlocks.required_inputs
+StanBlocks.stan_definition
+StanBlocks.stan_definition_closure
+StanBlocks.stan_operation
+StanBlocks.stan_execute
+StanBlocks.ModelDescriptor
+StanBlocks.ModelInput
+StanBlocks.ModelOutput
+StanBlocks.ModelDefinition
+StanBlocks.ModelOperation
 ```
 
 ## Smoke Tests
@@ -51,4 +70,6 @@ StanBlocks.StanModel
 
 ```@docs
 StanBlocks.StanBlocksError
+StanBlocks.StanBlocksDiagnostic
+StanBlocks.diagnostic
 ```

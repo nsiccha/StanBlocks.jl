@@ -39,17 +39,32 @@ deanon_type(tt::StanType, x::CanonicalExpr, tok) = begin
         k => (k === :arg_types ? nat : v) for (k, v) in pairs(info(tt)) if k != :size
     ]...)
 end
-stan_expr(x::CanonicalExpr) = begin
-    tok = _next_anon_id()
-    tt = deanon_type(tracetype(anon_canonical(x, tok)), x, tok)
+_tracetype(x, _context) = tracetype(x)
+_stan_expr(x::CanonicalExpr, context) = begin
+    context = _context_or_new(context)
+    tok = _next_anon_id(context)
+    tt = deanon_type(_tracetype(anon_canonical(x, tok), context), x, tok)
     StanExpr(x, remake(tt; qual=maximum(qual, x.args; init=:data), cv=any(cv, x.args) || cv(tt)))
 end
+stan_expr(x::CanonicalExpr) = _stan_expr(x, TraceContext())
+# Every compiler-internal conversion that runs while a trace is active must use
+# the trace's context. Starting a standalone context here would restart the anon
+# token counter at 1; a result type that already contains the outer trace's
+# `_arg1_…` placeholder could then be deanonymized against the wrong expression.
+_trace_stan_expr(x::CanonicalExpr, info) = _stan_expr(x, _trace_context(info))
+_trace_stan_arg(x::CanonicalExpr, info) = _trace_stan_expr(x, info)
+_trace_stan_arg(x, _info) = stan_expr(x)
+_trace_stan_call(f, args...; info) = _trace_stan_expr(
+    CanonicalExpr(f, map(a -> _trace_stan_arg(a, info), args)...), info
+)
 # A @slic sub-model or named sub-model function in call position. For an anonymous
 # `SlicModel`, data flows via KEYWORDS — a positional call now errors (its call
 # operator points at `Base.merge` for splice overrides / `@slic f(...)=...` for
 # positional inputs). For a `SubmodelFn`, positional args ARE the inputs (bound by
 # its generated call method; Julia's own dispatch/arity handle them). Either way the
 # call yields a `SlicModel`, embedded via the existing `~`-rhs-is-`SlicModel` path.
+_stan_expr(x::CanonicalExpr{<:Union{SlicModel,SubmodelFn}}, _context) =
+    head(x)(x.args...; x.kwargs...)
 stan_expr(x::CanonicalExpr{<:Union{SlicModel,SubmodelFn}}) = head(x)(x.args...; x.kwargs...)
 
 backward!(x; info) = error("backward! not defined for value `$x` of type `$(typeof(x))` — no method matches a more specific signature.")
@@ -59,7 +74,7 @@ backward!(x::Union{String,Number,LineNumberNode,Symbol,Nothing,Colon}; info) = x
 backward!(x::CanonicalExpr; info) = remake(x, backward!(x.args; info)...)
 backward!(x::BlockExpr; info) = remake(x, reverse(backward!.(reverse(x.args); info))...)
 # The LHS of a compiler-injected slice/element fill (`out[a:b] = rhs`, hoisted
-# from an inlined mutating helper or a plate via `_slic_inline_pending`) is a
+# from an inlined mutating helper or a plate via the trace's pending buffer) is a
 # getindex expr, not a bare Symbol — but every `info` key is a Symbol. Resolve
 # the BASE variable being (partially) filled, "coarse-grained": discard *which*
 # elements are written and treat the whole base var as touched. A plain Symbol
@@ -108,28 +123,76 @@ backward!(x::AssignmentExpr; info) = begin
         # Symbol LHS: swap in the updated info entry. Slice LHS: keep the getindex
         # LHS verbatim so the emitter renders `out[a:b] = rhs`.
         remake(x, slice ? lhs2 : info[key], backward!(rhs; info))
+    elseif slice && qual(info[key]) != :data
+        lhs2, rhs = x.args
+        # A PRIOR-ONLY compiler-injected slice fill (a plate's return `z[i] = w[i]`
+        # or cell-local `=`, an inlined helper's `out[i] = …`): nothing downstream
+        # of `key` reaches a likelihood, or its `lqual` would read
+        # `:affects_likelihood` above. The whole coarse-grained variable — its fresh
+        # declaration, every fill, and the enclosing compiler-owned loop — is routed
+        # by `info[key]`'s qualifier, NOT by this statement's remade LHS
+        # (`distribution_blocks(::StanExpr{<:DeclExpr})`, `_loop_distribution_blocks`).
+        # Flip THAT to `:quantities`, so the fill follows its consumers to generated
+        # quantities. Its sources are deliberately left UNMARKED: the ordinary
+        # prior-only lowering then moves them to generated quantities too — a sampled
+        # source becomes an `_rng` draw, an assigned one a plain gq assignment — in
+        # source order, ahead of this fill, exactly as a whole-variable assignment's
+        # sources do. A source that ALSO reaches a likelihood is marked by that path
+        # and stays a parameter, which generated quantities can read anyway.
+        #
+        # History: `aef6a42` recursed into the RHS here instead, pinning every source
+        # as a parameter so a TRANSFORMED-PARAMETERS fill kept its sources in scope.
+        # That was the conservative direction, but it made a likelihood-free program
+        # sample its prior with NUTS: the plate return fill of a prior-regime PK/QT
+        # model kept 21 parameters, a 92-line transformed parameters block and a full
+        # adaptation run (snag prior-predictive-7e463983). Moving the fill WITH its
+        # sources is what keeps `parameters {}` empty when there is no likelihood.
+        # A data-only fill (`qual == :data`, transformed data) needs neither.
+        info[key] = remake(info[key]; qual=:quantities)
+        remake(x, remake(lhs2, qual=:quantities), rhs)
     elseif qual(lhs) == :parameter
         lhs2, rhs = x.args
-        # A prior-only compiler-injected SLICE fill (e.g. a plate's return
-        # `z[i] = w[i]`) still consumes its RHS in transformed parameters: the
-        # enclosing compiler-owned loop is routed by the base variable's final
-        # `info` qualifier, not this remade LHS. Recurse only for that certified
-        # shape so its sources stay parameters and remain in scope there.
-        #
-        # An ordinary whole-variable assignment can move to generated quantities
-        # together with its dependencies. Recursing for that shape would wrongly
-        # pin prior-only sources as parameters — notably the missing-data rewrite's
-        # `y = merge_missing(..., y_mis, ...)`, whose `y_mis` should be a GQ draw
-        # unless completed `y` feeds a downstream likelihood.
-        rhs = slice ? backward!(rhs; info) : rhs
+        # An ordinary whole-variable prior-only assignment moves to generated
+        # quantities together with its dependencies. Recursing into the RHS here
+        # would wrongly pin prior-only sources as parameters — notably the
+        # missing-data rewrite's `y = merge_missing(..., y_mis, ...)`, whose `y_mis`
+        # should be a GQ draw unless completed `y` feeds a downstream likelihood.
+        # (A slice fill whose base is data-qualified but whose LHS still carries the
+        # declaration-time provisional `:parameter` qualifier lands here too; its
+        # routing reads the base's `:data` qualifier, so this is a no-op for it.)
         remake(x, remake(lhs2, qual=:quantities), rhs)
     else
         x
     end
 end
-backward!(x::SamplingExpr{<:StanExpr{Symbol}}; info) = if qual(x.args[1]) == :data || lqual(info[expr(x.args[1])]) == :affects_likelihood
+# `backward!(::CanonicalExpr)` rebuilds a call from its args and drops its kwargs.
+# For a SAMPLING rhs those kwargs carry the author's `lower=`/`upper=` bounds, and
+# a cv-flipped parameter that still reads `:affects_likelihood` (the reachability
+# pass runs over the unconditioned trace) is re-drawn in generated quantities
+# from exactly this rhs — with the bounds gone, `alpha ~ normal(mu, 1; lower=-2)`
+# re-drew as a plain `normal_rng`. Put the sampling call's kwargs back so
+# `redraw_rng_expr` can honour them; the model block never prints kwargs and the
+# density/pointwise companions take positional args only, so nothing else moves.
+_restore_sampling_kwargs(new::StanExpr, old::StanExpr) = begin
+    (expr(new) isa CanonicalExpr && expr(old) isa CanonicalExpr) || return new
+    isempty(expr(old).kwargs) && return new
+    StanExpr(remake(expr(new), expr(new).args...; expr(old).kwargs...), type(new))
+end
+_restore_sampling_kwargs(new, old) = new
+# A prior-only sampled symbol is re-drawn in generated quantities from its
+# family's `_rng` — which must produce a value of the symbol's declared CENTER
+# type. For `simplex ~ dirichlet` / `cholesky_factor_corr ~ lkj_corr_cholesky`
+# the family rng does; for an `ordered` / `positive_ordered` prior no family rng
+# yields a sorted vector (a sorted iid draw is exact only for exchangeable
+# element densities, and nothing checks that yet). Such a symbol stays a SAMPLED
+# parameter — valid, descriptor-visible (`dimension > 0`), never a silently
+# unsorted draw that Stan rejects at the end of generated quantities. Ragged
+# constrained parameters take their own sampled path (`ragged_density`).
+_gq_redrawable(x::StanExpr) = !(center_type(x) in (types.ordered, types.positive_ordered))
+backward!(x::SamplingExpr{<:StanExpr{Symbol}}; info) = if qual(x.args[1]) == :data ||
+        lqual(info[expr(x.args[1])]) == :affects_likelihood || !_gq_redrawable(x.args[1])
     lhs, rhs = x.args
-    remake(x, info[expr(x.args[1])], backward!(rhs; info))
+    remake(x, info[expr(x.args[1])], _restore_sampling_kwargs(backward!(rhs; info), rhs))
 else
     lhs, rhs = x.args
     remake(x, remake(lhs, qual=:quantities), rhs)
@@ -138,7 +201,7 @@ backward!(x::SamplingExpr; info) = begin
     lhs, rhs = x.args
     key = _base_lhs_symbol(lhs)
     if key in keys(info) && _is_fresh_decl(info[key]) && _decl_role(info[key]) == :sampled
-        if lqual(info[key]) == :affects_likelihood && !cv(info[key])
+        if (lqual(info[key]) == :affects_likelihood || !_gq_redrawable(info[key])) && !cv(info[key])
             # A plate parameter used by a later likelihood remains a parameter;
             # propagate that reachability into its prior's RHS exactly like the
             # established bare-Symbol sampling path above.
@@ -153,7 +216,7 @@ backward!(x::SamplingExpr; info) = begin
             # the declaration `:quantities` (see `_forward_indexed_sampling!` in
             # forward.jl); this is the matching half that turns the `~` itself
             # into the generated-quantities re-draw.
-            remake(x, lhs, backward!(rhs; info))
+            remake(x, lhs, _restore_sampling_kwargs(backward!(rhs; info), rhs))
         else
             # Prior-only plate locals are generated quantities, matching the
             # existing prior-predictive treatment of unused Symbol samples. The
@@ -213,16 +276,50 @@ backward!(x::StanExpr{Symbol}; info) = begin
     # turned every such first binding into a `KeyError`; a submodel data input
     # reached through an indexed sampling LHS (`obs[i] ~ normal(...)`, where the
     # generic descent hits bare `obs`) is the live case. Absent name ⇒ bind `x`.
+    already_reached = key in keys(info) && lqual(info[key]) == :affects_likelihood
     certified = key in keys(info) && get(type(info[key]).info, :ragged_density, false)
     source = certified ? info[key] : x
-    info[key] = remake(source; lqual=:affects_likelihood)
+    reached = remake(source; lqual=:affects_likelihood)
+    info[key] = reached
+    # A parameter's declaration constraints participate in the unconstrained
+    # density through its transform/Jacobian. If a likelihood-reachable value
+    # has a bound or affine constraint that names another sampled variable,
+    # that dependency is therefore part of the same inferred density closure.
+    # Mark first, then descend only on the first visit so repeated references
+    # and even an invalid cyclic constraint graph cannot recurse forever.
+    already_reached || backward!(values(constraints(type(reached))); info)
+    reached
 end
 backward!(x::StanType; info) = remake(x; lqual=:affects_likelihood)
 
 distribute!(x::BlockExpr; info) = distribute!.(x.args; info)
 distribute!(x::Union{LineNumberNode,Nothing}; info) = nothing
 distribute!(x::DocumentExpr{<:Any,<:BlockExpr}; info) = distribute!(x.args[2]; info)
-distribute!(x; info) = begin
+# A documented statement whose inlined body is a multi-statement `:block` (a
+# submodel call — its declarations/samplings/return land in DIFFERENT Stan
+# blocks, so the block has no single distribution target). ONE `#`/`@doc`
+# comment gives `document(block)` (method above); STACKED comments — or a
+# comment plus a preceding statement in the same body — accrue MORE `:document`
+# wrappers: `document(document(…(block)))`. Peel every layer and distribute the
+# innermost block's statements individually, exactly as the single-layer method
+# and a bare inlined block (`distribute!(::BlockExpr)`) do. Without this, the
+# generic method below routes the nested document through `distribution_blocks`,
+# whose `:document` method (`passes.jl` ~line 298) peels each layer and finally
+# calls `distribution_blocks` on the inner `:block` — for which no method exists
+# (snag `doc-submodel-cal`; 3 stacked `#` comments before a submodel call, one
+# consumed into the model docstring, leaving `document(document(block))`). A
+# `:document` wrapping a NORMAL statement (plain `=`/`~`) never reaches here —
+# `_document_inner_block` returns `nothing`, so it keeps flowing through the
+# generic `distribute!`/`push!` path, which re-homes and renders its comment.
+_document_inner_block(x::DocumentExpr) = _document_inner_block(x.args[2])
+_document_inner_block(x::BlockExpr) = x
+_document_inner_block(x) = nothing
+distribute!(x::DocumentExpr{<:Any,<:DocumentExpr}; info) = begin
+    inner = _document_inner_block(x)
+    inner === nothing ? _distribute_statement!(x; info) : distribute!(inner; info)
+end
+distribute!(x; info) = _distribute_statement!(x; info)
+_distribute_statement!(x; info) = begin
     _push_expr!(info, x)
     for b in distribution_blocks(x; info)
         push!(block(info, b), x; info)
@@ -248,10 +345,20 @@ distribution_blocks(x::SamplingExpr; info) = if qual(x) == :data
         # a whole-LHS observation whenever a generated-output shape is derivable
         # from the base declaration: the per-cell rng writes into a compiler-owned
         # `<base>_gen` twin of the base's declared type (`_indexed_obs_gen_base`).
-        # Bases with no natively declarable Stan shape (RaggedVector/RaggedMatrix
-        # views over flat memory) keep the model-only routing.
-        if _indexed_obs_gen_base(x.args[1]; info) === nothing
-            (:model,)
+        # Dense bases use the native declaration retarget below. A RaggedVector
+        # base has no declaration of its own, but its exact compiler-owned
+        # `mem[start(ends,g):end(ends,g)]` projection has a separate flat-twin
+        # plan (`_indexed_ragged_obs_slice`). Other tuple/usertype carriers keep
+        # the model-only routing.
+        if _indexed_obs_twin_target(x.args[1]; info) === nothing
+            # A cv-tainted held-out obs with no gq twin (a top-level ragged
+            # observation whose per-group density loop the broadcast lowered — its
+            # predictive/pointwise twins are emitted separately) contributes no
+            # model likelihood: emitting it in the model block would reference the
+            # density argument's GQ-only backing and stanc-reject as out of scope.
+            # Drop it from emission; `backward!` has already run, so any population
+            # parameter it touches stays sampled (snag ragged-obs-not-c-5b1180c7).
+            cv(x.args[1]) ? () : (:model,)
         elseif cv(x.args[1])
             (:generated_quantities,)
         else
@@ -263,11 +370,27 @@ distribution_blocks(x::SamplingExpr; info) = if qual(x) == :data
         (:model, :generated_quantities)
     end
 elseif qual(x) == :parameter
+    validate_sampled_rhs(x.args...; info)
     # A plate producer emits the outer declaration separately; an indexed
     # sampling statement contributes only the model-side prior/likelihood.
     expr(x.args[1]) isa Symbol ? (:parameters, :model) : (:model,)
 else
     (:generated_quantities, )
+end
+validate_sampled_rhs(lhs, rhs; info) = nothing
+# A ragged twin aliases the completed flat draw, after its group loop. Keeping
+# this marker inert during backward analysis avoids making a latent response
+# likelihood-relevant merely because a predictive alias was requested.
+backward!(x::CanonicalExpr{typeof(_unbound_ragged_twin)}; info) = x
+distribute!(x::CanonicalExpr{typeof(_unbound_ragged_twin)}; info) = begin
+    name, memory = x.args
+    memory = info[expr(memory)]
+    qual(memory) == :quantities || return nothing
+    _assert_twin_free(name, "_gen", info)
+    gen = Symbol(name, :_gen)
+    twin = StanExpr(gen, remake(type(memory); value=missing))
+    info[gen] = twin
+    push!(block(info, :generated_quantities), CanonicalExpr(:(=), twin, memory); info)
 end
 distribution_blocks(x::ReturnExpr; info) = (:generated_quantities,)
 distribution_blocks(x::DocumentExpr; info) = distribution_blocks(x.args[2]; info)
@@ -345,30 +468,31 @@ _loop_distribution_blocks(x::StanExpr{<:ForExpr}; info) = begin
 end
 _loop_distribution_blocks(x; info) = distribution_blocks(x; info)
 _loop_distribution_stmt(x, ::Val; info) = x
+_loop_distribution_stmts(x, v::Val; info) = Any[_loop_distribution_stmt(x, v; info)]
 _loop_distribution_stmt(x::StanExpr{<:ForExpr}, ::Val{B}; info) where {B} = begin
     fe = expr(x)
     head, body = fe.args
     selected = Any[]
     for stmt in body.args
         B in _loop_distribution_blocks(stmt; info) || continue
-        push!(selected, _loop_distribution_stmt(stmt, Val(B); info))
+        append!(selected, _loop_distribution_stmts(stmt, Val(B); info))
     end
     StanExpr(remake(fe, head, remake(body, selected...)), type(x))
 end
-_loop_distribution_stmt(x::SamplingExpr, ::Val{:generated_quantities}; info) = begin
-    expr(x.args[1]) isa Symbol && error(
-        "Compiler-owned loop contains a non-indexed generated-quantities sample. Plate locals must use an outer declaration and indexed sampling."
-    )
-    # A per-cell PARAMETER draw writes back into its own outer declaration; a
-    # per-cell DATA observation writes into the `<base>_gen` twin instead.
-    k = _indexed_obs_gen_base(x.args[1]; info)
-    k === nothing ? _indexed_rng_assignment(x) : _indexed_obs_gen_assignment(x, k)
-end
+_loop_distribution_stmts(x::SamplingExpr, ::Val{:generated_quantities}; info) =
+    _indexed_gq_assignments(x; info)
 distribute!(x::StanExpr{<:ForExpr}; info) = begin
     _push_expr!(info, x)
     try
         fe = expr(x)
         head, body = fe.args
+        # Assignment synthesis below needs the declared twin entries (notably
+        # their flat/vector types) while it rewrites the grouped statements.
+        # Declare them before grouping, still immediately before the eventual
+        # gq loop because this distribute call owns both operations.
+        for target in unique(_obs_twin_targets(x; info))
+            _push_indexed_obs_twin_decls!(block(info, :generated_quantities), target; info)
+        end
         grouped = OrderedDict{Symbol,Vector{Any}}()
         for stmt in body.args
             for b in _loop_distribution_blocks(stmt; info)
@@ -376,17 +500,12 @@ distribute!(x::StanExpr{<:ForExpr}; info) = begin
                     "Compiler-owned loop body statement `", stmt, "` tried to emit into declarative block `", b,
                     "`. Plate parameters must have an outer declaration before the loop and use indexed sampling inside it."
                 )
-                push!(get!(() -> Any[], grouped, b),
-                    _loop_distribution_stmt(stmt, Val(b); info))
+                append!(get!(() -> Any[], grouped, b),
+                    _loop_distribution_stmts(stmt, Val(b); info))
             end
         end
         for (b, stmts) in grouped
             loop = StanExpr(remake(fe, head, remake(body, stmts...)), type(x))
-            # The gq clone writes per-cell observation draws into `<base>_gen`
-            # twins; declare each one immediately before the loop that fills it.
-            b === :generated_quantities && for k in unique(_obs_gen_bases(x; info))
-                _push_obs_gen_decl!(block(info, b), k; info)
-            end
             push!(block(info, b), loop; info)
         end
     finally
@@ -399,7 +518,12 @@ DeclarativeBlock = Union{DataBlock,ParametersBlock}
 ImperativeBlock = Union{FunctionsBlock,TransformedDataBlock,TransformedParametersBlock,ModelBlock,GeneratedQuantitiesBlock}
 fetch_data!(;info) = x->fetch_data!(x; info)
 fetch_data!(x::Union{Tuple,NamedTuple,Vector}; info) = map(fetch_data!(;info), x)
-fetch_data!(x::Union{Function,String}; info) = nothing
+# Bare (un-wrapped) literals reach here from a StanType's constraint `info`:
+# `autokwargs` supplies a DISTRIBUTION-implied bound as a raw Julia value
+# (`exponential`→`lower=0.0`), never as a StanExpr like an author-written one.
+# Descending into constraints without this method turned every implied bound
+# into `fetch_data! not defined for value 0.0`.
+fetch_data!(x::Union{Function,String,Number,Missing}; info) = nothing
 # `distribute!` skips LineNumberNodes/Nothing at the block level, but they also live
 # INSIDE a compiler-injected loop body (`@inline` line info), which
 # `fetch_data!(::StanExpr{<:ForExpr})` recurses into — skip them here too.
@@ -460,16 +584,38 @@ end
 Base.push!(b::ImperativeBlock, x::DocumentExpr; info) = begin
     push!(remake(b, remake(x, x.args[1], b)), x.args[2]; info)
 end
+# A compiler-owned `<stem>_gen` / `<stem>_likelihood` twin colliding with a USER
+# variable of the same name must fail HERE — loudly naming the twin — rather
+# than emitting a duplicate Stan declaration that only stanc rejects (same-block
+# twins are `get!`-deduped at reflection, so the descriptor cannot see the
+# collision). A DATA-qualified same-named var is exempt: it lands in another
+# block, and the descriptor's input/output clash check reports it with the
+# twin-aware message. Guards all three whole-LHS twin sites uniformly.
+_assert_twin_free(stem, suffix, info) = begin
+    stem isa Symbol || return nothing
+    twin = Symbol(stem, suffix)
+    twin in keys(info) || return nothing
+    qual(info[twin]) == :data && return nothing
+    error(
+        "Cannot emit the compiler-owned twin `", twin, "` for `", stem, " ~ …`: ",
+        "the model already defines `", twin, "`. `<stem>_gen` / ",
+        "`<stem>_likelihood` names are reserved for the compiler's predictive ",
+        "twins — rename the model's `", twin, "`.",
+    )
+end
 Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     lhs, rhs = x.args
     # if hasvalue(lhs)
-    if qual(lhs) == :data
+    is_observation = qual(lhs) == :data
+    if is_observation
         likelihood_rhs = likelihood_expr(lhs, rhs)
+        _assert_twin_free(expr(lhs), "_likelihood", info)
         push!(b, CanonicalExpr(
             :(=),
             StanExpr(Symbol(expr(lhs), "_likelihood"), remake(type(likelihood_rhs); value=missing)),
             likelihood_rhs
         ); info)
+        _assert_twin_free(expr(lhs), "_gen", info)
         lhs = StanExpr(Symbol(expr(lhs), "_gen"), remake(type(lhs); value=missing))
     end
     # Build a type token carrying the wanted output shape (from lhs, which is
@@ -478,9 +624,29 @@ Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     # @deffun dispatch on the shape.
     lhs_ct = center_type(lhs)
     token = StanExpr(lhs_ct, StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
-    rng_rhs = rng_expr(token, rhs)
+    # An observation's `<obs>_gen` twin draws from the bare family (its likelihood
+    # is the bare family); a PARAMETER re-draw must respect the sampled symbol's
+    # own `lower=`/`upper=` bounds — see `redraw_rng_expr`.
+    rng_rhs = is_observation ? rng_expr(token, rhs) : _gq_redraw(lhs, rhs, token)
     lhs = StanExpr(expr(lhs), remake(type(rng_rhs); value=missing))
     push!(b, CanonicalExpr(:(=), lhs, rng_rhs); info)
+    # A DECLARED-but-unbound observation (`SlicModel(…, observations)`; snag
+    # `unbound-observat-d32ac924`) re-draws above under its own name — and gets
+    # the same `<obs>_gen` twin a bound observation has, so downstream code
+    # reading `y_gen` works unchanged across fitted/prior programs. The twin
+    # ALIASES the one draw (`z_gen = z`): a second independent draw would cost
+    # another RNG call and dress simulation up as data-vs-simulation, while
+    # emitting ONLY the twin would break downstream reads of `z` (a chained
+    # unbound `w ~ family(z, …)` reads the draw). NO `_likelihood` twin —
+    # pointwise needs observed values. Bound observations never reach here
+    # (they twin in the branch above); a declared stem that stays a sampled
+    # parameter never reaches generated quantities at all — both correctly
+    # twinless.
+    if !is_observation && expr(lhs) isa Symbol && expr(lhs) in _model_observations(info)
+        _assert_twin_free(expr(lhs), "_gen", info)
+        twin = StanExpr(Symbol(expr(lhs), "_gen"), remake(type(lhs); value=missing))
+        push!(b, CanonicalExpr(:(=), twin, lhs); info)
+    end
 end
 # Prior-only indexed plate parameters are lowered cell-wise in generated
 # quantities: their outer declaration is already present there, so each loop
@@ -491,17 +657,68 @@ Base.push!(b::GeneratedQuantitiesBlock,
     # Same split as the loop clone (`_loop_distribution_stmt`): a per-cell
     # PARAMETER redraw fills its own outer declaration, a per-cell DATA
     # observation fills the `<base>_gen` twin, which must be declared first.
-    k = _indexed_obs_gen_base(x.args[1]; info)
-    k === nothing && return push!(b, _indexed_rng_assignment(x); info)
-    _push_obs_gen_decl!(b, k; info)
-    push!(b, _indexed_obs_gen_assignment(x, k); info)
+    target = _indexed_obs_twin_target(x.args[1]; info)
+    target === nothing || _push_indexed_obs_twin_decls!(b, target; info)
+    for stmt in _indexed_gq_assignments(x; info)
+        push!(b, stmt; info)
+    end
 end
 _indexed_rng_assignment(x::SamplingExpr) = begin
     lhs, rhs = x.args
     lhs_ct = center_type(lhs)
     token = StanExpr(lhs_ct,
         StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
-    CanonicalExpr(:(=), lhs, rng_expr(token, rhs))
+    # A per-cell PARAMETER re-draw: honour the cell prior's own bounds.
+    CanonicalExpr(:(=), lhs, _gq_redraw(lhs, rhs, token))
+end
+# The one generated-quantities re-draw of a sampled symbol (top-level or
+# per-cell): bounds honoured, and the two families that CANNOT be re-drawn fail
+# here with the reason rather than deep inside `tracetype`/emission.
+_gq_redraw(lhs, rhs, token) = begin
+    _check_redraw_improper(lhs, rhs)
+    _check_redraw_resolves(lhs, rhs, redraw_rng_expr(token, rhs))
+end
+# `flat()` is the improper-uniform base measure: it has no `_rng` because there
+# is nothing to draw from. A symbol whose only density is `flat` and which no
+# likelihood reaches is a prior-only program's unsimulable parameter — say so
+# (before this it died as `tracetype not defined … flat_rng(::array[] tokenof)`
+# at emission, or as a `jbroadcasted` type error once a bound was involved).
+_check_redraw_improper(lhs, rhs) = begin
+    _ragged_base_family(expr(rhs)) === builtin.flat || return nothing
+    name = _base_lhs_symbol(lhs)
+    error(
+        "`", name, " ~ flat(…)` is an improper prior and `", name, "` is re-drawn in ",
+        "generated quantities — no likelihood reaches it (a prior-only / prior-predictive ",
+        "program), or it is cv-held-out — but an improper prior has nothing to draw from. ",
+        "Give `", name, "` a proper prior (`", name, " ~ normal(…)`, `uniform(lo, hi)`, …), ",
+        "or bind the data whose likelihood informs it.",
+    )
+end
+# A sampled symbol that is RE-DRAWN in generated quantities — no likelihood
+# reaches it (prior-only / prior-predictive lowering), or it is cv-held-out — is
+# the one place a custom family's `_rng` companion becomes mandatory for that
+# shape. Without it the failure used to surface at EMISSION as an internal
+# `AssertionError: tracetype not defined for tau::anything = foo_rng(::array[] tokenof, …)`,
+# naming neither why the symbol is drawn nor what to add (the BRM `brm_ranef_sd`
+# shape, snag prior-predictive-7e463983). Catch it where the family is known.
+_check_redraw_resolves(lhs, rhs, draw) = begin
+    center_type(draw) === types.anything || return draw
+    name = _base_lhs_symbol(lhs)
+    family = _ragged_base_family(expr(rhs))
+    rng = try string(nameof(rng_expr(head(expr(rhs))))) catch; string(nameof(family), "_rng") end
+    ct = center_type(lhs)
+    nd = stan_ndim(lhs)
+    shape = nd == 0 ? string(ct) : string(ct, "[", join(("n" for _ in 1:nd), ", "), "]")
+    signature = nd == 0 ? string(rng, "(<the family's args…>)::", shape) :
+        string(rng, "(", shape, ", <the family's args…>)::", shape)
+    error(
+        "`", name, " ~ ", nameof(family), "(…)` is re-drawn in generated quantities — ",
+        "no likelihood reaches `", name, "` (a prior-only / prior-predictive program), or ",
+        "it is cv-held-out — but its family has no predictive companion for a `", shape,
+        "`: `", rng, "` resolved to an untyped (`anything`) result. Add\n    @deffun ",
+        signature, " = …\nalongside the density (the sized-token protocol every ",
+        "vector-shaped predictive draw uses; see `normal_rng(vector[n], …)` in `builtin.jl`).",
+    )
 end
 
 # --- Per-cell DATA observations inside a plate: the `<base>_gen` twin ---------
@@ -517,10 +734,10 @@ end
 # CELL shape, so each `*_rng` overload dispatches exactly as it does for a
 # prior-only plate parameter.
 #
-# Only a base with a natively declarable Stan shape qualifies. A RaggedVector /
-# RaggedMatrix base is a compile-time view over flat backing memory with no
-# declaration form, so the ragged obs-broadcast path (snag ragged-dist-arg) keeps
-# its model-only routing; same for any usertype/tuple carrier.
+# A natively declarable base qualifies for the ordinary whole-container retarget.
+# RaggedVector is handled separately below: it has no declaration form, but its
+# compiler-owned plate accessor exposes enough structure to declare flat storage.
+# RaggedMatrix and every other usertype/tuple carrier remain outside this path.
 _gen_twin_name(k::Symbol) = Symbol(k, "_gen")
 _is_gen_declarable(T) = T isa Type &&
     (T <: types.real || T <: types.any_vector || T <: types.matrix)
@@ -541,6 +758,58 @@ _indexed_obs_gen_base(lhs; info) = begin
     base = info[k]
     qual(base) == :data || return nothing
     _is_gen_declarable(center_type(base)) ? k : nothing
+end
+
+# STRICT RaggedVector plate-slice matcher. `_plate_input_accessor` lowers one
+# logical group `dv[g]` to exactly
+#
+#   dv.mem[ragged_start(dv.ends, g):ragged_end(dv.ends, g)]
+#
+# Match that entire shape — including the same named base and group index at
+# both bounds — rather than widening `_getindex_chain_base`. The dense retarget
+# must remain getindex-only, and an arbitrary tuple field / user-written slice
+# is not enough evidence that flat generated storage is semantically valid.
+_literal_int(x::StanExpr) = _literal_int(expr(x))
+_literal_int(x::Integer) = Int(x)
+_literal_int(::Any) = nothing
+_ragged_field_base(x, field::Int) = begin
+    x isa StanExpr || return nothing
+    e = expr(x)
+    e isa CanonicalExpr && head(e) === Base.getfield && length(e.args) == 2 || return nothing
+    _literal_int(e.args[2]) == field || return nothing
+    base = e.args[1]
+    base isa StanExpr && expr(base) isa Symbol ? expr(base) : nothing
+end
+_ragged_bound_group(x, bound, k::Symbol) = begin
+    x isa StanExpr || return nothing
+    e = expr(x)
+    e isa CanonicalExpr && head(e) === bound && length(e.args) == 2 || return nothing
+    _ragged_field_base(e.args[1], 2) === k || return nothing
+    e.args[2]
+end
+_indexed_ragged_obs_slice(lhs; info) = begin
+    lhs isa StanExpr || return nothing
+    e = expr(lhs)
+    e isa CanonicalExpr && head(e) === getindex && length(e.args) == 2 || return nothing
+    k = _ragged_field_base(e.args[1], 1)
+    (k isa Symbol && k in keys(info)) || return nothing
+    base = info[k]
+    T = center_type(base)
+    qual(base) == :data && T isa Type && T <: RaggedVector || return nothing
+    slice = e.args[2]
+    se = slice isa StanExpr ? expr(slice) : slice
+    se isa CanonicalExpr && head(se) isa Colon && length(se.args) == 2 || return nothing
+    lo_group = _ragged_bound_group(se.args[1], builtin.ragged_start, k)
+    hi_group = _ragged_bound_group(se.args[2], builtin.ragged_end, k)
+    lo_group === nothing || hi_group === nothing ||
+        isequal(expr(lo_group), expr(hi_group)) || return nothing
+    (; base=k, mem=e.args[1], group=lo_group, slice)
+end
+_indexed_obs_twin_target(lhs; info) = begin
+    k = _indexed_obs_gen_base(lhs; info)
+    k === nothing || return (; kind=:dense, base=k)
+    spec = _indexed_ragged_obs_slice(lhs; info)
+    spec === nothing ? nothing : (; kind=:ragged, base=spec.base)
 end
 # Rebuild an indexed LHS against a different base symbol, preserving every index
 # expression and the cell type (`y[i, j]` ⇒ `y_gen[i, j]`).
@@ -565,20 +834,65 @@ _indexed_obs_gen_assignment(x::SamplingExpr, k::Symbol) = begin
         StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
     CanonicalExpr(:(=), _rename_lhs_base(lhs, _gen_twin_name(k)), rng_expr(token, rhs))
 end
-# Walk a (possibly nested) compiler-owned loop for the bases needing a twin.
-_obs_gen_bases(::Union{LineNumberNode,Nothing}; info) = Symbol[]
-_obs_gen_bases(x; info) = Symbol[]
-_obs_gen_bases(x::StanExpr{<:ForExpr}; info) = begin
-    rv = Symbol[]
+# One RaggedVector group produces TWO generated-quantities assignments. The draw
+# uses the existing sized-token RNG protocol; the likelihood uses the aggregate
+# family density, never the elementwise `_lpdfs`, so joint families retain their
+# meaning. Dense per-cell observations continue to produce only the draw.
+_indexed_ragged_obs_assignments(x::SamplingExpr, spec; info) = begin
+    lhs, rhs = x.args
+    rhs_expr = expr(rhs)
+    rhs_expr isa CanonicalExpr || error(
+        "internal: ragged observation twin reached a non-call distribution rhs `", rhs_expr, "`.")
+    lhs_ct = center_type(lhs)
+    rhs_expr = _assert_ragged_family_carrier(rhs_expr, lhs_ct)
+    # Preserve the ordinary sampling diagnostic as the first gate. Because the
+    # gq declarations/assignments are built before the model-loop clone is
+    # pushed, attempting the sized RNG first would mask an unresolved density
+    # signature with the less relevant "missing sized RNG" error.
+    density = lpxf_expr(lhs, rhs_expr)
+    _check_lpxf_resolves(density)
+    token = StanExpr(lhs_ct,
+        StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
+    draw = _ragged_group_rng(token, rhs_expr, lhs_ct)
+    gen = info[_gen_twin_name(spec.base)]
+    gen_lhs = StanExpr(
+        CanonicalExpr(getindex, gen, spec.slice),
+        remake(type(lhs); value=missing, qual=:quantities),
+    )
+    lik = info[Symbol(spec.base, "_likelihood")]
+    lik_lhs = StanExpr(
+        CanonicalExpr(getindex, lik, spec.group),
+        remake(type(density); value=missing, qual=:quantities),
+    )
+    Any[
+        CanonicalExpr(:(=), gen_lhs, draw),
+        CanonicalExpr(:(=), lik_lhs, density),
+    ]
+end
+_indexed_gq_assignments(x::SamplingExpr; info) = begin
+    expr(x.args[1]) isa Symbol && error(
+        "Compiler-owned loop contains a non-indexed generated-quantities sample. Plate locals must use an outer declaration and indexed sampling.")
+    k = _indexed_obs_gen_base(x.args[1]; info)
+    k === nothing || return Any[_indexed_obs_gen_assignment(x, k)]
+    spec = _indexed_ragged_obs_slice(x.args[1]; info)
+    spec === nothing ? Any[_indexed_rng_assignment(x)] :
+        _indexed_ragged_obs_assignments(x, spec; info)
+end
+
+# Walk a (possibly nested) compiler-owned loop for the bases needing twins.
+_obs_twin_targets(::Union{LineNumberNode,Nothing}; info) = NamedTuple[]
+_obs_twin_targets(x; info) = NamedTuple[]
+_obs_twin_targets(x::StanExpr{<:ForExpr}; info) = begin
+    rv = NamedTuple[]
     for stmt in expr(x).args[2].args
-        append!(rv, _obs_gen_bases(stmt; info))
+        append!(rv, _obs_twin_targets(stmt; info))
     end
     rv
 end
-_obs_gen_bases(x::SamplingExpr; info) = begin
-    qual(x) == :data || return Symbol[]
-    k = _indexed_obs_gen_base(x.args[1]; info)
-    k === nothing ? Symbol[] : Symbol[k]
+_obs_twin_targets(x::SamplingExpr; info) = begin
+    qual(x) == :data || return NamedTuple[]
+    target = _indexed_obs_twin_target(x.args[1]; info)
+    target === nothing ? NamedTuple[] : NamedTuple[target]
 end
 # Declare the twin once per model (a base observed by two plates must not emit
 # two declarations); registering it in `info` doubles as the dedup key.
@@ -590,6 +904,45 @@ _push_obs_gen_decl!(b, k::Symbol; info) = begin
     info[gen] = decl
     push!(b, StanExpr(CanonicalExpr(:(::), decl), t); info)
 end
+_push_ragged_obs_decls!(b, k::Symbol; info) = begin
+    gen = _gen_twin_name(k)
+    lik = Symbol(k, "_likelihood")
+    names = (gen, lik)
+    existing = filter(name -> name in keys(info), names)
+    if !isempty(existing)
+        certified = length(existing) == 2 && all(name ->
+            get(type(info[name]).info, :ragged_obs_source, nothing) === k, names)
+        certified && return
+        error(
+            "Ragged plate observation `", k, "[…] ~ …` needs compiler-owned names `",
+            gen, "` and `", lik, "`, but ", join(string.(existing), ", "),
+            " is already bound in this model. Rename that variable.")
+    end
+    base = info[k]
+    arg_types = type(base).info.arg_types
+    mem = StanExpr(CanonicalExpr(Base.getfield, base,
+        StanExpr(1, StanType(types.int; value=1, qual=:data))), arg_types.mem)
+    ends = StanExpr(CanonicalExpr(Base.getfield, base,
+        StanExpr(2, StanType(types.int; value=2, qual=:data))), arg_types.ends)
+    gen_size = _trace_stan_call(builtin.num_elements, mem; info)
+    lik_size = _trace_stan_call(builtin.num_elements, ends; info)
+    # `<obs>_gen` carries the per-group predictive DRAW, so its center type must
+    # match the observation's own carrier: an integer ragged observation
+    # (`mem::array[] int`) draws into `array[] int`, a real one into `vector`.
+    # (`_likelihood` below stays real — it holds per-group density scalars.)
+    gen_type = StanType(center_type(arg_types.mem), (gen_size,);
+        value=missing, qual=:quantities, ragged_obs_source=k)
+    lik_type = StanType(types.vector, (lik_size,);
+        value=missing, qual=:quantities, ragged_obs_source=k)
+    for decl in (StanExpr(gen, gen_type), StanExpr(lik, lik_type))
+        info[expr(decl)] = decl
+        push!(b, StanExpr(CanonicalExpr(:(::), decl), type(decl)); info)
+    end
+end
+_push_indexed_obs_twin_decls!(b, target; info) =
+    target.kind === :dense ? _push_obs_gen_decl!(b, target.base; info) :
+    target.kind === :ragged ? _push_ragged_obs_decls!(b, target.base; info) :
+    error("internal: unknown indexed observation twin kind `", target.kind, "`.")
 
 function lpxf_expr end
 function rng_expr end

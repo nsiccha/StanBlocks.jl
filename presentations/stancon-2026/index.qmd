@@ -1,0 +1,753 @@
+---
+title: "StanBlocks.jl"
+subtitle: "A Julia frontend for writing and composing Stan models"
+author: "Nikolas Siccha · Generable Inc."
+institute: "StanCon 2026 · Uppsala"
+date: "2026-08-18"
+date-format: "D MMMM YYYY"
+format:
+  revealjs:
+    theme: [simple, stancon.scss]
+    width: 1600
+    height: 900
+    margin: 0.06
+    center: false
+    transition: fade
+    background-transition: fade
+    slide-number: c/t
+    progress: true
+    controls: true
+    hash-type: number
+    code-overflow: wrap
+    link-external-newwindow: true
+    include-after-body: [qr-title.html, three-modal.html]
+    footer: "[Slides · nsiccha.github.io/StanBlocks.jl/stancon-2026/](https://nsiccha.github.io/StanBlocks.jl/stancon-2026/)"
+execute:
+  enabled: false
+---
+
+## A deliberately modest promise
+
+:::: {.columns}
+::: {.column width="54%"}
+
+Write one model in a restricted, Julia-flavoured language:
+
+```julia
+model = @slic (; x, y) begin
+    alpha ~ normal(0, 2)
+    beta  ~ normal(0, 1)
+    sigma ~ exponential(1)
+    y ~ normal(alpha + beta * x, sigma)
+end
+```
+
+:::
+::: {.column .fragment width="42%"}
+
+Get ordinary, inspectable Stan:
+
+```stan
+parameters {
+  real alpha;
+  real beta;
+  real<lower=0> sigma;
+}
+model {
+  alpha ~ normal(0, 2);
+  beta ~ normal(0, 1);
+  sigma ~ exponential(1);
+  y ~ normal(alpha + beta * x,
+             sigma);
+}
+```
+
+:::
+::::
+
+::: {.takeaway .fragment}
+StanBlocks is a frontend, not a replacement for Stan.
+:::
+
+<p class="small muted fragment">… with quality-of-life improvements such as activity analysis, submodels, user-defined types (currently enabling e.g. NamedTuples and ragged data structures), higher-order user-defined functions, closures, keyword &amp; default arguments, automatic but optional type &amp; shape inference, (ragged) plates, metaprogramming, Julia-style multiple dispatch, and more.</p>
+
+::: {.notes}
+Open with the boundary, not the feature list. The promise is deliberately
+small: author in Julia syntax, emit normal Stan, keep Stan's toolchain.
+:::
+
+# 1. Why? {.section-slide}
+
+Why put a language in front of an already good language?
+
+## Julia + performant AD versus Stan
+
+:::: {.columns}
+::: {.column width="48%"}
+
+### Julia + performant AD
+
+- expressive, general-purpose language
+- mathematical code may need expert rewriting
+- AD must cope with that full expressiveness
+- historically incomplete, wrong, or slow
+- Enzyme makes far more possible today
+
+:::
+::: {.column .fragment width="48%"}
+
+### Stan
+
+- restricted language for statistical models
+- obvious mathematical code is a strong baseline
+- AD is central to the inference stack
+- narrower target is easier to optimize reliably
+- generated code remains inspectable
+
+:::
+::::
+
+::: {.takeaway .fragment}
+Julia maximizes **expressive freedom**; Stan narrows the problem to make differentiable programs **predictable**.
+:::
+
+::: {.notes}
+The first Julia bullet pair folds in Michael Tiemann's framing from
+[“Julia Solves the 2 Language Problem, However It Creates the 1.5 Language
+Problem”](https://www.youtube.com/watch?v=RUJFd-rEa0k): naive Julia can look
+like the mathematics yet be much slower than expert Julia, whose performant
+implementation may look very different. The detailed causes are not the point
+of this slide. The AD comparison is our synthesis, not Tiemann's framing.
+Historically, Julia AD has often felt incomplete, incorrect, or insufficiently
+performant. Julia did not bake one performant AD path into Core, while the
+language's generality already gives the primal compiler a difficult
+optimization problem. Differentiating the full language makes the analysis
+harder still. Stan accepts the opposite constraint: its narrower language and
+runtime are designed around differentiation for statistical inference.
+
+Enzyme changes what is possible in principle and can already match or beat Stan
+on some workloads. Do not turn that into “every Julia program always works
+today”: compilation, activity analysis, custom rules, library coverage, and
+workload-specific performance still matter. In StanBlocks today, Mooncake is
+the Julia AD backend; Stan's path is separate and uses Stan Math through
+BridgeStan.
+:::
+
+## The Stan bargain
+
+:::: {.card-grid}
+::: {.card}
+
+<div class="card-title">“Not ideal, but good” performance</div>
+
+Out of the box. Not always the theoretical optimum—but mature vectorisation,
+fused kernels, reverse-mode AD, and NUTS adaptation make “write the obvious
+model” a strong baseline.
+
+:::
+::: {.card .blue-card .fragment}
+
+<div class="card-title">Reliability</div>
+
+Static checks, explicit constraints and Jacobians, a mature sampler, and years
+of use on difficult models.
+
+:::
+::: {.card .gold-card .fragment}
+
+<div class="card-title">Stable semantics</div>
+
+The generated target is a small, explicit language designed around Bayesian
+computation rather than general-purpose execution.
+
+:::
+::: {.card .fragment}
+
+<div class="card-title">A review boundary</div>
+
+`stan_code(model)` is the boundary between a compositional authoring language
+and a mature inference language — read it, diff it, archive it, check it with
+`stanc`, hand it to the Stan ecosystem.
+
+:::
+::::
+
+::: {.takeaway .fragment}
+“Generated” does not have to mean “opaque.”
+:::
+
+::: {.notes}
+Use the user's wording verbally: “not ideal, but good performance out of the
+box.” The point is engineering leverage, not a benchmark claim that Stan wins
+every workload.
+:::
+
+# 2. What? {.section-slide}
+
+A small declarative model surface with a surprisingly high ceiling.
+
+## One model declaration
+
+:::: {.columns}
+::: {.column width="47%"}
+
+### StanBlocks source
+
+```julia
+m = @slic (; x, y) begin
+    alpha ~ normal(0, 2)
+    beta  ~ normal(0, 1)
+    sigma ~ exponential(1)
+
+    mu = alpha + beta * x
+    y ~ normal(mu, sigma)
+end
+```
+
+What is missing?
+
+- block declarations
+- types and shapes
+
+*Main caveat* — model-level control flow: keep `@slic` flat; use `@deffun` or `plate`.
+
+:::
+::: {.column .fragment width="49%"}
+
+### Essential Stan emission
+
+```stan
+data {
+  int x_n; vector[x_n] x;
+  int y_n; vector[y_n] y;
+}
+parameters {
+  real alpha; real beta;
+  real<lower=0> sigma;
+}
+transformed parameters {
+  vector[x_n] mu = alpha + beta * x;
+}
+model {
+  alpha ~ normal(0, 2);
+  beta ~ normal(0, 1);
+  sigma ~ exponential(1);
+  y ~ normal(mu, sigma);
+}
+generated quantities {
+  vector[y_n] y_likelihood = ...;
+  vector[y_n] y_gen = ...;
+}
+```
+
+:::
+::::
+
+:::: {.card-grid .three .compact-cards}
+::: {.card .fragment}
+
+<div class="card-title">Placement</div>
+
+`data` · `transformed data` · `parameters` · `transformed parameters` · `model` · `generated quantities`
+
+:::
+::: {.card .blue-card .fragment}
+
+<div class="card-title">Representation</div>
+
+types · shapes · constraints · function signatures · captured dimensions
+
+:::
+::: {.card .gold-card .fragment}
+
+<div class="card-title">Workflow outputs</div>
+
+pointwise log likelihood · posterior predictive draws · executable model descriptor
+
+:::
+::::
+
+::: {.notes}
+This output was generated from the current checkout. “Essential” means helper
+functions in the functions block are omitted on this slide; the backup has the
+full relevant declarations. The three cards are what the compiler INFERS from
+the one declaration: block placement; representation (types, shapes,
+constraints, function signatures, captured dimensions); and workflow outputs
+(pointwise log-likelihood, posterior-predictive draws, the executable
+descriptor). The one real restriction is model-level control flow — @slic
+bodies are straight-line; loops and branches live in @deffun or plate.
+:::
+
+## Composition is the reason for the frontend
+
+:::: {.columns}
+::: {.column width="49%"}
+
+### Reusable submodel
+
+```julia
+@slic random_slope(x::vector[n]) = begin
+    beta ~ normal(0, 1)
+    return beta * x
+end
+
+m = @slic (; x, y) begin
+    eta ~ random_slope(x)
+    y ~ normal(eta, 1)
+end
+```
+
+Emits a prefixed parameter `eta_beta`.
+
+:::
+::: {.column .fragment width="47%"}
+
+### Post-hoc variant
+
+```julia
+wide_prior = Base.merge(random_slope, quote
+    beta ~ normal(0, 5)
+end)
+```
+
+The matching `beta` statement is replaced; `random_slope` stays unchanged.
+
+The same mechanism supports:
+
+- nested submodels
+- swapping in new data
+- typed positional arguments
+- generated model variants
+
+:::
+::::
+
+::: {.takeaway .fragment}
+The payoff grows with a *family* of bespoke models, not with the first ten-line model.
+:::
+
+# 3. How? {.section-slide}
+
+Julia syntax on the front, SlicStan's information-flow idea in the middle, Stan on the back.
+
+## The intellectual lineage: SlicStan
+
+StanBlocks is directly inspired by [Gorinova, Gordon & Sutton (POPL 2019)](https://doi.org/10.1145/3290348). Shared ideas: no author-written Stan blocks, placement inferred from information flow, composable model fragments, and Stan preserved as the inference target.
+
+::: {.fragment}
+| | SlicStan | StanBlocks.jl (MlicStan?) |
+|---|---|---|
+| Frontend | A new Stan-like language | A restricted Julia macro DSL |
+| Core analysis | Information-flow type system | Forward trace + reverse likelihood tracking |
+| Abstraction | Flexible model functions | Julia dispatch, closures, kwargs, macros, `@slic` submodels |
+| Distinctive reach | Formal semantics; marginalizing out discrete parameters | Auto generated quantities, model variants, descriptors, BridgeStan/Julia integration |
+| Implementation posture | Research implementation in F# | Julia package used by larger Julia model DSLs |
+| Output | Stan | Stan |
+:::
+
+::: {.notes}
+Credit Maria Gorinova explicitly. SlicStan is “Slightly Less Intensely
+Constrained Stan.” Its paper gives an operational density semantics and a
+semantics-preserving translation; StanBlocks does not claim that formal result.
+:::
+
+## One model, three activity analyses
+
+```julia
+m = @slic (; y, subject) begin
+    J     = maximum(subject)
+    mu    ~ normal(0, 1)
+    tau   ~ exponential(1)
+    alpha :: vector[J] ~ normal(mu, tau)   # per-subject effect
+    sigma ~ exponential(1)
+    y ~ normal(alpha[subject], sigma)
+end
+```
+
+Same source. Only the **data you bind** changes — activity analysis and metadata
+decide, per statement, where each sampling statement ends up.
+
+:::: {.card-grid .three}
+::: {.card .gold-card .fragment}
+
+<div class="card-title">Prior prediction</div>
+
+Bind **no outcome** — `m(; subject)`.
+
+Nothing to condition on, so the whole model forward-simulates in `generated
+quantities` — `mu, tau, alpha, sigma`, and `y` itself.
+
+:::
+::: {.card .blue-card .fragment}
+
+<div class="card-title">Posterior fit</div>
+
+Bind **`y` observed**.
+
+`y ~ normal(alpha[subject], sigma)` becomes the likelihood; `mu, tau, alpha,
+sigma` are fitted, and `y_gen` is the posterior-predictive replica.
+
+:::
+::: {.card .fragment}
+
+<div class="card-title">Population prediction · CV</div>
+
+Bind **`maybecv(:subject, subject)`**.
+
+Taint flows from the grouping into `alpha`: the per-subject effects leave
+`parameters` and re-draw from `normal(mu, tau)` in `generated quantities`,
+while `mu, tau, sigma` stay fitted.
+
+:::
+::::
+
+```{=html}
+<p class="stan-modal-cta fragment">
+<button type="button" class="stan-modal-trigger"
+  onclick="event.stopPropagation(); window.openStanModal('prior-posterior');">
+  See the generated Stan, side by side&nbsp;→
+</button>
+</p>
+```
+
+::: {.notes}
+The SAME @slic source is all three models; only the data binding differs, and
+two mechanisms do the work. (1) Dead-parameter elimination: bind y and `y ~`
+is a live likelihood, so mu, tau, alpha, sigma are fitted parameters; OMIT y
+and there is no likelihood at all, so the whole model forward-simulates in
+generated quantities (y is generated too — this is the prior predictive). (2)
+cv taint: maybecv on the subject index taints everything it reaches — the y
+likelihood (dropped) and, because alpha's size J = maximum(subject) is tainted,
+alpha itself, which relocates to generated quantities and re-draws from
+normal(mu, tau). mu, tau, sigma are untainted, so they stay parameters. That is
+leave-a-group-out / population prediction. The typed `alpha :: vector[J] ~
+normal(mu, tau)` and the `; n=J` spelling now emit byte-identical Stan under cv
+taint — the declared size carries the taint too (StanBlocks fix, snag
+`typed-lhs-size-c-8a7fbfb2`). The modal shows the real distilled `stan_code`.
+:::
+
+# 4. Started pre-agents — still relevant? {.section-slide}
+
+Yes, but the value proposition changes.
+
+## From keystroke savings to a model contract
+
+<div class="timeline">
+  <div><strong>Oct 2024</strong>Initial repository: block inference, Julia syntax, Stan emission.</div>
+  <div><strong>2025</strong>Production-shaped models, generated quantities, broader Stan surface.</div>
+  <div><strong>2026</strong>Agent-assisted expansion: <code>plate</code>s, closures, higher-order functions, hardening.</div>
+</div>
+
+:::: {.columns}
+::: {.column .fragment width="47%"}
+
+### Agents make this cheaper
+
+- write Stan boilerplate
+- translate a sketch into a full model
+- generate repetitive signatures and tests
+- explore compiler edge cases quickly
+- producing, finding, and fixing bugs
+
+:::
+::: {.column .fragment width="49%"}
+
+### Agents do not make this disappear
+
+- one source for a family of model variants
+- a reusable statistical vocabulary
+- generated Stan that humans and tools can inspect
+
+:::
+::::
+
+::: {.takeaway .fragment}
+Agents reduce the cost of writing code. StanBlocks reduces the amount of *independent model meaning* we have to maintain.
+:::
+
+::: {.notes}
+Avoid claiming that generated code is automatically correct. The point is that
+the compiler centralises repeated semantics and exposes the result for review.
+Agents have also been valuable adversarial testers; they make the language more
+feasible to build while raising expectations for its contracts.
+:::
+
+# 5. What next? {.section-slide}
+
+Move up a layer without hiding the layer below.
+
+## StanBlocks as *one* compiler layer
+
+<div class="flow">
+  <div class="step j-blue"><strong>BRM.jl</strong><br>formulae, terms, priors, model-family vocabulary</div>
+  <div class="step stan"><strong>StanBlocks.jl</strong><br>composition, tracing, block/type/shape inference</div>
+  <div class="step j-green"><strong>BridgeStan.jl</strong><br>compiled Stan model — log density &amp; gradients (AD)</div>
+  <div class="step j-purple"><strong>JuliaBayes.jl</strong><br>shared Julia-facing workflow and ecosystem integration</div>
+</div>
+
+::: {.fragment}
+The largest current public (but unregistered) consumer is [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl): a `brms`-like formula layer that _currently_ lowers into Stan via StanBlocks.jl, but will target Julia via Turing.jl as well in the future.
+:::
+
+::: {.fragment}
+Near-term priorities:
+
+1. Make BRM.jl the ergonomic route for standard regression families.
+2. Keep StanBlocks available for bespoke PKPD and other compositional models.
+3. Connect through JuliaBayes interfaces rather than inventing another closed workflow.
+:::
+
+<div class="contributors-band fragment">
+<p class="band-label">JuliaBayes contributors</p>
+<div class="contributors">
+  <div class="person"><img src="https://github.com/nsiccha.png?size=200" alt="Nikolas Siccha"><p class="who">Nikolas Siccha</p><p class="aff">Generable Inc.</p></div>
+  <div class="person j-blue"><img src="img/penelopeysm.webp" style="object-position: 66% 32%;" alt="Penelope Yong"><p class="who">Penelope Yong</p><p class="aff">Alan Turing Institute</p></div>
+  <div class="person j-green"><img src="https://github.com/PTWaade.png?size=200" alt="Peter Thestrup Waade"><p class="who">Peter Thestrup Waade</p><p class="aff">TNU, ETH Zürich</p></div>
+  <div class="person j-purple"><img src="https://github.com/rsenne.png?size=200" alt="Ryan Senne"><p class="who">Ryan Senne</p><p class="aff">Boston University</p></div>
+  <div class="person j-red"><img src="https://github.com/seabbs.png?size=200" alt="Sam Abbott"><p class="who">Sam Abbott</p><p class="aff">LSHTM (epinowcast · epiforecasts)</p></div>
+  <div class="person j-blue"><img src="https://github.com/simonsteiger.png?size=200" alt="Simon Steiger"><p class="who">Simon Steiger</p><p class="aff">Karolinska Institutet</p></div>
+</div>
+</div>
+
+::: {.notes}
+JuliaBayes is intentionally phrased as ecosystem direction rather than a claim
+about a settled package API. The architectural principle is more important:
+standard workflows above, inspectable compiler below.
+:::
+
+## Summary {.summary-slide}
+
+:::: {.columns}
+::: {.column width="65%"}
+
+### The pitch
+
+1. **Julia + AD maximizes expressiveness; Stan narrows the problem** to make differentiable statistical programs predictable.
+2. **Stan is a strong inference target**: reliable, good out of the box, and explicit.
+3. **StanBlocks makes model families composable** while keeping generated Stan inspectable.
+4. **Agents strengthen the case for a compiler contract**, even as they weaken the case for mere syntax reduction.
+
+### Links
+
+- Live transpiler: <https://sb.siccha.de>
+- Feature atlas: <https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas>
+- Package + source: <https://github.com/nsiccha/StanBlocks.jl>
+- Email: [nikolassiccha@gmail.com](mailto:nikolassiccha@gmail.com)
+
+:::
+::: {.column .summary-contact width="31%"}
+
+<!-- Replace with an approved print-resolution local asset before PDF export if desired. -->
+![](https://github.com/nsiccha.png?size=480){.headshot fig-alt="Headshot of Nikolas Siccha"}
+
+**Nikolas Siccha**<br>
+Generable Inc.
+
+[![](slides-qr.svg){.slides-qr fig-alt="QR code linking to the StanCon 2026 slides"}](https://nsiccha.github.io/StanBlocks.jl/stancon-2026/)
+
+<span class="qr-caption">Slides</span>
+
+:::
+::::
+
+::: {.notes}
+No thank-you slide. End on the four claims and leave the contact/links visible
+for questions. Verify the final public slides URL before publication.
+:::
+
+# Backup {.section-slide}
+
+Source-to-emission examples and the honest edges of the current language.
+
+## Backup · deterministic control flow belongs in `@deffun`
+
+:::: {.columns}
+::: {.column width="49%"}
+
+```julia
+@deffun centered_sum(x) = begin
+    xbar = mean(x)
+    acc = 0.0
+    for xi in x
+        acc += xi - xbar
+    end
+    acc
+end
+```
+
+:::
+::: {.column width="47%"}
+
+```stan
+real centered_sum(vector x) {
+  real xbar = mean(x);
+  real acc = 0.0;
+  for (i in 1:num_elements(x)) {
+    real xi = x[i];
+    acc += xi - xbar;
+  }
+  return acc;
+}
+```
+
+:::
+::::
+
+`@slic` stays flat; `@deffun` owns loops, branches, mutation, iteration, and bounded comprehensions.
+
+## Backup · higher-order functions specialize at compile time
+
+:::: {.columns}
+::: {.column width="49%"}
+
+```julia
+@deffun apply_twice(f, x) = f(f(x))
+
+# f is passed like data — pick any callee
+z = apply_twice(exp, mu)   # ⇒ exp(exp(mu))
+```
+
+:::
+::: {.column width="47%"}
+
+```stan
+real apply_twice_exp(real x) {
+  return exp(exp(x));
+}
+
+// at the call site:
+real z = apply_twice_exp(mu);
+```
+
+:::
+::::
+
+The function argument is resolved at compile time: StanBlocks emits one specialized Stan function per callee (`apply_twice_exp`), so no runtime function object ever reaches Stan.
+
+## Backup · `plate` is the loop that samples
+
+:::: {.columns}
+::: {.column width="49%"}
+
+```julia
+theta ~ plate(y; outer = 4) do yi
+    t ~ normal(mu0, 1)
+    yi ~ normal(t, sigma)
+    t
+end
+```
+
+:::
+::: {.column width="47%"}
+
+```stan
+parameters {
+  vector[4] theta_t;
+}
+transformed parameters {
+  for (i in 1:4)
+    theta[i] = theta_t[i];
+}
+model {
+  for (i in 1:4) {
+    theta_t[i] ~ normal(mu0, 1);
+    y[i] ~ normal(theta_t[i], sigma);
+  }
+}
+```
+
+:::
+::::
+
+`plate` promotes fresh cell variables to outer storage and clones the compiler-owned loop into the Stan blocks that need it.
+
+## Backup · missing continuous outcomes
+
+```julia
+m = @slic (; y = Union{Missing,Float64}[1.0, missing, 3.0]) begin
+    mu ~ normal(0, 2)
+    sigma ~ exponential(1)
+    y ~ normal(mu, sigma)
+end
+```
+
+Essential rewrite:
+
+```stan
+data { vector[y_obs_n] y_obs; array[...] int y_ii_obs; array[...] int y_ii_mis; }
+parameters { real mu; real<lower=0> sigma; }
+model { y_obs ~ normal(mu, sigma); }
+generated quantities {
+  vector[y_ii_mis_n] y_mis = normal_vector_rng(y_ii_mis_n, mu, sigma);
+  vector[...] y = merge_missing(y_obs, y_mis, y_ii_obs, y_ii_mis);
+}
+```
+
+The usual case adds no missing-value sampler dimensions: imputed values are posterior-predictive generated quantities.
+
+## Backup · observation semantics compose with a base family
+
+```julia
+y_weighted  ~ weighted(normal, w, mu, sigma)
+y_truncated ~ truncated(normal, mu, sigma; lower=lo, upper=hi)
+y_censored  ~ censored(normal, mu, sigma; lower=lo, upper=hi)
+y_interval  ~ interval_censored(normal, lo, hi, mu, sigma)
+```
+
+The compiler selects the matching:
+
+- aggregate density/mass function
+- pointwise companion
+- CDF/CCDF terms
+- predictive RNG
+
+For censoring, the emitted density uses tail mass at the threshold atoms and the predictive RNG clamps a base-family draw.
+
+## Backup · executable descriptor
+
+For the regression example:
+
+```text
+inputs:
+  y      observed=true
+  x      observed=false
+
+outputs:
+  alpha, beta, sigma   parameter / posterior
+  y_likelihood        generated_quantity / pointwise_loglik / source=y
+  y_gen               generated_quantity / draw / source=y
+
+operations:
+  transpile · instantiate · fit · predict · pointwise_loglik
+```
+
+Consumers do not need a parallel registry of what a model can do.
+
+## Backup · current hard edges
+
+| Boundary | Current rule |
+|---|---|
+| Model-level control flow | Keep `@slic` flat; use `@deffun` or `plate` |
+| `plate` recursion / scan | Cells must be independent; use a deterministic recurrence |
+| Plate cell shape | Scalars and fixed vectors; no matrix-valued cell result |
+| General containers | No general 3-D+ Julia container surface |
+| Missing data | Continuous outcomes only; no missing predictors or discrete parameters |
+| Ragged observations | Continuous; groupwise log likelihood; no ragged integer draws |
+| Arbitrary Julia calls | Register through `@deffun`/builtins; no opaque auto-transpilation |
+| Validation | `transpiles` is not enough: run `stanc` and semantic/gradient checks |
+
+::: {.takeaway}
+A small language is useful only when its “no” is explicit.
+:::
+
+## Backup · sources and further reading
+
+- Michael Tiemann, [*Julia Solves the 2 Language Problem, However It Creates the 1.5 Language Problem*](https://www.youtube.com/watch?v=RUJFd-rEa0k).
+- [Enzyme.jl documentation](https://enzyme.mit.edu/julia/stable/) and Turing's [March 2026 performance update](https://turinglang.org/news/posts/2026-03-09-newsletter-18/).
+- Community context: Julia Discourse on [performant programming](https://discourse.julialang.org/t/discussion-on-the-future-for-performant-programming-in-julia/99509) and [the 2024 AD landscape](https://discourse.julialang.org/t/state-of-ad-in-2024/112601); Hacker News on [AD correctness](https://news.ycombinator.com/item?id=45289829).
+- Maria I. Gorinova, Andrew D. Gordon & Charles Sutton, [*Probabilistic Programming with Densities in SlicStan*](https://doi.org/10.1145/3290348), POPL 2019; [source](https://github.com/mgorinova/SlicStan).
+- [StanBlocks.jl source](https://github.com/nsiccha/StanBlocks.jl) and [authoring support guide](https://nsiccha.github.io/StanBlocks.jl/dev/authoring).
+- [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl) and its [worked model catalogue](https://nsiccha.github.io/BayesianRegressionModels.jl/).
+- Companion [StanCon 2026 feature atlas](https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas).
+
+<span class="small muted">Talk slot: 13:40–14:00, Tuesday 18 August 2026, Ångström Laboratory, Uppsala.</span>

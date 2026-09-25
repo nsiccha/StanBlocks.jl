@@ -109,6 +109,782 @@ the original family supplies pointwise likelihoods and predictive draws.
         occursin("parameter-dependent likelihood weights", parameter_weight_error)
 end
 
+# snag `weighted-custom-33d611a8` (reported from BRM): `weighted(...)` over a
+# custom `@lpxf` family whose pointwise twin is sized by one of its OWN arg
+# tokens (not by `y`) transpiled-errored with `Typed assignment lp::vector[n] =
+# ... is incompatible with inferred RHS type vector[dims(argK)[1]]`. The internal
+# `lp` local in the four `y::anything[n]` weighted methods was over-annotated
+# `::vector[n]`; a builtin family's pointwise happens to be sized by `y` so it
+# unified, but a custom family sized by a different arg (runtime-equal but a
+# distinct size token) could not. The wrapper's own runtime dim-guard already
+# enforces `dims(weight)[1] == n`, so `lp` takes the pointwise result's own size.
+@testitem "slic: weighted HOF over a custom family sized by a non-y arg" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    d_val = [1, 2, 0, 3]
+    window_val = [0.5, 1.0, 1.5, 2.0]
+    w_val = [1.0, 2.0, 1.0, 3.0]
+    model = @slic (; d = d_val, window = window_val, w = w_val) begin
+        mu ~ normal(0.0, 1.0)
+        sigma ~ exponential(1.0)
+        d ~ weighted(wcustom, w, mu, sigma, window)
+    end
+    code = stan_code(model)
+    @test occursin("weighted_wcustom_lpmf", code)
+    @test occursin("weighted_wcustom_lpmfs", code)
+    @test occursin("weighted_int_wcustom_rng", code)
+    # The internal `lp` local is NOT forced to the wrapper's `n`; it takes the
+    # pointwise result's own (window-sized) type. If a future edit re-adds the
+    # `::vector[n]` annotation, `stan_code` above throws and this test errors.
+    @test occursin("lp = wcustom_lpmfs", code)
+    @test stanc_compiles(model)
+end
+
+"""
+Location-first 3-arg continuous families (`skew_double_exponential`,
+`skew_normal`, `exp_mod_normal`, `pareto_type_2`) sampled with a per-observation
+VECTOR location — `y ~ dist(mu_vec, sigma_vec, tau)` — synthesize the sized-token
+gq predictive draw `dist_rng(<token>, vector, vector, real)`. The sized-token
+`@deffun` overloads must cover a vector LEADING arg (not only `student_t`'s
+scalar dof), matching the family's native `@defsig` which already lists
+`(vector[n], vector[n], real)`. Snag `stanblocks-skew`: without the vector-leading
+overloads the draw matched no method and the generated-quantities block failed to
+trace (`AssertionError: tracetype not defined for … skew_double_exponential_rng(
+::array[] tokenof, ::vector, ::vector, ::real)`).
+"""
+@testitem "slic: location-first 3-arg rng gq draw with a vector location" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    y_val   = [0.2, -0.1, 0.4, 0.5]
+    mu_val  = [1.0, 2.0, 3.0, 4.0]
+    sig_val = [0.5, 0.6, 0.7, 0.8]
+
+    # The sized-token gq draw for a vector location traces AND emits valid Stan.
+    # (`stan_code` itself THREW pre-fix, so `stanc_compiles` returning is the
+    #  regression signal; the `occursin` pins the specific `_rng` draw.)
+    function check(model, dist)
+        gq = stan_block(stan_code(model), "generated quantities")
+        @test occursin(Regex(dist * raw"\w*_rng\("), gq)
+        @test stanc_compiles(model)
+    end
+
+    check((@slic (; y = y_val, mu = mu_val, sigma = sig_val) begin
+        a ~ normal(0.0, 1.0); y ~ skew_double_exponential(mu .+ a, sigma, 0.25); a
+    end), "skew_double_exponential")
+    check((@slic (; y = y_val, mu = mu_val, sigma = sig_val) begin
+        a ~ normal(0.0, 1.0); y ~ skew_normal(mu .+ a, sigma, 0.25); a
+    end), "skew_normal")
+    check((@slic (; y = y_val, mu = mu_val, sigma = sig_val) begin
+        a ~ normal(0.0, 1.0); y ~ exp_mod_normal(mu .+ a, sigma, 0.25); a
+    end), "exp_mod_normal")
+    check((@slic (; y = y_val, mu = mu_val, sigma = sig_val) begin
+        a ~ normal(0.0, 1.0); y ~ pareto_type_2(mu .+ a, sigma, 1.5); a
+    end), "pareto_type_2")
+
+    # Regression guards for the still-scalar-leading paths: student_t keeps its
+    # scalar dof, and an all-scalar location still draws.
+    @test stanc_compiles(@slic (; y = y_val, mu = mu_val, sigma = sig_val) begin
+        a ~ normal(0.0, 1.0); y ~ student_t(3.0, mu .+ a, sigma); a
+    end)
+    @test stanc_compiles(@slic (; y = y_val) begin
+        a ~ normal(0.0, 1.0); s ~ normal(0.0, 1.0)
+        y ~ skew_double_exponential(a, exp(s), 0.25); a
+    end)
+end
+
+"""
+Location-first 3-arg continuous families (`skew_double_exponential`,
+`skew_normal`, `exp_mod_normal`, `pareto_type_2`) sampled with a per-observation
+VECTOR location but a SCALAR scale — `y ~ dist(mu_vec, sigma, tau)`, the SBBRMI
+regression shape — synthesize the sized-token gq predictive draw
+`dist_rng(<token>, vector, real, real)`. That draw needs BOTH the sized-token
+`@deffun` overloads for `(token, loc::vector[n], scale::real, b)` AND the
+native `(vector[n], real, real)` / `(vector[n], real, vector[n])` `@defsig`
+rows: without the overloads the 4-arg token call matches no method and the
+generated-quantities block fails to trace (`AssertionError: tracetype not
+defined for … skew_double_exponential_rng(::array[] tokenof, ::vector, ::real,
+::real)`), and the `@defsig` rows alone do not fix it. Snag
+`sbbrmi-response-f3ed0938`.
+"""
+@testitem "slic: location-first 3-arg rng gq draw with a scalar scale" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    y_val  = [0.2, -0.1, 0.4, 0.5]
+    mu_val = [1.0, 2.0, 3.0, 4.0]
+
+    # The sized-token gq draw for a vector location + scalar scale traces AND
+    # emits valid Stan. (`stan_code` itself THREW pre-fix, so `stanc_compiles`
+    # returning is the regression signal; the `occursin` pins the `_rng` draw.)
+    function check(model, dist)
+        gq = stan_block(stan_code(model), "generated quantities")
+        @test occursin(Regex(dist * raw"\w*_rng\("), gq)
+        @test stanc_compiles(model)
+    end
+
+    check((@slic (; y = y_val, mu = mu_val) begin
+        a ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ skew_double_exponential(mu .+ a, sigma, 0.25); a
+    end), "skew_double_exponential")
+    check((@slic (; y = y_val, mu = mu_val) begin
+        a ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ skew_normal(mu .+ a, sigma, 0.25); a
+    end), "skew_normal")
+    check((@slic (; y = y_val, mu = mu_val) begin
+        a ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ exp_mod_normal(mu .+ a, sigma, 0.25); a
+    end), "exp_mod_normal")
+    check((@slic (; y = y_val, mu = mu_val) begin
+        a ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ pareto_type_2(mu .+ a, sigma, 1.5); a
+    end), "pareto_type_2")
+
+    # The vector-third-arg row `(vector[n], real, vector[n])` behind the
+    # untyped `b`: a per-observation tau draws and passes stanc.
+    @test stanc_compiles(@slic (; y = y_val, mu = mu_val, tau = [0.1, 0.2, 0.3, 0.4]) begin
+        a ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ skew_double_exponential(mu .+ a, sigma, tau); a
+    end)
+
+    # The zero-row shape transpiles and passes stanc through the same `n == 0`
+    # guard the other sized companions carry.
+    @test stanc_compiles(@slic (; y = Float64[], mu = Float64[]) begin
+        a ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ skew_double_exponential(mu .+ a, sigma, 0.1); a
+    end)
+end
+
+"""
+Sized 3-arg `_rng` companions must guard empty segments (snag
+`sized-rng-compan-225549a9`). Stan Math ≤5.3.0 sizes a vectorized draw off
+ALL args with scalars counting as size 1, so a scalar arg beside empty
+segments runs the draw loop once over a null data pointer (SIGSEGV —
+proven for `student_t` under ASan; the scalar `nu` is the whole family
+difference vs the safe `normal_rng`). The companions early-return the
+empty draw when the size token is 0; the `else` branch is the exact
+previous body, so non-empty draws are unchanged.
+"""
+@testitem "slic: sized 3-arg rng companions guard empty segments" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    # Catch-all (container args): the GQ draw still routes through the sized
+    # companion, the companion carries the token-0 guard, the `else` branch
+    # keeps the exact previous body, and the model passes stanc.
+    container_model = @slic (; y = [0.2, -0.1], mu = [1.0, 2.0], sigma = [0.5, 0.6]) begin
+        a ~ normal(0.0, 1.0); y ~ student_t(3.0, mu .+ a, sigma); a
+    end
+    container_code = stan_code(container_model)
+    @test occursin("student_t_vector_rng(", stan_block(container_code, "generated quantities"))
+    container_fns = stan_block(container_code, "functions")
+    @test occursin("n == 0", container_fns)
+    @test occursin("to_vector(student_t_rng(nu, a, b))", container_fns)
+    @test stanc_compiles(container_model)
+
+    # All-scalar args: same guard posture on the `rep_vector` overload.
+    scalar_model = @slic (; y = [0.2, -0.1]) begin
+        a ~ normal(0.0, 1.0); s ~ normal(0.0, 1.0)
+        y ~ student_t(3.0, a, exp(s)); a
+    end
+    scalar_code = stan_code(scalar_model)
+    @test occursin("student_t_vector_rng(", stan_block(scalar_code, "generated quantities"))
+    scalar_fns = stan_block(scalar_code, "functions")
+    @test occursin("n == 0", scalar_fns)
+    @test occursin("to_vector(student_t_rng(nu, rep_vector(a, n), b))", scalar_fns)
+    @test stanc_compiles(scalar_model)
+
+    # The zero-row shape itself: an empty observation vector transpiles and
+    # passes stanc — pre-fix this emitted the unguarded native call.
+    empty_model = @slic (; y = Float64[], mu = Float64[], sigma = Float64[]) begin
+        a ~ normal(0.0, 1.0); y ~ student_t(3.0, mu .+ a, sigma); a
+    end
+    @test stanc_compiles(empty_model)
+
+    # Live proof: instantiating the empty model and constraining with an RNG
+    # executes the guarded GQ draw and returns only `a` — pre-fix this call
+    # crashed the process inside `student_t_rng`.
+    empty_problem = instantiate(stan_model(empty_model))
+    empty_names = BridgeStan.param_names(empty_problem.model; include_tp = true, include_gq = true)
+    @test "a" in empty_names
+    empty_draw = BridgeStan.param_constrain(
+        empty_problem.model, zeros(LogDensityProblems.dimension(empty_problem));
+        include_tp = true, include_gq = true,
+        rng = BridgeStan.StanRNG(empty_problem.model, 1234),
+    )
+    @test length(empty_draw) == LogDensityProblems.dimension(empty_problem)
+end
+
+"""
+Generalized empty-segment audit (todo 19n8abc): every sized `_rng` companion
+whose native call mixes scalar and container args early-returns the empty draw
+when the size token is 0. Stan Math ≤5.3.0 sizes a vectorized draw off ALL args
+with scalars counting as size 1, so a scalar beside an empty segment runs the
+draw loop once over a null data pointer (the student-t SIGSEGV class, snag
+sized-rng-compan-225549a9). Each companion's `else` branch keeps its exact
+previous body, so non-empty draws are unchanged.
+"""
+@testitem "slic: sized rng companions guard empty segments (generalized audit)" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    # 2-arg continuous, catch-all scalar mix — the exact student-t replay shape
+    # (scalar scale beside a container location).
+    normal_model = @slic (; y = [0.2, -0.1], mu = [1.0, 2.0]) begin
+        a ~ normal(0.0, 1.0); s ~ normal(0.0, 1.0)
+        y ~ normal(mu .+ a, exp(s)); a
+    end
+    normal_code = stan_code(normal_model)
+    @test occursin("normal_vector_rng(", stan_block(normal_code, "generated quantities"))
+    normal_fns = stan_block(normal_code, "functions")
+    @test occursin("n == 0", normal_fns)
+    @test occursin("to_vector(normal_rng(a, b))", normal_fns)
+    @test stanc_compiles(normal_model)
+
+    # 2-arg continuous, all-scalar args: same guard on the `rep_vector` overload.
+    scalar_model = @slic (; y = [0.2, -0.1]) begin
+        a ~ normal(0.0, 1.0); s ~ normal(0.0, 1.0)
+        y ~ normal(a, exp(s)); a
+    end
+    scalar_fns = stan_block(stan_code(scalar_model), "functions")
+    @test occursin("n == 0", scalar_fns)
+    @test occursin("to_vector(normal_rng(rep_vector(a, n), b))", scalar_fns)
+    @test stanc_compiles(scalar_model)
+
+    # 2-arg discrete catch-all scalar mix.
+    nb_model = @slic (; z = [2, 5, 3], mu = [1.0, 2.0, 3.0]) begin
+        phi ~ normal(0.0, 1.0)
+        z ~ neg_binomial_2(mu, exp(phi)); phi
+    end
+    nb_code = stan_code(nb_model)
+    @test occursin("neg_binomial_2_int_rng(", stan_block(nb_code, "generated quantities"))
+    nb_fns = stan_block(nb_code, "functions")
+    @test occursin("n == 0", nb_fns)
+    @test occursin("neg_binomial_2_rng(a, b)", nb_fns)
+    @test stanc_compiles(nb_model)
+
+    # binomial / beta_binomial / binomial_logit: scalar-mix natives.
+    bin_model = @slic (; z = [2, 5, 3], N = [10, 10, 10]) begin
+        theta ~ beta(1.0, 1.0)
+        z ~ binomial(N, theta); theta
+    end
+    bin_fns = stan_block(stan_code(bin_model), "functions")
+    @test occursin("n == 0", bin_fns)
+    @test occursin("binomial_rng(N, p)", bin_fns)
+    @test stanc_compiles(bin_model)
+
+    bb_model = @slic (; z = [2, 5, 3], N = [10, 10, 10]) begin
+        a ~ normal(0.0, 1.0); b ~ normal(0.0, 1.0)
+        z ~ beta_binomial(N, exp(a), exp(b)); a
+    end
+    bb_fns = stan_block(stan_code(bb_model), "functions")
+    @test occursin("n == 0", bb_fns)
+    @test occursin("beta_binomial_rng(N, a, b)", bb_fns)
+    @test stanc_compiles(bb_model)
+
+    blogit_model = @slic (; z = [2, 5, 3], N = [10, 10, 10]) begin
+        a ~ normal(0.0, 1.0)
+        z ~ binomial_logit(N, a); a
+    end
+    blogit_fns = stan_block(stan_code(blogit_model), "functions")
+    @test occursin("n == 0", blogit_fns)
+    @test occursin("binomial_rng(N, inv_logit(eta))", blogit_fns)
+    @test stanc_compiles(blogit_model)
+
+    # GLM: a 0-row design matrix early-returns via `m == 0`.
+    glm_model = @slic (; X = zeros(0, 2), y = Float64[]) begin
+        beta_pop ~ std_normal(; n = dims(X)[2])
+        sigma ~ exponential(1.0; lower = 0.0)
+        y ~ normal_id_glm(X, 0.0, beta_pop, sigma)
+    end
+    glm_fns = stan_block(stan_code(glm_model), "functions")
+    @test occursin("m == 0", glm_fns)
+    @test occursin("normal_id_glm_rng(X, alpha, beta, sigma)", glm_fns)
+    @test stanc_compiles(glm_model)
+
+    # Sized std_normal draw: the vector-prior redraw routes through the guarded
+    # companion (`normal_rng` with the scalar `1` beside the sized container).
+    std_model = @slic (; n = 3) begin
+        x ~ std_normal(; n = n)
+        x
+    end
+    std_code = stan_code(std_model)
+    @test occursin("std_normal_vector_rng(", stan_block(std_code, "generated quantities"))
+    std_fns = stan_block(std_code, "functions")
+    @test occursin("n == 0", std_fns)
+    @test occursin("to_vector(normal_rng(rep_vector(0, n), 1))", std_fns)
+    @test stanc_compiles(std_model)
+
+    # `vector_std_normal_rng(n)` helper: same scalar-`1` mix, same guard.
+    vsn_model = @slic (; n = 5, obs = [0.1, -0.2, 0.3, -0.4, 0.5]) begin
+        mu ~ std_normal(; n = n)
+        obs ~ normal(mu, 1.0)
+        y_rep = vector_std_normal_rng(n)
+    end
+    vsn_fns = stan_block(stan_code(vsn_model), "functions")
+    @test occursin("vector_std_normal_rng(", vsn_fns)
+    @test occursin("n == 0", vsn_fns)
+    @test stanc_compiles(vsn_model)
+
+    # Live proof: the empty continuous + discrete model instantiates and the
+    # RNG constrain executes both guarded GQ draws — pre-fix this crashed the
+    # process inside the vectorized native.
+    empty_model = @slic (; y = Float64[], mu = Float64[], z = Int[], mu2 = Float64[]) begin
+        a ~ normal(0.0, 1.0)
+        s ~ normal(0.0, 1.0)
+        phi ~ normal(0.0, 1.0)
+        y ~ normal(mu .+ a, exp(s))
+        z ~ neg_binomial_2(mu2 .+ exp(a), exp(phi))
+        a
+    end
+    @test stanc_compiles(empty_model)
+    empty_problem = instantiate(stan_model(empty_model))
+    empty_names = BridgeStan.param_names(empty_problem.model; include_tp = true, include_gq = true)
+    @test "a" in empty_names
+    empty_draw = BridgeStan.param_constrain(
+        empty_problem.model, zeros(LogDensityProblems.dimension(empty_problem));
+        include_tp = true, include_gq = true,
+        rng = BridgeStan.StanRNG(empty_problem.model, 1234),
+    )
+    @test length(empty_draw) == LogDensityProblems.dimension(empty_problem)
+end
+
+"""
+`vector_exponential_rng` is a single-native-arg companion, so the draw loop is
+bound by that arg's own size — the same immunity as the 1-arg loops (audit todo
+19n8abc), no `n == 0` guard. The `to_vector` wrapper is load-bearing instead:
+the vectorized native returns `array[] real`, so without it stanc rejects the
+emitted helper (snag replaying-a-zero-ab1b204c).
+"""
+@testitem "slic: vector_exponential_rng draws empty at n=0" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    exp_model = @slic (; n = 0) begin
+        s ~ normal(0.0, 1.0)
+        y_rep = vector_exponential_rng(exp(s), n)
+        y_rep
+    end
+    exp_code = stan_code(exp_model)
+    @test occursin("vector_exponential_rng(exp(s), n)", stan_block(exp_code, "generated quantities"))
+    exp_fns = stan_block(exp_code, "functions")
+    @test occursin("to_vector(exponential_rng(rep_vector(rate, n)))", exp_fns)
+    @test stanc_compiles(exp_model)
+
+    # Live proof: the empty GQ draw executes through the RNG constrain — the
+    # single native arg binds the loop to zero iterations, no scalar to replay
+    # the empty-segment SIGSEGV against.
+    exp_problem = instantiate(stan_model(exp_model))
+    exp_names = BridgeStan.param_names(exp_problem.model; include_tp = true, include_gq = true)
+    @test "s" in exp_names
+    exp_draw = BridgeStan.param_constrain(
+        exp_problem.model, zeros(LogDensityProblems.dimension(exp_problem));
+        include_tp = true, include_gq = true,
+        rng = BridgeStan.StanRNG(exp_problem.model, 1234),
+    )
+    # The draw carries the GQ scalars: `s` only — the empty `y_rep` draw
+    # contributes zero elements.
+    @test length(exp_draw) == 1
+    @test isfinite(exp_draw[1])
+
+    # Non-empty control: the `to_vector` wrap leaves ordinary draws working.
+    exp3_model = @slic (; n = 3) begin
+        s ~ normal(0.0, 1.0)
+        y_rep = vector_exponential_rng(exp(s), n)
+        y_rep
+    end
+    @test stanc_compiles(exp3_model)
+    exp3_problem = instantiate(stan_model(exp3_model))
+    exp3_draw = BridgeStan.param_constrain(
+        exp3_problem.model, zeros(LogDensityProblems.dimension(exp3_problem));
+        include_tp = true, include_gq = true,
+        rng = BridgeStan.StanRNG(exp3_problem.model, 1234),
+    )
+    # `s` plus the three exponential draws, all positive reals.
+    @test length(exp3_draw) == 4
+    @test all(x -> isfinite(x) && x > 0, exp3_draw[2:4])
+end
+
+"""
+Truncation, threshold censoring, and interval observations are distribution
+HOFs selected from one base-family token. Optional bounds are compile-time
+syntax: omission and explicit `nothing` choose the same side-specific Stan
+family, while no `Nothing` value or selector call survives code generation.
+"""
+@testitem "slic: truncated/censored/interval-censored distribution HOFs" tags=[:slic, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: cdf_normal, stanc_compiles, stan_block
+
+    # The same-day semantic spellings were removed, not retained as aliases.
+    for old_name in (:conditioned, :clamped, :interval_evidence)
+        @test !isdefined(StanBlocks, old_name)
+        @test !isdefined(StanBlocks.builtin, old_name)
+    end
+
+    lower_omitted = @slic (; y = 0.2) begin
+        theta ~ truncated(normal, 0.0, 1.0; lower = 0.0)
+        y ~ normal(theta, 1.0)
+        theta
+    end
+    lower_explicit = @slic (; y = 0.2) begin
+        theta ~ truncated(normal, 0.0, 1.0; lower = 0.0, upper = nothing)
+        y ~ normal(theta, 1.0)
+        theta
+    end
+    for model in (lower_omitted, lower_explicit)
+        code = stan_code(model)
+        @test occursin("real<lower=0.0> theta", code)
+        @test occursin("lower_conditioning_normal_lpdf", code)
+        @test !occursin("upper_conditioning_normal_lpdf", code)
+        @test !occursin("Nothing", code)
+        @test !occursin("nothing", code)
+        @test stanc_compiles(model)
+    end
+
+    typed_prior = @slic (; y = 0.2) begin
+        theta::real ~ truncated(normal, 0.0, 1.0; upper = 1.0)
+        y ~ normal(theta, 1.0)
+        theta
+    end
+    typed_code = stan_code(typed_prior)
+    @test occursin("real<upper=1.0> theta", typed_code)
+    @test occursin("upper_conditioning_normal_lpdf", typed_code)
+    @test stanc_compiles(typed_prior)
+
+    missing_bounds_error = try
+        stan_code(@slic begin
+            theta ~ truncated(normal, 0.0, 1.0)
+            theta
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(missing_bounds_error)
+    @test occursin("provide at least one of `lower=` or `upper=`", missing_bounds_error)
+
+    for (name, build) in (
+        ("censored", () -> stan_code(@slic begin
+            theta ~ censored(normal, 0.0, 1.0; lower = -1.0, upper = 1.0)
+            theta
+        end)),
+        ("interval_censored", () -> stan_code(@slic begin
+            theta ~ interval_censored(normal, -1.0, 1.0, 0.0, 1.0)
+            theta
+        end)),
+    )
+        prior_error = try
+            build()
+            nothing
+        catch err
+            sprint(showerror, err)
+        end
+        @test !isnothing(prior_error)
+        @test occursin("$name priors are not supported", prior_error)
+    end
+
+    unsupported_error = try
+        stan_code(@slic (; y = 1) begin
+            y ~ truncated(categorical, [0.4, 0.6]; lower = 1)
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(unsupported_error)
+    @test occursin(r"no Stan `categorical_lc(c)?df` companion", unsupported_error)
+
+    normal_y = [-1.0, -0.2, 1.0]
+    normal_model = @slic (; y = normal_y, lo = [-1.0, -0.5, 0.0]) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ censored(normal, mu, 1.0; lower = lo, upper = 1.0)
+        mu
+    end
+    normal_code = stan_code(normal_model)
+    @test occursin("clamping_normal_lpdf", normal_code)
+    @test occursin("clamping_normal_lpdfs", normal_code)
+    @test occursin("clamping_vector_normal_rng", normal_code)
+    @test !occursin("density(", normal_code)
+    @test !occursin("pointwise(", normal_code)
+    @test !occursin("predictive(", normal_code)
+    @test !occursin("logcdf(", normal_code)
+    @test !occursin("logccdf(", normal_code)
+    @test occursin("censored: lower bound must be less than upper bound", normal_code)
+    @test occursin("y_likelihood", stan_block(normal_code, "generated quantities"))
+    @test stanc_compiles(normal_model)
+
+    poisson_model = @slic (; y = [0, 2, 3]) begin
+        log_rate ~ normal(0.0, 1.0)
+        y ~ truncated(poisson, exp(log_rate); upper = 3)
+        log_rate
+    end
+    poisson_code = stan_code(poisson_model)
+    @test occursin("upper_conditioning_poisson_lpmf", poisson_code)
+    @test occursin("upper_conditioning_poisson_lpmfs", poisson_code)
+    @test occursin("upper_conditioning_int_poisson_rng", poisson_code)
+    @test !occursin("upper_conditioning_poisson_lpdf", poisson_code)
+    @test stanc_compiles(poisson_model)
+
+    lower_clamped_poisson = @slic (; y = 2) begin
+        log_rate ~ normal(0.0, 1.0)
+        y ~ censored(poisson, exp(log_rate); lower = 2)
+        log_rate
+    end
+    lower_clamped_code = stan_code(lower_clamped_poisson)
+    @test occursin("lower_clamping_poisson_lpmf", lower_clamped_code)
+    @test occursin("lower_clamping_poisson_lpmfs", lower_clamped_code)
+    @test occursin("lower_clamping_poisson_rng", lower_clamped_code)
+    @test stanc_compiles(lower_clamped_poisson)
+    lower_clamped_problem = instantiate(stan_model(lower_clamped_poisson))
+    for log_rate in (-0.3, 0.4)
+        lambda = exp(log_rate)
+        lower_atom = exp(-lambda) * (1.0 + lambda + lambda^2 / 2.0)
+        expected = _stan_normal(log_rate, 0.0, 1.0) + log(lower_atom)
+        @test LogDensityProblems.logdensity(lower_clamped_problem, [log_rate]) ≈ expected atol=1e-6
+    end
+
+    upper_clamped_poisson = @slic (; y = 3) begin
+        log_rate ~ normal(0.0, 1.0)
+        y ~ censored(poisson, exp(log_rate); upper = 3)
+        log_rate
+    end
+    upper_clamped_code = stan_code(upper_clamped_poisson)
+    @test occursin("upper_clamping_poisson_lpmf", upper_clamped_code)
+    @test occursin("upper_clamping_poisson_lpmfs", upper_clamped_code)
+    @test occursin("upper_clamping_poisson_rng", upper_clamped_code)
+    @test stanc_compiles(upper_clamped_poisson)
+    upper_clamped_problem = instantiate(stan_model(upper_clamped_poisson))
+    for log_rate in (-0.3, 0.4)
+        lambda = exp(log_rate)
+        through_two = exp(-lambda) * (1.0 + lambda + lambda^2 / 2.0)
+        upper_atom = 1.0 - through_two
+        expected = _stan_normal(log_rate, 0.0, 1.0) + log(upper_atom)
+        @test LogDensityProblems.logdensity(upper_clamped_problem, [log_rate]) ≈ expected atol=1e-6
+    end
+
+    interval_model = @slic (; marker = [0, 0, 0], lo = [0, 1, 2], hi = [1, 2, 4]) begin
+        log_rate ~ normal(0.0, 1.0)
+        marker ~ interval_censored(poisson, lo, hi, exp(log_rate))
+        log_rate
+    end
+    interval_code = stan_code(interval_model)
+    @test occursin("interval_evidence_impl_poisson_lpmf", interval_code)
+    @test occursin("interval_evidence_impl_poisson_lpmfs", interval_code)
+    @test occursin("interval_evidence_impl_int_poisson_rng", interval_code)
+    @test occursin("interval_censored: lower bound must be less than upper bound", interval_code)
+    @test stanc_compiles(interval_model)
+
+    custom_model = @slic (; y = [-0.4, 0.3]) begin
+        y ~ truncated(cdf_normal, 0.0, 1.0; lower = -1.0, upper = 1.0)
+    end
+    custom_code = stan_code(custom_model)
+    @test occursin("conditioning_cdf_normal_lpdf", custom_code)
+    @test occursin("cdf_normal_lcdf", custom_code)
+    @test occursin("conditioning_vector_cdf_normal_rng", custom_code)
+    @test stanc_compiles(custom_model)
+    custom_lower_model = @slic (; y = 0.2) begin
+        y ~ truncated(cdf_normal, 0.0, 1.0; lower = -1.0)
+    end
+    custom_lower_code = stan_code(custom_lower_model)
+    @test occursin("cdf_normal_lccdf", custom_lower_code)
+    @test stanc_compiles(custom_lower_model)
+
+    # BridgeStan validates the probability identities rather than only their
+    # emitted names. Explicit base-family calls inside a UDF retain constants.
+    truncated_numeric = @slic (; y = 0.2, z = 0.1) begin
+        theta ~ normal(0.0, 1.0)
+        z ~ normal(theta, 1.0)
+        y ~ truncated(normal, 0.0, 1.0; lower = -1.0, upper = 1.0)
+        theta
+    end
+    truncated_problem = instantiate(stan_model(truncated_numeric))
+    interval_probability = 0.6826894921370859
+    for theta in (-0.7, 0.3)
+        expected = _stan_normal(theta, 0.0, 1.0) +
+            _stan_normal(0.1, theta, 1.0) +
+            _stan_normal(0.2, 0.0, 1.0) - 0.5log(2pi) - log(interval_probability)
+        @test LogDensityProblems.logdensity(truncated_problem, [theta]) ≈ expected atol=1e-6
+    end
+
+    censored_numeric = @slic (; y = -1.0, z = 0.1) begin
+        theta ~ normal(0.0, 1.0)
+        z ~ normal(theta, 1.0)
+        y ~ censored(normal, 0.0, 1.0; lower = -1.0, upper = 1.0)
+        theta
+    end
+    censored_problem = instantiate(stan_model(censored_numeric))
+    for theta in (-0.7, 0.3)
+        expected = _stan_normal(theta, 0.0, 1.0) +
+            _stan_normal(0.1, theta, 1.0) + log(0.15865525393145707)
+        @test LogDensityProblems.logdensity(censored_problem, [theta]) ≈ expected atol=1e-6
+    end
+
+    interval_numeric = @slic (; marker = 0, z = 0.1) begin
+        theta ~ normal(0.0, 1.0)
+        z ~ normal(theta, 1.0)
+        marker ~ interval_censored(poisson, 1, 3, 2.0)
+        theta
+    end
+    interval_problem = instantiate(stan_model(interval_numeric))
+    # Genuine interval semantics are (1, 3], hence exactly P(X=2)+P(X=3).
+    poisson_interval_probability = exp(-2.0) * (2.0 + 4.0 / 3.0)
+    for theta in (-0.7, 0.3)
+        expected = _stan_normal(theta, 0.0, 1.0) +
+            _stan_normal(0.1, theta, 1.0) + log(poisson_interval_probability)
+        @test LogDensityProblems.logdensity(interval_problem, [theta]) ≈ expected atol=1e-6
+    end
+
+    invalid_bound_problem = instantiate(stan_model(@slic (; y = 0.0) begin
+        theta ~ normal(0.0, 1.0)
+        y ~ truncated(normal, theta, 1.0; lower = 1.0, upper = -1.0)
+        theta
+    end))
+    # BridgeStan represents a Stan `reject` during log-density evaluation as
+    # NaN. This exercises the runtime guard rather than merely matching text.
+    @test isnan(LogDensityProblems.logdensity(invalid_bound_problem, [0.0]))
+
+    # Predictive twins exercise both sized RNG specialisations. Truncated
+    # draws remain inside the interval; censored draws can land on either atom
+    # but never outside it.
+    truncated_gq = instantiate(stan_model(@slic (; y = [-0.2, 0.2, 0.4]) begin
+        y ~ truncated(normal, 0.0, 1.0; lower = -0.5, upper = 0.5)
+    end))
+    truncated_names = BridgeStan.param_names(
+        truncated_gq.model; include_tp = true, include_gq = true,
+    )
+    truncated_idx = findall(n -> startswith(n, "y_gen"), truncated_names)
+    truncated_draw = BridgeStan.param_constrain(
+        truncated_gq.model, zeros(LogDensityProblems.dimension(truncated_gq));
+        include_tp = true, include_gq = true,
+        rng = BridgeStan.StanRNG(truncated_gq.model, 1234),
+    )
+    @test length(truncated_idx) == 3
+    @test all(x -> -0.5 <= x <= 0.5, truncated_draw[truncated_idx])
+
+    censored_gq = instantiate(stan_model(@slic (; y = [-0.5, 0.0, 0.5]) begin
+        y ~ censored(normal, 0.0, 3.0; lower = -0.5, upper = 0.5)
+    end))
+    censored_names = BridgeStan.param_names(censored_gq.model; include_tp = true, include_gq = true)
+    censored_idx = findall(n -> startswith(n, "y_gen"), censored_names)
+    censored_draw = BridgeStan.param_constrain(
+        censored_gq.model, zeros(LogDensityProblems.dimension(censored_gq));
+        include_tp = true, include_gq = true,
+        rng = BridgeStan.StanRNG(censored_gq.model, 4321),
+    )
+    @test length(censored_idx) == 3
+    @test all(x -> -0.5 <= x <= 0.5, censored_draw[censored_idx])
+end
+
+@testitem "slic: distribution HOFs accept a family call in the token position" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Snag hof-call-form-fa-b2bfce08: `y ~ censored(normal(mu, sigma); lower=lo)`
+    # died with `` `tracetype` not defined for _argN_1::anything! `` because the
+    # expansion-time rewrite re-traced before likelihood lowering's loud family
+    # check could run. The call form now desugars to the token form at expansion
+    # time, so each pair below emits byte-identical Stan (the token side stays
+    # covered by the :stanc/:bridgestan HOF items).
+    censored_call = stan_code(@slic (; y = 0.2) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ censored(normal(mu, 1.0); lower = -1.0)
+        mu
+    end)
+    censored_token = stan_code(@slic (; y = 0.2) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ censored(normal, mu, 1.0; lower = -1.0)
+        mu
+    end)
+    @test censored_call == censored_token
+    @test occursin("y_likelihood", censored_call)
+
+    truncated_call = stan_code(@slic (; y = 0.2) begin
+        theta ~ truncated(normal(0.0, 1.0); lower = 0.0)
+        y ~ normal(theta, 1.0)
+        theta
+    end)
+    truncated_token = stan_code(@slic (; y = 0.2) begin
+        theta ~ truncated(normal, 0.0, 1.0; lower = 0.0)
+        y ~ normal(theta, 1.0)
+        theta
+    end)
+    @test truncated_call == truncated_token
+
+    interval_call = stan_code(@slic (; y = 0.2) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ interval_censored(normal(mu, 1.0), -1.0, 1.0)
+        mu
+    end)
+    interval_token = stan_code(@slic (; y = 0.2) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ interval_censored(normal, -1.0, 1.0, mu, 1.0)
+        mu
+    end)
+    @test interval_call == interval_token
+
+    weighted_call = stan_code(@slic (; y = 0.2, w = 2.5) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ weighted(normal(mu, 1.0), w)
+        mu
+    end)
+    weighted_token = stan_code(@slic (; y = 0.2, w = 2.5) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ weighted(normal, w, mu, 1.0)
+        mu
+    end)
+    @test weighted_call == weighted_token
+
+    custom_call = stan_code(@slic (; y = 0.3, w = 0.75, x = 1.2) begin
+        y ~ weighted(simple(x), w)
+    end)
+    custom_token = stan_code(@slic (; y = 0.3, w = 0.75, x = 1.2) begin
+        y ~ weighted(simple, w, x)
+    end)
+    @test custom_call == custom_token
+
+    missing_family_error = try
+        stan_code(@slic (; y = 0.2) begin
+            y ~ censored(; lower = -1.0)
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(missing_family_error) &&
+        occursin("missing family argument", missing_family_error)
+
+    nontoken_error = try
+        stan_code(@slic (; y = 0.2) begin
+            mu ~ normal(0.0, 1.0)
+            y ~ censored(mu; lower = -1.0)
+            mu
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(nontoken_error) &&
+        occursin("expected a base distribution function token", nontoken_error)
+    @test !occursin("tracetype", nontoken_error)
+
+    family_kwargs_error = try
+        stan_code(@slic (; y = 0.2) begin
+            mu ~ normal(0.0, 1.0)
+            y ~ censored(normal(mu, 1.0; lower = 0.0); lower = -1.0)
+            mu
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(family_kwargs_error) &&
+        occursin("takes only positional arguments", family_kwargs_error)
+
+    weighted_nontoken_error = try
+        stan_code(@slic (; y = 0.2, w = 2.5) begin
+            mu ~ normal(0.0, 1.0)
+            y ~ weighted(mu, w)
+            mu
+        end)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(weighted_nontoken_error) &&
+        occursin("expected a base distribution function token", weighted_nontoken_error)
+end
+
 @testmodule StanBlocksTestSetup begin
     using Random, Statistics
     using StanBlocks
@@ -153,6 +929,24 @@ end
         @lpxf simple_lpdf(y, x) = 0.
         simple_lpdfs(y, x) = 0.
         simple_rng(x) = 0.
+        # CDF-capable custom family used to verify that the generic
+        # conditioning/clamping HOFs select all five companions from one base
+        # token. These wrappers deliberately delegate to Stan's normal family.
+        @lpxf cdf_normal_lpdf(y, mu, sigma) = normal_lpdf(y, mu, sigma)
+        cdf_normal_lpdfs(y, mu, sigma) = normal_lpdf(y, mu, sigma)
+        cdf_normal_rng(mu, sigma) = normal_rng(mu, sigma)
+        cdf_normal_rng(vector[n], mu, sigma)::vector[n] =
+            to_vector(normal_rng(rep_vector(mu, n), sigma))
+        cdf_normal_lcdf(y, mu, sigma)::real = normal_lcdf(y, mu, sigma)
+        cdf_normal_lccdf(y, mu, sigma)::real = normal_lccdf(y, mu, sigma)
+        # A family with only a SCALAR `_rng`. A RAGGED group is a Stan `vector`,
+        # so its per-group predictive draw needs the sized
+        # `foo_rng(vector[n], …)::vector[n]` companion; without it the draw must
+        # fail LOUDLY naming the family and the signature to add, not from deep
+        # inside `tracetype`.
+        @lpxf scalarrng_lpdf(y::real, mu::real, s::real)::real = normal_lpdf(y | mu, s)
+        scalarrng_lpdfs(y::real, mu::real, s::real)::real = normal_lpdf(y | mu, s)
+        scalarrng_rng(mu::real, s::real)::real = normal_rng(mu, s)
         @lpxf vararg_lpdf(y, args...) = 0.
         vararg_lpdfs(y, args...) = 0.
         vararg_rng(args...) = 0.
@@ -182,6 +976,34 @@ end
         srs2_helper(y, f, args...) = my_lpdf(y, f, args...)
         srs2_lpdfs(y, f, args...) = 0.
         srs2_rng(f, args...) = 0.
+        # A custom @lpxf family whose pointwise `_lpmfs` twin is sized by its OWN
+        # `window::vector[N]` arg, NOT by `y`. Under `weighted(..., w)` the emitted
+        # wrapper binds an internal `lp` from that pointwise result, whose inferred
+        # size token (`dims(<window-arg>)[1]`) is runtime-equal to but distinct from
+        # the wrapper's `n` (= `dims(y)[1]`). Forcing `lp::vector[n]` on that local
+        # rejected the case at trace time — snag `weighted-custom-33d611a8`
+        # (reported from BRM's `weighted(dic_lognormal(...), fweights(n))`).
+        @lhs @lpxf wcustom_lpmf(d::int[N], mu::real, sigma::real, window::vector[N])::real = begin
+            rv = 0.
+            for i in 1:N
+                rv += lognormal_lpdf(window[i] + d[i], mu, sigma)
+            end
+            rv
+        end
+        wcustom_lpmfs(d::int[N], mu::real, sigma::real, window::vector[N])::vector[N] = begin
+            out::vector[N]
+            for i in 1:N
+                out[i] = lognormal_lpdf(window[i] + d[i], mu, sigma)
+            end
+            out
+        end
+        wcustom_rng(int[N], mu::real, sigma::real, window::vector[N])::int[N] = begin
+            out::int[N]
+            for i in 1:N
+                out[i] = 1
+            end
+            out
+        end
         end
     end
 
@@ -199,6 +1021,32 @@ end
         udf_body_size(x::vector[body_n])::real = sum(x) / body_n
         udf_return_size(x::vector[return_n])::vector[return_n] = x
         udf_checked_size(x::vector[checked_n], y::vector[checked_n])::real = dot_product(x, y)
+    end
+
+    # An `@lhs` UDF whose observation argument carries a dimension the BODY never
+    # mentions (`lhs_hidden_n` / `lhs_chol_hidden_n`). The base tracetype `@lhs`
+    # emits returns the observation's DECLARED shape, so it must bind those names
+    # even though the liveness analysis above (correctly) keeps them out of the
+    # emitted Stan preamble. Sharing one hidden set threw `UndefVarError` at trace
+    # time — snag `deffun-hidden-si-facb90e5`.
+    @deffun begin
+        @lhs @lpxf lhs_hidden_dim_lpdf(x::vector[lhs_m, lhs_hidden_n])::real = begin
+            rv = 0.
+            for i in 1:lhs_m
+                rv += std_normal_lpdf(x[i, :])::real
+            end
+            rv
+        end
+        @lhs @lpxf lhs_hidden_chol_lpdf(L::cholesky_factor_corr[lhs_chol_m, lhs_chol_hidden_n], eta::real)::real = begin
+            rv = 0.
+            for i in 1:lhs_chol_m
+                rv += lkj_corr_cholesky_lpdf(L[i, :, :], eta)::real
+            end
+            rv
+        end
+        @lhs @lpxf lhs_all_hidden_lpdf(x::vector[lhs_all_m, lhs_all_n])::real = begin
+            std_normal_lpdf(x[1, :])::real
+        end
     end
 
     # --- computed type annotations (@deffun container inference; todo 1v94weu) ---
@@ -290,6 +1138,31 @@ end
         xi = (a - b) .* exp(c)
         xi
     end
+    # --- INTEGER-LITERAL dimension in a @deffun ARG declaration ---
+    # `vector[4]` is a compile-time-constant size: unlike the symbolic `vector[n]`
+    # form there is no size NAME to bind, so the literal dim destructures to `_`
+    # and the emitted UDF is byte-identical to the symbolic one modulo its name.
+    # (Regressed as an `ensure_xlhs(::Int64)` MethodError at macro-expand before
+    # the `ensure_xlhs(::Integer)` method in functions.jl.)
+    @deffun litdim_scale(x::vector[4]) = x * 2.0
+    @deffun symdim_scale(x::vector[n]) = x * 2.0
+    # A raw `matrix` keeps its final two dimensions as the native matrix core;
+    # every leading dimension is a Stan array prefix. `@juliacompat` Julia
+    # emission represents the same rectangular value as an equal-rank dense array.
+    @deffun @juliacompat nested_matrix_result(x::matrix[n, j])::matrix[2, n, j] = begin
+        out::matrix[2, n, j]
+        for k in 1:2
+            for i in 1:n
+                for q in 1:j
+                    out[k, i, q] = x[i, q]
+                end
+            end
+        end
+        out
+    end
+    @deffun @juliacompat nested_matrix_input(x::matrix[m, two, n, j])::real = begin
+        sum(x[1, 1, :, :])
+    end
     # --- COMPOSITE (named-tuple) return whose ELEMENT sizes name the params ---
     # A ragged-map HOF: the returned `(;ends, mem)` has `mem` sized by a CALL over
     # the function's own params (`sum(ntd_sub_lengths(f, x, args...))`). At a call
@@ -297,7 +1170,7 @@ end
     # live in the ntup's `info.arg_types`, NOT in its (empty) `stan_size` — so
     # `deanon_type` has to recurse into the element types or they reach Stan
     # verbatim (undeclared identifier in a size position + a phantom `data` decl).
-    # Shape lifted from Bruno's `ragged_imap1` / `groupedby_idxs`.
+    # Shape lifted from a production PKPD model's `ragged_imap1` / `groupedby_idxs`.
     @deffun begin
         ntd_filter_n(f, x::anything[n], args...) = begin
             rv = 0
@@ -475,6 +1348,14 @@ end
         x ~ std_normal(;n)
         s = _scale_by_consts(x)
     end
+    # The constant-FUNCTION spelling `pi()` (Stan's spelling of pi) is REJECTED
+    # with an actionable error — the DSL stays Julia-idiomatic, so write bare `pi`
+    # (user decision `0wlv7e2`, snag `stan-pi-builtin`).
+    @deffun @inline _scale_by_const_call(x::vector[n])::vector[n] = (4. / pi()) * x
+    consts_call_model = @slic (;n=5) begin
+        x ~ std_normal(;n)
+        s = _scale_by_const_call(x)
+    end
     CONSTS_TEST_NUM = 2.5
     consts_bad_model = @slic (;n=5) begin
         x ~ std_normal(;n)
@@ -488,6 +1369,7 @@ end
     # optional one (`b`), so the two paths coexist in one shim.
     @deffun kw_scale(x::vector[n]; scale)::vector[n] = scale * x
     @deffun kw_req_opt(x::vector[n]; a, b=2.0)::vector[n] = a * x .+ b
+    @deffun @juliacompat kw_prior_scale(value::real; extra=0.0)::real = value + extra
     # required kwarg provided → transpiles
     kw_required_model = @slic (;n=3) begin
         x ~ std_normal(;n)
@@ -502,6 +1384,14 @@ end
     kw_opt_default_model = @slic (;n=3) begin
         x ~ std_normal(;n)
         s = kw_req_opt(x; a=1.5)
+    end
+    # One optional kwarg must cross the Stan UDF boundary as a scalar because
+    # Stan has no one-element tuple type. This mirrors the reporter's exact
+    # parameter-dependent call shape and keeps the explicit decimal value.
+    kw_single_optional_model = @slic (;y=[0.1, -0.1]) begin
+        sigma ~ lognormal(0.0, 0.3)
+        location ~ normal(0.0, kw_prior_scale(sigma; extra=0.2))
+        y ~ normal(location, 1.0)
     end
 
     # issue 12 sub-models
@@ -923,6 +1813,48 @@ end
         end
     end
 
+    # Snag `plate-context-le-919f23dc`: a registered (non-inline) UDF called
+    # from a plate cell traces its body in a function-local OrderedDict.  That
+    # scope must remain outside the caller's emit-time plate promotion context;
+    # only the call result (`conc`) and later cell locals are plate-promoted.
+    @deffun c3_plate_udf_locs(x::vector[n], log_Vc, log_k10) = begin
+        log_CL = log_Vc + log_k10
+        locs = x .* exp(log_CL)
+        locs
+    end
+    c3_plate_udf_model = @slic (;
+        xs=[[0.5, 0.7, 0.9], [0.4, 0.6]],
+        ys=[[-0.6, -0.2, 0.1], [-0.7, -0.3]],
+        nsub=2,
+    ) begin
+        log_Vc ~ normal(0.0, 1.0)
+        log_k10 ~ normal(0.0, 1.0)
+        sigma ~ exponential(1.0)
+        pk_loc ~ plate(xs, ys; outer=(nsub,)) do x, y
+            conc = c3_plate_udf_locs(x, log_Vc, log_k10)
+            qt_loc = log(conc)
+            y ~ normal(qt_loc, sigma)
+            conc
+        end
+    end
+    c3_plate_udf_flat_model = @slic (;
+        xs=[[0.5, 0.7, 0.9], [0.4, 0.6]],
+        ys=[[-0.6, -0.2, 0.1], [-0.7, -0.3]],
+        nsub=2,
+    ) begin
+        log_Vc ~ normal(0.0, 1.0)
+        log_k10 ~ normal(0.0, 1.0)
+        sigma ~ exponential(1.0)
+        pk_loc ~ plate(xs, ys; outer=(nsub,)) do x, y
+            log_CL = log_Vc + log_k10
+            locs = x .* exp(log_CL)
+            conc = locs
+            qt_loc = log(conc)
+            y ~ normal(qt_loc, sigma)
+            conc
+        end
+    end
+
     # The same promotion must preserve a vector-valued submodel cell: the internal
     # vector parameter and returned value collect as matrices and are indexed by
     # column in the emitted loop.
@@ -1026,7 +1958,7 @@ end
     c3_plate_fixed_correlated_model = @slic (;n_groups=5, k=3, y=[0.2, -0.1, 0.3, 0.0, 0.4]) begin
         L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
         tau::vector[k] ~ normal(0.0, 1.0; lower=0.0)
-        b::vector[k] ~ plate(y; outer=(n_groups,)) do yi
+        b::matrix[k, n_groups] ~ plate(y; outer=(n_groups,)) do yi
             cell ~ c3_plate_fixed_correlated_cell(k, L, tau)
             yi ~ normal(cell[1], 0.5)
             cell
@@ -1045,7 +1977,7 @@ end
     @slic c3_plate_in_sub_draws(n_groups::int, k::int) = begin
         L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
         tau::vector[k] ~ std_normal(; lower=0.0)
-        b::vector[k] ~ plate(; outer=(n_groups,)) do g
+        b::matrix[k, n_groups] ~ plate(; outer=(n_groups,)) do g
             z::vector[k] ~ std_normal()
             diag_pre_multiply(tau, L) * z
         end
@@ -1061,7 +1993,7 @@ end
     c3_plate_in_submodel_reference = @slic (;n_groups=4, k=3, y=[0.2, -0.1, 0.3, 0.0]) begin
         L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
         tau::vector[k] ~ std_normal(; lower=0.0)
-        b::vector[k] ~ plate(; outer=(n_groups,)) do g
+        b::matrix[k, n_groups] ~ plate(; outer=(n_groups,)) do g
             z::vector[k] ~ std_normal()
             diag_pre_multiply(tau, L) * z
         end
@@ -1083,7 +2015,7 @@ end
     c3_plate_in_submodel_renamed_reference = @slic (;G=4, P=3, y=[0.2, -0.1, 0.3, 0.0]) begin
         L::cholesky_factor_corr[P] ~ lkj_corr_cholesky(2.0)
         tau::vector[P] ~ std_normal(; lower=0.0)
-        b::vector[P] ~ plate(; outer=(G,)) do g
+        b::matrix[P, G] ~ plate(; outer=(G,)) do g
             z::vector[P] ~ std_normal()
             diag_pre_multiply(tau, L) * z
         end
@@ -1194,7 +2126,7 @@ end
 
     const julia_emission_fixture_module = @__MODULE__
 
-    @deffun begin
+    @deffun @juliacompat begin
         julia_shift(x::real, a::real)::real = x + a
         julia_apply(f, x::vector[n], args...)::vector[n] = begin
             out::vector[n]
@@ -1224,6 +2156,8 @@ end
         julia_signature_only(x::real)::real
         julia_sized_token(vector[n], x::vector[n])::vector[n] = x
     end
+
+    @deffun julia_default_stan_only(x::real)::real = x + 1.0
 
     @deffun @stanonly julia_branch_mutate_stanonly(
         x::vector[n], y::vector[n]
@@ -1305,9 +2239,9 @@ end
 end
 
 """
-Verify bounded default Julia emission from `@deffun` in an isolated test item.
+Verify explicit bounded Julia emission from `@deffun @juliacompat` in an isolated test item.
 """
-@testitem "slic: bounded default Julia emission from @deffun" tags=[:slic, :stanc] setup=[StanBlocksImports, JuliaEmissionFixtures] begin
+@testitem "slic: explicit bounded Julia emission from @deffun @juliacompat" tags=[:slic, :stanc] setup=[StanBlocksImports, JuliaEmissionFixtures] begin
     @test julia_shift(2.0, 3.0) == 5.0
     @test julia_nested([1.0, 2.0, 3.0], 0.5) == [1.5, 2.5, 3.5]
     @test julia_branch_mutate([1.0, -2.0], [3.0, 4.0]) == [4.0, 4.0]
@@ -1323,8 +2257,15 @@ Verify bounded default Julia emission from `@deffun` in an isolated test item.
     end
     @test err isa DimensionMismatch
     @test occursin("julia_branch_mutate", sprint(showerror, err))
+    # Same enrichment as the Stan-emission `reject`: name the inference source
+    # and list every site's size (user request 2026-08-14).
+    err_msg = sprint(showerror, err)
+    @test occursin("does not match `n` (= 2)", err_msg)
+    @test occursin("inferred from `x` dim 1", err_msg)
+    @test occursin("`n` sizes: `x` dim 1 (= 2), `y` dim 1 (= 1).", err_msg)
 
     @test !hasmethod(julia_stan_only, Tuple{Float64})
+    @test !hasmethod(julia_default_stan_only, Tuple{Float64})
     @test !hasmethod(julia_signature_only, Tuple{Float64})
     @test isempty(methods(julia_sized_token))
     @test existing_julia_function("abc") == 3
@@ -1334,8 +2275,8 @@ Verify bounded default Julia emission from `@deffun` in an isolated test item.
     collision = try
         Core.eval(julia_emission_fixture_module, quote
             @deffun begin
-                julia_collision(x::vector[n])::vector[n] = x
-                julia_collision(x::row_vector[n])::row_vector[n] = x
+                @juliacompat julia_collision(x::vector[n])::vector[n] = x
+                @juliacompat julia_collision(x::row_vector[n])::row_vector[n] = x
             end
         end)
         nothing
@@ -1343,7 +2284,7 @@ Verify bounded default Julia emission from `@deffun` in an isolated test item.
         e
     end
     @test occursin("Julia emission collision", sprint(showerror, collision))
-    @test occursin("@stanonly", sprint(showerror, collision))
+    @test occursin("Remove `@juliacompat`", sprint(showerror, collision))
 
     # A *deterministically named* definition that reaches for a probability
     # primitive still errors: the name says it was meant to be callable, so a
@@ -1351,14 +2292,14 @@ Verify bounded default Julia emission from `@deffun` in an isolated test item.
     unsupported = try
         Core.eval(
             julia_emission_fixture_module,
-            :(@deffun julia_bad_draw(x::real)::real = normal_rng(x, 1.0)),
+            :(@deffun @juliacompat julia_bad_draw(x::real)::real = normal_rng(x, 1.0)),
         )
         nothing
     catch e
         e
     end
     @test occursin("does not implement `normal_rng`", sprint(showerror, unsupported))
-    @test occursin("@stanonly", sprint(showerror, unsupported))
+    @test occursin("remove the explicit `@juliacompat` opt-in", sprint(showerror, unsupported))
 
     # …but a probability-family *definition* is outside the layer by
     # construction, so it loads unannotated and simply gets no Julia method.
@@ -1384,10 +2325,10 @@ Verify bounded default Julia emission from `@deffun` in an isolated test item.
     @test dual_code == stanonly_code
     @test stanc_check(dual_code; warn_pedantic=false).ok
 
-    @test StanBlocks.builtin.bordet_time_response(
+    @test StanBlocks.builtin.biomarker_time_response(
         [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [1.0, 1.0],
     ) ≈ [0.25, inv(1 + exp(-1.0)) * inv(1 + exp(1.0))]
-    @test StanBlocks.builtin.bordet_dose_response(
+    @test StanBlocks.builtin.biomarker_dose_response(
         [0.0, 1.0], [0.0, 0.0], [0.0, 0.0],
     ) ≈ [-log(2.0), -log1p(exp(-1.0))]
     @test StanBlocks.builtin.linear_idxs([1, 2, 1], [1, 1, 2]) == [1, 2, 3]
@@ -1396,7 +2337,7 @@ end
 """
 Verify `slic: normal(loc,scale)` in an isolated test item.
 """
-@testitem "slic: normal(loc,scale)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: normal(loc,scale)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         scale ~ std_normal(;lower=0.)
@@ -1428,10 +2369,259 @@ end
     end)
 end
 
+@testitem "slic: singleton @deffun kwarg uses scalar Stan argument" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    optional_code = stan_code(kw_single_optional_model)
+    required_code = stan_code(kw_required_model)
+    mixed_code = stan_code(kw_mixed_model)
+
+    # Optional and required singleton kwargs both scalarize. Preserve the
+    # explicit call-site value, and retain Julia keyword behavior for the
+    # `@juliacompat` surface.
+    @test !occursin("tuple(real) kw", optional_code)
+    @test !occursin("tuple(real) kw", required_code)
+    @test occursin("kwcall_kw_prior_scale(0.2, sigma)", optional_code)
+    @test kw_prior_scale(1.0; extra=0.2) == 1.2
+    @test stanc_check(optional_code; warn_pedantic=false).ok
+    @test stanc_check(required_code; warn_pedantic=false).ok
+
+    # Multiple kwargs still use the existing, valid Stan tuple representation.
+    @test occursin("tuple(real, real) kw", mixed_code)
+    @test stanc_check(mixed_code; warn_pedantic=false).ok
+end
+
+"""
+Verify `slic: typed-LHS sampling requires LHS-RHS support agreement` in an isolated test item.
+
+Regression for decision `0909w6i` ("the lhs is always right"): a typed-LHS
+`name::T ~ dist(...)` must have `T` PRODUCIBLE by the distribution's support.
+Two mismatches are unconditional and previously either crashed inside RNG
+emission or silently overrode the annotation (`_check_lhs_rhs_support`,
+`forward.jl`):
+  1. ELEMENT KIND — a discrete (`_lpmf`) distribution cannot fill a continuous
+     LHS, nor a continuous (`_lpdf`) one an integer LHS. The signal is the
+     distribution head's lpxf family (`_probability_kind`), because the natural
+     tracetype is `anything` for scalar-support distributions at forward time.
+  2. CONTAINER support — a `vector`-valued support (`dirichlet`) cannot fill a
+     SCALAR LHS.
+Broadcast (`x::vector[n] ~ std_normal()`) and native-constrained containers
+(`p::simplex[K] ~ dirichlet`) stay valid — the LHS drives the RHS path.
+"""
+@testitem "slic: typed-LHS sampling requires LHS-RHS support agreement" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+
+    # --- NEGATIVE: element-kind + shape mismatches must error cleanly ---------
+    # discrete dist (poisson) into a continuous vector LHS (was: internal crash)
+    m_pois = @slic (; N = 3, lambda = 2.0) begin
+        n::vector[N] ~ poisson(lambda)
+        n
+    end
+    @test !transpiles(m_pois; re=false)
+    @test occursin("produces integer (discrete) draws", errmsg(m_pois))
+
+    # discrete dist (categorical_logit) into a continuous vector LHS (was: crash)
+    m_cat = @slic (; N = 4, K = 3, logits = zeros(3)) begin
+        y::vector[N] ~ categorical_logit(logits)
+        y
+    end
+    @test !transpiles(m_cat; re=false)
+    @test occursin("produces integer (discrete) draws", errmsg(m_cat))
+
+    # continuous dist (normal) into an integer LHS (was: silent override to real)
+    m_norm = @slic (; N = 3) begin
+        z::int[N] ~ normal(0, 1)
+        z
+    end
+    @test !transpiles(m_norm; re=false)
+    @test occursin("produces continuous draws", errmsg(m_norm))
+
+    # container support (dirichlet -> vector) into a scalar LHS (was: override)
+    m_dir = @slic (;) begin
+        p::real ~ dirichlet([1.0, 1.0, 1.0])
+        p
+    end
+    @test !transpiles(m_dir; re=false)
+    @test occursin("a scalar LHS cannot hold it", errmsg(m_dir))
+
+    # --- POSITIVE: the LHS still drives valid broadcast / container paths -----
+    # scalar-support distribution broadcasts over a container LHS
+    @test transpiles(@slic (; n = 4) begin
+        x::vector[n] ~ std_normal()
+        x
+    end)
+    # container support into a matching native-constrained container LHS
+    @test transpiles(@slic (; K = 3, alpha = ones(3)) begin
+        p::simplex[K] ~ dirichlet(alpha)
+        p
+    end)
+    # discrete dist into a matching integer LHS
+    @test transpiles(@slic (; N = 3, lambda = 2.0) begin
+        nn::int[N] ~ poisson(lambda)
+        nn
+    end)
+    # constrained broadcast keeps working
+    @test transpiles(@slic (; K = 3) begin
+        tau::vector[K] ~ normal(0, 1; lower = 0)
+        tau
+    end)
+end
+
+"""
+Regression for snag `deffun-numeric-c-016cfc57` (reported from BRM's Kalman
+`@deffun`s): a bare module-level numeric `const` referenced in a model or
+`@deffun` body is DELIBERATELY not resolved (user decision `3bbtrv` — only
+built-in `Irrational`s do). The rejection must be loud AND actionable — name
+the deliberate design and the supported named-constant idiom (a zero-arg
+`@deffun`), rather than the opaque `Found X in <mod>, but is of type Float64!`
+the reporter hit twice. The idiom itself must transpile.
+"""
+@testitem "slic: numeric const rejection is actionable; zero-arg @deffun idiom works" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+
+    const NUMERIC_CONST = 1.8378770664093453
+
+    # --- NEGATIVE: a Float64 const referenced directly in the @slic body ------
+    m_slic = @slic (; y = [0.1, -0.2, 0.3]) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ normal(mu + NUMERIC_CONST, 1.0)
+    end
+    @test !transpiles(m_slic; re=false)
+    msg_slic = errmsg(m_slic)
+    @test occursin("3bbtrv", msg_slic)
+    @test occursin("@deffun", msg_slic)          # points at the idiom
+    @test occursin("1.8378770664093453", msg_slic)
+
+    # --- NEGATIVE: the same const referenced inside a @deffun body ------------
+    @deffun begin
+        scale_with_const(base::real)::real = base + NUMERIC_CONST
+    end
+    m_deffun = @slic (; y = [0.1, -0.2, 0.3]) begin
+        mu ~ normal(0.0, 1.0)
+        s = scale_with_const(1.0)
+        y ~ normal(mu, s)
+    end
+    @test !transpiles(m_deffun; re=false)
+    @test occursin("3bbtrv", errmsg(m_deffun))
+
+    # --- POSITIVE: the documented remedy — a zero-arg @deffun constant --------
+    @deffun begin
+        num_const()::real = 1.8378770664093453
+        scale_with_fn(base::real)::real = base + num_const()
+    end
+    m_fn = @slic (; y = [0.1, -0.2, 0.3]) begin
+        mu ~ normal(0.0, 1.0)
+        s = scale_with_fn(1.0)
+        y ~ normal(mu, s)
+    end
+    @test transpiles(m_fn)
+    code = stan_code(m_fn)
+    @test occursin("num_const", code)
+    @test occursin("1.8378770664093453", code)   # baked in the emitted function
+end
+
+"""
+A Join-less `autoprint` argument list that renders past the 100-char line
+limit must emit the line unbroken — there is no join point to break at.
+
+Snag `stanblocks-ragge-ca3c9b73`: a 1-dim `tokenof` sized by a long
+`ragged_start`/`ragged_end` bounds expression (a joint-response BRM model
+lowered through the StanBlocks backend) crashed emission with
+`MethodError: no method matching -(::Nothing, ::Int64)`, because
+`findfirst(_is_join, args)` returned `nothing` and the wrap path indexed
+`args[1:idx-1]` unconditionally.
+"""
+@testitem "slic: autoprint emits a Join-less long line unbroken" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    function stan_render(value)
+        io = IOBuffer()
+        show(StanBlocks.StanIO(io), value)
+        String(take!(io))
+    end
+
+    # The reported path (show.jl 1-dim tokenof): a single size expression
+    # rendering past the line limit, with no Join in the argument list.
+    longname = Symbol("brm_joint_y1__y2_observed_ends_" * "0123456789_abcdefghij"^4)
+    @assert length(string(longname)) > 100
+    size_expr = StanBlocks.StanExpr(longname, StanBlocks.StanType(StanBlocks.types.int))
+    tok = StanBlocks.StanExpr(
+        :sometoken,
+        StanBlocks.StanType(StanBlocks.types.tokenof{StanBlocks.types.int}, (size_expr,)),
+    )
+    @test stan_render(tok) == string(longname)
+
+    # The same fallback through autoprint directly.
+    buf = IOBuffer()
+    StanBlocks.autoprint(StanBlocks.StanIO(buf), "x"^150)
+    @test String(take!(buf)) == "x"^150
+
+    # Control: a Join-carrying long line still wraps at the join point.
+    wrapbuf = IOBuffer()
+    StanBlocks.autoprint(
+        StanBlocks.StanIO(wrapbuf), "(", StanBlocks.Join(("x"^60, "y"^60), ", "), ")",
+    )
+    @test occursin("\n", String(take!(wrapbuf)))
+end
+
+"""
+Verify `slic: plate result LHS must name the collected type` in an isolated test item.
+
+Regression for decision `0909w6i` FULL CUTOVER: the per-cell plate annotation
+(`b::vector[K] ~ plate(…)`, where the LHS names one CELL but binds the collected
+`matrix[K,N]`) is now a hard error directing to the collected spelling or the
+bare form (`_plate_resolve_cell_type`, `forward.jl`). The collected and bare
+forms both still transpile.
+"""
+@testitem "slic: plate result LHS must name the collected type" tags=[:slic, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+
+    # per-cell annotation (vector[k] cell, collected as matrix[k, n]) now errors,
+    # with a hint naming the collected spelling to write instead.
+    m_percell = @slic (; n = 5, k = 3) begin
+        b::vector[k] ~ plate(; outer = (n,)) do g
+            z::vector[k] ~ std_normal()
+            z
+        end
+        b
+    end
+    @test !transpiles(m_percell; re=false)
+    let e = errmsg(m_percell)
+        @test occursin("must name the COLLECTED type", e)
+        @test occursin("matrix[k, n]", e)          # copy-pasteable migration hint
+    end
+
+    # the collected spelling transpiles
+    @test transpiles(@slic (; n = 5, k = 3) begin
+        b::matrix[k, n] ~ plate(; outer = (n,)) do g
+            z::vector[k] ~ std_normal()
+            z
+        end
+        b
+    end)
+
+    # dropping the annotation (bare form) transpiles
+    @test transpiles(@slic (; n = 5, k = 3) begin
+        b ~ plate(; outer = (n,)) do g
+            z::vector[k] ~ std_normal()
+            z
+        end
+        b
+    end)
+
+    # a typed annotation on a MULTI-AXIS outer errors (no collected spelling) and
+    # directs to the bare form.
+    m_multi = @slic (; n = 3, m = 2, k = 3) begin
+        b::vector[k] ~ plate(; outer = (n, m)) do g, h
+            z::vector[k] ~ std_normal()
+            z
+        end
+        b
+    end
+    @test !transpiles(m_multi; re=false)
+    @test occursin("multi-axis", errmsg(m_multi))
+end
+
 """
 Verify `slic: simple` in an isolated test item.
 """
-@testitem "slic: simple" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: simple" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ simple(loc)
@@ -1441,7 +2631,7 @@ end
 """
 Verify `slic: vararg` in an isolated test item.
 """
-@testitem "slic: vararg" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: vararg" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ vararg(loc)
@@ -1451,7 +2641,7 @@ end
 """
 Verify `slic: fof(simple)` in an isolated test item.
 """
-@testitem "slic: fof(simple)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: fof(simple)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ fof(simple, loc)
@@ -1504,7 +2694,7 @@ end
 """
 Verify `slic: srs2(vararg)` in an isolated test item.
 """
-@testitem "slic: srs2(vararg)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: srs2(vararg)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ srs2(vararg, loc)
@@ -1514,7 +2704,7 @@ end
 """
 Verify `slic: srs2(vararg, extra)` in an isolated test item.
 """
-@testitem "slic: srs2(vararg, extra)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: srs2(vararg, extra)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;obs=0.) begin
         loc ~ std_normal()
         obs ~ srs2(vararg, loc, (1, 2, 3))
@@ -1524,7 +2714,7 @@ end
 """
 Verify `slic: stan_model re-data` in an isolated test item.
 """
-@testitem "slic: stan_model re-data" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: stan_model re-data" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(stan_model(@slic (;obs=randn(5)) begin
         loc ~ std_normal()
         scale ~ std_normal(;lower=0.)
@@ -1535,7 +2725,7 @@ end
 """
 Verify `slic: @slic f(…)=… sub-model functions` in an isolated test item.
 """
-@testitem "slic: @slic f(…)=… sub-model functions" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: @slic f(…)=… sub-model functions" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # positional 1-arg: `mu ~ linpred(x)` binds x into the sub-model's data.
     @test stanc_compiles(@slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
         mu ~ linpred(x)
@@ -1563,7 +2753,7 @@ end
 """
 Verify `issue9` in an isolated test item.
 """
-@testitem "issue9" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue9" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;n=10) begin
         x ~ issue9(n)
     end)
@@ -1576,7 +2766,7 @@ end
 """
 Verify `issue10` in an isolated test item.
 """
-@testitem "issue10" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue10" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;n=10) begin
         y ~ std_normal(;n)
         x = issue10a(y)
@@ -1607,12 +2797,92 @@ Verify dead UDF signature dimensions are not emitted while required bindings rem
     @test occursin("int return_n = dims(x)[1];", functions)
     @test occursin("int checked_n = dims(x)[1];", functions)
     @test occursin("if (dims(y)[1] != checked_n) reject", functions)
+    # The equal-size rejection names WHERE the dim was inferred and lists every
+    # site's runtime size (user request 2026-08-14).
+    @test occursin("does not match `checked_n`", functions)
+    @test occursin("inferred from `x` dim 1", functions)
+    @test occursin("`checked_n` sizes: `x` dim 1 (= ", functions)
+    @test occursin(", `y` dim 1 (= ", functions)
+end
+
+"""
+Verify an `@lhs` observation dimension the UDF body never reads still resolves.
+"""
+@testitem "slic: @lhs base tracetype binds body-unused observation dimensions" tags=[:slic, :regression, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    # Snag `deffun-hidden-si-facb90e5`: `lhs_hidden_n` appears ONLY in the
+    # observation's declared shape, never in the body, so the signature-dimension
+    # liveness analysis hid it — and the `@lhs` base tracetype, which returns that
+    # declared shape, then referenced an unbound name (`UndefVarError: n`) before
+    # any Stan was emitted. Reported against `x::vector[m, n]`; the same shape
+    # reaches `cholesky_factor_corr[m, n]`.
+    vec_model = @slic (; y = [1.0]) begin
+        z::vector[3, 2] ~ lhs_hidden_dim()
+        y ~ normal(sum(z[1, :]), 1.0)
+    end
+    @test stanc_compiles(vec_model)
+    vec_functions = stan_block(stan_code(vec_model), "functions")
+    # The fix must NOT re-introduce the dead local the liveness analysis removed:
+    # `lhs_m` is read by the body and bound, `lhs_hidden_n` is neither.
+    @test occursin("int lhs_m = dims(x)[1];", vec_functions)
+    @test !occursin("lhs_hidden_n", vec_functions)
+    @test occursin("array[3] vector[2] z;", stan_block(stan_code(vec_model), "parameters"))
+
+    chol_model = @slic (; y = [1.0]) begin
+        L::cholesky_factor_corr[3, 2] ~ lhs_hidden_chol(2.0)
+        y ~ normal(L[1, 1, 1], 1.0)
+    end
+    @test stanc_compiles(chol_model)
+    chol_functions = stan_block(stan_code(chol_model), "functions")
+    @test occursin("int lhs_chol_m = dims(L)[1];", chol_functions)
+    @test !occursin("lhs_chol_hidden_n", chol_functions)
+    @test occursin("array[3] cholesky_factor_corr[2] L;", stan_block(stan_code(chol_model), "parameters"))
+
+    # Every signature dimension hidden: the emitted UDF binds none of them.
+    all_hidden_model = @slic (; y = [1.0]) begin
+        z::vector[3, 2] ~ lhs_all_hidden()
+        y ~ normal(sum(z[1, :]), 1.0)
+    end
+    @test stanc_compiles(all_hidden_model)
+    all_hidden_functions = stan_block(stan_code(all_hidden_model), "functions")
+    @test occursin("lhs_all_hidden_lpdf", all_hidden_functions)
+    @test !occursin("lhs_all_m", all_hidden_functions)
+    @test !occursin("lhs_all_n", all_hidden_functions)
+end
+
+@testitem "slic: cholesky_factor scalar element access has a tracetype (D5)" tags=[:slic, :regression, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    # Defect D5: a single natively-constrained square matrix
+    # (`cholesky_factor_corr` / `cholesky_factor_cov`, sized `<ct>[K]` — one size
+    # dim, since `r_ndim(square_matrix) == 1`) had no getindex tracetype for scalar
+    # element access, so `L[i, j]` degraded to `anything` and USING the element
+    # threw "tracetype not defined" before any Stan was emitted. It is logically
+    # K-by-K: `L[i, j]` must be a `real`, exactly as the plain `matrix[K, K]` control.
+    # (The plate case `array[G] cholesky_factor_corr[K]` — indexed `L[g, i, j]` —
+    # already worked via the `[m, n]` signature; this guards the single value.)
+    corr_model = @slic (; y = 0.3) begin
+        L::cholesky_factor_corr[3] ~ lkj_corr_cholesky(2.0)
+        y ~ normal(L[2, 1], 1.0)
+    end
+    corr_code = stan_code(corr_model)
+    @test occursin("cholesky_factor_corr[3] L;", stan_block(corr_code, "parameters"))
+    @test stanc_compiles(corr_model)
+
+    cov_model = @slic (; y = 0.3) begin
+        L::cholesky_factor_cov[3] ~ flat()
+        y ~ normal(L[2, 1], 1.0)
+    end
+    cov_code = stan_code(cov_model)
+    @test occursin("cholesky_factor_cov[3] L;", stan_block(cov_code, "parameters"))
+    @test stanc_compiles(cov_model)
 end
 
 """
 Verify `issue12` in an isolated test item.
 """
-@testitem "issue12" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue12" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stan_code(Base.merge(sm12a, quote
         return x
     end)(; n=10, y=1.)) == stan_code(sm12b(; n=10, y=1.))
@@ -1629,7 +2899,7 @@ end
 """
 Verify `issue15` in an isolated test item.
 """
-@testitem "issue15" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue15" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stan_code(Base.merge(sm15a, quote
         xx = append_row(x, x)
         return xx
@@ -1668,6 +2938,741 @@ Verify `slic: chained + variable-bound Base.merge splice (crowdsource pattern)` 
 end
 
 """
+`Base.merge(model, (; x=value))` fixes a model name rather than conditioning on
+it: the matching sampling or assignment statement disappears, the concrete
+value becomes data, and downstream statements continue to refer to `x`.
+Statement splices and fixed bindings may be supplied together; fixed bindings
+are final, so a same-name spliced statement cannot survive as a likelihood.
+"""
+@testitem "slic: Base.merge fixed-value bindings replace statements with data" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    base = @slic begin
+        theta :: vector[2] ~ normal(0.0, 1.0)
+        mu = 2.0 * theta
+        y ~ normal(mu, 1.0)
+    end
+
+    fixed = Base.merge(base, (; theta=[0.25, -0.5]))(; y=[0.1, -0.2])
+    fixed_code = stan_code(fixed)
+    @test stanc_compiles(fixed)
+    @test occursin("vector[theta_n] theta;", stan_block(fixed_code, "data"))
+    @test !occursin("theta ~ normal", fixed_code)
+    @test occursin("mu = (2.0 * theta)", fixed_code)
+    @test StanBlocks.data(fixed)[:theta] == [0.25, -0.5]
+
+    rebound = fixed(; theta=[1.0, 2.0])
+    @test StanBlocks.data(rebound)[:theta] == [1.0, 2.0]
+    @test stan_code(rebound) == fixed_code
+
+    # A structural override and fixed bindings compose in one merge. Even when
+    # the quote mentions the same name, the concrete fixed value is final.
+    mixed = Base.merge(base, quote
+        theta ~ std_normal()
+        y ~ student_t(4.0, mu, 1.0)
+    end, (; theta=[0.25, -0.5]))(; y=[0.1, -0.2])
+    mixed_code = stan_code(mixed)
+    @test stanc_compiles(mixed)
+    @test !occursin("theta ~", mixed_code)
+    @test occursin("y ~ student_t(4.0, mu, 1.0)", mixed_code)
+
+    # Fixing a derived name replaces its assignment by the data binding too.
+    assigned_base = @slic begin
+        theta = 2.0 * seed
+        y ~ normal(theta, 1.0)
+    end
+    fixed_assignment = Base.merge(assigned_base, (; theta=0.75))(; y=0.1)
+    assigned_code = stan_code(fixed_assignment)
+    @test stanc_compiles(fixed_assignment)
+    @test !occursin("theta = (2.0 * seed)", assigned_code)
+    @test occursin("real theta;", stan_block(assigned_code, "data"))
+
+    # Every merge is functional: the base still declares and samples theta.
+    base_code = stan_code(base(; y=[0.1, -0.2]))
+    @test occursin("theta ~ normal(0.0, 1.0)", base_code)
+end
+
+"""
+`Base.merge(base, other::SlicModel)` composes two WHOLE models: `other`'s body
+statements splice in (same-LHS override + append, exactly like a spliced
+statement AST), and `other`'s bound data merges into the result. Unlike a fixed
+NamedTuple binding, a merged model's data names KEEP their likelihood statements
+— they are observations, not parameters pinned to a value.
+"""
+@testitem "slic: Base.merge composes two whole sb models" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    m1 = @slic (; y1 = [0.1, 0.2, -0.1]) begin
+        mu ~ normal(0.0, 1.0)
+        y1 ~ normal(mu, 1.0)
+    end
+    m2 = @slic (; y2 = [0.3, -0.4]) begin
+        sigma ~ normal(0.0, 1.0; lower = 0.0)
+        y2 ~ normal(0.0, sigma)
+    end
+
+    merged = Base.merge(m1, m2)
+    merged_code = stan_code(merged)
+    @test stanc_compiles(merged)
+    # Both models' parameters and data survive the merge…
+    params = stan_block(merged_code, "parameters")
+    @test occursin("real mu;", params)
+    @test occursin("real<lower=0.0> sigma;", params)
+    dat = stan_block(merged_code, "data")
+    @test occursin("vector[y1_n] y1;", dat)
+    @test occursin("vector[y2_n] y2;", dat)
+    # …and BOTH likelihoods are kept (a merged model's data is not `fixed`).
+    @test occursin("y1 ~ normal(mu, 1.0)", merged_code)
+    @test occursin("y2 ~ normal(0.0, sigma)", merged_code)
+    # Both models' bound data lands in the merged model's data.
+    @test StanBlocks.data(merged)[:y1] == [0.1, 0.2, -0.1]
+    @test StanBlocks.data(merged)[:y2] == [0.3, -0.4]
+
+    # The overlay wins on a same-LHS collision, exactly like a spliced statement.
+    m2b = @slic (; y2 = [0.3, -0.4]) begin
+        mu    ~ normal(5.0, 0.1)
+        sigma ~ normal(0.0, 1.0; lower = 0.0)
+        y2    ~ normal(mu, sigma)
+    end
+    overridden = Base.merge(m1, m2b)
+    overridden_code = stan_code(overridden)
+    @test stanc_compiles(overridden)
+    @test occursin("mu ~ normal(5.0, 0.1)", overridden_code)
+    @test !occursin("mu ~ normal(0.0, 1.0)", overridden_code)
+
+    # A model overlay composes with a statement overlay in one call; later wins.
+    mixed = Base.merge(m1, m2, :(mu ~ normal(1.0, 0.5)))
+    mixed_code = stan_code(mixed)
+    @test stanc_compiles(mixed)
+    @test occursin("mu ~ normal(1.0, 0.5)", mixed_code)
+    @test occursin("y2 ~ normal(0.0, sigma)", mixed_code)
+
+    # Every merge is functional: the inputs are unmutated.
+    @test occursin("mu ~ normal(0.0, 1.0)", stan_code(m1))
+    @test !occursin("sigma", stan_code(m1))
+end
+
+"""
+A sub-model spliced into a generated body as a VALUE must behave exactly like a
+Symbol naming the same sub-model. This is the only way to embed a `Base.merge`
+result from an emitting package: the merged model exists only as a value at
+emission time and has no name. Head resolution used to route such a head into
+the EAGER `forward!(::SlicModel)` tracer, which traced the sub-model body before
+any kwarg had bound its data inputs, so every data reference died with
+`Could not find <name> in model, builtin, … or Main!`.
+Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
+"""
+@testitem "slic: a SlicModel VALUE in call position embeds like a named sub-model" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    X_val = reshape(collect(1.0:6.0), 3, 2)
+    y_val = [0.1, 0.2, 0.3]
+
+    prior_base = @slic begin
+        n_covariates = dims(X)[2]
+        beta_pop ~ std_normal(; n=n_covariates)
+        return X * beta_pop
+    end
+    merged = Base.merge(prior_base, :(beta_pop ~ normal(0.5, 2.0; n=n_covariates)))
+
+    outer(callee) = StanBlocks.SlicModel(
+        Expr(:block, :(mu ~ $callee(; X = Xdat)), :(y ~ normal(mu, 1.0))),
+        Dict{Symbol,Any}(:Xdat => X_val, :y => y_val),
+        @__MODULE__,
+    )
+    # The control names the SAME merged model through a module-level binding.
+    global VALUE_SPLICE_CONTROL = merged
+    control = stan_code(outer(:VALUE_SPLICE_CONTROL))
+    spliced = stan_code(outer(merged))
+
+    @test spliced == control
+    @test occursin("mu_beta_pop ~ normal(0.5, 2.0);", spliced)
+    # The kwarg really bound the sub-model's data input (`X` -> the outer `Xdat`).
+    @test occursin("mu = (Xdat * mu_beta_pop)", spliced)
+
+    # A named sub-model FUNCTION spliced as a value takes the same head path.
+    @slic value_splice_shift(s::real) = begin
+        z ~ normal(0.0, s)
+        return z
+    end
+    fn = value_splice_shift
+    fn_model = StanBlocks.SlicModel(
+        Expr(:block, :(w ~ $fn(2.0)), :(yy ~ normal(w, 1.0))),
+        Dict{Symbol,Any}(:yy => 0.5),
+        @__MODULE__,
+    )
+    @test transpiles(fn_model)
+end
+
+"""
+`compile_slic_bundle` owns the fresh-module / ordered-`@deffun` / ordered-`@slic`
+integration that interactive authoring consumers otherwise have to reproduce
+with synthetic macrocalls and `Core.eval`. It traces once, then returns the
+ordinary model, descriptor, and source surfaces used for a single anonymous
+model.
+Snag `first-class-slic-d83cfbea`, reported by SlicTranspiler.
+Snag `compile-slic-bun-83d3bfe1`, reported by SlicTranspiler.
+"""
+@testitem "slic: compile a trusted bundle of named submodels and a parent" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    udf_definitions = [
+        "bundle-offset" => :(bundle_offset(x::real)::real = begin
+            x + 0.25
+        end),
+        "bundle-shift" => :(bundle_shift(x::real)::real = begin
+            bundle_offset(x)
+        end),
+    ]
+    definitions = [
+        :(bundle_latent(scale) = begin
+            z ~ normal(bundle_shift(0.0), scale)
+            return z
+        end),
+        :(bundle_shifted(scale, offset) = begin
+            z ~ bundle_latent(scale)
+            return z + offset
+        end),
+    ]
+    body = quote
+        mu ~ bundle_shifted(1.0, 0.5)
+        y ~ normal(mu, 1.0)
+    end
+
+    result = compile_slic_bundle((; y=[0.1, -0.2, 0.4]), definitions, body;
+        udf_definitions, name=:bundle_parent)
+
+    @test result.model isa StanBlocks.StanModel
+    @test result.descriptor isa StanBlocks.ModelDescriptor
+    @test result.descriptor.name == :bundle_parent
+    @test result.code == stan_code(result.model)
+    @test occursin("real bundle_offset(real x)", result.code)
+    @test occursin("real bundle_shift(real x)", result.code)
+    @test occursin("mu_z_z ~ normal(bundle_shift(0.0), 1.0);", result.code)
+    @test occursin("y ~ normal(mu, 1.0);", result.code)
+    @test StanBlocks.required_inputs(result.descriptor) == (:y,)
+    @test stanc_compiles(result.model)
+
+    # CONTROL: this is the consumer-owned integration the bundle API replaces.
+    # Installing the same parsed parts manually must produce byte-identical Stan.
+    control_udf = :(bundle_control_shift(x::real)::real = begin
+        x + 0.25
+    end)
+    control_body = quote
+        mu ~ normal(bundle_control_shift(0.0), 1.0)
+        y ~ normal(mu, 1.0)
+    end
+    control_data = (; y=[0.1, -0.2, 0.4])
+    workspace = Module(gensym(:SlicBundleControl))
+    Core.eval(workspace, Expr(
+        :macrocall, GlobalRef(StanBlocks, Symbol("@deffun")),
+        LineNumberNode(0, Symbol("bundle-control-udf")), control_udf,
+    ))
+    manual_slic = Core.eval(workspace, Expr(
+        :macrocall, GlobalRef(StanBlocks, Symbol("@slic")),
+        LineNumberNode(0, :slic_bundle), QuoteNode(control_data), control_body,
+    ))
+    manual_code = Base.invokelatest(() -> stan_code(manual_slic))
+    api_code = compile_slic_bundle(control_data, Expr[], control_body;
+        udf_definitions=["bundle-control-udf" => control_udf]).code
+    @test api_code == manual_code
+
+    # Each trusted workspace part carries its own editor identity through the
+    # ordinary structured-diagnostic path.
+    bad_udf = "bundle-udf" => :(bundle_bad(x::real)::real = begin
+        definitely_missing_bundle_udf(x)
+    end)
+    udf_err = try
+        compile_slic_bundle((; y=0.1), Expr[], "bundle-parent" => quote
+            mu = bundle_bad(0.0)
+            y ~ normal(mu, 1.0)
+        end; udf_definitions=[bad_udf])
+        nothing
+    catch e
+        e
+    end
+    @test diagnostic(udf_err).source_part == "bundle-udf"
+
+    definition_err = try
+        compile_slic_bundle((; y=0.1), ["bundle-definition" => :(bundle_bad_model() = begin
+            z ~ definitely_missing_bundle_distribution(0.0)
+            return z
+        end)], "bundle-parent" => quote
+            mu ~ bundle_bad_model()
+            y ~ normal(mu, 1.0)
+        end)
+        nothing
+    catch e
+        e
+    end
+    @test diagnostic(definition_err).source_part == "bundle-definition"
+
+    parent_err = try
+        compile_slic_bundle((; y=0.1), Expr[], "bundle-parent" => quote
+            y ~ definitely_missing_bundle_parent(0.0)
+        end)
+        nothing
+    catch e
+        e
+    end
+    @test diagnostic(parent_err).source_part == "bundle-parent"
+
+    # Validate the whole definition list before mutating a workspace.
+    bad = Any[first(definitions), :(not_a_definition)]
+    err = try
+        compile_slic_bundle((; y=0.0), bad, :(y ~ normal(0, 1)))
+        nothing
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    @test occursin("definition 2 must be a named SLIC definition", sprint(showerror, err))
+    @test_throws ErrorException compile_slic_bundle(
+        (; y=0.0), definitions, body; udf_definitions=[:not_an_expression])
+    @test_throws ErrorException compile_slic_bundle(
+        (; y=0.0), [42 => first(definitions)], body)
+    @test_throws ErrorException compile_slic_bundle((; y=0.0), definitions, :not_an_expr)
+end
+
+"""
+Bundle UDFs resolve the same public transpile-time helpers as ordinary
+`@deffun` authoring without relying on exports that happen to be bound in
+`Main`. The public `return_type_of` spelling must produce the same Stan as the
+direct `typeof` spelling for this scalar-element copy and remain stanc-valid.
+Snag `compile-slic-bun-b7eb93b5`, reported by SlicTranspiler.
+"""
+@testitem "slic: bundle UDFs resolve public transpile-time helpers" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    data = (; x=[0.1, -0.2], y=[0.0, 0.1])
+    body = quote
+        mu = bundle_copy_vec(x)
+        y ~ normal(mu, 1.0)
+    end
+    element_type_udf = "bundle-element-type" =>
+        :(bundle_element_type(x::real)::real = x)
+    copy_udf = "bundle-copy-vec" => :(bundle_copy_vec(x::vector[n]) = begin
+        out::return_type_of(bundle_element_type, x[1])[n]
+        for i in 1:n
+            out[i] = x[i]
+        end
+        out
+    end)
+    workaround_udf = "bundle-copy-vec-workaround" =>
+        :(bundle_copy_vec(x::vector[n]) = begin
+            out::typeof(x[1])[n]
+            for i in 1:n
+                out[i] = x[i]
+            end
+            out
+        end)
+
+    result = compile_slic_bundle(data, Expr[], body;
+        udf_definitions=[element_type_udf, copy_udf])
+    workaround = compile_slic_bundle(data, Expr[], body;
+        udf_definitions=[element_type_udf, workaround_udf])
+
+    @test result.code == workaround.code
+    @test occursin("vector[n] out;", result.code)
+    @test stanc_compiles(result.model)
+end
+
+"""
+`compile_slic_bundle` accepts anonymous sub-model bodies and values as explicit
+workspace dependencies. The parent names each dependency structurally; callers
+do not need to evaluate `@slic` themselves or rewrite an anonymous model as a
+named method. Source and value inputs retain ordinary free-name kwarg binding
+and hygienic namespaces.
+Snag `compile-slic-bun-08d0bcdc`, reported by SlicTranspiler.
+"""
+@testitem "slic: compile anonymous submodel dependencies in a trusted bundle" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    data = (; y=0.2)
+    body = quote
+        left ~ local_prior(; mu=0.0, scale=1.0)
+        right ~ local_prior(; mu=1.0, scale=2.0)
+        y ~ normal(left + right, 1.0)
+    end
+
+    # Before the dependency channel, the parent symbol is intentionally absent
+    # from the owned workspace and cannot resolve a caller-local value.
+    missing = try
+        compile_slic_bundle(data, Expr[], body)
+        nothing
+    catch e
+        e
+    end
+    @test missing isa StanBlocksError
+    @test occursin("Could not find local_prior", sprint(showerror, missing))
+
+    source_dependency = "bundle-local-prior" => (:local_prior => quote
+        beta ~ normal(mu, scale)
+        return beta
+    end)
+    source_result = compile_slic_bundle(data, Expr[], body;
+        anonymous_submodels=[source_dependency], name=:anonymous_bundle)
+    @test source_result.descriptor.name == :anonymous_bundle
+    @test occursin("left_beta ~ normal(0.0, 1.0);", source_result.code)
+    @test occursin("right_beta ~ normal(1.0, 2.0);", source_result.code)
+    @test StanBlocks.required_inputs(source_result.descriptor) == (:y,)
+    @test stanc_compiles(source_result.model)
+
+    # CONTROL: direct value interpolation was the semantics-preserving
+    # workaround. Source and value dependencies must emit the identical model.
+    local_prior_value = @slic begin
+        beta ~ normal(mu, scale)
+        return beta
+    end
+    control_body = quote
+        left ~ $local_prior_value(; mu=0.0, scale=1.0)
+        right ~ $local_prior_value(; mu=1.0, scale=2.0)
+        y ~ normal(left + right, 1.0)
+    end
+    control_code = compile_slic_bundle(data, Expr[], control_body).code
+    value_code = compile_slic_bundle(data, Expr[], body;
+        anonymous_submodels=[:local_prior => local_prior_value]).code
+    @test source_result.code == control_code == value_code
+
+    # A body source is evaluated after the bundle UDFs and captures the owned
+    # workspace as its defining module.
+    udf_code = compile_slic_bundle(data, Expr[], body;
+        udf_definitions=[:(bundle_prior_location(x::real)::real = begin x + 0.25 end)],
+        anonymous_submodels=[:local_prior => quote
+            beta ~ normal(bundle_prior_location(mu), scale)
+            return beta
+        end]).code
+    @test occursin("left_beta ~ normal(bundle_prior_location(0.0), 1.0);", udf_code)
+
+    bad_body = "anonymous-prior-part" => (:bad_prior => quote
+        z ~ definitely_missing_anonymous_distribution(0.0)
+        return z
+    end)
+    bad_err = try
+        compile_slic_bundle((; y=0.0), Expr[], quote
+            mu ~ bad_prior()
+            y ~ normal(mu, 1.0)
+        end; anonymous_submodels=[bad_body])
+        nothing
+    catch e
+        e
+    end
+    @test diagnostic(bad_err).source_part == "anonymous-prior-part"
+
+    bad_value = @slic begin
+        z ~ definitely_missing_anonymous_value_distribution(0.0)
+        return z
+    end
+    bad_value_err = try
+        compile_slic_bundle((; y=0.0), Expr[], quote
+            mu ~ bad_prior_value()
+            y ~ normal(mu, 1.0)
+        end; anonymous_submodels=[
+            "anonymous-value-part" => (:bad_prior_value => bad_value),
+        ])
+        nothing
+    catch e
+        e
+    end
+    @test diagnostic(bad_value_err).source_part == "anonymous-value-part"
+
+    @test_throws ErrorException compile_slic_bundle(
+        data, Expr[], body; anonymous_submodels=[:local_prior => 42])
+    @test_throws ErrorException compile_slic_bundle(
+        data, Expr[], body; anonymous_submodels=["part" => ("not-a-symbol" => quote end)])
+    @test_throws ErrorException compile_slic_bundle(
+        data, Expr[], body; anonymous_submodels=[
+            :local_prior => local_prior_value,
+            :local_prior => local_prior_value,
+        ])
+    @test_throws ErrorException compile_slic_bundle(
+        data, [:(local_prior() = begin z ~ normal(0, 1); return z end)], body;
+        anonymous_submodels=[:local_prior => local_prior_value])
+end
+
+"""
+`compile_slic_bundle` preserves inline `@deffun` distribution annotations in
+its fresh module. A local density used through `~` needs the same explicit
+`@lhs @lpxf` registration and pointwise/predictive companions as a direct
+`@slic` model; the bundle must emit all three UDFs and stanc-valid generated
+quantities. Snag `compile-slic-bun-4bc9aa10`, reported by SlicTranspiler.
+"""
+@testitem "slic: compile a local distribution triad in a trusted bundle" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    udf_definitions = ["bundle-garch" => :(@stanonly begin
+        @lhs @lpxf bundle_garch_lpdf(
+            y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real,
+        )::real = begin
+            sigma2 = alpha0
+            rv = 0.0
+            for t in 1:T
+                rv += normal_lpdf(y[t], mu, sqrt(sigma2))
+                sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
+            end
+            return rv
+        end
+
+        bundle_garch_lpdfs(
+            y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real,
+        )::vector[T] = begin
+            sigma2 = alpha0
+            rv::vector[T]
+            for t in 1:T
+                rv[t] = normal_lpdf(y[t], mu, sqrt(sigma2))
+                sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
+            end
+            return rv
+        end
+
+        bundle_garch_rng(
+            vector[T], mu::real, alpha0::real, alpha1::real, beta1::real,
+        )::vector[T] = begin
+            sigma2 = alpha0
+            rv::vector[T]
+            for t in 1:T
+                rv[t] = normal_rng(mu, sqrt(sigma2))
+                sigma2 = alpha0 + alpha1 * square(rv[t] - mu) + beta1 * sigma2
+            end
+            return rv
+        end
+    end)]
+    body = quote
+        mu ~ std_normal()
+        alpha0 ~ std_normal(; lower=0.0)
+        alpha1 ~ uniform(0.0, 1.0)
+        beta1 ~ uniform(0.0, 1.0)
+        y ~ bundle_garch(mu, alpha0, alpha1, beta1)
+    end
+
+    result = compile_slic_bundle((; y=randn(8)), Expr[], body;
+        udf_definitions, name=:bundle_garch_parent)
+
+    @test occursin("real bundle_garch_lpdf(", result.code)
+    @test occursin("vector bundle_garch_lpdfs(", result.code)
+    @test occursin("vector bundle_garch_vector_rng(", result.code)
+    @test occursin("y ~ bundle_garch(mu, alpha0, alpha1, beta1);", result.code)
+    @test occursin("y_likelihood = bundle_garch_lpdfs(", result.code)
+    @test occursin("y_gen = bundle_garch_vector_rng(", result.code)
+    @test stanc_check(result.code; warn_pedantic=false).ok
+end
+
+"""
+`compile_slic_bundle` accepts validated, macro-free metadata for trusted UDF
+annotations and assertions, then lowers it to the existing `@deffun` forms.
+The structured form must emit byte-identical Stan to the macro-bearing
+workaround while preserving inline, runtime-assertion, and local-distribution
+registration semantics. Snag `compile-slic-bun-0d501bc1`, reported by
+SlicTranspiler.
+"""
+@testitem "slic: compile macro-free UDF marker metadata" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    inline_definition = :(bundle_safe_scale(x::real)::real = begin
+        sqrt(square(x) + 0.01)
+    end)
+    lpdfs_definition = :(bundle_safe_lpdfs(
+        y::vector[T], mu::real, sigma::real,
+    )::vector[T] = begin
+        rv::vector[T]
+        for t in 1:T
+            rv[t] = normal_lpdf(y[t], mu, sigma)
+        end
+        return rv
+    end)
+    rng_definition = :(bundle_safe_rng(
+        vector[T], mu::real, sigma::real,
+    )::vector[T] = begin
+        rv::vector[T]
+        for t in 1:T
+            rv[t] = normal_rng(mu, sigma)
+        end
+        return rv
+    end)
+    lpdf_definition = :(bundle_safe_lpdf(
+        y::vector[T], mu::real, sigma::real,
+    )::real = begin
+        return normal_lpdf(y, mu, sigma)
+    end)
+    assertion_macrocall = Expr(
+        :macrocall,
+        GlobalRef(StanBlocks, Symbol("@stan_assert")),
+        LineNumberNode(0, Symbol("bundle-lpdf")),
+        :(sigma > 0),
+        "bundle_safe_lpdf: sigma must be positive",
+    )
+    default_assertion_macrocall = Expr(
+        :macrocall,
+        GlobalRef(StanBlocks, Symbol("@stan_assert")),
+        LineNumberNode(0, Symbol("bundle-lpdf")),
+        :(sigma < 100),
+    )
+    macro_udfs = [
+        "bundle-inline" => :(@stanonly @inline $inline_definition),
+        "bundle-lpdfs" => :(@stanonly $lpdfs_definition),
+        "bundle-rng" => :(@stanonly $rng_definition),
+        "bundle-lpdf" => :(@stanonly @lhs @lpxf bundle_safe_lpdf(
+            y::vector[T], mu::real, sigma::real,
+        )::real = begin
+            $assertion_macrocall
+            $default_assertion_macrocall
+            return normal_lpdf(y, mu, sigma)
+        end),
+    ]
+    metadata_udfs = [
+        "bundle-inline" => (;
+            definition=inline_definition,
+            markers=(:stanonly, :inline),
+        ),
+        "bundle-lpdfs" => (;
+            definition=lpdfs_definition,
+            markers=:stanonly,
+        ),
+        "bundle-rng" => (;
+            definition=rng_definition,
+            markers=:stanonly,
+        ),
+        "bundle-lpdf" => (;
+            definition=lpdf_definition,
+            markers=(:stanonly, :lhs, :lpxf),
+            assertions=((;
+                condition=:(sigma > 0),
+                message="bundle_safe_lpdf: sigma must be positive",
+            ), (; condition=:(sigma < 100))),
+        ),
+    ]
+    body = quote
+        mu ~ std_normal()
+        sigma ~ std_normal(; lower=0.0)
+        y ~ bundle_safe(mu, bundle_safe_scale(sigma))
+    end
+    data = (; y=randn(6))
+
+    workaround = compile_slic_bundle(data, Expr[], body;
+        udf_definitions=macro_udfs, name=:bundle_macro_markers)
+    structured = compile_slic_bundle(data, Expr[], body;
+        udf_definitions=metadata_udfs, name=:bundle_metadata_markers)
+
+    @test structured.code == workaround.code
+    @test occursin("bundle_safe_lpdf: sigma must be positive", structured.code)
+    @test occursin("assertion failed: sigma < 100", structured.code)
+    @test !occursin("bundle_safe_scale(", structured.code)
+    @test occursin("y ~ bundle_safe(mu,", structured.code)
+    @test occursin("y_likelihood = bundle_safe_lpdfs(", structured.code)
+    @test occursin("y_gen = bundle_safe_vector_rng(", structured.code)
+    @test stanc_check(structured.code; warn_pedantic=false).ok
+
+    metadata_error(spec) = try
+        compile_slic_bundle(data, Expr[], body; udf_definitions=[spec])
+        ""
+    catch e
+        sprint(showerror, e)
+    end
+    @test occursin("unknown field `surprise`", metadata_error((;
+        definition=inline_definition, surprise=true,
+    )))
+    @test occursin("unknown marker `eval`", metadata_error((;
+        definition=inline_definition, markers=(:inline, :eval),
+    )))
+    @test occursin("assertion 1 message must be a string", metadata_error((;
+        definition=lpdf_definition,
+        assertions=((; condition=:(sigma > 0), message=42),),
+    )))
+end
+
+"""
+`Base.merge` keys a spliced statement on what its LHS NAMES, so a typed-LHS
+override replaces the base's plain-LHS statement instead of being appended, and
+the merged body stays raw Julia AST so it can be printed for inspection.
+Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
+"""
+@testitem "slic: Base.merge typed-LHS override + printable spliced body" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    plain_base = @slic begin
+        log_rho ~ std_normal(; n=n_axes)
+        return log_rho
+    end
+    # Typed-LHS override against a PLAIN-LHS base: keyed on `log_rho`, so it
+    # REPLACES rather than being appended (which used to raise a bare
+    # `MethodError: no method matching usedin(::CanonicalExpr{Val{:(::)}}, …)`).
+    typed_override = Base.merge(plain_base, :(log_rho :: vector[n_axes] ~ normal(0.5, 2.0)))
+    printed = sprint(print, StanBlocks.model(typed_override))
+    @test occursin("normal(0.5, 2.0)", printed)
+    @test !occursin("std_normal", printed)
+    @test transpiles(typed_override(; n_axes=3))
+
+    # A spliced body is plain Julia AST — printable, with no traced-only node
+    # leaking into it (printing one used to die in the Stan emitter).
+    typed_base = @slic begin
+        log_rho :: vector[n_axes] ~ std_normal()
+        return log_rho
+    end
+    typed_typed = Base.merge(typed_base, :(log_rho :: vector[n_axes] ~ normal(0.5, 2.0)))
+    typed_printed = sprint(print, StanBlocks.model(typed_typed))
+    @test occursin("normal(0.5, 2.0)", typed_printed)
+    @test StanBlocks.model(typed_typed) isa Expr
+    @test all(a -> a isa Union{Expr,LineNumberNode}, StanBlocks.model(typed_typed).args)
+
+    # A non-statement splice is refused loudly rather than silently appended.
+    @test_throws ErrorException Base.merge(plain_base, :(log_rho + 1))
+end
+
+"""
+The mirror of the case above: a PLAIN-LHS override against a TYPED-LHS base.
+Keying on the bare name makes the two match (as it must), but replacing the
+statement wholesale then dropped the base's declaration — which does not fail,
+it silently RESCOPES the parameter to a scalar and blows up passes later in
+whatever first consumes the wrong shape, naming neither the parameter nor the
+merge. An override's LHS DECLARES; omitting one means "unchanged", so the
+override supplies the RHS and the base supplies the declaration.
+Snag `merge-plain-over-f228c5b2`, reported by BayesianRegressionModels.
+"""
+@testitem "slic: Base.merge plain-LHS override inherits the base's declaration" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    X_val = reshape(collect(1.0:12.0), 6, 2)
+    y_val = collect(1.0:6.0)
+    outer(callee) = StanBlocks.SlicModel(
+        Expr(:block, :(mu ~ $callee(; X = Xdat)), :(y ~ normal(mu, 1.0))),
+        Dict{Symbol,Any}(:Xdat => X_val, :y => y_val),
+        @__MODULE__,
+    )
+
+    typed_base = @slic begin
+        n_axes = dims(X)[2]
+        rho :: vector[n_axes] ~ lognormal(0.0, 1.0; lower=0.0)
+        return X * rho
+    end
+
+    plain_override = Base.merge(typed_base, :(rho ~ inv_gamma(5.0, 5.0)))
+    printed = sprint(print, StanBlocks.model(plain_override))
+    @test occursin("rho::vector[n_axes]~inv_gamma(5.0,5.0)", replace(printed, " " => ""))
+    @test !occursin("lognormal", printed)
+
+    # The emitted program is byte-identical to repeating the declaration by
+    # hand, which is what a caller had to do before this. That equality is the
+    # point: it is what lets an emitting package drop its per-sub-model
+    # knowledge of each declared form.
+    spelled_out = stan_code(outer(Base.merge(
+        typed_base, :(rho :: vector[n_axes] ~ inv_gamma(5.0, 5.0; lower=0.0)))))
+    @test stan_code(outer(plain_override)) == spelled_out
+    @test occursin("vector<lower=0.0>[mu_n_axes] mu_rho;", spelled_out)
+
+    # An override that wants a DIFFERENT declaration still writes its own, so
+    # nothing became inexpressible.
+    retyped = sprint(print, StanBlocks.model(
+        Base.merge(typed_base, :(rho :: real ~ inv_gamma(5.0, 5.0)))))
+    @test occursin("rho::real", replace(retyped, " " => ""))
+
+    # Assignments take the same path as sampling statements.
+    assign_base = @slic begin
+        n_axes = dims(X)[2]
+        rho :: vector[n_axes] ~ std_normal()
+        scaled :: vector[n_axes] = 2.0 * rho
+        return X * scaled
+    end
+    assign_override = Base.merge(assign_base, :(scaled = 3.0 * rho))
+    @test occursin("scaled::vector[n_axes]=",
+                   replace(sprint(print, StanBlocks.model(assign_override)), " " => ""))
+    @test transpiles(outer(assign_override))
+
+    # A plain base is untouched — there is no declaration to inherit — and a
+    # reusable override Expr is never mutated by an earlier merge.
+    shared = :(rho ~ inv_gamma(5.0, 5.0))
+    Base.merge(typed_base, shared)
+    @test shared == :(rho ~ inv_gamma(5.0, 5.0))
+    plain_base2 = @slic begin
+        n_axes = dims(X)[2]
+        rho ~ std_normal(; n=n_axes)
+        return X * rho
+    end
+    @test !occursin("::", sprint(print, StanBlocks.model(Base.merge(plain_base2, shared))))
+end
+
+"""
 Verify `determinism: inline UDF + lifted closure` in an isolated test item.
 """
 @testitem "determinism: inline UDF + lifted closure" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
@@ -1678,13 +3683,27 @@ Verify `determinism: inline UDF + lifted closure` in an isolated test item.
     @test occursin("// lifted closure", a)
     # transpiling twice in one session must be byte-identical
     @test a == b
+
+    # Each concurrent transpilation owns its counters and scratch buffers. This
+    # exercises real parallelism when the test Julia has multiple threads and
+    # remains a separate-Task isolation check on a single-threaded runner.
+    concurrent = fetch.([
+        Threads.@spawn stan_code(stan_model(det_model)) for _ in 1:max(4, Threads.nthreads())
+    ])
+    @test all(==(a), concurrent)
+
+    # Keep the architectural requirement executable: no compiler source may
+    # silently reintroduce ambient Task-local state.
+    slic_src = joinpath(dirname(pathof(StanBlocks)), "slic_stan")
+    source_files = filter(endswith(".jl"), readdir(slic_src; join=true))
+    @test all(!occursin("task_local_storage", read(file, String)) for file in source_files)
 end
 
 """
 Verify `slic: ODE closure-captured param feeding a likelihood stays a parameter`
 in an isolated test item.
 """
-@testitem "slic: ODE closure-captured param feeding a likelihood stays a parameter" tags=[:slic, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ODE closure-captured param feeding a likelihood stays a parameter" tags=[:slic, :regression, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Snag `ode-closure-capt`: a parameter captured by an ODE-RHS closure whose
     # solve feeds a downstream likelihood must remain a SAMPLED parameter. The
     # §9 prior-but-no-downstream-use → GQ `_rng` analysis must follow the closure
@@ -1706,7 +3725,7 @@ end
 Verify `slic: ODE closure-captured DATA value is declared in the data block`
 in an isolated test item.
 """
-@testitem "slic: ODE closure-captured DATA value is declared in the data block" tags=[:slic, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ODE closure-captured DATA value is declared in the data block" tags=[:slic, :regression, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Snag `ode-closure-capt` DATA-side twin: a data value (`k`) captured only
     # inside a lifted ODE-RHS closure is threaded as a trailing solver arg, so
     # `fetch_data!(closure)` must follow captures and declare it — else dead-data
@@ -1721,12 +3740,273 @@ in an isolated test item.
     @test isfinite(LogDensityProblems.logdensity(p, [0.5]))
 end
 
+@testitem "slic: sequential_marginalize sequential HOF (scalar belief) + capture dedup" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # General sequential-marginalization combinator: `y ~ sequential_marginalize(b0, predict,
+    # observe, simulate)` — a forward filter integrating out a latent state. Here
+    # an AR(1) marginal likelihood with a scalar belief. This ALSO guards the
+    # closure capture-dedup fix (functions.jl `func_args` / `expand_call_args`):
+    # `observe` and `simulate` both close over `sigma`, so a naive per-closure
+    # capture splice would emit a UDF with a duplicate `sigma` parameter that stanc
+    # rejects ("All function arguments must have distinct identifiers").
+    model = @slic (; y = [0.5, -0.3, 1.2, 0.1, 0.8, -0.2]) begin
+        rho ~ std_normal()
+        sigma ~ std_normal()
+        y ~ sequential_marginalize(0.0,
+            bb -> rho * bb,
+            (bb, yy) -> (bb + yy, normal_lpdf(yy, bb, exp(sigma))),
+            bb -> (bb + normal_rng(bb, exp(sigma)), normal_rng(bb, exp(sigma))))
+    end
+    @test stanc_compiles(model)
+    sc = stan_code(model)
+    @test occursin("sequential_marginalize", sc)
+    @test occursin("_lpdfs(", sc)   # per-observation one-step-ahead conditionals
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 2
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.3, 0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
+@testitem "slic: kalman filter (univariate obs, k-state)" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Matrix-parameterized linear-Gaussian Kalman marginal likelihood. Declared
+    # matrix dims keep the state size in UDF scope (the closure route's captured-
+    # matrix size gap does not apply here). Local-linear-trend: k=2 state, scalar
+    # observation yₜ = c'·zₜ + N(0, r).
+    A  = [1.0 1.0; 0.0 1.0]
+    c  = [1.0, 0.0]
+    m0 = [0.0, 0.0]
+    P0 = [1.0 0.0; 0.0 1.0]
+    y  = [0.2, 0.5, 0.3, 0.9, 1.1, 1.0, 1.4]
+    model = @slic (; y, m0, P0, A, c) begin
+        logq ~ std_normal()
+        logr ~ std_normal()
+        y ~ kalman(m0, P0, A, exp(logq) * diag_matrix(rep_vector(1.0, 2)), c, exp(logr))
+    end
+    @test stanc_compiles(model)
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 2
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.1, 0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
+@testitem "slic: kalman filter (multivariate obs)" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Multivariate-observation overload of `kalman`: C::matrix[d,K], R::matrix[d,d],
+    # y::matrix[T,d] (row t = yₜ = C·zₜ + N(0, R)). Shares the base `kalman` family
+    # with the scalar overload (dispatch selects on the matrix argument shapes) and
+    # is immune to the captured-matrix size gap (declared matrix dims).
+    A  = [1.0 1.0; 0.0 1.0]
+    C  = [1.0 0.0; 0.0 1.0]
+    m0 = [0.0, 0.0]
+    P0 = [1.0 0.0; 0.0 1.0]
+    y  = [0.2 0.1; 0.5 0.3; 0.3 0.4; 0.9 0.7; 1.1 0.6]   # T=5, d=2
+    model = @slic (; y, m0, P0, A, C) begin
+        logq ~ std_normal()
+        logr ~ std_normal()
+        y ~ kalman(m0, P0, A, exp(logq) * diag_matrix(rep_vector(1.0, 2)),
+                   C, exp(logr) * diag_matrix(rep_vector(1.0, 2)))
+    end
+    @test stanc_compiles(model)
+    sc = stan_code(model)
+    @test occursin("multi_normal_lpdf", sc)   # multivariate innovation density
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 2
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.1, 0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
+@testitem "slic: sequential_marginalize captured-matrix belief (capture-dim binds)" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # A belief sized by a CAPTURED matrix through the general HOF: `predict = b -> A*b`
+    # closes over the data matrix `A`. `func_args` hoists that capture into the receiver
+    # UDF's signature as a bare (unsized) `matrix A`, so a belief size derived from it —
+    # `vector[A_m] bp = A*b;`, where `A_m` is A's ORIGINAL data-block dim symbol —
+    # referenced an identifier out of scope inside the Stan function and stanc rejected
+    # it. The fix (`_capture_dim_binds` in `Base.show(::StanFunction3)`, functions.jl)
+    # materializes the referenced capture dim at the body top (`int A_m = dims(A)[1];`),
+    # mirroring the declared-arg preamble; it guards both the `_lpdfs` (density) and
+    # `_rng` (forward-sim) bodies.
+    A  = [0.9 0.0; 0.1 0.8]
+    b0 = [0.0, 0.0]
+    y  = [0.5, -0.3, 1.2, 0.1, 0.8, -0.2]
+    model = @slic (; y, A, b0) begin
+        sigma ~ std_normal()
+        y ~ sequential_marginalize(b0,
+            b -> A * b,
+            (b, yy) -> (b, normal_lpdf(yy, b[1], exp(sigma))),
+            b -> (b, normal_rng(b[1], exp(sigma))))
+    end
+    @test stanc_compiles(model)
+    sc = stan_code(model)
+    @test occursin("int A_m = dims(A)[1];", sc)   # the capture-dim bind lands
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 1
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
+@testitem "slic: matrix-covariance Kalman through the sequential_marginalize HOF" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # The headline the captured-matrix fix unlocks: a full matrix-covariance Kalman
+    # filter — belief `(mean::vector, cov::matrix)` — expressed through the GENERAL
+    # `sequential_marginalize` HOF (rather than the built-in `kalman` family). `predict`
+    # closes over the transition `A` / process noise `Q`; the belief's mean and
+    # covariance sizes derive from those captured matrices, exercising the capture-dim
+    # binding (`int A_m`/`Q_m`/`Q_n = dims(...);`). It ALSO names the observation-noise
+    # capture `r`, guarding the internal-name-hygiene fix: the HOF's own body locals are
+    # `sm_`-prefixed, so a capture named `r` no longer collides with the per-step result
+    # local ("Identifier r is already in use").
+    A  = [0.9 0.0; 0.1 0.8]
+    Q  = [0.1 0.0; 0.0 0.1]
+    c  = [1.0, 0.0]
+    m0 = [0.0, 0.0]
+    P0 = [1.0 0.0; 0.0 1.0]
+    y  = [0.5, -0.3, 1.2, 0.1, 0.8, -0.2]
+    model = @slic (; y, A, Q, c, m0, P0) begin
+        logr ~ std_normal()
+        r = exp(logr)
+        y ~ sequential_marginalize((m0, P0),
+            b -> (A * b[1], A * b[2] * A' + Q),
+            (b, yy) -> begin
+                yhat = c' * b[1]
+                S = c' * b[2] * c + r
+                K = b[2] * c / S
+                ((b[1] + K * (yy - yhat), b[2] - K * (c' * b[2])), normal_lpdf(yy, yhat, sqrt(S)))
+            end,
+            b -> begin
+                yhat = c' * b[1]
+                S = c' * b[2] * c + r
+                yd = normal_rng(yhat, sqrt(S))
+                K = b[2] * c / S
+                ((b[1] + K * (yd - yhat), b[2] - K * (c' * b[2])), yd)
+            end)
+    end
+    @test stanc_compiles(model)
+    sc = stan_code(model)
+    @test occursin("int Q_m = dims(Q)[1];", sc)   # captured-matrix dims bind
+    @test occursin("sm_step", sc)                 # hygienic internal locals (no `r` clash)
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 1
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
+@testitem "slic: hmm_forward discrete emission (Poisson HMM)" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # SAME bare spelling over count data: Stan resolves `y ~ hmm_forward(…)` to
+    # the `_lpmf` specialization by the int variate, while the fetch pulls that
+    # specialization instead of the `_lpdf` one (`_dual_lpmf_call`). Integer `y`
+    # routes the GQ redraw through the `int[T]` rng overload (a real draw into
+    # an int carrier has no valid Stan form). Emission scale is captured.
+    Gamma = [0.9 0.1; 0.2 0.8]
+    rho = [0.5, 0.5]
+    lam = [1.0, 5.0]
+    y = [1, 0, 2, 6, 4, 1]
+    model = @slic (; y, Gamma, rho, lam) begin
+        logr ~ std_normal()
+        s = exp(logr)
+        y ~ hmm_forward(rho, Gamma,
+            yt -> [poisson_lpmf(yt, lam[1] * s), poisson_lpmf(yt, lam[2] * s)],
+            k -> poisson_rng(lam[k] * s))
+    end
+    @test stanc_compiles(model)
+    sc = stan_code(model)
+    @test occursin("hmm_forward", sc)
+    @test occursin("_lpmf(", sc)   # discrete specialization behind the bare `~`
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 1
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
+@testitem "slic: hmm_forward emission-closure family (Gaussian HMM)" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Option-A family (decision 07j39xa): the user supplies only the emission
+    # closure `emit(yₜ)::vector[K]`; the package owns the log-space forward
+    # recursion + `_lpdf` / `_lpdfs` / `_rng` triad. K=2 Gaussian HMM; `sigma`
+    # is a captured parameter (the emission-couples-y+params case the fixed-arg
+    # `kalman` mold cannot take).
+    Gamma = [0.9 0.1; 0.2 0.8]
+    rho = [0.5, 0.5]
+    mu = [-1.0, 2.0]
+    y = [0.3, -0.8, 1.9, 2.2, -1.1, 0.1]
+    model = @slic (; y, Gamma, rho, mu) begin
+        logsigma ~ std_normal()
+        s = exp(logsigma)
+        y ~ hmm_forward(rho, Gamma,
+            yt -> [normal_lpdf(yt, mu[1], s), normal_lpdf(yt, mu[2], s)],
+            k -> normal_rng(mu[k], s))
+    end
+    @test stanc_compiles(model)
+    sc = stan_code(model)
+    @test occursin("hmm_forward", sc)
+    @test occursin("_lpdfs(", sc)   # per-observation one-step-ahead conditionals
+    p = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(p) == 1
+    lp, g = LogDensityProblems.logdensity_and_gradient(p, [0.1])
+    @test isfinite(lp)
+    @test all(isfinite, g)
+end
+
 """
 Verify `in-body @doc docstring renders (StanExpr unwrap)` in an isolated test item.
 """
 @testitem "in-body @doc docstring renders (StanExpr unwrap)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(doc_model)
     @test occursin("// documented local declaration", stan_code(stan_model(doc_model)))
+end
+
+"""
+Verify `documented submodel call transpiles at any doc-stacking depth` in an
+isolated test item. A `#`/`@doc` comment before a submodel CALL (`mu ~
+linpred(x)`, whose body inlines to a multi-statement `:block`) accrues one
+`:document` wrapper per surviving comment. With ≥2 wrappers around the inlined
+block, `distribute!` used to route the nested document through
+`distribution_blocks`, which bottomed out at `distribution_blocks(::BlockExpr)`
+— undefined, so transpilation crashed with an internal `MethodError` (snag
+`doc-submodel-cal`). Every stacking depth must now transpile, the emitted Stan
+must be identical to the undocumented model apart from the surviving `//`
+comment line, and a documented submodel call preceded by another statement
+(which adds a wrapper) must also transpile.
+"""
+@testitem "documented submodel call transpiles at any doc-stacking depth" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    strip_comments(code) = join(
+        filter(l -> !startswith(strip(l), "//"), split(code, '\n')), '\n'
+    )
+    undoc_code = stan_code(@slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        mu ~ linpred(x)
+        y ~ normal(mu, 1)
+    end)
+
+    d1 = @slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        @doc "one" mu ~ linpred(x)
+        y ~ normal(mu, 1)
+    end
+    d2 = @slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        @doc "one" @doc "two" mu ~ linpred(x)
+        y ~ normal(mu, 1)
+    end
+    d3 = @slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        @doc "one" @doc "two" @doc "three" mu ~ linpred(x)
+        y ~ normal(mu, 1)
+    end
+    # Regression floor: `d3` (and `preceded` below) crashed before the fix.
+    for m in (d1, d2, d3)
+        @test transpiles(m)
+        # Emitted Stan differs from the undocumented model ONLY by `//` comment
+        # lines — the fix changes nothing semantic, it just stops the crash.
+        @test strip_comments(stan_code(m)) == strip_comments(undoc_code)
+    end
+    @test occursin("// one", stan_code(d3))
+
+    # A preceding statement adds another `:document` wrapper around the inlined
+    # block; this variant also used to crash with only two `@doc`s.
+    preceded = @slic (; x=0.7, y=[1.0, 2.0, 3.0]) begin
+        s ~ normal(0, 1)
+        @doc "one" @doc "two" mu ~ linpred(x)
+        y ~ normal(mu + s, 1)
+    end
+    @test transpiles(preceded)
 end
 
 """
@@ -1739,12 +4019,93 @@ Verify `built-in constants resolve (pi, ℯ); arbitrary const errors` in an isol
     @test occursin("2.71828", code)   # ℯ
     # arbitrary module-level number is NOT a built-in constant → loud failure
     @test !transpiles(consts_bad_model; re=false)
+    # Constant-FUNCTION spelling `pi()` is REJECTED with an ACTIONABLE error
+    # (user decision `0wlv7e2`, snag `stan-pi-builtin`): the DSL stays
+    # Julia-idiomatic — write bare `pi`. Before the fix `pi()` failed with the
+    # opaque `tracetype not defined for (…::anything * ::real)`, naming neither
+    # `pi` nor the real problem.
+    @test !transpiles(consts_call_model; re=false)
+    call_err = try
+        stan_code(stan_model(consts_call_model)); nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test call_err !== nothing
+    @test occursin("pi", call_err)                 # names the offending constant
+    @test occursin("bare", call_err)               # points at the bare form
+    @test !occursin("tracetype not defined", call_err)  # NOT the opaque error
+end
+
+"""
+Julia's short-circuit AST heads must lower directly to Stan `&&` / `||` inside
+`@deffun` bodies. They are not callable Base functions and must not fall through
+the ordinary function-head resolver (which used to fail with `Could not find &&`).
+"""
+@testitem "slic: @deffun short-circuit boolean operators" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports] begin
+    @deffun @juliacompat begin
+        # Mirrors helpful_stan_functions@583d31de's gpareto_lpdf support check.
+        @stanonly short_circuit_guard(x::vector[n], ymin::real, k::real, sigma::real)::real = begin
+            inv_k = inv(k)
+            if k < 0 && max(x - ymin) / sigma > -inv_k
+                return -1.0
+            end
+            if sigma <= 0 || ymin < 0
+                return 0.0
+            end
+            1.0
+        end
+
+        # The `@juliacompat` Julia emission must keep Julia's lazy RHS evaluation too.
+        short_circuit_julia_or(x::real)::real = begin
+            if x > 0 || error("short-circuit OR evaluated its RHS")
+                return x
+            end
+            0.0
+        end
+        short_circuit_julia_and(x::real)::real = begin
+            if x < 0 && error("short-circuit AND evaluated its RHS")
+                return -x
+            end
+            x
+        end
+    end
+
+    model = @slic (; x=[0.1, 0.2, 0.3], y=0.0) begin
+        k ~ std_normal()
+        sigma ~ lognormal(0.0, 1.0)
+        y ~ normal(short_circuit_guard(x, 0.0, k, sigma), 1.0)
+    end
+    code = stan_code(model)
+    @test occursin(" && ", code)
+    @test occursin(" || ", code)
+    @test stanc_check(code; warn_pedantic=false).ok
+
+    @test short_circuit_julia_or(1.0) == 1.0
+    @test short_circuit_julia_and(1.0) == 1.0
+    @test_throws ErrorException short_circuit_julia_or(-1.0)
+    @test_throws ErrorException short_circuit_julia_and(-1.0)
+
+    # `@slic` remains straight-line: the same expression is supported only in
+    # a UDF body, and now rejects at the structural gate instead of symbol lookup.
+    bad = @slic (;) begin
+        z = 1 < 2 && 2 < 3
+        y ~ normal(z, 1.0)
+    end
+    bad_error = try
+        stan_code(bad)
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test bad_error !== nothing
+    @test occursin("`&&` control flow is not supported in @slic model bodies", bad_error)
+    @test !occursin("Could not find &&", bad_error)
 end
 
 """
 Verify scalar-array elementwise arithmetic against the shipped generalized lowering.
 """
-@testitem "slic: scalar-array elementwise arithmetic" tags=[:slic, :regression, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: scalar-array elementwise arithmetic" tags=[:slic, :regression, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Array-operand elementwise arithmetic on scalar arrays (`array[] int` /
     # `array[] real`) lowers to the `jbroadcasted` element loop and preserves
     # the element kind (int → array[] int, real → vector). Guarded by stanc,
@@ -1777,7 +4138,7 @@ end
 """
 Verify `issue17` in an isolated test item.
 """
-@testitem "issue17" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue17" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;n=10, y=1.) begin
         x ~ issue17(;n)
         y ~ simple(x)
@@ -1787,7 +4148,7 @@ end
 """
 Verify `issue18` in an isolated test item.
 """
-@testitem "issue18" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue18" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;n=10, y=1.) begin
         x ~ issue18(;n)
         y ~ simple(x)
@@ -1797,7 +4158,7 @@ end
 """
 Verify `issue19` in an isolated test item.
 """
-@testitem "issue19" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue19" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;n=10, y=1.) begin
         x ~ sm19a(;n)
         y ~ simple(x)
@@ -1811,7 +4172,7 @@ end
 """
 Verify `issue20` in an isolated test item.
 """
-@testitem "issue20" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "issue20" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(m20.model(;n=10))
     @test stanc_compiles(m20.modela(;n=10))
     @test stanc_compiles(m20.modelb(;n=10))
@@ -1874,7 +4235,7 @@ end
 """
 Verify `partly-missing: vector dist arg (regression check)` in an isolated test item.
 """
-@testitem "partly-missing: vector dist arg (regression check)" tags=[:slic, :regression, :missing, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "partly-missing: vector dist arg (regression check)" tags=[:slic, :regression, :missing, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # This exercises the getindex branch of maybe_index — previously broken
     # because the node was built with Symbol :getindex instead of Function.
     m = @slic (;x=collect(1.:6.), y=[1., missing, 3., missing, 5., missing]) begin
@@ -1912,7 +4273,7 @@ end
 """
 Verify `partly-missing: regression — all-observed vector unaffected` in an isolated test item.
 """
-@testitem "partly-missing: regression — all-observed vector unaffected" tags=[:slic, :regression, :missing] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "partly-missing: regression — all-observed vector unaffected" tags=[:slic, :regression, :missing, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test stanc_compiles(@slic (;y=[1.0, 2.0, 3.0]) begin
         mu    ~ normal(0., 10.)
         sigma ~ gamma(2., 1.)
@@ -2018,7 +4379,7 @@ end
 """
 Verify `slic: standalone bare typed model parameters` in an isolated test item.
 """
-@testitem "slic: standalone bare typed model parameters" tags=[:slic, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: standalone bare typed model parameters" tags=[:slic, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     y = [0.2, -0.1, 0.4]
     model = @slic (;y) begin
         alpha::real
@@ -2177,6 +4538,22 @@ Verify `shapes: matrix creation` in an isolated test item.
         @test check_type(model, :A, "matrix")
         @test stanc_compiles(model)
     end
+    @testset "csr_matrix_times_vector(m,n,w,v,u,b) :: vector[m]" begin
+        # A*b for a sparse m x n matrix A in compressed-row form. Here a 3x4
+        # banded basis (spline-Rt shape): row i has cols (i, i+1) each 0.5.
+        model = @slic (;
+            w = [0.5,0.5, 0.5,0.5, 0.5,0.5],  # nonzero values (nnz=6)
+            v = [1,2, 2,3, 3,4],              # 1-based column indices
+            u = [1,3,5,7],                    # 1-based row pointers (rows+1)
+            y = [0.1, 0.2, 0.3], n_days = 3, n_basis = 4,
+        ) begin
+            beta :: vector[n_basis] ~ std_normal()
+            log_rt = csr_matrix_times_vector(n_days, n_basis, w, v, u, beta)
+            y ~ normal(log_rt, 0.1)
+        end
+        @test check_type(model, :log_rt, "vector")
+        @test stanc_compiles(model)
+    end
 end
 
 """
@@ -2195,6 +4572,23 @@ Verify `shapes: conversions` in an isolated test item.
         model = @slic (;x=randn(5)) begin rv = to_row_vector(x) end
         @test transpiles(model)
         @test check_type(model, :rv, "row_vector")
+    end
+    @testset "to_int(x::real) :: int and to_int(x::real[n]) :: int[n]" begin
+        # Data-side real->int (e.g. dPCR partition counts). Stan's `to_int`
+        # requires a data-qualified argument; a deterministic function of data
+        # lands in `transformed data`, so the contract is satisfied.
+        scalar = @slic (;conc=5.7, obs=0.) begin
+            n_pos = to_int(round(conc))
+            obs   ~ normal(0.1 * n_pos, 1.)
+        end
+        @test occursin(r"\bint n_pos\b", stan_code(scalar))
+        @test stanc_compiles(scalar)
+        arr = @slic (;concs=[5.7, 2.3, 8.9], obs=0.) begin
+            counts = to_int(round(to_array_1d(concs)))
+            obs    ~ normal(0.1 * sum(counts), 1.)
+        end
+        @test occursin(r"\barray\[[^\]]*\] int counts\b", stan_code(arr))
+        @test stanc_compiles(arr)
     end
 end
 
@@ -2239,6 +4633,38 @@ Verify `shapes: append functions` in an isolated test item.
         end
         @test check_type(model, :v3, "vector")
         @test stanc_compiles(model)
+    end
+    @testset "append_col(r1::row_vector[m], r2::row_vector[n]) :: row_vector[m+n]" begin
+        # Two row_vectors concatenate COLUMN-wise into a longer row_vector, NOT
+        # a matrix (that would be append_row's row-stacking). Regression for the
+        # grey-seal IPM `multinomial_allocation` chain: reference_logit[1] ++
+        # logits[3] -> row_vector[4], then softmax(logits')' back to row_vector.
+        model = @slic (;m=1, n=3, obs=randn(4)) begin
+            r1     = rep_row_vector(0., m)
+            r2     = rep_row_vector(1., n)
+            logits = append_col(r1, r2)
+            alloc  = softmax(logits')'
+            obs   ~ normal(alloc', 1.)
+        end
+        @test check_type(model, :logits, "row_vector")
+        @test check_type(model, :alloc, "row_vector")
+        @test stanc_compiles(model)
+    end
+    @testset "append_col(r::row_vector[n], x::real) / (x::real, r::row_vector[n]) :: row_vector[n+1]" begin
+        append_model = @slic (;n=3, obs=randn(4)) begin
+            r   = rep_row_vector(0., n)
+            r2  = append_col(r, 1.)
+            obs ~ normal(r2', 1.)
+        end
+        @test check_type(append_model, :r2, "row_vector")
+        @test stanc_compiles(append_model)
+        prepend_model = @slic (;n=3, obs=randn(4)) begin
+            r   = rep_row_vector(0., n)
+            r2  = append_col(1., r)
+            obs ~ normal(r2', 1.)
+        end
+        @test check_type(prepend_model, :r2, "row_vector")
+        @test stanc_compiles(prepend_model)
     end
 end
 
@@ -2380,7 +4806,7 @@ end
 """
 Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolated test item.
 """
-@testitem "slic: scalar-array elementwise broadcasting (jbroadcasted)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: scalar-array elementwise broadcasting (jbroadcasted)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Generalised trace-level `jbroadcasted` (f4b601f): elementwise arithmetic on
     # scalar arrays (`array[] int` / `array[] real` — what a `Vector{Int}` /
     # `Vector{Float64}` data input becomes; NOT a native `vector`) has no Stan
@@ -2484,7 +4910,7 @@ Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolat
     end
 end
 
-@testitem "slic: boolean-mask indexing via comparison broadcast + findall" tags=[:slic, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: boolean-mask indexing via comparison broadcast + findall" tags=[:slic, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Stan has no boolean-mask indexing (`v[mask]`). Instead, element-wise
     # comparison on a DATA scalar array (`cmt .== 1`, cmt an `array[] int`) lowers
     # via `jbroadcasted` to a 0/1 `array[] int` mask, and `findall(mask)`
@@ -2588,7 +5014,7 @@ end
 """
 Verify `slic: bounded one-dimensional @deffun comprehensions` in an isolated test item.
 """
-@testitem "slic: bounded one-dimensional @deffun comprehensions" tags=[:slic, :shapes, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: bounded one-dimensional @deffun comprehensions" tags=[:slic, :shapes, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @testset "canonicalization preserves the comprehension/generator structure" begin
         c = StanBlocks.stan.canonical(Meta.parse("[x[i] * x[i] for i in 1:n]"))
         @test c isa StanBlocks.stan.ComprehensionExpr
@@ -2770,7 +5196,7 @@ Verify the enumerate/zip/N-D/nested iteration-protocol extensions (devibe
 `@deffun` bodies, gated on `stanc_compiles` with BridgeStan lp/gradient spot
 checks, plus the 3-D and flattened-generator rejections.
 """
-@testitem "slic: enumerate / zip / N-D comprehension iteration" tags=[:slic, :shapes, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: enumerate / zip / N-D comprehension iteration" tags=[:slic, :shapes, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     iter_error(f) = try (f(); nothing) catch e sprint(showerror, e) end
 
     @testset "enumerate binds (index, element)" begin
@@ -2882,7 +5308,7 @@ end
 Verify `return_type_of(f, args...)` exposes the existing SLIC inference table
 both as a direct public query and as a computed `@deffun` type annotation.
 """
-@testitem "slic: public return_type_of transpile-time query" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: public return_type_of transpile-time query" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     scalar_rt = return_type_of(return_type_scalar, 1.0)
     vector_rt = return_type_of(return_type_vector, [1.0, 2.0, 3.0])
 
@@ -2911,7 +5337,7 @@ end
 """
 Verify `slic: computed type annotations (@deffun container inference)` in an isolated test item.
 """
-@testitem "slic: computed type annotations (@deffun container inference)" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: computed type annotations (@deffun container inference)" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # `@deffun` accepts a COMPUTED type annotation — `typeof(f(x[1]))[dims]` — in
     # both a body decl (`umap`) and the `::ret` position (`umap_r`). The output
     # container is INFERRED from `f`'s per-element return type: a `real` element →
@@ -2982,7 +5408,7 @@ end
 """
 Verify `slic: typed assignment compatibility` in an isolated test item.
 """
-@testitem "slic: typed assignment compatibility" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: typed assignment compatibility" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     good = @slic (;x=[1.0, 2.0, 3.0], ii=[1, 2, 3]) begin
         # Known-value equality: the literal 3 matches the data-size symbol x_n.
         direct::vector[3] = x
@@ -3031,7 +5457,66 @@ Verify `slic: typed assignment compatibility` in an isolated test item.
     @test occursin("dimension 1", dim_err)
 end
 
-@testitem "slic: typed assignment sized from a non-first signature arg" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: integer-literal @deffun arg dimensions lower like symbolic dims" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # A `@deffun` argument declared with an integer-literal dimension
+    # (`litdim_scale(x::vector[4])`) must macro-expand and lower exactly like the
+    # symbolic `symdim_scale(x::vector[n])`. Before the `ensure_xlhs(::Integer)`
+    # method in functions.jl, the literal dim threw `MethodError:
+    # ensure_xlhs(::Int64; hidden=…)` at macro-expansion (the `make_deconstruct`
+    # arg-shape deconstruction).
+    litdim = @slic (; x = [1.0, 2.0, 3.0, 4.0]) begin
+        y = litdim_scale(x)
+        mu ~ normal(sum(y), 1.0)
+        mu
+    end
+    symdim = @slic (; x = [1.0, 2.0, 3.0, 4.0]) begin
+        y = symdim_scale(x)
+        mu ~ normal(sum(y), 1.0)
+        mu
+    end
+    @test transpiles(litdim)
+    @test stanc_compiles(litdim)
+    # The literal-dim UDF emits Stan byte-identical to the symbolic one modulo
+    # the function name — the whole point of admitting the literal dimension.
+    normname(code) = replace(code, "litdim_scale" => "F", "symdim_scale" => "F")
+    @test normname(stan_code(litdim)) == normname(stan_code(symdim))
+end
+
+@testitem "slic: @deffun nested array-of-matrix signatures" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    x = reshape(collect(1.0:6.0), 2, 3)
+    result = nested_matrix_result(x)
+    @test size(result) == (2, 2, 3)
+    @test result[1, :, :] == x
+    @test result[2, :, :] == x
+
+    nested = reshape(collect(1.0:48.0), 2, 2, 3, 4)
+    @test nested_matrix_input(nested) == sum(nested[1, 1, :, :])
+
+    function synthetic_arg(name, center, sizes)
+        dims = map(sizes) do size
+            StanBlocks.StanExpr(size, StanBlocks.StanType(StanBlocks.types.int))
+        end
+        StanBlocks.StanExpr(name, StanBlocks.StanType(center, Tuple(dims)))
+    end
+    function stan_render(value)
+        io = IOBuffer()
+        show(StanBlocks.StanIO(io), value)
+        String(take!(io))
+    end
+
+    matrix_arg = synthetic_arg(:x, StanBlocks.types.matrix, (:n, :j))
+    nested_arg = synthetic_arg(:x, StanBlocks.types.matrix, (:m, :two, :n, :j))
+    result_udf = stan_render(StanBlocks.fundef(StanBlocks.CanonicalExpr(nested_matrix_result, matrix_arg)))
+    input_udf = stan_render(StanBlocks.fundef(StanBlocks.CanonicalExpr(nested_matrix_input, nested_arg)))
+    @test occursin("array[] matrix nested_matrix_result(", result_udf)
+    @test occursin("real nested_matrix_input(array[, ] matrix x)", input_udf)
+
+    code = "functions {\n$result_udf\n$input_udf\n}\nmodel {}\n"
+    checked = stanc_check(code; warn_pedantic=false)
+    @test checked.ok
+end
+
+@testitem "slic: typed assignment sized from a non-first signature arg" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Regression for the signature-dimension alias gap: the all-vector `_rng`
     # idiom `draws::vector[n] = to_vector(normal_rng(loc, scale))` infers its size
     # from `scale` — the SECOND `vector[n]` arg — and the alias table used to
@@ -3089,7 +5574,7 @@ end
     @test !occursin(r"!= anontok__\d+\) reject", tok_code)
 end
 
-@testitem "slic: bare whole-vector local (broadcast RHS) emits unquoted size" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: bare whole-vector local (broadcast RHS) emits unquoted size" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Regression for the inferred whole-vector-local snag: a bare (un-annotated)
     # intermediate local whose RHS is a broadcast must emit a VALID unquoted size
     # `vector[dims(a)[1]]`, not the invalid quoted `vector["dims(a)[1]"]` that
@@ -3115,9 +5600,16 @@ end
     @test transpiles(multi)
     @test stanc_compiles(multi)
     @test !occursin("\"dims(", stan_code(multi))
+    # A 3-site shared dim: each equal-size reject names the inference source
+    # (`a`) and lists ALL three sizes (user request 2026-08-14).
+    multi_functions = stan_block(stan_code(multi), "functions")
+    @test occursin("inferred from `a` dim 1", multi_functions)
+    @test occursin("`n` sizes: `a` dim 1 (= ", multi_functions)
+    @test occursin(", `b` dim 1 (= ", multi_functions)
+    @test occursin(", `c` dim 1 (= ", multi_functions)
 end
 
-@testitem "slic: composite return type deanonymizes nested element sizes" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: composite return type deanonymizes nested element sizes" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Regression for the leaked-gensym snag: a `@deffun` returning a (named)
     # tuple whose ELEMENT sizes are calls over its own params. Those sizes live
     # in the type's `info.arg_types`; the tup/ntup's own `stan_size` is empty, so
@@ -3150,7 +5642,7 @@ end
 """
 Verify `slic: jmap (inference-driven element-wise map)` in an isolated test item.
 """
-@testitem "slic: jmap (inference-driven element-wise map)" tags=[:slic, :shapes] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: jmap (inference-driven element-wise map)" tags=[:slic, :shapes, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # `jmap(f, x::anything[n])` maps `f` over `x`, inferring the output CONTAINER
     # from `f`'s per-element return type (`typeof(f(x[1]))`): a `real`-returning
     # `f` → `vector[n]`, an `int`-returning `f` → `array[] int`. ONE definition
@@ -3345,7 +5837,7 @@ end
 """
 Verify `slic: compiler-injected fresh-result slice-fills (case-3)` in an isolated test item.
 """
-@testitem "slic: compiler-injected fresh-result slice-fills (case-3)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: compiler-injected fresh-result slice-fills (case-3)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # PARAM input: fresh result filled from a parameter → transformed parameters.
     param_model = @slic (;y=randn(3)) begin
         x ~ std_normal(;n=3)
@@ -3415,7 +5907,7 @@ end
 """
 Verify `slic: ragged lowering adopts a bare free parameter` in an isolated test item.
 """
-@testitem "slic: ragged lowering adopts a bare free parameter" tags=[:slic, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ragged lowering adopts a bare free parameter" tags=[:slic, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     ragged_model = @slic (;Ks=[2, 3], y=0.2) begin
         p::simplex[Ks] ~ flat()
         y ~ normal(sum(p[1]), 1.0)
@@ -3490,7 +5982,7 @@ end
 """
 Verify `slic: compiler-injected for-loop + range fresh-result fills (case-3 C.1/C.2)` in an isolated test item.
 """
-@testitem "slic: compiler-injected for-loop + range fresh-result fills (case-3 C.1/C.2)" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: compiler-injected for-loop + range fresh-result fills (case-3 C.1/C.2)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # C.1 PARAM: for-loop fresh fill from a parameter → loop+decl+bind in transformed parameters.
     forfill_param = @slic (;y=randn(3)) begin
         x ~ std_normal(;n=3)
@@ -3542,7 +6034,7 @@ end
 """
 Verify `slic: mixed sampling/fill routing in compiler-owned plate loop` in an isolated test item.
 """
-@testitem "slic: mixed sampling/fill routing in compiler-owned plate loop" tags=[:slic, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: mixed sampling/fill routing in compiler-owned plate loop" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(c3_plate_router_model)
     @test stanc_compiles(c3_plate_router_model)
     code = stan_code(c3_plate_router_model)
@@ -3576,9 +6068,70 @@ Verify `slic: mixed sampling/fill routing in compiler-owned plate loop` in an is
 end
 
 """
+Regression (snag plate-untyped-ve-819ecfff): an UNTYPED fresh `~` cell whose
+ELEMENTWISE family broadcasts over vector-shaped arguments
+(`yj ~ normal(hvec, 1.0)`, `hvec::vector[T]`) infers a `vector[T]` sampled shape
+— identical to the typed `yj::vector[T]` spelling and to the joint families
+(`multi_normal`/`dirichlet`), instead of being mis-typed SCALAR and silently
+emitting stanc-invalid Stan wherever consumed. Guards both the plate collection
+and a consumed top-level binding, plus the non-regression of scalar-argument and
+scalar-sample (`categorical`) families.
+"""
+@testitem "slic: untyped vector-shaped elementwise ~ infers the broadcast shape" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # 1. Plate, prior-only: untyped cell collects as matrix[T, S] and stanc-passes,
+    #    byte-identically to the typed spelling (the annotation was purely ergonomic).
+    untyped = @slic (; S = 3, T = 4) begin
+        hvec ~ normal(0.0, 1.0; n = T)
+        yy ~ plate(; outer = (S,)) do j
+            yj ~ normal(hvec, 1.0)
+            yj
+        end
+    end
+    typed = @slic (; S = 3, T = 4) begin
+        hvec ~ normal(0.0, 1.0; n = T)
+        yy ~ plate(; outer = (S,)) do j
+            yj::vector[T] ~ normal(hvec, 1.0)
+            yj
+        end
+    end
+    @test transpiles(untyped)
+    @test stanc_compiles(untyped)
+    @test stan_code(untyped) == stan_code(typed)
+    @test occursin("matrix[T, S] yy_yj", stan_code(untyped))
+
+    # 2. Top-level, consumed downstream (yj reaches a likelihood → a vector param).
+    toplevel = @slic (; T = 4, w = 0.5) begin
+        hvec ~ normal(0.0, 1.0; n = T)
+        yj ~ normal(hvec, 1.0)
+        w ~ normal(sum(yj), 1.0)
+    end
+    @test transpiles(toplevel)
+    @test stanc_compiles(toplevel)
+    @test occursin(r"vector\[T\] yj", stan_block(stan_code(toplevel), "parameters"))
+
+    # 3. No over-widening: a scalar-argument family stays scalar.
+    scalar = @slic (;) begin
+        z ~ normal(0.0, 1.0)
+        return z
+    end
+    @test stanc_compiles(scalar)
+    @test occursin("real z", stan_code(scalar))
+
+    # 4. No false-widening: `categorical` samples a scalar `int` from a vector
+    #    argument — only the DRAW shape drives inference, not an argument's shape.
+    cat = @slic (; K = 3) begin
+        theta::simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        c ~ categorical(theta)
+        return c
+    end
+    @test stanc_compiles(cat)
+    @test occursin("int c", stan_code(cat))
+end
+
+"""
 Verify `slic: public plate() do-block emitter` in an isolated test item.
 """
-@testitem "slic: public plate() do-block emitter" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: public plate() do-block emitter" tags=[:slic, :plate, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # 1. Scalar-per-cell plate with a live per-cell likelihood → vector result.
     doblock = @slic (; y = randn(6), mu0 = 0.5) begin
         sigma ~ normal(0.0, 1.0; lower = 0.0)
@@ -3594,15 +6147,21 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
         params = stan_block(code, "parameters")
         @test occursin("vector[6] theta_t", params)    # fresh cell-local, namespaced under `theta`
         @test occursin(r"real<lower=0\.0> sigma", params)
-        @test !occursin("theta;", params)              # theta is a TP fill, not a param (theta_t is the cell)
-        tp = stan_block(code, "transformed parameters")
-        @test occursin("vector[6] theta", tp)
-        @test occursin(r"theta\[plate_i\w*\] = theta_t\[plate_i", tp)
+        @test !occursin("theta;", params)              # theta is a fill, not a param (theta_t is the cell)
+        # Nothing downstream consumes `theta`, so its return fill is a prior-only
+        # assignment: it lands in generated quantities (off the gradient tape),
+        # exactly as an unconsumed whole-variable assignment would — the
+        # per-cell sample it reads is a parameter regardless (the likelihood
+        # reaches it), and generated quantities can read parameters.
+        @test strip(stan_block(code, "transformed parameters")) == "{\n}"
+        gq = stan_block(code, "generated quantities")
+        @test occursin("vector[6] theta;", gq)
+        @test occursin(r"theta\[plate_i\w*\] = theta_t\[plate_i", gq)
         mb = stan_block(code, "model")
         @test occursin(r"theta_t\[plate_i\w*\] ~ normal\(mu0", mb)
         @test occursin(r"y\[plate_i\w*\] ~ normal\(theta_t\[plate_i", mb)
     end
-    # sampler dims = sigma + t[6]; theta is a deterministic TP fill, not a dim.
+    # sampler dims = sigma + t[6]; theta is a deterministic fill, not a dim.
     @test LogDensityProblems.dimension(instantiate(doblock)) == 7
 
     # 2. Vector-per-cell plate (BRM #1): typed fresh `vector[K]` param + typed
@@ -3610,7 +6169,7 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
     vec_cell = @slic (; n_series = 8) begin
         L::cholesky_factor_corr[6] ~ lkj_corr_cholesky(2.0)   # shared, captured
         tau::vector[6] ~ normal(0.0, 1.0; lower = 0.0)        # shared, captured
-        b::vector[6] ~ plate(; outer = (n_series,)) do s
+        b::matrix[6, n_series] ~ plate(; outer = (n_series,)) do s
             z::vector[6] ~ std_normal()                       # fresh per-cell vector
             diag_pre_multiply(tau, L) * z                     # vector[6] cell output
         end
@@ -3618,59 +6177,74 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
     @test transpiles(vec_cell)
     @test stanc_compiles(vec_cell)
     let code = stan_code(vec_cell)
-        params = stan_block(code, "parameters")
-        @test occursin("matrix[6, n_series] b_z", params)     # per-cell vector → matrix column
-        tp = stan_block(code, "transformed parameters")
-        @test occursin("matrix[6, n_series] b", tp)
+        # No likelihood anywhere: a prior-predictive program. The shared `L`/`tau`
+        # draws, the hoisted invariant, the per-column cell re-draw and the
+        # collected `b` all lower to generated quantities; nothing is sampled.
+        @test strip(stan_block(code, "parameters")) == "{\n}"
+        @test strip(stan_block(code, "transformed parameters")) == "{\n}"
+        @test strip(stan_block(code, "model")) == "{\n}"
+        gq = stan_block(code, "generated quantities")
+        @test occursin("matrix[6, n_series] b_z;", gq)         # per-cell vector → matrix column
+        @test occursin("matrix[6, n_series] b;", gq)
+        @test occursin("vector[6] tau = lower_conditioning_vector_normal_rng(6, 0.0, 0.0, 1.0);", gq)
         # LICM: `diag_pre_multiply(tau, L)` does not depend on the cell, so the
         # emitter binds it ONCE before the compiler-owned loop rather than
-        # re-evaluating (and re-AD-taping) it per cell. Snag
+        # re-evaluating it per cell — in whichever block the plate lands. Snag
         # benchmarked-brm-20aa0361 measured ~2x per-gradient on a 1000-group
-        # correlated random effect purely from where this landed.
-        @test occursin(r"matrix\[6, 6\] b__pl_inv\d+_\d+ = diag_pre_multiply\(tau, L\);", tp)
-        @test occursin(r"b\[:, plate_i\w*\] = \(b__pl_inv\d+_\d+ \* b_z\[:, plate_i", tp)
+        # correlated random effect purely from where this landed (the fitted
+        # case is pinned by `slic: plate hoists loop-invariant cell-body
+        # expressions`).
+        @test occursin(r"matrix\[6, 6\] b__pl_inv\d+_\d+ = diag_pre_multiply\(tau, L\);", gq)
+        @test occursin(r"b\[:, plate_i\w*\] = \(b__pl_inv\d+_\d+ \* b_z\[:, plate_i", gq)
         # …and the loop itself is left with no copy of the invariant.
-        let li = findfirst("for(", tp)
-            @test li !== nothing && !occursin("diag_pre_multiply", tp[first(li):end])
+        let li = findfirst("for(", gq)
+            @test li !== nothing && !occursin("diag_pre_multiply", gq[first(li):end])
         end
-        mb = stan_block(code, "model")
-        @test occursin(r"b_z\[:, plate_i\w*\] ~ std_normal\(\)", mb)  # sampled per column
-        @test !occursin("b[:", mb)                            # the b fill is NOT in model
+        @test occursin(r"b_z\[:, plate_i\w*\] = std_normal_vector_rng\(6\);", gq)  # re-drawn per column
     end
+    @test LogDensityProblems.dimension(instantiate(vec_cell)) == 0
 
-    # 3. fspmjv regression: a FULLY prior-only dead plate (no likelihood anywhere
-    #    AND its output unused) must keep its fresh per-cell samples as PARAMETERS
-    #    (not prior-only-lowered to generated quantities), so the transformed-
-    #    parameters return-fill stays in scope. Before aef6a42 this emitted
-    #    invalid Stan — stanc: "Identifier w not in scope". `stanc_compiles`
-    #    is the guard that actually catches that regression.
+    # 3. A FULLY prior-only dead plate (no likelihood anywhere AND its output
+    #    unused) is a prior-predictive program: the WHOLE plate — its fresh
+    #    per-cell sample, the collected result and the compiler-owned loop — lowers
+    #    to generated quantities together with everything it reads, so
+    #    `parameters {}` and `model {}` are EMPTY and the program is a
+    #    `fixed_param` simulator. Two earlier states of this test are history:
+    #    before aef6a42 the sample was GQ-lowered while the return fill stayed in
+    #    transformed parameters (stanc: "Identifier w not in scope"); aef6a42 then
+    #    pinned the sample as a PARAMETER instead, which made a likelihood-free
+    #    program sample its prior with NUTS (snag prior-predictive-7e463983). The
+    #    fill now follows its sources to GQ. `stanc_compiles` guards the scope
+    #    half; the block assertions guard the routing half.
     priordead = @slic (;) begin
         tau ~ normal(0.0, 1.0; lower = 0.0)
         z ~ plate(; outer = (4,)) do i
-            w ~ normal(0.0, tau)              # fresh per-cell param — MUST stay a parameter
-            w                                 # cell output → z[i] (transformed parameters)
+            w ~ normal(0.0, tau)              # fresh per-cell param — re-drawn in GQ
+            w                                 # cell output → z[i] (also GQ)
         end
     end
     @test transpiles(priordead)
     @test stanc_compiles(priordead)
     let code = stan_code(priordead)
-        params = stan_block(code, "parameters")
-        @test occursin("vector[4] z_w", params)             # w stays a PARAMETER (the fix), namespaced under `z`
-        @test occursin(r"real<lower=0\.0> tau", params)
-        tp = stan_block(code, "transformed parameters")
-        @test occursin("vector[4] z", tp)
-        @test occursin(r"z\[plate_i\w*\] = z_w\[plate_i", tp)
-        # The bug: w was RNG-lowered to generated quantities while z (TP) still
-        # referenced it. Guard both the decl and the RNG draw are absent from GQ.
+        @test strip(stan_block(code, "parameters")) == "{\n}"
+        @test strip(stan_block(code, "transformed parameters")) == "{\n}"
+        @test strip(stan_block(code, "model")) == "{\n}"
         gq = stan_block(code, "generated quantities")
-        @test !occursin("w", gq)
+        # tau's USER bound is a truncation of its prior: the re-draw goes through
+        # the `truncated` rejection sampler, never a bare `normal_rng(0, 1)`.
+        @test occursin("real tau = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+        @test occursin("vector[4] z_w;", gq)
+        @test occursin("vector[4] z;", gq)
+        @test occursin(r"z_w\[plate_i\w*\] = normal_rng\(0\.0, tau\);", gq)
+        @test occursin(r"z\[plate_i\w*\] = z_w\[plate_i", gq)
     end
-    # dim = tau + w[4] = 5 (w is a real sampler dim; z is a deterministic TP fill).
-    @test LogDensityProblems.dimension(instantiate(priordead)) == 5
+    # Zero sampler dimensions: the whole program is generated quantities.
+    @test LogDensityProblems.dimension(instantiate(priordead)) == 0
 
-    # 4. Control for fspmjv: the moment the plate output feeds a likelihood, the
-    #    fresh sample is naturally a parameter and TP is valid — confirms the
-    #    fspmjv fix did not disturb the common (non-dead) path.
+    # 4. Control: the moment the plate output feeds a likelihood, the fresh
+    #    sample is a parameter and the return fill lands in transformed
+    #    parameters — the prior-only lowering above does not disturb the common
+    #    (non-dead) path.
     priorlive = @slic (; obs = randn(4)) begin
         tau ~ normal(0.0, 1.0; lower = 0.0)
         z ~ plate(; outer = (4,)) do i
@@ -3687,6 +6261,145 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
         @test occursin(r"obs ~ normal\(z", stan_block(code, "model"))
     end
     @test LogDensityProblems.dimension(instantiate(priorlive)) == 5
+end
+
+"""
+An ODE solver returns `array[] vector`. Plate collects that deterministic local
+with the plate axes prepended, then indexes those axes to recover the original
+trajectory inside the cell before selecting a state.
+"""
+@testitem "slic: plate collects an ODE array-vector cell local" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    @deffun plate_array_vector_rhs(t::real, y::vector[ny], ke::real)::vector[ny] = begin
+        dy::vector[ny]
+        dy[1] = -ke * y[1]
+        dy
+    end
+
+    data = (; ts = [0.5, 1.0], obs = [0.55, 0.35])
+    raw_local = @slic data begin
+        ke ~ lognormal(0.0, 0.5)
+        pred ~ plate(; outer = 2) do i
+            pd_pred_trajectory = ode_rk45_tol(
+                plate_array_vector_rhs,
+                rep_vector(1.0 * i, 1),
+                0.0,
+                to_array_1d(ts),
+                1.0e-6,
+                1.0e-6,
+                100_000,
+                ke,
+            )
+            selected = to_vector(pd_pred_trajectory[:, 1])
+            obs[i] ~ normal(selected[1], 0.1)
+            selected
+        end
+    end
+    @test transpiles(raw_local)
+    @test stanc_compiles(raw_local)
+    raw_code = stan_code(raw_local)
+    raw_tp = stan_block(raw_code, "transformed parameters")
+    @test occursin("array[2, ts_n] vector[1] pred_pd_pred_trajectory;", raw_tp)
+    @test occursin(r"pred_pd_pred_trajectory\[plate_i__pl_\d+\] = ode_rk45_tol\(", raw_tp)
+    @test occursin(r"to_vector\(pred_pd_pred_trajectory\[plate_i__pl_\d+\]\[:, 1\]\)", raw_code)
+
+    raw_result = @slic data begin
+        ke ~ lognormal(0.0, 0.5)
+        trajectories ~ plate(; outer = 2) do i
+            ode_rk45_tol(
+                plate_array_vector_rhs,
+                rep_vector(1.0 * i, 1),
+                0.0,
+                to_array_1d(ts),
+                1.0e-6,
+                1.0e-6,
+                100_000,
+                ke,
+            )
+        end
+        obs ~ normal(to_vector(trajectories[1][:, 1]), 0.1)
+    end
+    @test transpiles(raw_result)
+    @test stanc_compiles(raw_result)
+    @test occursin(
+        "array[2, ts_n] vector[1] trajectories;",
+        stan_block(stan_code(raw_result), "transformed parameters"),
+    )
+
+    multi_axis = @slic (; ts = data.ts) begin
+        ke ~ lognormal(0.0, 0.5)
+        pred ~ plate(; outer = (2, 2)) do i, j
+            trajectory = ode_rk45_tol(
+                plate_array_vector_rhs,
+                rep_vector(1.0 * (i + j), 1),
+                0.0,
+                to_array_1d(ts),
+                1.0e-6,
+                1.0e-6,
+                100_000,
+                ke,
+            )
+            to_vector(trajectory[:, 1])
+        end
+    end
+    @test transpiles(multi_axis)
+    @test stanc_compiles(multi_axis)
+    # Likelihood-free, so the carrier fill routes to generated quantities
+    # (§28: the return fill lands where a likelihood can read it, else GQ).
+    @test occursin(
+        "array[2, 2, ts_n] vector[1] pred_trajectory;",
+        stan_block(stan_code(multi_axis), "generated quantities"),
+    )
+
+    inline_selection = @slic data begin
+        ke ~ lognormal(0.0, 0.5)
+        pred ~ plate(; outer = 2) do i
+            selected = to_vector(ode_rk45_tol(
+                plate_array_vector_rhs,
+                rep_vector(1.0 * i, 1),
+                0.0,
+                to_array_1d(ts),
+                1.0e-6,
+                1.0e-6,
+                100_000,
+                ke,
+            )[:, 1])
+            obs[i] ~ normal(selected[1], 0.1)
+            selected
+        end
+    end
+    @test transpiles(inline_selection)
+    @test stanc_compiles(inline_selection)
+end
+
+@testitem "slic: plate context stops at registered UDF bodies" tags=[:slic, :plate, :ragged, :stanc, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    @test transpiles(c3_plate_udf_model)
+    @test stanc_compiles(c3_plate_udf_model)
+    code = stan_code(c3_plate_udf_model)
+
+    # UDF locals remain function-local.  Flattening the UDF into the plate cell
+    # would instead promote these names into outer per-cell storage.
+    functions = stan_block(code, "functions")
+    @test occursin("real log_CL = (log_Vc + log_k10);", functions)
+    @test occursin("vector[dims(x)[1]] locs = (x .* exp(log_CL));", functions)
+    @test !occursin("pk_loc_log_CL", code)
+    @test !occursin("pk_loc_locs", code)
+
+    # The source-level workaround does transpile, but changes the program: UDF
+    # locals become model outputs with per-cell storage.  Keep that measurable
+    # cost pinned so the supported form stays the registered UDF call.
+    @test transpiles(c3_plate_udf_flat_model)
+    flat_code = stan_code(c3_plate_udf_flat_model)
+    @test occursin("pk_loc_log_CL", flat_code)
+    @test occursin("pk_loc_locs", flat_code)
+
+    descriptor = stan_descriptor(c3_plate_udf_model; name=:plate_udf)
+    outputs = Dict(output.name => output for output in descriptor.outputs)
+    @test outputs[:ys_gen].source == :ys
+    @test outputs[:ys_likelihood].source == :ys
 end
 
 """
@@ -3708,26 +6421,33 @@ cell-invariant arguments, and their internal samples must nonetheless stay per-c
 (`vector[6] theta_cell_z`, `matrix[k, n] theta_cell_z`) — a `~`-bearing submodel call
 is never lifted, however invariant its arguments look.
 """
-@testitem "slic: plate hoists loop-invariant cell-body expressions" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: plate hoists loop-invariant cell-body expressions" tags=[:slic, :plate, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # 1. NON-CENTERED (BRM `ranef_correlated`): the scale is written inline in the
     #    cell body. It must be bound once before the loop, and the result must be
     #    indistinguishable from writing that binding by hand.
-    inline_nc = @slic (; n_terms = 3, n_groups = 5) begin
+    # Every model here observes `obs ~ normal(b[:, 1], 1.0)`: without a likelihood
+    # the whole plate is a prior-predictive program and lowers to generated
+    # quantities (the hoist included, off the tape), which is not what these
+    # transformed-parameters assertions are about.
+    obs3 = [0.1, -0.2, 0.3]
+    inline_nc = @slic (; n_terms = 3, n_groups = 5, obs = obs3) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
-        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+        b::matrix[n_terms, n_groups] ~ plate(; outer = (n_groups,)) do g
             z::vector[n_terms] ~ std_normal()
             diag_pre_multiply(tau, L) * z
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
-    hoisted_nc = @slic (; n_terms = 3, n_groups = 5) begin
+    hoisted_nc = @slic (; n_terms = 3, n_groups = 5, obs = obs3) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
         S = diag_pre_multiply(tau, L)                 # the hand-hoisted spelling
-        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+        b::matrix[n_terms, n_groups] ~ plate(; outer = (n_groups,)) do g
             z::vector[n_terms] ~ std_normal()
             S * z
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
     @test transpiles(inline_nc)
     @test stanc_compiles(inline_nc)
@@ -3749,23 +6469,25 @@ is never lifted, however invariant its arguments look.
     #    vector[n_terms]` carrier, so Stan pays the shared Cholesky log determinant
     #    once instead of once per group. The public plate result remains the same
     #    `matrix[n_terms,n_groups]`; only its internal sampled carrier changes.
-    inline_c = @slic (; n_terms = 3, n_groups = 5) begin
+    inline_c = @slic (; n_terms = 3, n_groups = 5, obs = obs3) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
-        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+        b::matrix[n_terms, n_groups] ~ plate(; outer = (n_groups,)) do g
             bc::vector[n_terms] ~ multi_normal_cholesky(rep_vector(0.0, n_terms), diag_pre_multiply(tau, L))
             bc
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
-    hoisted_c = @slic (; n_terms = 3, n_groups = 5) begin
+    hoisted_c = @slic (; n_terms = 3, n_groups = 5, obs = obs3) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
         mu0 = rep_vector(0.0, n_terms)
         S = diag_pre_multiply(tau, L)
-        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+        b::matrix[n_terms, n_groups] ~ plate(; outer = (n_groups,)) do g
             bc::vector[n_terms] ~ multi_normal_cholesky(mu0, S)
             bc
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
     @test transpiles(inline_c)
     @test stanc_compiles(inline_c)
@@ -3805,14 +6527,15 @@ is never lifted, however invariant its arguments look.
     # 4. PASS A: a cell-invariant ASSIGNMENT written inside the cell body is lifted
     #    WHOLE — one shared `matrix[n_terms, n_terms]`, not an `n_groups`-wide
     #    per-cell collection plus a fill loop.
-    passA = @slic (; n_terms = 3, n_groups = 5) begin
+    passA = @slic (; n_terms = 3, n_groups = 5, obs = obs3) begin
         L::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(2.0)
         tau::vector[n_terms] ~ normal(0.0, 1.0; lower = 0.0)
-        b::vector[n_terms] ~ plate(; outer = (n_groups,)) do g
+        b::matrix[n_terms, n_groups] ~ plate(; outer = (n_groups,)) do g
             S = diag_pre_multiply(tau, L)             # invariant, but written per-cell
             z::vector[n_terms] ~ std_normal()
             S * z
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
     @test transpiles(passA)
     @test stanc_compiles(passA)
@@ -3840,20 +6563,23 @@ is never lifted, however invariant its arguments look.
     # 6. The collapse is semantic, not "one sample + return" syntax alone.
     #    A cell-varying multivariate argument must keep the matrix carrier and
     #    indexed loop, and a vectorised UNIVARIATE family is outside this pass.
-    varying_mv = @slic (; scales = ones(4), n_terms = 2) begin
-        b::vector[n_terms] ~ plate(scales; outer = length(scales)) do s
+    obs2 = [0.1, -0.2]
+    varying_mv = @slic (; scales = ones(4), n_terms = 2, obs = obs2) begin
+        b::matrix[n_terms, length(scales)] ~ plate(scales; outer = length(scales)) do s
             bc::vector[n_terms] ~ multi_normal_cholesky(
                 rep_vector(0.0, n_terms),
                 diag_matrix(rep_vector(s, n_terms)),
             )
             bc
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
-    iid_uni = @slic (; n_groups = 4, n_terms = 2) begin
-        b::vector[n_terms] ~ plate(; outer = n_groups) do g
+    iid_uni = @slic (; n_groups = 4, n_terms = 2, obs = obs2) begin
+        b::matrix[n_terms, n_groups] ~ plate(; outer = n_groups) do g
             z::vector[n_terms] ~ normal(0.0, 1.0)
             z
         end
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
     for (m, carrier) in ((varying_mv, "b_bc"), (iid_uni, "b_z"))
         @test transpiles(m)
@@ -3868,16 +6594,17 @@ is never lifted, however invariant its arguments look.
     # 7. A plate inside a called submodel resolves its local dimensions and
     #    flattened names before the same vectorised sample is emitted at root.
     @slic centered_plate(k::int, n::int, mu::vector[k], S::matrix[k,k]) = begin
-        b::vector[k] ~ plate(; outer = n) do g
+        b::matrix[k, n] ~ plate(; outer = n) do g
             bc::vector[k] ~ multi_normal_cholesky(mu, S)
             bc
         end
         return b
     end
-    called = @slic (; n_terms = 2, n_groups = 4) begin
+    called = @slic (; n_terms = 2, n_groups = 4, obs = obs2) begin
         mu = rep_vector(0.0, n_terms)
         S::matrix[n_terms,n_terms] = diag_matrix(rep_vector(1.0, n_terms))
         b ~ centered_plate(n_terms, n_groups, mu, S)
+        obs ~ normal(b[:, 1], 1.0)                    # a likelihood keeps the plate on the gradient tape
     end
     @test transpiles(called)
     @test stanc_compiles(called)
@@ -3899,7 +6626,7 @@ carriers, not collide. Before the multiple-plate-l snag fix the second plate's
 discovery saw the first plate's leaked `z` and rejected `z ~ …` as "LHS bound to a
 parameter-qualified value". Regression for the BRM crossed-effects use case.
 """
-@testitem "slic: multiple plates reuse cell-local names hygienically" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: multiple plates reuse cell-local names hygienically" tags=[:slic, :plate, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # BRM crossed-effects shape: two grouping factors, each its own plate, both
     # using the natural fresh cell-local name `z`, then a JOINT likelihood.
     crossed = @slic (; y = [0.2, -0.1, 0.3, 0.0], subject = [1, 1, 2, 2], item = [1, 2, 1, 2]) begin
@@ -3973,7 +6700,7 @@ end
 """
 Verify `slic: public plate promotes called-submodel bindings` in an isolated test item.
 """
-@testitem "slic: public plate promotes called-submodel bindings" tags=[:slic, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: public plate promotes called-submodel bindings" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(c3_plate_submodel_model)
     @test stanc_compiles(c3_plate_submodel_model)
     code = stan_code(c3_plate_submodel_model)
@@ -3987,8 +6714,11 @@ Verify `slic: public plate promotes called-submodel bindings` in an isolated tes
     let tp = stan_block(code, "transformed parameters")
         @test occursin(r"theta_cell_shifted\[plate_i__pl_\d+\]\s*=", tp)
         @test occursin(r"theta_cell\[plate_i__pl_\d+\]\s*=", tp)
-        @test occursin(r"theta\[plate_i__pl_\d+\]\s*=\s*theta_cell\[plate_i__pl_\d+\]", tp)
+        # The collected `theta` feeds nothing (the likelihood reads the cell), so
+        # its return fill is prior-only and lands in generated quantities.
+        @test !occursin(r"theta\[plate_i__pl_\d+\]\s*=", tp)
     end
+    @test occursin(r"theta\[plate_i__pl_\d+\]\s*=\s*theta_cell\[plate_i__pl_\d+\]", stan_block(code, "generated quantities"))
     let model_block = stan_block(code, "model")
         @test occursin(r"theta_cell_z\[plate_i__pl_\d+\]\s*~\s*std_normal", model_block)
         @test occursin(r"y\[plate_i__pl_\d+\]\s*~\s*normal\(theta_cell\[plate_i__pl_\d+\]", model_block)
@@ -3997,27 +6727,45 @@ Verify `slic: public plate promotes called-submodel bindings` in an isolated tes
     @test transpiles(c3_plate_vector_submodel_model)
     @test stanc_compiles(c3_plate_vector_submodel_model)
     vector_code = stan_code(c3_plate_vector_submodel_model)
-    @test occursin("matrix[k, n] theta_cell_z", stan_block(vector_code, "parameters"))
-    @test occursin(r"theta_cell_z\[:, plate_i__pl_\d+\]\s*~\s*std_normal", stan_block(vector_code, "model"))
-    @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*theta_cell\[:, plate_i__pl_\d+\]", stan_block(vector_code, "transformed parameters"))
+    # This model has no likelihood at all: a prior-predictive program, so the
+    # promoted submodel vector parameter re-draws per column in generated
+    # quantities and the collected result is filled there too.
+    @test strip(stan_block(vector_code, "parameters")) == "{\n}"
+    @test strip(stan_block(vector_code, "model")) == "{\n}"
+    let gq = stan_block(vector_code, "generated quantities")
+        @test occursin("matrix[k, n] theta_cell_z", gq)
+        @test occursin(r"theta_cell_z\[:, plate_i__pl_\d+\]\s*=\s*std_normal_vector_rng\(k\)", gq)
+        @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*theta_cell\[:, plate_i__pl_\d+\]", gq)
+    end
+    # …and with a likelihood on the result it is the sampled matrix parameter.
+    vector_fit = Base.merge(c3_plate_vector_submodel_model, quote
+        obs ~ normal(theta[:, 1], 1.0)
+    end)(; obs = [0.1, -0.2])
+    let fit_code = stan_code(vector_fit)
+        @test occursin("matrix[k, n] theta_cell_z", stan_block(fit_code, "parameters"))
+        @test occursin(r"theta_cell_z\[:, plate_i__pl_\d+\]\s*~\s*std_normal", stan_block(fit_code, "model"))
+        @test occursin(r"theta\[:, plate_i__pl_\d+\]\s*=\s*theta_cell\[:, plate_i__pl_\d+\]", stan_block(fit_code, "transformed parameters"))
+    end
 end
 
 """
 Verify `slic: public plate emits N-dimensional outer loops` in an isolated test item.
 """
-@testitem "slic: public plate emits N-dimensional outer loops" tags=[:slic, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: public plate emits N-dimensional outer loops" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(c3_plate_outer_int_model)
     @test stanc_compiles(c3_plate_outer_int_model)
     int_code = stan_code(c3_plate_outer_int_model)
     @test occursin("vector[4] theta_z", stan_block(int_code, "parameters"))
-    @test occursin("vector[4] theta", stan_block(int_code, "transformed parameters"))
+    # The collected `theta` feeds no likelihood (the cell does), so its fill is a
+    # generated quantity in every shape below; the sample stays a parameter.
+    @test occursin("vector[4] theta;", stan_block(int_code, "generated quantities"))
     @test occursin(r"for\(plate_i__pl_\d+ in 1:4\)", stan_block(int_code, "model"))
 
     @test transpiles(c3_plate_outer_2d_scalar_model)
     @test stanc_compiles(c3_plate_outer_2d_scalar_model)
     scalar2_code = stan_code(c3_plate_outer_2d_scalar_model)
     @test occursin("matrix[2, 3] theta_z", stan_block(scalar2_code, "parameters"))
-    @test occursin("matrix[2, 3] theta", stan_block(scalar2_code, "transformed parameters"))
+    @test occursin("matrix[2, 3] theta;", stan_block(scalar2_code, "generated quantities"))
     let model_block = stan_block(scalar2_code, "model")
         @test occursin(r"for\(plate_i1__pl_\d+ in 1:2\)", model_block)
         @test occursin(r"for\(plate_i2__pl_\d+ in 1:3\)", model_block)
@@ -4029,7 +6777,7 @@ Verify `slic: public plate emits N-dimensional outer loops` in an isolated test 
     @test stanc_compiles(c3_plate_outer_2d_vector_model)
     vector2_code = stan_code(c3_plate_outer_2d_vector_model)
     @test occursin("array[3] matrix[k, 2] theta_z", stan_block(vector2_code, "parameters"))
-    @test occursin("array[3] matrix[k, 2] theta", stan_block(vector2_code, "transformed parameters"))
+    @test occursin("array[3] matrix[k, 2] theta;", stan_block(vector2_code, "generated quantities"))
     @test occursin(
         r"theta_z\[plate_i2__pl_\d+, :, plate_i1__pl_\d+\]\s*~\s*std_normal",
         stan_block(vector2_code, "model"),
@@ -4068,7 +6816,7 @@ end
 """
 Verify `slic: public plate emits heterogeneous vector cells` in an isolated test item.
 """
-@testitem "slic: public plate emits heterogeneous vector cells" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: public plate emits heterogeneous vector cells" tags=[:slic, :plate, :ragged, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     for model in (c3_plate_ragged_model, c3_plate_ragged_submodel_model)
         @test transpiles(model)
         @test stanc_compiles(model)
@@ -4092,6 +6840,96 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
     @test occursin(r"vector\[sum\(b_cell_z__pl_len_\d+\)\] b_cell_z__pl_mem_\d+", stan_block(called, "parameters"))
     @test occursin(r"(?s)b_cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", stan_block(called, "model"))
     @test occursin(r"(?s)b__pl_mem_\d+\[.*?\]\s*=\s*b_cell__pl_mem_\d+\[", stan_block(called, "transformed parameters"))
+
+    # Descriptor ownership is per emitted carrier, not per plate or first input:
+    # two named members may have different ragged axes, while dense members stay
+    # unsegmented.  The returned `b` follows the axis of the value it collects.
+    layouts = @slic (; K = [2, 3, 4], J = [1, 4, 2]) begin
+        b ~ plate(; outer = length(K)) do g
+            z::vector[K[g]] ~ std_normal()
+            w::vector[J[g]] ~ std_normal()
+            q ~ std_normal()
+            z
+        end
+    end
+    outputs = collect(stan_descriptor(layouts; name = :ragged_layouts).outputs)
+    carrier(stem) = only(filter(o -> startswith(string(o.name), stem * "__pl_mem_"), outputs))
+    @test carrier("b_z").segments == [2, 5, 9]
+    @test carrier("b_w").segments == [1, 5, 7]
+    @test carrier("b").segments == [2, 5, 9]
+    @test only(filter(o -> o.name == :b_q, outputs)).segments === nothing
+
+    # Segment values are evaluated against the current data, not frozen at the
+    # original trace. Re-binding changes each carrier independently.
+    rebound = StanBlocks.stan_model(layouts)(; K = [1, 1, 3], J = [2, 2, 2])
+    rebound_outputs = collect(stan_descriptor(rebound; name = :rebound_layouts).outputs)
+    rebound_carrier(stem) = only(filter(
+        o -> startswith(string(o.name), stem * "__pl_mem_"), rebound_outputs,
+    ))
+    @test rebound_carrier("b_z").segments == [1, 2, 5]
+    @test rebound_carrier("b_w").segments == [2, 4, 6]
+    @test rebound_carrier("b").segments == [1, 2, 5]
+
+    # A nested-vector input is represented internally as `(mem, ends)`, but its
+    # SLIC `length` is the number of logical groups — not the tuple field count.
+    # This is the common BRM shape: a result/member inherits each input slice's
+    # length, and a rebind can change both boundaries and group count.
+    input_shaped = @slic (; xs = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]) begin
+        a ~ std_normal()
+        y ~ plate(xs; outer = length(xs)) do x
+            z::typeof(x) = a .* x
+            z
+        end
+    end
+    input_outputs = collect(stan_descriptor(input_shaped; name = :input_shaped).outputs)
+    input_carrier(stem) = only(filter(
+        o -> startswith(string(o.name), stem * "__pl_mem_"), input_outputs,
+    ))
+    @test input_carrier("y_z").segments == [2, 3, 6]
+    @test input_carrier("y").segments == [2, 3, 6]
+
+    rebound_input = StanBlocks.stan_model(input_shaped)(;
+        xs = [[1.0], [2.0, 3.0, 4.0]],
+    )
+    rebound_input_outputs = collect(stan_descriptor(
+        rebound_input; name = :rebound_input_shaped,
+    ).outputs)
+    rebound_input_carrier(stem) = only(filter(
+        o -> startswith(string(o.name), stem * "__pl_mem_"), rebound_input_outputs,
+    ))
+    @test rebound_input_carrier("y_z").segments == [1, 4]
+    @test rebound_input_carrier("y").segments == [1, 4]
+
+    # Reporter-shaped layout: a named dense workspace is sized with Stan's
+    # collection `max`, then projected onto the ragged observation indices.
+    # The workspace and projection deliberately have different group axes.
+    max_shaped = @slic (;
+        qt_idx = [[3], [3, 4], [3, 4, 5]],
+    ) begin
+        qbase ~ std_normal()
+        pk_loc ~ plate(qt_idx; outer = length(qt_idx)) do qidx
+            dense_conc = rep_vector(qbase, max(qidx))
+            dense_conc[qidx]
+        end
+    end
+    max_outputs = collect(stan_descriptor(max_shaped; name = :max_shaped).outputs)
+    max_carrier(stem) = only(filter(
+        o -> startswith(string(o.name), stem * "__pl_mem_"), max_outputs,
+    ))
+    @test max_carrier("pk_loc_dense_conc").segments == [3, 7, 12]
+    @test max_carrier("pk_loc").segments == [1, 3, 6]
+
+    rebound_max = StanBlocks.stan_model(max_shaped)(;
+        qt_idx = [[2], [2, 3, 4, 5]],
+    )
+    rebound_max_outputs = collect(stan_descriptor(
+        rebound_max; name = :rebound_max_shaped,
+    ).outputs)
+    rebound_max_carrier(stem) = only(filter(
+        o -> startswith(string(o.name), stem * "__pl_mem_"), rebound_max_outputs,
+    ))
+    @test rebound_max_carrier("pk_loc_dense_conc").segments == [2, 7]
+    @test rebound_max_carrier("pk_loc").segments == [1, 5]
 end
 
 """
@@ -4108,8 +6946,10 @@ The obs is now BROADCAST ACROSS the ragged groups (never flattened): it lowers t
 compiler-owned per-group loop `for g in 1:length(ys): ys[g] ~ dist(mu[g], …)`
 (ragged distribution args sliced per group via `_ragged_group_arg`; shared
 scalar/dense args pass through), reusing the ragged-prior density-loop machinery.
-The indexed data obs routes to the model block only (no auto-GQ), matching the
-obs-in-cell plate form.
+
+This item pins the MODEL block only. The generated-quantities half — the
+`<obs>_gen` / `<obs>_likelihood` twins added by decision
+`2026-07-29T17-18-58-036-0w0r1yf` — is `slic: ragged observation twins`.
 
 Correctness for BOTH:
 - univariate `normal` reduces to the same per-group density as the obs-in-cell
@@ -4118,7 +6958,7 @@ Correctness for BOTH:
   multivariate observation with its own group vector `mu[g]`, NOT a flattened
   backing (which would silently change the model).
 """
-@testitem "slic: ragged obs broadcasts a distribution across groups (obs-outside)" tags=[:slic, :plate, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ragged obs broadcasts a distribution across groups (obs-outside)" tags=[:slic, :plate, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # (A) univariate normal — per-group broadcast, equal to the obs-in-cell twin.
     model = c3_plate_ragged_obs_outside_model
     @test transpiles(model)
@@ -4153,7 +6993,441 @@ Correctness for BOTH:
     end
 end
 
-@testitem "slic: cmt-keyed boolean-mask obs inside a plate cell" tags=[:slic, :plate, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+"""
+Verify `slic: ragged observation twins`.
+
+Snag ragged-observati-6a26481b, decision `2026-07-29T17-18-58-036-0w0r1yf`
+(resolved "yes, go" by the user): a ragged observation lowered to a MODEL-ONLY
+per-group density loop, so a `RaggedVector` observation advertised neither
+`:predict` nor `:pointwise_loglik` — the only observation shape in SLIC that
+produced no predictive draw. Root cause: `_is_gen_declarable` (passes.jl)
+rejects a `RaggedVector` base, so `distribution_blocks` routed the whole
+sampling statement to `(:model,)`.
+
+The resolved design is the HYBRID: the compiler owns the STORAGE and the loops
+(a flat `<obs>_gen` over the ragged memory, a per-group `<obs>_likelihood`, both
+filled by a second compiler-owned loop pinned to generated quantities), while
+the FAMILY REGISTRY owns the semantics (`rng_expr` for the draw, `lpxf_expr` for
+the density). Author syntax is unchanged. Contract defaults:
+
+- **A** — one AGGREGATE density per group (`lpxf_expr`, never `_lpdfs`), because
+  a joint family like `multi_normal` has no per-element factorisation. Optional
+  per-element loglik for factorising families is the non-blocking follow-up
+  `2026-07-29T17-26-05-795-1kf2m4c`, deliberately NOT in this landing.
+- **B** — the flat draw plus `ModelOutput.segments` (the carrier's own inclusive
+  1-based `ends`), so a consumer cuts the draw back into groups without reaching
+  into the `(mem, ends)` tuple.
+- **C** — the sized-token RNG protocol every other vector-shaped predictive draw
+  already uses, so a custom family only needs its ordinary
+  `foo_rng(vector[n], …)::vector[n]` companion; missing it fails loudly, naming
+  the family and the signature.
+- **D** — the model block is byte-for-byte unchanged.
+- **E** — a discrete family over a ragged carrier is rejected (a `RaggedVector`
+  stores its groups in a real `vector`, so there is no integer carrier yet).
+"""
+@testitem "slic: ragged observation twins" tags=[:slic, :plate, :ragged, :descriptor, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    ts = [[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]]
+    ys = [[0.6, 0.8, 1.0], [0.5, 0.7], [0.4, 0.9, 1.1, 1.3]]
+    nlpdf(y, m, s) = -0.5 * log(2pi) - log(s) - 0.5 * abs2((y - m) / s)
+
+    # (A) univariate normal ---------------------------------------------------
+    model = c3_plate_ragged_obs_outside_model
+    let gq = stan_block(stan_code(model), "generated quantities")
+        # Storage: the draw is FLAT over the ragged memory; the loglik is one
+        # scalar per GROUP.
+        @test occursin("vector[num_elements(ys.1)] ys_gen;", gq)
+        @test occursin("vector[num_elements_RaggedVector(ys)] ys_likelihood;", gq)
+        # Semantics come from the family registry: the SIZED rng for the draw,
+        # the AGGREGATE `_lpdf` (never `_lpdfs`) for the density.
+        @test occursin(r"ys_gen\[ragged_start\(ys\.2, g__rq_\d+\):ragged_end\(ys\.2, g__rq_\d+\)\] = normal_vector_rng\(", gq)
+        @test occursin(r"ys_likelihood\[g__rq_\d+\] = normal_lpdf\(getindex_RaggedVector\(ys, g__rq_\d+\) \|", gq)
+        @test !occursin("normal_lpdfs", gq)
+    end
+    # (D) the model block stays a PURE density loop — the twins are additive, so
+    # nothing predictive leaks into it (Stan forbids `_rng` there anyway).
+    let mb = stan_block(stan_code(model), "model")
+        @test !occursin("_rng", mb)
+        @test !occursin("ys_gen", mb)
+        @test !occursin("ys_likelihood", mb)
+    end
+
+    d = stan_descriptor(model; name = :ragged_twins)
+    outs = Dict(o.name => o for o in d.outputs)
+    @test outs[:ys_gen].generative == :draw && outs[:ys_gen].source == :ys
+    @test outs[:ys_likelihood].generative == :pointwise_loglik
+    let ops = [op.name for op in d.operations]
+        @test :predict in ops && :pointwise_loglik in ops
+    end
+    # (B) group boundaries — inclusive 1-based ends of groups 3, 2 and 4 long.
+    @test outs[:ys_gen].segments == [3, 5, 9]
+
+    # (F) The identical logical observation kept INSIDE the plate cell gets the
+    # same ragged storage contract. This is a distinct compiler path from the
+    # top-level broadcast above: the plate has already lowered `yy` to the exact
+    # backing-memory slice by the time distribution routing sees it.
+    dv = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]]
+    incell = @slic (; dv) begin
+        sigma ~ exponential(1.0)
+        cell_sum ~ plate(dv; outer = length(dv)) do yy
+            yy ~ normal(0.0, sigma)
+            sum(yy)
+        end
+    end
+    let gq = stan_block(stan_code(incell), "generated quantities")
+        @test occursin("vector[num_elements(dv.1)] dv_gen;", gq)
+        @test occursin("vector[num_elements(dv.2)] dv_likelihood;", gq)
+        @test occursin(r"dv_gen\[ragged_start\(dv\.2, plate_i\w*\):ragged_end\(dv\.2, plate_i\w*\)\] = normal_vector_rng\(", gq)
+        @test occursin(r"dv_likelihood\[plate_i\w*\] = normal_lpdf\(dv\.1\[", gq)
+        @test !occursin("normal_lpdfs", gq)
+    end
+    id = stan_descriptor(incell; name = :ragged_incell_twins)
+    iouts = Dict(o.name => o for o in id.outputs)
+    @test [o.name for o in id.outputs if o.generative == :draw] == [:dv_gen]
+    @test [o.name for o in id.outputs if o.generative == :pointwise_loglik] == [:dv_likelihood]
+    @test iouts[:dv_gen].source == :dv
+    @test iouts[:dv_likelihood].source == :dv
+    @test iouts[:dv_gen].segments == [3, 6, 9]
+    @test iouts[:dv_likelihood].segments == [3, 6, 9]
+    @test Set(op.name for op in id.operations) ⊇ Set((:predict, :pointwise_loglik))
+
+    # Consumer-facing execution shape: one flat draw over all nine values and
+    # one aggregate log density for each of the three logical groups.
+    ip = stan_execute(id, :fit)
+    idim = LogDensityProblems.dimension(ip)
+    ipred = stan_execute(id, :predict; problem = ip, draws = zeros(idim), seed = 6758)
+    ill = stan_execute(id, :pointwise_loglik; problem = ip, draws = zeros(idim), seed = 6758)
+    @test keys(ipred) == (:dv_gen,)
+    @test keys(ill) == (:dv_likelihood,)
+    @test length(ipred.dv_gen) == 9
+    @test length(ill.dv_likelihood) == 3
+    @test all(isfinite, ipred.dv_gen)
+    @test all(isfinite, ill.dv_likelihood)
+
+    # End-to-end through BridgeStan.
+    p = instantiate(model)
+    sm = p.model
+    names = BridgeStan.param_names(sm; include_tp = true, include_gq = true)
+    gi = findall(n -> startswith(n, "ys_gen"), names)
+    li = findall(n -> startswith(n, "ys_likelihood"), names)
+    @test length(gi) == sum(length, ys)     # ONE flat draw over every element
+    @test length(li) == length(ys)          # ONE aggregate density per group
+    let c = BridgeStan.param_constrain(
+            sm, [0.3];
+            include_tp = true, include_gq = true, rng = BridgeStan.StanRNG(sm, 4321),
+        )
+        @test all(isfinite, c[gi])
+        @test all(isfinite, c[li])
+        sigma = c[findfirst(==("sigma"), names)]
+        # `normal` factorises, so the GROUP density is the sum of its elements'.
+        # (What the follow-up would additionally expose is those summands.)
+        for g in eachindex(ys)
+            @test c[li[g]] ≈ sum(nlpdf(ys[g][i], 2.0 * ts[g][i], sigma) for i in eachindex(ys[g]))
+        end
+        # The published segments cut the flat draw back into the ragged shape.
+        segs = outs[:ys_gen].segments
+        flat = c[gi]
+        starts = [g == 1 ? 1 : segs[g-1] + 1 for g in eachindex(segs)]
+        @test [length(flat[starts[g]:segs[g]]) for g in eachindex(segs)] == length.(ys)
+    end
+
+    # (A, joint family) multi_normal — a group is ONE multivariate observation,
+    # so it has ONE density and no per-element factorisation to expose at all.
+    let mvn = c3_ragged_obs_broadcast_mvn_model,
+        ym = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]],
+        mm = [[0.0, 0.1, 0.2], [0.3, 0.4, 0.5], [0.6, 0.7, 0.8]]
+
+        gq = stan_block(stan_code(mvn), "generated quantities")
+        @test occursin(r"= multi_normal_vector_rng\(", gq)
+        @test occursin(r"ym_likelihood\[g__rq_\d+\] = multi_normal_lpdf\(", gq)
+        pm = instantiate(mvn)
+        nm = BridgeStan.param_names(pm.model; include_tp = true, include_gq = true)
+        @test count(n -> startswith(n, "ym_gen"), nm) == 9
+        @test count(n -> startswith(n, "ym_likelihood"), nm) == 3
+        # `scale` has a prior but no likelihood, so SLIC lowers it to a gq
+        # `exponential_rng` and the sampler dimension is ZERO — the whole model
+        # is the ragged observation.
+        @test LogDensityProblems.dimension(pm) == 0
+        cm = BridgeStan.param_constrain(
+            pm.model, Float64[];
+            include_tp = true, include_gq = true, rng = BridgeStan.StanRNG(pm.model, 99),
+        )
+        lim = findall(n -> startswith(n, "ym_likelihood"), nm)
+        # `Sig` is the identity here, so the joint density coincides with the
+        # elementwise sum — which pins the group DIMENSION (3, not 1 and not 9).
+        for g in eachindex(ym)
+            @test cm[lim[g]] ≈ sum(nlpdf(ym[g][i], mm[g][i], 1.0) for i in eachindex(ym[g]))
+        end
+    end
+
+    # (C) distribution HOFs over a ragged obs. The base family is resolved ONE
+    # level through the HOF (`_ragged_base_family`), because the HOF itself has
+    # no `lpxf_expr`; the draw still goes through the sized-token protocol.
+    let wt = @slic (; ys = ys, w = 2.0) begin
+            sigma ~ exponential(1)
+            ys ~ weighted(normal, w, 0.0, sigma)
+        end
+        @test transpiles(wt)
+        @test stanc_compiles(wt)
+        gq = stan_block(stan_code(wt), "generated quantities")
+        @test occursin(r"= weighted_vector_normal_rng\(", gq)
+        @test occursin(r"ys_likelihood\[g__rq_\d+\] = weighted_normal_lpdf\(", gq)
+    end
+    # A HOF carries its control values in KWARGS, and a per-group censoring bound
+    # is ragged like any other per-group quantity: it must be SLICED in the
+    # generated-quantities loop exactly as in the model loop. Left unsliced this
+    # transpiled but emitted Stan comparing a `real` to a
+    # `tuple(vector, array[] int)`, which only stanc caught.
+    let scalar_bound = @slic (; ys = ys, lloq = 0.45) begin
+            sigma ~ exponential(1)
+            ys ~ censored(normal, 0.0, sigma; lower = lloq)
+        end
+        @test stanc_compiles(scalar_bound)
+        @test occursin("lloq", stan_block(stan_code(scalar_bound), "generated quantities"))
+    end
+    let ragged_bound = @slic (;
+            ys = ys,
+            lo = [[0.45, 0.45, 0.45], [0.45, 0.45], [0.45, 0.45, 0.45, 0.45]],
+        ) begin
+            sigma ~ exponential(1)
+            ys ~ censored(normal, 0.0, sigma; lower = lo)
+        end
+        @test stanc_compiles(ragged_bound)
+        code = stan_code(ragged_bound)
+        @test occursin(r"getindex_RaggedVector\(lo, g__ro_\d+\)", stan_block(code, "model"))
+        @test occursin(
+            r"getindex_RaggedVector\(lo, g__rq_\d+\)",
+            stan_block(code, "generated quantities"),
+        )
+    end
+
+    # (C, failure) a family whose only `_rng` is SCALAR cannot build a group
+    # draw. The error names the family and the exact overload to add, instead of
+    # surfacing as an internal `` `tracetype` not defined for …::anything ``.
+    let bad = @slic (; ys = ys) begin
+            s ~ exponential(1)
+            ys ~ scalarrng(0.0, s)
+        end
+        @test_throws "no SIZED predictive companion" stan_code(bad)
+        @test_throws "scalarrng_rng(vector[n]" stan_code(bad)
+    end
+
+    # (E) a discrete family has no ragged carrier: a `RaggedVector`'s groups live
+    # in a real `vector`, so an integer-valued ragged draw has nowhere to land.
+    let discrete = @slic (; ks = [[1.0, 2.0], [3.0, 4.0, 5.0]]) begin
+            lam ~ exponential(1)
+            ks ~ poisson(lam)
+        end
+        @test_throws "is discrete" stan_code(discrete)
+    end
+end
+
+"""
+Verify `slic: discrete family over an integer ragged observation`.
+
+Snag `ragged-int-obser-771dd259` (from BRM `:ssm` — a per-subject binary/count
+indicator). A `Vector{Vector{Int}}` observation ingests with an INTEGER-backed
+`RaggedVector` (`mem::array[] int`), so a discrete family (`bernoulli_logit`,
+`poisson_log`, …) over it now lowers exactly like a real one instead of being
+rejected: the group getindex (`typeof(rv.mem[1])`-computed return) reads the group
+as `array[] int`, the sized-token RNG picks the discrete `foo_rng(int[n],…)::int[n]`
+overload, and the `<obs>_gen` twin is declared `array[] int`. `<obs>_likelihood`
+stays real (per-group density scalars). The carrier/family MISMATCH stays a loud,
+carrier-aware error: a discrete family on a REAL ragged obs, and a continuous
+family on an INTEGER ragged obs, both reject at tracing. Covers the in-cell
+(plate-cell) and obs-outside spellings.
+"""
+@testitem "slic: discrete family over an integer ragged observation" tags=[:slic, :plate, :ragged, :descriptor, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    ts = [[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]]
+    smoked = [[1, 0, 1], [0, 1], [1, 1, 0, 1]]      # per-subject binary indicator
+
+    # (A) obs-outside: `smoked ~ bernoulli_logit(eta)` over an integer ragged obs.
+    outside = @slic (; ts = ts, smoked = smoked, nsub = 3) begin
+        l31 ~ normal(0.0, 1.0)
+        eta ~ plate(ts; outer = (nsub,)) do t
+            m::typeof(t) = l31 .* t
+            m
+        end
+        smoked ~ bernoulli_logit(eta)
+    end
+    @test transpiles(outside)
+    @test stanc_compiles(outside)
+    let gq = stan_block(stan_code(outside), "generated quantities")
+        # The predictive draw carrier is an INTEGER array (not `vector`), filled
+        # by the discrete sized RNG; the per-group loglik is a real scalar.
+        @test occursin("int smoked_gen", gq)
+        @test !occursin("vector[num_elements(smoked.1)] smoked_gen", gq)
+        @test occursin(r"smoked_gen\[.*\] = bernoulli_logit_int_rng\(", gq)
+        @test occursin(r"smoked_likelihood\[.*\] = bernoulli_logit_lpmf\(", gq)
+    end
+    let mb = stan_block(stan_code(outside), "model")
+        @test !occursin("_rng", mb)
+    end
+    d = stan_descriptor(outside; name = :ragged_int_obs)
+    outs = Dict(o.name => o for o in d.outputs)
+    @test outs[:smoked_gen].generative == :draw && outs[:smoked_gen].source == :smoked
+    @test outs[:smoked_gen].segments == [3, 5, 9]
+    @test outs[:smoked_likelihood].generative == :pointwise_loglik
+    let ops = [op.name for op in d.operations]
+        @test :fit in ops && :predict in ops && :pointwise_loglik in ops
+    end
+    # End-to-end: finite log-density + gradient, and the predictive draws are
+    # integers over the flat backing memory.
+    p = instantiate(outside)
+    lp, grad = LogDensityProblems.logdensity_and_gradient(p, 0.1 .* randn(LogDensityProblems.dimension(p)))
+    @test isfinite(lp) && all(isfinite, grad)
+    let sm = p.model,
+        names = BridgeStan.param_names(p.model; include_tp = true, include_gq = true)
+        gi = findall(n -> startswith(n, "smoked_gen"), names)
+        @test length(gi) == sum(length, smoked)            # flat over every element
+        c = BridgeStan.param_constrain(sm, [0.2]; include_tp = true, include_gq = true,
+            rng = BridgeStan.StanRNG(sm, 771))
+        @test all(v -> v == round(v), c[gi])               # integer draws (0/1)
+    end
+
+    # (B) in-cell: the identical observation kept inside the plate cell.
+    incell = @slic (; ts = ts, smoked = smoked, nsub = 3) begin
+        threshold ~ normal(0.0, 1.0); l31 ~ normal(0.0, 1.0)
+        mu ~ plate(ts, smoked; outer = (nsub,)) do t, sm
+            m::typeof(t) = l31 .* t
+            sm ~ bernoulli_logit(m .+ threshold)
+            m
+        end
+    end
+    @test transpiles(incell)
+    @test stanc_compiles(incell)
+    let gq = stan_block(stan_code(incell), "generated quantities")
+        @test occursin("int smoked_gen", gq)
+        @test occursin("bernoulli_logit_int_rng(", gq)
+    end
+    let ip = instantiate(incell)
+        ilp, igrad = LogDensityProblems.logdensity_and_gradient(ip, 0.1 .* randn(LogDensityProblems.dimension(ip)))
+        @test isfinite(ilp) && all(isfinite, igrad)
+    end
+
+    # (C) `poisson_log` — the capability is general across discrete families.
+    counts = [[1, 0, 2], [3, 1], [0, 1, 2, 4]]
+    pois = @slic (; ts = ts, counts = counts, nsub = 3) begin
+        l ~ normal(0.0, 1.0)
+        eta ~ plate(ts; outer = (nsub,)) do t
+            m::typeof(t) = l .* t
+            m
+        end
+        counts ~ poisson_log(eta)
+    end
+    @test transpiles(pois)
+    @test stanc_compiles(pois)
+    @test occursin("int counts_gen", stan_block(stan_code(pois), "generated quantities"))
+
+    # (D) MISMATCH stays a loud, carrier-aware error, both directions.
+    #  discrete family on a REAL ragged obs …
+    let bad = @slic (; ys = [[0.6, 0.8], [0.5, 0.7, 0.9]]) begin
+            lam ~ exponential(1)
+            ys ~ poisson_log(lam)
+        end
+        @test_throws "real-valued" stan_code(bad)
+    end
+    #  … and a continuous family on an INTEGER ragged obs.
+    let bad = @slic (; ks = [[1, 2], [3, 4, 5]]) begin
+            mu ~ normal(0.0, 1.0); sigma ~ exponential(1)
+            ks ~ normal(mu, sigma)
+        end
+        @test_throws "integer-valued" stan_code(bad)
+    end
+end
+
+"""
+Verify `slic: ragged obs cv-taint routes the held-out density loop out of the model block`.
+
+Snag ragged-obs-not-c-5b1180c7. A top-level ragged observation `ys ~ dist(mu, …)`
+whose density argument `mu` is a ragged plate result sized from a CV-marked group
+count: under resample (`maybecv` on the group count) the plate parameter — hence
+`mu`'s flat backing `mu__pl_mem_<id>` — moves to `generated quantities`. The
+per-group MODEL-block density loop
+`getindex_RaggedVector(ys, g) ~ dist(mu__pl_mem_<id>[…], …)` then referenced a
+GQ-only symbol and stanc rejected the program (`Identifier not in scope`), while
+the FIT (no cv) is stanc-valid.
+
+The fix mirrors the scalar (`SamplingExpr{Symbol,<:StanExpr}`) and indexed
+(`_forward_indexed_sampling!`) cv paths: `_forward_ragged_obs_broadcast!` marks the
+ragged response cv when its density argument is cv, so `distribution_blocks` leaves
+the held-out per-group density loop OUT of the model block. The density statement
+STAYS in the trace, so `backward!` keeps every population parameter it touches (here
+the noise scale `sigma`) in the sampled set — exactly as the obs-in-cell control
+does — and the gq twins (`ys_gen` / `ys_likelihood`) carry the held-out prediction.
+The non-cv path is byte-unchanged.
+"""
+@testitem "slic: ragged obs cv-taint routes the held-out density loop out of the model block" tags=[:slic, :plate, :ragged, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    maybecv = StanBlocks.stan.maybecv
+    ts = [[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]]
+    ys = [[0.6, 0.8, 1.0], [0.5, 0.7], [0.4, 0.9, 1.1, 1.3]]
+
+    # A ragged plate result `mu` derived from a per-cell PARAMETER `b`, observed by a
+    # TOP-LEVEL ragged obs. Marking the group count `nsub` cv (resample) moves the
+    # plate parameter — and `mu`'s backing — to generated quantities.
+    outside = @slic (; ts, ys, nsub = 3) begin
+        sigma ~ exponential(1)
+        mu ~ plate(ts; outer = (nsub,)) do t
+            b ~ normal(0.0, 1.0)
+            m::typeof(t) = b .* t
+            m
+        end
+        ys ~ normal(mu, sigma)
+    end
+    # The reporter's working CONTROL: the SAME observation kept INSIDE the plate cell.
+    incell = @slic (; ts, ys, nsub = 3) begin
+        sigma ~ exponential(1)
+        mu ~ plate(ts, ys; outer = (nsub,)) do t, y
+            b ~ normal(0.0, 1.0)
+            m::typeof(t) = b .* t
+            y ~ normal(m, sigma)
+            m
+        end
+    end
+
+    # FIT (no cv): the held-out density loop IS the model likelihood, stanc-valid.
+    @test occursin(
+        r"getindex_RaggedVector\(ys, g__ro_\d+\) ~ normal\(mu__pl_mem_\d+\[",
+        stan_block(stan_code(outside), "model"),
+    )
+    @test stanc_compiles(outside)
+
+    # RESAMPLE (group count cv): the backing moves to generated quantities and the
+    # held-out density loop is DROPPED from the model block — stanc-valid.
+    resampled = outside(; nsub = maybecv(:nsub, 3))
+    code = stan_code(resampled)
+    @test first(stanc_check(code; warn_pedantic = false))
+    let mb = stan_block(code, "model"),
+        tp = stan_block(code, "transformed parameters"),
+        gq = stan_block(code, "generated quantities"),
+        par = stan_block(code, "parameters")
+
+        # the held-out per-group density loop is gone from the model block ...
+        @test !occursin("getindex_RaggedVector(ys", mb)
+        @test !occursin("mu__pl_mem", mb)
+        # ... and its backing is declared ONLY in generated quantities.
+        @test occursin(r"vector\[sum\(mu__pl_len_\d+\)\] mu__pl_mem_\d+;", gq)
+        @test !occursin("mu__pl_mem", tp)
+        # The population noise scale stays SAMPLED (reused from the original fit): the
+        # density statement survived `backward!` even though it is not emitted.
+        @test occursin("real<lower=0.0> sigma;", par)
+        @test occursin("sigma ~ exponential(1)", mb)
+        # The held-out prediction + pointwise loglik remain in generated quantities.
+        @test occursin(r"ys_gen\[.*\] = normal_vector_rng\(", gq)
+        @test occursin(
+            r"ys_likelihood\[g__rq_\d+\] = normal_lpdf\(getindex_RaggedVector\(ys, g__rq_\d+\)",
+            gq,
+        )
+    end
+
+    # Semantic equivalence to the working obs-in-cell control: the top-level form now
+    # resamples to a stanc-valid program with the SAME sampled parameter set.
+    incell_rs = incell(; nsub = maybecv(:nsub, 3))
+    @test first(stanc_check(stan_code(incell_rs); warn_pedantic = false))
+    @test stan_block(code, "parameters") == stan_block(stan_code(incell_rs), "parameters")
+end
+
+@testitem "slic: cmt-keyed boolean-mask obs inside a plate cell" tags=[:slic, :plate, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Snag plate-cell-int: a per-cell `findall`/boolean-mask INDEX array (`array[] int`)
     # feeding cmt-keyed multi-output do-block obs. Both the auto-sugar `y[c .== 1]` and
     # the explicit `idx = findall(c .== 1)` forms used to abort with `plate: unsupported
@@ -4224,6 +7498,86 @@ end
     end
 end
 
+@testitem "slic: ragged plate result rejects whole-object arithmetic with an actionable error" tags=[:slic, :plate, :ragged, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Snag plate-return-tup-5c3fa1c8 (reported by BRM): a plate cell whose width is
+    # inferred to vary per cell (it slices a ragged input) collects to a RaggedVector
+    # (`tuple(vector, array[] int)`). The author's downstream `pred * w` / `pred .* w`
+    # then failed with the OPAQUE `tracetype not defined for (... .* ...)` / `::anything`,
+    # naming neither the RaggedVector nor the remedy. It must now reject with a message
+    # that names the RaggedVector AND the fix (annotate the collected matrix type).
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+
+    # The reporter's downstream shape: ragged pred, then broadcast by a weight vector.
+    ragged_broadcast = @slic (; nsub = 2, tcol = [[0.1, 0.2, 0.3], [0.4, 0.5]], w = [1.0, 1.0]) begin
+        a ~ std_normal()
+        pred ~ plate(tcol; outer = (nsub,)) do t
+            a .* t
+        end
+        I_agg = pred .* w
+        I_agg
+    end
+    let e = errmsg(ragged_broadcast)
+        @test occursin("RaggedVector", e)
+        @test occursin("as_matrix", e)             # the downstream cast remedy
+        @test occursin("matrix[K, N]", e)          # the annotate-collected-type remedy
+        @test !occursin("tracetype not defined", e) # no longer the opaque floor message
+    end
+
+    # Plain `*` (matmul) on the ragged result gets the same actionable error.
+    ragged_matmul = @slic (; nsub = 2, tcol = [[0.1, 0.2, 0.3], [0.4, 0.5]], w = [1.0, 1.0]) begin
+        a ~ std_normal()
+        pred ~ plate(tcol; outer = (nsub,)) do t
+            a .* t
+        end
+        I_agg = pred * w
+        I_agg
+    end
+    @test occursin("RaggedVector", errmsg(ragged_matmul))
+
+    # The remedy transpiles: annotating the COLLECTED matrix type forces a fixed-width
+    # `matrix[K, N]` result that supports `*` (data is balanced: 4 rows per subject).
+    remedy = @slic (; nsub = 2, nt = 4, ntot = 8, rows_mat = [1 2 3 4; 5 6 7 8],
+                       w = [1.0, 2.0], y = [0.1, 0.2, 0.3, 0.4]) begin
+        log_rt::vector[ntot] ~ std_normal()
+        pred::matrix[nt, nsub] ~ plate(; outer = (nsub,)) do g
+            log_rt[rows_mat[g]]
+        end
+        I_agg = pred * w
+        y ~ normal(I_agg, 1.0)
+    end
+    @test transpiles(remedy)
+
+    # The DOWNSTREAM cast: `as_matrix(pred)` on a ragged plate result — no annotation —
+    # views it as a `matrix[K, N]` (column i = group i) and supports `* w`. The result
+    # size is the DATA `ends`, so stanc accepts the `matrix[ragged_length(ends,1), n]` decl.
+    downstream = @slic (; nsub = 2, tcol = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+                          w = [1.0, 2.0], y = [0.1, 0.2, 0.3]) begin
+        a ~ std_normal()
+        pred ~ plate(tcol; outer = (nsub,)) do t
+            a .* t                       # ragged cell — pred is a RaggedVector
+        end
+        I_agg = as_matrix(pred) * w      # cast downstream; NO annotation
+        y ~ normal(I_agg, 1.0)
+    end
+    @test transpiles(downstream)
+    @test occursin("matrix as_matrix(", stan_code(downstream))          # emitted cast fn
+    @test occursin("reject(", stan_code(downstream))                     # runtime equal-width guard
+    # The cast fn declares `matrix[ragged_length(ends, 1), n]` off the DATA ends, so the
+    # collected result never puts the parameter `mem` in a size declaration.
+    @test !occursin("ragged_length((", stan_code(downstream))            # not sized off the tuple
+
+    # Regressions: ordinary matrix*vector and RaggedVector indexing are NOT caught.
+    @test transpiles(@slic (; X = [1.0 2.0; 3.0 4.0; 5.0 6.0], y = [0.1, 0.2, 0.3]) begin
+        beta::vector[2] ~ std_normal()
+        y ~ normal(X * beta, 1.0)
+    end)
+    @test transpiles(@slic (; doses = [[1.0, 2.0, 3.0], [4.0]], g = 1) begin
+        a ~ std_normal()
+        d = doses[g]
+        a
+    end)
+end
+
 """
 Snag build-a-declarat-ab2d2471 (reported by BRM): a declaration-driven prior /
 posterior generative artifact needs two things StanBlocks did not give it.
@@ -4244,12 +7598,12 @@ Out of scope by design and asserted as such: the pointwise `<obs>_likelihood`
 companion, and RAGGED observation bases (a RaggedVector is a compile-time view
 over flat memory with no declarable Stan twin, so it keeps the model-only route).
 """
-@testitem "slic: plate per-cell observations emit a _gen twin; lkj gq redraw" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: plate per-cell observations emit a _gen twin; lkj gq redraw" tags=[:slic, :plate, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # (A) per-cell observation inside a plate → `y_gen` in generated quantities.
     obs_plate = @slic (; n_groups = 5, k = 3, y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
         L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
         tau::vector[k] ~ normal(0.0, 1.0; lower = 0.0)
-        b::vector[k] ~ plate(y; outer = (n_groups,)) do yi
+        b::matrix[k, n_groups] ~ plate(y; outer = (n_groups,)) do yi
             cell ~ c3_plate_fixed_correlated_cell(k, L, tau)
             yi ~ normal(cell[1], 0.5)
             cell
@@ -4280,9 +7634,12 @@ over flat memory with no declarable Stan twin, so it keeps the model-only route)
         @test all(isfinite, drawn[idx])
     end
 
-    # A RAGGED observation base has no declarable twin → model-only, unchanged.
+    # A RAGGED observation base gets its twins from the compiler-owned ragged
+    # loop instead of `_push_obs_gen_decl!` — the `_gen` retarget this item pins
+    # still must not fire on it (`_getindex_chain_base` stays getindex-only), so
+    # the declaration is the ragged one, sized over the FLAT memory.
     let code = stan_code(c3_plate_ragged_obs_outside_model)
-        @test !occursin("ys_gen", code)
+        @test occursin("vector[num_elements(ys.1)] ys_gen;", code)
     end
 
     # A COMPOUND data-qualified LHS is not an indexed observation. The twin
@@ -4328,7 +7685,7 @@ Stan applies the constraint transform + jacobian per cell. Dense simplex / order
 ragged constrained cells (`K` per plate index) and constrained MATRIX families
 (cholesky_*) remain rejected pending follow-up.
 """
-@testitem "slic: plate supports dense native-constrained vector cells" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: plate supports dense native-constrained vector cells" tags=[:slic, :plate, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     simplex_cell = @slic (; n = 3, k = 3) begin
         p ~ plate(; outer = (n,)) do g
             cell::simplex[k] ~ dirichlet(rep_vector(1.0, k))
@@ -4338,13 +7695,28 @@ ragged constrained cells (`K` per plate index) and constrained MATRIX families
     @test transpiles(simplex_cell)
     @test stanc_compiles(simplex_cell)
     let code = stan_code(simplex_cell)
-        # cell-local `cell` is namespaced under the plate result `p` → `p_cell`.
-        @test occursin(r"array\[n\] simplex\[k\] p_cell", stan_block(code, "parameters"))
-        @test occursin(r"p_cell\[plate_i\w*\] ~ dirichlet", stan_block(code, "model"))
+        # No likelihood: a prior-predictive program. The native `array[n]
+        # simplex[k]` cell declaration survives the move to generated quantities,
+        # where the cell (namespaced under the plate result `p` → `p_cell`)
+        # re-draws from the family's constrained rng.
+        @test strip(stan_block(code, "parameters")) == "{\n}"
+        gq = stan_block(code, "generated quantities")
+        @test occursin(r"array\[n\] simplex\[k\] p_cell", gq)
+        @test occursin(r"p_cell\[plate_i\w*\] = dirichlet_\w*rng\(k, ", gq)
         @test !occursin("anything", code)           # the bug: anything-typed _lpdfs helper
     end
-    # Stan applies the simplex transform: n cells × (k-1) free coords each.
-    @test LogDensityProblems.dimension(instantiate(simplex_cell)) == 3 * (3 - 1)
+    @test LogDensityProblems.dimension(instantiate(simplex_cell)) == 0
+    # With a likelihood on the collected result it is the sampled parameter Stan
+    # constrains per cell: n cells × (k-1) free coords each.
+    simplex_fit = Base.merge(simplex_cell, quote
+        obs ~ normal(p[1], 0.5)
+    end)(; obs = [0.2, 0.3, 0.5])
+    @test stanc_compiles(simplex_fit)
+    let code = stan_code(simplex_fit)
+        @test occursin(r"array\[n\] simplex\[k\] p_cell", stan_block(code, "parameters"))
+        @test occursin(r"p_cell\[plate_i\w*\] ~ dirichlet", stan_block(code, "model"))
+    end
+    @test LogDensityProblems.dimension(instantiate(simplex_fit)) == 3 * (3 - 1)
 
     # `ordered` family: N cells × K free coords each.
     ordered_cell = @slic (; n = 2, k = 4) begin
@@ -4354,6 +7726,14 @@ ragged constrained cells (`K` per plate index) and constrained MATRIX families
         end
     end
     @test stanc_compiles(ordered_cell)
+    # An `ordered` prior has no exact re-draw (no family rng yields a sorted
+    # vector), so it deliberately STAYS a sampled parameter even with no
+    # likelihood; only the unconsumed collected result moves to gq.
+    let code = stan_code(ordered_cell)
+        @test occursin(r"array\[n\] ordered\[k\] p_c;", stan_block(code, "parameters"))
+        @test occursin(r"p_c\[plate_i\w*\] ~ normal", stan_block(code, "model"))
+        @test occursin(r"array\[n\] ordered\[k\] p;", stan_block(code, "generated quantities"))
+    end
     @test LogDensityProblems.dimension(instantiate(ordered_cell)) == 2 * 4
 
     # N-dimensional outer: `array[a, b] simplex[k]`.
@@ -4364,7 +7744,14 @@ ragged constrained cells (`K` per plate index) and constrained MATRIX families
         end
     end
     @test stanc_compiles(nd_cell)
-    @test occursin(r"array\[a, b\] simplex\[k\]", stan_block(stan_code(nd_cell), "parameters"))
+    # prior-only ⇒ the N-D constrained cell declaration lives in gq …
+    @test occursin(r"array\[a, b\] simplex\[k\] p_c;", stan_block(stan_code(nd_cell), "generated quantities"))
+    # … and is the sampled parameter once a likelihood consumes the result.
+    nd_fit = Base.merge(nd_cell, quote
+        obs ~ normal(p[1, 1], 0.5)
+    end)(; obs = [0.2, 0.3, 0.5])
+    @test stanc_compiles(nd_fit)
+    @test occursin(r"array\[a, b\] simplex\[k\]", stan_block(stan_code(nd_fit), "parameters"))
 
     # Control: an UNCONSTRAINED `vector[k]` cell keeps the dense `matrix[k,n]` packing.
     plain_cell = @slic (; n = 3, k = 3) begin
@@ -4374,7 +7761,7 @@ ragged constrained cells (`K` per plate index) and constrained MATRIX families
         end
     end
     @test transpiles(plain_cell)
-    @test occursin("matrix[k, n] p_z", stan_block(stan_code(plain_cell), "parameters"))
+    @test occursin("matrix[k, n] p_z", stan_block(stan_code(plain_cell), "generated quantities"))
 
     # Still-unsupported constrained cells reject cleanly (no invalid Stan):
     #   ragged simplex — Stan cannot declare `array[n] simplex[K[g]]` (varying K).
@@ -4384,19 +7771,30 @@ ragged constrained cells (`K` per plate index) and constrained MATRIX families
             c
         end
     end; re = false)
-    #   constrained MATRIX family — matrix cells are not yet supported in plate at all.
-    @test !transpiles(@slic (; n = 2, k = 3) begin
-        p ~ plate(; outer = (n,)) do g
-            L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
-            L
+
+    # A constrained MATRIX family cell now COLLECTS as
+    # `array[n] cholesky_factor_corr[k]` (snag stanblocks-plate-248f67d3 — the
+    # rejection asserted here before the capability landed).
+    let chol_cell = @slic (; n = 2, k = 3) begin
+            p ~ plate(; outer = (n,)) do g
+                L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
+                L
+            end
         end
-    end; re = false)
+        @test transpiles(chol_cell)
+        # Prior-only program: the whole plate lowers to generated quantities
+        # (the same rule the plain-vector control above follows).
+        @test occursin(
+            "array[n] cholesky_factor_corr[k] p_L",
+            stan_block(stan_code(chol_cell), "generated quantities"),
+        )
+    end
 end
 
 """
 Verify `slic: BRM-shaped ragged constraints compose with plate` in an isolated test item.
 """
-@testitem "slic: BRM-shaped ragged constraints compose with plate" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: BRM-shaped ragged constraints compose with plate" tags=[:slic, :plate, :ragged, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(c3_plate_ragged_brm_model)
     @test stanc_compiles(c3_plate_ragged_brm_model)
     code = stan_code(c3_plate_ragged_brm_model)
@@ -4420,7 +7818,7 @@ end
 """
 Verify `slic: fixed-width constrained matrix accepted by matrix-typed plate cell` in an isolated test item.
 """
-@testitem "slic: fixed-width constrained matrix accepted by matrix-typed plate cell" tags=[:slic, :plate, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: fixed-width constrained matrix accepted by matrix-typed plate cell" tags=[:slic, :plate, :ragged, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(c3_plate_fixed_correlated_model)
     @test stanc_compiles(c3_plate_fixed_correlated_model)
     code = stan_code(c3_plate_fixed_correlated_model)
@@ -4434,7 +7832,7 @@ end
 """
 Verify `slic: public plate inside a called submodel` in an isolated test item.
 """
-@testitem "slic: public plate inside a called submodel" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: public plate inside a called submodel" tags=[:slic, :plate, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Snag regression (plate-inside-cal-69cec8bc): a fixed-vector plate in a CALLED
     # submodel body. Previously threw `TypeError: ... expected StanModel, got
     # SubModel` at `_plate_discover`. Fresh cell collections discover + emit under
@@ -4519,7 +7917,7 @@ end
 """
 Verify `slic: ragged simplex uses TP-inlined constraint transforms` in an isolated test item.
 """
-@testitem "slic: ragged simplex uses TP-inlined constraint transforms" tags=[:slic, :ragged] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ragged simplex uses TP-inlined constraint transforms" tags=[:slic, :ragged, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     @test transpiles(c3_ragged_simplex_model)
     @test stanc_compiles(c3_ragged_simplex_model)
     code = stan_code(c3_ragged_simplex_model)
@@ -4545,7 +7943,7 @@ end
 """
 Verify `slic: ragged Cholesky factors use flattened matrix carriers` in an isolated test item.
 """
-@testitem "slic: ragged Cholesky factors use flattened matrix carriers" tags=[:slic, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ragged Cholesky factors use flattened matrix carriers" tags=[:slic, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     cases = (
         (c3_ragged_cholesky_corr_model, "cholesky_factor_corr_jacobian", 4),
         (c3_ragged_cholesky_cov_model, "cholesky_factor_cov_jacobian", 10),
@@ -4602,7 +8000,7 @@ end
 """
 Verify `slic: ragged ordered constrained parameters` in an isolated test item.
 """
-@testitem "slic: ragged ordered constrained parameters" tags=[:slic, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ragged ordered constrained parameters" tags=[:slic, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     Ks = [1, 2, 4]
     ordered_model = @slic (;Ks, y=0.2) begin
         p::ordered[Ks] ~ flat()
@@ -4661,7 +8059,7 @@ own getindex/length UDFs firing on a bound (non-construction) data name. This is
 non-plate regression the plate testitems above never exercised (their ragged carriers
 are PARAMETERS built by the plate, not ingested `Vector{Vector}` DATA).
 """
-@testitem "slic: ragged data indexes as a first-class container outside a plate" tags=[:slic, :ragged, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: ragged data indexes as a first-class container outside a plate" tags=[:slic, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     ragged = [[0.1, 0.2], [0.3, 0.4, 0.5], [0.6]]
 
     # `y[g]` (literal AND data-driven index) + `length(y)`, all OUTSIDE any plate.
@@ -4683,10 +8081,15 @@ are PARAMETERS built by the plate, not ingested `Vector{Vector}` DATA).
     @test occursin(r"tuple\(vector\[y_mem_n\], array\[y_ends_n\] int\) y;", stan_block(code, "data"))
     let td = stan_block(code, "transformed data")
         # `y[g]` routes through RaggedVector's getindex UDF (a bound data name is NOT a
-        # construction), sized by the data-qualified per-group length.
+        # construction), sized by the data-qualified per-group length. A real-backed
+        # group reads as a `vector` (the UDF's element type is now computed from the
+        # carrier — `typeof(rv.mem[1])` — so an int-backed group would read as
+        # `array[] int`; snag ragged-int-obser-771dd259). The size expression is the
+        # group length, whether spelled as the `ragged_length_RaggedVector(y, 1)` UDF
+        # call or its inlined `ragged_end - ragged_start + 1` equivalent.
         @test occursin("getindex_RaggedVector(y, 1)", td)
         @test occursin("getindex_RaggedVector(y, g)", td)
-        @test occursin(r"vector\[ragged_length_RaggedVector\(y, 1\)\]", td)
+        @test occursin(r"vector\[[^\n]*RaggedVector\(y, 1\)[^\n]*\] first_group", td)
         # `length(y)` counts groups via `size(ends)`.
         @test occursin("num_elements_RaggedVector(y)", td)
     end
@@ -4710,7 +8113,7 @@ lowers to Stan's native `col(X, j)`, `EachRow(X)[i]` to `row(X, i)`, and
 `length(EachCol(X))` to `cols(X)`. Pairs with `plate` to broadcast a submodel over
 columns. (EachSlice deferred — it would need 3-D+ container support.)
 """
-@testitem "slic: EachCol / EachRow are first-class column/row matrix views" tags=[:slic, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: EachCol / EachRow are first-class column/row matrix views" tags=[:slic, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     X = reshape(collect(1.0:15.0), 3, 5)   # deterministic 3×5
 
     # (1) column/row indexing OUTSIDE a plate, end-to-end through BridgeStan.
@@ -5149,6 +8552,73 @@ scalar. The scalar trial count must be expanded to make Stan return `int[n]`.
 end
 
 """
+Regression for a vector-valued native beta-binomial observation with scalar
+trials. Its generated-quantities draw carries the observation's sized token,
+so the scalar trial count must be expanded before calling the native RNG.
+"""
+@testitem "slic: beta-binomial scalar trials generate vector predictions" tags=[:slic, :descriptor, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    fixed = @slic (; y = [1, 2, 3]) begin
+        y ~ beta_binomial(8, 0.4, 5.0)
+    end
+    fixed_d = stan_descriptor(fixed; name = :beta_binomial_scalar_args)
+    fixed_outs = Dict(o.name => o for o in fixed_d.outputs)
+    @test fixed_outs[:y_gen].type == :int
+    @test fixed_outs[:y_gen].size == (:y_n,)
+    @test fixed_outs[:y_gen].generative == :draw
+    @test fixed_outs[:y_gen].source == :y
+    @test fixed_outs[:y_likelihood].type == :vector
+    @test fixed_outs[:y_likelihood].size == (:y_n,)
+    @test fixed_outs[:y_likelihood].generative == :pointwise_loglik
+    @test fixed_outs[:y_likelihood].source == :y
+    @test stan_operation(fixed_d, :predict).outputs == (:y_gen,)
+    @test stan_operation(fixed_d, :pointwise_loglik).outputs == (:y_likelihood,)
+    fixed_code = stan_code(fixed)
+    @test occursin("beta_binomial_int_rng(y_n, 8, 0.4, 5.0)",
+                   stan_block(fixed_code, "generated quantities"))
+    @test occursin("beta_binomial_rng(rep_array(N, n), a, b)",
+                   stan_block(fixed_code, "functions"))
+    @test stanc_compiles(fixed)
+
+    model = @slic (; y = [1, 2, 3]) begin
+        log_alpha ~ normal(0.0, 1.0)
+        log_beta ~ normal(0.0, 1.0)
+        y ~ beta_binomial(8, exp(log_alpha), exp(log_beta))
+    end
+    d = stan_descriptor(model; name = :beta_binomial_scalar_trials)
+    problem = stan_execute(d, :fit)
+    dim = LogDensityProblems.dimension(problem)
+    @test dim == 2
+    pred = stan_execute(d, :predict; problem, draws = zeros(dim), seed = 2026)
+    @test keys(pred) == (:y_gen,)
+    @test length(pred.y_gen) == 3
+    @test all(draw -> isinteger(draw) && 0 <= draw <= 8, pred.y_gen)
+    ll = stan_execute(d, :pointwise_loglik; problem, draws = zeros(dim), seed = 2026)
+    @test keys(ll) == (:y_likelihood,)
+    @test length(ll.y_likelihood) == 3
+    @test all(isfinite, ll.y_likelihood)
+
+    varying_alpha = @slic (; y = [1, 2, 3], alpha = [0.4, 0.8, 1.2]) begin
+        y ~ beta_binomial(8, alpha, 5.0)
+    end
+    varying_alpha_d = stan_descriptor(varying_alpha; name = :beta_binomial_vector_alpha)
+    varying_alpha_outs = Dict(o.name => o for o in varying_alpha_d.outputs)
+    @test varying_alpha_outs[:y_gen].type == :int
+    @test varying_alpha_outs[:y_gen].size == (:y_n,)
+    @test stanc_compiles(varying_alpha)
+
+    varying_trials = @slic (; y = [1, 2, 3], trials = [8, 8, 8]) begin
+        y ~ beta_binomial(trials, 0.4, 5.0)
+    end
+    varying_d = stan_descriptor(varying_trials; name = :beta_binomial_vector_trials)
+    varying_outs = Dict(o.name => o for o in varying_d.outputs)
+    @test varying_outs[:y_gen].type == :int
+    @test varying_outs[:y_gen].size == (:trials_n,)
+    @test stanc_compiles(varying_trials)
+end
+
+"""
 Regression for a vector-valued binomial-logit observation with scalar trials.
 The generated-quantities draw carries the observation's sized token, so its RNG
 signature is `(int[n], int, vector[n])` even though Stan broadcasts the scalar
@@ -5231,7 +8701,7 @@ all three paths: density, auto-RNG prediction, and pointwise log likelihood.
     K = 3
     model = @slic (; x = [-1.0, -0.25, 0.5, 1.25], y = [1, 2, 3, 2], N, K) begin
         beta::vector[K-1] ~ std_normal()
-        logits::vector[K] ~ plate(x; outer = (N,)) do xi
+        logits::matrix[K,N] ~ plate(x; outer = (N,)) do xi
             append_row(0.0, beta * xi)
         end
         y ~ categorical_logit(logits)
@@ -5297,19 +8767,24 @@ and the DENSE per-cell plate form were already correct, and must stay so.
     # The covariate is ALSO a RaggedVector — being ragged is not what makes a
     # column observed; appearing left of a `~` is.
     @test !Dict(i.name => i for i in d.inputs)[:ts].observed
-    # A ragged observation base still gets no `_gen` twin (no declarable Stan
-    # shape), so `:predict` must stay absent — conditioning on a column and
-    # being able to predict it are different questions.
-    @test :predict ∉ ops(d)
-    @test :pointwise_loglik ∉ ops(d)
+    # The plate accessor certifies the logical group boundaries, so the compiler
+    # can now expose a flat draw and one aggregate likelihood per group.
+    outs = Dict(o.name => o for o in d.outputs)
+    @test outs[:ys_gen].source == :ys
+    @test outs[:ys_likelihood].source == :ys
+    @test outs[:ys_gen].segments == [3, 5, 9]
+    @test outs[:ys_likelihood].segments == [3, 5, 9]
+    @test :predict in ops(d)
+    @test :pointwise_loglik in ops(d)
 
     # (2) Already-correct sibling: top-level ragged obs, broadcast across groups.
     do_ = stan_descriptor(c3_plate_ragged_obs_outside_model; name = :outside)
     @test obs(do_) == [:ys]
     @test :fit in ops(do_)
 
-    # (3) Already-correct sibling: a DENSE per-cell plate obs, which DOES get a
-    # `_gen` twin — the widened walk must not disturb it.
+    # (3) Already-correct sibling: a DENSE per-cell plate obs gets a `_gen`
+    # twin but deliberately no likelihood companion. The ragged-specific path
+    # must not change that contract.
     dense = @slic (; ys = [1.0, 2.0, 3.0], nsub = 3) begin
         sigma ~ exponential(1)
         mu ~ plate(; outer = (nsub,)) do i
@@ -5321,6 +8796,11 @@ and the DENSE per-cell plate form were already correct, and must stay so.
     dd = stan_descriptor(dense; name = :dense_cell)
     @test obs(dd) == [:ys]
     @test :fit in ops(dd)
+    douts = Dict(o.name => o for o in dd.outputs)
+    @test haskey(douts, :ys_gen)
+    @test !haskey(douts, :ys_likelihood)
+    @test :predict in ops(dd)
+    @test :pointwise_loglik ∉ ops(dd)
 
     # A compound (non-projection) sampling LHS must still NOT mark a base
     # observed — the walk was widened to structural projections only, not to
@@ -5389,20 +8869,26 @@ Verify the descriptor over the PLATE shape — the case `e4f0964`'s two testitem
 did not reach. A per-cell observation inside a compiler-owned plate loop gets
 its `<base>_gen` twin from `_push_obs_gen_decl!` INSIDE a `ForExpr`, while
 `_output_symbols` deliberately does not descend into such a loop (the base is
-declared separately). That interaction, the ragged carve-out, and the
-distinction between a gq observation-twin and a gq prior RE-DRAW are what this
-item pins down.
+declared separately). That interaction, the RAGGED observation's own pair of
+twins, and the distinction between a gq observation-twin and a gq prior RE-DRAW
+are what this item pins down.
 
 Todo `2026-07-22T11-53-04-745-0ly84er`, from decision `0a6ftf8` resolving "no
 preference": the two gaps I had flagged are reachable from pure `@slic`, so
 none of this needs BRM.
+
+The ragged half was a deliberate CARVE-OUT until decision
+`2026-07-29T17-18-58-036-0w0r1yf` (snag ragged-observati-6a26481b): a ragged
+observation lowered to a model-only density loop, so it advertised neither
+`:predict` nor `:pointwise_loglik`. It now emits both twins and publishes the
+group boundaries as `ModelOutput.segments`.
 """
-@testitem "slic: descriptor over plate observations, ragged carve-out and gq re-draws" tags=[:slic, :descriptor, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: descriptor over plate observations, ragged twins and gq re-draws" tags=[:slic, :descriptor, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # --- per-cell plate observation: the twin is reached through a loop -------
     obs_plate = @slic (; n_groups = 5, k = 3, y = [0.2, -0.1, 0.3, 0.0, 0.4]) begin
         L::cholesky_factor_corr[k] ~ lkj_corr_cholesky(2.0)
         tau::vector[k] ~ normal(0.0, 1.0; lower = 0.0)
-        b::vector[k] ~ plate(y; outer = (n_groups,)) do yi
+        b::matrix[k, n_groups] ~ plate(y; outer = (n_groups,)) do yi
             cell ~ c3_plate_fixed_correlated_cell(k, L, tau)
             yi ~ normal(cell[1], 0.5)
             cell
@@ -5442,18 +8928,42 @@ none of this needs BRM.
     # dropped by the same bug that dropped `y_gen` — assert them so a future
     # skip-the-DeclExpr regression fails here loudly rather than silently
     # shrinking every plate model's output set.
-    @test outs[:b].kind == :transformed_parameter
+    # The likelihood reads the cell, not the collected `b`: `b` is an unconsumed
+    # fill and therefore a (derived) generated quantity; the cell chain is sampled.
+    @test outs[:b].kind == :generated_quantity
+    @test outs[:b].generative == :derived
     @test outs[:b_cell].kind == :transformed_parameter
     @test outs[:b_cell_z].kind == :parameter
 
-    # --- ragged carve-out: no declarable shape ⇒ no twin ⇒ no :predict -------
+    # --- ragged observation: BOTH twins, plus the group boundaries ------------
     rd = stan_descriptor(c3_plate_ragged_obs_outside_model; name = :ragged)
-    @test !any(o -> o.generative == :draw, rd.outputs)
-    @test :predict ∉ [op.name for op in rd.operations]
-    # It is still an observation — pass (1) sees the model-block `~` even though
-    # pass (2) has no twin to find. The two passes are not redundant.
+    routs = Dict(o.name => o for o in rd.outputs)
+    @test routs[:ys_gen].kind == :generated_quantity
+    @test routs[:ys_gen].generative == :draw && routs[:ys_gen].source == :ys
+    @test routs[:ys_likelihood].generative == :pointwise_loglik
+    @test routs[:ys_likelihood].source == :ys
+    @test [o.name for o in rd.outputs if o.generative == :draw] == [:ys_gen]
+    let ops = [op.name for op in rd.operations]
+        @test :predict in ops && :pointwise_loglik in ops && :fit in ops
+    end
+    @test stan_operation(rd, :predict).outputs == (:ys_gen,)
+    @test stan_operation(rd, :pointwise_loglik).outputs == (:ys_likelihood,)
+    # Contract B of `0w0r1yf`: `ys_gen` is emitted FLAT (one `vector` holding
+    # every group end to end), so the descriptor publishes the group boundaries
+    # — the carrier's own inclusive 1-based `ends` — and a consumer cuts the
+    # draw back into groups without reaching into the `(mem, ends)` tuple.
+    # Groups here are 3, 2 and 4 elements long.
+    @test routs[:ys_gen].segments == [3, 5, 9]
+    @test routs[:ys_likelihood].segments == [3, 5, 9]
+    # `ys_gen` is flat over the memory; `ys_likelihood` is one scalar per group.
+    @test occursin("num_elements_RaggedVector", string(routs[:ys_likelihood].size[1]))
+    @test !occursin("RaggedVector", string(routs[:ys_gen].size[1]))
+    # Pass (1) still sees the model-block `~` — the two passes are not redundant,
+    # and a ragged obs is the only shape where pass (1) is the sole signal for
+    # the `observed` flag (its LHS reaches the cell through a `getfield`).
     @test Dict(i.name => i for i in rd.inputs)[:ys].observed
-    @test :fit in [op.name for op in rd.operations]
+    # A DENSE observation has no segmentation to report.
+    @test outs[:y_gen].segments === nothing
 
     # --- a gq prior RE-DRAW is :derived, not :draw ---------------------------
     # cv-tainting `eta` flips `L` out of `parameters` into a generated-quantities
@@ -5496,6 +9006,19 @@ is skipped for a ragged plate-sliced obs.
 @testitem "slic: unresolved sampling distribution fails loudly" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     ys = [randn(3) for _ in 1:4]
     xs = [randn(3) for _ in 1:4]
+
+    # Provenance is derived from exact-signature marker METHODS, not a mutable
+    # process-global registry. Multiple overloads of one function contribute
+    # multiple methods; the name-level query still distinguishes UDF-only,
+    # native-only, and mixed families.
+    sb = StanBlocks.stan
+    @test !isdefined(sb, :_marked_backed)
+    @test sb.udf_backed(sb.builtin.truncated_normal_lpdf)
+    @test !sb.native_backed(sb.builtin.truncated_normal_lpdf)
+    @test !sb.udf_backed(sb.builtin.normal_lpdf)
+    @test sb.native_backed(sb.builtin.normal_lpdf)
+    @test sb.udf_backed(sb.builtin.lkj_corr_cholesky_lpdf)
+    @test sb.native_backed(sb.builtin.lkj_corr_cholesky_lpdf)
 
     # --- POSITIVE: the registered ALL-VECTOR signature still resolves --------
     # Both in a ragged plate cell and at top level: the UDF is emitted and stanc
@@ -5582,6 +9105,206 @@ is skipped for a ragged plate-sliced obs.
     end
     @test transpiles(native_both)
     @test stanc_compiles(native_both)
+end
+
+"""
+A module's own `@deffun` resolves past a same-named builtin on arity mismatch.
+
+Regression for snag `module-deffun-sh-c54067c8` (reported by Bruno). Symbol
+resolution is info → builtin → mod → Main, so a DIRECT `_lpdf`/`_rng` call to a
+name the builtin owns NEVER consulted the defining module — even when no
+builtin overload matched the argument shapes. The call then traced to
+`anything` with no `fundef`, no definition was emitted, and (unlike the `~`
+form, which `_check_lpxf_resolves` guards) nothing raised: Bruno's 4-arg
+`truncated_normal_lpdf` call inside its own `@deffun` was shadowed by the 5-arg
+builtin into Stan that stanc rejected as an undeclared identifier.
+
+The fix re-traces such a call against the module's binding when the builtin
+yields `anything` with no `fundef` for a udf-only name; when the module's
+overloads match nothing either it fails loudly naming both definitions.
+"""
+@testitem "slic: module @deffun resolves past a same-named builtin on arity mismatch" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+
+    # Bruno's shape, replayed in this item's own module: a 4-arg left-censored
+    # `truncated_normal_lpdf` + 3-arg rng next to the builtin's 5-arg
+    # (lloq+uloq) overload of the same name.
+    @deffun @lhs @lpxf truncated_normal_lpdf(y::real, loc::real, scale::real, lloq::real)::real =
+        if y <= lloq
+            normal_lcdf(lloq, loc, scale)
+        else
+            normal_lpdf(y, loc, scale)
+        end
+    @deffun mymax(a::real, b::real)::real = if a > b
+        a
+    else
+        b
+    end
+    @deffun truncated_normal_rng(loc::real, scale::real, lloq::real)::real =
+        mymax(normal_rng(loc, scale), lloq)
+    @deffun addpropnormal_lpdfs(y::real, loc::real, add_scale::real, prop_scale::real, lloq::real)::real =
+        truncated_normal_lpdf(y, loc, sqrt(add_scale^2 + (loc * prop_scale)^2), lloq)
+    @deffun addpropnormal_lpdfs(y::vector[n], loc::vector[n], add_scale::vector[n], prop_scale::vector[n], lloq::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = addpropnormal_lpdfs(y[i], loc[i], add_scale[i], prop_scale[i], lloq[i])
+        end
+        rv
+    end
+    @deffun @lhs @lpxf addpropnormal_lpdf(y::vector[n], loc::vector[n], add_scale::vector[n], prop_scale::vector[n], lloq::vector[n])::real =
+        sum(addpropnormal_lpdfs(y, loc, add_scale, prop_scale, lloq))
+    @deffun addpropnormal_rng(loc::real, add_scale::real, prop_scale::real, lloq::real)::real =
+        truncated_normal_rng(loc, sqrt(add_scale^2 + (loc * prop_scale)^2), lloq)
+    @deffun addpropnormal_rng(loc::vector[n], add_scale::vector[n], prop_scale::vector[n], lloq::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = addpropnormal_rng(loc[i], add_scale[i], prop_scale[i], lloq[i])
+        end
+        rv
+    end
+    @deffun addpropnormal_rng(vector[n], loc::vector[n], add_scale::vector[n], prop_scale::vector[n], lloq::vector[n])::vector[n] =
+        addpropnormal_rng(loc, add_scale, prop_scale, lloq)
+
+    # --- POSITIVE: the module's definitions are emitted, stanc accepts ------
+    m = @slic (; y = [0.5, -0.2], lloq = [-1.0, -1.0]) begin
+        mu ~ normal(0.0, 1.0)
+        locv = mu .+ [0.0, 0.0]
+        y ~ addpropnormal(locv, [0.5, 0.5], [0.1, 0.1], lloq)
+        mu
+    end
+    code = stan_code(m)
+    @test occursin("real truncated_normal_lpdf(", code)
+    @test occursin("real truncated_normal_rng(", code)
+    # The MODULE's left-censored body — not the builtin's two-sided one.
+    @test occursin("if((y <= lloq))", code)
+    @test occursin("normal_lcdf(lloq | loc, scale)", code)
+    @test !occursin("normal_lccdf", code)
+    @test stanc_compiles(m)
+
+    # --- DIRECTION PIN: a matching builtin call is untouched by the retry ----
+    # From the SAME colliding module, the 5-arg shape still resolves to the
+    # builtin (its body uses `normal_lccdf`, which the module's never does).
+    @deffun both_lpdfs(y::real, loc::real, s::real, lo::real, hi::real)::real =
+        truncated_normal_lpdf(y, loc, s, lo, hi)
+    @deffun both_lpdfs(y::vector[n], loc::vector[n], s::vector[n], lo::vector[n], hi::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = both_lpdfs(y[i], loc[i], s[i], lo[i], hi[i])
+        end
+        rv
+    end
+    @deffun @lhs @lpxf both_lpdf(y::vector[n], loc::vector[n], s::vector[n], lo::vector[n], hi::vector[n])::real =
+        sum(both_lpdfs(y, loc, s, lo, hi))
+    @deffun both_rng(mu::real, s::real, lo::real, hi::real)::real = normal_rng(mu, s)
+    @deffun both_rng(mu::vector[n], s::vector[n], lo::vector[n], hi::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = both_rng(mu[i], s[i], lo[i], hi[i])
+        end
+        rv
+    end
+    @deffun both_rng(vector[n], mu::vector[n], s::vector[n], lo::vector[n], hi::vector[n])::vector[n] =
+        both_rng(mu, s, lo, hi)
+    m5 = @slic (; y = [0.5, -0.2]) begin
+        mu ~ normal(0.0, 1.0)
+        locv = mu .+ [0.0, 0.0]
+        y ~ both(locv, [0.5, 0.5], [-1.0, -1.0], [2.0, 2.0])
+        mu
+    end
+    code5 = stan_code(m5)
+    @test occursin("normal_lccdf", code5)
+    @test stanc_compiles(m5)
+
+    # --- NEGATIVE: no match in EITHER module fails loudly, naming both ------
+    # A 3-arg call matches neither the builtin 5-arg nor the module 4-arg
+    # overload. Before the fix this emitted an undefined call (stanc's problem);
+    # now tracing itself refuses with both definitions named.
+    @deffun bad_lpdfs(y::real, loc::real, s::real)::real =
+        truncated_normal_lpdf(y, loc, s)
+    @deffun bad_lpdfs(y::vector[n], loc::vector[n], s::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = bad_lpdfs(y[i], loc[i], s[i])
+        end
+        rv
+    end
+    @deffun @lhs @lpxf bad_lpdf(y::vector[n], loc::vector[n], s::vector[n])::real =
+        sum(bad_lpdfs(y, loc, s))
+    @deffun bad_rng(mu::real, s::real)::real = normal_rng(mu, s)
+    @deffun bad_rng(mu::vector[n], s::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = bad_rng(mu[i], s[i])
+        end
+        rv
+    end
+    @deffun bad_rng(vector[n], mu::vector[n], s::vector[n])::vector[n] =
+        bad_rng(mu, s)
+    bad_m = @slic (; y = [0.5, -0.2]) begin
+        mu ~ normal(0.0, 1.0)
+        locv = mu .+ [0.0, 0.0]
+        y ~ bad(locv, [0.5, 0.5])
+        mu
+    end
+    @test_throws "no registered signature matches" stan_code(bad_m)
+    @test_throws "truncated_normal_lpdf" stan_code(bad_m)
+    @test_throws "builtin" stan_code(bad_m)
+end
+
+@testitem "slic: cv-tainted typed-LHS size re-draws the parameter in gq" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    # Two DOCUMENTED-EQUIVALENT spellings of ONE model (stanblocks-use §4:
+    # `name::Type[dims] ~ dist(...)` desugars to `name ~ dist(...; n=...)`). Under
+    # CV the size `J = maximum(subject)` is held out, so nothing informs `alpha`
+    # and it must leave `parameters` and re-draw in generated quantities — exactly
+    # as the `n=` spelling already did. The typed-LHS forward pass read cv off the
+    # DISTRIBUTION ARGS only (`mu, tau`), never off the declared size, so it stayed
+    # a fitted parameter: a prior draw dressed up as a fit (snag typed-lhs-size).
+    subject = [1, 1, 2, 2, 3, 3]
+    y = [0.2, -0.1, 0.3, 0.0, 0.4, -0.2]
+    typed = @slic (; y, subject) begin
+        J = maximum(subject); mu ~ normal(0, 1); tau ~ exponential(1)
+        alpha :: vector[J] ~ normal(mu, tau)
+        sigma ~ exponential(1); y ~ normal(alpha[subject], sigma)
+    end
+    kwarg = @slic (; y, subject) begin
+        J = maximum(subject); mu ~ normal(0, 1); tau ~ exponential(1)
+        alpha ~ normal(mu, tau; n = J)
+        sigma ~ exponential(1); y ~ normal(alpha[subject], sigma)
+    end
+    mark(m) = m(; y = y, subject = StanBlocks.stan.maybecv(:subject, subject))
+    plain(m) = m(; y = y, subject = subject)
+
+    # --- UNMARKED: an ordinary fit is untouched; `alpha` stays a parameter. ------
+    let code = stan_code(plain(typed))
+        @test stanc_compiles(plain(typed))
+        @test occursin("vector[J] alpha", stan_block(code, "parameters"))
+        @test occursin(r"alpha ~ normal\(mu, tau\)", stan_block(code, "model"))
+        @test occursin(r"y ~ normal\(alpha\[subject\], sigma\)", stan_block(code, "model"))
+    end
+    # The two spellings agree WITHOUT cv too — the fix must not perturb the fit.
+    @test stan_code(plain(typed)) == stan_code(plain(kwarg))
+
+    # --- MARKED: the typed-LHS spelling now matches the `n=` spelling exactly. ---
+    @test stan_code(mark(typed)) == stan_code(mark(kwarg))
+    let code = stan_code(mark(typed))
+        @test transpiles(mark(typed))
+        @test stanc_compiles(mark(typed))
+        params, gq, mdl = stan_block(code, "parameters"),
+                          stan_block(code, "generated quantities"),
+                          stan_block(code, "model")
+        # `alpha` leaves `parameters` and re-draws from its hyperprior in gq.
+        @test !occursin("alpha", params)
+        @test occursin(r"vector\[J\] alpha = normal_vector_rng\(J, mu, tau\)", gq)
+        # The held-out likelihood and the prior `~` both leave the model block.
+        @test !occursin("alpha ~", mdl)
+        @test !occursin(r"y ~ normal", mdl)
+        # The untainted hyperparameters stay fitted.
+        @test occursin("real mu", params)
+        @test occursin("tau", params)
+        @test occursin("sigma", params)
+    end
 end
 
 """
@@ -5792,6 +9515,107 @@ The unmarked emission must stay byte-identical; the flat spelling is the control
     end
 end
 
+@testitem "slic: constrained-matrix (Cholesky) plate cells collect, sample, and route cv" tags=[:slic, :plate, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Snag stanblocks-plate-248f67d3 (BRM): the stratified correlated ranef
+    # `(e | gr(g, by=b))` needs ONE `cholesky_factor_corr[n_terms]` cell per
+    # stratum, collected as Stan `array[n_strata] cholesky_factor_corr[n_terms]`
+    # — the constrained-matrix analogue of the `:constrained_vector` increment
+    # (`921afb1`). Both cell spellings must reach the same promotion: the typed
+    # declaration and the untyped `n=`-kwarg family call.
+    n_strata, n_terms, n_groups, n_obs = 2, 2, 8, 40
+    sidx = repeat(1:n_strata; outer = div(n_groups, n_strata))
+    gidx = repeat(1:n_groups; inner = div(n_obs, n_groups))
+    data = (; stratum_idx = sidx, n_strata, n_terms, n_groups,
+              Z = randn(n_obs, n_terms), y = randn(n_obs), group_idx = gidx)
+
+    function stratified(decl)
+        if decl
+            @slic (; data...) begin
+                n_g = maximum(group_idx)
+                L ~ plate(; outer = (n_strata,)) do s
+                    L_s::cholesky_factor_corr[n_terms] ~ lkj_corr_cholesky(1.)
+                    L_s
+                end
+                tau ~ std_normal(; n = n_terms, lower = 0.)
+                b_cols ~ plate(; outer = (n_g,)) do g
+                    z_g::vector[n_terms] ~ std_normal()
+                    diag_pre_multiply(tau, L[stratum_idx[g]]) * z_g
+                end
+                mu = rows_dot_product(Z, (b_cols')[group_idx, :])
+                y ~ normal(mu, 1.)
+            end
+        else
+            @slic (; data...) begin
+                n_g = maximum(group_idx)
+                L ~ plate(; outer = (n_strata,)) do s
+                    L_s ~ lkj_corr_cholesky(1.; n = n_terms)
+                    L_s
+                end
+                tau ~ std_normal(; n = n_terms, lower = 0.)
+                b_cols ~ plate(; outer = (n_g,)) do g
+                    z_g::vector[n_terms] ~ std_normal()
+                    diag_pre_multiply(tau, L[stratum_idx[g]]) * z_g
+                end
+                mu = rows_dot_product(Z, (b_cols')[group_idx, :])
+                y ~ normal(mu, 1.)
+            end
+        end
+    end
+
+    for decl in (true, false)
+        m = stratified(decl)
+        code = stan_code(m)
+        params = stan_block(code, "parameters")
+        tp = stan_block(code, "transformed parameters")
+        mdl = stan_block(code, "model")
+        # The cell storage is an ARRAY of constrained matrices: Stan applies the
+        # per-cell constraint transform + jacobian; the collected result copy in
+        # `transformed parameters` is validate-only.
+        @test occursin("array[n_strata] cholesky_factor_corr[n_terms]", params)
+        @test occursin("array[n_strata] cholesky_factor_corr[n_terms]", tp)
+        @test occursin(r"~ lkj_corr_cholesky\(1\.0\)", mdl)
+        @test stanc_compiles(m)
+    end
+
+    # End-to-end: the constrained array carries a finite log-density and finite
+    # analytic gradients through BridgeStan.
+    let problem = instantiate(stan_model(stratified(true)))
+        x0 = zeros(LogDensityProblems.dimension(problem))
+        @test isfinite(LogDensityProblems.logdensity(problem, x0))
+        lp2, grad = LogDensityProblems.logdensity_and_gradient(problem, x0)
+        @test isfinite(lp2)
+        @test all(isfinite, grad)
+    end
+
+    # cv: the STRATUM cells are not held out, so they stay fitted parameters;
+    # only the per-group draws (whose outer size is cv-tainted via
+    # `maximum(group_idx)`) re-draw in generated quantities.
+    let cv_model = stratified(true)(; group_idx = StanBlocks.stan.maybecv(:group_idx, gidx)),
+        code = stan_code(cv_model)
+        @test stanc_compiles(cv_model)
+        @test occursin("array[n_strata] cholesky_factor_corr[n_terms]", stan_block(code, "parameters"))
+        @test occursin("b_cols_z", stan_block(code, "generated quantities"))
+        @test !occursin("b_cols_z", stan_block(code, "parameters"))
+    end
+
+    # A varying-size constrained cell has no Stan declaration — refuse loudly
+    # instead of emitting `array[...] <ct>[K[plate_i]]` for stanc to reject.
+    let ragged_cholesky = @slic (; Ks = [2, 3]) begin
+            L ~ plate(; outer = (2,)) do g
+                L_g ~ lkj_corr_cholesky(1.; n = Ks[g])
+                L_g
+            end
+        end
+        err = try
+            stan_code(ragged_cholesky); nothing
+        catch e
+            e
+        end
+        @test err !== nothing
+        @test occursin("varying-size constrained cell", sprint(showerror, err))
+    end
+end
+
 """
 Verify `slic: error formatter never destroys the error it formats` in an
 isolated test item.
@@ -5806,7 +9630,7 @@ isolated test item.
     # `:tuple`/`:block` head. Before the fix that throw escaped `showerror`
     # itself, replacing a perfectly good diagnostic with an unrelated crash
     # (and killing Julia's top-level error printer outright).
-    # Reported by Bruno as snag `error-formatter-79e40522`.
+    # Reported via snag `error-formatter-79e40522`.
     unrenderable = @slic begin
         x::real ~ normal(0, 1)
         y ~ definitely_not_a_slic_function(g -> g + x)
@@ -5841,6 +9665,316 @@ isolated test item.
     @test occursin("Could not find definitely_not_a_slic_variable", oshown)
     @test occursin("While processing:", oshown)
     @test !occursin("<unrenderable", oshown)
+end
+
+"""
+Verify `slic: int/real 2-d array row-slice + sub-array getindex` in an isolated
+test item.
+"""
+@testitem "slic: int/real 2-d array row-slice + sub-array getindex" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # `y[i, :]` on an `int[m,n]` / `real[m,n]` array desugars (functions.jl
+    # colon rules) to `getindex(<arr>[m,n], int, int[o])`, and `y[a, b]` to
+    # `(<arr>[m,n], int[o], int[p])`. Those rows mirror the `matrix[m,n]` ones
+    # but were missing for the array center types, so a row-slice degraded to
+    # `anything` and an int-array row-slice ASSIGNMENT inside a custom `_rng`
+    # (e.g. `y[i,:] = multinomial_rng(...)`) failed to transpile. Snag
+    # `multinomial-cust-59569d79`.
+    @deffun begin
+        ia_row(y::int[m,n], i::int)::int[n]  = y[i, :]
+        ia_col(y::int[m,n], j::int)::int[m]  = y[:, j]
+        isub(y::int[m,n], a::int[o], b::int[p])::int[o,p] = y[a, b]
+    end
+    @test string(StanBlocks.return_type_of(ia_row, zeros(Int,2,3), 1)) == "array[3] int"
+    @test string(StanBlocks.return_type_of(ia_col, zeros(Int,2,3), 1)) == "array[2] int"
+    @test string(StanBlocks.return_type_of(isub, zeros(Int,3,4), [1,2], [1,2,3])) == "array[2, 3] int"
+
+    # `real[m,n]` (array-of-real) is not constructible from a Julia value (a
+    # Matrix{Float64} is Stan `matrix`), so exercise its slice rows through a
+    # @deffun arg typed `real[m,n]` and transpile a model that reads them.
+    @deffun begin
+        rrow(y::real[m,n], i::int)::real[n]                 = y[i, :]
+        rsub(y::real[m,n], a::int[o], b::int[p])::real[o,p] = y[a, b]
+    end
+    m = @slic (; rr = [1,2], cc = [1,2]) begin
+        Xa :: real[2,3]
+        r  = rrow(Xa, 1)          # real[3]
+        s  = rsub(Xa, rr, cc)     # real[2,2]
+        mu :: real ~ normal(sum(r) + sum(s[1, :]), 1.0)
+    end
+    @test transpiles(m)
+
+    # The int-array row-slice rng from the snag now transpiles end to end.
+    @deffun begin
+        @lhs @lpxf mnomx_lpmf(obs::int[n_obs, K], probs::vector[K], row_N::int[n_obs])::real = begin
+            lp = 0.0
+            for i in 1:n_obs; lp += multinomial_lpmf(obs[i, :], probs); end
+            lp
+        end
+        mnomx_lpmfs(obs::int[n_obs, K], probs::vector[K], row_N::int[n_obs])::vector[n_obs] = begin
+            ll::vector[n_obs]
+            for i in 1:n_obs; ll[i] = multinomial_lpmf(obs[i, :], probs); end
+            ll
+        end
+        # Auto-GQ deliberately forwards only the density arguments. A count
+        # total needed by the RNG must therefore be an explicit family argument,
+        # even when the density body itself can infer it from the observation.
+        mnomx_rng(int[n_obs, K], probs::vector[K], row_N::int[n_obs])::int[n_obs, K] = begin
+            y::int[n_obs, K]
+            for i in 1:n_obs; y[i, :] = multinomial_rng(probs, row_N[i]); end
+            y
+        end
+    end
+    mm = @slic (; obs = [3 5 2; 4 4 2], row_N = [10, 10], K = 3) begin
+        probs :: simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        obs ~ mnomx(probs, row_N)
+    end
+    code = stan_code(mm)
+    @test occursin(r"obs_gen\s*=\s*mnomx_int_rng\([^;]*probs, row_N\)", code)
+    @test transpiles(mm)
+
+    # The RNG contract cannot depend on an observed LHS existing. Exercise the
+    # sized call directly with only its type token and explicit family args.
+    token = StanBlocks.stan_call(
+        getindex, StanBlocks.stan_expr(StanBlocks.types.int), 2, 3)
+    draw = StanBlocks.stan_call(mnomx_rng, token, fill(1 / 3, 3), [10, 10])
+    @test StanBlocks.center_type(draw) === StanBlocks.types.int
+    @test length(StanBlocks.stan_size(draw)) == 2
+
+    # The built-in multinomial family provides the same explicit-N contract, so
+    # the common row-batched case needs no custom @lpxf wrapper. Its density
+    # validates each supplied total, pointwise GQ emits one value per row, and
+    # predictive GQ can draw from family arguments alone.
+    builtin_mm = @slic (; builtin_obs = [3 5 2; 4 4 2], row_N = [10, 10], K = 3) begin
+        probs :: simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        builtin_obs ~ multinomial(probs, row_N)
+    end
+    builtin_code = stan_code(builtin_mm)
+    @test occursin("builtin_obs ~ multinomial(probs, row_N);", builtin_code)
+    @test occursin("multinomial_lpmfs(builtin_obs, probs, row_N)", builtin_code)
+    @test occursin(r"builtin_obs_gen\s*=\s*multinomial_int_rng\([^;]*probs, row_N\)", builtin_code)
+    @test transpiles(builtin_mm)
+
+    single_mm = @slic (; counts = [3, 5, 2], N = 10, K = 3) begin
+        probs :: simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        counts ~ multinomial(probs, N)
+    end
+    single_code = stan_code(single_mm)
+    @test occursin("counts ~ multinomial(probs, N);", single_code)
+    @test occursin(r"counts_gen\s*=\s*multinomial_int_rng\([^;]*probs, N\)", single_code)
+    @test occursin("multinomial: explicit N must equal sum(obs)", single_code)
+    @test transpiles(single_mm)
+
+    # No observed LHS is required: @lhs infers int[K] from (probs, N), and the
+    # prior-predictive model draws the fresh composition directly in GQ.
+    prior_mm = @slic (; N = 10, K = 3) begin
+        probs :: simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        counts ~ multinomial(probs, N)
+    end
+    prior_code = stan_code(prior_mm)
+    @test occursin(r"counts\s*=\s*multinomial_int_rng\([^;]*probs, N\)", prior_code)
+    @test transpiles(prior_mm)
+
+    prior_batch_mm = @slic (; row_N = [10, 12], K = 3) begin
+        probs :: simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        counts ~ multinomial(probs, row_N)
+    end
+    prior_batch_code = stan_code(prior_batch_mm)
+    @test occursin(r"counts\s*=\s*multinomial_int_rng\([^;]*probs, row_N\)", prior_batch_code)
+    @test transpiles(prior_batch_mm)
+end
+
+@testitem "slic: plain-tuple getindex `p[i]` agrees with getfield" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    # Julia allows `p[i]` on a tuple, and it must behave exactly like
+    # `getfield(p, i)`: BOTH the emitted Stan (positional `p.N`, never the
+    # generic `p[i]` bracket, which stanc rejects on a tuple) AND the resolved
+    # element type (the tuple's `arg_types[i]`, not `anything`). Before the fix
+    # `p[i]` fell to the generic getindex rule: it emitted an invalid bracket
+    # AND typed the element as `anything`, so it transpiled but stanc-failed in a
+    # `sum(...)` context and threw a cryptic `anything`-arithmetic tracetype
+    # error the moment the element was used directly (e.g. `p[1] .+ p[2]`).
+    # Snag `tuple-getindex-e-32be6638`.
+    @deffun pair_test(x::vector[n]) = (x .+ 1.0, x .* 2.0)
+    xv = [1.0, 2.0, 3.0]; yv = [0.5, 0.6, 0.7]
+
+    # (a) scalar `sum(p[i])` context — needs the emission fix.
+    m_sum = @slic (; x = xv, y = yv) begin
+        mu ~ normal(0.0, 1.0)
+        p = pair_test(x)
+        y ~ normal(mu + sum(p[1]) + sum(p[2]), 1.0)
+        mu
+    end
+    code_sum = stan_code(m_sum)
+    @test occursin("p.1", code_sum)
+    @test occursin("p.2", code_sum)
+    @test !occursin("p[1]", code_sum)
+    @test !occursin("p[2]", code_sum)
+    @test stanc_compiles(m_sum)
+
+    # (b) direct element use `p[1] .+ p[2]` — needs the tracetype fix (the
+    # element must resolve to `vector`, not `anything`).
+    m_vec = @slic (; x = xv, y = yv) begin
+        mu ~ normal(0.0, 1.0)
+        p = pair_test(x)
+        y ~ normal(mu .+ p[1] .+ p[2], 1.0)
+        mu
+    end
+    @test transpiles(m_vec)
+    @test stanc_compiles(m_vec)
+
+    # (c) `p[i]` and `getfield(p, i)` emit identical Stan.
+    m_gf = @slic (; x = xv, y = yv) begin
+        mu ~ normal(0.0, 1.0)
+        p = pair_test(x)
+        y ~ normal(mu + sum(getfield(p, 1)) + sum(getfield(p, 2)), 1.0)
+        mu
+    end
+    @test stan_code(m_gf) == code_sum
+end
+
+"""
+Verify `slic: tracetype-not-defined assignment formats without crashing` in an
+isolated test item.
+"""
+@testitem "slic: tracetype-not-defined assignment formats without crashing" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # The generic `tracetype(::CanonicalExpr)` fallback (functions.jl) builds its
+    # "tracetype not defined" message by rendering a `short_expr` copy of the
+    # offending node, whose rhs becomes a `StringStanType` placeholder. Rendering
+    # a `= ` assignment with such a placeholder must NOT crash on
+    # `center_type(::StringStanType)`; the guard in `show(::AssignmentExpr{...})`
+    # skips the code-emission assert for the display placeholder. Same class as
+    # `slic: error formatter never destroys the error it formats` (snag
+    # `error-formatter-79e40522`); reported via snag `multinomial-cust-59569d79`.
+    lhs  = StanBlocks.StanExpr(:y_gen, StanBlocks.StanType(StanBlocks.types.anything))
+    rhs  = StanBlocks.StanExpr(:draw,
+        StanBlocks.StanType(StanBlocks.types.int,
+            (StanBlocks.StanExpr(3, StanBlocks.StanType(StanBlocks.types.int)),)))
+    node = StanBlocks.CanonicalExpr(:(=), lhs, StanBlocks.short_expr(rhs))
+    rendered = string(node)                   # regressed => MethodError here errors the item
+    @test occursin("y_gen", rendered)         # the offending lhs still named
+end
+
+"""
+Verify `slic: structured diagnostics preserve source-part provenance` in an
+isolated test item.
+"""
+@testitem "slic: structured diagnostics preserve source-part provenance" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Parser diagnostics come from JuliaSyntax's structured byte location, not
+    # from the rendered `# Error @ none:L:C` text. The offset maps the trusted
+    # leading `begin` wrapper back onto the submitted editor source.
+    parse_err = try
+        Meta.parse("begin\nx = )\nend")
+        nothing
+    catch err
+        err
+    end
+    parsed = diagnostic(parse_err; source_part="parent", line_offset=-1)
+    @test parsed isa StanBlocksDiagnostic
+    @test parsed.source_part == "parent"
+    @test parsed.line == 1
+    @test parsed.column == 5
+    @test parsed.code == :slic_parse_error
+    @test occursin("unexpected `)`", parsed.message)
+    @test diagnostic(ArgumentError("outside StanBlocks")) === nothing
+
+    # Existing three-element cause tuples remain readable; callers adopting
+    # the new accessor do not require every producer to switch atomically.
+    legacy = StanBlocksError(
+        :transpile,
+        "model",
+        (ErrorException("legacy transpile failure"), nothing, Any[]),
+    )
+    legacy_diag = diagnostic(legacy; source_part="legacy-part")
+    @test legacy_diag.source_part == "legacy-part"
+    @test legacy_diag.code == :slic_transpile_error
+    @test legacy_diag.message == "legacy transpile failure"
+
+    eval_slic(part, source) = Core.eval(
+        @__MODULE__,
+        Expr(:macrocall, Symbol("@slic"), LineNumberNode(0, Symbol(part)), Meta.parse(source)),
+    )
+
+    # A tracing failure points at the editor part supplied on the trusted
+    # macrocall. Julia's lowered AST has line numbers but no expression columns,
+    # so `column === nothing` is the honest structured value.
+    trace_model = eval_slic("parent-model", """begin
+        theta ~ normal(0.0, 1.0)
+        y ~ definitely_missing_diagnostic_call(theta)
+    end""")
+    trace_err = try
+        stan_code(trace_model)
+        nothing
+    catch err
+        err
+    end
+    traced = diagnostic(trace_err; line_offset=-1)
+    @test trace_err isa StanBlocksError
+    @test traced.source_part == "parent-model"
+    @test traced.line == 2
+    @test traced.column === nothing
+    @test traced.code == :slic_trace_error
+    @test occursin("definitely_missing_diagnostic_call", traced.message)
+
+    # A failure after forward tracing has completed is classified separately as
+    # lowering. A bare non-void expression is traceable but cannot be assigned
+    # to a Stan block at statement position.
+    lower_model = eval_slic("lowering-part", """begin
+        1 + 2
+    end""")
+    lower_err = try
+        stan_code(lower_model)
+        nothing
+    catch err
+        err
+    end
+    lowered = diagnostic(lower_err; line_offset=-1)
+    @test lower_err isa StanBlocksError
+    @test lowered.source_part == "lowering-part"
+    @test lowered.line == 1
+    @test lowered.code == :slic_lowering_error
+
+    # Named @slic definitions and @deffun bodies inherit their own macrocall
+    # source part even when their parsed child LineNumberNodes said `none`.
+    sub_def = Meta.parse("""diagnostic_submodel(x::real) = begin
+        z ~ definitely_missing_submodel_call(x)
+    end""")
+    Core.eval(@__MODULE__, Expr(
+        :macrocall, Symbol("@slic"), LineNumberNode(0, Symbol("submodel-definition")), sub_def,
+    ))
+    sub_parent = eval_slic("submodel-parent", """begin
+        child ~ diagnostic_submodel(0.0)
+    end""")
+    sub_err = try
+        stan_code(sub_parent)
+        nothing
+    catch err
+        err
+    end
+    sub_diag = diagnostic(sub_err; line_offset=-1)
+    @test sub_diag.source_part == "submodel-definition"
+    @test sub_diag.line == 1
+    @test sub_diag.code == :slic_trace_error
+
+    udf_def = Meta.parse("""diagnostic_udf(x::real)::real = begin
+        definitely_missing_udf_call(x)
+    end""")
+    Core.eval(@__MODULE__, Expr(
+        :macrocall, Symbol("@deffun"), LineNumberNode(0, Symbol("udf-definition")), udf_def,
+    ))
+    udf_parent = eval_slic("udf-parent", """begin
+        mu = diagnostic_udf(0.0)
+        y ~ normal(mu, 1.0)
+    end""")
+    udf_err = try
+        stan_code(udf_parent)
+        nothing
+    catch err
+        err
+    end
+    udf_diag = diagnostic(udf_err; line_offset=-1)
+    @test udf_diag.source_part == "udf-definition"
+    @test udf_diag.line == 1
+    @test udf_diag.code == :slic_lowering_error
 end
 
 @testitem "slic: plate carries cell constraints through promotion" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
@@ -5880,14 +10014,43 @@ end
     @test occursin("multiplier=tau", affine_params)
     @test stanc_compiles(affine_model)
 
-    # A constraint naming the plate's per-cell position cannot be promoted: the
-    # promoted declaration is emitted OUTSIDE the loop, where that position does
-    # not exist. Refuse loudly rather than emit a model that compiles and is wrong.
-    idx_dependent = try
+    # D2b: a constraint reaching the plate's per-cell position through DATA (here
+    # `l` slices the data vector `lamv`, so `exp(l)` is data-computable) is HOISTED:
+    # the whole `multiplier` is materialised over the outer axis in `transformed
+    # data`, and the promoted `vector[G]` declaration references that carrier BY
+    # NAME. The pre-D2b behaviour was a loud refusal; the wrong alternative — a
+    # silent drop — samples a different posterior with no diagnostic.
+    hoisted_model = @slic (; G, obs = obs_pos, lamv) begin
+        m0 ~ normal(sum(lamv), 1.)
+        s ~ plate(lamv; outer = G) do l
+            c::real ~ normal(m0, 1.; multiplier = exp(l))
+            c
+        end
+        obs ~ normal(s, 1.)
+        s
+    end
+    hoisted_code   = stan_code(hoisted_model)
+    hoisted_tdata  = stan_block(hoisted_code, "transformed data")
+    hoisted_params = stan_block(hoisted_code, "parameters")
+    # The carrier is declared and filled over the outer axis in transformed data…
+    @test occursin(r"vector\[G\] s_c__pl_multiplier_\d+;", hoisted_tdata)
+    @test occursin("exp(lamv[", hoisted_tdata)
+    # …and referenced by NAME on the promoted declaration, never re-inlined into
+    # the parameters block (a per-cell constraint expression there is not valid Stan).
+    @test occursin(r"vector<multiplier=s_c__pl_multiplier_\d+>\[G\] s_c;", hoisted_params)
+    @test !occursin("exp(lamv", hoisted_params)
+    @test stanc_compiles(hoisted_model)
+
+    # A constraint that is index-dependent AND references a PARAMETER (`tau`) cannot
+    # be materialised as transformed data — Stan requires a promoted constraint to be
+    # data-computable. Refuse loudly (D3's rule on the plate path) rather than emit a
+    # model that compiles and is wrong.
+    param_dependent = try
         stan_code(@slic (; G, obs = obs_pos, lamv) begin
-            m0 ~ normal(sum(lamv), 1.)
+            m0  ~ normal(sum(lamv), 1.)
+            tau ~ normal(0., 1.; lower = 0.)
             s ~ plate(lamv; outer = G) do l
-                c::real ~ normal(m0, 1.; lower = 0., multiplier = exp(l))
+                c::real ~ normal(m0, 1.; multiplier = tau * l)
                 c
             end
             obs ~ normal(s, 1.)
@@ -5897,9 +10060,9 @@ end
     catch e
         sprint(showerror, e)
     end
-    @test idx_dependent !== nothing
-    @test occursin("per-cell position", idx_dependent)
-    @test occursin("multiplier", idx_dependent)
+    @test param_dependent !== nothing
+    @test occursin("parameter", param_dependent)
+    @test occursin("multiplier", param_dependent)
 
     # Negative control: a constraint-free plate is untouched by any of this.
     plain_model = @slic (; G, obs = obs_any, lamv) begin
@@ -5959,6 +10122,305 @@ end
     @test !occursin("lam", stan_code(literal_only))
     @test occursin("lower=0.0", stan_block(stan_code(literal_only), "parameters"))
     @test stanc_compiles(literal_only)
+
+    # Control: a DISTRIBUTION-implied bound. `autokwargs` supplies these as raw
+    # Julia values (`exponential`→`lower=0.0`), not as StanExprs like an
+    # author-written `lower=` — so descending into constraints hit
+    # `fetch_data! not defined for value 0.0` on every implied-bound
+    # distribution. The author-written control above does NOT cover this: it
+    # reaches the constraint already wrapped.
+    for (nm, m) in ("exponential" => (@slic (; y) begin
+                        s ~ exponential(1.); y ~ normal(0., s); s end),
+                    "gamma" => (@slic (; y) begin
+                        s ~ gamma(2., 2.); y ~ normal(0., s); s end),
+                    "beta" => (@slic (; y) begin
+                        p ~ beta(2., 2.); y ~ normal(p, 1.); p end))
+        @test occursin("lower=0", stan_block(stan_code(m), "parameters"))
+        @test stanc_compiles(m)
+    end
+end
+
+@testitem "slic: custom-family vector autokwargs preserve coordinate bounds" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    using LogDensityProblems
+    import BridgeStan
+
+    @deffun begin
+        @lpxf coordinate_bound_lpdf(x::vector[n])::real = std_normal_lpdf(x)
+        coordinate_bound_lpdfs(x::vector[n])::vector[n] = std_normal_lpdfs(x)
+        coordinate_bound_rng(vector[n])::vector[n] = begin
+            @stan_assert n == 2
+            out::vector[n]
+            out[1] = uniform_rng(0.2, 0.8)
+            out[2] = uniform_rng(0.3, 0.9)
+            out
+        end
+    end
+    StanBlocks.autokwargs(::StanBlocks.CanonicalExpr{typeof(coordinate_bound)}) =
+        (; lower=adjoint([0.2, 0.3]), upper=adjoint([0.8, 0.9]))
+
+    fitted = @slic (; y=[0.]) begin
+        beta ~ coordinate_bound(; n=2)
+        y ~ normal(sum(beta), 1.)
+        beta
+    end
+    typed = @slic (; y=[0.]) begin
+        beta::vector[2] ~ coordinate_bound()
+        y ~ normal(sum(beta), 1.)
+        beta
+    end
+    expected_decl = "vector<lower=[0.2, 0.3]', upper=[0.8, 0.9]'>[2] beta;"
+    for model in (fitted, typed)
+        code = stan_code(model)
+        @test occursin(expected_decl, stan_block(code, "parameters"))
+        @test stanc_compiles(model)
+    end
+
+    # Plain runtime vectors and syntax-producing extensions are normalised
+    # through the same fold; `Expr(:vect, ...)` must not survive as Stan array
+    # syntax.
+    for raw_bounds in ((; lower=[0.2, 0.3], upper=[0.8, 0.9]),
+                       (; lower=Expr(:vect, 0.2, 0.3),
+                          upper=Expr(:vect, 0.8, 0.9)))
+        bounds = StanBlocks._fold_constraints(:beta, raw_bounds)
+        bound_type = StanBlocks.StanType(StanBlocks.types.vector,
+            (StanBlocks.stan_expr(2, 2),); bounds...)
+        @test sprint(print, bound_type) ==
+            "vector<lower=[0.2, 0.3]', upper=[0.8, 0.9]'>[2]"
+    end
+
+    # Prior-only lowering has no constrained parameter declaration and remains
+    # a zero-dimensional generated-quantities program.
+    prior = @slic begin
+        beta ~ coordinate_bound(; n=2)
+        beta
+    end
+    prior_code = stan_code(prior)
+    @test !occursin("beta", stan_block(prior_code, "parameters"))
+    @test occursin("vector[2] beta = coordinate_bound_vector_rng(2)", prior_code)
+    @test stanc_compiles(prior)
+
+    mktempdir() do dir
+        cd(dir) do
+            problem = stan_instantiate(fitted)
+            @test LogDensityProblems.dimension(problem) == 2
+            @test BridgeStan.param_names(problem.model) == ["beta.1", "beta.2"]
+
+            # Stan applies each bound pair to the corresponding unconstrained
+            # coordinate. q = (0, 0) maps to the coordinate-wise midpoints;
+            # the asymmetric control detects a swapped or scalarised bound.
+            @test BridgeStan.param_constrain(problem.model, [0., 0.]) ≈ [0.5, 0.6] atol=1e-12
+            q = [-log(2.), log(3.)]
+            @test BridgeStan.param_constrain(problem.model, q) ≈ [0.4, 0.75] atol=1e-12
+            @test isfinite(LogDensityProblems.logdensity(problem, q))
+        end
+    end
+end
+
+@testitem "slic: a bound and an affine transform cannot share a declaration" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    y, K = randn(20), 3
+    # `StanBlocksError` wraps the cause, so match on the rendered text — the
+    # same shape the other rejection items in this file use.
+    reject(f) = try; f(); nothing; catch e; sprint(showerror, e) end
+
+    # `real<lower=0, multiplier=s> x;` is a stanc SYNTAX error, so left to reach
+    # the emitter it surfaced as an unattributed parse failure on generated
+    # source the author never wrote. Both folding paths must reject it at trace
+    # time — the bare-LHS one (`autotype`) and the typed-LHS one.
+    bare = reject(() -> stan_code(@slic (; y) begin
+        m ~ normal(0., 1.)
+        s ~ normal(0., 1.; lower = 0., multiplier = m)
+        y ~ normal(0., s); s
+    end))
+    @test bare !== nothing
+    @test occursin("cannot combine a bound with an affine transform", bare)
+    @test occursin("`lower=`", bare)
+    @test occursin("`multiplier=`", bare)
+
+    typed = reject(() -> stan_code(@slic (; y, K) begin
+        m ~ normal(0., 1.)
+        s::vector[K] ~ normal(0., 1.; lower = 0., multiplier = m)
+        y ~ normal(0., sum(s)); s
+    end))
+    @test typed !== nothing
+    @test occursin("cannot combine a bound with an affine transform", typed)
+    @test occursin("on `s`", typed)   # typed path names the parameter
+
+    upoff = reject(() -> stan_code(@slic (; y) begin
+        m ~ normal(0., 1.)
+        s ~ normal(0., 1.; upper = 1., offset = m)
+        y ~ normal(0., s); s
+    end))
+    @test upoff !== nothing
+    @test occursin("`upper=`", upoff)
+    @test occursin("`offset=`", upoff)
+
+    # A DISTRIBUTION-implied bound collides just as really, but blaming the
+    # author for a `lower=` they never wrote is the confusing half.
+    impl = reject(() -> stan_code(@slic (; y) begin
+        m ~ normal(0., 1.)
+        s ~ exponential(1.; multiplier = m)
+        y ~ normal(0., s); s
+    end))
+    @test impl !== nothing
+    @test occursin("implied by the distribution", impl)
+
+    # Controls: each family alone is legal, and both must still compile.
+    bound_only = @slic (; y) begin
+        s ~ normal(0., 1.; lower = 0., upper = 1.); y ~ normal(0., s); s
+    end
+    @test occursin("lower=0.0", stan_block(stan_code(bound_only), "parameters"))
+    @test stanc_compiles(bound_only)
+
+    affine_only = @slic (; y) begin
+        m ~ normal(0., 1.)
+        t ~ normal(0., 1.; lower = 0.)
+        s ~ normal(m, t; offset = m, multiplier = t)
+        y ~ normal(s, 1.); s
+    end
+    affine_params = stan_block(stan_code(affine_only), "parameters")
+    @test occursin("offset=m", affine_params)
+    @test occursin("multiplier=t", affine_params)
+    @test !occursin("lower=0.0>[", affine_params)   # `s` itself stays unbounded
+    @test stanc_compiles(affine_only)
+end
+
+@testitem "slic: parameter constraints reject transformed-parameter dependencies" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    y = randn(20)
+    reject(f) = try; f(); nothing; catch e; sprint(showerror, e) end
+
+    # Both declarations are `:parameter`-qualified while tracing, but `shifted`
+    # is emitted in transformed parameters and therefore is not in scope from a
+    # parameter declaration. Exercise one bound and one affine constraint so
+    # the rule covers the full declaration-constraint family independently of
+    # the bound+affine combination check above.
+    bound = reject(() -> stan_code(@slic (; y) begin
+        a ~ normal(0., 1.)
+        shifted = exp(a)
+        b ~ normal(0., 1.; lower = shifted)
+        y ~ normal(b, 1.); b
+    end))
+    @test bound !== nothing
+    @test occursin("Parameter `b`", bound)
+    @test occursin("`lower=shifted`", bound)
+    @test occursin("depends on `shifted`", bound)
+    @test occursin("transformed-parameter value", bound)
+
+    affine = reject(() -> stan_code(@slic (; y) begin
+        a ~ normal(0., 1.)
+        shifted = exp(a)
+        b ~ normal(0., 1.; multiplier = shifted)
+        y ~ normal(b, 1.); b
+    end))
+    @test affine !== nothing
+    @test occursin("`multiplier=shifted`", affine)
+
+    # Positive controls: direct data, transformed data, and an earlier sampled
+    # parameter are all available when Stan declares a later parameter.
+    earlier_parameter = @slic (; y) begin
+        a ~ normal(0., 1.; lower = 0.)
+        b ~ normal(0., 1.; lower = a)
+        y ~ normal(a + b, 1.); b
+    end
+    earlier_params = stan_block(stan_code(earlier_parameter), "parameters")
+    @test occursin("real<lower=a> b;", earlier_params)
+    @test stanc_compiles(earlier_parameter)
+
+    transformed_data = @slic (; y) begin
+        lo = y[1]
+        b ~ normal(0., 1.; lower = lo)
+        y ~ normal(b, 1.); b
+    end
+    @test occursin("real<lower=lo> b;", stan_block(stan_code(transformed_data), "parameters"))
+    @test stanc_compiles(transformed_data)
+end
+
+@testitem "slic: parameter constraint dependencies stay in the inferred density closure" tags=[:slic, :regression, :stanc, :bridgestan, :logdensity] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    y = [0.1, 0.5]
+    fitted = @slic (; y) begin
+        location ~ normal(0, 1)
+        bounded ~ normal(0.2, 0.7; lower = location, upper = location + 2)
+        y ~ normal(bounded, 0.8)
+    end
+    code = stan_code(fitted)
+    parameters = stan_block(code, "parameters")
+    model_block = stan_block(code, "model")
+    generated_quantities = stan_block(code, "generated quantities")
+
+    # `location` is used only by `bounded`'s declaration constraints. Those
+    # constraints define the unconstrained transform, so both variables must
+    # remain sampled parameters even though no artificial likelihood argument
+    # mentions `location`.
+    location_decl = findfirst("real location;", parameters)
+    bounded_decl = findfirst("real<lower=location, upper=(location + 2)> bounded;", parameters)
+    @test location_decl !== nothing
+    @test bounded_decl !== nothing
+    @test first(location_decl) < first(bounded_decl)
+    @test occursin("location ~ normal(0, 1);", model_block)
+    @test occursin("bounded ~ normal(0.2, 0.7);", model_block)
+    @test !occursin("location = normal_rng", generated_quantities)
+    @test stanc_compiles(fitted)
+
+    problem = instantiate(stan_model(fitted))
+    @test LogDensityProblems.dimension(problem) == 2
+    @test BridgeStan.param_names(problem.model) == ["location", "bounded"]
+    expected_logdensity(unconstrained) = begin
+        location = unconstrained[1]
+        unit = inv(1 + exp(-unconstrained[2]))
+        bounded = location + 2unit
+        log_jacobian = log(2unit * (1 - unit))
+        _stan_normal(location, 0, 1) +
+            _stan_normal(bounded, 0.2, 0.7) +
+            sum(_stan_normal.(y, bounded, 0.8)) + log_jacobian
+    end
+    reference = [0.0, 0.0]
+    reference_density = LogDensityProblems.logdensity(problem, reference)
+    reference_expected = expected_logdensity(reference)
+    for unconstrained in ([-0.4, 0.3], [0.7, -0.8])
+        # Stan's sampling statements may drop a fixed normalizing constant.
+        # Density differences retain every parameter-dependent prior,
+        # likelihood, transform, and moving-bound Jacobian contribution.
+        @test LogDensityProblems.logdensity(problem, unconstrained) - reference_density ≈
+            expected_logdensity(unconstrained) - reference_expected atol=1e-6
+    end
+
+    # With no likelihood, the same dependency chain remains prior-only. Source
+    # order must put `location` before the bounded RNG, and every draw must obey
+    # the dynamic interval without introducing sampler dimensions.
+    prior_only = @slic begin
+        location ~ normal(0, 1)
+        bounded ~ normal(0.2, 0.7; lower = location, upper = location + 2)
+    end
+    prior_code = stan_code(prior_only)
+    prior_parameters = stan_block(prior_code, "parameters")
+    @test !occursin("location", prior_parameters)
+    @test !occursin("bounded", prior_parameters)
+    prior_gq = stan_block(prior_code, "generated quantities")
+    location_draw = findfirst("real location = normal_rng(0, 1);", prior_gq)
+    bounded_draw = findfirst(
+        "real bounded = conditioning_normal_rng(location, (location + 2), 0.2, 0.7);",
+        prior_gq,
+    )
+    @test location_draw !== nothing
+    @test bounded_draw !== nothing
+    @test first(location_draw) < first(bounded_draw)
+    @test stanc_compiles(prior_only)
+
+    prior_problem = instantiate(stan_model(prior_only))
+    @test LogDensityProblems.dimension(prior_problem) == 0
+    names = BridgeStan.param_names(prior_problem.model; include_tp=true, include_gq=true)
+    @test names == ["location", "bounded"]
+    rng = BridgeStan.StanRNG(prior_problem.model, 7301)
+    draws = [
+        BridgeStan.param_constrain(
+            prior_problem.model, Float64[]; include_tp=true, include_gq=true, rng,
+        ) for _ in 1:128
+    ]
+    @test all(draw -> draw[1] <= draw[2] <= draw[1] + 2, draws)
 end
 
 """
@@ -5987,6 +10449,97 @@ vector observation: model density, predictive RNG, and pointwise log likelihood.
     @test occursin(r"y_gen\s*=\s*skew_double_exponential_vector_rng\(", code)
     @test occursin(r"y_likelihood\s*=\s*skew_double_exponential_lpdfs\(y,", code)
     @test stanc_compiles(model)
+end
+
+"""
+Snag regression (multi-normal-cho-25292199): the native Stan
+`multi_normal_cholesky` family must complete the observation triad for one
+vector observation. Grouped observations use the supported top-level ragged
+shape and retain one joint likelihood scalar per group.
+"""
+@testitem "slic: multi-normal-cholesky supports density pointwise and predictive paths" tags=[:slic, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    single = @slic (; y = [0.1, -0.2], mu = [0.0, 0.0], L = [1.0 0.0; 0.2 0.9]) begin
+        y ~ multi_normal_cholesky(mu, L)
+    end
+
+    d = stan_descriptor(single; name = :multi_normal_cholesky)
+    outs = Dict(output.name => output for output in d.outputs)
+    @test outs[:y_gen].type == :vector
+    @test outs[:y_gen].size == (:mu_n,)
+    @test outs[:y_gen].generative == :draw
+    @test outs[:y_likelihood].type == :real
+    @test outs[:y_likelihood].size == ()
+    @test outs[:y_likelihood].generative == :pointwise_loglik
+    @test stan_operation(d, :predict).outputs == (:y_gen,)
+    @test stan_operation(d, :pointwise_loglik).outputs == (:y_likelihood,)
+
+    code = stan_code(single)
+    @test occursin("y ~ multi_normal_cholesky(mu, L);", code)
+    @test occursin(r"y_gen\s*=\s*multi_normal_cholesky_vector_rng\(", code)
+    @test occursin(r"y_likelihood\s*=\s*multi_normal_cholesky_lpdfs\(y,", code)
+    @test stanc_compiles(single)
+
+    grouped = @slic (;
+        ys = [[0.1, -0.2], [0.3, 0.4]],
+        mus = [[0.0, 0.0], [0.0, 0.0]],
+        L = [1.0 0.0; 0.2 0.9],
+    ) begin
+        ys ~ multi_normal_cholesky(mus, L)
+    end
+
+    gd = stan_descriptor(grouped; name = :grouped_multi_normal_cholesky)
+    gouts = Dict(output.name => output for output in gd.outputs)
+    @test gouts[:ys_gen].type == :vector
+    @test gouts[:ys_gen].segments == [2, 4]
+    @test gouts[:ys_gen].generative == :draw
+    @test gouts[:ys_likelihood].type == :vector
+    @test occursin("num_elements_RaggedVector", string(gouts[:ys_likelihood].size[1]))
+    @test gouts[:ys_likelihood].segments == [2, 4]
+    @test gouts[:ys_likelihood].generative == :pointwise_loglik
+
+    grouped_code = stan_code(grouped)
+    grouped_gq = stan_block(grouped_code, "generated quantities")
+    @test occursin(r"ys_likelihood\[g__rq_\d+\]\s*=\s*multi_normal_cholesky_lpdf\(", grouped_gq)
+    @test occursin(r"ys_gen\[ragged_start\(", grouped_gq)
+    @test stanc_compiles(grouped)
+end
+
+"""
+Snag regression (joint-mvn-choles-bac744cf): a grouped (ragged)
+`multi_normal_cholesky` observation whose generated-quantities size token
+renders past the 100-char line limit must still emit. The 1-dim `tokenof`
+call-site form has no `Join` to break at, so before `10f2539` this crashed
+with `MethodError: -(::Nothing, ::Int64)` — the exact failure a BRM
+joint-response (`brm_joint_...`) model hit at StanBlocks pin `9a958f9`, where
+the long `ragged_end(...) - ragged_start(...) + 1` size expression is the
+token. The long names here stand in for that lowering; the crash fix itself
+is covered at the unit level by
+`slic: autoprint emits a Join-less long line unbroken`.
+"""
+@testitem "slic: grouped multi_normal_cholesky emits a long-token GQ draw" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    long_grouped = @slic (;
+        brm_joint_concentration__response_observed = [[0.1, -0.2], [0.3, 0.4]],
+        brm_joint_concentration__response_means = [[0.0, 0.0], [0.0, 0.0]],
+        L_res = [1.0 0.0; 0.2 0.9],
+    ) begin
+        brm_joint_concentration__response_observed ~ multi_normal_cholesky(
+            brm_joint_concentration__response_means, L_res)
+    end
+
+    long_code = stan_code(long_grouped)
+    long_gq = stan_block(long_code, "generated quantities")
+    @test occursin(r"multi_normal_cholesky_vector_rng\(", long_gq)
+    # The pin: the size-token line must actually exceed the wrap limit, or
+    # this test no longer exercises the Join-less path it guards.
+    @test any(
+        line -> length(line) > 100 && occursin("ragged_end", line),
+        split(long_gq, "\n"),
+    )
+    @test stanc_compiles(long_grouped)
 end
 
 """
@@ -6029,4 +10582,1298 @@ self/cross covariance with scalar or per-axis length scales. SLIC spells an
     end
     @test occursin("to_array_1d(length_scale)", stan_block(code, "functions"))
     @test stanc_compiles(model)
+end
+
+"""
+Regression for the three GLM families whose fused likelihood Stan ships but
+whose RNG it does NOT. `stanc --dump-stan-math-signatures` (2.39.0) lists
+exactly two `*_glm_rng` overloads, both `bernoulli_logit_glm_rng`; there is no
+`normal_id_glm_rng`, `poisson_log_glm_rng` or `neg_binomial_2_log_glm_rng`.
+A data-LHS `y ~ <family>_glm(...)` synthesizes a sized-token predictive draw,
+so each family needs BOTH a token overload and a plain form that lowers to the
+base family's RNG over `alpha + X * beta` — the `binomial_logit_rng` treatment.
+Emitting a native call instead transpiles green and is rejected by stanc, so
+this item gates on `stanc_compiles`, not `transpiles`.
+"""
+@testitem "slic: GLM families without a native rng lower their predictive draw" tags=[:slic, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+
+    X = [1.0 0.5; 0.25 -1.0; -0.5 0.75; 2.0 0.1]
+    y_real = [0.3, -1.2, 0.7, 1.9]
+    y_int = [1, 0, 3, 2]
+    alpha_vec = [0.1, -0.2, 0.3, 0.0]
+
+    normal_model = @slic (; X = X, y = y_real) begin
+        beta_pop ~ std_normal(; n = dims(X)[2])
+        sigma ~ exponential(1.0; lower = 0.0)
+        y ~ normal_id_glm(X, 0.0, beta_pop, sigma)
+    end
+    poisson_model = @slic (; X = X, y = y_int) begin
+        beta_pop ~ std_normal(; n = dims(X)[2])
+        y ~ poisson_log_glm(X, 0.0, beta_pop)
+    end
+    negbin_model = @slic (; X = X, y = y_int) begin
+        beta_pop ~ std_normal(; n = dims(X)[2])
+        phi ~ exponential(1.0; lower = 0.0)
+        y ~ neg_binomial_2_log_glm(X, 0.0, beta_pop, phi)
+    end
+    # A vector intercept must dispatch to the non-`rep_vector` plain form.
+    normal_vector_alpha = @slic (; X = X, y = y_real, a = alpha_vec) begin
+        beta_pop ~ std_normal(; n = dims(X)[2])
+        sigma ~ exponential(1.0; lower = 0.0)
+        y ~ normal_id_glm(X, a, beta_pop, sigma)
+    end
+
+    for (family, base_rng, model) in (
+        ("normal_id_glm", "normal_rng", normal_model),
+        ("poisson_log_glm", "poisson_log_rng", poisson_model),
+        ("neg_binomial_2_log_glm", "neg_binomial_2_log_rng", negbin_model),
+        ("normal_id_glm", "normal_rng", normal_vector_alpha),
+    )
+        code = stan_code(model)
+        functions = stan_block(code, "functions")
+        # The token wrapper exists and delegates to the plain form...
+        @test occursin("$(family)_rng(", functions)
+        # ...whose body draws from the BASE family, never a native `*_glm_rng`.
+        @test occursin("$(base_rng)(", functions)
+        outputs = Dict(output.name => output for output in stan_descriptor(model).outputs)
+        @test outputs[:y_gen].generative == :draw
+        @test outputs[:y_gen].size == (:X_m,)
+        @test outputs[:y_likelihood].generative == :pointwise_loglik
+        # stanc is the real gate: a phantom native call transpiles but does not compile.
+        @test stanc_compiles(model)
+    end
+
+    # Bernoulli is the one family Stan DOES ship an rng for; its token overload
+    # must still bottom out in the native call, not a lowered composition.
+    bernoulli_model = @slic (; X = X, y = [1, 0, 1, 0]) begin
+        beta_pop ~ std_normal(; n = dims(X)[2])
+        y ~ bernoulli_logit_glm(X, 0.0, beta_pop)
+    end
+    bernoulli_functions = stan_block(stan_code(bernoulli_model), "functions")
+    @test occursin("return bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta);", bernoulli_functions)
+    @test stanc_compiles(bernoulli_model)
+end
+
+"""
+`inv_sqrt` is a native element-wise Stan Math function. Register it in both
+the `@builtin_module` name manifest and the shared unary-math `@defsig` Union
+so `@stanonly @deffun` bodies can call it. Regression for Helpful Stan
+Functions' `variance_adjusted_sgt`, whose infinite-q branch calls
+`inv_sqrt(real)`.
+"""
+@testitem "slic: native inv_sqrt builtin emits and compiles" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
+    @deffun begin
+        @stanonly variance_adjusted_sgt_scale(q::real)::real = inv_sqrt(q)
+        @stanonly inv_sqrt_vec(x::vector[n])::vector[n] = inv_sqrt(x)
+    end
+
+    scalar_model = @slic (; y = 0.5) begin
+        q ~ lognormal(0., 1.)
+        adjusted = variance_adjusted_sgt_scale(q)
+        y ~ normal(adjusted, 1.)
+    end
+    scalar_code = stan_code(scalar_model)
+    @test occursin("return inv_sqrt(q);", scalar_code)
+    @test stanc_check(scalar_code; warn_pedantic=false).ok
+
+    vector_model = @slic (; y = [0.5, 1.0, 1.5]) begin
+        q ~ lognormal(0., 1.; n = 3)
+        adjusted = inv_sqrt_vec(q)
+        y ~ normal(adjusted, 1.)
+    end
+    vector_code = stan_code(vector_model)
+    @test occursin("return inv_sqrt(x);", vector_code)
+    @test stanc_check(vector_code; warn_pedantic=false).ok
+end
+
+"""
+`lambert_w0` is a native Stan Math function (element-wise: real / vector /
+row_vector / array / matrix). It must be registered on the builtin surface —
+in the `@builtin_module` name manifest AND the shared unary-math `@defsig`
+Union — so a Stan-only `@deffun` body may call it and lower to `lambert_w0(...)`.
+Regression for the `quarto-migration` monster port, whose exact
+Michaelis-Menten step (`exact_michaelis_menten_solution`) needs the closed-form
+`lambert_w0` rather than a numerical ODE fallback.
+"""
+@testitem "slic: native lambert_w0 builtin emits and compiles" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
+    # A `@defsig`-only native (no Julia method); the default Stan-only emission
+    # therefore accepts each definition without an annotation. Three statements,
+    # `exact_mm_step` cross-referencing the scalar `lambert_w0_exp` — the shape
+    # the monster model uses.
+    @deffun begin
+        lambert_w0_exp(earg::real)::real = lambert_w0(exp(earg))
+        exact_mm_step(K::real, earg::real)::real = K * lambert_w0_exp(earg)
+        lambert_w0_vec(x::vector[n])::vector[n] = lambert_w0(x)
+    end
+
+    # Scalar: the closed-form Michaelis-Menten step.
+    scalar_model = @slic (; y = 1.5) begin
+        earg ~ normal(0., 1.)
+        K ~ lognormal(0., 1.)
+        mm = exact_mm_step(K, earg)
+        y ~ normal(mm, 1.0)
+    end
+    scalar_code = stan_code(scalar_model)
+    @test occursin("lambert_w0(", scalar_code)
+    @test occursin("return lambert_w0(exp(earg));", scalar_code)
+    @test stanc_check(scalar_code; warn_pedantic=false).ok
+
+    # Vectorized element-wise form.
+    vector_model = @slic (; n = 3, yv = [1.0, 2.0, 3.0]) begin
+        xv ~ normal(0., 1.; n = 3)
+        wv = lambert_w0_vec(xv)
+        yv ~ normal(wv, 1.0)
+    end
+    vector_code = stan_code(vector_model)
+    @test occursin("lambert_w0(", vector_code)
+    @test occursin("return lambert_w0(x);", vector_code)
+    @test stanc_check(vector_code; warn_pedantic=false).ok
+end
+
+"""
+`log_modified_bessel_first_kind(v, z)` is a native Stan Math function — the
+log-space twin of `modified_bessel_first_kind`, but with a REAL order `v` and
+vectorised over both arguments. It must be registered on the builtin surface —
+in the `@builtin_module` name manifest AND a binary-elementwise `@defsig`
+group — so a Stan-only `@deffun` body may call it and lower to
+`log_modified_bessel_first_kind(...)`. Regression for BRM's periodic
+Hilbert-space GP basis (`hsgp(x; cov=:periodic)`), whose spectral weights are
+`exp(base + 0.5 * log_modified_bessel_first_kind(harmonic, 1/rho^2))` — the
+log-space form so a small length scale cannot overflow `exp(1/rho^2)`. Before
+registration the trace failed with
+`Could not find log_modified_bessel_first_kind in model, builtin, … or Main!`
+(snag `log-modified-bes-60f43dd8`).
+
+Registered shapes: `(real, real) => real` — and because `types.int <:
+types.real` that one row also admits every `(int, real)` / `(real, int)` /
+`(int, int)` scalar mix; `(real, vector[n])` / `(vector[n], real)` /
+`(vector[n], vector[n]) => vector[n]`; `(real, real[n])` / `(real[n], real)` /
+`(real[n], real[n]) => real[n]`, so an `int[n]` harmonic array vectorises in
+either slot — stanc lists `(array[] int, real) => array[] real` and accepts the
+mixed `(array[] int, array[] real)` pair by int->real array promotion.
+"""
+@testitem "slic: native log_modified_bessel_first_kind builtin emits and compiles" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
+    # `@defsig`-only natives (no Julia method): the default Stan-only emission
+    # accepts each definition without an annotation.
+    @deffun begin
+        # BRM's exact periodic-HSGP shape: per-harmonic loop, int order.
+        hsgp_periodic_weights(rho::real, harmonics::int[k], base::real)::vector[k] = begin
+            a = 1.0 / (rho * rho)
+            rv::vector[k]
+            for b in 1:k
+                rv[b] = exp(base + 0.5 * log_modified_bessel_first_kind(harmonics[b], a))
+            end
+            rv
+        end
+        # The loop-free spelling: (array[] int, real) => array[] real.
+        hsgp_periodic_logw(rho::real, harmonics::int[k])::real[k] =
+            log_modified_bessel_first_kind(harmonics, 1.0 / (rho * rho))
+        # Real (non-integer) order — the shape `modified_bessel_first_kind(int, real)` cannot express.
+        log_bessel_real_order(v::real, z::real)::real = log_modified_bessel_first_kind(v, z)
+        log_bessel_vec(v::real, z::vector[n])::vector[n] = log_modified_bessel_first_kind(v, z)
+        log_bessel_vec2(v::vector[n], z::vector[n])::vector[n] = log_modified_bessel_first_kind(v, z)
+        # Mixed int-array order / real-array argument: the `(real[n], real[n])`
+        # row admits it, and stanc compiles it by array promotion.
+        log_bessel_mixed(v::int[n], z::vector[n])::real[n] =
+            log_modified_bessel_first_kind(v, to_array_1d(z))
+    end
+
+    loop_model = @slic (; harmonics = [1, 2, 3], y = [0.1, -0.2, 0.3]) begin
+        rho ~ lognormal(0.0, 1.0)
+        w = hsgp_periodic_weights(rho, harmonics, 0.5)
+        y ~ normal(w, 1.0)
+    end
+    loop_code = stan_code(loop_model)
+    @test occursin("log_modified_bessel_first_kind(harmonics[b], a)", loop_code)
+    @test stanc_check(loop_code; warn_pedantic=false).ok
+
+    array_model = @slic (; harmonics = [1, 2, 3], y = [0.1, -0.2, 0.3]) begin
+        rho ~ lognormal(0.0, 1.0)
+        lw = hsgp_periodic_logw(rho, harmonics)
+        y ~ normal(to_vector(lw), 1.0)
+    end
+    array_code = stan_code(array_model)
+    @test occursin("return log_modified_bessel_first_kind(harmonics, (1.0 / (rho * rho)));", array_code)
+    @test stanc_check(array_code; warn_pedantic=false).ok
+
+    scalar_model = @slic (; y = 0.4) begin
+        z ~ lognormal(0.0, 1.0)
+        v = log_bessel_real_order(0.5, z)
+        y ~ normal(v, 1.0)
+    end
+    scalar_code = stan_code(scalar_model)
+    @test occursin("return log_modified_bessel_first_kind(v, z);", scalar_code)
+    @test stanc_check(scalar_code; warn_pedantic=false).ok
+
+    vector_model = @slic (; y = [0.1, -0.2, 0.3], n = 3) begin
+        zv ~ lognormal(0.0, 1.0; n = 3)
+        v1 = log_bessel_vec(0.5, zv)
+        v2 = log_bessel_vec2(zv, zv)
+        y ~ normal(v1 + v2, 1.0)
+    end
+    vector_code = stan_code(vector_model)
+    @test count("return log_modified_bessel_first_kind(v, z);", vector_code) == 2
+    @test stanc_check(vector_code; warn_pedantic=false).ok
+
+    mixed_model = @slic (; hs = [1, 2], zs = [0.5, 1.5], y = 0.4) begin
+        s ~ lognormal(0.0, 1.0)
+        v = log_bessel_mixed(hs, zs)
+        y ~ normal(s + sum(v), 1.0)
+    end
+    mixed_code = stan_code(mixed_model)
+    @test occursin("return log_modified_bessel_first_kind(v, to_array_1d(z));", mixed_code)
+    @test stanc_check(mixed_code; warn_pedantic=false).ok
+end
+
+"""
+`not_a_number()` is a zero-argument native Stan function. It must be registered
+in both the builtin name manifest and the native signature block so a
+`@stanonly @deffun` body can resolve and emit the call.
+"""
+@testitem "slic: native not_a_number builtin emits and compiles" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
+    @deffun begin
+        @stanonly not_a_number_probe(x::real)::real = if is_inf(x)
+            not_a_number()
+        else
+            x
+        end
+    end
+
+    model = @slic (; y = 0.0) begin
+        theta ~ normal(0.0, 1.0)
+        y ~ normal(not_a_number_probe(theta), 1.0)
+    end
+    code = stan_code(model)
+    @test occursin("return not_a_number();", code)
+    @test stanc_check(code; warn_pedantic=false).ok
+end
+
+"""
+Stan overloads `log2`: `log2(x)` is the ordinary unary logarithm, while
+zero-argument `log2()` is the real constant `log(2)`. The shared unary-math
+signature covers only the former, so the latter needs its own native signature.
+Regression for Helpful Stan Functions' student-t log-CDF/log-CCDF helpers.
+"""
+@testitem "slic: native zero-argument log2 builtin emits and compiles" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
+    @deffun begin
+        @stanonly student_t_tail_probe(lval::real)::real = lval - log2()
+        @stanonly unary_log2_probe(x::real)::real = log2(x)
+    end
+
+    model = @slic (; y = 0.0) begin
+        theta ~ lognormal(0.0, 1.0)
+        y ~ normal(student_t_tail_probe(theta) + unary_log2_probe(theta), 1.0)
+    end
+    code = stan_code(model)
+    @test occursin("return (lval - log2());", code)
+    @test occursin("return log2(x);", code)
+    @test stanc_check(code; warn_pedantic=false).ok
+end
+
+"""
+Statement `if`/`elseif`/`else` chains in a Stan-only `@deffun` must render as
+Stan's ordinary `else if` syntax.  The equivalent nested-`if` workaround stays
+valid, but should retain its visibly nested block structure.  The chain must
+also render when it sits INSIDE a `for` loop with compound-assign branches under
+`@lhs @lpxf` (BRM's `brm_ranef_sd_lpdf` shape) — that path never reaches the
+tail-position `ensure_xreturn` normalisation the `return`-branch probes exercise.
+"""
+@testitem "slic: Stan-only @deffun elseif chains render and compile" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports] begin
+    @deffun begin
+        @stanonly hsf_elseif_probe(x::real, df::real)::real = begin
+            if is_inf(x)
+                return x
+            elseif is_inf(df)
+                return df
+            else
+                return x + df
+            end
+        end
+
+        @stanonly hsf_nested_if_probe(x::real, df::real)::real = begin
+            if is_inf(x)
+                return x
+            else
+                if is_inf(df)
+                    return df
+                else
+                    return x + df
+                end
+            end
+        end
+
+        # Snag `deffun-elseif-em-7310340a`: the chain nested inside a `for` loop,
+        # `+=` branches, implicit tail return, `@lhs @lpxf` — verbatim the shape
+        # of BRM's `brm_ranef_sd_lpdf` (sbimpl.jl), which the ARV-393 joint PK+QT
+        # spec emits for any shared-`|ID|` `sd(...)`.
+        @lhs @lpxf elseif_loop_sd_lpdf(tau::vector[n], family::vector[n],
+                                        rate::vector[n])::real = begin
+            rv = 0.
+            for i in 1:n
+                if family[i] == 0
+                    rv += std_normal_lpdf(tau[i])::real
+                elseif family[i] == 1
+                    rv += exponential_lpdf(tau[i], rate[i])::real
+                else
+                    rv += normal_lpdf(tau[i], 0., rate[i])::real
+                end
+            end
+            rv
+        end
+    end
+
+    elseif_model = @slic (; y = 0.0) begin
+        x ~ normal(0.0, 1.0)
+        df ~ lognormal(0.0, 1.0)
+        y ~ normal(hsf_elseif_probe(x, df), 1.0)
+    end
+    nested_if_model = @slic (; y = 0.0) begin
+        x ~ normal(0.0, 1.0)
+        df ~ lognormal(0.0, 1.0)
+        y ~ normal(hsf_nested_if_probe(x, df), 1.0)
+    end
+
+    elseif_loop_model = @slic (; sd_family = [0.0, 1.0, 2.0], sd_rate = [1.0, 2.0, 3.0], n_terms = 3, y = 0.0) begin
+        tau ~ elseif_loop_sd(sd_family, sd_rate; n=n_terms, lower=0.)
+        y ~ normal(sum(tau), 1.0)
+    end
+
+    elseif_code = stan_code(elseif_model)
+    nested_if_code = stan_code(nested_if_model)
+    elseif_loop_code = stan_code(elseif_loop_model)
+    @test occursin(" else if(", elseif_code)
+    @test !occursin(" else if(", nested_if_code)
+    @test occursin(" else if(", elseif_loop_code)
+    @test stanc_check(elseif_code; warn_pedantic=false).ok
+    @test stanc_check(nested_if_code; warn_pedantic=false).ok
+    @test stanc_check(elseif_loop_code; warn_pedantic=false).ok
+end
+
+@testitem "slic: prior-only program lowers plates, fills and bounded priors to generated quantities" tags=[:slic, :plate, :ragged, :stanc, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    # Snag prior-predictive-7e463983 (reported from Bruno's `regime="prior"` PK/QT
+    # program). With NO likelihood, every parameter must be an `_rng` draw in
+    # generated quantities, in dependency order, followed by the transforms —
+    # `parameters {}` and `model {}` empty, so the program runs as `fixed_param`.
+    # Before the fix a prior-only compiler-injected slice fill (a plate's return
+    # fill / cell-local `=`, an inlined helper's `out[i] = …`) recursed into its
+    # RHS in `backward!` and pinned every source as a parameter: 21 of 24
+    # parameters of that program stayed sampled behind a 92-line transformed
+    # parameters block.
+    empty_block(code, name) = strip(stan_block(code, name)) == "{\n}"
+
+    # (a) The reporter's shape: correlated random-effect block, population
+    #     coefficients, a transformed-parameter chain, and a RAGGED plate with a
+    #     cell-local `=` plus a return fill. No likelihood ⇒ everything is GQ.
+    xs = [[0.1, 0.2, 0.3], [0.4, 0.5]]
+    prior_shape = @slic (; xs, subject_idx = [1, 2], n_subject = 2, X = [1.0 0.5; 1.0 -0.5]) begin
+        L::cholesky_factor_corr[2] ~ lkj_corr_cholesky(2.0)
+        tau::vector[2] ~ exponential(1.5)
+        z_flat ~ std_normal(; n = 2 * n_subject)
+        z = reshape(z_flat, 2, n_subject)
+        b = (diag_pre_multiply(tau, L) * z)'
+        beta_pop::vector[2] ~ normal([0.0, 0.0], [1.0, 0.5])
+        pop = X * beta_pop
+        r = b[subject_idx, 1]
+        k = exp(pop + r)
+        rho ~ uniform(0.4, 2.0)
+        sigma ~ exponential(1.0)
+        pred ~ plate(xs, k; outer = (n_subject,)) do xi, ki
+            conc = ki * xi * rho
+            conc
+        end
+    end
+    @test transpiles(prior_shape)
+    @test stanc_compiles(prior_shape)
+    let code = stan_code(prior_shape)
+        @test empty_block(code, "parameters")
+        @test empty_block(code, "transformed parameters")
+        @test empty_block(code, "model")
+        gq = stan_block(code, "generated quantities")
+        # every prior is an rng draw, in source (= dependency) order …
+        @test occursin("matrix[2, 2] L = lkj_corr_cholesky_cholesky_factor_corr_rng(2, 2.0);", gq)
+        @test occursin("vector[2] tau = exponential_vector_rng(2, 1.5);", gq)
+        @test occursin("real rho = uniform_rng(0.4, 2.0);", gq)
+        @test occursin("real sigma = exponential_rng(1.0);", gq)
+        # … the transforms follow them …
+        @test findfirst("matrix[n_subject, 2] b = ", gq) > findfirst("vector[2] tau = ", gq)
+        @test occursin("vector[X_m] k = exp(", gq)
+        # … and the ragged plate's carrier + loop are in GQ too.
+        @test occursin(r"vector\[sum\(pred__pl_len_\d+\)\] pred__pl_mem_\d+;", gq)
+        @test occursin(r"for\(plate_i__pl_\d+ in 1:n_subject\)", gq)
+    end
+    d = stan_descriptor(prior_shape; name = :prior_shape)
+    @test [op.name for op in d.operations] == [:transpile, :instantiate]
+    @test all(o.kind == :generated_quantity for o in d.outputs)
+
+    # (b) Control: a likelihood on the plate result keeps the whole chain sampled.
+    ys = [[1.0, 2.0, 3.0], [4.0, 5.0]]
+    fit_shape = Base.merge(prior_shape, quote
+        ys ~ normal(pred, sigma)
+    end)(; ys)
+    @test stanc_compiles(fit_shape)
+    let code = stan_code(fit_shape)
+        params = stan_block(code, "parameters")
+        for decl in ("cholesky_factor_corr[2] L;", "vector<lower=0.0>[2] tau;", "vector[2] beta_pop;",
+                     "real<lower=0.4, upper=2.0> rho;", "real<lower=0.0> sigma;")
+            @test occursin(decl, params)
+        end
+        @test occursin(r"vector\[sum\(pred__pl_len_\d+\)\] pred__pl_mem_\d+;", stan_block(code, "transformed parameters"))
+        @test occursin("~ normal(", stan_block(code, "model"))
+    end
+    @test :fit in [op.name for op in stan_descriptor(fit_shape; name = :fit_shape).operations]
+
+    # (c) An inlined mutating helper's `out[i] = …` fill is the same shape as a
+    #     plate fill: prior-only ⇒ the fill AND its source `u` land in GQ.
+    @deffun @inline pp_sq_fill!(x::vector[n])::vector[n] = begin
+        out::vector[n]
+        for i in 1:n
+            out[i] = x[i] * x[i]
+        end
+        return out
+    end
+    inline_prior = @slic (;) begin
+        u ~ normal(0.0, 1.0; n = 4)
+        v = pp_sq_fill!(u)
+        s ~ exponential(1.0)
+        t = v * s
+    end
+    @test stanc_compiles(inline_prior)
+    let code = stan_code(inline_prior)
+        @test empty_block(code, "parameters") && empty_block(code, "transformed parameters")
+        gq = stan_block(code, "generated quantities")
+        @test occursin("vector[4] u = normal_vector_rng(4, 0.0, 1.0);", gq)
+        @test occursin(r"out__il_\d+\[i__il_\d+\] = \(u\[i__il_\d+\] \* u\[i__il_\d+\]\);", gq)
+    end
+
+    # (d) Mixed: a plate feeding a likelihood stays sampled while a DEAD chain
+    #     beside it (`u` → inlined fill → `dead_fill`) lowers to GQ — the loop
+    #     grouping keeps each statement in its own block.
+    mixed = @slic (; obs = [0.1, -0.2, 0.3, 0.0]) begin
+        tau ~ normal(0.0, 1.0; lower = 0.0)
+        z ~ plate(; outer = (4,)) do i
+            w ~ normal(0.0, tau)
+            w
+        end
+        obs ~ normal(z, 1.0)
+        u ~ normal(0.0, 1.0; n = 4)
+        dead_fill = pp_sq_fill!(u)
+    end
+    @test stanc_compiles(mixed)
+    let code = stan_code(mixed)
+        params = stan_block(code, "parameters")
+        @test occursin("real<lower=0.0> tau;", params) && occursin("vector[4] z_w;", params)
+        @test !occursin("vector[4] u;", params)
+        @test occursin(r"z\[plate_i\w*\] = z_w\[plate_i", stan_block(code, "transformed parameters"))
+        gq = stan_block(code, "generated quantities")
+        @test occursin("vector[4] u = normal_vector_rng(4, 0.0, 1.0);", gq)
+        @test occursin(r"vector\[n__il_\d+\] dead_fill = out__il_\d+;", gq)
+    end
+
+    # (e) A sampled symbol's USER bound is a truncation of its prior. A re-draw
+    #     must come from the truncated law — `normal_rng(0, 1)` for a `<lower=0>`
+    #     half-normal is negative half the time. Scalar, typed-LHS vector, sized
+    #     kwarg vector, two-sided, a non-implied bound on a bounded family, and a
+    #     plate cell prior all route through the `truncated` rejection sampler;
+    #     a family-implied bound (`exponential` ⇒ `lower=0`) is NOT re-truncated.
+    bounded = @slic (; n_cell = 3) begin
+        tau ~ normal(0.0, 1.0; lower = 0.0)
+        v::vector[2] ~ normal(0.0, 1.0; lower = 0.0)
+        w ~ normal(0.0, 1.0; lower = -1.0, upper = 1.0, n = 2)
+        ex ~ exponential(1.0; lower = 0.5)
+        plain ~ exponential(2.0)
+        restated ~ exponential(2.0; lower = 0.0)
+        q ~ plate(; outer = (n_cell,)) do i
+            t ~ normal(0.0, tau; lower = 0.0)
+            t
+        end
+        s = v[1] + w[2] + tau + ex
+    end
+    @test stanc_compiles(bounded)
+    let gq = stan_block(stan_code(bounded), "generated quantities")
+        @test occursin("real tau = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+        @test occursin("vector[2] v = lower_conditioning_vector_normal_rng(2, 0.0, 0.0, 1.0);", gq)
+        @test occursin("vector[2] w = conditioning_vector_normal_rng(2, -1.0, 1.0, 0.0, 1.0);", gq)
+        @test occursin("real ex = lower_conditioning_exponential_rng(0.5, 1.0);", gq)
+        @test occursin("real plain = exponential_rng(2.0);", gq)
+        @test occursin("real restated = exponential_rng(2.0);", gq)
+        @test occursin(r"q_t\[plate_i\w*\] = lower_conditioning_normal_rng\(0\.0, 0\.0, tau\);", gq)
+    end
+
+    # (f) The same holds for a cv-flipped re-draw: `backward!` rebuilds the
+    #     sampling rhs, and the bound used to be lost with its kwargs.
+    cv_base = @slic (; subject = [1, 1, 2, 2, 3], y = [0.1, 0.2, -0.1, 0.0, 0.3]) begin
+        mu ~ std_normal()
+        J = maximum(subject)
+        alpha ~ normal(mu, 1.0; n = J, lower = -2.0)
+        y ~ normal(alpha[subject], 1.0)
+    end
+    cv_bounded = cv_base(; subject = StanBlocks.stan.maybecv(:subject, [1, 1, 2, 2, 3]))
+    @test stanc_compiles(cv_bounded)
+    let code = stan_code(cv_bounded)
+        @test occursin("real mu;", stan_block(code, "parameters"))
+        @test occursin("vector[J] alpha = lower_conditioning_vector_normal_rng(J, -2.0, mu, 1.0);",
+            stan_block(code, "generated quantities"))
+    end
+
+    # (g) `std_normal` is the one zero-argument family; inside a HOF rng body its
+    #     `predictive(family)` call is the token-returning selector form, so the
+    #     documented `tau ~ std_normal(; lower = 0.)` prior predictive used to die
+    #     in `sig_expr`. The rng call spells it as `normal(0, 1)`; the density
+    #     side (a fitted `truncated(std_normal; lower=…)`) is untouched.
+    radon_pp = @slic (; subject = [1, 1, 2, 2, 3]) begin
+        mu    ~ std_normal()
+        tau   ~ std_normal(; lower = 0.)
+        J     = maximum(subject)
+        alpha ~ normal(mu, tau; n = J)
+        sigma ~ std_normal(; lower = 0.)
+        y     ~ normal(alpha[subject], sigma)
+    end
+    @test stanc_compiles(radon_pp)
+    let gq = stan_block(stan_code(radon_pp), "generated quantities")
+        @test occursin("real mu = std_normal_rng();", gq)
+        @test occursin("real tau = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+        @test occursin("real sigma = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+        # `y ~ normal(alpha[subject], sigma)` is an untyped fresh cell whose
+        # elementwise family broadcasts over the vector `alpha[subject]`, so its
+        # sampled shape is `vector[subject_n]` — the SAME type `y` carries as a
+        # data outcome in the posterior spelling (case f), now that the fresh-`~`
+        # autotype infers the broadcast shape (snag plate-untyped-ve-819ecfff).
+        # Previously it was mis-typed scalar and emitted `array[subject_n] real`,
+        # valid here only because nothing consumes `y`; the vector spelling is the
+        # consistent one and draws identically.
+        @test occursin("vector[subject_n] y = normal_vector_rng(subject_n, alpha[subject], sigma);", gq)
+    end
+    fitted_trunc = @slic (; y = [0.1, 0.2]) begin
+        tau ~ truncated(std_normal; lower = 0.0)
+        y ~ normal(0.0, tau)
+    end
+    @test stanc_compiles(fitted_trunc)
+    @test occursin("real lower_conditioning_std_normal_lpdf(", stan_code(fitted_trunc))
+
+    # (h) A custom family without an `_rng` for the re-drawn shape fails at
+    #     trace time with the family, the reason and the signature to add —
+    #     not as an internal `tracetype not defined` assertion at emission.
+    @deffun begin
+        @lhs @lpxf pp_halfnorm_sd_lpdf(x::vector[n], rate::real)::real = normal_lpdf(x, 0.0, rate)
+    end
+    no_rng = @slic (; n_sub = 2) begin
+        tau::vector[2] ~ pp_halfnorm_sd(1.5)
+        zz ~ plate(; outer = (n_sub,)) do i
+            w ~ normal(0.0, tau[1])
+            w
+        end
+    end
+    err = try; stan_code(no_rng); nothing; catch e; sprint(showerror, e); end
+    @test err !== nothing
+    @test occursin("`tau ~ pp_halfnorm_sd(…)` is re-drawn in generated quantities", err)
+    @test occursin("@deffun pp_halfnorm_sd_rng(vector[n], <the family's args…>)::vector[n]", err)
+
+    # (i) An IMPROPER `flat()` prior has nothing to draw from: a likelihood-free
+    #     program cannot simulate it, and it says so (it used to die as an
+    #     internal `tracetype not defined … flat_rng` assertion at emission).
+    flat_prior = @slic (;) begin
+        p::vector[2] ~ flat(; lower = 0.0)
+        q = p * 2.0
+    end
+    err = try; stan_code(flat_prior); nothing; catch e; sprint(showerror, e); end
+    @test err !== nothing
+    @test occursin("`p ~ flat(…)` is an improper prior", err)
+    @test occursin("nothing to draw from", err)
+end
+
+"""
+Annotated top-level model loops — `@plate for … end` and `@scan begin … end` —
+are sugar over the shared compiler-owned-loop inliner (`_forward_loop_core!`),
+never HOFs: the tracer inlines both (decisions `10mrh0f`, `1375uo5`). Arrays
+indexed by the loop variable are model-scope arrays; bare fresh names are
+per-iteration locals (`1rgglep`); a scan's setup is its initial state
+(`1ntdzr8`); scan lowers to a plain Stan model-block loop with backward-only
+lag reads (`17cilkc`).
+"""
+@testitem "slic: annotated @plate for / @scan loops emit and stanc-compile" tags=[:slic, :plate, :scan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    import StanBlocks.stan: maybecv
+
+    # 1. `@plate for`: a model-scope array (own name), a hoisted local (hygienic
+    #    name, constraint carried), an observation; the user's loop variable is
+    #    the emitted index.
+    pf = @slic (; y = randn(6), mu0 = 0.5) begin
+        sigma ~ normal(0.0, 1.0; lower = 0.0)
+        @plate for i in 1:6
+            x[i] ~ normal(mu0, 1.0)
+            t ~ exponential(1.0)
+            y[i] ~ normal(x[i] + t, sigma)
+        end
+        z ~ normal(sum(x), 1.0)
+    end
+    @test transpiles(pf)
+    @test stanc_compiles(pf)
+    let code = stan_code(pf)
+        params = stan_block(code, "parameters")
+        @test occursin("vector[6] x;", params)
+        @test occursin("vector<lower=0.0>[6] x_t;", params)
+        mb = stan_block(code, "model")
+        @test occursin("for(i in 1:6)", mb)
+        @test occursin("x[i] ~ normal(mu0, 1.0);", mb)
+        @test occursin("x_t[i] ~ exponential(1.0);", mb)
+        @test occursin("y[i] ~ normal((x[i] + x_t[i]), sigma);", mb)
+        # `z` reaches no likelihood: a generated quantity reading the collected array.
+        @test occursin("real z = normal_rng(sum(x), 1.0);", stan_block(code, "generated quantities"))
+    end
+
+    # 2. `@scan`: AR(1) with the observation outside — the hand-written Stan.
+    ar1_model(data) = @slic data begin
+        phi ~ normal(0.0, 0.5)
+        s ~ exponential(1.0)
+        @scan begin
+            h[1] ~ normal(0.0, 1.0)
+            for t in 2:T
+                h[t] ~ normal(phi * h[t-1], s)
+            end
+        end
+        y ~ normal(h, 1.0)
+    end
+    ar1 = ar1_model((; y = randn(5), T = 5))
+    @test transpiles(ar1)
+    @test stanc_compiles(ar1)
+    let code = stan_code(ar1)
+        @test occursin("vector[T] h;", stan_block(code, "parameters"))
+        mb = stan_block(code, "model")
+        @test occursin("h[1] ~ normal(0.0, 1.0);", mb)
+        @test occursin("for(t in 2:T)", mb)
+        @test occursin("h[t] ~ normal((phi * h[(t - 1)]), s);", mb)
+        @test occursin("y ~ normal(h, 1.0);", mb)
+    end
+
+    # 3. Prior-only (`y` unbound): the whole block re-draws in generated
+    #    quantities in step order; nothing is sampled.
+    prior = ar1_model((; T = 5))
+    @test stanc_compiles(prior)
+    let code = stan_code(prior)
+        @test strip(stan_block(code, "parameters")) == "{\n}"
+        @test strip(stan_block(code, "model")) == "{\n}"
+        gq = stan_block(code, "generated quantities")
+        i1 = findfirst("h[1] = normal_rng(0.0, 1.0);", gq)
+        i2 = findfirst("h[t] = normal_rng((phi * h[(t - 1)]), s);", gq)
+        @test i1 !== nothing && i2 !== nothing && first(i1) < first(i2)
+    end
+
+    # 4. cv-tainted size: the chain leaves `parameters`, `y ~` leaves the model
+    #    block, the predictive twins remain (the plate rule, applied as one unit).
+    cvm = ar1_model((; y = randn(5), T = maybecv(:T, 5)))
+    @test stanc_compiles(cvm)
+    let code = stan_code(cvm)
+        @test !occursin("h[t] ~", stan_block(code, "model"))
+        gq = stan_block(code, "generated quantities")
+        @test occursin("h[t] = normal_rng((phi * h[(t - 1)]), s);", gq)
+        @test occursin("y_gen", gq) && occursin("y_likelihood", gq)
+    end
+
+    # 5. Two carried states, lag 2, setup fills `1:2`, loop from 3.
+    two = @slic (; y1 = randn(6), y2 = randn(6), T = 6) begin
+        a ~ normal(0.0, 1.0); b ~ normal(0.0, 1.0); s ~ exponential(1.0)
+        @scan begin
+            u[1] ~ normal(0.0, 1.0); v[1] ~ normal(0.0, 1.0)
+            u[2] ~ normal(0.0, 1.0); v[2] ~ normal(0.0, 1.0)
+            for t in 3:T
+                u[t] ~ normal(u[t-1] + a * v[t-2], s)
+                v[t] ~ normal(v[t-1] + b * u[t-1], s)
+            end
+        end
+        y1 ~ normal(u, 0.5); y2 ~ normal(v, 0.5)
+    end
+    @test stanc_compiles(two)
+    let mb = stan_block(stan_code(two), "model")
+        @test occursin("for(t in 3:T)", mb)
+        @test occursin("u[t] ~ normal((u[(t - 1)] + (a * v[(t - 2)])), s);", mb)
+        @test occursin("v[t] ~ normal((v[(t - 1)] + (b * u[(t - 1)])), s);", mb)
+    end
+
+    # 6. Non-centered: the per-step local innovation is sized by the ITERATION
+    #    count and indexed with the offset — no never-sampled coordinate.
+    nc = @slic (; y = randn(5), T = 5) begin
+        phi ~ normal(0.0, 0.5); s ~ exponential(1.0)
+        @scan begin
+            eps1 ~ std_normal()
+            x[1] = s * eps1
+            for t in 2:T
+                eps ~ std_normal()
+                x[t] = phi * x[t-1] + s * eps
+            end
+        end
+        y ~ normal(x, 1.0)
+    end
+    @test stanc_compiles(nc)
+    let code = stan_code(nc)
+        params = stan_block(code, "parameters")
+        @test occursin("vector[(T - 1)] x_eps;", params)
+        @test occursin("real eps1;", params)
+        tp = stan_block(code, "transformed parameters")
+        @test occursin("vector[T] x;", tp)
+        @test occursin("x[1] = (s * eps1);", tp)
+        @test occursin("x[t] = ((phi * x[(t - 1)]) + (s * x_eps[(t - 1)]));", tp)
+        @test occursin("x_eps[(t - 1)] ~ std_normal();", stan_block(code, "model"))
+    end
+
+    # 7. N-D `@plate for`, and value iteration over a ragged container with the
+    #    observation on the per-cell slice.
+    nd = @slic (; y = randn(3, 2), N = 3, M = 2) begin
+        @plate for i in 1:N, j in 1:M
+            w[i, j] ~ normal(0.0, 1.0)
+            y[i, j] ~ normal(w[i, j], 1.0)
+        end
+    end
+    @test stanc_compiles(nd)
+    @test occursin("matrix[N, M] w;", stan_block(stan_code(nd), "parameters"))
+    vi = @slic (; doses = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]) begin
+        @plate for d in doses
+            m ~ normal(0.0, 1.0)
+            d ~ normal(m, 1.0)
+        end
+    end
+    @test stanc_compiles(vi)
+
+    # 8. Rejections — every contract violation is a loud trace-time error.
+    rejects(m, needle) = try
+        stan_code(m); false
+    catch e
+        occursin(needle, sprint(showerror, e))
+    end
+    bare_for = @slic (; y = randn(3)) begin
+        for i in 1:3; y[i] ~ normal(0.0, 1.0); end
+    end
+    @test rejects(bare_for, "`@plate for i in 1:N … end`")
+    plate_lag = @slic (; T = 4) begin
+        @plate for i in 1:T; x[i] ~ normal(0.0, 1.0); z[i] = x[i-1]; end
+    end
+    @test rejects(plate_lag, "plate cells are independent; use `@scan`")
+    scan_fwd = @slic (; T = 4) begin
+        @scan begin; x[1] ~ normal(0.0, 1.0); for i in 2:T; x[i] ~ normal(x[i+1], 1.0); end; end
+    end
+    @test rejects(scan_fwd, "forward and non-index reads are not a scan")
+    outer_write = @slic (; T = 4) begin
+        sigma ~ exponential(1.0)
+        @plate for i in 1:T; sigma ~ exponential(2.0); x[i] ~ normal(0.0, sigma); end
+    end
+    @test rejects(outer_write, "SB models never mutate")
+    double_fill = @slic (; T = 4) begin
+        @plate for i in 1:T; x[i] ~ normal(0.0, 1.0); x[i] ~ normal(1.0, 1.0); end
+    end
+    @test rejects(double_fill, "assigned twice")
+    lag_beyond = @slic (; T = 4) begin
+        @scan begin; x[1] ~ normal(0.0, 1.0); for i in 2:T; x[i] ~ normal(x[i-2], 1.0); end; end
+    end
+    @test rejects(lag_beyond, "reads before the setup")
+    bad_start = @slic (; T = 4) begin
+        @scan begin; x[1] ~ normal(0.0, 1.0); for i in 3:T; x[i] ~ normal(x[i-1], 1.0); end; end
+    end
+    @test rejects(bad_start, "the loop must start at 2")
+    bare_read = @slic (; T = 4) begin
+        @plate for i in 1:T; x[i] ~ normal(0.0, 1.0); z[i] = sum(x); end
+    end
+    @test rejects(bare_read, "read it indexed")
+end
+
+"""
+Annotated loops build through BridgeStan with the expected sampler dimension:
+model-scope arrays and per-iteration locals are real parameters, a scan's
+prior-only program has none, and a scan's local innovations count only the
+iterations that run.
+"""
+@testitem "slic: annotated loops instantiate with the expected dimensions" tags=[:slic, :plate, :scan, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+    ar1_model(data) = @slic data begin
+        phi ~ normal(0.0, 0.5)
+        s ~ exponential(1.0)
+        @scan begin
+            h[1] ~ normal(0.0, 1.0)
+            for t in 2:T
+                h[t] ~ normal(phi * h[t-1], s)
+            end
+        end
+        y ~ normal(h, 1.0)
+    end
+    ar1 = ar1_model((; y = randn(5), T = 5))
+    p = instantiate(ar1)
+    @test LogDensityProblems.dimension(p) == 2 + 5          # phi, s, h[1:5]
+    @test isfinite(LogDensityProblems.logdensity(p, 0.1 .* randn(7)))
+    @test LogDensityProblems.dimension(instantiate(ar1_model((; T = 5)))) == 0   # prior-only: fixed_param
+    nc = @slic (; y = randn(5), T = 5) begin
+        phi ~ normal(0.0, 0.5); s ~ exponential(1.0)
+        @scan begin
+            eps1 ~ std_normal()
+            x[1] = s * eps1
+            for t in 2:T
+                eps ~ std_normal()
+                x[t] = phi * x[t-1] + s * eps
+            end
+        end
+        y ~ normal(x, 1.0)
+    end
+    @test LogDensityProblems.dimension(instantiate(nc)) == 2 + 1 + 4   # phi, s, eps1, eps[2:5]
+    nested = @slic (; y = randn(4, 3), S = 3, T = 4) begin
+        phi ~ normal(0.0, 0.5); s ~ exponential(1.0)
+        @plate for j in 1:S
+            @scan begin
+                h[1] ~ normal(0.0, 1.0)
+                for t in 2:T
+                    h[t] ~ normal(phi * h[t-1], s)
+                end
+            end
+            y[:, j] ~ normal(h, 1.0)
+        end
+    end
+    pn = instantiate(nested)
+    @test LogDensityProblems.dimension(pn) == 2 + 4 * 3               # phi, s, h[T, S]
+    @test isfinite(LogDensityProblems.logdensity(pn, 0.1 .* randn(14)))
+end
+
+"""
+Annotated loops nest: a `@scan` inside a `@plate for` is the per-subject
+state-space shape. The enclosing loop discovers the inner loop's arrays and
+locals in its probe pass and promotes them to per-subject storage; in its emit
+pass the inner loop re-declares nothing and its indices COMPOSE with the
+enclosing accessor (`h[t]` under `h[:, j]` → `h[t, j]`), so all three modes
+(posterior / prior-only / cv population prediction) hold as one unit.
+"""
+@testitem "slic: annotated loops nest — a @scan inside a @plate for" tags=[:slic, :plate, :scan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    import StanBlocks.stan: maybecv
+    nest_model(data) = @slic data begin
+        phi ~ normal(0.0, 0.5); s ~ exponential(1.0)
+        @plate for j in 1:S
+            @scan begin
+                h[1] ~ normal(0.0, 1.0)
+                for t in 2:T
+                    h[t] ~ normal(phi * h[t-1], s)
+                end
+            end
+            y[:, j] ~ normal(h, 1.0)
+        end
+    end
+    # posterior: one matrix parameter, composed indices, the observation per column
+    post = nest_model((; y = randn(4, 3), S = 3, T = 4))
+    @test stanc_compiles(post)
+    let code = stan_code(post)
+        @test occursin("matrix[T, S] h;", stan_block(code, "parameters"))
+        mb = stan_block(code, "model")
+        @test occursin("for(j in 1:S)", mb)
+        @test occursin("h[1, j] ~ normal(0.0, 1.0);", mb)
+        @test occursin("h[t, j] ~ normal((phi * h[(t - 1), j]), s);", mb)
+        @test occursin("y[:, j] ~ normal(h[:, j], 1.0);", mb)
+        @test occursin("y_gen[:, j] = normal_vector_rng(y_m, h[:, j], 1.0);", stan_block(code, "generated quantities"))
+    end
+    # cv-tainted subject count: the whole per-subject chain re-draws in gq
+    cvm = nest_model((; y = randn(4, 3), S = maybecv(:S, 3), T = 4))
+    @test stanc_compiles(cvm)
+    let code = stan_code(cvm)
+        @test !occursin("h[t, j] ~", stan_block(code, "model"))
+        gq = stan_block(code, "generated quantities")
+        @test occursin("h[1, j] = normal_rng(0.0, 1.0);", gq)
+        @test occursin("h[t, j] = normal_rng((phi * h[(t - 1), j]), s);", gq)
+    end
+    # prior-only with an UNTYPED observation cell: the vector-shaped fresh `~`
+    # cell infers `vector[T]` (snag plate-untyped-ve-819ecfff, fixed 8086402)
+    prior = @slic (; S = 3, T = 4) begin
+        phi ~ normal(0.0, 0.5); s ~ exponential(1.0)
+        @plate for j in 1:S
+            @scan begin
+                h[1] ~ normal(0.0, 1.0)
+                for t in 2:T
+                    h[t] ~ normal(phi * h[t-1], s)
+                end
+            end
+            y[:, j] ~ normal(h, 1.0)
+        end
+    end
+    @test stanc_compiles(prior)
+    let code = stan_code(prior)
+        @test strip(stan_block(code, "parameters")) == "{\n}"
+        gq = stan_block(code, "generated quantities")
+        @test occursin("matrix[T, S] y;", gq)
+        @test occursin("y[:, j] = normal_vector_rng(T, h[:, j], 1.0);", gq)
+    end
+    # non-centered inside the plate: per-subject locals, sized by the iteration count
+    nc = @slic (; y = randn(4, 3), S = 3, T = 4) begin
+        phi ~ normal(0.0, 0.5); s ~ exponential(1.0)
+        @plate for j in 1:S
+            @scan begin
+                e1 ~ std_normal()
+                x[1] = s * e1
+                for t in 2:T
+                    eps ~ std_normal()
+                    x[t] = phi * x[t-1] + s * eps
+                end
+            end
+            y[:, j] ~ normal(x, 1.0)
+        end
+    end
+    @test stanc_compiles(nc)
+    let code = stan_code(nc)
+        params = stan_block(code, "parameters")
+        @test occursin("vector[S] e1;", params)
+        @test occursin("matrix[(T - 1), S] x_eps;", params)
+        tp = stan_block(code, "transformed parameters")
+        @test occursin("x[1, j] = (s * e1[j]);", tp)
+        @test occursin("x[t, j] = ((phi * x[(t - 1), j]) + (s * x_eps[(t - 1), j]));", tp)
+        mb = stan_block(code, "model")
+        @test occursin("e1[j] ~ std_normal();", mb)
+        @test occursin("x_eps[(t - 1), j] ~ std_normal();", mb)
+    end
+end
+
+"""
+`inv_cloglog` is a native Stan Math function (the inverse complementary
+log-log link, element-wise over real / vector / row_vector / array / matrix).
+It must be registered on the builtin surface — in the `@builtin_module` name
+manifest AND the shared unary-math `@defsig` Union — so a `@deffun` body may
+call it and lower to `inv_cloglog(...)`. Regression for snag
+stanblocks-trace-e1235cb1: a consumer `@lpxf` Bernoulli family calling
+`inv_cloglog(mu)` on a vector aborted at trace time with
+`tracetype not defined for p = inv_cloglog(::vector)::anything!`, because the
+bare name skipped the absent builtin and resolved to the consumer's own Julia
+fallback.
+"""
+@testitem "slic: native inv_cloglog builtin emits and compiles" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
+    # A `@defsig`-only native (no Julia method); the default Stan-only emission
+    # therefore accepts each definition without an annotation.
+    @deffun begin
+        cloglog_p(mu::real)::real = inv_cloglog(mu)
+        cloglog_vec(mu::vector[n])::vector[n] = inv_cloglog(mu)
+    end
+
+    # Scalar: the inverse-link evaluation.
+    scalar_model = @slic (; y = 1.5) begin
+        mm ~ normal(0., 1.)
+        ps = cloglog_p(mm)
+        y ~ normal(ps, 1.0)
+    end
+    scalar_code = stan_code(scalar_model)
+    @test occursin("inv_cloglog(", scalar_code)
+    @test occursin("return inv_cloglog(mu);", scalar_code)
+    @test stanc_check(scalar_code; warn_pedantic=false).ok
+
+    # Vectorized element-wise form.
+    vector_model = @slic (; n = 3, yv = [1, 0, 1]) begin
+        xv ~ normal(0., 1.; n = 3)
+        pv = cloglog_vec(xv)
+        yv ~ bernoulli(pv)
+    end
+    vector_code = stan_code(vector_model)
+    @test occursin("inv_cloglog(", vector_code)
+    @test occursin("return inv_cloglog(mu);", vector_code)
+    @test stanc_check(vector_code; warn_pedantic=false).ok
+end
+
+@testitem "slic: _write_stan_source invalidates a stale .stan file" tags=[:slic, :regression] setup=[StanBlocksImports] begin
+    using Logging
+    write_source = StanBlocks._write_stan_source
+    mktempdir() do dir
+        path = joinpath(dir, "model.stan")
+        v1 = "parameters { real logitp; }\n"
+        v2 = "parameters { real eta; }\n"
+        # Fresh path: written without complaint.
+        fresh_logs = TestLogger(; min_level=Logging.Info)
+        fresh_wrote = with_logger(fresh_logs) do
+            write_source(path, v1)
+        end
+        @test fresh_wrote === true
+        @test read(path, String) == v1
+        @test isempty(fresh_logs.logs)
+        # Identical content: untouched (mtime preserved, no warning), so the
+        # BridgeStan mtime-based rebuild cache keeps working.
+        m0 = mtime(path)
+        same_logs = TestLogger(; min_level=Logging.Info)
+        same_wrote = with_logger(same_logs) do
+            write_source(path, v1)
+        end
+        @test same_wrote === false
+        @test mtime(path) == m0
+        @test isempty(same_logs.logs)
+        # Differing content: overwritten, with a warning naming the path.
+        @test_logs (:warn, r"overwriting stale Stan source") write_source(path, v2)
+        @test read(path, String) == v2
+        # Nothing is loaded in this process, so a fresh write compiles from
+        # the path itself.
+        @test StanBlocks._build_path_for(path, v2) == path
+    end
+end
+
+@testitem "slic: default instantiate path lives outside the cwd" tags=[:slic, :regression] setup=[StanBlocksImports] begin
+    # A default-path compile must never drop a stray `tmp/` into the process
+    # cwd (e.g. a package worktree a bench runs from). The default is absolute
+    # and rooted at tempdir()/stanblocks, honouring STANBLOCKS_BUILD_DIR.
+    sc = "parameters { real mu; }\n"
+    expected = joinpath(tempdir(), "stanblocks", string(hash(sc)) * ".stan")
+    defaulted = withenv("STANBLOCKS_BUILD_DIR" => nothing) do
+        StanBlocks._default_build_path(sc)
+    end
+    @test isabspath(defaulted)
+    @test defaulted == expected
+    mktempdir() do dir
+        @test withenv("STANBLOCKS_BUILD_DIR" => dir) do
+            StanBlocks._default_build_dir()
+        end == dir
+        @test withenv("STANBLOCKS_BUILD_DIR" => dir) do
+            StanBlocks._default_build_path(sc)
+        end == joinpath(dir, string(hash(sc)) * ".stan")
+    end
+end
+
+@testitem "slic: stan_instantiate follows model edits on a shared explicit path" tags=[:slic, :regression, :bridgestan] setup=[StanBlocksImports] begin
+    # Same explicit `path`, model changes between calls (param rename): the
+    # on-disk source must follow the NEW model — never silently compile and
+    # sample the stale program.
+    v1 = @slic (; y = [1.0, 2.0]) begin
+        logitp ~ std_normal()
+        y ~ normal(logitp, 1.0)
+    end
+    v2 = @slic (; y = [1.0, 2.0]) begin
+        eta ~ std_normal()
+        y ~ normal(eta, 1.0)
+    end
+    mktempdir() do dir
+        path = joinpath(dir, "evolving.stan")
+        p1 = instantiate(v1; path=path)
+        @test read(path, String) == stan_code(v1)
+        @test BridgeStan.param_names(p1.model) == ["logitp"]
+        # Same path, changed model, previous build already loaded in this
+        # session: the file follows the new model and the compiled problem is
+        # the NEW program (built from a content-addressed copy, since the
+        # loaded `.so` path cannot reload in-process).
+        p2 = @test_logs (:warn, r"overwriting stale Stan source") (:warn, r"already loaded") instantiate(v2; path=path)
+        @test read(path, String) == stan_code(v2)
+        @test BridgeStan.param_names(p2.model) == ["eta"]
+        # Same shape, but nothing loaded (the cross-process reporter's case):
+        # the stale file is rewritten and the new program builds from the
+        # explicit path itself.
+        other = joinpath(dir, "other.stan")
+        write(other, stan_code(v1))
+        p3 = @test_logs (:warn, r"overwriting stale Stan source") instantiate(v2; path=other)
+        @test read(other, String) == stan_code(v2)
+        @test BridgeStan.param_names(p3.model) == ["eta"]
+    end
+end
+
+@testitem "slic: declared unbound observations emit a _gen twin covered by :predict" tags=[:slic, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Snag `unbound-observat-d32ac924` (BRM's one prior spelling: the response
+    # column omitted). An unbound `z ~ family(…)` is syntactically identical
+    # to a prior, so the producer DECLARES it
+    # (`StanBlocks.SlicModel(body, data, mod, (:z,))`); the compiler then emits
+    # the same `<obs>_gen` twin a bound observation has — aliasing the one
+    # forward-simulated draw, with NO `_likelihood` (pointwise needs observed
+    # values) — and the descriptor covers it under `:predict`. The emitted
+    # programs' stanc acceptance is pinned by the companion `:stanc` item.
+    mixed_base = @slic (; x = [-1.0, 0.0, 1.0, 2.0], y = [0.1, 0.8, 1.7, 2.6]) begin
+        mu = x .* 1.0
+        sigma_y ~ exponential(1.0)
+        sigma_z ~ exponential(1.0)
+        y ~ normal(mu, sigma_y)
+        z ~ normal(mu, sigma_z)
+    end
+    declare(model, observations) =
+        StanBlocks.SlicModel(model.model, model.data, model.mod, observations)
+
+    # Without the declaration the status quo holds exactly: `z`
+    # forward-simulates under its own name (`:derived`) and `:predict` covers
+    # the bound twin only. Nothing is inferred.
+    plain_code = stan_code(mixed_base)
+    @test !occursin("z_gen", plain_code)
+    plain_d = stan_descriptor(mixed_base; name = :mixed_plain)
+    plain_outs = Dict(o.name => o for o in plain_d.outputs)
+    @test plain_outs[:z].generative == :derived
+    @test stan_operation(plain_d, :predict).outputs == (:y_gen,)
+
+    # Declared: the twin aliases the draw, joins `:predict`, and no
+    # `_likelihood` appears; priors (`sigma_z`) correctly stay twinless.
+    mixed = declare(mixed_base, (:z,))
+    mixed_code = stan_code(mixed)
+    @test occursin(r"vector\[x_n\] z_gen = z;", mixed_code)
+    @test !occursin("z_likelihood", mixed_code)
+    @test !occursin("sigma_z_gen", mixed_code)
+    mixed_d = stan_descriptor(mixed; name = :mixed_declared)
+    mixed_outs = Dict(o.name => o for o in mixed_d.outputs)
+    @test mixed_outs[:z_gen].kind == :generated_quantity
+    @test mixed_outs[:z_gen].generative == :draw
+    @test mixed_outs[:z_gen].source == :z
+    @test mixed_outs[:z_gen].size == mixed_outs[:z].size
+    @test stan_operation(mixed_d, :predict).outputs == (:y_gen, :z_gen)
+    @test stan_operation(mixed_d, :pointwise_loglik).outputs == (:y_likelihood,)
+    @test :fit in [op.name for op in mixed_d.operations]
+
+    # Fully unconditioned (prior) program: empty `parameters`, no `:fit`, no
+    # `:pointwise_loglik` — but the twin and `:predict` appear.
+    prior_base = @slic (; x = [-1.0, 0.0, 1.0, 2.0]) begin
+        mu = x .* 1.0
+        sigma ~ exponential(1.0)
+        y ~ normal(mu, sigma)
+    end
+    prior = declare(prior_base, (:y,))
+    prior_code = stan_code(prior)
+    @test occursin(r"parameters\s*\{\s*\}", prior_code)
+    @test occursin(r"vector\[x_n\] y_gen = y;", prior_code)
+    @test !occursin("y_likelihood", prior_code)
+    prior_d = stan_descriptor(prior; name = :prior_declared)
+    @test [op.name for op in prior_d.operations] ==
+        [:transpile, :instantiate, :predict]
+    @test stan_operation(prior_d, :predict).outputs == (:y_gen,)
+
+    # A declared stem that IS bound takes the ordinary bound path (twin +
+    # `_likelihood`); the declaration is ignored, never duplicated.
+    bound = declare(mixed_base, (:y, :z))
+    bound_code = stan_code(bound)
+    @test length(collect(eachmatch(r"y_gen", bound_code))) == 1
+    @test occursin("y_likelihood", bound_code)
+    bound_d = stan_descriptor(bound; name = :bound_declared)
+    @test stan_operation(bound_d, :predict).outputs == (:y_gen, :z_gen)
+
+    # A declared stem that stays a sampled parameter (it feeds a bound
+    # likelihood) gets no twin: posterior draws of it come from the sampler.
+    latent_base = @slic (; x = [1.0, 2.0], w = [0.5, 1.5]) begin
+        mu = x .* 1.0
+        z ~ normal(mu, 1.0)
+        w ~ normal(z, 0.5)
+    end
+    latent = declare(latent_base, (:z,))
+    latent_code = stan_code(latent)
+    @test !occursin("z_gen", latent_code)
+    latent_d = stan_descriptor(latent; name = :latent_declared)
+    latent_outs = Dict(o.name => o for o in latent_d.outputs)
+    @test latent_outs[:z].kind == :parameter
+    @test stan_operation(latent_d, :predict).outputs == (:w_gen,)
+
+    # Chained unbound observations both twin, and the downstream twin reads
+    # the draw (the bare symbol must stay emitted).
+    chain_base = @slic (; x = [1.0, 2.0]) begin
+        mu = x .* 1.0
+        z ~ normal(mu, 1.0)
+        w ~ normal(z, 0.5)
+    end
+    chain = declare(chain_base, (:z, :w))
+    chain_code = stan_code(chain)
+    @test occursin(r"z_gen = z;", chain_code)
+    @test occursin(r"w_gen = w;", chain_code)
+    chain_d = stan_descriptor(chain; name = :chain_declared)
+    @test stan_operation(chain_d, :predict).outputs == (:z_gen, :w_gen)
+
+    # A declared stem with no `~` statement is silently ignored.
+    dangling = declare(mixed_base, (:nope,))
+    @test !occursin("nope_gen", stan_code(dangling))
+    dangling_d = stan_descriptor(dangling; name = :dangling_declared)
+    @test stan_operation(dangling_d, :predict).outputs == (:y_gen,)
+
+    # The declaration survives re-data and `Base.merge` (unioned); fixing a
+    # name removes its statement, so the fixed stem drops out.
+    @test mixed(; x = [-1.0, 0.0, 1.0, 2.0]).observations == (:z,)
+    other = declare(prior_base, (:w,))
+    @test Set(Base.merge(mixed, other).observations) == Set([:z, :w])
+    @test Base.merge(mixed, (; z = [1.0, 2.0, 3.0, 4.0])).observations == ()
+    # A bare `Symbol` declares one stem; anything else fails loudly.
+    @test declare(mixed_base, :z).observations == (:z,)
+    @test_throws "must be `Symbol`s" declare(mixed_base, ("z",))
+
+    # A user variable colliding with the twin fails fast at trace time naming
+    # the twin — instead of a duplicate Stan declaration only stanc rejects.
+    collide_base = @slic (; x = [1.0, 2.0]) begin
+        mu = x .* 1.0
+        sigma ~ exponential(1.0)
+        z ~ normal(mu, sigma)
+        z_gen = mu .* sigma
+    end
+    collide = declare(collide_base, (:z,))
+    @test_throws "Cannot emit the compiler-owned twin `z_gen`" stan_code(collide)
+
+    # The same fail-fast rule guards the bound twins uniformly: a user
+    # generated-quantity colliding with either twin errors at trace time.
+    bound_gen_collide = @slic (; x = [1.0, 2.0], y = [0.5, 1.5]) begin
+        mu = x .* 1.0
+        sigma ~ exponential(1.0)
+        y ~ normal(mu, sigma)
+        y_gen = mu .* sigma
+    end
+    @test_throws "Cannot emit the compiler-owned twin `y_gen`" stan_code(bound_gen_collide)
+    bound_lik_collide = @slic (; x = [1.0, 2.0], y = [0.5, 1.5]) begin
+        mu = x .* 1.0
+        sigma ~ exponential(1.0)
+        y ~ normal(mu, sigma)
+        y_likelihood = mu .* sigma
+    end
+    @test_throws "Cannot emit the compiler-owned twin `y_likelihood`" stan_code(bound_lik_collide)
+end
+
+@testitem "slic: declared unbound twins stanc-compile" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+    # Stanc acceptance for the programs the companion `:predict` item pins
+    # (kept separate so the transpile/descriptor pins run on the portable CI
+    # job, which skips `:stanc`).
+    declare(model, observations) =
+        StanBlocks.SlicModel(model.model, model.data, model.mod, observations)
+    mixed_base = @slic (; x = [-1.0, 0.0, 1.0, 2.0], y = [0.1, 0.8, 1.7, 2.6]) begin
+        mu = x .* 1.0
+        sigma_y ~ exponential(1.0)
+        sigma_z ~ exponential(1.0)
+        y ~ normal(mu, sigma_y)
+        z ~ normal(mu, sigma_z)
+    end
+    @test stanc_compiles(declare(mixed_base, (:z,)))
+    prior_base = @slic (; x = [-1.0, 0.0, 1.0, 2.0]) begin
+        mu = x .* 1.0
+        sigma ~ exponential(1.0)
+        y ~ normal(mu, sigma)
+    end
+    @test stanc_compiles(declare(prior_base, (:y,)))
+    chain_base = @slic (; x = [1.0, 2.0]) begin
+        mu = x .* 1.0
+        z ~ normal(mu, 1.0)
+        w ~ normal(z, 0.5)
+    end
+    @test stanc_compiles(declare(chain_base, (:z, :w)))
+end
+
+@testitem "slic: declared unbound twins execute through :predict" tags=[:slic, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # End-to-end companion to the `:predict` item above: the declared twin is
+    # served through the standard operation like any bound twin. Mirrors the
+    # `:predict` execution shape of "descriptor operations execute through
+    # BridgeStan" (NOT run on hosts without the BridgeStan toolchain; the
+    # stan CI job covers it).
+    mixed_base = @slic (; x = [-1.0, 0.0, 1.0, 2.0], y = [0.1, 0.8, 1.7, 2.6]) begin
+        mu = x .* 1.0
+        sigma_y ~ exponential(1.0)
+        sigma_z ~ exponential(1.0)
+        y ~ normal(mu, sigma_y)
+        z ~ normal(mu, sigma_z)
+    end
+    mixed = StanBlocks.SlicModel(
+        mixed_base.model, mixed_base.data, mixed_base.mod, (:z,))
+    d = stan_descriptor(mixed; name = :mixed_predict_exec)
+
+    prob = stan_execute(d, :fit)
+    dim = LogDensityProblems.dimension(prob)
+    @test isfinite(LogDensityProblems.logdensity(prob, zeros(dim)))
+
+    pred = stan_execute(d, :predict; problem = prob, draws = zeros(dim), seed = 1234)
+    @test keys(pred) == (:y_gen, :z_gen)
+    @test length(pred.z_gen) == 4
+    @test all(isfinite, pred.z_gen)
+    multi = stan_execute(d, :predict; problem = prob, draws = zeros(dim, 3), seed = 7)
+    @test size(multi.z_gen) == (4, 3)
+
+    # Fixed_param (fully unconditioned) program: `:predict` draws the twin
+    # over an empty parameter vector, like the §34 manual recipe.
+    prior_base = @slic (; x = [-1.0, 0.0, 1.0, 2.0]) begin
+        mu = x .* 1.0
+        sigma ~ exponential(1.0)
+        y ~ normal(mu, sigma)
+    end
+    prior = StanBlocks.SlicModel(
+        prior_base.model, prior_base.data, prior_base.mod, (:y,))
+    pd = stan_descriptor(prior; name = :prior_predict_exec)
+    pprob = stan_execute(pd, :instantiate)
+    @test LogDensityProblems.dimension(pprob) == 0
+    ppred = stan_execute(pd, :predict; problem = pprob, draws = Float64[], seed = 5)
+    @test keys(ppred) == (:y_gen,)
+    @test length(ppred.y_gen) == 4
+    @test all(isfinite, ppred.y_gen)
 end

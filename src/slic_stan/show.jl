@@ -44,12 +44,19 @@ autoprint(io, args...) = if maybreak(io)
         print(io, rv)
     else
         idx = findfirst(_is_join, args)
-        iio = indent(io)
-        print(io, args[1:idx-1]...)
-        print(io, "\n", current_indent(iio))
-        print(iio, Join(args[idx].iterator, rstrip(args[idx].delim) * "\n" * current_indent(iio)))
-        print(io, "\n", current_indent(io))
-        print(io, args[idx+1:end]...)
+        if isnothing(idx)
+            # No breakable join point — e.g. a 1-dim tokenof size expression
+            # built from ragged_start/ragged_end bounds (the single-arg call
+            # below). Emit the long line as-is: valid Stan, just unbroken.
+            print(io, rv)
+        else
+            iio = indent(io)
+            print(io, args[1:idx-1]...)
+            print(io, "\n", current_indent(iio))
+            print(iio, Join(args[idx].iterator, rstrip(args[idx].delim) * "\n" * current_indent(iio)))
+            print(io, "\n", current_indent(io))
+            print(io, args[idx+1:end]...)
+        end
     end
 else
     print(io, args...)
@@ -102,7 +109,7 @@ end
 block_print(io, ::FunctionsBlock, x) = isnothing(x) || print(io, x, "\n")
 constraints(x::StanType) = (;[
     key=>getindex(info(x), key)
-    for key in (:lower, :upper, :offset, :multiplier) if key in keys(info(x))
+    for key in CONSTRAINT_KEYS if key in keys(info(x))
 ]...)
 Base.show(io::IO, x::StanExpr) = print(io, expr(x), "::", type(x))
 Base.show(io::IO, x::StanType) = show(StanIO(io), x)
@@ -121,7 +128,13 @@ Base.show(io::StanIO, x::StanType{<:types.tup}) = begin
 end
 Base.show(io::IO, x::AssignmentExpr{<:StanExpr{Symbol}}) = begin
     name, rhs = x.args
-    @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
+    # A `short_expr` display placeholder carries a `StringStanType` rhs and is
+    # only ever rendered by the error formatter itself (functions.jl:127). Skip
+    # the code-emission assert for it so formatting a genuinely-untypeable
+    # assignment cannot crash on `center_type(::StringStanType)` — same class as
+    # snag `error-formatter-79e40522` (snag `multinomial-cust-59569d79`).
+    type(rhs) isa StringStanType ||
+        @assert center_type(rhs) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
     print(io, type(rhs), " ", name, " = ", rhs)
 end
 Base.show(io::IO, x::AssignmentExpr) = print(io, x.args[1], " = ", x.args[2])
@@ -177,15 +190,36 @@ Base.show(io::IO, x::WhileExpr) = begin
     head, body = x.args
     print(io, "while(", head, ")", StanBlock(Symbol(), body.args))
 end
-_else_branch(_x, e::BlockExpr) = StanBlock(Symbol(), e.args)
-_else_branch(x, e) = error("if/elseif rendering: else branch is not a BlockExpr (got `$(typeof(e))` from `$x`).")
+_else_branch(e::BlockExpr) = (" else", StanBlock(Symbol(), e.args))
+_else_branch(e::StanExpr{<:ElseIfExpr}) = (" else ", e)
+_else_branch(e::ElseIfExpr) = (" else ", e)
+_else_branch(e) = error("if/elseif rendering: expected a BlockExpr or ElseIfExpr branch, got `$(typeof(e))`.")
 
-Base.show(io::IO, x::IfExpr) = begin
-    print(io, "if(", x.args[1], ")", StanBlock(Symbol(), x.args[2].args))
+_if_condition(x::IfExpr) = x.args[1]
+_if_condition(x::ElseIfExpr) = _elseif_condition(x.args[1])
+_elseif_condition(x::BlockExpr) = begin
+    args = filter(a -> !(a isa LineNumberNode), x.args)
+    length(args) == 1 || error("if/elseif rendering: expected one expression in an elseif condition, got $(length(args)).")
+    only(args)
+end
+_elseif_condition(x) = error("if/elseif rendering: expected a BlockExpr elseif condition, got `$(typeof(x))`.")
+
+_show_if(io::IO, x::Union{IfExpr,ElseIfExpr}) = begin
+    print(io, "if(", _if_condition(x), ")", StanBlock(Symbol(), x.args[2].args))
     if length(x.args) == 3
-        print(io, " else", _else_branch(x, x.args[3]))
+        print(io, _else_branch(x.args[3])...)
     end
 end
+Base.show(io::IO, x::IfExpr) = _show_if(io, x)
+Base.show(io::IO, x::ElseIfExpr) = _show_if(io, x)
+# Ternary conditional EXPRESSION → Stan's `cond ? a : b` operator. Unlike the
+# `if`-statement above, the branches are values (`x.args[2]`/`[3]`), not blocks,
+# so they render inline; the outer parens keep it safe in any expression
+# position (e.g. `real m = ((a < b) ? a : b);`).
+Base.show(io::IO, x::TernaryExpr) =
+    print(io, "(", x.args[1], " ? ", x.args[2], " : ", x.args[3], ")")
+Base.show(io::IO, x::LogicalAndExpr) = print(io, "(", Join(x.args, " && "), ")")
+Base.show(io::IO, x::LogicalOrExpr) = print(io, "(", Join(x.args, " || "), ")")
 Base.show(io::IO, x::CanonicalExpr{typeof(adjoint)}) = print(io, "(", x.args[1], "')")
 Base.show(io::IO, x::CanonicalExpr{typeof(range)}) = autoprint(io, "linspaced_vector(", Join((x.args[end], x.args[1], x.args[2]), ", "), ")")
 Base.show(io::IO, x::CanonicalExpr{typeof(getindex)}) = autoprint(io, x.args[1], "[", Join(x.args[2:end], ", "), "]")
@@ -193,6 +227,13 @@ Base.show(io::IO, x::CanonicalExpr{typeof(getindex)}) = autoprint(io, x.args[1],
 # `Base.getfield(obj, position)`) renders as Stan's positional tuple
 # access `obj.N`.
 Base.show(io::IO, x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = print(io, x.args[1], ".", x.args[2])
+# Julia tuple indexing `p[i]` on a plain positional tuple is the same
+# positional access as `getfield(p, i)` — Julia permits both on a tuple — so
+# it must render as Stan's `p.N`, not the generic `p[i]` bracket above (which
+# is invalid on a tuple: stanc rejects it). The `<:types.usertype` getindex
+# method below is strictly more specific, so a usertype's element access still
+# routes to its Stan helper rather than positional access.
+Base.show(io::IO, x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = print(io, x.args[1], ".", x.args[2])
 # User-defined `Base.getindex(::usertype, ::int)` methods (e.g.
 # `RaggedVector` group access) route through a real Stan helper function
 # rather than Stan's native `r[i]` (which on a tuple-rendered usertype
@@ -211,11 +252,31 @@ for f in (Meta.quot(:(~)), Meta.quot(:(=)))
     @eval Base.show(io::IO, x::CanonicalExprV{$f}) = print(io, Join(x.args, prettystring($f)))
 end
 Base.show(io::IO, x::SamplingExpr) = print(io, Join(x.args, " ~ "))
+# An explicit-suffix density head (`y ~ …_lpmf(…)`, `y ~ …_lpdf(…)`) must print
+# comma-separated in SAMPLING position: Stan requires the `|` bar only for
+# density calls in EXPRESSION position (`f(x) = … normal_lpdf(y | …)`), and
+# rejects it after `~` (stanc `Ill-formed expression`, observed 2026-09-17 —
+# the first valid program to put an explicit suffix in `~` position; bare
+# heads are unaffected either way). The generic `CanonicalExpr` printer above
+# keeps the bar for expression position, where it is mandatory.
+Base.show(io::StanIO, x::SamplingExpr) = begin
+    lhs, rhs = x.args
+    print(io, lhs, " ~ ")
+    rc = rhs isa CanonicalExpr ? rhs :
+        (rhs isa StanExpr && expr(rhs) isa CanonicalExpr ? expr(rhs) : nothing)
+    if !isnothing(rc) &&
+       endswith(string(func_name(head(rc), rc.args)), r"_lp[md]f|_l?c?cdf")
+        print(io, func_name(head(rc), rc.args), "(",
+              Join(stan_call_args(rc.args), ", "), ")")
+    else
+        print(io, rhs)
+    end
+end
 
 for f in (:+=,:-=,:*=)
     qf = Meta.quot(f)
-    @eval forward!(x::CanonicalExprV{$qf}; info) = stan_expr(remake(x, forward!(x.args; info)...))
+    @eval forward!(x::CanonicalExprV{$qf}; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
     @eval Base.show(io::IO, x::CanonicalExprV{$qf}) = print(io, Join(x.args, prettystring($qf)))
 end
-@eval forward!(x::CanonicalExprV{:(.=)}; info) = stan_expr(remake(x, forward!(x.args; info)...))
+@eval forward!(x::CanonicalExprV{:(.=)}; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 @eval Base.show(io::IO, x::CanonicalExprV{:(.=)}) = print(io, Join(x.args, " = "))

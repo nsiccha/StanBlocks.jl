@@ -50,7 +50,11 @@ end
 _display_output_semantics(output::ModelOutput) = begin
     role = string(replace(string(output.kind), "_" => " "), " / ",
         replace(string(output.generative), "_" => " "))
-    output.source === nothing ? role : string(role, " of ", output.source)
+    output.source === nothing || (role = string(role, " of ", output.source))
+    # A ragged observation's twins are group-shaped; say so, since the declared
+    # size alone (a flat `num_elements`) does not.
+    output.segments === nothing ? role :
+        string(role, ", ", length(output.segments), " ragged groups")
 end
 
 # The semantic half of `stan_descriptor`, intentionally excluding its stable id:
@@ -58,11 +62,13 @@ end
 # traced blocks and are therefore safe for default display.
 _display_traced_parts(x::StanModel) = begin
     datacontent = content(block(x, :data))
-    datanames = Set{Symbol}(keys(datacontent))
+    # `_block_outputs` takes the data CONTENT, not just its names: a ragged
+    # observation's twins carry the carrier's group boundaries, which live on
+    # the data value (`ModelOutput.segments`).
     outputs = vcat(
-        _block_outputs(x, :parameters, :parameter, datanames),
-        _block_outputs(x, :transformed_parameters, :transformed_parameter, datanames),
-        _block_outputs(x, :generated_quantities, :generated_quantity, datanames),
+        _block_outputs(x, :parameters, :parameter, datacontent),
+        _block_outputs(x, :transformed_parameters, :transformed_parameter, datacontent),
+        _block_outputs(x, :generated_quantities, :generated_quantity, datacontent),
     )
 
     observed = _observed_bases(block(x, :model), Set{Symbol}())

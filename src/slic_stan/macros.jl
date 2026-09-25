@@ -11,15 +11,17 @@ macro slic(model)
     # `@slic f(args...) = body` — a NAMED sub-model function (see `_slic_fn`);
     # everything else is an anonymous `SlicModel` value.
     if Meta.isexpr(model, :(=)) && Meta.isexpr(model.args[1], :call)
-        return _slic_fn(model, __module__)
+        return _slic_fn(_inherit_source_file(model, __source__), __module__)
     end
-    expanded = lower_string_interp(slic_macroexpand(__module__, model))
+    expanded = _inherit_source_file(
+        lower_string_interp(slic_macroexpand(__module__, model)), __source__)
     doc, stripped = extract_leading_docstring(expanded)
     SlicModel(stripped, Dict{Symbol,Any}(:docstring => doc), __module__)
 end
 macro slic(data, model)
     mod = @__MODULE__
-    expanded = lower_string_interp(slic_macroexpand(__module__, model))
+    expanded = _inherit_source_file(
+        lower_string_interp(slic_macroexpand(__module__, model)), __source__)
     doc, stripped = extract_leading_docstring(expanded)
     qmodel = Meta.quot(stripped)
     if isempty(doc)
@@ -123,24 +125,24 @@ end
 """
     @deffun function_definition
 
-Define a Stan-compatible function with type inference and dual code generation.
+Define a Stan-compatible function with type inference and Stan code generation.
 
 Parses a Julia-style function definition (with type-annotated arguments and return type),
 generates the corresponding Stan function, and registers type-inference signatures so the
-transpiler can propagate types through calls to this function. Eligible bodyful bare-symbol
-definitions also install one callable Julia method from the original user-facing definition.
-Signature-only/type-token glue, qualified or pre-existing function extensions, and
-definitions whose own name is in the probability/RNG/ODE/`reduce_sum` family
-(`*_lpdf`, `*_lpmf`, `*_lcdf`, `*_lccdf`, `*_cdf`, `*_rng`, the elementwise `*_lpdfs`/
-`*_lpmfs`/… companions, and `ode_*`) skip the Julia target automatically.
+transpiler can propagate types through calls to this function. Definitions are Stan-only by
+default. Add `@juliacompat` to an eligible bodyful bare-symbol definition to install one
+callable Julia method from the original user-facing definition as well. Signature-only/type-
+token glue, qualified or pre-existing function extensions, and definitions whose own name is
+in the probability/RNG/ODE/`reduce_sum` family (`*_lpdf`, `*_lpmf`, `*_lcdf`, `*_lccdf`,
+`*_cdf`, `*_rng`, the elementwise `*_lpdfs`/`*_lpmfs`/… companions, and `ode_*`) remain
+Stan-only even when annotated.
 
-The Julia target is a bounded deterministic compatibility layer: supported signatures,
-symbolic dimension checks, typed locals, control flow/mutation, nested deterministic calls,
-higher-order arguments, and varargs. In a *deterministically named* definition, a direct
-probability/RNG/ODE/`reduce_sum` primitive call requires the explicit `@stanonly` opt-out
-and otherwise errors at expansion time — the name says the function was meant to be
-callable, so a silent skip would hide a mistake. A probability-family definition is
-outside the layer by construction and needs no annotation.
+The opt-in Julia target is a bounded deterministic compatibility layer: supported
+signatures, symbolic dimension checks, typed locals, control flow/mutation, nested
+deterministic calls, higher-order arguments, and varargs. In a `@juliacompat` definition,
+a direct probability/RNG/ODE/`reduce_sum` primitive call errors at expansion time. Remove
+the annotation when the definition is intentionally Stan-only. A probability-family
+definition is outside the layer by construction and gets no Julia method.
 
 For functions ending in `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf`, the return type is automatically
 set to `real` and companion `_lpdfs`/`_rng` stubs are generated for use in `generated_quantities`.
@@ -174,7 +176,7 @@ the enclosing block.
 # Example
 
 ```julia
-@deffun @stanonly garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
+@deffun garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
     sigma2 = alpha0
     rv = 0.
     for t in 1:T
@@ -188,26 +190,43 @@ end
 See `src/slic_stan/builtin.jl` for many more examples.
 """
 macro deffun(x)
-    esc(deffun(lower_string_interp(slic_macroexpand(__module__, x)); source=__source__, def_mod=__module__))
+    expanded = _inherit_source_file(
+        lower_string_interp(slic_macroexpand(__module__, x)), __source__)
+    esc(deffun(expanded; source=__source__, def_mod=__module__))
+end
+
+"""
+    @juliacompat definition
+
+Opt an eligible bodyful `@deffun` definition into the bounded deterministic
+Julia compatibility target while retaining the same SLIC/Stan lowering:
+
+```julia
+@deffun @juliacompat affine(x::real, a::real)::real = a * x + 1.0
+```
+
+It may wrap one definition or a `begin ... end` group inside `@deffun`.
+Signature-only/type-token glue, qualified or pre-existing function extensions,
+and probability/RNG/ODE/`reduce_sum`-family definitions remain Stan-only.
+Within a `@juliacompat begin ... end` group, a nested `@stanonly` definition
+explicitly opts that member back out.
+"""
+macro juliacompat(x)
+    error("@juliacompat may only appear inside an @deffun block")
 end
 
 """
     @stanonly definition
 
-Opt a bodyful `@deffun` definition out of its default Julia method while
-retaining the existing SLIC/Stan lowering. Use it for deliberately Stan-only
-semantics outside the bounded deterministic Julia compatibility layer:
+Explicitly mark a `@deffun` definition as Stan-only. This is the default, so
+the annotation is normally optional; it remains useful as documentation and
+to opt one member out of a surrounding `@juliacompat begin ... end` group:
 
 ```julia
 @deffun @stanonly foo_rng(x::real)::real = stan_rng_primitive(x)
 ```
 
 It may wrap one definition or a `begin ... end` group inside `@deffun`.
-Signature-only and type-token compiler-glue definitions — and any definition
-whose own name is in the probability/RNG/ODE/`reduce_sum` family — already skip
-Julia emission automatically, so `@stanonly` is redundant on those (harmless,
-but unnecessary). Reach for it when a *deterministically named* definition is
-intentionally Stan-only.
 """
 macro stanonly(x)
     error("@stanonly may only appear inside an @deffun block")
@@ -277,4 +296,50 @@ end
 macro stan_assert(cond, msg=nothing)
     msg_expr = msg === nothing ? string("assertion failed: ", cond) : msg
     esc(:(if !($cond); reject($msg_expr); end))
+end
+
+"""
+    @plate for i in 1:N
+        x[i] ~ dist(…)          # a model-scope array, one element per cell
+        t ~ dist(…)             # a per-cell local (hoisted, hygienic name)
+        y[i] ~ dist(x[i], t)    # an observation on data `y`
+    end
+
+The annotated independent-cell loop of a `@slic` model body: sugar for the
+`plate(...) do … end` primitive (the tracer inlines both; neither is a HOF).
+Arrays indexed by the loop variable are model-scope arrays visible after the
+loop; bare fresh names are per-iteration locals; writes to names bound outside
+the loop are rejected — SB models never mutate. Cells are independent: a read
+at any other index than the loop variable's is an error (use `@scan`).
+`for i in 1:N, j in 1:M` gives an N-D outer shape; `for di in doses` iterates
+the values of a container (a `RaggedVector` group per cell).
+
+Only meaningful inside a `@slic` model body, where it is a reserved form.
+"""
+macro plate(x)
+    error("`@plate` may only appear inside a `@slic` model body, as `@plate for i in 1:N … end`.")
+end
+
+"""
+    @scan begin
+        x[1] ~ dist0(…)                     # setup: the initial state(s)
+        for i in 2:T
+            x[i] ~ dist(x[i-1], …)          # the recurrence: lag reads `x[i-k]`
+        end
+    end
+
+The annotated sequential loop of a `@slic` model body (a sampled-states
+recurrence; decision `17cilkc`): one block whose trailing `for` is the
+recurrence and whose preceding statements are the setup. Arrays indexed by the
+loop variable are model-scope arrays; inside the loop they may be read at the
+current index or at a fixed lag `x[i - k]` (`k ≥ 1`), never ahead. Every
+element is assigned exactly once across setup + loop (the setup fills `x[1:m]`
+and the loop starts at `m+1`). Per-iteration locals and observations behave as
+in `@plate`. Lowers to a plain Stan `for` loop; a prior-only or cross-validated
+model re-draws the whole block in `generated quantities` in step order.
+
+Only meaningful inside a `@slic` model body, where it is a reserved form.
+"""
+macro scan(x)
+    error("`@scan` may only appear inside a `@slic` model body, as `@scan begin <setup>; for i in lo:hi … end end`.")
 end

@@ -4,12 +4,22 @@ A Julia → Stan transpiler. You write a probabilistic model in (a restricted su
 
 - automatic **block placement** — variables are routed to `data` / `transformed_data` / `parameters` / `transformed_parameters` / `model` / `generated_quantities` based on what they depend on
 - automatic **type, shape and constraint inference** — including for user-defined functions
-- automatic **posterior pointwise log-likelihoods** and **predictive draws** for every `~` statement
+- automatic **posterior pointwise log-likelihoods** and **predictive draws** when the observation shape and family provide the required companions
 - (limited) **higher-order user-defined functions** — `map`-, `reduce_sum`-, and `broadcast`-style patterns
 - full **Stan toolchain** — `stan_code(model)` to inspect, `stan_instantiate(model)` to compile via [BridgeStan](https://github.com/roualdes/bridgestan), then sample/score with anything that consumes [`LogDensityProblems`](https://github.com/tpapp/LogDensityProblems.jl)
 
 ::: warning Restricted syntax
 A `@slic` body is a **flat declarative block**: `~` and `=` statements only. No `for`/`while`/`if`/`&&`/`||`/ternary/comprehension at the model level — put those in [`@deffun`](#user-defined-functions-with-deffun) bodies. The transpiler errors with a pointer if you forget. See [Caveats](#caveats).
+:::
+
+::: tip Current feature boundary
+The [Authoring and feature support](authoring.md) page is the compact source for
+distribution combinators, missing outcomes, ragged data, executable descriptors,
+and the complete `plate` support/limitation matrix. The [Feature atlas](feature-atlas.md)
+pairs representative StanBlocks programs with their essential generated Stan.
+The [Worked examples](worked-examples.md) preserve the longer model families
+and case studies from the former Quarto documentation, with complete Stan
+programs generated from the displayed Julia source during the docs build.
 :::
 
 ## Quick Start
@@ -128,13 +138,33 @@ m2 = sm(;y=randn(100))              # StanModel call: re-data only (cheap)
 
 For each `Vector` data kwarg `x`, an `Int` `x_n = length(x)` is added automatically; for each `Matrix`, both `x_m` and `x_n` are added. So you can refer to those names inside the model without ceremony. `Vector{<:AbstractVector{<:Real}}` data is automatically [encoded as a ragged vector](#ragged-vectors).
 
-You can also append/replace statements on a model after the fact by passing AST snippets:
+You can append or replace statements without mutating the base model through
+`Base.merge`:
 
 ```julia
-extended = base_model(:( y_pred = normal_rng(mu, sigma) ))
+extended = Base.merge(base_model, quote
+    beta ~ normal(0, 2; n=n_covariates)
+end)
+
+fixed = Base.merge(base_model, (; beta=[0.2, -0.1]))
+
+fixed_and_extended = Base.merge(base_model, quote
+    sigma ~ exponential(1)
+end, (; beta=[0.2, -0.1]))
 ```
 
-If a passed snippet has the same LHS as an existing statement, it replaces that statement; otherwise it's appended.
+If a merged statement has the same named LHS as an existing statement, it
+replaces it; otherwise it is appended. A typed-LHS override and a plain-LHS
+base match by the underlying name. A merged `NamedTuple` fixes its names: each
+matching sampling or assignment statement is removed, and the supplied value
+is stored as data. Fixed bindings are applied after statement replacements, so
+the mixed form above is unambiguous.
+
+This differs deliberately from `base_model(; beta=value)`, which only binds
+data and leaves an existing `beta ~ ...` statement contributing a likelihood.
+The old positional splice `base_model(quote ... end)` is not an alias: model
+calls with kwargs bind data, while structural composition and explicit fixing
+go through `Base.merge`.
 
 ### Activity analysis
 
@@ -178,11 +208,15 @@ You can additionally pass `n=…` or `m=…, n=…` on any prior to make the par
 
 ## User-defined functions with `@deffun`
 
-`@deffun` registers a Stan-compatible function with type-annotated arguments.
-An eligible bodyful, bare-symbol definition emits **both** one callable Julia
-method and the existing Stan function by default. The Julia method comes from
-the original user-facing definition exactly once, so defaults and kwargs keep
-ordinary Julia behaviour while internal SLIC trampolines remain compiler-only.
+`@deffun` registers a Stan-compatible function. Argument, return, and ordinary
+local type/shape annotations are optional: StanBlocks normally specialises the
+function at its call site and infers types and shapes from argument values and
+right-hand-side expressions.
+Definitions emit Stan by default. Add `@juliacompat` to an eligible bodyful,
+bare-symbol definition to emit **both** one callable Julia method and the Stan
+function. The Julia method comes from the original user-facing definition
+exactly once, so defaults and kwargs keep ordinary Julia behaviour while
+internal SLIC trampolines remain compiler-only.
 
 The Julia target is deliberately deterministic and bounded. It supports scalar,
 vector, matrix, and scalar-array signatures; symbolic dimensions (with
@@ -193,22 +227,23 @@ small internal compatibility dispatch supplies Stan spellings such as
 piracy. Distinct SLIC overloads that collapse to the same Julia container
 signature error instead of silently overwriting a method.
 
-Use `@stanonly` for an intentionally Stan-only body:
+Use `@juliacompat` when a helper should also be callable from Julia:
 
 ```julia
-@deffun @stanonly my_normal_rng(mu::real, sigma::real)::real = normal_rng(mu, sigma)
+@deffun @juliacompat affine(x::real, a::real)::real = a * x + 1.0
 ```
 
-`@stanonly` may wrap one definition or a `begin ... end` group. Signature-only
-stubs, bare type-token/compiler-glue forms, qualified or pre-existing function
-extensions, and definitions whose own name is in the probability/RNG/ODE family
-(`*_lpdf`, `*_lpmf`, `*_lcdf`, `*_lccdf`, `*_cdf`, `*_rng`, the elementwise
-`*_lpdfs`/`*_lpmfs`/… companions, and `ode_*`) skip Julia emission
-automatically — so a user-defined `_lpmf` that calls Stan probability
-primitives needs no annotation. A *deterministically named* body that directly
-calls an unsupported probability, RNG, ODE, or `reduce_sum` primitive still
-errors at expansion with a pointer to `@stanonly`; full runtime parity for those
-Stan facilities is not part of this compatibility layer.
+`@juliacompat` may wrap one definition or a `begin ... end` group. A nested
+`@stanonly` explicitly opts one member back out; outside such a group,
+`@stanonly` documents the default. Signature-only stubs, bare type-token/
+compiler-glue forms, qualified or pre-existing function extensions, and
+definitions whose own name is in the probability/RNG/ODE family (`*_lpdf`,
+`*_lpmf`, `*_lcdf`, `*_lccdf`, `*_cdf`, `*_rng`, the elementwise `*_lpdfs`/
+`*_lpmfs`/… companions, and `ode_*`) remain Stan-only. An opted-in,
+deterministically named body that directly calls an unsupported probability,
+RNG, ODE, or `reduce_sum` primitive errors at expansion and should drop
+`@juliacompat`; full runtime parity for those Stan facilities is not part of
+this compatibility layer.
 
 Bodies may use `for`/`while`/nested `if`, mutation, index or value iteration,
 `enumerate`/`zip`, one-line nested loops, and rectangular comprehensions with at
@@ -218,14 +253,36 @@ comprehensions reject explicitly. The body is also transpiled to Stan.
 UDF bodies must not contain `~` sampling statements or `target +=` increments — UDFs cannot introduce parameters or directly manipulate the log density. The macro errors at expansion time if either is found.
 
 ```julia
-@deffun @stanonly garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
-    sigma2 = alpha0
-    rv = 0.
-    for t in 1:T
-        rv += normal_lpdf(y[t], mu, sqrt(sigma2))
-        sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
+@deffun begin
+    @lhs @lpxf garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
+        sigma2 = alpha0
+        rv = 0.
+        for t in 1:T
+            rv += normal_lpdf(y[t], mu, sqrt(sigma2))
+            sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
+        end
+        return rv
     end
-    return rv
+
+    garch11_lpdfs(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::vector[T] = begin
+        sigma2 = alpha0
+        rv::vector[T]
+        for t in 1:T
+            rv[t] = normal_lpdf(y[t], mu, sqrt(sigma2))
+            sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
+        end
+        return rv
+    end
+
+    garch11_rng(vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::vector[T] = begin
+        sigma2 = alpha0
+        rv::vector[T]
+        for t in 1:T
+            rv[t] = normal_rng(mu, sqrt(sigma2))
+            sigma2 = alpha0 + alpha1 * square(rv[t] - mu) + beta1 * sigma2
+        end
+        return rv
+    end
 end
 ```
 
@@ -252,18 +309,50 @@ end
 
 ### Type/shape annotations
 
-Annotations follow the pattern `name::type[size_args…]`. Size arguments introduced this way are **available as locals inside the function body**:
+Annotations are optional, especially in UDF signatures. Start without them:
+
+```julia
+@deffun twice(x) = 2 * x
+@deffun displaced_state(state, dx) = state + dx
+```
+
+Add an annotation only when it supplies information inference does not have or
+when you want it to be part of the function's contract: to select an overload,
+introduce named dimension locals, declare a fresh uninitialised buffer, or pin
+an otherwise ambiguous result. An annotation follows the pattern
+`name::type[size_args…]`. Size arguments introduced this way are **available as
+locals inside the function body**:
 
 ```julia
 @deffun mean_real_vector(x::vector[n])::real = sum(x) / n
 @deffun mean_matrix(A::matrix[m, n])::real   = sum(A) / (m * n)
 ```
 
+### Data-only UDF arguments are compiler-inferred, not user-annotated
+
+Stan permits `data` qualifiers on user-defined-function arguments, and some
+Stan functions require particular inputs to be data-only. StanBlocks currently
+does not infer and emit those UDF qualifiers, so a wrapper that needs them is
+not expressible through `@deffun` today.
+
+This is intentionally **not** a user-facing annotation surface. If StanBlocks
+adds support, the compiler must derive data-only arguments from qualifier
+information it already tracks and emit the Stan `data` keywords automatically.
+Authors will continue to write ordinary annotations such as `x::vector[n]` and
+`tol::real`; forms such as `x::data(vector[n])` are not part of the API.
+
 Underscored names mean "I take this argument but ignore the value, just use its shape":
 
 ```julia
 @deffun pad_zero(_::vector[n])::vector[n+1] = append_row(rep_vector(0., n), 0.)
 ```
+
+The same inference-first rule applies inside the body. `out = expression`
+infers `out`'s type and shape; `out::vector[n]` is useful when there is no RHS
+yet because later statements fill `out` element by element. Model declarations
+follow the same principle: annotations are optional when a distribution or
+bound value already determines the type and shape, and useful when the
+declaration itself must provide them.
 
 ### Transpile-time return-type queries
 
@@ -307,8 +396,8 @@ For functions whose name ends in one of `_lpdf` / `_lpmf` / `_lcdf` / `_lccdf`:
 - companion `_lpdfs` / `_lpmfs` / `_lcdfs` / `_lccdfs` (pointwise) and `_rng` (predictive) stubs are generated automatically and used by [posterior pointwise likelihood / predictive generation](#posterior-pointwise-likelihood-and-predictive-draws)
 
 ```julia
-@deffun @stanonly my_normal_lpdf(y, mu, sigma) = normal_lpdf(y, mu, sigma)
-@deffun @stanonly my_normal_rng(mu, sigma)::real = normal_rng(mu, sigma)
+@deffun my_normal_lpdf(y, mu, sigma) = normal_lpdf(y, mu, sigma)
+@deffun my_normal_rng(mu, sigma)::real = normal_rng(mu, sigma)
 ```
 
 ### Variadic and higher-order functions
@@ -336,8 +425,8 @@ end
 
 For UDFs that you want to use via `~` (or whose pointwise/predictive companions need to be discoverable), opt in with these markers:
 
-- **[`@lpxf`](api#StanBlocks.@lpxf)** — register the three SLIC dispatch hooks (`lpxf_expr`, `rng_expr`, `likelihood_expr`) for one or more `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf` symbols. The companion `_rng` and `_lpdfs` (or `_lpmfs`/etc.) names must already exist.
-- **[`@lhs`](api#StanBlocks.@lhs)** — used **inside** a `@deffun` block, registers a method for base-level LHS inference (so `lhs ~ foo(args…)` works for that method). Without it, only the `_lpdf`-keyed tracetype is registered (so the method dispatches when called explicitly, but not via `~`). Compose with `@lpxf` in either order.
+- **[`@lpxf`](api.md#StanBlocks.@lpxf)** — register the three SLIC dispatch hooks (`lpxf_expr`, `rng_expr`, `likelihood_expr`) for one or more `_lpdf`/`_lpmf`/`_lcdf`/`_lccdf` symbols. The companion `_rng` and `_lpdfs` (or `_lpmfs`/etc.) names must already exist.
+- **[`@lhs`](api.md#StanBlocks.@lhs)** — used **inside** a `@deffun` block, registers a method for base-level LHS inference (so `lhs ~ foo(args…)` works for that method). Without it, only the `_lpdf`-keyed tracetype is registered (so the method dispatches when called explicitly, but not via `~`). Compose with `@lpxf` in either order.
 
 ```julia
 @deffun begin
@@ -396,8 +485,9 @@ Restrictions:
 
 Standard Julia macros (`@views`, `@.`, `@inbounds`, user-defined macros) are
 expanded against the calling module before tracing, so they work
-transparently. SLIC-internal markers (`@doc`, `@lpxf`, `@lhs`, `@inline`) are
-preserved verbatim and handled structurally by the parser.
+transparently. SLIC-internal markers (`@doc`, `@lpxf`, `@lhs`, `@inline`,
+`@juliacompat`, `@stanonly`) are preserved verbatim and handled structurally
+by the parser.
 
 ```julia
 macro center(x); :($x - mean($x)); end
@@ -437,9 +527,121 @@ end
 end
 ```
 
+Anonymous and merged `SlicModel` values are first-class callees too. This is
+useful for generated model bodies where the variant has no module-level name:
+
+```julia
+variant = Base.merge(popefs, quote
+    beta_pop ~ normal(0, 2; n=n_covariates)
+end)
+
+# In generated Julia AST, interpolate the value into call-head position.
+body = quote
+    eta ~ $variant(; X=Xdata)
+    y   ~ normal(eta, 1)
+end
+generated_model = StanBlocks.SlicModel(body, Dict(:Xdata => X, :y => y), @__MODULE__)
+```
+
+The interpolated value has the same kwarg-binding and namespacing semantics as
+a symbol naming that model. Positional inputs belong to a named sub-model
+function (`@slic f(x::real) = ...`); anonymous sub-model values accept kwargs
+or enclosing-scope bindings only.
+
+Interactive authoring tools that already parsed and validated UDFs and named
+sub-model definitions can compile the whole workspace without constructing
+macro calls or managing an evaluation module themselves:
+
+```julia
+udf_definitions = ["shift-zero" => :(shift_zero(x::real)::real = begin
+    x + 0.25
+end)]
+definitions = ["latent" => :(latent(scale) = begin
+    z ~ normal(shift_zero(0.0), scale)
+    return z
+end)]
+anonymous_submodels = ["local-prior" => (:local_prior => quote
+    z ~ normal(location, scale)
+    return z
+end)]
+body = "parent" => quote
+    mu ~ latent(1.0)
+    offset ~ local_prior(; location=0.0, scale=1.0)
+    y ~ normal(mu + offset, 1.0)
+end
+
+result = compile_slic_bundle((; y=[0.1, -0.2]), definitions, body;
+    udf_definitions, anonymous_submodels, name=:authoring_workspace)
+result.code
+result.descriptor
+```
+
+`compile_slic_bundle` evaluates the dependency-ordered `udf_definitions` first,
+then the named SLIC definitions in their supplied order, then anonymous
+sub-model dependencies, in one fresh module, and traces the parent once. Each
+anonymous dependency is `name => body_or_value`, or
+`source_part => (name => body_or_value)` when it needs an editor identity. A
+body is the anonymous `@slic begin … end` contents without the outer macro; an
+existing `SlicModel` value is accepted too. The parent calls `name`, so anonymous
+free-name kwargs and per-LHS parameter namespaces are preserved without
+caller-side `Core.eval` or rewriting the model as a named method.
+
+A bare expression remains supported; pairing any ordinary part as
+`source_part => expression` gives tracing and lowering failures from that part
+the same stable identity in `diagnostic(error)`.
+
+For an editable source that must remain macro-free, a UDF value may instead be
+a structured named tuple:
+
+```julia
+udf_definitions = [
+    "safe-log" => (;
+        definition=:(safe_log(x::real)::real = begin
+            log(x)
+        end),
+        markers=:stanonly,
+        assertions=((;
+            condition=:(x > 0),
+            message="safe_log: x must be positive",
+        ),),
+    ),
+    "scale" => (;
+        definition=:(scale(x::real, by::real)::real = begin
+            x * by
+        end),
+        markers=(:stanonly, :inline),
+    ),
+]
+```
+
+`definition` is required. `markers` accepts one Symbol or a tuple/vector drawn
+from `:stanonly`, `:juliacompat`, `:lhs`, `:lpxf`, and `:inline`. Each assertion
+has a `condition` AST and an optional string `message`; the compiler prepends it
+to one bodyful definition with `@stan_assert` semantics. Unknown fields,
+markers, duplicates, malformed assertions, and `:inline` combined with
+`:lhs`/`:lpxf` fail validation. The compiler lowers valid metadata to its own
+known macro forms, so consumers do not have to admit or synthesize macro AST.
+
+UDF annotations otherwise keep their ordinary `@deffun` meaning inside a
+bundle. A `foo_lpdf` name alone is an explicitly callable density helper; it
+does not opt `foo` into `y ~ foo(args...)`. For that sampling form, mark the
+density method with `markers=(:stanonly, :lhs, :lpxf)` (or the equivalent
+`@lhs @lpxf`) and provide matching `foo_lpdfs` and sized-token `foo_rng` bodies,
+as in the GARCH example above. Bundle compilation returns the ordinary model,
+descriptor, and generated-quantities source, so it requires the same complete
+distribution triad as a direct `@slic` model.
+
+The API accepts trusted expressions rather than source text: it neither parses
+nor sandboxes input. Structured marker metadata avoids macros for the listed
+semantics, but does not make an otherwise arbitrary `definition` AST safe;
+macros inside supplied expressions retain ordinary Julia macro-expansion
+semantics.
+
 ## Posterior pointwise likelihood and predictive draws
 
-For each `~` statement, StanBlocks automatically emits the corresponding pointwise log-likelihood and a predictive RNG draw into `generated_quantities`, using the `_lpdfs`/`_lpmfs`/`_rng` companions:
+For an ordinary top-level observation, StanBlocks automatically emits the
+corresponding pointwise log-likelihood and a predictive RNG draw into
+`generated_quantities`, using the `_lpdfs`/`_lpmfs`/`_rng` companions:
 
 ```julia
 m = @slic (;y=randn(10)) begin
@@ -449,13 +651,16 @@ m = @slic (;y=randn(10)) begin
 end
 ```
 
-The generated Stan exposes per-draw `log_lik_y[i]` and `y_pred[i]` — ready for PSIS-LOO / posterior predictive checks. Inspect via `stan_code(m)`.
+The generated Stan exposes `y_likelihood[i]` and `y_gen[i]` — ready for
+PSIS-LOO and posterior-predictive checks. Dense observations inside `plate` and
+ragged observations have deliberately different twin shapes; see
+[Generated observation twins](authoring.md#generated-observation-twins).
 
 For your own UDFs, the same machinery activates as soon as you provide the `_lpdfs` and `_rng` companions (manually or via `@lpxf`).
 
 ## Built-in Stan functions
 
-Several hundred built-in Stan functions and distributions are pre-registered with their type/shape signatures. The full list lives in [`src/slic_stan/builtin.jl`](https://github.com/nsiccha/StanBlocks.jl/blob/dev/src/slic_stan/builtin.jl). Highlights:
+Several hundred built-in Stan functions and distributions are pre-registered with their type/shape signatures. The full list lives in [`src/slic_stan/builtin.jl`](https://github.com/nsiccha/StanBlocks.jl/blob/devibe/src/slic_stan/builtin.jl). Highlights:
 
 - **Vector / matrix construction**: `rep_vector`, `rep_matrix`, `rep_array`, `linspaced_vector`, `linspaced_array`, `to_vector`, `to_row_vector`, `to_matrix`, `to_array_1d`, `diag_matrix`, `one_hot_vector`, `identity_matrix`
 - **Append / reshape**: `append_row`, `append_col`, `append_array`, `reshape`
@@ -575,10 +780,10 @@ Stan program.
 
 | API                                                          | Use                                                                                  |
 |--------------------------------------------------------------|--------------------------------------------------------------------------------------|
-| [`stan_code(model)`](api#StanBlocks.stan_code)               | Returns the generated Stan source as a `String`                                      |
-| [`stan_model(slic)`](api#StanBlocks.stan_model)              | Performs the trace once, returns a [`StanModel`](api#StanBlocks.StanModel) you can re-data via `model(; new_kwargs…)` |
+| [`stan_code(model)`](api.md#StanBlocks.stan_code)               | Returns the generated Stan source as a `String`                                      |
+| [`stan_model(slic)`](api.md#StanBlocks.stan_model)              | Performs the trace once, returns a [`StanModel`](api.md#StanBlocks.StanModel) you can re-data via `model(; new_kwargs…)` |
 | `StanBlocks.stan_data(model)`                                | The data dictionary that will be passed to BridgeStan                                |
-| [`stan_instantiate(model)`](api#StanBlocks.stan_instantiate) | Compiles via BridgeStan and returns a `StanLogDensityProblems.StanProblem`           |
+| [`stan_instantiate(model)`](api.md#StanBlocks.stan_instantiate) | Compiles via BridgeStan and returns a `StanLogDensityProblems.StanProblem`           |
 
 A `StanModel` returned by `stan_model` is **cheap to re-data**: `model(; y=new_y)` returns a new model that reuses the trace.
 
@@ -586,14 +791,14 @@ A `StanModel` returned by `stan_model` is **cheap to re-data**: `model(; y=new_y
 
 | kwarg            | Default                       | Meaning                                                                               |
 |------------------|-------------------------------|---------------------------------------------------------------------------------------|
-| `path=…`         | `tmp/<hash>.stan`             | Where to write the `.stan` file. Hash-based by default, so identical code is cached.  |
+| `path=…`         | `<build-dir>/<hash>.stan`     | Where to write the `.stan` file. Hash-based by default, so identical code is cached. The default build dir is `$STANBLOCKS_BUILD_DIR`, else `$TMPDIR/stanblocks` — never the process cwd, so compiling leaves no stray `tmp/` in the worktree a bench runs from. An explicit relative `path` still resolves against the cwd. |
 | `nan_on_error`   | `true`                        | Make BridgeStan return `NaN` instead of throwing on evaluation failures               |
 | `make_args`      | `["STAN_THREADS=true"]`       | Extra arguments forwarded to Stan's `make`                                            |
 | `warn`           | `false`                       | Forwarded to BridgeStan                                                               |
 
 ## Errors
 
-Anything that goes wrong during transpilation, compilation, or evaluation is wrapped in a [`StanBlocksError`](api#StanBlocks.StanBlocksError):
+Anything that goes wrong during transpilation, compilation, or evaluation is wrapped in a [`StanBlocksError`](api.md#StanBlocks.StanBlocksError):
 
 - `phase::Symbol` — `:transpile`, `:compile`, or `:evaluate`
 - `context::String` — short description (e.g. `"model: eight_schools"`)
@@ -614,25 +819,24 @@ You generally don't call these — they're applied automatically when type/shape
 
 ### Ragged vectors
 
-A `Vector{<:AbstractVector{<:Real}}` data kwarg is automatically converted by `to_ragged` to a `(; mem, ends)` named tuple — `mem` is the concatenated memory, `ends` are inclusive 1-based end offsets per subvector. Use `ragged_n`, `ragged_total`, `ragged_start`, `ragged_end`, `ragged_length` to access subvectors:
+A `Vector{<:AbstractVector{<:Real}}` data kwarg becomes a nominal,
+first-class `RaggedVector`. Its backing representation is flat `mem` plus
+inclusive group `ends`, but ordinary model code indexes the logical container:
 
 ```julia
-@deffun reduce_ragged_lpdf(rag, n_groups::int)::real = begin
-    rv = 0.
-    for g in 1:n_groups
-        s, e = ragged_start(rag, g), ragged_end(rag, g)
-        rv += normal_lpdf(rag.mem[s:e], 0., 1.)
-    end
-    rv
-end
+groups = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]
 
-@slic (;y=[randn(3), randn(5), randn(2)]) begin
-    n_groups = ragged_n(y)
-    y ~ reduce_ragged(n_groups)     # `y` itself (the (mem, ends) ntup) is used as the LHS
+@slic (; groups, g = 2, obs = 0.0) begin
+    n_groups = length(groups)
+    selected = groups[g]
+    obs ~ normal(sum(selected) + n_groups, 1.0)
 end
 ```
 
-`ragged_start(x, i)` and `ragged_end(x, i)` take the whole `(; mem, ends)` named tuple as their first argument — not `ends` separately. See `src/slic_stan/builtin.jl` for the full set.
+`ragged_start`, `ragged_end`, and `ragged_length` expose offsets for UDF size
+math. Ragged observations, varying-size constrained parameters, generated
+twins, and `ModelOutput.segments` are documented under
+[Ragged data and container views](authoring.md#ragged-data-and-container-views).
 
 ## Caveats
 
@@ -701,7 +905,8 @@ The deployed catalog lives at <https://nsiccha.github.io/BayesianRegressionModel
 
 ## See also
 
-- [API Reference](api) — full list of exported functions and macros
+- [Authoring and feature support](authoring.md) — current HOF, ragged, missing-data, descriptor, and `plate` contracts
+- [API Reference](api.md) — full list of exported functions and macros
 - [Case Studies](https://nsiccha.github.io/StanBlocks.jl/slic/) — golf, radon, crowdsourcing, ISBA PCR, and more
 - [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl) ([catalog](https://nsiccha.github.io/BayesianRegressionModels.jl/)) — the canonical large-scale `@slic` / `@deffun` consumer
 - [Stan Documentation](https://mc-stan.org/docs/stan-users-guide/)

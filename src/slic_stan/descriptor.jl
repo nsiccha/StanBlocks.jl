@@ -97,6 +97,16 @@ StanBlocks.stan_descriptor).
     cv-flipped re-draw of a latent, a model `return` value.
 - `source::Union{Symbol,Nothing}` — the observation a `:draw` /
   `:pointwise_loglik` derives from; `nothing` otherwise.
+- `segments::Union{Nothing,Vector{Int}}` — group boundaries when this quantity
+  is either the twin of a **ragged** observation or the emitted flat-memory
+  carrier of a ragged plate result/member; `nothing` for every dense quantity.
+  The entries are the carrier's own **inclusive 1-based end indices**, so group
+  `g` of a flat carrier or `:draw` occupies
+  `segments[g-1]+1 : segments[g]` (with `segments[0] ≡ 0`), while group `g` of a
+  `:pointwise_loglik` is element `g`. Each ragged plate member reports its own
+  layout; members may have different axes, so consumers must not copy segments
+  from a sibling or an input. Publishing the layout here lets consumers restore
+  groups without reaching into compiler-owned names or carrier tuples.
 """
 struct ModelOutput
     name::Symbol
@@ -106,6 +116,7 @@ struct ModelOutput
     constraints::NamedTuple
     generative::Symbol
     source::Union{Symbol,Nothing}
+    segments::Union{Nothing,Vector{Int}}
 end
 
 """
@@ -233,7 +244,7 @@ _size_symbols(x::CanonicalExpr, acc) = (foreach(a -> _size_symbols(a, acc), x.ar
 
 _descriptor_constraints(x::StanExpr) = _descriptor_constraints(info(type(x)))
 _descriptor_constraints(i) = (; [
-    key => i[key] for key in (:lower, :upper, :offset, :multiplier) if haskey(i, key)
+    key => i[key] for key in CONSTRAINT_KEYS if haskey(i, key)
 ]...)
 
 # --- observations ------------------------------------------------------------
@@ -241,11 +252,10 @@ _descriptor_constraints(i) = (; [
 # Which data variables the model CONDITIONS on takes TWO passes, because neither
 # alone is complete:
 #
-#  (1) the model block's `~` statements. Authoritative, and the only signal for
-#      a RAGGED observation, which has no declarable Stan shape and therefore no
-#      `_gen` twin at all — so pass (2) can never see one. Resolving the base of
-#      such an LHS needs `_obs_projection_base`, not the getindex-only matcher;
-#      see the note there.
+#  (1) the model block's `~` statements. Authoritative for every live likelihood
+#      and still required for observation shapes with no generated twin.
+#      Resolving a ragged plate slice needs `_obs_projection_base`, not the
+#      dense getindex-only retarget; see the note there.
 #  (2) the `<stem>_gen` / `<stem>_likelihood` declarations in generated
 #      quantities, WHERE `<stem>` IS ITSELF A DATA INPUT. Needed because a
 #      cv-held-out observation routes to generated quantities ONLY — and by then
@@ -278,13 +288,11 @@ _observed_bases(x::StanExpr{<:CanonicalExpr}, acc) = _observed_bases(expr(x), ac
 # stops dead at that `getfield` and reports the column as UNOBSERVED.
 #
 # Deliberately WIDER than `_getindex_chain_base` (passes.jl), which must stay
-# getindex-only: that matcher gates the compiler-owned `<base>_gen` retarget, and
-# a ragged base has no declarable Stan shape to retarget INTO, so it keeps its
-# model-only routing by design. Whether a model CONDITIONS on a column and
-# whether the compiler can PREDICT it are different questions — conflating them
-# is what hid BOTH `observed` and `:fit` from every ragged-observation model
-# (snag built-brm-s-desc-55d6d48c). `:predict` stays correctly absent here,
-# because it gates on a `:draw` output rather than on this walk.
+# getindex-only because it retargets a natively declarable dense base. Ragged
+# prediction uses a DIFFERENT strict matcher, `_indexed_ragged_obs_slice`, which
+# validates the complete compiler-owned `mem[start(ends,g):end(ends,g)]` shape
+# before declaring flat storage. This generic observation walk must not be used
+# as a predictive certificate: doing so would accept arbitrary tuple projections.
 _obs_projection_base(x::StanExpr) = _obs_projection_base(expr(x))
 _obs_projection_base(x::Symbol) = x
 _obs_projection_base(x::CanonicalExpr) =
@@ -341,28 +349,178 @@ end
 
 # Generative role of a generated quantity: the compiler-owned twin of `stem`
 # when the name is `<stem>_gen` / `<stem>_likelihood` AND `stem` is a data input
-# of this model (pass (2) above), `:derived` otherwise.
-_generative_role(name::Symbol, datanames) = begin
+# of this model (pass (2) above) — or, for `_gen` only, a producer-declared
+# observation stem (`SlicModel(…, observations)`; snag
+# `unbound-observat-d32ac924`), whose twin aliases the forward-simulated draw.
+# `_likelihood` stays bound-only: pointwise needs observed values, and the
+# compiler never emits it for an unbound stem. `:derived` otherwise — in
+# particular a user variable that merely ends in `_gen` still needs its stem in
+# one of the two sets, so the suffix alone never classifies.
+_generative_role(name::Symbol, datanames, observations=()) = begin
     s = string(name)
     for (suffix, role) in (("_likelihood", :pointwise_loglik), ("_gen", :draw))
         endswith(s, suffix) || continue
         stem = Symbol(s[1:end-length(suffix)])
         stem in datanames && return (role, stem)
+        role === :draw && stem in observations && return (role, stem)
     end
     (:derived, nothing)
 end
 
-_block_outputs(m::StanModel, blockname::Symbol, kind::Symbol, datanames) = begin
+# Group boundaries of a RAGGED observation's twins (`ModelOutput.segments`). The
+# `ends` live on the observation's own carrier — a `RaggedVector` is a nominal
+# ntup with `(mem, ends)` (builtin.jl), and its data value is the materialised
+# pairing — so this reads the DATA, not the emitted Stan. Dense observations
+# have no segmentation and report `nothing`.
+_ragged_segments(x) = begin
+    center_type(x) <: RaggedVector || center_type(x) <: RaggedMatrix || return nothing
+    v = getvalue(x)
+    v isa NamedTuple && haskey(v, :ends) || return nothing
+    collect(Int, v.ends)
+end
+_output_segments(source, data) =
+    source === nothing || !haskey(data, source) ? nothing : _ragged_segments(data[source])
+
+# A ragged plate's transformed-data `ends = cumulative_sum(lens)` has no Julia
+# value on the traced StanExpr.  Lowering therefore retains the equivalent
+# data-computable recipe on each emitted memory carrier.  Evaluate only that
+# bounded expression graph here, resolving symbols through the descriptor's
+# CURRENT data block so a rebound `StanModel` reports rebound boundaries.
+_plate_layout_value(x, env, mod) = x
+_plate_layout_value(x::QuoteNode, env, mod) = x.value
+_plate_layout_value(x::Symbol, env, mod) = begin
+    haskey(env, x) || return x
+    bound = env[x]
+    bound isa StanExpr && hasvalue(bound) && return getvalue(bound)
+    bound isa StanExpr ? _plate_layout_value(bound, env, mod) : bound
+end
+_plate_layout_value(x::StanExpr, env, mod) = begin
+    e = expr(x)
+    if e isa Symbol && haskey(env, e)
+        bound = env[e]
+        bound isa StanExpr && hasvalue(bound) && return getvalue(bound)
+        bound isa StanExpr || return bound
+    end
+    # A composite data expression may retain the value inferred while the model
+    # was first traced. Re-evaluate its graph so `StanModel(; data=...)` cannot
+    # leak those stale values into the rebound descriptor.
+    e isa CanonicalExpr && return _plate_layout_value(e, env, mod)
+    hasvalue(x) ? getvalue(x) : _plate_layout_value(e, env, mod)
+end
+_plate_layout_ragged_value(x) =
+    x isa NamedTuple && haskey(x, :mem) && haskey(x, :ends)
+
+# Canonical global calls normally enter Julia through `jcall(Val(name), mod,
+# ...)`, which supplies Stan-compatible collection semantics such as
+# `max(vector) -> maximum(vector)`.  Layout recipes retain resolved function
+# heads, so recover that route when the function is still its module's binding;
+# closures and callable values keep the ordinary direct-call fallback.
+_plate_layout_jcall(f, args...; kwargs...) = jcall(f, args...; kwargs...)
+_plate_layout_jcall(f::Function, args...; kwargs...) = begin
+    name = nameof(f)
+    owner = parentmodule(f)
+    if isdefined(owner, name) && getproperty(owner, name) === f
+        return jcall(Val(name), owner, args...; kwargs...)
+    end
+    jcall(f, args...; kwargs...)
+end
+
+_plate_layout_call(f, mod, args...; kwargs...) = begin
+    if (f === length || f === lastindex) && length(args) == 1 &&
+            _plate_layout_ragged_value(args[1])
+        return length(args[1].ends)
+    elseif f === ragged_start && length(args) == 2
+        ends, i = _plate_layout_ragged_value(args[1]) ? args[1].ends : args[1], args[2]
+        return i == 1 ? 1 : ends[i - 1] + 1
+    elseif f === ragged_end && length(args) == 2
+        ends, i = _plate_layout_ragged_value(args[1]) ? args[1].ends : args[1], args[2]
+        return ends[i]
+    elseif f === ragged_length && length(args) == 2
+        ends, i = _plate_layout_ragged_value(args[1]) ? args[1].ends : args[1], args[2]
+        return ends[i] - (i == 1 ? 0 : ends[i - 1])
+    end
+    _plate_layout_jcall(f, args...; kwargs...)
+end
+_plate_layout_call(f::Symbol, mod, args...; kwargs...) = begin
+    if f in (:length, :lastindex) && length(args) == 1 &&
+            _plate_layout_ragged_value(args[1])
+        return length(args[1].ends)
+    elseif f in (:ragged_start, :ragged_end, :ragged_length)
+        callable = f === :ragged_start ? ragged_start :
+            (f === :ragged_end ? ragged_end : ragged_length)
+        return _plate_layout_call(callable, mod, args...; kwargs...)
+    end
+    owner = isdefined(Base, f) ? Base :
+        (isdefined(mod, f) ? mod : (isdefined(builtin, f) ? builtin : nothing))
+    owner === nothing && error(
+        "stan_descriptor: cannot evaluate ragged plate layout function `$f`."
+    )
+    jcall(Val(f), owner, args...; kwargs...)
+end
+_plate_layout_value(x::CanonicalExpr, env, mod) = begin
+    args = map(a -> _plate_layout_value(a, env, mod), x.args)
+    kwargs = (; (k => _plate_layout_value(v, env, mod) for (k, v) in pairs(x.kwargs))...)
+    _plate_layout_call(head(x), mod, args...; kwargs...)
+end
+
+_ragged_plate_segments(m::StanModel, name::Symbol, data) = begin
+    haskey(vars(m), name) || return nothing
+    layout = get(info(type(vars(m)[name])), :ragged_plate_layout, nothing)
+    layout === nothing && return nothing
+
+    env = Dict{Symbol,Any}(pairs(data))
+    mod = get(meta(m), :mod, @__MODULE__)
+    n = _plate_layout_value(layout.outer, env, mod)
+    n isa Integer || error(
+        "stan_descriptor: ragged plate carrier `$name` has a non-integer outer size `$n`."
+    )
+    n >= 0 || error(
+        "stan_descriptor: ragged plate carrier `$name` has a negative outer size `$n`."
+    )
+    lengths = Int[]
+    sizehint!(lengths, n)
+    for i in 1:n
+        env[layout.index] = i
+        len = _plate_layout_value(layout.cell_size, env, mod)
+        len isa Integer || error(
+            "stan_descriptor: ragged plate carrier `$name` has non-integer cell size `$len` at group $i."
+        )
+        len >= 0 || error(
+            "stan_descriptor: ragged plate carrier `$name` has negative cell size `$len` at group $i."
+        )
+        push!(lengths, Int(len))
+    end
+    cumsum(lengths)
+end
+
+_output_segments(m::StanModel, name::Symbol, source, data) = begin
+    observed = _output_segments(source, data)
+    observed === nothing || return observed
+    layout = _ragged_plate_segments(m, name, data)
+    layout === nothing || return layout
+    haskey(vars(m), name) || return nothing
+    ends = get(type(vars(m)[name]).info, :ragged_observation_ends, nothing)
+    ends === nothing && return nothing
+    value = _plate_layout_value(ends, Dict{Symbol,Any}(pairs(data)), get(meta(m), :mod, @__MODULE__))
+    value isa AbstractVector{<:Integer} || error(
+        "stan_descriptor: ragged observation `", source, "` has non-integer group boundaries.")
+    collect(Int, value)
+end
+
+_block_outputs(m::StanModel, blockname::Symbol, kind::Symbol, data) = begin
     acc = OrderedDict{Symbol,Any}()
     _output_symbols(block(m, blockname), acc)
+    datanames = keys(data)
+    observations = _model_observations(m)
     rv = ModelOutput[]
     for (name, x) in pairs(acc)
         always_inline(x) && continue
         generative, source = kind === :generated_quantity ?
-            _generative_role(name, datanames) : (:posterior, nothing)
+            _generative_role(name, datanames, observations) : (:posterior, nothing)
         push!(rv, ModelOutput(
             name, kind, _descriptor_type(x), _descriptor_size(x),
             _descriptor_constraints(x), generative, source,
+            _output_segments(m, name, source, data),
         ))
     end
     rv
@@ -510,12 +668,11 @@ stan_descriptor(x::SlicModel; kwargs...) = stan_descriptor(stan_model(x); kwargs
 stan_descriptor(m::StanModel; name=nothing) = begin
     code = stan_code(m)
     data = content(block(m, :data))
-    datanames = Set{Symbol}(keys(data))
 
     outputs = vcat(
-        _block_outputs(m, :parameters, :parameter, datanames),
-        _block_outputs(m, :transformed_parameters, :transformed_parameter, datanames),
-        _block_outputs(m, :generated_quantities, :generated_quantity, datanames),
+        _block_outputs(m, :parameters, :parameter, data),
+        _block_outputs(m, :transformed_parameters, :transformed_parameter, data),
+        _block_outputs(m, :generated_quantities, :generated_quantity, data),
     )
     # Observations: pass (1) the model block's `~`, pass (2) the twins just
     # classified. See the two-pass note above `_observed_bases`.
@@ -864,6 +1021,7 @@ Base.show(io::IO, ::MIME"text/plain", d::ModelDescriptor) = begin
         isempty(o.size) || print(io, "[", join(o.size, ", "), "]")
         print(io, "  ", o.kind, "/", o.generative)
         o.source === nothing || print(io, " of ", o.source)
+        o.segments === nothing || print(io, "  ", length(o.segments), " ragged group(s)")
     end
     print(io, "\n  operations: ", join((op.name for op in d.operations), ", "))
 end

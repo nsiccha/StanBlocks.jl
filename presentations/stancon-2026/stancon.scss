@@ -1,0 +1,458 @@
+/* StanCon 2026 presentation theme. */
+/*-- scss:defaults --*/
+
+$body-bg: #fbfaf7;
+$body-color: #20242b;
+$link-color: #8f1d2c;
+$presentation-heading-color: #6e1724;
+$presentation-heading-font: "Avenir Next", "Inter", "Helvetica Neue", sans-serif;
+$font-family-sans-serif: "Avenir Next", "Inter", "Helvetica Neue", sans-serif;
+$font-family-monospace: "JuliaMono", "Iosevka", "SFMono-Regular", monospace;
+$code-block-bg: #f1eee8;
+$code-block-border-color: #d8d1c6;
+$presentation-font-size-root: 34px;
+
+/*-- scss:rules --*/
+
+:root {
+  --sb-red: #8f1d2c;
+  --sb-red-soft: #f3e4e6;
+  --sb-blue: #315d84;
+  --sb-blue-soft: #e7eff6;
+  --sb-gold: #a36a16;
+  --sb-ink: #20242b;
+  --sb-muted: #666c75;
+  --sb-paper: #fbfaf7;
+  --sb-line: #d8d1c6;
+}
+
+.reveal .slides {
+  text-align: left;
+}
+
+.reveal h1,
+.reveal h2,
+.reveal h3 {
+  letter-spacing: -0.025em;
+  text-transform: none;
+}
+
+.reveal h1 {
+  font-size: 2.2em;
+}
+
+.reveal h2 {
+  border-bottom: 0.08em solid var(--sb-red);
+  padding-bottom: 0.12em;
+}
+
+.reveal .section-slide h1,
+.reveal .section-slide h2 {
+  border: 0;
+  color: var(--sb-paper);
+}
+
+.reveal .section-slide {
+  background: var(--sb-red);
+  color: var(--sb-paper);
+  padding: 1.6em;
+  border-radius: 0.25em;
+}
+
+.reveal .section-slide p {
+  color: #f8e9eb;
+  font-size: 1.2em;
+}
+
+.reveal pre {
+  border: 1px solid var(--sb-line);
+  border-radius: 0.25em;
+  box-shadow: none;
+}
+
+.reveal code {
+  font-variant-ligatures: none;
+}
+
+.reveal .source-code {
+  font-size: 0.77em;
+}
+
+.reveal .tiny-code .source-code {
+  font-size: 0.58em;
+}
+
+/* Inference cards under the two-column split on the combined declaration
+   slide: tighten padding/typography so all three fit below the code. */
+.reveal .compact-cards {
+  gap: 0.4em;
+  margin-top: 0.35em;
+}
+
+.reveal .compact-cards .card {
+  padding: 0.38em 0.55em;
+}
+
+.reveal .compact-cards .card-title {
+  font-size: 0.9em;
+  margin-bottom: 0.1em;
+}
+
+.reveal .compact-cards .card p {
+  font-size: 0.64em;
+  margin: 0;
+}
+
+.reveal .small {
+  font-size: 0.78em;
+}
+
+.reveal .tiny {
+  font-size: 0.61em;
+}
+
+.reveal .muted {
+  color: var(--sb-muted);
+}
+
+.reveal .accent {
+  color: var(--sb-red);
+}
+
+.reveal .blue {
+  color: var(--sb-blue);
+}
+
+.reveal .takeaway {
+  border-left: 0.22em solid var(--sb-red);
+  background: var(--sb-red-soft);
+  padding: 0.55em 0.8em;
+  margin-top: 0.7em;
+  font-size: 1.08em;
+}
+
+.reveal .card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55em;
+}
+
+.reveal .card-grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.reveal .card {
+  border: 1px solid var(--sb-line);
+  border-top: 0.16em solid var(--sb-red);
+  border-radius: 0.25em;
+  background: white;
+  padding: 0.55em 0.65em;
+}
+
+.reveal .card.blue-card {
+  border-top-color: var(--sb-blue);
+}
+
+.reveal .card.gold-card {
+  border-top-color: var(--sb-gold);
+}
+
+.reveal .card-title {
+  margin: 0 0 0.2em;
+  color: $presentation-heading-color;
+  font-family: $presentation-heading-font;
+  font-size: 1em;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.reveal .card p,
+.reveal .card li {
+  font-size: 0.72em;
+}
+
+.reveal .stan-modal-cta {
+  margin-top: 0.5em;
+}
+
+.reveal .stan-modal-trigger {
+  font-family: $presentation-heading-font;
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--sb-paper);
+  background: var(--sb-red);
+  border: 0;
+  border-radius: 999px;
+  padding: 0.4em 1em;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.reveal .stan-modal-trigger:hover {
+  background: #741624;
+}
+
+.reveal .flow {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 0.42em;
+  margin: 0.7em 0;
+}
+
+.reveal .flow .step {
+  position: relative;
+  background: white;
+  border: 1px solid var(--sb-line);
+  border-radius: 0.25em;
+  padding: 0.55em 0.5em;
+  text-align: center;
+  font-size: 0.74em;
+}
+
+.reveal .flow .step:not(:last-child)::after {
+  content: "→";
+  position: absolute;
+  right: -0.42em;
+  top: 37%;
+  color: var(--sb-red);
+  font-weight: 800;
+  z-index: 2;
+}
+
+/* Semi-thick brand-colored borders: standard Julia colors for every layer
+   EXCEPT StanBlocks.jl itself, which carries Stan's maroon and is emphasised
+   (thicker border + light red tint) as the subject of the talk. */
+.reveal .flow .step.j-red {
+  border: 0.14em solid #cb3c33;
+}
+
+.reveal .flow .step.j-green {
+  border: 0.14em solid #389826;
+}
+
+.reveal .flow .step.j-purple {
+  border: 0.14em solid #9558b2;
+}
+
+.reveal .flow .step.j-blue {
+  border: 0.14em solid #4063d8;
+}
+
+.reveal .flow .step.stan {
+  border: 0.22em solid var(--sb-red);
+  background: var(--sb-red-soft);
+}
+
+.reveal .tag {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.14em 0.52em;
+  margin: 0.08em 0.08em 0.08em 0;
+  background: var(--sb-blue-soft);
+  color: var(--sb-blue);
+  font-size: 0.7em;
+  font-weight: 700;
+}
+
+.reveal .tag.red {
+  background: var(--sb-red-soft);
+  color: var(--sb-red);
+}
+
+.reveal .tag.off {
+  background: transparent;
+  color: var(--sb-muted);
+  border: 1px dashed var(--sb-line);
+  text-decoration: line-through;
+  font-weight: 600;
+}
+
+.reveal table {
+  font-size: 0.72em;
+}
+
+.reveal table th {
+  color: var(--sb-red);
+}
+
+.reveal .timeline {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0.6em;
+  margin-top: 1.1em;
+}
+
+.reveal .timeline > div {
+  border-top: 0.15em solid var(--sb-red);
+  padding-top: 0.35em;
+}
+
+.reveal .timeline strong {
+  display: block;
+  color: var(--sb-red);
+  font-size: 1.18em;
+}
+
+.reveal .headshot {
+  width: 6.6em;
+  height: 6.6em;
+  object-fit: cover;
+  border-radius: 50%;
+  border: 0.16em solid var(--sb-red);
+  box-shadow: 0 0.2em 0.7em rgba(32, 36, 43, 0.16);
+}
+
+.reveal .contributors-band {
+  margin-top: 0.7em;
+}
+
+.reveal .contributors-band .band-label {
+  color: var(--sb-muted);
+  font-size: 0.6em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 0.35em;
+}
+
+.reveal .contributors {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.5em;
+  align-items: start;
+}
+
+.reveal .contributors .person {
+  text-align: center;
+  line-height: 1.15;
+}
+
+.reveal .contributors .person img {
+  width: 2.4em;
+  height: 2.4em;
+  object-fit: cover;
+  border-radius: 50%;
+  border: 0.1em solid var(--sb-red);
+  box-shadow: 0 0.12em 0.4em rgba(32, 36, 43, 0.16);
+}
+
+/* Contributors other than Niko each carry one Julia colour on their circle;
+   Niko keeps Stan's maroon (the base rule above). */
+.reveal .contributors .person.j-blue img   { border-color: #4063d8; }
+.reveal .contributors .person.j-green img  { border-color: #389826; }
+.reveal .contributors .person.j-purple img { border-color: #9558b2; }
+.reveal .contributors .person.j-red img    { border-color: #cb3c33; }
+
+.reveal .contributors .person .who {
+  margin: 0.22em 0 0;
+  font-size: 0.5em;
+  font-weight: 700;
+  color: var(--sb-ink);
+}
+
+.reveal .contributors .person .aff {
+  margin: 0.06em 0 0;
+  font-size: 0.44em;
+  color: var(--sb-muted);
+}
+
+/* Three QR codes injected onto the title slide (see qr-title.html).
+   The title block is made full-height with its text vertically centred, so
+   the QR strip can be pinned to the actual bottom of the slide -- clear of
+   the title text, never floating over it. */
+/* Full slide height so the QR strip's absolute bottom offset anchors to the
+   real bottom of the slide. reveal sets display:block inline on the active
+   slide (beats CSS flex), so we lift the title off the very top with
+   padding-top rather than flex-centering. */
+.reveal .slides > section.quarto-title-block {
+  height: 100%;
+  box-sizing: border-box;
+  padding-top: 5.5em;
+}
+
+.reveal .title-qr {
+  position: absolute;
+  bottom: 1.8em;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 1.6em;
+  margin: 0;
+}
+
+.reveal .title-qr .title-qr-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-decoration: none;
+  color: var(--sb-ink);
+}
+
+.reveal .title-qr .title-qr-item img {
+  width: 4em;
+  height: 4em;
+  background: #fff;
+  padding: 0.14em;
+  border: 0.08em solid rgba(179, 32, 37, 0.28);
+  border-radius: 0.18em;
+}
+
+.reveal .title-qr .title-qr-cap {
+  margin-top: 0.28em;
+  font-size: 0.52em;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  color: var(--sb-ink);
+}
+
+.reveal .title-qr .title-qr-cap .u {
+  color: var(--sb-muted);
+  font-weight: 600;
+}
+
+.reveal .summary-contact {
+  text-align: center;
+}
+
+.reveal .summary-slide .column:first-child {
+  font-size: 0.86em;
+}
+
+.reveal .summary-contact p {
+  margin: 0.28em 0;
+}
+
+.reveal .slides-qr {
+  display: block;
+  width: 7.4em;
+  height: 7.4em;
+  margin: 0.45em auto 0.1em;
+  padding: 0.18em;
+  background: #fff;
+  border: 0.08em solid rgba(179, 32, 37, 0.28);
+  border-radius: 0.22em;
+}
+
+.reveal .qr-caption {
+  color: var(--sb-muted);
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.reveal .contact a {
+  overflow-wrap: anywhere;
+}
+
+.reveal .footer {
+  color: var(--sb-muted);
+}
+
+.reveal .footer a {
+  color: var(--sb-red);
+  text-decoration: none;
+}

@@ -15,6 +15,31 @@ struct SlicModel#{M,D}
     model#::M
     data#::D
     mod::Module
+    observations
+    SlicModel(model, data, mod, observations=()) =
+        new(model, data, mod, _checked_observations(observations))
+end
+# Observation stems the producer declares for `~` targets that bind no data
+# (snag `unbound-observat-d32ac924`). The trace cannot tell an unbound
+# observation (`z ~ normal(…)` with no `z` column) from a prior — the two are
+# syntactically identical, and every syntactic rule misfires (a data-sized sink
+# prior would twin too) — so the identity is declared, never inferred. The
+# declaration tracks STATEMENTS, not bindings: a declared stem that IS bound
+# takes the ordinary bound path (twin + `_likelihood`, declaration ignored), a
+# declared stem that stays a sampled parameter (it feeds a bound likelihood)
+# gets no twin, and a declared stem with no `~` statement is silently ignored.
+_checked_observations(obs::Symbol) = (obs,)
+_checked_observations(obs::Tuple{Vararg{Symbol}}) = obs
+_checked_observations(obs) = begin
+    tup = Tuple(o for o in obs)
+    for o in tup
+        o isa Symbol || error(
+            "`SlicModel` observation declarations must be `Symbol`s, got `", o,
+            "` (`", typeof(o), "`). Declare the `~` target's bare name, e.g. ",
+            "`SlicModel(body, data, mod, (:z,))`."
+        )
+    end
+    tup
 end
 SlicModel(model, data) = SlicModel(model, data, Main)
 "The inferred Stan model, post-tracing. Can be instantiated via `stan_instantiate`."
@@ -28,6 +53,22 @@ struct SubModel#{P,N,L}
     name#::N
     locals#::L
 end
+
+# All mutable compiler scratch belongs to one explicit transpilation. Keeping it
+# on the model / UDF `info` graph makes nested tracing and re-entrancy visible in
+# the call graph; no state is inherited implicitly from the current Julia Task.
+mutable struct TraceContext
+    inline_counter::Int
+    closure_counter::Int
+    anon_counter::Int
+    expr_stack::Vector{Any}
+    current_lnn::Base.RefValue{Any}
+    inline_pending::Union{Nothing,Vector{Any}}
+    ragged_density_targets::Tuple
+    plate_context::Any
+end
+TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing)
+_context_or_new(context) = context === nothing ? TraceContext() : context
 """
 A named sub-model function, produced by `@slic f(args...) = body`. The singleton
 `SubmodelFn{:f}()` is bound to `f`; each `@slic f(...) = ...` adds a call method
@@ -92,6 +133,15 @@ WhileExpr{T} = CanonicalExprV{:while,T}
 ColonExpr{T} = CanonicalExprV{:(:),T}
 IfExpr{T} = CanonicalExprV{:if,T}
 ElseIfExpr{T} = CanonicalExprV{:elseif,T}
+LogicalAndExpr{T} = CanonicalExprV{:&&,T}
+LogicalOrExpr{T} = CanonicalExprV{:||,T}
+# A ternary conditional EXPRESSION `cond ? a : b` — distinct head from the
+# `if`-STATEMENT (`:if`). Julia parses both to `Expr(:if, …)`, but a ternary's
+# branches are bare VALUES while a statement's are `:block`s; `canonical` splits
+# them so the value form lowers to Stan's `cond ? a : b` operator (a real result
+# type from the branches) instead of being (mis)handled as block-bodied control
+# flow. See `canonical(::Expr)` (tracing.jl), `tracetype`/`forward!`/`show`.
+TernaryExpr{T} = CanonicalExprV{:ternary,T}
 BreakExpr{T} = CanonicalExprV{:break,T}
 ContinueExpr{T} = CanonicalExprV{:continue,T}
 StringExpr{T} = CanonicalExprV{:string,T}
@@ -101,12 +151,45 @@ SplatExpr{T} = CanonicalExprV{:...,T}
 model(x::SlicModel) = x.model
 data(x::SlicModel) = x.data
 meta(x::StanModel) = x.meta
-_expr_stack(x::StanModel) = get(x.meta, :_expr_stack, nothing)
+# Producer-declared observation stems for `~` targets that bind no data
+# (`SlicModel(…, observations)`; snag `unbound-observat-d32ac924`). Absent on
+# hand-built traces — default `()`, the no-declaration status quo.
+_model_observations(x::StanModel) = get(meta(x), :observations, ())
+_model_observations(x::SubModel) = _model_observations(parent(x))
+_model_observations(_) = ()
+_trace_context(x::StanModel) = get(x.meta, :_trace_context, nothing)
+_trace_context(x::SubModel) = _trace_context(parent(x))
+_trace_context(x::AbstractDict) = get(x, :__trace_context__, nothing)
+_trace_context(x::NamedTuple) = get(x, :__trace_context__, nothing)
+_trace_context(_) = nothing
+_attach_trace_context!(info::AbstractDict, context) = begin
+    info[:__trace_context__] = _context_or_new(context)
+    info
+end
+_with_trace_state(body::Function, info, field::Symbol, value) = begin
+    context = _trace_context(info)
+    context === nothing && return body()
+    old = getfield(context, field)
+    setfield!(context, field, value)
+    try
+        body()
+    finally
+        setfield!(context, field, old)
+    end
+end
+_next_trace_id!(context::TraceContext, field::Symbol) = begin
+    id = getfield(context, field) + 1
+    setfield!(context, field, id)
+    id
+end
+_next_trace_id!(info, field::Symbol) = begin
+    context = _trace_context(info)
+    context === nothing && error("internal: trace state is missing while allocating `$field`.")
+    _next_trace_id!(context, field)
+end
+_expr_stack(x) = (context = _trace_context(x); context === nothing ? nothing : context.expr_stack)
 _expr_stack(x::SubModel) = _expr_stack(parent(x))
-_expr_stack(x) = nothing
-_current_lnn(x::StanModel) = get(x.meta, :_current_lnn, nothing)
-_current_lnn(x::SubModel) = _current_lnn(parent(x))
-_current_lnn(x) = nothing
+_current_lnn(x) = (context = _trace_context(x); context === nothing ? nothing : context.current_lnn)
 vars(x::StanModel) = x.vars
 blocks(x::StanModel) = x.blocks
 remake(x::StanModel; kwargs...) = StanModel((;x.meta..., kwargs...), x.vars, x.blocks)
@@ -180,7 +263,7 @@ head(::CanonicalExprV{H}) where {H} = H
 remake(x::CanonicalExpr, args...; kwargs...) = CanonicalExpr(head(x), args...; kwargs...)
 
 StanModel(name=gensym("stan_model")) = StanModel(
-    (;name),
+    (;name, _trace_context=TraceContext()),
     OrderedDict(),
     (;
         functions=StanBlock(:functions,OrderedDict()),
@@ -193,19 +276,82 @@ StanModel(name=gensym("stan_model")) = StanModel(
     ),
 )
 replace_name(x::Expr) = replace_name(canonical(x))
-replace_name(x::Union{SamplingExpr,AssignmentExpr}) = x.args[1]
+replace_name(x::Union{SamplingExpr,AssignmentExpr}) = _replace_key(x.args[1])
+replace_name(x::DeclExpr) = _replace_key(x)
 replace_name(::ReturnExpr) = RV_NAME
 replace_name(::Any) = missing
+# A statement's replacement KEY is what its LHS *names*, so a typed LHS keys on
+# the bare name: `beta::vector[k] ~ normal(…)` must override the base's
+# `beta ~ std_normal(…)`, which is the whole point of a `Base.merge` splice
+# (swap one statement's distribution, keep the rest). Keying on the whole
+# `DeclExpr` made those two look like different statements — the override was
+# appended instead of replacing, and the leftover key then reached `usedin`,
+# which is `Symbol`-only, as a bare `MethodError`.
+# Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
+_replace_key(x) = x
+_replace_key(x::DeclExpr) = x.args[1]
 usedin(s::Symbol) = Base.Fix1(usedin, s)
 usedin(s::Symbol, x::Expr) = any(usedin(s), x.args)
 usedin(s::Symbol, x::Symbol) = s == x
 usedin(s::Symbol, x::CanonicalExpr) = any(usedin(s), x.args)
 usedin(s::Symbol, x) = false
+# Where a statement's LHS sits in its RAW AST: `x ~ rhs` parses to
+# `Expr(:call, :~, lhs, rhs)`, `x = rhs` to `Expr(:(=), lhs, rhs)`. `0` means
+# "not a shape whose LHS we rewrite" (a `return`, or anything unrecognised).
+_lhs_position(x::Expr) =
+    Meta.isexpr(x, :call, 3) && x.args[1] === :~ ? 2 :
+    Meta.isexpr(x, :(=), 2) ? 1 : 0
+_lhs_position(x) = 0
+# An override's LHS declares; OMITTING a declaration means "unchanged", not
+# "cleared". So when a spliced statement's LHS is a bare name and the base
+# statement it replaces DECLARED that name (`rho :: vector[n_axes] ~ …`), the
+# override supplies the RHS and the base supplies the declaration.
+#
+# Replacing the statement wholesale instead dropped the type and size, which
+# does not fail — it silently RESCOPES the parameter (`rho` becomes a scalar)
+# into a well-formed but different model, and the mismatch surfaces passes
+# later in whatever first consumes the wrong shape, naming neither the
+# parameter nor the merge. Swapping one statement's distribution while keeping
+# its declaration is the whole point of the splice surface, so it must not
+# require every caller to know and repeat each sub-model's declared form.
+#
+# An override that WANTS a different declaration still writes its own
+# (`rho :: real ~ …`), so nothing becomes inexpressible.
+# Snag `merge-plain-over-f228c5b2`, reported by BayesianRegressionModels.
+_inherit_lhs_decl(base::Expr, override::Expr) = begin
+    bi, oi = _lhs_position(base), _lhs_position(override)
+    oi == 0 && return override
+    declaration = Meta.isexpr(base, :(::), 2) ? base :
+        bi == 0 ? nothing : base.args[bi]
+    Meta.isexpr(declaration, :(::), 2) || return override
+    Meta.isexpr(override.args[oi], :(::)) && return override
+    out = copy(override)
+    out.args[oi] = declaration
+    out
+end
+_inherit_lhs_decl(_base, override) = override
+# Only whole names have a safe insertion point before their first use. An
+# unmatched element is not a replacement of its vector's declaration/prior:
+# inserting it can double-count a density, lose bounds, or leave RNG holes.
+# Exact indexed statement replacements have already been consumed below.
+_check_splice_insertion(::Symbol, _raw) = nothing
+_check_splice_insertion(_key, raw) = throw(ArgumentError(
+    "Base.merge(submodel, …): cannot insert a spliced statement with an unmatched " *
+    "non-Symbol LHS: `" * sprint(print, raw) * "`. Indexed overrides require an " *
+    "existing statement with exactly the same LHS; they do not replace a whole " *
+    "vector prior or transfer element bounds to its declaration. For heterogeneous " *
+    "vector priors, replace the whole name with a custom @lpxf family, declare its " *
+    "support with StanBlocks.autokwargs, and provide its sized _rng companion."
+))
 top_replace_components(x::Expr; rep::OrderedDict) = begin
     @assert x.head == :block "top_replace_components expects a `begin ... end` block, got `$x` (head `$(x.head)`)."
     args = []
     for arg in x.args
-        push!(args, pop!(rep, replace_name(arg), arg))
+        override = pop!(rep, replace_name(arg), nothing)
+        push!(args, isnothing(override) ? arg : _inherit_lhs_decl(arg, override))
+    end
+    for (key, raw) in rep
+        _check_splice_insertion(key, raw)
     end
     i = 1
     while i <= length(args)
@@ -220,19 +366,115 @@ top_replace_components(x::Expr; rep::OrderedDict) = begin
     append!(args, values(rep))
     Expr(:block, args...)
 end
-# `Base.merge(submodel, stmts...)` — statement-splice composition: override the
-# body statements whose LHS-name matches, append the rest. This REPLACES the old
-# positional-call splice (`submodel(quote … end)`); a positional sub-model call now
-# errors loudly (see the call operator below).
-_splice_body(x::SlicModel, args::Union{SamplingExpr,AssignmentExpr,ReturnExpr}...) = top_replace_components(model(x); rep=OrderedDict([
-    replace_name(arg)=>arg for arg in args
-]))
-unblock(x::BlockExpr) = mapreduce(unblock, vcat, x.args)
+# `Base.merge(submodel, stmts..., fixed::NamedTuple)` — model composition:
+#
+# - statement arguments override body statements whose LHS-name matches and
+#   append the rest;
+# - NamedTuple arguments FIX their names: matching sampling/assignment
+#   statements are removed and the supplied values become model data.
+#
+# Fixed bindings are applied after all statement splices, independent of their
+# argument position. This makes the mixed form unambiguous: in
+# `Base.merge(model, :(x ~ prior()), (; x=value))`, the explicit value wins and
+# `x ~ prior()` does not survive as a likelihood contribution.
+#
+# This REPLACES the old positional-call splice (`submodel(quote … end)`); a
+# positional sub-model call now errors loudly (see the call operator below).
+unblock(x::BlockExpr) = mapreduce(unblock, vcat, x.args; init=[])
+unblock(x::Expr) = x.head === :block ? mapreduce(unblock, vcat, x.args; init=[]) : [x]
 unblock(x::LineNumberNode) = []
 unblock(x) = [x]
-_splice_body(x::SlicModel, args::Union{BlockExpr,SamplingExpr,AssignmentExpr,ReturnExpr}...) = _splice_body(x, mapreduce(unblock, vcat, args)...)
-_splice_body(x::SlicModel, args::Expr...) = _splice_body(x, canonical.(args)...)
-Base.merge(x::SlicModel, args...) = SlicModel(_splice_body(x, args...), data(x), x.mod)
+# Canonicalise ONLY to derive the replacement key and to validate the statement
+# shape — splice the argument through UNCHANGED. A `@slic` body is raw Julia AST,
+# so canonicalising the overrides used to leave `model(merged)` a MIXED tree, and
+# `show` on a `CanonicalExpr` is the *Stan* emitter (§R8): it assumes every node
+# has already been traced. Printing a spliced body to inspect it therefore died in
+# the emitter (`MethodError: no method matching type(::Symbol)`, show.jl's
+# `DeclExpr` method) — and making that emitter tolerate untraced nodes would hide
+# a genuine compiler bug, so the body is kept raw instead. `forward!(::SlicModel)`
+# canonicalises the whole body anyway, so nothing downstream loses information.
+# Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
+_check_splice_stmt(raw, ::Union{SamplingExpr,AssignmentExpr,ReturnExpr}) = raw
+_check_splice_stmt(raw, _canonical) = error(
+    "Base.merge(submodel, …): every spliced statement must be a sampling (`x ~ …`), ",
+    "an assignment (`x = …`) or a `return …`; got `", raw, "`."
+)
+_splice_body(x::SlicModel, args...) = begin
+    rep = OrderedDict{Any,Any}()
+    for raw in mapreduce(unblock, vcat, args; init=[])
+        c = canonical(raw)
+        _check_splice_stmt(raw, c)
+        rep[replace_name(c)] = raw
+    end
+    top_replace_components(model(x); rep)
+end
+_without_fixed_components(x::Expr, fixed_names) = begin
+    @assert x.head == :block "_without_fixed_components expects a `begin ... end` block, got `$x` (head `$(x.head)`)."
+    Expr(:block, filter(x.args) do arg
+        key = replace_name(arg)
+        ismissing(key) || !(key in fixed_names)
+    end...)
+end
+_merge_parts(args) = begin
+    stmts = Any[]
+    fixed = NamedTuple()
+    for arg in args
+        if arg isa NamedTuple
+            fixed = merge(fixed, arg)
+        else
+            push!(stmts, arg)
+        end
+    end
+    stmts, fixed
+end
+# A `SlicModel` argument contributes its whole self: its body statements splice
+# like any other override/append override, and its bound data merges into the
+# result's data. That data does NOT go through the `fixed` path — a `fixed` name
+# has its defining statement REMOVED (fixing a parameter to a value), but a
+# merged model's data names are OBSERVATIONS whose likelihood statements must
+# survive the merge. `docstring` is model metadata carried inside `data`, not a
+# data binding, so it is dropped (the base model `x` keeps its own).
+_model_data_only(x::SlicModel) = (;
+    (k => v for (k, v) in pairs(data(x)) if k !== :docstring)...
+)
+# `Base.merge(base, overlays...)` — model composition. Each overlay is one of:
+#
+# - a statement AST (`:(x ~ …)`, `quote … end`): overrides the base statement
+#   whose LHS-name matches and appends the rest;
+# - a `NamedTuple`: FIXES its names — matching sampling/assignment statements are
+#   removed and the supplied values become model data;
+# - another `SlicModel`: its body statements splice as above, and its bound data
+#   merges in as data bindings (NOT fixed — its likelihoods survive).
+#
+# Fixed bindings are applied after all statement splices, independent of argument
+# position, so the mixed form stays unambiguous: in `Base.merge(model, :(x ~
+# prior()), (; x=value))` the explicit value wins and `x ~ prior()` does not
+# survive as a likelihood contribution.
+Base.merge(x::SlicModel, args...) = begin
+    model_data = NamedTuple()
+    observations = Tuple(x.observations)
+    parts = Any[]
+    for arg in args
+        if arg isa SlicModel
+            append!(parts, unblock(model(arg)))
+            model_data = merge(model_data, _model_data_only(arg))
+            observations = Tuple(union(observations, arg.observations))
+        else
+            push!(parts, arg)
+        end
+    end
+    stmts, fixed = _merge_parts(parts)
+    body = _splice_body(x, stmts...)
+    merged_data = merge(data(x), pairs(model_data))
+    # A fixed name's defining statement is REMOVED, so the observation ceases
+    # to exist as a statement — drop it from the declaration (which tracks
+    # statements, not bindings). A merely BOUND observation keeps its
+    # statement, so re-data preserves the declaration verbatim instead.
+    observations = Tuple(o for o in observations if !(o in keys(fixed)))
+    isempty(fixed) && return SlicModel(body, merged_data, x.mod, observations)
+    body = _without_fixed_components(body, keys(fixed))
+    SlicModel(body, merge(merged_data, pairs(fixed)), x.mod, observations)
+end
 
 _submodel_positional_error(args...) = error(
     "A @slic sub-model was called with positional argument(s). ",
@@ -240,14 +482,80 @@ _submodel_positional_error(args...) = error(
     "now use `Base.merge(submodel, stmts...)` (e.g. `Base.merge(base, quote … end)`); and ",
     "positional scalar inputs require a named sub-model function declared with `@slic f(args...) = …`."
 )
-(x::SlicModel)(; kwargs...) = SlicModel(model(x), merge(data(x), kwargs), x.mod)
+(x::SlicModel)(; kwargs...) =
+    SlicModel(model(x), merge(data(x), kwargs), x.mod, x.observations)
 (x::SlicModel)(arg, args...; kwargs...) = _submodel_positional_error(arg, args...)
+
+# The four constraint keys a StanType carries in its `info` alongside its size.
+# One tuple, because four sites need the same set — `constraints` (show.jl), the
+# descriptor projection, and the two places user kwargs get folded into a
+# declared type (`autotype`, and forward.jl's typed-LHS sampling path).
+const CONSTRAINT_KEYS = (:lower, :upper, :offset, :multiplier)
+const BOUND_KEYS  = (:lower, :upper)
+const AFFINE_KEYS = (:offset, :multiplier)
+
+# Stan's declaration grammar admits a BOUND pair (`lower`/`upper`) or an AFFINE
+# pair (`offset`/`multiplier`) — never both. `real<lower=0, multiplier=s> x;` is
+# a stanc SYNTAX error, so left to reach the emitter it surfaces as an
+# unattributed parse failure on generated source the author never wrote, with no
+# line that corresponds to anything in the `@slic` block. Reject it at trace
+# time, where the kwarg still has a name and a model to point at.
+#
+# `implied` names the keys that came from the distribution rather than the
+# author (`exponential`→`lower=0`, `beta`→`[0,1]`): `tau ~ exponential(1.;
+# multiplier=s)` is a genuine collision, but blaming the author for a `lower=`
+# they never wrote is the confusing half, so say where it came from.
+_check_constraint_combination(name, cons; implied=()) = begin
+    bounds = filter(in(BOUND_KEYS), keys(cons))
+    affine = filter(in(AFFINE_KEYS), keys(cons))
+    (isempty(bounds) || isempty(affine)) && return cons
+    src(k) = k in implied ? "`$k=` (implied by the distribution)" : "`$k=`"
+    where = name === nothing ? "" : " on `$name`"
+    error(
+        "Stan cannot combine a bound with an affine transform in one declaration",
+        where, ": ", join(map(src, bounds), " and "), " cannot be used together ",
+        "with ", join(map(src, affine), " and "), ". Stan applies `offset`/",
+        "`multiplier` to an UNBOUNDED parameter; a bounded one is already ",
+        "reparameterised by its own transform. Drop the affine pair, or declare ",
+        "the parameter unbounded and enforce the bound in the model."
+    )
+end
+
+# A custom distribution's `autokwargs` method runs as ordinary Julia, outside
+# the SLIC forward pass. Literal vector bounds therefore arrive here as runtime
+# vectors / `adjoint(vector)` wrappers (or, for callers constructing syntax,
+# bare `Expr(:vect, ...)`) rather than as typed `StanExpr`s. Preserve them as
+# native Stan VECTOR expressions before the constraint is stored in a
+# `StanType`: leaving the Julia carrier raw makes `fetch_data!` reject it, while
+# printing a raw `Expr(:vect, ...)` would use Stan's ARRAY-literal spelling.
+_constraint_value(x) = x
+_constraint_vector_literal(xs) = begin
+    vect = CanonicalExpr(:vect, xs...)
+    StanExpr(vect, tracetype(vect))
+end
+_constraint_value(x::AbstractVector{<:Real}) = _constraint_vector_literal(x)
+_constraint_value(x::AbstractMatrix{<:Real}) = begin
+    p = parent(x)
+    p isa AbstractVector && size(x) == (1, length(p)) ?
+        _constraint_vector_literal(p) : x
+end
+_constraint_value(x::Expr) =
+    x.head === :vect && all(a -> a isa Real, x.args) ?
+        _constraint_vector_literal(x.args) : x
+
+# Project a kwarg bag onto the constraint keys, normalising literal vector
+# expressions and validating the combination. Both folding sites call this, so
+# inferred and explicitly typed sampling declarations cannot drift.
+_fold_constraints(name, kw; implied=()) = _check_constraint_combination(
+    name, (;[key => _constraint_value(kw[key]) for key in CONSTRAINT_KEYS if key in keys(kw)]...); implied
+)
 
 qual(x) = :data
 qual(x::StanExpr) = qual(type(x))
 qual(x::StanType) = get(info(x), :qual, :undefined)
 _is_fresh_decl(x::StanExpr) = get(info(type(x)), :fresh_decl, false)
 _decl_role(x::StanExpr) = get(info(type(x)), :decl_role, :none)
+_decl_role(x::StanType) = get(info(x), :decl_role, :none)
 lqual(x) = :undefined
 lqual(x::StanExpr) = lqual(type(x))
 lqual(x::StanType) = get(info(x), :lqual, :undefined) 
@@ -261,7 +569,33 @@ cv(x) = false
 cv(x::StanExpr) = cv(type(x))
 cv(x::StanType) = get(info(x), :cv, false) || any(cv, stan_size(x))
 
-stan_type(expr, value; kwargs...) = error("Do not know how to handle `stan_type($expr, $value)`")
+# Generic fallback. The one non-native value we accept is a Tables.jl source (a
+# `DataFrame`, a row/column table, …). Tables.jl is an INTERFACE package (traits
+# + generic access, no shared supertype), so there is nothing to dispatch on —
+# the idiomatic consumer check is the `Tables.istable` trait. It lives here in
+# the generic fallback, so every more-specific value (Integer, vectors,
+# NamedTuple, the ragged carrier) still dispatches natively and only a
+# genuinely-unknown value reaches the trait check; a non-table still errors.
+stan_type(expr, value; kwargs...) =
+    Tables.istable(value) ? _table_stan_type(expr, value; kwargs...) :
+    error("Do not know how to handle `stan_type($expr, $value)`")
+
+# A table is special: all its columns share ONE length (the row count). So it
+# ingests as a single `ntup` whose fields are the columns, ALL keyed off one
+# shared row-count size `<name>_nrow` — never independent per-column sizes. Each
+# column reuses the ordinary column ingest (`stan_type(col)`: float→`vector`,
+# int→`array[] int`, with the right qual) with only its size swapped to the
+# shared `nrow`, so the column→Stan-type mapping stays single-sourced. Columns
+# are addressed by name in the body (`df.age`) via the existing ntup field access.
+_table_column_type(name, col, nrow) = remake(stan_type(name, col), nrow)
+_table_stan_type(expr, tbl; kwargs...) = begin
+    cols = Tables.columntable(tbl)   # NamedTuple of columns, equal-length by the Tables contract
+    isempty(cols) && error("StanBlocks: table `$expr` has no columns; nothing to ingest.")
+    nrow = stan_expr(Symbol(expr, "_nrow"), length(first(cols)))
+    arg_types = (; (name => _table_column_type(Symbol(expr, "_", name), col, nrow)
+                    for (name, col) in pairs(cols))...)
+    StanType(types.ntup, tuple(); arg_types, value=cols, kwargs...)
+end
 stan_type(expr, value::Integer; kwargs...) = StanType(types.int; value, kwargs..., qual=:data)
 stan_type(expr, value::AbstractFloat; kwargs...) = StanType(types.real; value, kwargs...)
 stan_type(expr, value::AbstractVector{<:Real}; kwargs...) = StanType(

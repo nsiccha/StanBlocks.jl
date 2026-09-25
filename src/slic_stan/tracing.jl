@@ -37,57 +37,70 @@ const _StanBlocksError = StanBlocksError
 _is_stanblocks_error(e::_StanBlocksError) = true
 _is_stanblocks_error(_) = false
 
-# --- Per-trace monotonic id counters (thread-safe + deterministic) -----------
-# `_next_inline_id`/`_next_closure_id`/`_next_anon_id` hand out the ids used for
+function _with_slic_diagnostic(f::Function, code, label, context, fallback)
+    try
+        f()
+    catch e
+        bt = catch_backtrace()
+        _is_stanblocks_error(e) && rethrow()
+        expr_stack = context isa TraceContext ? copy(context.expr_stack) : Any[]
+        current = context isa TraceContext ? _deref_lnn(context.current_lnn) : nothing
+        lnn = _diagnostic_lnn_for_source(expr_stack, current, fallback)
+        structured = _diagnostic_from_error(code, e, lnn)
+        throw(_StanBlocksError(:transpile, label, (e, bt, expr_stack, structured)))
+    end
+end
+
+# --- Per-trace monotonic id counters (explicit + deterministic) --------------
+# `_next_inline_id`/`_next_closure_id` hand out the ids used for
 # inlined-UDF local renames (`name__il_<id>`, forward.jl), lifted-closure Stan
-# fn names + comments (`// lifted closure (id <id>)`, closures.jl), and per-call
-# anon-arg placeholders (`_arg<tok>_<i>`, functions.jl). These ids must be
+# fn names + comments (`// lifted closure (id <id>)`, closures.jl). These ids must be
 # unique WITHIN a single transpilation but must NOT carry across transpilations:
 # a module-global counter would (a) data-race under concurrent tracing and (b)
 # make the emitted Stan depend on how many prior inlines/closures ran this
 # session — non-deterministic generation that also defeats the `hash(stan_code)`
-# cache. So the counters live in PER-TASK storage, seeded FRESH per trace by
-# `_with_trace_counters` (called from the `stan_model` wrapper below). The lazy
-# `get!` is the get-with-default for any call OUTSIDE a trace scope (only the
-# anon counter is reachable there, via ad-hoc `stan_expr(::CanonicalExpr)`;
-# determinism is irrelevant there since anon placeholders are always
-# deanonymized away) — it returns a task-local `Ref`, so still thread-safe.
-_trace_counter(key) = get!(() -> Ref(0), task_local_storage(), key)
-_next_inline_id()  = (_trace_counter(:_slic_inline_counter)[]  += 1)
-_next_closure_id() = (_trace_counter(:_slic_closure_counter)[] += 1)
-_next_anon_id()    = (_trace_counter(:_slic_anon_counter)[]    += 1)
-# Seed all three counters fresh (scoped, restored on exit) around one trace.
-_with_trace_counters(body) =
-    task_local_storage(:_slic_inline_counter, Ref(0)) do
-        task_local_storage(:_slic_closure_counter, Ref(0)) do
-            task_local_storage(:_slic_anon_counter, Ref(0)) do
-                body()
-            end
-        end
-    end
+# cache. Both counters therefore live on the root model's explicit TraceContext.
+_next_inline_id(info) = _next_trace_id!(info, :inline_counter)
+_next_closure_id(info) = _next_trace_id!(info, :closure_counter)
+_next_anon_id(context::TraceContext) = _next_trace_id!(context, :anon_counter)
 
 stan_model(x::SlicModel; info=StanModel()) = begin
-    _expr_stack = Any[]
-    _current_lnn = Ref{Any}(nothing)
-    info = remake(info; _expr_stack, _current_lnn)
-    task_local_storage(:_slic_expr_stack, _expr_stack) do
-        task_local_storage(:_slic_current_lnn, _current_lnn) do
-            task_local_storage(:_slic_inline_pending, Any[]) do
-                _with_trace_counters() do
-                    try
-                        distribute!(backward!(forward!(x; info); info); info)
-                        remake(info; docstring=get(x.data, :docstring, ""))
-                    catch e
-                        _is_stanblocks_error(e) && rethrow()
-                        bt = catch_backtrace()
-                        # Keep the raw (exception, backtrace, expr_stack) tuple so the
-                        # display layer can show the Julia traceback alongside the
-                        # SLIC-level expression trace.
-                        throw(_StanBlocksError(:transpile, "model", (e, bt, copy(_expr_stack))))
-                    end
-                end
-            end
-        end
+    context = TraceContext()
+    # The producer's observation declaration rides in trace meta so both the
+    # GQ twin emission (`distribute!`) and the descriptor (`meta(m)`) see it.
+    # `remake` merges, so `forward!`'s local `mod` remake preserves it.
+    info = remake(info; _trace_context=context, observations=x.observations)
+    source_lnn = _first_source_lnn(model(x))
+    stage = :trace
+    try
+        traced = forward!(x; info)
+        stage = :lowering
+        lowered = backward!(traced; info)
+        distribute!(lowered; info)
+        emission_lnn = _diagnostic_lnn(
+            context.expr_stack,
+            _deref_lnn(context.current_lnn),
+            source_lnn,
+        )
+        remake(info; docstring=get(x.data, :docstring, ""), _source_lnn=emission_lnn)
+    catch e
+        _is_stanblocks_error(e) && rethrow()
+        bt = catch_backtrace()
+        code = stage === :trace ? :slic_trace_error : :slic_lowering_error
+        lnn = _diagnostic_lnn(
+            context.expr_stack,
+            _deref_lnn(context.current_lnn),
+            source_lnn,
+        )
+        structured = _diagnostic_from_error(code, e, lnn)
+        # Keep the raw (exception, backtrace, expr_stack) tuple so the
+        # display layer can show the Julia traceback alongside the
+        # SLIC-level expression trace. The fourth element is a supported,
+        # machine-readable diagnostic; the first three retain compatibility.
+        throw(_StanBlocksError(
+            :transpile, "model",
+            (e, bt, copy(context.expr_stack), structured),
+        ))
     end
 end
 maybedata!(x::StanModel, key, value) = x[key] = maybedata(key, value)
@@ -238,16 +251,25 @@ end
 _control_flow_kind(::ForExpr) = "for"
 _control_flow_kind(::WhileExpr) = "while"
 _control_flow_kind(::IfExpr) = "if"
+_control_flow_kind(::TernaryExpr) = "ternary"
+_control_flow_kind(::LogicalAndExpr) = "&&"
+_control_flow_kind(::LogicalOrExpr) = "||"
 _control_flow_kind(::ElseIfExpr) = "elseif"
 _control_flow_kind(::BreakExpr) = "break"
 _control_flow_kind(::ContinueExpr) = "continue"
 _control_flow_kind(::ComprehensionExpr) = "comprehension"
 _reject_model_control_flow(x) = x
 _reject_model_control_flow(x::CanonicalExpr) = (foreach(_reject_model_control_flow, x.args); x)
-_reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,ElseIfExpr,BreakExpr,ContinueExpr,ComprehensionExpr}) = error(
+_reject_model_control_flow(x::Union{ForExpr,WhileExpr,IfExpr,TernaryExpr,LogicalAndExpr,LogicalOrExpr,ElseIfExpr,BreakExpr,ContinueExpr,ComprehensionExpr}) = error(
     "`$(_control_flow_kind(x))` control flow is not supported in @slic model bodies — ",
-    "move the logic into an @deffun function body, or use a vectorised form."
+    "move the logic into an @deffun function body, or use a vectorised form. ",
+    "A top-level loop that introduces parameters is written `@plate for i in 1:N … end` ",
+    "(independent cells) or `@scan begin <setup>; for i in lo:hi … end end` (a recurrence)."
 )
+# The annotated loops are compiler-owned: the annotation licenses the loop and
+# the inliner (`_forward_annotated_loop!`) re-checks the BODY statements itself.
+_reject_model_control_flow(x::CanonicalExprV{:plate_loop}) = x
+_reject_model_control_flow(x::CanonicalExprV{:scan_block}) = x
 # Slice/element assignment (`v[a:b] = …`, `v[i] = …`) is declare-then-fill: the
 # indexed LHS forwards to a non-Symbol expr that is never registered in `info`,
 # so the backward pass would otherwise die with a raw `KeyError` from the
@@ -280,6 +302,18 @@ end
 isexpr(h) = Base.Fix2(isexpr, h)
 isexpr(x, h) = false
 isexpr(x::CanonicalExpr, h) = head(x) == h
+# `@plate` / `@scan` annotations on a top-level `@slic` loop. They are reserved
+# macros (`_SLIC_RESERVED_MACROS`, so `slic_macroexpand` keeps them) and are
+# recognised here by head — bare, `Module.@plate`, or a `GlobalRef` — BEFORE
+# their argument is canonicalised, because the inliner needs the RAW loop AST
+# for its syntactic pre-pass (the same reason a lambda's body stays raw).
+_annotated_loop_kind(::Any) = nothing
+_annotated_loop_kind(head::Symbol) =
+    head === Symbol("@plate") ? :plate : head === Symbol("@scan") ? :scan : nothing
+_annotated_loop_kind(head::GlobalRef) = _annotated_loop_kind(head.name)
+_annotated_loop_kind(head::Expr) =
+    (head.head === :. && length(head.args) == 2 && head.args[2] isa QuoteNode) ?
+        _annotated_loop_kind(head.args[2].value) : nothing
 canonical(x) = x
 canonical(x::Expr) = if x.head === :->
     # Lambdas (`(x) -> body`): keep `lhs` and `body` as raw, un-canonicalised
@@ -287,6 +321,15 @@ canonical(x::Expr) = if x.head === :->
     # later substitution — `inline_substitute` walks Expr/Symbol, not
     # CanonicalExpr.
     CanonicalExpr(x.head, x.args...)
+elseif x.head === :macrocall && _annotated_loop_kind(x.args[1]) !== nothing
+    kind = _annotated_loop_kind(x.args[1])
+    args = Any[a for a in x.args[3:end] if !(a isa LineNumberNode)]
+    length(args) == 1 || error(
+        "`@", kind, "` takes exactly one argument (",
+        kind === :plate ? "`@plate for i in 1:N … end`" : "`@scan begin <setup>; for i in lo:hi … end end`",
+        "), got ", length(args), "."
+    )
+    CanonicalExpr(kind === :plate ? :plate_loop : :scan_block, args[1])
 elseif x.head === :do
     # `f(args) do x; body end` parses to `Expr(:do, Expr(:call, f, args...),
     # Expr(:->, Expr(:tuple, x), body))`. Desugar to the equivalent
@@ -297,6 +340,16 @@ elseif x.head === :do
     @assert Meta.isexpr(call_expr, :call) "canonical(:do): first arg must be a `:call` Expr, got `$call_expr`."
     @assert Meta.isexpr(lambda, :->) "canonical(:do): second arg must be a `:->` lambda Expr, got `$lambda`."
     canonical(Expr(:call, call_expr.args[1], lambda, call_expr.args[2:end]...))
+elseif x.head === :if && length(x.args) == 3 &&
+        !Meta.isexpr(x.args[2], :block) && !Meta.isexpr(x.args[3], :block)
+    # Ternary conditional EXPRESSION `cond ? a : b`. Julia parses this to the
+    # same `Expr(:if, …)` as an `if`-STATEMENT, but a ternary's branches are
+    # bare VALUES whereas a statement's are `:block`s. Route the value form to
+    # its own `:ternary` head so it lowers to Stan's `cond ? a : b` operator
+    # (`show`/`tracetype`/`forward!` for `TernaryExpr`), instead of being
+    # (mis)handled as block-bodied control flow — which crashed in `show`
+    # while formatting the "tracetype not defined" rejection.
+    CanonicalExpr(:ternary, canonical.(x.args)...)
 else
     CanonicalExpr(x.head, canonical.(x.args)...)
 end
@@ -392,12 +445,8 @@ end
 pretty_type_expr(T::Symbol) = string(T)
 pretty_type_expr(ref::CanonicalExprV{:getindex}) = string(ref.args[1], "[", join(ref.args[2:end], ", "), "]")
 
-# TODO: task-local storage is used here to propagate _expr_stack/_current_lnn through
-# @deffun calls, which rebuild `info` from scratch. Cleaner alternatives:
-# - Thread info through stan_expr (invasive: changes signature everywhere + codegen)
-# - Carry refs as CanonicalExpr kwargs (requires codegen changes in functions.jl)
-_get_expr_stack(info) = something(_expr_stack(info), get(task_local_storage(), :_slic_expr_stack, nothing), Some(nothing))
-_get_lnn_ref(info) = something(_current_lnn(info), get(task_local_storage(), :_slic_current_lnn, nothing), Some(nothing))
+_get_expr_stack(info) = _expr_stack(info)
+_get_lnn_ref(info) = _current_lnn(info)
 _get_lnn(info) = _deref_lnn(_get_lnn_ref(info))
 _deref_lnn(r::Ref) = r[]
 _deref_lnn(_) = nothing
@@ -430,10 +479,28 @@ get_module(info::StanModel) = get(info.meta, :mod, Main)
 get_module(info::AbstractDict) = get(info, :__mod__, Main)
 get_module(info::NamedTuple) = get(info, :__mod__, Main)
 get_module(info::SubModel) = get_module(parent(info))
-# Plate emission installs a task-local promotion context while re-tracing its
+# Plate emission installs an explicit promotion context while re-tracing its
 # compiler-owned loop.  The forward layer adds the StanModel/SubModel method;
 # this floor keeps ordinary symbol resolution independent of that feature.
 _plate_promoted_reference(x, info) = nothing
+# A module-level binding whose type SLIC deliberately does not resolve in a
+# model / `@deffun` body. Only `Function` / `SlicModel` / `SubmodelFn` /
+# built-in `Irrational` (π, ℯ, …) bindings resolve to a value; a plain numeric
+# `const` does NOT — user decision `3bbtrv` ("only pi and e or other built in
+# constants"), so there is intentionally no `::Number` resolution. Keep that
+# rejection loud AND actionable (cf. `eccfc8a` for `pi()`): name the type, the
+# rule, and — for a number — the supported named-constant idiom.
+_unresolved_module_binding_error(x, mod, Mx) = begin
+    base = "Found `$x` in $(mod) of type $(typeof(Mx)); an @slic/@deffun body " *
+           "resolves only Function / SlicModel / built-in Irrational (π, ℯ, …) " *
+           "module bindings — a $(typeof(Mx)) does not (deliberate; StanBlocks " *
+           "decision `3bbtrv`)."
+    Mx isa Number || return base
+    tystr = Mx isa Integer ? "int" : "real"
+    base * " To reuse a named numeric constant, inline the literal, use a Julia " *
+           "`Irrational`, or define a zero-arg Stan function and call it: " *
+           "`@deffun $(x)()::$(tystr) = $(Mx)` then `$(x)()`."
+end
 forward!(x::Symbol; info) = begin
     # A ragged plate logical cell has no dense top-level declaration: the emit
     # context maps it straight to a certified flat-memory slice. Consult that
@@ -449,13 +516,13 @@ forward!(x::Symbol; info) = begin
     if isdefined(mod, x)
         Mx = getproperty(mod, x)
         rv = _forward_module_value(Mx, info)
-        rv === nothing && error("Found $x in $(mod), but is of type $(typeof(Mx))!")
+        rv === nothing && error(_unresolved_module_binding_error(x, mod, Mx))
         return rv
     end
     if mod !== Main && isdefined(Main, x)
         Mx = getproperty(Main, x)
         rv = _forward_module_value(Mx, info)
-        rv === nothing && error("Found $x in Main, but is of type $(typeof(Mx))!")
+        rv === nothing && error(_unresolved_module_binding_error(x, Main, Mx))
         return rv
     end
     error("Could not find $(x) in model, builtin, $(mod) or Main!")
