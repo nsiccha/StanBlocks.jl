@@ -201,8 +201,13 @@ end
 ```
 
 Here `yi` means `y[i]`, while `mu0` and `sigma` are the same captured values in
-every cell. The compiler emits the necessary loops separately in the Stan
-blocks that own the declarations, fills, densities, and generated quantities.
+every cell. Every positional's length must equal its outer axis (and every
+sibling positional): a provable mismatch errors at trace time naming the
+plate, the positional, and both lengths. A ragged input counts groups and
+`EachCol`/`EachRow` count columns/rows; a `length(X)`-style `outer` carries no
+trace-time value and stays unchecked. The compiler emits the necessary loops
+separately in the Stan blocks that own the declarations, fills, densities,
+and generated quantities.
 
 ### Plate support matrix
 
