@@ -1064,6 +1064,19 @@ import Statistics
         end
         rv
     end
+    # Shared-simplex form: n draws against one probability vector (e.g.
+    # `s ~ dirichlet(…); y::int[n] ~ categorical(s)`). The scalar fallback
+    # carries the REQUIRED `::real` (rule documented below): the singular
+    # `categorical_lpmf(args...)` stub is itself unannotated (snag
+    # sbbrmi-of-s-diri-78c6f9e7).
+    categorical_lpmfs(args...)::real = categorical_lpmf(args...)
+    categorical_lpmfs(y::int[n], p::vector[k])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = categorical_lpmf(y[i], p)
+        end
+        rv
+    end
     # Scalar-fallback pointwise-density companions delegate to the `_lpdf`, which
     # returns `real`; the explicit `::real` return type is REQUIRED — without it
     # the varargs signature monomorphises to a Stan function with return type
