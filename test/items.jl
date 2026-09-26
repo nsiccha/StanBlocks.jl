@@ -8745,6 +8745,68 @@ all three paths: density, auto-RNG prediction, and pointwise log likelihood.
 end
 
 """
+Snag regression (sbbrmi-of-s-diri-78c6f9e7): plain categorical over a SHARED
+simplex vector (`s ~ dirichlet(…); y::int[n] ~ categorical(s)`) drives all
+three paths: density, auto-RNG prediction, and pointwise log likelihood. The
+GQ `y_likelihood` twin calls `categorical_lpmfs`, which had no builtin
+definition (only the singular `categorical_lpmf` existed), so any such model
+failed transpile with `tracetype not defined for y_likelihood`.
+"""
+@testitem "slic: shared-simplex categorical supports density prediction and pointwise likelihood" tags=[:slic, :descriptor, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+
+    N = 5
+    K = 3
+    model = @slic (; y = [1, 2, 3, 2, 1], K) begin
+        s::simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        y ~ categorical(s)
+    end
+
+    d = stan_descriptor(model; name = :categorical_shared)
+    outs = Dict(o.name => o for o in d.outputs)
+    @test outs[:y_gen].type == :int
+    @test outs[:y_gen].size == (:y_n,)
+    @test outs[:y_gen].generative == :draw
+    @test outs[:y_gen].source == :y
+    @test outs[:y_likelihood].type == :vector
+    @test outs[:y_likelihood].size == (:y_n,)
+    @test outs[:y_likelihood].generative == :pointwise_loglik
+    @test outs[:y_likelihood].source == :y
+    @test stan_operation(d, :predict).outputs == (:y_gen,)
+    @test stan_operation(d, :pointwise_loglik).outputs == (:y_likelihood,)
+
+    code = stan_code(model)
+    @test occursin("y ~ categorical(s);", code)
+    @test occursin("categorical_int_rng(y_n, s)", code)
+    @test occursin("categorical_lpmfs(y, s)", code)
+    @test stanc_compiles(model)
+
+    problem = stan_execute(d, :fit)
+    dim = LogDensityProblems.dimension(problem)
+    @test dim == K - 1
+    @test isfinite(LogDensityProblems.logdensity(problem, zeros(dim)))
+
+    pred = stan_execute(d, :predict; problem, draws = zeros(dim), seed = 2026)
+    @test keys(pred) == (:y_gen,)
+    @test length(pred.y_gen) == N
+    @test all(draw -> isinteger(draw) && 1 <= draw <= K, pred.y_gen)
+
+    ll = stan_execute(d, :pointwise_loglik; problem, draws = zeros(dim), seed = 2026)
+    @test keys(ll) == (:y_likelihood,)
+    @test length(ll.y_likelihood) == N
+    @test all(isfinite, ll.y_likelihood)
+
+    # Scalar observation exercises the scalar-fallback twin.
+    scalar = @slic (; y = 2, K) begin
+        s::simplex[K] ~ dirichlet(rep_vector(1.0, K))
+        y ~ categorical(s)
+    end
+    @test transpiles(scalar)
+    @test stanc_compiles(scalar)
+    @test occursin("categorical_lpmfs(y, s)", stan_code(scalar))
+end
+
+"""
 Snag regression (built-brm-s-desc-55d6d48c). A RAGGED, plate-sliced observation
 is still an observation: the descriptor must report the column as `observed` and
 offer `:fit`. It previously reported NEITHER, because the base walk stopped at
