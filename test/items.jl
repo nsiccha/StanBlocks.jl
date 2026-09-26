@@ -6814,6 +6814,111 @@ Verify `slic: public plate emits N-dimensional outer loops` in an isolated test 
 end
 
 """
+Verify `slic: plate positionals must match their outer axis lengths` in an isolated test item.
+
+Regression for snag `slic-plate-with-94c68761`: a positional whose length
+provably differs from its outer axis (or from a sibling positional) is
+ill-typed — cell `g` silently read element `g` of the longer vector (BRM's
+`gr()` plate read ROW strata instead of GROUP strata, posterior off by 0.0033
+with no warning), while a shorter one emitted a Stan runtime out-of-bounds.
+`_plate_check_iterable_lengths` (forward.jl) resolves each side to a concrete
+Integer from traced type `value`s and errors on PROVEN mismatch only, naming
+the plate, the positional, and both lengths.
+"""
+@testitem "slic: plate positionals must match their outer axis lengths" tags=[:slic, :plate] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+
+    # --- NEGATIVE: proven mismatches error, naming plate/positional/lengths --
+    # The snag: length-6 positional into `outer=(n_groups,)` with n_groups=4.
+    m_long = @slic (; stratum=[1, 2, 1, 2, 1, 2], n_groups=4) begin
+        theta ~ plate(stratum; outer=(n_groups,)) do s
+            mu ~ normal(0.0, 1.0)
+            mu + s
+        end
+    end
+    @test !transpiles(m_long; re=false)
+    @test occursin("plate `theta`", errmsg(m_long))
+    @test occursin("positional `stratum` (param `s`) has length 6", errmsg(m_long))
+    @test occursin("`outer=(n_groups,)` needs 4 cells", errmsg(m_long))
+
+    # The exact reported shape: an indexed expression as the positional.
+    m_indexed = @slic (;
+        stratum_idx=[10, 20, 30, 40, 50, 60],
+        group_idx=[1, 2, 3, 4, 1, 2],
+        n_groups=4,
+    ) begin
+        theta ~ plate(stratum_idx[group_idx]; outer=(n_groups,)) do s
+            mu ~ normal(0.0, 1.0)
+            mu + s
+        end
+    end
+    @test !transpiles(m_indexed; re=false)
+    @test occursin("positional `stratum_idx[group_idx]`", errmsg(m_indexed))
+    @test occursin("has length 6", errmsg(m_indexed))
+
+    # A SHORTER positional also errors (was: Stan runtime out-of-bounds).
+    m_short = @slic (; v=[1, 2], n=4) begin
+        theta ~ plate(v; outer=(n,)) do s
+            mu ~ normal(0.0, 1.0)
+            mu + s
+        end
+    end
+    @test !transpiles(m_short; re=false)
+    @test occursin("has length 2", errmsg(m_short))
+
+    # Siblings cross-validate when `outer` is derived (hence unresolvable).
+    m_siblings = @slic (; xs=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], ys=[1.0, 2.0, 3.0, 4.0]) begin
+        theta ~ plate(xs, ys) do x, y
+            mu ~ normal(0.0, 1.0)
+            mu + x + y
+        end
+    end
+    @test !transpiles(m_siblings; re=false)
+    @test occursin("same cell index", errmsg(m_siblings))
+
+    # Ragged carriers count groups: 2 groups into 3 cells errors.
+    m_ragged = @slic (; xs=[[0.5, 0.7, 0.9], [0.4, 0.6]], nsub=3) begin
+        theta ~ plate(xs; outer=(nsub,)) do x
+            mu ~ normal(0.0, 1.0)
+            mu + sum(x)
+        end
+    end
+    @test !transpiles(m_ragged; re=false)
+    @test occursin("has 2 groups", errmsg(m_ragged))
+
+    # EachCol counts columns: 5 columns into 3 cells errors.
+    m_eachcol = @slic (; X=[1.0 2.0 3.0 4.0 5.0; 6.0 7.0 8.0 9.0 10.0]) begin
+        theta ~ plate(EachCol(X); outer=3) do xj
+            mu ~ normal(0.0, 1.0)
+            mu + sum(xj)
+        end
+    end
+    @test !transpiles(m_eachcol; re=false)
+    @test occursin("has 5 columns", errmsg(m_eachcol))
+
+    # --- POSITIVE: matching + unresolvable sides keep working -----------------
+    @test transpiles(@slic (; stratum=[1, 2, 1, 2], n_groups=4) begin
+        theta ~ plate(stratum; outer=(n_groups,)) do s
+            mu ~ normal(0.0, 1.0)
+            mu + s
+        end
+    end)
+    # A `length(...)` outer carries no trace-time value: unchecked, as before.
+    @test transpiles(@slic (; K=[2, 3, 4]) begin
+        theta ~ plate(K; outer=(length(K),)) do s
+            mu ~ normal(0.0, 1.0)
+            mu + s
+        end
+    end)
+    @test transpiles(@slic (; xs=[[0.5, 0.7], [0.4, 0.6]], nsub=2) begin
+        theta ~ plate(xs; outer=(nsub,)) do x
+            mu ~ normal(0.0, 1.0)
+            mu + sum(x)
+        end
+    end)
+end
+
+"""
 Verify `slic: public plate emits heterogeneous vector cells` in an isolated test item.
 """
 @testitem "slic: public plate emits heterogeneous vector cells" tags=[:slic, :plate, :ragged, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin

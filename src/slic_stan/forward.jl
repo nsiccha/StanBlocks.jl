@@ -2230,6 +2230,144 @@ _plate_input_accessor(it, idxs, info) = begin
     :($it.mem[ragged_start($it.ends, $idx):ragged_end($it.ends, $idx)])
 end
 
+# Trace-time positional-length validation (snag slic-plate-with-94c68761). Every
+# positional iterable is indexed by the SAME loop indices (`a_k ⇒ iter_k[i…]`),
+# so a positional whose length provably differs from its outer axis — or from a
+# sibling positional — is ill-typed: today cell `g` silently reads element `g`
+# of the longer vector (BRM's `gr()` plate read ROW strata instead of GROUP
+# strata, posterior off by 0.0033 with no warning), while a shorter one emits a
+# Stan runtime out-of-bounds. Each side resolves to a concrete Integer from
+# traced type `value`s (data sizes carry them); the check errors on PROVEN
+# mismatch only — an unresolvable side (a `length(X)`/`cols(X)` outer, a
+# parameter iterable, a scalar, a tuple, an unrecognized view) keeps today's
+# behavior instead of risking a false positive.
+_plate_length_value(x::Integer) = x isa Bool ? nothing : Int(x)
+_plate_length_value(x::StanExpr) = _plate_length_value(type(x))
+_plate_length_value(T::StanType) = begin
+    haskey(info(T), :value) || return nothing
+    _plate_length_value(info(T).value)
+end
+_plate_length_value(x) = nothing
+_plate_as_canonical(it::CanonicalExpr) = it
+_plate_as_canonical(it) = canonical(it)
+_plate_probe_length(d, probe) = begin
+    fwd = try
+        forward!(_plate_as_canonical(d); info=probe)
+    catch
+        return nothing
+    end
+    fwd isa StanExpr ? _plate_length_value(fwd) : nothing
+end
+_plate_probe_iterable_type(it, probe) = begin
+    fwd = try
+        forward!(_plate_as_canonical(it); info=probe)
+    catch
+        return nothing
+    end
+    fwd isa StanExpr && type(fwd) isa StanType ? type(fwd) : nothing
+end
+_plate_arg_type(T::StanType, key) = begin
+    haskey(info(T), :arg_types) || return nothing
+    at = info(T).arg_types
+    at isa NamedTuple || return nothing
+    haskey(at, key) || return nothing
+    at[key]
+end
+# Per-axis lengths of a whole-forwarded positional, in outer-axis order, as
+# `(length, unit)` with `length === nothing` when unresolvable. Dense
+# containers read `stan_size`; a certified ragged carrier counts its `ends`
+# (one entry per group, 1-D only, matching `_plate_input_accessor`'s ragged
+# scope); EachCol/EachRow count the wrapped matrix's columns/rows. Anything
+# else (scalars — already loud downstream — tuples, closures, unrecognized
+# views) yields no lengths and stays unchecked.
+_plate_iterable_lengths(T::StanType) = begin
+    if _plate_is_ragged_iterable(T)
+        ends = _plate_arg_type(T, :ends)
+        n = ends isa StanType && !isempty(stan_size(ends)) ?
+            _plate_length_value(stan_size(ends)[1]) : nothing
+        return Any[(n, "groups")]
+    end
+    if center_type(T) <: builtin.EachCol
+        X = _plate_arg_type(T, :X)
+        n = X isa StanType && length(stan_size(X)) >= 2 ?
+            _plate_length_value(stan_size(X)[2]) : nothing
+        return Any[(n, "columns")]
+    end
+    if center_type(T) <: builtin.EachRow
+        X = _plate_arg_type(T, :X)
+        n = X isa StanType && !isempty(stan_size(X)) ?
+            _plate_length_value(stan_size(X)[1]) : nothing
+        return Any[(n, "rows")]
+    end
+    Any[(_plate_length_value(s), "length") for s in stan_size(T)]
+end
+# Error-message spelling for iterable/outer expressions: `string` on a canonical
+# call renders its mangled Stan name (`length_K(K)`), so unwrap the two shapes
+# that reach here — indexing and calls — back to readable Julia.
+_plate_spelling(it::Symbol) = string(it)
+_plate_spelling(it::Number) = string(it)
+_plate_spelling(it::CanonicalExprV{:getindex}) = string(
+    _plate_spelling(it.args[1]), "[", join(_plate_spelling.(it.args[2:end]), ", "), "]",
+)
+_plate_spelling(it::CanonicalExpr) =
+    string(head(it), "(", join(_plate_spelling.(it.args), ", "), ")")
+_plate_spelling(it::Expr) =
+    it.head === :ref && !isempty(it.args) ? string(
+        string(it.args[1]), "[", join(string.(it.args[2:end]), ", "), "]",
+    ) : string(it)
+_plate_spelling(it) = string(it)
+_plate_outer_spelling(outer_dims) = string(
+    "outer=(",
+    join(_plate_spelling.(outer_dims), ", "),
+    length(outer_dims) == 1 ? ",)" : ")",
+)
+_plate_length_mismatch(rv, outer_dims, j, first, second) = begin
+    who = rv === nothing ? "plate" : "plate `$rv`"
+    ax = length(outer_dims) == 1 ? "" : " (axis $j)"
+    tail = (first.outer || second.outer) ?
+        "cell `i` reads element `i`, so the positional cannot supply these cells. Fix the iterable or `outer` so the lengths agree." :
+        "every positional is indexed by the same cell index. Pass same-length iterables or an explicit `outer`."
+    string(who, ": ", first.desc, ", but ", second.desc, ax, " — ", tail)
+end
+# Compare every positional's per-axis lengths against its outer axis and
+# against its siblings, in an isolated probe (the `_plate_discover` pattern:
+# copy the vars, isolate the pending buffer, discard the probe). The first
+# resolved side per axis is the reference; a later resolved side that disagrees
+# is a proven mismatch. A side that fails to forward (an already-broken
+# iterable/outer) is skipped — the real trace reports that genuine error.
+_plate_check_iterable_lengths(rv, params, iterables, outer_dims; info) = begin
+    isempty(iterables) && return nothing
+    _with_trace_state(info, :inline_pending, Any[]) do
+        probe = _plate_probe(info)
+        outer = _plate_outer_spelling(outer_dims)
+        refs = Dict{Int,Any}()
+        for (j, d) in enumerate(outer_dims)
+            m = _plate_probe_length(d, probe)
+            m === nothing && continue
+            refs[j] = (; len=m, outer=true, desc=string("`", outer, "` needs ", m, " cells"))
+        end
+        for (a, it) in zip(params, iterables)
+            T = _plate_probe_iterable_type(it, probe)
+            T === nothing && continue
+            for (j, (n, unit)) in enumerate(_plate_iterable_lengths(T))
+                j > length(outer_dims) && break
+                n === nothing && continue
+                side = (; len=n, outer=false, desc=string(
+                    "positional `", _plate_spelling(it), "` (param `", a, "`) has ",
+                    unit == "length" ? "length $n" : "$n $unit",
+                ))
+                if haskey(refs, j)
+                    first = refs[j]
+                    first.len == n && continue
+                    error(_plate_length_mismatch(rv, outer_dims, j, first, side))
+                end
+                refs[j] = side
+            end
+        end
+    end
+    nothing
+end
+
 # ── Loop-invariant code motion (LICM) over the plate cell body ───────────────
 # The cell body is emitted INSIDE the compiler-owned `for` loop, so every
 # subexpression that does not depend on the cell — `diag_pre_multiply(tau, L)`,
@@ -2724,6 +2862,11 @@ _forward_loop_core!(;
     body_stmts, ret_expr, setup_stmts, public, probe_transform, probe_exclude,
     scan_arrays, info, ns=nothing, hoist_tag=id,
 ) = begin
+    # Proven length mismatches between positionals and their outer axes (or
+    # between siblings) are ill-typed — refuse before any renaming/hoisting.
+    # No-ops for iterable-free loops (scan, index-only plates).
+    _plate_check_iterable_lengths(rv, params, iterables, outer_dims; info)
+
     # Namespace for hygiene renames and hoisted invariants: the do-form's result
     # name; the sugar passes its own STABLE prefix (a nested loop is traced twice —
     # in the enclosing loop's discovery probe and in its emit — and the names the
