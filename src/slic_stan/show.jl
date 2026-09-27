@@ -193,6 +193,13 @@ end
 _else_branch(e::BlockExpr) = (" else", StanBlock(Symbol(), e.args))
 _else_branch(e::StanExpr{<:ElseIfExpr}) = (" else ", e)
 _else_branch(e::ElseIfExpr) = (" else ", e)
+# A nested `if` DIRECTLY in the else slot (no wrapping block, no `:elseif`
+# node) is the shape programmatic generators emit for K-way dispatch chains
+# (BRM's `_sb_mixture_family` RNG dispatch; snag `k-5-mixturemodel-6105de92`).
+# Surface syntax cannot spell it, so it never reaches the `BlockExpr` method
+# above — render it as Stan's ordinary `else if`, same as `:elseif`.
+_else_branch(e::StanExpr{<:IfExpr}) = (" else ", e)
+_else_branch(e::IfExpr) = (" else ", e)
 _else_branch(e) = error("if/elseif rendering: expected a BlockExpr or ElseIfExpr branch, got `$(typeof(e))`.")
 
 _if_condition(x::IfExpr) = x.args[1]
