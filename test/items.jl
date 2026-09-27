@@ -4910,6 +4910,116 @@ Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolat
     end
 end
 
+@testitem "slic: dotted function calls lower elementwise (jbroadcasted)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Dotted CALLS (`exp.(t)`) share the `:.,` head with property access
+    # (`obj.field`) but carry a tuple-headed second arg. They used to fall into
+    # the property-access assertion (`Trying to access property ... of object
+    # of type without named properties (func)!` + a type dump); now a
+    # non-scalar arg lowers through the generalised `jbroadcasted` element
+    # loop, and an all-scalar call re-traces as the undotted call (snag
+    # `dotted-function-1e6f1764`). GATE ON `stanc_compiles`: the loop must emit
+    # valid Stan, not merely transpile.
+    @testset "snag minimal: exp.(t) over a plate-sliced column" begin
+        model = @slic (;nsub=2, tcol=[[0.1,0.2,0.3],[0.4,0.5,0.6]]) begin
+            pred ~ plate(tcol; outer=(nsub,)) do t
+                exp.(t)
+            end
+        end
+        @test occursin("jbroadcasted_exp", stan_code(model))
+        @test stanc_compiles(model)
+    end
+    @testset "nested dotted call over a dotted operator: exp.(-k .* t)" begin
+        model = @slic (;nsub=2, tcol=[[0.1,0.2,0.3],[0.4,0.5,0.6]]) begin
+            k ~ normal(0, 1)
+            pred ~ plate(tcol; outer=(nsub,)) do t
+                exp.(-k .* t)
+            end
+        end
+        @test occursin("jbroadcasted_exp", stan_code(model))
+        @test stanc_compiles(model)
+    end
+    @testset "outside any plate: y = exp.(v)" begin
+        model = @slic (;v=[1.0,2.0,3.0]) begin
+            y = exp.(v)
+            z ~ normal(y, 1.0)
+        end
+        @test occursin("jbroadcasted_exp", stan_code(model))
+        @test stanc_compiles(model)
+    end
+    @testset "multi-arg dotted call: log_sum_exp.(a, b)" begin
+        model = @slic (;a=[1.0,2.0], b=[0.5,0.5]) begin
+            v = log_sum_exp.(a, b)
+            z ~ normal(0, 1)
+        end
+        @test occursin("jbroadcasted_log_sum_exp", stan_code(model))
+        @test stanc_compiles(model)
+    end
+    @testset "all-scalar dotted call emits exactly the undotted call" begin
+        dotted = @slic (;a=1.0) begin
+            y = exp.(a)
+            z ~ normal(y, 1.0)
+        end
+        undotted = @slic (;a=1.0) begin
+            y = exp(a)
+            z ~ normal(y, 1.0)
+        end
+        @test stan_code(dotted) == stan_code(undotted)
+        @test stanc_compiles(dotted)
+    end
+    @testset "property access still routes to getfield (not the call lane)" begin
+        # `idxs.ends[1]` is surface `:.,` with a QuoteNode second arg — the
+        # shape the broadcast-call check must NOT claim.
+        model = @slic (;subject=[1, 1, 2, 2, 2, 3], uy=[1, 2, 3]) begin
+            idxs = ntd_group_idxs(subject, uy)
+            mu ~ normal(idxs.ends[1], 1)
+        end
+        @test transpiles(model)
+        @test stanc_compiles(model)
+    end
+    @testset "reject floor: matrix arg names the undotted spelling" begin
+        err = try
+            stan_code(@slic (;M=[1.0 2.0; 3.0 4.0]) begin
+                Y = exp.(M)
+                z ~ normal(0, 1)
+            end)
+            nothing
+        catch e
+            e
+        end
+        @test err !== nothing
+        @test occursin("undotted call `exp(...)`", sprint(showerror, err))
+    end
+    @testset "reject floor: row_vector arg names the fix" begin
+        err = try
+            stan_code(@slic (;w=[1.0,2.0,3.0]) begin
+                rv = to_row_vector(w)
+                Y = exp.(rv)
+                z ~ normal(0, 1)
+            end)
+            nothing
+        catch e
+            e
+        end
+        @test err !== nothing
+        @test occursin("to_vector", sprint(showerror, err))
+    end
+    @testset "reject floor: _lpdf callee names the undotted spelling" begin
+        # The loop would return a `vector` from a `_lpdf`-named function, which
+        # stanc rejects — fail closed at trace time, not at stanc time.
+        err = try
+            stan_code(@slic (;y=[1.0,2.0], mu=[0.0,0.0]) begin
+                lp = normal_lpdf.(y, mu, 1.0)
+                z ~ normal(0, 1)
+            end)
+            nothing
+        catch e
+            e
+        end
+        @test err !== nothing
+        @test occursin("undotted call `normal_lpdf(...)`", sprint(showerror, err))
+    end
+end
+
 @testitem "slic: boolean-mask indexing via comparison broadcast + findall" tags=[:slic, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Stan has no boolean-mask indexing (`v[mask]`). Instead, element-wise
     # comparison on a DATA scalar array (`cmt .== 1`, cmt an `array[] int`) lowers
