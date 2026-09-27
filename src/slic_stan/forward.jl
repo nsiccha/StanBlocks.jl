@@ -3594,8 +3594,75 @@ forward!(x::DocumentExpr; info) = remake(x, forward!(x.args; info)...)
 forward!(x::TupleExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::KwExpr; info) = _trace_stan_expr(remake(x, x.args[1], forward!(x.args[2]; info)), info)
 forward!(x::NamedTupleExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+# Dotted CALLS (`f.(args...)`) share the `:.,` head with property access
+# (`obj.field`): `Expr(:., f, Expr(:tuple, args...))` vs `Expr(:., obj,
+# QuoteNode(field))`. A tuple-headed second arg is the broadcast-call shape —
+# lower it elementwise instead of hitting the property-access assertion below
+# (snag `dotted-function-1e6f1764`).
+_is_broadcast_call(x::GetPropertyExpr) = x.args[2] isa TupleExpr
+_broadcast_call_iterated(a) = a isa StanExpr && stan_ndim(type(a)) >= 1
+_forward_broadcast_call!(x::GetPropertyExpr; info) = begin
+    f, call_args = x.args[1], x.args[2].args
+    # Forward each arg once (splat-expanding, exactly like `:call` arg
+    # handling) and reuse the forwarded values below — re-tracing the raw
+    # args in the rebuilt call would double-trace side-effecting args.
+    fwd = Any[]
+    for a in call_args
+        append!(fwd, forwards!(a; info))
+    end
+    # All-scalar broadcast is exactly the undotted call — re-trace as one, so
+    # inline UDFs, module shadowing, and every other call-lane rule applies.
+    any(_broadcast_call_iterated, fwd) ||
+        return forward!(CanonicalExpr(f, fwd...); info)
+    _reject_broadcast_call_density(f)
+    for a in fwd
+        _broadcast_call_iterated(a) || continue
+        _reject_broadcast_call_shape(f, a)
+    end
+    # Some non-scalar arg: the generalised `jbroadcasted` element loop (the
+    # same construct scalar-array operator lowering uses) applies `f` per
+    # element and infers the output container from its return type.
+    forward!(CanonicalExpr(builtin.jbroadcasted, f, fwd...); info)
+end
+# Stan requires a user-defined function whose name ends `_lpdf`/`_lpmf` (and the
+# `_lupdf`/`_lupmf`/`_lcdf`/`_lccdf`/`_cdf`/`_ccdf` siblings) to return `real` —
+# but the `jbroadcasted` loop over such an `f` would return a `vector`, which
+# stanc rejects. (The same gap affects a direct `jbroadcasted(normal_lpdf, ...)`
+# call — verified stanc-rejected; the dotted surface fails closed instead of
+# inheriting it.) The undotted call vectorizes natively, so it is the redirect.
+_reject_broadcast_call_density(f::Symbol) = begin
+    any(s -> endswith(string(f), s), ("_lpdf", "_lpmf", "_lupdf", "_lupmf", "_lcdf", "_lccdf", "_cdf", "_ccdf")) ||
+        return nothing
+    error(
+        "SLIC: dotted call `", f, ".(...)` is not supported — the element loop would return ",
+        "a `vector` from a `", f, "`-named function, which stanc rejects (`", f, "` must ",
+        "return `real`). Write the undotted call `", f, "(...)`: Stan vectorizes log-density ",
+        "functions natively over vectors.",
+    )
+end
+_reject_broadcast_call_density(f) = nothing
+# The `jbroadcasted` loop is 1-D and column-oriented: it cannot express a
+# `row_vector` (which would come back a `vector`) or a 2-D+ container (whose
+# slices are not scalars). Fail closed naming the undotted spelling — Stan
+# vectorizes natively over matrices, so the undotted call is usually the fix.
+_reject_broadcast_call_shape(f, a) = begin
+    t = type(a)
+    stan_ndim(t) == 1 || error(
+        "SLIC: dotted call `", short_expr(f), ".(...)` over `", sigtype(t),
+        "` is not supported — elementwise lowering handles 1-D `vector` / scalar-array ",
+        "arguments only. Write the undotted call `", short_expr(f), "(...)`: Stan ",
+        "vectorizes natively over matrices.",
+    )
+    center_type(t) === types.row_vector && error(
+        "SLIC: dotted call `", short_expr(f), ".(...)` over a `row_vector` is not ",
+        "supported — the element loop returns a `vector`, losing the row shape. Convert ",
+        "with `to_vector(...)` first, or write the undotted call.",
+    )
+    nothing
+end
 forward!(x::GetPropertyExpr; info) = begin
     @assert length(x.args) == 2
+    _is_broadcast_call(x) && return _forward_broadcast_call!(x; info)
     obj, name = forward!(x.args; info)
     @assert _is_ntup_stan_expr(obj) "Trying to access property `$name` of object of type without named properties ($(type(obj)))!"
     names = keys(obj.type.info.arg_types)
