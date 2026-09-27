@@ -11227,6 +11227,41 @@ tail-position `ensure_xreturn` normalisation the `return`-branch probes exercise
     @test stanc_check(elseif_loop_code; warn_pedantic=false).ok
 end
 
+"""
+A nested `if` DIRECTLY in the else slot (no wrapping block, no `:elseif`
+node) — the shape programmatic generators emit for K-way dispatch chains —
+must render as Stan's ordinary `else if` chain. Surface syntax cannot spell
+this shape, so the chain is built as `Expr(:if, ...)` and eval'd through
+`@deffun`, exactly like BRM's `_sb_mixture_family` RNG dispatch, whose K>=3
+mixtures failed in `_else_branch` (snag `k-5-mixturemodel-6105de92`).
+Pure branch bodies keep the probe stanc-clean; the nesting shape is the
+verbatim generator shape.
+"""
+@testitem "slic: programmatic nested-if dispatch chain renders as else-if" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports] begin
+    comp(k) = Expr(:call, :exp, Symbol(:c, k))
+    then(k) = Expr(:block, comp(k))
+    branch = foldr(1:4, init=then(5)) do k, acc
+        Expr(:if, Expr(:call, :(==), :k, k), then(k), acc)
+    end
+    formals = Any[Expr(:(::), :k, :int),
+        (Expr(:(::), Symbol(:c, k), :real) for k in 1:5)...]
+    sig = Expr(:(::), Expr(:call, :mix_chain5_probe, formals...), :real)
+    defs = Expr(:block, Expr(:(=), sig, Expr(:block, branch)))
+    Core.eval(@__MODULE__,
+        Expr(:macrocall, Symbol("@deffun"), LineNumberNode(1), defs))
+    model = @slic (; y = 0.0) begin
+        c1 ~ normal(0.0, 1.0)
+        c2 ~ normal(0.0, 1.0)
+        c3 ~ normal(0.0, 1.0)
+        c4 ~ normal(0.0, 1.0)
+        c5 ~ normal(0.0, 1.0)
+        y ~ normal(mix_chain5_probe(3, c1, c2, c3, c4, c5), 1.0)
+    end
+    code = stan_code(model)
+    @test count(" else if(", code) == 3
+    @test stanc_check(code; warn_pedantic=false).ok
+end
+
 @testitem "slic: prior-only program lowers plates, fills and bounded priors to generated quantities" tags=[:slic, :plate, :ragged, :stanc, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
     # Snag prior-predictive-7e463983 (reported from Bruno's `regime="prior"` PK/QT
