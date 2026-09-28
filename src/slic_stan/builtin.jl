@@ -905,6 +905,12 @@ import Statistics
     student_t_rng(nu::real, loc::real, scale::real)::real
     multi_normal_rng(loc::vector[n], args...)::vector[n]
     multi_normal_cholesky_rng(loc::vector[n], scale)::vector[n]
+    multi_student_t_rng(nu::real, loc::vector[n], scale)::vector[n]
+    multi_student_t_cholesky_rng(nu::real, loc::vector[n], scale)::vector[n]
+    wishart_rng(nu::real, Sigma::matrix[n,n])::matrix[n,n]
+    inv_wishart_rng(nu::real, Sigma::matrix[n,n])::matrix[n,n]
+    wishart_cholesky_rng(nu::real, L::matrix[n,n])::matrix[n,n]
+    inv_wishart_cholesky_rng(nu::real, L::matrix[n,n])::matrix[n,n]
     bernoulli_rng(::vector[n])::int[n]
     bernoulli_logit_rng(::real)::int
     bernoulli_logit_rng(::vector[n])::int[n]
@@ -1085,6 +1091,14 @@ import Statistics
     # (snag plate-constraine-90607054).
     multi_normal_lpdfs(args...)::real = multi_normal_lpdf(args...)
     multi_normal_cholesky_lpdfs(args...)::real = multi_normal_cholesky_lpdf(args...)
+    multi_normal_prec_lpdfs(args...)::real = multi_normal_prec_lpdf(args...)
+    multi_student_t_lpdfs(args...)::real = multi_student_t_lpdf(args...)
+    multi_student_t_cholesky_lpdfs(args...)::real = multi_student_t_cholesky_lpdf(args...)
+    wishart_lpdfs(args...)::real = wishart_lpdf(args...)
+    inv_wishart_lpdfs(args...)::real = inv_wishart_lpdf(args...)
+    wishart_cholesky_lpdfs(args...)::real = wishart_cholesky_lpdf(args...)
+    inv_wishart_cholesky_lpdfs(args...)::real = inv_wishart_cholesky_lpdf(args...)
+    lkj_corr_lpdfs(args...)::real = lkj_corr_lpdf(args...)
     dirichlet_lpdfs(args...)::real = dirichlet_lpdf(args...)
     @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr[m,n], x::real, m::int, n::int)::real = begin
         rv = 0.0
@@ -1135,6 +1149,9 @@ import Statistics
     # `dirichlet_rng`/`simplex` precedent: a gq redraw declares the natural
     # unconstrained container, not the constrained parameter type.
     lkj_corr_cholesky_rng(n::int, eta::real)::matrix[n,n]
+    # Plain-corr twin of the above: same int-dimension native, unconstrained
+    # matrix draw (the `matrix`, not `corr_matrix`, precedent stands).
+    lkj_corr_rng(n::int, eta::real)::matrix[n,n]
 
     # Scalar log-CDF companion signatures used by distribution HOFs. The
     # `@builtin_module` manifest declares names for every probability family,
@@ -2485,6 +2502,15 @@ end
 # vectorized loop, so outside the guarded class (audit todo 19n8abc).
 @deffun multi_normal_rng(vector[n], loc::vector[n], cov)::vector[n]          = multi_normal_rng(loc, cov)
 @deffun multi_normal_cholesky_rng(vector[n], loc::vector[n], scale)::vector[n] = multi_normal_cholesky_rng(loc, scale)
+# Precision-parameterized MVN: Stan Math ships no `multi_normal_prec_rng`
+# (verified via `stanc --dump-stan-math-signatures`), so the sized-token draw
+# routes through the covariance form. Exact: N(mu, Omega^-1) == N(mu, inv(Omega)).
+@deffun multi_normal_prec_rng(vector[n], loc::vector[n], prec)::vector[n] =
+    multi_normal_rng(loc, inverse(prec))
+@deffun multi_student_t_rng(vector[n], nu, loc::vector[n], scale)::vector[n] =
+    multi_student_t_rng(nu, loc, scale)
+@deffun multi_student_t_cholesky_rng(vector[n], nu, loc::vector[n], scale)::vector[n] =
+    multi_student_t_cholesky_rng(nu, loc, scale)
 
 # lkj_corr_cholesky: the gq token carries the DECLARED constrained shape
 # (`tokenof{cholesky_factor_corr}` sized `(n,)` — `r_ndim(square_matrix) == 1`),
@@ -2494,6 +2520,13 @@ end
 # container is ever read, so outside the guarded class (todo 19n8abc).
 @deffun lkj_corr_cholesky_rng(cholesky_factor_corr[n], eta::real)::matrix[n,n] =
     lkj_corr_cholesky_rng(n, eta)
+# Matrix-draw families observed as plain data: the gq token is a 2-dim matrix,
+# so the sized-token slot is `matrix[n,m]`. Each delegates to its native form.
+@deffun wishart_rng(matrix[n,m], nu, Sigma)::matrix[n,m] = wishart_rng(nu, Sigma)
+@deffun inv_wishart_rng(matrix[n,m], nu, Sigma)::matrix[n,m] = inv_wishart_rng(nu, Sigma)
+@deffun wishart_cholesky_rng(matrix[n,m], nu, L)::matrix[n,m] = wishart_cholesky_rng(nu, L)
+@deffun inv_wishart_cholesky_rng(matrix[n,m], nu, L)::matrix[n,m] = inv_wishart_cholesky_rng(nu, L)
+@deffun lkj_corr_rng(matrix[n,m], eta)::matrix[n,m] = lkj_corr_rng(n, eta)
 
 # =============================================================================
 # Longitudinal-biomarker (generable) model-family port.
