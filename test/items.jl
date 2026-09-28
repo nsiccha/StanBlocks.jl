@@ -10784,6 +10784,134 @@ shape and retain one joint likelihood scalar per group.
 end
 
 """
+Snag regression (missing-multi-no-54b27d39): the native Stan
+`multi_normal_prec` family must complete the observation triad for one
+vector observation. Before the fix the GQ likelihood twin had no tracetype
+(`tracetype not defined for y_likelihood::anything =
+multi_normal_prec_lpdfs(…)`); the reporter's one-line `_lpdfs` proposal alone
+only moved the crash to the predictive twin (`y_gen … =
+multi_normal_prec_rng(…)`), which Stan Math does not ship — the draw routes
+through `multi_normal_rng(loc, inverse(prec))` instead. Grouped (ragged)
+observations are a separate gap (same error class as the other newly
+completed families) and are not covered here.
+"""
+@testitem "slic: multi-normal-prec supports density pointwise and predictive paths" tags=[:slic, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    single = @slic (; y = [0.1, -0.2], mu = [0.0, 0.0], Om = [1.0 0.0; 0.0 1.0]) begin
+        y ~ multi_normal_prec(mu, Om)
+    end
+
+    d = stan_descriptor(single; name = :multi_normal_prec)
+    outs = Dict(output.name => output for output in d.outputs)
+    @test outs[:y_gen].type == :vector
+    @test outs[:y_gen].size == (:mu_n,)
+    @test outs[:y_gen].generative == :draw
+    @test outs[:y_likelihood].type == :real
+    @test outs[:y_likelihood].size == ()
+    @test outs[:y_likelihood].generative == :pointwise_loglik
+    @test stan_operation(d, :predict).outputs == (:y_gen,)
+    @test stan_operation(d, :pointwise_loglik).outputs == (:y_likelihood,)
+
+    code = stan_code(single)
+    @test occursin("y ~ multi_normal_prec(mu, Om);", code)
+    @test occursin(r"y_gen\s*=\s*multi_normal_prec_vector_rng\(", code)
+    @test occursin(r"y_likelihood\s*=\s*multi_normal_prec_lpdfs\(y,", code)
+    @test occursin("inverse(prec)", code)
+    @test stanc_compiles(single)
+end
+
+"""
+Snag regression (missing-multi-no-54b27d39): the remaining joint families
+with Stan-native densities and draws complete the same observed-data triad
+(model density, pointwise likelihood, predictive draw) as `multi_normal`,
+`multi_normal_cholesky` and `dirichlet` already did. Each previously aborted
+transpile with `tracetype not defined for <obs>_likelihood::anything =
+<family>_lpdfs(…)`, then — once the `_lpdfs` twin existed — with the same
+assertion on the `<obs>_gen` predictive twin.
+"""
+@testitem "slic: joint families complete the observed-data triad" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+
+    @testset "multi_student_t" begin
+        m = @slic (; y = [0.1, -0.2], mu = [0.0, 0.0], Sig = [1.0 0.0; 0.0 1.0], nu = 4.0) begin
+            y ~ multi_student_t(nu, mu, Sig)
+        end
+        @test transpiles(m)
+        code = stan_code(m)
+        @test occursin(r"y_likelihood\s*=\s*multi_student_t_lpdfs\(y,", code)
+        @test occursin(r"y_gen\s*=\s*multi_student_t_vector_rng\(", code)
+        @test stanc_compiles(m)
+    end
+
+    @testset "multi_student_t_cholesky" begin
+        m = @slic (; y = [0.1, -0.2], mu = [0.0, 0.0], L = [1.0 0.0; 0.2 0.9], nu = 4.0) begin
+            y ~ multi_student_t_cholesky(nu, mu, L)
+        end
+        @test transpiles(m)
+        code = stan_code(m)
+        @test occursin(r"y_likelihood\s*=\s*multi_student_t_cholesky_lpdfs\(y,", code)
+        @test occursin(r"y_gen\s*=\s*multi_student_t_cholesky_vector_rng\(", code)
+        @test stanc_compiles(m)
+    end
+
+    @testset "wishart" begin
+        m = @slic (; W = [1.0 0.0; 0.0 1.0], nu = 5.0, S = [1.0 0.0; 0.0 1.0]) begin
+            W ~ wishart(nu, S)
+        end
+        @test transpiles(m)
+        code = stan_code(m)
+        @test occursin(r"W_likelihood\s*=\s*wishart_lpdfs\(W,", code)
+        @test occursin(r"W_gen\s*=\s*wishart_matrix_rng\(", code)
+        @test stanc_compiles(m)
+    end
+
+    @testset "inv_wishart" begin
+        m = @slic (; W = [1.0 0.0; 0.0 1.0], nu = 5.0, S = [1.0 0.0; 0.0 1.0]) begin
+            W ~ inv_wishart(nu, S)
+        end
+        @test transpiles(m)
+        code = stan_code(m)
+        @test occursin(r"W_likelihood\s*=\s*inv_wishart_lpdfs\(W,", code)
+        @test occursin(r"W_gen\s*=\s*inv_wishart_matrix_rng\(", code)
+        @test stanc_compiles(m)
+    end
+
+    @testset "wishart_cholesky" begin
+        m = @slic (; Lw = [1.0 0.0; 0.2 0.9], nu = 5.0, Ls = [1.0 0.0; 0.2 0.9]) begin
+            Lw ~ wishart_cholesky(nu, Ls)
+        end
+        @test transpiles(m)
+        code = stan_code(m)
+        @test occursin(r"Lw_likelihood\s*=\s*wishart_cholesky_lpdfs\(Lw,", code)
+        @test occursin(r"Lw_gen\s*=\s*wishart_cholesky_matrix_rng\(", code)
+        @test stanc_compiles(m)
+    end
+
+    @testset "inv_wishart_cholesky" begin
+        m = @slic (; Lw = [1.0 0.0; 0.2 0.9], nu = 5.0, Ls = [1.0 0.0; 0.2 0.9]) begin
+            Lw ~ inv_wishart_cholesky(nu, Ls)
+        end
+        @test transpiles(m)
+        code = stan_code(m)
+        @test occursin(r"Lw_likelihood\s*=\s*inv_wishart_cholesky_lpdfs\(Lw,", code)
+        @test occursin(r"Lw_gen\s*=\s*inv_wishart_cholesky_matrix_rng\(", code)
+        @test stanc_compiles(m)
+    end
+
+    @testset "lkj_corr" begin
+        m = @slic (; C = [1.0 0.2; 0.2 1.0], eta = 2.0) begin
+            C ~ lkj_corr(eta)
+        end
+        @test transpiles(m)
+        code = stan_code(m)
+        @test occursin(r"C_likelihood\s*=\s*lkj_corr_lpdfs\(C,", code)
+        @test occursin(r"C_gen\s*=\s*lkj_corr_matrix_rng\(", code)
+        @test stanc_compiles(m)
+    end
+end
+
+"""
 Snag regression (joint-mvn-choles-bac744cf): a grouped (ragged)
 `multi_normal_cholesky` observation whose generated-quantities size token
 renders past the 100-char line limit must still emit. The 1-dim `tokenof`
