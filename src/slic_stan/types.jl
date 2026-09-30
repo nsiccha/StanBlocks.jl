@@ -70,8 +70,8 @@ end
 TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing)
 _context_or_new(context) = context === nothing ? TraceContext() : context
 """
-A named sub-model function, produced by `@slic f(args...) = body`. The singleton
-`SubmodelFn{:f, identity}()` is bound to `f`; each `@slic f(...) = ...` adds a call
+A named sub-model function, produced by `@slic f(args...) = body`. The value
+`SubmodelFn{:f, identity}(mod)` is bound to `f`; each `@slic f(...) = ...` adds a call
 method on that binding's type, returning `SlicModel(body, data, mod)` and binding the
 positional args by name into the sub-model's data. Multiple definitions of the same
 `f` add methods → native multiple-dispatch. A call to a `SubmodelFn` is embedded as a
@@ -79,7 +79,9 @@ sub-model by `stan_expr(::CanonicalExpr{<:SubmodelFn})` (the value it returns is
 `SlicModel`, which flows through the existing embedding path). Contrast the anonymous
 `SlicModel` value built by `@slic begin ... end`.
 """
-struct SubmodelFn{name,identity} end
+struct SubmodelFn{name,identity}
+    owner::Module
+end
 abstract type AbstractStanType end
 struct StanExpr{E,T<:AbstractStanType}
     expr::E

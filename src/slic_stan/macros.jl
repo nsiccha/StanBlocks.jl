@@ -110,9 +110,11 @@ _slic_fn(model, mod) = begin
     _slic_definition_expr(mod, Expr(:block,
         quote
             if !isdefined($mod, $(QuoteNode(fname)))
-                global $fname = $ftype()
+                global $fname = $ftype($mod)
             elseif !($fname isa $SubmodelFn{$(QuoteNode(fname))})
                 throw(ArgumentError("@slic cannot replace an existing non-submodel binding"))
+            elseif $fname.owner !== $mod
+                throw(ArgumentError("@slic overloads must be defined in the submodel's owning module"))
             end
         end,
         Expr(:(=), methsig, methbody),

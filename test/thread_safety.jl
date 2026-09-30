@@ -36,11 +36,21 @@ using TestItemRunner
     @test a.latent === binding
     @test Base.invokelatest(a.latent, 1.0, 0.5).mod === a
     @test Base.invokelatest(stan_code, model(b)) == code_b
+    # Aliasing/importing a foreign binding must not silently replace its methods.
+    foreign = Module(:ForeignBinding)
+    Core.eval(foreign, :(using StanBlocks))
+    Core.eval(foreign, Expr(:const, Expr(:(=), :latent, QuoteNode(a.latent))))
+    @test_throws ArgumentError Core.eval(foreign, :(@slic latent(scale) = begin
+        z ~ normal(-99.0, scale)
+        return z
+    end))
+    @test Base.invokelatest(stan_code, model(a)) == code_a
 end
 
 @testitem "thread safety: concurrent runtime families and old tasks" tags=[:slic, :regression] begin
     using StanBlocks
-    @test Threads.nthreads() >= 2
+    # Also exercise cooperative task scheduling in single-thread test runners.
+    # Run with --threads=2 to also exercise simultaneous Julia threads.
     data = (; y=[0.25, -0.5])
     before = deepcopy(data)
     function bundle(offset)
@@ -101,7 +111,6 @@ end
 
 @testitem "thread safety: parallel readers and exclusive publication" tags=[:slic, :regression] begin
     using StanBlocks
-    @test Threads.nthreads() >= 2
     entered, release = Channel{Nothing}(2), Channel{Nothing}(2)
     readers = [Threads.@spawn(StanBlocks._with_slic_read() do
         put!(entered, nothing)
