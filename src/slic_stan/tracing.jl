@@ -502,7 +502,8 @@ _plate_promoted_reference(x, info) = nothing
 # rule, and — for a number — the supported named-constant idiom.
 _unresolved_module_binding_error(x, mod, Mx) = begin
     base = "Found `$x` in $(mod) of type $(typeof(Mx)); an @slic/@deffun body " *
-           "resolves only Function / SlicModel / built-in Irrational (π, ℯ, …) " *
+           "resolves only Function / SlicModel / ValueFamily / ValueUDF / " *
+           "built-in Irrational (π, ℯ, …) " *
            "module bindings — a $(typeof(Mx)) does not (deliberate; StanBlocks " *
            "decision `3bbtrv`)."
     Mx isa Number || return base

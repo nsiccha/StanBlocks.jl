@@ -5,6 +5,7 @@ export return_type_of, stan_code, stan_model, compile_slic_bundle, slic_eval, st
 export stan_descriptor, stan_definition, stan_definition_closure, stan_operation, stan_execute
 export ModelDescriptor, ModelInput, ModelOutput, ModelDefinition, ModelOperation
 export StanBlocksError, StanBlocksDiagnostic, diagnostic
+export ValueFamily, ValueUDF
 
 using OrderedCollections, JSON, StanLogDensityProblems, LogDensityProblems, Markdown
 using BridgeStan
