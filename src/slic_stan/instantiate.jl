@@ -19,7 +19,10 @@ compile the generated code via BridgeStan.
 """
 function stan_code end
 
-stan_code(x::StanModel) = begin 
+stan_code(x::StanModel) = _with_slic_read() do
+    _stan_code(x)
+end
+_stan_code(x::StanModel) = begin
     try
         buf = IOBuffer()
         show(StanIO(buf), x)

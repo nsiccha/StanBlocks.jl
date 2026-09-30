@@ -1,3 +1,4 @@
+include("definitions.jl")
 include("types.jl")
 include("tracing.jl")
 include("forward.jl")
