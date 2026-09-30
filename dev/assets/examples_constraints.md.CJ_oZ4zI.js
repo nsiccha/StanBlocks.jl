@@ -56,10 +56,7 @@ import{_ as i,o as a,c as n,an as h}from"./chunks/framework.Bcnd46pE.js";const g
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;">// Historical transform demonstration: this zero density omits the Jacobian of</span></span>
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;">// \`uniform_disk_constrain\` and therefore does not define a uniform-area</span></span>
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;">// prior on the disk. The surrounding documentation derives the missing term.</span></span>
-<span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">real</span><span style="--shiki-light:#6F42C1;--shiki-dark:#B392F0;"> uniform_disk_lpdf</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;">(</span></span>
-<span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">    vector</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;"> xi,</span></span>
-<span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">    int</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;"> n</span></span>
-<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;">) {</span></span>
+<span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">real</span><span style="--shiki-light:#6F42C1;--shiki-dark:#B392F0;"> uniform_disk_lpdf</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;">(</span><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">vector</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;"> xi, </span><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">int</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;"> n) {</span></span>
 <span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">    return</span><span style="--shiki-light:#005CC5;--shiki-dark:#79B8FF;"> 0.0</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;">;</span></span>
 <span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;">}</span></span>
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;">// This function returns the constrained parameters \`x\` and \`y\` together with the intermediate quantities \`radius\` and \`angle\` as a a Named Tuple, </span></span>
