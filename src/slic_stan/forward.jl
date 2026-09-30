@@ -4,7 +4,7 @@
 # constructor call dispatches via the usertype tracetype.
 _forward_module_value(v::Function, info) = forward!(v; info)
 _forward_module_value(v::SlicModel, info) = v
-# A named sub-model function resolves to its (singleton) value, like a `SlicModel`;
+# A named sub-model function resolves to its bound value, like a `SlicModel`;
 # the call is embedded by `stan_expr(::CanonicalExpr{<:SubmodelFn})`.
 _forward_module_value(v::SubmodelFn, info) = v
 # Built-in mathematical constants (π, ℯ, … — all `Irrational`s) resolve to their

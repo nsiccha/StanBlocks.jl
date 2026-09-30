@@ -338,29 +338,30 @@ function compile_slic_bundle(data, definitions, body;
         "compile_slic_bundle: body must be an Expr, got $(typeof(checked_body.expression))."
     )
 
-    workspace = Module(gensym(:StanBlocksSlicBundle))
-    # UDFs installed in this fresh module must see public transpile-time
-    # helpers without depending on which StanBlocks exports happen to exist in
-    # `Main`. Bind the package function itself before evaluating definitions.
-    Core.eval(workspace, Expr(:const, Expr(:(=), :return_type_of,
-        GlobalRef(@__MODULE__, :return_type_of))))
-    for definition in checked_udfs
+    slic = _with_slic_definitions() do
+        workspace = Module(gensym(:StanBlocksSlicBundle))
+        # UDFs installed in this fresh module must see public transpile-time
+        # helpers without depending on which StanBlocks exports exist in Main.
+        Core.eval(workspace, Expr(:const, Expr(:(=), :return_type_of,
+            GlobalRef(@__MODULE__, :return_type_of))))
+        for definition in checked_udfs
+            Core.eval(workspace, _slic_bundle_macrocall(
+                Symbol("@deffun"), definition.source_part, definition.expression))
+        end
+        for definition in checked_definitions
+            Core.eval(workspace, _slic_bundle_macrocall(
+                Symbol("@slic"), definition.source_part, definition.expression))
+        end
+        for (index, dependency) in enumerate(checked_anonymous)
+            _slic_bundle_bind_anonymous!(workspace, dependency, index)
+        end
         Core.eval(workspace, _slic_bundle_macrocall(
-            Symbol("@deffun"), definition.source_part, definition.expression))
+            Symbol("@slic"), checked_body.source_part, QuoteNode(data), checked_body.expression))
     end
-    for definition in checked_definitions
-        Core.eval(workspace, _slic_bundle_macrocall(
-            Symbol("@slic"), definition.source_part, definition.expression))
-    end
-    for (index, dependency) in enumerate(checked_anonymous)
-        _slic_bundle_bind_anonymous!(workspace, dependency, index)
-    end
-    slic = Core.eval(workspace, _slic_bundle_macrocall(
-        Symbol("@slic"), checked_body.source_part, QuoteNode(data), checked_body.expression))
 
     # `Core.eval` installed callable methods in a newer world than this compiled
     # function. Keep tracing and all descriptor reads in that newest world.
-    Base.invokelatest() do
+    _with_slic_read() do
         model = stan_model(slic)
         descriptor = stan_descriptor(model; name)
         (; model, descriptor, code=stan_code(model))

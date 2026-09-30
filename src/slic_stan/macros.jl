@@ -32,8 +32,8 @@ macro slic(data, model)
 end
 
 # `@slic f(args...) = body` — a NAMED sub-model function (the `@deffun`-analogue for
-# models). Lowers to a proper Julia callable: binds `f = SubmodelFn{:f}()` and adds a
-# call method `(::SubmodelFn{:f})(args...; kwargs...) = SlicModel(body, data, mod)` that
+# models). Each binding owns a distinct callable type and adds a
+# call method `(::typeof(f))(args...; kwargs...) = SlicModel(body, data, mod)` that
 # binds the POSITIONAL args by name into the sub-model's data. Multiple `@slic f(...)=...`
 # definitions add methods → native multiple-dispatch; other inputs still flow in by
 # kwarg/scope. Contrast `@slic begin ... end`, which builds an anonymous `SlicModel`
@@ -100,12 +100,23 @@ _slic_fn(model, mod) = begin
     doc, stripped = extract_leading_docstring(expanded)
     qbody = Meta.quot(stripped)
     data_pairs = [:($(QuoteNode(nm)) => $nm) for nm in argnames]
-    ftype = Expr(:curly, SubmodelFn, QuoteNode(fname))
+    # A spelling is not a function identity: two modules (including fresh
+    # workspaces with the same module name) must never share a call method.
+    # Reuse the existing binding for subsequent overloads in this namespace.
+    ftype = Expr(:curly, SubmodelFn, QuoteNode(fname), QuoteNode(gensym(fname)))
     sigargs = [_slic_argsig(a, fname) for a in argspecs]
-    methsig = Expr(:call, Expr(:(::), ftype), Expr(:parameters, :(kwargs...)), sigargs...)
+    methsig = Expr(:call, Expr(:(::), :(typeof($fname))), Expr(:parameters, :(kwargs...)), sigargs...)
     methbody = :($SlicModel($qbody, merge(Dict{Symbol,Any}(:docstring => $doc, $(data_pairs...)), kwargs), $mod))
-    esc(Expr(:block,
-        Expr(:(=), fname, Expr(:call, ftype)),
+    _slic_definition_expr(mod, Expr(:block,
+        quote
+            if !isdefined($mod, $(QuoteNode(fname)))
+                global $fname = $ftype($mod)
+            elseif !($fname isa $SubmodelFn{$(QuoteNode(fname))})
+                throw(ArgumentError("@slic cannot replace an existing non-submodel binding"))
+            elseif $fname.owner !== $mod
+                throw(ArgumentError("@slic overloads must be defined in the submodel's owning module"))
+            end
+        end,
         Expr(:(=), methsig, methbody),
     ))
 end
@@ -119,7 +130,7 @@ This macro is mainly useful for bulk built-in function signature definitions.
 StanBlocks.jl users should generally prefer using @deffun.
 """
 macro defsig(x)
-    esc(defsig(x; source=__source__))
+    _slic_definition_expr(__module__, defsig(x; source=__source__))
 end
 
 """
@@ -192,7 +203,7 @@ See `src/slic_stan/builtin.jl` for many more examples.
 macro deffun(x)
     expanded = _inherit_source_file(
         lower_string_interp(slic_macroexpand(__module__, x)), __source__)
-    esc(deffun(expanded; source=__source__, def_mod=__module__))
+    _slic_definition_expr(__module__, deffun(expanded; source=__source__, def_mod=__module__))
 end
 
 """
@@ -251,7 +262,7 @@ must already exist when the registrations execute. This macro does not parse
 function bodies and does not wrap `@deffun`.
 """
 macro lpxf(x)
-    lpxf_register(x; source=__source__)
+    _slic_definition_expr(__module__, lpxf_register(x; source=__source__))
 end
 
 """

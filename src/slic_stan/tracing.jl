@@ -24,6 +24,12 @@ StanBlocks.stan_instantiate) on the original `SlicModel`.
 
 Errors during tracing are wrapped in a [`StanBlocksError`](@ref
 StanBlocks.StanBlocksError) tagged with `phase = :transpile`.
+
+Independent calls trace concurrently and observe completed SLIC definitions in
+the newest method world. Keep model ASTs, data, and published models read-only.
+The optional internal `info` builder must be fresh and exclusively owned by this
+call; sharing it also shares mutable blocks and variables. Extension hooks must
+be pure. Use [`slic_eval`](@ref) for runtime families with ordinary Julia hooks.
 """
 function stan_model end
 # Internal alias for the sibling error type (StanBlocks.jl defines it before this
@@ -64,7 +70,11 @@ _next_inline_id(info) = _next_trace_id!(info, :inline_counter)
 _next_closure_id(info) = _next_trace_id!(info, :closure_counter)
 _next_anon_id(context::TraceContext) = _next_trace_id!(context, :anon_counter)
 
-stan_model(x::SlicModel; info=StanModel()) = begin
+stan_model(x::SlicModel; info=StanModel()) = _with_slic_read() do
+    _stan_model(x; info)
+end
+
+_stan_model(x::SlicModel; info) = begin
     context = TraceContext()
     # The producer's observation declaration rides in trace meta so both the
     # GQ twin emission (`distribute!`) and the descriptor (`meta(m)`) see it.

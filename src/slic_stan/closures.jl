@@ -171,7 +171,7 @@ macro usertype(struct_def)
     new_body_args = Any[_usertype_field(stmt, typename) for stmt in body.args]
     new_body = Expr(:block, new_body_args...)
     new_sig  = :($typename <: $supertype)
-    esc(Expr(:block, Expr(:struct, false, new_sig, new_body), typename))
+    _slic_definition_expr(__module__, Expr(:block, Expr(:struct, false, new_sig, new_body), typename))
 end
 
 # `@usertype` type signature → (typename, supertype). Default supertype is the

@@ -19,7 +19,10 @@ compile the generated code via BridgeStan.
 """
 function stan_code end
 
-stan_code(x::StanModel) = begin 
+stan_code(x::StanModel) = _with_slic_read() do
+    _stan_code(x)
+end
+_stan_code(x::StanModel) = begin
     try
         buf = IOBuffer()
         show(StanIO(buf), x)
@@ -61,103 +64,47 @@ Compile `model` (a [`SlicModel`](@ref StanBlocks.SlicModel) or
 
 # Keyword arguments
 
-- `path::AbstractString` — where to write the `.stan` file. Defaults to
-  `<build-dir>/<hash>.stan`, where `<build-dir>` is `STANBLOCKS_BUILD_DIR`
-  when set, else `joinpath(tempdir(), "stanblocks")` (`tempdir()` honours
-  `TMPDIR`) — so identical generated code is cached on disk OUTSIDE the
-  process working directory, and compiling never drops a stray `tmp/` into
-  the caller's cwd (in particular, never into a package worktree a bench is
-  run from). An explicit relative `path` still resolves against the cwd —
-  that is the caller's explicit choice.
-  An existing file with identical content is left untouched (preserving
-  the mtime-based rebuild cache); an existing file whose content differs
-  from the generated model is overwritten — with a warning naming the
-  path — so a changed model is always what gets compiled. If the previous
-  build is already loaded in this session, the new program is compiled from
-  a content-addressed copy under the same build dir instead (an already-`dlopen`'ed
-  library path cannot reload in-process), with a warning; the file at `path`
-  still receives the new source.
+- `path::AbstractString` — optional source alias. Relative paths resolve against
+  the cwd. The file is updated atomically; identical bytes preserve its mtime,
+  and changed bytes produce a warning. The native library always comes from an
+  immutable artifact under `STANBLOCKS_BUILD_DIR`, or `tempdir()/stanblocks`
+  when unset. It is keyed by source, ordered `make_args`, source basename,
+  build root, BridgeStan version/location, CPU/compiler identities, and build
+  configuration.
+  Every call resolves this identity, including identical-source calls after an
+  earlier program was loaded. Published libraries are never overwritten.
 - `nan_on_error::Bool = true` — make BridgeStan return `NaN` instead of
   throwing on evaluation failures.
 - `make_args::Vector{String} = ["STAN_THREADS=true"]` — extra arguments
   forwarded to Stan's `make`.
 - `warn::Bool = false` — forwarded to BridgeStan.
 
-Errors during compilation are wrapped in a [`StanBlocksError`](@ref
-StanBlocks.StanBlocksError) tagged with `phase = :compile`.
+Concurrent calls own separate model instances. Artifact, source-alias, and
+BridgeStan setup/build locks coordinate Julia tasks and cooperating processes;
+independent tracing stays parallel. Native compilation shares a toolchain lock,
+and native constructor calls are serialized within the process. Compilation
+publishes only a completed library from a private staging directory. Failures
+propagate and release the locks; partial build outputs are discarded.
+An abruptly killed process can leave a pidfile: confirm that its owner has
+exited before removing the lock. A slow live compiler's lock never expires.
+
+Keep inputs, environment, and the installed toolchain read-only during calls.
+The identity covers the documented `make/local` override and compiler binaries;
+for custom toolchain source edits or external compiler inputs not represented in
+that configuration, use a new `STANBLOCKS_BUILD_DIR`. Direct external BridgeStan
+builds must not mutate the same toolchain concurrently. This construction
+contract does not grant shared ownership of the returned model's workspaces or
+RNG, or make native evaluation without threading support thread-safe. Keep
+BridgeStan's threading/ABI configuration consistent across libraries loaded in
+one process. Stan enables threading for any nonempty `STAN_THREADS` value,
+including `false`; an empty value disables it.
 """
-instantiate(x::Union{SlicModel,StanModel}; nan_on_error=true, make_args=["STAN_THREADS=true"], warn=false, kwargs...) = begin
+instantiate(x::SlicModel; kwargs...) = instantiate(stan_model(x); kwargs...)
+function instantiate(x::StanModel; nan_on_error=true, make_args=["STAN_THREADS=true"], warn=false, path=nothing)
     sc = stan_code(x)
     _guard_ragged_stan_version(sc)
-    stan_path = get(kwargs, :path, _default_build_path(sc))
-    mkpath(dirname(stan_path))
-    wrote = _write_stan_source(stan_path, sc)
-    build_path = wrote ? _build_path_for(stan_path, sc) : stan_path
-    StanLogDensityProblems.StanProblem(
-        build_path,
-        bridgestan_data(stan_data(x));
-        nan_on_error,
-        make_args,
-        warn
-    )
-end
-"""
-    _default_build_dir() -> String
-    _default_build_path(sc) -> String
-
-The default compile-output location: `STANBLOCKS_BUILD_DIR` when set, else
-`joinpath(tempdir(), "stanblocks")` (`tempdir()` honours `TMPDIR`). Absolute
-by construction, so a default-path `instantiate` never writes into the
-process working directory. Both the default `path` and the already-loaded
-content-addressed fallback in `_build_path_for` go through here.
-"""
-_default_build_dir() = get(ENV, "STANBLOCKS_BUILD_DIR", joinpath(tempdir(), "stanblocks"))
-_default_build_path(sc) = joinpath(_default_build_dir(), string(hash(sc)) * ".stan")
-"""
-    _write_stan_source(stan_path, sc) -> Bool
-
-Write generated Stan source `sc` to `stan_path`, invalidating a stale cache
-entry, and return whether bytes were written. An existing file with identical
-content is left untouched, preserving the mtime-based rebuild cache (BridgeStan
-`make` skips recompilation when neither source nor data changed). An existing
-file whose content differs is overwritten — with a warning naming the path —
-so a later `stan_instantiate(changed_model; path=same_path)` call compiles and
-samples the NEW program instead of silently reusing the old one.
-"""
-_write_stan_source(stan_path, sc) = begin
-    if isfile(stan_path)
-        read(stan_path, String) == sc && return false
-        @warn "stan_instantiate: overwriting stale Stan source" path = stan_path
-    end
-    open(stan_path, "w") do fd
-        write(fd, sc)
-    end
-    true
-end
-"""
-    _build_path_for(stan_path, sc) -> String
-
-Choose the `.stan` path to compile after `_write_stan_source` wrote new bytes
-at `stan_path`. Normally `stan_path` itself — except when the previous build
-is already loaded in this session: `dlopen` resolves an already-loaded `.so`
-path to the OLD handle, so even after `make` rebuilds it the new program
-would never load (BridgeStan warns about exactly this in `StanModel`). In that
-case the new program is built from a content-addressed copy under the default
-build dir instead, which loads fresh. The copy equals `stan_path` itself when
-`stan_path` is already content-addressed (the default), in which case there is
-nothing safer available and `stan_path` is returned.
-"""
-_build_path_for(stan_path, sc) = begin
-    # Mirrors BridgeStan's `compile_model` `.so` derivation (`model.jl`
-    # compares the same `abspath` form against `dllist()`).
-    so = splitext(abspath(stan_path))[1] * "_model.so"
-    abspath(so) in Base.Libc.Libdl.dllist() || return stan_path
-    build_path = _default_build_path(sc)
-    build_path == stan_path && return stan_path
-    @warn "stan_instantiate: a build of the previous source is already loaded in this session; compiling the new program from a content-addressed copy" path = build_path
-    mkpath(dirname(build_path))
-    _write_stan_source(build_path, sc)
-    build_path
+    data = bridgestan_data(stan_data(x))
+    _instantiate_artifact(sc, data; path, make_args, nan_on_error, warn)
 end
 """
     _guard_ragged_stan_version(sc)
