@@ -1480,6 +1480,129 @@ begin
         end
     end
 
+    # Signature-dimension analysis shared by `@deffun` expansion and value-based
+    # UDFs (`ValueUDF`, valuefamily.jl): which dims get an emitted preamble
+    # binding, which get runtime shape checks, which trace-time size names stay
+    # hidden, and the access→dim alias table for typed-assignment validation.
+    # Pure data in (the parsed signature + body/return ASTs), pure data out —
+    # `@deffun` splices the results into its generated `tracetype`/`fundef`
+    # methods; `ValueUDF` precomputes them once at construction. Keep the two
+    # consumers on this single analysis so one body emits one Stan function
+    # whichever surface defined it.
+    _udf_size_analysis(f, arg_names, arg_types, is_token, body, rv) = begin
+        # Collect every signature-dimension binding as a candidate first.  A
+        # named dimension only belongs in the emitted function preamble when
+        # this UDF's body / return annotation references it, or when a later
+        # occurrence needs it as the reference side of a runtime shape check.
+        # Keeping the use analysis local to this definition avoids emitting an
+        # `int n = dims(x)[1];` merely because `n` appeared in the signature.
+        fun_size_candidates = OrderedDict()
+        required_fun_sizes = Set{Symbol}()
+        # Keep the semantic source of each signature-size name alongside the
+        # emitted Stan binding. During anonymous UDF tracing, `n` and
+        # `dims(x)[1]` are distinct syntax even though the function preamble
+        # explicitly equates them; typed-assignment validation needs that
+        # relationship to compare shapes accurately.
+        #
+        # The table is keyed by the ACCESS EXPRESSION and maps back to the
+        # canonical dimension name, because the relation is many-to-one: for
+        # `f(loc::vector[n], scale::vector[n])` BOTH `dims(loc)[1]` and
+        # `dims(scale)[1]` ARE `n`. A `dim_name => access` map can only hold
+        # one of them, which made a size inferred from a NON-FIRST argument
+        # unequatable to the signature symbol — `draws::vector[n] = <RHS sized
+        # off scale>` threw outright.
+        #
+        # Every entry is backed by the emitted Stan, so the compile-time
+        # equality never outruns what Stan enforces: the FIRST occurrence of a
+        # dim is its defining binding (`int n = dims(loc)[1];`, below), and each
+        # SUBSEQUENT non-token occurrence is guarded by the runtime `reject`
+        # pushed below. Token args are deliberately excluded from the subsequent
+        # case (they skip that check — `tok && continue`), so nothing there is
+        # aliased on an unchecked assumption.
+        #
+        # Keys are `Symbol(access)` so the frozen table can be a NamedTuple.
+        fun_size_alias_names = OrderedDict{Symbol,Symbol}()
+        # When a dim name appears in multiple args (e.g.
+        # `f(x::vector[n], y::vector[n])`), the first occurrence binds it
+        # via `int n = dims(x)[1];` and each subsequent occurrence becomes
+        # a runtime shape check that aborts with a `reject` message
+        # naming the offending arg / dim.
+        fun_checks = String[]
+        # Pass 1 — collect every signature-dimension occurrence in signature
+        # order, keeping the Stan expression that reads its runtime size. A dim
+        # that appears N times has ONE binding site (the first) and N-1 shape
+        # checks. Collecting the full site list up front lets each `reject`
+        # name WHERE the dim was inferred and enumerate EVERY argument that
+        # must share it, each with its actual runtime size — a check exists
+        # only when a dim has >= 2 sites, so the enumeration is always
+        # meaningful (user request 2026-08-14).
+        fun_size_sites = OrderedDict{Symbol,Vector{Any}}()
+        for (arg_name, arg_type, tok) in zip(arg_names, arg_types, is_token)
+            for (i, dim_name) in enumerate(arg_type.args[2:end])
+                _is_symbol(dim_name) || continue
+                dim_name == :(_) && continue
+                dim_name in arg_names && continue
+                access = if tok
+                    # Stan has no 1-element tuple type — single-dim tokens are passed
+                    # as a plain `int`, so unpack without `.1` indexing.
+                    ndims = length(arg_type.args) - 1
+                    ndims == 1 ? string(arg_name) : string(arg_name, ".", i)
+                else
+                    string("dims(", arg_name, ")[", i, "]")
+                end
+                push!(get!(fun_size_sites, dim_name, Any[]), (arg_name, i, access, tok))
+            end
+        end
+        # Pass 2 — the FIRST occurrence binds the dim (`int n = dims(x)[1];`);
+        # each SUBSEQUENT non-token occurrence becomes a runtime shape check
+        # that aborts with a `reject` naming the offending arg/dim, the
+        # argument the dim was inferred from, and every site's actual size.
+        # Token args are excluded from the check (usually internal dispatch
+        # glue) but still listed among the sizes.
+        for (dim_name, sites) in pairs(fun_size_sites)
+            origin_arg, origin_i, origin_access, _ = first(sites)
+            # Sound because of the `reject`s emitted below: the first
+            # occurrence defines the binding and every later non-token
+            # occurrence is guarded against it.
+            fun_size_alias_names[Symbol(origin_access)] = dim_name
+            fun_size_candidates[dim_name] = "int $dim_name = $origin_access;"
+            # A Stan `reject` argument list: literal text with each size access
+            # spliced as its own expression (`… (= ", dims(x)[1], ") …`).
+            sizes_clause = join(
+                (string("`", an, "` dim ", ii, " (= \", ", acc, ", \")")
+                 for (an, ii, acc, _t) in sites),
+                ", ",
+            )
+            for (arg_name, i, access, tok) in Iterators.drop(sites, 1)
+                tok && continue
+                push!(required_fun_sizes, dim_name)
+                fun_size_alias_names[Symbol(access)] = dim_name
+                msg = string(
+                    "\"", f, ": dim mismatch — `", arg_name, "` dim ", i,
+                    " (= \", ", access, ", \") does not match `", dim_name,
+                    "` (= \", ", dim_name, ", \"), inferred from `", origin_arg,
+                    "` dim ", origin_i, ". `", dim_name, "` sizes: ",
+                    sizes_clause, ".\"",
+                )
+                push!(fun_checks, string("if (", access, " != ", dim_name, ") reject(", msg, ");"))
+            end
+        end
+        for dim_name in keys(fun_size_candidates)
+            (_ast_mentions(body, dim_name) || _ast_mentions(rv, dim_name)) || continue
+            push!(required_fun_sizes, dim_name)
+        end
+        fun_sizes = OrderedDict(
+            dim_name => binding
+            for (dim_name, binding) in pairs(fun_size_candidates)
+            if dim_name in required_fun_sizes
+        )
+        hidden_size_names = union(
+            Set(arg_names),
+            setdiff(Set(keys(fun_size_candidates)), required_fun_sizes),
+        )
+        (; fun_sizes, fun_checks, hidden_size_names, fun_size_alias_names, fun_size_candidates)
+    end
+
     deffun(x::Expr; docstring="", source=LineNumberNode(0, :none), is_lhs=false, is_lpxf=false, is_inline=false, is_juliacompat=false, is_stanonly=false, emit_julia=true, _shim_kwarg_specs=nothing, def_mod=nothing) = if x.head == :block
         seen_lpxf_bases = Set{Symbol}()
         for arg in x.args
@@ -1756,116 +1879,12 @@ begin
             push!(lhs_type, :(Vararg{Any}))
         end
 
-        # Collect every signature-dimension binding as a candidate first.  A
-        # named dimension only belongs in the emitted function preamble when
-        # this UDF's body / return annotation references it, or when a later
-        # occurrence needs it as the reference side of a runtime shape check.
-        # Keeping the use analysis local to this definition avoids emitting an
-        # `int n = dims(x)[1];` merely because `n` appeared in the signature.
-        fun_size_candidates = OrderedDict()
-        required_fun_sizes = Set{Symbol}()
-        # Keep the semantic source of each signature-size name alongside the
-        # emitted Stan binding. During anonymous UDF tracing, `n` and
-        # `dims(x)[1]` are distinct syntax even though the function preamble
-        # explicitly equates them; typed-assignment validation needs that
-        # relationship to compare shapes accurately.
-        #
-        # The table is keyed by the ACCESS EXPRESSION and maps back to the
-        # canonical dimension name, because the relation is many-to-one: for
-        # `f(loc::vector[n], scale::vector[n])` BOTH `dims(loc)[1]` and
-        # `dims(scale)[1]` ARE `n`. A `dim_name => access` map can only hold
-        # one of them, which made a size inferred from a NON-FIRST argument
-        # unequatable to the signature symbol — `draws::vector[n] = <RHS sized
-        # off scale>` threw outright.
-        #
-        # Every entry is backed by the emitted Stan, so the compile-time
-        # equality never outruns what Stan enforces: the FIRST occurrence of a
-        # dim is its defining binding (`int n = dims(loc)[1];`, below), and each
-        # SUBSEQUENT non-token occurrence is guarded by the runtime `reject`
-        # pushed below. Token args are deliberately excluded from the subsequent
-        # case (they skip that check — `tok && continue`), so nothing there is
-        # aliased on an unchecked assumption.
-        #
-        # Keys are `Symbol(access)` so the frozen table can be a NamedTuple.
-        fun_size_alias_names = OrderedDict{Symbol,Symbol}()
-        # When a dim name appears in multiple args (e.g.
-        # `f(x::vector[n], y::vector[n])`), the first occurrence binds it
-        # via `int n = dims(x)[1];` and each subsequent occurrence becomes
-        # a runtime shape check that aborts with a `reject` message
-        # naming the offending arg / dim.
-        fun_checks = String[]
-        # Pass 1 — collect every signature-dimension occurrence in signature
-        # order, keeping the Stan expression that reads its runtime size. A dim
-        # that appears N times has ONE binding site (the first) and N-1 shape
-        # checks. Collecting the full site list up front lets each `reject`
-        # name WHERE the dim was inferred and enumerate EVERY argument that
-        # must share it, each with its actual runtime size — a check exists
-        # only when a dim has >= 2 sites, so the enumeration is always
-        # meaningful (user request 2026-08-14).
-        fun_size_sites = OrderedDict{Symbol,Vector{Any}}()
-        for (arg_name, arg_type, tok) in zip(arg_names, arg_types, is_token)
-            for (i, dim_name) in enumerate(arg_type.args[2:end])
-                _is_symbol(dim_name) || continue
-                dim_name == :(_) && continue
-                dim_name in arg_names && continue
-                access = if tok
-                    # Stan has no 1-element tuple type — single-dim tokens are passed
-                    # as a plain `int`, so unpack without `.1` indexing.
-                    ndims = length(arg_type.args) - 1
-                    ndims == 1 ? string(arg_name) : string(arg_name, ".", i)
-                else
-                    string("dims(", arg_name, ")[", i, "]")
-                end
-                push!(get!(fun_size_sites, dim_name, Any[]), (arg_name, i, access, tok))
-            end
-        end
-        # Pass 2 — the FIRST occurrence binds the dim (`int n = dims(x)[1];`);
-        # each SUBSEQUENT non-token occurrence becomes a runtime shape check
-        # that aborts with a `reject` naming the offending arg/dim, the
-        # argument the dim was inferred from, and every site's actual size.
-        # Token args are excluded from the check (usually internal dispatch
-        # glue) but still listed among the sizes.
-        for (dim_name, sites) in pairs(fun_size_sites)
-            origin_arg, origin_i, origin_access, _ = first(sites)
-            # Sound because of the `reject`s emitted below: the first
-            # occurrence defines the binding and every later non-token
-            # occurrence is guarded against it.
-            fun_size_alias_names[Symbol(origin_access)] = dim_name
-            fun_size_candidates[dim_name] = "int $dim_name = $origin_access;"
-            # A Stan `reject` argument list: literal text with each size access
-            # spliced as its own expression (`… (= ", dims(x)[1], ") …`).
-            sizes_clause = join(
-                (string("`", an, "` dim ", ii, " (= \", ", acc, ", \")")
-                 for (an, ii, acc, _t) in sites),
-                ", ",
-            )
-            for (arg_name, i, access, tok) in Iterators.drop(sites, 1)
-                tok && continue
-                push!(required_fun_sizes, dim_name)
-                fun_size_alias_names[Symbol(access)] = dim_name
-                msg = string(
-                    "\"", f, ": dim mismatch — `", arg_name, "` dim ", i,
-                    " (= \", ", access, ", \") does not match `", dim_name,
-                    "` (= \", ", dim_name, ", \"), inferred from `", origin_arg,
-                    "` dim ", origin_i, ". `", dim_name, "` sizes: ",
-                    sizes_clause, ".\"",
-                )
-                push!(fun_checks, string("if (", access, " != ", dim_name, ") reject(", msg, ");"))
-            end
-        end
-        for dim_name in keys(fun_size_candidates)
-            (_ast_mentions(body, dim_name) || _ast_mentions(rv, dim_name)) || continue
-            push!(required_fun_sizes, dim_name)
-        end
-        fun_sizes = OrderedDict(
-            dim_name => binding
-            for (dim_name, binding) in pairs(fun_size_candidates)
-            if dim_name in required_fun_sizes
-        )
-        hidden_size_names = union(
-            Set(arg_names),
-            setdiff(Set(keys(fun_size_candidates)), required_fun_sizes),
-        )
+        _sizes = _udf_size_analysis(f, arg_names, arg_types, is_token, body, rv)
+        fun_sizes = _sizes.fun_sizes
+        fun_checks = _sizes.fun_checks
+        hidden_size_names = _sizes.hidden_size_names
+        fun_size_alias_names = _sizes.fun_size_alias_names
+        fun_size_candidates = _sizes.fun_size_candidates
         # The trace-time deconstruction binds exactly the size names this
         # definition emits Stan bindings for; everything else destructures to
         # `_`. The `@lhs` base tracetype below needs a DIFFERENT hidden set (it
