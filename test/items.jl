@@ -12459,3 +12459,305 @@ the local and the function — when a size cannot be expressed in arguments
     @test occursin("function-local `a`", msg)
     @test occursin("si_read_cell_reassign", msg)
 end
+
+"""
+Value families (`ValueFamily`/`ValueUDF`, snag `value-based-dist-5d5cd3ab`)
+carry the distribution triad as data: no `Core.eval`, no Julia methods, no
+module bindings. The twin below is built TWICE from ONE quoted def source —
+once through `@deffun` (scaffolding eval, what values replace) and once
+through the value constructor — and both must emit identical Stan.
+"""
+@testitem "slic: value families lower without method registration" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block
+    vd = :(@lhs @lpxf tw_hetero_lpdf(x::vector[n], mu::vector[n])::real = begin
+        if any(x .< 0)
+            return negative_infinity()
+        end
+        normal_lpdf(x[1], mu[1], 1.0) + exponential_lpdf(x[2], 1.0)
+    end)
+    vp = :(tw_hetero_lpdfs(x::vector[n], mu::vector[n])::vector[n] = begin
+        out::vector[n]
+        out[1] = normal_lpdf(x[1], mu[1], 1.0)
+        out[2] = exponential_lpdf(x[2], 1.0)
+        out
+    end)
+    vr = :(tw_hetero_rng(vector[n], mu::vector[n])::vector[n] = begin
+        out::vector[n]
+        out[1] = abs(normal_rng(mu[1], 1.0))
+        out[2] = exponential_rng(1.0)
+        out
+    end)
+    # Scaffolding twin: the method-registration surface, eval'd here so the
+    # value path is measured against identical bodies. Everything below the
+    # twin setup runs without defining a method (asserted via world age).
+    Core.eval(@__MODULE__, :(@deffun @stanonly begin
+        $vd
+        $vp
+        $vr
+    end))
+    Core.eval(@__MODULE__, :(StanBlocks.autokwargs(
+        ::StanBlocks.CanonicalExpr{typeof(tw_hetero)}) = (; lower=0.0)))
+    vfam = ValueFamily(:tw_hetero, :lpdf, vd, vp, vr, @__MODULE__; support=(; lower=0.0))
+
+    base_body = :(begin
+        tau::vector[n]
+        y ~ normal(sum(tau), 1.0)
+        return tau
+    end)
+    data = Dict{Symbol,Any}(:y => 0.5, :mu => [0.0, 0.0])
+    m_fn = Base.merge(
+        StanBlocks.SlicModel(base_body, data, @__MODULE__), :(tau ~ tw_hetero(mu)))(; n=2)
+    m_val = Base.merge(StanBlocks.SlicModel(base_body, data, @__MODULE__),
+        Expr(:call, :~, :tau, Expr(:call, vfam, :mu)))(; n=2)
+    code_fn = stan_code(stan_model(m_fn))
+    code_val = stan_code(stan_model(m_val))
+
+    # One native parameter declaration with intrinsic support (the BRM H1 shape).
+    @test occursin("vector<lower=0.0>[n] tau;", stan_block(code_val, "parameters"))
+    @test occursin("tau ~ tw_hetero(mu);", stan_block(code_val, "model"))
+    @test occursin("real tw_hetero_lpdf(", code_val)
+    # One body emits one Stan function whichever surface defines it (modulo
+    # the value provenance comments).
+    strip_value_comments(code) =
+        replace(code, r"^// value UDF .*\n"m => "")
+    @test strip_value_comments(code_val) == code_fn
+    # Descriptor parity: same outputs, operations, and definitions.
+    d_fn, d_val = stan_descriptor(stan_model(m_fn)), stan_descriptor(stan_model(m_val))
+    @test getproperty.(d_val.outputs, :name) == getproperty.(d_fn.outputs, :name)
+    @test getproperty.(d_val.operations, :name) == getproperty.(d_fn.operations, :name)
+    defkey(d) = Tuple([(x.name, x.signature) for x in d.definitions])
+    @test defkey(d_val) == defkey(d_fn)
+
+    # The no-eval proof: construction + tracing advance no method tables.
+    # (Warmed once above so lazy init cannot pollute the snapshot.)
+    w0 = Base.get_world_counter()
+    vfam2 = ValueFamily(:tw_hetero, :lpdf, vd, vp, vr, @__MODULE__; support=(; lower=0.0))
+    m_val2 = Base.merge(StanBlocks.SlicModel(base_body, data, @__MODULE__),
+        Expr(:call, :~, :tau, Expr(:call, vfam2, :mu)))(; n=2)
+    code_val2 = stan_code(stan_model(m_val2))
+    w1 = Base.get_world_counter()
+    @test w0 == w1
+    @test code_val2 == code_val
+end
+
+@testitem "slic: value mixture overloads lower like @deffun" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    scal_d = :(tw_mix_lpdf(y::real, w::vector[K], a::real, b::real)::real =
+        log_sum_exp([log(w[1]) + normal_lpdf(y, a, 1.0),
+            log(w[2]) + normal_lpdf(y, b, 1.0)]))
+    vec_d = :(tw_mix_lpdf(y::vector[n], w::vector[K], a::vector[n], b::vector[n])::real = begin
+        rv = 0.0
+        for i in 1:n
+            rv = rv + tw_mix_lpdf(y[i], w, a[i], b[i])::real
+        end
+        rv
+    end)
+    vec_p = :(tw_mix_lpdfs(y::vector[n], w::vector[K], a::vector[n], b::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = tw_mix_lpdf(y[i], w, a[i], b[i])
+        end
+        rv
+    end)
+    dlg_p = :(tw_mix_lpdfs(args...) = tw_mix_lpdf(args...))
+    scal_r = :(tw_mix_rng(w::vector[K], a::real, b::real)::real = a)
+    vec_r = :(tw_mix_rng(vector[n], w::vector[K], a::vector[n], b::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = tw_mix_rng(w, a[i], b[i])
+        end
+        rv
+    end)
+    # Scaffolding twin (see the item above): same defs through `@deffun`.
+    # Every density def of a value family is samplable (the role implies
+    # `@lhs`), so the twin marks every samplable shape; the hooks register
+    # once (`@lpxf` on one def). An unmarked `vec_d` would leave the vector
+    # family call to the `anything` fallback — same Stan, but data-decl order
+    # (and the sampled type) would differ from the value path by annotation,
+    # not by implementation.
+    Core.eval(@__MODULE__, :(@deffun @stanonly begin
+        @lpxf @lhs $scal_d
+        @lhs $vec_d
+        $vec_p
+        $dlg_p
+        $scal_r
+        $vec_r
+    end))
+    vfam = ValueFamily(:tw_mix, :lpdf, Any[scal_d, vec_d], Any[vec_p, dlg_p],
+        Any[scal_r, vec_r], @__MODULE__)
+
+    data_v = Dict{Symbol,Any}(:y => [0.1, -0.2], :w => [0.4, 0.6],
+        :a => [0.0, 0.0], :b => [1.0, 1.0])
+    mv_fn = StanBlocks.SlicModel(:(y ~ tw_mix(w, a, b)), data_v, @__MODULE__)
+    mv_val = StanBlocks.SlicModel(
+        Expr(:block, Expr(:call, :~, :y, Expr(:call, vfam, :w, :a, :b))), data_v, @__MODULE__)
+    code_fn = stan_code(stan_model(mv_fn))
+    code_val = stan_code(stan_model(mv_val))
+    strip_value_comments(code) =
+        replace(code, r"^// value UDF .*\n"m => "")
+    @test strip_value_comments(code_val) == code_fn
+    # Stan-native overloading: one label, scalar + vector definitions.
+    @test count("real tw_mix_lpdf(", code_val) == 2
+    @test occursin("tw_mix_vector_rng(", code_val)
+    @test occursin("y ~ tw_mix(w, a, b);", code_val)
+
+    # Scalar observations take the vararg pointwise delegation + scalar RNG.
+    data_s = Dict{Symbol,Any}(:ys => 0.3, :w => [0.4, 0.6], :as => 0.0, :bs => 1.0)
+    ms_fn = StanBlocks.SlicModel(:(ys ~ tw_mix(w, as, bs)), data_s, @__MODULE__)
+    ms_val = StanBlocks.SlicModel(
+        Expr(:block, Expr(:call, :~, :ys, Expr(:call, vfam, :w, :as, :bs))), data_s, @__MODULE__)
+    code_s_fn = stan_code(stan_model(ms_fn))
+    code_s_val = stan_code(stan_model(ms_val))
+    @test strip_value_comments(code_s_val) == code_s_fn
+    @test occursin("real ys_likelihood = tw_mix_lpdfs(ys, w, as, bs);", code_s_val)
+    @test occursin("real ys_gen = tw_mix_rng(w, as, bs);", code_s_val)
+end
+
+@testitem "slic: value families resolve by module binding; typeof dispatch" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    d = :(vbern_lpmf(y::int, theta::real)::real = bernoulli_lpmf(y, theta))
+    p = :(vbern_lpmfs(y::int, theta::real)::real = bernoulli_lpmf(y, theta))
+    r = :(vbern_rng(theta::real)::int = bernoulli_rng(theta))
+    # Scaffolding only: bind the value so surface syntax resolves it. (The
+    # product path splices values into generated ASTs and never evals.)
+    Core.eval(@__MODULE__, :(const vbern = $(ValueFamily(:vbern, :lpmf, d, p, r, @__MODULE__))))
+    code = stan_code(stan_model(StanBlocks.SlicModel(
+        :(y ~ vbern(theta)), Dict{Symbol,Any}(:y => 1, :theta => 0.3), @__MODULE__)))
+    @test occursin("int y;", code)
+    @test occursin("y ~ vbern(theta);", code)
+    @test occursin("real y_likelihood = vbern_lpmfs(y, theta);", code)
+    @test occursin("int y_gen = vbern_rng(theta);", code)
+
+    # `::typeof(f)` formals dispatch on a plain Julia function value.
+    myfn(x) = x
+    ud = :(vtag_lpdf(y::real, ::typeof(myfn), s::real)::real = normal_lpdf(y, 0.0, s))
+    up = :(vtag_lpdfs(y::real, ::typeof(myfn), s::real)::real = normal_lpdf(y, 0.0, s))
+    ur = :(vtag_rng(::typeof(myfn), s::real)::real = normal_rng(0.0, s))
+    ftype = ValueFamily(:vtag, :lpdf, ud, up, ur, @__MODULE__)
+    code_t = stan_code(stan_model(StanBlocks.SlicModel(
+        Expr(:block, Expr(:call, :~, :y, Expr(:call, ftype, myfn, :s))),
+        Dict{Symbol,Any}(:y => 0.5, :s => 1.0), @__MODULE__)))
+    @test occursin("real vtag_myfn_lpdf(real y, real s)", code_t)
+    # Function args mangle into the call name and drop from the arg list
+    # (the `@deffun` fof shape).
+    @test occursin("y ~ vtag_myfn(s);", code_t)
+end
+
+@testitem "slic: value-family v1 boundaries fail loudly" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    vd = :(vbnd_lpdf(x::real, mu::real)::real = normal_lpdf(x, mu, 1.0))
+    vp = :(vbnd_lpdfs(x::real, mu::real)::real = normal_lpdf(x, mu, 1.0))
+    vr = :(vbnd_rng(mu::real)::real = normal_rng(mu, 1.0))
+    fam = ValueFamily(:vbnd, :lpdf, vd, vp, vr, @__MODULE__)
+    Core.eval(@__MODULE__, :(const vbnd = $fam))
+    loud(f) = try
+        f()
+        ("", false)
+    catch e
+        (sprint(showerror, e), true)
+    end
+
+    # Explicit user bounds on a redrawn (prior-only) param: the truncated-HOF
+    # rewrite has no value form in v1.
+    msg, threw = loud(() -> stan_model(StanBlocks.SlicModel(
+            :(tau ~ vbnd(mu; lower=0.0)), Dict{Symbol,Any}(:mu => 0.0), @__MODULE__))
+    @test threw
+    @test occursin("documented follow-ups", msg)
+    # HOF-wrapping a value family.
+    msg, threw = loud(() -> stan_model(StanBlocks.SlicModel(
+            :(y ~ censored(vbnd, mu; lower=-1.0)),
+            Dict{Symbol,Any}(:y => 0.2, :mu => 0.0), @__MODULE__)))
+    @test threw
+    @test occursin("documented follow-ups", msg)
+    # Selector over a value family.
+    msg, threw = loud(() -> stan_model(StanBlocks.SlicModel(
+            :(begin
+                r = predictive(vbnd, mu)
+                y ~ normal(r, 1.0)
+            end), Dict{Symbol,Any}(:y => 0.5, :mu => 0.0), @__MODULE__))
+    @test threw
+    @test occursin("documented follow-ups", msg)
+    # Same label, different bodies, one trace: ambiguous emission.
+    dalt = :(vbnd_lpdf(x::real, mu::real)::real = normal_lpdf(x, mu, 99.0))
+    palt = :(vbnd_lpdfs(x::real, mu::real)::real = normal_lpdf(x, mu, 99.0))
+    ralt = :(vbnd_rng(mu::real)::real = normal_rng(mu, 99.0))
+    falt = ValueFamily(:vbnd, :lpdf, dalt, palt, ralt, @__MODULE__)
+    msg, threw = loud(() -> stan_model(StanBlocks.SlicModel(
+            Expr(:block, Expr(:call, :~, :y, Expr(:call, fam, :mu)),
+                Expr(:call, :~, :z, Expr(:call, falt, :mu))),
+            Dict{Symbol,Any}(:y => 0.5, :z => 0.6, :mu => 0.0), @__MODULE__))
+    @test threw
+    @test occursin("two different bodies", msg)
+    # Same label, same content, one trace: dedups to one definition.
+    same = ValueFamily(:vbnd, :lpdf, vd, vp, vr, @__MODULE__)
+    code_dup = stan_code(stan_model(StanBlocks.SlicModel(
+        Expr(:block, Expr(:call, :~, :y, Expr(:call, fam, :mu)),
+            Expr(:call, :~, :z, Expr(:call, same, :mu))),
+        Dict{Symbol,Any}(:y => 0.5, :z => 0.6, :mu => 0.0), @__MODULE__)))
+    @test count("real vbnd_lpdf(", code_dup) == 1
+    # No matching overload: names actuals + overloads.
+    msg, threw = loud(() -> stan_model(StanBlocks.SlicModel(
+            Expr(:block, Expr(:call, :~, :y, Expr(:call, fam, :mu, :extra))),
+            Dict{Symbol,Any}(:y => 0.5, :mu => 0.0, :extra => 1.0), @__MODULE__))
+    @test threw
+    @test occursin("no overload matches", msg)
+    # Ragged observations over value families: loud, never silent.
+    msg, threw = loud(() -> stan_model(StanBlocks.SlicModel(
+            Expr(:block,
+                Expr(:call, :~, :sigma, Expr(:call, :exponential, 1.0)),
+                Expr(:call, :~, :y, Expr(:call, fam, :mu, :sigma))),
+            Dict{Symbol,Any}(:mu => [[1.0, 2.0], [3.0]]), @__MODULE__, (:y,)))
+    @test threw
+    @test occursin("no overload matches", msg)
+    # Constructor rejections: kwarg formals, nullary density, bad kind/label.
+    msg, threw = loud(() -> ValueUDF(:kwf,
+        :(kwf(x::real; k::real=1.0)::real = x + k), @__MODULE__))
+    @test threw
+    @test occursin("keyword formals", msg)
+    msg, threw = loud(() -> ValueFamily(:nod, :lpdf,
+        :(nod_lpdf()::real = 1.0), vp, vr, @__MODULE__))
+    @test threw
+    @test occursin("observation", msg)
+    msg, threw = loud(() -> ValueFamily(:bk, :lcdf, vd, vp, vr, @__MODULE__))
+    @test threw
+    @test occursin(":lpdf", msg)
+    msg, threw = loud(() -> ValueFamily(:bad_lpdf, :lpdf, vd, vp, vr, @__MODULE__))
+    @test threw
+    @test occursin("ends in", msg)
+end
+
+@testitem "slic: concurrent value-family builds are serial-identical" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Expr-built defs (no parser metadata — the programmatic consumer path).
+    function makefam(i)
+        label = Symbol("vfam", i)
+        d = Expr(:(=), Expr(:(::), Expr(:call, Symbol(label, :_lpdf),
+                Expr(:(::), :y, :real), Expr(:(::), :mu, :real)), :real),
+            Expr(:block, Expr(:call, :normal_lpdf, :y, :mu, 0.1 * i)))
+        p = Expr(:(=), Expr(:(::), Expr(:call, Symbol(label, :_lpdfs),
+                Expr(:(::), :y, :real), Expr(:(::), :mu, :real)), :real),
+            Expr(:block, Expr(:call, :normal_lpdf, :y, :mu, 0.1 * i)))
+        r = Expr(:(=), Expr(:(::), Expr(:call, Symbol(label, :_rng),
+                Expr(:(::), :mu, :real)), :real),
+            Expr(:block, Expr(:call, :normal_rng, :mu, 0.1 * i)))
+        ValueFamily(label, :lpdf, d, p, r, @__MODULE__)
+    end
+    function tracemodel(fam, i)
+        stan_code(stan_model(StanBlocks.SlicModel(
+            Expr(:block, Expr(:call, :~, :y, Expr(:call, fam, :mu))),
+            Dict{Symbol,Any}(:y => 0.5 + 0.01 * i, :mu => 0.0), @__MODULE__)))
+    end
+    refs = [tracemodel(makefam(i), i) for i in 1:4]
+    # Warm the task machinery once: first `@spawn` in a process advances world
+    # age (Julia runtime, not StanBlocks) and must not pollute the snapshot.
+    Base.fetch(Base.Threads.@spawn 1)
+    w0 = Base.get_world_counter()
+    tasks = [Base.Threads.@spawn tracemodel(makefam(i), i) for i in 1:4]
+    outs = Base.fetch.(tasks)
+    w1 = Base.get_world_counter()
+    @test w0 == w1
+    for i in 1:4
+        @test outs[i] == refs[i]
+        @test occursin("vfam$(i)_lpdf", outs[i])
+        for j in 1:4
+            j == i && continue
+            @test !occursin("vfam$(j)_lpdf", outs[i])
+        end
+    end
+end

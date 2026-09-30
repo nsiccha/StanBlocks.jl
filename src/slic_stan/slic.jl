@@ -11,6 +11,7 @@ include("macros.jl")
 include("builtin.jl")
 
 include("lpxf_builtin.jl")
+include("valuefamily.jl")
 include("show.jl")
 include("instantiate.jl")
 include("descriptor.jl")
