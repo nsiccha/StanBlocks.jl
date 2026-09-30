@@ -498,9 +498,13 @@ function Base.show(io::IO, f::StanFunction3)
             String[]
         end
         body = isempty(binds) ? f.body : vcat(binds, f.body)
+        # The leading comment renders on its own line, so it must not consume
+        # the signature's break budget: feeding it to `autoprint` lets a
+        # provenance comment flip a short signature to broken layout (a value
+        # twin then differs from its `@deffun` twin by layout, not content).
+        print(io, f.docstring)
         autoprint(
             io,
-            f.docstring,
             sigtype(f.rv_type), " ", func_name(f.parent, f.args), "(", func_args(f.args), ")",
             StanBlock(Symbol(), body),
         )
