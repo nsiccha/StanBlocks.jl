@@ -12657,7 +12657,7 @@ end
     # Explicit user bounds on a redrawn (prior-only) param: the truncated-HOF
     # rewrite has no value form in v1.
     msg, threw = loud(() -> stan_model(StanBlocks.SlicModel(
-            :(tau ~ vbnd(mu; lower=0.0)), Dict{Symbol,Any}(:mu => 0.0), @__MODULE__))
+            :(tau ~ vbnd(mu; lower=0.0)), Dict{Symbol,Any}(:mu => 0.0), @__MODULE__)))
     @test threw
     @test occursin("documented follow-ups", msg)
     # HOF-wrapping a value family.
@@ -12671,7 +12671,7 @@ end
             :(begin
                 r = predictive(vbnd, mu)
                 y ~ normal(r, 1.0)
-            end), Dict{Symbol,Any}(:y => 0.5, :mu => 0.0), @__MODULE__))
+            end), Dict{Symbol,Any}(:y => 0.5, :mu => 0.0), @__MODULE__)))
     @test threw
     @test occursin("documented follow-ups", msg)
     # Same label, different bodies, one trace: ambiguous emission.
@@ -12682,7 +12682,7 @@ end
     msg, threw = loud(() -> stan_model(StanBlocks.SlicModel(
             Expr(:block, Expr(:call, :~, :y, Expr(:call, fam, :mu)),
                 Expr(:call, :~, :z, Expr(:call, falt, :mu))),
-            Dict{Symbol,Any}(:y => 0.5, :z => 0.6, :mu => 0.0), @__MODULE__))
+            Dict{Symbol,Any}(:y => 0.5, :z => 0.6, :mu => 0.0), @__MODULE__)))
     @test threw
     @test occursin("two different bodies", msg)
     # Same label, same content, one trace: dedups to one definition.
@@ -12695,7 +12695,7 @@ end
     # No matching overload: names actuals + overloads.
     msg, threw = loud(() -> stan_model(StanBlocks.SlicModel(
             Expr(:block, Expr(:call, :~, :y, Expr(:call, fam, :mu, :extra))),
-            Dict{Symbol,Any}(:y => 0.5, :mu => 0.0, :extra => 1.0), @__MODULE__))
+            Dict{Symbol,Any}(:y => 0.5, :mu => 0.0, :extra => 1.0), @__MODULE__)))
     @test threw
     @test occursin("no overload matches", msg)
     # Ragged observations over value families: loud, never silent.
@@ -12703,7 +12703,7 @@ end
             Expr(:block,
                 Expr(:call, :~, :sigma, Expr(:call, :exponential, 1.0)),
                 Expr(:call, :~, :y, Expr(:call, fam, :mu, :sigma))),
-            Dict{Symbol,Any}(:mu => [[1.0, 2.0], [3.0]]), @__MODULE__, (:y,)))
+            Dict{Symbol,Any}(:mu => [[1.0, 2.0], [3.0]]), @__MODULE__, (:y,))))
     @test threw
     @test occursin("no overload matches", msg)
     # Constructor rejections: kwarg formals, nullary density, bad kind/label.
@@ -12744,12 +12744,14 @@ end
             Dict{Symbol,Any}(:y => 0.5 + 0.01 * i, :mu => 0.0), @__MODULE__)))
     end
     refs = [tracemodel(makefam(i), i) for i in 1:4]
-    # Warm the task machinery once: first `@spawn` in a process advances world
-    # age (Julia runtime, not StanBlocks) and must not pollute the snapshot.
-    Base.fetch(Base.Threads.@spawn 1)
+    # Warm the exact `@spawn` site once: first task-thunk use in a process
+    # advances world age (Julia runtime, not StanBlocks) and must not pollute
+    # the snapshot. A `@spawn 1` elsewhere does NOT cover this site — each
+    # syntactic thunk compiles on first use — so run the whole driver once.
+    runall() = Base.fetch.([Base.Threads.@spawn tracemodel(makefam(i), i) for i in 1:4])
+    runall()
     w0 = Base.get_world_counter()
-    tasks = [Base.Threads.@spawn tracemodel(makefam(i), i) for i in 1:4]
-    outs = Base.fetch.(tasks)
+    outs = runall()
     w1 = Base.get_world_counter()
     @test w0 == w1
     for i in 1:4
