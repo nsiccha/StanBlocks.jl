@@ -12611,6 +12611,40 @@ end
     @test occursin("real ys_gen = tw_mix_rng(w, as, bs);", code_s_val)
 end
 
+@testitem "slic: value families support obs-only sizes" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block
+    # The BRM whole-vector-prior shape: `n` lives ONLY on the observation
+    # formal; the family call carries scalar args (length comes from the typed
+    # LHS / `n` keyword). The `@lhs` reconstruct rule seeds obs sizes from a
+    # missing-size placeholder instead of erroring (snag value-based-dist).
+    vd = :(szprobe_lpdf(x::vector[n], mu::real)::real = normal_lpdf(x, mu, 1.0))
+    vp = :(szprobe_lpdfs(x::vector[n], mu::real)::vector[n] = normal_lpdfs(x, mu, 1.0))
+    vr = :(szprobe_rng(vector[n], mu::real)::vector[n] = normal_rng(vector[n], mu, 1.0))
+    # Scaffolding twin (see the items above): same defs through `@deffun`.
+    Core.eval(@__MODULE__, :(@deffun @stanonly begin
+        @lpxf @lhs $vd
+        $vp
+        $vr
+    end))
+    vfam = ValueFamily(:szprobe, :lpdf, vd, vp, vr, @__MODULE__)
+
+    data = Dict{Symbol,Any}(:y => [0.2, -0.3])
+    lhs = Expr(:(::), :theta, :(vector[2]))
+    body_fn = Expr(:block, Expr(:call, :~, lhs, :(szprobe(0.0; n=2))),
+        :(y ~ normal(theta, 1.0)))
+    body_val = Expr(:block,
+        Expr(:call, :~, lhs,
+            Expr(:call, vfam, Expr(:parameters, Expr(:kw, :n, 2)), 0.0)),
+        :(y ~ normal(theta, 1.0)))
+    code_fn = stan_code(stan_model(StanBlocks.SlicModel(body_fn, data, @__MODULE__)))
+    code_val = stan_code(stan_model(StanBlocks.SlicModel(body_val, data, @__MODULE__)))
+    @test occursin("vector[2] theta;", stan_block(code_val, "parameters"))
+    @test occursin("theta ~ szprobe(0.0);", stan_block(code_val, "model"))
+    strip_value_comments(code) =
+        replace(code, r"^// value UDF .*\n"m => "")
+    @test strip_value_comments(code_val) == code_fn
+end
+
 @testitem "slic: value families resolve by module binding; typeof dispatch" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     d = :(vbern_lpmf(y::int, theta::real)::real = bernoulli_lpmf(y, theta))
     p = :(vbern_lpmfs(y::int, theta::real)::real = bernoulli_lpmf(y, theta))

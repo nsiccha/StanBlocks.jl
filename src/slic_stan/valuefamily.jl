@@ -719,7 +719,20 @@ tracetype(x::CanonicalExpr{<:ValueUDF}) = _tracetype(x, nothing)
 _tracetype(x::CanonicalExpr{<:ValueFamily}, context) = begin
     family = head(x)
     o = _value_match_overload(family.density, x.args, true)
-    bindings = _value_bind_sizes!(OrderedDict{Symbol,Any}(), o, x.args, true)
+    bindings = OrderedDict{Symbol,Any}()
+    # The `@lhs` reconstruct rule: the observation formal binds FIRST, from a
+    # placeholder with missing sizes (`y_expr`). A size living ONLY on the
+    # observation (typed-LHS/scalar-args vector priors, where the family call
+    # carries no `n`) then resolves to unknown instead of erroring — the LHS
+    # redraw supplies the concrete size later. Call-arg sizes bind after
+    # (last-wins), exactly like the generated deconstruct's formal order.
+    for dim in o.formal_types[1].args[2:end]
+        dim isa Symbol || continue
+        dim === :_ && continue
+        dim in o.formal_names && continue
+        bindings[dim] = StanExpr(missing, StanType(types.int))
+    end
+    _value_bind_sizes!(bindings, o, x.args, true)
     obs_ast = o.formal_types[1]
     # `anything[]` observations mean scalar `real` (the `@lhs` normalization).
     obs_ast = obs_ast == :(anything[]) ? :(real[]) : obs_ast
