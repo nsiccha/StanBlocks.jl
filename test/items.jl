@@ -12022,8 +12022,7 @@ end
         @test fresh_wrote === true
         @test read(path, String) == v1
         @test isempty(fresh_logs.logs)
-        # Identical content: untouched (mtime preserved, no warning), so the
-        # BridgeStan mtime-based rebuild cache keeps working.
+        # Identical content: untouched (mtime preserved, no warning).
         m0 = mtime(path)
         same_logs = TestLogger(; min_level=Logging.Info)
         same_wrote = with_logger(same_logs) do
@@ -12035,9 +12034,6 @@ end
         # Differing content: overwritten, with a warning naming the path.
         @test_logs (:warn, r"overwriting stale Stan source") write_source(path, v2)
         @test read(path, String) == v2
-        # Nothing is loaded in this process, so a fresh write compiles from
-        # the path itself.
-        @test StanBlocks._build_path_for(path, v2) == path
     end
 end
 
@@ -12046,19 +12042,21 @@ end
     # cwd (e.g. a package worktree a bench runs from). The default is absolute
     # and rooted at tempdir()/stanblocks, honouring STANBLOCKS_BUILD_DIR.
     sc = "parameters { real mu; }\n"
-    expected = joinpath(tempdir(), "stanblocks", string(hash(sc)) * ".stan")
     defaulted = withenv("STANBLOCKS_BUILD_DIR" => nothing) do
         StanBlocks._default_build_path(sc)
     end
     @test isabspath(defaulted)
-    @test defaulted == expected
+    @test dirname(dirname(defaulted)) == joinpath(tempdir(), "stanblocks")
+    @test startswith(basename(defaulted), "model_") && endswith(defaulted, ".stan")
     mktempdir() do dir
         @test withenv("STANBLOCKS_BUILD_DIR" => dir) do
             StanBlocks._default_build_dir()
         end == dir
-        @test withenv("STANBLOCKS_BUILD_DIR" => dir) do
+        relocated = withenv("STANBLOCKS_BUILD_DIR" => dir) do
             StanBlocks._default_build_path(sc)
-        end == joinpath(dir, string(hash(sc)) * ".stan")
+        end
+        @test dirname(dirname(relocated)) == dir
+        @test basename(relocated) != basename(defaulted)
     end
 end
 
@@ -12081,14 +12079,15 @@ end
         @test BridgeStan.param_names(p1.model) == ["logitp"]
         # Same path, changed model, previous build already loaded in this
         # session: the file follows the new model and the compiled problem is
-        # the NEW program (built from a content-addressed copy, since the
-        # loaded `.so` path cannot reload in-process).
-        p2 = @test_logs (:warn, r"overwriting stale Stan source") (:warn, r"already loaded") instantiate(v2; path=path)
+        # the NEW program, loaded from its immutable artifact.
+        p2 = @test_logs (:warn, r"overwriting stale Stan source") instantiate(v2; path=path)
         @test read(path, String) == stan_code(v2)
         @test BridgeStan.param_names(p2.model) == ["eta"]
-        # Same shape, but nothing loaded (the cross-process reporter's case):
-        # the stale file is rewritten and the new program builds from the
-        # explicit path itself.
+        # Identical source must resolve the same NEW artifact on every call.
+        p2_again = instantiate(v2; path=path)
+        @test BridgeStan.param_names(p2_again.model) == ["eta"]
+        # An existing source alias follows the model even before it has ever
+        # been passed to instantiate; compilation still uses immutable storage.
         other = joinpath(dir, "other.stan")
         write(other, stan_code(v1))
         p3 = @test_logs (:warn, r"overwriting stale Stan source") instantiate(v2; path=other)

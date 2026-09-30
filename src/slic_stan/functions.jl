@@ -657,11 +657,11 @@ _deffun_julia_validate_dims(x, dims::Tuple, name) = begin
     x
 end
 
-# Mutable, non-const registry: one SLIC overload may map to one Julia dispatch
-# signature.  Re-evaluating the same definition is allowed for Revise; a
+# One SLIC overload may map to one Julia dispatch signature.
+# Re-evaluating the same definition is allowed; a
 # distinct SLIC signature collapsing onto the same Julia signature errors.
-@isdefined(_deffun_julia_signatures) || (_deffun_julia_signatures = IdDict{Any,Dict{Any,Any}}())
-_register_deffun_julia_signature!(f, julia_key, slic_key) = begin
+const _deffun_julia_signatures = IdDict{Any,Dict{Any,Any}}()
+_register_deffun_julia_signature!(f, julia_key, slic_key) = _with_slic_definitions() do
     registered = get(_deffun_julia_signatures, f, nothing)
     if isnothing(registered)
         isempty(methods(f)) || return false

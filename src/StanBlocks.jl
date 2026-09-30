@@ -1,13 +1,15 @@
 module StanBlocks
 
 export @slic, @defsig, @deffun, @juliacompat, @stanonly, @lpxf, @lhs, @stan_assert, @plate, @scan
-export return_type_of, stan_code, stan_model, compile_slic_bundle, stan_instantiate, stanc_check
+export return_type_of, stan_code, stan_model, compile_slic_bundle, slic_eval, stan_instantiate, stanc_check
 export stan_descriptor, stan_definition, stan_definition_closure, stan_operation, stan_execute
 export ModelDescriptor, ModelInput, ModelOutput, ModelDefinition, ModelOperation
 export StanBlocksError, StanBlocksDiagnostic, diagnostic
 
 using OrderedCollections, JSON, StanLogDensityProblems, LogDensityProblems, Markdown
 using BridgeStan
+import SHA
+using FileWatching: Pidfile
 import Tables   # light interface package: lets a DataFrame / Tables.jl source be a data kwarg (see `_table_stan_type`)
 
 # --- Error type for StanBlocks computations (defined early so submodules can use it) ---
