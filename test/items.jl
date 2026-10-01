@@ -915,6 +915,28 @@ end
     msg(e::AssertionError) = e.msg
     msg(e::MethodError) = e.msg
 
+    # Eval-free proof helper (snag `value-based-dist`): snapshot the (binding
+    # count, method count) of the modules a value trace could register into. A
+    # raw `get_world_counter()` pin is NOT portable — Julia 1.12 bumps the
+    # counter on every top-level eval — but ambient bumps add no bindings or
+    # methods, so this snapshot is stable across versions while still catching
+    # any `Core.eval` (new globals, types, or methods on existing functions).
+    function eval_state(mods...)
+        total_names = 0
+        total_methods = 0
+        for mod in mods
+            ns = names(mod; all=true)
+            total_names += length(ns)
+            for n in ns
+                isdefined(mod, n) || continue
+                f = getproperty(mod, n)
+                f isa Function || continue
+                total_methods += length(methods(f))
+            end
+        end
+        (total_names, total_methods)
+    end
+
     # `@lpxf` opts a `_lpdf`-named @deffun into the base-callable + lpxf/rng/likelihood
     # triad registration: it binds the base fn (`simple`, `vararg`, `fof`, `srs2`) and
     # wires `lpxf_expr`/`rng_expr`/`likelihood_expr` so the name is usable both as a
@@ -12467,7 +12489,7 @@ once through `@deffun` (scaffolding eval, what values replace) and once
 through the value constructor — and both must emit identical Stan.
 """
 @testitem "slic: value families lower without method registration" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
-    using .StanBlocksTestSetup: stan_block
+    using .StanBlocksTestSetup: stan_block, eval_state
     vd = :(@lhs @lpxf tw_hetero_lpdf(x::vector[n], mu::vector[n])::real = begin
         if any(x .< 0)
             return negative_infinity()
@@ -12527,15 +12549,19 @@ through the value constructor — and both must emit identical Stan.
     defkey(d) = Tuple([(x.name, x.signature) for x in d.definitions])
     @test defkey(d_val) == defkey(d_fn)
 
-    # The no-eval proof: construction + tracing advance no method tables.
-    # (Warmed once above so lazy init cannot pollute the snapshot.)
-    w0 = Base.get_world_counter()
+    # The no-eval proof: construction + tracing define no bindings or methods.
+    # (Warmed once above so lazy init cannot pollute the snapshot. Snapshot
+    # counts, not the world counter — ambient top-level evals bump the counter
+    # on Julia 1.12+ without defining anything. Pre-bind the region's own
+    # globals: top-level assignment creates bindings — including `s0` itself.)
+    vfam2 = m_val2 = code_val2 = s1 = s0 = nothing
+    s0 = eval_state(@__MODULE__, StanBlocks)
     vfam2 = ValueFamily(:tw_hetero, :lpdf, vd, vp, vr, @__MODULE__; support=(; lower=0.0))
     m_val2 = Base.merge(StanBlocks.SlicModel(base_body, data, @__MODULE__),
         Expr(:call, :~, :tau, Expr(:call, vfam2, :mu)))(; n=2)
     code_val2 = stan_code(stan_model(m_val2))
-    w1 = Base.get_world_counter()
-    @test w0 == w1
+    s1 = eval_state(@__MODULE__, StanBlocks)
+    @test s0 == s1
     @test code_val2 == code_val
 end
 
@@ -12757,6 +12783,7 @@ end
 end
 
 @testitem "slic: concurrent value-family builds are serial-identical" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: eval_state
     # Expr-built defs (no parser metadata — the programmatic consumer path).
     function makefam(i)
         label = Symbol("vfam", i)
@@ -12777,16 +12804,16 @@ end
             Dict{Symbol,Any}(:y => 0.5 + 0.01 * i, :mu => 0.0), @__MODULE__)))
     end
     refs = [tracemodel(makefam(i), i) for i in 1:4]
-    # Warm the exact `@spawn` site once: first task-thunk use in a process
-    # advances world age (Julia runtime, not StanBlocks) and must not pollute
-    # the snapshot. A `@spawn 1` elsewhere does NOT cover this site — each
-    # syntactic thunk compiles on first use — so run the whole driver once.
+    # Warm the exact `@spawn` site once so first-use task-thunk compilation
+    # (Julia runtime, not StanBlocks) cannot pollute the snapshot below.
     runall() = Base.fetch.([Base.Threads.@spawn tracemodel(makefam(i), i) for i in 1:4])
     runall()
-    w0 = Base.get_world_counter()
+    # Pre-bind the region's own globals (see the item above).
+    outs = s1 = s0 = nothing
+    s0 = eval_state(@__MODULE__, StanBlocks)
     outs = runall()
-    w1 = Base.get_world_counter()
-    @test w0 == w1
+    s1 = eval_state(@__MODULE__, StanBlocks)
+    @test s0 == s1
     for i in 1:4
         @test outs[i] == refs[i]
         @test occursin("vfam$(i)_lpdf", outs[i])
