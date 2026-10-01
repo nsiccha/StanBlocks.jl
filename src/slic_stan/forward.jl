@@ -104,8 +104,8 @@ _reject_nullary_constant_call(x::CanonicalExpr, resolved_head) = error(
 # A user module's own `@deffun` must win over a same-named builtin when the
 # builtin has no matching signature — otherwise the call is emitted with no
 # definition behind it and only stanc objects (snag `module-deffun-sh-c54067c8`:
-# Bruno's 4-arg `truncated_normal_lpdf` was shadowed by the 5-arg builtin into
-# an undeclared-identifier stanc rejection). `forward!(::Symbol)` resolves
+# a downstream module's 4-arg `truncated_normal_lpdf` was shadowed by the 5-arg
+# builtin into an undeclared-identifier stanc rejection). `forward!(::Symbol)` resolves
 # info → builtin → mod → Main, so the builtin claims the head before the
 # module is consulted; the mismatch only shows afterward as an `anything`-typed
 # call with no `fundef`. When THAT shape meets a udf-only builtin name (one
@@ -2953,7 +2953,7 @@ _forward_loop_core!(;
     # per-cell integer RESPONSE (an omitted response column in a kernel plate).
     # It stays in the promoted set and collects to an outer `array[N…] int[K]`
     # (fixed width) or a ragged flat-memory carrier (varying width), exactly like
-    # a continuous response cell. (Snag omitted-integer: Bruno TGI prior.)
+    # a continuous response cell. (Snag omitted-integer-f59f449a.)
     inline_int_names = Set{Symbol}(
         f for (f, T) in fresh if center_type(T) <: types.int && stan_ndim(T) >= 1 &&
             !(center_type(T) === types.int && _decl_role(T) === :sampled)

@@ -1192,7 +1192,7 @@ end
     # live in the ntup's `info.arg_types`, NOT in its (empty) `stan_size` — so
     # `deanon_type` has to recurse into the element types or they reach Stan
     # verbatim (undeclared identifier in a size position + a phantom `data` decl).
-    # Shape lifted from a production PKPD model's `ragged_imap1` / `groupedby_idxs`.
+    # The shape of a generic group-by-value index helper (a ragged integer map).
     @deffun begin
         ntd_filter_n(f, x::anything[n], args...) = begin
             rv = 0
@@ -4877,7 +4877,7 @@ Verify `slic: scalar-array elementwise broadcasting (jbroadcasted)` in an isolat
         @test stanc_compiles(model)
     end
     @testset "plain scalar * scalar array lowers as Julia scalar scaling" begin
-        # Deployed-PKPD regression: comparison broadcasting intentionally returns
+        # Downstream regression: comparison broadcasting intentionally returns
         # an index-capable `array[] int` mask. Multiplying that mask by a real
         # coefficient is nevertheless ordinary Julia scalar scaling, not
         # array-array multiplication, and must produce a Stan vector.
@@ -9409,12 +9409,12 @@ end
 """
 A module's own `@deffun` resolves past a same-named builtin on arity mismatch.
 
-Regression for snag `module-deffun-sh-c54067c8` (reported by Bruno). Symbol
+Regression for snag `module-deffun-sh-c54067c8` (reported downstream). Symbol
 resolution is info → builtin → mod → Main, so a DIRECT `_lpdf`/`_rng` call to a
 name the builtin owns NEVER consulted the defining module — even when no
 builtin overload matched the argument shapes. The call then traced to
 `anything` with no `fundef`, no definition was emitted, and (unlike the `~`
-form, which `_check_lpxf_resolves` guards) nothing raised: Bruno's 4-arg
+form, which `_check_lpxf_resolves` guards) nothing raised: a module's 4-arg
 `truncated_normal_lpdf` call inside its own `@deffun` was shadowed by the 5-arg
 builtin into Stan that stanc rejected as an undeclared identifier.
 
@@ -9425,9 +9425,10 @@ overloads match nothing either it fails loudly naming both definitions.
 @testitem "slic: module @deffun resolves past a same-named builtin on arity mismatch" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles
 
-    # Bruno's shape, replayed in this item's own module: a 4-arg left-censored
+    # A synthetic module family in this item's own module: a 4-arg left-censored
     # `truncated_normal_lpdf` + 3-arg rng next to the builtin's 5-arg
-    # (lloq+uloq) overload of the same name.
+    # (lloq+uloq) overload of the same name, called DIRECTLY from a wrapper
+    # family's `@deffun` bodies.
     @deffun @lhs @lpxf truncated_normal_lpdf(y::real, loc::real, scale::real, lloq::real)::real =
         if y <= lloq
             normal_lcdf(lloq, loc, scale)
@@ -9441,34 +9442,34 @@ overloads match nothing either it fails loudly naming both definitions.
     end
     @deffun truncated_normal_rng(loc::real, scale::real, lloq::real)::real =
         mymax(normal_rng(loc, scale), lloq)
-    @deffun addpropnormal_lpdfs(y::real, loc::real, add_scale::real, prop_scale::real, lloq::real)::real =
-        truncated_normal_lpdf(y, loc, sqrt(add_scale^2 + (loc * prop_scale)^2), lloq)
-    @deffun addpropnormal_lpdfs(y::vector[n], loc::vector[n], add_scale::vector[n], prop_scale::vector[n], lloq::vector[n])::vector[n] = begin
+    @deffun lcwrap_lpdfs(y::real, loc::real, scale::real, lloq::real)::real =
+        truncated_normal_lpdf(y, loc, 2 * scale, lloq)
+    @deffun lcwrap_lpdfs(y::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n])::vector[n] = begin
         rv::vector[n]
         for i in 1:n
-            rv[i] = addpropnormal_lpdfs(y[i], loc[i], add_scale[i], prop_scale[i], lloq[i])
+            rv[i] = lcwrap_lpdfs(y[i], loc[i], scale[i], lloq[i])
         end
         rv
     end
-    @deffun @lhs @lpxf addpropnormal_lpdf(y::vector[n], loc::vector[n], add_scale::vector[n], prop_scale::vector[n], lloq::vector[n])::real =
-        sum(addpropnormal_lpdfs(y, loc, add_scale, prop_scale, lloq))
-    @deffun addpropnormal_rng(loc::real, add_scale::real, prop_scale::real, lloq::real)::real =
-        truncated_normal_rng(loc, sqrt(add_scale^2 + (loc * prop_scale)^2), lloq)
-    @deffun addpropnormal_rng(loc::vector[n], add_scale::vector[n], prop_scale::vector[n], lloq::vector[n])::vector[n] = begin
+    @deffun @lhs @lpxf lcwrap_lpdf(y::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n])::real =
+        sum(lcwrap_lpdfs(y, loc, scale, lloq))
+    @deffun lcwrap_rng(loc::real, scale::real, lloq::real)::real =
+        truncated_normal_rng(loc, 2 * scale, lloq)
+    @deffun lcwrap_rng(loc::vector[n], scale::vector[n], lloq::vector[n])::vector[n] = begin
         rv::vector[n]
         for i in 1:n
-            rv[i] = addpropnormal_rng(loc[i], add_scale[i], prop_scale[i], lloq[i])
+            rv[i] = lcwrap_rng(loc[i], scale[i], lloq[i])
         end
         rv
     end
-    @deffun addpropnormal_rng(vector[n], loc::vector[n], add_scale::vector[n], prop_scale::vector[n], lloq::vector[n])::vector[n] =
-        addpropnormal_rng(loc, add_scale, prop_scale, lloq)
+    @deffun lcwrap_rng(vector[n], loc::vector[n], scale::vector[n], lloq::vector[n])::vector[n] =
+        lcwrap_rng(loc, scale, lloq)
 
     # --- POSITIVE: the module's definitions are emitted, stanc accepts ------
     m = @slic (; y = [0.5, -0.2], lloq = [-1.0, -1.0]) begin
         mu ~ normal(0.0, 1.0)
         locv = mu .+ [0.0, 0.0]
-        y ~ addpropnormal(locv, [0.5, 0.5], [0.1, 0.1], lloq)
+        y ~ lcwrap(locv, [0.5, 0.5], lloq)
         mu
     end
     code = stan_code(m)
@@ -11332,8 +11333,8 @@ tail-position `ensure_xreturn` normalisation the `return`-branch probes exercise
 
         # Snag `deffun-elseif-em-7310340a`: the chain nested inside a `for` loop,
         # `+=` branches, implicit tail return, `@lhs @lpxf` — verbatim the shape
-        # of BRM's `brm_ranef_sd_lpdf` (sbimpl.jl), which the ARV-393 joint PK+QT
-        # spec emits for any shared-`|ID|` `sd(...)`.
+        # of BRM's `brm_ranef_sd_lpdf` (sbimpl.jl), which a joint downstream spec
+        # emits for any shared-`|ID|` `sd(...)`.
         @lhs @lpxf elseif_loop_sd_lpdf(tau::vector[n], family::vector[n],
                                         rate::vector[n])::real = begin
             rv = 0.
@@ -11414,15 +11415,15 @@ end
 
 @testitem "slic: prior-only program lowers plates, fills and bounded priors to generated quantities" tags=[:slic, :plate, :ragged, :stanc, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
-    # Snag prior-predictive-7e463983 (reported from Bruno's `regime="prior"` PK/QT
+    # Snag prior-predictive-7e463983 (reported from a downstream prior-only
     # program). With NO likelihood, every parameter must be an `_rng` draw in
     # generated quantities, in dependency order, followed by the transforms —
     # `parameters {}` and `model {}` empty, so the program runs as `fixed_param`.
     # Before the fix a prior-only compiler-injected slice fill (a plate's return
     # fill / cell-local `=`, an inlined helper's `out[i] = …`) recursed into its
-    # RHS in `backward!` and pinned every source as a parameter: 21 of 24
-    # parameters of that program stayed sampled behind a 92-line transformed
-    # parameters block.
+    # RHS in `backward!` and pinned every source as a parameter: nearly every
+    # parameter of that program stayed sampled behind a transformed parameters
+    # block.
     empty_block(code, name) = strip(stan_block(code, name)) == "{\n}"
 
     # (a) The reporter's shape: correlated random-effect block, population
@@ -12342,7 +12343,7 @@ end
 """
 Verify `slic: deffun result size routed through a function-local`.
 
-Snag `deffun-result-si-9d9eaab2` (BRM `linear_pk_read_locs_auc_cell`): a
+Snag `deffun-result-si-9d9eaab2` (a downstream per-cell read kernel): a
 `@deffun` whose result size is spelled through a FUNCTION-LOCAL int
 (`n_reads = max(op_read_idx); reads = rep_vector(0., 2 * n_reads)`)
 transpiled clean but emitted invalid Stan — the local's bare name escaped
