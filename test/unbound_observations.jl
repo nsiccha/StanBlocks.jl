@@ -130,8 +130,8 @@ end
 end
 
 """
-Per-cell unbound INTEGER responses (snag omitted-integer-f59f449a, Bruno TGI
-prior): a `~`-defined `int[K]` plate cell is a sampled response, not an
+Per-cell unbound INTEGER responses (snag omitted-integer-f59f449a, a prior-only
+downstream model): a `~`-defined `int[K]` plate cell is a sampled response, not an
 ephemeral index array — it promotes to an outer collection and
 forward-simulates in generated quantities, exactly like a continuous cell.
 Deterministic int cells (findall/boolean-mask) keep inlining (plate-cell-int).
@@ -140,7 +140,7 @@ Deterministic int cells (findall/boolean-mask) keep inlining (plate-cell-int).
     using .StanBlocksTestSetup: stan_block
 
     @deffun begin
-        "Category family mimicking Bruno `tgi_category`."
+        "Synthetic ordinal category family."
         @lhs @lpxf tcat_lpmf(y::int[n], r::vector[n])::real = sum(r)
         tcat_rng(r::vector[n])::int[n] = begin
             rv::int[n]
@@ -150,7 +150,7 @@ Deterministic int cells (findall/boolean-mask) keep inlining (plate-cell-int).
             rv
         end
         tcat_rng(int[n], r::vector[n])::int[n] = tcat_rng(r)
-        "Binary family mimicking Bruno `tgi_response`."
+        "Synthetic binary response family."
         @lhs @lpxf tresp_lpmf(y::int[n], r::vector[n])::real = sum(r)
         tresp_rng(r::vector[n])::int[n] = begin
             rv::int[n]
@@ -258,7 +258,7 @@ end
     using .StanBlocksTestSetup: stanc_compiles
 
     @deffun begin
-        "Category family with real draws, mimicking Bruno `tgi_category`."
+        "Synthetic ordinal category family with real draws."
         @lhs @lpxf tcat_lpmf(y::int[n], r::vector[n])::real = sum(r)
         tcat_rng(r::vector[n])::int[n] = begin
             rv::int[n]
@@ -272,7 +272,7 @@ end
             rv
         end
         tcat_rng(int[n], r::vector[n])::int[n] = tcat_rng(r)
-        "Binary family with real draws, mimicking Bruno `tgi_response`."
+        "Synthetic binary response family with real draws."
         @lhs @lpxf tresp_lpmf(y::int[n], r::vector[n])::real = sum(r)
         tresp_rng(r::vector[n])::int[n] = begin
             rv::int[n]

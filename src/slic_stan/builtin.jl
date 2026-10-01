@@ -249,16 +249,16 @@ end
     normal_lcdf_stable
     normal_lccdf_stable
 
-    # Longitudinal-biomarker (generable) model-family port. The obs
-    # model is a censored normal w/ limits of quantification (`truncated_normal`
-    # — name kept to match the source fn even though semantics = censoring);
+    # Longitudinal dose/time-response building blocks. The obs model is a
+    # censored normal w/ limits of quantification (`truncated_normal` — the
+    # name says truncated, but the semantics are censoring);
     # `truncated_normal_lpdf` auto-expands to the
     # truncated_normal / _lpdfs / _rng / _cdf / _lccdf / _lcdf family. The mean
     # kernels (`biomarker_time_response` single-peak bump, `biomarker_dose_response`
-    # log-sigmoid) + index/broadcast helpers are composed by BRM's biomarker
-    # term (contract cut (b): kernels here, BRM composes log_y).
-    # `truncated_student_t_lpdf` = the heavy-tailed obs variant (generated family;
-    # same censoring contract, + a leading `dof` arg, branches on the LOQ limits).
+    # log-sigmoid) + index/broadcast helpers are composed downstream (e.g. by a
+    # BRM grouped term: kernels here, the consumer composes log_y).
+    # `truncated_student_t_lpdf` = the heavy-tailed obs variant (same censoring
+    # contract, + a leading `dof` arg, branches on the LOQ limits).
     truncated_normal_lpdf
     truncated_student_t_lpdf
     biomarker_time_response
@@ -2529,11 +2529,11 @@ end
 @deffun lkj_corr_rng(matrix[n,m], eta)::matrix[n,m] = lkj_corr_rng(n, eta)
 
 # =============================================================================
-# Longitudinal-biomarker (generable) model-family port.
-# Contract (cut (b)): StanBlocks ships the obs-model
-# triad + the parametric mean KERNELS + index/broadcast helpers; BRM's biomarker
-# term composes `log_y = baseline[series] + affectable .* time_resp .* exp(dose_resp)`
-# and wires the floor hierarchy. All resolve via the builtin path (no import).
+# Longitudinal dose/time-response building blocks.
+# Contract: StanBlocks ships the censored obs-model
+# triad + the parametric mean KERNELS + index/broadcast helpers; a downstream
+# term composes e.g. `log_y = baseline[series] + affectable .* time_resp .* exp(dose_resp)`
+# and wires its own hierarchy. All resolve via the builtin path (no import).
 # =============================================================================
 @deffun begin
     # --- censored-normal observation model (limits of quantification) --------
@@ -2589,12 +2589,13 @@ end
     truncated_normal_rng(vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] =
         truncated_normal_rng(loc, scale, lloq, uloq)
 
-    # Heavy-tailed censored obs model (generated biomarker family). Direct analog of
-    # `truncated_normal` + a leading `dof` arg. NOTE the censored branches use the
-    # LOQ LIMITS (`lloq`/`uloq`) inside lcdf/lccdf — faithful to the generated
-    # source (`truncated_normal` used `obs`; the two source files genuinely differ,
-    # so each is mirrored per-source). `~ truncated_student_t(dof, loc, scale,
-    # lloq, uloq)` samples; SLIC auto-emits the GQ log-lik + predictive draw.
+    # Heavy-tailed censored obs model. Direct analog of `truncated_normal` + a
+    # leading `dof` arg. NOTE the censored branches evaluate the tail mass at the
+    # LOQ LIMITS (`lloq`/`uloq`), whereas `truncated_normal_lpdf` evaluates it at
+    # `obs`; the two coincide when a censored observation is recorded at its
+    # limit, and each family keeps its own published semantics. `~
+    # truncated_student_t(dof, loc, scale, lloq, uloq)` samples; SLIC auto-emits
+    # the GQ log-lik + predictive draw.
     truncated_student_t_lpdf(obs::real, dof::real, loc::real, scale::real, lloq::real, uloq::real)::real = begin
         rv::real[1]
         rv[1] = student_t_lpdf(obs, dof, loc, scale)

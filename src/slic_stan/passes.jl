@@ -143,9 +143,9 @@ backward!(x::AssignmentExpr; info) = begin
         # History: `aef6a42` recursed into the RHS here instead, pinning every source
         # as a parameter so a TRANSFORMED-PARAMETERS fill kept its sources in scope.
         # That was the conservative direction, but it made a likelihood-free program
-        # sample its prior with NUTS: the plate return fill of a prior-regime PK/QT
-        # model kept 21 parameters, a 92-line transformed parameters block and a full
-        # adaptation run (snag prior-predictive-7e463983). Moving the fill WITH its
+        # sample its prior with NUTS: a prior-only plate model's return fill kept
+        # nearly every parameter sampled behind a transformed parameters block and a
+        # full adaptation run (snag prior-predictive-7e463983). Moving the fill WITH its
         # sources is what keeps `parameters {}` empty when there is no likelihood.
         # A data-only fill (`qual == :data`, transformed data) needs neither.
         info[key] = remake(info[key]; qual=:quantities)
