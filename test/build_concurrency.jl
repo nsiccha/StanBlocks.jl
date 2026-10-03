@@ -25,9 +25,17 @@ using TestItemRunner
         path = joinpath(dir, "alias.stan")
         a, b = repeat("a", 100_000), repeat("b", 100_000)
         StanBlocks._atomic_build_write(path, a)
+        # Windows rename briefly holds delete access to the new file, which
+        # can deny an ordinary reader's open. Retry only that sharing error;
+        # every successful read must still contain one complete source.
+        read_alias = Base.retry(read;
+            delays=Base.ExponentialBackOff(n=10, first_delay=0.01,
+                max_delay=0.25, factor=2.0, jitter=0.0),
+            check=(_, err) -> Sys.iswindows() && err isa SystemError &&
+                err.errnum == Base.Libc.EACCES)
         readers = [Threads.@spawn begin
             for _ in 1:100
-                bytes = read(path, String)
+                bytes = read_alias(path, String)
                 bytes == a || bytes == b || error("partial source publication")
                 yield()
             end
