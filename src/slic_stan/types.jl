@@ -600,11 +600,18 @@ _table_stan_type(expr, tbl; kwargs...) = begin
 end
 stan_type(expr, value::Integer; kwargs...) = StanType(types.int; value, kwargs..., qual=:data)
 stan_type(expr, value::AbstractFloat; kwargs...) = StanType(types.real; value, kwargs...)
-stan_type(expr, value::AbstractVector{<:Real}; kwargs...) = StanType(
+_real_vector_stan_type(expr, value; kwargs...) = StanType(
     types.vector,
     stan_expr.((Symbol(expr, "_n"), ), size(value));
     value, kwargs...
 )
+stan_type(expr, value::AbstractVector{<:Real}; kwargs...) = _real_vector_stan_type(expr, value; kwargs...)
+# Empty bottom-eltype vectors overlap the integer and ragged methods. Give
+# them the real-vector contract; a nonempty bottom array has no defined values.
+stan_type(expr, value::AbstractVector{Union{}}; kwargs...) = begin
+    isempty(value) || throw(ArgumentError("Bottom-eltype data vector `$expr` must be empty; supply defined numeric values for a nonempty input."))
+    _real_vector_stan_type(expr, value; kwargs...)
+end
 stan_type(expr, value::AbstractMatrix{<:Real}; kwargs...) = StanType(
     types.matrix,
     stan_expr.((Symbol(expr, "_m"), Symbol(expr, "_n"), ), size(value));
