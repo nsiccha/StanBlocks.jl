@@ -40,6 +40,44 @@ using TestItemRunner
         # The artifact path is immutable, even if a caller damages the cache.
         @test_throws ErrorException StanBlocks._write_immutable_stan_source(path, b)
         @test read(path, String) == a
+
+        # Refused: replacing a directory must preserve it and surface the
+        # native failure, never fall back to copying (atomic publication).
+        directory = joinpath(dir, "keep-directory")
+        mkpath(directory)
+        marker = joinpath(directory, "marker")
+        write(marker, a)
+        before = sort(readdir(dir))
+        @test_throws Base.IOError StanBlocks._atomic_build_write(directory, b)
+        @test read(marker, String) == a
+        @test sort(readdir(dir)) == before
+
+        if Sys.iswindows()
+            # A real Windows handle blocks rename until its reader closes.
+            ready = Channel{Nothing}(1)
+            reader = Threads.@spawn open(path, "r") do io
+                put!(ready, nothing)
+                sleep(0.05)
+                @test read(io, String) == a
+            end
+            take!(ready)
+            try
+                StanBlocks._atomic_build_write(path, b)
+            finally
+                fetch(reader)
+            end
+            @test read(path, String) == b
+
+            # Persistent OS denial must surface rather than report success
+            # or delete the old source (dev §1; atomic publication contract).
+            before = sort(readdir(dir))
+            open(path, "r") do io
+                @test_throws Base.IOError StanBlocks._atomic_build_write(path, a)
+                @test read(io, String) == b
+            end
+            @test read(path, String) == b
+            @test sort(readdir(dir)) == before
+        end
     end
 end
 
