@@ -86,6 +86,7 @@ _stan_model(x::SlicModel; info) = begin
         traced = forward!(x; info)
         stage = :lowering
         lowered = backward!(traced; info)
+        info = remake(info; _model_local_transforms=_model_local_transforms(lowered; info))
         distribute!(lowered; info)
         emission_lnn = _diagnostic_lnn(
             context.expr_stack,

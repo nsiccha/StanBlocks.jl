@@ -292,6 +292,67 @@ backward!(x::StanExpr{Symbol}; info) = begin
 end
 backward!(x::StanType; info) = remake(x; lqual=:affects_likelihood)
 
+# Stan forbids integers anywhere in a top-level transformed-parameter type,
+# including nested tuples, usertypes, and arrays. Keep such derived values as
+# model locals and repeat their deterministic construction in generated
+# quantities, where their original types and output names remain legal. The
+# dependent transforms must follow them, rather than reading a model local
+# from the earlier transformed-parameters block. Plan the complete dependency
+# closure before distribution: a compiler-owned result may have several fills.
+_contains_integer(t::StanType) = center_type(t) <: types.int ||
+    any(_contains_integer, values(get(info(t), :arg_types, ())))
+_uses_model_local(x, names) = false
+_uses_model_local(x::StanExpr{Symbol}, names) = expr(x) in names ||
+    _uses_model_local(type(x), names)
+_uses_model_local(x::StanExpr, names) = _uses_model_local(expr(x), names) ||
+    _uses_model_local(type(x), names)
+_uses_model_local(x::StanType, names) = _uses_model_local(stan_size(x), names) ||
+    _uses_model_local(values(constraints(x)), names) ||
+    _uses_model_local(get(info(x), :arg_types, ()), names)
+_uses_model_local(x::CanonicalExpr, names) = _uses_model_local(x.args, names) ||
+    _uses_model_local(values(x.kwargs), names)
+_uses_model_local(x::Union{Tuple,NamedTuple,AbstractVector}, names) =
+    any(a -> _uses_model_local(a, names), x)
+
+_transform_bindings!(bindings, x; info) = nothing
+_transform_bindings!(bindings, x::StanExpr; info) =
+    _transform_bindings!(bindings, expr(x); info)
+_transform_bindings!(bindings, x::CanonicalExpr; info) =
+    foreach(a -> _transform_bindings!(bindings, a; info), x.args)
+# A for-loop header also uses `=` but keeps a raw Symbol LHS. It binds an
+# iteration index, rather than declaring a model-scope transformed value.
+_transform_bindings!(bindings, x::AssignmentExpr; info) = nothing
+_transform_bindings!(bindings, x::AssignmentExpr{<:StanExpr}; info) = begin
+    lhs, rhs = x.args
+    key = _base_lhs_symbol(lhs)
+    base = get(vars(info), key, lhs)
+    q = expr(lhs) isa Symbol ? qual(lhs) : qual(base)
+    q == :parameter && push!(bindings, (key, type(base), rhs))
+end
+_transform_bindings!(bindings, x::DeclExpr; info) = begin
+    key = _decl_lhs_symbol(x)
+    base = info[key]
+    qual(base) == :parameter && _decl_role(base) == :fill &&
+        push!(bindings, (key, type(base), nothing))
+end
+_model_local_transforms(x; info) = begin
+    bindings = Tuple{Symbol,StanType,Any}[]
+    _transform_bindings!(bindings, x; info)
+    names = Set{Symbol}(key for (key, t, _) in bindings if _contains_integer(t))
+    isempty(names) && return names
+    previous = -1
+    while previous != length(names)
+        previous = length(names)
+        for (key, t, rhs) in bindings
+            (_uses_model_local(t, names) || _uses_model_local(rhs, names)) && push!(names, key)
+        end
+    end
+    names
+end
+_transform_blocks(x; info) =
+    _uses_model_local(x, get(meta(info), :_model_local_transforms, ())) ?
+        (:model, :generated_quantities) : (:transformed_parameters,)
+
 distribute!(x::BlockExpr; info) = distribute!.(x.args; info)
 distribute!(x::Union{LineNumberNode,Nothing}; info) = nothing
 distribute!(x::DocumentExpr{<:Any,<:BlockExpr}; info) = distribute!(x.args[2]; info)
@@ -331,7 +392,7 @@ qual(x::SamplingExpr) = qual(x.args[1])
 distribution_blocks(x::AssignmentExpr; info) = if qual(x) == :data
     (:transformed_data, )
 elseif qual(x) == :parameter
-    (:transformed_parameters, )
+    _transform_blocks(x; info)
 else
     (:generated_quantities, )
 end
@@ -405,7 +466,7 @@ distribution_blocks(x::StanExpr; info) = if center_type(x) === types.void
     if qual(x) == :data
         (:transformed_data,)
     elseif qual(x) == :parameter
-        (:transformed_parameters,)
+        _transform_blocks(x; info)
     else
         (:generated_quantities,)
     end
@@ -421,6 +482,7 @@ end
 # wrapper's own qual is only the provisional declaration-time qualifier; ignore it.
 _qual_blocks(q) = q == :data ? (:transformed_data,) :
     q == :parameter ? (:transformed_parameters,) : (:generated_quantities,)
+_qual_blocks(q, x; info) = q == :parameter ? _transform_blocks(x; info) : _qual_blocks(q)
 distribution_blocks(x::StanExpr{<:DeclExpr}; info) = begin
     base = info[_decl_lhs_symbol(expr(x))]
     role = _decl_role(base)
@@ -430,10 +492,11 @@ distribution_blocks(x::StanExpr{<:DeclExpr}; info) = begin
         role == :fill || error(
             "Fresh declaration `", expr(base), "` reached distribution with unknown role `", role, "`."
         )
-        _qual_blocks(qual(base))
+        _qual_blocks(qual(base), base; info)
     end
 end
-distribution_blocks(x::StanExpr{<:AssignmentExpr}; info) = _qual_blocks(qual(info[_base_lhs_symbol(expr(x))]))
+distribution_blocks(x::StanExpr{<:AssignmentExpr}; info) =
+    _qual_blocks(qual(info[_base_lhs_symbol(expr(x))]), x; info)
 # A compiler-injected `for` loop whose body is fills (Feature-1 ragged-simplex:
 # `for(g in 1:G) p_flat[lo:hi] = simplex_jacobian(...)`, G data-sized so it can't
 # unroll). Route the WHOLE loop by the coarse (max) qual over the base vars its body
@@ -450,7 +513,7 @@ _for_body_qual(fe::ForExpr, info) = begin
     end
     q
 end
-distribution_blocks(x::StanExpr{<:ForExpr}; info) = _qual_blocks(_for_body_qual(expr(x), info))
+distribution_blocks(x::StanExpr{<:ForExpr}; info) = _qual_blocks(_for_body_qual(expr(x), info), x; info)
 
 # Route a compiler-owned loop FINE-GRAINED by body statement while preserving a
 # coarse symbolic runtime loop in every destination block. A plate body commonly
