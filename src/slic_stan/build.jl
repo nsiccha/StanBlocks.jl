@@ -66,13 +66,28 @@ end
 
 # rename, rather than mv(force=true), keeps the old file visible until the new
 # complete bytes replace it. The temporary file lives on the same filesystem.
+function _rename_build_file(src, dst)
+    # Julia 1.10's Filesystem.rename falls back to copy/remove on failure.
+    # Publication needs a strict native rename on every supported Julia line.
+    err = ccall(:jl_fs_rename, Int32, (Cstring, Cstring), src, dst)
+    err < 0 && Base.uv_error("rename($(repr(src)), $(repr(dst)))", err)
+    nothing
+end
+
 function _atomic_build_write(path, value)
     mkpath(dirname(path))
     tmp, io = mktemp(dirname(path))
     try
         write(io, value)
         close(io)
-        Base.Filesystem.rename(tmp, path)
+        # Windows readers opened without delete sharing temporarily prevent
+        # replacement. Retry only that platform's access-denied error; keep
+        # the old file visible and propagate a persistent failure unchanged.
+        delays = Base.ExponentialBackOff(n=10, first_delay=0.01,
+            max_delay=0.25, factor=2.0, jitter=0.0)
+        Base.retry(_rename_build_file; delays,
+            check=(_, err) -> Sys.iswindows() && err isa Base.IOError &&
+                err.code == Base.UV_EACCES)(tmp, path)
     finally
         isopen(io) && close(io)
         ispath(tmp) && rm(tmp)
