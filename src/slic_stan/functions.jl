@@ -2276,7 +2276,24 @@ end
 # the placeholders it actually introduced. The explicit TraceContext supplies
 # the counter; the names never reach Stan output because they are always
 # deanonymized away.
-anon_arg(x::StanExpr, i::Int, tok) = StanExpr(Symbol(:_arg, tok, :_, i), type(x))
+anon_size_arg_types(at, i, tok, fields) = at
+_anon_size_arg_types(at, i, tok, fields) = ntuple(length(at)) do field
+    anon_size_type(at[field], i, tok, (fields..., field))
+end
+anon_size_arg_types(at::Tuple, i, tok, fields) = _anon_size_arg_types(at, i, tok, fields)
+anon_size_arg_types(at::NamedTuple, i, tok, fields) =
+    NamedTuple{keys(at)}(_anon_size_arg_types(at, i, tok, fields))
+anon_size_type(T::StanType, i, tok, fields=()) = begin
+    sizes = ntuple(length(stan_size(T))) do dimension
+        s = stan_size(T)[dimension]
+        StanExpr(CallSizeRef(tok, i, fields, dimension), type(s))
+    end
+    at = get(info(T), :arg_types, nothing)
+    nat = anon_size_arg_types(at, i, tok, fields)
+    remake(T, sizes...; (at === nothing ? (;) : (; arg_types=nat))...)
+end
+anon_arg(x::StanExpr, i::Int, tok) =
+    StanExpr(Symbol(:_arg, tok, :_, i), anon_size_type(type(x), i, tok))
 anon_arg(x, i::Int, tok) = x
 anon_canonical(x::CanonicalExpr, tok) = remake(x, ntuple(i -> anon_arg(x.args[i], i, tok), length(x.args))...)
 anon_canonical(x::CanonicalExpr{Colon}, tok) = x   # needs real args for range size
