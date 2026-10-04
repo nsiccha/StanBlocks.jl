@@ -1,6 +1,23 @@
+# A caller's shape is already in caller scope. Keep it opaque while inferring
+# a callee's result: a callee argument/local can have the same spelling as a
+# symbol in that shape (e.g. `x` in a ragged slice's length).
+struct CallSizeRef
+    token::Int
+    argument::Int
+    fields::Tuple
+    dimension::Int
+end
 
 deanon_size(s, x, tok) = s
 deanon_size(s::StanExpr, x::CanonicalExpr, tok) = _deanon_size_expr(expr(s), s, x, tok)
+_deanon_size_expr(e::CallSizeRef, s, x, tok) = begin
+    e.token == tok || return s
+    T = type(x.args[e.argument])
+    for field in e.fields
+        T = info(T).arg_types[field]
+    end
+    stan_size(T)[e.dimension]
+end
 # Match this call's own placeholders `_arg<tok>_<i>` only — never an inner/outer
 # level's (different `tok`), which would alias a param to the wrong arg.
 _deanon_size_expr(e::Symbol, s, x, tok) = begin
