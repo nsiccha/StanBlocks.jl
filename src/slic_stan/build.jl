@@ -1,9 +1,112 @@
-# File locks cover both Julia Tasks and cooperating processes. Do not expire a
-# live compiler's lock on a timeout: a slow build must never acquire a competitor.
-function _with_build_lock(f, path)
+# File locks cover both Julia Tasks and cooperating processes, using Julia's
+# Pidfile protocol so external builders can share it. Do not expire a live
+# compiler's lock on a timeout: a slow build must never acquire a competitor.
+# A holder killed before release (SIGKILL, OOM) cannot remove its file, so a
+# waiter reclaims a lock only when its recorded process is gone from this host
+# and its holder stopped refreshing it. Pidfile's own `stale_age` removal is
+# check-then-remove: concurrent waiters delete each other's fresh locks and all
+# enter. Reclaim therefore re-checks the file under a separate short guard.
+# `dead_age`: seconds without an mtime refresh (holders refresh every sixth of
+# it) before a reclaim; `poll`: seconds between a waiter's checks.
+function _with_build_lock(f, path; dead_age=60, poll=10)
     mkpath(dirname(path))
-    Pidfile.mkpidlock(f, path; wait=true)
+    lock = _acquire_build_lock(path, dead_age, poll)
+    try
+        f()
+    finally
+        close(lock)
+    end
 end
+
+function _acquire_build_lock(path, dead_age, poll)
+    while true
+        lock = Pidfile.trymkpidlock(path; refresh=dead_age / 6)
+        lock === false || return lock
+        _reclaim_dead_build_lock(path, dead_age) || _wait_build_lock_change(path, poll)
+    end
+end
+
+function _wait_build_lock_change(path, poll)
+    try
+        watch_file(path, poll)
+    catch err
+        err isa Base.IOError || rethrow()
+        # A release between the attempt and the watch: retry immediately. Any
+        # other watch failure (no inotify watch left) falls back to polling.
+        ispath(path) && sleep(poll)
+    end
+    nothing
+end
+
+_process_exists(pid) = ccall(:uv_kill, Cint, (Cint, Cint), pid, 0) != Base.UV_ESRCH
+
+# The record of a lock whose holder died on this host, or `nothing`. A remote
+# host, a reused live pid, or a foreign format leaves the lock to its holder.
+function _dead_build_lock_record(path, dead_age)
+    record, age = try
+        open(io -> (read(io, String), time() - mtime(io)), path)
+    catch err
+        err isa SystemError && err.errnum == Libc.ENOENT && return nothing
+        rethrow()
+    end
+    age > dead_age || return nothing
+    # Pidfile writes "<pid> <host>" right after creating the file.
+    isempty(record) && return record
+    m = match(r"^([0-9]+) (.+)$"s, record)
+    m === nothing && return nothing
+    pid = tryparse(Cint, m[1])
+    (pid === nothing || pid == 0 || m[2] != gethostname() || _process_exists(pid)) && return nothing
+    record
+end
+
+function _reclaim_dead_build_lock(path, dead_age)
+    _dead_build_lock_record(path, dead_age) === nothing && return false
+    # Another waiter may have reclaimed the file meanwhile and a live process
+    # re-created it, so decide again while holding the guard. The guard is held
+    # only for that check; Pidfile clears one left by a dead reclaimer.
+    guard = Pidfile.trymkpidlock(path * ".reclaim"; stale_age=dead_age)
+    guard === false && return false
+    try
+        record = _dead_build_lock_record(path, dead_age)
+        record === nothing && return false
+        _remove_build_lock(path)
+        @warn "StanBlocks reclaimed a build lock whose holder no longer exists" path record
+        true
+    finally
+        close(guard)
+    end
+end
+
+# Only a non-cooperating process can remove the file under the guard; its
+# absence is then already the outcome a reclaim needs.
+function _remove_build_lock(path)
+    # Windows reserves a deleted name while any handle is open; move it aside.
+    if Sys.iswindows()
+        aside = string(path, '.', getpid(), '.', time_ns(), ".deleted")
+        try
+            _rename_build_file(path, aside)
+        catch err
+            err isa Base.IOError && err.code == Base.UV_ENOENT && return nothing
+            rethrow()
+        end
+        path = aside
+    end
+    rm(path; force=true)
+    nothing
+end
+
+"""
+    StanBlocks.with_toolchain_lock(f, toolchain)
+
+Run `f()` holding the build lock StanBlocks holds while compiling in the
+BridgeStan source/build tree `toolchain` (`.stanblocks-build.pid` in its
+`realpath`). External builders sharing that tree, such as a replay of emitted
+Stan source through `BridgeStan.compile_model`, use it to exclude StanBlocks'
+builds and each other. The lock is never expired while its holder runs; a lock
+left by a process that died on this host is reclaimed.
+"""
+with_toolchain_lock(f, toolchain) = _with_build_lock(f, _toolchain_lock_path(realpath(toolchain)))
+_toolchain_lock_path(home) = joinpath(home, ".stanblocks-build.pid")
 
 function _bridgestan_build_home()
     # BridgeStan may install its default source distribution on first use. The
@@ -135,7 +238,7 @@ function _instantiate_artifact(sc, data; path, make_args, nan_on_error, warn)
     args = String[arg for arg in make_args]
     filename = _source_alias(path, sc)
     home = _bridgestan_build_home()
-    toolchain_lock = joinpath(home, ".stanblocks-build.pid")
+    toolchain_lock = _toolchain_lock_path(home)
     context = _with_build_lock(toolchain_lock) do
         _native_build_context(home, args)
     end

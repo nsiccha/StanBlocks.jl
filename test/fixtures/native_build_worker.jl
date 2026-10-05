@@ -1,7 +1,7 @@
 # Exercise the production artifact layer in separate processes without loading
 # the unrelated DSL/compiler. All inputs name this test's own worktree/env.
 using SHA, BridgeStan, LogDensityProblems
-using FileWatching: Pidfile
+using FileWatching: Pidfile, watch_file
 const JSON = Base.require(Base.PkgId(Base.UUID("682c06a0-de6a-54ab-a142-c8b1cf79cde6"), "JSON"))
 const StanLogDensityProblems = Base.require(Base.PkgId(
     Base.UUID("a545de4d-8dba-46db-9d34-4e41d3f07807"), "StanLogDensityProblems"))
