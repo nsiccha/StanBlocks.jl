@@ -89,6 +89,111 @@ using TestItemRunner
     end
 end
 
+@testitem "build lock: a dead holder's lock is reclaimed, a live holder's never" tags=[:slic, :regression] begin
+    using StanBlocks
+    using Test: TestLogger
+    using Logging: with_logger
+    # A cooperating holder in another process, on Julia's stdlib Pidfile lock
+    # as an external replay builder or an older StanBlocks takes it: it never
+    # refreshes the file, so only its liveness protects it.
+    # Pkg.test hides @stdlib from children; resolve it through the test manifest.
+    project = dirname(Base.active_project())
+    holder_code = "const FileWatching = Base.require(Base.PkgId(Base.UUID(" *
+        "\"7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee\"), \"FileWatching\")); " *
+        "lock = FileWatching.Pidfile.mkpidlock(ARGS[1]); println(\"HELD\"); flush(stdout); sleep(3600)"
+    acquire(path) = Threads.@spawn StanBlocks._with_build_lock(path; dead_age=1, poll=0.25) do
+        read(path, String)
+    end
+    own = "$(getpid()) $(gethostname())"
+    mktempdir() do dir
+        path = joinpath(dir, "toolchain", ".stanblocks-build.pid")
+        mkpath(dirname(path))
+        holder = open(`$(Base.julia_cmd()) --startup-file=no --project=$project -e $holder_code $path`, "r")
+        logger = TestLogger()
+        local waiter
+        try
+            readline(holder) == "HELD" || error("lock holder did not start")
+            waiter = with_logger(() -> acquire(path), logger)
+            # Refused: expiring a live holder's lock on a timeout would let a
+            # competitor into a slow build (build.jl lock contract).
+            @test timedwait(() -> istaskdone(waiter), 5) === :timed_out
+            kill(holder, Base.SIGKILL)  # killed mid-build: its file stays
+        finally
+            process_running(holder) && kill(holder, Base.SIGKILL)
+            wait(holder)
+        end
+        @test isfile(path)
+        @test timedwait(() -> istaskdone(waiter), 60) === :ok
+        @test fetch(waiter) == own
+        @test any(log -> occursin("reclaimed a build lock", log.message), logger.logs)
+        @test !isfile(path) && !isfile(path * ".reclaim")
+
+        # A holder on another host cannot be checked, so it is left alone.
+        write(path, "1 elsewhere.invalid")
+        sleep(1.5)
+        waiter = acquire(path)
+        @test timedwait(() -> istaskdone(waiter), 3) === :timed_out
+        rm(path)
+        @test fetch(waiter) == own
+
+        # A holder killed between creating and writing its file leaves it empty.
+        write(path, "")
+        sleep(1.5)
+        @test fetch(acquire(path)) == own
+
+        # External builders share the toolchain lock through the public helper.
+        lock_path = joinpath(realpath(dir), ".stanblocks-build.pid")
+        @test StanBlocks.with_toolchain_lock(() -> read(lock_path, String), dir) == own
+        @test !isfile(lock_path)
+    end
+end
+
+@testitem "build lock: waiters on a dead holder's lock enter one at a time" tags=[:slic, :regression] begin
+    using StanBlocks
+    # Julia's Pidfile `stale_age` removal is check-then-remove: waiters that
+    # see the same stale file delete each other's fresh locks and all enter.
+    worker = joinpath(@__DIR__, "fixtures", "build_lock_waiter.jl")
+    implementation = joinpath(dirname(pathof(StanBlocks)), "slic_stan", "build.jl")
+    # Pkg.test hides @stdlib from children; resolve it through the test manifest.
+    project = dirname(Base.active_project())
+    holder_code = "const FileWatching = Base.require(Base.PkgId(Base.UUID(" *
+        "\"7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee\"), \"FileWatching\")); " *
+        "lock = FileWatching.Pidfile.mkpidlock(ARGS[1]); println(\"HELD\"); flush(stdout); sleep(3600)"
+    mktempdir() do dir
+        path = joinpath(dir, ".stanblocks-build.pid")
+        holder = open(`$(Base.julia_cmd()) --startup-file=no --project=$project -e $holder_code $path`, "r")
+        try
+            readline(holder) == "HELD" || error("lock holder did not start")
+        finally
+            kill(holder, Base.SIGKILL)
+            wait(holder)
+        end
+        @test isfile(path)
+        n = 4
+        workers = [open(`$(Base.julia_cmd()) --startup-file=no --project=$project $worker $implementation $path $dir $i`, "r")
+                   for i in 1:n]
+        outputs = String[]
+        try
+            ready = timedwait(() -> all(i -> isfile(joinpath(dir, "ready-$i")), 1:n) ||
+                any(process_exited, workers), 120)
+            ready === :ok && all(i -> isfile(joinpath(dir, "ready-$i")), 1:n) ||
+                error("build-lock workers did not reach the start gate")
+            write(joinpath(dir, "start"), "start")
+            finished = timedwait(() -> all(process_exited, workers), 120)
+            finished === :ok || error("build-lock workers did not finish")
+        finally
+            foreach(w -> process_running(w) && kill(w, Base.SIGKILL), workers)
+            foreach(wait, workers)
+            append!(outputs, read.(workers, String))
+        end
+        @test all(success, workers)
+        intervals = sort!([parse.(Float64, m.captures) for output in outputs
+                           for m in eachmatch(r"(?m)^INTERVAL (\S+) (\S+)$", output)])
+        @test length(intervals) == n
+        @test all(k -> intervals[k+1][1] >= intervals[k][2], 1:n-1)
+    end
+end
+
 @testitem "thread safety: shared native artifact across processes" tags=[:slic, :regression, :bridgestan] begin
     using StanBlocks
     worker = joinpath(@__DIR__, "fixtures", "native_build_worker.jl")
