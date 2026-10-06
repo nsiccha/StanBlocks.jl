@@ -2854,6 +2854,12 @@ end
     end
     typeof(multiply_lower_tri_self_transpose) => begin
         (matrix[m,n],) => matrix[m,m]
+        # A natively-constrained square matrix (`cholesky_factor_corr[K]`,
+        # `cholesky_factor_cov[K]`, `cov_matrix[K]`, `corr_matrix[K]`) is SIZED by
+        # one dim (`r_ndim(square_matrix) == 1`), so the `matrix[m,n]` row cannot
+        # match it and the call degraded to `anything` (stanc-invalid companions).
+        # Stan accepts any `matrix` here; the result is a plain `matrix[K,K]`.
+        (square_matrix[m],) => matrix[m,m]
     end
     typeof(matrix_power) => begin
         (matrix[n,n], int[]) => matrix[n,n]
