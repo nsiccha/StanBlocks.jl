@@ -2512,6 +2512,91 @@ end
 @deffun multi_student_t_cholesky_rng(vector[n], nu, loc::vector[n], scale)::vector[n] =
     multi_student_t_cholesky_rng(nu, loc, scale)
 
+# Array-of-vector draws (`array[m] vector[n]`, SLIC `vector[m, n]`). The density
+# side accepts the whole array, so `b::vector[m, n] ~ multi_*(…)` is one sampled
+# carrier — written by hand, or produced by a plate whose single cell is a
+# shared-argument multivariate prior (`_plate_vectorized_sample`, forward.jl).
+# When no likelihood reaches it (a prior-only program) or it is cv-held-out, it
+# is re-drawn in generated quantities, where each Stan multivariate RNG returns
+# one vector: draw row by row, from a shared location or from row `i`'s own.
+# `for i in 1:m` runs zero iterations for an empty array, and each native call is
+# sized by its location vector alone, so outside the guarded class (todo 19n8abc).
+# snag centered-ranef-p-892a7790.
+@deffun begin
+    multi_normal_rng(vector[m, n], loc::vector[n], cov)::vector[m, n] = begin
+        rv::vector[m, n]
+        for i in 1:m
+            rv[i] = multi_normal_rng(loc, cov)
+        end
+        rv
+    end
+    multi_normal_rng(vector[m, n], loc::vector[m, n], cov)::vector[m, n] = begin
+        rv::vector[m, n]
+        for i in 1:m
+            rv[i] = multi_normal_rng(loc[i], cov)
+        end
+        rv
+    end
+    multi_normal_cholesky_rng(vector[m, n], loc::vector[n], scale)::vector[m, n] = begin
+        rv::vector[m, n]
+        for i in 1:m
+            rv[i] = multi_normal_cholesky_rng(loc, scale)
+        end
+        rv
+    end
+    multi_normal_cholesky_rng(vector[m, n], loc::vector[m, n], scale)::vector[m, n] = begin
+        rv::vector[m, n]
+        for i in 1:m
+            rv[i] = multi_normal_cholesky_rng(loc[i], scale)
+        end
+        rv
+    end
+    multi_normal_prec_rng(vector[m, n], loc::vector[n], prec)::vector[m, n] = begin
+        cov = inverse(prec)
+        rv::vector[m, n]
+        for i in 1:m
+            rv[i] = multi_normal_rng(loc, cov)
+        end
+        rv
+    end
+    multi_normal_prec_rng(vector[m, n], loc::vector[m, n], prec)::vector[m, n] = begin
+        cov = inverse(prec)
+        rv::vector[m, n]
+        for i in 1:m
+            rv[i] = multi_normal_rng(loc[i], cov)
+        end
+        rv
+    end
+    multi_student_t_rng(vector[m, n], nu, loc::vector[n], scale)::vector[m, n] = begin
+        rv::vector[m, n]
+        for i in 1:m
+            rv[i] = multi_student_t_rng(nu, loc, scale)
+        end
+        rv
+    end
+    multi_student_t_rng(vector[m, n], nu, loc::vector[m, n], scale)::vector[m, n] = begin
+        rv::vector[m, n]
+        for i in 1:m
+            rv[i] = multi_student_t_rng(nu, loc[i], scale)
+        end
+        rv
+    end
+    multi_student_t_cholesky_rng(vector[m, n], nu, loc::vector[n], scale)::vector[m, n] = begin
+        rv::vector[m, n]
+        for i in 1:m
+            rv[i] = multi_student_t_cholesky_rng(nu, loc, scale)
+        end
+        rv
+    end
+    multi_student_t_cholesky_rng(vector[m, n], nu, loc::vector[m, n], scale)::vector[m, n] = begin
+        rv::vector[m, n]
+        for i in 1:m
+            rv[i] = multi_student_t_cholesky_rng(nu, loc[i], scale)
+        end
+        rv
+    end
+end
+
 # lkj_corr_cholesky: the gq token carries the DECLARED constrained shape
 # (`tokenof{cholesky_factor_corr}` sized `(n,)` — `r_ndim(square_matrix) == 1`),
 # so the sized-token slot is written `cholesky_factor_corr[n]`, not

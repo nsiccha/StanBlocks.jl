@@ -11734,6 +11734,108 @@ end
     @test occursin("nothing to draw from", err)
 end
 
+@testitem "slic: array-of-vector multivariate priors re-draw in generated quantities" tags=[:slic, :plate, :stanc, :bridgestan, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    # Snag centered-ranef-p-892a7790 (reported from a downstream centred
+    # random-effect block). A plate whose single cell is a shared-argument
+    # multivariate prior samples ONE `array[n_groups] vector[n_terms]` carrier
+    # (`_plate_vectorized_sample`). Without a likelihood that carrier is re-drawn
+    # in generated quantities, and the family had no `array[] vector`
+    # predictive companion: the prior-only program failed at trace time.
+    empty_block(code, name) = strip(stan_block(code, name)) == "{\n}"
+    gidx = repeat(1:4, 2)
+    cells = (
+        multi_normal_cholesky = :(bc::vector[K] ~ multi_normal_cholesky(rep_vector(0.0, K), diag_pre_multiply(tau, L))),
+        multi_normal = :(bc::vector[K] ~ multi_normal(rep_vector(0.0, K), multiply_lower_tri_self_transpose(diag_pre_multiply(tau, L)))),
+        multi_normal_prec = :(bc::vector[K] ~ multi_normal_prec(rep_vector(0.0, K), multiply_lower_tri_self_transpose(diag_pre_multiply(tau, L)))),
+        multi_student_t = :(bc::vector[K] ~ multi_student_t(4.0, rep_vector(0.0, K), multiply_lower_tri_self_transpose(diag_pre_multiply(tau, L)))),
+        multi_student_t_cholesky = :(bc::vector[K] ~ multi_student_t_cholesky(4.0, rep_vector(0.0, K), diag_pre_multiply(tau, L))),
+    )
+    plate_model(cell) = StanBlocks.SlicModel(quote
+        L ~ lkj_corr_cholesky(1.0; n = K)
+        tau ~ std_normal(; n = K, lower = 0.0)
+        b_cols ~ plate(; outer = (G,)) do g
+            $cell
+            bc
+        end
+        y ~ normal(b_cols[1, group_idx], 1.0)
+    end, Dict{Symbol,Any}(:G => 4, :K => 2, :group_idx => gidx), @__MODULE__)
+
+    # (a) Every vectorised family: the fitted program samples the array carrier,
+    #     and the prior program (response omitted) re-draws it under the SAME name.
+    for (family, cell) in pairs(cells)
+        m = plate_model(cell)
+        fitted = stan_code(m(; y = randn(Xoshiro(1), 8)))
+        @test occursin("array[G] vector[K] b_cols_bc;", stan_block(fitted, "parameters"))
+        prior = stan_code(m)
+        @test empty_block(prior, "parameters")
+        @test empty_block(prior, "model")
+        @test occursin("array[G] vector[K] b_cols_bc = $(family)_vector_rng((G, K), ",
+                       stan_block(prior, "generated quantities"))
+        @test stanc_compiles(m)
+    end
+
+    # (b) The same carrier written by hand, with a shared location and with
+    #     per-row locations, re-draws when prior-only and when cv-held-out.
+    Sigma = [1.0 0.3; 0.3 2.0]
+    families = (
+        multi_normal_cholesky = loc -> :(multi_normal_cholesky($loc, L)),
+        multi_normal = loc -> :(multi_normal($loc, Sigma)),
+        multi_normal_prec = loc -> :(multi_normal_prec($loc, Sigma)),
+        multi_student_t = loc -> :(multi_student_t(4.0, $loc, Sigma)),
+        multi_student_t_cholesky = loc -> :(multi_student_t_cholesky(4.0, $loc, L)),
+    )
+    for (family, rhs) in pairs(families)
+        shared = StanBlocks.SlicModel(quote
+            L ~ lkj_corr_cholesky(1.0; n = K)
+            b::vector[G, K] ~ $(rhs(:(rep_vector(0.0, K))))
+            y ~ normal(b[1, 1], 1.0)
+        end, Dict{Symbol,Any}(:G => 4, :K => 2, :Sigma => Sigma), @__MODULE__)
+        per_row = StanBlocks.SlicModel(quote
+            L ~ lkj_corr_cholesky(1.0; n = K)
+            mus::vector[G, K] ~ multi_normal_cholesky(rep_vector(0.0, K), L)
+            b::vector[G, K] ~ $(rhs(:mus))
+            y ~ normal(b[1, 1], 1.0)
+        end, Dict{Symbol,Any}(:G => 4, :K => 2, :Sigma => Sigma), @__MODULE__)
+        for m in (shared, per_row)
+            gq = stan_block(stan_code(m), "generated quantities")
+            @test occursin("array[G] vector[K] b = $(family)_vector_rng((G, K), ", gq)
+            @test stanc_compiles(m)
+            @test stanc_compiles(m(; y = 0.3))
+        end
+    end
+    held_out = @slic begin
+        L ~ lkj_corr_cholesky(1.0; n = K)
+        b::vector[G, K] ~ multi_normal_cholesky(rep_vector(0.0, K), L)
+        y ~ normal(b[1, 1], 1.0)
+    end
+    held_out = held_out(; K = 2, G = StanBlocks.stan.maybecv(:G, 4), y = 0.3)
+    held_code = stan_code(held_out)
+    @test !occursin("vector[K] b;", stan_block(held_code, "parameters"))
+    @test occursin("array[G] vector[K] b = multi_normal_cholesky_vector_rng((G, K), ",
+                   stan_block(held_code, "generated quantities"))
+    @test stanc_compiles(held_out)
+
+    # (c) The prior program is fixed_param and its rows follow the family: with
+    #     L and tau fixed, each group's draws have covariance diag(tau) L L' diag(tau).
+    Lfix = [1.0 0.0; 0.6 0.8]                 # Cholesky factor of [1 0.6; 0.6 1]
+    taufix = [0.5, 2.0]
+    target = [0.25 0.6; 0.6 4.0]              # diag(tau) * Lfix * Lfix' * diag(tau)
+    fixed = Base.merge(plate_model(cells.multi_normal_cholesky), (; L = Lfix, tau = taufix))
+    problem = instantiate(fixed)
+    @test LogDensityProblems.dimension(problem) == 0
+    names = BridgeStan.param_names(problem.model; include_tp = true, include_gq = true)
+    cols = [findfirst(==("b_cols_bc.$g.$j"), names) for g in 1:4, j in 1:2]
+    @test all(!isnothing, cols)
+    rng = BridgeStan.StanRNG(problem.model, 892)
+    draws = reduce(hcat, [BridgeStan.param_constrain(problem.model, Float64[];
+        include_tp = true, include_gq = true, rng) for _ in 1:20_000])
+    for g in 1:4
+        @test maximum(abs.(cov(draws[cols[g, :], :]') .- target)) < 0.2
+        @test maximum(abs.(mean(draws[cols[g, :], :]; dims = 2))) < 0.1
+    end
+end
+
 """
 Annotated top-level model loops — `@plate for … end` and `@scan begin … end` —
 are sugar over the shared compiler-owned-loop inliner (`_forward_loop_core!`),
