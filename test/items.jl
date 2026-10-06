@@ -2357,6 +2357,94 @@ Verify explicit bounded Julia emission from `@deffun @juliacompat` in an isolate
 end
 
 """
+Verify `@juliacompat` matrix builders reach Julia's own `hcat`/`reshape`.
+
+Regression for snag `juliacompat-appe-8a38f4f3`. `StanBlocks` rebinds some
+Base names to SLIC builtins (`hcat`, `reshape`), and those builtins'
+`@juliacompat` bodies route back through `jcall`. The `append_col`, `hcat`,
+`to_matrix`, `to_array_2d` and `reshape` compatibility shims called the
+rebound names bare, so every Julia-side matrix build recursed until
+`StackOverflowError`. The guard below covers every present and future shim.
+"""
+@testitem "slic: @juliacompat matrix builders reach Julia's hcat and reshape" tags=[:slic, :stanc] setup=[StanBlocksImports] begin
+    shims = Module(:JuliaCompatMatrixShims)
+    Core.eval(shims, :(using StanBlocks))
+    Core.eval(shims, quote
+        @deffun @juliacompat begin
+            shim_append_col2(a::vector[n], b::vector[n])::matrix[n, 2] = append_col(a, b)
+            shim_append_col3(a::vector[n], b::vector[n], c::vector[n])::matrix[n, 3] = append_col(a, b, c)
+            shim_append_col_mv(x::matrix[n, k], b::vector[n])::matrix[n, k + 1] = append_col(x, b)
+            shim_hcat1(a::vector[n])::matrix[n, 1] = hcat(a)
+            shim_hcat3(a::vector[n], b::vector[n], c::vector[n])::matrix[n, 3] = hcat(a, b, c)
+            shim_to_matrix(v::vector[n])::matrix[2, 2] = to_matrix(v, 2, 2)
+            shim_reshape(v::vector[n])::matrix[2, 2] = reshape(v, 2, 2)
+            shim_append_row3(a::vector[n], b::vector[n], c::vector[n])::vector[3 * n] = append_row(a, b, c)
+        end
+    end)
+    call(f, args...) = Base.invokelatest(getproperty(shims, f), args...)
+
+    a, b, c = [-1.0, 1.0, 0.0], [0.0, -2.5, 0.5], [0.0, 0.25, -0.25]
+    v = [1.0, 2.0, 3.0, 4.0]
+    @test call(:shim_append_col2, a, b) == [a b]
+    @test call(:shim_append_col3, a, b, c) == [a b c]
+    @test call(:shim_append_col_mv, [a b], c) == [a b c]
+    @test call(:shim_hcat1, a) == reshape(a, 3, 1)
+    @test call(:shim_hcat3, a, b, c) == [a b c]
+    # Stan fills `to_matrix`/`reshape` results column-major, as Julia does.
+    @test call(:shim_to_matrix, v) == [1.0 3.0; 2.0 4.0]
+    @test call(:shim_reshape, v) == [1.0 3.0; 2.0 4.0]
+    @test call(:shim_append_row3, a, b, c) == vcat(a, b, c)
+
+    # The package builtins' own Julia methods reach the same shims.
+    @test StanBlocks.builtin.append_col(a, b, c) == [a b c]
+    @test StanBlocks.builtin.hcat(a) == reshape(a, 3, 1)
+    @test StanBlocks.builtin.hcat(a, b) == [a b]
+    @test StanBlocks.builtin.hcat([a b], c) == [a b c]
+    @test StanBlocks.builtin.hcat(a, b, c) == [a b c]
+    @test StanBlocks.builtin.reshape(v, 2, 2) == [1.0 3.0; 2.0 4.0]
+
+    # The helpers are ordinary Stan functions too; the fix leaves that side alone.
+    model = Core.eval(shims, quote
+        @slic (; n=3, a=[-1.0, 1.0, 0.0], b=[0.0, -2.5, 0.5], c=[0.0, 0.25, -0.25]) begin
+            m = shim_append_col3(a, b, c)
+        end
+    end)
+    code = stan_code(model)
+    @test occursin("shim_append_col3(a, b, c)", code)
+    @test stanc_check(code; warn_pedantic=false).ok
+
+    # Guard: no `jcall` method may resolve a Base name this package rebinds.
+    rebound = IdDict{Any,Symbol}(
+        getfield(StanBlocks, s) => s for s in names(StanBlocks; all=true)
+        if isdefined(Base, s) && isdefined(StanBlocks, s) &&
+           getfield(StanBlocks, s) !== getfield(Base, s)
+    )
+    @test haskey(rebound, StanBlocks.hcat) && haskey(rebound, StanBlocks.reshape)
+    resolved(x::GlobalRef) = isdefined(x.mod, x.name) ? Any[getfield(x.mod, x.name)] : Any[]
+    resolved(x::Expr) = reduce(vcat, map(resolved, x.args); init=Any[])
+    resolved(x) = Any[x]
+    rebound_callees(m::Method) = Symbol[
+        rebound[r] for st in Base.uncompressed_ir(m).code for r in resolved(st)
+        if haskey(rebound, r)
+    ]
+    # Positive control: the detector sees a bare rebound callee and accepts
+    # the `Base.`-qualified spelling.
+    probe = Module(:ReboundCalleeProbe)
+    Core.eval(probe, quote
+        const hcat = $(StanBlocks.hcat)
+        bare(xs...) = hcat(xs...)
+        qualified(xs...) = Base.hcat(xs...)
+    end)
+    @test rebound_callees(only(methods(probe.bare))) == [:hcat]
+    @test isempty(rebound_callees(only(methods(probe.qualified))))
+    offenders = [
+        (string(m.file), m.line, s) for m in methods(StanBlocks.jcall)
+        for s in rebound_callees(m)
+    ]
+    @test isempty(offenders)
+end
+
+"""
 Verify `slic: normal(loc,scale)` in an isolated test item.
 """
 @testitem "slic: normal(loc,scale)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
