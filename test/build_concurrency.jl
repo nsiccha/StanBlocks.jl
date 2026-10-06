@@ -111,8 +111,12 @@ end
         holder = open(`$(Base.julia_cmd()) --startup-file=no --project=$project -e $holder_code $path`, "r")
         logger = TestLogger()
         local waiter
+        local held
         try
             readline(holder) == "HELD" || error("lock holder did not start")
+            # Pidfile writes "<pid> <host>" before mkpidlock returns.
+            held = read(path, String)
+            @test held == "$(getpid(holder)) $(gethostname())"
             waiter = with_logger(() -> acquire(path), logger)
             # Refused: expiring a live holder's lock on a timeout would let a
             # competitor into a slow build (build.jl lock contract).
@@ -122,10 +126,15 @@ end
             process_running(holder) && kill(holder, Base.SIGKILL)
             wait(holder)
         end
-        @test isfile(path)
+        # The waiter may reclaim before `wait(holder)` returns: Windows reports
+        # the pid gone before the exit reaches this task. So check what it
+        # reclaimed, the killed holder's own file, not whether that file still
+        # exists at this instant.
         @test timedwait(() -> istaskdone(waiter), 60) === :ok
         @test fetch(waiter) == own
-        @test any(log -> occursin("reclaimed a build lock", log.message), logger.logs)
+        reclaimed = [log.kwargs[:record] for log in logger.logs
+                     if occursin("reclaimed a build lock", log.message)]
+        @test reclaimed == [held]
         @test !isfile(path) && !isfile(path * ".reclaim")
 
         # A holder on another host cannot be checked, so it is left alone.
