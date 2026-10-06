@@ -521,6 +521,10 @@ end
 # ordinary Julia/user functions resolve in the definition module, while the
 # deliberately small Stan compatibility set gets methods here.  Keeping the
 # compatibility dispatch internal avoids adding broad methods to Base.
+# These methods forward to Julia's own functions, but this module rebinds some
+# Base names to SLIC builtins (`hcat`, `reshape`, ...; `@builtin_module`), and
+# a builtin's `@juliacompat` body routes back through `jcall`.  Spell such a
+# callee `Base.<name>` here: a bare shadowed name recurses without bound.
 jcall(f, args...; kwargs...) = f(args...; kwargs...)
 jcall(::Val{name}, mod::Module, args...; kwargs...) where {name} =
     getproperty(mod, name)(args...; kwargs...)
@@ -585,13 +589,13 @@ jcall(::Val{:rep_matrix}, ::Module, x::AbstractVector, n::Integer) = repeat(x, 1
 jcall(::Val{:to_vector}, ::Module, x) = vec(x)
 jcall(::Val{:to_row_vector}, ::Module, x) = vec(x)
 jcall(::Val{:to_array_1d}, ::Module, x) = collect(vec(x))
-jcall(::Val{:to_array_2d}, ::Module, x, m::Integer, n::Integer) = reshape(collect(x), m, n)
-jcall(::Val{:to_matrix}, ::Module, x, m::Integer, n::Integer) = reshape(collect(x), m, n)
+jcall(::Val{:to_array_2d}, ::Module, x, m::Integer, n::Integer) = Base.reshape(collect(x), m, n)
+jcall(::Val{:to_matrix}, ::Module, x, m::Integer, n::Integer) = Base.reshape(collect(x), m, n)
 jcall(::Val{:append_array}, ::Module, xs...) = vcat(xs...)
 jcall(::Val{:append_row}, ::Module, xs...) = vcat(xs...)
-jcall(::Val{:append_col}, ::Module, xs...) = hcat(xs...)
-jcall(::Val{:hcat}, ::Module, xs...) = hcat(xs...)
-jcall(::Val{:reshape}, ::Module, x, dims::Integer...) = reshape(x, dims...)
+jcall(::Val{:append_col}, ::Module, xs...) = Base.hcat(xs...)
+jcall(::Val{:hcat}, ::Module, xs...) = Base.hcat(xs...)
+jcall(::Val{:reshape}, ::Module, x, dims::Integer...) = Base.reshape(x, dims...)
 jcall(::Val{:cumulative_sum}, ::Module, x) = cumsum(x)
 jcall(::Val{:mean}, ::Module, x) = Statistics.mean(x)
 jcall(::Val{:sd}, ::Module, x) = Statistics.std(x)
