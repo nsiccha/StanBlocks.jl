@@ -126,18 +126,33 @@ short_expr(x::Symbol) = x
 short_expr(x::StanExpr2{types.anything}) = StanExpr(short_expr(expr(x)), type(x))
 short_expr(x::StanExpr) = StanExpr("", StringStanType(sigtype(x)))
 short_expr(x::CanonicalExpr) = CanonicalExpr(head(x), short_expr.(x.args)...)
-tracetype(x::CanonicalExpr) = begin
-    map(x.args) do arg 
-        # tracetype not defined for $(head(expr(arg)))$(typeof.(type.(expr(arg).args))) (nargs = $(length(expr(arg).args))).
-        center_type(type(arg)) == types.anything && error("""
-            `tracetype` not defined for $(short_expr(arg))!
-            This is only allowed if this return value does not get used in another expression,
-            but it is used in $(short_expr(x)) (nargs = $(length(x.args))).
-            """)
-                # but needed in $(head(x))$(typeof.(type.(x.args))) (nargs = $(length(x.args))).
-    end
-    StanType(types.anything)
+# Raw call arguments (a function token, a `Colon`) render as themselves.
+short_expr(x) = x
+# A call with no `tracetype` row, no matching `@defsig` signature and no matching
+# `@deffun` overload traces to an `anything`-typed value. It may stand alone as a
+# statement, but it must not be used in another expression. Otherwise it is
+# emitted unchecked, or, for an unmatched `@deffun`, with no definition behind it,
+# and only stanc reports the problem. `_stan_expr` (passes.jl) checks every
+# traced node's arguments before ANY `tracetype` method runs. The generic fallback
+# below would catch an untyped argument, but a signature with an untyped formal
+# (`Base.sum(x)::real`, `normal_lpdf(args...)`) matches it and returns a concrete
+# type. So `sum(tcrossprod(S))` transpiled while `R = tcrossprod(S)` failed.
+# A string literal is `anything`-typed only because SLIC has no string type
+# (`stan_type(::AbstractString)`), so it is a typed constant, not an untyped value.
+_untyped_value(arg) = false
+_untyped_value(arg::StanExpr) =
+    center_type(arg) === types.anything && !(getvalue(arg) isa AbstractString)
+_reject_untyped_args(x::CanonicalExpr) = foreach(x.args) do arg
+    _untyped_value(arg) && error("""
+        `tracetype` not defined for $(short_expr(arg))!
+        This is only allowed if this return value does not get used in another expression,
+        but it is used in $(short_expr(x)) (nargs = $(length(x.args))).
+        """)
 end
+# Statement nodes carry `anything` by construction (an `elseif` branch is an
+# `anything`-typed argument of its `if`), and their bodies are statements.
+_reject_untyped_args(::Union{ForExpr,WhileExpr,IfExpr,ElseIfExpr,BlockExpr}) = nothing
+tracetype(x::CanonicalExpr) = StanType(types.anything)
 
 """
     return_type_of(f, args...) -> StanType
