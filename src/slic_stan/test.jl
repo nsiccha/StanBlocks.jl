@@ -88,11 +88,15 @@ errors). Binary discovery: `\$STANC_PATH` env var → BridgeStan's
 """
 function stanc_check(stan_code::AbstractString; warn_pedantic::Bool=true)
     stanc = _stanc_bin()
-    tmpfile = tempname() * ".stan"
-    write(tmpfile, stan_code)
     io = IOBuffer()
     flags = warn_pedantic ? `--warn-pedantic` : ``
-    ok = success(pipeline(`$stanc $flags $tmpfile`; stderr=io, stdout=io))
-    rm(tmpfile; force=true)
+    # stanc writes the generated `<name>.hpp` beside its input, so compile inside
+    # a private temporary directory: `mktempdir` removes the source and the C++
+    # output together, also when stanc fails or throws.
+    ok = mktempdir() do dir
+        stanfile = joinpath(dir, "model.stan")
+        write(stanfile, stan_code)
+        success(pipeline(`$stanc $flags $stanfile`; stderr=io, stdout=io))
+    end
     (ok=ok, output=String(take!(io)))
 end
