@@ -900,6 +900,16 @@ import Statistics
     @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr, x::real)
     @lhs wishart_lpdf(L::cov_matrix[m], x::real, sigma::matrix[m,m])
     @lhs wishart_cholesky_lpdf(L::cholesky_factor_cov[m], x::real, sigma::matrix[m,m])
+    # Sized ELEMENT densities over any natively-constrained square matrix (an
+    # array element `L[i]`, a plate cell). The unsized `@lhs` rows above only
+    # name a family's support type; a value sized by its one dim
+    # (`r_ndim(square_matrix) == 1`) needs these to type the density call.
+    lkj_corr_lpdf(L::square_matrix[n], eta::real)::real
+    lkj_corr_cholesky_lpdf(L::square_matrix[n], eta::real)::real
+    wishart_lpdf(W::square_matrix[n], nu::real, Sigma::matrix[n,n])::real
+    inv_wishart_lpdf(W::square_matrix[n], nu::real, Sigma::matrix[n,n])::real
+    wishart_cholesky_lpdf(L::square_matrix[n], nu::real, LSigma::matrix[n,n])::real
+    inv_wishart_cholesky_lpdf(L::square_matrix[n], nu::real, LSigma::matrix[n,n])::real
 
     lognormal_rng(loc::real, scale::real)::real
     student_t_rng(nu::real, loc::real, scale::real)::real
@@ -1100,13 +1110,10 @@ import Statistics
     inv_wishart_cholesky_lpdfs(args...)::real = inv_wishart_cholesky_lpdf(args...)
     lkj_corr_lpdfs(args...)::real = lkj_corr_lpdf(args...)
     dirichlet_lpdfs(args...)::real = dirichlet_lpdf(args...)
-    @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr[m,n], x::real, m::int, n::int)::real = begin
-        rv = 0.0
-        for i in 1:m
-            rv += lkj_corr_cholesky_lpdf(L[i, :, :], x)
-        end
-        rv
-    end
+    # Explicit-size spelling of the array density below; the sizes are implied by
+    # `L` itself, so it delegates.
+    @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr[m,n], x::real, m::int, n::int)::real =
+        lkj_corr_cholesky_lpdf(L, x)
     lkj_corr_cholesky_lpdfs(args...)::real = lkj_corr_cholesky_lpdf(args...)
     # A CONSTRAINED-MATRIX element (`cholesky_factor_corr[K]`, e.g. a per-stratum
     # plate cell, snag stanblocks-plate-248f67d3) is itself ndim-1, so the
@@ -2597,14 +2604,49 @@ end
     end
 end
 
-# lkj_corr_cholesky: the gq token carries the DECLARED constrained shape
-# (`tokenof{cholesky_factor_corr}` sized `(n,)` — `r_ndim(square_matrix) == 1`),
-# so the sized-token slot is written `cholesky_factor_corr[n]`, not
-# `matrix[n,n]`. Delegates to the native 2-arg form, whose first argument is the
-# DIMENSION (an int), not a container — hence `n` rather than the token. No
-# container is ever read, so outside the guarded class (todo 19n8abc).
-@deffun lkj_corr_cholesky_rng(cholesky_factor_corr[n], eta::real)::matrix[n,n] =
-    lkj_corr_cholesky_rng(n, eta)
+# Natively-constrained square-matrix PARAMETERS. A family over `cov_matrix`,
+# `corr_matrix`, `cholesky_factor_cov` or `cholesky_factor_corr` samples a single
+# matrix (`<ct>[n]`, sized by one dim since `r_ndim(square_matrix) == 1`) or an
+# array of them (`<ct>[m, n]`, i.e. `array[m] <ct>[n]`). Stan's densities take
+# one matrix, so the array form is a UDF overload of the same `_lpdf` name that
+# sums the element densities (typed by the sized element signatures beside the
+# `@lhs` rows); `As ~ family(...)` then resolves to it. Its trailing arguments
+# stay untyped so it never reads `dims(L)[2]`, which an empty array lacks. When
+# no likelihood reaches the parameter (a prior-only program) or it is
+# cv-held-out, it is re-drawn in generated quantities from the sized token of its
+# DECLARED shape, `square_matrix[n]` or `square_matrix[m, n]` whatever the
+# constrained family (the mangled name still carries it, e.g.
+# `lkj_corr_cholesky_cholesky_factor_corr_rng`). The draw is a plain `matrix`,
+# after the `dirichlet_rng`/`simplex` precedent; the lkj natives take the
+# DIMENSION, not a container. Array draws loop `for i in 1:m`, which runs zero
+# times for an empty array, and no native call is scalar-inflated, so all are
+# outside the guarded class (todo 19n8abc).
+for (dist, params, draw) in (
+    (:wishart, (:nu, :Sigma), :(wishart_rng(nu, Sigma))),
+    (:inv_wishart, (:nu, :Sigma), :(inv_wishart_rng(nu, Sigma))),
+    (:wishart_cholesky, (:nu, :LSigma), :(wishart_cholesky_rng(nu, LSigma))),
+    (:inv_wishart_cholesky, (:nu, :LSigma), :(inv_wishart_cholesky_rng(nu, LSigma))),
+    (:lkj_corr, (:eta,), :(lkj_corr_rng(n, eta))),
+    (:lkj_corr_cholesky, (:eta,), :(lkj_corr_cholesky_rng(n, eta))),
+)
+    dlpdf = Symbol(dist, :_lpdf)
+    drng = Symbol(dist, :_rng)
+    @eval @deffun $dlpdf(L::square_matrix[m, n], $(params...))::real = begin
+        rv = 0.0
+        for i in 1:m
+            rv += $dlpdf(L[i], $(params...))
+        end
+        rv
+    end
+    @eval @deffun $drng(square_matrix[n], $(params...))::matrix[n, n] = $draw
+    @eval @deffun $drng(square_matrix[m, n], $(params...))::matrix[m, n, n] = begin
+        rv::matrix[m, n, n]
+        for i in 1:m
+            rv[i] = $draw
+        end
+        rv
+    end
+end
 # Matrix-draw families observed as plain data: the gq token is a 2-dim matrix,
 # so the sized-token slot is `matrix[n,m]`. Each delegates to its native form.
 @deffun wishart_rng(matrix[n,m], nu, Sigma)::matrix[n,m] = wishart_rng(nu, Sigma)
