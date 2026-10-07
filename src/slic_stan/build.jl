@@ -43,10 +43,18 @@ _process_exists(pid) = ccall(:uv_kill, Cint, (Cint, Cint), pid, 0) != Base.UV_ES
 # The record of a lock whose holder died on this host, or `nothing`. A remote
 # host, a reused live pid, or a foreign format leaves the lock to its holder.
 function _dead_build_lock_record(path, dead_age)
+    # Read through libuv, as stdlib Pidfile does: on Windows it opens with
+    # delete sharing, so this read cannot block a reclaimer's rename. An
+    # IOStream `open` there denies it, failing that rename with EBUSY.
     record, age = try
-        open(io -> (read(io, String), time() - mtime(io)), path)
+        file = Base.Filesystem.open(path, Base.Filesystem.JL_O_RDONLY)
+        try
+            (read(file, String), time() - mtime(file))
+        finally
+            close(file)
+        end
     catch err
-        err isa SystemError && err.errnum == Libc.ENOENT && return nothing
+        err isa Base.IOError && err.code == Base.UV_ENOENT && return nothing
         rethrow()
     end
     age > dead_age || return nothing
@@ -69,7 +77,7 @@ function _reclaim_dead_build_lock(path, dead_age)
     try
         record = _dead_build_lock_record(path, dead_age)
         record === nothing && return false
-        _remove_build_lock(path)
+        _remove_build_lock(path) || return false
         @warn "StanBlocks reclaimed a build lock whose holder no longer exists" path record
         true
     finally
@@ -77,22 +85,26 @@ function _reclaim_dead_build_lock(path, dead_age)
     end
 end
 
-# Only a non-cooperating process can remove the file under the guard; its
-# absence is then already the outcome a reclaim needs.
+# Whether the lock file is gone. Only a non-cooperating process can remove it
+# under the guard; its absence is then already the outcome a reclaim needs.
 function _remove_build_lock(path)
     # Windows reserves a deleted name while any handle is open; move it aside.
     if Sys.iswindows()
         aside = string(path, '.', getpid(), '.', time_ns(), ".deleted")
         try
-            _rename_build_file(path, aside)
+            _retry_windows_rename(path, aside, Base.UV_EBUSY)
         catch err
-            err isa Base.IOError && err.code == Base.UV_ENOENT && return nothing
+            err isa Base.IOError || rethrow()
+            err.code == Base.UV_ENOENT && return true
+            # A reader without delete sharing (an older StanBlocks, a virus
+            # scanner) still has the dead file open: leave it for a later round.
+            err.code == Base.UV_EBUSY && return false
             rethrow()
         end
         path = aside
     end
     rm(path; force=true)
-    nothing
+    true
 end
 
 """
@@ -177,20 +189,24 @@ function _rename_build_file(src, dst)
     nothing
 end
 
+# Windows readers opened without delete sharing briefly prevent a rename: of
+# the source with EBUSY, of a replaced destination with EACCES. Retry only that
+# platform's `code` for up to 1.6 s, then rethrow the last error.
+function _retry_windows_rename(src, dst, code)
+    delays = Base.ExponentialBackOff(n=10, first_delay=0.01,
+        max_delay=0.25, factor=2.0, jitter=0.0)
+    Base.retry(_rename_build_file; delays,
+        check=(_, err) -> Sys.iswindows() && err isa Base.IOError && err.code == code)(src, dst)
+end
+
 function _atomic_build_write(path, value)
     mkpath(dirname(path))
     tmp, io = mktemp(dirname(path))
     try
         write(io, value)
         close(io)
-        # Windows readers opened without delete sharing temporarily prevent
-        # replacement. Retry only that platform's access-denied error; keep
-        # the old file visible and propagate a persistent failure unchanged.
-        delays = Base.ExponentialBackOff(n=10, first_delay=0.01,
-            max_delay=0.25, factor=2.0, jitter=0.0)
-        Base.retry(_rename_build_file; delays,
-            check=(_, err) -> Sys.iswindows() && err isa Base.IOError &&
-                err.code == Base.UV_EACCES)(tmp, path)
+        # Keep the old file visible and propagate a persistent failure unchanged.
+        _retry_windows_rename(tmp, path, Base.UV_EACCES)
     finally
         isopen(io) && close(io)
         ispath(tmp) && rm(tmp)
