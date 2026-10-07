@@ -41,9 +41,8 @@ end
 # arg gets `a::StanExpr2{<:types.vector, 1}`, so a sibling `@slic f(a::real) = …`
 # defines a DISTINCT method. Untyped args match anything (positional-only).
 #
-# Translate one `@slic f(...)` arg spec → a method-signature fragment. Mirrors the
-# `T[dims...] → StanExpr2{<:types.T, ndims}` shape of @deffun's `xsig_type` (a closure
-# local to `deffun`, hence re-derived here rather than reused).
+# Translate one `@slic f(...)` arg spec → a method-signature fragment, using the
+# same `T[dims...]` dispatch key as `@deffun`/`@defsig` (`xsig_valtype`).
 _slic_argsig(a::Symbol, fname) = a
 _slic_argsig(a::Expr, fname) = begin
     (Meta.isexpr(a, :(::)) && a.args[1] isa Symbol) || error(
@@ -52,33 +51,14 @@ _slic_argsig(a::Expr, fname) = begin
     name, tann = a.args
     ref = Meta.isexpr(tann, :ref) ? tann : Expr(:ref, tann)   # `real` → `real[]`
     ct = ref.args[1]
-    ndims = length(ref.args) - 1
     (ct isa Symbol && isdefined(types, ct)) || error(
         "@slic ", fname, "(...): unknown SLIC type `", ct, "` in argument `", a, "`."
     )
-    ctval = getproperty(types, ct)
-    constr = if ctval === types.anything && ndims == 0
-        Expr(:curly, StanExpr2, Expr(:(<:), ctval))
-    elseif ctval === types.matrix && ndims == 2
-        # A `matrix[m,n]` cell argument ALSO admits Stan's constrained
-        # square-matrix families (`cholesky_factor_corr`/`cholesky_factor_cov`,
-        # `corr_matrix`, `cov_matrix` — the `<:square_matrix` subtypes). Those
-        # carry a SINGLE declared size (`r_ndim(square_matrix)==1`, so
-        # `stan_ndim==1`) even though they ARE matrices, so a plain
-        # `StanExpr2{<:matrix, 2}` signature rejects them on the `ndims` type
-        # parameter (value ndim 1 ≠ decl ndim 2) — the reported
-        # `SubmodelFn(...) MethodError` for a top-level `cholesky_factor_corr[k]`
-        # passed where `matrix[k,k]` is declared. Widen dispatch to accept both
-        # shapes; the value flows into the sub-model verbatim, so its constraint
-        # metadata is preserved at the caller. (No reverse admission: a plain
-        # `matrix` value is NOT accepted where a constrained family is declared.)
-        Expr(:curly, Union,
-            Expr(:curly, StanExpr2, Expr(:(<:), ctval), ndims),
-            Expr(:curly, StanExpr2, Expr(:(<:), types.square_matrix), 1))
-    else
-        Expr(:curly, StanExpr2, Expr(:(<:), ctval), ndims)
-    end
-    Expr(:(::), name, constr)
+    # The shared formal dispatch key: a `matrix[m,n]` argument also admits a
+    # constrained square matrix (`xformal_type`), whose value flows into the
+    # sub-model verbatim, constraint metadata included. A plain `matrix` value
+    # is NOT admitted where a constrained family is declared.
+    Expr(:(::), name, xsig_valtype(ref))
 end
 _slic_fn(model, mod) = begin
     call, body = model.args
