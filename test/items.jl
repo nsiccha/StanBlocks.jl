@@ -6892,7 +6892,11 @@ parameter-qualified value". Regression for the BRM crossed-effects use case.
             cell ~ mp_ncp(3)
             cell
         end
-        a ~ normal(sum(g1[1]) + sum(g2[1]), 1.0)
+        # Each plate result is a matrix[3, 2] with one column per cell, so cell 1
+        # is the column `g1[:, 1]`. A bare `g1[1]` is untyped: Julia reads it as one
+        # element and Stan as row 1, and an untyped value used inside `sum` fails
+        # at trace time.
+        a ~ normal(sum(g1[:, 1]) + sum(g2[:, 1]), 1.0)
     end
     @test transpiles(crossed_sub)
     @test stanc_compiles(crossed_sub)
