@@ -11915,6 +11915,26 @@ and share one definition with a plain-`matrix` argument.
 end
 
 """
+`stanc_check` leaves nothing behind in the temporary directory. stanc writes the
+generated `<name>.hpp` beside its input, and every call used to leak one.
+"""
+@testitem "stanc_check leaves no temporary files behind" tags=[:stanc, :regression] setup=[StanBlocksImports] begin
+    accepted = "parameters { real x; }\nmodel { x ~ normal(0, 1); }\n"
+    rejected = "model { y ~ normal(0, 1); }\n"
+    mktempdir() do dir
+        withenv("TMPDIR" => dir) do
+            @test tempdir() == dir
+            ok = stanc_check(accepted; warn_pedantic=false)
+            @test ok.ok
+            bad = stanc_check(rejected; warn_pedantic=false)
+            @test !bad.ok
+            @test occursin("y", bad.output)
+        end
+        @test isempty(readdir(dir))
+    end
+end
+
+"""
 Annotated top-level model loops — `@plate for … end` and `@scan begin … end` —
 are sugar over the shared compiler-owned-loop inliner (`_forward_loop_core!`),
 never HOFs: the tracer inlines both (decisions `10mrh0f`, `1375uo5`). Arrays
