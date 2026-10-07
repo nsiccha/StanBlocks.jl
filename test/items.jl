@@ -11915,6 +11915,52 @@ and share one definition with a plain-`matrix` argument.
 end
 
 """
+A constrained square matrix (`cholesky_factor_corr[K]`, `cholesky_factor_cov[K]`,
+`cov_matrix[K]`, `corr_matrix[K]`) carries ONE declared size but is a K×K Stan
+`matrix`, so every matrix builtin types it exactly as it types a plain
+`matrix[K, K]` (todo `1jt0ldf`). The plain-matrix family is the positive control:
+every call below is one that already works for `matrix[K, K]`.
+"""
+@testitem "slic: constrained square matrices type as matrix[K, K] in matrix builtins" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+    # `X` is the matrix under test.
+    calls = [
+        "tcrossprod(X)", "crossprod(X)", "inverse(X)", "inverse_spd(X)", "chol2inv(X)",
+        "symmetrize_from_lower_tri(X)", "generalized_inverse(X)", "matrix_power(X, 2)",
+        "trace(X)", "determinant(X)", "log_determinant(X)", "log_determinant_spd(X)",
+        "eigenvalues_sym(X)", "eigenvectors_sym(X)", "cholesky_decompose(X)",
+        "mdivide_left_spd(X, y)", "mdivide_right_spd(y', X)", "diag_post_multiply(X, y)",
+        "diag_pre_multiply(y, X)", "X'", "transpose(X)", "X[1, 2]", "X[:, 1]", "X[1, :]",
+        "quad_form(X, y)", "quad_form_diag(X, y)", "quad_form_sym(X, y)", "trace_quad_form(X, y)",
+        "diagonal(X)", "rows_dot_self(X)", "columns_dot_self(X)", "col(X, 1)", "row(X, 1)",
+        "X + X", "X - X", "X * y", "X * X", "y' * X", "2.0 * X", "X * 2.0", "exp(X)",
+        "multiply_lower_tri_self_transpose(X)", "matrix_exp_multiply(X, X)",
+    ]
+    S0 = [1.0 0.0 0.0; 0.0 1.0 0.0; 0.0 0.0 1.0]
+    y = [0.1, -0.3, 0.5]
+    build(decl, X) = begin
+        lines = [decl; ["r$i = " * replace(c, "X" => X) for (i, c) in enumerate(calls)]]
+        Core.eval(@__MODULE__, Expr(:macrocall, Symbol("@slic"), LineNumberNode(@__LINE__, Symbol(@__FILE__)),
+            :((; K = 3, G = 2, y = $y, S0 = $S0)), Meta.parse("begin\n" * join(lines, "\n") * "\nend")))
+    end
+    families = [
+        ("plain matrix[K, K]", "L ~ lkj_corr_cholesky(2.0; n = K)\nA = multiply_lower_tri_self_transpose(L)", "A"),
+        ("cholesky_factor_corr", "A ~ lkj_corr_cholesky(2.0; n = K)", "A"),
+        ("cholesky_factor_cov", "A::cholesky_factor_cov[K] ~ lkj_corr_cholesky(2.0)", "A"),
+        ("cov_matrix", "A::cov_matrix[K] ~ wishart(4.0, S0)", "A"),
+        ("corr_matrix", "A::corr_matrix[K] ~ lkj_corr(2.0)", "A"),
+        # An element of an array of constrained matrices is itself one.
+        ("cov_matrix array element", "As::cov_matrix[G, K] ~ wishart(4.0, S0)", "As[1]"),
+        ("cholesky_factor_corr array element", "As::cholesky_factor_corr[G, K] ~ lkj_corr_cholesky(2.0)", "As[2]"),
+    ]
+    @testset "$label" for (label, decl, X) in families
+        m = build(decl, X)
+        @test !occursin("anything", stan_code(m))
+        @test stanc_compiles(m)
+    end
+end
+
+"""
 Annotated top-level model loops — `@plate for … end` and `@scan begin … end` —
 are sugar over the shared compiler-owned-loop inliner (`_forward_loop_core!`),
 never HOFs: the tracer inlines both (decisions `10mrh0f`, `1375uo5`). Arrays
