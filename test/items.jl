@@ -11837,6 +11837,92 @@ end
 end
 
 """
+A constrained square matrix (`cholesky_factor_corr[K]`, `cholesky_factor_cov[K]`,
+`cov_matrix[K]`, `corr_matrix[K]`) carries ONE declared size but is a K×K Stan
+`matrix`, so every matrix builtin types it exactly as it types a plain
+`matrix[K, K]` (todo `1jt0ldf`). The plain-matrix family is the positive control:
+every call below is one that already works for `matrix[K, K]`. The likelihood
+on `z` keeps the matrix out of the prior-only re-draw path, which is a separate
+`_rng` coverage question.
+"""
+@testitem "slic: constrained square matrices type as matrix[K, K] in matrix builtins" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+    # `X` is the matrix under test.
+    calls = [
+        "tcrossprod(X)", "crossprod(X)", "inverse(X)", "inverse_spd(X)", "chol2inv(X)",
+        "symmetrize_from_lower_tri(X)", "generalized_inverse(X)", "matrix_power(X, 2)",
+        "trace(X)", "determinant(X)", "log_determinant(X)", "log_determinant_spd(X)",
+        "eigenvalues_sym(X)", "eigenvectors_sym(X)", "cholesky_decompose(X)",
+        "mdivide_left_spd(X, y)", "mdivide_right_spd(y', X)", "diag_post_multiply(X, y)",
+        "diag_pre_multiply(y, X)", "X'", "transpose(X)", "X[1, 2]", "X[:, 1]", "X[1, :]",
+        "quad_form(X, y)", "quad_form_diag(X, y)", "quad_form_sym(X, y)", "trace_quad_form(X, y)",
+        "diagonal(X)", "rows_dot_self(X)", "columns_dot_self(X)", "col(X, 1)", "row(X, 1)",
+        "X + X", "X - X", "X * y", "X * X", "y' * X", "2.0 * X", "X * 2.0", "exp(X)",
+        "multiply_lower_tri_self_transpose(X)", "matrix_exp_multiply(X, X)",
+    ]
+    S0 = [1.0 0.0 0.0; 0.0 1.0 0.0; 0.0 0.0 1.0]
+    y = [0.1, -0.3, 0.5]
+    build(decl, X) = begin
+        lines = [decl; "z ~ normal($X[1, 1], 1.0)"; ["r$i = " * replace(c, "X" => X) for (i, c) in enumerate(calls)]]
+        Core.eval(@__MODULE__, Expr(:macrocall, Symbol("@slic"), LineNumberNode(@__LINE__, Symbol(@__FILE__)),
+            :((; K = 3, G = 2, y = $y, S0 = $S0, z = 0.2)), Meta.parse("begin\n" * join(lines, "\n") * "\nend")))
+    end
+    families = [
+        ("plain matrix[K, K]", "L ~ lkj_corr_cholesky(2.0; n = K)\nA = multiply_lower_tri_self_transpose(L)", "A"),
+        ("cholesky_factor_corr", "A ~ lkj_corr_cholesky(2.0; n = K)", "A"),
+        ("cholesky_factor_cov", "A::cholesky_factor_cov[K] ~ lkj_corr_cholesky(2.0)", "A"),
+        ("cov_matrix", "A::cov_matrix[K] ~ wishart(4.0, S0)", "A"),
+        ("corr_matrix", "A::corr_matrix[K] ~ lkj_corr(2.0)", "A"),
+        # An element of an array of constrained matrices is itself one.
+        ("cov_matrix array element", "As::cov_matrix[G, K] ~ flat()", "As[1]"),
+        ("cholesky_factor_corr array element", "As::cholesky_factor_corr[G, K] ~ flat()", "As[2]"),
+    ]
+    @testset "$label" for (label, decl, X) in families
+        m = build(decl, X)
+        @test !occursin("anything", stan_code(m))
+        @test stanc_compiles(m)
+    end
+
+    # A `@deffun` `matrix[m, n]` formal binds a constrained square matrix as K×K
+    # (both size names read K), in a regular and an inlined UDF.
+    @deffun sqmat_rowsums(x::matrix[m, n])::vector[m] = x * rep_vector(1.0, n)
+    @deffun @inline sqmat_scaled(x::matrix[m, n], s::real)::matrix[m, n] = x * s
+    udf = @slic (; K = 3, S0, z = 0.2) begin
+        S::cov_matrix[K] ~ wishart(4.0, S0)
+        L ~ lkj_corr_cholesky(2.0; n = K)
+        z ~ normal(sqmat_rowsums(S)[1] + sqmat_rowsums(L)[2] + sqmat_scaled(L, 2.0)[1, 1], 1.0)
+    end
+    udf_code = stan_code(udf)
+    @test count("vector sqmat_rowsums(", udf_code) == 1
+    @test !occursin("anything", udf_code)
+    @test stanc_compiles(udf)
+
+    # An ARRAY of constrained matrices has as many dims as a `matrix[m, n]`
+    # formal but is not a matrix, so it no longer matches one (it used to be
+    # typed as a `G×K` matrix and emitted stanc-invalid Stan). The results are
+    # bound, because only a bound result is type-checked.
+    # refused: Stan has no matrix signature taking `array[] matrix` (decision `123gb1g`)
+    refusal(m) = try
+        stan_code(m)
+        nothing
+    catch err
+        err isa StanBlocksError ? sprint(showerror, err) : rethrow()
+    end
+    builtin_on_array = refusal(@slic (; K = 3, G = 2, z = 0.2) begin
+        As::cholesky_factor_corr[G, K] ~ flat()
+        R = tcrossprod(As)
+        z ~ normal(sum(R), 1.0)
+    end)
+    @test !isnothing(builtin_on_array) && occursin("tcrossprod", builtin_on_array)
+    udf_on_array = refusal(@slic (; K = 3, G = 2, z = 0.2) begin
+        As::cov_matrix[G, K] ~ flat()
+        R = sqmat_rowsums(As)
+        z ~ normal(sum(R), 1.0)
+    end)
+    @test !isnothing(udf_on_array) && occursin("sqmat_rowsums", udf_on_array)
+end
+
+"""
 A natively-constrained square matrix (`cholesky_factor_corr`, `cholesky_factor_cov`,
 `cov_matrix`, `corr_matrix`) is sized by one dim but is a Stan `matrix`: matrix
 builtins type it as `matrix[K, K]`, and generated companions sign it as `matrix`

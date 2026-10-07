@@ -2896,12 +2896,6 @@ end
     end
     typeof(multiply_lower_tri_self_transpose) => begin
         (matrix[m,n],) => matrix[m,m]
-        # A natively-constrained square matrix (`cholesky_factor_corr[K]`,
-        # `cholesky_factor_cov[K]`, `cov_matrix[K]`, `corr_matrix[K]`) is SIZED by
-        # one dim (`r_ndim(square_matrix) == 1`), so the `matrix[m,n]` row cannot
-        # match it and the call degraded to `anything` (stanc-invalid companions).
-        # Stan accepts any `matrix` here; the result is a plain `matrix[K,K]`.
-        (square_matrix[m],) => matrix[m,m]
     end
     typeof(matrix_power) => begin
         (matrix[n,n], int[]) => matrix[n,n]
@@ -3030,19 +3024,16 @@ end
         (row_vector[m], matrix[m,n]) => row_vector[n]
         (matrix[m,n], vector[n]) => vector[m]
         (matrix[m,n], matrix[n,o]) => matrix[m,o]
-        (cholesky_factor_corr[m],matrix[m,n]) => matrix[m,n]
     end
     typeof(adjoint) => begin
         (vector[n],) => row_vector[n]
         (row_vector[n],) => vector[n]
         (matrix[m,n],) => matrix[n,m]
-        (cholesky_factor_corr[m],) => matrix[m,m]
     end
     typeof(transpose) => begin
         (vector[n],) => row_vector[n]
         (row_vector[n],) => vector[n]
         (matrix[m,n],) => matrix[n,m]
-        (cholesky_factor_corr[m],) => matrix[m,m]
     end
     typeof(getindex) => begin 
         (int[m], int) => int
@@ -3078,19 +3069,10 @@ end
         (matrix[m,n,k], int, int[o], int) => vector[o]
         (matrix[m,n,k], int, int, int[p]) => row_vector[p]
         (matrix[m,n,k], int, int[o], int[p]) => matrix[o,p]
-        # A single natively-constrained square matrix (`cholesky_factor_corr` /
-        # `cholesky_factor_cov`) is SIZED by one dim (`<ct>[K]`, since
-        # `r_ndim(square_matrix) == 1`) but is logically K-by-K: scalar element
-        # access is a `real`, exactly as for a plain `matrix[K,K]`. Without an entry
-        # here the l_ndim-peeling getindex rule (functions.jl, `l_ndim > 0` branch)
-        # reads the first index as an array-prefix selector and the result degrades
-        # to `anything` (defect D5). The `[m,n]` entries below are the plate
-        # (array-of-cells) case, indexed by the outer axis first.
-        (cholesky_factor_corr[m], int, int) => real
-        (cholesky_factor_cov[m], int, int) => real
-        (cholesky_factor_corr[m,n], int, int, int) => real
-        (cholesky_factor_corr[m,n], int, int[o], int) => vector[o]
-        (cholesky_factor_corr[m,n], int, int, int[p]) => row_vector[p]
+        # A constrained square matrix (or an array of them) indexes through the
+        # `matrix[...]` rows above as K-by-K (`xformal_type`). Specialisation: a
+        # block of a Cholesky-correlation factor taken from an array of them
+        # (`L[g, :, :]`, the per-cell `lkj_corr_cholesky_lpdf` loop) stays one.
         (cholesky_factor_corr[m,n], int, int[o], int[p]) => cholesky_factor_corr[o]
     end
     typeof(std_normal_rng) => begin 
@@ -3166,7 +3148,6 @@ end
     end
     typeof(diag_pre_multiply) => begin
         (vector[m], matrix[m,n]) => matrix[m,n]
-        (vector[m], cholesky_factor_corr[m]) => matrix[m,m] 
     end
     typeof(diag_post_multiply) => begin
         (matrix[m,n], vector[n]) => matrix[m,n] 
