@@ -11935,6 +11935,111 @@ generated `<name>.hpp` beside its input, and every call used to leak one.
 end
 
 """
+Every natively-constrained square-matrix family samples a single matrix or an
+ARRAY of them (`As::<ct>[G, K] ~ family(...)`, a looping `_lpdf` overload), and a
+parameter that no likelihood reaches is re-drawn in generated quantities as a
+plain `matrix` (or `array[] matrix`).
+"""
+@testitem "slic: constrained-matrix families sample arrays and re-draw prior-only" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    S0 = [1.0 0.2 0.0; 0.2 1.0 0.0; 0.0 0.0 1.0]
+    L0 = [1.0 0.0 0.0; 0.2 sqrt(0.96) 0.0; 0.0 0.0 1.0]
+    data = Dict{Symbol,Any}(:K => 3, :G => 2, :S0 => S0, :L0 => L0, :y => [0.1, 0.2, 0.3], :y2 => [-0.2, 0.0, 0.4])
+    families = (
+        (:cov_matrix, :(wishart(5.0, S0)), :wishart),
+        (:cov_matrix, :(inv_wishart(5.0, S0)), :inv_wishart),
+        (:cholesky_factor_cov, :(wishart_cholesky(5.0, L0)), :wishart_cholesky),
+        (:cholesky_factor_cov, :(inv_wishart_cholesky(5.0, L0)), :inv_wishart_cholesky),
+        (:corr_matrix, :(lkj_corr(2.0)), :lkj_corr),
+        (:cholesky_factor_corr, :(lkj_corr_cholesky(2.0)), :lkj_corr_cholesky),
+        (:cholesky_factor_cov, :(lkj_corr_cholesky(2.0)), :lkj_corr_cholesky),
+    )
+    for (ct, rhs, family) in families
+        mvn = ct in (:cholesky_factor_cov, :cholesky_factor_corr) ? :multi_normal_cholesky : :multi_normal
+        model(body) = StanBlocks.SlicModel(body, data, @__MODULE__)
+        single_prior = model(quote A::$ct[K] ~ $rhs end)
+        single_fit = model(quote A::$ct[K] ~ $rhs; y ~ $mvn(rep_vector(0.0, K), A) end)
+        array_prior = model(quote As::$ct[G, K] ~ $rhs end)
+        array_fit = model(quote As::$ct[G, K] ~ $rhs; y ~ $mvn(rep_vector(0.0, K), As[1]) end)
+        # (a) Prior-only: the parameter is re-drawn from the sized token of its
+        #     declared family, as a plain matrix / array of matrices.
+        @test occursin("matrix[K, K] A = $(family)_$(ct)_rng(K, ",
+                       stan_block(stan_code(single_prior), "generated quantities"))
+        @test occursin("array[G] matrix[K, K] As = $(family)_$(ct)_rng((G, K), ",
+                       stan_block(stan_code(array_prior), "generated quantities"))
+        # (b) Fitted array prior: the sampling statement stays verbatim and
+        #     resolves to the looping `array[] matrix` overload.
+        fit_code = stan_code(array_fit)
+        @test occursin("As ~ $(family)(", stan_block(fit_code, "model"))
+        @test occursin("real $(family)_lpdf(\n    array[] matrix L,", stan_block(fit_code, "functions"))
+        for m in (single_prior, single_fit, array_prior, array_fit)
+            @test stanc_compiles(m)
+        end
+    end
+    # (c) The explicit-size spelling `lkj_corr_cholesky(eta, G, K)` delegates to
+    #     the array overload.
+    explicit = StanBlocks.SlicModel(quote
+        As::cholesky_factor_corr[G, K] ~ lkj_corr_cholesky(2.0, G, K)
+        y ~ multi_normal_cholesky(rep_vector(0.0, K), As[1])
+    end, data, @__MODULE__)
+    @test stanc_compiles(explicit)
+end
+
+"""
+The array overload's density equals the sum of per-matrix densities, and the
+prior-only re-draws follow their family.
+"""
+@testitem "slic: constrained-matrix array priors and re-draws agree natively" tags=[:slic, :bridgestan, :regression] setup=[StanBlocksImports] begin
+    S0 = [1.0 0.2 0.0; 0.2 1.0 0.0; 0.0 0.0 1.0]
+    data = Dict{Symbol,Any}(:K => 3, :G => 2, :S0 => S0, :y => [0.1, 0.2, 0.3], :y2 => [-0.2, 0.0, 0.4])
+    model(body) = StanBlocks.SlicModel(body, data, @__MODULE__)
+    # (a) Same unconstrained coordinates (As[1] then As[2] versus A1 then A2),
+    #     same log density up to a constant: `A ~ family(...)` on a native density
+    #     drops its normalising constant, while the array overload, like every
+    #     StanBlocks UDF density, sums the normalised element `_lpdf`.
+    density_offsets(a, b) = begin
+        pa, pb = instantiate(a), instantiate(b)
+        d = LogDensityProblems.dimension(pa)
+        @test d == LogDensityProblems.dimension(pb)
+        rng = Xoshiro(7)
+        map(1:20) do _
+            x = 0.5 .* randn(rng, d)
+            LogDensityProblems.logdensity(pa, x) - LogDensityProblems.logdensity(pb, x)
+        end
+    end
+    same_density(a, b) = (offsets = density_offsets(a, b); maximum(offsets) - minimum(offsets) < 1e-8)
+    @test same_density(
+        model(quote As::cov_matrix[G, K] ~ wishart(5.0, S0); y ~ multi_normal(rep_vector(0.0, K), As[1]); y2 ~ multi_normal(rep_vector(0.0, K), As[2]) end),
+        model(quote A1::cov_matrix[K] ~ wishart(5.0, S0); A2::cov_matrix[K] ~ wishart(5.0, S0); y ~ multi_normal(rep_vector(0.0, K), A1); y2 ~ multi_normal(rep_vector(0.0, K), A2) end))
+    @test same_density(
+        model(quote As::cholesky_factor_corr[G, K] ~ lkj_corr_cholesky(2.0); y ~ multi_normal_cholesky(rep_vector(0.0, K), As[1]); y2 ~ multi_normal_cholesky(rep_vector(0.0, K), As[2]) end),
+        model(quote A1::cholesky_factor_corr[K] ~ lkj_corr_cholesky(2.0); A2::cholesky_factor_corr[K] ~ lkj_corr_cholesky(2.0); y ~ multi_normal_cholesky(rep_vector(0.0, K), A1); y2 ~ multi_normal_cholesky(rep_vector(0.0, K), A2) end))
+    @test all(iszero, density_offsets(
+        model(quote As::cholesky_factor_corr[G, K] ~ lkj_corr_cholesky(2.0, G, K); y ~ multi_normal_cholesky(rep_vector(0.0, K), As[1]); y2 ~ multi_normal_cholesky(rep_vector(0.0, K), As[2]) end),
+        model(quote As::cholesky_factor_corr[G, K] ~ lkj_corr_cholesky(2.0); y ~ multi_normal_cholesky(rep_vector(0.0, K), As[1]); y2 ~ multi_normal_cholesky(rep_vector(0.0, K), As[2]) end)))
+    # (b) Prior-only programs are fixed_param; their draws follow the family.
+    draws(m) = begin
+        p = instantiate(m)
+        @test LogDensityProblems.dimension(p) == 0
+        names = BridgeStan.param_names(p.model; include_tp = true, include_gq = true)
+        rng = BridgeStan.StanRNG(p.model, 892)
+        names, reduce(hcat, [BridgeStan.param_constrain(p.model, Float64[];
+            include_tp = true, include_gq = true, rng) for _ in 1:20_000])
+    end
+    col(names, name) = findfirst(==(name), names)
+    names, D = draws(model(quote As::cov_matrix[G, K] ~ wishart(5.0, S0) end))
+    for g in 1:2   # E[W] = nu * S
+        @test maximum(abs(mean(D[col(names, "As.$g.$i.$j"), :]) - 5 * S0[i, j]) for i in 1:3, j in 1:3) < 0.15
+    end
+    names, D = draws(model(quote As::cholesky_factor_corr[G, K] ~ lkj_corr_cholesky(2.0) end))
+    for g in 1:2, t in 1:100   # a correlation Cholesky factor: lower triangular, unit rows
+        L = [D[col(names, "As.$g.$i.$j"), t] for i in 1:3, j in 1:3]
+        @test maximum(abs.(sum(L .^ 2; dims = 2) .- 1)) < 1e-10
+        @test L[1, 2] == L[1, 3] == L[2, 3] == 0
+    end
+end
+
+"""
 Annotated top-level model loops — `@plate for … end` and `@scan begin … end` —
 are sugar over the shared compiler-owned-loop inliner (`_forward_loop_core!`),
 never HOFs: the tracer inlines both (decisions `10mrh0f`, `1375uo5`). Arrays
