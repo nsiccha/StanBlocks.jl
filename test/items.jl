@@ -11911,6 +11911,92 @@ end
 end
 
 """
+A constrained square matrix (`cholesky_factor_corr[K]`, `cholesky_factor_cov[K]`,
+`cov_matrix[K]`, `corr_matrix[K]`) carries ONE declared size but is a K×K Stan
+`matrix`, so every matrix builtin types it exactly as it types a plain
+`matrix[K, K]` (todo `1jt0ldf`). The plain-matrix family is the positive control:
+every call below is one that already works for `matrix[K, K]`. The likelihood
+on `z` keeps the matrix out of the prior-only re-draw path, which is a separate
+`_rng` coverage question.
+"""
+@testitem "slic: constrained square matrices type as matrix[K, K] in matrix builtins" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+    # `X` is the matrix under test.
+    calls = [
+        "tcrossprod(X)", "crossprod(X)", "inverse(X)", "inverse_spd(X)", "chol2inv(X)",
+        "symmetrize_from_lower_tri(X)", "generalized_inverse(X)", "matrix_power(X, 2)",
+        "trace(X)", "determinant(X)", "log_determinant(X)", "log_determinant_spd(X)",
+        "eigenvalues_sym(X)", "eigenvectors_sym(X)", "cholesky_decompose(X)",
+        "mdivide_left_spd(X, y)", "mdivide_right_spd(y', X)", "diag_post_multiply(X, y)",
+        "diag_pre_multiply(y, X)", "X'", "transpose(X)", "X[1, 2]", "X[:, 1]", "X[1, :]",
+        "quad_form(X, y)", "quad_form_diag(X, y)", "quad_form_sym(X, y)", "trace_quad_form(X, y)",
+        "diagonal(X)", "rows_dot_self(X)", "columns_dot_self(X)", "col(X, 1)", "row(X, 1)",
+        "X + X", "X - X", "X * y", "X * X", "y' * X", "2.0 * X", "X * 2.0", "exp(X)",
+        "multiply_lower_tri_self_transpose(X)", "matrix_exp_multiply(X, X)",
+    ]
+    S0 = [1.0 0.0 0.0; 0.0 1.0 0.0; 0.0 0.0 1.0]
+    y = [0.1, -0.3, 0.5]
+    build(decl, X) = begin
+        lines = [decl; "z ~ normal($X[1, 1], 1.0)"; ["r$i = " * replace(c, "X" => X) for (i, c) in enumerate(calls)]]
+        Core.eval(@__MODULE__, Expr(:macrocall, Symbol("@slic"), LineNumberNode(@__LINE__, Symbol(@__FILE__)),
+            :((; K = 3, G = 2, y = $y, S0 = $S0, z = 0.2)), Meta.parse("begin\n" * join(lines, "\n") * "\nend")))
+    end
+    families = [
+        ("plain matrix[K, K]", "L ~ lkj_corr_cholesky(2.0; n = K)\nA = multiply_lower_tri_self_transpose(L)", "A"),
+        ("cholesky_factor_corr", "A ~ lkj_corr_cholesky(2.0; n = K)", "A"),
+        ("cholesky_factor_cov", "A::cholesky_factor_cov[K] ~ lkj_corr_cholesky(2.0)", "A"),
+        ("cov_matrix", "A::cov_matrix[K] ~ wishart(4.0, S0)", "A"),
+        ("corr_matrix", "A::corr_matrix[K] ~ lkj_corr(2.0)", "A"),
+        # An element of an array of constrained matrices is itself one.
+        ("cov_matrix array element", "As::cov_matrix[G, K] ~ flat()", "As[1]"),
+        ("cholesky_factor_corr array element", "As::cholesky_factor_corr[G, K] ~ flat()", "As[2]"),
+    ]
+    @testset "$label" for (label, decl, X) in families
+        m = build(decl, X)
+        @test !occursin("anything", stan_code(m))
+        @test stanc_compiles(m)
+    end
+
+    # A `@deffun` `matrix[m, n]` formal binds a constrained square matrix as K×K
+    # (both size names read K), in a regular and an inlined UDF.
+    @deffun sqmat_rowsums(x::matrix[m, n])::vector[m] = x * rep_vector(1.0, n)
+    @deffun @inline sqmat_scaled(x::matrix[m, n], s::real)::matrix[m, n] = x * s
+    udf = @slic (; K = 3, S0, z = 0.2) begin
+        S::cov_matrix[K] ~ wishart(4.0, S0)
+        L ~ lkj_corr_cholesky(2.0; n = K)
+        z ~ normal(sqmat_rowsums(S)[1] + sqmat_rowsums(L)[2] + sqmat_scaled(L, 2.0)[1, 1], 1.0)
+    end
+    udf_code = stan_code(udf)
+    @test count("vector sqmat_rowsums(", udf_code) == 1
+    @test !occursin("anything", udf_code)
+    @test stanc_compiles(udf)
+
+    # An ARRAY of constrained matrices has as many dims as a `matrix[m, n]`
+    # formal but is not a matrix, so it no longer matches one (it used to be
+    # typed as a `G×K` matrix and emitted stanc-invalid Stan). The results are
+    # bound, because only a bound result is type-checked.
+    # refused: Stan has no matrix signature taking `array[] matrix` (decision `123gb1g`)
+    refusal(m) = try
+        stan_code(m)
+        nothing
+    catch err
+        err isa StanBlocksError ? sprint(showerror, err) : rethrow()
+    end
+    builtin_on_array = refusal(@slic (; K = 3, G = 2, z = 0.2) begin
+        As::cholesky_factor_corr[G, K] ~ flat()
+        R = tcrossprod(As)
+        z ~ normal(sum(R), 1.0)
+    end)
+    @test !isnothing(builtin_on_array) && occursin("tcrossprod", builtin_on_array)
+    udf_on_array = refusal(@slic (; K = 3, G = 2, z = 0.2) begin
+        As::cov_matrix[G, K] ~ flat()
+        R = sqmat_rowsums(As)
+        z ~ normal(sum(R), 1.0)
+    end)
+    @test !isnothing(udf_on_array) && occursin("sqmat_rowsums", udf_on_array)
+end
+
+"""
 A natively-constrained square matrix (`cholesky_factor_corr`, `cholesky_factor_cov`,
 `cov_matrix`, `corr_matrix`) is sized by one dim but is a Stan `matrix`: matrix
 builtins type it as `matrix[K, K]`, and generated companions sign it as `matrix`
@@ -12005,6 +12091,111 @@ generated `<name>.hpp` beside its input, and every call used to leak one.
             @test occursin("y", bad.output)
         end
         @test isempty(readdir(dir))
+    end
+end
+
+"""
+Every natively-constrained square-matrix family samples a single matrix or an
+ARRAY of them (`As::<ct>[G, K] ~ family(...)`, a looping `_lpdf` overload), and a
+parameter that no likelihood reaches is re-drawn in generated quantities as a
+plain `matrix` (or `array[] matrix`).
+"""
+@testitem "slic: constrained-matrix families sample arrays and re-draw prior-only" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    S0 = [1.0 0.2 0.0; 0.2 1.0 0.0; 0.0 0.0 1.0]
+    L0 = [1.0 0.0 0.0; 0.2 sqrt(0.96) 0.0; 0.0 0.0 1.0]
+    data = Dict{Symbol,Any}(:K => 3, :G => 2, :S0 => S0, :L0 => L0, :y => [0.1, 0.2, 0.3], :y2 => [-0.2, 0.0, 0.4])
+    families = (
+        (:cov_matrix, :(wishart(5.0, S0)), :wishart),
+        (:cov_matrix, :(inv_wishart(5.0, S0)), :inv_wishart),
+        (:cholesky_factor_cov, :(wishart_cholesky(5.0, L0)), :wishart_cholesky),
+        (:cholesky_factor_cov, :(inv_wishart_cholesky(5.0, L0)), :inv_wishart_cholesky),
+        (:corr_matrix, :(lkj_corr(2.0)), :lkj_corr),
+        (:cholesky_factor_corr, :(lkj_corr_cholesky(2.0)), :lkj_corr_cholesky),
+        (:cholesky_factor_cov, :(lkj_corr_cholesky(2.0)), :lkj_corr_cholesky),
+    )
+    for (ct, rhs, family) in families
+        mvn = ct in (:cholesky_factor_cov, :cholesky_factor_corr) ? :multi_normal_cholesky : :multi_normal
+        model(body) = StanBlocks.SlicModel(body, data, @__MODULE__)
+        single_prior = model(quote A::$ct[K] ~ $rhs end)
+        single_fit = model(quote A::$ct[K] ~ $rhs; y ~ $mvn(rep_vector(0.0, K), A) end)
+        array_prior = model(quote As::$ct[G, K] ~ $rhs end)
+        array_fit = model(quote As::$ct[G, K] ~ $rhs; y ~ $mvn(rep_vector(0.0, K), As[1]) end)
+        # (a) Prior-only: the parameter is re-drawn from the sized token of its
+        #     declared family, as a plain matrix / array of matrices.
+        @test occursin("matrix[K, K] A = $(family)_$(ct)_rng(K, ",
+                       stan_block(stan_code(single_prior), "generated quantities"))
+        @test occursin("array[G] matrix[K, K] As = $(family)_$(ct)_rng((G, K), ",
+                       stan_block(stan_code(array_prior), "generated quantities"))
+        # (b) Fitted array prior: the sampling statement stays verbatim and
+        #     resolves to the looping `array[] matrix` overload.
+        fit_code = stan_code(array_fit)
+        @test occursin("As ~ $(family)(", stan_block(fit_code, "model"))
+        @test occursin("real $(family)_lpdf(\n    array[] matrix L,", stan_block(fit_code, "functions"))
+        for m in (single_prior, single_fit, array_prior, array_fit)
+            @test stanc_compiles(m)
+        end
+    end
+    # (c) The explicit-size spelling `lkj_corr_cholesky(eta, G, K)` delegates to
+    #     the array overload.
+    explicit = StanBlocks.SlicModel(quote
+        As::cholesky_factor_corr[G, K] ~ lkj_corr_cholesky(2.0, G, K)
+        y ~ multi_normal_cholesky(rep_vector(0.0, K), As[1])
+    end, data, @__MODULE__)
+    @test stanc_compiles(explicit)
+end
+
+"""
+The array overload's density equals the sum of per-matrix densities, and the
+prior-only re-draws follow their family.
+"""
+@testitem "slic: constrained-matrix array priors and re-draws agree natively" tags=[:slic, :bridgestan, :regression] setup=[StanBlocksImports] begin
+    S0 = [1.0 0.2 0.0; 0.2 1.0 0.0; 0.0 0.0 1.0]
+    data = Dict{Symbol,Any}(:K => 3, :G => 2, :S0 => S0, :y => [0.1, 0.2, 0.3], :y2 => [-0.2, 0.0, 0.4])
+    model(body) = StanBlocks.SlicModel(body, data, @__MODULE__)
+    # (a) Same unconstrained coordinates (As[1] then As[2] versus A1 then A2),
+    #     same log density up to a constant: `A ~ family(...)` on a native density
+    #     drops its normalising constant, while the array overload, like every
+    #     StanBlocks UDF density, sums the normalised element `_lpdf`.
+    density_offsets(a, b) = begin
+        pa, pb = instantiate(a), instantiate(b)
+        d = LogDensityProblems.dimension(pa)
+        @test d == LogDensityProblems.dimension(pb)
+        rng = Xoshiro(7)
+        map(1:20) do _
+            x = 0.5 .* randn(rng, d)
+            LogDensityProblems.logdensity(pa, x) - LogDensityProblems.logdensity(pb, x)
+        end
+    end
+    same_density(a, b) = (offsets = density_offsets(a, b); maximum(offsets) - minimum(offsets) < 1e-8)
+    @test same_density(
+        model(quote As::cov_matrix[G, K] ~ wishart(5.0, S0); y ~ multi_normal(rep_vector(0.0, K), As[1]); y2 ~ multi_normal(rep_vector(0.0, K), As[2]) end),
+        model(quote A1::cov_matrix[K] ~ wishart(5.0, S0); A2::cov_matrix[K] ~ wishart(5.0, S0); y ~ multi_normal(rep_vector(0.0, K), A1); y2 ~ multi_normal(rep_vector(0.0, K), A2) end))
+    @test same_density(
+        model(quote As::cholesky_factor_corr[G, K] ~ lkj_corr_cholesky(2.0); y ~ multi_normal_cholesky(rep_vector(0.0, K), As[1]); y2 ~ multi_normal_cholesky(rep_vector(0.0, K), As[2]) end),
+        model(quote A1::cholesky_factor_corr[K] ~ lkj_corr_cholesky(2.0); A2::cholesky_factor_corr[K] ~ lkj_corr_cholesky(2.0); y ~ multi_normal_cholesky(rep_vector(0.0, K), A1); y2 ~ multi_normal_cholesky(rep_vector(0.0, K), A2) end))
+    @test all(iszero, density_offsets(
+        model(quote As::cholesky_factor_corr[G, K] ~ lkj_corr_cholesky(2.0, G, K); y ~ multi_normal_cholesky(rep_vector(0.0, K), As[1]); y2 ~ multi_normal_cholesky(rep_vector(0.0, K), As[2]) end),
+        model(quote As::cholesky_factor_corr[G, K] ~ lkj_corr_cholesky(2.0); y ~ multi_normal_cholesky(rep_vector(0.0, K), As[1]); y2 ~ multi_normal_cholesky(rep_vector(0.0, K), As[2]) end)))
+    # (b) Prior-only programs are fixed_param; their draws follow the family.
+    draws(m) = begin
+        p = instantiate(m)
+        @test LogDensityProblems.dimension(p) == 0
+        names = BridgeStan.param_names(p.model; include_tp = true, include_gq = true)
+        rng = BridgeStan.StanRNG(p.model, 892)
+        names, reduce(hcat, [BridgeStan.param_constrain(p.model, Float64[];
+            include_tp = true, include_gq = true, rng) for _ in 1:20_000])
+    end
+    col(names, name) = findfirst(==(name), names)
+    names, D = draws(model(quote As::cov_matrix[G, K] ~ wishart(5.0, S0) end))
+    for g in 1:2   # E[W] = nu * S
+        @test maximum(abs(mean(D[col(names, "As.$g.$i.$j"), :]) - 5 * S0[i, j]) for i in 1:3, j in 1:3) < 0.15
+    end
+    names, D = draws(model(quote As::cholesky_factor_corr[G, K] ~ lkj_corr_cholesky(2.0) end))
+    for g in 1:2, t in 1:100   # a correlation Cholesky factor: lower triangular, unit rows
+        L = [D[col(names, "As.$g.$i.$j"), t] for i in 1:3, j in 1:3]
+        @test maximum(abs.(sum(L .^ 2; dims = 2) .- 1)) < 1e-10
+        @test L[1, 2] == L[1, 3] == L[2, 3] == 0
     end
 end
 

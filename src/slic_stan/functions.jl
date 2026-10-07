@@ -303,7 +303,7 @@ tracetype(x::CanonicalExpr{<:Base.BroadcastFunction}) = begin
     invoke(tracetype, Tuple{CanonicalExpr}, x)
 end
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype(
-    CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 1),))))
+    CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1))
 )
 # Selecting scalar indices from the leading array-prefix of an
 # `array[...] vector/matrix` peels those array dimensions. A partial selection
@@ -328,12 +328,14 @@ tracetype(x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr,Vararg{Any}}}) 
     invoke(tracetype, Tuple{CanonicalExpr}, x)
 end
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any}}) = tracetype(
-    CanonicalExpr(head(x), x.args[1], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 1),))), x.args[3])
+    CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1), x.args[3])
 )
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Colon}}) = tracetype(
-    CanonicalExpr(head(x), x.args[1], x.args[2], StanExpr(missing, StanType(types.int, (stan_size(x.args[1], 2),))))
+    CanonicalExpr(head(x), x.args[1], x.args[2], _colon_range_expr(x.args[1], 2))
 )
-_colon_range_expr(x, j) = StanExpr(missing, StanType(types.int, (stan_size(x, min(j, stan_ndim(x))),)))
+# A colon on axis `j` is the full range of that axis (`index_shape`, so a
+# constrained square matrix's second axis is its one declared size).
+_colon_range_expr(x, j) = StanExpr(missing, StanType(types.int, (index_shape(x)[j],)))
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Colon}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1), x.args[3])
 )
@@ -781,17 +783,35 @@ begin
         return :($types.func{$ct})
     end
 
-    xsig_type(x::Expr) = begin
-        @assert x.head == :ref "xsig_type expects a `T` or `T[dims...]` `:ref` expression, got `$x` (head `$(x.head)`)."
+    # The value type a `T[dims...]` formal binds — the dispatch key shared by
+    # `@defsig`, `@deffun` and `@slic f(...)`. A `matrix[..., m, n]` formal also
+    # binds a natively-constrained square matrix (`cholesky_factor_corr`,
+    # `cholesky_factor_cov`, `cov_matrix`, `corr_matrix`): Stan passes it as a
+    # plain `matrix`, but it carries ONE declared size (`r_ndim(square_matrix)
+    # == 1`), so it has one dim fewer than the formal. The plain branch is
+    # EXACTLY `types.matrix`: an ARRAY of constrained matrices has the formal's
+    # dim count but is not a matrix, so it must not match. `xformal_size` reads
+    # the bound value's sizes back in the formal's shape.
+    xformal_type(ct, ndims) = if ct === types.matrix && ndims >= 2
+        :(Union{$StanExpr2{$ct, $ndims}, $StanExpr2{<:$types.square_matrix, $(ndims - 1)}})
+    else
+        :($StanExpr2{<:$ct, $ndims})
+    end
+    xformal_size(formal::Expr, arg) =
+        gettype(formal.args[1]) === types.matrix && length(formal.args) >= 3 ?
+            :($index_shape($arg)) : :($stan_size($arg))
+    xsig_valtype(x::Expr) = begin
+        @assert x.head == :ref "xsig_valtype expects a `T` or `T[dims...]` `:ref` expression, got `$x` (head `$(x.head)`)."
         ct, size... = x.args
         ct = gettype(ct)
         ndims = length(size)
         if ct == types.anything && ndims == 0
-            :(<:$StanExpr2{<:$ct})
+            :($StanExpr2{<:$ct})
         else
-            :(<:$StanExpr2{<:$ct, $ndims})
+            xformal_type(ct, ndims)
         end
     end
+    xsig_type(x::Expr) = :(<:$(xsig_valtype(x)))
     # Type-token positional args: bare `T` or `T[dims...]` where `T` is a Stan
     # type. Dispatched via `<:StanExpr2{<:types.tokenof{<:T_t}, S}`.
     _is_type_token_sym(x) = _is_symbol(x) && isdefined(types, x) && _is_anything_type(getproperty(types, x))
@@ -840,7 +860,7 @@ begin
 
         xexpr = :(x::$CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
         xbody = Expr(:block, source, [
-            xassign(xtuple(ensure_xlhs.(lhsi.args[2:end])...), :(stan_size(x.args[$i])))
+            xassign(xtuple(ensure_xlhs.(lhsi.args[2:end])...), xformal_size(lhsi, :(x.args[$i])))
             for (i, lhsi) in enumerate(lhs)
         ]..., :(info = (;$(dim_names...), __trace_context__ = $_context_or_new(context))), xsig_expr(rv))
         quote
@@ -1922,8 +1942,9 @@ begin
         make_deconstruct(hidden) = Expr(:block,
             xassign(xtuple(arg_names..., (isnothing(vararg) ? () : (vararg,))...), :(x.args)),
             [
-                xassign(xtuple(ensure_xlhs.(args_type.args[2:end]; hidden)...), :($stan_size($args_name)))
-                for (args_name, args_type) in zip(arg_names, arg_types)
+                xassign(xtuple(ensure_xlhs.(args_type.args[2:end]; hidden)...),
+                    tok ? :($stan_size($args_name)) : xformal_size(args_type, args_name))
+                for (args_name, args_type, tok) in zip(arg_names, arg_types, is_token)
             ]...,
             :(info = (;$(sig_names...), $(keys(fun_sizes)...),))
         )
@@ -2205,6 +2226,11 @@ sig_expr(x::StanType) = StanType(sigtype(center_type(x)), map(sig_expr_size, sta
 # unsized `matrix`.
 _square_matrix_sig_size(::Tuple{}) = ()
 _square_matrix_sig_size(size::Tuple) = (size..., last(size))
+# One size per index axis: the declared sizes, except that a constrained square
+# matrix's trailing size fills both of its matrix axes (the shape its signature
+# key uses). Colon desugaring and a `matrix[..., m, n]` formal read sizes here.
+index_shape(x) = stan_size(x)
+index_shape(x::StanExpr2{<:types.square_matrix}) = _square_matrix_sig_size(stan_size(x))
 sig_expr(x::StanType{<:types.square_matrix}) = StanType(
     types.matrix, map(sig_expr_size, _square_matrix_sig_size(stan_size(x)))
 )
