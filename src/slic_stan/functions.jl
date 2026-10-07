@@ -867,7 +867,12 @@ begin
         String(take!(io))
     end
     sigtype(x::Type) = x
-    sigtype(x::Type{types.cholesky_factor_corr}) = types.matrix
+    # Stan function signatures take UNCONSTRAINED types only ("Functions do not
+    # enforce type constraints. Use "matrix" instead."), so every natively-
+    # constrained square matrix — not just `cholesky_factor_corr` — signs as
+    # `matrix`. Otherwise a `cov_matrix` argument emitted `cov_matrix args3` in a
+    # generated companion (`multi_normal_lpdfs`, `multi_normal_vector_rng`, …).
+    sigtype(x::Type{<:types.square_matrix}) = types.matrix
     sigtype(x::Type{<:types.vector}) = types.vector
     # `bool` is Stan-identical to `int` (it emits as `array[] int`), so its
     # signature type — which drives Stan-function NAMING and DEDUP — must be
@@ -2177,6 +2182,17 @@ sig_expr(x::CanonicalExpr) = remake(x, sig_expr(x.args)...)
 sig_expr(x::StanExpr) = StanExpr(:_, sig_expr(type(x)))
 sig_expr_size(x::StanExpr) = StanExpr(:_, StanType(types.int, ()))
 sig_expr(x::StanType) = StanType(sigtype(center_type(x)), map(sig_expr_size, stan_size(x)))
+# A constrained square matrix signs as `matrix` (`sigtype`) but is SIZED by one
+# trailing dim (`r_ndim(square_matrix) == 1`). Key it with a plain matrix's two
+# trailing dims, or `cov_matrix[K]` and `matrix[K, K]` arguments collect as two
+# definitions that render the same Stan signature ("already been declared"). An
+# UNSIZED one (a family's support type, e.g. `lkj_corr_cholesky(2.0)`) keys as an
+# unsized `matrix`.
+_square_matrix_sig_size(::Tuple{}) = ()
+_square_matrix_sig_size(size::Tuple) = (size..., last(size))
+sig_expr(x::StanType{<:types.square_matrix}) = StanType(
+    types.matrix, map(sig_expr_size, _square_matrix_sig_size(stan_size(x)))
+)
 sig_expr(x::StanType{<:types.tup}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); arg_types=sig_expr(info(x).arg_types))
 sig_expr(x::StanType{<:types.func}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); value=sig_expr(info(x).value))
 # A closure arg's function-dedup key MUST preserve its per-site `id`.

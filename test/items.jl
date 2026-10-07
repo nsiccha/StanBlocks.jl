@@ -11837,6 +11837,84 @@ end
 end
 
 """
+A natively-constrained square matrix (`cholesky_factor_corr`, `cholesky_factor_cov`,
+`cov_matrix`, `corr_matrix`) is sized by one dim but is a Stan `matrix`: matrix
+builtins type it as `matrix[K, K]`, and generated companions sign it as `matrix`
+and share one definition with a plain-`matrix` argument.
+"""
+@testitem "slic: constrained square-matrix arguments type and sign as matrix" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    y = [0.1, -0.3, 0.5]
+    # (a) `multiply_lower_tri_self_transpose` on a constrained factor is a
+    #     `matrix[K, K]`, not `anything`: its `multi_normal` companions take a
+    #     `matrix` covariance and stanc accepts them.
+    corr = @slic (; K = 3, y) begin
+        L ~ lkj_corr_cholesky(1.0; n = K)
+        y ~ multi_normal(rep_vector(0.0, K), multiply_lower_tri_self_transpose(L))
+    end
+    cov = @slic (; K = 3, y) begin
+        L::cholesky_factor_cov[K] ~ lkj_corr_cholesky(1.0)
+        y ~ multi_normal(rep_vector(0.0, K), multiply_lower_tri_self_transpose(L))
+    end
+    for m in (corr, cov)
+        fns = stan_block(stan_code(m), "functions")
+        @test !occursin("anything", fns)
+        @test occursin("matrix args3", fns)
+        @test occursin("matrix cov", fns)
+        @test stanc_compiles(m)
+    end
+    # (b) The same call inside a typed array-of-vector prior traces, both
+    #     prior-only (re-drawn in generated quantities) and with a likelihood.
+    prior = @slic (; K = 3, G = 4) begin
+        L ~ lkj_corr_cholesky(1.0; n = K)
+        b::vector[G, K] ~ multi_normal(rep_vector(0.0, K), multiply_lower_tri_self_transpose(L))
+    end
+    @test occursin("array[G] vector[K] b = multi_normal_vector_rng((G, K), ",
+                   stan_block(stan_code(prior), "generated quantities"))
+    @test stanc_compiles(prior)
+    fitted = @slic (; K = 3, G = 4, z = 0.2) begin
+        L ~ lkj_corr_cholesky(1.0; n = K)
+        b::vector[G, K] ~ multi_normal(rep_vector(0.0, K), multiply_lower_tri_self_transpose(L))
+        z ~ normal(b[1][1], 1.0)
+    end
+    @test occursin("array[G] vector[K] b;", stan_block(stan_code(fitted), "parameters"))
+    @test stanc_compiles(fitted)
+    # (c) A constrained matrix passed straight to a family signs its companion
+    #     argument as `matrix` (Stan function signatures take no constraints).
+    S0 = [1.0 0.0 0.0; 0.0 1.0 0.0; 0.0 0.0 1.0]
+    direct = (
+        cov_matrix = @slic((; K = 3, y, S0), begin
+            S::cov_matrix[K] ~ wishart(4.0, S0)
+            y ~ multi_normal(rep_vector(0.0, K), S)
+        end),
+        corr_matrix = @slic((; K = 3, y), begin
+            C::corr_matrix[K] ~ lkj_corr(2.0)
+            y ~ multi_normal(rep_vector(0.0, K), C)
+        end),
+    )
+    for (ct, m) in pairs(direct)
+        fns = stan_block(stan_code(m), "functions")
+        @test !occursin(string(ct), fns)
+        @test occursin("matrix args3", fns)
+        @test stanc_compiles(m)
+    end
+    # (d) A constrained and a plain `matrix` argument render the same Stan
+    #     signature, so they share ONE companion definition.
+    mixed = @slic (; K = 3, y, y2 = y, y3 = y, S0) begin
+        S::cov_matrix[K] ~ wishart(4.0, S0)
+        L ~ lkj_corr_cholesky(1.0; n = K)
+        tau ~ exponential(1.0; n = K)
+        y ~ multi_normal(rep_vector(0.0, K), S)
+        y2 ~ multi_normal(rep_vector(0.0, K), multiply_lower_tri_self_transpose(diag_pre_multiply(tau, L)))
+        y3 ~ multi_normal(rep_vector(0.0, K), multiply_lower_tri_self_transpose(L))
+    end
+    mixed_code = stan_code(mixed)
+    @test count("real multi_normal_lpdfs(", mixed_code) == 1
+    @test count("vector multi_normal_vector_rng(", mixed_code) == 1
+    @test stanc_compiles(mixed)
+end
+
+"""
 Annotated top-level model loops — `@plate for … end` and `@scan begin … end` —
 are sugar over the shared compiler-owned-loop inliner (`_forward_loop_core!`),
 never HOFs: the tracer inlines both (decisions `10mrh0f`, `1375uo5`). Arrays
