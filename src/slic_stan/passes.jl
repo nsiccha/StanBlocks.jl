@@ -58,6 +58,7 @@ deanon_type(tt::StanType, x::CanonicalExpr, tok) = begin
 end
 _tracetype(x, _context) = tracetype(x)
 _stan_expr(x::CanonicalExpr, context) = begin
+    _reject_untyped_args(x)
     context = _context_or_new(context)
     tok = _next_anon_id(context)
     tt = deanon_type(_tracetype(anon_canonical(x, tok), context), x, tok)

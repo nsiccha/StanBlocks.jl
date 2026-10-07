@@ -10243,6 +10243,80 @@ isolated test item.
 end
 
 """
+An untyped call result (no `tracetype` row, no matching `@defsig` signature, no
+matching `@deffun` overload) must fail at trace time wherever it is used in
+another expression, not only when it is bound to a name. Before the fix, a
+signature with an untyped formal (`Base.sum(x)::real`, `normal_lpdf(args...)`)
+matched the `anything` argument and returned a concrete type. So
+`z ~ normal(sum(f(M)), 1.0)` and `r = sum(f(M))` transpiled unchecked, and an
+unmatched `@deffun` was called without being emitted into `functions {}`, so
+only stanc reported the error.
+"""
+@testitem "slic: untyped call result used in another expression fails at trace time" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    @deffun begin
+        vector_only_total(x::vector[n])::real = sum(x)
+        guarded_total(x::vector[n], c::int)::real = begin
+            print("x = ", x)
+            if x[1] > 1e10
+                reject("too large: ", x[1])
+            elseif x[1] < -1e10
+                print("too small")
+            end
+            c > 0 ? sum(x) : 0.0
+        end
+        branch_total(x::matrix[m, n], c::int)::real = c > 0 ? vector_only_total(x) : 0.0
+    end
+    trace_error(m) = try
+        stan_code(m); nothing
+    catch e
+        sprint(showerror, e)
+    end
+    M = [1.0 2.0; 3.0 4.0]
+
+    # refused: an untyped value used in another expression is emitted unchecked
+    # and only stanc objects (dev §1, never silently swallow errors). Every
+    # nested position fails like the bound `r = vector_only_total(M)` does.
+    bound = trace_error(@slic (; M, z = 0.5) begin
+        r = vector_only_total(M)
+        z ~ normal(r, 1.0)
+    end)
+    @test bound !== nothing && occursin("tracetype not defined", bound)
+    for (label, m) in (
+        "nested in a ~ argument" => (@slic (; M, z = 0.5) begin
+            z ~ normal(sum(vector_only_total(M)), 1.0)
+        end),
+        "nested in an assignment" => (@slic (; M, z = 0.5) begin
+            r = sum(vector_only_total(M))
+            z ~ normal(r, 1.0)
+        end),
+        "direct ~ argument" => (@slic (; M, z = 0.5) begin
+            z ~ normal(vector_only_total(M), 1.0)
+        end),
+        "ternary branch" => (@slic (; M, z = 0.5, c = 1) begin
+            z ~ normal(branch_total(M, c), 1.0)
+        end),
+    )
+        err = trace_error(m)
+        @test err !== nothing
+        err === nothing && continue
+        @test occursin("`tracetype` not defined for vector_only_total(::matrix)::anything", err)
+        @test occursin("used in another expression", err)
+        @test !occursin(r"_arg\d+_\d+", err)  # names the call, not an anonymized placeholder
+    end
+
+    # String literals and statement nodes carry `anything` by construction and
+    # stay accepted: `print`/`reject` messages, an `elseif` branch, and a ternary
+    # over typed branches.
+    code = stan_code(@slic (; n = 3, z = 0.5, c = 1) begin
+        x ~ normal(0.0, 1.0; n = n)
+        z ~ normal(guarded_total(x, c), 1.0)
+    end)
+    @test occursin("print(\"x = \", x);", code)
+    @test occursin("} else if(", code)
+    @test occursin("((c > 0) ? sum(x) : 0.0)", code)
+end
+
+"""
 Verify `slic: structured diagnostics preserve source-part provenance` in an
 isolated test item.
 """
