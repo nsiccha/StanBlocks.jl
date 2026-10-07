@@ -2185,9 +2185,13 @@ sig_expr(x::StanType) = StanType(sigtype(center_type(x)), map(sig_expr_size, sta
 # A constrained square matrix signs as `matrix` (`sigtype`) but is SIZED by one
 # trailing dim (`r_ndim(square_matrix) == 1`). Key it with a plain matrix's two
 # trailing dims, or `cov_matrix[K]` and `matrix[K, K]` arguments collect as two
-# definitions that render the same Stan signature ("already been declared").
+# definitions that render the same Stan signature ("already been declared"). An
+# UNSIZED one (a family's support type, e.g. `lkj_corr_cholesky(2.0)`) keys as an
+# unsized `matrix`.
+_square_matrix_sig_size(::Tuple{}) = ()
+_square_matrix_sig_size(size::Tuple) = (size..., last(size))
 sig_expr(x::StanType{<:types.square_matrix}) = StanType(
-    types.matrix, map(sig_expr_size, (stan_size(x)..., last(stan_size(x))))
+    types.matrix, map(sig_expr_size, _square_matrix_sig_size(stan_size(x)))
 )
 sig_expr(x::StanType{<:types.tup}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); arg_types=sig_expr(info(x).arg_types))
 sig_expr(x::StanType{<:types.func}) = StanType(center_type(x), map(sig_expr_size, stan_size(x)); value=sig_expr(info(x).value))
