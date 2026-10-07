@@ -203,6 +203,56 @@ end
     end
 end
 
+@testitem "build lock: a reader of a dead lock defers its reclaim, never fails it" tags=[:slic, :regression] begin
+    using StanBlocks
+    using Test: TestLogger
+    using Logging: with_logger
+    acquire(path, logger) = with_logger(logger) do
+        Threads.@spawn StanBlocks._with_build_lock(path; dead_age=1, poll=0.25) do
+            read(path, String)
+        end
+    end
+    reclaimed(logger) = [log.kwargs[:record] for log in logger.logs
+                         if occursin("reclaimed a build lock", log.message)]
+    own = "$(getpid()) $(gethostname())"
+    mktempdir() do dir
+        path = joinpath(dir, ".stanblocks-build.pid")
+        # A holder killed between creating and writing its file leaves it
+        # empty, dead once older than `dead_age`.
+        write(path, "")
+        sleep(1.5)
+        # Waiters read the record with delete sharing, so a waiter reading it
+        # never blocks another's reclaim, on Windows included.
+        logger = TestLogger()
+        file = Base.Filesystem.open(path, Base.Filesystem.JL_O_RDONLY)
+        try
+            @test fetch(acquire(path, logger)) == own
+        finally
+            close(file)
+        end
+        @test reclaimed(logger) == [""]
+
+        # A reader without delete sharing (an IOStream on Windows; an older
+        # StanBlocks reads one) makes the reclaim's aside-rename fail with
+        # EBUSY. The waiter keeps waiting until it can reclaim; it never fails.
+        write(path, "")
+        sleep(1.5)
+        logger = TestLogger()
+        local waiter
+        open(path, "r") do io
+            waiter = acquire(path, logger)
+            if Sys.iswindows()
+                @test timedwait(() -> istaskdone(waiter), 3) === :timed_out
+            else
+                @test timedwait(() -> istaskdone(waiter), 30) === :ok
+            end
+        end
+        @test fetch(waiter) == own
+        @test reclaimed(logger) == [""]
+        @test !isfile(path)
+    end
+end
+
 @testitem "thread safety: shared native artifact across processes" tags=[:slic, :regression, :bridgestan] begin
     using StanBlocks
     worker = joinpath(@__DIR__, "fixtures", "native_build_worker.jl")
