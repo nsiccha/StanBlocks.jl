@@ -3106,11 +3106,15 @@ _forward_loop_core!(;
             # carrier lets `stan_descriptor` materialise inclusive ends against
             # the model's CURRENT data (including after `model(; data=...)`),
             # without parsing compiler-owned `__pl_*` names or borrowing a
-            # sibling plate member's potentially different axis.
+            # sibling plate member's potentially different axis.  The recipe is
+            # a canonical graph: an outer inferred from the first positional is
+            # the raw Julia `:(length(it))`, which the descriptor's evaluator
+            # cannot walk, so normalise it to the same form as an explicit
+            # `outer=length(it)` (snag `stan-descriptor-18cffc24`).
             info[plan.mem] = remake(info[plan.mem]; ragged_plate_layout=(;
                 logical=plan.logical,
                 ends=plan.ends,
-                outer=outer_dims[1],
+                outer=_plate_as_canonical(outer_dims[1]),
                 index=idxs[1],
                 cell_size=plan.size_expr,
             ))
