@@ -278,6 +278,7 @@ end
         waiter = acquire(path, logger)
         if Sys.islinux()
             @test timedwait(() -> istaskdone(waiter), 30) === :ok
+            istaskdone(waiter) || rm(path)  # fail, never hang, on a regression
             @test fetch(waiter) == own
             @test reclaimed(logger) == [own]
         else
