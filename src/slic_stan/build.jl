@@ -2,8 +2,8 @@
 # Pidfile protocol so external builders can share it. Do not expire a live
 # compiler's lock on a timeout: a slow build must never acquire a competitor.
 # A holder killed before release (SIGKILL, OOM) cannot remove its file, so a
-# waiter reclaims a lock only when its recorded process is gone from this host
-# and its holder stopped refreshing it. Pidfile's own `stale_age` removal is
+# waiter reclaims a lock only when its holder is gone from this host and
+# stopped refreshing it (`_holder_alive`). Pidfile's own `stale_age` removal is
 # check-then-remove: concurrent waiters delete each other's fresh locks and all
 # enter. Reclaim therefore re-checks the file under a separate short guard.
 # `dead_age`: seconds without an mtime refresh (holders refresh every sixth of
@@ -40,8 +40,53 @@ end
 
 _process_exists(pid) = ccall(:uv_kill, Cint, (Cint, Cint), pid, 0) != Base.UV_ESRCH
 
+# Whether a lock's holder may still be alive. Every holder, stdlib Pidfile and
+# older StanBlocks included, keeps its lock file open for writing until it
+# releases. On Linux the kernel's open count therefore decides, whatever pid
+# namespace the holder or this waiter runs in: a sandboxed holder records its
+# namespace-local pid, which names an unrelated live process here (pid 2 is
+# `kthreadd` on a host), and a host holder's pid is invisible from a sandbox.
+# Elsewhere, or where the filesystem grants no leases, the recorded pid decides.
+function _holder_alive(path, pid)
+    writer = _open_for_write_elsewhere(path)
+    writer === nothing ? _process_exists(pid) : writer
+end
+
+# Linux fcntl constants, identical on every architecture Julia supports.
+const _F_SETSIG = Cint(10)
+const _F_SETLEASE = Cint(1024)
+const _F_RDLCK = Cint(0)
+const _F_UNLCK = Cint(2)
+const _SIGURG = Cint(23)
+
+# Linux: whether any file description has `path` open for writing, or `nothing`
+# when that cannot be measured. The kernel grants a read lease only on a file
+# nobody has open for writing; it is released at once. Readers do not count, so
+# a waiter reading the record never looks like a holder. A lease break signals
+# the lease holder, by default with SIGIO, which terminates Julia: SIGURG is
+# ignored by default, so a writer racing this probe only waits for its release.
+function _open_for_write_elsewhere(path)
+    Sys.islinux() || return nothing
+    file = try
+        Base.Filesystem.open(path, Base.Filesystem.JL_O_RDONLY | Base.Filesystem.JL_O_NONBLOCK)
+    catch err
+        err isa Base.IOError || rethrow()
+        return nothing
+    end
+    try
+        ccall(:fcntl, Cint, (Cint, Cint, Cint...), file.handle, _F_SETSIG, _SIGURG) == 0 || return nothing
+        if ccall(:fcntl, Cint, (Cint, Cint, Cint...), file.handle, _F_SETLEASE, _F_RDLCK) != 0
+            return Libc.errno() == Libc.EAGAIN ? true : nothing
+        end
+        ccall(:fcntl, Cint, (Cint, Cint, Cint...), file.handle, _F_SETLEASE, _F_UNLCK)
+        false
+    finally
+        close(file)
+    end
+end
+
 # The record of a lock whose holder died on this host, or `nothing`. A remote
-# host, a reused live pid, or a foreign format leaves the lock to its holder.
+# host, a live holder, or a foreign format leaves the lock to its holder.
 function _dead_build_lock_record(path, dead_age)
     # Read through libuv, as stdlib Pidfile does: on Windows it opens with
     # delete sharing, so this read cannot block a reclaimer's rename. An
@@ -58,12 +103,13 @@ function _dead_build_lock_record(path, dead_age)
         rethrow()
     end
     age > dead_age || return nothing
-    # Pidfile writes "<pid> <host>" right after creating the file.
-    isempty(record) && return record
+    # Pidfile writes "<pid> <host>" right after creating the file; an empty
+    # file's holder died in between unless it still has the file open.
+    isempty(record) && return _open_for_write_elsewhere(path) === true ? nothing : record
     m = match(r"^([0-9]+) (.+)$"s, record)
     m === nothing && return nothing
     pid = tryparse(Cint, m[1])
-    (pid === nothing || pid == 0 || m[2] != gethostname() || _process_exists(pid)) && return nothing
+    (pid === nothing || pid == 0 || m[2] != gethostname() || _holder_alive(path, pid)) && return nothing
     record
 end
 

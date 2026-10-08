@@ -253,6 +253,70 @@ end
     end
 end
 
+@testitem "build lock: a holder is alive while its lock file is open, whatever pid it recorded" tags=[:slic, :regression] begin
+    using StanBlocks
+    using Test: TestLogger
+    using Logging: with_logger
+    # A holder in another pid namespace (a sandboxed agent's build) records its
+    # namespace-local pid. Seen from here that pid names some unrelated live
+    # process, and a host holder's pid is invisible from inside a sandbox. Only
+    # Linux can ask the kernel whether the file is still open for writing.
+    acquire(path, logger) = with_logger(logger) do
+        Threads.@spawn StanBlocks._with_build_lock(path; dead_age=1, poll=0.25) do
+            read(path, String)
+        end
+    end
+    reclaimed(logger) = [log.kwargs[:record] for log in logger.logs
+                         if occursin("reclaimed a build lock", log.message)]
+    own = "$(getpid()) $(gethostname())"
+    mktempdir() do dir
+        path = joinpath(dir, ".stanblocks-build.pid")
+        # A dead holder whose recorded pid names a live process: this one.
+        write(path, own)
+        sleep(1.5)
+        logger = TestLogger()
+        waiter = acquire(path, logger)
+        if Sys.islinux()
+            @test timedwait(() -> istaskdone(waiter), 30) === :ok
+            @test fetch(waiter) == own
+            @test reclaimed(logger) == [own]
+        else
+            # Elsewhere a live pid keeps the lock, the documented limit.
+            @test timedwait(() -> istaskdone(waiter), 3) === :timed_out
+            rm(path)
+            @test fetch(waiter) == own
+        end
+        @test !isfile(path)
+
+        Sys.islinux() || return
+        # A live holder whose recorded pid this waiter cannot see: the record
+        # names an exited process, but the holder still has the file open.
+        gone = run(`true`; wait=false)
+        record = "$(getpid(gone)) $(gethostname())"
+        wait(gone)
+        write(path, record)
+        holder_code = "file = open(ARGS[1], \"a\"); println(\"HELD\"); flush(stdout); sleep(3600)"
+        holder = open(`$(Base.julia_cmd()) --startup-file=no -e $holder_code $path`, "r")
+        logger = TestLogger()
+        local waiter
+        try
+            readline(holder) == "HELD" || error("lock holder did not start")
+            sleep(1.5)
+            waiter = acquire(path, logger)
+            # Refused: the holder never refreshes, so its open file alone
+            # protects its build from a competitor (build.jl lock contract).
+            @test timedwait(() -> istaskdone(waiter), 5) === :timed_out
+        finally
+            kill(holder, Base.SIGKILL)
+            wait(holder)
+        end
+        @test timedwait(() -> istaskdone(waiter), 30) === :ok
+        @test fetch(waiter) == own
+        @test reclaimed(logger) == [record]
+        @test !isfile(path) && !isfile(path * ".reclaim")
+    end
+end
+
 @testitem "thread safety: shared native artifact across processes" tags=[:slic, :regression, :bridgestan] begin
     using StanBlocks
     worker = joinpath(@__DIR__, "fixtures", "native_build_worker.jl")
