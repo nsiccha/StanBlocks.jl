@@ -7262,6 +7262,74 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
 end
 
 """
+Verify `slic: positional-only ragged plate carriers describe their inferred outer`.
+
+Snag stan-descriptor-18cffc24: without `outer=`, a plate infers its axis as
+`length(<first positional>)`. A parameter-dependent varying-length result then
+gets a flat-memory carrier whose retained layout recipe held that inferred
+outer as a raw Julia `Expr`, so `stan_descriptor` rejected it as a
+"non-integer outer size" although the explicit `outer=(length(y),)` spelling
+described fine. Both spellings now emit the same program and publish the same
+`segments`, also after rebinding the data and when the first positional is a
+dense vector sliced alongside a ragged one.
+"""
+@testitem "slic: positional-only ragged plate carriers describe their inferred outer" tags=[:slic, :plate, :ragged, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    y = [[0.6, 0.2], Float64[], [1.0, 0.8, 0.3]]
+    ref = [[0.1, 0.0], Float64[], [0.2, -0.1, 0.05]]
+    inferred = @slic (; y, ref) begin
+        sigma ~ exponential(1.0)
+        s ~ normal(0.0, 1.0)
+        m ~ plate(y, ref) do yo, r
+            r .* s + 0.0 .* yo
+        end
+        y ~ normal(m, sigma)
+    end
+    explicit = @slic (; y, ref) begin
+        sigma ~ exponential(1.0)
+        s ~ normal(0.0, 1.0)
+        m ~ plate(y, ref; outer = (length(y),)) do yo, r
+            r .* s + 0.0 .* yo
+        end
+        y ~ normal(m, sigma)
+    end
+    @test stan_code(inferred) == stan_code(explicit)
+
+    segmented(model) = Dict(
+        (startswith(string(o.name), "m__pl_mem_") ? :m__pl_mem : o.name) => (o.kind, o.segments)
+        for o in stan_descriptor(model).outputs if o.segments !== nothing
+    )
+    expected = Dict(
+        :m__pl_mem => (:transformed_parameter, [2, 2, 5]),
+        :y_gen => (:generated_quantity, [2, 2, 5]),
+        :y_likelihood => (:generated_quantity, [2, 2, 5]),
+    )
+    @test segmented(inferred) == expected
+    @test segmented(explicit) == expected
+
+    # The inferred outer is evaluated against the CURRENT data, so a rebind
+    # changes the group count and boundaries together.
+    rebound = StanBlocks.stan_model(inferred)(;
+        y = [[1.0], [2.0, 3.0, 4.0]], ref = [[0.5], [0.1, 0.2, 0.3]],
+    )
+    @test segmented(rebound) == Dict(
+        :m__pl_mem => (:transformed_parameter, [1, 4]),
+        :y_gen => (:generated_quantity, [1, 4]),
+        :y_likelihood => (:generated_quantity, [1, 4]),
+    )
+
+    # A dense first positional sizes the axis; the ragged second sizes cells.
+    # Nothing observes `m`, so its parameter-dependent carrier is a generated
+    # quantity, still described with its own segments.
+    dense_first = @slic (; w = [0.5, 1.5, 2.5], ref) begin
+        s ~ normal(0.0, 1.0)
+        m ~ plate(w, ref) do wi, r
+            wi .* r .* s
+        end
+    end
+    @test segmented(dense_first) == Dict(:m__pl_mem => (:generated_quantity, [2, 2, 5]))
+end
+
+"""
 Verify `slic: ragged obs broadcasts a distribution across groups (obs-outside)`.
 
 Snag ragged-dist-arg-dcffbc1b: a plate collects per-cell VECTORS of differing
