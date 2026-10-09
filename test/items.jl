@@ -9768,6 +9768,77 @@ end
 end
 
 """
+Snag held-out-observa-5ca873e1 (reported by BRM) expected a `maybecv`-marked
+response to move the parameters only it reads into generated quantities. That is
+the omitted-response transformation, not the cross-validation one. A cv program
+re-draws what the mark taints given an earlier fit; everything untainted stays a
+parameter so the fitted draws can be supplied for it by unconstrained name. A
+marked response drops its likelihood, but what it reads is not tainted, so it
+stays a parameter. Omitting the response is what moves everything no remaining
+likelihood reaches into generated quantities. This item pins both behaviors side
+by side.
+"""
+@testitem "slic: a cv-marked response keeps its parameters; an omitted one re-draws them" tags=[:slic, :plate, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    maybecv = StanBlocks.stan.maybecv
+    y = [0.1, 0.8, 1.7, 2.6]
+    z = [-0.2, 0.4, 1.2, 2.1]
+
+    m = @slic begin
+        mu ~ std_normal()
+        sigma_y ~ std_normal(; lower = 0.)
+        sigma_z ~ std_normal(; lower = 0.)
+        y ~ normal(mu, sigma_y)
+        z ~ normal(mu, sigma_z)
+    end
+    marked, omitted = m(; y, z = maybecv(:z, z)), m(; y)
+    let code = stan_code(marked)
+        @test stanc_compiles(marked)
+        params, mdl, gq = stan_block(code, "parameters"), stan_block(code, "model"),
+                          stan_block(code, "generated quantities")
+        @test occursin("real<lower=0.0> sigma_z;", params)
+        @test occursin("real mu", params) && occursin("sigma_y", params)
+        @test !occursin(r"\bz ~", mdl)
+        @test occursin("z_likelihood = normal_lpdfs(z, mu, sigma_z)", gq)
+        @test occursin("z_gen = normal_vector_rng(z_n, mu, sigma_z)", gq)
+        outs = Dict(o.name => o for o in stan_descriptor(marked).outputs)
+        @test outs[:sigma_z].kind == :parameter
+    end
+    let code = stan_code(omitted)
+        @test stanc_compiles(omitted)
+        params, gq = stan_block(code, "parameters"), stan_block(code, "generated quantities")
+        @test !occursin("sigma_z", params)
+        @test occursin("real mu", params) && occursin("sigma_y", params)
+        @test occursin("real sigma_z = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+    end
+
+    # The same split for a per-cell response in an annotated plate.
+    p = @slic begin
+        mu ~ std_normal()
+        sigma_y ~ std_normal(; lower = 0.)
+        sigma_q ~ std_normal(; lower = 0.)
+        y ~ normal(mu, sigma_y)
+        @plate for i in 1:N
+            t[i] ~ normal(mu, 1)
+            q[i] ~ normal(t[i], sigma_q)
+        end
+    end
+    let model = p(; y, N = 4, q = maybecv(:q, z)), code = stan_code(model)
+        @test stanc_compiles(model)
+        params, gq = stan_block(code, "parameters"), stan_block(code, "generated quantities")
+        @test occursin("sigma_q", params) && occursin(r"vector\[N\] t;", params)
+        @test occursin(r"q_gen\[i\] = normal_rng\(t\[i\], sigma_q\)", gq)
+    end
+    let model = StanBlocks.SlicModel(p.model, Dict{Symbol,Any}(:y => y, :N => 4), p.mod, (:q,)),
+        code = stan_code(model)
+        @test stanc_compiles(model)
+        params, gq = stan_block(code, "parameters"), stan_block(code, "generated quantities")
+        @test !occursin("sigma_q", params) && !occursin(r"\bt;", params)
+        @test occursin(r"t\[i\] = normal_rng\(", gq)
+    end
+end
+
+"""
 Snag plate-silently-i-e41ed2f0 (reported by BRM, found handling its own cv snag
 build-a-cv-out-o-5a22814d): a cv-tainted size reaching a plate-internal FRESH
 parameter was mis-lowered SILENTLY.

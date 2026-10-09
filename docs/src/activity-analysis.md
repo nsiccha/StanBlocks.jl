@@ -172,11 +172,43 @@ generated quantities {
 
 Here `subject` is the only data and everything flows from it, so the **whole**
 dataset is held out: no likelihood term remains, so `:fit` is **not** offered
-(operations are `:transpile`, `:instantiate`, `:predict`, `:pointwise_loglik`), and
-the retained parameters simply sample their priors — a population-level predictive.
-Mark *one* observation input while another stays bound, and the retained likelihood
-keeps the shared population parameters genuinely fitted: that is leave-group-out
-cross-validation, expressed by binding alone.
+(operations are `:transpile`, `:instantiate`, `:predict`, `:pointwise_loglik`).
+
+Use this program with the draws of an earlier fit. `mu`, `tau`, and `sigma` stay
+parameters so that the fitted draws can be supplied for them by unconstrained
+parameter name; `alpha` is then re-drawn for new groups from the fitted population.
+That is population prediction. Sampled on its own, this program gives the retained
+parameters only their priors. Mark *one* observation input while another stays
+bound, and sampling the program keeps the shared population parameters fitted by
+the retained likelihood: that is leave-group-out cross-validation.
+
+### Marking a response is not omitting it
+
+The cross-validation mark and an omitted outcome are two different transformations.
+For
+
+```julia
+m2 = @slic begin
+    mu      ~ std_normal()
+    sigma_y ~ std_normal(; lower = 0.)
+    sigma_z ~ std_normal(; lower = 0.)
+    y       ~ normal(mu, sigma_y)
+    z       ~ normal(mu, sigma_z)
+end
+```
+
+- `m2(; y, z = StanBlocks.stan.maybecv(:z, z))` drops the `z ~` term from the model
+  block and keeps its `z_gen` and `z_likelihood` companions. Nothing that `z` reads is
+  tainted, so `mu`, `sigma_y`, and `sigma_z` all stay parameters, and an earlier fit's
+  draws supply them. Sampled on its own, this program gives `sigma_z` only its prior.
+- `m2(; y)` does not condition on `z` at all. Everything that no remaining likelihood
+  reaches moves to `generated_quantities`, as in section 2: `sigma_z` is re-drawn from
+  its prior and `z` is simulated, while `mu` and `sigma_y` stay fitted through `y`.
+  A producer that needs the `z_gen` name declares `z` as an observation
+  (`StanBlocks.SlicModel(body, data, mod, (:z,))`).
+
+To fit a model without conditioning on a response, omit the response. To predict a
+held-out response from an earlier fit, mark it.
 
 ::: tip The descriptor sees this
 `stan_descriptor(model)` reports it directly. Each input's `held_out` flag is
