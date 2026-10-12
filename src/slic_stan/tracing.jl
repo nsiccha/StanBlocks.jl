@@ -292,6 +292,53 @@ _reject_model_control_flow(x::AssignmentExpr{<:CanonicalExprV{:getindex}}) = err
     "body — only whole-variable assignment `name = …` is. Declare-then-fill (`v[a:b] = expr`) is ",
     "available only inside an @deffun function body; move it there and call it (e.g. `v = fill_v(…)`)."
 )
+# An observation samples a data input (or an indexed slice of one), never a name
+# the same body defines with `=`. That is what keeps one model source a prior
+# simulator: omit the data and `y ~ dist` becomes a draw of `y`, while
+# `a = y; a ~ dist` has nothing to draw — `a` is already defined by `y`.
+# Checked on the RAW statements so the error names the author's own spelling.
+# A plate cell refuses every such name. Model scope (`allow_computed=true`)
+# refuses a pure alias (`a = y`, `a = y[i]`) but still accepts observing
+# transformed data (`log_y = log(y); log_y ~ …`), the Stan idiom the
+# posteriordb ports rely on. Snag plate-observatio-2b5c02f8.
+_raw_is_projection(x::Symbol) = true
+_raw_is_projection(x::Expr) = x.head === :ref && _raw_is_projection(x.args[1]) &&
+    all(i -> i isa Symbol || (i isa Integer && !(i isa Bool)), x.args[2:end])
+_raw_is_projection(::Any) = false
+_raw_stmt(s) = (s isa Expr && s.head === :macrocall &&
+    (s.args[1] == GlobalRef(Core, Symbol("@doc")) || s.args[1] === Symbol("@doc"))) ?
+    _raw_stmt(s.args[end]) : s
+_raw_lhs_root(x::Symbol) = x
+_raw_lhs_root(x::Expr) = x.head in (:(::), :ref) ? _raw_lhs_root(x.args[1]) : nothing
+_raw_lhs_root(::Any) = nothing
+_is_raw_sampling(s) = s isa Expr && s.head === :call && length(s.args) == 3 && s.args[1] === :~
+_reject_observed_definitions(stmts, where; allow_computed::Bool=false) = begin
+    stmts = Any[_raw_stmt(s) for s in stmts if !(s isa LineNumberNode)]
+    defined = Dict{Symbol,Any}()
+    for s in stmts
+        s isa Expr && s.head === :(=) || continue
+        lhs = s.args[1]
+        name = lhs isa Symbol ? lhs : (lhs isa Expr && lhs.head === :(::) && lhs.args[1] isa Symbol) ? lhs.args[1] : nothing
+        name === nothing || (defined[name] = s.args[2])
+    end
+    isempty(defined) && return nothing
+    for s in stmts
+        _is_raw_sampling(s) || continue
+        name = _raw_lhs_root(s.args[2])
+        (name isa Symbol && haskey(defined, name)) || continue
+        rhs = defined[name]
+        projection = _raw_is_projection(rhs)
+        projection || !allow_computed || continue
+        fix = projection ? "write `$(rhs) ~ …` instead." :
+            "observe the data `$name` is computed from instead."
+        error(
+            "`", s.args[2], " ~ …` observes `", name, "`, which this ", where, " defines as `",
+            name, " = ", rhs, "`. An observation must sample the data itself, so that omitting ",
+            "the data turns it into a prior draw; a value defined by `=` has nothing to draw — ", fix
+        )
+    end
+    nothing
+end
 """
 Descends forwards through the expression tree. Basically _always_ returns a StanExpr.
 """
@@ -304,6 +351,8 @@ forward!(x::SlicModel; info=StanModel()) = begin
         maybedata!(info, key, value)
     end
     raw_body = model(x)
+    _reject_observed_definitions(Meta.isexpr(raw_body, :block) ? raw_body.args : Any[raw_body], "model";
+        allow_computed=true)
     raw_body = isempty(missing_vars) ? raw_body : _expand_missing_stmts(raw_body, missing_vars)
     body = canonical(raw_body)
     _reject_model_control_flow(body)
