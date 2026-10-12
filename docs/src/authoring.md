@@ -96,11 +96,14 @@ The exact shape depends on how the observation is written:
 | Dense, top-level | `<obs>_gen`, observation-shaped | `<obs>_likelihood`, elementwise |
 | Dense, inside `plate` | `<obs>_gen`, filled per cell | Not synthesized |
 | Ragged, top-level | Flat `<obs>_gen` over all elements | `<obs>_likelihood`, one aggregate per group |
-| Ragged slice, inside `plate` | Not synthesized | Not synthesized |
+| Ragged slice, inside `plate` | Flat `<obs>_gen` over all elements | `<obs>_likelihood`, one aggregate per group |
 
-All four forms still contribute their density to the model. The last two rows
-are different generated-quantity capabilities, not different likelihood
-semantics.
+All four forms contribute the same density to the model; the rows differ only
+in their generated-quantity capabilities, not in likelihood semantics. An
+observation always samples the data itself (`y ~ …`, `y[i] ~ …`, a plate
+positional `yi ~ …`): `a = y; a ~ …` is refused, because a name defined by `=`
+has nothing to draw when `y` is omitted and the model could no longer simulate
+from its prior.
 
 ## Missing outcomes
 
@@ -219,6 +222,7 @@ and generated quantities.
 | Lexically captured values | ✅ | Shared across cells; loop-invariant expressions are hoisted when safe |
 | Fresh scalar `~` or `=` binding | ✅ | Collected as a `vector[N]` for one outer axis; additional axes use matrix/array storage |
 | Fixed `vector[K]` binding/result | ✅ | Collected as `matrix[K,N]` for one outer axis; extra axes add Stan array prefixes |
+| Observing a cell binding defined by `=` (`a = yi; a ~ …`) | ❌ | Refused: observe the data itself (`yi ~ …`, `ys[i] ~ …`), so that omitting it still gives the prior simulation |
 | Sampled fixed `int[K]` cell binding | ✅ | Sampled (`~`) side bindings collect as `array[N,K] int` for one outer axis; deterministic int cells (findall/boolean-mask index arrays) still inline at each use |
 | Dense `array[T] vector[K]` binding/result | ✅ | Collected as `array[outer...,T] vector[K]`; includes a raw ODE trajectory bound once and consumed inside the cell |
 | Varying-length plain `vector[K[i]]` cell | ✅, narrow | One-dimensional outer shape and data-computable lengths only; represented by flat memory whose descriptor output carries that result/member's own inclusive group ends in `segments` |
@@ -317,7 +321,10 @@ Stan `for` loop into the blocks that own each statement. Inside the body:
   loop; a whole vector cell is written `v[:, i]`;
 - a bare fresh name (`t ~ …`, `tmp = …`) is a **per-iteration local**, hoisted
   to per-cell storage under a hygienic name (`x_t`);
-- `y[i] ~ …` on data is an observation, with the usual `y_gen` twin;
+- `y[i] ~ …` on data is an observation, with the usual `y_gen` twin. Observe
+  the data itself: `obs = y[i]; obs ~ …` is refused, because a name defined
+  by `=` has nothing to draw when `y` is omitted (the same rule holds at model
+  scope);
 - a write to a name bound outside the loop is rejected — SB models never
   mutate — and every element of a loop-filled array is assigned exactly once.
 
@@ -335,7 +342,8 @@ arrays at any index other than the loop variable's is an error.
 end
 ```
 
-`for i in 1:N, j in 1:M` gives an N-dimensional outer shape; `for d in doses`
+`for i in 1:N, j in 1:M` gives an N-dimensional outer shape, and
+`for i in eachindex(y)` is the range `1:length(y)`; `for d in doses`
 iterates the values of a container (each cell receives one `RaggedVector`
 group, and `d ~ …` observes it).
 
