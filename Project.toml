@@ -8,6 +8,7 @@ BridgeStan = "c88b6f0a-829e-4b0b-94b7-f06ab5908f5a"
 FileWatching = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 LogDensityProblems = "6fdf6af0-433a-55f7-b3ed-c6c6e0b8df7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Markdown = "d6f4376e-aef5-505a-96c1-9c027394607a"
 OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
 SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
@@ -25,6 +26,7 @@ PosteriorDBExt = "PosteriorDB"
 BridgeStan = "2.9"
 JSON = "0.18, 0.19, 0.20, 0.21, 1"
 LogDensityProblems = "2.1"
+Mooncake = "0.5"
 OrderedCollections = "1.8"
 PosteriorDB = "0.5, 0.6"
 StanLogDensityProblems = "0.1"
@@ -33,10 +35,11 @@ TestItemRunner = "1"
 julia = "1.10"
 
 [extras]
+Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 PosteriorDB = "1c4bc282-d2f5-44f9-b6d1-8c4424a23ad4"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 
 [targets]
-test = ["PosteriorDB", "Random", "Test", "TestItemRunner"]
+test = ["Mooncake", "PosteriorDB", "Random", "Test", "TestItemRunner"]
