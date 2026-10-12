@@ -576,6 +576,29 @@ _julia_logit(x) = log(x) - log1p(-x)
 _julia_log1m(x) = log1p(-x)
 _julia_log1p_exp(x) = max(x, zero(x)) + log1p(exp(-abs(x)))
 _julia_log1m_exp(x) = x < -log(2) ? log1p(-exp(x)) : log(-expm1(x))
+# Stan Math's two-argument `log_sum_exp`, special cases included: a `-Inf`
+# first argument returns the second, two `+Inf` arguments return `+Inf`, and
+# otherwise the larger argument is factored out so `exp` cannot overflow.
+# `log1p(exp(d))` with `d <= 0` is Stan's `log1p_exp` on that branch; spelling
+# it directly keeps the derivative at a tie at 1/2 instead of routing it
+# through `max`/`abs`.
+function _julia_log_sum_exp(a::Real, b::Real)
+    x, y = promote(float(a), float(b))
+    x == -Inf && return y
+    x == Inf && y == Inf && return y
+    x > y ? x + log1p(exp(y - x)) : y + log1p(exp(x - y))
+end
+# The reduction over a vector, row vector, matrix, or real array: empty is
+# `-Inf`, a non-finite maximum is returned as is, and otherwise the maximum is
+# factored out.  The gradient is the softmax of `x` however AD attributes the
+# maximum, because the maximum's own terms cancel.
+function _julia_log_sum_exp(x::AbstractArray{<:Real})
+    T = float(eltype(x))
+    isempty(x) && return T(-Inf)
+    m = maximum(x)
+    isfinite(m) || return T(m)
+    m + log(sum(exp.(x .- m)))
+end
 
 jcall(::Val{:inv_logit}, ::Module, x) = inv(one(x) + exp(-x))
 jcall(::Val{:inv_logit}, ::Module, x::AbstractArray) = jcall.(Ref(Val(:inv_logit)), Ref(@__MODULE__), x)
@@ -589,6 +612,13 @@ jcall(::Val{:log1p_exp}, ::Module, x) = _julia_log1p_exp(x)
 jcall(::Val{:log1p_exp}, ::Module, x::AbstractArray) = _julia_log1p_exp.(x)
 jcall(::Val{:log1m_exp}, ::Module, x) = _julia_log1m_exp(x)
 jcall(::Val{:log1m_exp}, ::Module, x::AbstractArray) = _julia_log1m_exp.(x)
+jcall(::Val{:log_sum_exp}, ::Module, x::Real, y::Real) = _julia_log_sum_exp(x, y)
+jcall(::Val{:log_sum_exp}, ::Module, x::AbstractArray{<:Real}) = _julia_log_sum_exp(x)
+function jcall(::Val{:log_sum_exp}, ::Module, x::AbstractArray{<:Real}, y::AbstractArray{<:Real})
+    size(x) == size(y) || throw(DimensionMismatch(
+        "log_sum_exp requires arguments of equal size, got $(size(x)) and $(size(y))"))
+    _julia_log_sum_exp.(x, y)
+end
 jcall(::Val{:square}, ::Module, x) = x * x
 jcall(::Val{:square}, ::Module, x::AbstractArray) = x .* x
 jcall(::Val{:fmin}, ::Module, x, y) = min(x, y)
