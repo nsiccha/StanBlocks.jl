@@ -103,7 +103,10 @@ in their generated-quantity capabilities, not in likelihood semantics. An
 observation always samples the data itself (`y ~ …`, `y[i] ~ …`, a plate
 positional `yi ~ …`): `a = y; a ~ …` is refused, because a name defined by `=`
 has nothing to draw when `y` is omitted and the model could no longer simulate
-from its prior.
+from its prior. Inside a plate cell every `=`-defined name is refused; at model
+scope only a pure alias is, and observing transformed data
+(`log_y = log(y); log_y ~ …`, the Stan idiom of several posteriordb ports) still
+compiles — such a model cannot simulate `y` itself from its prior.
 
 ## Missing outcomes
 
@@ -323,8 +326,7 @@ Stan `for` loop into the blocks that own each statement. Inside the body:
   to per-cell storage under a hygienic name (`x_t`);
 - `y[i] ~ …` on data is an observation, with the usual `y_gen` twin. Observe
   the data itself: `obs = y[i]; obs ~ …` is refused, because a name defined
-  by `=` has nothing to draw when `y` is omitted (the same rule holds at model
-  scope);
+  by `=` has nothing to draw when `y` is omitted;
 - a write to a name bound outside the loop is rejected — SB models never
   mutate — and every element of a loop-filled array is assigned exactly once.
 
