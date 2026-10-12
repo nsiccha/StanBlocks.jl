@@ -2534,6 +2534,158 @@ Mooncake differentiates the Julia methods emitted for both matrix primitives.
 end
 
 """
+An opted-in deterministic helper can call Stan's `log_sum_exp` in Julia, in
+every shape SLIC registers, with Stan Math's overflow-safe special cases; the
+same authored calls emit Stan. Regression for snag `juliacompat-log-983e7fe9`.
+"""
+@testitem "slic: @juliacompat log_sum_exp" tags=[:slic, :stanc, :bridgestan] setup=[StanBlocksImports] begin
+    helpers = Module(:JuliaCompatLogSumExp)
+    Core.eval(helpers, :(using StanBlocks))
+    Core.eval(helpers, quote
+        @deffun @juliacompat begin
+            lse_pair(a::real, b::real)::real = log_sum_exp(a, b)
+            lse_vector(x::vector[n])::real = log_sum_exp(x)
+            lse_row(x::row_vector[n])::real = log_sum_exp(x)
+            lse_matrix(x::matrix[m, n])::real = log_sum_exp(x)
+            lse_array(x::real[n])::real = log_sum_exp(x)
+            lse_elementwise(x::vector[n], y::vector[n])::vector[n] = log_sum_exp(x, y)
+            lse_loop(rate::vector[n], w::real)::vector[n] = begin
+                rv::vector[n]
+                for i in 1:n
+                    rv[i] = log_sum_exp(log1m(w) - rate[i], log(w))
+                end
+                rv
+            end
+        end
+    end)
+    call(f, args...) = Base.invokelatest(getproperty(helpers, f), args...)
+    naive(xs) = log(sum(exp, xs))
+
+    @test call(:lse_pair, 0.1, -0.7) ≈ naive((0.1, -0.7)) atol=1e-15
+    @test call(:lse_pair, -0.7, 0.1) ≈ naive((0.1, -0.7)) atol=1e-15
+    @test call(:lse_pair, 2, 3) ≈ naive((2.0, 3.0)) atol=1e-15
+    # Factoring out the maximum keeps large arguments finite.
+    @test call(:lse_pair, 1000.0, 1000.0) ≈ 1000 + log(2) atol=1e-12
+    @test call(:lse_pair, -1000.0, 1000.0) == 1000.0
+    # Stan Math's special cases.
+    @test call(:lse_pair, -Inf, 0.5) == 0.5
+    @test call(:lse_pair, 0.5, -Inf) == 0.5
+    @test call(:lse_pair, -Inf, -Inf) == -Inf
+    @test call(:lse_pair, Inf, Inf) == Inf
+    @test call(:lse_pair, Inf, 1.0) == Inf
+    @test isnan(call(:lse_pair, NaN, 1.0))
+    @test isnan(call(:lse_pair, 1.0, NaN))
+
+    x = [0.3, -1.2, 2.5, 0.0]
+    @test call(:lse_vector, x) ≈ naive(x) atol=1e-14
+    @test call(:lse_row, x) ≈ naive(x) atol=1e-14
+    @test call(:lse_array, x) ≈ naive(x) atol=1e-14
+    @test call(:lse_array, [1, 2, 3]) ≈ naive([1.0, 2.0, 3.0]) atol=1e-14
+    X = [0.3 -1.2 0.4; 2.5 0.0 -3.0]
+    @test call(:lse_matrix, X) ≈ naive(X) atol=1e-14
+    @test call(:lse_vector, fill(1000.0, 3)) ≈ 1000 + log(3) atol=1e-12
+    @test call(:lse_vector, Float64[]) == -Inf
+    @test call(:lse_vector, [-Inf, -Inf]) == -Inf
+    @test call(:lse_vector, [Inf, 1.0]) == Inf
+    y = [-0.4, 0.8, 2.5, -5.0]
+    @test call(:lse_elementwise, x, y) ≈ [naive((x[i], y[i])) for i in eachindex(x)] atol=1e-14
+    # Refused by the declared shared `vector[n]` dimension in both targets.
+    @test_throws DimensionMismatch call(:lse_elementwise, x, y[1:3])
+    rate, w = [0.0, 0.4, 1.1], 0.15
+    @test call(:lse_loop, rate, w) ≈ log.((1 - w) .* exp.(-rate) .+ w) rtol=1e-12
+
+    model = Core.eval(helpers, quote
+        @slic (; x = $x, X = $X, rate = $rate, y = 1.7) begin
+            theta ~ normal(0.0, 1.0)
+            w = inv_logit(theta)
+            mu = lse_pair(theta, 0.3) + lse_vector(x * theta) + lse_matrix(X * theta) +
+                 sum(lse_elementwise(x, x * theta)) + sum(lse_loop(rate, w))
+            y ~ normal(mu, 1.0)
+        end
+    end)
+    code = stan_code(model)
+    @test occursin("log_sum_exp(a, b)", code)
+    @test occursin("log_sum_exp(x)", code)
+    @test occursin("log_sum_exp(x, y)", code)
+    @test stanc_check(code; warn_pedantic=false).ok
+
+    # Compare the native Stan density and gradient against the Julia helper
+    # chain. Taking density differences removes any normalization convention.
+    problem = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(problem) == 1
+    julia_mu(t) = call(:lse_pair, t, 0.3) + call(:lse_vector, x * t) + call(:lse_matrix, X * t) +
+        sum(call(:lse_elementwise, x, x * t)) + sum(call(:lse_loop, rate, 1 / (1 + exp(-t))))
+    julia_lp(t) = -0.5t^2 - 0.5(1.7 - julia_mu(t))^2
+    t0, t1 = 0.0, 0.3
+    lp0 = LogDensityProblems.logdensity(problem, [t0])
+    lp1, grad1 = LogDensityProblems.logdensity_and_gradient(problem, [t1])
+    @test lp1 - lp0 ≈ julia_lp(t1) - julia_lp(t0) atol=1e-9
+    h = 1e-6
+    @test grad1[1] ≈ (julia_lp(t1 + h) - julia_lp(t1 - h)) / (2h) atol=1e-6
+end
+
+@testsnippet JuliaCompatLogSumExpADFixtures begin
+    using StanBlocks
+    import StanBlocks.stan: @deffun
+    @deffun @juliacompat begin
+        ad_lse_pair(a::real, b::real)::real = log_sum_exp(a, b)
+        ad_lse_vector(x::vector[n])::real = log_sum_exp(x)
+        ad_lse_elementwise(x::vector[n], y::vector[n])::vector[n] = log_sum_exp(x, y)
+        ad_lse_loop(rate::vector[n], w::real)::vector[n] = begin
+            rv::vector[n]
+            for i in 1:n
+                rv[i] = log_sum_exp(log1m(w) - rate[i], log(w))
+            end
+            rv
+        end
+    end
+end
+
+"""
+Mooncake differentiates the Julia `log_sum_exp` methods with Stan Math's
+gradients: logistic weights for two arguments (1/2 each at a tie) and the
+softmax for a reduction.
+"""
+@testitem "slic: @juliacompat log_sum_exp is Mooncake differentiable" tags=[:slic, :ad] setup=[StanBlocksImports, JuliaCompatLogSumExpADFixtures] begin
+    import Mooncake
+    gradient(f, x...) = begin
+        cache = Mooncake.prepare_gradient_cache(f, x...)
+        Mooncake.value_and_gradient!!(cache, f, x...)
+    end
+    sigmoid(z) = 1 / (1 + exp(-z))
+
+    for (a, b) in ((0.4, -1.3), (-1.3, 0.4), (0.25, 0.25), (1000.0, 999.0))
+        value, (_, da, db) = gradient(ad_lse_pair, a, b)
+        @test value ≈ ad_lse_pair(a, b) atol=1e-12
+        @test da ≈ sigmoid(a - b) atol=1e-12
+        @test db ≈ sigmoid(b - a) atol=1e-12
+    end
+
+    x = [0.3, -1.2, 2.5, 0.0]
+    value, (_, dx) = gradient(ad_lse_vector, x)
+    @test value ≈ ad_lse_vector(x) atol=1e-12
+    @test dx ≈ exp.(x .- value) atol=1e-12
+    @test sum(dx) ≈ 1 atol=1e-12
+    # The maximum's own terms cancel, so a tied maximum still gives the softmax.
+    tied = [2.0, 2.0, -1.0]
+    tied_value, (_, dtied) = gradient(ad_lse_vector, tied)
+    @test dtied ≈ exp.(tied .- tied_value) atol=1e-12
+
+    y = [-0.4, 0.8, 2.5, -5.0]
+    elementwise_sum(x, y) = sum(ad_lse_elementwise(x, y))
+    _, (_, dex, dey) = gradient(elementwise_sum, x, y)
+    @test dex ≈ sigmoid.(x .- y) atol=1e-12
+    @test dey ≈ sigmoid.(y .- x) atol=1e-12
+
+    rate = [0.0, 0.4, 1.1]
+    loop_sum(w) = sum(ad_lse_loop(rate, w))
+    loop_value, (_, dw) = gradient(loop_sum, 0.15)
+    h = 1e-6
+    @test loop_value ≈ loop_sum(0.15) atol=1e-12
+    @test dw ≈ (loop_sum(0.15 + h) - loop_sum(0.15 - h)) / (2h) atol=1e-6
+end
+
+"""
 Verify `slic: normal(loc,scale)` in an isolated test item.
 """
 @testitem "slic: normal(loc,scale)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
