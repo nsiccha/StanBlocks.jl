@@ -13196,8 +13196,10 @@ Verify `slic: an observation samples data, not a name defined by =`.
 
 Snag `plate-observatio-2b5c02f8`: `a = y; a ~ dist(…)` — observing a name the same
 body defines with `=` — compiled at model scope and aborted with an internal
-"transformed fill target" error inside a plate cell. It is now refused everywhere
-with an error naming the direct spelling. An observation must sample the data
+"transformed fill target" error inside a plate cell. A plate cell now refuses any
+such name, and model scope refuses a pure alias (`a = y`, `a = y[i]`), each with
+an error naming the direct spelling. Model scope still observes transformed data
+(`log_y = log(y); log_y ~ …`), the idiom the posteriordb ports use. An observation must sample the data
 itself, so that omitting the data turns the same model into a prior simulation;
 a name defined by `=` has nothing to draw (user feedback on decision
 `2026-10-12T14-27-45-196-00nwka8`). The direct spellings, and the prior
@@ -13216,10 +13218,21 @@ simulation they give with the data omitted, are unchanged.
         a = y
         a ~ normal(0.0, s)
     end))
-    @test_throws "observe the data `a` is computed from instead" stan_code(@slic((; y = [1.0, 2.0]), begin
+    @test_throws "observe the data `a` is computed from instead" stan_code(@slic((; y = [1.0, 2.0, 3.0]), begin
+        sigma ~ exponential(1.0)
+        out ~ plate(y; outer = 3) do yi
+            t ~ normal(0.0, 1.0)
+            a = 2.0 * yi
+            a ~ normal(t, sigma)
+            t
+        end
+    end))
+    # Model scope still observes transformed data (`log_y = log(y); log_y ~ …`,
+    # the Stan idiom the posteriordb ports use); only a pure alias is refused there.
+    @test stanc_compiles(@slic((; y = [1.0, 2.0]), begin
         s ~ exponential(1.0)
-        a = 2.0 .* y
-        a ~ normal(0.0, s)
+        log_y = log.(y)
+        log_y ~ normal(0.0, s)
     end))
     @test_throws "write `y ~ …` instead" stan_code(@slic((; y = [1.0, 2.0]), begin
         s ~ exponential(1.0)

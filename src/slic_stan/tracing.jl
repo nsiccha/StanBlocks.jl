@@ -297,7 +297,14 @@ _reject_model_control_flow(x::AssignmentExpr{<:CanonicalExprV{:getindex}}) = err
 # simulator: omit the data and `y ~ dist` becomes a draw of `y`, while
 # `a = y; a ~ dist` has nothing to draw — `a` is already defined by `y`.
 # Checked on the RAW statements so the error names the author's own spelling.
-# Snag plate-observatio-2b5c02f8.
+# A plate cell refuses every such name. Model scope (`allow_computed=true`)
+# refuses a pure alias (`a = y`, `a = y[i]`) but still accepts observing
+# transformed data (`log_y = log(y); log_y ~ …`), the Stan idiom the
+# posteriordb ports rely on. Snag plate-observatio-2b5c02f8.
+_raw_is_projection(x::Symbol) = true
+_raw_is_projection(x::Expr) = x.head === :ref && _raw_is_projection(x.args[1]) &&
+    all(i -> i isa Symbol || (i isa Integer && !(i isa Bool)), x.args[2:end])
+_raw_is_projection(::Any) = false
 _raw_stmt(s) = (s isa Expr && s.head === :macrocall &&
     (s.args[1] == GlobalRef(Core, Symbol("@doc")) || s.args[1] === Symbol("@doc"))) ?
     _raw_stmt(s.args[end]) : s
@@ -305,7 +312,7 @@ _raw_lhs_root(x::Symbol) = x
 _raw_lhs_root(x::Expr) = x.head in (:(::), :ref) ? _raw_lhs_root(x.args[1]) : nothing
 _raw_lhs_root(::Any) = nothing
 _is_raw_sampling(s) = s isa Expr && s.head === :call && length(s.args) == 3 && s.args[1] === :~
-_reject_observed_definitions(stmts, where) = begin
+_reject_observed_definitions(stmts, where; allow_computed::Bool=false) = begin
     stmts = Any[_raw_stmt(s) for s in stmts if !(s isa LineNumberNode)]
     defined = Dict{Symbol,Any}()
     for s in stmts
@@ -320,8 +327,9 @@ _reject_observed_definitions(stmts, where) = begin
         name = _raw_lhs_root(s.args[2])
         (name isa Symbol && haskey(defined, name)) || continue
         rhs = defined[name]
-        fix = (rhs isa Symbol || (rhs isa Expr && rhs.head === :ref)) ?
-            "write `$(rhs) ~ …` instead." :
+        projection = _raw_is_projection(rhs)
+        projection || !allow_computed || continue
+        fix = projection ? "write `$(rhs) ~ …` instead." :
             "observe the data `$name` is computed from instead."
         error(
             "`", s.args[2], " ~ …` observes `", name, "`, which this ", where, " defines as `",
@@ -343,7 +351,8 @@ forward!(x::SlicModel; info=StanModel()) = begin
         maybedata!(info, key, value)
     end
     raw_body = model(x)
-    _reject_observed_definitions(Meta.isexpr(raw_body, :block) ? raw_body.args : Any[raw_body], "model")
+    _reject_observed_definitions(Meta.isexpr(raw_body, :block) ? raw_body.args : Any[raw_body], "model";
+        allow_computed=true)
     raw_body = isempty(missing_vars) ? raw_body : _expand_missing_stmts(raw_body, missing_vars)
     body = canonical(raw_body)
     _reject_model_control_flow(body)
