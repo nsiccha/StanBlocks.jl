@@ -534,30 +534,43 @@ function Base.show(io::IO, f::StanFunction3)
 end
 
 # Runtime half of the bounded Julia target for `@deffun`.  The macro-side
-# lowering below routes global calls through `jcall(Val(name), def_mod, ...)`:
-# ordinary Julia/user functions resolve in the definition module, while the
-# deliberately small Stan compatibility set gets methods here.  Keeping the
-# compatibility dispatch internal avoids adding broad methods to Base.
+# lowering below routes global calls through
+# `jcall(Val(name), _JuliaCallScope{def_mod}(), ...)`: ordinary Julia/user
+# functions resolve in the definition module, while the deliberately small Stan
+# compatibility set gets methods here.  Keeping the compatibility dispatch
+# internal avoids adding broad methods to Base.
 # These methods forward to Julia's own functions, but this module rebinds some
 # Base names to SLIC builtins (`hcat`, `reshape`, ...; `@builtin_module`), and
 # a builtin's `@juliacompat` body routes back through `jcall`.  Spell such a
 # callee `Base.<name>` here: a bare shadowed name recurses without bound.
+#
+# The definition module rides in the TYPE of the scope argument.  Inference
+# never propagates a `Module` constant into a callee (a module is a mutable
+# value), so a lookup on a `Module` argument infers `Any` and every call in a
+# `@juliacompat` body would dispatch dynamically.  As a type parameter the
+# module is static, and the callee's binding resolves during inference.
+# Plain `Module` scopes stay accepted for callers that hold a module value,
+# such as descriptor layout evaluation.
+struct _JuliaCallScope{M} end
+const _JuliaScope = Union{Module,_JuliaCallScope}
+_jcall_callee(mod::Module, ::Val{name}) where {name} = getglobal(mod, name)
+_jcall_callee(::_JuliaCallScope{M}, ::Val{name}) where {M,name} = getglobal(M, name)
 jcall(f, args...; kwargs...) = f(args...; kwargs...)
-jcall(::Val{name}, mod::Module, args...; kwargs...) where {name} =
-    getproperty(mod, name)(args...; kwargs...)
+jcall(tag::Val, scope::_JuliaScope, args...; kwargs...) =
+    _jcall_callee(scope, tag)(args...; kwargs...)
 
 for f in (:sqrt, :exp, :log, :log10, :sin, :cos, :asin, :acos, :tan, :atan,
           :cosh, :sinh, :tanh, :acosh, :asinh, :atanh, :expm1, :abs,
           :exp2, :log2, :ceil, :floor, :round, :trunc)
     bf = getproperty(Base, f)
-    @eval jcall(::Val{$(QuoteNode(f))}, ::Module, x::AbstractArray) = $bf.(x)
+    @eval jcall(::Val{$(QuoteNode(f))}, ::_JuliaScope, x::AbstractArray) = $bf.(x)
 end
 
 for f in (:+, :-)
     bf = getproperty(Base, f)
     @eval begin
-        jcall(::Val{$(QuoteNode(f))}, ::Module, x::AbstractArray, y::Number) = $bf.(x, y)
-        jcall(::Val{$(QuoteNode(f))}, ::Module, x::Number, y::AbstractArray) = $bf.(x, y)
+        jcall(::Val{$(QuoteNode(f))}, ::_JuliaScope, x::AbstractArray, y::Number) = $bf.(x, y)
+        jcall(::Val{$(QuoteNode(f))}, ::_JuliaScope, x::Number, y::AbstractArray) = $bf.(x, y)
     end
 end
 
@@ -568,7 +581,7 @@ for (f, bf) in ((Symbol(".+"), +), (Symbol(".-"), -), (Symbol(".*"), *),
                 (Symbol(".=="), ==), (Symbol(".!="), !=),
                 (Symbol(".<"), <), (Symbol(".<="), <=),
                 (Symbol(".>"), >), (Symbol(".>="), >=))
-    @eval jcall(::Val{$(QuoteNode(f))}, ::Module, args...) = broadcast($bf, args...)
+    @eval jcall(::Val{$(QuoteNode(f))}, ::_JuliaScope, args...) = broadcast($bf, args...)
 end
 
 _julia_log_inv_logit(x) = min(x, zero(x)) - log1p(exp(-abs(x)))
@@ -600,51 +613,51 @@ function _julia_log_sum_exp(x::AbstractArray{<:Real})
     m + log(sum(exp.(x .- m)))
 end
 
-jcall(::Val{:inv_logit}, ::Module, x) = inv(one(x) + exp(-x))
-jcall(::Val{:inv_logit}, ::Module, x::AbstractArray) = jcall.(Ref(Val(:inv_logit)), Ref(@__MODULE__), x)
-jcall(::Val{:logit}, ::Module, x) = _julia_logit(x)
-jcall(::Val{:logit}, ::Module, x::AbstractArray) = _julia_logit.(x)
-jcall(::Val{:log_inv_logit}, ::Module, x) = _julia_log_inv_logit(x)
-jcall(::Val{:log_inv_logit}, ::Module, x::AbstractArray) = _julia_log_inv_logit.(x)
-jcall(::Val{:log1m}, ::Module, x) = _julia_log1m(x)
-jcall(::Val{:log1m}, ::Module, x::AbstractArray) = _julia_log1m.(x)
-jcall(::Val{:log1p_exp}, ::Module, x) = _julia_log1p_exp(x)
-jcall(::Val{:log1p_exp}, ::Module, x::AbstractArray) = _julia_log1p_exp.(x)
-jcall(::Val{:log1m_exp}, ::Module, x) = _julia_log1m_exp(x)
-jcall(::Val{:log1m_exp}, ::Module, x::AbstractArray) = _julia_log1m_exp.(x)
-jcall(::Val{:log_sum_exp}, ::Module, x::Real, y::Real) = _julia_log_sum_exp(x, y)
-jcall(::Val{:log_sum_exp}, ::Module, x::AbstractArray{<:Real}) = _julia_log_sum_exp(x)
-function jcall(::Val{:log_sum_exp}, ::Module, x::AbstractArray{<:Real}, y::AbstractArray{<:Real})
+jcall(::Val{:inv_logit}, ::_JuliaScope, x) = inv(one(x) + exp(-x))
+jcall(::Val{:inv_logit}, ::_JuliaScope, x::AbstractArray) = jcall.(Ref(Val(:inv_logit)), Ref(@__MODULE__), x)
+jcall(::Val{:logit}, ::_JuliaScope, x) = _julia_logit(x)
+jcall(::Val{:logit}, ::_JuliaScope, x::AbstractArray) = _julia_logit.(x)
+jcall(::Val{:log_inv_logit}, ::_JuliaScope, x) = _julia_log_inv_logit(x)
+jcall(::Val{:log_inv_logit}, ::_JuliaScope, x::AbstractArray) = _julia_log_inv_logit.(x)
+jcall(::Val{:log1m}, ::_JuliaScope, x) = _julia_log1m(x)
+jcall(::Val{:log1m}, ::_JuliaScope, x::AbstractArray) = _julia_log1m.(x)
+jcall(::Val{:log1p_exp}, ::_JuliaScope, x) = _julia_log1p_exp(x)
+jcall(::Val{:log1p_exp}, ::_JuliaScope, x::AbstractArray) = _julia_log1p_exp.(x)
+jcall(::Val{:log1m_exp}, ::_JuliaScope, x) = _julia_log1m_exp(x)
+jcall(::Val{:log1m_exp}, ::_JuliaScope, x::AbstractArray) = _julia_log1m_exp.(x)
+jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::Real, y::Real) = _julia_log_sum_exp(x, y)
+jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::AbstractArray{<:Real}) = _julia_log_sum_exp(x)
+function jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::AbstractArray{<:Real}, y::AbstractArray{<:Real})
     size(x) == size(y) || throw(DimensionMismatch(
         "log_sum_exp requires arguments of equal size, got $(size(x)) and $(size(y))"))
     _julia_log_sum_exp.(x, y)
 end
-jcall(::Val{:square}, ::Module, x) = x * x
-jcall(::Val{:square}, ::Module, x::AbstractArray) = x .* x
-jcall(::Val{:fmin}, ::Module, x, y) = min(x, y)
-jcall(::Val{:fmax}, ::Module, x, y) = max(x, y)
-jcall(::Val{:max}, ::Module, x::AbstractArray) = maximum(x)
-jcall(::Val{:min}, ::Module, x::AbstractArray) = minimum(x)
-jcall(::Val{:dims}, ::Module, x) = collect(size(x))
-jcall(::Val{:rows}, ::Module, x) = size(x, 1)
-jcall(::Val{:cols}, ::Module, x) = size(x, 2)
-jcall(::Val{:num_elements}, ::Module, x) = length(x)
-jcall(::Val{:rep_vector}, ::Module, x, n::Integer) = fill(x, n)
-jcall(::Val{:rep_array}, ::Module, x, dims::Integer...) = fill(x, dims...)
-jcall(::Val{:rep_matrix}, ::Module, x::Number, m::Integer, n::Integer) = fill(x, m, n)
-jcall(::Val{:rep_matrix}, ::Module, x::AbstractVector, n::Integer) = repeat(x, 1, n)
-jcall(::Val{:to_vector}, ::Module, x) = vec(x)
-jcall(::Val{:to_row_vector}, ::Module, x) = vec(x)
-jcall(::Val{:to_array_1d}, ::Module, x) = collect(vec(x))
-jcall(::Val{:to_array_2d}, ::Module, x, m::Integer, n::Integer) = Base.reshape(collect(x), m, n)
-jcall(::Val{:to_matrix}, ::Module, x, m::Integer, n::Integer) = Base.reshape(collect(x), m, n)
-jcall(::Val{:append_array}, ::Module, xs...) = vcat(xs...)
-jcall(::Val{:append_row}, ::Module, xs...) = vcat(xs...)
-jcall(::Val{:append_row}, ::Module, x::AbstractMatrix, y::AbstractVector) =
+jcall(::Val{:square}, ::_JuliaScope, x) = x * x
+jcall(::Val{:square}, ::_JuliaScope, x::AbstractArray) = x .* x
+jcall(::Val{:fmin}, ::_JuliaScope, x, y) = min(x, y)
+jcall(::Val{:fmax}, ::_JuliaScope, x, y) = max(x, y)
+jcall(::Val{:max}, ::_JuliaScope, x::AbstractArray) = maximum(x)
+jcall(::Val{:min}, ::_JuliaScope, x::AbstractArray) = minimum(x)
+jcall(::Val{:dims}, ::_JuliaScope, x) = collect(size(x))
+jcall(::Val{:rows}, ::_JuliaScope, x) = size(x, 1)
+jcall(::Val{:cols}, ::_JuliaScope, x) = size(x, 2)
+jcall(::Val{:num_elements}, ::_JuliaScope, x) = length(x)
+jcall(::Val{:rep_vector}, ::_JuliaScope, x, n::Integer) = fill(x, n)
+jcall(::Val{:rep_array}, ::_JuliaScope, x, dims::Integer...) = fill(x, dims...)
+jcall(::Val{:rep_matrix}, ::_JuliaScope, x::Number, m::Integer, n::Integer) = fill(x, m, n)
+jcall(::Val{:rep_matrix}, ::_JuliaScope, x::AbstractVector, n::Integer) = repeat(x, 1, n)
+jcall(::Val{:to_vector}, ::_JuliaScope, x) = vec(x)
+jcall(::Val{:to_row_vector}, ::_JuliaScope, x) = vec(x)
+jcall(::Val{:to_array_1d}, ::_JuliaScope, x) = collect(vec(x))
+jcall(::Val{:to_array_2d}, ::_JuliaScope, x, m::Integer, n::Integer) = Base.reshape(collect(x), m, n)
+jcall(::Val{:to_matrix}, ::_JuliaScope, x, m::Integer, n::Integer) = Base.reshape(collect(x), m, n)
+jcall(::Val{:append_array}, ::_JuliaScope, xs...) = vcat(xs...)
+jcall(::Val{:append_row}, ::_JuliaScope, xs...) = vcat(xs...)
+jcall(::Val{:append_row}, ::_JuliaScope, x::AbstractMatrix, y::AbstractVector) =
     vcat(x, Base.reshape(y, 1, length(y)))
-jcall(::Val{:append_col}, ::Module, xs...) = Base.hcat(xs...)
-jcall(::Val{:hcat}, ::Module, xs...) = Base.hcat(xs...)
-jcall(::Val{:reshape}, ::Module, x, dims::Integer...) = Base.reshape(x, dims...)
+jcall(::Val{:append_col}, ::_JuliaScope, xs...) = Base.hcat(xs...)
+jcall(::Val{:hcat}, ::_JuliaScope, xs...) = Base.hcat(xs...)
+jcall(::Val{:reshape}, ::_JuliaScope, x, dims::Integer...) = Base.reshape(x, dims...)
 # LinearAlgebra.exp uses LAPACK balancing, whose foreign call has no Mooncake
 # rule.  Scaling and squaring a short Taylor series keeps the Julia target
 # differentiable through matrix products.  At norm <= 1/2, the 24-term tail
@@ -680,18 +693,18 @@ function _deffun_julia_matrix_exp(x::AbstractMatrix{<:Real})
     end
     result
 end
-jcall(::Val{:matrix_exp}, ::Module, x::AbstractMatrix{<:Real}) = _deffun_julia_matrix_exp(x)
-function jcall(::Val{:matrix_power}, ::Module, x::AbstractMatrix{<:Real}, n::Integer)
+jcall(::Val{:matrix_exp}, ::_JuliaScope, x::AbstractMatrix{<:Real}) = _deffun_julia_matrix_exp(x)
+function jcall(::Val{:matrix_power}, ::_JuliaScope, x::AbstractMatrix{<:Real}, n::Integer)
     n >= 0 || throw(DomainError(n, "matrix_power requires a nonnegative integer exponent"))
     all(isfinite, x) || throw(DomainError(x, "matrix_power requires finite entries"))
     Base.:^(x, n)
 end
-jcall(::Val{:cumulative_sum}, ::Module, x) = cumsum(x)
-jcall(::Val{:mean}, ::Module, x) = Statistics.mean(x)
-jcall(::Val{:sd}, ::Module, x) = Statistics.std(x)
-jcall(::Val{:broadcasted_getindex}, ::Module, x, i) = x isa AbstractArray ? x[i] : x
-jcall(::Val{:jmap}, ::Module, f, x) = map(f, x)
-jcall(::Val{:reject}, ::Module, args...) = throw(ArgumentError(join(string.(args))))
+jcall(::Val{:cumulative_sum}, ::_JuliaScope, x) = cumsum(x)
+jcall(::Val{:mean}, ::_JuliaScope, x) = Statistics.mean(x)
+jcall(::Val{:sd}, ::_JuliaScope, x) = Statistics.std(x)
+jcall(::Val{:broadcasted_getindex}, ::_JuliaScope, x, i) = x isa AbstractArray ? x[i] : x
+jcall(::Val{:jmap}, ::_JuliaScope, f, x) = map(f, x)
+jcall(::Val{:reject}, ::_JuliaScope, args...) = throw(ArgumentError(join(string.(args))))
 
 _deffun_julia_numeric_type(x::Number) = typeof(x)
 _deffun_julia_numeric_type(x::AbstractArray{<:Number}) = eltype(x)
@@ -1444,7 +1457,8 @@ begin
             Expr(:call, :($stan.jcall), params..., f, positional...)
         elseif f isa Symbol
             tag = :($Val{$(QuoteNode(f))}())
-            Expr(:call, :($stan.jcall), params..., tag, def_mod, positional...)
+            scope = :($stan._JuliaCallScope{$def_mod}())
+            Expr(:call, :($stan.jcall), params..., tag, scope, positional...)
         else
             Expr(:call, :($stan.jcall), params..., f, positional...)
         end
