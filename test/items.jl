@@ -2379,6 +2379,7 @@ rebound names bare, so every Julia-side matrix build recursed until
             shim_to_matrix(v::vector[n])::matrix[2, 2] = to_matrix(v, 2, 2)
             shim_reshape(v::vector[n])::matrix[2, 2] = reshape(v, 2, 2)
             shim_append_row3(a::vector[n], b::vector[n], c::vector[n])::vector[3 * n] = append_row(a, b, c)
+            shim_append_row_mr(x::matrix[n, k], r::row_vector[k])::matrix[n + 1, k] = append_row(x, r)
         end
     end)
     call(f, args...) = Base.invokelatest(getproperty(shims, f), args...)
@@ -2394,6 +2395,7 @@ rebound names bare, so every Julia-side matrix build recursed until
     @test call(:shim_to_matrix, v) == [1.0 3.0; 2.0 4.0]
     @test call(:shim_reshape, v) == [1.0 3.0; 2.0 4.0]
     @test call(:shim_append_row3, a, b, c) == vcat(a, b, c)
+    @test call(:shim_append_row_mr, [a b], [1.0, 2.0]) == [a b; 1.0 2.0]
 
     # The package builtins' own Julia methods reach the same shims.
     @test StanBlocks.builtin.append_col(a, b, c) == [a b c]
@@ -2442,6 +2444,93 @@ rebound names bare, so every Julia-side matrix build recursed until
         for s in rebound_callees(m)
     ]
     @test isempty(offenders)
+end
+
+"""
+An opted-in deterministic helper can use Stan's matrix exponential and
+nonnegative integer matrix power in Julia, with the same authored calls in Stan.
+"""
+@testitem "slic: @juliacompat matrix exponential and power" tags=[:slic, :stanc, :bridgestan] setup=[StanBlocksImports] begin
+    helpers = Module(:JuliaCompatMatrixFunctions)
+    Core.eval(helpers, :(using StanBlocks))
+    Core.eval(helpers, quote
+        @deffun @juliacompat begin
+            exp_matrix(A::matrix[n,n], t::real)::matrix[n,n] = matrix_exp(A * t)
+            power_matrix(A::matrix[n,n], k::int)::matrix[n,n] = matrix_power(A, k)
+        end
+    end)
+    call(f, args...) = Base.invokelatest(getproperty(helpers, f), args...)
+
+    A = [-0.3 0.2 0.1; 0.1 -0.4 0.2; 0.05 0.1 -0.25]
+    B = [1.0 0.0 0.2; 0.0 1.0 0.3; 0.0 0.0 1.0]
+    @test call(:exp_matrix, A, 0.2) ≈ StanBlocks.LinearAlgebra.exp(0.2A) atol=1e-12
+    @test call(:power_matrix, B, 0) == Matrix{Float64}(StanBlocks.LinearAlgebra.I, 3, 3)
+    @test call(:power_matrix, B, 3) ≈ [1.0 0.0 0.6; 0.0 1.0 0.9; 0.0 0.0 1.0]
+    # Refused by Stan Math's matrix_power contract: the exponent is nonnegative.
+    @test_throws DomainError call(:power_matrix, B, -1)
+    # Stan Math rejects nonfinite matrix entries, including for a zero power.
+    @test_throws DomainError call(:power_matrix, [NaN 0.0; 0.0 1.0], 0)
+    # Refused by the declared matrix[n,n] arguments in both targets.
+    @test_throws DimensionMismatch call(:exp_matrix, ones(2, 3), 0.2)
+    @test_throws DimensionMismatch call(:power_matrix, ones(2, 3), 2)
+
+    model = Core.eval(helpers, quote
+        @slic (; A = $A, B = $B, k = 3, y = 1.2) begin
+            rate ~ normal(0.0, 1.0)
+            E = exp_matrix(A, rate)
+            P = power_matrix(B, k)
+            y ~ normal(E[1, 1] + P[1, 3], 1.0)
+        end
+    end)
+    code = stan_code(model)
+    @test occursin("matrix_exp((A * t))", code)
+    @test occursin("matrix_power(A, k)", code)
+    @test stanc_check(code; warn_pedantic=false).ok
+
+    # Compare the native Stan density and gradient against the Julia helper
+    # chain. Taking density differences removes any normalization convention.
+    problem = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(problem) == 1
+    julia_lp(x) = -0.5x^2 - 0.5(1.2 - (call(:exp_matrix, A, x)[1, 1] + call(:power_matrix, B, 3)[1, 3]))^2
+    x0, x1 = 0.0, 0.2
+    lp0 = LogDensityProblems.logdensity(problem, [x0])
+    lp1, grad1 = LogDensityProblems.logdensity_and_gradient(problem, [x1])
+    @test lp1 - lp0 ≈ julia_lp(x1) - julia_lp(x0) atol=1e-7
+    h = 1e-6
+    @test grad1[1] ≈ (julia_lp(x1 + h) - julia_lp(x1 - h)) / (2h) atol=1e-6
+end
+
+@testsnippet JuliaCompatMatrixADFixtures begin
+    using StanBlocks
+    import StanBlocks.stan: @deffun
+    @deffun @juliacompat begin
+        ad_exp_matrix(A::matrix[n,n], t::real)::matrix[n,n] = matrix_exp(A * t)
+        ad_power_matrix(A::matrix[n,n], k::int)::matrix[n,n] = matrix_power(A, k)
+    end
+end
+
+"""
+Mooncake differentiates the Julia methods emitted for both matrix primitives.
+"""
+@testitem "slic: @juliacompat matrix primitives are Mooncake differentiable" tags=[:slic, :ad] setup=[StanBlocksImports, JuliaCompatMatrixADFixtures] begin
+    import Mooncake
+
+    A = [-0.3 0.2 0.1; 0.1 -0.4 0.2; 0.05 0.1 -0.25]
+    exp_value(t) = ad_exp_matrix(A, t)[1, 1]
+    exp_cache = Mooncake.prepare_gradient_cache(exp_value, 0.2)
+    value, (_, grad) = Mooncake.value_and_gradient!!(exp_cache, exp_value, 0.2)
+    h = 1e-6
+    @test value ≈ exp_value(0.2) atol=1e-12
+    @test grad ≈ (exp_value(0.2 + h) - exp_value(0.2 - h)) / (2h) atol=1e-6
+
+    B = [1.0 0.0 0.2; 0.0 1.0 0.3; 0.0 0.0 1.0]
+    power_value(M) = sum(ad_power_matrix(M, 3))
+    power_cache = Mooncake.prepare_gradient_cache(power_value, B)
+    power, (_, power_grad) = Mooncake.value_and_gradient!!(power_cache, power_value, B)
+    offset = zeros(3, 3)
+    offset[1, 1] = h
+    @test power ≈ power_value(B) atol=1e-12
+    @test power_grad[1, 1] ≈ (power_value(B + offset) - power_value(B - offset)) / (2h) atol=1e-6
 end
 
 """
