@@ -13099,6 +13099,7 @@ Verify a plate-local alias preserves the per-cell size of a vector-valued UDF.
     @test stanc_compiles(shadowed_alias)
     @test stanc_compiles(shadowed_direct)
     @test stan_code(shadowed_alias) == stan_code(shadowed_direct)
+    @test stan_code(shadowed_alias) == code
 end
 
 """
