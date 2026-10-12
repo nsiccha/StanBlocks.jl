@@ -2357,6 +2357,101 @@ Verify explicit bounded Julia emission from `@deffun @juliacompat` in an isolate
 end
 
 """
+Verify `@juliacompat` Julia methods infer concrete result types.
+
+Regression for snag `called-a-stanblo-24d1dbd0`. A `@juliacompat` body routes
+each global call through `jcall(Val(name), scope, ...)`, which resolves the
+callee in the definition module. That module used to arrive as a `Module`
+value, which inference never propagates into a callee, so every call in the
+body dispatched dynamically and a helper without a declared return type
+inferred `Any` for every caller. The definition module now rides in the scope's
+type, so ordinary callees, nested helpers and the Stan compatibility shims all
+infer.
+"""
+@testitem "slic: @juliacompat Julia methods infer concrete result types" tags=[:slic] setup=[StanBlocksImports] begin
+    helpers = Module(:JuliaCompatInference)
+    Core.eval(helpers, :(using StanBlocks))
+    Core.eval(helpers, quote
+        plain_julia_square(x) = x * x
+        @deffun @juliacompat begin
+            infer_scale(log_a, log_b) = exp(log_a + log_b)
+            infer_decay(state::vector[k], dt::real)::vector[k] = begin
+                rv::vector[k]
+                for i in 1:k
+                    rv[i] = state[i] * exp(-dt)
+                end
+                rv
+            end
+            # No declared return type; the result size is computed from an
+            # argument, as a recurrence cell's read buffer is.
+            infer_reads(
+                kind::int[n], dt::vector[n], amount::vector[n], read_idx::int[n],
+                log_a, log_b,
+            ) = begin
+                scale = infer_scale(log_a, log_a + log_b)
+                n_reads = max(read_idx)
+                state = rep_vector(0., 2)
+                given = 0.
+                reads = rep_vector(0., 2 * max(read_idx))
+                for j in 1:n
+                    state .= infer_decay(state, dt[j])
+                    if kind[j] == 1
+                        reads[read_idx[j]] = state[2] / scale
+                        reads[n_reads + read_idx[j]] = (given - sum(state)) / scale
+                    else
+                        dose = amount[j] * exp(log_b)
+                        state[1] = state[1] + dose
+                        given += dose
+                    end
+                end
+                reads
+            end
+            infer_mirror(x::vector[n])::vector[2 * n] = append_row(x, -x)
+            infer_plain(x::vector[n], a::real) = plain_julia_square(a) * (x + a)
+        end
+    end)
+    f(name) = getproperty(helpers, name)
+    call(name, args...) = Base.invokelatest(f(name), args...)
+
+    @test Base.return_types(f(:infer_scale), (Float64, Float64)) == [Float64]
+    @test Base.return_types(f(:infer_decay), (Vector{Float64}, Float64)) == [Vector{Float64}]
+    reads_types = (Vector{Int}, Vector{Float64}, Vector{Float64}, Vector{Int}, Float64, Float64)
+    @test Base.return_types(f(:infer_reads), reads_types) == [Vector{Float64}]
+    @test Base.return_types(f(:infer_mirror), (Vector{Float64},)) == [Vector{Float64}]
+    @test Base.return_types(f(:infer_plain), (Vector{Float64}, Float64)) == [Vector{Float64}]
+
+    @test call(:infer_scale, 0.5, -0.25) ≈ exp(0.25)
+    @test call(:infer_decay, [1.0, 2.0], log(2.0)) ≈ [0.5, 1.0]
+    kind, dt, amount, read_idx = [2, 1, 2, 1], [0.1, 0.2, 0.3, 0.4], [1.0, 0.0, 2.0, 0.0], [0, 1, 0, 2]
+    log_a, log_b = 0.1, -0.2
+    reads = let scale = exp(log_a + log_a + log_b), state = zeros(2), given = 0.0, reads = zeros(4)
+        for j in eachindex(kind)
+            state .*= exp(-dt[j])
+            if kind[j] == 1
+                reads[read_idx[j]] = state[2] / scale
+                reads[2 + read_idx[j]] = (given - sum(state)) / scale
+            else
+                state[1] += amount[j] * exp(log_b)
+                given += amount[j] * exp(log_b)
+            end
+        end
+        reads
+    end
+    @test call(:infer_reads, kind, dt, amount, read_idx, log_a, log_b) ≈ reads
+    @test call(:infer_mirror, [1.0, 2.0]) == [1.0, 2.0, -1.0, -2.0]
+    @test call(:infer_plain, [1.0, 2.0], 3.0) == [36.0, 45.0]
+
+    # The compatibility shims dispatch on the typed scope and on a plain
+    # module alike (descriptor layout evaluation passes a module value).
+    scope = StanBlocks._JuliaCallScope{helpers}()
+    @test Base.return_types(StanBlocks.jcall, (Val{:+}, typeof(scope), Float64, Float64)) == [Float64]
+    @test StanBlocks.jcall(Val(:max), scope, [1, 4, 2]) == 4
+    @test StanBlocks.jcall(Val(:max), helpers, [1, 4, 2]) == 4
+    @test StanBlocks.jcall(Val(:+), helpers, [1.0, 2.0], 1.0) == [2.0, 3.0]
+    @test StanBlocks.jcall(Val(:plain_julia_square), helpers, 3.0) == 9.0
+end
+
+"""
 Verify `@juliacompat` matrix builders reach Julia's own `hcat`/`reshape`.
 
 Regression for snag `juliacompat-appe-8a38f4f3`. `StanBlocks` rebinds some
