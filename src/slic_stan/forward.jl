@@ -2674,6 +2674,12 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
         for idx in idxs
             probe[idx] = StanExpr(idx, StanType(types.int; qual=:data))
         end
+        # A do-block parameter may shadow the outer iterable (`plate(reads)
+        # do reads`). Its accessor still names the OUTER `reads` in emitted
+        # Stan. Keep that pre-binding as the size resolver's terminal; mapping
+        # the name back to the accessor would recursively expand `reads` into
+        # `reads[plate_i]` inside itself.
+        shadowed = Dict{Symbol,Any}(a => probe[a] for a in params if a in keys(probe))
         if isempty(iterables)
             for (param, idx) in zip(params, idxs)
                 # The do-block parameter is an alias for this plate axis, not a
@@ -2709,6 +2715,7 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
             v isa StanExpr && (size_table[k] = v)
             _return_size_harvest!(caller_syms, v)
         end
+        merge!(size_table, shadowed)
         for s in caller_syms
             haskey(size_table, s) || (size_table[s] = StanExpr(s, StanType(types.int)))
         end
