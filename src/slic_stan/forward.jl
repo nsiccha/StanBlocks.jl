@@ -2658,6 +2658,14 @@ end
 # ones. `pending` is isolated in its own trace-context slot; nothing is emitted and the
 # probe is discarded. Returns (fresh::Vector{Pair{Symbol,StanType}} in body order
 # keyed by global name, ret_type).
+_plate_size_defs!(defs, x) = nothing
+_plate_size_defs!(defs, x::BlockExpr) = foreach(a -> _plate_size_defs!(defs, a), x.args)
+_plate_size_defs!(defs, x::AssignmentExpr) = begin
+    lhs, rhs = x.args
+    lhs isa StanExpr && expr(lhs) isa Symbol && (defs[expr(lhs)] = rhs)
+    nothing
+end
+
 _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanModel,SubModel}) =
     _with_trace_state(info, :inline_pending, Any[]) do
         probe = _plate_probe(info)
@@ -2689,9 +2697,28 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
                 probe[a] = forward!(canonical(_plate_input_accessor(it, idxs, info)); info=probe)
             end
         end
+        # A UDF's symbolic return size can name a plate-local argument alias.
+        # Keep each pre-trace binding as a terminal, then resolve fresh `=`
+        # definitions in the traced body before their sizes escape the cell.
+        # The emitted body still uses the author's aliases; only inferred sizes
+        # are expressed through the sliced inputs and plate index.
+        size_table = OrderedDict{Symbol,Any}()
+        caller_syms = Set{Symbol}()
+        for k in keys(probe)
+            v = probe[k]
+            v isa StanExpr && (size_table[k] = v)
+            _return_size_harvest!(caller_syms, v)
+        end
+        for s in caller_syms
+            haskey(size_table, s) || (size_table[s] = StanExpr(s, StanType(types.int)))
+        end
         # Trace as a BLOCK (not per-statement) so submodel embedding binds its
         # flattened result the same way the real model-body trace does.
-        isempty(body_stmts) || forward!(canonical(Expr(:block, body_stmts...)); info=probe)
+        traced = isempty(body_stmts) ? nothing :
+            forward!(canonical(Expr(:block, body_stmts...)); info=probe)
+        defs = OrderedDict{Symbol,Any}()
+        traced === nothing || _plate_size_defs!(defs, traced)
+        merge!(size_table, defs)
         # The annotated-loop sugar has no collected result (`ret_expr === nothing`).
         ret = ret_expr === nothing ? nothing : forward!(canonical(ret_expr); info=probe)
         # idx/param helper bindings flatten to their global names in the root; skip
@@ -2701,9 +2728,10 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
         fresh = Pair{Symbol,Any}[]
         for k in keys(root)
             (k in before || k in helpers) && continue
-            push!(fresh, k => type(root[k]))
+            push!(fresh, k => _resolve_return_size_type(type(root[k]), size_table, "plate cell"))
         end
-        (fresh=fresh, ret_type=ret === nothing ? nothing : type(ret))
+        (fresh=fresh, ret_type=ret === nothing ? nothing :
+            _resolve_return_size_type(type(ret), size_table, "plate cell"))
     end
 
 # ── Plate emitter entry: the public `rv ~ plate(iters…; outer=…) do … end`. ──
@@ -2966,7 +2994,7 @@ _forward_loop_core!(;
             fi = _plate_fresh_info(s)
             if fi !== nothing && s isa Expr && s.head === :(=) &&
                 _plate_global_name(info, fi[1]) in inline_int_names
-                inline_map[fi[1]] = s.args[2]
+                inline_map[fi[1]] = _subst_syms(s.args[2], inline_map)
             else
                 push!(kept, s)
             end
