@@ -2496,6 +2496,39 @@ nonnegative integer matrix power in Julia, with the same authored calls in Stan.
     @test grad1[1] ≈ (julia_lp(x1 + h) - julia_lp(x1 - h)) / (2h) atol=1e-6
 end
 
+@testsnippet JuliaCompatMatrixADFixtures begin
+    using StanBlocks
+    import StanBlocks.stan: @deffun
+    @deffun @juliacompat begin
+        ad_exp_matrix(A::matrix[n,n], t::real)::matrix[n,n] = matrix_exp(A * t)
+        ad_power_matrix(A::matrix[n,n], k::int)::matrix[n,n] = matrix_power(A, k)
+    end
+end
+
+"""
+Mooncake differentiates the Julia methods emitted for both matrix primitives.
+"""
+@testitem "slic: @juliacompat matrix primitives are Mooncake differentiable" tags=[:slic, :ad] setup=[StanBlocksImports, JuliaCompatMatrixADFixtures] begin
+    import Mooncake
+
+    A = [-0.3 0.2 0.1; 0.1 -0.4 0.2; 0.05 0.1 -0.25]
+    exp_value(t) = ad_exp_matrix(A, t)[1, 1]
+    exp_cache = Mooncake.prepare_gradient_cache(exp_value, 0.2)
+    value, (_, grad) = Mooncake.value_and_gradient!!(exp_cache, exp_value, 0.2)
+    h = 1e-6
+    @test value ≈ exp_value(0.2) atol=1e-12
+    @test grad ≈ (exp_value(0.2 + h) - exp_value(0.2 - h)) / (2h) atol=1e-6
+
+    B = [1.0 0.0 0.2; 0.0 1.0 0.3; 0.0 0.0 1.0]
+    power_value(M) = sum(ad_power_matrix(M, 3))
+    power_cache = Mooncake.prepare_gradient_cache(power_value, B)
+    power, (_, power_grad) = Mooncake.value_and_gradient!!(power_cache, power_value, B)
+    offset = zeros(3, 3)
+    offset[1, 1] = h
+    @test power ≈ power_value(B) atol=1e-12
+    @test power_grad[1, 1] ≈ (power_value(B + offset) - power_value(B - offset)) / (2h) atol=1e-6
+end
+
 """
 Verify `slic: normal(loc,scale)` in an isolated test item.
 """

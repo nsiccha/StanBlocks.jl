@@ -613,7 +613,42 @@ jcall(::Val{:append_row}, ::Module, xs...) = vcat(xs...)
 jcall(::Val{:append_col}, ::Module, xs...) = Base.hcat(xs...)
 jcall(::Val{:hcat}, ::Module, xs...) = Base.hcat(xs...)
 jcall(::Val{:reshape}, ::Module, x, dims::Integer...) = Base.reshape(x, dims...)
-jcall(::Val{:matrix_exp}, ::Module, x::AbstractMatrix{<:Real}) = LinearAlgebra.exp(x)
+# LinearAlgebra.exp uses LAPACK balancing, whose foreign call has no Mooncake
+# rule.  Scaling and squaring a short Taylor series keeps the Julia target
+# differentiable through matrix products.  At norm <= 1/2, the 24-term tail
+# is below 4e-33 before roundoff and squaring.
+function _deffun_julia_matrix_exp(x::AbstractMatrix{<:Real})
+    n, m = size(x)
+    n == m || throw(DimensionMismatch("matrix_exp requires a square matrix"))
+    T = promote_type(eltype(x), Float64)
+    scale_norm = zero(T)
+    for i in 1:n
+        row_norm = zero(T)
+        for j in 1:n
+            row_norm += abs(x[i, j])
+        end
+        scale_norm = max(scale_norm, row_norm)
+    end
+    isfinite(scale_norm) || throw(DomainError(scale_norm, "matrix_exp requires finite entries"))
+    scaled = x
+    squarings = 0
+    while scale_norm > 0.5
+        scaled = scaled / 2
+        scale_norm /= 2
+        squarings += 1
+    end
+    result = Matrix{T}(LinearAlgebra.I, n, n)
+    term = result
+    for k in 1:24
+        term = term * scaled / k
+        result = result + term
+    end
+    for _ in 1:squarings
+        result = result * result
+    end
+    result
+end
+jcall(::Val{:matrix_exp}, ::Module, x::AbstractMatrix{<:Real}) = _deffun_julia_matrix_exp(x)
 function jcall(::Val{:matrix_power}, ::Module, x::AbstractMatrix{<:Real}, n::Integer)
     n >= 0 || throw(DomainError(n, "matrix_power requires a nonnegative integer exponent"))
     Base.:^(x, n)
