@@ -13272,6 +13272,51 @@ simulation they give with the data omitted, are unchanged.
 end
 
 """
+Verify `slic: @plate for over eachindex(x) iterates the index range`.
+
+`@plate for i in eachindex(x)` used to treat `eachindex(x)` as a container of
+elements, so `i` was an element and the loop's own index a hidden
+`plate_i__pl_<id>`. A fill `out[i] = …` was then rejected as written away from the
+loop index, with an error asking for that hidden name. `eachindex(x)` now lowers
+to the index range `1:length(x)`, so `i` is the loop index.
+"""
+@testitem "slic: @plate for over eachindex(x) iterates the index range" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    scalar = @slic (; y = [1.0, 2.0, 3.0]) begin
+        sigma ~ exponential(1.0)
+        @plate for i in eachindex(y)
+            t ~ normal(0.0, 1.0)
+            y[i] ~ normal(t, sigma)
+            out[i] = 2 * t
+        end
+    end
+    ranged = @slic (; y = [1.0, 2.0, 3.0]) begin
+        sigma ~ exponential(1.0)
+        @plate for i in 1:length(y)
+            t ~ normal(0.0, 1.0)
+            y[i] ~ normal(t, sigma)
+            out[i] = 2 * t
+        end
+    end
+    @test stanc_compiles(scalar)
+    @test stan_code(scalar) == stan_code(ranged)
+    @test occursin("for(i in 1:num_elements(y))", stan_block(stan_code(scalar), "model"))
+
+    ts = [[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]]
+    ys = [[0.6, 0.8, 1.0], [0.5, 0.7], [0.4, 0.9, 1.1, 1.3]]
+    ragged = @slic (; ts, ys) begin
+        sigma ~ exponential(1.0)
+        @plate for i in eachindex(ys)
+            b ~ normal(0.0, 1.0)
+            m::typeof(ts[i]) = b .* ts[i]
+            ys[i] ~ normal(m, sigma)
+            pred[i] = m
+        end
+    end
+    @test stanc_compiles(ragged)
+end
+
+"""
 Verify `slic: deffun result size routed through a function-local`.
 
 Snag `deffun-result-si-9d9eaab2` (a downstream per-cell read kernel): a

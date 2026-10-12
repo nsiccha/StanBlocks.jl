@@ -3321,6 +3321,12 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
             label, ": each loop clause must bind `var in <range or container>`, got `", b, "`.")
         var, src = b.args
         var in keys(info) && error(label, ": loop variable `", var, "` is already bound in model scope.")
+        # `eachindex(x)` is the index range `1:length(x)`, not a container of
+        # elements: the loop variable must be the loop index, or `out[i] = …`
+        # reads as a write away from it.
+        if src isa Expr && src.head === :call && length(src.args) == 2 && src.args[1] === :eachindex
+            src = Expr(:call, :(:), 1, Expr(:call, :length, src.args[2]))
+        end
         if src isa Expr && src.head === :call && length(src.args) == 3 && src.args[1] === :(:)
             lo, hi = src.args[2], src.args[3]
             kind === :plate && lo != 1 && error(
