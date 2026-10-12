@@ -2445,6 +2445,58 @@ rebound names bare, so every Julia-side matrix build recursed until
 end
 
 """
+An opted-in deterministic helper can use Stan's matrix exponential and
+nonnegative integer matrix power in Julia, with the same authored calls in Stan.
+"""
+@testitem "slic: @juliacompat matrix exponential and power" tags=[:slic, :stanc, :bridgestan] setup=[StanBlocksImports] begin
+    helpers = Module(:JuliaCompatMatrixFunctions)
+    Core.eval(helpers, :(using StanBlocks))
+    Core.eval(helpers, quote
+        @deffun @juliacompat begin
+            exp_matrix(A::matrix[n,n], t::real)::matrix[n,n] = matrix_exp(A * t)
+            power_matrix(A::matrix[n,n], k::int)::matrix[n,n] = matrix_power(A, k)
+        end
+    end)
+    call(f, args...) = Base.invokelatest(getproperty(helpers, f), args...)
+
+    A = [-0.3 0.2 0.1; 0.1 -0.4 0.2; 0.05 0.1 -0.25]
+    B = [1.0 0.0 0.2; 0.0 1.0 0.3; 0.0 0.0 1.0]
+    @test call(:exp_matrix, A, 0.2) ≈ StanBlocks.LinearAlgebra.exp(0.2A) atol=1e-12
+    @test call(:power_matrix, B, 0) == Matrix{Float64}(StanBlocks.LinearAlgebra.I, 3, 3)
+    @test call(:power_matrix, B, 3) ≈ [1.0 0.0 0.6; 0.0 1.0 0.9; 0.0 0.0 1.0]
+    # Refused by Stan Math's matrix_power contract: the exponent is nonnegative.
+    @test_throws DomainError call(:power_matrix, B, -1)
+    # Refused by the declared matrix[n,n] arguments in both targets.
+    @test_throws DimensionMismatch call(:exp_matrix, ones(2, 3), 0.2)
+    @test_throws DimensionMismatch call(:power_matrix, ones(2, 3), 2)
+
+    model = Core.eval(helpers, quote
+        @slic (; A = $A, B = $B, k = 3, y = 1.2) begin
+            rate ~ normal(0.0, 1.0)
+            E = exp_matrix(A, rate)
+            P = power_matrix(B, k)
+            y ~ normal(E[1, 1] + P[1, 3], 1.0)
+        end
+    end)
+    code = stan_code(model)
+    @test occursin("matrix_exp((A * t))", code)
+    @test occursin("matrix_power(A, k)", code)
+    @test stanc_check(code; warn_pedantic=false).ok
+
+    # Compare the native Stan density and gradient against the Julia helper
+    # chain. Taking density differences removes any normalization convention.
+    problem = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(problem) == 1
+    julia_lp(x) = -0.5x^2 - 0.5(1.2 - (call(:exp_matrix, A, x)[1, 1] + call(:power_matrix, B, 3)[1, 3]))^2
+    x0, x1 = 0.0, 0.2
+    lp0 = LogDensityProblems.logdensity(problem, [x0])
+    lp1, grad1 = LogDensityProblems.logdensity_and_gradient(problem, [x1])
+    @test lp1 - lp0 ≈ julia_lp(x1) - julia_lp(x0) atol=1e-7
+    h = 1e-6
+    @test grad1[1] ≈ (julia_lp(x1 + h) - julia_lp(x1 - h)) / (2h) atol=1e-6
+end
+
+"""
 Verify `slic: normal(loc,scale)` in an isolated test item.
 """
 @testitem "slic: normal(loc,scale)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
