@@ -2379,6 +2379,7 @@ rebound names bare, so every Julia-side matrix build recursed until
             shim_to_matrix(v::vector[n])::matrix[2, 2] = to_matrix(v, 2, 2)
             shim_reshape(v::vector[n])::matrix[2, 2] = reshape(v, 2, 2)
             shim_append_row3(a::vector[n], b::vector[n], c::vector[n])::vector[3 * n] = append_row(a, b, c)
+            shim_append_row_mr(x::matrix[n, k], r::row_vector[k])::matrix[n + 1, k] = append_row(x, r)
         end
     end)
     call(f, args...) = Base.invokelatest(getproperty(shims, f), args...)
@@ -2394,6 +2395,7 @@ rebound names bare, so every Julia-side matrix build recursed until
     @test call(:shim_to_matrix, v) == [1.0 3.0; 2.0 4.0]
     @test call(:shim_reshape, v) == [1.0 3.0; 2.0 4.0]
     @test call(:shim_append_row3, a, b, c) == vcat(a, b, c)
+    @test call(:shim_append_row_mr, [a b], [1.0, 2.0]) == [a b; 1.0 2.0]
 
     # The package builtins' own Julia methods reach the same shims.
     @test StanBlocks.builtin.append_col(a, b, c) == [a b c]
@@ -2466,6 +2468,8 @@ nonnegative integer matrix power in Julia, with the same authored calls in Stan.
     @test call(:power_matrix, B, 3) ≈ [1.0 0.0 0.6; 0.0 1.0 0.9; 0.0 0.0 1.0]
     # Refused by Stan Math's matrix_power contract: the exponent is nonnegative.
     @test_throws DomainError call(:power_matrix, B, -1)
+    # Stan Math rejects nonfinite matrix entries, including for a zero power.
+    @test_throws DomainError call(:power_matrix, [NaN 0.0; 0.0 1.0], 0)
     # Refused by the declared matrix[n,n] arguments in both targets.
     @test_throws DimensionMismatch call(:exp_matrix, ones(2, 3), 0.2)
     @test_throws DimensionMismatch call(:power_matrix, ones(2, 3), 2)

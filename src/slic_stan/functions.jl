@@ -610,6 +610,8 @@ jcall(::Val{:to_array_2d}, ::Module, x, m::Integer, n::Integer) = Base.reshape(c
 jcall(::Val{:to_matrix}, ::Module, x, m::Integer, n::Integer) = Base.reshape(collect(x), m, n)
 jcall(::Val{:append_array}, ::Module, xs...) = vcat(xs...)
 jcall(::Val{:append_row}, ::Module, xs...) = vcat(xs...)
+jcall(::Val{:append_row}, ::Module, x::AbstractMatrix, y::AbstractVector) =
+    vcat(x, Base.reshape(y, 1, length(y)))
 jcall(::Val{:append_col}, ::Module, xs...) = Base.hcat(xs...)
 jcall(::Val{:hcat}, ::Module, xs...) = Base.hcat(xs...)
 jcall(::Val{:reshape}, ::Module, x, dims::Integer...) = Base.reshape(x, dims...)
@@ -651,6 +653,7 @@ end
 jcall(::Val{:matrix_exp}, ::Module, x::AbstractMatrix{<:Real}) = _deffun_julia_matrix_exp(x)
 function jcall(::Val{:matrix_power}, ::Module, x::AbstractMatrix{<:Real}, n::Integer)
     n >= 0 || throw(DomainError(n, "matrix_power requires a nonnegative integer exponent"))
+    all(isfinite, x) || throw(DomainError(x, "matrix_power requires finite entries"))
     Base.:^(x, n)
 end
 jcall(::Val{:cumulative_sum}, ::Module, x) = cumsum(x)
