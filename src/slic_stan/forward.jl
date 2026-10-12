@@ -2901,6 +2901,7 @@ _forward_loop_core!(;
     # between siblings) are ill-typed — refuse before any renaming/hoisting.
     # No-ops for iterable-free loops (scan, index-only plates).
     _plate_check_iterable_lengths(rv, params, iterables, outer_dims; info)
+    _reject_observed_definitions(body_stmts, kind === :scan ? "scan step" : "plate cell")
 
     # Namespace for hygiene renames and hoisted invariants: the do-form's result
     # name; the sugar passes its own STABLE prefix (a nested loop is traced twice —

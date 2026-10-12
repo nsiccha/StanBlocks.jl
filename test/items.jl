@@ -13192,6 +13192,86 @@ Verify a plate-local alias preserves the per-cell size of a vector-valued UDF.
 end
 
 """
+Verify `slic: an observation samples data, not a name defined by =`.
+
+Snag `plate-observatio-2b5c02f8`: `a = y; a ~ dist(…)` — observing a name the same
+body defines with `=` — compiled at model scope and aborted with an internal
+"transformed fill target" error inside a plate cell. It is now refused everywhere
+with an error naming the direct spelling. An observation must sample the data
+itself, so that omitting the data turns the same model into a prior simulation;
+a name defined by `=` has nothing to draw (user feedback on decision
+`2026-10-12T14-27-45-196-00nwka8`). The direct spellings, and the prior
+simulation they give with the data omitted, are unchanged.
+"""
+@testitem "slic: an observation samples data, not a name defined by =" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+    ts = [[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]]
+    ys = [[0.6, 0.8, 1.0], [0.5, 0.7], [0.4, 0.9, 1.1, 1.3]]
+
+    # refused: a `~` on a name defined by `=` cannot become a prior draw when its
+    # data is omitted (snag plate-observatio-2b5c02f8; user feedback on decision
+    # 2026-10-12T14-27-45-196-00nwka8).
+    @test_throws "which this model defines as `a = y`" stan_code(@slic((; y = [1.0, 2.0]), begin
+        s ~ exponential(1.0)
+        a = y
+        a ~ normal(0.0, s)
+    end))
+    @test_throws "observe the data `a` is computed from instead" stan_code(@slic((; y = [1.0, 2.0]), begin
+        s ~ exponential(1.0)
+        a = 2.0 .* y
+        a ~ normal(0.0, s)
+    end))
+    @test_throws "write `y ~ …` instead" stan_code(@slic((; y = [1.0, 2.0]), begin
+        s ~ exponential(1.0)
+        a::vector[2] = y
+        a[1] ~ normal(0.0, s)
+    end))
+    @test_throws "which this plate cell defines as `a = yi`" stan_code(@slic((; y = [1.0, 2.0, 3.0]), begin
+        sigma ~ exponential(1.0)
+        out ~ plate(y; outer = 3) do yi
+            t ~ normal(0.0, 1.0)
+            a = yi
+            a ~ normal(t, sigma)
+            t
+        end
+    end))
+    @test_throws "write `ys[i] ~ …` instead" stan_code(@slic((; ts, ys, nsub = 3), begin
+        sigma ~ exponential(1.0)
+        @plate for i in 1:nsub
+            b ~ normal(0.0, 1.0)
+            m::typeof(ts[i]) = b .* ts[i]
+            obs = ys[i]
+            obs ~ normal(m, sigma)
+            pred[i] = m
+        end
+    end))
+    alias_sub = @slic begin
+        a = y
+        a ~ normal(mu, 1.0)
+    end
+    @test_throws "write `y ~ …` instead" stan_code(@slic((; yy = [1.0, 2.0]), begin
+        mu ~ normal(0.0, 1.0)
+        r ~ alias_sub(; y = yy, mu)
+    end))
+
+    # The direct spelling, and the prior simulation it becomes without the data.
+    direct(d) = @slic d begin
+        sigma ~ exponential(1.0)
+        @plate for i in 1:nsub
+            b ~ normal(0.0, 1.0)
+            m::typeof(ts[i]) = b .* ts[i]
+            ys[i] ~ normal(m, sigma)
+            pred[i] = m
+        end
+    end
+    @test stanc_compiles(direct((; ts, ys, nsub = 3)))
+    let prior = direct((; ts, nsub = 3)), d = stan_descriptor(prior)
+        @test stanc_compiles(prior)
+        @test isempty([o.name for o in d.outputs if o.kind == :parameter])
+    end
+end
+
+"""
 Verify `slic: deffun result size routed through a function-local`.
 
 Snag `deffun-result-si-9d9eaab2` (a downstream per-cell read kernel): a
