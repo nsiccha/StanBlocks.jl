@@ -1017,13 +1017,24 @@ begin
         tok, idx = body[1:us-1], body[us+1:end]
         !isempty(tok) && !isempty(idx) && all(isdigit, tok) && all(isdigit, idx)
     end
-    _throw_return_size_local(s::Symbol, fname, reason::Symbol) = error(
-        "@deffun ($fname): inferred result size references function-local `$s`, ",
-        reason === :reassigned ?
-            "which is reassigned in the body, so it cannot be expressed in the function's arguments. " :
-            "which cannot be expressed in the function's arguments (it is bound by a loop, a declaration, or an inner scope — not by a plain top-level `=` assignment). ",
-        "Spell the size in terms of the arguments instead of routing it through `$s`, or annotate the return type explicitly."
-    )
+    _throw_return_size_local(s::Symbol, fname, reason::Symbol) = begin
+        if fname == "plate cell"
+            error(
+                "plate: inferred cell size references local `$s`, ",
+                reason === :reassigned ?
+                    "which is reassigned in the body and cannot be expressed outside this cell. " :
+                    "which cannot be expressed outside this cell (it is bound by a loop, a declaration, or an inner scope — not by a plain top-level `=` assignment). ",
+                "Spell the size in terms of the sliced inputs or plate index instead."
+            )
+        end
+        error(
+            "@deffun ($fname): inferred result size references function-local `$s`, ",
+            reason === :reassigned ?
+                "which is reassigned in the body, so it cannot be expressed in the function's arguments. " :
+                "which cannot be expressed in the function's arguments (it is bound by a loop, a declaration, or an inner scope — not by a plain top-level `=` assignment). ",
+            "Spell the size in terms of the arguments instead of routing it through `$s`, or annotate the return type explicitly."
+        )
+    end
     _resolve_return_size(s, table, fname, seen) = s
     _resolve_return_size(s::StanExpr, table, fname, seen) = begin
         e = expr(s)
