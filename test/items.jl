@@ -13037,6 +13037,49 @@ end
 end
 
 """
+Verify a plate-local alias preserves the per-cell size of a vector-valued UDF.
+"""
+@testitem "slic: plate-local alias retains ragged UDF result size" tags=[:slic, :plate, :ragged, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    @deffun si_alias_cell(reads::int[n])::vector[max(reads)] = rep_vector(1.0, max(reads))
+
+    data = (; reads = [[1, 2], [1, 2, 3]], y = [1.0, 1.0])
+    aliased = @slic (; data...) begin
+        out ~ plate(reads, y; outer = (2,)) do cell_reads, cell_y
+            local_reads = cell_reads
+            conc = si_alias_cell(local_reads)
+            cell_y ~ normal(conc[1], 1.0)
+            conc[2]
+        end
+    end
+    direct = @slic (; data...) begin
+        out ~ plate(reads, y; outer = (2,)) do cell_reads, cell_y
+            conc = si_alias_cell(cell_reads)
+            cell_y ~ normal(conc[1], 1.0)
+            conc[2]
+        end
+    end
+    chained = @slic (; data...) begin
+        out ~ plate(reads, y; outer = (2,)) do cell_reads, cell_y
+            local_reads = cell_reads
+            again = local_reads
+            conc = si_alias_cell(again)
+            cell_y ~ normal(conc[1], 1.0)
+            conc[2]
+        end
+    end
+    @test stanc_compiles(direct)
+    @test stanc_compiles(aliased)
+    @test stanc_compiles(chained)
+    code = stan_code(aliased)
+    @test code == stan_code(direct)
+    @test code == stan_code(chained)
+    @test occursin(r"out_conc__pl_mem_\d+", code)
+    @test !occursin("matrix[max(out_local_reads)", stan_block(code, "transformed data"))
+end
+
+"""
 Verify `slic: deffun result size routed through a function-local`.
 
 Snag `deffun-result-si-9d9eaab2` (a downstream per-cell read kernel): a
