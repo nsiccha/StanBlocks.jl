@@ -13166,6 +13166,29 @@ Verify a plate-local alias preserves the per-cell size of a vector-valued UDF.
     @test code == stan_code(chained)
     @test occursin(r"out_conc__pl_mem_\d+", code)
     @test !occursin("matrix[max(out_local_reads)", stan_block(code, "transformed data"))
+
+    # Keep the public do-block spelling too: the cell parameter may have the
+    # same name as its outer iterable, so the size resolver must preserve the
+    # outer binding while following the local alias.
+    shadowed_alias = @slic data begin
+        out ~ plate(reads, y; outer = (2,)) do reads, y
+            local_reads = reads
+            conc = si_alias_cell(local_reads)
+            y ~ normal(conc[1], 1.0)
+            conc[2]
+        end
+    end
+    shadowed_direct = @slic data begin
+        out ~ plate(reads, y; outer = (2,)) do reads, y
+            conc = si_alias_cell(reads)
+            y ~ normal(conc[1], 1.0)
+            conc[2]
+        end
+    end
+    @test stanc_compiles(shadowed_alias)
+    @test stanc_compiles(shadowed_direct)
+    @test stan_code(shadowed_alias) == stan_code(shadowed_direct)
+    @test stan_code(shadowed_alias) == code
 end
 
 """
