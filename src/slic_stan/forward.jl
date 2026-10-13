@@ -2955,6 +2955,11 @@ _forward_loop_core!(;
     fresh = probe_transform === nothing ? discovered.fresh :
         Pair{Symbol,Any}[p for p in discovered.fresh
                          if !_is_probe_junk_name(p.first) && !(p.first in probe_exclude)]
+    # Discovery sees a declared missing observation under its hygienic cell
+    # name. Emission samples the promoted storage instead, so retain the names
+    # here for both the storage declaration and its public predictive alias.
+    unbound_cells = Symbol[f for (f, T) in fresh
+        if f in _model_observations(info) && _decl_role(T) === :sampled]
     rv_type = rv === nothing ? nothing :
         rv_ct === nothing ? discovered.ret_type :
         _plate_resolve_cell_type(rv_ct, discovered.ret_type, outer_dims, rv; info)
@@ -3134,6 +3139,9 @@ _forward_loop_core!(;
             mem_decl = Expr(:(::), plan.mem, Expr(:ref, mem_ct, :(sum($(plan.lens)))))
             emitted = forward!(canonical(mem_decl); info)
             pending !== nothing && push!(pending, emitted)
+            if plan.logical in unbound_cells
+                info[plan.mem] = remake(info[plan.mem]; unbound_observation=plan.logical)
+            end
             # Retain the carrier's OWN data-computable layout recipe for public
             # descriptor reflection.  The logical RaggedVector binding below
             # already preserves `(mem, ends)`, but `ends` is a transformed-data
@@ -3248,7 +3256,16 @@ _forward_loop_core!(;
     for plan in values(ragged_plans)
         forward!(canonical(:($(plan.logical) = RaggedVector($(plan.mem), $(plan.ends)))); info)
     end
-    emitted_loop
+    # A missing observation's indexed samples draw once into their promoted
+    # storage. Alias that completed storage after the loop, just as a top-level
+    # declared missing response does; the alias inherits a ragged layout when
+    # the storage is a flat plate carrier.
+    twins = Any[]
+    for f in unbound_cells
+        storage = haskey(ragged_plans, f) ? ragged_plans[f].mem : f
+        push!(twins, CanonicalExpr(_unbound_ragged_twin, f, root[storage]))
+    end
+    isempty(twins) ? emitted_loop : CanonicalExpr(:block, emitted_loop, twins...)
 end
 # ── Annotated top-level loops: `@plate for … end` / `@scan begin … end` ──────
 # Sugar over the shared inliner above (decisions `10mrh0f`, `1ntdzr8`,
