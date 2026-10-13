@@ -82,6 +82,73 @@ censoring still cannot introduce a sampled latent parameter.
     @test !occursin("y_gen", lc)
 end
 
+@testitem "slic: declared missing plate cells keep public predictive names" tags=[:slic, :plate, :descriptor, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block, stanc_compiles
+
+    data = Dict{Symbol,Any}(
+        :ts => [[0.2, 0.8], [0.3]],
+        :lo => [[0.05, 0.05], [0.05]],
+        :obs => [[0.4, 0.7], [0.2]],
+        :nsub => 2,
+    )
+    for family in (:(censored(normal, tt, scale; lower=ll)), :(normal(tt, scale)))
+        m = StanBlocks.SlicModel(quote
+            scale ~ exponential(1.0)
+            pred ~ plate(ts, lo; outer=(nsub,)) do tt, ll
+                z ~ $family
+                tt
+            end
+            fitted ~ plate(obs, ts; outer=(nsub,)) do yy, tt
+                yy ~ normal(tt, scale)
+                tt
+            end
+        end, data, @__MODULE__, (:pred_z,))
+        code = stan_code(m)
+        gq = stan_block(code, "generated quantities")
+        @test occursin(r"pred_z_gen\s*=\s*pred_z__pl_mem_\d+;", gq)
+        @test !occursin("pred_z_likelihood", code)
+        @test stanc_compiles(m)
+
+        d = stan_descriptor(m)
+        outputs = Dict(o.name => o for o in d.outputs)
+        @test outputs[:pred_z_gen].generative == :draw
+        @test outputs[:pred_z_gen].source == :pred_z
+        @test outputs[:pred_z_gen].segments == [2, 3]
+        @test outputs[:obs_gen].segments == [2, 3]
+        @test outputs[:obs_likelihood].segments == [2, 3]
+        @test :pred_z_gen in stan_operation(d, :predict).outputs
+        @test :obs_likelihood in stan_operation(d, :pointwise_loglik).outputs
+        @test :fit in getproperty.(d.operations, :name)
+
+        rebound = stan_model(m)(; ts=[[0.2], [0.3, 0.4]], lo=[[0.05], [0.05, 0.05]],
+            obs=[[0.4], [0.2, 0.3]])
+        rd = stan_descriptor(rebound)
+        @test only(o for o in rd.outputs if o.name == :pred_z_gen).segments == [1, 3]
+    end
+
+    censored_cell = quote
+        pred ~ plate(ts, lo; outer=(nsub,)) do tt, ll
+            z ~ censored(normal, tt, 1.0; lower=ll)
+            tt
+        end
+    end
+    # Refused: without a declaration the missing cell sample is a latent prior,
+    # while censored threshold atoms are observation-only (stanblocks-use §8).
+    undeclared = StanBlocks.SlicModel(censored_cell, data, @__MODULE__)
+    @test_throws "censored priors are not supported" stan_code(undeclared)
+
+    latent = StanBlocks.SlicModel(quote
+        pred ~ plate(ts, lo, obs; outer=(nsub,)) do tt, ll, yy
+            z ~ censored(normal, tt, 1.0; lower=ll)
+            yy ~ normal(z, 1.0)
+            tt
+        end
+    end, data, @__MODULE__, (:pred_z,))
+    # Refused: declaring a stem cannot turn an actually fitted latent into
+    # an observation; its censored law remains invalid as a parameter prior.
+    @test_throws "censored priors are not supported" stan_code(latent)
+end
+
 @testitem "slic: declared unbound ragged censoring stanc acceptance" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles
     for (family, data) in (
