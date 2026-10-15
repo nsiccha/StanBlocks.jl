@@ -14202,3 +14202,256 @@ it, and a `return` inside a loop body still sets the function's result.
     @test occursin("return v;", stan_code(return_in_loop))
     @test stanc_compiles(return_in_loop)
 end
+
+"""
+Verify `slic: @deffun if-branch bindings are hoisted when read after the if`.
+
+Julia's `if` introduces no scope: a name first bound inside a branch may be
+bound in several branches and read after the `if`. Each branch of the emitted
+Stan `if` is a block of its own, and the tracer kept one flat binding table
+across the branches, so it declared the name inside the first branch and
+reassigned it bare in the next one. `transpiles()` accepted that and stanc
+rejected it (`Identifier "t" not in scope`). Each branch now has its own
+binding scope. A fresh name that is read after the `if` is declared once
+before it, with `int` and `real` bindings widened to `real`, and every
+in-branch binding becomes a reassignment. A name nothing reads after the `if`
+keeps its in-branch declaration.
+"""
+@testitem "slic: @deffun if-branch bindings are hoisted when read after the if" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+
+    @deffun begin
+        branch_hoist_both(x::real)::real = begin
+            if x > 0
+                t = x
+            else
+                t = -x
+            end
+            t
+        end
+        branch_hoist_one(x::real)::real = begin
+            if x > 0
+                t = 2.0 * x
+            end
+            t
+        end
+        branch_hoist_elseif(x::real)::real = begin
+            if x > 5
+                return x
+            elseif x > 1
+                t = x
+            elseif x > 0
+                w = 2.0
+            else
+                t = -x
+            end
+            2.0 * t
+        end
+        branch_hoist_nested(x::real)::real = begin
+            if x > 0
+                if x > 1
+                    t = x
+                else
+                    t = 1.0
+                end
+                u = t + 1.0
+            else
+                t = -x
+                u = 0.0
+            end
+            t + u
+        end
+        branch_hoist_widened(x::real)::real = begin
+            if x > 0
+                t = x
+            else
+                t = 0
+            end
+            t
+        end
+        branch_hoist_typed(x::real)::real = begin
+            if x > 0
+                t::real = x
+            else
+                t::real = -x
+            end
+            t
+        end
+        branch_hoist_vector(x::vector[n])::real = begin
+            if sum(x) > 0
+                v = x .* 2.0
+            else
+                v = x
+            end
+            sum(v)
+        end
+        branch_hoist_in_loop(x::vector[n])::real = begin
+            s = 0.0
+            for i in 1:n
+                if x[i] > 0
+                    v = x[i]
+                else
+                    v = 0.0
+                end
+                s = s + v
+            end
+            s
+        end
+        branch_hoist_read_in_while(x::real)::real = begin
+            k = 0
+            if x > 0
+                t = x
+            end
+            while k < 2
+                t = t + 1.0
+                k = k + 1
+            end
+            t
+        end
+        branch_local_temps(x::real)::real = begin
+            s = 0.0
+            if x > 0
+                u = x * x
+                s = s + u
+            else
+                u = -x
+                s = s - u
+            end
+            if x < 1
+                tmp = 1
+                s = s + tmp
+            end
+            if x < 2
+                tmp = 2.0
+                s = s - tmp
+            end
+            if x > 0
+                k = 2
+                s = s + k
+            end
+            for k in 1:3
+                s = s + k
+            end
+            if x > 0
+                r = 1
+                s = s + r
+            end
+            r = 2.5 * s
+            r
+        end
+    end
+    @deffun @inline branch_hoist_inline(x::real)::real = begin
+        if x > 0
+            t = x
+        else
+            t = -x
+        end
+        t + 1.0
+    end
+    @deffun branch_hoist_inline_twice(x::real)::real = branch_hoist_inline(x) + branch_hoist_inline(-2.0 * x)
+
+    scalar_model(f) = @eval @slic (; y = 1.0) begin
+        mu ~ std_normal()
+        y ~ normal($f(mu), 1.0)
+    end
+    vector_model(f) = @eval @slic (; x = [0.5, -0.2, 0.3], y = 1.0) begin
+        mu ~ std_normal()
+        y ~ normal($f(x) + mu, 1.0)
+    end
+
+    both = stan_code(scalar_model(:branch_hoist_both))
+    @test occursin("real t;\n    if((x > 0)) {\n        t = x;\n    } else {\n        t = (-x);\n    }\n    return t;", both)
+    @test stanc_compiles(scalar_model(:branch_hoist_both))
+
+    for f in (:branch_hoist_one, :branch_hoist_elseif, :branch_hoist_nested, :branch_hoist_widened,
+            :branch_hoist_typed, :branch_hoist_read_in_while, :branch_hoist_inline_twice)
+        code = stan_code(scalar_model(f))
+        @test !occursin("real t =", code)
+        @test stanc_compiles(scalar_model(f))
+    end
+    @test occursin("real w = 2.0;", stan_code(scalar_model(:branch_hoist_elseif)))
+    nested = stan_code(scalar_model(:branch_hoist_nested))
+    @test count("real t;", nested) == 1 && count("real u;", nested) == 1
+    # `int` in one branch, `real` in the other: declared `real`.
+    @test occursin("real t;", stan_code(scalar_model(:branch_hoist_widened)))
+    @test occursin("t = 0;", stan_code(scalar_model(:branch_hoist_widened)))
+    # Each inline expansion hoists its own renamed local.
+    inline = stan_code(scalar_model(:branch_hoist_inline_twice))
+    @test count(r"real t__il_\d+;", inline) == 2
+
+    vector_hoist = stan_code(vector_model(:branch_hoist_vector))
+    @test occursin("vector[dims(x)[1]] v;\n    if(", vector_hoist)
+    @test stanc_compiles(vector_model(:branch_hoist_vector))
+    # Hoisted to the loop body, not past it.
+    in_loop = stan_code(vector_model(:branch_hoist_in_loop))
+    @test occursin("for(i in 1:n) {\n        real v;\n        if(", in_loop)
+    @test stanc_compiles(vector_model(:branch_hoist_in_loop))
+
+    # Names nothing reads after their `if` keep their in-branch declarations:
+    # a temporary bound in both branches, temporaries reused by later `if`s, a
+    # later loop variable, and a name rebound before it is read again.
+    temps = stan_code(scalar_model(:branch_local_temps))
+    @test count("real u = ", temps) == 2
+    @test occursin("int tmp = 1;", temps) && occursin("real tmp = 2.0;", temps)
+    @test occursin("int k = 2;", temps) && occursin("for(k in 1:3)", temps)
+    @test occursin("int r = 1;", temps) && occursin("real r = (2.5 * s);", temps)
+    @test !occursin(r"(real|int) (u|tmp|k|r);", temps)
+    @test stanc_compiles(scalar_model(:branch_local_temps))
+end
+
+"""
+Verify `slic: @deffun if-branch hoisting refuses undeclarable bindings`.
+
+A name hoisted out of an `if` is declared once, before the `if`, so its
+branches must agree on what that declaration is. Branches binding values of
+different shapes, a size bound inside the branch, and an `int` binding that
+is widened to `real` and then read back in its branch cannot be declared
+faithfully, so each is refused with a message naming the name and the fix.
+"""
+@testitem "slic: @deffun if-branch hoisting refuses undeclarable bindings" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    @deffun begin
+        branch_hoist_bad_types(x::vector[n])::real = begin
+            if sum(x) > 0
+                t = x
+            else
+                t = 1.0
+            end
+            sum(t)
+        end
+        branch_hoist_bad_size(x::vector[n])::real = begin
+            if sum(x) > 0
+                m = n + 1
+                t = rep_vector(0.0, m)
+            end
+            sum(t)
+        end
+        branch_hoist_bad_widened_read(x::real)::real = begin
+            if x > 0
+                t = 1
+                u = t + 1
+            else
+                t = x
+            end
+            t
+        end
+    end
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+    model(f) = @eval @slic (; x = [0.5, -0.2, 0.3], y = 1.0) begin
+        mu ~ std_normal()
+        y ~ normal($f(x) + mu, 1.0)
+    end
+
+    # refused: a Stan local has one declared type (todo `03y3dhn`)
+    msg = errmsg(model(:branch_hoist_bad_types))
+    @test occursin("`t` is read after the `if`", msg) && occursin("incompatible Stan types", msg)
+    # refused: the declaration before the `if` cannot size by a branch-local name (todo `03y3dhn`)
+    msg = errmsg(model(:branch_hoist_bad_size))
+    @test occursin("refers to `m`, which is bound inside the branch", msg)
+    # refused: the widened declaration would retype the branch's own `int` read (todo `03y3dhn`)
+    scalar = @slic (; y = 1.0) begin
+        mu ~ std_normal()
+        y ~ normal(branch_hoist_bad_widened_read(mu), 1.0)
+    end
+    msg = errmsg(scalar)
+    @test occursin("branch 1 binds it to `int` and reads it back", msg)
+end

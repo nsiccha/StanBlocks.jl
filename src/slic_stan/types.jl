@@ -66,8 +66,12 @@ mutable struct TraceContext
     inline_pending::Union{Nothing,Vector{Any}}
     ragged_density_targets::Tuple
     plate_context::Any
+    # `@deffun` statement lists being traced (innermost last) and the active
+    # `if` branch scopes; see "Branch scope" in forward.jl.
+    stmt_frames::Vector{Any}
+    branch_scopes::Vector{Any}
 end
-TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing)
+TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[])
 _context_or_new(context) = context === nothing ? TraceContext() : context
 """
 A named sub-model function, produced by `@slic f(args...) = body`. The value
