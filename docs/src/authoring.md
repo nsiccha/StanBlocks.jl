@@ -400,8 +400,10 @@ supported yet. A bare `for` in a model body remains an error.
 Inside `@deffun`, index and value iteration, `enumerate`, `zip`, one-line nested
 loops, and rectangular comprehensions with at most two axes are supported.
 Filtered, stepped, flattened-ragged, and three-or-more-dimensional
-comprehensions reject explicitly. `if`/`else` works; write nested `if` blocks
-instead of an `elseif` chain. UDFs cannot contain `~` or `target +=`.
+comprehensions reject explicitly. `if`/`elseif`/`else` chains work. As in
+Julia, an `if` has no scope of its own: a name first bound inside a branch and
+read after the `if` is declared once before it, while a name used only inside
+its branch stays local to that branch. UDFs cannot contain `~` or `target +=`.
 
 Bodyful deterministic `@deffun` definitions are Stan-only by default. Add
 `@juliacompat` to install a bounded Julia method for a helper that should also
