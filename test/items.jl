@@ -14060,3 +14060,145 @@ end
         end
     end
 end
+
+"""
+Verify `slic: @deffun loop-local bindings end with their loop body`.
+
+Snag `deffun-sibling-l-01df6260` (reported from a downstream module): a plain
+`=` to a fresh name inside a `for`/`while` body declares that name inside the
+emitted Stan loop block, but the tracer kept the binding after the body ended.
+A later plain `=` to the same name, in a sibling loop or after the loop, then
+traced as a reassignment and emitted a bare `name = rhs;`. `transpiles()`
+accepted it and stanc rejected it (`Identifier "acc" not in scope`). Each loop
+body is now its own scope, as in Julia, so the later binding declares afresh.
+A name bound before the loop is still reassigned inside it and visible after
+it, and a `return` inside a loop body still sets the function's result.
+"""
+@testitem "slic: @deffun loop-local bindings end with their loop body" tags=[:slic, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+
+    @deffun begin
+        loop_scope_sibling_for(x::vector[n], m::int)::vector[n] = begin
+            out = rep_vector(0.0, n)
+            for g in 1:2
+                for i in 1:n
+                    acc = x[i] / g
+                    for p in 1:(i - 1)
+                        acc = acc - x[p]
+                    end
+                    out[i] = acc
+                end
+                for r in 1:m
+                    acc = 0.0
+                    for p in 1:n
+                        acc = acc + x[p]
+                    end
+                    out[r] = out[r] + acc
+                end
+            end
+            out
+        end
+        loop_scope_sibling_while(x::vector[n])::real = begin
+            s = 0.0
+            k = 1
+            while k <= n
+                t = x[k]
+                s = s + t
+                k = k + 1
+            end
+            k = 1
+            while k <= n
+                t = 2.0 * x[k]
+                s = s + t
+                k = k + 1
+            end
+            s
+        end
+        loop_scope_after_loop(x::vector[n])::real = begin
+            s = 0.0
+            for i in 1:n
+                t = x[i]
+                s = s + t
+            end
+            t = 2.0 * s
+            t
+        end
+        loop_scope_value_iteration(x::vector[n])::real = begin
+            s = 0.0
+            for xi in x
+                t = xi
+                s = s + t
+            end
+            for (i, xi) in enumerate(x)
+                t = i * xi
+                s = s + t
+            end
+            s
+        end
+        loop_scope_outer_acc(x::vector[n])::real = begin
+            acc = 0.0
+            for i in 1:n
+                acc = acc + x[i]
+            end
+            acc
+        end
+        loop_scope_return_in_loop(x::vector[n])::real = begin
+            for i in 1:n
+                v = x[i]
+                if v > 0
+                    return v
+                end
+            end
+            0.0
+        end
+    end
+
+    xs = [-0.1, 0.2, 0.3]
+    sibling_for = @slic (; x = xs, m = 2, y = [1.0, 2.0, 3.0]) begin
+        mu ~ std_normal()
+        y ~ normal(loop_scope_sibling_for(x, m) .+ mu, 1.0)
+    end
+    code = stan_code(sibling_for)
+    # One declaration per sibling loop; the inner accumulations stay bare.
+    @test count("real acc = ", code) == 2
+    @test occursin("real acc = 0.0;", code)
+    @test occursin("acc = (acc + x[p]);", code)
+    @test stanc_compiles(sibling_for)
+
+    sibling_while = @slic (; x = xs, y = 1.0) begin
+        mu ~ std_normal()
+        y ~ normal(loop_scope_sibling_while(x) + mu, 1.0)
+    end
+    value_iteration = @slic (; x = xs, y = 1.0) begin
+        mu ~ std_normal()
+        y ~ normal(loop_scope_value_iteration(x) + mu, 1.0)
+    end
+    for model in (sibling_while, value_iteration)
+        @test count("real t = ", stan_code(model)) == 2
+        @test stanc_compiles(model)
+    end
+
+    after_loop = @slic (; x = xs, y = 1.0) begin
+        mu ~ std_normal()
+        y ~ normal(loop_scope_after_loop(x) + mu, 1.0)
+    end
+    @test occursin("real t = (2.0 * s);", stan_code(after_loop))
+    @test stanc_compiles(after_loop)
+
+    # Controls: an accumulator bound before the loop is reassigned inside it
+    # and read after it; a `return` inside a loop body keeps the result type.
+    outer_acc = @slic (; x = xs, y = 1.0) begin
+        mu ~ std_normal()
+        y ~ normal(loop_scope_outer_acc(x) + mu, 1.0)
+    end
+    outer_code = stan_code(outer_acc)
+    @test count("real acc = ", outer_code) == 1
+    @test occursin("acc = (acc + x[i]);", outer_code)
+    @test stanc_compiles(outer_acc)
+    return_in_loop = @slic (; x = xs, y = 1.0) begin
+        mu ~ std_normal()
+        y ~ normal(loop_scope_return_in_loop(x) + mu, 1.0)
+    end
+    @test occursin("return v;", stan_code(return_in_loop))
+    @test stanc_compiles(return_in_loop)
+end

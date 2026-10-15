@@ -801,6 +801,29 @@ _restore_scope!(info, saved) = for (n, old) in saved
     old === nothing ? (n in keys(info) && pop!(info, n)) : (info[n] = old)
 end
 
+# ── Loop-body scope in @deffun bodies ─────────────────────────────────────────
+# A `for`/`while` body is a local scope in Julia AND in the Stan block it emits:
+# a plain `=` to a fresh name inside it declares that name inside the loop's
+# `{ … }`, so the binding must not outlive the body. Kept, a later plain `=` to
+# the same name — in a sibling loop, or after the loop — traced as a
+# reassignment of a binding Stan no longer has in scope and emitted a bare
+# `name = rhs;` that stanc rejects (snag `deffun-sibling-l-01df6260`). Names
+# bound before the body keep their (possibly reassigned) binding, and the
+# function-level `return` channel `RV_NAME` is not a local. Model / submodel
+# scope traces only compiler-owned loops, where re-binding a name is refused
+# rather than reassigned, so it keeps its bindings.
+_with_loop_scope(body::Function, info) = body()
+_with_loop_scope(body::Function, info::AbstractDict) = begin
+    outer = Set(keys(info))
+    try
+        body()
+    finally
+        for name in collect(keys(info))
+            name in outer || name === RV_NAME || pop!(info, name)
+        end
+    end
+end
+
 # ── Destructuring iteration: `enumerate(c)` / `zip(a, b, …)` ──────────────────
 # `for (i, xi) in enumerate(c)` / `for (ai, bi) in zip(a, b)` (and their
 # comprehension forms) bind a TUPLE of names per step. `enumerate`/`zip` survive
@@ -3844,7 +3867,7 @@ forward!(x::ForExpr; info) = begin
     # must declare that SAME emitted symbol used by forwarded body references;
     # keeping the raw local `idx` would produce `for(i ...) body[prefix_i]`.
     emitted_idx = expr(info[idx])
-    body = forward!(body; info)
+    body = _with_loop_scope(() -> forward!(body; info), info)
     pop!(info, idx)
     _trace_stan_expr(remake(x, remake(head, emitted_idx, idx_range), body), info)
 end
@@ -3901,10 +3924,11 @@ end
 
 forward!(x::WhileExpr; info) = begin
     @assert length(x.args) == 2
-    head, body = x.args
+    cond, body = x.args
     @assert _is_block_canonical(body)
-    # body = forward!(body; info)
-    _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+    cond = forward!(cond; info)
+    body = _with_loop_scope(() -> forward!(body; info), info)
+    _trace_stan_expr(remake(x, cond, body), info)
 end
 forward!(x::IfExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::TernaryExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
