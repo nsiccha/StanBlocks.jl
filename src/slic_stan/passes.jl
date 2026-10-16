@@ -332,7 +332,7 @@ backward!(x::StanExpr{Symbol}; info) = begin
     # occurrence forwarded earlier carries none: keep the current entry, as for
     # the ragged-density certificate.
     certified = key in keys(info) && (get(type(info[key]).info, :ragged_density, false) ||
-        !isempty(_slice_records(info[key])))
+        !isempty(_slice_records(info[key])) || !isempty(_slice_observations(info[key])))
     source = certified ? info[key] : x
     reached = remake(source; lqual=:affects_likelihood)
     info[key] = reached
@@ -822,6 +822,44 @@ Base.push!(b::GeneratedQuantitiesBlock,
     for stmt in _indexed_gq_assignments(x; info)
         push!(b, stmt; info)
     end
+    if target !== nothing && target.kind === :dense && _slice_obs_pointwise(target.base; info)
+        lhs, rhs = x.args
+        lik = _push_slice_obs_likelihood_decl!(b, target.base; info)
+        pointwise = likelihood_expr(lhs, rhs)
+        push!(b, CanonicalExpr(:(=), _rename_lhs_base(lhs, lik), pointwise); info)
+    end
+end
+# A data vector observed slice by slice (`y[1:2] ~ exponential(s); y[3] ~ …`,
+# which is what `y ~ vcat(…)` lowers to) gets the per-coordinate
+# `y_likelihood` a whole-vector observation has — when its slices cover every
+# coordinate exactly once and each slice's pointwise density is per coordinate.
+# A joint family over a slice (`y[1:3] ~ multi_normal(…)`) has one density for
+# the whole slice, and an uncovered coordinate is not an observation, so either
+# leaves `y` with its `y_gen` twin only.
+_slice_obs_pointwise(k::Symbol; info) = begin
+    records = _slice_observations(info[k])
+    isempty(records) && return false
+    n = _slice_int(stan_size(info[k])[1]; values=true)
+    n === nothing && return false
+    coords = Int[]
+    for r in records
+        r.coords === nothing && return false
+        append!(coords, r.coords)
+    end
+    sort!(coords) == collect(1:n) || return false
+    all(r -> stan_ndim(likelihood_expr(r.lhs, r.rhs)) == stan_ndim(r.lhs), records)
+end
+_push_slice_obs_likelihood_decl!(b, k::Symbol; info) = begin
+    lik = Symbol(k, "_likelihood")
+    if lik in keys(info)
+        get(type(info[lik]).info, :slice_obs_source, nothing) === k && return lik
+        _assert_twin_free(k, "_likelihood", info)
+    end
+    t = StanType(types.vector, stan_size(info[k]); qual=:quantities, slice_obs_source=k)
+    decl = StanExpr(lik, t)
+    info[lik] = decl
+    push!(b, StanExpr(CanonicalExpr(:(::), decl), t); info)
+    lik
 end
 _indexed_rng_assignment(x::SamplingExpr) = begin
     lhs, rhs = x.args

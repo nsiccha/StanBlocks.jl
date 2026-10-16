@@ -2217,6 +2217,8 @@ _forward_indexed_sampling!(x; info, user_slice::Bool=false) = begin
     end
     if qual(info[k]) != :data && (user_slice || _scan_loop(info[k]) !== nothing)
         rhs = _record_slice_support!(k, lhs, rhs; info, loop=user_slice ? nothing : _scan_loop(info[k]))
+    elseif user_slice
+        _record_slice_observation!(k, lhs, rhs; info)
     end
     # Re-derive the LHS against the base we may have just tainted.  `lhs` was
     # snapshotted at the top of this function, BEFORE the cv decision, and
@@ -2269,6 +2271,7 @@ forward!(x::SamplingExpr{<:CanonicalExprV{:getindex},<:StanExpr}; info) =
 _is_flat_decl(x::StanExpr) = get(type(x).info, :flat_decl, false)
 _scan_loop(x::StanExpr) = get(type(x).info, :scan_loop, nothing)
 _slice_records(x::StanExpr) = get(type(x).info, :slice_supports, ())
+_slice_observations(x::StanExpr) = get(type(x).info, :slice_observations, ())
 _is_flat_rhs(rhs::StanExpr) = _is_flat_rhs(expr(rhs))
 _is_flat_rhs(rhs::CanonicalExpr) = head(rhs) === builtin.flat
 _is_flat_rhs(_) = false
@@ -2382,17 +2385,6 @@ _record_slice_support!(k, lhs, rhs; info, loop=nothing) = begin
     rhs_c isa CanonicalExpr || return rhs
     spelling = _stan_snippet(lhs)
     idxs = expr(lhs).args[2:end]
-    length(idxs) == 1 || error(
-        "Slice statement `", spelling, " ~ …` indexes `", k, "` with ", length(idxs),
-        " indices; per-coordinate priors are supported on a vector, indexed by one ",
-        "integer, range or integer array.")
-    idx = only(idxs)
-    if loop === nothing
-        qual(idx) == :data || error(
-            "Slice statement `", spelling, " ~ …`: the index must be data (a literal, ",
-            "a range or a data integer array), so that every coordinate's support is ",
-            "known when `", k, "` is declared.")
-    end
     implied = autokwargs(rhs_c)
     own = _fold_constraints(k, merge(implied, rhs_c.kwargs); implied=keys(implied))
     affine = filter(in(AFFINE_KEYS), keys(own))
@@ -2408,6 +2400,26 @@ _record_slice_support!(k, lhs, rhs; info, loop=nothing) = begin
         upper=_unbounded_as_nothing(:upper,
             _intersect_bound(:upper, default.upper, get(own, :upper, nothing); info)),
     )
+    if !(center_type(T) === types.vector && stan_ndim(T) == 1 && length(idxs) == 1)
+        # Per-coordinate support is declared on a vector. Elsewhere a slice is
+        # fine as long as it keeps the declaration's support.
+        for key in BOUND_KEYS
+            _same_bound(getproperty(eff, key), getproperty(default, key)) || error(
+                "Slice statement `", spelling, " ~ …` gives coordinates of `", k,
+                "` their own `", key, "=` support, which Stan can only declare per ",
+                "coordinate on a vector indexed by one integer, range or integer array; `",
+                k, "` is a `", sigtype(T), "`. State the support on the declaration ",
+                "(`", k, "::", sigtype(T), "[…] ~ flat(; ", key, "=…)`) so every slice shares it.")
+        end
+        return rhs
+    end
+    idx = only(idxs)
+    if loop === nothing
+        qual(idx) == :data || error(
+            "Slice statement `", spelling, " ~ …`: the index must be data (a literal, ",
+            "a range or a data integer array), so that every coordinate's support is ",
+            "known when `", k, "` is declared.")
+    end
     coords = loop === nothing ? _slice_coords(idx; values=true) : _loop_coords(loop; values=true)
     literal = loop === nothing ? _slice_coords(idx; values=false) : _loop_coords(loop; values=false)
     records = _slice_records(base)
@@ -2436,6 +2448,20 @@ _record_slice_support!(k, lhs, rhs; info, loop=nothing) = begin
     end
     isempty(extra) && return rhs
     StanExpr(remake(rhs_c, rhs_c.args...; merge(rhs_c.kwargs, (; extra...))...), type(rhs))
+end
+
+# An observation written as slices of a data vector (`y[1:2] ~ …`, or the
+# lowering of `y ~ vcat(…)`): remember each slice, so generated quantities can
+# give `y` a per-coordinate `y_likelihood` when the slices cover every
+# coordinate (`_slice_obs_pointwise`, passes.jl).
+_record_slice_observation!(k, lhs, rhs; info) = begin
+    base = info[k]
+    (center_type(base) <: types.any_vector && stan_ndim(base) == 1) || return nothing
+    idxs = expr(lhs).args[2:end]
+    length(idxs) == 1 || return nothing
+    record = (; coords=_slice_coords(only(idxs); values=true), lhs, rhs)
+    info[k] = remake(base; slice_observations=(_slice_observations(base)..., record))
+    nothing
 end
 
 # After the whole body is traced: fold every declaration's slice records into its
@@ -2479,7 +2505,7 @@ _slice_declared_bound(k, v, records, key, extra; info) = begin
         return bounds[1]
     literal = _slice_literal_bound(key, N, default, records)
     literal === missing || return _slice_bound_vector(key, literal; info)
-    _slice_bound_carrier!(k, key, T, default, records, extra; info)
+    _slice_bound_carrier!(k, key, T, default, records, extra; info, covered)
 end
 
 # Per-coordinate bounds as a Julia vector (`nothing` = unbounded) when the length,
@@ -2519,7 +2545,7 @@ end
 # The general case: build the per-coordinate bound in `transformed data`, from
 # the declaration's default and one fill per slice, and bound the declaration by
 # that carrier (the same shape plate constraint hoisting uses).
-_slice_bound_carrier!(k, key, T, default, records, extra; info) = begin
+_slice_bound_carrier!(k, key, T, default, records, extra; info, covered=false) = begin
     N = stan_size(T)[1]
     data_ok(b) = b === nothing || _bound_number(b) !== nothing || qual(b) == :data
     for b in (default, (getproperty(r, key) for r in records)...)
@@ -2534,12 +2560,11 @@ _slice_bound_carrier!(k, key, T, default, records, extra; info) = begin
     end
     j = Symbol(carrier, :_i)
     value(b) = b === nothing ? _infinity_expr(key) : b
-    stmts = Any[
-        :($carrier :: vector[$N]),
-        :(for $j in 1:$N
-              $carrier[$j] = $(_bound_ndim(default) == 1 ? :($default[$j]) : value(default))
-          end),
-    ]
+    stmts = Any[:($carrier :: vector[$N])]
+    # Coordinates no slice covers keep the declaration's own support.
+    covered || push!(stmts, :(for $j in 1:$N
+        $carrier[$j] = $(_bound_ndim(default) == 1 ? :($default[$j]) : value(default))
+    end))
     for r in records
         b = value(getproperty(r, key))
         vector_bound = _bound_ndim(b) == 1

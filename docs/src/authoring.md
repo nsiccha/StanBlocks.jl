@@ -79,6 +79,77 @@ density. Use `interval_censored` for genuinely binned observations and
 `truncated` only when the data-generating process cannot produce values outside
 the range.
 
+## Different priors for coordinates of one vector
+
+One vector can take a different prior family on different coordinates. Lay the
+blocks end to end with `vcat`:
+
+```julia
+@slic (; rate = [1.5, 3.0], y = 0.4) begin
+    tau ~ vcat(exponential(rate), normal(0., 1.; lower=0.))
+    y ~ normal(sum(tau), 1.)
+end
+```
+
+A block's length comes from its own shape: a scalar family covers one
+coordinate, a vector argument or `n=` a longer block (`exponential(rate)` covers
+`length(rate)`). `tau` is declared with the summed length; a typed LHS
+(`tau::vector[3] ~ vcat(…)`) must agree with it. `vcat` lowers to one native
+Stan statement per block and one declaration that carries every coordinate's
+support:
+
+```stan
+parameters { vector<lower=0.0>[(rate_n + 1)] tau; }
+model {
+    tau[1:rate_n] ~ exponential(rate);
+    tau[(rate_n + 1)] ~ normal(0.0, 1.0);
+}
+```
+
+`tau ~ vcat(…)` is a single statement naming the whole vector, so
+`Base.merge(base, :(tau ~ vcat(…)))` replaces a prior in one step, including
+over a bare `tau::vector[n]` declaration.
+
+The same lowering is available as Stan-style slice statements, after either a
+bare declaration or a `flat` declaration that states the support:
+
+```julia
+tau::vector[3]                  # each slice brings its own support
+tau[1:2] ~ exponential(rate)
+tau[3] ~ normal(0., 1.; lower=0.)
+
+tau::vector[3] ~ flat(; lower=0.)   # the declaration states the support
+tau[1:2] ~ exponential(rate)
+tau[3] ~ normal(0., 1.)             # a half-normal: it stays inside lower=0
+```
+
+A slice brings its family's implied support (`exponential` ⇒ `lower=0`) plus
+any explicit `lower=`/`upper=`, intersected with a `flat` declaration's. When
+every coordinate ends up with the same bound the declaration carries it as a
+scalar; otherwise it carries a per-coordinate bound vector, with
+`negative_infinity()`/`positive_infinity()` for unbounded coordinates
+(`vector<lower=[0.0, 0.0, negative_infinity()]'>[3] tau`). When a slice index or
+the length is data rather than a literal, that vector is built in
+`transformed data`. Prior-only and held-out programs re-draw each block from its
+own family inside the coordinate's support.
+
+Rules:
+
+- Indices are data: integer literals, ranges, or data integer arrays.
+- Each coordinate takes exactly one prior; a coordinate sampled twice is an
+  error. A vector with a whole-vector prior (`tau::vector[3] ~ normal(…)`) takes
+  no slice statements.
+- A coordinate no statement covers stays improper-flat on the declared support.
+- Per-coordinate bounds apply to a `vector`; a per-coordinate bound must be data,
+  and `offset=`/`multiplier=` belong to the declaration, not to a slice.
+- An observed `y ~ vcat(…)` (or slices covering every coordinate of a data
+  vector) gets `y_gen` and a per-coordinate `y_likelihood`; a joint family over a
+  slice (`multi_normal`) has no per-coordinate likelihood, so `y` then gets `y_gen`
+  only.
+
+Write a custom whole-vector family (an `_lpdf`/`_lpdfs`/sized `_rng` triad with
+`autokwargs` support) only for a genuinely joint prior.
+
 ## Generated observation twins
 
 A normal top-level observation such as `y ~ normal(mu, sigma)` produces two
@@ -407,6 +478,11 @@ is empty while the block re-draws in `generated quantities` in step order;
 mark a size or input with `maybecv` and the whole chain, observation
 included, moves to `generated quantities`.
 
+A carried array takes its support coordinate by coordinate, as slice statements
+do: with `x[1] ~ exponential(1.)` and an unbounded recurrence
+`x[t] ~ normal(x[t-1], 1.)`, only `x[1]` is bounded
+(`vector<lower=[0.0, negative_infinity(), negative_infinity()]'>[3] x`).
+
 Annotated loops nest: a `@scan` inside a `@plate for j in 1:S` is the
 per-subject state-space shape. The enclosing loop promotes the inner arrays
 to per-subject storage and the indices compose into one Stan variable
@@ -417,7 +493,9 @@ nested `@plate` setups are not supported yet); a `@scan` has one axis; an
 untyped fresh cell whose distribution arguments are vector-shaped must be
 annotated (`v[:, j]::vector[T] ~ …`) until the plate typing snag
 `plate-untyped-ve-819ecfff` lands; typed locals inside a nested loop are not
-supported yet. A bare `for` in a model body remains an error.
+supported yet; a nested `@scan` whose setup and recurrence have different
+support is refused, since a per-coordinate bound across the promoted axes is not
+built yet. A bare `for` in a model body remains an error.
 
 ## `@deffun` iteration boundary
 
