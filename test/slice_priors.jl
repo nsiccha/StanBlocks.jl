@@ -200,13 +200,17 @@ end
     @test stanc_compiles(literal)
 
     # Same program as the hand-written slices.
-    sliced = @slic (; y=0.3, rate=[1.5, 3.0]) begin
-        tau::vector[rate_n + 1]
-        tau[1:rate_n] ~ exponential(rate)
-        tau[rate_n + 1] ~ normal(0., 1.)
+    lowered = @slic (; y=0.3) begin
+        tau ~ vcat(exponential([1.5, 3.0]), normal(0., 1.))
         y ~ normal(sum(tau), 1.)
     end
-    @test stan_code(sliced) == stan_code(mixed)
+    sliced = @slic (; y=0.3) begin
+        tau::vector[3]
+        tau[1:2] ~ exponential([1.5, 3.0])
+        tau[3] ~ normal(0., 1.)
+        y ~ normal(sum(tau), 1.)
+    end
+    @test stan_code(sliced) == stan_code(lowered)
 
     # One whole-name statement: `Base.merge` replaces a bare declaration's prior
     # in one step and keeps its declared length.
