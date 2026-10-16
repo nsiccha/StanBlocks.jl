@@ -10175,6 +10175,157 @@ by side.
 end
 
 """
+Snag rng-draw-read-by-9ad81a23 (reported by a downstream module): a random draw
+that reads a parameter is a generated quantity, and so is everything computed
+from it.
+
+Stan allows a random number generator only in transformed data, generated
+quantities and `*_rng` functions. A draw's qualifier used to be the maximum of its
+arguments', so `b = normal_rng(mu0, 1.0)` was `:parameter`: whenever a likelihood
+read `b`, the draw landed in `transformed parameters` and stanc rejected the
+program. That held for a held-out (cv) observation as well, whose twins are the
+only readers. The draw is now `:quantities` (`_rng_qual`, passes.jl), so the chain
+follows it to generated quantities while the parameters it reads stay sampled.
+
+A sampled parameter whose prior reads a draw is re-drawn in generated quantities,
+as a cv-tainted one is. A likelihood that is not held out cannot read a draw; that
+is a trace-time error naming the draw. A draw is also never cell-invariant: the
+plate loop-invariant hoist used to lift `normal_rng(mu0, 1.0)` out of the cell
+loop, silently sharing one draw across all cells. A draw from data alone remains a
+transformed-data constant.
+"""
+@testitem "slic: a random draw that reads a parameter is a generated quantity" tags=[:slic, :plate, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    maybecv = StanBlocks.stan.maybecv
+    @deffun begin
+        draw_shift_rng(m::real)::real = normal_rng(m, 1.0)
+    end
+    y = [0.1, 0.2, -0.3]
+    heldout = maybecv(:y, y)
+
+    # Held-out observation: the draw, its transform and both twins land in
+    # generated quantities; the parameter the draw reads stays sampled.
+    for spelling in (
+        @slic(begin
+            mu0 ~ std_normal()
+            b = draw_shift_rng(mu0)
+            c = b + 1.0
+            y ~ normal(c, 1.0)
+        end),
+        @slic(begin
+            mu0 ~ std_normal()
+            b = normal_rng(mu0, 1.0)
+            c = b + 1.0
+            y ~ normal(c, 1.0)
+        end),
+    )
+        model = spelling(; y = heldout)
+        code = stan_code(model)
+        @test stanc_compiles(model)
+        params, tp, mdl, gq = stan_block(code, "parameters"), stan_block(code, "transformed parameters"),
+            stan_block(code, "model"), stan_block(code, "generated quantities")
+        @test occursin("real mu0;", params)
+        @test !occursin("_rng", tp) && !occursin("_rng", mdl)
+        @test occursin(r"real b = (draw_shift_rng\(mu0\)|normal_rng\(mu0, 1\.0\));", gq)
+        @test occursin("real c = (b + 1.0);", gq)
+        @test occursin("y_likelihood = normal_lpdfs(y, c, 1.0)", gq)
+        @test occursin("y_gen = normal_vector_rng(y_n, c, 1.0)", gq)
+        d = stan_descriptor(model)
+        @test [o.name for o in d.operations] == [:transpile, :instantiate, :predict, :pointwise_loglik]
+        @test only(o for o in d.outputs if o.name == :mu0).kind == :parameter
+    end
+
+    # A sampled parameter whose prior reads a draw is re-drawn from that prior.
+    let model = @slic((; y = heldout), begin
+            mu0 ~ std_normal()
+            b = normal_rng(mu0, 1.0)
+            z::real ~ normal(b, 1.0)
+            y ~ normal(z, 1.0)
+        end), code = stan_code(model)
+        @test stanc_compiles(model)
+        @test !occursin(r"\bz;", stan_block(code, "parameters"))
+        @test occursin("real z = normal_rng(b, 1.0);", stan_block(code, "generated quantities"))
+    end
+
+    # refused: a likelihood term is evaluated in the model block, where Stan forbids
+    # random number generators, and a target that depends on a fresh draw at every
+    # evaluation is not a log density (Stan's block semantics).
+    for (spelling, read) in (
+        (@slic(begin
+            mu0 ~ std_normal()
+            b = normal_rng(mu0, 1.0)
+            y ~ normal(b, 1.0)
+        end), "`b`"),
+        (@slic(begin
+            mu0 ~ std_normal()
+            y ~ normal(draw_shift_rng(mu0), 1.0)
+        end), "`draw_shift_rng(mu0)`"),
+        (@slic(begin
+            mu0 ~ std_normal()
+            b = normal_rng(mu0, 1.0)
+            z ~ normal(b, 1.0)
+            y ~ normal(z, 1.0)
+        end), "`z`"),
+    )
+        err = try
+            stan_code(spelling(; y))
+            nothing
+        catch e
+            sprint(showerror, e)
+        end
+        @test err !== nothing
+        @test occursin("is a likelihood term, but it reads $read: a random draw", err)
+        @test occursin("StanBlocks.stan.maybecv(:y, y)", err)
+    end
+
+    # A draw inside a plate cell is drawn once per cell, never hoisted as invariant.
+    for (model, block) in (
+        (@slic((; n = 3), begin
+            mu0 ~ std_normal()
+            @plate for i in 1:n
+                e = normal_rng(mu0, 1.0)
+                x[i] = e + 0.5
+            end
+        end), "generated quantities"),
+        (@slic((; n = 3, obs = y), begin
+            mu ~ std_normal()
+            obs ~ normal(mu, 1.0)
+            @plate for i in 1:n
+                e = normal_rng(0.0, 1.0)
+                x[i] = e + 0.5
+            end
+        end), "transformed data"),
+    )
+        code = stan_code(model)
+        @test stanc_compiles(model)
+        @test occursin(r"x_e\[i\] = normal_rng\((mu0|0\.0), 1\.0\);", stan_block(code, block))
+        @test !occursin("__pl_inv", code)
+    end
+    let model = @slic((; y = heldout), begin
+            mu0 ~ std_normal()
+            theta ~ plate(; outer = (3,)) do i
+                normal_rng(mu0, 1.0)
+            end
+            y ~ normal(theta, 1.0)
+        end), code = stan_code(model)
+        @test stanc_compiles(model)
+        @test occursin(r"theta\[plate_i__pl_\d+\] = normal_rng\(mu0, 1\.0\);", stan_block(code, "generated quantities"))
+    end
+
+    # A draw from data alone stays a transformed-data constant, so simulated data
+    # can still be conditioned on in the same program.
+    let model = @slic((; n = 3), begin
+            mu ~ std_normal()
+            y_sim = vector_std_normal_rng(n)
+            y_sim ~ normal(mu, 1.0)
+        end), code = stan_code(model)
+        @test stanc_compiles(model)
+        @test occursin("vector[n] y_sim = vector_std_normal_rng(n);", stan_block(code, "transformed data"))
+        @test occursin("y_sim ~ normal(mu, 1.0);", stan_block(code, "model"))
+    end
+end
+
+"""
 Snag plate-silently-i-e41ed2f0 (reported by BRM, found handling its own cv snag
 build-a-cv-out-o-5a22814d): a cv-tainted size reaching a plate-internal FRESH
 parameter was mis-lowered SILENTLY.

@@ -855,6 +855,9 @@ _probability_kind(v::ValueFamily) = v.kind
 # natively — exactly like `@deffun`.
 func_name(v::ValueFamily) = string(v.label)
 func_name(v::ValueUDF) = string(v.label)
+# A value family's `<label>_rng` companion is an RNG callable exactly like a
+# `@deffun` one: a call that reads a parameter is a generated quantity (passes.jl).
+_is_rng_callee(v::ValueUDF) = endswith(String(v.label), "_rng")
 
 # Dedup keys live in their own head namespace (`:valueudf`) so a value UDF
 # never dedups against a same-labeled `@deffun` — that would be silent
