@@ -1026,6 +1026,40 @@ end
             end
             out
         end
+        # A custom family whose sized `_rng` RESULT is sized through another
+        # argument (`A`), not through its leading size token. A re-drawn prior
+        # `z::vector[k] ~ sizedby(A)` then names `k` only inside that token:
+        # `vector[A_m] z = sizedby_vector_rng(k, A)` (snag `gq-re-draw-size-91350b2e`).
+        @lhs @lpxf sizedby_lpdf(x::vector[n], A::matrix[p, q])::real = std_normal_lpdf(x)
+        sizedby_lpdfs(x::vector[n], A::matrix[p, q])::vector[n] = begin
+            out::vector[n]
+            for i in 1:n
+                out[i] = std_normal_lpdf(x[i])
+            end
+            out
+        end
+        sizedby_rng(vector[n], A::matrix[p, q])::vector[p] = begin
+            out::vector[p]
+            for i in 1:p
+                out[i] = normal_rng(0., 1.)
+            end
+            out
+        end
+        @lhs sizedby_lpdf(x::matrix[m, n], A::matrix[p, q])::real = std_normal_lpdf(to_vector(x))
+        sizedby_lpdfs(x::matrix[m, n], A::matrix[p, q])::vector[m] = begin
+            out::vector[m]
+            for i in 1:m
+                out[i] = std_normal_lpdf(to_vector(x[i, :]))
+            end
+            out
+        end
+        sizedby_rng(matrix[m, n], A::matrix[p, q])::matrix[m, p] = begin
+            out::matrix[m, p]
+            for i in 1:m, j in 1:p
+                out[i, j] = normal_rng(0., 1.)
+            end
+            out
+        end
         end
     end
 
@@ -11601,6 +11635,52 @@ end
             @test isfinite(LogDensityProblems.logdensity(problem, q))
         end
     end
+end
+
+@testitem "slic: data named only in a re-draw's size token reaches the data block" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    A, y = [1.0 0.0; 0.0 1.0], [0.1, -0.2]
+
+    # A prior no likelihood reads is re-drawn in generated quantities from the
+    # sized token of its declaration: `fam_rng(<size>, args…)`. `fetch_data!`
+    # skipped the compiler-built token (`StanExpr{<:DataType}`), so data named
+    # ONLY in that size never reached the `data` block. `sizedby_rng` sizes its
+    # RESULT through `A`, so the re-draw's declaration (`vector[A_m] z`) does not
+    # name `k` either, and stanc rejected `Identifier "k" not in scope` (snag
+    # `gq-re-draw-size-91350b2e`). One-dim token: printed as a bare int.
+    vector_redraw = @slic (; k = 2, A, y) begin
+        z::vector[k] ~ sizedby(A)
+        s ~ std_normal()
+        y ~ normal(s, 1.)
+    end
+    code = stan_code(vector_redraw)
+    @test occursin(r"\bint k;", stan_block(code, "data"))
+    @test occursin(r"(?s)vector\[A_m\] z = sizedby\w*_rng\(\s*k,\s*A\s*\)", stan_block(code, "generated quantities"))
+    @test stanc_compiles(vector_redraw)
+
+    # Two-dim token: printed as a Stan tuple literal `(ng, nk)`, the reported
+    # shape (a generated matrix block re-drawn through a custom matrix `_rng`).
+    # `ng` also sizes the result; `nk` appears only in the token.
+    matrix_redraw = @slic (; ng = 3, nk = 2, A, y) begin
+        z::matrix[ng, nk] ~ sizedby(A)
+        s ~ std_normal()
+        y ~ normal(s, 1.)
+    end
+    code = stan_code(matrix_redraw)
+    @test occursin(r"\bint nk;", stan_block(code, "data"))
+    @test occursin(r"(?s)sizedby\w*_rng\(\s*\(ng, nk\),\s*A\s*\)", stan_block(code, "generated quantities"))
+    @test stanc_compiles(matrix_redraw)
+
+    # Control: a likelihood reads `z`, so it stays a parameter whose declaration
+    # names `nk` — this always reached the data block.
+    fitted = @slic (; ng = 3, nk = 2, A, y) begin
+        z::matrix[ng, nk] ~ sizedby(A)
+        y ~ normal(sum(z), 1.)
+    end
+    code = stan_code(fitted)
+    @test occursin(r"\bint nk;", stan_block(code, "data"))
+    @test occursin("matrix[ng, nk] z;", stan_block(code, "parameters"))
+    @test stanc_compiles(fitted)
 end
 
 @testitem "slic: a bound and an affine transform cannot share a declaration" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
