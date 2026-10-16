@@ -613,6 +613,10 @@ function _julia_log_sum_exp(x::AbstractArray{<:Real})
     m + log(sum(exp.(x .- m)))
 end
 
+# Stan Math's `check_matching_sizes` for elementwise binary builtins.
+_julia_check_matching_sizes(name, x, y) = size(x) == size(y) || throw(DimensionMismatch(
+    "$name requires arguments of equal size, got $(size(x)) and $(size(y))"))
+
 jcall(::Val{:inv_logit}, ::_JuliaScope, x) = inv(one(x) + exp(-x))
 jcall(::Val{:inv_logit}, ::_JuliaScope, x::AbstractArray) = jcall.(Ref(Val(:inv_logit)), Ref(@__MODULE__), x)
 jcall(::Val{:logit}, ::_JuliaScope, x) = _julia_logit(x)
@@ -628,8 +632,7 @@ jcall(::Val{:log1m_exp}, ::_JuliaScope, x::AbstractArray) = _julia_log1m_exp.(x)
 jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::Real, y::Real) = _julia_log_sum_exp(x, y)
 jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::AbstractArray{<:Real}) = _julia_log_sum_exp(x)
 function jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::AbstractArray{<:Real}, y::AbstractArray{<:Real})
-    size(x) == size(y) || throw(DimensionMismatch(
-        "log_sum_exp requires arguments of equal size, got $(size(x)) and $(size(y))"))
+    _julia_check_matching_sizes(:log_sum_exp, x, y)
     _julia_log_sum_exp.(x, y)
 end
 jcall(::Val{:square}, ::_JuliaScope, x) = x * x
@@ -658,6 +661,23 @@ jcall(::Val{:append_row}, ::_JuliaScope, x::AbstractMatrix, y::AbstractVector) =
 jcall(::Val{:append_col}, ::_JuliaScope, xs...) = Base.hcat(xs...)
 jcall(::Val{:hcat}, ::_JuliaScope, xs...) = Base.hcat(xs...)
 jcall(::Val{:reshape}, ::_JuliaScope, x, dims::Integer...) = Base.reshape(x, dims...)
+# The dot-product family.  Julia arrays carry no vector/row-vector distinction,
+# so a Stan row vector result is a plain vector here, as for `to_row_vector`.
+# `LinearAlgebra.dot` rejects unequal lengths itself; the row and column forms
+# check sizes first because broadcasting would stretch a singleton dimension.
+jcall(::Val{:dot_product}, ::_JuliaScope, x::AbstractVector{<:Real}, y::AbstractVector{<:Real}) =
+    LinearAlgebra.dot(x, y)
+jcall(::Val{:dot_self}, ::_JuliaScope, x::AbstractVector{<:Real}) = LinearAlgebra.dot(x, x)
+function jcall(::Val{:rows_dot_product}, ::_JuliaScope, x::AbstractMatrix{<:Real}, y::AbstractMatrix{<:Real})
+    _julia_check_matching_sizes(:rows_dot_product, x, y)
+    vec(sum(x .* y; dims=2))
+end
+function jcall(::Val{:columns_dot_product}, ::_JuliaScope, x::AbstractMatrix{<:Real}, y::AbstractMatrix{<:Real})
+    _julia_check_matching_sizes(:columns_dot_product, x, y)
+    vec(sum(x .* y; dims=1))
+end
+jcall(::Val{:rows_dot_self}, ::_JuliaScope, x::AbstractMatrix{<:Real}) = vec(sum(x .* x; dims=2))
+jcall(::Val{:columns_dot_self}, ::_JuliaScope, x::AbstractMatrix{<:Real}) = vec(sum(x .* x; dims=1))
 # LinearAlgebra.exp uses LAPACK balancing, whose foreign call has no Mooncake
 # rule.  Scaling and squaring a short Taylor series keeps the Julia target
 # differentiable through matrix products.  At norm <= 1/2, the 24-term tail
