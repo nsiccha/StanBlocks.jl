@@ -82,7 +82,9 @@ Compile `model` (a [`SlicModel`](@ref StanBlocks.SlicModel) or
   stamp of every entry beneath it, so a link moved to another tree, or a tree
   rebuilt in place, selects a fresh library. Build environment variables that
   name paths count the same way, except the `PATH` and `LD_LIBRARY_PATH`
-  search lists and `BRIDGESTAN`, which selects the home itself.
+  search lists and `BRIDGESTAN`, which selects the home itself. The files a
+  `USER_HEADER` reaches through quoted `#include` lines count too, as for
+  [`stan_library`](@ref StanBlocks.stan_library).
 - `warn::Bool = false` — forwarded to BridgeStan.
 
 Concurrent calls own separate model instances. Artifact, source-alias, and
@@ -113,6 +115,68 @@ function instantiate(x::StanModel; nan_on_error=true, make_args=["STAN_THREADS=t
     _guard_ragged_stan_version(sc)
     data = bridgestan_data(stan_data(x))
     _instantiate_artifact(sc, data; path, make_args, nan_on_error, warn)
+end
+
+"""
+    stan_library(source; make_args=["STAN_THREADS=true"], stanc_args=String[], dependencies=String[]) -> String
+
+Compile the complete Stan program text `source` into StanBlocks' immutable
+artifact store and return the path of the published BridgeStan shared library.
+Use it for Stan text that does not come from a SLIC model: an archived emitted
+program, a hand-written `.stan` file's contents, or a program that calls
+caller-owned C++ functions. Construct the model from the returned path, for
+example `StanLogDensityProblems.StanProblem(library, stan_json)` or
+`BridgeStan.StanModel(library, stan_json)`. [`stan_instantiate`](@ref
+StanBlocks.stan_instantiate) uses the same store for SLIC models.
+
+The library is `<build-dir>/<key>/model_<key>_model.so`, beside its source
+`model_<key>.stan`, where `<build-dir>` is `\$STANBLOCKS_BUILD_DIR`, else
+`tempdir()/stanblocks`. The key covers everything `stan_instantiate`'s does
+(source text, ordered `make_args`, build root, BridgeStan version and
+location, CPU and compiler identities, build environment, `make/local`, and
+the state of every toolchain path the build names), plus the `stanc_args` and
+the state of every dependency below. A change to any of them selects a new
+library; a published library is never rebuilt or overwritten, so one already
+loaded by a process stays valid. Identical calls return the same path without
+compiling.
+
+# Keyword arguments
+
+- `make_args` — arguments forwarded to BridgeStan's `make`, in order. The words
+  of a `STANCFLAGS=` entry are passed to `stanc` ahead of `stanc_args`.
+- `stanc_args` — arguments for `stanc`, such as `"--allow-undefined"` for a
+  program whose declared functions a C++ header implements. All of them reach
+  `stanc`: StanBlocks hands BridgeStan one combined `STANCFLAGS` assignment,
+  where `BridgeStan.compile_model` given several would keep only the last.
+- `dependencies` — further files the build reads, such as a C++ header found
+  through an `-I` path or a Stan file reached through `--include-paths`.
+  Relative paths resolve against the current directory; each must exist.
+
+The C++ header BridgeStan includes, named by `USER_HEADER=` in `make_args` or
+in the environment, is a toolchain path like any other. make runs in the
+BridgeStan home, so a relative `USER_HEADER` names a file there; pass an
+absolute path. That header and every listed dependency are scanned for quoted
+`#include "…"` lines, and each included file that exists relative to the
+including file is a dependency too, transitively. Angle-bracket includes are
+treated as part of the toolchain.
+
+Keep the source, the dependencies, the environment, and the toolchain read-only
+during the call. Compilation runs in a private staging directory under the
+toolchain build lock (`StanBlocks.with_toolchain_lock`), so concurrent calls in
+this and other processes publish each library once. Unlike `stan_instantiate`,
+this function constructs no native model: serializing construction and
+evaluation is the caller's responsibility.
+"""
+function stan_library(source::AbstractString; make_args=["STAN_THREADS=true"],
+                      stanc_args=String[], dependencies=String[])
+    sc = String(source)
+    _guard_ragged_stan_version(sc)
+    files = String[abspath(path) for path in dependencies]
+    for path in files
+        isfile(path) || throw(ArgumentError("stan_library: dependency $(repr(path)) is not a file"))
+    end
+    _artifact_library(sc; make_args=String[arg for arg in make_args],
+        stanc_args=String[arg for arg in stanc_args], dependencies=files)
 end
 """
     _guard_ragged_stan_version(sc)

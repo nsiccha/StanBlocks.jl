@@ -176,6 +176,24 @@ end
 
 _build_file_digest(path) = isfile(path) ? bytes2hex(open(SHA.sha256, path)) : nothing
 
+# BridgeStan.compile_model (2.9.0) splices `stanc_args` into the single word
+# `"STANCFLAGS=--include-paths=. $stanc_args"`, which Julia expands as a cartesian
+# product: one `STANCFLAGS=` assignment per element, appended after the caller's
+# make arguments. make keeps the LAST assignment, so of several stanc arguments
+# only the last reaches stanc, and any of them replaces a `STANCFLAGS=` make
+# argument. Collect every stanc word here; `_compile_stanc_args` passes them as one.
+function _split_stanc_make_args(make_args, stanc_args)
+    make, stanc = String[], String[]
+    for arg in make_args
+        startswith(arg, "STANCFLAGS=") ?
+            append!(stanc, Base.shell_split(chopprefix(arg, "STANCFLAGS="))) : push!(make, arg)
+    end
+    make, append!(stanc, stanc_args)
+end
+# One element yields one `STANCFLAGS=` word under either splicing; none leaves
+# BridgeStan's default untouched, as for every build before stanc arguments.
+_compile_stanc_args(stanc) = isempty(stanc) ? String[] : [join(stanc, ' ')]
+
 function _build_compilers(make_args)
     commands = String["c++", "g++", "clang++", get(ENV, "CXX", "")]
     for arg in make_args
@@ -218,20 +236,49 @@ end
 # home make runs and writes objects in; its version and location identify it.
 const _BUILD_UNSTAMPED_VARIABLES = ("BRIDGESTAN", "LD_LIBRARY_PATH", "PATH")
 
-# The resolved path a Make variable's value names, or `nothing`. BridgeStan runs
-# make in its home, so a relative value names a path there.
+# The path a Make variable's value names. BridgeStan runs make in its home, so
+# a relative value names a path there.
+_named_path(home, value) = isabspath(value) ? value : joinpath(home, value)
+
+# The resolved path a Make variable's value names, or `nothing`.
 function _toolchain_path(home, value)
     (value === nothing || isempty(value)) && return nothing
-    path = isabspath(value) ? value : joinpath(home, value)
+    path = _named_path(home, value)
     ispath(path) ? realpath(path) : nothing
+end
+
+const _QUOTED_INCLUDE = r"^[ \t]*#[ \t]*include[ \t]*\"([^\"\n]+)\""m
+
+# The files C++ headers reach through quoted `#include "…"` lines that resolve
+# next to the including file, where the preprocessor looks first, transitively
+# and resolved. Angle includes and quoted includes found only through `-I` are
+# not followed; such files are passed as dependencies. A commented-out include
+# is followed too, which only costs a rebuild when the file it names changes.
+function _quoted_includes(headers)
+    seen, found = Set{String}(), String[]
+    pending = String[normpath(header) for header in headers if isfile(header)]
+    while !isempty(pending)
+        path = pop!(pending)
+        path in seen && continue
+        push!(seen, path)
+        for m in eachmatch(_QUOTED_INCLUDE, read(path, String))
+            included = normpath(joinpath(dirname(path), m[1]))
+            isfile(included) || continue
+            push!(found, realpath(included))
+            push!(pending, included)
+        end
+    end
+    found
 end
 
 # Make arguments and build environment variables that name a toolchain tree
 # or file (`STAN=`, `MATH=`, `STANC=`, `USER_HEADER=`, …) are identified by
 # what they name, not by their text: a moved link or an in-place rebuild
 # behind the same text must not reuse a library built against the old tree.
-# Each named path is recorded resolved, and each outermost one is stamped once.
-function _toolchain_paths(home, make_args, environment)
+# The files a `USER_HEADER` and the explicit `dependencies` (absolute paths of
+# existing files) include are inputs too, though no variable names them. Each
+# path is recorded resolved, and each outermost one is stamped once.
+function _toolchain_paths(home, make_args, environment; dependencies=String[])
     assignments = Pair{String,String}[]
     for arg in make_args
         parts = split(arg, '='; limit=2)
@@ -246,6 +293,13 @@ function _toolchain_paths(home, make_args, environment)
         path = _toolchain_path(home, value)
         path === nothing || push!(paths, name => path)
     end
+    append!(paths, ["dependency" => realpath(path) for path in dependencies])
+    headers = [_named_path(home, value) for (name, value) in assignments
+               if name == "USER_HEADER" && !isempty(value)]
+    named = Set(last.(paths))
+    for path in _quoted_includes([headers; dependencies])
+        path in named || (push!(named, path); push!(paths, "#include" => path))
+    end
     roots = String[]
     for path in sort!(unique(last.(paths)))
         any(root -> isdir(root) && startswith(path, joinpath(root, "")), roots) ||
@@ -254,7 +308,7 @@ function _toolchain_paths(home, make_args, environment)
     (; paths, stamps=[root => _build_tree_stamp(root) for root in roots])
 end
 
-function _native_build_context(home, make_args)
+function _native_build_context(home, make_args; stanc_args=String[], dependencies=String[])
     # Source distributions and build configuration are read-only while in use.
     # Include compiler binaries and the documented make/local override so an
     # ordinary compiler/configuration upgrade cannot reuse a loaded old library.
@@ -278,10 +332,11 @@ function _native_build_context(home, make_args)
        files=[name => _build_file_digest(joinpath(home, name)) for name in files],
        compilers=_build_compilers(make_args))
     # The home's own trees are identified by its BridgeStan version and path.
-    # Only builds that name other toolchain paths gain an entry, so the keys of
-    # builds that name none are unchanged.
-    toolchain = _toolchain_paths(home, make_args, environment)
-    isempty(toolchain.paths) ? context : (; context..., toolchain)
+    # Only builds that name other toolchain paths, or pass stanc arguments,
+    # gain an entry, so the keys of builds that do neither are unchanged.
+    toolchain = _toolchain_paths(home, make_args, environment; dependencies)
+    isempty(toolchain.paths) || (context = (; context..., toolchain))
+    isempty(stanc_args) ? context : (; context..., stanc_args)
 end
 
 _default_build_dir() = abspath(get(ENV, "STANBLOCKS_BUILD_DIR", joinpath(tempdir(), "stanblocks")))
@@ -365,13 +420,13 @@ end
 # Serialize that boundary conservatively; each call still owns a fresh model.
 const _native_constructor_lock = ReentrantLock()
 
-function _instantiate_artifact(sc, data; path, make_args, nan_on_error, warn)
-    args = String[arg for arg in make_args]
-    filename = _source_alias(path, sc)
+"The published immutable library for Stan source `sc`, compiled first if absent."
+function _artifact_library(sc; filename="model.stan", make_args, stanc_args=String[], dependencies=String[])
+    args, stanc = _split_stanc_make_args(make_args, stanc_args)
     home = _bridgestan_build_home()
     toolchain_lock = _toolchain_lock_path(home)
     context = _with_build_lock(toolchain_lock) do
-        _native_build_context(home, args)
+        _native_build_context(home, args; stanc_args=stanc, dependencies)
     end
     source = _default_build_path(sc, context; filename)
     filename = basename(source)
@@ -386,15 +441,23 @@ function _instantiate_artifact(sc, data; path, make_args, nan_on_error, warn)
                 mktempdir(dirname(source); prefix="build-") do staging
                     staged_source = joinpath(staging, filename)
                     write(staged_source, sc)
-                    built = BridgeStan.compile_model(staged_source; make_args=args)
+                    built = BridgeStan.compile_model(staged_source; make_args=args,
+                        stanc_args=_compile_stanc_args(stanc))
                     # A published library is complete and is NEVER overwritten.
                     # Failed compilation only leaves private staging files.
                     Base.Filesystem.rename(built, library)
                 end
             end
         end
-        lock(_native_constructor_lock) do
-            StanLogDensityProblems.StanProblem(library, data; nan_on_error, warn)
-        end
+    end
+    library
+end
+
+function _instantiate_artifact(sc, data; path, make_args, nan_on_error, warn)
+    library = _artifact_library(sc; filename=_source_alias(path, sc),
+        make_args=String[arg for arg in make_args])
+    # A published library is immutable, so constructing from it needs no build lock.
+    lock(_native_constructor_lock) do
+        StanLogDensityProblems.StanProblem(library, data; nan_on_error, warn)
     end
 end
