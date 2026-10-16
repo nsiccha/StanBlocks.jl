@@ -697,7 +697,15 @@ fetch_data!(x::StanExpr{Symbol}; info) = begin
     hasvalue(x) && push!(block(info, :data), x; info)
 end
 fetch_data!(x::StanExpr{<:Function}; info) = nothing
-fetch_data!(x::StanExpr{<:DataType}; info) = nothing
+# A compiler-built `tokenof{T}` token (the leading slot of a sized `_rng` draw:
+# `StanExpr(T, StanType(tokenof{T}, size))`) carries the Stan type itself as
+# `expr`, so only its SIZE can name data — and `show` prints that size at the
+# call site (`foo_rng((n, k), …)`). Skipping the size left data named only
+# there out of the `data` block: a re-drawn `z::matrix[n, k] ~ fam(A)` whose
+# `fam_rng` result is sized through `A` emitted `fam_rng((n, k), A)` with no
+# `int k;`, and stanc rejected it (snag `gq-re-draw-size-91350b2e`). A 0-dim
+# token has an empty size and is a no-op.
+fetch_data!(x::StanExpr{<:DataType}; info) = fetch_data!(type(x); info)
 fetch_data!(x::StanExpr{<:CanonicalExpr}; info) = fetch_data!((type(x), expr(x)); info)
 # A compiler-injected `for` loop: walk the range bound and body for data deps, but
 # SKIP the head's raw-Symbol loop index — it isn't data, and the generic

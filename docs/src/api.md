@@ -34,6 +34,7 @@ StanBlocks.stan_code
 StanBlocks.stan_model
 StanBlocks.stan_instantiate
 StanBlocks.instantiate
+StanBlocks.stan_library
 ```
 
 ## Model Descriptors
