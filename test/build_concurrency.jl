@@ -134,14 +134,16 @@ end
             @test relative.toolchain.paths == ["STAN" => realpath(joinpath(home, "stan-fork"))]
 
             # A link moved to another tree selects another library, and moving
-            # it back selects the first one again.
+            # it back selects the first one again. The link resolves to the
+            # tree it names; its text stays in the key as make receives it.
             if !Sys.iswindows()
+                toolchain(root) = StanBlocks._native_build_context(home, args(root)).toolchain
                 link = joinpath(dir, "toolchain")
                 symlink(old, link)
                 via_old = key(home, args(link))
-                @test via_old == key(home, args(old))
+                @test toolchain(link) == toolchain(old)
                 rm(link); symlink(new, link)
-                @test key(home, args(link)) == key(home, args(new))
+                @test toolchain(link) == toolchain(new)
                 @test key(home, args(link)) != via_old
                 rm(link); symlink(old, link)
                 @test key(home, args(link)) == via_old
