@@ -13749,19 +13749,26 @@ to the index range `1:length(x)`, so `i` is the loop index.
 end
 
 """
-Verify `slic: a plate cell ending in nothing collects no result`.
+Verify `slic: a plate cell ending in a statement collects no result`.
 
 Snag `result-less-do-f-3076f098` (a downstream regression DSL): a cell that only
 observes had no `plate` do-form spelling, because the body had to end in a
 value. The consumer collected a prediction nothing read, which added a
-generated-quantities copy of every per-observation value. A cell ending in
-`nothing` now collects no result: the plate LHS only namespaces the cell's
-fresh bindings and is neither declared nor bound.
+generated-quantities copy of every per-observation value. A cell whose last
+line is a `~`/`=` statement, or `nothing`, now collects no result: the plate
+LHS only namespaces the cell's fresh bindings and is neither declared nor bound.
 """
-@testitem "slic: a plate cell ending in nothing collects no result" tags=[:slic, :plate, :ragged, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: a plate cell ending in a statement collects no result" tags=[:slic, :plate, :ragged, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
     y = [0.3, -0.2, 0.5, 0.1, -0.4, 0.2]
     resultless = @slic (; y) begin
+        sigma ~ normal(0, 1; lower = 0)
+        theta ~ plate(y; outer = 6) do yi
+            t ~ normal(0, 1)
+            yi ~ normal(t, sigma)
+        end
+    end
+    explicit_nothing = @slic (; y) begin
         sigma ~ normal(0, 1; lower = 0)
         theta ~ plate(y; outer = 6) do yi
             t ~ normal(0, 1)
@@ -13781,6 +13788,7 @@ fresh bindings and is neither declared nor bound.
     @test stanc_compiles(resultless)
     @test occursin(r"vector\[6\] theta_t;", stan_block(code, "parameters"))
     @test !occursin(r"\btheta\b", code)
+    @test stan_code(explicit_nothing) == code
     # The collecting spelling differs only by the result's declaration and fill.
     @test code == replace(stan_code(collected),
         r"\n *vector\[6\] theta;" => "",
@@ -13794,7 +13802,6 @@ fresh bindings and is neither declared nor bound.
             b ~ normal(0.0, 1.0)
             m = b .* t
             yobs ~ normal(m, sigma)
-            nothing
         end
     end
     ragged_collected = @slic (; ts, ys) begin
@@ -13821,12 +13828,14 @@ fresh bindings and is neither declared nor bound.
             theta ~ plate(; outer = n) do i
                 t ~ normal(0, 1)
                 u ~ normal(t, sigma)
-                nothing
+                v = 2 * u
             end
         end), pcode = stan_code(prior)
         @test stanc_compiles(prior)
         @test !occursin(r"\w", stan_block(pcode, "parameters"))
         @test occursin(r"vector\[n\] theta_u;", stan_block(pcode, "generated quantities"))
+        @test occursin(r"vector\[n\] theta_v;", stan_block(pcode, "generated quantities"))
+        @test !occursin(r"\btheta\b", pcode)
     end
 
     # Inside a called sub-model, the namespace composes with the sub-model's.
@@ -13834,7 +13843,6 @@ fresh bindings and is neither declared nor bound.
         obs ~ plate(yy; outer = n) do yi
             t ~ normal(0, 1)
             yi ~ normal(t, s)
-            nothing
         end
     end
     let m = @slic((; y), begin
@@ -13845,33 +13853,22 @@ fresh bindings and is neither declared nor bound.
         @test occursin(r"vector\[6\] node_obs_t;", stan_block(stan_code(m), "parameters"))
     end
 
-    # refused: a cell's last statement is its value; `~`/`=` has none, and
-    # `nothing` spells "no result" (snag result-less-do-f-3076f098).
-    @test_throws "end it with `nothing`" stan_code(@slic((; y), begin
-        sigma ~ normal(0, 1; lower = 0)
-        theta ~ plate(y; outer = 6) do yi
-            t ~ normal(0, 1)
-            yi ~ normal(t, sigma)
-        end
-    end))
     # refused: a typed result LHS names a collected type, and a result-less
     # cell collects nothing.
-    @test_throws "collects no result — drop the annotation" stan_code(@slic((; y), begin
+    @test_throws "so collects no result. Drop the annotation" stan_code(@slic((; y), begin
         sigma ~ normal(0, 1; lower = 0)
         theta::vector[6] ~ plate(y; outer = 6) do yi
             t ~ normal(0, 1)
             yi ~ normal(t, sigma)
-            nothing
         end
     end))
     # refused: the LHS of a result-less plate binds nothing to read, like the
-    # LHS of a sub-model without `return`.
-    @test_throws "Could not find theta" stan_code(@slic((; y), begin
+    # LHS of a sub-model without `return`; the error names the reason.
+    @test_throws "names a plate whose cell collects no result" stan_code(@slic((; y), begin
         sigma ~ normal(0, 1; lower = 0)
         theta ~ plate(y; outer = 6) do yi
             t ~ normal(0, 1)
             yi ~ normal(t, sigma)
-            nothing
         end
         w ~ normal(sum(theta), 1.0)
     end))
@@ -13882,12 +13879,10 @@ fresh bindings and is neither declared nor bound.
         theta ~ plate(y; outer = 6) do yi
             t ~ normal(0, 1)
             yi ~ normal(t, sigma)
-            nothing
         end
         theta ~ plate(z; outer = 6) do zi
             t ~ normal(0, 1)
             zi ~ normal(t, sigma)
-            nothing
         end
     end))
     # Hygiene gap (StanBlocks todo `1nws1vv`): the compiler's namespaced

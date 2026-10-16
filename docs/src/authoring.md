@@ -192,8 +192,8 @@ or keyword bounds are sliced per group.
 
 `plate` maps one straight-line cell body over an outer grid. Positional inputs
 are sliced per cell, lexical captures are shared, fresh cell-local `~` and `=`
-bindings are promoted to outer storage, and the trailing expression is collected
-as the plate result:
+bindings are promoted to outer storage, and a trailing value expression is
+collected as the plate result:
 
 ```julia
 @slic (; y = randn(6), mu0 = 0.5) begin
@@ -243,8 +243,7 @@ and generated quantities.
 | Several independent plates reusing local names | ✅ | Cell-local bindings are hygienically namespaced by plate result |
 | Dependency on a previous cell | ❌ | Cells are independent; a recurrence that samples per step is the annotated `@scan begin … end` loop (below), a deterministic one a `@deffun` recurrence |
 | Vararg do-block parameters | ❌ | Use a fixed positional argument list |
-| Cell without a result (observation-only) | ✅ | End the body with `nothing`: fresh bindings keep the `<rv>_<name>` namespace and no `rv` is declared, filled or bound |
-| Body ending in `~` or `=` | ❌ | The last expression is the cell result, or `nothing` for no result |
+| Cell without a result (observation-only) | ✅ | The body ends in a `~`/`=` statement or `nothing`: fresh bindings keep the `<rv>_<name>` namespace and no `rv` is declared, filled or bound |
 | Fully dead/prior-only plate | ✅ | The whole plate — fresh samples, collected result and loop — lowers to `generated quantities` with everything it reads; `parameters {}` stays empty |
 | Cross-validation taint | ✅ | Taint from `outer` sizes or a cell prior RHS moves the affected cell path to generated quantities |
 
@@ -312,8 +311,8 @@ stripping the `outer` axis. `y_gen` is `int[N]` and `y_likelihood` is
 structure requires it, accepting the generated-quantity limits in the table
 above.
 
-A cell that only observes has no value worth collecting. End it with
-`nothing`:
+A cell whose last line is a statement (`~` or `=`) has no value to collect,
+so it collects no result. A trailing `nothing` does the same:
 
 ```julia
 @slic (; ts, ys) begin
@@ -322,7 +321,6 @@ A cell that only observes has no value worth collecting. End it with
         b ~ normal(0, 1)
         m = b .* t
         yi ~ normal(m, sigma)
-        nothing
     end
 end
 ```
@@ -330,8 +328,9 @@ end
 The cell's fresh bindings are still namespaced by the plate's LHS (`pk_b`,
 `pk_m`), but `pk` itself is not declared, filled or bound, in the same way
 that `node ~ submodel(...)` binds nothing for a sub-model without `return`.
-Collecting a value that nothing reads instead (`m` as the trailing
-expression) adds a generated-quantities copy of every cell value.
+Reading `pk` later is an error that says so. Collecting a value that nothing
+reads instead (`m` as the trailing expression) adds a generated-quantities
+copy of every cell value.
 
 ## Annotated loops: `@plate for … end` and `@scan begin … end`
 
@@ -348,7 +347,7 @@ Stan `for` loop into the blocks that own each statement. Inside the body:
   to per-cell storage under a hygienic name (`x_t`, prefixed by the
   alphabetically first array the loop fills, or `loop_i_t` — the loop
   variables — when it fills none). For a namespace of your choosing, use the
-  `plate` do-form ending in `nothing`;
+  `plate` do-form, whose LHS names it even when the cell collects no result;
 - `y[i] ~ …` on data is an observation, with the usual `y_gen` twin. Observe
   the data itself: `obs = y[i]; obs ~ …` is refused, because a name defined
   by `=` has nothing to draw when `y` is omitted;
