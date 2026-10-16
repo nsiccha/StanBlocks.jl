@@ -1135,9 +1135,10 @@ Emission patterns:
 | two-axis real comprehension | allocated `matrix` plus nested fill loops |
 | integer-valued comprehension | `array[] int`, preserving index usability |
 
-Nested `if`/`else`, `for`, `while`, `=`, `+=`, `-=`, `*=`, `.=` and indexed
-assignment work in `@deffun`. `elseif` chains, filtered/stepped generators,
-flattened ragged comprehensions, and 3-D+ comprehensions reject explicitly.
+Nested `if`/`elseif`/`else`, `for`, `while`, `=`, `+=`, `-=`, `*=`, `.=` and
+indexed assignment work in `@deffun`; a name bound inside a branch and read after
+the `if` is declared before it. Filtered/stepped generators, flattened ragged
+comprehensions, and 3-D+ comprehensions reject explicitly.
 
 ## Post-hoc variants and cross-validation taint
 

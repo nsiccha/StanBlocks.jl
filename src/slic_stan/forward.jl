@@ -360,11 +360,16 @@ _retrace_inline_body(rewritten, mod; info) =
     end
 _do_retrace_inline_body(rewritten; info) = begin
     pending = _get_inline_pending(info)
-    for s in rewritten[1:end-1]
-        result = forward!(canonical(s); info)
-        pending !== nothing && push!(pending, result)
+    stmts = map(canonical, rewritten)
+    _with_stmt_frame(info, stmts) do frame
+        for i in firstindex(stmts):lastindex(stmts)-1
+            _at_stmt!(frame, i)
+            result = forward!(stmts[i]; info)
+            pending !== nothing && push!(pending, result)
+        end
+        _at_stmt!(frame, lastindex(stmts))
+        forward!(stmts[end]; info)
     end
-    forward!(canonical(rewritten[end]); info)
 end
 
 # Per-callsite counter for locals (uniqueness within a trace is the only
@@ -626,27 +631,32 @@ fold_shape_query(x::StanExpr) = x
 # `forward!(::BlockExpr)` pushes a fresh pending-statements buffer for its
 # scope, drains it between args, then pops on exit. This is what lets inline
 # UDFs hoist multi-statement bodies into the enclosing block without leaking
-# into sibling sub-blocks (for / while / if branches, nested blocks).
+# into sibling sub-blocks (for / while / if branches, nested blocks). It also
+# records its statement list, so an `if` can see what follows it ("Branch
+# scope" below).
 forward!(x::BlockExpr; info) = _with_trace_state(info, :inline_pending, Any[]) do
     new_args = Any[]
     pending = _get_inline_pending(info)
-    for arg in x.args
-        resolved = forward!(arg; info)
-        if !isempty(pending)
-            append!(new_args, pending)
-            empty!(pending)
-        end
-        # Bare-symbol/number/string StanExprs at statement position have no
-        # Stan-side meaning — they arise e.g. when an inline UDF whose final
-        # expression is just one of its args (`f!(buf) = (mutate; buf)`) is
-        # called at statement position. Skip them so we don't emit `name;`.
-        if _plate_context(info) !== nothing && resolved isa BlockExpr
-            # A submodel embedded inside a plate is an inline expansion. The
-            # loop router consumes a flat statement list, so splice the traced
-            # submodel block here rather than leaving a nested BlockExpr.
-            append!(new_args, resolved.args)
-        elseif !_is_inert_block_stmt(resolved)
-            push!(new_args, resolved)
+    _with_stmt_frame(info, x.args) do frame
+        for (i, arg) in enumerate(x.args)
+            _at_stmt!(frame, i)
+            resolved = forward!(arg; info)
+            if !isempty(pending)
+                append!(new_args, pending)
+                empty!(pending)
+            end
+            # Bare-symbol/number/string StanExprs at statement position have no
+            # Stan-side meaning — they arise e.g. when an inline UDF whose final
+            # expression is just one of its args (`f!(buf) = (mutate; buf)`) is
+            # called at statement position. Skip them so we don't emit `name;`.
+            if _plate_context(info) !== nothing && resolved isa BlockExpr
+                # A submodel embedded inside a plate is an inline expansion. The
+                # loop router consumes a flat statement list, so splice the traced
+                # submodel block here rather than leaving a nested BlockExpr.
+                append!(new_args, resolved.args)
+            elseif !_is_inert_block_stmt(resolved)
+                push!(new_args, resolved)
+            end
         end
     end
     remake(x, new_args...)
@@ -816,12 +826,336 @@ _with_loop_scope(body::Function, info) = body()
 _with_loop_scope(body::Function, info::AbstractDict) = begin
     outer = Set(keys(info))
     try
-        body()
+        _with_stmt_frame(_ -> body(), info, Any[]; boundary=true)
     finally
         for name in collect(keys(info))
             name in outer || name === RV_NAME || pop!(info, name)
         end
     end
+end
+
+# ── Branch scope in @deffun bodies ────────────────────────────────────────────
+# Julia's `if` introduces no scope: a name first bound inside a branch is a
+# local of the enclosing function or loop body, so it may be bound in several
+# branches and read after the `if`. Each branch of the emitted Stan `if` is a
+# block of its own, so a declaration inside one branch is out of scope in the
+# next branch and after the `if` (todo `03y3dhn`, found with snag
+# `deffun-sibling-l-01df6260`).
+#
+# So every branch traces in its own binding scope, like a loop body, and a
+# fresh name that the code after the `if` reads is HOISTED: declared once in
+# the enclosing block, just before the `if`, with each in-branch binding
+# emitted as a plain reassignment. The names to hoist are decided before the
+# branches are traced, from the statements that follow the `if`
+# (`_live_after`); the declared type joins the branches' bindings
+# (`_join_branch_types`). A fresh name nothing reads after the `if` keeps its
+# in-branch declaration, so branch-local temporaries emit as before.
+
+# The statement lists being traced, innermost last, so that an `if` can see
+# what follows it. A loop body pushes a boundary: its bindings end with it.
+struct _StmtFrame
+    info::Any
+    stmts::Any
+    pos::Base.RefValue{Int}
+    boundary::Bool
+end
+_stmt_frames(info) = (context = _trace_context(info); context === nothing ? nothing : context.stmt_frames)
+_branch_scopes(info) = (context = _trace_context(info); context === nothing ? nothing : context.branch_scopes)
+_with_stmt_frame(body::Function, info, stmts; boundary=false) = body(nothing)
+_with_stmt_frame(body::Function, info::AbstractDict, stmts; boundary=false) = begin
+    frames = _stmt_frames(info)
+    frames === nothing && return body(nothing)
+    frame = _StmtFrame(info, stmts, Ref(0), boundary)
+    push!(frames, frame)
+    try
+        body(frame)
+    finally
+        pop!(frames) === frame || error("internal: unbalanced @deffun statement frames.")
+    end
+end
+_at_stmt!(::Nothing, i) = nothing
+_at_stmt!(frame::_StmtFrame, i) = (frame.pos[] = i; nothing)
+
+# Does `x` refer to `name`? A loop, comprehension or closure variable of the
+# same name shadows it. `targets=false` skips the bound name of a plain or
+# typed `name = rhs` binding, so only reads count.
+_mentions(x, name; targets=true) = false
+_mentions(x::Symbol, name; targets=true) = x === name
+_mentions(x::Expr, name; targets=true) = any(a -> _mentions(a, name; targets), x.args)
+_mentions(x::StanExpr, name; targets=true) = _mentions(expr(x), name; targets)
+_mentions(x::CanonicalExpr{Val{H}}, name; targets=true) where {H} =
+    H === name || _mentions_args(x, name; targets)
+_mentions(x::CanonicalExpr, name; targets=true) = _mentions_args(x, name; targets)
+_mentions_args(x::CanonicalExpr, name; targets) =
+    any(a -> _mentions(a, name; targets), x.args) ||
+    any(v -> _mentions(v, name; targets), values(x.kwargs))
+_mentions(x::AssignmentExpr, name; targets=true) = begin
+    lhs, rhs = x.args
+    if !targets && _binding_name(lhs) === name
+        _mentions(rhs, name; targets) || _mentions(_decl_annotation(lhs), name; targets)
+    else
+        _mentions_args(x, name; targets)
+    end
+end
+_mentions(x::ForExpr, name; targets=true) = _loop_reads(x, name, body -> _mentions(body, name; targets))
+_mentions(x::GeneratorExpr, name; targets=true) = begin
+    value, clauses... = x.args
+    for clause in clauses
+        _is_assign_canonical(clause) || return _mentions_args(x, name; targets)
+        _mentions(clause.args[2], name; targets) && return true
+        _bound_by(clause.args[1], name) && return false
+    end
+    _mentions(value, name; targets)
+end
+_mentions(x::CanonicalExprV{:->}, name; targets=true) =
+    !_mentions(x.args[1], name) && _mentions(x.args[2], name; targets)
+
+_binding_name(x::Symbol) = x
+_binding_name(x::DeclExpr) = x.args[1] isa Symbol ? x.args[1] : nothing
+_binding_name(_) = nothing
+_decl_annotation(x::DeclExpr) = x.args[2]
+_decl_annotation(_) = nothing
+_bound_by(x::Symbol, name) = x === name
+_bound_by(x::TupleExpr, name) = any(a -> _bound_by(a, name), x.args)
+_bound_by(_, name) = false
+# A `for` head is one `var = range` clause, or a `:block` of them (one-line
+# nested loops); a clause's ranges see the variables of the clauses before it.
+_loop_clauses(head::BlockExpr) = filter(c -> !(c isa LineNumberNode), head.args)
+_loop_clauses(head) = (head,)
+_loop_reads(x::ForExpr, name, body_reads) = begin
+    head, body = x.args
+    for clause in _loop_clauses(head)
+        _is_assign_canonical(clause) || return _mentions(clause, name)
+        _mentions(clause.args[2], name) && return true
+        _bound_by(clause.args[1], name) && return false
+    end
+    body_reads(body)
+end
+
+# How a statement uses `name`: `:read` when some path through it reads `name`
+# before rebinding it, `:kill` when every path rebinds `name` (or leaves the
+# block) first, `:none` when neither, so the statements after it decide.
+_liveness(x, name) = _mentions(x, name) ? :read : :none
+_liveness(::LineNumberNode, name) = :none
+_liveness(x::BlockExpr, name) = _seq_liveness(x.args, name)
+_liveness(x::AssignmentExpr, name) =
+    _binding_name(x.args[1]) === name ? (_mentions(x, name; targets=false) ? :read : :kill) :
+    (_mentions(x, name) ? :read : :none)
+_liveness(x::Union{IfExpr,ElseIfExpr}, name) = begin
+    _mentions(x.args[1], name) && return :read
+    arms = (_liveness(x.args[2], name), length(x.args) == 3 ? _liveness(x.args[3], name) : :none)
+    :read in arms ? :read : all(==(:kill), arms) ? :kill : :none
+end
+_liveness(x::ReturnExpr, name) = _mentions(x, name) ? :read : :kill
+_liveness(::Union{BreakExpr,ContinueExpr}, name) = :kill
+# A loop body may run zero times, so a rebinding inside it never kills.
+_liveness(x::ForExpr, name) = _loop_reads(x, name, body -> _liveness(body, name) === :read) ? :read : :none
+_liveness(x::WhileExpr, name) =
+    (_mentions(x.args[1], name) || _liveness(x.args[2], name) === :read) ? :read : :none
+_seq_liveness(stmts, name) = begin
+    for stmt in stmts
+        r = _liveness(stmt, name)
+        r === :none || return r
+    end
+    :none
+end
+# Is `name` read after the statement being traced, before being rebound? The
+# walk covers the rest of each enclosing statement list of this binding table,
+# up to the nearest loop body.
+_live_after(name; info) = begin
+    frames = _stmt_frames(info)
+    frames === nothing && return false
+    for k in reverse(eachindex(frames))
+        frame = frames[k]
+        (frame.info === info && !frame.boundary) || break
+        r = _seq_liveness(view(frame.stmts, frame.pos[]+1:lastindex(frame.stmts)), name)
+        r === :none || return r === :read
+    end
+    false
+end
+
+# Names a branch may bind fresh: a plain or typed `name = rhs` anywhere in it,
+# except inside a nested loop, comprehension or closure (their own scopes).
+_branch_bound_names!(acc, x) = acc
+_branch_bound_names!(acc, x::CanonicalExpr) = (foreach(a -> _branch_bound_names!(acc, a), x.args); acc)
+_branch_bound_names!(acc, x::AssignmentExpr) = begin
+    name = _binding_name(x.args[1])
+    name === nothing || name in acc || push!(acc, name)
+    _branch_bound_names!(acc, x.args[2])
+end
+_branch_bound_names!(acc, ::Union{ForExpr,WhileExpr,ComprehensionExpr,GeneratorExpr,CanonicalExprV{:->}}) = acc
+# An `if`/`elseif`/`else` chain, including an `if` placed directly in an else
+# slot (rendered `else if`), is ONE statement whose branches share one scope.
+_foreach_branch(f, x::Union{IfExpr,ElseIfExpr}) = begin
+    f(x.args[2])
+    length(x.args) == 3 && _foreach_else_branch(f, x.args[3])
+    nothing
+end
+_foreach_else_branch(f, x::Union{IfExpr,ElseIfExpr}) = _foreach_branch(f, x)
+_foreach_else_branch(f, x) = f(x)
+
+mutable struct _BranchScope
+    info::Any
+    # Fresh names this `if` declares before itself.
+    hoist::Vector{Symbol}
+    branch::Int
+    branches::Vector{Any}
+    # Per branch, the fresh bindings it made (popped when it ends).
+    introduced::Vector{OrderedDict{Symbol,Any}}
+    # Per hoisted name bound in this `if`: (branch, Stan type) of each binding.
+    records::Dict{Symbol,Vector{Tuple{Int,StanType}}}
+end
+_BranchScope(info, hoist) = _BranchScope(info, hoist, 0, Any[], OrderedDict{Symbol,Any}[], Dict{Symbol,Vector{Tuple{Int,StanType}}}())
+
+_hoist_owner(name; info) = begin
+    scopes = _branch_scopes(info)
+    scopes === nothing ? nothing : findlast(s -> s.info === info && name in s.hoist, scopes)
+end
+_is_hoisted(name; info) = _is_hoisted(name, info)
+_is_hoisted(name, info) = false
+_is_hoisted(name, info::AbstractDict) = _hoist_owner(name; info) !== nothing
+
+# A fresh binding of a hoisted name. Its declaration is emitted before the
+# `if` (`_close_branch_name!`), so the binding is a plain reassignment.
+_bind_hoisted!(name, t::StanType, rhs; info) = begin
+    @assert center_type(t) != types.anything "tracetype not defined for $name = $(short_expr(rhs))!"
+    scopes = _branch_scopes(info)
+    for scope in view(scopes, _hoist_owner(name; info):lastindex(scopes))
+        scope.info === info || continue
+        push!(get!(() -> Tuple{Int,StanType}[], scope.records, name), (scope.branch, t))
+    end
+    # Bound on more than one path, a hoisted name has no single defining
+    # expression — like a reassigned local (functions.jl `forward_return!`).
+    let defs = _return_size_defs(info)
+        defs === nothing || (defs[name] = nothing)
+    end
+    info[name] = _hoisted_value(name, t; info)
+    _trace_stan_expr(CanonicalExpr(Symbol(".="), info[name], rhs), info)
+end
+_hoisted_value(name, t; info) = StanExpr(name, remake(t, [
+    maybe_lazy_size(name, i, sizei; info) for (i, sizei) in enumerate(stan_size(t))
+]...; value=missing, decl_role=:derived))
+
+_forward_if!(x, info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+_forward_if!(x, info::AbstractDict) = begin
+    hoist = Symbol[]
+    _foreach_branch(branch -> _branch_bound_names!(hoist, branch), x)
+    filter!(name -> !(name in keys(info)) && _hoist_owner(name; info) === nothing && _live_after(name; info), hoist)
+    scope = _BranchScope(info, hoist)
+    scopes = _branch_scopes(info)
+    scopes === nothing || push!(scopes, scope)
+    traced = try
+        _forward_if_chain!(x, scope; info)
+    finally
+        scopes === nothing || pop!(scopes) === scope || error("internal: unbalanced @deffun branch scopes.")
+    end
+    for name in unique!(collect(Iterators.flatten(keys.(scope.introduced))))
+        _close_branch_name!(scope, name; info)
+    end
+    traced
+end
+_forward_if_chain!(x::Union{IfExpr,ElseIfExpr}, scope; info) = begin
+    cond = forward!(x.args[1]; info)
+    then = _forward_branch!(x.args[2], scope; info)
+    length(x.args) == 3 || return _trace_stan_expr(remake(x, cond, then), info)
+    _trace_stan_expr(remake(x, cond, then, _forward_else!(x.args[3], scope; info)), info)
+end
+_forward_else!(x::Union{IfExpr,ElseIfExpr}, scope; info) = _forward_if_chain!(x, scope; info)
+_forward_else!(x, scope; info) = _forward_branch!(x, scope; info)
+_forward_branch!(x, scope; info) = begin
+    scope.branch += 1
+    push!(scope.branches, x)
+    outer = Set(keys(info))
+    try
+        forward!(x; info)
+    finally
+        introduced = OrderedDict{Symbol,Any}()
+        for name in collect(keys(info))
+            name in outer || name === RV_NAME || (introduced[name] = pop!(info, name))
+        end
+        push!(scope.introduced, introduced)
+    end
+end
+
+# After the branches: declare a hoisted name before the `if` (or, when an
+# enclosing `if` hoists it, rebind it for the rest of the enclosing branch);
+# leave a branch-local name out of scope.
+_close_branch_name!(scope, name; info) = begin
+    bound = [b for (b, introduced) in enumerate(scope.introduced) if haskey(introduced, name)]
+    records = get(scope.records, name, nothing)
+    if records !== nothing
+        aliased = setdiff(bound, first.(records))
+        isempty(aliased) || error(
+            "@deffun `if`: `", name, "` is read after the `if`, so it is declared before it, but branch ",
+            first(aliased), " binds it to a value that emits no Stan variable (a closure, ragged or ",
+            "column view, …) while another branch binds a Stan value. Bind it the same way in every branch."
+        )
+        t = _join_branch_types(scope, name, records; info)
+        if name in scope.hoist
+            for size in stan_size(t), sym in _size_symbols!(Symbol[], size)
+                sym in keys(info) || error(
+                    "@deffun `if`: `", name, "` is bound inside an `if` branch and read after the `if`, so ",
+                    "it is declared before the `if` — but its size `", expr(size), "` refers to `", sym,
+                    "`, which is bound inside the branch. Bind `", sym, "` before the `if`."
+                )
+            end
+            pending = _get_inline_pending(info)
+            pending === nothing && error("internal: no enclosing statement list to declare `", name, "` in.")
+            info[name] = StanExpr(name, t)
+            push!(pending, _trace_stan_expr(CanonicalExpr(:(::), info[name]), info))
+        end
+        info[name] = _hoisted_value(name, t; info)
+    elseif name in scope.hoist || _hoist_owner(name; info) !== nothing || _live_after(name; info)
+        # A value that emits no Stan variable (a closure, ragged or column
+        # view) has nothing to hoist; it outlives its branch as before. Which
+        # one a later read sees cannot depend on the runtime condition, so
+        # only one branch may bind it.
+        length(bound) == 1 || error(
+            "@deffun `if`: `", name, "` is bound in several branches of an `if` and read after it, ",
+            "but not to a Stan value that can be declared before the `if` (a closure, ragged or ",
+            "column view, …). Bind it once before the `if`."
+        )
+        info[name] = scope.introduced[only(bound)][name]
+    end
+    nothing
+end
+_size_symbols!(acc, x::StanExpr) = _size_symbols!(acc, expr(x))
+_size_symbols!(acc, x::Symbol) = push!(acc, x)
+_size_symbols!(acc, x::CanonicalExpr) = (foreach(a -> _size_symbols!(acc, a), x.args); acc)
+_size_symbols!(acc, _) = acc
+
+# The type a hoisted name is declared with: the bindings' common type, with
+# `int` widened to `real` (Stan converts on assignment). Sizes must agree.
+_join_branch_types(scope, name, records; info) = begin
+    types_ = last.(records)
+    centers = center_type.(types_)
+    joined = reduce(typejoin, centers)
+    k = findfirst(==(joined), centers)
+    k === nothing && error(
+        "@deffun `if`: `", name, "` is read after the `if`, so it is declared once before it, but its ",
+        "branches bind it to incompatible Stan types (", join(unique(string.(types_)), ", "),
+        "). Bind values of one type in every branch."
+    )
+    t = types_[k]
+    size_t = stan_size(t)
+    aliases = _typed_assignment_aliases(info)
+    for (branch, tb) in records
+        size_b = stan_size(tb)
+        same_size = length(size_b) == length(size_t) &&
+            all(i -> _typed_assignment_dim_matches(size_t[i], size_b[i], aliases), eachindex(size_t))
+        (same_size && (!(joined <: types.tup) || string(tb) == string(t))) || error(
+            "@deffun `if`: `", name, "` is read after the `if`, so it is declared once before it, but its ",
+            "branches bind it to `", t, "` and `", tb, "`. Bind values of one shape in every branch."
+        )
+        # A widened branch must not read its binding back: the tracer would
+        # type that read as `int` where Stan has the declared `real`.
+        center_type(tb) === joined || !_mentions(scope.branches[branch], name; targets=false) || error(
+            "@deffun `if`: `", name, "` is read after the `if`, so it is declared once before it as `",
+            t, "`, but branch ", branch, " binds it to `", tb, "` and reads it back. Bind a `", t,
+            "` there (e.g. `", name, " = 1.0`), or bind the name before the `if`."
+        )
+    end
+    remake(t; value=missing, decl_role=:derived)
 end
 
 # ── Destructuring iteration: `enumerate(c)` / `zip(a, b, …)` ──────────────────
@@ -1070,6 +1404,7 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
         end
         return _trace_stan_expr(CanonicalExpr(Symbol(".="), info[name], rhs), info)
     end
+    _is_hoisted(name; info) && return _bind_hoisted!(name, type(rhs), rhs; info)
     @assert name ∉ keys(info)
     # A model-scope `name = rhs` is emitted in transformed data / transformed
     # parameters / generated quantities, never in the parameters block. Keep
@@ -1179,9 +1514,13 @@ forward!(x::AssignmentExpr; info) = begin
     # rewrites the emitted base to its flattened parent name while `keys(info)`
     # intentionally remains the local-name view.
     local_key = _base_lhs_symbol(x.args[1])
+    # A typed binding of a fresh name that an `if` hoists out of its branch.
+    hoisted = lhs_raw isa DeclExpr && lhs_raw.args[1] isa Symbol &&
+        !(local_key in keys(info)) && _is_hoisted(local_key; info)
     fwd = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
     lhs, rhs = expr(fwd).args
     lhs_raw isa DeclExpr && _check_typed_assignment(local_key, type(lhs), type(rhs); info)
+    hoisted && return _bind_hoisted!(local_key, type(lhs), rhs; info)
     k = local_key in keys(info) ? local_key : _base_lhs_symbol(lhs)
     if k in keys(info)
         base = info[k]
@@ -3930,11 +4269,11 @@ forward!(x::WhileExpr; info) = begin
     body = _with_loop_scope(() -> forward!(body; info), info)
     _trace_stan_expr(remake(x, cond, body), info)
 end
-forward!(x::IfExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+forward!(x::IfExpr; info) = _forward_if!(x, info)
 forward!(x::TernaryExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::Union{LogicalAndExpr,LogicalOrExpr}; info) =
     _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
-forward!(x::ElseIfExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+forward!(x::ElseIfExpr; info) = _forward_if!(x, info)
 forward!(x::BreakExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::ContinueExpr; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 forward!(x::QuoteExpr; info) = x.args[1]
