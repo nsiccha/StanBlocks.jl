@@ -2781,6 +2781,140 @@ softmax for a reduction.
 end
 
 """
+An opted-in deterministic helper can call Stan's dot-product family in Julia:
+`dot_product`, `dot_self`, and the `rows_`/`columns_` products and self
+products. The same authored calls emit Stan. Regression for snag
+`called-a-stanblo-1cc2d09d`.
+"""
+@testitem "slic: @juliacompat dot-product family" tags=[:slic, :stanc, :bridgestan] setup=[StanBlocksImports] begin
+    helpers = Module(:JuliaCompatDotProducts)
+    Core.eval(helpers, :(using StanBlocks))
+    Core.eval(helpers, quote
+        @deffun @juliacompat begin
+            dp(x::vector[n], y::vector[n])::real = dot_product(x, y)
+            ds(x::vector[n])::real = dot_self(x)
+            rdp(x::matrix[m, n], y::matrix[m, n])::vector[m] = rows_dot_product(x, y)
+            cdp(x::matrix[m, n], y::matrix[m, n])::row_vector[n] = columns_dot_product(x, y)
+            rds(x::matrix[m, n])::vector[m] = rows_dot_self(x)
+            cds(x::matrix[m, n])::row_vector[n] = columns_dot_self(x)
+            # Independently sized arguments leave the size check to the builtin.
+            dp_free(x::vector[n], y::vector[k])::real = dot_product(x, y)
+            rdp_free(x::matrix[m, n], y::matrix[p, q])::vector[m] = rows_dot_product(x, y)
+            cdp_free(x::matrix[m, n], y::matrix[p, q])::row_vector[n] = columns_dot_product(x, y)
+        end
+    end)
+    call(f, args...) = Base.invokelatest(getproperty(helpers, f), args...)
+
+    x, y = [0.2, -0.5, 1.5], [1.0, 2.0, 3.0]
+    X = [1.0 2.0 3.0; -1.0 0.5 2.0]
+    Y = [0.5 0.0 -1.0; 2.0 1.0 1.0]
+    @test call(:dp, x, y) ≈ 3.7 atol=1e-14
+    @test call(:dp, [1, 2], [3, 4]) == 11
+    @test call(:ds, x) ≈ 2.54 atol=1e-14
+    @test call(:rdp, X, Y) ≈ [-2.5, 0.5] atol=1e-14
+    @test call(:cdp, X, Y) ≈ [-1.5, 0.5, -1.0] atol=1e-14
+    @test call(:rds, X) ≈ [14.0, 5.25] atol=1e-14
+    @test call(:cds, X) ≈ [2.0, 4.25, 13.0] atol=1e-14
+    @test call(:dp, Float64[], Float64[]) == 0.0
+    @test call(:rdp, zeros(2, 0), zeros(2, 0)) == [0.0, 0.0]
+    @test call(:cds, zeros(0, 2)) == [0.0, 0.0]
+    # Refused by Stan Math's matching-size check, including a singleton
+    # dimension that broadcasting would otherwise stretch.
+    @test_throws DimensionMismatch call(:dp_free, x, y[1:2])
+    @test_throws DimensionMismatch call(:rdp_free, X, Y[:, 1:2])
+    @test_throws DimensionMismatch call(:rdp_free, X, Y[1:1, :])
+    @test_throws DimensionMismatch call(:cdp_free, X, Y[1:1, :])
+    @test_throws DimensionMismatch call(:cdp_free, X, Y[:, 1:1])
+
+    model = Core.eval(helpers, quote
+        @slic (; x = $x, X = $X, Y = $Y, obs = 1.3) begin
+            theta ~ normal(0.0, 1.0)
+            mu = dp(x, x * theta) + ds(x * theta) + sum(rdp(X * theta, Y)) +
+                 sum(cdp(X, Y * theta)) + sum(rds(X * theta)) + sum(cds(Y * theta))
+            obs ~ normal(mu, 10.0)
+        end
+    end)
+    code = stan_code(model)
+    for call_text in ("dot_product(x, y)", "dot_self(x)", "rows_dot_product(x, y)",
+                      "columns_dot_product(x, y)", "rows_dot_self(x)", "columns_dot_self(x)")
+        @test occursin(call_text, code)
+    end
+    @test stanc_check(code; warn_pedantic=false).ok
+
+    # Compare the native Stan density and gradient against the Julia helper
+    # chain. Taking density differences removes any normalization convention.
+    problem = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(problem) == 1
+    julia_mu(t) = call(:dp, x, x * t) + call(:ds, x * t) + sum(call(:rdp, X * t, Y)) +
+        sum(call(:cdp, X, Y * t)) + sum(call(:rds, X * t)) + sum(call(:cds, Y * t))
+    julia_lp(t) = -0.5t^2 - 0.5((1.3 - julia_mu(t)) / 10)^2
+    t0, t1 = 0.0, 0.4
+    lp0 = LogDensityProblems.logdensity(problem, [t0])
+    lp1, grad1 = LogDensityProblems.logdensity_and_gradient(problem, [t1])
+    @test lp1 - lp0 ≈ julia_lp(t1) - julia_lp(t0) atol=1e-9
+    h = 1e-6
+    @test grad1[1] ≈ (julia_lp(t1 + h) - julia_lp(t1 - h)) / (2h) atol=1e-6
+end
+
+@testsnippet JuliaCompatDotProductADFixtures begin
+    using StanBlocks
+    import StanBlocks.stan: @deffun
+    @deffun @juliacompat begin
+        ad_dp(x::vector[n], y::vector[n])::real = dot_product(x, y)
+        ad_ds(x::vector[n])::real = dot_self(x)
+        ad_rdp(x::matrix[m, n], y::matrix[m, n])::vector[m] = rows_dot_product(x, y)
+        ad_cdp(x::matrix[m, n], y::matrix[m, n])::row_vector[n] = columns_dot_product(x, y)
+        ad_rds(x::matrix[m, n])::vector[m] = rows_dot_self(x)
+        ad_cds(x::matrix[m, n])::row_vector[n] = columns_dot_self(x)
+    end
+end
+
+"""
+Mooncake differentiates the Julia dot-product methods, and each infers a
+concrete result type.
+"""
+@testitem "slic: @juliacompat dot-product family is Mooncake differentiable" tags=[:slic, :ad] setup=[StanBlocksImports, JuliaCompatDotProductADFixtures] begin
+    import Mooncake
+    gradient(f, x...) = begin
+        cache = Mooncake.prepare_gradient_cache(f, x...)
+        Mooncake.value_and_gradient!!(cache, f, x...)
+    end
+
+    x, y = [0.2, -0.5, 1.5], [1.0, 2.0, 3.0]
+    X = [1.0 2.0 3.0; -1.0 0.5 2.0]
+    Y = [0.5 0.0 -1.0; 2.0 1.0 1.0]
+    w_rows, w_cols = [0.7, -1.1], [0.3, 1.2, -0.4]
+
+    value, (_, dx, dy) = gradient(ad_dp, x, y)
+    @test value ≈ ad_dp(x, y) atol=1e-12
+    @test dx ≈ y atol=1e-12
+    @test dy ≈ x atol=1e-12
+    _, (_, dself) = gradient(ad_ds, x)
+    @test dself ≈ 2x atol=1e-12
+
+    # Weighted sums give every output element a distinct cotangent.
+    _, (_, dX, dY) = gradient((A, B) -> w_rows' * ad_rdp(A, B), X, Y)
+    @test dX ≈ w_rows .* Y atol=1e-12
+    @test dY ≈ w_rows .* X atol=1e-12
+    _, (_, dX, dY) = gradient((A, B) -> w_cols' * ad_cdp(A, B), X, Y)
+    @test dX ≈ w_cols' .* Y atol=1e-12
+    @test dY ≈ w_cols' .* X atol=1e-12
+    _, (_, dX) = gradient(A -> w_rows' * ad_rds(A), X)
+    @test dX ≈ 2w_rows .* X atol=1e-12
+    _, (_, dX) = gradient(A -> w_cols' * ad_cds(A), X)
+    @test dX ≈ 2w_cols' .* X atol=1e-12
+
+    @test Base.return_types(ad_dp, (Vector{Float64}, Vector{Float64})) == [Float64]
+    @test Base.return_types(ad_ds, (Vector{Float64},)) == [Float64]
+    for f in (ad_rdp, ad_cdp)
+        @test Base.return_types(f, (Matrix{Float64}, Matrix{Float64})) == [Vector{Float64}]
+    end
+    for f in (ad_rds, ad_cds)
+        @test Base.return_types(f, (Matrix{Float64},)) == [Vector{Float64}]
+    end
+end
+
+"""
 Verify `slic: normal(loc,scale)` in an isolated test item.
 """
 @testitem "slic: normal(loc,scale)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
