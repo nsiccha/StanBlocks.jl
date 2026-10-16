@@ -788,6 +788,7 @@ Stan program.
 | [`stan_model(slic)`](api.md#StanBlocks.stan_model)              | Performs the trace once, returns a [`StanModel`](api.md#StanBlocks.StanModel) you can re-data via `model(; new_kwargs…)` |
 | `StanBlocks.stan_data(model)`                                | The data dictionary that will be passed to BridgeStan                                |
 | [`stan_instantiate(model)`](api.md#StanBlocks.stan_instantiate) | Compiles via BridgeStan and returns a `StanLogDensityProblems.StanProblem`           |
+| [`stan_library(source)`](api.md#StanBlocks.stan_library)        | Compiles complete Stan program text into the same immutable artifact store and returns the shared library path |
 
 A `StanModel` returned by `stan_model` is **cheap to re-data**: `model(; y=new_y)` returns a new model that reuses the trace.
 
@@ -797,7 +798,7 @@ A `StanModel` returned by `stan_model` is **cheap to re-data**: `model(; y=new_y
 |------------------|-------------------------------|---------------------------------------------------------------------------------------|
 | `path=…`         | `<build-dir>/<hash>.stan`     | Where to write the `.stan` file. Hash-based by default, so identical code is cached. The default build dir is `$STANBLOCKS_BUILD_DIR`, else `$TMPDIR/stanblocks` — never the process cwd, so compiling leaves no stray `tmp/` in the worktree a bench runs from. An explicit relative `path` still resolves against the cwd. |
 | `nan_on_error`   | `true`                        | Make BridgeStan return `NaN` instead of throwing on evaluation failures               |
-| `make_args`      | `["STAN_THREADS=true"]`       | Extra arguments forwarded to Stan's `make`. A value naming a file or directory (`STAN=`, `MATH=`, `STANC=`, …) keys the compiled library on what it resolves to and that tree's current state, so a moved link or an in-place toolchain rebuild compiles a fresh library. |
+| `make_args`      | `["STAN_THREADS=true"]`       | Extra arguments forwarded to Stan's `make`. A value naming a file or directory (`STAN=`, `MATH=`, `STANC=`, …) keys the compiled library on what it resolves to and that tree's current state, so a moved link or an in-place toolchain rebuild compiles a fresh library. The files a `USER_HEADER=` header reaches through quoted `#include` lines count too. |
 | `warn`           | `false`                       | Forwarded to BridgeStan                                                               |
 
 ## Errors
