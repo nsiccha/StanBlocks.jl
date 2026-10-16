@@ -1262,11 +1262,32 @@ back to a vector for a vector observation.
 
 ### Torsten
 
-The builtin signature layer includes the Torsten analytical
-`pmx_solve_onecpt`/`pmx_solve_twocpt` family. With a Torsten-enabled BridgeStan
+The builtin signature layer includes Torsten's NONMEM-style event-schedule
+solvers: the analytical `pmx_solve_onecpt`/`pmx_solve_twocpt` family and its
+`_effcpt` variants, the matrix-exponential `pmx_solve_linode`, the general ODE
+solvers `pmx_solve_rk45`/`pmx_solve_bdf`/`pmx_solve_adams`, and the coupled
+`pmx_solve_{onecpt,twocpt}_{rk45,bdf}`. With a Torsten-enabled BridgeStan
 build, these calls have been exercised end to end through compilation and a
 gradient-correct log density. They remain an environment-dependent extension of
 the ordinary BridgeStan route, not a bundled StanBlocks compiler.
+
+Torsten fixes the right-hand side of its ODE solvers: unlike Stan's variadic
+`ode_rk45`, the solver cannot forward trailing arguments, so parameters travel
+in `theta` and data in the optional per-event `x_r`/`x_i` arrays. Write the
+right-hand side as a `@deffun` with exactly that signature:
+
+```julia
+@deffun onecpt_rhs(t::real, y::vector[n], theta::real[k], x_r::real[m], x_i::int[l])::vector[n] = begin
+    dy::vector[n]
+    dy[1] = -theta[3] * y[1]
+    dy[2] = theta[3] * y[1] - theta[1] / theta[2] * y[2]
+    dy
+end
+
+# in the model body:
+x = pmx_solve_rk45(onecpt_rhs, 2, to_array_1d(time), to_array_1d(amt), to_array_1d(rate),
+                   to_array_1d(ii), evid, cmt, addl, ss, theta)
+```
 
 ### Other registered scientific primitives
 

@@ -165,6 +165,12 @@ Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = autoprint(io, head(x), "(", J
     (func_name(x.args[1], x.args[2:end]), stan_call_args(x.args[2:end])...,
      _closure_captures(x.args[1])...), ", "
 ), ")")
+# Torsten's functor solvers take the right-hand side by name in the first slot
+# like the ODE solvers above, but call it with a fixed signature, so there are
+# no closure captures to thread (`_pmx_check_functor_call` refuses them).
+Base.show(io::IO, x::CanonicalExpr{<:PMXFunctorSolver}) = autoprint(io, head(x), "(", Join(
+    (func_name(x.args[1], x.args[2:end]), stan_call_args(x.args[2:end])...), ", "
+), ")")
 commentstring(x::String) = "// " * replace(x, "\n"=>"\n    // ") * "\n"
 # A docstring arg can arrive traced (a `StanExpr` wrapping the String) rather
 # than a bare String — e.g. a doc comment on a sub-model whose body was forwarded.
