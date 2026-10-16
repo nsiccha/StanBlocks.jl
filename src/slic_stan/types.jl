@@ -70,8 +70,10 @@ mutable struct TraceContext
     # `if` branch scopes; see "Branch scope" in forward.jl.
     stmt_frames::Vector{Any}
     branch_scopes::Vector{Any}
+    # LHS names of plates whose cell collects no result (forward.jl).
+    resultless_plates::Set{Symbol}
 end
-TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[])
+TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}())
 _context_or_new(context) = context === nothing ? TraceContext() : context
 """
 A named sub-model function, produced by `@slic f(args...) = body`. The value

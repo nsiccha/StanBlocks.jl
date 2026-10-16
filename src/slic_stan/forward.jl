@@ -2219,10 +2219,11 @@ forward!(x::SamplingExpr{<:CanonicalExprV{:getindex},<:StanExpr}; info) =
 # every loop axis; the trailing expression is each cell's output, filled into
 # `rv`. An integer `outer=N` is the 1-D shorthand; tuples emit nested loops.
 # Current cell-shape scope: scalar, fixed `vector[K]`, or heterogeneous
-# one-dimensional `vector[K[i]]` values; no vararg params; the body must end in
-# a value expression.
-# Used only to reject a terminal `~`/`=` statement with a clear error. Fresh
-# binding discovery itself is trace-based (`_plate_discover` below).
+# one-dimensional `vector[K[i]]` values; no vararg params; a body ending in a
+# `~`/`=` statement or `nothing` collects no result.
+# The (name, type annotation) a `~`/`=` statement binds when its LHS is a bare or
+# typed Symbol, else `nothing`. Fresh binding discovery itself is trace-based
+# (`_plate_discover` below).
 _plate_fresh_info(s) = begin
     lhs = if s isa Expr && s.head === :call && length(s.args) >= 3 && s.args[1] === :~
         s.args[2]                         # `lhs ~ dist`  (raw `~` ⇒ Expr(:call, :~, lhs, rhs))
@@ -2234,6 +2235,21 @@ _plate_fresh_info(s) = begin
     lhs isa Symbol && return (lhs, nothing)
     (lhs isa Expr && lhs.head === :(::) && lhs.args[1] isa Symbol) && return (lhs.args[1], lhs.args[2])
     nothing
+end
+# A `~` or `=` statement, whatever its LHS: a plate cell ending in one has no
+# value to collect.
+_plate_is_statement(s) = s isa Expr &&
+    (s.head === :(=) || (s.head === :call && length(s.args) >= 3 && s.args[1] === :~))
+# Result-less plate names, so reading one fails with the reason instead of a
+# bare "Could not find" (`forward!(::Symbol)`, tracing.jl).
+_note_resultless_plate!(info, rv::Symbol) = begin
+    context = _trace_context(info)
+    context === nothing || push!(context.resultless_plates, rv)
+    nothing
+end
+_is_resultless_plate(info, x::Symbol) = begin
+    context = _trace_context(info)
+    context !== nothing && x in context.resultless_plates
 end
 # Substitute only do-block parameters with their per-cell input accessors. Fresh
 # names are promoted during tracing via the explicit plate context, which also reaches
@@ -3240,16 +3256,34 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
 
     stmts = Any[s for s in body_raw.args if !(s isa LineNumberNode)]
     isempty(stmts) && error("plate: empty do-block body.")
-    body_stmts, ret_expr = stmts[1:end-1], stmts[end]
-    _plate_fresh_info(ret_expr) === nothing || error(
-        "plate: the do-block must END with a cell-output VALUE expression, not a `~`/`=` statement."
-    )
+    # The cell collects its last line when that line is a value. A cell ending in
+    # a `~`/`=` statement, or in `nothing`, has no value to collect (snag
+    # result-less-do-f-3076f098): `rv` then names only the namespace of the cell's
+    # fresh bindings (`rv_t`) and is not bound, like the LHS of
+    # `lhs ~ submodel(...)` for a submodel with no `return`. The loop is the
+    # annotated-loop sugar's result-less core.
+    last_stmt = stmts[end]
+    ends_in_nothing = last_stmt === :nothing || last_stmt === nothing
+    resultless = ends_in_nothing || _plate_is_statement(last_stmt)
+    body_stmts = ends_in_nothing ? stmts[1:end-1] : resultless ? stmts : stmts[1:end-1]
+    ret_expr = resultless ? nothing : last_stmt
+    if resultless
+        rv_ct === nothing || error(
+            "plate: the typed result `", rv, "::… ~ plate(…)` annotates a collected type, but ",
+            "the do-block ends in a `~`/`=` statement or `nothing` and so collects no result. ",
+            "Drop the annotation, or end the cell with the value to collect."
+        )
+        isempty(body_stmts) && error("plate: the do-block of `", rv, "` contains only `nothing`.")
+        rv in keys(info) && error("plate: `", rv, "` is already bound in model scope.")
+        _note_resultless_plate!(info, rv)
+    end
 
     _forward_loop_core!(;
-        kind=:plate, rv, rv_ct, id, idxs, outer_dims, outer_lo=Any[1 for _ in outer_dims],
-        params, iterables, input_subst, body_stmts, ret_expr,
+        kind=:plate, rv=resultless ? nothing : rv, rv_ct, id, idxs, outer_dims,
+        outer_lo=Any[1 for _ in outer_dims], params, iterables, input_subst, body_stmts,
+        ret_expr,
         setup_stmts=Any[], public=Set{Symbol}(), probe_transform=nothing,
-        probe_exclude=Set{Symbol}(), scan_arrays=Set{Symbol}(), info,
+        probe_exclude=Set{Symbol}(), scan_arrays=Set{Symbol}(), info, ns=rv,
     )
 end
 
@@ -3260,9 +3294,11 @@ end
 # binding is promoted to an outer collection, and the loop is emitted directly
 # into the Stan blocks. Parameters beyond the do-form's:
 #
-#   • `rv`/`rv_ct`/`ret_expr` — `nothing` for the sugar, which has no collected
-#     result: its model-scope arrays are the indexed-by-loop-var LHS names in
-#     `public` (registered under their own names, never hygiene-renamed).
+#   • `rv`/`rv_ct`/`ret_expr` — `nothing` for the sugar and for a do-form cell
+#     ending in a `~`/`=` statement or `nothing`, which collect no result. The sugar's model-scope
+#     arrays are the indexed-by-loop-var LHS names in `public` (registered under
+#     their own names, never hygiene-renamed); the result-less do-form passes
+#     its LHS as `ns`.
 #   • `outer_lo` — per-axis loop lower bound (`1` for a plate; a scan's
 #     recurrence runs `lo:hi` while its arrays are sized by `hi`).
 #   • `setup_stmts` — a scan's initial-state statements (`x[1] ~ …`), traced at
@@ -3317,6 +3353,22 @@ _forward_loop_core!(;
         f = fi[1]
         (f in params || f in public || f in keys(info) || haskey(fresh_rename, f)) && continue
         fresh_rename[f] = Symbol(ns, :_, f)
+    end
+    # The namespaced name must itself be fresh. `rv` being unbound does not
+    # guarantee that: a result-less plate binds no `rv`, so a second plate under
+    # the same name reaches here, as do an array-less `@plate for` over the same
+    # index (`loop_i_t` twice) and a data input spelled like a carrier
+    # (`theta_t`). Name the collision here instead of failing later in
+    # discovery or block routing. A name an enclosing loop owns is the nested
+    # emit pass re-declaring its own binding, not a collision.
+    for (f, g) in fresh_rename
+        g in keys(info) || continue
+        _plate_context(info) !== nothing && _plate_context_entry(g; info) !== nothing && continue
+        error(
+            "plate: the cell binding `", f, "` is stored as `", g, "`, which is already ",
+            "bound in model scope. Rename the binding, or the plate result (or, for an ",
+            "array-less `@plate for`, the loop variable) that makes `", ns, "` its namespace."
+        )
     end
     if !isempty(fresh_rename)
         body_stmts = Any[_subst_syms(s, fresh_rename) for s in body_stmts]
