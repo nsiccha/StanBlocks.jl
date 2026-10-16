@@ -586,5 +586,9 @@ forward!(x::Symbol; info) = begin
         rv === nothing && error(_unresolved_module_binding_error(x, Main, Mx))
         return rv
     end
+    _is_resultless_plate(info, x) && error(
+        "`$(x)` names a plate whose cell collects no result: its do-block ends in a ",
+        "`~`/`=` statement or `nothing`, so `$(x)` is not bound. End the cell with the ",
+        "value to collect (for example its cell parameter).")
     error("Could not find $(x) in model, builtin, $(mod) or Main!")
 end
