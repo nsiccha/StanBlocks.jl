@@ -69,14 +69,20 @@ Compile `model` (a [`SlicModel`](@ref StanBlocks.SlicModel) or
   and changed bytes produce a warning. The native library always comes from an
   immutable artifact under `STANBLOCKS_BUILD_DIR`, or `tempdir()/stanblocks`
   when unset. It is keyed by source, ordered `make_args`, source basename,
-  build root, BridgeStan version/location, CPU/compiler identities, and build
-  configuration.
+  build root, BridgeStan version/location, CPU/compiler identities, build
+  configuration, and the state of every toolchain path the build names.
   Every call resolves this identity, including identical-source calls after an
   earlier program was loaded. Published libraries are never overwritten.
 - `nan_on_error::Bool = true` — make BridgeStan return `NaN` instead of
   throwing on evaluation failures.
 - `make_args::Vector{String} = ["STAN_THREADS=true"]` — extra arguments
-  forwarded to Stan's `make`.
+  forwarded to Stan's `make`. An argument whose value names an existing file
+  or directory (`STAN=`, `MATH=`, `STANC=`, `USER_HEADER=`, …; relative to the
+  BridgeStan home, where `make` runs) is identified by its resolved path and a
+  stamp of every entry beneath it, so a link moved to another tree, or a tree
+  rebuilt in place, selects a fresh library. Build environment variables that
+  name paths count the same way, except the `PATH` and `LD_LIBRARY_PATH`
+  search lists and `BRIDGESTAN`, which selects the home itself.
 - `warn::Bool = false` — forwarded to BridgeStan.
 
 Concurrent calls own separate model instances. Artifact, source-alias, and
@@ -89,9 +95,11 @@ An abruptly killed process can leave a pidfile: confirm that its owner has
 exited before removing the lock. A slow live compiler's lock never expires.
 
 Keep inputs, environment, and the installed toolchain read-only during calls.
-The identity covers the documented `make/local` override and compiler binaries;
-for custom toolchain source edits or external compiler inputs not represented in
-that configuration, use a new `STANBLOCKS_BUILD_DIR`. Direct external BridgeStan
+The identity covers the documented `make/local` override, compiler binaries,
+and toolchain paths named by `make_args` or the build environment. The default
+BridgeStan home's own trees are identified by its version and location; for
+source edits there, or external compiler inputs not represented in that
+configuration, use a new `STANBLOCKS_BUILD_DIR`. Direct external BridgeStan
 builds must not mutate the same toolchain concurrently. This construction
 contract does not grant shared ownership of the returned model's workspaces or
 RNG, or make native evaluation without threading support thread-safe. Keep

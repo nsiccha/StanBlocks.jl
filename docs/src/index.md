@@ -797,7 +797,7 @@ A `StanModel` returned by `stan_model` is **cheap to re-data**: `model(; y=new_y
 |------------------|-------------------------------|---------------------------------------------------------------------------------------|
 | `path=…`         | `<build-dir>/<hash>.stan`     | Where to write the `.stan` file. Hash-based by default, so identical code is cached. The default build dir is `$STANBLOCKS_BUILD_DIR`, else `$TMPDIR/stanblocks` — never the process cwd, so compiling leaves no stray `tmp/` in the worktree a bench runs from. An explicit relative `path` still resolves against the cwd. |
 | `nan_on_error`   | `true`                        | Make BridgeStan return `NaN` instead of throwing on evaluation failures               |
-| `make_args`      | `["STAN_THREADS=true"]`       | Extra arguments forwarded to Stan's `make`                                            |
+| `make_args`      | `["STAN_THREADS=true"]`       | Extra arguments forwarded to Stan's `make`. A value naming a file or directory (`STAN=`, `MATH=`, `STANC=`, …) keys the compiled library on what it resolves to and that tree's current state, so a moved link or an in-place toolchain rebuild compiles a fresh library. |
 | `warn`           | `false`                       | Forwarded to BridgeStan                                                               |
 
 ## Errors
