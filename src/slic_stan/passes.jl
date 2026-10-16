@@ -57,12 +57,39 @@ deanon_type(tt::StanType, x::CanonicalExpr, tok) = begin
     ]...)
 end
 _tracetype(x, _context) = tracetype(x)
+# Stan allows a random-number generator only in transformed data, generated
+# quantities, and functions whose names end in `_rng` — the suffix is Stan's own
+# marker for an RNG-bearing callable, builtin or user-defined. Every draw is a
+# generated quantity: qualify it `:quantities` (the top of
+# `data < parameter < quantities`), and every expression and compiler-owned fill
+# that reads it takes that qualifier through the ordinary `maximum(qual, …)` /
+# `_promote_qual` propagation, so the whole chain routes to generated quantities,
+# never to transformed parameters (snag `rng-draw-read-by-9ad81a23`). That holds
+# for a draw from data alone too: in transformed data it would be one fixed draw
+# per run that no output carries, whereas the `~` spelling of the same draw (a
+# prior no likelihood reaches) is already re-drawn in generated quantities.
+_rng_qual(x::CanonicalExpr, q) = q in (:data, :parameter) && _is_rng_callee(head(x)) ? :quantities : q
+# Whether a value — or a size it is declared with — reads a random draw. The
+# fresh-parameter sites (forward.jl) treat this like `cv` taint, which likewise
+# checks the declared size: such a parameter is re-drawn in generated quantities,
+# because a model-block density or a `parameters` size cannot read a draw.
+_reads_draw(_) = false
+_reads_draw(x::StanExpr) = qual(x) == :quantities || _reads_draw(type(x))
+_reads_draw(x::StanType) = qual(x) == :quantities || any(_reads_draw, stan_size(x))
+_is_rng_callee(f) = false
+_is_rng_callee(f::Function) = endswith(String(nameof(f)), "_rng")
+# Raw-AST callees (the plate pass inspects source before tracing).
+_is_rng_callee(f::Symbol) = endswith(String(f), "_rng")
+_is_rng_callee(f::GlobalRef) = _is_rng_callee(f.name)
+_is_rng_callee(f::Expr) = f.head === :. && _is_rng_callee(f.args[end])
+_is_rng_callee(f::QuoteNode) = _is_rng_callee(f.value)
 _stan_expr(x::CanonicalExpr, context) = begin
     _reject_untyped_args(x)
     context = _context_or_new(context)
     tok = _next_anon_id(context)
     tt = deanon_type(_tracetype(anon_canonical(x, tok), context), x, tok)
-    StanExpr(x, remake(tt; qual=maximum(qual, x.args; init=:data), cv=any(cv, x.args) || cv(tt)))
+    q = _rng_qual(x, maximum(qual, x.args; init=:data))
+    StanExpr(x, remake(tt; qual=q, cv=any(cv, x.args) || cv(tt)))
 end
 stan_expr(x::CanonicalExpr) = _stan_expr(x, TraceContext())
 # Every compiler-internal conversion that runs while a trace is active must use
@@ -407,6 +434,39 @@ _distribute_statement!(x; info) = begin
 end
 qual(x::AssignmentExpr) = qual(x.args[1])
 qual(x::SamplingExpr) = qual(x.args[1])
+# An observation that is not held out is a likelihood term, emitted in the model
+# block. A `:quantities` value there can only be an RNG draw or something computed
+# from one (`_rng_qual`): a cv-tainted value has already marked the observation
+# held out. The model block cannot read it — Stan forbids RNGs there and generated
+# quantities are out of scope — and a target that depends on a fresh random draw
+# is not a log density. Refuse at trace time instead of emitting stanc-invalid
+# Stan (snag `rng-draw-read-by-9ad81a23`).
+_reject_draw_in_likelihood(x::SamplingExpr) = begin
+    lhs, rhs = x.args
+    qual(rhs) == :quantities || return nothing
+    draws = unique!(_draw_reads(rhs))
+    obs = _base_lhs_symbol(lhs)
+    error(
+        "Observation `", _stan_snippet(lhs), " ~ ", _stan_snippet(rhs), "` is a likelihood term, ",
+        "but it reads ", join(map(d -> "`$d`", draws), ", "), ": a random draw (an `_rng` call ",
+        "or a value computed from one). Stan evaluates likelihood terms in the model block, ",
+        "where random number generators are not allowed and generated quantities are out of ",
+        "scope. To predict `", obs, "` from the draw, hold it out — bind it as ",
+        "`StanBlocks.stan.maybecv(:", obs, ", ", obs, ")` — so its likelihood leaves the model ",
+        "block and its `", obs, "_gen` / `", obs, "_likelihood` twins read the draw in ",
+        "generated quantities. Otherwise compute the location without an `_rng` call."
+    )
+end
+# The draws a `:quantities` expression reads: each bound name that holds one, or
+# the `_rng` call itself when it appears inline.
+_draw_reads(x) = String[]
+_draw_reads(x::Union{Tuple,AbstractVector}) = reduce(vcat, map(_draw_reads, x); init=String[])
+_draw_reads(x::StanExpr) = qual(x) == :quantities ? _draw_reads(expr(x), x) : String[]
+_draw_reads(::Symbol, x::StanExpr) = [_stan_snippet(x)]
+_draw_reads(e::CanonicalExpr, x::StanExpr) =
+    _is_rng_callee(head(e)) ? [_stan_snippet(x)] : _draw_reads(e.args)
+_draw_reads(_, x::StanExpr) = String[]
+_stan_snippet(x) = sprint(io -> show(nobreak(StanIO(io)), x))
 distribution_blocks(x::AssignmentExpr; info) = if qual(x) == :data
     (:transformed_data, )
 elseif qual(x) == :parameter
@@ -415,6 +475,7 @@ else
     (:generated_quantities, )
 end
 distribution_blocks(x::SamplingExpr; info) = if qual(x) == :data
+    cv(x.args[1]) || _reject_draw_in_likelihood(x)
     if !(expr(x.args[1]) isa Symbol)
         # Indexed observation inside a compiler-owned plate loop. The ordinary
         # gq expansion assumes a whole named LHS and cannot write one cell of a
@@ -794,8 +855,9 @@ _check_redraw_resolves(lhs, rhs, draw) = begin
         string(rng, "(", shape, ", <the family's args…>)::", shape)
     error(
         "`", name, " ~ ", nameof(family), "(…)` is re-drawn in generated quantities — ",
-        "no likelihood reaches `", name, "` (a prior-only / prior-predictive program), or ",
-        "it is cv-held-out — but its family has no predictive companion for a `", shape,
+        "no likelihood reaches `", name, "` (a prior-only / prior-predictive program), ",
+        "it is cv-held-out, or its prior reads a random draw — but its family has no ",
+        "predictive companion for a `", shape,
         "`: `", rng, "` resolved to an untyped (`anything`) result. Add\n    @deffun ",
         signature, " = …\nalongside the density (the sized-token protocol every ",
         "vector-shaped predictive draw uses; see `normal_rng(vector[n], …)` in `builtin.jl`).",

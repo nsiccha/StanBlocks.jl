@@ -181,6 +181,10 @@ StanBlocks decides for each variable which Stan block it belongs to:
 
 Shapes derived from data (the auto-added `_n`, `_m` integers, the result of [`dims(X)[i]`](#dynamic-shape-handling), etc.) land in `transformed_data` automatically.
 
+A random draw (a call to an `_rng` function) lands in `generated_quantities`
+with everything computed from it, whatever its arguments read. See
+[random draws](activity-analysis.md#random-draws-are-generated-quantities).
+
 ### Constraints
 
 Constraints are passed as keyword arguments to the prior and lower to Stan-level constraint declarations:

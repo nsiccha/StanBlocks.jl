@@ -1703,12 +1703,21 @@ forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
     end
     if name in keys(info)
         q = stan.qual(info[name])
+        q == :quantities && !stan.cv(info[name]) && error(
+            "Sampling statement `$name ~ ...` observes `$name`, which holds a random draw (an ",
+            "`_rng` call or a value computed from one) and is therefore a generated quantity — ",
+            "a likelihood cannot condition on it. To fit simulated data, simulate it with the ",
+            "response omitted (the prior-predictive program) and bind the draw as data."
+        )
         q == :data || error("Sampling statement `$name ~ ...` has LHS bound to a $q-qualified value — only data-qualified LHS is supported here (submodel kwargs typically refer to caller-provided data).")
         stan.cv(rhs) && (info[name] = remake(info[name]; cv=true))
     else
         autotype = _broadcast_fresh_sample_type(stan.autotype(rhs), rhs)
         cv = stan.cv(autotype) || stan.cv(rhs)
-        qual = cv ? :quantities : :parameter
+        # A prior (or declared size) that reads a random draw (`_rng_qual`,
+        # passes.jl) cannot be a model-block density: the parameter is itself a
+        # generated quantity, re-drawn from that prior exactly like a cv-tainted one.
+        qual = cv || _reads_draw(rhs) || _reads_draw(autotype) ? :quantities : :parameter
         info[name] = StanExpr(name, remake(autotype; qual, cv, decl_role=:sampled))
     end
     validate_sampling_rhs(info[name], rhs; info)
@@ -1962,7 +1971,9 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # generated quantities (snag typed-lhs-size). `stan.cv(base_lhs_type)` folds
     # in the same `any(cv, stan_size)` the autotype path uses.
     cv_args = any(stan.cv, args_resolved) || stan.cv(base_lhs_type)
-    qual = cv_args ? :quantities : :parameter
+    # A prior or declared size reading a random draw makes the parameter a
+    # generated quantity too (the bare-LHS path above; `_reads_draw`, passes.jl).
+    qual = cv_args || _reads_draw(rhs_forwarded) || _reads_draw(base_lhs_type) ? :quantities : :parameter
     info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args, decl_role=:sampled))
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     validate_sampling_rhs(info[name], rhs_stan; info)
@@ -2153,10 +2164,13 @@ _forward_indexed_sampling!(x; info) = begin
         # behind in `transformed parameters`, referencing a name declared later.
         if role == :unfilled
             tainted = cv(base) || cv(rhs)
-            info[k] = tainted ?
-                remake(base; decl_role=:sampled, qual=:quantities, cv=true) :
+            # A cell prior that reads a random draw makes the cell value a
+            # generated quantity as well, without the cv flag (`_rng_qual`, passes.jl).
+            drawn = tainted || _reads_draw(rhs) || _reads_draw(base)
+            info[k] = drawn ?
+                remake(base; decl_role=:sampled, qual=:quantities, cv=tainted) :
                 remake(base; decl_role=:sampled, qual=:parameter)
-            retainted = tainted
+            retainted = drawn
         end
     else
         q = qual(base)
@@ -2786,7 +2800,14 @@ _plate_collect_syms!(acc, x::GlobalRef) = (push!(acc, x.name); acc)
 _plate_collect_syms!(acc, x::Expr) =
     (for a in x.args; _plate_collect_syms!(acc, a); end; acc)
 _plate_is_invariant(x, varying) =
-    isdisjoint(_plate_collect_syms!(Set{Symbol}(), x), varying)
+    isdisjoint(_plate_collect_syms!(Set{Symbol}(), x), varying) && !_plate_mentions_rng(x)
+# A random draw is never cell-invariant, whatever its arguments read: lifting
+# `normal_rng(mu0, 1.0)` out of the loop would turn one independent draw per cell
+# into a single shared draw (snag `rng-draw-read-by-9ad81a23`). Deterministic
+# arguments of the draw remain eligible on their own.
+_plate_mentions_rng(_) = false
+_plate_mentions_rng(x::Expr) =
+    (x.head === :call && _is_rng_callee(x.args[1])) || any(_plate_mentions_rng, x.args)
 
 # Only a CALL with at least one binding-mentioning argument is worth lifting: a
 # bare symbol or literal costs nothing per cell, an index into a shared value
