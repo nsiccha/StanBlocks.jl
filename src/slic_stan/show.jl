@@ -83,6 +83,20 @@ Base.show(io::StanIO, x::StanExpr{<:AbstractString}) =
 Base.show(io::StanIO, x::StanExpr2{<:types.tokenof,1}) = autoprint(io, stan_size(x)[1])
 Base.show(io::StanIO, x::StanExpr2{<:types.tokenof}) = autoprint(io, "(", Join(stan_size(x), ", "), ")")
 Base.show(io::StanIO, ::Colon) = print(io, ":")
+# Stan has no literal for a non-finite real: Julia's `Inf`, `-Inf` and `NaN`
+# spellings are undeclared identifiers to stanc. A Julia float reaches Stan text
+# wherever a value is emitted rather than traced from source — e.g. an
+# `autokwargs` / `ValueFamily(; support=)` bound vector with an unbounded
+# coordinate, `lower=[-Inf, 0.0]` (snag `coordinate-speci-a6a09904`) — so spell
+# the non-finite values with Stan's nullary builtins. Stan treats an infinite
+# bound as absent (identity transform, no Jacobian term). Finite floats keep
+# Julia's shortest round-trip spelling. The method names exactly the IEEE union
+# because Base's own `show(::IO, ::T) where T<:IEEEFloat` is more specific in
+# the value slot: an `AbstractFloat` method here would be ambiguous with it.
+Base.show(io::StanIO, x::Union{Float16,Float32,Float64}) =
+    isnan(x) ? print(io, "not_a_number()") :
+    isinf(x) ? print(io, signbit(x) ? "negative_infinity()" : "positive_infinity()") :
+    invoke(show, Tuple{IO,typeof(x)}, io, x)
 # The ordinary `Base.show(::IO, ::SlicModel/::StanModel)` methods are semantic
 # summaries in `quarto.jl`. Stan emission is deliberately available only through
 # this `StanIO` method and the explicit `stan_code(model)` entry point.
