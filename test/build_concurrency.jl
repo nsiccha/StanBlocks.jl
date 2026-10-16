@@ -516,3 +516,145 @@ end
     end
     @test y == before
 end
+
+@testitem "artifact identity: a header's quoted includes, listed dependencies and stanc arguments" tags=[:slic, :regression] begin
+    # Snag raw-source-immut-2d40975e: a USER_HEADER's own includes were not in
+    # the identity, so editing one reused a library built against the old one.
+    using StanBlocks
+    code = "parameters { real x; } model { x ~ normal(0, 1); }"
+    key(context) = StanBlocks._default_build_path(code, context)
+    # Every stanc word, from a STANCFLAGS make argument or stanc_args, reaches
+    # BridgeStan as one element, so its compile_model emits one STANCFLAGS word.
+    @test StanBlocks._split_stanc_make_args(
+        ["STAN_THREADS=true", "STANCFLAGS=--O1 --warn-pedantic"], ["--allow-undefined"]) ==
+        (["STAN_THREADS=true"], ["--O1", "--warn-pedantic", "--allow-undefined"])
+    @test StanBlocks._compile_stanc_args(["--O1", "--allow-undefined"]) == ["--O1 --allow-undefined"]
+    @test StanBlocks._compile_stanc_args(String[]) == String[]
+    # No build environment variable names a path here, so only the arguments do.
+    quiet = [name => nothing for name in keys(ENV) if name in ("MATH", "USER_HEADER", "CXX",
+        "CC", "AR", "LD", "RANLIB", "MAKE") || startswith(name, "TBB") ||
+        startswith(name, "BRIDGESTAN") || (startswith(name, "STAN") && !startswith(name, "STANBLOCKS_"))]
+    mktempdir() do dir
+        home = mkpath(joinpath(dir, "bridgestan"))
+        withenv(quiet...) do
+            plain = StanBlocks._native_build_context(home, ["STAN_THREADS=true"])
+            # Builds without stanc arguments, toolchain paths or dependencies
+            # keep their existing keys.
+            @test !haskey(plain, :stanc_args) && !haskey(plain, :toolchain)
+            @test key(StanBlocks._native_build_context(home, ["STAN_THREADS=true"];
+                stanc_args=["--O1"])) != key(plain)
+
+            header = joinpath(dir, "ext.hpp")
+            included = joinpath(dir, "include", "offset.hpp")
+            mkpath(dirname(included))
+            write(header, "#include <ostream>\n#include \"include/offset.hpp\"\n")
+            # The include cycle back to the header must terminate.
+            write(included, "#define EXT_OFFSET 1.0\n#include \"../ext.hpp\"\n")
+            args = ["STAN_THREADS=true", "USER_HEADER=$header"]
+            context() = StanBlocks._native_build_context(home, args)
+            base = context()
+            @test base.toolchain.paths ==
+                ["USER_HEADER" => realpath(header), "#include" => realpath(included)]
+            @test key(context()) == key(base)
+            write(included, "#define EXT_OFFSET 2.0\n#include \"../ext.hpp\"\n")
+            edited_include = context()
+            @test key(edited_include) != key(base)
+            write(header, read(header, String) * "// edited\n")
+            @test key(context()) != key(edited_include)
+
+            # make resolves a relative USER_HEADER in the BridgeStan home, and
+            # the preprocessor its quoted includes next to it.
+            relative = joinpath(home, "relative.hpp")
+            write(relative, "#include \"../include/offset.hpp\"\n")
+            @test Set(StanBlocks._native_build_context(home, ["USER_HEADER=relative.hpp"]).toolchain.paths) ==
+                Set(["USER_HEADER" => realpath(relative), "#include" => realpath(included),
+                     "#include" => realpath(header)])
+            # The environment's header is followed as a make argument's is.
+            from_env = withenv("USER_HEADER" => header) do
+                StanBlocks._native_build_context(home, String[])
+            end
+            @test from_env.toolchain.paths ==
+                ["USER_HEADER" => realpath(header), "#include" => realpath(included)]
+            # A listed dependency is recorded and followed the same way.
+            @test StanBlocks._native_build_context(home, String[]; dependencies=[header]).toolchain.paths ==
+                ["dependency" => realpath(header), "#include" => realpath(included)]
+        end
+    end
+    missing_header = joinpath(tempdir(), "stanblocks-no-such-header-$(rand(UInt)).hpp")
+    @test_throws ArgumentError stan_library(code; dependencies=[missing_header])
+end
+
+@testitem "stan_library: raw source and an edited header or include get new immutable libraries" tags=[:slic, :regression, :bridgestan] begin
+    using StanBlocks
+    using LogDensityProblems: logdensity
+    import BridgeStan
+    source = """
+    functions {
+      real ext_shift(data real x);
+    }
+    data {
+      real x0;
+    }
+    parameters {
+      real theta;
+    }
+    model {
+      theta ~ normal(ext_shift(x0), 1);
+    }
+    """
+    stan_json = """{"x0": 0.0}"""
+    density(library) = logdensity(StanBlocks.StanLogDensityProblems.StanProblem(library, stan_json), [0.0])
+    mktempdir() do dir
+        withenv("STANBLOCKS_BUILD_DIR" => joinpath(dir, "build"), "USER_HEADER" => nothing) do
+            header = joinpath(dir, "ext_shift.hpp")
+            offset = joinpath(dir, "include", "ext_offset.hpp")
+            mkpath(dirname(offset))
+            write(header, """
+            #include <ostream>
+            #include "include/ext_offset.hpp"
+            double ext_shift(const double& x, std::ostream* pstream__) { return x + EXT_OFFSET; }
+            """)
+            write(offset, "#define EXT_OFFSET 1.0\n")
+            make_args = ["STAN_THREADS=true", "USER_HEADER=$header"]
+            stanc_args = ["--allow-undefined", "--warn-pedantic"]
+
+            # Control: BridgeStan.compile_model emits one STANCFLAGS assignment
+            # per stanc argument and make keeps the last, so only
+            # --warn-pedantic reaches stanc, which then rejects the declared
+            # but undefined function.
+            toolchain = realpath(BridgeStan.get_bridgestan_path(; download=false))
+            direct = joinpath(dir, "direct.stan")
+            write(direct, source)
+            @test_throws ErrorException StanBlocks.with_toolchain_lock(toolchain) do
+                BridgeStan.compile_model(direct; make_args, stanc_args)
+            end
+
+            one = stan_library(source; make_args, stanc_args)
+            @test startswith(one, realpath(joinpath(dir, "build")))
+            @test read(replace(one, r"_model\.so$" => ".stan"), String) == source
+            @test density(one) == -0.5
+            built = mtime(one)
+            @test stan_library(source; make_args, stanc_args) == one
+            # The same flags spelled as a make argument, alone or combined with
+            # stanc_args, are the same build.
+            @test stan_library(source;
+                make_args=[make_args; "STANCFLAGS=--allow-undefined --warn-pedantic"]) == one
+            @test stan_library(source; make_args=[make_args; "STANCFLAGS=--allow-undefined"],
+                stanc_args=["--warn-pedantic"]) == one
+            @test mtime(one) == built
+
+            # Editing a quoted include, then the header itself, selects new
+            # libraries, which this process loads beside the first one.
+            write(offset, "#define EXT_OFFSET 2.0\n")
+            two = stan_library(source; make_args, stanc_args)
+            @test two != one
+            @test density(two) == -2.0
+            write(header, replace(read(header, String), "x + EXT_OFFSET" => "x + 2 * EXT_OFFSET"))
+            three = stan_library(source; make_args, stanc_args)
+            @test three ∉ (one, two)
+            @test density(three) == -8.0
+            @test density(one) == -0.5
+            @test mtime(one) == built
+        end
+    end
+end
