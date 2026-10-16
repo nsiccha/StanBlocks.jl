@@ -823,6 +823,18 @@ end
 # scope traces only compiler-owned loops, where re-binding a name is refused
 # rather than reassigned, so it keeps its bindings.
 _with_loop_scope(body::Function, info) = body()
+# Count the loops a model-scope trace is inside (`TraceContext.loop_depth`).
+_with_compiler_loop(body::Function, info) = begin
+    context = _trace_context(info)
+    context === nothing && return body()
+    context.loop_depth += 1
+    try
+        body()
+    finally
+        context.loop_depth -= 1
+    end
+end
+_in_compiler_loop(info) = (context = _trace_context(info); context !== nothing && context.loop_depth > 0)
 _with_loop_scope(body::Function, info::AbstractDict) = begin
     outer = Set(keys(info))
     try
@@ -1718,7 +1730,8 @@ forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
         # passes.jl) cannot be a model-block density: the parameter is itself a
         # generated quantity, re-drawn from that prior exactly like a cv-tainted one.
         qual = cv || _reads_draw(rhs) || _reads_draw(autotype) ? :quantities : :parameter
-        info[name] = StanExpr(name, remake(autotype; qual, cv, decl_role=:sampled))
+        flat = _is_flat_rhs(rhs) ? (; flat_decl=true) : (;)
+        info[name] = StanExpr(name, remake(autotype; qual, cv, decl_role=:sampled, flat...))
     end
     validate_sampling_rhs(info[name], rhs; info)
     remake(x, info[name], rhs)
@@ -1974,7 +1987,10 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # A prior or declared size reading a random draw makes the parameter a
     # generated quantity too (the bare-LHS path above; `_reads_draw`, passes.jl).
     qual = cv_args || _reads_draw(rhs_forwarded) || _reads_draw(base_lhs_type) ? :quantities : :parameter
-    info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args, decl_role=:sampled))
+    # A `flat(…)` declaration may be followed by slice statements
+    # (`_record_slice_support!`); mark it so they recognise their target.
+    flat = _is_flat_rhs(rhs_canonical) ? (; flat_decl=true) : (;)
+    info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args, decl_role=:sampled, flat...))
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     validate_sampling_rhs(info[name], rhs_stan; info)
     remake(x, info[name], rhs_stan)
@@ -2124,11 +2140,21 @@ end
 # first such use classifies the declaration as a parameter; indexed data LHSs
 # remain ordinary observations.  An indexed parameter that did NOT come from a
 # fresh declaration stays out of this internal path.
-_forward_indexed_sampling!(x; info) = begin
+#
+# `user_slice` marks an indexed `~` the AUTHOR wrote (its RHS arrives raw): a
+# slice statement `tau[1:2] ~ exponential(rate)` on a bare `tau::vector[n]` or a
+# `tau::vector[n] ~ flat(; …)` declaration. Such a statement brings its own
+# coordinate support, recorded on the declaration (`_record_slice_support!`
+# below). A plate's own promoted cells arrive with a forwarded RHS and keep the
+# plate's constraint promotion; a `@scan` carried array opts in through its
+# `scan_loop` marker instead.
+_forward_indexed_sampling!(x; info, user_slice::Bool=false) = begin
     lhs_raw, rhs_raw = x.args
     k = _base_lhs_symbol(lhs_raw)
     k in keys(info) || error(
-        "Plate-generated indexed sampling of `", k, "[…]` requires the plate emitter to register its outer declaration first."
+        user_slice ?
+            "Indexed sampling `$k[…] ~ …` needs `$k` to be declared first, e.g. `$k::vector[n]`." :
+            "Plate-generated indexed sampling of `$k[…]` requires the plate emitter to register its outer declaration first."
     )
     lhs = forward!(lhs_raw; info)
     rhs = forward!(rhs_raw; info)::StanExpr
@@ -2171,17 +2197,28 @@ _forward_indexed_sampling!(x; info) = begin
                 remake(base; decl_role=:sampled, qual=:quantities, cv=tainted) :
                 remake(base; decl_role=:sampled, qual=:parameter)
             retainted = drawn
+        elseif user_slice
+            # A later slice statement of the same declaration taints it the same
+            # way: one Stan variable cannot be split between `parameters` and
+            # `generated quantities`.
+            retainted = _taint_slice_declaration!(k, rhs; info)
         end
+    elseif user_slice && _is_flat_decl(base)
+        # Slices after `tau::vector[n] ~ flat(; lower=…)`: the declaration states
+        # the support (Stan's own style) and the slices supply the densities.
+        retainted = _taint_slice_declaration!(k, rhs; info)
     else
         q = qual(base)
-        q == :data || error(
-            "Indexed sampling of `", k, "[…]` has a ", q,
-            "-qualified base that is not a compiler-generated fresh plate declaration."
-        )
+        q == :data || error(_indexed_sampling_base_error(k, lhs_raw, base, user_slice))
         if cv(rhs)
             info[k] = remake(base; cv=true)
             retainted = true
         end
+    end
+    if qual(info[k]) != :data && (user_slice || _scan_loop(info[k]) !== nothing)
+        rhs = _record_slice_support!(k, lhs, rhs; info, loop=user_slice ? nothing : _scan_loop(info[k]))
+    elseif user_slice
+        _record_slice_observation!(k, lhs, rhs; info)
     end
     # Re-derive the LHS against the base we may have just tainted.  `lhs` was
     # snapshotted at the top of this function, BEFORE the cv decision, and
@@ -2199,12 +2236,452 @@ _forward_indexed_sampling!(x; info) = begin
     remake(x, lhs, rhs)
 end
 forward!(x::SamplingExpr{<:CanonicalExprV{:getindex}}; info) =
-    _forward_indexed_sampling!(x; info)
+    _forward_indexed_sampling!(x; info, user_slice=!_in_compiler_loop(info))
 # Resolve the intentional intersection with the generic
 # `SamplingExpr{<:Any,<:StanExpr}` floor. Plate promotion forwards the RHS first,
 # then hands the indexed LHS to this same classifier.
 forward!(x::SamplingExpr{<:CanonicalExprV{:getindex},<:StanExpr}; info) =
     _forward_indexed_sampling!(x; info)
+
+# ── Slice statements: per-coordinate prior families on one vector ────────────
+# Decision `2026-10-16T14-13-42-706-0c3ako4` (snag `heterogeneous-pe-7668c283`):
+#
+#     tau::vector[3]                      # or: tau::vector[3] ~ flat(; lower=0.)
+#     tau[1:2] ~ exponential(rate)
+#     tau[3] ~ normal(0., 1.; lower=0.)
+#
+# emits ONE declaration that carries every coordinate's support, plus one native
+# statement per slice:
+#
+#     vector<lower=0.0>[3] tau;
+#     tau[1:2] ~ exponential(rate);  tau[3] ~ normal(0.0, 1.0);
+#
+# Each author-written slice brings its own support — the family's implied
+# bounds (`autokwargs`) plus any explicit `lower=`/`upper=` — intersected with
+# what a `flat(; …)` declaration states. The slice is RECORDED on the
+# declaration (`slice_supports`); once the whole body is traced,
+# `_finalize_slice_supports!` folds the records into the declaration: a scalar
+# bound when every coordinate agrees, else a per-coordinate bound vector with
+# ±infinity for unbounded coordinates (Stan's identity transform). Before this
+# the indexed path never read the support: `tau[1] ~ exponential(1.5)` emitted
+# an UNBOUNDED `vector[2] tau` whose sampler explored negative values, while the
+# prior-only program of the same body drew from the bounded family. The
+# typed-LHS path had the same bug once (its fold in `forward!(::SamplingExpr{
+# <:DeclExpr})` above); `vcat(…)` and `@scan` lower to these same records.
+_is_flat_decl(x::StanExpr) = get(type(x).info, :flat_decl, false)
+_scan_loop(x::StanExpr) = get(type(x).info, :scan_loop, nothing)
+_slice_records(x::StanExpr) = get(type(x).info, :slice_supports, ())
+_slice_observations(x::StanExpr) = get(type(x).info, :slice_observations, ())
+_is_flat_rhs(rhs::StanExpr) = _is_flat_rhs(expr(rhs))
+_is_flat_rhs(rhs::CanonicalExpr) = head(rhs) === builtin.flat
+_is_flat_rhs(_) = false
+
+_indexed_sampling_base_error(k, lhs_raw, base, user_slice) = begin
+    q = qual(base)
+    user_slice || return string(
+        "Indexed sampling of `", k, "[…]` has a ", q,
+        "-qualified base that is not a compiler-generated fresh plate declaration.")
+    _decl_role(base) === :sampled && q in (:parameter, :quantities) ? string(
+        "`", k, "` already has a whole-vector prior, so a slice statement `", k,
+        "[…] ~ …` would give its coordinates a second one. To give coordinates ",
+        "different priors, declare `", k, "` without one (`", k, "::vector[n]`, or ",
+        "`", k, "::vector[n] ~ flat(; lower=…)` to state its support) and write a ",
+        "slice statement per block, or use `", k, " ~ vcat(prior₁, prior₂, …)`.") : string(
+        "Slice statement `", k, "[…] ~ …` needs `", k, "` to be data or a declared ",
+        "parameter (`", k, "::vector[n]`), but `", k, "` is a ", q,
+        "-qualified value computed in the model; a computed value cannot be sampled.")
+end
+
+# A later slice can make the whole declaration predictive-only (a cv-tainted or
+# draw-reading prior), exactly as the first one does in `_forward_indexed_sampling!`.
+_taint_slice_declaration!(k, rhs; info) = begin
+    base = info[k]
+    tainted = cv(rhs)
+    (tainted || _reads_draw(rhs)) || return false
+    qual(base) === :quantities && (cv(base) || !tainted) && return false
+    info[k] = remake(base; qual=:quantities, cv=cv(base) || tainted)
+    true
+end
+
+_slice_bounds(cons) = (; lower=get(cons, :lower, nothing), upper=get(cons, :upper, nothing))
+# A bound that is a literal real number, else `nothing`. `Bool` is not a bound.
+_bound_number(x::Real) = x isa Bool ? nothing : x
+_bound_number(x::StanExpr) = _bound_number(expr(x))
+_bound_number(_) = nothing
+# `nothing` is "unbounded"; an infinite numeric bound means the same to Stan.
+_unbounded_as_nothing(key, x) = (n = _bound_number(x);
+    n !== nothing && isinf(n) && (key === :lower ? n < 0 : n > 0) ? nothing : x)
+_same_bound(a, b) = begin
+    (a === nothing || b === nothing) && return a === b
+    n, m = _bound_number(a), _bound_number(b)
+    n !== nothing && m !== nothing && return n == m
+    isequal(_bound_value(a), _bound_value(b))
+end
+_bound_ndim(x::StanExpr) = stan_ndim(x)
+_bound_ndim(_) = 0
+# The support of a coordinate both a `flat(; …)` declaration and a slice
+# statement constrain is the intersection of the two.
+_intersect_bound(key, a, b; info) = begin
+    a === nothing && return b
+    b === nothing && return a
+    _same_bound(a, b) && return a
+    n, m = _bound_number(a), _bound_number(b)
+    n !== nothing && m !== nothing && return key === :lower ? max(n, m) : min(n, m)
+    (_bound_ndim(a) == 0 && _bound_ndim(b) == 0) || error(
+        "The `", key, "=` bound a slice statement brings cannot be intersected with ",
+        "the declaration's `", key, "=`, because one of them is vector-valued. ",
+        "State the support in one place: on the declaration (`flat(; ", key,
+        "=…)`) or on the slice statements.")
+    forward!(canonical(Expr(:call, key === :lower ? :fmax : :fmin, a, b)); info)
+end
+
+# Concrete integer value of an index expression. `values=false` accepts only
+# literals (safe to bake into emitted Stan); `values=true` also reads bound data
+# values (enough for a trace-time check, but stale after re-binding data).
+_slice_int(x::Integer; values) = x isa Bool ? nothing : Int(x)
+_slice_int(x::StanExpr; values) = begin
+    e = expr(x)
+    e isa Integer && return _slice_int(e; values)
+    if e isa CanonicalExpr && length(e.args) == 2
+        op = head(e)
+        op in (+, -, *, ÷) || return nothing
+        a = _slice_int(e.args[1]; values)
+        b = _slice_int(e.args[2]; values)
+        return a === nothing || b === nothing ? nothing : op(a, b)
+    end
+    (values && e isa Symbol && hasvalue(x)) || return nothing
+    v = getvalue(x)
+    v isa Integer && !(v isa Bool) ? Int(v) : nothing
+end
+_slice_int(::Any; values) = nothing
+_is_range_index(x::StanExpr) = (e = expr(x); e isa CanonicalExpr && head(e) isa Colon && length(e.args) == 2)
+_is_range_index(_) = false
+# The coordinates one slice index selects, or `nothing` when they are not known.
+_slice_coords(idx; values) = begin
+    if _is_range_index(idx)
+        lo = _slice_int(expr(idx).args[1]; values)
+        hi = _slice_int(expr(idx).args[2]; values)
+        return lo === nothing || hi === nothing ? nothing : collect(lo:hi)
+    end
+    n = _slice_int(idx; values)
+    n === nothing || return [n]
+    (values && idx isa StanExpr && hasvalue(idx)) || return nothing
+    v = getvalue(idx)
+    v isa AbstractVector{<:Integer} ? Int.(collect(v)) : nothing
+end
+_loop_coords(loop; values) = begin
+    lo = _slice_int(loop.lo; values)
+    hi = _slice_int(loop.hi; values)
+    lo === nothing || hi === nothing ? nothing : collect(lo:hi)
+end
+
+# Record a slice statement's support on its declaration and return the RHS the
+# statement keeps. `loop` is a `@scan` recurrence's coverage (`(; idx, lo, hi)`):
+# its one statement samples the coordinates `lo:hi`.
+_record_slice_support!(k, lhs, rhs; info, loop=nothing) = begin
+    base = info[k]
+    T = type(base)
+    rhs_c = expr(rhs)
+    rhs_c isa CanonicalExpr || return rhs
+    spelling = _stan_snippet(lhs)
+    idxs = expr(lhs).args[2:end]
+    implied = autokwargs(rhs_c)
+    own = _fold_constraints(k, merge(implied, rhs_c.kwargs); implied=keys(implied))
+    affine = filter(in(AFFINE_KEYS), keys(own))
+    isempty(affine) || error(
+        "Slice statement `", spelling, " ~ …` passes `", join(affine, "=`, `"), "=`. ",
+        "An affine transform belongs to the whole declaration of `", k, "`, not to a ",
+        "slice; declare it there.")
+    default = get(T.info, :slice_default, nothing)
+    default === nothing && (default = _slice_bounds(constraints(T)))
+    eff = (;
+        lower=_unbounded_as_nothing(:lower,
+            _intersect_bound(:lower, default.lower, get(own, :lower, nothing); info)),
+        upper=_unbounded_as_nothing(:upper,
+            _intersect_bound(:upper, default.upper, get(own, :upper, nothing); info)),
+    )
+    if !(center_type(T) === types.vector && stan_ndim(T) == 1 && length(idxs) == 1)
+        # Per-coordinate support is declared on a vector. Elsewhere a slice is
+        # fine as long as it keeps the declaration's support.
+        for key in BOUND_KEYS
+            _same_bound(getproperty(eff, key), getproperty(default, key)) || error(
+                "Slice statement `", spelling, " ~ …` gives coordinates of `", k,
+                "` their own `", key, "=` support, which Stan can only declare per ",
+                "coordinate on a vector indexed by one integer, range or integer array; `",
+                k, "` is a `", sigtype(T), "`. State the support on the declaration ",
+                "(`", k, "::", sigtype(T), "[…] ~ flat(; ", key, "=…)`) so every slice shares it.")
+        end
+        return rhs
+    end
+    idx = only(idxs)
+    if loop === nothing
+        qual(idx) == :data || error(
+            "Slice statement `", spelling, " ~ …`: the index must be data (a literal, ",
+            "a range or a data integer array), so that every coordinate's support is ",
+            "known when `", k, "` is declared.")
+    end
+    coords = loop === nothing ? _slice_coords(idx; values=true) : _loop_coords(loop; values=true)
+    literal = loop === nothing ? _slice_coords(idx; values=false) : _loop_coords(loop; values=false)
+    records = _slice_records(base)
+    if coords !== nothing
+        for r in records
+            r.coords === nothing && continue
+            shared = intersect(coords, r.coords)
+            isempty(shared) && continue
+            error(
+                "Coordinate", length(shared) == 1 ? " " : "s ", join(map(i -> "`$k[$i]`", shared), ", "),
+                length(shared) == 1 ? " is" : " are", " sampled twice: by `", r.spelling,
+                " ~ …` and by `", spelling, " ~ …`. Give each coordinate exactly one prior.")
+        end
+    end
+    record = (; idx, loop, lower=eff.lower, upper=eff.upper, coords, literal, spelling)
+    info[k] = remake(base; slice_default=default, slice_supports=(records..., record))
+    # The model block never prints a sampling call's kwargs, but a generated-
+    # quantities re-draw honours them (`redraw_rng_expr`). Where the declaration
+    # narrows the statement's own support, carry the narrowed bound onto the
+    # statement so a prior-only or held-out re-draw stays inside it.
+    extra = Pair{Symbol,Any}[]
+    for key in BOUND_KEYS
+        b = getproperty(eff, key)
+        (b === nothing || _same_bound(b, get(own, key, nothing))) && continue
+        push!(extra, key => b)
+    end
+    isempty(extra) && return rhs
+    StanExpr(remake(rhs_c, rhs_c.args...; merge(rhs_c.kwargs, (; extra...))...), type(rhs))
+end
+
+# An observation written as slices of a data vector (`y[1:2] ~ …`, or the
+# lowering of `y ~ vcat(…)`): remember each slice, so generated quantities can
+# give `y` a per-coordinate `y_likelihood` when the slices cover every
+# coordinate (`_slice_obs_pointwise`, passes.jl).
+_record_slice_observation!(k, lhs, rhs; info) = begin
+    base = info[k]
+    (center_type(base) <: types.any_vector && stan_ndim(base) == 1) || return nothing
+    idxs = expr(lhs).args[2:end]
+    length(idxs) == 1 || return nothing
+    record = (; coords=_slice_coords(only(idxs); values=true), lhs, rhs)
+    info[k] = remake(base; slice_observations=(_slice_observations(base)..., record))
+    nothing
+end
+
+# After the whole body is traced: fold every declaration's slice records into its
+# Stan bounds. Returns the traced body, extended by any `transformed data`
+# statements that build a per-coordinate bound vector.
+_finalize_slice_supports!(traced; info) = begin
+    extra = Any[]
+    for k in collect(keys(info))
+        v = info[k]
+        v isa StanExpr || continue
+        records = _slice_records(v)
+        isempty(records) && continue
+        cons = Pair{Symbol,Any}[]
+        for key in BOUND_KEYS
+            b = _slice_declared_bound(k, v, records, key, extra; info)
+            (b === :unchanged || b === nothing) || push!(cons, key => b)
+        end
+        isempty(cons) || (info[k] = remake(info[k]; cons...))
+    end
+    isempty(extra) && return traced
+    traced isa BlockExpr ? remake(traced, traced.args..., extra...) :
+        CanonicalExpr(:block, traced, extra...)
+end
+
+_slice_declared_bound(k, v, records, key, extra; info) = begin
+    T = type(v)
+    default = getproperty(T.info.slice_default, key)
+    bounds = Any[getproperty(r, key) for r in records]
+    all(b -> _same_bound(b, default), bounds) && return :unchanged
+    (center_type(T) === types.vector && stan_ndim(T) == 1) || error(
+        "The slice statements of `", k, "` give its coordinates different `", key,
+        "=` support, which Stan can only declare per coordinate on a `vector`; `", k,
+        "` is a `", sigtype(T), "`. Declare the support on the declaration ",
+        "(`", k, "::", sigtype(T), "[…] ~ flat(; ", key, "=…)`) so every slice shares it.")
+    N = _slice_int(stan_size(T)[1]; values=false)
+    covered = get(T.info, :slice_tiled, false)
+    if !covered && N !== nothing && all(r -> r.literal !== nothing, records)
+        covered = sort!(unique!(reduce(vcat, Any[r.literal for r in records]))) == collect(1:N)
+    end
+    covered && all(b -> _same_bound(b, bounds[1]), bounds) && _bound_ndim(bounds[1]) == 0 &&
+        return bounds[1]
+    literal = _slice_literal_bound(key, N, default, records)
+    literal === missing || return _slice_bound_vector(key, literal; info)
+    _slice_bound_carrier!(k, key, T, default, records, extra; info, covered)
+end
+
+# Per-coordinate bounds as a Julia vector (`nothing` = unbounded) when the length,
+# every index and every bound are literals; `missing` otherwise.
+_slice_bound_entries(key, b, n) = begin
+    b === nothing && return fill(nothing, n)
+    x = _bound_number(b)
+    x !== nothing && return fill(_unbounded_as_nothing(key, x), n)
+    e = b isa StanExpr ? expr(b) : b
+    (e isa VectExpr && length(e.args) == n) || return missing
+    xs = Any[_bound_number(a) for a in e.args]
+    any(isnothing, xs) && return missing
+    Any[_unbounded_as_nothing(key, a) for a in xs]
+end
+_slice_literal_bound(key, N, default, records) = begin
+    N === nothing && return missing
+    d = default === nothing ? nothing : _bound_number(default)
+    default !== nothing && d === nothing && return missing
+    c = Any[_unbounded_as_nothing(key, d) for _ in 1:N]
+    for r in records
+        r.literal === nothing && return missing
+        vals = _slice_bound_entries(key, getproperty(r, key), length(r.literal))
+        vals === missing && return missing
+        for (j, x) in zip(r.literal, vals)
+            1 <= j <= N || return missing
+            c[j] = x
+        end
+    end
+    c
+end
+_infinity_expr(key) = key === :lower ? :(negative_infinity()) : :(positive_infinity())
+_slice_bound_vector(key, c; info) = begin
+    all(x -> isequal(x, c[1]), c) && return c[1]
+    forward!(canonical(Expr(:vect, Any[x === nothing ? _infinity_expr(key) : x for x in c]...)); info)
+end
+
+# The general case: build the per-coordinate bound in `transformed data`, from
+# the declaration's default and one fill per slice, and bound the declaration by
+# that carrier (the same shape plate constraint hoisting uses).
+_slice_bound_carrier!(k, key, T, default, records, extra; info, covered=false) = begin
+    N = stan_size(T)[1]
+    data_ok(b) = b === nothing || _bound_number(b) !== nothing || qual(b) == :data
+    for b in (default, (getproperty(r, key) for r in records)...)
+        data_ok(b) || error(
+            "The slice statements of `", k, "` give its coordinates different `", key,
+            "=` support, and one of those bounds depends on a parameter. A ",
+            "per-coordinate bound must be data (Stan builds it before the parameters).")
+    end
+    carrier = Symbol(k, :__, key)
+    while carrier in keys(info)
+        carrier = Symbol(carrier, :_)
+    end
+    j = Symbol(carrier, :_i)
+    value(b) = b === nothing ? _infinity_expr(key) : b
+    stmts = Any[:($carrier :: vector[$N])]
+    # Coordinates no slice covers keep the declaration's own support.
+    covered || push!(stmts, :(for $j in 1:$N
+        $carrier[$j] = $(_bound_ndim(default) == 1 ? :($default[$j]) : value(default))
+    end))
+    for r in records
+        b = value(getproperty(r, key))
+        vector_bound = _bound_ndim(b) == 1
+        if r.loop !== nothing
+            t = r.loop.idx
+            push!(stmts, Expr(:for, Expr(:(=), t, Expr(:call, :(:), r.loop.lo, r.loop.hi)),
+                Expr(:block, :($carrier[$t] = $b))))
+        elseif _is_range_index(r.idx)
+            lo, hi = expr(r.idx).args
+            push!(stmts, :(for $j in $lo:$hi
+                $carrier[$j] = $(vector_bound ? :($b[$j - $lo + 1]) : b)
+            end))
+        elseif stan_ndim(r.idx) == 0
+            push!(stmts, :($carrier[$(r.idx)] = $b))
+        else
+            push!(stmts, :(for $j in 1:dims($(r.idx))[1]
+                $carrier[$(r.idx)[$j]] = $(vector_bound ? :($b[$j]) : b)
+            end))
+        end
+    end
+    for s in stmts
+        push!(extra, forward!(canonical(s); info))
+    end
+    info[carrier]
+end
+
+# `tau ~ vcat(prior₁, prior₂, …)` — one vector, one prior family per block of
+# coordinates, laid end to end. A block's length comes from its own shape: a
+# scalar family covers one coordinate, a vector argument or `n=` a longer block
+# (`exponential(rate)` covers `length(rate)`). It lowers to the slice
+# statements above — a bare declaration of the summed length (or the typed
+# LHS's own) plus `tau[lo:hi] ~ prior_k` per block — so the support fold, the
+# double-sampling check and the re-draws are the slices' own. A draw is the
+# `vcat` of the block draws, hence the name. On a data LHS the blocks are slice
+# observations of it. One statement names the whole vector, so
+# `Base.merge(base, :(tau ~ vcat(…)))` replaces a prior in one step.
+forward!(x::SamplingExpr{Symbol,<:CanonicalExprV{:vcat}}; info) =
+    _forward_vcat!(x.args[1], nothing, x.args[2]; info)
+forward!(x::SamplingExpr{<:DeclExpr,<:CanonicalExprV{:vcat}}; info) = begin
+    decl = x.args[1]
+    decl.args[1] isa Symbol || error("`… ~ vcat(…)`: a typed LHS must name a Symbol, got `$(decl.args[1])`.")
+    _forward_vcat!(decl.args[1], decl.args[2], x.args[2]; info)
+end
+_vcat_add(a::Integer, b::Integer) = a + b
+_vcat_add(a, b) = :($a + $b)
+_vcat_add(a, b::Integer) = b == 0 ? a : b < 0 ? :($a - $(-b)) : :($a + $b)
+_forward_vcat!(name::Symbol, type_expr, rhs; info) = begin
+    _plate_context(info) === nothing || error(
+        "`", name, " ~ vcat(…)` inside a plate or @scan cell is not supported yet; ",
+        "declare `", name, "` at model scope.")
+    isempty(rhs.kwargs) || error(
+        "`", name, " ~ vcat(…)` takes no keyword arguments; put each block's bounds on ",
+        "the block itself (`vcat(normal(0., 1.; lower=0.), …)`).")
+    blocks = collect(rhs.args)
+    isempty(blocks) && error("`", name, " ~ vcat()` needs at least one block.")
+    observed = name in keys(info) && qual(info[name]) == :data
+    name in keys(info) && !observed && error(
+        "`", name, " ~ vcat(…)`: `", name, "` is already bound to a ", qual(info[name]),
+        "-qualified value; `vcat(…)` declares a new parameter or observes data.")
+    lens = Any[]
+    vector_block = Bool[]
+    for (i, b) in enumerate(blocks)
+        _is_canonical_expr(b) || error(
+            "Block ", i, " of `", name, " ~ vcat(…)` must be a distribution call, got `", b, "`.")
+        head(b) isa Val{:vcat} && error(
+            "Block ", i, " of `", name, " ~ vcat(…)` is itself a `vcat(…)`; list its blocks directly.")
+        fwd = forward!(b; info)::StanExpr
+        bt = _broadcast_fresh_sample_type(autotype(fwd), fwd)
+        sz = stan_size(bt)
+        length(sz) <= 1 || error(
+            "Block ", i, " of `", name, " ~ vcat(…)` has a ", length(sz), "-dimensional ",
+            "support; a block must be scalar- or vector-valued.")
+        push!(lens, isempty(sz) ? 1 : _vcat_size(sz[1]))
+        push!(vector_block, !isempty(sz))
+    end
+    total = foldl(_vcat_add, lens)
+    size_expr = total
+    if type_expr !== nothing
+        ct, sizes... = _is_getindex_expr(type_expr) ? type_expr.args : (type_expr,)
+        (ct === :vector && length(sizes) == 1) || error(
+            "`", name, "::", pretty_type_expr(type_expr), " ~ vcat(…)`: `vcat(…)` builds a ",
+            "`vector[n]`; declare `", name, "::vector[n]`.")
+        size_expr = only(sizes)
+        declared = _slice_int(forward!(canonical(size_expr); info); values=true)
+        summed = _slice_int(forward!(canonical(total); info); values=true)
+        (declared === nothing || summed === nothing || declared == summed) || error(
+            "`", name, "::vector[", declared, "] ~ vcat(…)`: the blocks cover ", summed,
+            " coordinates, not ", declared, ".")
+    elseif observed
+        n = stan_ndim(info[name]) == 1 ? _slice_int(stan_size(info[name])[1]; values=true) : nothing
+        summed = _slice_int(forward!(canonical(total); info); values=true)
+        (n === nothing || summed === nothing || n == summed) || error(
+            "`", name, " ~ vcat(…)`: the blocks cover ", summed, " coordinates, but `", name,
+            "` has ", n, ".")
+    end
+    stmts = Any[]
+    lo = 1
+    for (i, b) in enumerate(blocks)
+        hi = foldl(_vcat_add, lens[1:i])
+        idx = vector_block[i] ? Expr(:call, :(:), lo, hi) : lo
+        push!(stmts, Expr(:call, :~, Expr(:ref, name, idx), b))
+        lo = _vcat_add(hi, 1)
+    end
+    observed || pushfirst!(stmts, :($name :: vector[$size_expr]))
+    traced = forward!(canonical(Expr(:block, stmts...)); info)
+    if !observed
+        _is_fresh_decl(info[name]) || error(
+            "`", name, " ~ vcat(…)` must be written in a model or sub-model body.")
+        # The blocks tile `1:n` by construction, so a support they share is
+        # every coordinate's (`_slice_declared_bound`).
+        info[name] = remake(info[name]; slice_tiled=true)
+    end
+    traced
+end
+_vcat_size(x::StanExpr) = (n = _slice_int(x; values=false); n === nothing ? x : n)
+_vcat_size(x) = x
+
 # --- Public `plate` do-block emitter (Feature 2, surface decision n35u3c) -----
 # Lowers `rv ~ plate(iter1, …; outer=(dims...)) do a1, …; body…; cell_output; end`
 # into the plate PRODUCER CONTRACT that the `~`-aware routing (landed on
@@ -2495,6 +2972,27 @@ end
 #     parameter-dependent bound/scale is not. A wrong model that compiles is the
 #     failure mode being removed. (D3's rule, applied on the plate path — plate cells
 #     return early before the ordinary sampling scope check.)
+# A `@scan` nested in an enclosing loop leaves its carried arrays to that loop,
+# which promotes them from the discovery probe's types. Those types hold the
+# scan's slice records (`_record_slice_support!`) rather than a folded bound, so
+# fold them here: a support every record shares becomes the cell's constraint.
+# Per-coordinate support across the promoted axes is not built yet — refuse it
+# rather than emit the setup's support for every coordinate.
+_plate_fold_inner_slices(f, T::StanType) = begin
+    records = get(T.info, :slice_supports, ())
+    isempty(records) && return T
+    cons = Pair{Symbol,Any}[]
+    for key in BOUND_KEYS
+        b = getproperty(first(records), key)
+        all(r -> _same_bound(getproperty(r, key), b), records) || error(
+            "@scan: the setup and the recurrence of `", f, "` give its coordinates ",
+            "different `", key, "=` support (", join(map(r -> "`$(r.spelling) ~ …`", records), ", "),
+            "). Per-coordinate support is not supported yet for a @scan nested in another ",
+            "loop; give them the same support, or move the @scan to model scope.")
+        b === nothing || push!(cons, key => b)
+    end
+    remake(T; cons...)
+end
 _plate_promoted_constraints(f, T::StanType, index_aliases) = begin
     cons = constraints(T)
     isempty(cons) && return (cons, Pair{Symbol,Any}[])
@@ -3633,12 +4131,21 @@ _forward_loop_core!(;
     local_outer = any(offset_axes) ?
         Any[lo == 1 ? d : :($d - $(lo_offset(lo))) for (d, lo) in zip(plate_outer, outer_lo)] :
         plate_outer
+    # A `@scan`'s carried array (`x[1] ~ …` setup, `x[t] ~ …` recurrence) gets
+    # its support coordinate by coordinate from those statements
+    # (`_record_slice_support!`), not from the cell type: discovery types the
+    # array from its FIRST statement, so the setup's support used to bound the
+    # whole array — `x[1] ~ exponential(1.)` silently truncated an unbounded
+    # recurrence to `vector<lower=0.0>[T] x`.
+    scan_carried(f) = kind === :scan && f in public_global && length(idxs) == 1
     for (f, T) in all_cell_types
         haskey(ragged_plans, f) && continue
         (vectorized_sample !== nothing && f === vectorized_sample.global_name) && continue
         tgt = f === rv ? info : root
         outer_for_f = (f === rv || f in public_global) ? plate_outer : local_outer
-        cons, hoist = _plate_promoted_constraints(f, T, index_aliases)
+        T = _plate_fold_inner_slices(f, T)
+        cons, hoist = scan_carried(f) ? ((;), Pair{Symbol,Any}[]) :
+            _plate_promoted_constraints(f, T, index_aliases)
         if !isempty(hoist)
             info isa SubModel && error(
                 "plate: hoisting an index-dependent constraint on `", f, "` inside a ",
@@ -3651,6 +4158,12 @@ _forward_loop_core!(;
         end
         emitted = forward!(canonical(_plate_outer_decl(f, T, outer_for_f)); info=tgt)
         emitted = _plate_constrain_decl(f, emitted, cons; info=tgt)
+        if scan_carried(f)
+            coverage = (; idx=_plate_global_name(info, idxs[1]),
+                lo=forward!(canonical(outer_lo[1]); info),
+                hi=forward!(canonical(plate_outer[1]); info))
+            tgt[f] = remake(tgt[f]; scan_loop=coverage, slice_tiled=true)
+        end
         pending !== nothing && push!(pending, emitted)
     end
     if vectorized_sample !== nothing
@@ -4279,7 +4792,9 @@ forward!(x::ForExpr; info) = begin
     # must declare that SAME emitted symbol used by forwarded body references;
     # keeping the raw local `idx` would produce `for(i ...) body[prefix_i]`.
     emitted_idx = expr(info[idx])
-    body = _with_loop_scope(() -> forward!(body; info), info)
+    body = _with_compiler_loop(info) do
+        _with_loop_scope(() -> forward!(body; info), info)
+    end
     pop!(info, idx)
     _trace_stan_expr(remake(x, remake(head, emitted_idx, idx_range), body), info)
 end

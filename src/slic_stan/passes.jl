@@ -245,7 +245,12 @@ end
 backward!(x::SamplingExpr; info) = begin 
     lhs, rhs = x.args
     key = _base_lhs_symbol(lhs)
-    if key in keys(info) && _is_fresh_decl(info[key]) && _decl_role(info[key]) == :sampled
+    # Slice statements after a `flat(…)` declaration (forward.jl,
+    # `_record_slice_support!`) route exactly like a fresh declaration's.
+    sliced = key in keys(info) && (
+        (_is_fresh_decl(info[key]) && _decl_role(info[key]) == :sampled) ||
+        _is_flat_decl(info[key]))
+    if sliced
         if (lqual(info[key]) == :affects_likelihood || !_gq_redrawable(info[key])) && !cv(info[key])
             # A plate parameter used by a later likelihood remains a parameter;
             # propagate that reachability into its prior's RHS exactly like the
@@ -322,7 +327,12 @@ backward!(x::StanExpr{Symbol}; info) = begin
     # reached through an indexed sampling LHS (`obs[i] ~ normal(...)`, where the
     # generic descent hits bare `obs`) is the live case. Absent name ⇒ bind `x`.
     already_reached = key in keys(info) && lqual(info[key]) == :affects_likelihood
-    certified = key in keys(info) && get(type(info[key]).info, :ragged_density, false)
+    # A declaration whose slice statements set its support (forward.jl,
+    # `_finalize_slice_supports!`) gets its bounds after the forward pass, so an
+    # occurrence forwarded earlier carries none: keep the current entry, as for
+    # the ragged-density certificate.
+    certified = key in keys(info) && (get(type(info[key]).info, :ragged_density, false) ||
+        !isempty(_slice_records(info[key])) || !isempty(_slice_observations(info[key])))
     source = certified ? info[key] : x
     reached = remake(source; lqual=:affects_likelihood)
     info[key] = reached
@@ -755,6 +765,14 @@ _assert_twin_free(stem, suffix, info) = begin
 end
 Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     lhs, rhs = x.args
+    # A re-drawn `tau::vector[n] ~ flat(…)` whose coordinates slice statements
+    # sample (forward.jl, `_record_slice_support!`): `flat` has nothing to draw
+    # from, so only DECLARE `tau` here; each slice's re-draw fills its block.
+    if qual(lhs) != :data && expr(lhs) isa Symbol && _is_flat_rhs(rhs) &&
+            !isempty(_slice_records(info[expr(lhs)]))
+        t = remake(type(info[expr(lhs)]); value=missing, qual=:quantities)
+        return push!(b, StanExpr(CanonicalExpr(:(::), StanExpr(expr(lhs), t)), t); info)
+    end
     # if hasvalue(lhs)
     is_observation = qual(lhs) == :data
     if is_observation
@@ -812,6 +830,44 @@ Base.push!(b::GeneratedQuantitiesBlock,
     for stmt in _indexed_gq_assignments(x; info)
         push!(b, stmt; info)
     end
+    if target !== nothing && target.kind === :dense && _slice_obs_pointwise(target.base; info)
+        lhs, rhs = x.args
+        lik = _push_slice_obs_likelihood_decl!(b, target.base; info)
+        pointwise = likelihood_expr(lhs, rhs)
+        push!(b, CanonicalExpr(:(=), _rename_lhs_base(lhs, lik), pointwise); info)
+    end
+end
+# A data vector observed slice by slice (`y[1:2] ~ exponential(s); y[3] ~ …`,
+# which is what `y ~ vcat(…)` lowers to) gets the per-coordinate
+# `y_likelihood` a whole-vector observation has — when its slices cover every
+# coordinate exactly once and each slice's pointwise density is per coordinate.
+# A joint family over a slice (`y[1:3] ~ multi_normal(…)`) has one density for
+# the whole slice, and an uncovered coordinate is not an observation, so either
+# leaves `y` with its `y_gen` twin only.
+_slice_obs_pointwise(k::Symbol; info) = begin
+    records = _slice_observations(info[k])
+    isempty(records) && return false
+    n = _slice_int(stan_size(info[k])[1]; values=true)
+    n === nothing && return false
+    coords = Int[]
+    for r in records
+        r.coords === nothing && return false
+        append!(coords, r.coords)
+    end
+    sort!(coords) == collect(1:n) || return false
+    all(r -> stan_ndim(likelihood_expr(r.lhs, r.rhs)) == stan_ndim(r.lhs), records)
+end
+_push_slice_obs_likelihood_decl!(b, k::Symbol; info) = begin
+    lik = Symbol(k, "_likelihood")
+    if lik in keys(info)
+        get(type(info[lik]).info, :slice_obs_source, nothing) === k && return lik
+        _assert_twin_free(k, "_likelihood", info)
+    end
+    t = StanType(types.vector, stan_size(info[k]); qual=:quantities, slice_obs_source=k)
+    decl = StanExpr(lik, t)
+    info[lik] = decl
+    push!(b, StanExpr(CanonicalExpr(:(::), decl), t); info)
+    lik
 end
 _indexed_rng_assignment(x::SamplingExpr) = begin
     lhs, rhs = x.args

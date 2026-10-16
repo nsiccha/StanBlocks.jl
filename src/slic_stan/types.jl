@@ -72,8 +72,12 @@ mutable struct TraceContext
     branch_scopes::Vector{Any}
     # LHS names of plates whose cell collects no result (forward.jl).
     resultless_plates::Set{Symbol}
+    # Depth of compiler-owned `for` loops being traced. A model body has no
+    # loops of its own, so an indexed `~` met at depth 0 is one the author
+    # wrote (a slice statement, forward.jl); one inside a loop is the compiler's.
+    loop_depth::Int
 end
-TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}())
+TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0)
 _context_or_new(context) = context === nothing ? TraceContext() : context
 """
 A named sub-model function, produced by `@slic f(args...) = body`. The value
