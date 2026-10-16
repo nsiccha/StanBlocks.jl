@@ -11683,6 +11683,111 @@ end
     @test stanc_compiles(fitted)
 end
 
+"""
+Stan has no infinity or NaN literal, so a non-finite Julia float that reaches
+Stan text prints as `negative_infinity()` / `positive_infinity()` /
+`not_a_number()`. The case that needs it is a coordinate-specific support
+bound with an unbounded coordinate, `lower=[-Inf, 0.0]`: Stan applies the
+identity transform with no Jacobian term to the infinite coordinate. Before
+snag `coordinate-speci-a6a09904` the bound printed as `[-Inf, 0.0]'`, which
+stanc rejects (`Identifier "Inf" not in scope`).
+"""
+@testitem "slic: non-finite bounds render as Stan infinity builtins" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    stan_text(x) = sprint(io -> show(StanBlocks.StanIO(io), x))
+    @test stan_text(Inf) == "positive_infinity()"
+    @test stan_text(-Inf) == "negative_infinity()"
+    @test stan_text(NaN) == "not_a_number()"
+    @test stan_text(-Inf32) == "negative_infinity()"
+    @test stan_text(Inf16) == "positive_infinity()"
+    # Finite floats keep Julia's spelling.
+    @test stan_text(0.5) == "0.5"
+    @test stan_text(-2.0) == "-2.0"
+    @test stan_text(1.0e-5) == "1.0e-5"
+
+    # Every bound spelling folds through the same printer: adjoint vectors,
+    # plain vectors, numeric `Expr(:vect, ...)` and scalars.
+    two_sided = "vector<lower=[negative_infinity(), 0.0]', upper=[positive_infinity(), 2.0]'>[2]"
+    for (raw_bounds, expected) in (
+            (; lower=adjoint([-Inf, 0.0]), upper=adjoint([Inf, 2.0])) => two_sided,
+            (; lower=[-Inf, 0.0], upper=[Inf, 2.0]) => two_sided,
+            (; lower=Expr(:vect, -Inf, 0.0), upper=Expr(:vect, Inf, 2.0)) => two_sided,
+            (; lower=-Inf) => "vector<lower=negative_infinity()>[2]")
+        bounds = StanBlocks._fold_constraints(:beta, raw_bounds)
+        bound_type = StanBlocks.StanType(StanBlocks.types.vector,
+            (StanBlocks.stan_expr(2, 2),); bounds...)
+        @test sprint(print, bound_type) == expected
+    end
+
+    @deffun begin
+        @lpxf partly_bounded_lpdf(x::vector[n])::real = std_normal_lpdf(x)
+        partly_bounded_lpdfs(x::vector[n])::vector[n] = std_normal_lpdfs(x)
+        partly_bounded_rng(vector[n])::vector[n] = begin
+            @stan_assert n == 2
+            out::vector[n]
+            out[1] = normal_rng(0., 1.)
+            out[2] = uniform_rng(0., 2.)
+            out
+        end
+    end
+    StanBlocks.autokwargs(::StanBlocks.CanonicalExpr{typeof(partly_bounded)}) =
+        (; lower=adjoint([-Inf, 0.0]), upper=adjoint([Inf, 2.0]))
+    vd = :(@lhs @lpxf partly_value_lpdf(x::vector[n])::real = std_normal_lpdf(x))
+    vp = :(partly_value_lpdfs(x::vector[n])::vector[n] = std_normal_lpdfs(x))
+    vr = :(partly_value_rng(vector[n])::vector[n] = begin
+        out::vector[n]
+        out[1] = normal_rng(0., 1.)
+        out[2] = uniform_rng(0., 2.)
+        out
+    end)
+    vfam = ValueFamily(:partly_value, :lpdf, vd, vp, vr, @__MODULE__;
+        support=(; lower=[-Inf, 0.0], upper=[Inf, 2.0]))
+
+    base = @slic begin
+        beta::vector[n]
+        y ~ normal(sum(beta), 1.)
+        return beta
+    end
+    method_prior = Base.merge(base, :(beta ~ partly_bounded()))(; n=2)
+    value_prior = Base.merge(base, Expr(:call, :~, :beta, Expr(:call, vfam)))(; n=2)
+    expected_decl = "vector<lower=[negative_infinity(), 0.0]', upper=[positive_infinity(), 2.0]'>[n] beta;"
+    for prior in (method_prior, value_prior)
+        fitted = prior(; y=0.5)
+        code = stan_code(fitted)
+        @test occursin(expected_decl, stan_block(code, "parameters"))
+        @test !occursin(r"\b(Inf|NaN)\b", code)
+        @test stanc_compiles(fitted)
+        # Prior-only: the family's own RNG fills `beta` in generated quantities.
+        @test !occursin("beta", stan_block(stan_code(prior), "parameters"))
+        @test stanc_compiles(prior)
+    end
+
+    logistic(u) = 1 / (1 + exp(-u))
+    mktempdir() do dir
+        cd(dir) do
+            problem = stan_instantiate(method_prior(; y=0.5))
+            @test BridgeStan.param_names(problem.model) == ["beta.1", "beta.2"]
+            qs = ([0., 0.], [-1.3, 0.7], [2.1, -1.9], [0.4, 3.])
+            # Coordinate 1 is unconstrained (identity); coordinate 2 maps into
+            # (0, 2). A dropped or scalarised bound fails the second entry.
+            for q in qs
+                @test BridgeStan.param_constrain(problem.model, q) ≈
+                    [q[1], 2 * logistic(q[2])] atol=1e-12
+            end
+            # Only coordinate 2 contributes a log-Jacobian, so the density
+            # differs from this hand computation by a constant alone.
+            manual(q) = begin
+                b = [q[1], 2 * logistic(q[2])]
+                -sum(abs2, b) / 2 - (0.5 - sum(b))^2 / 2 +
+                    log(2) + log(logistic(q[2])) + log(1 - logistic(q[2]))
+            end
+            offsets = [LogDensityProblems.logdensity(problem, q) - manual(q) for q in qs]
+            @test maximum(offsets) - minimum(offsets) < 1e-10
+        end
+    end
+end
+
 @testitem "slic: a bound and an affine transform cannot share a declaration" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
     y, K = randn(20), 3
