@@ -7063,6 +7063,145 @@ trajectory inside the cell before selecting a state.
     @test stanc_compiles(inline_selection)
 end
 
+"""
+Torsten's functor event solvers (`pmx_solve_rk45`/`bdf`/`adams` and the coupled
+`pmx_solve_{onecpt,twocpt}_{rk45,bdf}`) call the right-hand side with Torsten's
+fixed signature `f(t, y, theta, x_r, x_i)` (coupled: `f(t, y, y_pk, theta, x_r,
+x_i)`), not Stan's variadic ODE one, so the `@deffun` must be emitted at exactly
+that signature and named in the solver's function slot. Snag
+`torsten-functor-96ddfe89`. The Torsten stanc and BridgeStan halves run only where
+the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
+"""
+@testitem "slic: Torsten functor pmx solvers emit the fixed-signature RHS" tags=[:slic, :stanc, :bridgestan, :torsten] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block
+
+    @deffun begin
+        pmx_test_theta(cl::real, v::real, ka::real)::real[3] = begin
+            th::real[3]
+            th[1] = cl
+            th[2] = v
+            th[3] = ka
+            th
+        end
+        pmx_test_rhs(t::real, y::vector[n], theta::real[k], x_r::real[m], x_i::int[l])::vector[n] = begin
+            dy::vector[n]
+            dy[1] = -theta[3] * y[1]
+            dy[2] = theta[3] * y[1] - theta[1] / theta[2] * y[2]
+            dy
+        end
+        # `y' = K y` for the same one-compartment system, for `pmx_solve_linode`.
+        pmx_test_K(cl::real, v::real, ka::real)::matrix[2, 2] = begin
+            K = rep_matrix(0.0, 2, 2)
+            K[1, 1] = -ka
+            K[2, 1] = ka
+            K[2, 2] = -cl / v
+            K
+        end
+        # Effect compartment driven by the closed-form central amount `y_pk[2]`.
+        pmx_test_effect_rhs(t::real, y::vector[n], y_pk::vector[p], theta::real[k], x_r::real[m], x_i::int[l])::vector[n] = begin
+            dy::vector[n]
+            dy[1] = theta[4] * (y_pk[2] - y[1])
+            dy
+        end
+    end
+
+    time = [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 12.5, 16.0, 24.0]
+    N = length(time)
+    data = Dict{Symbol,Any}(
+        :time => time, :amt => [100.0; zeros(N - 1)], :rate => zeros(N),
+        :ii => [12.0; zeros(N - 1)], :evid => [1; zeros(Int, N - 1)],
+        :cmt => [1; fill(2, N - 1)], :addl => [1; zeros(Int, N - 1)],
+        :ss => zeros(Int, N), :obs => collect(2:N),
+        :y => [0.6, 1.0, 1.4, 1.5, 1.0, 1.9, 1.4, 0.6],
+        :xrm => ones(N, 1), :xi => ones(Int, N, 1),
+    )
+    pk_model(call) = StanBlocks.SlicModel(quote
+        cl ~ lognormal(log(5.0), 0.5)
+        v ~ lognormal(log(50.0), 0.5)
+        ka ~ lognormal(log(1.2), 0.5)
+        sigma ~ exponential(10.0)
+        ta = to_array_1d(time)
+        aa = to_array_1d(amt)
+        ra = to_array_1d(rate)
+        ia = to_array_1d(ii)
+        th = pmx_test_theta(cl, v, ka)
+        the = to_array_1d(append_row(to_vector(th), 0.7))
+        xr = to_array_2d(xrm)
+        x = $call
+        cp = to_vector(x[2, :]) / v
+        y ~ lognormal(log(cp[obs]), sigma)
+    end, copy(data), @__MODULE__)
+
+    rhs_sig = r"vector pmx_test_rhs\(\s*real t,\s*vector y,\s*array\[\] real theta,\s*array\[\] real x_r,\s*array\[\] int x_i\s*\)"
+    effect_sig = r"vector pmx_test_effect_rhs\(\s*real t,\s*vector y,\s*vector y_pk,\s*array\[\] real theta,\s*array\[\] real x_r,\s*array\[\] int x_i\s*\)"
+    cases = Pair{String,Any}[
+        "rk45" => :(pmx_solve_rk45(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th)),
+        "rk45+theta-tol" => :(pmx_solve_rk45(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
+            1e-8, 1e-8, 100000)),
+        "bdf+tol" => :(pmx_solve_bdf(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
+            rep_array(1.0, 2), rep_array(0.0, 2), 1e-8, 1e-8, 100000)),
+        "adams+x_r/x_i" => :(pmx_solve_adams(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
+            rep_array(1.0, 2), rep_array(0.0, 2), xr, xi)),
+        "linode" => :(pmx_solve_linode(ta, aa, ra, ia, evid, cmt, addl, ss,
+            pmx_test_K(cl, v, ka), rep_array(1.0, 2), rep_array(0.0, 2))),
+        "onecpt_effcpt" => :(pmx_solve_onecpt_effcpt(ta, aa, ra, ia, evid, cmt, addl, ss, the)),
+        "onecpt_rk45" => :(pmx_solve_onecpt_rk45(pmx_test_effect_rhs, 1, ta, aa, ra, ia, evid, cmt, addl, ss,
+            the, rep_array(1.0, 3), rep_array(0.0, 3))),
+        "twocpt_bdf" => :(pmx_solve_twocpt_bdf(pmx_test_effect_rhs, 1, ta, aa, ra, ia, evid, cmt, addl, ss,
+            to_array_1d(append_row(append_row(to_vector(th), 1.0), the[4])), rep_array(1.0, 4), rep_array(0.0, 4))),
+    ]
+    codes = Dict(label => stan_code(pk_model(call)) for (label, call) in cases)
+
+    # The RHS is emitted once, at Torsten's fixed signature, and named in the
+    # solver's function slot — no captures or trailing parameters are threaded.
+    for label in ("rk45", "rk45+theta-tol", "bdf+tol", "adams+x_r/x_i")
+        @test occursin(rhs_sig, stan_block(codes[label], "functions"))
+        @test occursin(r"matrix\[2, time_n\] x = pmx_solve_(rk45|bdf|adams)\(\s*pmx_test_rhs,\s*2,", codes[label])
+    end
+    @test occursin(r"pmx_solve_adams\([^;]*,\s*xr,\s*xi\s*\)", codes["adams+x_r/x_i"])
+    # The coupled solvers return the closed-form PK compartments plus nOde.
+    @test occursin(effect_sig, stan_block(codes["onecpt_rk45"], "functions"))
+    @test occursin(r"matrix\[\(2 \+ 1\), time_n\] x = pmx_solve_onecpt_rk45\(\s*pmx_test_effect_rhs,\s*1,", codes["onecpt_rk45"])
+    @test occursin(r"matrix\[\(3 \+ 1\), time_n\] x = pmx_solve_twocpt_bdf\(", codes["twocpt_bdf"])
+    @test occursin("matrix[2, time_n] x = pmx_solve_linode(", codes["linode"])
+    @test occursin("matrix[3, time_n] x = pmx_solve_onecpt_effcpt(", codes["onecpt_effcpt"])
+
+    # A closure capturing a parameter cannot ride Torsten's fixed signature;
+    # supporting it needs a generated theta-packing adapter (capability gap).
+    capturing = pk_model(:(pmx_solve_rk45((t, yy, tht, xrr, xii) -> -ka * yy, 2, ta, aa, ra, ia,
+        evid, cmt, addl, ss, th)))
+    @test_broken (try stan_code(capturing); true catch; false end)
+
+    torsten = joinpath(homedir(), ".local/opt/torsten")
+    if !isdir(torsten)
+        @test_skip "Torsten build not provisioned at $torsten"
+    else
+        tstanc = joinpath(torsten, "cmdstan/bin/stanc")
+        for (label, code) in codes
+            result = withenv("STANC_PATH" => tstanc) do
+                stanc_check(code; warn_pedantic=false)
+            end
+            result.ok || @info "Torsten stanc rejected $label" result.output
+            @test result.ok
+        end
+
+        # The same one-compartment model through the ODE solver and the
+        # closed-form one: log density and gradient agree to solver tolerance.
+        make_args = ["STAN_THREADS=true", "STAN=$torsten/cmdstan/stan/",
+            "MATH=$torsten/cmdstan/stan/lib/stan_math/", "STANC=$torsten/cmdstan/bin/stanc"]
+        ode = instantiate(pk_model(:(pmx_solve_rk45(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
+            rep_array(1.0, 2), rep_array(0.0, 2), 1e-10, 1e-10, 1000000))); make_args)
+        closed = instantiate(pk_model(:(pmx_solve_onecpt(ta, aa, ra, ia, evid, cmt, addl, ss, th))); make_args)
+        @test LogDensityProblems.dimension(ode) == LogDensityProblems.dimension(closed) == 4
+        for q in ([0.1, -0.2, 0.05, -0.3], [-0.3, 0.2, 0.4, 0.1])
+            lo, go = LogDensityProblems.logdensity_and_gradient(ode, q)
+            lc, gc = LogDensityProblems.logdensity_and_gradient(closed, q)
+            @test lo ≈ lc atol=1e-6
+            @test go ≈ gc atol=1e-5
+        end
+    end
+end
+
 @testitem "slic: plate context stops at registered UDF bodies" tags=[:slic, :plate, :ragged, :stanc, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
 
