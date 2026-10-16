@@ -218,6 +218,60 @@ disappears once every observation is held out. See
 [executable model descriptors](authoring.md#executable-model-descriptors).
 :::
 
+## Random draws are generated quantities
+
+Stan allows a random number generator only in transformed data, generated
+quantities, and functions whose names end in `_rng`. StanBlocks places draws by the
+same rule. A call to an `_rng` function that reads a parameter is a generated
+quantity, and so is everything computed from it. This holds for a builtin such as
+`normal_rng` and for your own `@deffun foo_rng`. The parameters the draw reads stay
+sampled.
+
+```julia
+@deffun shift_rng(m::real)::real = normal_rng(m, 1.0)
+
+m3 = @slic begin
+    mu0 ~ std_normal()
+    b   = shift_rng(mu0)
+    y   ~ normal(b, 1.0)
+end
+```
+
+With a held-out response, `m3(; y = StanBlocks.stan.maybecv(:y, y))`, the draw and
+the response's predictive and pointwise-log-likelihood companions all read the same
+`b` in generated quantities:
+
+```stan
+parameters {
+    real mu0;
+}
+model {
+    mu0 ~ std_normal();
+}
+generated quantities {
+    real b = shift_rng(mu0);
+    vector[y_n] y_likelihood = normal_lpdfs(y, b, 1.0);
+    vector[y_n] y_gen = normal_vector_rng(y_n, b, 1.0);
+}
+```
+
+With an ordinary observation, `m3(; y)` fails at trace time. A likelihood term is
+evaluated in the model block, and a target that depends on a fresh draw at every
+evaluation is not a log density. The error names the draw and the held-out spelling.
+
+The same rule covers the other places a draw can appear:
+
+- A parameter whose prior reads a draw (`z ~ normal(b, 1.0)`) is re-drawn from that
+  prior in generated quantities, like a parameter tainted by a cross-validation mark.
+- A draw inside a `plate` or `@plate` cell is made once per cell. It is never
+  hoisted out of the loop as cell-invariant.
+- A draw whose arguments are all data is a transformed-data constant. It is drawn
+  once per run and not written to the output, and a likelihood can condition on it
+  as simulated data.
+- An `_rng` call written inline in a held-out observation's right-hand side is
+  evaluated separately in each companion. Bind the draw to a name first when both
+  companions must read the same draw.
+
 ## A note on the two composition tools
 
 Omitting an outcome is not the same as *fixing* a parameter. Binding a sampled name

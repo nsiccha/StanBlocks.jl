@@ -181,6 +181,11 @@ StanBlocks decides for each variable which Stan block it belongs to:
 
 Shapes derived from data (the auto-added `_n`, `_m` integers, the result of [`dims(X)[i]`](#dynamic-shape-handling), etc.) land in `transformed_data` automatically.
 
+A random draw (a call to an `_rng` function) that reads a parameter lands in
+`generated_quantities` with everything computed from it; a draw from data alone
+is a `transformed_data` constant. See
+[random draws](activity-analysis.md#random-draws-are-generated-quantities).
+
 ### Constraints
 
 Constraints are passed as keyword arguments to the prior and lower to Stan-level constraint declarations:
@@ -668,7 +673,7 @@ Several hundred built-in Stan functions and distributions are pre-registered wit
 - **Introspection**: `dims(X)`, `rows(X)`, `cols(X)`, `num_elements(X)`
 - **Scalar math**: `inv_logit`, `logit`, `log1m`, `log1p_exp`, `log_inv_logit`, `log1m_exp`, `log_sum_exp`, `Phi`, `Phi_approx`, `square`, `lgamma`
 - **Reductions / parallelism**: `reduce_sum`, `reduce_sum_static`, `simple_reduce_sum`
-- **Random draws** (in `generated_quantities`): `normal_rng`, `binomial_rng`, `dirichlet_rng`, `multi_normal_rng`, `multi_normal_cholesky_rng`, …
+- **Random draws** (in `generated_quantities` when they read a parameter): `normal_rng`, `binomial_rng`, `dirichlet_rng`, `multi_normal_rng`, `multi_normal_cholesky_rng`, …
 - **ODE integrators**: `ode_rk45`, `ode_rk45_tol`, `ode_ckrk`, `ode_adams`, `ode_bdf` and their `_tol` variants
 - **GP covariances**: `gp_exp_quad_cov`, `gp_exponential_cov`, `gp_matern32_cov`, `gp_matern52_cov`, `gp_periodic_cov`, `gp_dot_prod_cov`
 - **Distributions**: `normal`, `student_t`, `cauchy`, `lognormal`, `gamma`, `beta`, `exponential`, `uniform`, `bernoulli`, `bernoulli_logit`, `binomial`, `binomial_logit`, `neg_binomial_2`, `multi_normal`, `multi_normal_cholesky`, `dirichlet`, `lkj_corr`, `lkj_corr_cholesky`, `wishart`, … (each with `_lpdf`/`_lpmf`, `_lpdfs`/`_lpmfs` and `_rng` variants where appropriate)
@@ -699,7 +704,7 @@ end
 @slic (;n=5, obs=randn(5)) begin
     mu    ~ std_normal(;n=n)
     obs   ~ normal(mu, 1.)
-    y_rep = vector_std_normal_rng(n)
+    y_rep = mu + vector_std_normal_rng(n)
 end
 ```
 
