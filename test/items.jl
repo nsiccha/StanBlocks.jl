@@ -13749,6 +13749,178 @@ to the index range `1:length(x)`, so `i` is the loop index.
 end
 
 """
+Verify `slic: a plate cell ending in nothing collects no result`.
+
+Snag `result-less-do-f-3076f098` (a downstream regression DSL): a cell that only
+observes had no `plate` do-form spelling, because the body had to end in a
+value. The consumer collected a prediction nothing read, which added a
+generated-quantities copy of every per-observation value. A cell ending in
+`nothing` now collects no result: the plate LHS only namespaces the cell's
+fresh bindings and is neither declared nor bound.
+"""
+@testitem "slic: a plate cell ending in nothing collects no result" tags=[:slic, :plate, :ragged, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    y = [0.3, -0.2, 0.5, 0.1, -0.4, 0.2]
+    resultless = @slic (; y) begin
+        sigma ~ normal(0, 1; lower = 0)
+        theta ~ plate(y; outer = 6) do yi
+            t ~ normal(0, 1)
+            yi ~ normal(t, sigma)
+            nothing
+        end
+    end
+    collected = @slic (; y) begin
+        sigma ~ normal(0, 1; lower = 0)
+        theta ~ plate(y; outer = 6) do yi
+            t ~ normal(0, 1)
+            yi ~ normal(t, sigma)
+            t
+        end
+    end
+    code = stan_code(resultless)
+    @test stanc_compiles(resultless)
+    @test occursin(r"vector\[6\] theta_t;", stan_block(code, "parameters"))
+    @test !occursin(r"\btheta\b", code)
+    # The collecting spelling differs only by the result's declaration and fill.
+    @test code == replace(stan_code(collected),
+        r"\n *vector\[6\] theta;" => "",
+        r"\n *theta\[plate_i__pl_\d+\] = theta_t\[plate_i__pl_\d+\];" => "")
+
+    ts = [[0.5, 0.7, 0.9], [0.4, 0.6], [0.3, 0.8, 1.0, 1.2]]
+    ys = [[0.6, 0.8, 1.0], [0.5, 0.7], [0.4, 0.9, 1.1, 1.3]]
+    ragged_resultless = @slic (; ts, ys) begin
+        sigma ~ exponential(1.0)
+        cp ~ plate(ts, ys) do t, yobs
+            b ~ normal(0.0, 1.0)
+            m = b .* t
+            yobs ~ normal(m, sigma)
+            nothing
+        end
+    end
+    ragged_collected = @slic (; ts, ys) begin
+        sigma ~ exponential(1.0)
+        cp ~ plate(ts, ys) do t, yobs
+            b ~ normal(0.0, 1.0)
+            m = b .* t
+            yobs ~ normal(m, sigma)
+            m
+        end
+    end
+    @test stanc_compiles(ragged_resultless)
+    let d = stan_descriptor(ragged_resultless), with = stan_descriptor(ragged_collected)
+        # Only the unread collected copy of every prediction disappears.
+        @test :cp__pl_mem_1 in [o.name for o in with.outputs]
+        @test [o.name for o in d.outputs] == [o.name for o in with.outputs if o.name !== :cp__pl_mem_1]
+        @test only(o for o in d.outputs if o.name === :cp_m__pl_mem_1).segments == [3, 5, 9]
+        @test [op.name for op in d.operations] == [op.name for op in with.operations]
+    end
+
+    # Prior-only: the whole result-less plate lowers to generated quantities.
+    let prior = @slic((; n = 6), begin
+            sigma ~ normal(0, 1; lower = 0)
+            theta ~ plate(; outer = n) do i
+                t ~ normal(0, 1)
+                u ~ normal(t, sigma)
+                nothing
+            end
+        end), pcode = stan_code(prior)
+        @test stanc_compiles(prior)
+        @test !occursin(r"\w", stan_block(pcode, "parameters"))
+        @test occursin(r"vector\[n\] theta_u;", stan_block(pcode, "generated quantities"))
+    end
+
+    # Inside a called sub-model, the namespace composes with the sub-model's.
+    obs_only = @slic begin
+        obs ~ plate(yy; outer = n) do yi
+            t ~ normal(0, 1)
+            yi ~ normal(t, s)
+            nothing
+        end
+    end
+    let m = @slic((; y), begin
+            sigma ~ normal(0, 1; lower = 0)
+            node ~ obs_only(; yy = y, n = 6, s = sigma)
+        end)
+        @test stanc_compiles(m)
+        @test occursin(r"vector\[6\] node_obs_t;", stan_block(stan_code(m), "parameters"))
+    end
+
+    # refused: a cell's last statement is its value; `~`/`=` has none, and
+    # `nothing` spells "no result" (snag result-less-do-f-3076f098).
+    @test_throws "end it with `nothing`" stan_code(@slic((; y), begin
+        sigma ~ normal(0, 1; lower = 0)
+        theta ~ plate(y; outer = 6) do yi
+            t ~ normal(0, 1)
+            yi ~ normal(t, sigma)
+        end
+    end))
+    # refused: a typed result LHS names a collected type, and a result-less
+    # cell collects nothing.
+    @test_throws "collects no result — drop the annotation" stan_code(@slic((; y), begin
+        sigma ~ normal(0, 1; lower = 0)
+        theta::vector[6] ~ plate(y; outer = 6) do yi
+            t ~ normal(0, 1)
+            yi ~ normal(t, sigma)
+            nothing
+        end
+    end))
+    # refused: the LHS of a result-less plate binds nothing to read, like the
+    # LHS of a sub-model without `return`.
+    @test_throws "Could not find theta" stan_code(@slic((; y), begin
+        sigma ~ normal(0, 1; lower = 0)
+        theta ~ plate(y; outer = 6) do yi
+            t ~ normal(0, 1)
+            yi ~ normal(t, sigma)
+            nothing
+        end
+        w ~ normal(sum(theta), 1.0)
+    end))
+    # refused: reusing a plate name would bind its namespaced carriers twice
+    # (a collecting plate already refuses a second `theta ~ plate(…)`).
+    @test_throws "stored as `theta_t`, which is already bound" stan_code(@slic((; y, z = y), begin
+        sigma ~ normal(0, 1; lower = 0)
+        theta ~ plate(y; outer = 6) do yi
+            t ~ normal(0, 1)
+            yi ~ normal(t, sigma)
+            nothing
+        end
+        theta ~ plate(z; outer = 6) do zi
+            t ~ normal(0, 1)
+            zi ~ normal(t, sigma)
+            nothing
+        end
+    end))
+    # Hygiene gap (StanBlocks todo `1nws1vv`): the compiler's namespaced
+    # name can collide although the author's names do not — two array-less
+    # `@plate for i` loops both store `t` as `loop_i_t`, and a data input
+    # `theta_t` collides with plate `theta`'s cell `t`. Both now fail with the
+    # collision named instead of a misleading downstream error.
+    two_loops = @slic (; y, z = y) begin
+        sigma ~ normal(0, 1; lower = 0)
+        @plate for i in 1:6
+            t ~ normal(0, 1)
+            y[i] ~ normal(t, sigma)
+        end
+        @plate for i in 1:6
+            t ~ normal(0, 1)
+            z[i] ~ normal(t, sigma)
+        end
+    end
+    @test_broken stanc_compiles(two_loops)
+    @test_throws "stored as `loop_i_t`, which is already bound" stan_code(two_loops)
+    carrier_named_data = @slic (; y, theta_t = y) begin
+        sigma ~ normal(0, 1; lower = 0)
+        theta ~ plate(y; outer = 6) do yi
+            t ~ normal(0, 1)
+            yi ~ normal(t, sigma)
+            t
+        end
+    end
+    @test_broken stanc_compiles(carrier_named_data)
+    @test_throws "stored as `theta_t`, which is already bound" stan_code(carrier_named_data)
+end
+
+"""
 Verify `slic: deffun result size routed through a function-local`.
 
 Snag `deffun-result-si-9d9eaab2` (a downstream per-cell read kernel): a
