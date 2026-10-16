@@ -221,11 +221,10 @@ disappears once every observation is held out. See
 ## Random draws are generated quantities
 
 Stan allows a random number generator only in transformed data, generated
-quantities, and functions whose names end in `_rng`. StanBlocks places draws by the
-same rule. A call to an `_rng` function that reads a parameter is a generated
-quantity, and so is everything computed from it. This holds for a builtin such as
-`normal_rng` and for your own `@deffun foo_rng`. The parameters the draw reads stay
-sampled.
+quantities, and functions whose names end in `_rng`. StanBlocks puts every draw in
+generated quantities: a call to an `_rng` function is a generated quantity, and so
+is everything computed from it. This holds for a builtin such as `normal_rng` and
+for your own `@deffun foo_rng`. The parameters a draw reads stay sampled.
 
 ```julia
 @deffun shift_rng(m::real)::real = normal_rng(m, 1.0)
@@ -261,13 +260,18 @@ evaluation is not a log density. The error names the draw and the held-out spell
 
 The same rule covers the other places a draw can appear:
 
-- A parameter whose prior reads a draw (`z ~ normal(b, 1.0)`) is re-drawn from that
-  prior in generated quantities, like a parameter tainted by a cross-validation mark.
+- A parameter whose prior or declared size reads a draw (`z ~ normal(b, 1.0)`) is
+  re-drawn from that prior in generated quantities, like a parameter tainted by a
+  cross-validation mark.
 - A draw inside a `plate` or `@plate` cell is made once per cell. It is never
   hoisted out of the loop as cell-invariant.
-- A draw whose arguments are all data is a transformed-data constant. It is drawn
-  once per run and not written to the output, and a likelihood can condition on it
-  as simulated data.
+- A draw whose arguments are all data is a generated quantity too: a fresh draw
+  per iteration, written to the output. This matches the `~` spelling of the same
+  draw, which a likelihood does not reach and so is re-drawn in generated
+  quantities. A likelihood cannot condition on a draw (`y_sim ~ normal(mu, 1.0)`
+  after `y_sim = vector_std_normal_rng(n)` is an error). To fit simulated data,
+  simulate it with the prior-predictive program (omit the response, as in
+  section 2), then bind the draw as data.
 - An `_rng` call written inline in a held-out observation's right-hand side is
   evaluated separately in each companion. Bind the draw to a name first when both
   companions must read the same draw.
