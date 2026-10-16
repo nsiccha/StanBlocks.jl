@@ -191,6 +191,69 @@ function _build_compilers(make_args)
     [(; path, digest=_build_file_digest(path)) for path in sort!(unique(paths))]
 end
 
+# The state of a file or directory tree without reading file contents: every
+# entry's relative path, mode, size, modification and status-change times and
+# inode, in sorted order. Writing, replacing, rebuilding or re-linking any
+# entry changes it (the status-change time cannot be set back); reading does
+# not. Symbolic links inside the tree are recorded, not followed.
+function _build_tree_stamp(path)
+    ctx = SHA.SHA2_256_CTX()
+    _stamp_build_entry!(ctx, path, "", stat(path))
+    bytes2hex(SHA.digest!(ctx))
+end
+
+function _stamp_build_entry!(ctx, path, rel, s)
+    SHA.update!(ctx, codeunits(string(rel, '\0', s.mode, '\0', s.size, '\0',
+        s.mtime, '\0', s.ctime, '\0', s.inode, '\n')))
+    isdir(s) || return
+    for name in readdir(path)
+        _stamp_build_entry!(ctx, joinpath(path, name), string(rel, '/', name),
+            lstat(joinpath(path, name)))
+    end
+end
+
+# Variables whose paths are not toolchain inputs. PATH and LD_LIBRARY_PATH are
+# search lists: a single entry would stamp a whole system directory, and the
+# compilers found through PATH are digested instead. BRIDGESTAN selects the
+# home make runs and writes objects in; its version and location identify it.
+const _BUILD_UNSTAMPED_VARIABLES = ("BRIDGESTAN", "LD_LIBRARY_PATH", "PATH")
+
+# The resolved path a Make variable's value names, or `nothing`. BridgeStan runs
+# make in its home, so a relative value names a path there.
+function _toolchain_path(home, value)
+    (value === nothing || isempty(value)) && return nothing
+    path = isabspath(value) ? value : joinpath(home, value)
+    ispath(path) ? realpath(path) : nothing
+end
+
+# Make arguments and build environment variables that name a toolchain tree
+# or file (`STAN=`, `MATH=`, `STANC=`, `USER_HEADER=`, …) are identified by
+# what they name, not by their text: a moved link or an in-place rebuild
+# behind the same text must not reuse a library built against the old tree.
+# Each named path is recorded resolved, and each outermost one is stamped once.
+function _toolchain_paths(home, make_args, environment)
+    assignments = Pair{String,String}[]
+    for arg in make_args
+        parts = split(arg, '='; limit=2)
+        length(parts) == 2 && push!(assignments, String(parts[1]) => String(parts[2]))
+    end
+    for (name, value) in environment
+        value === nothing || push!(assignments, name => value)
+    end
+    paths = Pair{String,String}[]
+    for (name, value) in assignments
+        name in _BUILD_UNSTAMPED_VARIABLES && continue
+        path = _toolchain_path(home, value)
+        path === nothing || push!(paths, name => path)
+    end
+    roots = String[]
+    for path in sort!(unique(last.(paths)))
+        any(root -> isdir(root) && startswith(path, joinpath(root, "")), roots) ||
+            push!(roots, path)
+    end
+    (; paths, stamps=[root => _build_tree_stamp(root) for root in roots])
+end
+
 function _native_build_context(home, make_args)
     # Source distributions and build configuration are read-only while in use.
     # Include compiler binaries and the documented make/local override so an
@@ -206,13 +269,19 @@ function _native_build_context(home, make_args)
             startswith(name, "BRIDGESTAN") || startswith(name, "TBB")
     end)
     sort!(unique!(env_names))
+    environment = [name => get(ENV, name, nothing) for name in env_names]
     files = ("Makefile", joinpath("make", "local"), joinpath("bin", "stanc"))
-    (; format=1, bridgestan=string(pkgversion(BridgeStan)), home,
+    context = (; format=1, bridgestan=string(pkgversion(BridgeStan)), home,
        platform=string(Sys.MACHINE, '/', Sys.KERNEL), make_args,
        cpu=(; target=Sys.CPU_NAME, models=sort!(unique(info.model for info in Sys.cpu_info()))),
-       environment=[name => get(ENV, name, nothing) for name in env_names],
+       environment,
        files=[name => _build_file_digest(joinpath(home, name)) for name in files],
        compilers=_build_compilers(make_args))
+    # The home's own trees are identified by its BridgeStan version and path.
+    # Only builds that name other toolchain paths gain an entry, so the keys of
+    # builds that name none are unchanged.
+    toolchain = _toolchain_paths(home, make_args, environment)
+    isempty(toolchain.paths) ? context : (; context..., toolchain)
 end
 
 _default_build_dir() = abspath(get(ENV, "STANBLOCKS_BUILD_DIR", joinpath(tempdir(), "stanblocks")))
