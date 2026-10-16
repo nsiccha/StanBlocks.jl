@@ -243,7 +243,8 @@ and generated quantities.
 | Several independent plates reusing local names | ✅ | Cell-local bindings are hygienically namespaced by plate result |
 | Dependency on a previous cell | ❌ | Cells are independent; a recurrence that samples per step is the annotated `@scan begin … end` loop (below), a deterministic one a `@deffun` recurrence |
 | Vararg do-block parameters | ❌ | Use a fixed positional argument list |
-| Body without trailing value | ❌ | The last expression must be the cell result, not `~` or `=` |
+| Cell without a result (observation-only) | ✅ | End the body with `nothing`: fresh bindings keep the `<rv>_<name>` namespace and no `rv` is declared, filled or bound |
+| Body ending in `~` or `=` | ❌ | The last expression is the cell result, or `nothing` for no result |
 | Fully dead/prior-only plate | ✅ | The whole plate — fresh samples, collected result and loop — lowers to `generated quantities` with everything it reads; `parameters {}` stays empty |
 | Cross-validation taint | ✅ | Taint from `outer` sizes or a cell prior RHS moves the affected cell path to generated quantities |
 
@@ -311,6 +312,27 @@ stripping the `outer` axis. `y_gen` is `int[N]` and `y_likelihood` is
 structure requires it, accepting the generated-quantity limits in the table
 above.
 
+A cell that only observes has no value worth collecting. End it with
+`nothing`:
+
+```julia
+@slic (; ts, ys) begin
+    sigma ~ exponential(1)
+    pk ~ plate(ts, ys) do t, yi
+        b ~ normal(0, 1)
+        m = b .* t
+        yi ~ normal(m, sigma)
+        nothing
+    end
+end
+```
+
+The cell's fresh bindings are still namespaced by the plate's LHS (`pk_b`,
+`pk_m`), but `pk` itself is not declared, filled or bound, in the same way
+that `node ~ submodel(...)` binds nothing for a sub-model without `return`.
+Collecting a value that nothing reads instead (`m` as the trailing
+expression) adds a generated-quantities copy of every cell value.
+
 ## Annotated loops: `@plate for … end` and `@scan begin … end`
 
 A top-level model loop that introduces parameters is written as an
@@ -323,7 +345,10 @@ Stan `for` loop into the blocks that own each statement. Inside the body:
   **model-scope array**, registered under its own name and visible after the
   loop; a whole vector cell is written `v[:, i]`;
 - a bare fresh name (`t ~ …`, `tmp = …`) is a **per-iteration local**, hoisted
-  to per-cell storage under a hygienic name (`x_t`);
+  to per-cell storage under a hygienic name (`x_t`, prefixed by the
+  alphabetically first array the loop fills, or `loop_i_t` — the loop
+  variables — when it fills none). For a namespace of your choosing, use the
+  `plate` do-form ending in `nothing`;
 - `y[i] ~ …` on data is an observation, with the usual `y_gen` twin. Observe
   the data itself: `obs = y[i]; obs ~ …` is refused, because a name defined
   by `=` has nothing to draw when `y` is omitted;
