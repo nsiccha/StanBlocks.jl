@@ -89,6 +89,90 @@ using TestItemRunner
     end
 end
 
+@testitem "artifact identity: make arguments naming toolchain paths key on what they name" tags=[:slic, :regression] begin
+    # Snag instantiate-cach-ad8bb476: a toolchain behind a moved link, or
+    # rebuilt in place, kept the make_args text and reused a library built
+    # against the old headers.
+    using StanBlocks
+    code = "parameters { real x; } model { x ~ normal(0, 1); }"
+    key(home, args) = StanBlocks._default_build_path(code, StanBlocks._native_build_context(home, args))
+    # No build environment variable names a path here, so only make_args do.
+    quiet = [name => nothing for name in keys(ENV) if name in ("MATH", "USER_HEADER", "CXX",
+        "CC", "AR", "LD", "RANLIB", "MAKE") || startswith(name, "TBB") ||
+        startswith(name, "BRIDGESTAN") || (startswith(name, "STAN") && !startswith(name, "STANBLOCKS_"))]
+    mktempdir() do dir
+        home = mkpath(joinpath(dir, "bridgestan"))
+        tree(name, header) = begin
+            root = joinpath(dir, name)
+            write(joinpath(mkpath(joinpath(root, "stan", "src")), "solver.hpp"), header)
+            mkpath(joinpath(root, "stan", "lib", "math"))
+            write(joinpath(mkpath(joinpath(root, "bin")), "stanc"), "stanc")
+            root
+        end
+        old, new = tree("toolchain-1", "old"), tree("toolchain-2", "fixed")
+        withenv(quiet...) do
+            # Values that name no path leave the context, and so every
+            # existing key, exactly as before.
+            plain = StanBlocks._native_build_context(home, ["STAN_THREADS=true", "O=0", "STAN_THREADS="])
+            @test !haskey(plain, :toolchain)
+
+            args(root) = ["STAN_THREADS=true", "STAN=$root/stan/",
+                "MATH=$root/stan/lib/math/", "STANC=$root/bin/stanc"]
+            context = StanBlocks._native_build_context(home, args(old))
+            @test context.toolchain.paths == ["STAN" => realpath(joinpath(old, "stan")),
+                "MATH" => realpath(joinpath(old, "stan", "lib", "math")),
+                "STANC" => realpath(joinpath(old, "bin", "stanc"))]
+            # MATH lies inside STAN, so its tree is stamped once.
+            @test first.(context.toolchain.stamps) == [realpath(joinpath(old, "bin", "stanc")),
+                realpath(joinpath(old, "stan"))]
+            @test key(home, args(old)) == key(home, args(old))
+            @test key(home, args(old)) != key(home, args(new))
+
+            # A relative value names a path in the BridgeStan home, where make runs.
+            mkpath(joinpath(home, "stan-fork"))
+            relative = StanBlocks._native_build_context(home, ["STAN=stan-fork/"])
+            @test relative.toolchain.paths == ["STAN" => realpath(joinpath(home, "stan-fork"))]
+
+            # A link moved to another tree selects another library, and moving
+            # it back selects the first one again. The link resolves to the
+            # tree it names; its text stays in the key as make receives it.
+            if !Sys.iswindows()
+                toolchain(root) = StanBlocks._native_build_context(home, args(root)).toolchain
+                link = joinpath(dir, "toolchain")
+                symlink(old, link)
+                via_old = key(home, args(link))
+                @test toolchain(link) == toolchain(old)
+                rm(link); symlink(new, link)
+                @test toolchain(link) == toolchain(new)
+                @test key(home, args(link)) != via_old
+                rm(link); symlink(old, link)
+                @test key(home, args(link)) == via_old
+            end
+
+            # Rebuilding a header or the stanc binary in place under the same
+            # path selects another library.
+            before = key(home, args(old))
+            write(joinpath(old, "stan", "src", "solver.hpp"), "rebuilt")
+            header_rebuilt = key(home, args(old))
+            @test header_rebuilt != before
+            write(joinpath(old, "bin", "stanc"), "stanc 2")
+            @test key(home, args(old)) != header_rebuilt
+            # A file added anywhere in the tree counts too.
+            stanc_rebuilt = key(home, args(old))
+            write(joinpath(old, "stan", "lib", "math", "extra.hpp"), "extra")
+            @test key(home, args(old)) != stanc_rebuilt
+        end
+        # Build environment variables name toolchain paths as make arguments
+        # do. The PATH-style search lists and BRIDGESTAN (the home itself,
+        # where make writes its objects) are not toolchain paths.
+        math = joinpath(new, "stan", "lib", "math")
+        @test StanBlocks._toolchain_paths(home, String[], ["MATH" => math]).paths ==
+            ["MATH" => realpath(math)]
+        @test isempty(StanBlocks._toolchain_paths(home, String[],
+            ["PATH" => new, "LD_LIBRARY_PATH" => new, "BRIDGESTAN" => home, "O" => "3"]).paths)
+    end
+end
+
 @testitem "build lock: a dead holder's lock is reclaimed, a live holder's never" tags=[:slic, :regression] begin
     using StanBlocks
     using Test: TestLogger

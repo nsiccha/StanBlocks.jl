@@ -128,8 +128,11 @@ end
     ode_ckrk ode_ckrk_tol
     ode_adams ode_adams_tol
     ode_bdf ode_bdf_tol
-    # Torsten (metrumresearchgroup/Torsten) analytical PK event-schedule solvers.
+    # Torsten (metrumresearchgroup/Torsten) PK event-schedule solvers.
     pmx_solve_onecpt pmx_solve_twocpt
+    pmx_solve_onecpt_effcpt pmx_solve_twocpt_effcpt pmx_solve_linode
+    pmx_solve_rk45 pmx_solve_bdf pmx_solve_adams
+    pmx_solve_onecpt_rk45 pmx_solve_onecpt_bdf pmx_solve_twocpt_rk45 pmx_solve_twocpt_bdf
     append_array
     append_row
     append_col
@@ -372,6 +375,10 @@ import Statistics
     rep_matrix(v::vector[m], n)::matrix[m, n]
     rep_matrix(x::real, m, n)::matrix[m,n]
     to_array_2d(v, m, n)::real[m,n]
+    # Stan's native matrix → 2-D real array (row-major). Matrix data ingests as
+    # `matrix`, so this is how data reaches an `array[,] real` slot such as
+    # Torsten's per-event `x_r`.
+    to_array_2d(x::matrix[m, n])::real[m, n]
     dot_product(x::vector[n], y::vector[n])::real
     matrix_exp(x::matrix[m,m])::matrix[m,m]
     rows_dot_product(x::matrix[m,n], y::matrix[m,n])::vector[m]
@@ -3316,6 +3323,93 @@ _pmx_solve_tracetype(x, ncmt) = StanType(
 )
 tracetype(x::CanonicalExpr{typeof(pmx_solve_onecpt)}) = _pmx_solve_tracetype(x, 2)
 tracetype(x::CanonicalExpr{typeof(pmx_solve_twocpt)}) = _pmx_solve_tracetype(x, 3)
+# The effect-compartment variants append one effect compartment to the same
+# closed-form models and take the same argument layout.
+tracetype(x::CanonicalExpr{typeof(pmx_solve_onecpt_effcpt)}) = _pmx_solve_tracetype(x, 3)
+tracetype(x::CanonicalExpr{typeof(pmx_solve_twocpt_effcpt)}) = _pmx_solve_tracetype(x, 4)
+# `pmx_solve_linode(time, …, ss, K, biovar, tlag)` solves `y' = K y` by matrix
+# exponential. nCmt is the row count of `K`: a `matrix`, or an `array[] matrix`
+# (one system matrix per event), whose rows are its second-to-last dimension.
+tracetype(x::CanonicalExpr{typeof(pmx_solve_linode)}) = StanType(
+    types.matrix, (stan_size(x.args[9], stan_ndim(x.args[9]) - 1), stan_size(x.args[1], 1))
+)
+
+# ── Torsten functor (general-ODE) and coupled event solvers ──
+#   pmx_solve_{rk45,bdf,adams}(f, nCmt, time, amt, rate, ii, evid, cmt, addl, ss,
+#       theta[, biovar, tlag][, x_r, x_i][, rel_tol, abs_tol, max_num_steps
+#       [, as_rel_tol, as_abs_tol, as_max_num_steps]])     → matrix[nCmt, nEvent]
+#   pmx_solve_{onecpt,twocpt}_{rk45,bdf}(f, nOde, time, …, ss, theta, biovar,
+#       tlag[, <tolerances>])                               → matrix[nPK + nOde, nEvent]
+# The first family integrates the user's ODE `f` over the same NONMEM event
+# schedule as the analytical solvers. The coupled family solves the one-/two-
+# compartment PK states (nPK = 2 / 3) in closed form and only the user's `nOde`
+# downstream states numerically; `f` receives the PK amounts as `y_pk`.
+#
+# Torsten's pmx stanc fixes the RHS signature; it is NOT Stan's variadic ODE
+# interface, so the solver cannot forward trailing arguments to `f`:
+#   vector f(real t, vector y, array[] real theta, data array[] real x_r, data array[] int x_i)
+#   vector f(real t, vector y, vector y_pk, array[] real theta, data array[] real x_r, data array[] int x_i)
+# Parameters reach `f` through `theta` (one row per event when `theta` is an
+# `array[,] real`), data through the optional per-event `x_r`/`x_i` rows; Torsten
+# passes empty arrays when they are omitted (and the coupled family has none).
+# The RHS is fetched at exactly that call (`_pmx_rhs_call`), and the solver call
+# names it in the function slot (`show(::CanonicalExpr{<:PMXFunctorSolver})`). A
+# capturing closure cannot be threaded through that fixed signature, so it is
+# refused at trace time rather than emitted as Stan stanc would reject.
+const PMXODESolver = Union{typeof.((pmx_solve_rk45, pmx_solve_bdf, pmx_solve_adams))...}
+const PMXCoupledSolver = Union{typeof.((
+    pmx_solve_onecpt_rk45, pmx_solve_onecpt_bdf, pmx_solve_twocpt_rk45, pmx_solve_twocpt_bdf,
+))...}
+const PMXFunctorSolver = Union{PMXODESolver, PMXCoupledSolver}
+_pmx_n_pk(::CanonicalExpr{<:Union{typeof(pmx_solve_onecpt_rk45), typeof(pmx_solve_onecpt_bdf)}}) = 2
+_pmx_n_pk(::CanonicalExpr{<:Union{typeof(pmx_solve_twocpt_rk45), typeof(pmx_solve_twocpt_bdf)}}) = 3
+_pmx_check_functor_call(x::CanonicalExpr) = begin
+    fname = nameof(head(x))
+    length(x.args) >= 11 || error(
+        "$fname: expected at least 11 arguments `(f, n, time, amt, rate, ii, evid, cmt, ",
+        "addl, ss, theta, …)`, got $(length(x.args))."
+    )
+    n = x.args[2]
+    (center_type(n) <: types.int && stan_ndim(n) == 0) || error(
+        "$fname: the second argument (the compartment / ODE count) must be an `int`, ",
+        "got `$(sigtype(n))`."
+    )
+    captures = _closure_captures(x.args[1])
+    isempty(captures) || error(
+        "$fname: the ODE right-hand side is a closure capturing ",
+        join(map(k -> "`$k`", collect(keys(type(x.args[1]).info.value.captures))), ", "), ". ",
+        "Torsten calls it with the fixed signature `f(t, y, theta, x_r, x_i)` and cannot ",
+        "forward captured values. Pass parameters through `theta` (array[] real) and data ",
+        "through `x_r`/`x_i`, and define the right-hand side as a `@deffun`."
+    )
+end
+tracetype(x::CanonicalExpr{<:PMXODESolver}) = begin
+    _pmx_check_functor_call(x)
+    StanType(types.matrix, (x.args[2], stan_size(x.args[3], 1)))
+end
+tracetype(x::CanonicalExpr{<:PMXCoupledSolver}) = begin
+    _pmx_check_functor_call(x)
+    n_cmt = stan_expr(CanonicalExpr(+, stan_expr(_pmx_n_pk(x)), x.args[2]))
+    StanType(types.matrix, (n_cmt, stan_size(x.args[3], 1)))
+end
+_pmx_row(a, context) = stan_ndim(a) >= 2 ? _jb_elem(a, context) : a
+_pmx_state(n) = StanExpr(:_, StanType(types.vector, (n,)))
+_pmx_states(x::CanonicalExpr{<:PMXODESolver}) = (_pmx_state(x.args[2]),)
+_pmx_states(x::CanonicalExpr{<:PMXCoupledSolver}) =
+    (_pmx_state(x.args[2]), _pmx_state(stan_expr(_pmx_n_pk(x))))
+_pmx_has_data_rows(x::CanonicalExpr{<:PMXODESolver}) =
+    length(x.args) >= 15 && stan_ndim(x.args[14]) == 2
+_pmx_has_data_rows(::CanonicalExpr{<:PMXCoupledSolver}) = false
+_pmx_data_rows(x, context) = _pmx_has_data_rows(x) ?
+    (_jb_elem(x.args[14], context), _jb_elem(x.args[15], context)) :
+    (StanExpr(:_, StanType(types.real, (stan_expr(0),))),
+     StanExpr(:_, StanType(types.int, (stan_expr(0),))))
+_pmx_rhs_call(x::CanonicalExpr{<:PMXFunctorSolver}, context) = CanonicalExpr(
+    x.args[1], _jb_elem(x.args[3], context), _pmx_states(x)...,
+    _pmx_row(x.args[11], context), _pmx_data_rows(x, context)...,
+)
+fetch_functions!(x::CanonicalExpr{<:PMXFunctorSolver}; info) =
+    fetch_functions!(_pmx_rhs_call(x, _trace_context(info)); info)
 
 # ── Generalised `jbroadcasted(f, a1, …, ak)` — trace-level element loop ──
 # Applies `f` element-wise over its iterated args (any arity, any position):

@@ -2781,6 +2781,140 @@ softmax for a reduction.
 end
 
 """
+An opted-in deterministic helper can call Stan's dot-product family in Julia:
+`dot_product`, `dot_self`, and the `rows_`/`columns_` products and self
+products. The same authored calls emit Stan. Regression for snag
+`called-a-stanblo-1cc2d09d`.
+"""
+@testitem "slic: @juliacompat dot-product family" tags=[:slic, :stanc, :bridgestan] setup=[StanBlocksImports] begin
+    helpers = Module(:JuliaCompatDotProducts)
+    Core.eval(helpers, :(using StanBlocks))
+    Core.eval(helpers, quote
+        @deffun @juliacompat begin
+            dp(x::vector[n], y::vector[n])::real = dot_product(x, y)
+            ds(x::vector[n])::real = dot_self(x)
+            rdp(x::matrix[m, n], y::matrix[m, n])::vector[m] = rows_dot_product(x, y)
+            cdp(x::matrix[m, n], y::matrix[m, n])::row_vector[n] = columns_dot_product(x, y)
+            rds(x::matrix[m, n])::vector[m] = rows_dot_self(x)
+            cds(x::matrix[m, n])::row_vector[n] = columns_dot_self(x)
+            # Independently sized arguments leave the size check to the builtin.
+            dp_free(x::vector[n], y::vector[k])::real = dot_product(x, y)
+            rdp_free(x::matrix[m, n], y::matrix[p, q])::vector[m] = rows_dot_product(x, y)
+            cdp_free(x::matrix[m, n], y::matrix[p, q])::row_vector[n] = columns_dot_product(x, y)
+        end
+    end)
+    call(f, args...) = Base.invokelatest(getproperty(helpers, f), args...)
+
+    x, y = [0.2, -0.5, 1.5], [1.0, 2.0, 3.0]
+    X = [1.0 2.0 3.0; -1.0 0.5 2.0]
+    Y = [0.5 0.0 -1.0; 2.0 1.0 1.0]
+    @test call(:dp, x, y) ≈ 3.7 atol=1e-14
+    @test call(:dp, [1, 2], [3, 4]) == 11
+    @test call(:ds, x) ≈ 2.54 atol=1e-14
+    @test call(:rdp, X, Y) ≈ [-2.5, 0.5] atol=1e-14
+    @test call(:cdp, X, Y) ≈ [-1.5, 0.5, -1.0] atol=1e-14
+    @test call(:rds, X) ≈ [14.0, 5.25] atol=1e-14
+    @test call(:cds, X) ≈ [2.0, 4.25, 13.0] atol=1e-14
+    @test call(:dp, Float64[], Float64[]) == 0.0
+    @test call(:rdp, zeros(2, 0), zeros(2, 0)) == [0.0, 0.0]
+    @test call(:cds, zeros(0, 2)) == [0.0, 0.0]
+    # Refused by Stan Math's matching-size check, including a singleton
+    # dimension that broadcasting would otherwise stretch.
+    @test_throws DimensionMismatch call(:dp_free, x, y[1:2])
+    @test_throws DimensionMismatch call(:rdp_free, X, Y[:, 1:2])
+    @test_throws DimensionMismatch call(:rdp_free, X, Y[1:1, :])
+    @test_throws DimensionMismatch call(:cdp_free, X, Y[1:1, :])
+    @test_throws DimensionMismatch call(:cdp_free, X, Y[:, 1:1])
+
+    model = Core.eval(helpers, quote
+        @slic (; x = $x, X = $X, Y = $Y, obs = 1.3) begin
+            theta ~ normal(0.0, 1.0)
+            mu = dp(x, x * theta) + ds(x * theta) + sum(rdp(X * theta, Y)) +
+                 sum(cdp(X, Y * theta)) + sum(rds(X * theta)) + sum(cds(Y * theta))
+            obs ~ normal(mu, 10.0)
+        end
+    end)
+    code = stan_code(model)
+    for call_text in ("dot_product(x, y)", "dot_self(x)", "rows_dot_product(x, y)",
+                      "columns_dot_product(x, y)", "rows_dot_self(x)", "columns_dot_self(x)")
+        @test occursin(call_text, code)
+    end
+    @test stanc_check(code; warn_pedantic=false).ok
+
+    # Compare the native Stan density and gradient against the Julia helper
+    # chain. Taking density differences removes any normalization convention.
+    problem = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(problem) == 1
+    julia_mu(t) = call(:dp, x, x * t) + call(:ds, x * t) + sum(call(:rdp, X * t, Y)) +
+        sum(call(:cdp, X, Y * t)) + sum(call(:rds, X * t)) + sum(call(:cds, Y * t))
+    julia_lp(t) = -0.5t^2 - 0.5((1.3 - julia_mu(t)) / 10)^2
+    t0, t1 = 0.0, 0.4
+    lp0 = LogDensityProblems.logdensity(problem, [t0])
+    lp1, grad1 = LogDensityProblems.logdensity_and_gradient(problem, [t1])
+    @test lp1 - lp0 ≈ julia_lp(t1) - julia_lp(t0) atol=1e-9
+    h = 1e-6
+    @test grad1[1] ≈ (julia_lp(t1 + h) - julia_lp(t1 - h)) / (2h) atol=1e-6
+end
+
+@testsnippet JuliaCompatDotProductADFixtures begin
+    using StanBlocks
+    import StanBlocks.stan: @deffun
+    @deffun @juliacompat begin
+        ad_dp(x::vector[n], y::vector[n])::real = dot_product(x, y)
+        ad_ds(x::vector[n])::real = dot_self(x)
+        ad_rdp(x::matrix[m, n], y::matrix[m, n])::vector[m] = rows_dot_product(x, y)
+        ad_cdp(x::matrix[m, n], y::matrix[m, n])::row_vector[n] = columns_dot_product(x, y)
+        ad_rds(x::matrix[m, n])::vector[m] = rows_dot_self(x)
+        ad_cds(x::matrix[m, n])::row_vector[n] = columns_dot_self(x)
+    end
+end
+
+"""
+Mooncake differentiates the Julia dot-product methods, and each infers a
+concrete result type.
+"""
+@testitem "slic: @juliacompat dot-product family is Mooncake differentiable" tags=[:slic, :ad] setup=[StanBlocksImports, JuliaCompatDotProductADFixtures] begin
+    import Mooncake
+    gradient(f, x...) = begin
+        cache = Mooncake.prepare_gradient_cache(f, x...)
+        Mooncake.value_and_gradient!!(cache, f, x...)
+    end
+
+    x, y = [0.2, -0.5, 1.5], [1.0, 2.0, 3.0]
+    X = [1.0 2.0 3.0; -1.0 0.5 2.0]
+    Y = [0.5 0.0 -1.0; 2.0 1.0 1.0]
+    w_rows, w_cols = [0.7, -1.1], [0.3, 1.2, -0.4]
+
+    value, (_, dx, dy) = gradient(ad_dp, x, y)
+    @test value ≈ ad_dp(x, y) atol=1e-12
+    @test dx ≈ y atol=1e-12
+    @test dy ≈ x atol=1e-12
+    _, (_, dself) = gradient(ad_ds, x)
+    @test dself ≈ 2x atol=1e-12
+
+    # Weighted sums give every output element a distinct cotangent.
+    _, (_, dX, dY) = gradient((A, B) -> w_rows' * ad_rdp(A, B), X, Y)
+    @test dX ≈ w_rows .* Y atol=1e-12
+    @test dY ≈ w_rows .* X atol=1e-12
+    _, (_, dX, dY) = gradient((A, B) -> w_cols' * ad_cdp(A, B), X, Y)
+    @test dX ≈ w_cols' .* Y atol=1e-12
+    @test dY ≈ w_cols' .* X atol=1e-12
+    _, (_, dX) = gradient(A -> w_rows' * ad_rds(A), X)
+    @test dX ≈ 2w_rows .* X atol=1e-12
+    _, (_, dX) = gradient(A -> w_cols' * ad_cds(A), X)
+    @test dX ≈ 2w_cols' .* X atol=1e-12
+
+    @test Base.return_types(ad_dp, (Vector{Float64}, Vector{Float64})) == [Float64]
+    @test Base.return_types(ad_ds, (Vector{Float64},)) == [Float64]
+    for f in (ad_rdp, ad_cdp)
+        @test Base.return_types(f, (Matrix{Float64}, Matrix{Float64})) == [Vector{Float64}]
+    end
+    for f in (ad_rds, ad_cds)
+        @test Base.return_types(f, (Matrix{Float64},)) == [Vector{Float64}]
+    end
+end
+
+"""
 Verify `slic: normal(loc,scale)` in an isolated test item.
 """
 @testitem "slic: normal(loc,scale)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
@@ -6927,6 +7061,145 @@ trajectory inside the cell before selecting a state.
     end
     @test transpiles(inline_selection)
     @test stanc_compiles(inline_selection)
+end
+
+"""
+Torsten's functor event solvers (`pmx_solve_rk45`/`bdf`/`adams` and the coupled
+`pmx_solve_{onecpt,twocpt}_{rk45,bdf}`) call the right-hand side with Torsten's
+fixed signature `f(t, y, theta, x_r, x_i)` (coupled: `f(t, y, y_pk, theta, x_r,
+x_i)`), not Stan's variadic ODE one, so the `@deffun` must be emitted at exactly
+that signature and named in the solver's function slot. Snag
+`torsten-functor-96ddfe89`. The Torsten stanc and BridgeStan halves run only where
+the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
+"""
+@testitem "slic: Torsten functor pmx solvers emit the fixed-signature RHS" tags=[:slic, :stanc, :bridgestan, :torsten] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block
+
+    @deffun begin
+        pmx_test_theta(cl::real, v::real, ka::real)::real[3] = begin
+            th::real[3]
+            th[1] = cl
+            th[2] = v
+            th[3] = ka
+            th
+        end
+        pmx_test_rhs(t::real, y::vector[n], theta::real[k], x_r::real[m], x_i::int[l])::vector[n] = begin
+            dy::vector[n]
+            dy[1] = -theta[3] * y[1]
+            dy[2] = theta[3] * y[1] - theta[1] / theta[2] * y[2]
+            dy
+        end
+        # `y' = K y` for the same one-compartment system, for `pmx_solve_linode`.
+        pmx_test_K(cl::real, v::real, ka::real)::matrix[2, 2] = begin
+            K = rep_matrix(0.0, 2, 2)
+            K[1, 1] = -ka
+            K[2, 1] = ka
+            K[2, 2] = -cl / v
+            K
+        end
+        # Effect compartment driven by the closed-form central amount `y_pk[2]`.
+        pmx_test_effect_rhs(t::real, y::vector[n], y_pk::vector[p], theta::real[k], x_r::real[m], x_i::int[l])::vector[n] = begin
+            dy::vector[n]
+            dy[1] = theta[4] * (y_pk[2] - y[1])
+            dy
+        end
+    end
+
+    time = [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 12.5, 16.0, 24.0]
+    N = length(time)
+    data = Dict{Symbol,Any}(
+        :time => time, :amt => [100.0; zeros(N - 1)], :rate => zeros(N),
+        :ii => [12.0; zeros(N - 1)], :evid => [1; zeros(Int, N - 1)],
+        :cmt => [1; fill(2, N - 1)], :addl => [1; zeros(Int, N - 1)],
+        :ss => zeros(Int, N), :obs => collect(2:N),
+        :y => [0.6, 1.0, 1.4, 1.5, 1.0, 1.9, 1.4, 0.6],
+        :xrm => ones(N, 1), :xi => ones(Int, N, 1),
+    )
+    pk_model(call) = StanBlocks.SlicModel(quote
+        cl ~ lognormal(log(5.0), 0.5)
+        v ~ lognormal(log(50.0), 0.5)
+        ka ~ lognormal(log(1.2), 0.5)
+        sigma ~ exponential(10.0)
+        ta = to_array_1d(time)
+        aa = to_array_1d(amt)
+        ra = to_array_1d(rate)
+        ia = to_array_1d(ii)
+        th = pmx_test_theta(cl, v, ka)
+        the = to_array_1d(append_row(to_vector(th), 0.7))
+        xr = to_array_2d(xrm)
+        x = $call
+        cp = to_vector(x[2, :]) / v
+        y ~ lognormal(log(cp[obs]), sigma)
+    end, copy(data), @__MODULE__)
+
+    rhs_sig = r"vector pmx_test_rhs\(\s*real t,\s*vector y,\s*array\[\] real theta,\s*array\[\] real x_r,\s*array\[\] int x_i\s*\)"
+    effect_sig = r"vector pmx_test_effect_rhs\(\s*real t,\s*vector y,\s*vector y_pk,\s*array\[\] real theta,\s*array\[\] real x_r,\s*array\[\] int x_i\s*\)"
+    cases = Pair{String,Any}[
+        "rk45" => :(pmx_solve_rk45(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th)),
+        "rk45+theta-tol" => :(pmx_solve_rk45(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
+            1e-8, 1e-8, 100000)),
+        "bdf+tol" => :(pmx_solve_bdf(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
+            rep_array(1.0, 2), rep_array(0.0, 2), 1e-8, 1e-8, 100000)),
+        "adams+x_r/x_i" => :(pmx_solve_adams(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
+            rep_array(1.0, 2), rep_array(0.0, 2), xr, xi)),
+        "linode" => :(pmx_solve_linode(ta, aa, ra, ia, evid, cmt, addl, ss,
+            pmx_test_K(cl, v, ka), rep_array(1.0, 2), rep_array(0.0, 2))),
+        "onecpt_effcpt" => :(pmx_solve_onecpt_effcpt(ta, aa, ra, ia, evid, cmt, addl, ss, the)),
+        "onecpt_rk45" => :(pmx_solve_onecpt_rk45(pmx_test_effect_rhs, 1, ta, aa, ra, ia, evid, cmt, addl, ss,
+            the, rep_array(1.0, 3), rep_array(0.0, 3))),
+        "twocpt_bdf" => :(pmx_solve_twocpt_bdf(pmx_test_effect_rhs, 1, ta, aa, ra, ia, evid, cmt, addl, ss,
+            to_array_1d(append_row(append_row(to_vector(th), 1.0), the[4])), rep_array(1.0, 4), rep_array(0.0, 4))),
+    ]
+    codes = Dict(label => stan_code(pk_model(call)) for (label, call) in cases)
+
+    # The RHS is emitted once, at Torsten's fixed signature, and named in the
+    # solver's function slot — no captures or trailing parameters are threaded.
+    for label in ("rk45", "rk45+theta-tol", "bdf+tol", "adams+x_r/x_i")
+        @test occursin(rhs_sig, stan_block(codes[label], "functions"))
+        @test occursin(r"matrix\[2, time_n\] x = pmx_solve_(rk45|bdf|adams)\(\s*pmx_test_rhs,\s*2,", codes[label])
+    end
+    @test occursin(r"pmx_solve_adams\([^;]*,\s*xr,\s*xi\s*\)", codes["adams+x_r/x_i"])
+    # The coupled solvers return the closed-form PK compartments plus nOde.
+    @test occursin(effect_sig, stan_block(codes["onecpt_rk45"], "functions"))
+    @test occursin(r"matrix\[\(2 \+ 1\), time_n\] x = pmx_solve_onecpt_rk45\(\s*pmx_test_effect_rhs,\s*1,", codes["onecpt_rk45"])
+    @test occursin(r"matrix\[\(3 \+ 1\), time_n\] x = pmx_solve_twocpt_bdf\(", codes["twocpt_bdf"])
+    @test occursin("matrix[2, time_n] x = pmx_solve_linode(", codes["linode"])
+    @test occursin("matrix[3, time_n] x = pmx_solve_onecpt_effcpt(", codes["onecpt_effcpt"])
+
+    # A closure capturing a parameter cannot ride Torsten's fixed signature;
+    # supporting it needs a generated theta-packing adapter (capability gap).
+    capturing = pk_model(:(pmx_solve_rk45((t, yy, tht, xrr, xii) -> -ka * yy, 2, ta, aa, ra, ia,
+        evid, cmt, addl, ss, th)))
+    @test_broken (try stan_code(capturing); true catch; false end)
+
+    torsten = joinpath(homedir(), ".local/opt/torsten")
+    if !isdir(torsten)
+        @test_skip "Torsten build not provisioned at $torsten"
+    else
+        tstanc = joinpath(torsten, "cmdstan/bin/stanc")
+        for (label, code) in codes
+            result = withenv("STANC_PATH" => tstanc) do
+                stanc_check(code; warn_pedantic=false)
+            end
+            result.ok || @info "Torsten stanc rejected $label" result.output
+            @test result.ok
+        end
+
+        # The same one-compartment model through the ODE solver and the
+        # closed-form one: log density and gradient agree to solver tolerance.
+        make_args = ["STAN_THREADS=true", "STAN=$torsten/cmdstan/stan/",
+            "MATH=$torsten/cmdstan/stan/lib/stan_math/", "STANC=$torsten/cmdstan/bin/stanc"]
+        ode = instantiate(pk_model(:(pmx_solve_rk45(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
+            rep_array(1.0, 2), rep_array(0.0, 2), 1e-10, 1e-10, 1000000))); make_args)
+        closed = instantiate(pk_model(:(pmx_solve_onecpt(ta, aa, ra, ia, evid, cmt, addl, ss, th))); make_args)
+        @test LogDensityProblems.dimension(ode) == LogDensityProblems.dimension(closed) == 4
+        for q in ([0.1, -0.2, 0.05, -0.3], [-0.3, 0.2, 0.4, 0.1])
+            lo, go = LogDensityProblems.logdensity_and_gradient(ode, q)
+            lc, gc = LogDensityProblems.logdensity_and_gradient(closed, q)
+            @test lo ≈ lc atol=1e-6
+            @test go ≈ gc atol=1e-5
+        end
+    end
 end
 
 @testitem "slic: plate context stops at registered UDF bodies" tags=[:slic, :plate, :ragged, :stanc, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
