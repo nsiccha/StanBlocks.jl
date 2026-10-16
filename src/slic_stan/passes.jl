@@ -245,7 +245,12 @@ end
 backward!(x::SamplingExpr; info) = begin 
     lhs, rhs = x.args
     key = _base_lhs_symbol(lhs)
-    if key in keys(info) && _is_fresh_decl(info[key]) && _decl_role(info[key]) == :sampled
+    # Slice statements after a `flat(…)` declaration (forward.jl,
+    # `_record_slice_support!`) route exactly like a fresh declaration's.
+    sliced = key in keys(info) && (
+        (_is_fresh_decl(info[key]) && _decl_role(info[key]) == :sampled) ||
+        _is_flat_decl(info[key]))
+    if sliced
         if (lqual(info[key]) == :affects_likelihood || !_gq_redrawable(info[key])) && !cv(info[key])
             # A plate parameter used by a later likelihood remains a parameter;
             # propagate that reachability into its prior's RHS exactly like the
@@ -322,7 +327,12 @@ backward!(x::StanExpr{Symbol}; info) = begin
     # reached through an indexed sampling LHS (`obs[i] ~ normal(...)`, where the
     # generic descent hits bare `obs`) is the live case. Absent name ⇒ bind `x`.
     already_reached = key in keys(info) && lqual(info[key]) == :affects_likelihood
-    certified = key in keys(info) && get(type(info[key]).info, :ragged_density, false)
+    # A declaration whose slice statements set its support (forward.jl,
+    # `_finalize_slice_supports!`) gets its bounds after the forward pass, so an
+    # occurrence forwarded earlier carries none: keep the current entry, as for
+    # the ragged-density certificate.
+    certified = key in keys(info) && (get(type(info[key]).info, :ragged_density, false) ||
+        !isempty(_slice_records(info[key])))
     source = certified ? info[key] : x
     reached = remake(source; lqual=:affects_likelihood)
     info[key] = reached
@@ -747,6 +757,14 @@ _assert_twin_free(stem, suffix, info) = begin
 end
 Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     lhs, rhs = x.args
+    # A re-drawn `tau::vector[n] ~ flat(…)` whose coordinates slice statements
+    # sample (forward.jl, `_record_slice_support!`): `flat` has nothing to draw
+    # from, so only DECLARE `tau` here; each slice's re-draw fills its block.
+    if qual(lhs) != :data && expr(lhs) isa Symbol && _is_flat_rhs(rhs) &&
+            !isempty(_slice_records(info[expr(lhs)]))
+        t = remake(type(info[expr(lhs)]); value=missing, qual=:quantities)
+        return push!(b, StanExpr(CanonicalExpr(:(::), StanExpr(expr(lhs), t)), t); info)
+    end
     # if hasvalue(lhs)
     is_observation = qual(lhs) == :data
     if is_observation
