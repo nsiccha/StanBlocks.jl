@@ -10176,8 +10176,7 @@ end
 
 """
 Snag rng-draw-read-by-9ad81a23 (reported by a downstream module): a random draw
-that reads a parameter is a generated quantity, and so is everything computed
-from it.
+is a generated quantity, and so is everything computed from it.
 
 Stan allows a random number generator only in transformed data, generated
 quantities and `*_rng` functions. A draw's qualifier used to be the maximum of its
@@ -10191,10 +10190,12 @@ A sampled parameter whose prior reads a draw is re-drawn in generated quantities
 as a cv-tainted one is. A likelihood that is not held out cannot read a draw; that
 is a trace-time error naming the draw. A draw is also never cell-invariant: the
 plate loop-invariant hoist used to lift `normal_rng(mu0, 1.0)` out of the cell
-loop, silently sharing one draw across all cells. A draw from data alone remains a
-transformed-data constant.
+loop, silently sharing one draw across all cells. A draw from data alone is a
+generated quantity too: in transformed data it was one fixed draw per run that no
+output carried, while the `~` spelling of the same draw is already re-drawn in
+generated quantities.
 """
-@testitem "slic: a random draw that reads a parameter is a generated quantity" tags=[:slic, :plate, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: a random draw is a generated quantity" tags=[:slic, :plate, :stanc, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
     maybecv = StanBlocks.stan.maybecv
     @deffun begin
@@ -10266,6 +10267,11 @@ transformed-data constant.
             z ~ normal(b, 1.0)
             y ~ normal(z, 1.0)
         end), "`z`"),
+        (@slic(begin
+            k = poisson_rng(3.0)
+            z ~ std_normal(; n = k)
+            y ~ normal(sum(z), 1.0)
+        end), "`z`"),
     )
         err = try
             stan_code(spelling(; y))
@@ -10294,7 +10300,7 @@ transformed-data constant.
                 e = normal_rng(0.0, 1.0)
                 x[i] = e + 0.5
             end
-        end), "transformed data"),
+        end), "generated quantities"),
     )
         code = stan_code(model)
         @test stanc_compiles(model)
@@ -10312,17 +10318,32 @@ transformed-data constant.
         @test occursin(r"theta\[plate_i__pl_\d+\] = normal_rng\(mu0, 1\.0\);", stan_block(code, "generated quantities"))
     end
 
-    # A draw from data alone stays a transformed-data constant, so simulated data
-    # can still be conditioned on in the same program.
-    let model = @slic((; n = 3), begin
+    # A draw from data alone is a generated quantity too, written to the output.
+    let model = @slic((; n = 3, obs = y), begin
+            mu ~ std_normal(; n = n)
+            obs ~ normal(mu, 1.0)
+            y_rep = vector_std_normal_rng(n)
+        end), code = stan_code(model)
+        @test stanc_compiles(model)
+        @test !occursin("_rng", stan_block(code, "transformed data"))
+        @test occursin("vector[n] y_rep = vector_std_normal_rng(n);", stan_block(code, "generated quantities"))
+        @test only(o for o in stan_descriptor(model).outputs if o.name == :y_rep).kind == :generated_quantity
+    end
+
+    # refused: a likelihood cannot condition on a draw (it is a generated quantity);
+    # simulated data comes from the prior-predictive program, bound back as data.
+    err = try
+        stan_code(@slic((; n = 3), begin
             mu ~ std_normal()
             y_sim = vector_std_normal_rng(n)
             y_sim ~ normal(mu, 1.0)
-        end), code = stan_code(model)
-        @test stanc_compiles(model)
-        @test occursin("vector[n] y_sim = vector_std_normal_rng(n);", stan_block(code, "transformed data"))
-        @test occursin("y_sim ~ normal(mu, 1.0);", stan_block(code, "model"))
+        end))
+        nothing
+    catch e
+        sprint(showerror, e)
     end
+    @test err !== nothing
+    @test occursin("observes `y_sim`, which holds a random draw", err)
 end
 
 """

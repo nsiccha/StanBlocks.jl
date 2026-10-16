@@ -1703,15 +1703,21 @@ forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
     end
     if name in keys(info)
         q = stan.qual(info[name])
+        q == :quantities && !stan.cv(info[name]) && error(
+            "Sampling statement `$name ~ ...` observes `$name`, which holds a random draw (an ",
+            "`_rng` call or a value computed from one) and is therefore a generated quantity — ",
+            "a likelihood cannot condition on it. To fit simulated data, simulate it with the ",
+            "response omitted (the prior-predictive program) and bind the draw as data."
+        )
         q == :data || error("Sampling statement `$name ~ ...` has LHS bound to a $q-qualified value — only data-qualified LHS is supported here (submodel kwargs typically refer to caller-provided data).")
         stan.cv(rhs) && (info[name] = remake(info[name]; cv=true))
     else
         autotype = _broadcast_fresh_sample_type(stan.autotype(rhs), rhs)
         cv = stan.cv(autotype) || stan.cv(rhs)
-        # A prior that reads a random draw (`_rng_qual`, passes.jl) cannot be a
-        # model-block density: the parameter is itself a generated quantity,
-        # re-drawn from that prior exactly like a cv-tainted one.
-        qual = cv || stan.qual(rhs) == :quantities ? :quantities : :parameter
+        # A prior (or declared size) that reads a random draw (`_rng_qual`,
+        # passes.jl) cannot be a model-block density: the parameter is itself a
+        # generated quantity, re-drawn from that prior exactly like a cv-tainted one.
+        qual = cv || _reads_draw(rhs) || _reads_draw(autotype) ? :quantities : :parameter
         info[name] = StanExpr(name, remake(autotype; qual, cv, decl_role=:sampled))
     end
     validate_sampling_rhs(info[name], rhs; info)
@@ -1965,9 +1971,9 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # generated quantities (snag typed-lhs-size). `stan.cv(base_lhs_type)` folds
     # in the same `any(cv, stan_size)` the autotype path uses.
     cv_args = any(stan.cv, args_resolved) || stan.cv(base_lhs_type)
-    # A prior reading a random draw makes the parameter a generated quantity too
-    # (the bare-LHS path above; `_rng_qual`, passes.jl).
-    qual = cv_args || stan.qual(rhs_forwarded) == :quantities ? :quantities : :parameter
+    # A prior or declared size reading a random draw makes the parameter a
+    # generated quantity too (the bare-LHS path above; `_reads_draw`, passes.jl).
+    qual = cv_args || _reads_draw(rhs_forwarded) || _reads_draw(base_lhs_type) ? :quantities : :parameter
     info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args, decl_role=:sampled))
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     validate_sampling_rhs(info[name], rhs_stan; info)
@@ -2160,7 +2166,7 @@ _forward_indexed_sampling!(x; info) = begin
             tainted = cv(base) || cv(rhs)
             # A cell prior that reads a random draw makes the cell value a
             # generated quantity as well, without the cv flag (`_rng_qual`, passes.jl).
-            drawn = tainted || qual(rhs) == :quantities
+            drawn = tainted || _reads_draw(rhs) || _reads_draw(base)
             info[k] = drawn ?
                 remake(base; decl_role=:sampled, qual=:quantities, cv=tainted) :
                 remake(base; decl_role=:sampled, qual=:parameter)

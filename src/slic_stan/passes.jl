@@ -59,15 +59,23 @@ end
 _tracetype(x, _context) = tracetype(x)
 # Stan allows a random-number generator only in transformed data, generated
 # quantities, and functions whose names end in `_rng` — the suffix is Stan's own
-# marker for an RNG-bearing callable, builtin or user-defined. A draw that reads a
-# parameter is therefore a generated quantity by construction. Qualify it
-# `:quantities` (the top of `data < parameter < quantities`): every expression and
-# compiler-owned fill that reads it then takes that qualifier through the ordinary
-# `maximum(qual, …)` / `_promote_qual` propagation, so the whole chain routes to
-# generated quantities, never to transformed parameters (snag
-# `rng-draw-read-by-9ad81a23`). A draw from data alone stays `:data`: a
-# transformed-data constant drawn once per run, which Stan allows.
-_rng_qual(x::CanonicalExpr, q) = q == :parameter && _is_rng_callee(head(x)) ? :quantities : q
+# marker for an RNG-bearing callable, builtin or user-defined. Every draw is a
+# generated quantity: qualify it `:quantities` (the top of
+# `data < parameter < quantities`), and every expression and compiler-owned fill
+# that reads it takes that qualifier through the ordinary `maximum(qual, …)` /
+# `_promote_qual` propagation, so the whole chain routes to generated quantities,
+# never to transformed parameters (snag `rng-draw-read-by-9ad81a23`). That holds
+# for a draw from data alone too: in transformed data it would be one fixed draw
+# per run that no output carries, whereas the `~` spelling of the same draw (a
+# prior no likelihood reaches) is already re-drawn in generated quantities.
+_rng_qual(x::CanonicalExpr, q) = q in (:data, :parameter) && _is_rng_callee(head(x)) ? :quantities : q
+# Whether a value — or a size it is declared with — reads a random draw. The
+# fresh-parameter sites (forward.jl) treat this like `cv` taint, which likewise
+# checks the declared size: such a parameter is re-drawn in generated quantities,
+# because a model-block density or a `parameters` size cannot read a draw.
+_reads_draw(_) = false
+_reads_draw(x::StanExpr) = qual(x) == :quantities || _reads_draw(type(x))
+_reads_draw(x::StanType) = qual(x) == :quantities || any(_reads_draw, stan_size(x))
 _is_rng_callee(f) = false
 _is_rng_callee(f::Function) = endswith(String(nameof(f)), "_rng")
 # Raw-AST callees (the plate pass inspects source before tracing).
