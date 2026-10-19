@@ -234,6 +234,29 @@ groups = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]
 end
 ```
 
+Elementwise arithmetic keeps the groups. `2.0 * x`, `a + b * x`, `x / s`,
+`x .^ 2`, `-x`, and `x + z` / `x .* z` for two RaggedVectors with the same
+group ends all give a `RaggedVector`. The result works anywhere a RaggedVector
+does: as a ragged law argument, indexed by group, or passed to an `@inline`
+RaggedVector UDF:
+
+```julia
+const RaggedVector = StanBlocks.RaggedVector   # not exported; alias it to name it
+@deffun @inline exp_rv(x::RaggedVector) = RaggedVector(exp(x.mem), x.ends)
+
+@slic (; y = [[1.0, 2.0], [3.0]], x = [[0.1, 0.2], [0.3]], z = [[1.1, 1.2], [1.3]]) begin
+    mu ~ std_normal(); a ~ std_normal(); b ~ std_normal()
+    y ~ normal(mu, exp_rv(a + (b - a) * x) + z .^ 2)
+end
+```
+
+Group `g` of the result is the same arithmetic over each operand's group `g`.
+Two RaggedVector operands must have the same group ends: transpile rejects
+known differing values, and Stan checks rebound data at runtime. Forms with no
+elementwise meaning are rejected with the supported forms listed: `x * z`,
+`s / x`, `x ^ 2`, and a dense vector operand (per group or per element?). Write
+`.*`, `./`, and `.^` for the elementwise versions.
+
 `ragged_start`, `ragged_end`, and `ragged_length` expose flat offsets for UDF
 size math. `EachCol(X)` and `EachRow(X)` are zero-cost dense views:
 `EachCol(X)[j]` lowers to `col(X, j)`, and `EachRow(X)[i]` lowers to
