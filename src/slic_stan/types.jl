@@ -100,6 +100,7 @@ abstract type AbstractStanType end
 struct StanExpr{E,T<:AbstractStanType}
     expr::E
     type::T
+    StanExpr{E,T}(expr, type) where {E,T<:AbstractStanType} = new{E,T}(expr, type)
 end
 # A `Type`-valued expr (a `tokenof{T}` head, e.g. the `RaggedVector` in
 # `RaggedVector(mem, ends)`) states `E = typeof(expr)` explicitly. Given an `expr`
@@ -108,6 +109,16 @@ end
 # against that unsound type can then fail with "fatal error in type inference
 # (type bound)" (snag raggedvector-ari-19d214fa: `2.0 .* rv`).
 StanExpr(expr::Type, type::T) where {T<:AbstractStanType} = StanExpr{typeof(expr),T}(expr, type)
+# A traced call is parameterized by its HEAD only (`StanExpr{CanonicalExpr{H}}`),
+# never by its argument types. Keying `E` on the full `typeof(expr)` put the whole
+# expression tree into the type domain: every distinct sub-expression shape minted
+# a new concrete type, and every walker plus the Base generics it calls was
+# re-inferred and re-compiled per shape and per model (snag
+# `stanblocks-trans-f759fe4f`: 100% of a mid-size model's ~4 min transpile was
+# JIT). Dispatch on the call itself still sees its arguments' `StanExpr` types one
+# level down, which is all `tracetype`/`@defsig` match on.
+StanExpr(expr, type::AbstractStanType) = StanExpr{_stan_expr_param(expr),typeof(type)}(expr, type)
+_stan_expr_param(x) = typeof(x)
 struct StringStanType <: AbstractStanType
     val::AbstractString
 end
@@ -133,6 +144,7 @@ struct CanonicalExpr{H,A}
     CanonicalExpr(head::Val{:block}, args...; kwargs...) = new{Val{:block},typeof(collect(args))}(head, collect(args), (;kwargs...))
     # CanonicalExpr(head::Val{:tuple})
 end
+_stan_expr_param(::CanonicalExpr{H}) where {H} = CanonicalExpr{H}
 CanonicalExprV{H,A} = CanonicalExpr{Val{H},A}
 BlockExpr{A} = CanonicalExprV{:block,A}
 AssignmentExpr{L,R} = CanonicalExprV{:(=),Tuple{L,R}}

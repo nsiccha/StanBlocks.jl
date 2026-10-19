@@ -627,7 +627,7 @@ distribution_blocks(x::StanExpr{<:DeclExpr}; info) = begin
         _qual_blocks(qual(base), base; info)
     end
 end
-distribution_blocks(x::StanExpr{<:AssignmentExpr}; info) =
+distribution_blocks(x::StanExpr{<:CanonicalExprV{:(=)}}; info) =
     _qual_blocks(qual(info[_base_lhs_symbol(expr(x))]), x; info)
 # A compiler-injected `for` loop whose body is fills (Feature-1 ragged-simplex:
 # `for(g in 1:G) p_flat[lo:hi] = simplex_jacobian(...)`, G data-sized so it can't
