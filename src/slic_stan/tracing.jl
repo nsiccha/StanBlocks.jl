@@ -469,11 +469,12 @@ canonical(x::CanonicalExprV{:parameters}) = if all(isexpr(:kw), x.args)
 else
     CanonicalExpr(x.head, ensure_kw.(x.args)...)
 end
-canonical(x::CanonicalExprV{:call}) = begin
+Base.@nospecializeinfer canonical(@nospecialize(x::CanonicalExprV{:call})) = begin
     f = broadcast_callee(x.args[1])
     args = []
     kwargs = []
-    for arg in x.args[2:end]
+    for i in 2:length(x.args)
+        arg = x.args[i]
         if isexpr(arg, :parameters)
             @assert all(isexpr(:kw), arg.args) "canonical(:call): `:parameters` block must contain only `:kw` entries, got `$(arg.args)`."
             for argi in arg.args
@@ -566,7 +567,7 @@ forward!(;info) = x->forward!(x; info)
 # Argument tuples differ in concrete type per call shape: fold them through one
 # `Any` buffer, not `mapreduce(vcat)`, which compiled per tuple and element type
 # (snag `stanblocks-trans-f759fe4f`).
-forward!(@nospecialize(x::Tuple); info) = begin
+Base.@nospecializeinfer forward!(@nospecialize(x::Tuple); info) = begin
     out = Any[]
     for xi in x
         append!(out, forwards!(xi; info))

@@ -142,7 +142,7 @@ short_expr(x) = x
 _untyped_value(arg) = false
 _untyped_value(arg::StanExpr) =
     center_type(arg) === types.anything && !(getvalue(arg) isa AbstractString)
-_reject_untyped_args(@nospecialize(x::CanonicalExpr)) = for arg in x.args
+Base.@nospecializeinfer _reject_untyped_args(@nospecialize(x::CanonicalExpr)) = for arg in x.args
     _untyped_value(arg) && error("""
         `tracetype` not defined for $(short_expr(arg))!
         This is only allowed if this return value does not get used in another expression,
@@ -2338,8 +2338,9 @@ _backed_marker(kind, f, xexpr, stan) = begin
     Expr(:(=), Expr(:call, marker, Expr(:(::), kind_type), xexpr), nothing)
 end
 sig_expr(x) = x
-sig_expr(x::Union{Tuple,NamedTuple,Vector}) = map(sig_expr, x)
-sig_expr(x::CanonicalExpr) = remake(x, sig_expr(x.args)...)
+sig_expr(x::Union{Tuple,NamedTuple}) = _anymap(sig_expr, x)
+sig_expr(x::Vector) = map(sig_expr, x)
+Base.@nospecializeinfer sig_expr(@nospecialize(x::CanonicalExpr)) = remake(x, sig_expr(x.args)...)
 sig_expr(x::StanExpr) = StanExpr(:_, sig_expr(type(x)))
 sig_expr_size(x::StanExpr) = StanExpr(:_, StanType(types.int, ()))
 sig_expr(x::StanType) = StanType(sigtype(center_type(x)), map(sig_expr_size, stan_size(x)))
@@ -2371,7 +2372,7 @@ sig_expr(x::StanType{<:types.func}) = StanType(center_type(x), map(sig_expr_size
 # while the second call site still emitted `f_closure_2(...)` → stanc rejects
 # with "undeclared identifier". Keying on the id realigns dedup with naming.
 sig_expr(x::StanExpr2{<:types.closure}) = StanExpr(type(x).info.value.id, sig_expr(type(x)))
-fetch_functions!(x::CanonicalExpr; info) = begin
+Base.@nospecializeinfer fetch_functions!(@nospecialize(x::CanonicalExpr); info) = begin
     sx = sig_expr(x)
     sx in keys(info) && return
     info[sx] = _fundef(x, _trace_context(info))
@@ -2443,7 +2444,7 @@ end
 fetch_subfunctions!(x; info) = nothing
 # A side-effect walk over heterogeneous containers: one compiled loop, not a
 # `map` per container type (snag `stanblocks-trans-f759fe4f`).
-fetch_subfunctions!(@nospecialize(xs::Union{Tuple,NamedTuple,Vector}); info) =
+Base.@nospecializeinfer fetch_subfunctions!(@nospecialize(xs::Union{Tuple,NamedTuple,Vector}); info) =
     (for x in xs; fetch_subfunctions!(x; info); end; nothing)
 fetch_subfunctions!(x::StanExpr; info) = fetch_subfunctions!((expr(x), type(x)); info)
 fetch_subfunctions!(x::StanType; info) = fetch_subfunctions!((stan_size(x), x.info); info)
@@ -2471,13 +2472,13 @@ end
 # shape. The `ntuple` closures they replace were also unrolled and constant-
 # propagated per argument position, recursively through nested `arg_types`
 # (snag `stanblocks-trans-f759fe4f`: ~20 s of one model's inference).
-anon_size_arg_types(@nospecialize(at), i, tok, fields) = at
-_anon_size_arg_types(@nospecialize(at), i, tok, fields) =
+Base.@nospecializeinfer anon_size_arg_types(@nospecialize(at), i, tok, fields) = at
+Base.@nospecializeinfer _anon_size_arg_types(@nospecialize(at), i, tok, fields) =
     Any[anon_size_type(at[field], i, tok, (fields..., field)) for field in 1:length(at)]
-anon_size_arg_types(@nospecialize(at::Tuple), i, tok, fields) = Tuple(_anon_size_arg_types(at, i, tok, fields))
-anon_size_arg_types(@nospecialize(at::NamedTuple), i, tok, fields) =
+Base.@nospecializeinfer anon_size_arg_types(@nospecialize(at::Tuple), i, tok, fields) = Tuple(_anon_size_arg_types(at, i, tok, fields))
+Base.@nospecializeinfer anon_size_arg_types(@nospecialize(at::NamedTuple), i, tok, fields) =
     NamedTuple{keys(at)}(Tuple(_anon_size_arg_types(at, i, tok, fields)))
-anon_size_type(@nospecialize(T::StanType), i, tok, fields=()) = begin
+Base.@nospecializeinfer anon_size_type(@nospecialize(T::StanType), i, tok, fields=()) = begin
     sizes = Any[
         StanExpr(CallSizeRef(tok, i, fields, dimension), type(s))
         for (dimension, s) in enumerate(stan_size(T))
@@ -2489,7 +2490,7 @@ end
 anon_arg(x::StanExpr, i::Int, tok) =
     StanExpr(Symbol(:_arg, tok, :_, i), anon_size_type(type(x), i, tok))
 anon_arg(x, i::Int, tok) = x
-anon_canonical(@nospecialize(x::CanonicalExpr), tok) =
+Base.@nospecializeinfer anon_canonical(@nospecialize(x::CanonicalExpr), tok) =
     remake(x, Any[anon_arg(x.args[i], i, tok) for i in 1:length(x.args)]...)
 anon_canonical(x::CanonicalExpr{Colon}, tok) = x   # needs real args for range size
 anon_canonical(x::BlockExpr, tok) = x               # args is Vector, not Tuple
@@ -2499,12 +2500,15 @@ anon_info(x::NamedTuple) = (;[
     for (key, value) in pairs(x)
 ]...)
 anon_expr(key, x) = error("anon_expr not defined for key `$key` with value of type `$(typeof(x))` — add a specialization if this type needs an anon representation.")
-anon_expr(key, x::Tuple) = begin
-    idxs = cumsum(map(!always_inline, x))
-    ([
-        anon_expr(Symbol(key, idx), xi)
-        for (idx, xi) in zip(idxs, x)
-    ]...,)
+# Elements are numbered by their running count of non-inlined entries.
+Base.@nospecializeinfer anon_expr(key, @nospecialize(x::Tuple)) = begin
+    out = Any[]
+    idx = 0
+    for xi in x
+        idx += !always_inline(xi)
+        push!(out, anon_expr(Symbol(key, idx), xi))
+    end
+    (out...,)
 end
 anon_expr(key, x::StanExpr) = StanExpr(key, StanType(center_type(x), ([
     StanExpr("dims($key)[$i]", StanType(types.int))
@@ -2568,7 +2572,13 @@ func_name(f, args) = begin
     end
 end
 func_name(args::NamedTuple) = func_name(values(args))
-func_name(args::Tuple) = mapreduce(func_name, vcat, args; init=[])
+Base.@nospecializeinfer func_name(@nospecialize(args::Tuple)) = begin
+    out = []
+    for arg in args
+        out = vcat(out, func_name(arg))
+    end
+    out
+end
 func_name(x) = []
 func_name(x::StanExpr) = always_inline(x) ? [func_name(type(x).info.value)] : []
 # Closures: each `(x) -> body` site gets a fresh monotonic id at construction

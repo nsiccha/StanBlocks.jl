@@ -46,10 +46,10 @@ _deanon_size_expr(_, s, _, tok) = s
 #
 # Like the `anon_*` walkers (functions.jl), these and `_stan_expr` run once per
 # traced call and do not specialize on the call's concrete expression type.
-deanon_arg_types(at, @nospecialize(x::CanonicalExpr), tok) = at
-deanon_arg_types(at::Union{Tuple,NamedTuple}, @nospecialize(x::CanonicalExpr), tok) =
-    map(t -> deanon_type(t, x, tok), at)
-deanon_type(tt::StanType, @nospecialize(x::CanonicalExpr), tok) = begin
+Base.@nospecializeinfer deanon_arg_types(at, @nospecialize(x::CanonicalExpr), tok) = at
+Base.@nospecializeinfer deanon_arg_types(at::Union{Tuple,NamedTuple}, @nospecialize(x::CanonicalExpr), tok) =
+    _anymap(t -> deanon_type(t, x, tok), at)
+Base.@nospecializeinfer deanon_type(tt::StanType, @nospecialize(x::CanonicalExpr), tok) = begin
     sz = stan_size(tt)
     nsz = map(s -> deanon_size(s, x, tok), sz)
     at = get(info(tt), :arg_types, nothing)
@@ -86,7 +86,7 @@ _is_rng_callee(f::Symbol) = endswith(String(f), "_rng")
 _is_rng_callee(f::GlobalRef) = _is_rng_callee(f.name)
 _is_rng_callee(f::Expr) = f.head === :. && _is_rng_callee(f.args[end])
 _is_rng_callee(f::QuoteNode) = _is_rng_callee(f.value)
-_stan_expr(@nospecialize(x::CanonicalExpr), context) = begin
+Base.@nospecializeinfer _stan_expr(@nospecialize(x::CanonicalExpr), context) = begin
     _reject_untyped_args(x)
     context = _context_or_new(context)
     tok = _next_anon_id(context)
@@ -717,7 +717,7 @@ DeclarativeBlock = Union{DataBlock,ParametersBlock}
 ImperativeBlock = Union{FunctionsBlock,TransformedDataBlock,TransformedParametersBlock,ModelBlock,GeneratedQuantitiesBlock}
 fetch_data!(;info) = x->fetch_data!(x; info)
 # A side-effect walk: one compiled loop, not a `map` per container type.
-fetch_data!(@nospecialize(xs::Union{Tuple,NamedTuple,Vector}); info) =
+Base.@nospecializeinfer fetch_data!(@nospecialize(xs::Union{Tuple,NamedTuple,Vector}); info) =
     (for x in xs; fetch_data!(x; info); end; nothing)
 # Bare (un-wrapped) literals reach here from a StanType's constraint `info`:
 # `autokwargs` supplies a DISTRIBUTION-implied bound as a raw Julia value

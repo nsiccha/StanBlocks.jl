@@ -127,8 +127,22 @@ Base.show(io::IO, x::StringStanType) = print(io, x.val)
 struct StanType{T,S} <: AbstractStanType
     size::NTuple{S,StanExpr}
     info#::I
-    StanType(T,size=tuple(), info=(;); kwargs...) = new{T,length(size)}(size, merge(info, kwargs))
+    StanType(T,size=tuple(), info=(;); kwargs...) = new{T,length(size)}(size, _merge_info(info, kwargs))
 end
+# `merge(info, kwargs)` built at run time: Base's NamedTuple `merge` is compiled
+# per pair of field-type signatures, and type metadata comes in many (snag
+# `stanblocks-trans-f759fe4f`). Same key order and override rule as `merge`.
+Base.@nospecializeinfer _merge_info(@nospecialize(info::NamedTuple), @nospecialize(kwargs)) = begin
+    isempty(kwargs) && return info
+    names = Symbol[keys(info)...]
+    vals = Any[values(info)...]
+    for (key, value) in pairs(kwargs)
+        i = findfirst(==(key), names)
+        i === nothing ? (push!(names, key); push!(vals, value)) : (vals[i] = value)
+    end
+    NamedTuple{(names...,)}((vals...,))
+end
+_merge_info(info, kwargs) = merge(info, kwargs)
 StanExpr2{T,S,E} = StanExpr{E,StanType{T,S}}
 struct StanBlock{N}
     content#::C
@@ -146,6 +160,11 @@ struct CanonicalExpr{H,A}
     # CanonicalExpr(head::Val{:tuple})
 end
 _shallow_type(::CanonicalExpr{H}) where {H} = CanonicalExpr{H}
+# `map(f, xs)` over the heterogeneous (named) tuples the compiler walks, compiled
+# once: Base's `map` is instantiated per container type, and nearly every traced
+# call presents a new one (snag `stanblocks-trans-f759fe4f`).
+Base.@nospecializeinfer _anymap(f, @nospecialize(xs::Tuple)) = Tuple(Any[f(xs[i]) for i in 1:length(xs)])
+Base.@nospecializeinfer _anymap(f, @nospecialize(xs::NamedTuple)) = NamedTuple{keys(xs)}(_anymap(f, values(xs)))
 CanonicalExprV{H,A} = CanonicalExpr{Val{H},A}
 BlockExpr{A} = CanonicalExprV{:block,A}
 AssignmentExpr{L,R} = CanonicalExprV{:(=),Tuple{L,R}}

@@ -2,7 +2,22 @@ struct Join
     iterator
     delim
 end
-Base.show(io::IO, x::Join) = join(io, x.iterator, x.delim)
+Base.show(io::IO, x::Join) = _print_joined(io, x.iterator, x.delim)
+# Emission prints heterogeneous tuples of expressions; these loops compile once
+# instead of once per tuple type, as Base's varargs `print` and `join` do
+# (snag `stanblocks-trans-f759fe4f`).
+Base.@nospecializeinfer _print_joined(io, @nospecialize(itr), delim) = begin
+    first = true
+    for x in itr
+        first || print(io, delim)
+        first = false
+        print(io, x)
+    end
+end
+Base.@nospecializeinfer _print_each(io, @nospecialize(xs), range=1:length(xs)) =
+    for i in range
+        print(io, xs[i])
+    end
 
 abstract type WrappedIO <: IO end
 Base.parent(io::WrappedIO) = io.parent
@@ -36,14 +51,14 @@ _autoprint_buf(io::StanIO) = (buf = IOBuffer(); (remake(nobreak(io), buf), buf))
 _autoprint_buf(io) = (buf = IOBuffer(); (buf, buf))
 _is_join(::Join) = true
 _is_join(_) = false
-autoprint(io, args...) = if maybreak(io)
+Base.@nospecializeinfer autoprint(io, @nospecialize(args...)) = if maybreak(io)
     bufio, buf = _autoprint_buf(io)
-    print(bufio, args...)
+    _print_each(bufio, args)
     rv = String(take!(buf))
     if length(rv) <= line_limit(io)
         print(io, rv)
     else
-        idx = findfirst(_is_join, args)
+        idx = findfirst(i -> _is_join(args[i]), 1:length(args))
         if isnothing(idx)
             # No breakable join point — e.g. a 1-dim tokenof size expression
             # built from ragged_start/ragged_end bounds (the single-arg call
@@ -51,15 +66,15 @@ autoprint(io, args...) = if maybreak(io)
             print(io, rv)
         else
             iio = indent(io)
-            print(io, args[1:idx-1]...)
+            _print_each(io, args, 1:idx-1)
             print(io, "\n", current_indent(iio))
             print(iio, Join(args[idx].iterator, rstrip(args[idx].delim) * "\n" * current_indent(iio)))
             print(io, "\n", current_indent(io))
-            print(io, args[idx+1:end]...)
+            _print_each(io, args, idx+1:length(args))
         end
     end
 else
-    print(io, args...)
+    _print_each(io, args)
 end
 Base.show(io::StanIO, x::StanModel) = begin
     print(io, maybedoc(get(x.meta, :docstring, "")))

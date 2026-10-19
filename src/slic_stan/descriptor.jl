@@ -595,7 +595,7 @@ end
 # resolve to an included (non-`nothing`) definition. A Vector + Set preserves
 # first-use order without introducing a second ordered-container dependency.
 _definition_dependency_keys!(x, functions, acc, seen) = nothing
-_definition_dependency_keys!(@nospecialize(xs::Union{Tuple,NamedTuple,AbstractVector}), functions, acc, seen) =
+Base.@nospecializeinfer _definition_dependency_keys!(@nospecialize(xs::Union{Tuple,NamedTuple,AbstractVector}), functions, acc, seen) =
     (for x in xs; _definition_dependency_keys!(x, functions, acc, seen); end; nothing)
 _definition_dependency_keys!(x::StanExpr, functions, acc, seen) =
     _definition_dependency_keys!((expr(x), type(x)), functions, acc, seen)
