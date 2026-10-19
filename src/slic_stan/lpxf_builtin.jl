@@ -295,7 +295,8 @@ validate_sampling_rhs(lhs, rhs::StanExpr{<:CanonicalExpr}; info) = begin
     nothing
 end
 _declared_observation_lhs(lhs; info) = begin
-    key = _base_lhs_symbol(lhs)
+    key = _sampling_lhs_key(lhs)
+    key === nothing && return false
     key in _model_observations(info) && return true
     key in keys(info) && get(type(info[key]).info, :unbound_observation, nothing) !== nothing
 end

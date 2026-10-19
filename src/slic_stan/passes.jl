@@ -129,6 +129,15 @@ backward!(x::BlockExpr; info) = remake(x, reverse(backward!.(reverse(x.args); in
 _base_lhs_symbol(x::StanExpr) = _base_lhs_symbol(expr(x))
 _base_lhs_symbol(x::Symbol) = x
 _base_lhs_symbol(x::CanonicalExpr) = _base_lhs_symbol(x.args[1])
+# The same descent for a SAMPLING lhs, made total. A sampling lhs may be an
+# arbitrary data-qualified expression (`(2.0 * sum(v)) ~ normal(…)` is legal), so
+# the descent can bottom out in a literal rather than a Symbol: `nothing` then
+# means "a computed observation with no base variable". Every Symbol-bottomed lhs
+# keys exactly as `_base_lhs_symbol` does.
+_sampling_lhs_key(x::StanExpr) = _sampling_lhs_key(expr(x))
+_sampling_lhs_key(x::Symbol) = x
+_sampling_lhs_key(x::CanonicalExpr) = isempty(x.args) ? nothing : _sampling_lhs_key(x.args[1])
+_sampling_lhs_key(::Any) = nothing
 # The declared Symbol of a compiler-injected fresh-result declaration `out::T`
 # (a `DeclExpr` = single-arg `CanonicalExprV{:(::)}` whose one arg is the typed
 # symbol, itself a `StanExpr{Symbol}` post-`forward!`).
@@ -244,10 +253,11 @@ else
 end
 backward!(x::SamplingExpr; info) = begin 
     lhs, rhs = x.args
-    key = _base_lhs_symbol(lhs)
+    key = _sampling_lhs_key(lhs)
+    known = key !== nothing && key in keys(info)
     # Slice statements after a `flat(…)` declaration (forward.jl,
     # `_record_slice_support!`) route exactly like a fresh declaration's.
-    sliced = key in keys(info) && (
+    sliced = known && (
         (_is_fresh_decl(info[key]) && _decl_role(info[key]) == :sampled) ||
         _is_flat_decl(info[key]))
     if sliced
@@ -274,7 +284,7 @@ backward!(x::SamplingExpr; info) = begin
             info[key] = remake(info[key]; qual=:quantities)
             remake(x, remake(lhs; qual=:quantities), rhs)
         end
-    elseif key in keys(info) && get(type(info[key]).info, :ragged_density, false)
+    elseif known && get(type(info[key]).info, :ragged_density, false)
         # Informative ragged priors sample a compiler-generated slice of the
         # constrained memory.  Mark both the slice and RHS as likelihood-relevant;
         # the earlier transform fill will then propagate reachability from this
@@ -455,16 +465,20 @@ _reject_draw_in_likelihood(x::SamplingExpr) = begin
     lhs, rhs = x.args
     qual(rhs) == :quantities || return nothing
     draws = unique!(_draw_reads(rhs))
-    obs = _base_lhs_symbol(lhs)
+    obs = _sampling_lhs_key(lhs)
+    # A computed observation (`(2.0 * sum(v)) ~ …`) names no variable to hold out.
+    remedy = obs === nothing ? "Compute the location without an `_rng` call." : string(
+        "To predict `", obs, "` from the draw, hold it out — bind it as ",
+        "`StanBlocks.stan.maybecv(:", obs, ", ", obs, ")` — so its likelihood leaves the model ",
+        "block and its `", obs, "_gen` / `", obs, "_likelihood` twins read the draw in ",
+        "generated quantities. Otherwise compute the location without an `_rng` call.",
+    )
     error(
         "Observation `", _stan_snippet(lhs), " ~ ", _stan_snippet(rhs), "` is a likelihood term, ",
         "but it reads ", join(map(d -> "`$d`", draws), ", "), ": a random draw (an `_rng` call ",
         "or a value computed from one). Stan evaluates likelihood terms in the model block, ",
         "where random number generators are not allowed and generated quantities are out of ",
-        "scope. To predict `", obs, "` from the draw, hold it out — bind it as ",
-        "`StanBlocks.stan.maybecv(:", obs, ", ", obs, ")` — so its likelihood leaves the model ",
-        "block and its `", obs, "_gen` / `", obs, "_likelihood` twins read the draw in ",
-        "generated quantities. Otherwise compute the location without an `_rng` call."
+        "scope. ", remedy,
     )
 end
 # The draws a `:quantities` expression reads: each bound name that holds one, or
