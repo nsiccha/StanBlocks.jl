@@ -448,7 +448,10 @@ distribute!(x::DocumentExpr{<:Any,<:BlockExpr}; info) = distribute!(x.args[2]; i
 _document_inner_block(x::DocumentExpr) = _document_inner_block(x.args[2])
 _document_inner_block(x::BlockExpr) = x
 _document_inner_block(x) = nothing
-distribute!(x::DocumentExpr{<:Any,<:DocumentExpr}; info) = begin
+# The wrapped document is matched by its head: an expression node's type names
+# a nested call by head only, so it carries no `Tuple{L,R}` for `DocumentExpr`
+# to match (snag `stanblocks-trans-f759fe4f`).
+distribute!(x::DocumentExpr{<:Any,<:CanonicalExprV{:document}}; info) = begin
     inner = _document_inner_block(x)
     inner === nothing ? _distribute_statement!(x; info) : distribute!(inner; info)
 end
