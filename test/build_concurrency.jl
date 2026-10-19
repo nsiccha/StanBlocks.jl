@@ -430,7 +430,8 @@ end
                 probe = Threads.@spawn StanBlocks.with_toolchain_lock(() -> nothing, home)
                 hit = Threads.@spawn StanBlocks._artifact_library(code; make_args=args)
                 @test timedwait(() -> istaskdone(hit), 30) === :ok
-                @test fetch(hit) == library
+                # Fail, never hang, on a regression: the holder waits for us.
+                @test istaskdone(hit) && fetch(hit) == library
                 # A library not yet built still waits for the toolchain.
                 miss = Threads.@spawn StanBlocks._artifact_library("// other\n" * code; make_args=args)
                 @test timedwait(() -> istaskdone(miss), 3) === :timed_out
