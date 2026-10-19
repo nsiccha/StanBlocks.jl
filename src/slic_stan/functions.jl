@@ -540,6 +540,9 @@ function Base.show(io::IO, f::StanFunction3)
     end
 end
 
+# The Julia target runs numerics, also under AD, so it keeps full
+# specialization inside the compiler's `@nospecialize` region (slic.jl).
+@specialize
 # Runtime half of the bounded Julia target for `@deffun`.  The macro-side
 # lowering below routes global calls through
 # `jcall(Val(name), _JuliaCallScope{def_mod}(), ...)`: ordinary Julia/user
@@ -795,6 +798,7 @@ _deffun_julia_validate_dims(x, dims::Tuple, name) = begin
     x
 end
 
+@nospecialize
 # One SLIC overload may map to one Julia dispatch signature.
 # Re-evaluating the same definition is allowed; a
 # distinct SLIC signature collapsing onto the same Julia signature errors.
