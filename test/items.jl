@@ -211,6 +211,21 @@ scalar), plus a bounded family whose held-out elements are outside its support.
     end
     @test occursin("no `x ~ …` statement observes `x`",
         something(err(() -> stan_code(covariate(; x = maybecv(:x, x; held_out = held), y))), ""))
+
+    # Re-binding a traced model: a new mark replaces the mask, a plain value keeps
+    # the traced one, and a mask that no longer fits (or a mark the model was not
+    # traced with) is refused rather than read out of bounds.
+    traced = stan_model(masked)
+    y2 = [0.4, 0.0, -0.2, 0.6, 0.1]
+    held2 = [true, false, false, true, false]
+    remasked = traced(; y = maybecv(:y, y2; held_out = held2))
+    @test StanBlocks.stan.stan_data(remasked)[:y_held_out] == [1, 0, 0, 1, 0]
+    @test LogDensityProblems.logdensity(instantiate(remasked), [0.3]) ≈
+        -0.5 * 0.3^2 + sum(nlpdf.(y2[.!held2], 0.3))
+    @test StanBlocks.stan.stan_data(traced(; y = reverse(y)))[:y_held_out] == [0, 0, 1, 1]
+    @test occursin("does not fit the re-bound value", something(err(() -> traced(; y = y2)), ""))
+    @test occursin("fixed when the model is traced",
+        something(err(() -> stan_model(top(; y))(; y = maybecv(:y, y; held_out = held))), ""))
 end
 
 # snag `weighted-custom-33d611a8` (reported from BRM): `weighted(...)` over a

@@ -51,7 +51,8 @@ StanBlocks.stan_descriptor).
 - `derived::Bool` — `true` when this input is another input's declared size
   (`y_n` for `vector[y_n] y`), or the `y_held_out` mask an element hold-out
   mark (`maybecv(:y, y; held_out = mask)`) passes to Stan. Re-binding the
-  container re-derives it, so a consumer must never ask for it separately.
+  container re-derives its size, and a re-bound `maybecv(:y, y; held_out =
+  mask)` mark replaces the mask, so a consumer must never ask for it separately.
   Neither an `inlined` nor a `derived` input is part of
   [`required_inputs`](@ref StanBlocks.required_inputs), and neither belongs in a
   generated form.
