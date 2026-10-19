@@ -142,7 +142,7 @@ short_expr(x) = x
 _untyped_value(arg) = false
 _untyped_value(arg::StanExpr) =
     center_type(arg) === types.anything && !(getvalue(arg) isa AbstractString)
-_reject_untyped_args(x::CanonicalExpr) = foreach(x.args) do arg
+_reject_untyped_args(@nospecialize(x::CanonicalExpr)) = for arg in x.args
     _untyped_value(arg) && error("""
         `tracetype` not defined for $(short_expr(arg))!
         This is only allowed if this return value does not get used in another expression,
@@ -2440,9 +2440,11 @@ fetch_functions!(x::SamplingExpr; info) = begin
         fetch_functions!(expr(draw); info)
     end
 end
-fetch_subfunctions!(;info) = x->fetch_subfunctions!(x; info)
 fetch_subfunctions!(x; info) = nothing
-fetch_subfunctions!(x::Union{Tuple,NamedTuple,Vector}; info) = map(fetch_subfunctions!(;info), x)
+# A side-effect walk over heterogeneous containers: one compiled loop, not a
+# `map` per container type (snag `stanblocks-trans-f759fe4f`).
+fetch_subfunctions!(@nospecialize(xs::Union{Tuple,NamedTuple,Vector}); info) =
+    (for x in xs; fetch_subfunctions!(x; info); end; nothing)
 fetch_subfunctions!(x::StanExpr; info) = fetch_subfunctions!((expr(x), type(x)); info)
 fetch_subfunctions!(x::StanType; info) = fetch_subfunctions!((stan_size(x), x.info); info)
 fetch_subfunctions!(x::CanonicalExpr; info) = begin 
@@ -2462,18 +2464,24 @@ end
 # the placeholders it actually introduced. The explicit TraceContext supplies
 # the counter; the names never reach Stan output because they are always
 # deanonymized away.
-anon_size_arg_types(at, i, tok, fields) = at
-_anon_size_arg_types(at, i, tok, fields) = ntuple(length(at)) do field
-    anon_size_type(at[field], i, tok, (fields..., field))
-end
-anon_size_arg_types(at::Tuple, i, tok, fields) = _anon_size_arg_types(at, i, tok, fields)
-anon_size_arg_types(at::NamedTuple, i, tok, fields) =
-    NamedTuple{keys(at)}(_anon_size_arg_types(at, i, tok, fields))
-anon_size_type(T::StanType, i, tok, fields=()) = begin
-    sizes = ntuple(length(stan_size(T))) do dimension
-        s = stan_size(T)[dimension]
+#
+# These walkers run once per traced call, over argument tuples whose concrete
+# types differ per call shape. They build results in `Any` vectors and do not
+# specialize on the walked value, so each compiles once instead of once per
+# shape. The `ntuple` closures they replace were also unrolled and constant-
+# propagated per argument position, recursively through nested `arg_types`
+# (snag `stanblocks-trans-f759fe4f`: ~20 s of one model's inference).
+anon_size_arg_types(@nospecialize(at), i, tok, fields) = at
+_anon_size_arg_types(@nospecialize(at), i, tok, fields) =
+    Any[anon_size_type(at[field], i, tok, (fields..., field)) for field in 1:length(at)]
+anon_size_arg_types(@nospecialize(at::Tuple), i, tok, fields) = Tuple(_anon_size_arg_types(at, i, tok, fields))
+anon_size_arg_types(@nospecialize(at::NamedTuple), i, tok, fields) =
+    NamedTuple{keys(at)}(Tuple(_anon_size_arg_types(at, i, tok, fields)))
+anon_size_type(@nospecialize(T::StanType), i, tok, fields=()) = begin
+    sizes = Any[
         StanExpr(CallSizeRef(tok, i, fields, dimension), type(s))
-    end
+        for (dimension, s) in enumerate(stan_size(T))
+    ]
     at = get(info(T), :arg_types, nothing)
     nat = anon_size_arg_types(at, i, tok, fields)
     remake(T, sizes...; (at === nothing ? (;) : (; arg_types=nat))...)
@@ -2481,7 +2489,8 @@ end
 anon_arg(x::StanExpr, i::Int, tok) =
     StanExpr(Symbol(:_arg, tok, :_, i), anon_size_type(type(x), i, tok))
 anon_arg(x, i::Int, tok) = x
-anon_canonical(x::CanonicalExpr, tok) = remake(x, ntuple(i -> anon_arg(x.args[i], i, tok), length(x.args))...)
+anon_canonical(@nospecialize(x::CanonicalExpr), tok) =
+    remake(x, Any[anon_arg(x.args[i], i, tok) for i in 1:length(x.args)]...)
 anon_canonical(x::CanonicalExpr{Colon}, tok) = x   # needs real args for range size
 anon_canonical(x::BlockExpr, tok) = x               # args is Vector, not Tuple
 anon_canonical(x::CanonicalExprV{:nt}, tok) = x     # preserve named tuple structure

@@ -559,12 +559,20 @@ _deref_lnn(_) = nothing
 _push_expr!(info, x) = (s = _get_expr_stack(info); isnothing(s) || push!(s, (x, _get_lnn(info))); nothing)
 _pop_expr!(info) = (s = _get_expr_stack(info); isnothing(s) || pop!(s); nothing)
 
-forwards!(;info) = x->forwards!(x; info)
-forwards!(x; info) = [forward!(x; info)]
-forwards!(x::SplatExpr; info) = [forward!(x.args[1]; info)...]
+forwards!(x; info) = Any[forward!(x; info)]
+forwards!(x::SplatExpr; info) = Any[forward!(x.args[1]; info)...]
 forward!(x; info) = error("forward! not defined for value `$x` of type `$(typeof(x))` — no method matches a more specific signature.")
 forward!(;info) = x->forward!(x; info)
-forward!(x::Tuple; info) = (mapreduce(forwards!(;info), vcat, x; init=[])...,)
+# Argument tuples differ in concrete type per call shape: fold them through one
+# `Any` buffer, not `mapreduce(vcat)`, which compiled per tuple and element type
+# (snag `stanblocks-trans-f759fe4f`).
+forward!(@nospecialize(x::Tuple); info) = begin
+    out = Any[]
+    for xi in x
+        append!(out, forwards!(xi; info))
+    end
+    (out...,)
+end
 forward!(x::Union{Tuple,NamedTuple,Vector,Base.Pairs}; info) = map(forward!(;info), x)
 forward!(x::Union{Number,Function,Nothing}; info) = x
 # Wrap string literals as StanExprs so they can be passed as args to

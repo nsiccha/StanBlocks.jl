@@ -43,10 +43,13 @@ _deanon_size_expr(_, s, _, tok) = s
 # emits `_arg<tok>_<i>` verbatim into Stan — an undeclared identifier in a size
 # position, which `fetch_data!` then compounds by declaring as a phantom `data`
 # variable. Recurse so an element's size is deanonymized exactly like a scalar's.
-deanon_arg_types(at, x::CanonicalExpr, tok) = at
-deanon_arg_types(at::Union{Tuple,NamedTuple}, x::CanonicalExpr, tok) =
+#
+# Like the `anon_*` walkers (functions.jl), these and `_stan_expr` run once per
+# traced call and do not specialize on the call's concrete expression type.
+deanon_arg_types(at, @nospecialize(x::CanonicalExpr), tok) = at
+deanon_arg_types(at::Union{Tuple,NamedTuple}, @nospecialize(x::CanonicalExpr), tok) =
     map(t -> deanon_type(t, x, tok), at)
-deanon_type(tt::StanType, x::CanonicalExpr, tok) = begin
+deanon_type(tt::StanType, @nospecialize(x::CanonicalExpr), tok) = begin
     sz = stan_size(tt)
     nsz = map(s -> deanon_size(s, x, tok), sz)
     at = get(info(tt), :arg_types, nothing)
@@ -83,13 +86,14 @@ _is_rng_callee(f::Symbol) = endswith(String(f), "_rng")
 _is_rng_callee(f::GlobalRef) = _is_rng_callee(f.name)
 _is_rng_callee(f::Expr) = f.head === :. && _is_rng_callee(f.args[end])
 _is_rng_callee(f::QuoteNode) = _is_rng_callee(f.value)
-_stan_expr(x::CanonicalExpr, context) = begin
+_stan_expr(@nospecialize(x::CanonicalExpr), context) = begin
     _reject_untyped_args(x)
     context = _context_or_new(context)
     tok = _next_anon_id(context)
     tt = deanon_type(_tracetype(anon_canonical(x, tok), context), x, tok)
-    q = _rng_qual(x, maximum(qual, x.args; init=:data))
-    StanExpr(x, remake(tt; qual=q, cv=any(cv, x.args) || cv(tt)))
+    args = Any[x.args...]
+    q = _rng_qual(x, maximum(qual, args; init=:data))
+    StanExpr(x, remake(tt; qual=q, cv=any(cv, args) || cv(tt)))
 end
 stan_expr(x::CanonicalExpr) = _stan_expr(x, TraceContext())
 # Every compiler-internal conversion that runs while a trace is active must use
@@ -712,7 +716,9 @@ end
 DeclarativeBlock = Union{DataBlock,ParametersBlock}
 ImperativeBlock = Union{FunctionsBlock,TransformedDataBlock,TransformedParametersBlock,ModelBlock,GeneratedQuantitiesBlock}
 fetch_data!(;info) = x->fetch_data!(x; info)
-fetch_data!(x::Union{Tuple,NamedTuple,Vector}; info) = map(fetch_data!(;info), x)
+# A side-effect walk: one compiled loop, not a `map` per container type.
+fetch_data!(@nospecialize(xs::Union{Tuple,NamedTuple,Vector}); info) =
+    (for x in xs; fetch_data!(x; info); end; nothing)
 # Bare (un-wrapped) literals reach here from a StanType's constraint `info`:
 # `autokwargs` supplies a DISTRIBUTION-implied bound as a raw Julia value
 # (`exponential`→`lower=0.0`), never as a StanExpr like an author-written one.
