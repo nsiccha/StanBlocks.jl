@@ -76,6 +76,13 @@ Base.@nospecializeinfer autoprint(io, @nospecialize(args...)) = if maybreak(io)
 else
     _print_each(io, args)
 end
+# Emission prints each node through `show(::StanIO, …)`. From here to the end of
+# the file every method compiles once for its declared signature, not once per
+# node type of every model (snag `stanblocks-trans-f759fe4f`). The `WrappedIO`
+# writes above stay specialized: they run per character.
+@nospecialize
+# Base's `print(io, x)` would compile per node type before reaching `show`.
+Base.print(io::StanIO, x::Union{CanonicalExpr,StanExpr,StanType}) = (show(io, x); nothing)
 Base.show(io::StanIO, x::StanModel) = begin
     print(io, maybedoc(get(x.meta, :docstring, "")))
     print(io, Join(blocks(x), "\n"))
@@ -329,3 +336,4 @@ for f in (:+=,:-=,:*=)
 end
 @eval forward!(x::CanonicalExprV{:(.=)}; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
 @eval Base.show(io::IO, x::CanonicalExprV{:(.=)}) = print(io, Join(x.args, " = "))
+@specialize

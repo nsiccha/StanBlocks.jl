@@ -2338,12 +2338,12 @@ _backed_marker(kind, f, xexpr, stan) = begin
     Expr(:(=), Expr(:call, marker, Expr(:(::), kind_type), xexpr), nothing)
 end
 Base.@nospecializeinfer sig_expr(@nospecialize(x)) = x
-sig_expr(x::Union{Tuple,NamedTuple}) = _anymap(sig_expr, x)
+Base.@nospecializeinfer sig_expr(@nospecialize(x::Union{Tuple,NamedTuple})) = _anymap(sig_expr, x)
 sig_expr(x::Vector) = map(sig_expr, x)
 Base.@nospecializeinfer sig_expr(@nospecialize(x::CanonicalExpr)) = remake(x, sig_expr(x.args)...)
 Base.@nospecializeinfer sig_expr(@nospecialize(x::StanExpr)) = StanExpr(:_, sig_expr(type(x)))
 sig_expr_size(x::StanExpr) = StanExpr(:_, StanType(types.int, ()))
-sig_expr(x::StanType) = StanType(sigtype(center_type(x)), map(sig_expr_size, stan_size(x)))
+Base.@nospecializeinfer sig_expr(@nospecialize(x::StanType)) = StanType(sigtype(center_type(x)), map(sig_expr_size, stan_size(x)))
 # A constrained square matrix signs as `matrix` (`sigtype`) but is SIZED by one
 # trailing dim (`r_ndim(square_matrix) == 1`). Key it with a plain matrix's two
 # trailing dims, or `cov_matrix[K]` and `matrix[K, K]` arguments collect as two
@@ -2374,10 +2374,11 @@ sig_expr(x::StanType{<:types.func}) = StanType(center_type(x), map(sig_expr_size
 sig_expr(x::StanExpr2{<:types.closure}) = StanExpr(type(x).info.value.id, sig_expr(type(x)))
 Base.@nospecializeinfer fetch_functions!(@nospecialize(x::CanonicalExpr); info) = begin
     sx = sig_expr(x)
-    sx in keys(info) && return
-    info[sx] = _fundef(x, _trace_context(info))
-    isnothing(info[sx]) && return
-    fetch_subfunctions!(info[sx].body; info)
+    _haskey_erased(info, sx) && return
+    def = _fundef(x, _trace_context(info))
+    _setindex_erased!(info, def, sx)
+    isnothing(def) && return
+    fetch_subfunctions!(def.body; info)
 end
 # A sampling statement is emitted VERBATIM as Stan (`lhs ~ dist(args…)`, show.jl),
 # while the `dist_lpdf` UDF standing behind it is pulled into the functions block
@@ -2446,9 +2447,9 @@ fetch_subfunctions!(x; info) = nothing
 # `map` per container type (snag `stanblocks-trans-f759fe4f`).
 Base.@nospecializeinfer fetch_subfunctions!(@nospecialize(xs::Union{Tuple,NamedTuple,Vector}); info) =
     (for x in xs; fetch_subfunctions!(x; info); end; nothing)
-fetch_subfunctions!(x::StanExpr; info) = fetch_subfunctions!((expr(x), type(x)); info)
-fetch_subfunctions!(x::StanType; info) = fetch_subfunctions!((stan_size(x), x.info); info)
-fetch_subfunctions!(x::CanonicalExpr; info) = begin 
+Base.@nospecializeinfer fetch_subfunctions!(@nospecialize(x::StanExpr); info) = fetch_subfunctions!((expr(x), type(x)); info)
+Base.@nospecializeinfer fetch_subfunctions!(@nospecialize(x::StanType); info) = fetch_subfunctions!((stan_size(x), x.info); info)
+Base.@nospecializeinfer fetch_subfunctions!(@nospecialize(x::CanonicalExpr); info) = begin 
     fetch_functions!(x; info)
     fetch_subfunctions!((x.args, x.kwargs); info)
 end

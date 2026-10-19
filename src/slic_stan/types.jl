@@ -118,7 +118,8 @@ StanExpr(expr::Type, type::T) where {T<:AbstractStanType} = StanExpr{typeof(expr
 # and re-compiled per shape and per model (snag `stanblocks-trans-f759fe4f`: 100%
 # of a mid-size model's ~4 min transpile was JIT). Dispatch on a call still sees
 # its arguments one level down, which is all `tracetype`/`@defsig` match on.
-StanExpr(expr, type::AbstractStanType) = StanExpr{_shallow_type(expr),typeof(type)}(expr, type)
+Base.@nospecializeinfer StanExpr(@nospecialize(expr), @nospecialize(type::AbstractStanType)) =
+    StanExpr{_shallow_type(expr),typeof(type)}(expr, type)
 _shallow_type(x) = typeof(x)
 struct StringStanType <: AbstractStanType
     val::AbstractString
@@ -154,9 +155,11 @@ struct CanonicalExpr{H,A}
     args::A
     kwargs#::K
     # Maybe a bit dangerous
-    CanonicalExpr(head::Symbol, args...; kwargs...) = CanonicalExpr(Val(head), args...; kwargs...)
-    CanonicalExpr(head, args...; kwargs...) = canonical(new{typeof(head),Tuple{map(_shallow_type, args)...}}(head, args, (;kwargs...)))
-    CanonicalExpr(head::Val{:block}, args...; kwargs...) = new{Val{:block},typeof(collect(args))}(head, collect(args), (;kwargs...))
+    # Constructed for every node of every model: compiled once, not per head and
+    # argument types (snag `stanblocks-trans-f759fe4f`).
+    Base.@nospecializeinfer CanonicalExpr(head::Symbol, @nospecialize(args...); kwargs...) = CanonicalExpr(Val(head), args...; kwargs...)
+    Base.@nospecializeinfer CanonicalExpr(@nospecialize(head), @nospecialize(args...); kwargs...) = canonical(new{typeof(head),Tuple{map(_shallow_type, args)...}}(head, args, (;kwargs...)))
+    Base.@nospecializeinfer CanonicalExpr(head::Val{:block}, @nospecialize(args...); kwargs...) = new{Val{:block},typeof(collect(args))}(head, collect(args), (;kwargs...))
     # CanonicalExpr(head::Val{:tuple})
 end
 _shallow_type(::CanonicalExpr{H}) where {H} = CanonicalExpr{H}
@@ -165,6 +168,10 @@ _shallow_type(::CanonicalExpr{H}) where {H} = CanonicalExpr{H}
 # call presents a new one (snag `stanblocks-trans-f759fe4f`).
 Base.@nospecializeinfer _anymap(f, @nospecialize(xs::Tuple)) = Tuple(Any[f(xs[i]) for i in 1:length(xs)])
 Base.@nospecializeinfer _anymap(f, @nospecialize(xs::NamedTuple)) = NamedTuple{keys(xs)}(_anymap(f, values(xs)))
+# Dictionaries keyed by expression nodes (the functions-block registry): one
+# compiled lookup and insert for every node type.
+Base.@nospecializeinfer _haskey_erased(d, @nospecialize(k)) = haskey(d, k)
+Base.@nospecializeinfer _setindex_erased!(d, @nospecialize(v), @nospecialize(k)) = (d[k] = v; d)
 CanonicalExprV{H,A} = CanonicalExpr{Val{H},A}
 BlockExpr{A} = CanonicalExprV{:block,A}
 AssignmentExpr{L,R} = CanonicalExprV{:(=),Tuple{L,R}}
