@@ -144,9 +144,12 @@ any explicit `lower=`/`upper=`, intersected with a `flat` declaration's. When
 every coordinate ends up with the same bound the declaration carries it as a
 scalar; otherwise it carries a per-coordinate bound vector, with
 `negative_infinity()`/`positive_infinity()` for unbounded coordinates
-(`vector<lower=[0.0, 0.0, negative_infinity()]'>[3] tau`). When a slice index or
-the length is data rather than a literal, that vector is built in
-`transformed data`. Prior-only and held-out programs re-draw each block from its
+(`vector<lower=[0.0, 0.0, negative_infinity()]'>[3] tau`). `vcat` blocks of
+literal length fix the coordinates even when the declared length is data, so
+`tau::vector[n] ~ vcat(normal(0., 1.), exponential(1.))` still gives
+`vector<lower=[negative_infinity(), 0.0]'>[n] tau`. When a slice index, a block
+length or a bound is data, or slice statements cover a data-length vector, that
+vector is built in `transformed data`. Prior-only and held-out programs re-draw each block from its
 own family inside the coordinate's support.
 
 Rules:

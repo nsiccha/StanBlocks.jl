@@ -2623,8 +2623,16 @@ _slice_declared_bound(k, v, records, key, extra; info) = begin
         "(`", k, "::", sigtype(T), "[…] ~ flat(; ", key, "=…)`) so every slice shares it.")
     N = _slice_int(stan_size(T)[1]; values=false)
     covered = get(T.info, :slice_tiled, false)
-    if !covered && N !== nothing && all(r -> r.literal !== nothing, records)
-        covered = sort!(unique!(reduce(vcat, Any[r.literal for r in records]))) == collect(1:N)
+    coords = all(r -> r.literal !== nothing, records) ?
+        sort!(unique(reduce(vcat, Any[r.literal for r in records]))) : nothing
+    if !covered && N !== nothing && coords !== nothing
+        covered = coords == collect(1:N)
+    end
+    # Tiles of literal length (`tau::vector[n] ~ vcat(…)` with scalar blocks)
+    # fix the length even when the declaration spells it as data, so the bound
+    # is still a literal vector (snag `vcat-per-coordin-201e2b14`).
+    if covered && N === nothing && coords !== nothing && coords == collect(1:length(coords))
+        N = length(coords)
     end
     covered && all(b -> _same_bound(b, bounds[1]), bounds) && _bound_ndim(bounds[1]) == 0 &&
         return bounds[1]
