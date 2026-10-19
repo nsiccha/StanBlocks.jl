@@ -234,8 +234,11 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(*)}; info) =
     _lower_arithmetic(x, _lower_scalar_array_scale; info)
 expand_inline_or_trace(x::CanonicalExpr{<:Base.BroadcastFunction}; info) =
     _lower_arithmetic(x, _lower_scalar_array_broadcast; info)
+# `/` and `^` had no method of their own: an `@inline` overload still takes the
+# generic route first.
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(/),typeof(^)}}; info) =
-    _lower_arithmetic(x, _no_arithmetic_lowering; info)
+    isnothing(inline_body(x)) ? _lower_arithmetic(x, _no_arithmetic_lowering; info) :
+        invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info)
 # `isdefined(builtin, x)` returns true even for names inherited from Base
 # (e.g. `accumulate!`), which would mask user-defined SLIC UDFs that share
 # Base's name. Restrict to bindings actually owned by the `builtin` module.

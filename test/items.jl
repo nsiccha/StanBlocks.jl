@@ -8959,6 +8959,113 @@ end
 end
 
 """
+Verify `slic: elementwise arithmetic on RaggedVector operands`.
+
+Snag raggedvector-ari-19d214fa (reported by BRM): `2.0 * rv` on a RaggedVector
+died in `_reject_ragged_vector_arithmetic`, even as a direct law argument
+(`y ~ normal(mu, 2.0 * x)`), so a scale computed from parameters and ragged data
+could not reach an `@inline` RaggedVector UDF. Elementwise arithmetic now maps
+`mem` and keeps `ends`, and `rv[g]` of the result slices each operand before the
+arithmetic. Two RaggedVector operands must share their group ends: transpile
+rejects differing known values, and Stan rejects differing rebound data. Forms
+with no elementwise meaning keep the actionable rejection.
+"""
+@testitem "slic: elementwise arithmetic on RaggedVector operands" tags=[:slic, :plate, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+    y    = [[1.0, 2.0], [3.0], [0.5, 0.2, 0.1]]
+    x    = [[0.1, 0.2], [0.3], [0.4, 0.5, 0.6]]
+    x2   = [[1.1, 1.2], [1.3], [1.4, 1.5, 1.6]]
+    xbad = [[1.1], [1.2, 1.3], [1.4, 1.5, 1.6]]   # same length, other groups
+    data = (; y, x, x2, xbad)
+    ragged_scale(scale) = StanBlocks.stan.SlicModel(quote
+        mu ~ std_normal(); a ~ std_normal(); b ~ exponential(1.0)
+        y ~ normal(mu, $scale)
+    end, data, @__MODULE__)
+
+    for scale in (
+        :(2.0 * x), :(x * 2.0), :(x / 2.0), :(a + (b - a) * x), :(a * b * x), :(a + b + x),
+        :(2.0 .* x), :(x .* 2.0), :(1.0 ./ x), :(x .^ 2), :(x - 1.0), :(x + x2), :(x - x2),
+        :(x .* x2), :(x ./ x2), :(x .^ x2), :(-(-x)),
+    )
+        @test stanc_compiles(ragged_scale(scale))
+    end
+    # A group slice is the arithmetic over each operand's group slice. Identical
+    # ends need no check; a second RaggedVector's own boundaries are checked per group.
+    let mb = stan_block(stan_code(ragged_scale(:(2.0 * x .* x))), "model")
+        @test occursin(r"2\.0 \* getindex_RaggedVector\(x, g__ro_\d+\)", mb)
+        @test !occursin("x.1", mb)
+        @test !occursin("ragged_matched_group", mb)
+    end
+    @test occursin(
+        r"getindex_RaggedVector\(x2, ragged_matched_group\(x\.2, x2\.2, g__ro_\d+\)\)",
+        stan_code(ragged_scale(:(x + x2))),
+    )
+    # The result is a RaggedVector everywhere, not only as a law argument.
+    @test stanc_compiles(StanBlocks.stan.SlicModel(quote
+        mu ~ std_normal()
+        z = 2.0 * x + x2
+        y ~ normal(mu + sum(z[2]) + length(z), z)
+    end, data, @__MODULE__))
+
+    let e = errmsg(ragged_scale(:(x + xbad)))
+        @test occursin("different group ends", e)
+        @test occursin("[2, 3, 6]", e) && occursin("[1, 3, 6]", e)
+    end
+    # No elementwise meaning: matrix product, scalar divided by a RaggedVector,
+    # non-dotted power, and a dense operand (per group or per element?).
+    for scale in (:(x * x), :(2.0 / x), :(x ^ 2), :(x .* w))
+        e = errmsg(StanBlocks.stan.SlicModel(quote
+            mu ~ std_normal()
+            y ~ normal(mu, $scale)
+        end, (; data..., w = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), @__MODULE__))
+        @test occursin("RaggedVector", e)
+        @test occursin("no elementwise meaning", e)
+    end
+
+    # End to end through BridgeStan, against the same law over flat vectors (a
+    # factorising family's per-group sum IS the flat sum).
+    yv, xv, x2v = vcat(y...), vcat(x...), vcat(x2...)
+    arith = @slic (; y, x, x2) begin
+        mu ~ std_normal(); a ~ std_normal(); b ~ std_normal()
+        y ~ normal(mu + a * x - x2 / 4.0, exp(b) .* x2 ./ 2.0 + x .^ 2)
+    end
+    arith_flat = @slic (; yv, xv, x2v) begin
+        mu ~ std_normal(); a ~ std_normal(); b ~ std_normal()
+        yv ~ normal(mu + a * xv - x2v / 4.0, exp(b) .* x2v ./ 2.0 + xv .^ 2)
+    end
+    # The reporter's shape: a ragged plate result and an arithmetic RaggedVector
+    # passed to an `@inline` RaggedVector UDF inside the ragged law.
+    @deffun @inline rv_scale(loc::RaggedVector, add::RaggedVector, prop::real) =
+        RaggedVector(add.mem + prop * exp(loc.mem), loc.ends)
+    udf = @slic (; y, x, x2, nsub = 3) begin
+        a ~ std_normal(); b ~ std_normal()
+        pred ~ plate(x; outer = (nsub,)) do t
+            a .* t
+        end
+        y ~ normal(pred, rv_scale(pred, exp(a) + (exp(b) - exp(a)) * x2, exp(b)))
+    end
+    udf_flat = @slic (; yv, xv, x2v) begin
+        a ~ std_normal(); b ~ std_normal()
+        yv ~ normal(a * xv, exp(a) + (exp(b) - exp(a)) * x2v + exp(b) * exp(a * xv))
+    end
+    for (m, ref, xs) in (
+        (arith, arith_flat, ([0.1, -0.2, 0.3], [1.0, 0.5, -0.4])),
+        (udf, udf_flat, ([0.1, -0.2], [1.0, 0.5])),
+    )
+        p, p_ref = instantiate(m), instantiate(ref)
+        for θ in xs
+            lp, g = LogDensityProblems.logdensity_and_gradient(p, θ)
+            @test all(isfinite, g)
+            @test lp ≈ LogDensityProblems.logdensity(p_ref, θ)
+        end
+    end
+    # Rebinding data does not re-trace, so Stan checks the group ends itself.
+    p_bad = instantiate(stan_model(arith)(; x2 = xbad); nan_on_error = false)
+    @test_throws "different group ends" LogDensityProblems.logdensity(p_bad, [0.1, -0.2, 0.3])
+end
+
+"""
 Snag build-a-declarat-ab2d2471 (reported by BRM): a declaration-driven prior /
 posterior generative artifact needs two things StanBlocks did not give it.
 
