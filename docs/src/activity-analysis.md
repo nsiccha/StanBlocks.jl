@@ -233,7 +233,7 @@ m2(; y, z = StanBlocks.stan.maybecv(:z, z; held_out = t .> cutoff))
   response, so the `z[i] ~ …` cells of a `@plate for` (and the cells of a `plate`
   do-block over `z`) hold out their marked elements. Stan reads the mask as the data
   input `z_held_out`, which the descriptor marks `derived`. Re-binding `z` on a
-  traced model keeps the mask, and re-binding it as
+  traced model keeps the mask when it still fits, and re-binding it as
   `maybecv(:z, z; held_out = mask)` replaces it.
 - The mark only removes likelihood terms. Any other read of `z`, such as a lagged
   response used as a covariate, still sees every element.
