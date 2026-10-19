@@ -1610,7 +1610,34 @@ end
 #
 # The draw preserves the OBSERVED `ends` exactly — Stan's generated-quantities block
 # is statically sized, so a variable-length predictive group has nowhere to live.
+#
+# The group loop slices only the rhs's TOP-LEVEL args and kwargs, so a family
+# CALL in a distribution HOF's family slot is spliced to its token form first:
+# `censored(normal(mu, s); lower=lo)` becomes `censored(normal, mu, s; lower=lo)`
+# and `weighted(censored(normal(mu, s); lower=lo), w)` becomes
+# `weighted(censored, w, normal, mu, s; lower=lo)`. Otherwise the call's own
+# ragged arguments reach every group unsliced. A base-family call carrying
+# kwargs stays as written, for the traced splice to refuse.
+_ragged_token_rhs(rhs; info) = rhs
+_ragged_token_rhs(rhs::CanonicalExpr; info) = begin
+    spec = _hof_spec_of(_forward_head(head(rhs), info))
+    isnothing(spec) && return rhs
+    i = spec.family_arg
+    length(rhs.args) >= i && _is_canonical_expr(rhs.args[i]) || return rhs
+    family = _ragged_token_rhs(rhs.args[i]; info)
+    nested = _hof_spec_of(_forward_head(head(family), info)) !== nothing
+    nested || isempty(family.kwargs) || return rhs
+    CanonicalExpr(
+        head(rhs),
+        rhs.args[1:i-1]...,
+        head(family),
+        rhs.args[i+1:end]...,
+        family.args...;
+        _disjoint_kwargs(spec, rhs.kwargs, family.kwargs)...,
+    )
+end
 _forward_ragged_obs_broadcast!(name, rhs_raw; info) = begin
+    rhs_raw = _ragged_token_rhs(rhs_raw; info)
     id = _next_inline_id(info)
     g   = Symbol(:g, "__ro_", id)
     gg  = Symbol(:g, "__rq_", id)

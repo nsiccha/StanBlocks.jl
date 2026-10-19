@@ -1938,8 +1938,8 @@ end
 # Rebuilding the call rather than special-casing each family is what makes nested
 # base-family HOFs (`weighted`, `conditioned`, `clamped`, …) route through the
 # very same group RHS: `lpxf_expr`/`rng_expr`'s own HOF dispatch does the work.
-_ragged_group_call(x::CanonicalExpr) =
-    CanonicalExpr(_family_function(x.args[2]), x.args[3:end]...; x.kwargs...)
+_ragged_group_call(x::CanonicalExpr) = _normalized_hof_call(
+    CanonicalExpr(_family_function(x.args[2]), x.args[3:end]...; x.kwargs...))
 # The BASE family of a group RHS — one level through a distribution HOF, so
 # `weighted(normal, w, …)` is judged by `normal`, exactly as `lpxf_expr` /
 # `likelihood_expr` resolve it. The HOF itself has no `lpxf_expr` method.

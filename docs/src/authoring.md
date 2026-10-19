@@ -39,7 +39,7 @@ end
 
 | Combinator | Meaning | Parameter LHS? | Predictive draw |
 |---|---|---:|---|
-| `weighted(family, w, args...)` | Multiply an observation's log density by data-qualified `w` | No | Draw from the unweighted base family |
+| `weighted(family, w, args...)` | Multiply an observation's log density by data-qualified `w`; `family` may be a bounded combinator | No | Draw from the unweighted family |
 | `truncated(family, args...; lower, upper)` | Condition the latent draw to lie inside the supplied bound(s) | Yes | Rejection-sampled inside the inclusive bounds |
 | `censored(family, args...; lower, upper)` | Place tail probability on threshold atoms; interior values keep their ordinary density | No | Clamp the base-family draw to the thresholds |
 | `interval_censored(family, lower, upper, args...)` | Observe that the latent value lies in `(lower, upper]` | No | Draw from the uncoarsened base family |
@@ -52,7 +52,23 @@ identifiers, so name bound data `lo`/`hi` (or `lloq`/`uloq`) and map them with
 `lower=lo, upper=hi` as above.
 
 `weighted` accepts scalar or vector weights, but weights must be data-qualified;
-weighted priors and parameter-dependent weights reject. The other combinators
+weighted priors and parameter-dependent weights reject.
+
+`weighted`'s family slot also takes a bounded combinator, so a power-weighted
+censored, truncated, or interval-censored observation composes directly. The
+call and token spellings emit identical Stan; in the token form the bounds are
+written on `weighted` and belong to the nested combinator:
+
+```julia
+y ~ weighted(censored(normal(mu, sigma); lower=lo), w)
+y ~ weighted(censored, w, normal, mu, sigma; lower=lo)
+y ~ weighted(interval_censored(normal(mu, sigma), lo, hi), w)
+```
+
+The density and pointwise likelihood are the combinator's, multiplied by `w`;
+the predictive draw is the combinator's own unweighted draw. A bound on
+`weighted` whose family is a base family is an error, since it names no
+combinator. The other combinators
 require the relevant CDF companions. A custom `@lpxf foo_lpdf` / `foo_lpmf`
 family needs its usual pointwise and RNG companions plus:
 
