@@ -9066,6 +9066,103 @@ with no elementwise meaning keep the actionable rejection.
 end
 
 """
+Verify `slic: a computed RaggedVector law memory is evaluated once, not once per group`.
+
+Todo `0myytmj`: a ragged law argument built by an `@inline` RaggedVector UDF
+(`RaggedVector(exp(x.mem), x.ends)`) was sliced in place per group, so its whole
+memory was evaluated once per group, O(N·G) per log density. It is now bound once
+ahead of the group loops (user decision `1evjvh0`, option A): in `transformed data`
+when it reads only data, otherwise as a model-block local and again inside a local
+`{ … }` scope around the generated-quantities twin loop, never as an output. The
+same holds for such a UDF result as an operand of elementwise arithmetic.
+"""
+@testitem "slic: a computed RaggedVector law memory is evaluated once, not once per group" tags=[:slic, :ragged, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    @deffun @inline exp_rv(x::RaggedVector) = RaggedVector(exp(x.mem), x.ends)
+    y  = [[1.0, 2.0], [3.0], [0.5, 0.2, 0.1]]
+    x  = [[0.1, 0.2], [0.3], [0.4, 0.5, 0.6]]
+    z  = [[1.1, 1.2], [1.3], [1.4, 1.5, 1.6]]
+    lo = 0.05
+    outputs(m) = sort([o.name for o in stan_descriptor(m).outputs])
+
+    # Data-only memory: one `transformed data` value, sliced in both loops.
+    data_only = @slic (; y, x) begin
+        mu ~ std_normal(); y ~ normal(mu, exp_rv(x))
+    end
+    let code = stan_code(data_only)
+        @test stanc_compiles(data_only)
+        @test occursin(r"y__law_mem_\d+_1 = exp\(x\.1\)", stan_block(code, "transformed data"))
+        @test !occursin("exp(", stan_block(code, "model"))
+        @test !occursin("exp(", stan_block(code, "generated quantities"))
+    end
+
+    # Parameter-dependent memory: a model-block local ahead of the density loop, and
+    # a local scope around the twin loop; neither is an output. The argument may be
+    # written inline, bound to a name first, or sit in a distribution HOF.
+    reference = @slic (; y, x) begin
+        mu ~ std_normal(); b ~ std_normal(); y ~ normal(mu, b * x)
+    end
+    for m in (
+        @slic((; y, x), begin
+            mu ~ std_normal(); b ~ std_normal(); y ~ normal(mu, exp_rv(b * x))
+        end),
+        @slic((; y, x), begin
+            mu ~ std_normal(); b ~ std_normal(); s = exp_rv(b * x); y ~ normal(mu, s)
+        end),
+        @slic((; y, x, lo), begin
+            mu ~ std_normal(); b ~ std_normal()
+            y ~ censored(normal(mu, exp_rv(b * x)); lower = lo)
+        end),
+    )
+        code = stan_code(m)
+        @test stanc_compiles(m)
+        mb, gq = stan_block(code, "model"), stan_block(code, "generated quantities")
+        @test count("exp(", mb) == 1
+        @test occursin(r"y__law_mem_\d+_1 = exp\([^\n]*\n\s*for\(g__ro_\d+", mb)
+        @test count("exp(", gq) == 1
+        @test occursin(r"\{\n\s*vector\[[^\]]+\] y__law_mem_\d+_1 = exp\([^\n]*\n\s*for\(g__rq_\d+", gq)
+        @test !occursin("law_mem", stan_block(code, "transformed parameters"))
+        @test outputs(m) == outputs(reference)
+    end
+
+    # A UDF result as an elementwise operand (the docs example): bound once, while
+    # the other operand is still pushed down per group. End to end against the same
+    # law over flat vectors, density and the generated-quantities twins.
+    hoisted = @slic (; y, x, z) begin
+        mu ~ std_normal(); a ~ std_normal(); b ~ std_normal()
+        y ~ normal(mu, exp_rv(a + (b - a) * x) + z .^ 2)
+    end
+    yv, xv, zv = vcat(y...), vcat(x...), vcat(z...)
+    flat = @slic (; yv, xv, zv) begin
+        mu ~ std_normal(); a ~ std_normal(); b ~ std_normal()
+        yv ~ normal(mu, exp(a + (b - a) * xv) + zv .^ 2)
+    end
+    let code = stan_code(hoisted)
+        @test stanc_compiles(hoisted)
+        @test count("exp(", stan_block(code, "model")) == 1
+        @test count("exp(", stan_block(code, "generated quantities")) == 1
+    end
+    p, p_ref = instantiate(hoisted), instantiate(flat)
+    sm = p.model
+    names = BridgeStan.param_names(sm; include_tp = true, include_gq = true)
+    li = findall(n -> startswith(n, "y_likelihood"), names)
+    @test length(li) == length(y)
+    nlpdf(v, m, s) = -0.5 * log(2π) - log(s) - (v - m)^2 / (2s^2)
+    for θ in ([0.1, -0.2, 0.3], [1.0, 0.5, -0.4])
+        lp, g = LogDensityProblems.logdensity_and_gradient(p, θ)
+        @test all(isfinite, g)
+        @test lp ≈ LogDensityProblems.logdensity(p_ref, θ)
+        mu, a, b = θ
+        c = BridgeStan.param_constrain(sm, θ; include_tp = true, include_gq = true,
+            rng = BridgeStan.StanRNG(sm, 4321))
+        for k in eachindex(y)
+            @test c[li[k]] ≈ sum(nlpdf(y[k][i], mu, exp(a + (b - a) * x[k][i]) + z[k][i]^2)
+                for i in eachindex(y[k]))
+        end
+    end
+end
+
+"""
 Snag build-a-declarat-ab2d2471 (reported by BRM): a declaration-driven prior /
 posterior generative artifact needs two things StanBlocks did not give it.
 

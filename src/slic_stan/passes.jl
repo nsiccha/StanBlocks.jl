@@ -448,7 +448,7 @@ distribute!(x; info) = _distribute_statement!(x; info)
 _distribute_statement!(x; info) = begin
     _push_expr!(info, x)
     for b in distribution_blocks(x; info)
-        push!(block(info, b), x; info)
+        push!(block(info, b), _ragged_scoped(b, x; info); info)
     end
     _pop_expr!(info)
 end
@@ -556,6 +556,35 @@ distribute!(x::CanonicalExpr{typeof(_unbound_ragged_twin)}; info) = begin
     info[gen] = twin
     push!(block(info, :generated_quantities), CanonicalExpr(:(=), twin, memory); info)
 end
+# A hoisted ragged law memory (forward.jl `_ragged_law_memory_hoist`). Anything
+# but a parameter-dependent value distributes as the plain assignment it wraps
+# (data-only memory lands in `transformed data`). A parameter-dependent one is
+# declared as a model-block local and recorded: every generated-quantities
+# statement that reads it carries its own copy in a local scope (`_ragged_scoped`).
+_ragged_scratch(info) = begin
+    context = _trace_context(info)
+    context === nothing ? nothing : context.ragged_scratch
+end
+distribute!(x::CanonicalExpr{typeof(_ragged_scratch_assign)}; info) = begin
+    stmt = only(x.args)
+    key = _base_lhs_symbol(stmt.args[1])
+    scratch = _ragged_scratch(info)
+    (qual(info[key]) == :parameter && scratch !== nothing) || return distribute!(stmt; info)
+    scratch[key] = stmt
+    _push_expr!(info, stmt)
+    push!(block(info, :model), stmt; info)
+    _pop_expr!(info)
+end
+_ragged_scoped(b, x; info) = begin
+    b === :generated_quantities || return x
+    scratch = _ragged_scratch(info)
+    (scratch === nothing || isempty(scratch)) && return x
+    used = Any[stmt for (k, stmt) in scratch if _uses_model_local(x, (k,))]
+    isempty(used) && return x
+    StanExpr(CanonicalExpr(_ragged_scope, used..., x), type(x))
+end
+fetch_data!(x::StanExpr{<:CanonicalExpr{typeof(_ragged_scope)}}; info) =
+    foreach(s -> fetch_data!(s; info), expr(x).args)
 distribution_blocks(x::ReturnExpr; info) = (:generated_quantities,)
 distribution_blocks(x::DocumentExpr; info) = distribution_blocks(x.args[2]; info)
 distribution_blocks(::Union{Nothing}; info) = tuple()
@@ -672,7 +701,7 @@ distribute!(x::StanExpr{<:ForExpr}; info) = begin
         end
         for (b, stmts) in grouped
             loop = StanExpr(remake(fe, head, remake(body, stmts...)), type(x))
-            push!(block(info, b), loop; info)
+            push!(block(info, b), _ragged_scoped(b, loop; info); info)
         end
     finally
         _pop_expr!(info)

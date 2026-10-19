@@ -1647,6 +1647,92 @@ _ragged_token_rhs(rhs::CanonicalExpr; info) = begin
         _disjoint_kwargs(spec, rhs.kwargs, family.kwargs)...,
     )
 end
+# A ragged law argument that resolves to a RaggedVector CONSTRUCTION whose memory
+# is a computed expression — an `@inline` UDF result such as
+# `RaggedVector(exp(x.mem), x.ends)` — is sliced in place by the per-group
+# `getindex` on a construction (`builtin.jl`), so the whole memory was re-evaluated
+# once per group: O(N·G) per log-density evaluation instead of O(N); the same
+# holds for such a construction as an operand of an elementwise-arithmetic result
+# (`exp_rv(x) + z .^ 2`), whose group slice slices each operand. A TOP-LEVEL law
+# argument cannot depend on the group index, so such an argument is forwarded
+# once ahead of the loops (an inline UDF body is traced once), each computed
+# memory in it is bound once, and both loops slice the bindings. The rebuilt
+# constructions keep their own `ends`, so the per-group bounds emit as before.
+# Arguments with nothing to bind stay raw (byte-identical emission): plain ragged
+# variables, plate results (Symbol memory), and elementwise-arithmetic results
+# over such operands.
+# Where the hoisted memory lives (user decision `1evjvh0`, option A): data-only
+# memory is an ordinary `transformed data` value; parameter-dependent memory is
+# a SCRATCH local — declared in the model block, and re-declared inside a local
+# `{ … }` scope around each generated-quantities statement that reads it — so it
+# is never written to the output. `_ragged_scratch_assign` wraps the memory
+# assignment until distribution; `_ragged_scope` is that generated-quantities
+# scope (passes.jl `distribute!`, `_ragged_scoped`; show.jl `block_print`).
+function _ragged_scratch_assign end
+function _ragged_scope end
+forward!(x::CanonicalExpr{typeof(_ragged_scratch_assign)}; info) =
+    CanonicalExpr(_ragged_scratch_assign, forward!(only(x.args); info))
+_ragged_trivial_mem(m::StanExpr) = _ragged_trivial_mem(expr(m))
+_ragged_trivial_mem(::Symbol) = true
+_ragged_trivial_mem(m::CanonicalExpr) =
+    head(m) === Base.getfield && !isempty(m.args) && _ragged_trivial_mem(m.args[1])
+_ragged_trivial_mem(_) = false
+# A construction whose group slice would re-evaluate a computed memory — itself,
+# or an operand of an elementwise-arithmetic result, whose group slice slices
+# each operand (`exp_rv(x) + z .^ 2`).
+_ragged_recomputes_memory(_) = false
+_ragged_recomputes_memory(v::StanExpr) = begin
+    center_type(v) <: RaggedVector && _is_ragged_construction(v) || return false
+    record = _ragged_elementwise_record(v)
+    record === nothing ? !_ragged_trivial_mem(_ragged_mem(v)) :
+        any(_ragged_recomputes_memory, record.operands)
+end
+# Probe one argument in an isolated copy of `info` (the `_plate_probe_hoistable`
+# isolation), so an argument with nothing to hoist stays raw and traces exactly
+# as before. One that does not resolve standalone is not hoisted either; any real
+# error then surfaces where it always did, in the group loop.
+_ragged_probe_law_memory(a; info) = begin
+    (a isa Symbol ? a in keys(info) : _is_canonical_expr(a)) || return false
+    _with_trace_state(info, :inline_pending, Any[]) do
+        v = try
+            forward!(a; info=_plate_probe(info))
+        catch
+            return false
+        end
+        _ragged_recomputes_memory(v)
+    end
+end
+# Rebuild `v` over bound memories: a computed-memory construction becomes one over
+# a fresh binding (emitted into `pending`, ahead of the loops); an elementwise
+# result is re-lowered over its rebuilt operands.
+_ragged_bind_law_memory(v, name, id, n, pending; info) = begin
+    _ragged_recomputes_memory(v) || return v
+    record = _ragged_elementwise_record(v)
+    if record !== nothing
+        ops = map(a -> _ragged_bind_law_memory(a, name, id, n, pending; info), record.operands)
+        return forward!(CanonicalExpr(record.f, ops...); info)
+    end
+    n[] += 1
+    mem = Symbol(name, :__law_mem_, id, :_, n[])
+    push!(pending, forward!(CanonicalExpr(_ragged_scratch_assign,
+        CanonicalExpr(:(=), mem, _ragged_mem(v))); info))
+    forward!(CanonicalExpr(RaggedVector, info[mem], _ragged_ends(v)); info)
+end
+_ragged_law_memory_hoist(rhs::CanonicalExpr, name, id; info) = begin
+    pending = _get_inline_pending(info)
+    n = Ref(0)
+    hoist(a) = begin
+        _ragged_probe_law_memory(a; info) || return a
+        pending === nothing && error(
+            "internal: ragged observation `", name, " ~ …` has no statement buffer to ",
+            "bind its law memory into."
+        )
+        _ragged_bind_law_memory(forward!(a; info), name, id, n, pending; info)
+    end
+    args = Any[hoist(a) for a in rhs.args]
+    kwargs = (; (k => hoist(v) for (k, v) in pairs(rhs.kwargs))...)
+    CanonicalExpr(head(rhs), args...; kwargs...)
+end
 _forward_ragged_obs_broadcast!(name, rhs_raw; info) = begin
     rhs_raw = _ragged_token_rhs(rhs_raw; info)
     id = _next_inline_id(info)
@@ -1680,6 +1766,7 @@ _forward_ragged_obs_broadcast!(name, rhs_raw; info) = begin
     # holds per-group density scalars.
     _mem_at = get(type(info[name]).info, :arg_types, nothing)
     gen_elt = (_mem_at !== nothing && center_type(_mem_at.mem) === types.int) ? :int : :vector
+    rhs_raw = _ragged_law_memory_hoist(rhs_raw, name, id; info)
     stmts = Any[
         :(for $g in 1:length($name)
               $name[$g] ~ $(_ragged_group_rhs(rhs_raw, g))
