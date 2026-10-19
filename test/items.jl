@@ -885,6 +885,201 @@ end
         occursin("expected a base distribution function token", weighted_nontoken_error)
 end
 
+@testitem "slic: weighted HOF over a bounded combinator" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    # Snag weighted-over-ce-a55869f3: a power-weighted censored / truncated /
+    # interval-censored observation failed at transpile in both spellings —
+    # `censored is missing lpxf_expr` (token form) and "the family call
+    # `lower_clamping(...)` takes only positional arguments" (call form).
+    # `weighted`'s family slot now also takes a bounded combinator: density and
+    # pointwise are scaled by `w`, the draw is the combinator's own.
+    y = [0.1, 0.6, 1.0, 0.3]
+    lo = [0.1, 0.2, 0.15, 0.3]
+    hi = [1.0, 1.0, 1.0, 1.0]
+    w = [1.0, 0.5, 0.0, 2.0]
+    data = (; y, lo, hi, w)
+    spellings = (
+        censored = (
+            @slic(data, begin
+                mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+                y ~ weighted(censored(normal(mu, sigma); lower = lo), w)
+            end),
+            @slic(data, begin
+                mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+                y ~ weighted(censored, w, normal, mu, sigma; lower = lo)
+            end),
+            @slic(data, begin
+                mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+                y ~ weighted(censored, w, normal(mu, sigma); lower = lo, upper = nothing)
+            end),
+        ),
+        truncated = (
+            @slic(data, begin
+                mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+                y ~ weighted(truncated(normal(mu, sigma); lower = lo, upper = hi), w)
+            end),
+            @slic(data, begin
+                mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+                y ~ weighted(truncated, w, normal, mu, sigma; lower = lo, upper = hi)
+            end),
+        ),
+        interval = (
+            @slic(data, begin
+                mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+                y ~ weighted(interval_censored(normal(mu, sigma), lo, hi), w)
+            end),
+            @slic(data, begin
+                mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+                y ~ weighted(interval_censored, w, normal, lo, hi, mu, sigma)
+            end),
+        ),
+    )
+    wrappers = (
+        censored = "weighted_lower_clamping_normal",
+        truncated = "weighted_conditioning_normal",
+        interval = "weighted_interval_evidence_impl_normal",
+    )
+    for (name, models) in pairs(spellings)
+        codes = map(stan_code, models)
+        @test all(==(first(codes)), codes)
+        code = first(codes)
+        wrapper = getproperty(wrappers, name)
+        @test occursin("y ~ $wrapper(", stan_block(code, "model"))
+        @test occursin("$(wrapper)_lpdfs", code)
+        @test occursin(replace(wrapper, "weighted_" => "weighted_vector_", count = 1) * "_rng",
+            stan_block(code, "generated quantities"))
+        for selector in ("density(", "pointwise(", "predictive(", "logcdf(", "logccdf(")
+            @test !occursin(selector, code)
+        end
+        @test stanc_compiles(first(models))
+    end
+
+    # The weighted density and pointwise likelihood are the unweighted
+    # combinator's, scaled per observation by `w`.
+    gq(problem, x; seed = 1) = Dict(zip(
+        BridgeStan.param_names(problem.model; include_tp = true, include_gq = true),
+        BridgeStan.param_constrain(problem.model, x; include_tp = true, include_gq = true,
+            rng = BridgeStan.StanRNG(problem.model, seed)),
+    ))
+    pick(d, stem, n) = [d["$stem.$i"] for i in 1:n]
+    unweighted = @slic(data, begin
+        mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ censored(normal(mu, sigma); lower = lo)
+    end)
+    weighted_problem = instantiate(stan_model(first(spellings.censored)))
+    unweighted_problem = instantiate(stan_model(unweighted))
+    for x in ([0.2, -0.3], [-0.5, 0.4])
+        ll = pick(gq(unweighted_problem, x), "y_likelihood", 4)
+        expected = LogDensityProblems.logdensity(unweighted_problem, x) - sum(ll) + sum(w .* ll)
+        @test LogDensityProblems.logdensity(weighted_problem, x) ≈ expected atol = 1e-8
+        @test pick(gq(weighted_problem, x), "y_likelihood", 4) ≈ w .* ll atol = 1e-10
+    end
+    # The draw ignores the weight and keeps the censored law: never below `lo`.
+    draws = reduce(vcat, [pick(gq(weighted_problem, [0.2, -0.3]; seed), "y_gen", 4) for seed in 1:50])
+    @test all(draws .>= repeat(lo, 50))
+    @test any(draws .== repeat(lo, 50))
+
+    # A per-cell observation (scalar weight) is the same law.
+    plate_problem = instantiate(stan_model(@slic(data, begin
+        mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        @plate for i in 1:4
+            y[i] ~ weighted(censored(normal(mu, sigma); lower = lo[i]), w[i])
+        end
+    end)))
+    @test LogDensityProblems.logdensity(plate_problem, [0.2, -0.3]) ≈
+        LogDensityProblems.logdensity(weighted_problem, [0.2, -0.3]) atol = 1e-8
+
+    # A ragged observation takes the same law per group, in both spellings and
+    # in a plate cell. The ragged broadcast slices only top-level arguments, so
+    # a family CALL is spliced to the token form first; before this snag even
+    # a plain `censored(normal(mu, s); lower=lo)` failed on a ragged observation.
+    groups(v) = [v[1:2], v[3:3], v[4:4]]
+    ragged_data = (; yr = groups(y), lor = groups(lo), wr = groups(w))
+    ragged_call = @slic(ragged_data, begin
+        mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        yr ~ weighted(censored(normal(mu, sigma); lower = lor), wr)
+    end)
+    ragged_token = @slic(ragged_data, begin
+        mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        yr ~ weighted(censored, wr, normal, mu, sigma; lower = lor)
+    end)
+    @test stan_code(ragged_call) == stan_code(ragged_token)
+    ragged_problem = instantiate(stan_model(ragged_call))
+    ll = pick(gq(unweighted_problem, [0.2, -0.3]), "y_likelihood", 4) .* w
+    @test LogDensityProblems.logdensity(ragged_problem, [0.2, -0.3]) ≈
+        LogDensityProblems.logdensity(weighted_problem, [0.2, -0.3]) atol = 1e-8
+    @test pick(gq(ragged_problem, [0.2, -0.3]), "yr_likelihood", 3) ≈
+        [ll[1] + ll[2], ll[3], ll[4]] atol = 1e-10
+    @test stanc_compiles(@slic((; yr = groups(y), lor = groups(lo)), begin
+        mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        yr ~ censored(normal(mu, sigma); lower = lor)
+    end))
+    cell_code = stan_code(@slic(ragged_data, begin
+        mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        pred ~ plate(yr, lor, wr; outer = 3) do yi, li, wi
+            yi ~ weighted(censored(normal(mu, sigma); lower = li), wi)
+        end
+    end))
+    @test occursin("yr_gen", stan_block(cell_code, "generated quantities"))
+    @test occursin("yr_likelihood", stan_block(cell_code, "generated quantities"))
+    @test first(stanc_check(cell_code))
+
+    # A declared-unbound response draws with the combinator's shape: the
+    # censoring bound, not the weight, sets the axis.
+    prior = StanBlocks.SlicModel(quote
+        mu ~ normal(0.0, 1.0); sigma ~ exponential(1.0)
+        y ~ weighted(censored(normal(mu, sigma); lower = lo), w)
+    end, Dict{Symbol,Any}(:lo => lo, :w => w), @__MODULE__, (:y,))
+    prior_code = stan_code(prior)
+    @test occursin("vector[lo_n] y = weighted_vector_lower_clamping_normal_rng(",
+        stan_block(prior_code, "generated quantities"))
+    @test stanc_compiles(prior)
+
+    # A discrete base family selects the `_lpmf` wrappers and integer draws.
+    counts_model = @slic((; k = [2, 3, 2, 5], w), begin
+        log_rate ~ normal(0.0, 1.0)
+        k ~ weighted(censored(poisson(exp(log_rate)); lower = 2), w)
+    end)
+    counts_code = stan_code(counts_model)
+    @test occursin("weighted_lower_clamping_poisson_lpmf", counts_code)
+    @test occursin("weighted_int_lower_clamping_poisson_rng", counts_code)
+    @test stanc_compiles(counts_model)
+
+    refusal(build) = try
+        build()
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    # refused: a bound on `weighted` with a base family names no combinator
+    # (truncated or censored?); it was silently dropped before this snag (dev §1).
+    base_bound = refusal(() -> stan_code(@slic(data, begin
+        mu ~ normal(0.0, 1.0)
+        y ~ weighted(normal, w, mu, 1.0; lower = lo)
+    end)))
+    @test !isnothing(base_bound) && occursin("alone is a base family", base_bound)
+    # refused: a bound written both on `weighted` and on its combinator call
+    # must not silently resolve to either.
+    double_bound = refusal(() -> stan_code(@slic(data, begin
+        mu ~ normal(0.0, 1.0)
+        y ~ weighted(censored(normal(mu, 1.0); lower = lo), w; lower = lo)
+    end)))
+    @test !isnothing(double_bound) && occursin("no `truncated`/`censored` token to bound", double_bound)
+    # refused: weighting tempers evidence and has no CDF or law of its own, so
+    # there is nothing for a combinator to censor.
+    censored_weighted = refusal(() -> stan_code(@slic(data, begin
+        mu ~ normal(0.0, 1.0)
+        y ~ censored(weighted(normal(mu, 1.0), w); lower = lo)
+    end)))
+    @test !isnothing(censored_weighted) && occursin("`weighted` cannot be nested here", censored_weighted)
+    # refused: the nested token form keeps `censored`'s own at-least-one-bound rule.
+    missing_bound = refusal(() -> stan_code(@slic(data, begin
+        mu ~ normal(0.0, 1.0)
+        y ~ weighted(censored, w, normal, mu, 1.0)
+    end)))
+    @test !isnothing(missing_bound) && occursin("provide at least one of `lower=` or `upper=`", missing_bound)
+end
+
 @testmodule StanBlocksTestSetup begin
     using Random, Statistics
     using StanBlocks

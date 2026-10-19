@@ -41,6 +41,11 @@ _distribution_hof(::typeof(builtin.weighted)) = (
     family_arg = 1,
     data_args = (2,),
     requires_data_lhs = true,
+    # The family slot may also hold one of these bounded combinators, whose own
+    # arguments are then this HOF's trailing ones; in the token form its bounds
+    # are written on `weighted` and forwarded to it.
+    nestable = (:truncated, :censored, :interval_censored),
+    forwarded_kwargs = (:lower, :upper),
     lpdf = builtin.weighted_lpdf,
     lpmf = builtin.weighted_lpmf,
     lpdfs = builtin.weighted_lpdfs,
@@ -165,6 +170,9 @@ _family_function(x::StanExpr2{<:types.func}) = type(x).info.value
 _family_function(x) = error(
     "distribution HOF: expected a base distribution function token, got $(type(x))"
 )
+# The HOF spec of a resolved call head, or `nothing` for any other head.
+_hof_spec_of(x::StanExpr2{<:types.func}) = _distribution_hof(_family_function(x))
+_hof_spec_of(x) = nothing
 _is_compile_time_nothing(x) = x === nothing || x === :nothing ||
     (x isa QuoteNode && x.value === nothing)
 _forward_call_kwargs(
@@ -173,7 +181,8 @@ _forward_call_kwargs(
     info,
 ) = begin
     spec = _distribution_hof(_family_function(resolved_head))
-    optional = isnothing(spec) ? () : get(spec, :optional_kwargs, ())
+    optional = isnothing(spec) ? () :
+        (get(spec, :optional_kwargs, ())..., get(spec, :forwarded_kwargs, ())...)
     isempty(optional) && return forward!(x.kwargs; info)
     # A distribution HOF owns these kwargs at trace time. Explicit `nothing`
     # is equivalent to omission and must disappear before generic symbol/type
@@ -186,12 +195,40 @@ _forward_call_kwargs(
     ]...)
     forward!(kept; info)
 end
-_distribution_hof_family(spec, rhs::CanonicalExpr) = begin
-    length(rhs.args) >= spec.family_arg || error(
-        "distribution HOF: missing family argument $(spec.family_arg)"
+# The position of a HOF call's BASE family. A nestable combinator in the family
+# slot (`weighted(lower_clamping, w, normal, lo, mu, sigma)`) takes this HOF's
+# trailing arguments as its own, so kind, carrier and RNG checks look through it.
+_hof_trailing_arg(spec) = spec.family_arg + length(spec.data_args) + 1
+_check_nestable(spec, inner) = begin
+    nestable = get(spec, :nestable, ())
+    inner.name in nestable || error(
+        "$(spec.name): the family slot takes a base distribution family",
+        isempty(nestable) ? "" : " or one of `$(join(nestable, "`, `"))`",
+        "; `$(inner.name)` cannot be nested here",
     )
-    _family_function(rhs.args[spec.family_arg])
+    nothing
 end
+# Bounds reach a nested combinator from exactly one place; a key given on both
+# the HOF and its family must not silently resolve to either.
+_disjoint_kwargs(spec, outer::NamedTuple, inner::NamedTuple) = begin
+    duplicate = intersect(keys(outer), keys(inner))
+    isempty(duplicate) || error(
+        "$(spec.name): `", join(duplicate, "=`, `"), "=` is given both on `$(spec.name)` ",
+        "and on the combinator in its family slot; write it once",
+    )
+    (; outer..., inner...)
+end
+_hof_base_family_index(spec, args) = begin
+    i = spec.family_arg
+    length(args) >= i || error("distribution HOF: missing family argument $i")
+    inner = _distribution_hof(_family_function(args[i]))
+    isnothing(inner) && return i
+    _check_nestable(spec, inner)
+    j = _hof_trailing_arg(spec)
+    j - 1 + _hof_base_family_index(inner, args[j:end])
+end
+_distribution_hof_family(spec, rhs::CanonicalExpr) =
+    _family_function(rhs.args[_hof_base_family_index(spec, rhs.args)])
 _validate_distribution_hof(spec, lhs, rhs::CanonicalExpr; unbound=false) = begin
     if spec.requires_data_lhs && qual(lhs) != :data && !unbound
         error(
@@ -270,17 +307,23 @@ validate_sampled_rhs(lhs, rhs::StanExpr{<:CanonicalExpr}; info) = begin
     isnothing(spec) || _validate_distribution_hof(spec, lhs, expr(rhs))
     nothing
 end
-_distribution_sample_shape(at, rhs::StanExpr{<:CanonicalExpr}) = begin
-    spec = _distribution_hof(head(expr(rhs)))
+_distribution_sample_shape(at, rhs::StanExpr{<:CanonicalExpr}) = _hof_sample_shape(at, expr(rhs))
+_hof_sample_shape(at, rhs::CanonicalExpr) = begin
+    spec = _distribution_hof(head(rhs))
     isnothing(spec) && return at
-    # Likelihood weights do not introduce a predictive sample axis. The
-    # weighted RNG delegates to the base family and already exposes its shape.
-    spec.name === :weighted && return at
-    shaped = filter(a -> stan_ndim(a) > 0, expr(rhs).args)
+    # Likelihood weights do not introduce a predictive sample axis. A weighted
+    # base family's RNG already exposes its shape; a nested combinator's
+    # controls shape the draw exactly as they would without the weights.
+    if spec.name === :weighted
+        family = _family_function(rhs.args[spec.family_arg])
+        isnothing(_distribution_hof(family)) && return at
+        return _hof_sample_shape(at, CanonicalExpr(family, rhs.args[_hof_trailing_arg(spec):end]...))
+    end
+    shaped = filter(a -> stan_ndim(a) > 0, rhs.args)
     isempty(shaped) && return at
     shape = stan_size(first(shaped))
     length(shape) == 1 || return at
-    ct = _probability_kind(_distribution_hof_family(spec, expr(rhs))) === :lpmf ?
+    ct = _probability_kind(_distribution_hof_family(spec, rhs)) === :lpmf ?
         types.int : types.vector
     StanType(ct, shape, info(at))
 end
@@ -364,6 +407,23 @@ _hof_call_family_splice(spec, x::CanonicalExpr) = begin
     fam_head = head(inner)
     fam_fn = fam_head isa StanExpr2{<:types.func} ? type(fam_head).info.value : fam_head
     fam_fn isa Function || _distribution_hof_family(spec, x)
+    nested = _distribution_hof(fam_fn)
+    if !isnothing(nested)
+        _check_nestable(spec, nested)
+        # A combinator call (`weighted(censored(normal(mu, s); lower=lo), w)`)
+        # has already traced to its implementation call, whose bounds are
+        # positional; its kwargs only repeat them for a parameter's `autotype`.
+        # A public head still owns its bounds, for the nested token-form rewrite.
+        bounds = haskey(nested, :optional_kwargs) ? inner.kwargs : (;)
+        return CanonicalExpr(
+            head(x),
+            x.args[1:i-1]...,
+            stan_expr(fam_fn),
+            x.args[i+1:end]...,
+            inner.args...;
+            _disjoint_kwargs(spec, x.kwargs, bounds)...,
+        )
+    end
     isempty(inner.kwargs) || error(
         "$(spec.name): the family call `$(nameof(fam_fn))(...)` takes only " *
         "positional arguments; keyword argument(s) " *
@@ -378,38 +438,80 @@ _hof_call_family_splice(spec, x::CanonicalExpr) = begin
         x.kwargs...,
     )
 end
-expand_inline_or_trace(
-    x::CanonicalExpr{<:OptionalBoundDistributionHOF};
-    info,
-) = begin
+# The implementation call a bounded combinator lowers to: optional bounds select
+# the lower/upper/two-sided variant and become positional, `interval_censored`
+# renames to its implementation head, and a variant head is already lowered.
+_hof_impl_call(x::CanonicalExpr{<:OptionalBoundDistributionHOF}; kwargs...) = begin
     spec = _distribution_hof(head(x))
-    spliced = _hof_call_family_splice(spec, x)
-    spliced !== nothing && return forward!(spliced; info)
-    variant = _hof_variant(spec, x)
-    forward!(CanonicalExpr(
-        variant.head,
-        _hof_call_args(spec, x)...;
-        x.kwargs...,
-    ); info)
+    CanonicalExpr(_hof_variant(spec, x).head, _hof_call_args(spec, x)...; kwargs...)
 end
+_hof_impl_call(x::CanonicalExpr{typeof(builtin.interval_censored)}; kwargs...) =
+    CanonicalExpr(builtin.interval_evidence_impl, x.args...; kwargs...)
+_hof_impl_call(x::CanonicalExpr; kwargs...) = CanonicalExpr(head(x), x.args...; kwargs...)
 expand_inline_or_trace(
-    x::CanonicalExpr{typeof(builtin.interval_censored)};
+    x::CanonicalExpr{<:Union{OptionalBoundDistributionHOF,typeof(builtin.interval_censored)}};
     info,
 ) = begin
     spliced = _hof_call_family_splice(_distribution_hof(head(x)), x)
     spliced !== nothing && return forward!(spliced; info)
-    forward!(CanonicalExpr(
-        builtin.interval_evidence_impl,
-        x.args...;
-        x.kwargs...,
-    ); info)
+    forward!(_hof_impl_call(x; x.kwargs...); info)
+end
+# Token form of a nested combinator — `weighted(censored, w, normal, mu, sigma;
+# lower=lo)` — lowers its family to the implementation call, exactly as the
+# combinator alone would: `weighted(lower_clamping, w, normal, lo, mu, sigma)`.
+# The forwarded bounds belong to that combinator, so a base family refuses them
+# rather than silently dropping them.
+_nested_hof_call(spec, x::CanonicalExpr) = begin
+    i = spec.family_arg
+    family = _family_function(x.args[i])
+    forwarded = get(spec, :forwarded_kwargs, ())
+    bounds = (; (k => v for (k, v) in pairs(x.kwargs) if k in forwarded)...)
+    rest = (; (k => v for (k, v) in pairs(x.kwargs) if !(k in forwarded))...)
+    nested = _distribution_hof(family)
+    if isnothing(nested)
+        isempty(bounds) || error(
+            "$(spec.name): `", join(keys(bounds), "=`, `"), "=` bounds a combinator ",
+            "in the family slot — `$(spec.name)(censored($(nameof(family))(…); lower=lo), w)` ",
+            "or `$(spec.name)(censored, w, $(nameof(family)), …; lower=lo)`; ",
+            "`$(nameof(family))` alone is a base family",
+        )
+        return nothing
+    end
+    haskey(nested, :optional_kwargs) || isempty(bounds) || error(
+        "$(spec.name): `", join(keys(bounds), "=`, `"), "=` on `$(spec.name)` has no ",
+        "`truncated`/`censored` token to bound — a combinator call carries its own ",
+        "bounds, and `interval_censored` takes them positionally",
+    )
+    j = _hof_trailing_arg(spec)
+    inner = CanonicalExpr(family, x.args[j:end]...; bounds...)
+    impl = _hof_impl_call(something(_hof_call_family_splice(nested, inner), inner))
+    head(impl) === family && return nothing
+    CanonicalExpr(
+        head(x),
+        x.args[1:i-1]...,
+        stan_expr(head(impl)),
+        x.args[i+1:j-1]...,
+        impl.args...;
+        rest...,
+    )
+end
+# Companion selection (`lpxf_expr`/`likelihood_expr`/`rng_expr`) bypasses this
+# expansion, so a call built directly — a ragged group's twin — lowers its
+# nested combinator token here.
+_normalized_hof_call(rhs::CanonicalExpr) = begin
+    spec = _distribution_hof(head(rhs))
+    isnothing(spec) && return rhs
+    something(_nested_hof_call(spec, rhs), rhs)
 end
 expand_inline_or_trace(
     x::CanonicalExpr{typeof(builtin.weighted)};
     info,
 ) = begin
-    spliced = _hof_call_family_splice(_distribution_hof(head(x)), x)
+    spec = _distribution_hof(head(x))
+    spliced = _hof_call_family_splice(spec, x)
     spliced !== nothing && return forward!(spliced; info)
+    nested = _nested_hof_call(spec, x)
+    nested !== nothing && return forward!(nested; info)
     invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info)
 end
 _family_probability_companion(family, suffix::Symbol) = begin
@@ -537,7 +639,7 @@ rng_expr(token, rhs::StanExpr) = rng_expr(token, expr(rhs))
 # (`<variant>_rng(family, bounds…, args...)`), so appending is layout-safe.
 _hof_rng_args(spec, rhs::CanonicalExpr) = begin
     args = _hof_call_args(spec, rhs)
-    i = spec.family_arg
+    i = _hof_base_family_index(spec, args)
     _family_function(args[i]) === builtin.std_normal || return args
     (args[1:i-1]..., stan_expr(builtin.normal), args[i+1:end]..., stan_expr(0.0), stan_expr(1.0))
 end
@@ -609,13 +711,27 @@ _family_selector_target(::typeof(builtin.pointwise), family) = likelihood_expr(f
 _family_selector_target(::typeof(builtin.predictive), family) = rng_expr(family)
 _family_selector_target(::typeof(builtin.logcdf), family) = logcdf_expr(family)
 _family_selector_target(::typeof(builtin.logccdf), family) = logccdf_expr(family)
+_family_selector_target(selector, family, rest) = _family_selector_target(selector, family)
+# A nested combinator (`weighted`'s `density(lower_clamping, y, normal, lo, mu,
+# sigma)`) has no fixed companion: its `_lpdf`/`_lpmf` twin follows its own base
+# family, which trails the observation. Select it exactly as its `~` would.
+_family_selector_target(
+    selector::Union{typeof(builtin.density),typeof(builtin.pointwise)}, family, rest,
+) = begin
+    spec = _distribution_hof(family)
+    isnothing(spec) && return _family_selector_target(selector, family)
+    call = CanonicalExpr(family, rest[2:end]...)
+    base = _distribution_hof_family(spec, call)
+    selector === builtin.density ? _hof_probability(spec, base, call) :
+        _hof_pointwise(spec, base, call)
+end
 expand_inline_or_trace(
     x::CanonicalExpr{<:DistributionFamilySelector,<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}};
     info,
 ) = begin
     family = _family_function(x.args[1])
-    selected = _family_selector_target(head(x), family)
     rest = x.args[2:end]
+    selected = _family_selector_target(head(x), family, rest)
     isempty(rest) ? forward!(selected; info) :
         forward!(CanonicalExpr(selected, rest...); info)
 end
