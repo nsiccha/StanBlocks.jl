@@ -349,6 +349,11 @@ backward!(x::StanExpr{Symbol}; info) = begin
         !isempty(_slice_records(info[key])) || !isempty(_slice_observations(info[key])))
     source = certified ? info[key] : x
     reached = remake(source; lqual=:affects_likelihood)
+    # cv taint only ever grows. An observation that reads its own base (a sum of
+    # the response, an element hold-out mask slice bounded by the response's
+    # `ends`) carries an occurrence forwarded before the observation tainted
+    # that base; keep the taint rather than clearing it with that snapshot.
+    key in keys(info) && cv(info[key]) && !cv(reached) && (reached = remake(reached; cv=true))
     info[key] = reached
     # A parameter's declaration constraints participate in the unconstrained
     # density through its transform/Jacobian. If a likelihood-reachable value

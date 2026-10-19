@@ -80,8 +80,11 @@ mutable struct TraceContext
     # `_ragged_scratch_assign`): each generated-quantities statement that reads
     # one re-declares it inside its own local scope.
     ragged_scratch::OrderedDict{Symbol,Any}
+    # Observations whose element hold-out mask a `~` statement applied
+    # (`_held_out_rhs`, forward.jl).
+    held_out_observed::Set{Symbol}
 end
-TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0, OrderedDict{Symbol,Any}())
+TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0, OrderedDict{Symbol,Any}(), Set{Symbol}())
 _context_or_new(context) = context === nothing ? TraceContext() : context
 """
 A named sub-model function, produced by `@slic f(args...) = body`. The value
