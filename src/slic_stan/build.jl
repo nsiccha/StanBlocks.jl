@@ -420,26 +420,50 @@ end
 # Serialize that boundary conservatively; each call still owns a fresh model.
 const _native_constructor_lock = ReentrantLock()
 
+# The source and library paths of `sc`'s artifact under `context`, through the
+# real build directory so that aliases through symbolic links share one lock.
+function _artifact_paths(sc, context, filename)
+    source = _default_build_path(sc, context; filename)
+    mkpath(dirname(source))
+    source = joinpath(realpath(dirname(source)), basename(source))
+    source, splitext(source)[1] * "_model.so"
+end
+
+# The library an earlier build published for `sc`, or `nothing`. A published
+# library is complete and never overwritten, so finding one takes no lock and
+# never waits for another process's build. This context read can meet a first
+# build writing into the toolchain (BridgeStan downloads stanc, TBB builds into
+# a named tree): it then fails or names no library, and the caller reads the
+# context again under the toolchain lock, where a persistent error surfaces.
+function _published_library(sc, context, filename)
+    current = try
+        context()
+    catch err
+        err isa Base.IOError || err isa SystemError || rethrow()
+        return nothing
+    end
+    source, library = _artifact_paths(sc, current, filename)
+    isfile(library) || return nothing
+    _write_immutable_stan_source(source, sc)
+    library
+end
+
 "The published immutable library for Stan source `sc`, compiled first if absent."
 function _artifact_library(sc; filename="model.stan", make_args, stanc_args=String[], dependencies=String[])
     args, stanc = _split_stanc_make_args(make_args, stanc_args)
     home = _bridgestan_build_home()
+    context() = _native_build_context(home, args; stanc_args=stanc, dependencies)
+    published = _published_library(sc, context, filename)
+    published === nothing || return published
     toolchain_lock = _toolchain_lock_path(home)
-    context = _with_build_lock(toolchain_lock) do
-        _native_build_context(home, args; stanc_args=stanc, dependencies)
-    end
-    source = _default_build_path(sc, context; filename)
-    filename = basename(source)
-    mkpath(dirname(source))
-    source = joinpath(realpath(dirname(source)), basename(source))
-    library = splitext(source)[1] * "_model.so"
+    source, library = _artifact_paths(sc, _with_build_lock(context, toolchain_lock), filename)
     _with_build_lock(source * ".pid") do
         _write_immutable_stan_source(source, sc)
         if !isfile(library)
             # Even distinct artifacts can build common BridgeStan/TBB files.
             _with_build_lock(toolchain_lock) do
                 mktempdir(dirname(source); prefix="build-") do staging
-                    staged_source = joinpath(staging, filename)
+                    staged_source = joinpath(staging, basename(source))
                     write(staged_source, sc)
                     built = BridgeStan.compile_model(staged_source; make_args=args,
                         stanc_args=_compile_stanc_args(stanc))
