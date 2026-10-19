@@ -1601,8 +1601,68 @@ forward!(x::SamplingExpr{Symbol}; info) = begin
             center_type(info[name]) <: RaggedVector && _is_canonical_expr(rhs)
         return _forward_ragged_obs_broadcast!(name, rhs; info)
     end
-    rhs = forward!(rhs; info)::Union{StanExpr,SlicModel}
+    rhs = forward!(_held_out_rhs(name, rhs; info); info)::Union{StanExpr,SlicModel}
     forward!(remake(x, name, rhs); info)
+end
+# ── Element hold-out (`maybecv(:y, y; held_out=mask)`) ───────────────────────
+# Snag hold-out-a-subse-b48c943c. A whole-variable `maybecv` drops all of an
+# observation's likelihood; an element mask drops only the masked elements'.
+# The observation's family is wrapped in the compiler-owned
+# `heldout(family, <mask slice>, args…)` density (builtin.jl), whose mask slice
+# is the observation's own LHS with its base renamed to the mask — `y_held_out`,
+# `yr_held_out[i]` in a plate cell, `ys_held_out[g]` in a ragged group loop — so
+# the mask is indexed exactly as the observation is. No cv taint is set: every
+# parameter keeps its block. The twins resolve through the bare family
+# (`_heldout_family_call`, lpxf_builtin.jl), so they cover every element.
+_held_out_mask(k; info) =
+    k in keys(info) && info[k] isa StanExpr ? get(type(info[k]).info, :held_out_mask, nothing) : nothing
+_held_out_name(k::Symbol) = Symbol(k, :_held_out)
+# Bind each mask as a data input at model scope, beside the data it marks: a
+# `@plate for` cell must read it as data, never as a cell-local.
+_bind_held_out_masks!(names; info) = begin
+    for k in names
+        mask = _held_out_mask(k; info)
+        mask === nothing && continue
+        m = _held_out_name(k)
+        m in keys(info) && error(
+            "`", k, "` carries an element hold-out mask, which Stan reads as the data input `",
+            m, "`, but the model already binds `", m, "`. Rename that variable.")
+        info[m] = maybedata(m, mask; held_out_mask_of=k)
+    end
+    nothing
+end
+_held_out_rhs(lhs_raw, rhs_raw; info) = begin
+    k = _base_lhs_symbol(lhs_raw)
+    k isa Symbol && _held_out_mask(k; info) !== nothing || return rhs_raw
+    _is_canonical_expr(rhs_raw) || error(
+        "`", k, "` carries an element hold-out mask (`maybecv(:", k, ", …; held_out=mask)`), ",
+        "which needs a distribution call on the right of `", k, " ~ …`.")
+    f = _held_out_family_name(head(rhs_raw))
+    f in _joint_dist_names() && error(
+        "`", k, "` carries an element hold-out mask, but `", f, "` is a joint ",
+        "distribution: its elements have no separate densities to hold out. Hold out the whole ",
+        "observation with `maybecv(:", k, ", ", k, ")`, or use an element-wise family.")
+    CanonicalExpr(builtin.heldout, rhs_raw, _held_out_slice(lhs_raw, _held_out_name(k)))
+end
+# An untraced call head is the family's name (`canonical(::CanonicalExprV{:call})`),
+# or the function itself when a value was spliced in.
+_held_out_family_name(f::Symbol) = f
+_held_out_family_name(f::Function) = nameof(f)
+_held_out_family_name(_) = nothing
+# The observation's (untraced) LHS with its base renamed to the mask.
+_held_out_slice(::Union{Symbol,StanExpr{Symbol}}, m) = m
+_held_out_slice(x::CanonicalExpr, m) = remake(x, _held_out_slice(x.args[1], m), x.args[2:end]...)
+# A mask reaches the data block only through the observation it marks; a mask on
+# a binding that no `~` observes would otherwise be silently ignored.
+_assert_held_out_masks_applied(names; info) = begin
+    data = content(block(info, :data))
+    for k in names
+        _held_out_mask(k; info) === nothing && continue
+        _held_out_name(k) in keys(data) || error(
+            "`maybecv(:", k, ", …; held_out=mask)` holds out elements of an observation, but no ",
+            "`", k, " ~ …` statement observes `", k, "`. Mark the observed response, or drop `held_out`.")
+    end
+    nothing
 end
 # A ragged observation gets the model-block density loop AND a generated-quantities
 # twin loop. The twin deliberately keeps the group structure:
@@ -2282,7 +2342,7 @@ _forward_indexed_sampling!(x; info, user_slice::Bool=false) = begin
             "Plate-generated indexed sampling of `$k[…]` requires the plate emitter to register its outer declaration first."
     )
     lhs = forward!(lhs_raw; info)
-    rhs = forward!(rhs_raw; info)::StanExpr
+    rhs = forward!(_held_out_rhs(lhs_raw, rhs_raw; info); info)::StanExpr
     base = info[k]
     if _is_ragged_density_target(k; info)
         (center_type(base) <: RaggedVector || center_type(base) <: RaggedMatrix) || error(
