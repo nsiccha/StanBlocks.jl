@@ -1637,13 +1637,18 @@ _held_out_rhs(lhs_raw, rhs_raw; info) = begin
     _is_canonical_expr(rhs_raw) || error(
         "`", k, "` carries an element hold-out mask (`maybecv(:", k, ", …; held_out=mask)`), ",
         "which needs a distribution call on the right of `", k, " ~ …`.")
-    f = head(rhs_raw)
-    f isa Function && nameof(f) in _joint_dist_names() && error(
-        "`", k, "` carries an element hold-out mask, but `", nameof(f), "` is a joint ",
+    f = _held_out_family_name(head(rhs_raw))
+    f in _joint_dist_names() && error(
+        "`", k, "` carries an element hold-out mask, but `", f, "` is a joint ",
         "distribution: its elements have no separate densities to hold out. Hold out the whole ",
         "observation with `maybecv(:", k, ", ", k, ")`, or use an element-wise family.")
     CanonicalExpr(builtin.heldout, rhs_raw, _held_out_slice(lhs_raw, _held_out_name(k)))
 end
+# An untraced call head is the family's name (`canonical(::CanonicalExprV{:call})`),
+# or the function itself when a value was spliced in.
+_held_out_family_name(f::Symbol) = f
+_held_out_family_name(f::Function) = nameof(f)
+_held_out_family_name(_) = nothing
 # The observation's (untraced) LHS with its base renamed to the mask.
 _held_out_slice(::Union{Symbol,StanExpr{Symbol}}, m) = m
 _held_out_slice(x::CanonicalExpr, m) = remake(x, _held_out_slice(x.args[1], m), x.args[2:end]...)
