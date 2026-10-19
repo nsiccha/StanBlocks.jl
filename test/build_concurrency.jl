@@ -402,6 +402,57 @@ end
     end
 end
 
+@testitem "artifact library: a published library loads while another build holds the toolchain lock" tags=[:slic, :regression] begin
+    # Snag toolchain-build-ec701757: every call read its build context under the
+    # host-wide toolchain lock, so loading an already-built library queued
+    # behind every other process's compile on that toolchain.
+    using StanBlocks
+    code = "parameters { real x; } model { x ~ normal(0, 1); }\n"
+    args = ["STAN_THREADS=true"]
+    mktempdir() do dir
+        # A toolchain home without a Makefile: nothing here can compile.
+        home = realpath(mkpath(joinpath(dir, "bridgestan")))
+        withenv("BRIDGESTAN" => home, "STANBLOCKS_BUILD_DIR" => joinpath(dir, "build")) do
+            # An artifact as a finished build publishes it: source, then library.
+            source = StanBlocks._default_build_path(code, StanBlocks._native_build_context(home, args))
+            library = joinpath(realpath(mkpath(dirname(source))), splitext(basename(source))[1] * "_model.so")
+            write(source, code)
+            write(library, "")
+            held, release = Channel{Nothing}(1), Channel{Nothing}(1)
+            holder = Threads.@spawn StanBlocks.with_toolchain_lock(home) do
+                put!(held, nothing)
+                take!(release)
+            end
+            take!(held)
+            local probe, hit, miss
+            try
+                # Control: the lock a build takes stays held throughout.
+                probe = Threads.@spawn StanBlocks.with_toolchain_lock(() -> nothing, home)
+                hit = Threads.@spawn StanBlocks._artifact_library(code; make_args=args)
+                @test timedwait(() -> istaskdone(hit), 30) === :ok
+                # Fail, never hang, on a regression: the holder waits for us.
+                @test istaskdone(hit) && fetch(hit) == library
+                # A library not yet built still waits for the toolchain.
+                miss = Threads.@spawn StanBlocks._artifact_library("// other\n" * code; make_args=args)
+                @test timedwait(() -> istaskdone(miss), 3) === :timed_out
+                @test !istaskdone(probe)
+            finally
+                put!(release, nothing)
+                fetch(holder)
+            end
+            fetch(probe)
+            # Once the toolchain is free the miss reaches the compiler.
+            @test timedwait(() -> istaskdone(miss), 60) === :ok
+            @test istaskfailed(miss)
+            @test occursin("Makefile does not exist", sprint(showerror, miss.result))
+            # The lock-free path still refuses a damaged artifact source.
+            write(source, "// damaged\n" * code)
+            @test_throws ErrorException StanBlocks._artifact_library(code; make_args=args)
+            @test read(source, String) == "// damaged\n" * code
+        end
+    end
+end
+
 @testitem "thread safety: shared native artifact across processes" tags=[:slic, :regression, :bridgestan] begin
     using StanBlocks
     worker = joinpath(@__DIR__, "fixtures", "native_build_worker.jl")
