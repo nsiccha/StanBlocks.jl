@@ -139,6 +139,7 @@ end
     hcat
     reshape
     ragged_n ragged_total ragged_start ragged_end ragged_length as_matrix
+    ragged_common_ends ragged_matched_group
     # Stan 2.37 exposed constraint transforms (Feature 1) — @deffun sigs below.
     simplex_constrain simplex_unconstrain simplex_jacobian
     ordered_constrain ordered_unconstrain ordered_jacobian
@@ -2070,6 +2071,8 @@ end
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:RaggedVector},<:StanExpr2{<:types.int}}}; info) =
     if _is_ragged_construction(x.args[1])
         rv, i = x.args
+        record = _ragged_elementwise_record(rv)
+        record === nothing || return _ragged_elementwise_group(record, i; info)
         ends = _ragged_ends(rv)
         lo = _trace_stan_call(builtin.ragged_start, ends, i; info)
         hi = _trace_stan_call(builtin.ragged_end, ends, i; info)
@@ -2119,6 +2122,109 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr
     _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
     _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
+
+# --- Elementwise arithmetic on RaggedVector operands --------------------------
+# Snag raggedvector-ari-19d214fa (reported by BRM). A RaggedVector is flat memory
+# split into groups, so ELEMENTWISE arithmetic is arithmetic on `mem` that keeps
+# the group `ends`: `2.0 * rv`, `a + b * rv`, `rv / s`, `rv .^ 2`, `-rv`, and
+# `rv1 + rv2` / `rv1 .* rv2` when both carry the same `ends`. The accepted forms
+# mirror the scalar-array ones (`_lower_scalar_array_broadcast` /
+# `_lower_scalar_array_scale`, forward.jl): binary `+`/`-` and dotted
+# `.*`/`./`/`.^` between RaggedVectors and numeric scalars, unary `-`, and scalar
+# scaling `s * rv` / `rv * s` / `rv / s`. Every other form — a dense operand (per
+# group or per element?), `rv * rv`, `s / rv`, plain `^` — returns `nothing` and
+# keeps the actionable `_reject_ragged_vector_arithmetic` floor.
+#
+# The result is a RaggedVector CONSTRUCTION, so every consumer of one (`rv[g]`,
+# `length`, `.mem`/`.ends`, `as_matrix`, ragged observations, inline RaggedVector
+# UDFs) takes it unchanged. It also records its operands, so `rv[g]` slices each
+# operand by group BEFORE the arithmetic (`2.0 * x[g]`) instead of recomputing the
+# whole-memory result once per group.
+#
+# Two RaggedVector operands must share their group ends. Identical `ends`
+# expressions need no check. Otherwise differing trace-time values fail here, and
+# Stan rejects at runtime too, because a `StanModel` rebinds data without
+# re-tracing: the whole-object `ends` go through `ragged_common_ends`, and each
+# group slice validates only its own two boundaries (`ragged_matched_group`).
+@deffun begin
+    ragged_common_ends(ends::int[n], other::int[m])::int[n] = begin
+        @stan_assert n == m "RaggedVector arithmetic: the two operands have different numbers of groups; elementwise arithmetic needs the same group ends."
+        for i in 1:n
+            @stan_assert ends[i] == other[i] "RaggedVector arithmetic: the two operands have different group ends; elementwise arithmetic needs the same group ends."
+        end
+        ends
+    end
+    ragged_matched_group(ends::int[n], other::int[m], i::int)::int = begin
+        @stan_assert n == m "RaggedVector arithmetic: the two operands have different numbers of groups; elementwise arithmetic needs the same group ends."
+        @stan_assert ends[i] == other[i] "RaggedVector arithmetic: the two operands have different group ends; elementwise arithmetic needs the same group ends."
+        if i > 1
+            @stan_assert ends[i-1] == other[i-1] "RaggedVector arithmetic: the two operands have different group ends; elementwise arithmetic needs the same group ends."
+        end
+        i
+    end
+end
+_is_ragged_vector_operand(a) = a isa StanExpr && center_type(a) <: RaggedVector
+_is_ragged_arithmetic_scalar(a) = a isa StanExpr && _is_numeric_scalar(type(a))
+_ragged_arithmetic_form(f, args) = begin
+    all(a -> _is_ragged_vector_operand(a) || _is_ragged_arithmetic_scalar(a), args) || return false
+    n = length(args)
+    f === (-) && n == 1 && return true
+    n == 2 || return false
+    f === (+) || f === (-) ||
+        (f isa Base.BroadcastFunction && _broadcast_op(f) in (+, -, *, /, ^)) ||
+        (f === (*) && count(_is_ragged_arithmetic_scalar, args) == 1) ||
+        (f === (/) && _is_ragged_arithmetic_scalar(args[2]))
+end
+_ragged_elementwise_record(rv) = get(type(rv).info, :ragged_elementwise, nothing)
+_ragged_field(rv, i; info) = forward!(CanonicalExpr(Base.getfield, rv, i); info)
+# The ends a group slice of `rv` is cut at. An arithmetic result names its first
+# RaggedVector operand's ends: its own group slices validate the other operand.
+_ragged_group_ends(rv; info) = begin
+    record = _ragged_elementwise_record(rv)
+    record === nothing ? _ragged_field(rv, 2; info) : record.group_ends
+end
+_same_ragged_ends(a, b) = sprint(show, a) == sprint(show, b)
+_ragged_common_ends(rvs; info) = begin
+    ends = map(rv -> _ragged_field(rv, 2; info), rvs)
+    length(ends) == 1 && return only(ends)
+    a, b = ends
+    _same_ragged_ends(a, b) && return a
+    hasvalue(a) && hasvalue(b) && getvalue(a) != getvalue(b) && error(
+        "RaggedVector arithmetic: the operands have different group ends (`", a, "` = ",
+        getvalue(a), ", `", b, "` = ", getvalue(b), "). Elementwise arithmetic between two ",
+        "RaggedVectors needs the same groups; index one group with `rv[g]` to combine ",
+        "groups of different sizes.",
+    )
+    _trace_stan_call(builtin.ragged_common_ends, a, b; info)
+end
+_lower_ragged_arithmetic(x::CanonicalExpr; info) = begin
+    any(_is_ragged_vector_operand, x.args) || return nothing
+    f = head(x)
+    # `a + b + rv` / `a * b * rv` arrive n-ary: fold left into binary steps.
+    (f === (+) || f === (*)) && length(x.args) > 2 && return forward!(
+        CanonicalExpr(f, CanonicalExpr(f, x.args[1], x.args[2]), x.args[3:end]...); info,
+    )
+    _ragged_arithmetic_form(f, x.args) || return nothing
+    rvs = filter(_is_ragged_vector_operand, collect(x.args))
+    mems = map(a -> _is_ragged_vector_operand(a) ? _ragged_field(a, 1; info) : a, x.args)
+    mem = forward!(CanonicalExpr(f, mems...); info)
+    ends = _ragged_common_ends(rvs; info)
+    rv = forward!(CanonicalExpr(RaggedVector, mem, ends); info)
+    remake(rv; ragged_elementwise=(;
+        f, operands=x.args, group_ends=_ragged_group_ends(first(rvs); info),
+    ))
+end
+# Group `g` of an arithmetic result: the same arithmetic over each operand's group.
+_ragged_elementwise_group(record, g; info) = begin
+    slices = map(record.operands) do a
+        _is_ragged_vector_operand(a) || return a
+        ends = _ragged_group_ends(a; info)
+        ag = _same_ragged_ends(ends, record.group_ends) ? g :
+            _trace_stan_call(builtin.ragged_matched_group, record.group_ends, ends, g; info)
+        forward!(CanonicalExpr(getindex, a, ag); info)
+    end
+    forward!(CanonicalExpr(record.f, slices...); info)
+end
 
 # --- EachCol / EachRow — first-class column/row VIEWS of a matrix -------------
 # `EachCol(X)` / `EachRow(X)` make a matrix's columns / rows an indexable container

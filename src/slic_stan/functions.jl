@@ -258,18 +258,25 @@ _reject_scalar_array_elementwise(x::CanonicalExpr) = begin
 end
 # A `RaggedVector` (a ragged `plate` result, or ragged `Vector{<:AbstractVector}`
 # data — both stored as `tuple(vector, array[] int)`: flat memory + inclusive group
-# ends) has NO whole-object arithmetic, so `pred * w` / `pred .* w` / `pred .+ x`
-# otherwise fall through to the opaque `tracetype not defined` / `::anything` floor.
-# Name the RaggedVector and the actual remedy instead (snag plate-return-tup, reported
-# by BRM: a plate cell that slices a ragged input collects to a RaggedVector, and the
-# author's downstream `pred * w` failed with a message that named neither).
+# ends) supports only ELEMENTWISE arithmetic with numeric scalars and same-ends
+# RaggedVectors, lowered before `tracetype` (`_lower_ragged_arithmetic`, builtin.jl;
+# snag raggedvector-ari-19d214fa). Any other form — `pred * w` / `pred .* w` with a
+# dense `w` — would otherwise fall through to the opaque `tracetype not defined` /
+# `::anything` floor. Name the RaggedVector and the actual remedy instead (snag
+# plate-return-tup, reported by BRM: a plate cell that slices a ragged input collects
+# to a RaggedVector, and the author's downstream `pred * w` failed with a message that
+# named neither).
 _is_ragged_vector(t::StanType) = center_type(t) <: builtin.RaggedVector
 _reject_ragged_vector_arithmetic(x::CanonicalExpr) = begin
     any(a -> a isa StanExpr && _is_ragged_vector(type(a)), x.args) || return nothing
     error(
         "`", short_expr(x), "` applies arithmetic to a whole ragged `RaggedVector` (stored as ",
-        "`tuple(vector, array[] int)` — flat memory + inclusive group ends), which has no ",
-        "whole-object `+`/`-`/`*`/`.*` etc. A `plate` returns a RaggedVector by default when its ",
+        "`tuple(vector, array[] int)` — flat memory + inclusive group ends) in a form that has ",
+        "no elementwise meaning. A RaggedVector supports elementwise `+`/`-`/`.*`/`./`/`.^` with ",
+        "numeric scalars and with RaggedVectors that have the same group ends, unary `-`, and ",
+        "scalar scaling `s * rv` / `rv * s` / `rv / s`; write `.*` / `./` / `.^` for the ",
+        "elementwise product, quotient, and power. A dense vector or matrix operand is ",
+        "ambiguous (per group or per element). A `plate` returns a RaggedVector by default when its ",
         "cell width is not statically fixed — e.g. the cell slices a ragged / vector-of-vectors ",
         "input (`log_rt[rows]`), which stays ragged even when every group is the same length. ",
         "If you KNOW every group is the same length, cast it to a matrix downstream with ",
