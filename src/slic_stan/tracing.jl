@@ -420,7 +420,7 @@ _annotated_loop_kind(head::GlobalRef) = _annotated_loop_kind(head.name)
 _annotated_loop_kind(head::Expr) =
     (head.head === :. && length(head.args) == 2 && head.args[2] isa QuoteNode) ?
         _annotated_loop_kind(head.args[2].value) : nothing
-canonical(x) = x
+Base.@nospecializeinfer canonical(@nospecialize(x)) = x
 canonical(x::Expr) = if x.head === :->
     # Lambdas (`(x) -> body`): keep `lhs` and `body` as raw, un-canonicalised
     # AST. `forward!(::CanonicalExprV{:->, ...})` snapshots the raw body for

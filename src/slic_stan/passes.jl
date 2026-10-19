@@ -59,7 +59,7 @@ Base.@nospecializeinfer deanon_type(tt::StanType, @nospecialize(x::CanonicalExpr
         k => (k === :arg_types ? nat : v) for (k, v) in pairs(info(tt)) if k != :size
     ]...)
 end
-_tracetype(x, _context) = tracetype(x)
+Base.@nospecializeinfer _tracetype(@nospecialize(x), _context) = tracetype(x)
 # Stan allows a random-number generator only in transformed data, generated
 # quantities, and functions whose names end in `_rng` — the suffix is Stan's own
 # marker for an RNG-bearing callable, builtin or user-defined. Every draw is a
@@ -71,7 +71,7 @@ _tracetype(x, _context) = tracetype(x)
 # for a draw from data alone too: in transformed data it would be one fixed draw
 # per run that no output carries, whereas the `~` spelling of the same draw (a
 # prior no likelihood reaches) is already re-drawn in generated quantities.
-_rng_qual(x::CanonicalExpr, q) = q in (:data, :parameter) && _is_rng_callee(head(x)) ? :quantities : q
+Base.@nospecializeinfer _rng_qual(@nospecialize(x::CanonicalExpr), q) = q in (:data, :parameter) && _is_rng_callee(head(x)) ? :quantities : q
 # Whether a value — or a size it is declared with — reads a random draw. The
 # fresh-parameter sites (forward.jl) treat this like `cv` taint, which likewise
 # checks the declared size: such a parameter is re-drawn in generated quantities,
@@ -370,7 +370,7 @@ backward!(x::StanType; info) = remake(x; lqual=:affects_likelihood)
 # closure before distribution: a compiler-owned result may have several fills.
 _contains_integer(t::StanType) = center_type(t) <: types.int ||
     any(_contains_integer, values(get(info(t), :arg_types, ())))
-_uses_model_local(x, names) = false
+Base.@nospecializeinfer _uses_model_local(@nospecialize(x), names) = false
 _uses_model_local(x::StanExpr{Symbol}, names) = expr(x) in names ||
     _uses_model_local(type(x), names)
 _uses_model_local(x::StanExpr, names) = _uses_model_local(expr(x), names) ||
@@ -378,10 +378,14 @@ _uses_model_local(x::StanExpr, names) = _uses_model_local(expr(x), names) ||
 _uses_model_local(x::StanType, names) = _uses_model_local(stan_size(x), names) ||
     _uses_model_local(values(constraints(x)), names) ||
     _uses_model_local(get(info(x), :arg_types, ()), names)
-_uses_model_local(x::CanonicalExpr, names) = _uses_model_local(x.args, names) ||
+Base.@nospecializeinfer _uses_model_local(@nospecialize(x::CanonicalExpr), names) = _uses_model_local(x.args, names) ||
     _uses_model_local(values(x.kwargs), names)
-_uses_model_local(x::Union{Tuple,NamedTuple,AbstractVector}, names) =
-    any(a -> _uses_model_local(a, names), x)
+Base.@nospecializeinfer _uses_model_local(@nospecialize(xs::Union{Tuple,NamedTuple,AbstractVector}), names) = begin
+    for x in xs
+        _uses_model_local(x, names) && return true
+    end
+    false
+end
 
 _transform_bindings!(bindings, x; info) = nothing
 _transform_bindings!(bindings, x::StanExpr; info) =

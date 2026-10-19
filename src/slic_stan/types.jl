@@ -315,7 +315,7 @@ remake(x::StanBlock{N}, c) where {N} = StanBlock(N, c)
 
 head(x::CanonicalExpr) = x.head
 head(::CanonicalExprV{H}) where {H} = H
-remake(x::CanonicalExpr, args...; kwargs...) = CanonicalExpr(head(x), args...; kwargs...)
+Base.@nospecializeinfer remake(@nospecialize(x::CanonicalExpr), @nospecialize(args...); kwargs...) = CanonicalExpr(head(x), args...; kwargs...)
 
 StanModel(name=gensym("stan_model")) = StanModel(
     (;name, _trace_context=TraceContext()),
@@ -620,7 +620,7 @@ getvalue(x::StanType) = get(info(x), :value, missing)
 getvalue(x::DocumentExpr) = getvalue(x.args[2])
 hasvalue(x::StanExpr) = !ismissing(getvalue(x))
 hasvalue(x::StanType) = !ismissing(getvalue(x))
-cv(x) = false
+Base.@nospecializeinfer cv(@nospecialize(x)) = false
 cv(x::StanExpr) = cv(type(x))
 cv(x::StanType) = get(info(x), :cv, false) || any(cv, stan_size(x))
 

@@ -2337,11 +2337,11 @@ _backed_marker(kind, f, xexpr, stan) = begin
     kind_type = Expr(:curly, Val, QuoteNode(kind))
     Expr(:(=), Expr(:call, marker, Expr(:(::), kind_type), xexpr), nothing)
 end
-sig_expr(x) = x
+Base.@nospecializeinfer sig_expr(@nospecialize(x)) = x
 sig_expr(x::Union{Tuple,NamedTuple}) = _anymap(sig_expr, x)
 sig_expr(x::Vector) = map(sig_expr, x)
 Base.@nospecializeinfer sig_expr(@nospecialize(x::CanonicalExpr)) = remake(x, sig_expr(x.args)...)
-sig_expr(x::StanExpr) = StanExpr(:_, sig_expr(type(x)))
+Base.@nospecializeinfer sig_expr(@nospecialize(x::StanExpr)) = StanExpr(:_, sig_expr(type(x)))
 sig_expr_size(x::StanExpr) = StanExpr(:_, StanType(types.int, ()))
 sig_expr(x::StanType) = StanType(sigtype(center_type(x)), map(sig_expr_size, stan_size(x)))
 # A constrained square matrix signs as `matrix` (`sigtype`) but is SIZED by one
@@ -2489,7 +2489,7 @@ Base.@nospecializeinfer anon_size_type(@nospecialize(T::StanType), i, tok, field
 end
 anon_arg(x::StanExpr, i::Int, tok) =
     StanExpr(Symbol(:_arg, tok, :_, i), anon_size_type(type(x), i, tok))
-anon_arg(x, i::Int, tok) = x
+Base.@nospecializeinfer anon_arg(@nospecialize(x), i::Int, tok) = x
 Base.@nospecializeinfer anon_canonical(@nospecialize(x::CanonicalExpr), tok) =
     remake(x, Any[anon_arg(x.args[i], i, tok) for i in 1:length(x.args)]...)
 anon_canonical(x::CanonicalExpr{Colon}, tok) = x   # needs real args for range size
@@ -2555,7 +2555,7 @@ end
 # Escape the receiver before suffix/specialisation mangling so definitions,
 # calls, descriptors, and dependency signatures all share the same legal name.
 _stan_callable_name(name::AbstractString) = startswith(name, "_") ? "u" * name : name
-func_name(f, args) = begin
+Base.@nospecializeinfer func_name(@nospecialize(f), @nospecialize(args)) = begin
     # Stan gives probability and RNG suffixes semantic meaning, so a UDF's
     # suffix must remain the final component after HOF-specialisation fragments.
     # Inspect the receiver alone: scanning the combined receiver + arguments
