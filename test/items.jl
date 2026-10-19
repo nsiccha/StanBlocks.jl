@@ -16014,3 +16014,47 @@ faithfully, so each is refused with a message naming the name and the fix.
     msg = errmsg(scalar)
     @test occursin("branch 1 binds it to `int` and reads it back", msg)
 end
+
+@testitem "slic: an expression node's type names a nested call by its head only" tags=[:slic, :regression] setup=[StanBlocksImports] begin
+    # A node type that spelled out its whole sub-tree made every compiler walker
+    # compile once per sub-expression shape, for every new model: almost all of a
+    # mid-size model's transpile time was JIT (snag `stanblocks-trans-f759fe4f`).
+    # A traced node may name its argument calls one level down, which is what
+    # `tracetype` / `@defsig` dispatch on, but never those calls' own arguments.
+    deep = Any[]
+    heads = Set{Any}()
+    head_of(E::UnionAll) = head_of(E.body)
+    head_of(E::DataType) = E.parameters[1]
+    walk(x) = nothing
+    walk(x::Union{Tuple,AbstractVector}) = foreach(walk, x)
+    walk(x::NamedTuple) = foreach(walk, values(x))
+    walk(x::StanBlocks.CanonicalExpr) = (walk(x.args); walk(x.kwargs))
+    walk(x::StanBlocks.StanExpr) = begin
+        E = typeof(x).parameters[1]
+        if E <: StanBlocks.CanonicalExpr
+            push!(heads, head_of(E))
+            isconcretetype(E) && push!(deep, typeof(x))
+        end
+        walk(StanBlocks.expr(x))
+    end
+    m = @slic begin
+        a ~ normal(0., 1.)
+        b ~ normal(0., 1.)
+        c ~ normal(0., 1.)
+        y ~ normal(a + b * exp(c), 1.)
+    end
+    model = stan_model(m(; y = 1.0))
+    for block in StanBlocks.blocks(model), stmt in values(StanBlocks.content(block))
+        walk(stmt)
+    end
+    # The walk reached the nested calls, so an empty `deep` is not vacuous.
+    @test issubset((typeof(+), typeof(*), typeof(exp)), heads)
+    @test isempty(deep)
+
+    real_t = StanBlocks.StanType(StanBlocks.types.real)
+    leaf(name) = StanBlocks.StanExpr(name, real_t)
+    product = StanBlocks.StanExpr(StanBlocks.CanonicalExpr(*, leaf(:b), StanBlocks.StanExpr(StanBlocks.CanonicalExpr(exp, leaf(:c)), real_t)), real_t)
+    sum_node = StanBlocks.CanonicalExpr(+, leaf(:a), product)
+    @test typeof(product) == StanBlocks.StanExpr{StanBlocks.CanonicalExpr{typeof(*)},typeof(real_t)}
+    @test typeof(sum_node).parameters[2] == Tuple{typeof(leaf(:a)),typeof(product)}
+end
