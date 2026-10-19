@@ -1,5 +1,15 @@
 module StanBlocks
 
+# The SLIC compiler walks expression trees whose node types differ per model,
+# so nearly all of a transpile's time is compiling methods for new argument
+# types (snag `stanblocks-trans-f759fe4f`). Lower LLVM optimization and stop
+# inference from union-splitting calls with more than one matching method:
+# both cut that per-model compile cost. They apply to every method defined in
+# this module, including the Julia-side `@juliacompat` builtins and `jcall`
+# kernels, which therefore compile at -O1.
+Base.Experimental.@optlevel 1
+Base.Experimental.@max_methods 1
+
 export @slic, @defsig, @deffun, @juliacompat, @stanonly, @lpxf, @lhs, @stan_assert, @plate, @scan
 export return_type_of, stan_code, stan_model, compile_slic_bundle, slic_eval, stan_instantiate, stan_library, stanc_check
 export stan_descriptor, stan_definition, stan_definition_closure, stan_operation, stan_execute
