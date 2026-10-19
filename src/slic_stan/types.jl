@@ -97,6 +97,13 @@ struct StanExpr{E,T<:AbstractStanType}
     expr::E
     type::T
 end
+# A `Type`-valued expr (a `tokenof{T}` head, e.g. the `RaggedVector` in
+# `RaggedVector(mem, ends)`) states `E = typeof(expr)` explicitly. Given an `expr`
+# known only as `::Type{<:X}`, Julia 1.10 infers the default constructor's `E` as
+# `Type{<:X}`, but the runtime value is a `StanExpr{DataType}`. Code compiled
+# against that unsound type can then fail with "fatal error in type inference
+# (type bound)" (snag raggedvector-ari-19d214fa: `2.0 .* rv`).
+StanExpr(expr::Type, type::T) where {T<:AbstractStanType} = StanExpr{typeof(expr),T}(expr, type)
 struct StringStanType <: AbstractStanType
     val::AbstractString
 end

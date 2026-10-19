@@ -216,18 +216,26 @@ _lower_scalar_array_scale(x::CanonicalExpr; info) = begin
      (_is_numeric_scalar(type(l)) && _is_scalar_array(type(r)))) || return nothing
     forward!(CanonicalExpr(builtin.jbroadcasted, *, l, r); info)
 end
-expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(+),typeof(-)}}; info) = begin
-    rv = _lower_scalar_array_broadcast(x; info)
+# Elementwise arithmetic with a `RaggedVector` operand lowers to a new
+# RaggedVector over the same group `ends` (snag raggedvector-ari-19d214fa).
+# `builtin.jl` supplies the expansion once the usertype exists, like
+# `_ragged_group_arg`; it returns `nothing` for non-ragged operands and for
+# forms with no elementwise meaning, which keep the actionable rejection.
+function _lower_ragged_arithmetic end
+_no_arithmetic_lowering(x; info) = nothing
+_lower_arithmetic(x::CanonicalExpr, lower; info) = begin
+    rv = _lower_ragged_arithmetic(x; info)
+    isnothing(rv) && (rv = lower(x; info))
     isnothing(rv) ? fold_shape_query(_trace_stan_expr(x, info)) : rv
 end
-expand_inline_or_trace(x::CanonicalExpr{typeof(*)}; info) = begin
-    rv = _lower_scalar_array_scale(x; info)
-    isnothing(rv) ? fold_shape_query(_trace_stan_expr(x, info)) : rv
-end
-expand_inline_or_trace(x::CanonicalExpr{<:Base.BroadcastFunction}; info) = begin
-    rv = _lower_scalar_array_broadcast(x; info)
-    isnothing(rv) ? fold_shape_query(_trace_stan_expr(x, info)) : rv
-end
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(+),typeof(-)}}; info) =
+    _lower_arithmetic(x, _lower_scalar_array_broadcast; info)
+expand_inline_or_trace(x::CanonicalExpr{typeof(*)}; info) =
+    _lower_arithmetic(x, _lower_scalar_array_scale; info)
+expand_inline_or_trace(x::CanonicalExpr{<:Base.BroadcastFunction}; info) =
+    _lower_arithmetic(x, _lower_scalar_array_broadcast; info)
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(/),typeof(^)}}; info) =
+    _lower_arithmetic(x, _no_arithmetic_lowering; info)
 # `isdefined(builtin, x)` returns true even for names inherited from Base
 # (e.g. `accumulate!`), which would mask user-defined SLIC UDFs that share
 # Base's name. Restrict to bindings actually owned by the `builtin` module.
