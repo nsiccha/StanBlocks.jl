@@ -8262,6 +8262,86 @@ the density). Author syntax is unchanged. Contract defaults:
 end
 
 """
+Verify `slic: @plate for indexed ragged observation gets the do-form twins`.
+
+Todo `2026-10-19T09-38-39-930-088qhmi` (found while handling snag
+`weighted-over-ce-a55869f3`): inside `@plate for i in 1:G`, an indexed
+observation `yr[i] ~ …` of RAGGED data (`Vector{Vector}`) read its group through
+`getindex_RaggedVector`. The twin pass recognises only the compiler-owned slice
+`yr.mem[ragged_start(yr.ends, i):ragged_end(yr.ends, i)]`, so the cell got its
+density but no `yr_gen` / `yr_likelihood`, while the do-form spelling of the same
+cell emitted both. `@plate for` now observes the group through that same slice,
+so the two spellings emit the same Stan up to the loop variable's name — for a
+plain family and for a distribution HOF (`censored`).
+"""
+@testitem "slic: @plate for indexed ragged observation gets the do-form twins" tags=[:slic, :plate, :ragged, :descriptor, :bridgestan, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    yr = [[0.1, 0.2, 0.3], [0.4, 0.5], [0.6, 0.7, 0.8, 0.9]]
+    lor = [0.0, 0.0, 0.0]
+    G = 3
+    # The do-form names its loop variable `plate_i__pl_<id>` and line-wraps the
+    # longer calls; normalise both away before comparing.
+    norm(s) = replace(replace(s, r"plate_i__pl_\d+" => "i"), r"\s+" => "")
+    blocks(m) = (code = stan_code(m); norm.((stan_block(code, "model"), stan_block(code, "generated quantities"))))
+    twins(m) = (d = stan_descriptor(m; name = :indexed_ragged);
+        Dict(o.name => (o.generative, o.source, o.segments) for o in d.outputs if o.name in (:yr_gen, :yr_likelihood)))
+
+    indexed = @slic (; yr, G) begin
+        mu ~ normal(0.0, 1.0)
+        sigma ~ exponential(1.0)
+        @plate for i in 1:G
+            yr[i] ~ normal(mu, sigma)
+        end
+    end
+    doform = @slic (; yr, G) begin
+        mu ~ normal(0.0, 1.0)
+        sigma ~ exponential(1.0)
+        pred ~ plate(yr; outer = G) do yi
+            yi ~ normal(mu, sigma)
+        end
+    end
+    indexed_hof = @slic (; yr, lor, G) begin
+        mu ~ normal(0.0, 1.0)
+        sigma ~ exponential(1.0)
+        @plate for i in 1:G
+            yr[i] ~ censored(normal(mu, sigma); lower = lor[i])
+        end
+    end
+    doform_hof = @slic (; yr, lor, G) begin
+        mu ~ normal(0.0, 1.0)
+        sigma ~ exponential(1.0)
+        pred ~ plate(yr, lor; outer = G) do yi, li
+            yi ~ censored(normal(mu, sigma); lower = li)
+        end
+    end
+
+    expected = Dict(
+        :yr_gen => (:draw, :yr, [3, 5, 9]),
+        :yr_likelihood => (:pointwise_loglik, :yr, [3, 5, 9]),
+    )
+    for (a, b) in ((indexed, doform), (indexed_hof, doform_hof))
+        @test blocks(a) == blocks(b)
+        @test twins(a) == expected
+        @test twins(b) == expected
+        @test stanc_compiles(a)
+    end
+    let gq = stan_block(stan_code(indexed), "generated quantities")
+        @test occursin("vector[num_elements(yr.1)] yr_gen;", gq)
+        @test occursin("vector[num_elements(yr.2)] yr_likelihood;", gq)
+        @test occursin("yr_gen[ragged_start(yr.2, i):ragged_end(yr.2, i)] = normal_vector_rng(", gq)
+        @test occursin("yr_likelihood[i] = normal_lpdf(yr.1[ragged_start(yr.2, i):ragged_end(yr.2, i)] | mu, sigma);", gq)
+    end
+
+    # One aggregate density per group: at the unconstrained zero draw
+    # (mu = 0, sigma = exp(0) = 1) each entry is that group's summed normal lpdf.
+    nlpdf(y) = -0.5 * log(2pi) - 0.5 * abs2(y)
+    d = stan_descriptor(indexed; name = :indexed_ragged)
+    p = stan_execute(d, :fit)
+    ll = stan_execute(d, :pointwise_loglik; problem = p, draws = zeros(LogDensityProblems.dimension(p)), seed = 88)
+    @test keys(ll) == (:yr_likelihood,)
+    @test ll.yr_likelihood ≈ [sum(nlpdf, g) for g in yr]
+end
+
+"""
 Verify `slic: discrete family over an integer ragged observation`.
 
 Snag `ragged-int-obser-771dd259` (from BRM `:ssm` — a per-subject binary/count

@@ -4460,6 +4460,24 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
         Expr(e.head, Any[desugar(a) for a in e.args]...)
     end
     body_stmts = Any[desugar(s) for s in body_raw]
+    # A RAGGED data observation indexed by the plate variable (`yr[i] ~ …`, `yr`
+    # nested-vector data) observes group `i` through the same compiler-owned slice
+    # the container clause (`for yi in yr`) and the do-form use
+    # (`_plate_input_accessor`). Through `getindex_RaggedVector` the twin pass did
+    # not recognise the LHS, so the cell got its density but no `yr_gen` /
+    # `yr_likelihood`. Only the observation LHS is rewritten, and only for a
+    # one-axis plate indexed by the loop variable itself — the shape the ragged
+    # twins support.
+    if kind === :plate && length(idxs) == 1
+        ragged_obs(lhs) = lhs isa Expr && lhs.head === :ref && length(lhs.args) == 2 &&
+            lhs.args[1] isa Symbol && lhs.args[2] === idxs[1] && is_data(lhs.args[1]) &&
+            _plate_is_ragged_iterable(_plate_iterable_type(lhs.args[1], info))
+        body_stmts = Any[
+            (s isa Expr && s.head === :call && length(s.args) == 3 && s.args[1] === :~ && ragged_obs(s.args[2])) ?
+                Expr(:call, :~, _plate_input_accessor(s.args[2].args[1], idxs, info), s.args[3]) : s
+            for s in body_stmts
+        ]
+    end
     # A STABLE namespace for the loop's hoisted locals / invariants: the same in
     # the enclosing loop's probe pass (where our arrays are `public`) and in its
     # emit pass (where they are `owned`) — the union is identical in both.
