@@ -221,13 +221,27 @@ m2(; y, z = StanBlocks.stan.maybecv(:z, z; held_out = t .> cutoff))
 
 - The model block keeps the likelihood of the unmarked elements only:
   `z ~ heldout_normal(z_held_out, mu, sigma_z)`. A marked element's density is
-  skipped, not multiplied by zero, so an element outside a bounded family's support
-  cannot turn the target into `NaN`.
+  skipped, not multiplied by zero, and for a family whose density is elementwise in
+  its arguments it is never evaluated at all. That covers the scalar built-in
+  families (`normal`, `lognormal`, `gamma`, `poisson`, `binomial`, …), and
+  `weighted`, `truncated`, `censored` and `interval_censored` over one.
+  So a marked value outside the family's support cannot turn the target into `NaN`,
+  including where Stan raises an error instead of returning `-Inf` (`lognormal` or
+  `poisson` below 0, `gamma` at 0, `beta` outside [0, 1], `binomial` above its
+  trials).
+- A family with a shared or row-structured argument (`categorical(p)`,
+  `categorical_logit`, `ordered_logistic`, the fused GLMs, a custom `@lpxf` family)
+  is scored whole and its marked entries are dropped, so its marked values must lie
+  where its density accepts them.
 - No cv taint is set, so every parameter stays a parameter and the unmarked elements
   fit it.
-- `z_gen` and `z_likelihood` are the same as without the mark. Every element gets
-  its draw, and a marked element's `z_likelihood` entry is its log predictive density.
-  A ragged response keeps one `z_likelihood` entry per group.
+- Every element gets its `z_gen` draw, and a marked element's `z_likelihood` entry is
+  its log predictive density. A ragged response keeps one `z_likelihood` entry per
+  group. Where Stan would raise an error for a value, that entry is `-Inf`, scored
+  without calling the family, so a marked element outside the support cannot fail
+  the generated-quantities draw either. This applies to the scalar built-in families
+  with such values, alone or `weighted`. For every other family, `z_gen` and
+  `z_likelihood` are the same as without the mark.
 - The mask has the response's shape: a `Bool` vector for a vector response, one
   `Bool` vector per group for a ragged response. It is indexed the same way as the
   response, so the `z[i] ~ …` cells of a `@plate for` (and the cells of a `plate`
