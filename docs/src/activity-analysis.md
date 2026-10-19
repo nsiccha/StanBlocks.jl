@@ -230,11 +230,15 @@ m2(; y, z = StanBlocks.stan.maybecv(:z, z; held_out = t .> cutoff))
   A ragged response keeps one `z_likelihood` entry per group.
 - The mask has the response's shape: a `Bool` vector for a vector response, one
   `Bool` vector per group for a ragged response. It is indexed the same way as the
-  response, so the `z[i] ~ …` cells of a `@plate for` hold out their marked
-  elements. Stan reads the mask as the data input `z_held_out`, which the descriptor
-  marks `derived`.
+  response, so the `z[i] ~ …` cells of a `@plate for` (and the cells of a `plate`
+  do-block over `z`) hold out their marked elements. Stan reads the mask as the data
+  input `z_held_out`, which the descriptor marks `derived`. Re-binding `z` on a
+  traced model keeps the mask, and re-binding it as
+  `maybecv(:z, z; held_out = mask)` replaces it.
 - The mark only removes likelihood terms. Any other read of `z`, such as a lagged
   response used as a covariate, still sees every element.
+- A joint family such as `multi_normal` has no per-element densities, so a mask on
+  its response is refused; hold out the whole response instead.
 
 ::: tip The descriptor sees this
 `stan_descriptor(model)` reports it directly. Each input's `held_out` flag is

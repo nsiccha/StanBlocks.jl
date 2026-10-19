@@ -190,16 +190,51 @@ scalar), plus a bounded family whose held-out elements are outside its support.
         @test llm.yr_likelihood ≈ [sum(nlpdf.(g, 0.2)) for g in yr]
     end
 
-    # A scalar per-cell observation.
+    # A ragged observation over a plate's ragged result (the time-course shape),
+    # and the plate do-form over a ragged input.
+    ts = [[0.0, 1.0, 2.0], [0.5, 1.5], [0.0, 1.0, 2.0, 3.0]]
+    over_plate = @slic (; yr, ts, G) begin
+        a ~ normal(0.0, 1.0)
+        eta ~ plate(ts; outer = G) do t
+            m::typeof(t) = a .* t
+            m
+        end
+        yr ~ normal(eta, 1.0)
+    end
+    ragged_do = @slic (; yr, G) begin
+        mu ~ normal(0.0, 1.0)
+        theta ~ plate(yr; outer = G) do yi
+            yi ~ normal(mu, 1.0)
+        end
+    end
+    for (m, theta, expected) in (
+        (over_plate, 0.15, sum(sum(nlpdf.(g[.!h], 0.15 .* t[.!h])) for (g, h, t) in zip(yr, hr, ts))),
+        (ragged_do, 0.2, kept),
+    )
+        mm = m(; yr = maybecv(:yr, yr; held_out = hr))
+        @test gq(mm) == gq(m(; yr))
+        @test logdensity(mm, [theta]) ≈ -0.5 * theta^2 + expected
+    end
+
+    # A scalar per-cell observation, in both plate spellings.
     cells = @slic (; y) begin
         mu ~ normal(0.0, 1.0)
         @plate for i in 1:4
             y[i] ~ normal(mu, 1.0)
         end
     end
-    cm = cells(; y = maybecv(:y, y; held_out = held))
-    @test stanc_compiles(cm)
-    @test logdensity(cm, [0.3]) ≈ -0.5 * 0.3^2 + sum(nlpdf.(y[.!held], 0.3))
+    cells_do = @slic (; y) begin
+        mu ~ normal(0.0, 1.0)
+        theta ~ plate(y; outer = 4) do yi
+            yi ~ normal(mu, 1.0)
+        end
+    end
+    for m in (cells, cells_do)
+        cm = m(; y = maybecv(:y, y; held_out = held))
+        @test gq(cm) == gq(m(; y))
+        @test stanc_compiles(cm)
+        @test logdensity(cm, [0.3]) ≈ -0.5 * 0.3^2 + sum(nlpdf.(y[.!held], 0.3))
+    end
 
     # Refusals name the mark.
     err(f) = try f(); nothing catch e sprint(showerror, e) end
@@ -211,6 +246,12 @@ scalar), plus a bounded family whose held-out elements are outside its support.
     end
     @test occursin("no `x ~ …` statement observes `x`",
         something(err(() -> stan_code(covariate(; x = maybecv(:x, x; held_out = held), y))), ""))
+    joint = @slic (; y) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ multi_normal(rep_vector(mu, 4), diag_matrix(rep_vector(1.0, 4)))
+    end
+    @test occursin("`multi_normal` is a joint distribution",
+        something(err(() -> stan_code(joint(; y = maybecv(:y, y; held_out = held)))), ""))
 
     # Re-binding a traced model: a new mark replaces the mask, a plain value keeps
     # the traced one, and a mask that no longer fits (or a mark the model was not
