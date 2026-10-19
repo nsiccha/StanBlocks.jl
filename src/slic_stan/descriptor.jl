@@ -463,12 +463,54 @@ _plate_layout_value(x::CanonicalExpr, env, mod) = begin
     _plate_layout_call(head(x), mod, args...; kwargs...)
 end
 
+# A recipe may read ANOTHER ragged plate carrier rather than data: a plate that
+# iterates an earlier plate's ragged result `loc` records `outer = length(loc)`
+# and cell sizes over `loc`'s transformed-data ends. Neither name has a data
+# value, so bind each to that carrier's own segments, evaluated recursively from
+# its recipe against the same data (snag `stan-descriptor-1dcd538a`): the
+# logical result as a ragged value whose group structure alone is known, the
+# ends as the inclusive boundary vector.
+_plate_layout_names!(acc, x) = acc
+_plate_layout_names!(acc, x::Symbol) = push!(acc, x)
+_plate_layout_names!(acc, x::StanExpr) = _plate_layout_names!(acc, expr(x))
+_plate_layout_names!(acc, x::CanonicalExpr) = begin
+    foreach(a -> _plate_layout_names!(acc, a), x.args)
+    foreach(v -> _plate_layout_names!(acc, v), values(x.kwargs))
+    acc
+end
+_ragged_plate_layouts(m::StanModel) = begin
+    acc = Dict{Symbol,Any}()
+    for x in values(vars(m))
+        layout = get(info(type(x)), :ragged_plate_layout, nothing)
+        layout === nothing && continue
+        acc[layout.logical] = layout
+        acc[layout.ends] = layout
+    end
+    acc
+end
+
 _ragged_plate_segments(m::StanModel, name::Symbol, data) = begin
     haskey(vars(m), name) || return nothing
     layout = get(info(type(vars(m)[name])), :ragged_plate_layout, nothing)
     layout === nothing && return nothing
-
+    _ragged_plate_segments(m, name, layout, data, _ragged_plate_layouts(m), Symbol[])
+end
+_ragged_plate_segments(m::StanModel, name::Symbol, layout, data, layouts, active) = begin
+    layout.logical in active && error(
+        "stan_descriptor: ragged plate carrier `$name` reads its own layout through ",
+        join(("`$a`" for a in active), " -> "), "."
+    )
     env = Dict{Symbol,Any}(pairs(data))
+    reads = _plate_layout_names!(_plate_layout_names!(Set{Symbol}(), layout.outer), layout.cell_size)
+    for ref in reads
+        haskey(env, ref) && continue
+        source = get(layouts, ref, nothing)
+        source === nothing && continue
+        ends = _ragged_plate_segments(
+            m, source.logical, source, data, layouts, [active; layout.logical],
+        )
+        env[ref] = ref === source.ends ? ends : (; mem=nothing, ends)
+    end
     mod = get(meta(m), :mod, @__MODULE__)
     n = _plate_layout_value(layout.outer, env, mod)
     n isa Integer || error(
