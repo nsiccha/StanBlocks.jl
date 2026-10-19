@@ -459,6 +459,8 @@ _ragged_obs_rhs_cv(rhs_raw; info) =
 # scope, exactly like `_ragged_group_arg` above.
 function _ragged_group_draw end
 function _ragged_group_density end
+# A held-out observation's group score (`_heldout_group_score`, lpxf_builtin.jl).
+function _ragged_group_score end
 
 # Pin a compiler-owned generated-quantities declaration BEFORE its first fill.
 # A fresh declaration's first certified fill RESETS its qualifier to that RHS's
@@ -1827,6 +1829,9 @@ _forward_ragged_obs_broadcast!(name, rhs_raw; info) = begin
     _mem_at = get(type(info[name]).info, :arg_types, nothing)
     gen_elt = (_mem_at !== nothing && center_type(_mem_at.mem) === types.int) ? :int : :vector
     rhs_raw = _ragged_law_memory_hoist(rhs_raw, name, id; info)
+    # The group loop below wraps a held-out observation's family itself (its
+    # indexed `~` reaches `_held_out_rhs`); its twin is scored here.
+    density = _held_out_mask(name; info) === nothing ? _ragged_group_density : _ragged_group_score
     stmts = Any[
         :(for $g in 1:length($name)
               $name[$g] ~ $(_ragged_group_rhs(rhs_raw, g))
@@ -1838,7 +1843,7 @@ _forward_ragged_obs_broadcast!(name, rhs_raw; info) = begin
         :(for $gg in 1:length($name)
               $gen[ragged_start($name.ends, $gg):ragged_end($name.ends, $gg)] =
                   $(_ragged_group_marker(_ragged_group_draw, name, rhs_raw, gg))
-              $lik[$gg] = $(_ragged_group_marker(_ragged_group_density, name, rhs_raw, gg))
+              $lik[$gg] = $(_ragged_group_marker(density, name, rhs_raw, gg))
           end),
     ]
     _trace_ragged_stmts(stmts, name; info, certify_density=false)

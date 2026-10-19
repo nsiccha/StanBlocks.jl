@@ -269,6 +269,122 @@ scalar), plus a bounded family whose held-out elements are outside its support.
         something(err(() -> stan_model(top(; y))(; y = maybecv(:y, y; held_out = held))), ""))
 end
 
+"""
+Verify `slic: a held-out element outside its family's domain is never evaluated`.
+
+Snag `heldout-lpdf-eva-a8569726`: the whole-observation `heldout_lpdf` scored
+every element through the family's pointwise companion and only then dropped the
+marked ones, and the `y_likelihood` twin scored every element too. Stan raises an
+error, instead of returning `-Inf`, for a `lognormal` value below 0 (likewise
+`poisson`, `binomial` above its trials, ...), so one marked element there made the
+target `NaN` and failed every generated-quantities draw. An elementwise family is
+now evaluated only at the unmarked elements, and the twin scores a value Stan
+refuses `-Inf`. Covers a top-level vector (continuous, discrete, `weighted`), a
+top-level ragged response, `@plate for` and `plate` do-cells over it, and a family
+with a shared argument, which keeps the masked sum.
+"""
+@testitem "slic: a held-out element outside its family's domain is never evaluated" tags=[:slic, :plate, :ragged, :descriptor, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    maybecv = StanBlocks.stan.maybecv
+    logdensity(m, theta) = LogDensityProblems.logdensity(instantiate(stan_model(m)), theta)
+    function twins(m, theta)
+        d = stan_descriptor(m)
+        p = stan_execute(d, :fit)
+        merge(stan_execute(d, :pointwise_loglik; problem = p, draws = theta, seed = 1),
+              stan_execute(d, :predict; problem = p, draws = theta, seed = 1))
+    end
+    # lognormal(mu, 0.5); Stan refuses a negative value.
+    lnpdf(y, mu) = y < 0 ? -Inf : -log(y) - log(0.5) - 0.5 * log(2pi) - 2 * (log(y) - mu)^2
+    # Equal where finite, and `-Inf` exactly where expected.
+    same(a, b) = isinf.(a) == isinf.(b) && a[isfinite.(b)] ≈ b[isfinite.(b)]
+
+    y = [0.1, 0.2, 0.3, 0.5, -0.4]
+    held = [false, false, false, true, true]
+    top = @slic (; y) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ lognormal(mu, 0.5)
+    end
+    masked = top(; y = maybecv(:y, y; held_out = held))
+    @test stanc_compiles(masked)
+    mu = 0.1
+    @test logdensity(masked, [mu]) ≈ -0.5 * mu^2 + sum(lnpdf.(y[.!held], mu))
+    # The marked values are never read: an in-support value scores the same.
+    @test logdensity(masked, [mu]) ≈ logdensity(top(; y = maybecv(:y, abs.(y); held_out = held)), [mu])
+    t = twins(masked, [mu])
+    @test same(t.y_likelihood, lnpdf.(y, mu)) && t.y_likelihood[5] == -Inf
+    @test length(t.y_gen) == 5 && all(>(0), t.y_gen)
+
+    # A discrete family, and one whose support reads its first argument.
+    yc = [1, 0, 3, -1]
+    poisson_model = @slic (; yc) begin
+        lam ~ exponential(1.0)
+        yc ~ poisson(lam)
+    end
+    lam = 1.5
+    ppmf(k) = k < 0 ? -Inf : k * log(lam) - lam - log(factorial(k))
+    pm = poisson_model(; yc = maybecv(:yc, yc; held_out = [false, false, false, true]))
+    @test logdensity(pm, [log(lam)]) ≈ -lam + log(lam) + sum(ppmf.(yc[1:3]))
+    @test same(twins(pm, [log(lam)]).yc_likelihood, ppmf.(yc))
+    yb = [1, 2, 5]
+    binomial_model = @slic (; yb, N = [3, 3, 3]) begin
+        p ~ beta(1.0, 1.0)
+        yb ~ binomial(N, p)
+    end
+    bm = binomial_model(; yb = maybecv(:yb, yb; held_out = [false, false, true]))
+    bpmf(k) = k > 3 ? -Inf : log(Base.binomial(3, k)) + 3 * log(0.5)
+    @test logdensity(bm, [0.0]) ≈ log(0.25) + sum(bpmf.(yb[1:2]))
+    @test same(twins(bm, [0.0]).yb_likelihood, bpmf.(yb))
+
+    # A weighted family: the marked element is skipped, then scored -Inf.
+    w = [1.0, 2.0, 0.5, 1.0, 1.0]
+    weighted_model = @slic (; y, w) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ weighted(lognormal, w, mu, 0.5)
+    end
+    wm = weighted_model(; y = maybecv(:y, y; held_out = held), w)
+    @test logdensity(wm, [mu]) ≈ -0.5 * mu^2 + sum((w .* lnpdf.(y, mu))[.!held])
+    @test same(twins(wm, [mu]).y_likelihood, w .* lnpdf.(y, mu))
+
+    # A ragged response: top level, per `@plate for` cell, and per do-cell.
+    yr = [[0.1, 0.2, -0.3], [0.4, 0.5], [0.6, 0.7, 0.8, -0.9]]
+    hr = [[false, false, true], [false, true], [false, false, false, true]]
+    G = 3
+    kept = sum(sum(lnpdf.(g[.!h], 0.2)) for (g, h) in zip(yr, hr))
+    groups = [sum(lnpdf.(g, 0.2)) for g in yr]
+    toplevel = @slic (; yr) begin
+        mu ~ normal(0.0, 1.0)
+        yr ~ lognormal(mu, 0.5)
+    end
+    plated = @slic (; yr, G) begin
+        mu ~ normal(0.0, 1.0)
+        @plate for i in 1:G
+            yr[i] ~ lognormal(mu, 0.5)
+        end
+    end
+    do_cells = @slic (; yr, G) begin
+        mu ~ normal(0.0, 1.0)
+        theta ~ plate(yr; outer = G) do yi
+            yi ~ lognormal(mu, 0.5)
+        end
+    end
+    for m in (toplevel, plated, do_cells)
+        mm = m(; yr = maybecv(:yr, yr; held_out = hr))
+        @test logdensity(mm, [0.2]) ≈ -0.5 * 0.2^2 + kept
+        @test same(twins(mm, [0.2]).yr_likelihood, groups)
+    end
+
+    # A shared argument (`categorical(p)`) keeps the masked sum over its pointwise
+    # companion, whose argument alignment the elementwise route cannot know.
+    ycat = [1, 2, 3, 2]
+    cat_model = @slic (; ycat) begin
+        p::simplex[3] ~ dirichlet(rep_vector(1.0, 3))
+        ycat ~ categorical(p)
+    end
+    cm = cat_model(; ycat = maybecv(:ycat, ycat; held_out = [false, false, true, true]))
+    @test occursin("heldout_unmarked", stan_code(cm))
+    @test logdensity(cm, [0.0, 0.0]) ≈ logdensity(cat_model(; ycat = ycat[1:2]), [0.0, 0.0])
+end
+
 # snag `weighted-custom-33d611a8` (reported from BRM): `weighted(...)` over a
 # custom `@lpxf` family whose pointwise twin is sized by one of its OWN arg
 # tokens (not by `y`) transpiled-errored with `Typed assignment lp::vector[n] =
