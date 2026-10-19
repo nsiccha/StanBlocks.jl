@@ -210,6 +210,36 @@ end
 To fit a model without conditioning on a response, omit the response. To predict a
 held-out response from an earlier fit, mark it.
 
+### Holding out some elements of a response
+
+`maybecv(:z, z)` holds out every element of `z`. To fit on some elements and score
+the others (a forecast window, or a block of test rows), mark only those elements:
+
+```julia
+m2(; y, z = StanBlocks.stan.maybecv(:z, z; held_out = t .> cutoff))
+```
+
+- The model block keeps the likelihood of the unmarked elements only:
+  `z ~ heldout_normal(z_held_out, mu, sigma_z)`. A marked element's density is
+  skipped, not multiplied by zero, so an element outside a bounded family's support
+  cannot turn the target into `NaN`.
+- No cv taint is set, so every parameter stays a parameter and the unmarked elements
+  fit it.
+- `z_gen` and `z_likelihood` are the same as without the mark. Every element gets
+  its draw, and a marked element's `z_likelihood` entry is its log predictive density.
+  A ragged response keeps one `z_likelihood` entry per group.
+- The mask has the response's shape: a `Bool` vector for a vector response, one
+  `Bool` vector per group for a ragged response. It is indexed the same way as the
+  response, so the `z[i] ~ …` cells of a `@plate for` (and the cells of a `plate`
+  do-block over `z`) hold out their marked elements. Stan reads the mask as the data
+  input `z_held_out`, which the descriptor marks `derived`. Re-binding `z` on a
+  traced model keeps the mask when it still fits, and re-binding it as
+  `maybecv(:z, z; held_out = mask)` replaces it.
+- The mark only removes likelihood terms. Any other read of `z`, such as a lagged
+  response used as a covariate, still sees every element.
+- A joint family such as `multi_normal` has no per-element densities, so a mask on
+  its response is refused; hold out the whole response instead.
+
 ::: tip The descriptor sees this
 `stan_descriptor(model)` reports it directly. Each input's `held_out` flag is
 contagion-aware — marking one input routinely flips several to `held_out` — and the

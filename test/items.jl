@@ -109,6 +109,166 @@ the original family supplies pointwise likelihoods and predictive draws.
         occursin("parameter-dependent likelihood weights", parameter_weight_error)
 end
 
+"""
+Verify `slic: element hold-out mask drops only the marked elements' likelihood`.
+
+Snag `hold-out-a-subse-b48c943c`: `maybecv(:y, y)` holds out a whole variable,
+and a 0/1 power weight is not a hold-out (a weight-0 element's `y_likelihood` is
+`-0.0`, and `0 * -Inf` makes the target `NaN`). `maybecv(:y, y; held_out=mask)`
+drops exactly the marked elements' terms from the model block — skipped, not
+multiplied by 0 — while every parameter stays a parameter and the `y_gen` /
+`y_likelihood` twins stay those of the unmasked observation. Covers a top-level
+vector, a top-level ragged observation, and `@plate for` cells (ragged and
+scalar), plus a bounded family whose held-out elements are outside its support.
+"""
+@testitem "slic: element hold-out mask drops only the marked elements' likelihood" tags=[:slic, :plate, :ragged, :descriptor, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    maybecv = StanBlocks.stan.maybecv
+    nlpdf(y, mu) = -0.5 * log(2pi) - 0.5 * abs2(y - mu)
+    gq(m) = stan_block(stan_code(m), "generated quantities")
+    logdensity(m, theta) = LogDensityProblems.logdensity(instantiate(stan_model(m)), theta)
+
+    y = [0.1, -0.3, 0.5, 0.2]
+    held = [false, false, true, true]
+    top = @slic (; y) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ normal(mu, 1.0)
+    end
+    masked = top(; y = maybecv(:y, y; held_out = held))
+    code = stan_code(masked)
+    @test occursin("y ~ heldout_normal(y_held_out, mu, 1.0);", stan_block(code, "model"))
+    @test gq(masked) == gq(top(; y))
+    @test stanc_compiles(masked)
+    for mu in (-0.4, 0.7)
+        @test logdensity(masked, [mu]) ≈ -0.5 * mu^2 + sum(nlpdf.(y[.!held], mu))
+    end
+    d = stan_descriptor(masked)
+    inputs = Dict(i.name => i for i in d.inputs)
+    @test inputs[:y].observed && !inputs[:y].held_out
+    @test inputs[:y_held_out].derived && inputs[:y_held_out].value == [0, 0, 1, 1]
+    @test :fit in [op.name for op in d.operations]
+    @test [o.name for o in d.outputs if o.kind === :parameter] == [:mu]
+    p = stan_execute(d, :fit)
+    ll = stan_execute(d, :pointwise_loglik; problem = p, draws = [0.3], seed = 1)
+    @test ll.y_likelihood ≈ nlpdf.(y, 0.3)
+
+    # Held-out elements outside a bounded family's support are skipped: no `0 * -Inf`.
+    x = [1.0, 1.0, 1.0, 1.0]
+    yu = [0.5, 0.25, 2.5, 3.0]
+    uniform_model = @slic (; yu, x) begin
+        b ~ exponential(1.0)
+        yu ~ uniform(0.0, b .* x)
+    end
+    # At b = 2 the held-out 2.5 and 3.0 lie outside uniform(0, b): exponential
+    # prior -b, log-Jacobian log(b), and the two kept elements' -log(b) each.
+    lp = logdensity(uniform_model(; yu = maybecv(:yu, yu; held_out = held), x), [log(2.0)])
+    @test lp ≈ -2.0 + log(2.0) - 2 * log(2.0)
+
+    # A ragged observation: top-level and per `@plate for` cell.
+    yr = [[0.1, 0.2, 0.3], [0.4, 0.5], [0.6, 0.7, 0.8, 0.9]]
+    hr = [[false, false, true], [false, true], [false, false, false, true]]
+    G = 3
+    kept = sum(sum(nlpdf.(g[.!h], 0.2)) for (g, h) in zip(yr, hr))
+    toplevel = @slic (; yr) begin
+        mu ~ normal(0.0, 1.0)
+        yr ~ normal(mu, 1.0)
+    end
+    plated = @slic (; yr, G) begin
+        mu ~ normal(0.0, 1.0)
+        @plate for i in 1:G
+            yr[i] ~ normal(mu, 1.0)
+        end
+    end
+    for m in (toplevel, plated)
+        mm = m(; yr = maybecv(:yr, yr; held_out = hr))
+        @test gq(mm) == gq(m(; yr))
+        @test stanc_compiles(mm)
+        @test logdensity(mm, [0.2]) ≈ -0.5 * 0.2^2 + kept
+        dm = stan_descriptor(mm)
+        pm = stan_execute(dm, :fit)
+        llm = stan_execute(dm, :pointwise_loglik; problem = pm, draws = [0.2], seed = 1)
+        @test llm.yr_likelihood ≈ [sum(nlpdf.(g, 0.2)) for g in yr]
+    end
+
+    # A ragged observation over a plate's ragged result (the time-course shape),
+    # and the plate do-form over a ragged input.
+    ts = [[0.0, 1.0, 2.0], [0.5, 1.5], [0.0, 1.0, 2.0, 3.0]]
+    over_plate = @slic (; yr, ts, G) begin
+        a ~ normal(0.0, 1.0)
+        eta ~ plate(ts; outer = G) do t
+            m::typeof(t) = a .* t
+            m
+        end
+        yr ~ normal(eta, 1.0)
+    end
+    ragged_do = @slic (; yr, G) begin
+        mu ~ normal(0.0, 1.0)
+        theta ~ plate(yr; outer = G) do yi
+            yi ~ normal(mu, 1.0)
+        end
+    end
+    for (m, theta, expected) in (
+        (over_plate, 0.15, sum(sum(nlpdf.(g[.!h], 0.15 .* t[.!h])) for (g, h, t) in zip(yr, hr, ts))),
+        (ragged_do, 0.2, kept),
+    )
+        mm = m(; yr = maybecv(:yr, yr; held_out = hr))
+        @test gq(mm) == gq(m(; yr))
+        @test logdensity(mm, [theta]) ≈ -0.5 * theta^2 + expected
+    end
+
+    # A scalar per-cell observation, in both plate spellings.
+    cells = @slic (; y) begin
+        mu ~ normal(0.0, 1.0)
+        @plate for i in 1:4
+            y[i] ~ normal(mu, 1.0)
+        end
+    end
+    cells_do = @slic (; y) begin
+        mu ~ normal(0.0, 1.0)
+        theta ~ plate(y; outer = 4) do yi
+            yi ~ normal(mu, 1.0)
+        end
+    end
+    for m in (cells, cells_do)
+        cm = m(; y = maybecv(:y, y; held_out = held))
+        @test gq(cm) == gq(m(; y))
+        @test stanc_compiles(cm)
+        @test logdensity(cm, [0.3]) ≈ -0.5 * 0.3^2 + sum(nlpdf.(y[.!held], 0.3))
+    end
+
+    # Refusals name the mark.
+    err(f) = try f(); nothing catch e sprint(showerror, e) end
+    @test occursin("its mask has 3", err(() -> maybecv(:y, y; held_out = held[1:3])))
+    @test occursin("ragged one", err(() -> maybecv(:y, [1.0 2.0; 3.0 4.0]; held_out = [true, false])))
+    covariate = @slic (; x, y) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ normal(mu .* x, 1.0)
+    end
+    @test occursin("no `x ~ …` statement observes `x`",
+        something(err(() -> stan_code(covariate(; x = maybecv(:x, x; held_out = held), y))), ""))
+    joint = @slic (; y) begin
+        mu ~ normal(0.0, 1.0)
+        y ~ multi_normal(rep_vector(mu, 4), diag_matrix(rep_vector(1.0, 4)))
+    end
+    @test occursin("`multi_normal` is a joint distribution",
+        something(err(() -> stan_code(joint(; y = maybecv(:y, y; held_out = held)))), ""))
+
+    # Re-binding a traced model: a new mark replaces the mask, a plain value keeps
+    # the traced one, and a mask that no longer fits (or a mark the model was not
+    # traced with) is refused rather than read out of bounds.
+    traced = stan_model(masked)
+    y2 = [0.4, 0.0, -0.2, 0.6, 0.1]
+    held2 = [true, false, false, true, false]
+    remasked = traced(; y = maybecv(:y, y2; held_out = held2))
+    @test StanBlocks.stan.stan_data(remasked)[:y_held_out] == [1, 0, 0, 1, 0]
+    @test LogDensityProblems.logdensity(instantiate(remasked), [0.3]) ≈
+        -0.5 * 0.3^2 + sum(nlpdf.(y2[.!held2], 0.3))
+    @test StanBlocks.stan.stan_data(traced(; y = reverse(y)))[:y_held_out] == [0, 0, 1, 1]
+    @test occursin("does not fit the re-bound value", something(err(() -> traced(; y = y2)), ""))
+    @test occursin("fixed when the model is traced",
+        something(err(() -> stan_model(top(; y))(; y = maybecv(:y, y; held_out = held))), ""))
+end
+
 # snag `weighted-custom-33d611a8` (reported from BRM): `weighted(...)` over a
 # custom `@lpxf` family whose pointwise twin is sized by one of its OWN arg
 # tokens (not by `y`) transpiled-errored with `Typed assignment lp::vector[n] =
