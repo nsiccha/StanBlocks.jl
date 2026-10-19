@@ -839,8 +839,10 @@ end
 ```
 
 `ragged_start`, `ragged_end`, and `ragged_length` expose offsets for UDF size
-math. Ragged observations, varying-size constrained parameters, generated
-twins, and `ModelOutput.segments` are documented under
+math. Elementwise arithmetic (`2.0 * groups`, `groups .^ 2`, `groups + other`
+with the same group ends) keeps the groups. Ragged observations, ragged
+arithmetic, varying-size constrained parameters, generated twins, and
+`ModelOutput.segments` are documented under
 [Ragged data and container views](authoring.md#ragged-data-and-container-views).
 
 ## Caveats
