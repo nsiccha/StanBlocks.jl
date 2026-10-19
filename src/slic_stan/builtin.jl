@@ -33,6 +33,10 @@ end
 @builtin_module [
     weighted_lpdf
     weighted_lpmf
+    # Compiler-owned: what an element hold-out mark (`maybecv(:y, y; held_out=m)`)
+    # wraps an observation's family in. Not a user spelling.
+    heldout_lpdf
+    heldout_lpmf
     # Public distribution-HOF tokens match Julia's distribution vocabulary;
     # collision-free conditioning/clamping names remain implementation details.
     truncated censored interval_censored
@@ -447,6 +451,51 @@ import Statistics
         predictive(family, vector[n], args...)
     weighted_rng(int[n], family, weight, args...) =
         predictive(family, int[n], args...)
+
+    # Element hold-out (`maybecv(:y, y; held_out=mask)`, snag
+    # hold-out-a-subse-b48c943c). `held` is the mask's 0/1 slice aligned with
+    # `y`; a held-out element's density is SKIPPED, never multiplied by 0, so
+    # an element outside the family's support (`-Inf`) cannot make the target
+    # `NaN`. Only the model-block term carries the mask: the `<obs>_gen` /
+    # `<obs>_likelihood` twins resolve through the bare family
+    # (`rng_expr`/`likelihood_expr` in lpxf_builtin.jl), so every element keeps
+    # its draw and its unmasked pointwise score.
+    heldout_lpdf(y, family, held::int, args...)::real = begin
+        rv::real[1]
+        rv[1] = 0.0
+        if held == 0
+            rv[1] = density(family, y, args...)
+        end
+        rv[1]
+    end
+    heldout_lpmf(y, family, held::int, args...)::real = begin
+        rv::real[1]
+        rv[1] = 0.0
+        if held == 0
+            rv[1] = density(family, y, args...)
+        end
+        rv[1]
+    end
+    heldout_lpdf(y::anything[n], family, held::int[n], args...)::real = begin
+        lp = pointwise(family, y, args...)
+        rv = 0.0
+        for i in 1:n
+            if held[i] == 0
+                rv += lp[i]
+            end
+        end
+        rv
+    end
+    heldout_lpmf(y::anything[n], family, held::int[n], args...)::real = begin
+        lp = pointwise(family, y, args...)
+        rv = 0.0
+        for i in 1:n
+            if held[i] == 0
+                rv += lp[i]
+            end
+        end
+        rv
+    end
 
     # Mathematical truncation (`truncated`) ---------------------------------
     # Public optional kwargs select one of these lower/upper/two-sided
