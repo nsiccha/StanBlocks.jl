@@ -89,10 +89,13 @@ Compile `model` (a [`SlicModel`](@ref StanBlocks.SlicModel) or
 
 Concurrent calls own separate model instances. Artifact, source-alias, and
 BridgeStan setup/build locks coordinate Julia tasks and cooperating processes;
-independent tracing stays parallel. Native compilation shares a toolchain lock,
-and native constructor calls are serialized within the process. Compilation
-publishes only a completed library from a private staging directory. Failures
-propagate and release the locks; partial build outputs are discarded.
+independent tracing stays parallel. Only building the toolchain's shared files
+(`stanc`, BridgeStan's bridge object, Stan Math's libraries) takes the
+toolchain lock; distinct models then compile concurrently under their own
+artifact locks. Native constructor calls are serialized within the process.
+Compilation publishes only a completed library from a private staging
+directory. Failures propagate and release the locks; partial build outputs are
+discarded.
 An abruptly killed process can leave a pidfile: confirm that its owner has
 exited before removing the lock. A slow live compiler's lock never expires.
 
@@ -162,8 +165,11 @@ treated as part of the toolchain.
 
 Keep the source, the dependencies, the environment, and the toolchain read-only
 during the call. Compilation runs in a private staging directory under the
-toolchain build lock (`StanBlocks.with_toolchain_lock`), so concurrent calls in
-this and other processes publish each library once. Unlike `stan_instantiate`,
+artifact's own build lock, so concurrent calls in this and other processes
+publish each library once while distinct programs compile at the same time.
+Only bringing the toolchain's shared files (`stanc`, BridgeStan's bridge
+object, Stan Math's libraries) up to date takes the toolchain build lock
+(`StanBlocks.with_toolchain_lock`). Unlike `stan_instantiate`,
 this function constructs no native model: serializing construction and
 evaluation is the caller's responsibility.
 """
