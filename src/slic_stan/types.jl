@@ -76,8 +76,12 @@ mutable struct TraceContext
     # loops of its own, so an indexed `~` met at depth 0 is one the author
     # wrote (a slice statement, forward.jl); one inside a loop is the compiler's.
     loop_depth::Int
+    # Distributed ragged-law scratch assignments, by variable (passes.jl
+    # `_ragged_scratch_assign`): each generated-quantities statement that reads
+    # one re-declares it inside its own local scope.
+    ragged_scratch::OrderedDict{Symbol,Any}
 end
-TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0)
+TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0, OrderedDict{Symbol,Any}())
 _context_or_new(context) = context === nothing ? TraceContext() : context
 """
 A named sub-model function, produced by `@slic f(args...) = body`. The value

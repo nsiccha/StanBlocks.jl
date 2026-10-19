@@ -255,8 +255,9 @@ end
 
 Group `g` of the result is the same arithmetic over each operand's group `g`.
 A UDF result is not split this way, because a UDF may combine groups:
-`exp_rv(...)` computes `exp` over the whole memory, and inside a ragged law
-that happens once per group. Two RaggedVector operands must have the same group ends: transpile rejects
+`exp_rv(...)` computes `exp` over the whole memory. Inside a ragged law that
+memory is computed once, before the group loop, and each group slices it; when
+it depends on parameters it is a local variable, not a model output. Two RaggedVector operands must have the same group ends: transpile rejects
 known differing values, and Stan checks rebound data at runtime. Forms with no
 elementwise meaning are rejected with the supported forms listed: `x * z`,
 `s / x`, `x ^ 2`, and a dense vector operand (per group or per element?). Write

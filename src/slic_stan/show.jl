@@ -115,6 +115,13 @@ block_print(io, ::StanBlock, ::LineNumberNode) = nothing
 block_print(io, ::StanBlock, x) = print(io, current_indent(io), x, line_terminator(x))
 block_print(io, ::StanBlock, x::SamplingExpr{<:Any,<:StanExpr{<:CanonicalExpr{typeof(flat)}}}) = nothing
 block_print(io, b::StanBlock, x::BlockExpr) = map(stmt->block_print(io, b, stmt), x.args)
+# A local scope around a generated-quantities statement (passes.jl
+# `_ragged_scoped`): its leading declarations are Stan locals, not outputs.
+block_print(io, b::StanBlock, x::StanExpr{<:CanonicalExpr{typeof(_ragged_scope)}}) = begin
+    print(io, current_indent(io), "{\n")
+    foreach(stmt -> block_print(indent(io), b, stmt), expr(x).args)
+    print(io, current_indent(io), "}\n")
+end
 block_print(io, ::DeclarativeBlock, x) = !always_inline(x) && print(io, current_indent(io), type(x), " ", expr(x), line_terminator(x))
 block_print(io, b::DeclarativeBlock, x::DocumentExpr) = begin
     print(io, current_indent(io), commentstring(x.args[1]))
