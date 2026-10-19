@@ -9426,6 +9426,64 @@ Verify `slic: ragged ordered constrained parameters` in an isolated test item.
 end
 
 """
+Verify `slic: computed observation LHS whose first operand is a literal`.
+
+A data-only LHS expression is a legal observation (`(sum(v) + c) ~ normal(…)`).
+When its FIRST operand is a literal — `(2.0 * sum(v))`, `(1.0 + sum(v))` — the
+sampling passes found the observed base by descending `args[1]` with the fill-only
+`_base_lhs_symbol`, reached the `Float64`, and died in transpile with
+`MethodError: no method matching _base_lhs_symbol(::Float64)`, naming neither the
+LHS nor a remedy (todo `2026-10-19T11-41-40-279-1lj0zue`). Such an LHS is a computed
+observation with no base variable (`_sampling_lhs_key` → `nothing`): it lands in
+the model block, gets no `_gen` twin, and marks no input observed.
+"""
+@testitem "slic: computed observation LHS whose first operand is a literal" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    obs(d) = [i.name for i in d.inputs if i.observed]
+    for (model, line) in (
+        (@slic((; v = [0.1, 0.2, 0.3]), begin
+            mu ~ std_normal()
+            (2.0 * sum(v)) ~ normal(mu, 1.0)
+        end), "(2.0 * sum(v)) ~ normal(mu, 1.0);"),
+        (@slic((; v = [0.1, 0.2, 0.3]), begin
+            mu ~ std_normal()
+            (1.0 + sum(v)) ~ normal(mu, 1.0)
+        end), "(1.0 + sum(v)) ~ normal(mu, 1.0);"),
+        # The literal sits two levels down: `+(*(2.0, sum(v)), c)`.
+        (@slic((; v = [0.1, 0.2, 0.3], c = 1.0), begin
+            mu ~ std_normal()
+            (2.0 * sum(v) + c) ~ normal(mu, 1.0)
+        end), "((2.0 * sum(v)) + c) ~ normal(mu, 1.0);"),
+    )
+        @test transpiles(model)
+        @test stanc_compiles(model)
+        code = stan_code(model)
+        @test occursin(line, stan_block(code, "model"))
+        @test !occursin("v_gen", code)
+        @test isempty(obs(stan_descriptor(model; name = :computed)))
+    end
+
+    # The draw-in-likelihood refusal still names the draw for such an LHS; its
+    # hold-out remedy needs a variable to hold out, so it offers only the other one.
+    # refused: a likelihood term reading an `_rng` draw is not a log density
+    # (snag `rng-draw-read-by-9ad81a23`).
+    err = try
+        stan_code(@slic((; v = [0.1, 0.2, 0.3]), begin
+            mu0 ~ std_normal()
+            b = normal_rng(mu0, 1.0)
+            (2.0 * sum(v)) ~ normal(b, 1.0)
+        end))
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test err !== nothing
+    @test occursin("is a likelihood term, but it reads `b`: a random draw", err)
+    @test occursin("Compute the location without an `_rng` call.", err)
+    @test !occursin("maybecv", err)
+    @test !occursin("MethodError", err)
+end
+
+"""
 Verify `slic: ragged data indexes as a first-class container outside a plate`.
 
 Decision `2026-07-17T00-14-01-598-1g0cf6y` (approach B, commit 197f5be): ragged
