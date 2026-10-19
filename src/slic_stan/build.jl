@@ -156,12 +156,16 @@ end
 """
     StanBlocks.with_toolchain_lock(f, toolchain)
 
-Run `f()` holding the build lock StanBlocks holds while compiling in the
-BridgeStan source/build tree `toolchain` (`.stanblocks-build.pid` in its
-`realpath`). External builders sharing that tree, such as a replay of emitted
-Stan source through `BridgeStan.compile_model`, use it to exclude StanBlocks'
-builds and each other. The lock is never expired while its holder runs; a lock
-left by a process that died on this host is reclaimed.
+Run `f()` holding the build lock StanBlocks holds while it builds the shared
+files of the BridgeStan source/build tree `toolchain` (`.stanblocks-build.pid`
+in its `realpath`): `stanc`, BridgeStan's bridge object for the build flags,
+and Stan Math's TBB, SUNDIALS and MPI libraries. StanBlocks then compiles each
+model under that model's own lock, so distinct models compile concurrently.
+External builders sharing that tree, such as a replay of emitted Stan source
+through `BridgeStan.compile_model`, may build those shared files and use it to
+exclude StanBlocks' toolchain builds and each other. The lock is never expired
+while its holder runs; a lock left by a process that died on this host is
+reclaimed.
 """
 with_toolchain_lock(f, toolchain) = _with_build_lock(f, _toolchain_lock_path(realpath(toolchain)))
 _toolchain_lock_path(home) = joinpath(home, ".stanblocks-build.pid")
@@ -175,6 +179,54 @@ function _bridgestan_build_home()
 end
 
 _build_file_digest(path) = isfile(path) ? bytes2hex(open(SHA.sha256, path)) : nothing
+
+# BridgeStan's model rules read files that every model build shares: `stanc`
+# (`%.hpp : %.stan $(STANC)`), and the bridge object and Stan Math libraries a
+# model links (`%_model.so : %.o $(BRIDGE_O) $(SUNDIALS_TARGETS) $(MPI_TARGETS)
+# $(TBB_TARGETS)`). make writes them only while they are missing or out of
+# date; once current, a model build writes only next to its own source.
+const _SHARED_BUILD_VARIABLES = ("STANC", "BRIDGE_O", "SUNDIALS_TARGETS", "MPI_TARGETS", "TBB_TARGETS")
+
+# The shared targets the home's Makefile names for `make_args`, read through
+# BridgeStan's `print-%` rule, or `nothing` when it names no bridge object.
+function _shared_build_targets(home, make_args)
+    isfile(joinpath(home, "Makefile")) || return nothing
+    cmd = Cmd(`$(BridgeStan.get_make()) $make_args $(["print-$name" for name in _SHARED_BUILD_VARIABLES])`; dir=home)
+    # `read` drains the output before checking the exit status. Redirecting to
+    # an IOBuffer instead copies it in a task that `success` does not await.
+    output = try
+        read(pipeline(cmd; stderr=devnull), String)
+    catch err
+        err isa ProcessFailedException || rethrow()
+        return nothing
+    end
+    values = Dict{String,Vector{String}}()
+    for line in eachline(IOBuffer(output))
+        parts = split(line, '='; limit=2)
+        length(parts) == 2 || continue
+        name = String(strip(parts[1]))
+        name in _SHARED_BUILD_VARIABLES && (values[name] = String.(split(parts[2])))
+    end
+    isempty(get(values, "BRIDGE_O", String[])) && return nothing
+    String[target for name in _SHARED_BUILD_VARIABLES for target in get(values, name, String[])]
+end
+
+# Bring the toolchain's shared targets up to date for `make_args`; the caller
+# holds the toolchain lock. Returns whether the Makefile named them; when it did
+# not, a model build may write shared files and must keep the toolchain lock.
+function _build_shared_targets(home, make_args)
+    targets = _shared_build_targets(home, make_args)
+    targets === nothing && return false
+    cmd = Cmd(`$(BridgeStan.get_make()) $make_args $targets`; dir=home)
+    # make writes its log straight into the file, complete once it exits.
+    mktemp() do path, io
+        success(pipeline(cmd; stdout=io, stderr=io)) && return
+        close(io)
+        error("Building the shared BridgeStan toolchain files failed!\nCommand: $cmd\n",
+            "Output:\n", read(path, String))
+    end
+    true
+end
 
 # BridgeStan.compile_model (2.9.0) splices `stanc_args` into the single word
 # `"STANCFLAGS=--include-paths=. $stanc_args"`, which Julia expands as a cartesian
@@ -455,24 +507,29 @@ function _artifact_library(sc; filename="model.stan", make_args, stanc_args=Stri
     context() = _native_build_context(home, args; stanc_args=stanc, dependencies)
     published = _published_library(sc, context, filename)
     published === nothing || return published
+    # Distinct artifacts share the toolchain's stanc, bridge object and Stan
+    # Math libraries. Build them under the toolchain lock, and read the context
+    # after them so that it names the toolchain later calls find.
     toolchain_lock = _toolchain_lock_path(home)
-    source, library = _artifact_paths(sc, _with_build_lock(context, toolchain_lock), filename)
+    shared, current = _with_build_lock(toolchain_lock) do
+        _build_shared_targets(home, args), context()
+    end
+    source, library = _artifact_paths(sc, current, filename)
     _with_build_lock(source * ".pid") do
         _write_immutable_stan_source(source, sc)
-        if !isfile(library)
-            # Even distinct artifacts can build common BridgeStan/TBB files.
-            _with_build_lock(toolchain_lock) do
-                mktempdir(dirname(source); prefix="build-") do staging
-                    staged_source = joinpath(staging, basename(source))
-                    write(staged_source, sc)
-                    built = BridgeStan.compile_model(staged_source; make_args=args,
-                        stanc_args=_compile_stanc_args(stanc))
-                    # A published library is complete and is NEVER overwritten.
-                    # Failed compilation only leaves private staging files.
-                    Base.Filesystem.rename(built, library)
-                end
-            end
+        isfile(library) && return
+        compile() = mktempdir(dirname(source); prefix="build-") do staging
+            staged_source = joinpath(staging, basename(source))
+            write(staged_source, sc)
+            built = BridgeStan.compile_model(staged_source; make_args=args,
+                stanc_args=_compile_stanc_args(stanc))
+            # A published library is complete and is NEVER overwritten.
+            # Failed compilation only leaves private staging files.
+            Base.Filesystem.rename(built, library)
         end
+        # With the shared files current the build writes only into its staging
+        # directory, so distinct artifacts compile concurrently.
+        shared ? compile() : _with_build_lock(compile, toolchain_lock)
     end
     library
 end

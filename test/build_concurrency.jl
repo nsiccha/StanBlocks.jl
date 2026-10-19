@@ -453,6 +453,62 @@ end
     end
 end
 
+@testitem "artifact library: distinct models compile at once; only shared toolchain files take its lock" tags=[:slic, :regression] begin
+    # Snag host-wide-toolch-da758255: every model compile held the host-wide
+    # toolchain lock, so a host compiled one model at a time. Only the files
+    # all builds share (stanc, the bridge object, Stan Math's libraries) need
+    # it; once they are current a model build writes only into its staging.
+    using StanBlocks
+    if !Sys.iswindows()  # the stand-in Makefile needs a POSIX make and shell
+        code = "parameters { real x; } model { x ~ normal(0, 1); }\n"
+        args = ["STAN_THREADS=true"]
+        fixture = joinpath(@__DIR__, "fixtures", "toolchain.mk")
+        mktempdir() do dir
+            function toolchain(name, makefile)
+                home = realpath(mkpath(joinpath(dir, name)))
+                write(joinpath(home, "Makefile"), makefile)
+                home, mkpath(joinpath(dir, name * "-rendezvous"))
+            end
+            buildlog(home) = readlines(joinpath(home, "build.log"))
+            home, rendezvous = toolchain("bridgestan", read(fixture, String))
+            withenv("BRIDGESTAN" => home, "STANBLOCKS_BUILD_DIR" => joinpath(dir, "build"),
+                    "STANBLOCKS_TEST_RENDEZVOUS" => rendezvous) do
+                sources = ["// model $i\n" * code for i in 1:2]
+                builds = [Threads.@spawn StanBlocks._artifact_library(s; make_args=args) for s in sources]
+                # Each model recipe waits for the other's: a serialized compile
+                # fails after its 30 s wait instead of hanging here.
+                @test timedwait(() -> all(istaskdone, builds), 120) === :ok
+                @test all(istaskdone, builds) && !any(istaskfailed, builds)
+                libraries = fetch.(builds)
+                @test allunique(libraries) && read.(libraries, String) == sources
+                # The shared files were built once, under the toolchain lock;
+                # both models compiled at the same time without it.
+                shared = ["bin/stanc locked", "src/bridge.o locked",
+                          "lib/sundials.a locked", "lib/tbb.so locked"]
+                @test buildlog(home) == [shared; "model unlocked"; "model unlocked"]
+                # Another build variant's own shared file is built under the lock too.
+                variant = StanBlocks._artifact_library(code; make_args=[args; "VARIANT=hess"])
+                @test read(variant, String) == code
+                @test buildlog(home)[end-1:end] == ["src/bridge_hess.o locked", "model unlocked"]
+                # A published library is returned again without another build.
+                @test StanBlocks._artifact_library(sources[1]; make_args=args) == libraries[1]
+                @test length(buildlog(home)) == 8
+            end
+            # A Makefile that names no shared targets keeps the old, conservative
+            # shape: the whole compile holds the toolchain lock.
+            makefile = join(filter(!startswith("print-%"), readlines(fixture)), '\n') * '\n'
+            home, rendezvous = toolchain("unnamed", makefile)
+            write(joinpath(rendezvous, "other"), "")
+            withenv("BRIDGESTAN" => home, "STANBLOCKS_BUILD_DIR" => joinpath(dir, "build"),
+                    "STANBLOCKS_TEST_RENDEZVOUS" => rendezvous) do
+                @test read(StanBlocks._artifact_library(code; make_args=args), String) == code
+                @test buildlog(home) == ["bin/stanc locked", "src/bridge.o locked",
+                    "lib/sundials.a locked", "lib/tbb.so locked", "model locked"]
+            end
+        end
+    end
+end
+
 @testitem "thread safety: shared native artifact across processes" tags=[:slic, :regression, :bridgestan] begin
     using StanBlocks
     worker = joinpath(@__DIR__, "fixtures", "native_build_worker.jl")
