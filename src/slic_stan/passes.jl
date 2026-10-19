@@ -43,10 +43,13 @@ _deanon_size_expr(_, s, _, tok) = s
 # emits `_arg<tok>_<i>` verbatim into Stan — an undeclared identifier in a size
 # position, which `fetch_data!` then compounds by declaring as a phantom `data`
 # variable. Recurse so an element's size is deanonymized exactly like a scalar's.
-deanon_arg_types(at, x::CanonicalExpr, tok) = at
-deanon_arg_types(at::Union{Tuple,NamedTuple}, x::CanonicalExpr, tok) =
-    map(t -> deanon_type(t, x, tok), at)
-deanon_type(tt::StanType, x::CanonicalExpr, tok) = begin
+#
+# Like the `anon_*` walkers (functions.jl), these and `_stan_expr` run once per
+# traced call and do not specialize on the call's concrete expression type.
+Base.@nospecializeinfer deanon_arg_types(at, @nospecialize(x::CanonicalExpr), tok) = at
+Base.@nospecializeinfer deanon_arg_types(at::Union{Tuple,NamedTuple}, @nospecialize(x::CanonicalExpr), tok) =
+    _anymap(t -> deanon_type(t, x, tok), at)
+Base.@nospecializeinfer deanon_type(tt::StanType, @nospecialize(x::CanonicalExpr), tok) = begin
     sz = stan_size(tt)
     nsz = map(s -> deanon_size(s, x, tok), sz)
     at = get(info(tt), :arg_types, nothing)
@@ -56,7 +59,7 @@ deanon_type(tt::StanType, x::CanonicalExpr, tok) = begin
         k => (k === :arg_types ? nat : v) for (k, v) in pairs(info(tt)) if k != :size
     ]...)
 end
-_tracetype(x, _context) = tracetype(x)
+Base.@nospecializeinfer _tracetype(@nospecialize(x), _context) = tracetype(x)
 # Stan allows a random-number generator only in transformed data, generated
 # quantities, and functions whose names end in `_rng` — the suffix is Stan's own
 # marker for an RNG-bearing callable, builtin or user-defined. Every draw is a
@@ -68,7 +71,7 @@ _tracetype(x, _context) = tracetype(x)
 # for a draw from data alone too: in transformed data it would be one fixed draw
 # per run that no output carries, whereas the `~` spelling of the same draw (a
 # prior no likelihood reaches) is already re-drawn in generated quantities.
-_rng_qual(x::CanonicalExpr, q) = q in (:data, :parameter) && _is_rng_callee(head(x)) ? :quantities : q
+Base.@nospecializeinfer _rng_qual(@nospecialize(x::CanonicalExpr), q) = q in (:data, :parameter) && _is_rng_callee(head(x)) ? :quantities : q
 # Whether a value — or a size it is declared with — reads a random draw. The
 # fresh-parameter sites (forward.jl) treat this like `cv` taint, which likewise
 # checks the declared size: such a parameter is re-drawn in generated quantities,
@@ -83,13 +86,14 @@ _is_rng_callee(f::Symbol) = endswith(String(f), "_rng")
 _is_rng_callee(f::GlobalRef) = _is_rng_callee(f.name)
 _is_rng_callee(f::Expr) = f.head === :. && _is_rng_callee(f.args[end])
 _is_rng_callee(f::QuoteNode) = _is_rng_callee(f.value)
-_stan_expr(x::CanonicalExpr, context) = begin
+Base.@nospecializeinfer _stan_expr(@nospecialize(x::CanonicalExpr), context) = begin
     _reject_untyped_args(x)
     context = _context_or_new(context)
     tok = _next_anon_id(context)
     tt = deanon_type(_tracetype(anon_canonical(x, tok), context), x, tok)
-    q = _rng_qual(x, maximum(qual, x.args; init=:data))
-    StanExpr(x, remake(tt; qual=q, cv=any(cv, x.args) || cv(tt)))
+    args = Any[x.args...]
+    q = _rng_qual(x, maximum(qual, args; init=:data))
+    StanExpr(x, remake(tt; qual=q, cv=any(cv, args) || cv(tt)))
 end
 stan_expr(x::CanonicalExpr) = _stan_expr(x, TraceContext())
 # Every compiler-internal conversion that runs while a trace is active must use
@@ -366,7 +370,7 @@ backward!(x::StanType; info) = remake(x; lqual=:affects_likelihood)
 # closure before distribution: a compiler-owned result may have several fills.
 _contains_integer(t::StanType) = center_type(t) <: types.int ||
     any(_contains_integer, values(get(info(t), :arg_types, ())))
-_uses_model_local(x, names) = false
+Base.@nospecializeinfer _uses_model_local(@nospecialize(x), names) = false
 _uses_model_local(x::StanExpr{Symbol}, names) = expr(x) in names ||
     _uses_model_local(type(x), names)
 _uses_model_local(x::StanExpr, names) = _uses_model_local(expr(x), names) ||
@@ -374,10 +378,14 @@ _uses_model_local(x::StanExpr, names) = _uses_model_local(expr(x), names) ||
 _uses_model_local(x::StanType, names) = _uses_model_local(stan_size(x), names) ||
     _uses_model_local(values(constraints(x)), names) ||
     _uses_model_local(get(info(x), :arg_types, ()), names)
-_uses_model_local(x::CanonicalExpr, names) = _uses_model_local(x.args, names) ||
+Base.@nospecializeinfer _uses_model_local(@nospecialize(x::CanonicalExpr), names) = _uses_model_local(x.args, names) ||
     _uses_model_local(values(x.kwargs), names)
-_uses_model_local(x::Union{Tuple,NamedTuple,AbstractVector}, names) =
-    any(a -> _uses_model_local(a, names), x)
+Base.@nospecializeinfer _uses_model_local(@nospecialize(xs::Union{Tuple,NamedTuple,AbstractVector}), names) = begin
+    for x in xs
+        _uses_model_local(x, names) && return true
+    end
+    false
+end
 
 _transform_bindings!(bindings, x; info) = nothing
 _transform_bindings!(bindings, x::StanExpr; info) =
@@ -440,7 +448,10 @@ distribute!(x::DocumentExpr{<:Any,<:BlockExpr}; info) = distribute!(x.args[2]; i
 _document_inner_block(x::DocumentExpr) = _document_inner_block(x.args[2])
 _document_inner_block(x::BlockExpr) = x
 _document_inner_block(x) = nothing
-distribute!(x::DocumentExpr{<:Any,<:DocumentExpr}; info) = begin
+# The wrapped document is matched by its head: an expression node's type names
+# a nested call by head only, so it carries no `Tuple{L,R}` for `DocumentExpr`
+# to match (snag `stanblocks-trans-f759fe4f`).
+distribute!(x::DocumentExpr{<:Any,<:CanonicalExprV{:document}}; info) = begin
     inner = _document_inner_block(x)
     inner === nothing ? _distribute_statement!(x; info) : distribute!(inner; info)
 end
@@ -627,7 +638,7 @@ distribution_blocks(x::StanExpr{<:DeclExpr}; info) = begin
         _qual_blocks(qual(base), base; info)
     end
 end
-distribution_blocks(x::StanExpr{<:AssignmentExpr}; info) =
+distribution_blocks(x::StanExpr{<:CanonicalExprV{:(=)}}; info) =
     _qual_blocks(qual(info[_base_lhs_symbol(expr(x))]), x; info)
 # A compiler-injected `for` loop whose body is fills (Feature-1 ragged-simplex:
 # `for(g in 1:G) p_flat[lo:hi] = simplex_jacobian(...)`, G data-sized so it can't
@@ -712,7 +723,9 @@ end
 DeclarativeBlock = Union{DataBlock,ParametersBlock}
 ImperativeBlock = Union{FunctionsBlock,TransformedDataBlock,TransformedParametersBlock,ModelBlock,GeneratedQuantitiesBlock}
 fetch_data!(;info) = x->fetch_data!(x; info)
-fetch_data!(x::Union{Tuple,NamedTuple,Vector}; info) = map(fetch_data!(;info), x)
+# A side-effect walk: one compiled loop, not a `map` per container type.
+Base.@nospecializeinfer fetch_data!(@nospecialize(xs::Union{Tuple,NamedTuple,Vector}); info) =
+    (for x in xs; fetch_data!(x; info); end; nothing)
 # Bare (un-wrapped) literals reach here from a StanType's constraint `info`:
 # `autokwargs` supplies a DISTRIBUTION-implied bound as a raw Julia value
 # (`exponential`→`lower=0.0`), never as a StanExpr like an author-written one.

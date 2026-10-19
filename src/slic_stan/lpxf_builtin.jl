@@ -17,10 +17,13 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(builtin.maybe_index)}; info) = be
         "element-wise indexed. Use an explicit obs/mis split model instead."
     )
 end
-fold_shape_query(x::StanExpr{<:CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr{<:CanonicalExpr{typeof(builtin.dims)}},<:StanExpr{<:Integer}}}}) = begin
-    inner = expr(expr(x).args[1])
-    arg = inner.args[1]::StanExpr
-    i = expr(expr(x).args[2])::Integer
+# A traced call's `StanExpr` type names only its head (types.jl), so the
+# `dims(X)[i]` shape is matched on the getindex's runtime arguments.
+fold_shape_query(x::StanExpr{<:CanonicalExpr{typeof(getindex)}}) = _fold_dims_index(x, expr(x).args...)
+_fold_dims_index(x, _args...) = x
+_fold_dims_index(x, query::StanExpr{<:CanonicalExpr{typeof(builtin.dims)}}, index::StanExpr{<:Integer}) = begin
+    arg = expr(query).args[1]::StanExpr
+    i = expr(index)
     sz = stan_size(arg)
     if 1 <= i <= length(sz)
         candidate = sz[i]

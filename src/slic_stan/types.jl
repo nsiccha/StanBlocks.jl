@@ -100,6 +100,7 @@ abstract type AbstractStanType end
 struct StanExpr{E,T<:AbstractStanType}
     expr::E
     type::T
+    StanExpr{E,T}(expr, type) where {E,T<:AbstractStanType} = new{E,T}(expr, type)
 end
 # A `Type`-valued expr (a `tokenof{T}` head, e.g. the `RaggedVector` in
 # `RaggedVector(mem, ends)`) states `E = typeof(expr)` explicitly. Given an `expr`
@@ -108,6 +109,18 @@ end
 # against that unsound type can then fail with "fatal error in type inference
 # (type bound)" (snag raggedvector-ari-19d214fa: `2.0 .* rv`).
 StanExpr(expr::Type, type::T) where {T<:AbstractStanType} = StanExpr{typeof(expr),T}(expr, type)
+# Expression nodes name a nested call by its HEAD only (`_shallow_type`): a traced
+# call is `StanExpr{CanonicalExpr{H}}`, and a `CanonicalExpr`'s argument-tuple
+# parameter lists each argument call as `CanonicalExpr{H}`, never with that call's
+# own argument types. Keying either on the full `typeof` put the whole expression
+# tree into the type domain: every distinct sub-expression shape minted a new
+# concrete type, and every walker plus the Base generics it calls was re-inferred
+# and re-compiled per shape and per model (snag `stanblocks-trans-f759fe4f`: 100%
+# of a mid-size model's ~4 min transpile was JIT). Dispatch on a call still sees
+# its arguments one level down, which is all `tracetype`/`@defsig` match on.
+Base.@nospecializeinfer StanExpr(@nospecialize(expr), @nospecialize(type::AbstractStanType)) =
+    StanExpr{_shallow_type(expr),typeof(type)}(expr, type)
+_shallow_type(x) = typeof(x)
 struct StringStanType <: AbstractStanType
     val::AbstractString
 end
@@ -115,8 +128,22 @@ Base.show(io::IO, x::StringStanType) = print(io, x.val)
 struct StanType{T,S} <: AbstractStanType
     size::NTuple{S,StanExpr}
     info#::I
-    StanType(T,size=tuple(), info=(;); kwargs...) = new{T,length(size)}(size, merge(info, kwargs))
+    StanType(T,size=tuple(), info=(;); kwargs...) = new{T,length(size)}(size, _merge_info(info, kwargs))
 end
+# `merge(info, kwargs)` built at run time: Base's NamedTuple `merge` is compiled
+# per pair of field-type signatures, and type metadata comes in many (snag
+# `stanblocks-trans-f759fe4f`). Same key order and override rule as `merge`.
+Base.@nospecializeinfer _merge_info(@nospecialize(info::NamedTuple), @nospecialize(kwargs)) = begin
+    isempty(kwargs) && return info
+    names = Symbol[keys(info)...]
+    vals = Any[values(info)...]
+    for (key, value) in pairs(kwargs)
+        i = findfirst(==(key), names)
+        i === nothing ? (push!(names, key); push!(vals, value)) : (vals[i] = value)
+    end
+    NamedTuple{(names...,)}((vals...,))
+end
+_merge_info(info, kwargs) = merge(info, kwargs)
 StanExpr2{T,S,E} = StanExpr{E,StanType{T,S}}
 struct StanBlock{N}
     content#::C
@@ -128,11 +155,23 @@ struct CanonicalExpr{H,A}
     args::A
     kwargs#::K
     # Maybe a bit dangerous
-    CanonicalExpr(head::Symbol, args...; kwargs...) = CanonicalExpr(Val(head), args...; kwargs...)
-    CanonicalExpr(head, args...; kwargs...) = canonical(new{typeof(head),typeof(args)}(head, args, (;kwargs...)))
-    CanonicalExpr(head::Val{:block}, args...; kwargs...) = new{Val{:block},typeof(collect(args))}(head, collect(args), (;kwargs...))
+    # Constructed for every node of every model: compiled once, not per head and
+    # argument types (snag `stanblocks-trans-f759fe4f`).
+    Base.@nospecializeinfer CanonicalExpr(head::Symbol, @nospecialize(args...); kwargs...) = CanonicalExpr(Val(head), args...; kwargs...)
+    Base.@nospecializeinfer CanonicalExpr(@nospecialize(head), @nospecialize(args...); kwargs...) = canonical(new{typeof(head),Tuple{map(_shallow_type, args)...}}(head, args, (;kwargs...)))
+    Base.@nospecializeinfer CanonicalExpr(head::Val{:block}, @nospecialize(args...); kwargs...) = new{Val{:block},typeof(collect(args))}(head, collect(args), (;kwargs...))
     # CanonicalExpr(head::Val{:tuple})
 end
+_shallow_type(::CanonicalExpr{H}) where {H} = CanonicalExpr{H}
+# `map(f, xs)` over the heterogeneous (named) tuples the compiler walks, compiled
+# once: Base's `map` is instantiated per container type, and nearly every traced
+# call presents a new one (snag `stanblocks-trans-f759fe4f`).
+Base.@nospecializeinfer _anymap(f, @nospecialize(xs::Tuple)) = Tuple(Any[f(xs[i]) for i in 1:length(xs)])
+Base.@nospecializeinfer _anymap(f, @nospecialize(xs::NamedTuple)) = NamedTuple{keys(xs)}(_anymap(f, values(xs)))
+# Dictionaries keyed by expression nodes (the functions-block registry): one
+# compiled lookup and insert for every node type.
+Base.@nospecializeinfer _haskey_erased(d, @nospecialize(k)) = haskey(d, k)
+Base.@nospecializeinfer _setindex_erased!(d, @nospecialize(v), @nospecialize(k)) = (d[k] = v; d)
 CanonicalExprV{H,A} = CanonicalExpr{Val{H},A}
 BlockExpr{A} = CanonicalExprV{:block,A}
 AssignmentExpr{L,R} = CanonicalExprV{:(=),Tuple{L,R}}
@@ -283,7 +322,7 @@ remake(x::StanBlock{N}, c) where {N} = StanBlock(N, c)
 
 head(x::CanonicalExpr) = x.head
 head(::CanonicalExprV{H}) where {H} = H
-remake(x::CanonicalExpr, args...; kwargs...) = CanonicalExpr(head(x), args...; kwargs...)
+Base.@nospecializeinfer remake(@nospecialize(x::CanonicalExpr), @nospecialize(args...); kwargs...) = CanonicalExpr(head(x), args...; kwargs...)
 
 StanModel(name=gensym("stan_model")) = StanModel(
     (;name, _trace_context=TraceContext()),
@@ -588,7 +627,7 @@ getvalue(x::StanType) = get(info(x), :value, missing)
 getvalue(x::DocumentExpr) = getvalue(x.args[2])
 hasvalue(x::StanExpr) = !ismissing(getvalue(x))
 hasvalue(x::StanType) = !ismissing(getvalue(x))
-cv(x) = false
+Base.@nospecializeinfer cv(@nospecialize(x)) = false
 cv(x::StanExpr) = cv(type(x))
 cv(x::StanType) = get(info(x), :cv, false) || any(cv, stan_size(x))
 

@@ -420,7 +420,7 @@ _annotated_loop_kind(head::GlobalRef) = _annotated_loop_kind(head.name)
 _annotated_loop_kind(head::Expr) =
     (head.head === :. && length(head.args) == 2 && head.args[2] isa QuoteNode) ?
         _annotated_loop_kind(head.args[2].value) : nothing
-canonical(x) = x
+Base.@nospecializeinfer canonical(@nospecialize(x)) = x
 canonical(x::Expr) = if x.head === :->
     # Lambdas (`(x) -> body`): keep `lhs` and `body` as raw, un-canonicalised
     # AST. `forward!(::CanonicalExprV{:->, ...})` snapshots the raw body for
@@ -469,11 +469,12 @@ canonical(x::CanonicalExprV{:parameters}) = if all(isexpr(:kw), x.args)
 else
     CanonicalExpr(x.head, ensure_kw.(x.args)...)
 end
-canonical(x::CanonicalExprV{:call}) = begin
+Base.@nospecializeinfer canonical(@nospecialize(x::CanonicalExprV{:call})) = begin
     f = broadcast_callee(x.args[1])
     args = []
     kwargs = []
-    for arg in x.args[2:end]
+    for i in 2:length(x.args)
+        arg = x.args[i]
         if isexpr(arg, :parameters)
             @assert all(isexpr(:kw), arg.args) "canonical(:call): `:parameters` block must contain only `:kw` entries, got `$(arg.args)`."
             for argi in arg.args
@@ -559,12 +560,20 @@ _deref_lnn(_) = nothing
 _push_expr!(info, x) = (s = _get_expr_stack(info); isnothing(s) || push!(s, (x, _get_lnn(info))); nothing)
 _pop_expr!(info) = (s = _get_expr_stack(info); isnothing(s) || pop!(s); nothing)
 
-forwards!(;info) = x->forwards!(x; info)
-forwards!(x; info) = [forward!(x; info)]
-forwards!(x::SplatExpr; info) = [forward!(x.args[1]; info)...]
+forwards!(x; info) = Any[forward!(x; info)]
+forwards!(x::SplatExpr; info) = Any[forward!(x.args[1]; info)...]
 forward!(x; info) = error("forward! not defined for value `$x` of type `$(typeof(x))` — no method matches a more specific signature.")
 forward!(;info) = x->forward!(x; info)
-forward!(x::Tuple; info) = (mapreduce(forwards!(;info), vcat, x; init=[])...,)
+# Argument tuples differ in concrete type per call shape: fold them through one
+# `Any` buffer, not `mapreduce(vcat)`, which compiled per tuple and element type
+# (snag `stanblocks-trans-f759fe4f`).
+Base.@nospecializeinfer forward!(@nospecialize(x::Tuple); info) = begin
+    out = Any[]
+    for xi in x
+        append!(out, forwards!(xi; info))
+    end
+    (out...,)
+end
 forward!(x::Union{Tuple,NamedTuple,Vector,Base.Pairs}; info) = map(forward!(;info), x)
 forward!(x::Union{Number,Function,Nothing}; info) = x
 # Wrap string literals as StanExprs so they can be passed as args to

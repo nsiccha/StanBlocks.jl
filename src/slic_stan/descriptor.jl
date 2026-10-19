@@ -594,14 +594,14 @@ end
 # Mirror `fetch_subfunctions!`'s traversal, but collect only exact keys that
 # resolve to an included (non-`nothing`) definition. A Vector + Set preserves
 # first-use order without introducing a second ordered-container dependency.
-_definition_dependency_keys!(x, functions, acc, seen) = nothing
-_definition_dependency_keys!(xs::Union{Tuple,NamedTuple,AbstractVector}, functions, acc, seen) =
-    (foreach(x -> _definition_dependency_keys!(x, functions, acc, seen), xs); nothing)
-_definition_dependency_keys!(x::StanExpr, functions, acc, seen) =
+Base.@nospecializeinfer _definition_dependency_keys!(@nospecialize(x), functions, acc, seen) = nothing
+Base.@nospecializeinfer _definition_dependency_keys!(@nospecialize(xs::Union{Tuple,NamedTuple,AbstractVector}), functions, acc, seen) =
+    (for x in xs; _definition_dependency_keys!(x, functions, acc, seen); end; nothing)
+Base.@nospecializeinfer _definition_dependency_keys!(@nospecialize(x::StanExpr), functions, acc, seen) =
     _definition_dependency_keys!((expr(x), type(x)), functions, acc, seen)
 _definition_dependency_keys!(x::StanType, functions, acc, seen) =
     _definition_dependency_keys!((stan_size(x), info(x)), functions, acc, seen)
-_definition_dependency_keys!(x::CanonicalExpr, functions, acc, seen) = begin
+Base.@nospecializeinfer _definition_dependency_keys!(@nospecialize(x::CanonicalExpr), functions, acc, seen) = begin
     key = sig_expr(x)
     if haskey(functions, key) && !isnothing(functions[key]) && key ∉ seen
         push!(seen, key)
