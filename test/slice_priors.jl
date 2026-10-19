@@ -199,6 +199,29 @@ end
     @test occursin("vector<lower=0.0>[6] tau;", stan_code(literal))
     @test stanc_compiles(literal)
 
+    # Blocks of literal length fix the coordinates even when the declaration
+    # spells its length as data, so literal per-block bounds stay a literal
+    # bound vector on the declaration, not a `transformed data` carrier filled
+    # element by element (snag vcat-per-coordin-201e2b14).
+    sized = @slic (; y=0.3) begin
+        n_coef = 2
+        beta::vector[n_coef] ~ vcat(uniform(0.2, 0.8; lower=0.2, upper=0.8), uniform(0.3, 0.9; lower=0.3, upper=0.9))
+        y ~ normal(sum(beta), 1.)
+    end
+    code = stan_code(sized)
+    @test occursin("vector<lower=[0.2, 0.3]', upper=[0.8, 0.9]'>[n_coef] beta;", stan_block(code, "parameters"))
+    @test !occursin("beta__lower", code) && !occursin("beta__upper", code)
+    @test occursin("beta[2] ~ uniform(0.3, 0.9);", stan_block(code, "model"))
+    @test stanc_compiles(sized)
+    open_coord = @slic (; y=0.3, n=2) begin
+        beta::vector[n] ~ vcat(normal(0., 1.), uniform(0., 2.; lower=0., upper=2.))
+        y ~ normal(sum(beta), 1.)
+    end
+    code = stan_code(open_coord)
+    @test occursin("vector<lower=[negative_infinity(), 0.0]', upper=[positive_infinity(), 2.0]'>[n] beta;", code)
+    @test !occursin("beta__lower", code)
+    @test stanc_compiles(open_coord)
+
     # Same program as the hand-written slices.
     lowered = @slic (; y=0.3) begin
         tau ~ vcat(exponential([1.5, 3.0]), normal(0., 1.))
@@ -221,6 +244,9 @@ end
     merged = Base.merge(base, :(tau ~ vcat(exponential([1.5, 3.0]), normal(0., 1.; lower=0.))))(; n=3, y=0.5)
     @test occursin("vector<lower=0.0>[n] tau;", stan_code(merged))
     @test stanc_compiles(merged)
+    mixed_merged = Base.merge(base, :(tau ~ vcat(exponential([1.5, 3.0]), normal(0., 1.))))(; n=3, y=0.5)
+    @test occursin("vector<lower=[0.0, 0.0, negative_infinity()]'>[n] tau;", stan_code(mixed_merged))
+    @test stanc_compiles(mixed_merged)
     err = try
         stan_code(Base.merge(base, :(tau ~ vcat(exponential([1.5, 3.0]), normal(0., 1.))))(; n=4, y=0.5))
         nothing
