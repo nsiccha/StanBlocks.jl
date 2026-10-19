@@ -8168,6 +8168,71 @@ dense vector sliced alongside a ragged one.
 end
 
 """
+Verify `slic: ragged plate carriers over another plate's ragged result describe their segments`.
+
+Snag stan-descriptor-1dcd538a: a plate iterating an earlier plate's ragged
+result records `outer = length(loc)` and cell sizes over `loc`'s
+transformed-data ends. Neither has a data value, so `stan_descriptor` threw
+`MethodError: no method matching length(::Symbol)`. The descriptor now lays the
+carrier out from the iterated carrier's own segments, recursively along a
+chain, against the current data, including an omitted ragged response whose
+scale is such a carrier.
+"""
+@testitem "slic: ragged plate carriers over another plate's ragged result describe their segments" tags=[:slic, :plate, :ragged, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    segmented(model) = Dict(
+        Symbol(replace(string(o.name), r"__(pl|obs)_mem_\d+$" => s"__\1_mem")) => o.segments
+        for o in stan_descriptor(model).outputs if o.segments !== nothing
+    )
+    chained = @slic (; xs = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]) begin
+        a ~ std_normal()
+        loc ~ plate(xs) do x
+            a .* x
+        end
+        s ~ plate(loc) do l
+            exp.(l)
+        end
+        t ~ plate(s) do v
+            v .+ a
+        end
+    end
+    @test segmented(chained) == Dict(
+        :loc__pl_mem => [2, 3, 6], :s__pl_mem => [2, 3, 6], :t__pl_mem => [2, 3, 6],
+    )
+    rebound = StanBlocks.stan_model(chained)(; xs = [[1.0], [2.0, 3.0, 4.0]])
+    @test segmented(rebound) == Dict(
+        :loc__pl_mem => [1, 4], :s__pl_mem => [1, 4], :t__pl_mem => [1, 4],
+    )
+
+    # Reporter-shaped: an omitted ragged response whose censored law reads the
+    # first plate's location and a second plate's per-cell scale over it.
+    omitted = StanBlocks.SlicModel(quote
+        sigma_add ~ exponential(1.0)
+        sigma_prop ~ exponential(1.0)
+        loc ~ plate(ts; outer = length(ts)) do t
+            2.0 .* t
+        end
+        sd ~ plate(loc) do l
+            sqrt.(sigma_add^2 .+ (sigma_prop .* l) .^ 2)
+        end
+        y ~ censored(normal, loc, sd; lower = lo)
+    end, Dict{Symbol,Any}(
+        :ts => [[1.0, 2.0], Float64[], [3.0, 4.0, 5.0]],
+        :lo => [[0.1, 0.1], Float64[], [0.1, 0.1, 0.1]],
+    ), @__MODULE__, (:y,))
+    d = stan_descriptor(omitted)
+    @test stan_operation(d, :predict).outputs == (:y_gen,)
+    @test segmented(omitted) == Dict(
+        :sd__pl_mem => [2, 2, 5], :y__obs_mem => [2, 2, 5], :y_gen => [2, 2, 5],
+    )
+    rebound_omitted = StanBlocks.stan_model(omitted)(;
+        ts = [[1.0], [2.0, 3.0]], lo = [[0.1], [0.1, 0.1]],
+    )
+    @test segmented(rebound_omitted) == Dict(
+        :sd__pl_mem => [1, 3], :y__obs_mem => [1, 3], :y_gen => [1, 3],
+    )
+end
+
+"""
 Verify `slic: ragged obs broadcasts a distribution across groups (obs-outside)`.
 
 Snag ragged-dist-arg-dcffbc1b: a plate collects per-cell VECTORS of differing
