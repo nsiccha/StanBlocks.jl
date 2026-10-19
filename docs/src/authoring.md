@@ -458,7 +458,9 @@ end
 `for i in 1:N, j in 1:M` gives an N-dimensional outer shape, and
 `for i in eachindex(y)` is the range `1:length(y)`; `for d in doses`
 iterates the values of a container (each cell receives one `RaggedVector`
-group, and `d ~ …` observes it).
+group, and `d ~ …` observes it). On ragged data, `yr[i] ~ …` is the same
+observation of group `i`: a flat `yr_gen` and one aggregate `yr_likelihood`
+per group, exactly as the `plate` do-form emits them.
 
 `@scan` is the sequential loop: one block whose trailing `for` is the
 recurrence and whose preceding statements are the initial state. The loop's
