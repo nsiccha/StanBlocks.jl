@@ -130,9 +130,12 @@ Every prior that is re-drawn needs its family's `_rng` companion for that shape
 (a custom `@lpxf foo_lpdf` family ships `foo_rng`, sized-token overload
 included); a missing one is a trace-time error naming the symbol, the family and
 the signature to add, and an improper `flat()` prior — nothing to draw from — is
-an error too. Two prior shapes deliberately stay *sampled* parameters instead,
-because no exact draw exists yet: an `ordered` / `positive_ordered` prior (no
-family rng yields a sorted vector) and a ragged constrained parameter with an
+an error too. An `ordered` / `positive_ordered` prior whose elements share one
+scalar density (`c::ordered[k] ~ normal(loc, scale)`) is re-drawn as `sort_asc`
+of k iid draws, which is its exact law. Two prior shapes stay *sampled*
+parameters instead, because no exact whole-program draw exists: any other
+`ordered` / `positive_ordered` prior (an argument that differs between elements,
+a joint family, `truncated`), and a ragged constrained parameter with an
 informative prior (its per-group constrain step has no ragged rng). Everything
 prior-only around them still lowers to `generated quantities`; such a program
 merely keeps `dimension > 0`.
@@ -181,6 +184,18 @@ That is population prediction. Sampled on its own, this program gives the retain
 parameters only their priors. Mark *one* observation input while another stays
 bound, and sampling the program keeps the shared population parameters fitted by
 the retained likelihood: that is leave-group-out cross-validation.
+
+A marked `ordered` / `positive_ordered` prior is re-drawn as well. With one
+scalar density for every element it is the sorted iid draw, as in a prior-only
+program. Otherwise (`c::ordered[J] ~ normal(m0[1:J], 1.0)`, `multi_normal`,
+`truncated`) the draw is repeated until it is strictly increasing. That is the
+prior's exact law given the fitted parameters it reads. It costs on average
+1 / P(an unconstrained draw is sorted) draws, and after 100000 attempts the draw
+fails with Stan `reject`.
+
+```stan
+ordered[J] c = ordered_rejection_vector_normal_rng_rng(J, m0[1:J], 1.0);
+```
 
 ### Marking a response is not omitting it
 

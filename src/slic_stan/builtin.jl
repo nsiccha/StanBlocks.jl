@@ -45,6 +45,7 @@ end
     interval_evidence_impl_lpdf interval_evidence_impl_lpmf
     lower_conditioning_cell_rng upper_conditioning_cell_rng conditioning_cell_rng
     conditioning_outside
+    ordered_rejection_rng ordered_rejection_unsorted
     lower_clamping_cell_rng upper_clamping_cell_rng clamping_cell_rng
     jbroadcasted_rng
     # Sequential-marginalization families (forward filter): the general
@@ -644,6 +645,34 @@ import Statistics
         to_array_1d(jbroadcasted(conditioning_cell_rng, rep_vector(0., n), family, lo, hi, args...))
     conditioning_rng(int[n], family, lo, hi, args...)::int[n] =
         jbroadcasted(conditioning_cell_rng, rep_array(0, n), family, lo, hi, args...)
+
+    # Ordered re-draw by rejection (`_ordered_rejection`, passes.jl) ---------
+    # `rng` is a family's resolved vector draw. Stan's `ordered` check is strict,
+    # so a tie is a rejection too. Same budget and failure as `truncated`.
+    ordered_rejection_unsorted(x::vector[n])::int = begin
+        rv::int[1]
+        rv[1] = 0
+        for i in 2:n
+            if x[i] <= x[i - 1]
+                rv[1] = 1
+            end
+        end
+        rv[1]
+    end
+    ordered_rejection_rng(vector[n], rng, args...)::vector[n] = begin
+        draw::vector[n]
+        attempts::int[1]
+        draw = rng(vector[n], args...)
+        attempts[1] = 1
+        while ordered_rejection_unsorted(draw) == 1
+            if attempts[1] >= 100000
+                reject("ordered: rejection sampler found no increasing draw in 100000 attempts; the prior rarely draws its elements in order")
+            end
+            draw = rng(vector[n], args...)
+            attempts[1] = attempts[1] + 1
+        end
+        draw
+    end
 
     # Threshold censoring (`censored`) --------------------------------------
     lower_clamping_lpdf(y::real, family, lo, args...)::real = begin
