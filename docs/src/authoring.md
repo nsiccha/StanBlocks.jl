@@ -169,6 +169,49 @@ Rules:
 Write a custom whole-vector family (an `_lpdf`/`_lpdfs`/sized `_rng` triad with
 `autokwargs` support) only for a genuinely joint prior.
 
+## Bounded `ordered` and `positive_ordered` vectors
+
+Stan declares no bound on `ordered` or `positive_ordered`. A typed LHS can
+still carry one, written or implied by its family:
+
+```julia
+@slic (; y = 0.4) begin
+    c::ordered[3] ~ uniform(0., 1.)     # implied lower=0, upper=1
+    y ~ normal(c[1], 1.)
+end
+```
+
+A sampled one is declared as `c_free`, an `ordered` vector of the same shape,
+and `c` is the transformed parameter that one of Stan's constraint transforms
+makes of it. Each transform is increasing, so `c` stays ordered, and adds its
+own log-Jacobian:
+
+```stan
+parameters { ordered[3] c_free; }
+transformed parameters { ordered[3] c = lower_upper_bound_jacobian(c_free, 0.0, 1.0); }
+```
+
+| Constraint | `c` |
+|---|---|
+| `lower=L` | `lower_bound_jacobian(c_free, L)` |
+| `upper=U` | `upper_bound_jacobian(-c_free, U)` |
+| `lower=L, upper=U` | `lower_upper_bound_jacobian(c_free, L, U)` |
+| `offset=` / `multiplier=` | `offset_multiplier_jacobian(c_free, offset, multiplier)` |
+
+`positive_ordered` is bounded below at 0 already: a lower bound at or below 0
+adds nothing, and an `upper=U` lowers as `lower=0, upper=U`. A plate cell's
+`array[n] ordered[k]` carrier lowers the same way. A re-drawn one (prior-only
+or held out) is declared without the bound and drawn inside it.
+
+Rules:
+
+- Every constraint is a scalar: per-element bounds would not keep the elements
+  ordered.
+- `positive_ordered` takes no `offset=`/`multiplier=`, and its `lower=` must be
+  a number.
+- The sampler's coordinates are `c_free`: BridgeStan lists `c_free` as the
+  parameter and `c` as a transformed parameter.
+
 ## Generated observation twins
 
 A normal top-level observation such as `y ~ normal(mu, sigma)` produces two
