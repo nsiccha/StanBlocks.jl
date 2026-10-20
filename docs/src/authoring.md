@@ -595,12 +595,17 @@ boundaries.
 
 `ModelOutput.size` holds the emitted size expressions, which may be composite
 (`n_levels - 1`) or name a transformed-data value (`J = maximum(subject)`) that
-is not an input. `ModelOutput.dims` holds them resolved against the current
-data: one nonnegative `Int` per entry, `()` for a scalar. A
+is not an input. `ModelOutput.dims` is the shape of the output's value, resolved
+against the current data: one nonnegative `Int` per axis, `()` for a scalar. It
+is `size` evaluated entry by entry, except that a constrained square matrix
+declared by one size fills both of its matrix axes: `cholesky_factor_corr[K]`
+(and `cholesky_factor_cov[K]`, `cov_matrix[K]`, `corr_matrix[K]`) reports
+`(K, K)`, and an array `cholesky_factor_corr[G, K]` reports `(G, K, K)`. A
 `vector[n_levels - 1]` at `n_levels == 1` reports `(0,)`, and for any output
 that is not a tuple `prod(dims)` is the number of `param_names` entries
 BridgeStan lists for it, so an empty output is distinguishable from a missing
-one. Every top-level Stan size is data-only, so `dims` always exists; a size
+one. Those entries run first index fastest, so `reshape(values, dims)` rebuilds
+the value. Every top-level Stan size is data-only, so `dims` always exists; a size
 computed through a Stan-only `@deffun` makes `stan_descriptor` throw, and
 marking that function `@juliacompat` gives it the Julia method it needs.
 

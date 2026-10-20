@@ -8600,6 +8600,26 @@ value, for which `stan_descriptor` and printing the model used to throw.
         L::cholesky_factor_corr[n, 2] ~ lkj_corr_cholesky(2.0)
     end)[:L] == (3, 2, 2)
 
+    # A constrained square matrix declared by one size has two axes of that size
+    # (snag modeloutput-dims-5ab23309): `dims` is the value's shape, matching the
+    # K×K entries BridgeStan lists, not one entry per `size` entry.
+    square = @slic (; y = [0.1, -0.2, 0.3], K = 3) begin
+        Lc::cholesky_factor_corr[K] ~ lkj_corr_cholesky(2.0)
+        Lv::cholesky_factor_cov[K]
+        Sg::cov_matrix[K]
+        C::corr_matrix[K]
+        La::cholesky_factor_corr[2, K] ~ lkj_corr_cholesky(2.0)
+        y ~ normal(sum(Lc) + sum(Lv) + sum(Sg) + sum(C) + sum(La[1]) + sum(La[2]), 1.0)
+    end
+    square_outputs = stan_descriptor(square).outputs
+    @test only(o for o in square_outputs if o.name === :Lc).size == (:K,)
+    @test only(o for o in square_outputs if o.name === :La).size == (2, :K)
+    @test dims(square) == Dict(
+        :Lc => (3, 3), :Lv => (3, 3), :Sg => (3, 3), :C => (3, 3), :La => (2, 3, 3),
+        :y_likelihood => (3,), :y_gen => (3,),
+    )
+    @test dims(StanBlocks.stan_model(square)(; K = 2))[:La] == (2, 2, 2)
+
     # The Julia `jbroadcasted` runs its Stan element loop: a matrix argument
     # contributes its rows, scalars pass through.
     @test StanBlocks.jcall(Val(:jbroadcasted), StanBlocks, -, [2, 3, 4], 1) == [1, 2, 3]
@@ -8650,7 +8670,9 @@ Verify `slic: descriptor dims match BridgeStan's param_names`.
 Snag stan-descriptor-aa56f7f3: `prod(dims)` is the number of `param_names`
 entries a non-tuple output has, so a consumer can tell an empty output (no
 `name` / `name.i` entry, e.g. `vector[n_levels - 1]` at `n_levels == 1`) from a
-missing one.
+missing one. Snag modeloutput-dims-5ab23309: that includes the constrained
+square matrices declared by one size (`cholesky_factor_corr[K]` lists K×K
+names), arrays of them, a transformed-parameter matrix and a prior-only re-draw.
 """
 @testitem "slic: descriptor dims match BridgeStan's param_names" tags=[:slic, :ragged, :descriptor, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     entries(names, o) = count(s -> s == string(o.name) || startswith(s, string(o.name, ".")), names)
@@ -8672,11 +8694,25 @@ missing one.
             mu ~ std_normal()
             ys ~ normal(mu, 1.0)
         end),
+        @slic((; y = [0.1, -0.2, 0.3], K = 3), begin
+            Lc::cholesky_factor_corr[K] ~ lkj_corr_cholesky(2.0)
+            Lv::cholesky_factor_cov[K]
+            Sg::cov_matrix[K]
+            C::corr_matrix[K]
+            La::cholesky_factor_corr[2, K] ~ lkj_corr_cholesky(2.0)
+            Lg::cholesky_factor_corr[4] ~ lkj_corr_cholesky(2.0)
+            Om = multiply_lower_tri_self_transpose(Lc)
+            y ~ normal(sum(Om) + sum(Lv) + sum(Sg) + sum(C) + sum(La[1]) + sum(La[2]), 1.0)
+        end),
     )
         d = stan_descriptor(m)
         names = BridgeStan.param_names(stan_execute(d, :instantiate).model; include_tp = true, include_gq = true)
         for o in d.outputs
             @test entries(names, o) == prod(o.dims)
+            # The names run first index fastest, so `reshape(values, dims)`
+            # rebuilds the value.
+            indices = [Tuple(parse.(Int, split(s, ".")[2:end])) for s in names if startswith(s, string(o.name, "."))]
+            isempty(o.dims) || @test indices == vec([Tuple(c) for c in CartesianIndices(o.dims)])
         end
     end
 end

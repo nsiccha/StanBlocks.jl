@@ -109,14 +109,20 @@ StanBlocks.stan_descriptor).
   layout; members may have different axes, so consumers must not copy segments
   from a sibling or an input. Publishing the layout here lets consumers restore
   groups without reaching into compiler-owned names or carrier tuples.
-- `dims::Tuple{Vararg{Int}}` — `size` resolved against the model's current data:
-  one nonnegative `Int` per entry, in the same order (`()` for a scalar). A
-  `vector[n_levels - 1]` with `n_levels == 1` reports `(0,)`. For an output that
-  is not a tuple, `prod(dims)` is the number of entries BridgeStan's
-  `param_names` lists for it, so an empty output (no `name.i` entry at all) is
-  distinguishable from a missing one. A tuple-typed output reports its own
-  container size here; its fields' sizes are part of `type`. A rebound model
-  reports rebound values, as for `segments`.
+- `dims::Tuple{Vararg{Int}}` — the shape of the output's value, resolved against
+  the model's current data: one nonnegative `Int` per axis (`()` for a scalar).
+  It is `size` evaluated entry by entry, except that a constrained square matrix
+  declared by one size fills both of its matrix axes with it:
+  `cholesky_factor_corr[K]` (likewise `cholesky_factor_cov[K]`, `cov_matrix[K]`,
+  `corr_matrix[K]`) reports `(K, K)`, and an array of them,
+  `cholesky_factor_corr[G, K]`, reports `(G, K, K)`. A `vector[n_levels - 1]`
+  with `n_levels == 1` reports `(0,)`. For an output that is not a tuple,
+  `prod(dims)` is the number of entries BridgeStan's `param_names` lists for it,
+  so an empty output (no `name.i` entry at all) is distinguishable from a
+  missing one. Those entries run first index fastest, so `reshape(values, dims)`
+  rebuilds the value from them. A tuple-typed output reports its own container
+  size here; its fields' sizes are part of `type`. A rebound model reports
+  rebound values, as for `segments`.
 """
 struct ModelOutput
     name::Symbol
@@ -635,7 +641,10 @@ end
 # (`n_levels - 1`) or name a transformed-data value, and neither resolves
 # against the inputs alone (snag `stan-descriptor-aa56f7f3`). The scope above
 # evaluates it; only a size computed through a function with no Julia method
-# cannot be, and that fails closed.
+# cannot be, and that fails closed. `dims` is the VALUE's shape, so it walks
+# `index_shape`: a constrained square matrix declared by one size (`r_ndim == 1`)
+# has two axes of that size, as its K×K entries in `param_names` do (snag
+# `modeloutput-dims-5ab23309`).
 _output_dim(scope, name::Symbol, i, s) = begin
     value = try
         _scope_value(scope, s)
@@ -654,7 +663,7 @@ _output_dim(scope, name::Symbol, i, s) = begin
     Int(value)
 end
 _output_dims(scope, name::Symbol, x::StanExpr) =
-    Tuple(_output_dim(scope, name, i, s) for (i, s) in enumerate(stan_size(x)))
+    Tuple(_output_dim(scope, name, i, s) for (i, s) in enumerate(index_shape(x)))
 
 # One row per output a block declares, with every `ModelOutput` field except
 # `dims`; `decl` is the declaration they come from. The semantic display renders
@@ -798,9 +807,12 @@ operation the model does not offer.
 
 # Resolved dimensions
 
-Each output's `dims` is its `size` evaluated against the bound data, together
-with the transformed-data values and ragged-plate layouts that size reads. Every
-top-level Stan size is a data-only expression, so it always has a value; if
+Each output's `dims` is the shape of its value: its `size` evaluated against the
+bound data, together with the transformed-data values and ragged-plate layouts
+that size reads. A constrained square matrix declared by one size fills both of
+its matrix axes, so `cholesky_factor_corr[K]` reports `(K, K)`; for every
+non-tuple output `prod(dims)` is its number of BridgeStan `param_names` entries.
+Every top-level Stan size is a data-only expression, so it always has a value; if
 Julia cannot compute one (a size computed through a Stan-only `@deffun` with no
 Julia method), `stan_descriptor` throws, naming the output and the expression.
 Mark that function `@juliacompat` to give it a Julia method.
