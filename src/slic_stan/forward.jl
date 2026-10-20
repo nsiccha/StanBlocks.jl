@@ -522,6 +522,50 @@ _plate_context_entry(name::Symbol; info) = begin
     end
     nothing
 end
+# A name the compiler makes up for a plate — a cell binding's carrier
+# `<ns>_<f>`, a hoisted invariant — must not take a name already bound: `base`,
+# else `base_2`, `base_3`, … (todo `1nws1vv`: two array-less `@plate for i`
+# loops both namespace `loop_i`; a data input `theta_t` takes plate `theta`'s
+# carrier for `t`). `taken` holds the names this loop has already chosen or
+# fills as arrays, which are not bound yet.
+#
+# A nested loop is traced twice: in its enclosing loop's discovery probe, and
+# in that loop's emit trace, where every name the probe chose is bound as the
+# enclosing loop's promoted storage. A bound name an enclosing context owns is
+# this loop's own unless an earlier loop of the same emit trace took it
+# (`claimed`), so the emit trace makes the probe's choices again, in order.
+_plate_fresh_name!(base::Symbol, taken; info) = begin
+    for k in Iterators.countfrom(1)
+        name = k == 1 ? base : Symbol(base, :_, k)
+        name in taken && continue
+        name in keys(info) || return name
+        entry = _plate_context_entry(name; info)
+        (entry === nothing || entry.global_name in entry.owner.claimed) && continue
+        push!(entry.owner.claimed, entry.global_name)
+        return name
+    end
+end
+# A discovery probe's names are discarded with its bindings: restore the claims
+# of every enclosing context, and the result-less plate names, after it.
+_plate_discard_probe_names(f, info) = begin
+    sets = Set{Symbol}[]
+    ctx = _plate_context(info)
+    while ctx !== nothing
+        push!(sets, ctx.claimed)
+        ctx = get(ctx, :parent, nothing)
+    end
+    context = _trace_context(info)
+    context === nothing || push!(sets, context.resultless_plates)
+    saved = Set{Symbol}[copy(s) for s in sets]
+    try
+        f()
+    finally
+        for (s, before) in zip(sets, saved)
+            empty!(s)
+            union!(s, before)
+        end
+    end
+end
 _plate_promoted_lhs(name::Symbol; info) = begin
     entry = _plate_context_entry(name; info)
     entry === nothing && return nothing
@@ -2925,17 +2969,19 @@ end
 # value to collect.
 _plate_is_statement(s) = s isa Expr &&
     (s.head === :(=) || (s.head === :call && length(s.args) >= 3 && s.args[1] === :~))
-# Result-less plate names, so reading one fails with the reason instead of a
-# bare "Could not find" (`forward!(::Symbol)`, tracing.jl).
+# Result-less plate names (global, so a sub-model called twice records two), so
+# reading one fails with the reason instead of a bare "Could not find"
+# (`forward!(::Symbol)`, tracing.jl), and a second plate under one is refused.
 _note_resultless_plate!(info, rv::Symbol) = begin
     context = _trace_context(info)
-    context === nothing || push!(context.resultless_plates, rv)
+    context === nothing || push!(context.resultless_plates, _plate_global_name(info, rv))
     nothing
 end
-_is_resultless_plate(info, x::Symbol) = begin
+_is_resultless_plate(info::Union{StanModel,SubModel}, x::Symbol) = begin
     context = _trace_context(info)
-    context !== nothing && x in context.resultless_plates
+    context !== nothing && _plate_global_name(info, x) in context.resultless_plates
 end
+_is_resultless_plate(_, ::Symbol) = false
 # Substitute only do-block parameters with their per-cell input accessors. Fresh
 # names are promoted during tracing via the explicit plate context, which also reaches
 # names introduced inside an inlined submodel (not present in this raw AST).
@@ -3670,8 +3716,10 @@ _plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs, id; info, keep=S
             _plate_probe_hoistable(e; info)) || return nothing
         n[] += 1
         # The do-form tags hoists with the trace id; the annotated sugar passes
-        # `id === nothing` for STABLE names (a nested loop is traced twice).
-        name = id === nothing ? Symbol(rv, :__pl_inv, n[]) : Symbol(rv, :__pl_inv, n[], :_, id)
+        # `id === nothing` for STABLE names (a nested loop is traced twice), so
+        # two array-less loops over one index would share them.
+        name = _plate_fresh_name!(
+            id === nothing ? Symbol(rv, :__pl_inv, n[]) : Symbol(rv, :__pl_inv, n[], :_, id), (); info)
         emit_hoist!(Expr(:(=), name, e))
         cache[e] = name
     end
@@ -3822,7 +3870,7 @@ _plate_size_defs!(defs, x::AssignmentExpr) = begin
 end
 
 _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanModel,SubModel}) =
-    _with_trace_state(info, :inline_pending, Any[]) do
+    _plate_discard_probe_names(info) do; _with_trace_state(info, :inline_pending, Any[]) do
         probe = _plate_probe(info)
         root = _plate_root_info(probe)
         before = Set(keys(root))
@@ -3894,7 +3942,7 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
         end
         (fresh=fresh, ret_type=ret === nothing ? nothing :
             _resolve_return_size_type(type(ret), size_table, "plate cell"))
-    end
+    end end
 
 # ── Plate emitter entry: the public `rv ~ plate(iters…; outer=…) do … end`. ──
 # Trace-then-promote (decision 1vujeta): `_plate_discover` probes the body once to
@@ -3964,6 +4012,13 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     (body_raw isa Expr && body_raw.head === :block) || error(
         "plate: the do-block body must be a `:block` Expr, got `$(typeof(body_raw))`."
     )
+    # One name, one plate (decision `0oim59p`): the name labels the carriers of
+    # its cell bindings (`theta_t`), so a second plate under it is refused like
+    # any rebinding. A collecting plate's name is bound (refused below); a
+    # result-less one is only recorded.
+    _is_resultless_plate(info, rv) && error(
+        "plate: `", rv, "` already names an earlier plate (one whose cell collects no ",
+        "result). Give each plate its own name.")
     params, vararg = _parse_lambda_lhs(lhs_raw)
     vararg === nothing || error("plate: vararg do-block params (`args...`) are not supported yet.")
     iterables = collect(plate.args[2:end])
@@ -4067,10 +4122,12 @@ end
 #     before the loop, so it must not receive an outer collection declaration.
 #   • `scan_arrays` — global names whose lag reads `x[i-k]` the emit trace
 #     resolves against the OUTER declaration (`forward!(::CanonicalExprV{:getindex})`).
+#   • `hygiene` — carrier names the sugar already chose for its locals
+#     (`_plate_fresh_name!` claims a name, so it is chosen once per trace).
 _forward_loop_core!(;
     kind, rv, rv_ct, id, idxs, outer_dims, outer_lo, params, iterables, input_subst,
     body_stmts, ret_expr, setup_stmts, public, probe_transform, probe_exclude,
-    scan_arrays, info, ns=nothing, hoist_tag=id,
+    scan_arrays, info, ns=nothing, hoist_tag=id, hygiene=Dict{Symbol,Symbol}(),
 ) = begin
     # Proven length mismatches between positionals and their outer axes (or
     # between siblings) are ill-typed — refuse before any renaming/hoisting.
@@ -4092,9 +4149,11 @@ _forward_loop_core!(;
     # its own `z ~ …` as "LHS bound to a parameter-qualified value", and even
     # discovery aside, two `vector[N] z;` declarations are invalid Stan. Give every
     # plate its own NAMESPACE by prefixing each fresh cell-local with the plate's
-    # result name `rv` (`z` → `b_subject_z`): `rv` is required and already unique
-    # in model scope (asserted below), so distinct plates get distinct carriers,
-    # and the emitted Stan reads as "the `z` of `b_subject`". The rename runs
+    # result name `rv` (`z` → `b_subject_z`), so the emitted Stan reads as "the
+    # `z` of `b_subject`". A namespaced name that is already bound — the sugar's
+    # `loop_i` is shared by every array-less loop over `i`, a data input can be
+    # spelled `b_subject_z` — takes a numbered suffix instead
+    # (`_plate_fresh_name!`), so distinct plates get distinct carriers. The rename runs
     # BEFORE discovery, so a submodel-internal flattened name (`cell_z`, derived
     # from the direct binding `cell`) inherits the prefix (`rv_cell_z`) for free —
     # matching how submodel flattening already namespaces. Only genuinely fresh
@@ -4108,23 +4167,9 @@ _forward_loop_core!(;
         fi === nothing && continue
         f = fi[1]
         (f in params || f in public || f in keys(info) || haskey(fresh_rename, f)) && continue
-        fresh_rename[f] = Symbol(ns, :_, f)
-    end
-    # The namespaced name must itself be fresh. `rv` being unbound does not
-    # guarantee that: a result-less plate binds no `rv`, so a second plate under
-    # the same name reaches here, as do an array-less `@plate for` over the same
-    # index (`loop_i_t` twice) and a data input spelled like a carrier
-    # (`theta_t`). Name the collision here instead of failing later in
-    # discovery or block routing. A name an enclosing loop owns is the nested
-    # emit pass re-declaring its own binding, not a collision.
-    for (f, g) in fresh_rename
-        g in keys(info) || continue
-        _plate_context(info) !== nothing && _plate_context_entry(g; info) !== nothing && continue
-        error(
-            "plate: the cell binding `", f, "` is stored as `", g, "`, which is already ",
-            "bound in model scope. Rename the binding, or the plate result (or, for an ",
-            "array-less `@plate for`, the loop variable) that makes `", ns, "` its namespace."
-        )
+        fresh_rename[f] = get(hygiene, f) do
+            _plate_fresh_name!(Symbol(ns, :_, f), Iterators.flatten((values(hygiene), values(fresh_rename), public)); info)
+        end
     end
     if !isempty(fresh_rename)
         body_stmts = Any[_subst_syms(s, fresh_rename) for s in body_stmts]
@@ -4472,6 +4517,9 @@ _forward_loop_core!(;
         idxs=global_idxs, cell_types=cell_types, cell_accessors=cell_accessors,
         kind=kind, scan_arrays=Set{Symbol}(_plate_global_name(info, a) for a in scan_arrays),
         parent=_plate_context(info),      # an enclosing loop's context, for nested loops
+        # Names a nested loop may not choose (`_plate_fresh_name!`): this loop's
+        # own carriers and arrays from the start, then each nested loop's choice.
+        claimed=union(Set{Symbol}(_plate_global_name(info, g) for g in values(fresh_rename)), public_global),
     )
     emitted_loop = _with_trace_state(info, :plate_context, ctx) do
         forward!(canonical(loop); info)
@@ -4757,16 +4805,19 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     # the enclosing loop's probe pass (where our arrays are `public`) and in its
     # emit pass (where they are `owned`) — the union is identical in both.
     ns = isempty(arrays) ? Symbol(:loop_, join(idxs, "_")) : first(sort!(collect(arrays)))
-    # Nested emit pass: a local the enclosing loop already promoted (from our
-    # probe-pass declaration, under its hygienic name `ns_f`) is not re-declared;
-    # its bare references become explicit inner-indexed accesses of that name,
-    # which compose with the enclosing accessor.
+    # Each local's hygienic carrier: `ns_f`, or a numbered one when that is bound
+    # (`_plate_fresh_name!`). Nested emit pass: a local the enclosing loop
+    # already promoted (from our probe-pass declaration) is not re-declared; its
+    # bare references become explicit inner-indexed accesses of that name, which
+    # compose with the enclosing accessor.
+    hygiene = Dict{Symbol,Symbol}()
     owned_locals = Dict{Symbol,Any}()
     if !isempty(locals)
         lo_off(lo) = lo isa Integer ? lo - 1 : :($lo - 1)
         inner_ix = Any[lo == 1 ? idx : :($idx - $(lo_off(lo))) for (idx, lo) in zip(idxs, outer_lo)]
-        for f in locals
-            hygienic = Symbol(ns, :_, f)
+        for f in unique(locals)
+            hygienic = hygiene[f] =
+                _plate_fresh_name!(Symbol(ns, :_, f), Iterators.flatten((values(hygiene), arrays)); info)
             owned(hygienic) || continue
             any(s -> (l = _plate_stmt_lhs(s); l isa Expr && l.head === :(::) && l.args[1] === f), body_raw) &&
                 error(label, ": a typed local (`", f, "::…`) inside a nested annotated loop is not supported yet.")
@@ -4818,7 +4869,7 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
         params, iterables, input_subst, body_stmts, ret_expr=nothing,
         setup_stmts, public, probe_transform, probe_exclude=setup_plain,
         scan_arrays=(kind === :scan ? public : Set{Symbol}()), info,
-        ns, hoist_tag=nothing,
+        ns, hoist_tag=nothing, hygiene,
     )
 end
 
