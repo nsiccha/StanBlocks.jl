@@ -145,6 +145,7 @@ end
     ordered_constrain ordered_unconstrain ordered_jacobian
     positive_ordered_constrain positive_ordered_unconstrain positive_ordered_jacobian
     cholesky_factor_corr_jacobian cholesky_factor_cov_jacobian
+    lower_bound_jacobian upper_bound_jacobian lower_upper_bound_jacobian offset_multiplier_jacobian
     diag_matrix
     mdivide_left_tri_low
     one_hot_vector
@@ -332,6 +333,12 @@ import Statistics
     positive_ordered_unconstrain(x::vector[n])::vector[n]
     cholesky_factor_corr_jacobian(y::vector[n], K::int)::matrix[K,K]
     cholesky_factor_cov_jacobian(y::vector[n], M::int, N::int)::matrix[M,N]
+    # Elementwise bound / affine transforms. A constrained `ordered` parameter is
+    # one of these applied to an `ordered` free vector (`_ordered_transform`).
+    lower_bound_jacobian(y::vector[n], lb::real)::vector[n]
+    upper_bound_jacobian(y::vector[n], ub::real)::vector[n]
+    lower_upper_bound_jacobian(y::vector[n], lb::real, ub::real)::vector[n]
+    offset_multiplier_jacobian(y::vector[n], offset::real, multiplier::real)::vector[n]
     Base.log1p(x::real)::real
     Base.inv(::vector[n])::vector[n]
     Base.print(args...)::anything
