@@ -571,21 +571,44 @@ included, moves to `generated quantities`.
 A carried array takes its support coordinate by coordinate, as slice statements
 do: with `x[1] ~ exponential(1.)` and an unbounded recurrence
 `x[t] ~ normal(x[t-1], 1.)`, only `x[1]` is bounded
-(`vector<lower=[0.0, negative_infinity(), negative_infinity()]'>[3] x`).
+(`vector<lower=[0.0, negative_infinity(), negative_infinity()]'>[3] x`). A
+recurrence bound that reads the loop index (`lower=L[t]`) is per coordinate
+too, built in `transformed data`.
 
 Annotated loops nest: a `@scan` inside a `@plate for j in 1:S` is the
 per-subject state-space shape. The enclosing loop promotes the inner arrays
 to per-subject storage and the indices compose into one Stan variable
-(`matrix[T, S] h`, `h[t, j] ~ normal(phi * h[t-1, j], s)`).
+(`matrix[T, S] h`, `h[t, j] ~ normal(phi * h[t-1, j], s)`). Support that every
+coordinate of every cell shares stays a scalar bound (`matrix<lower=0.0>[T, S] h`).
+Otherwise the bound is a `transformed data` matrix of the same shape, filled
+per cell and coordinate:
+
+```julia
+@slic (; y = randn(6), S = 2) begin
+    @plate for j in 1:S
+        @scan begin
+            h[1] ~ exponential(1.)               # h[1, j]: lower=0
+            for t in 2:3
+                h[t] ~ normal(h[t-1], 1.)        # h[2:3, j]: unbounded
+            end
+        end
+    end
+    y ~ normal(to_vector(h), 1.)
+end
+# matrix<lower=h__lower>[3, S] h;  h__lower[1, j] = 0.0;
+#                                  h__lower[t, j] = negative_infinity();
+```
+
+Such a bound may read data and the loop indices (`lower=L[j]`, `upper=U[t]`),
+but not a value the loop body binds per cell (`c = L[j]; … lower=c`): write the
+expression in the bound instead.
 
 Current limits: a setup fill uses a literal index (`x[1] ~ …`; slice and
 nested `@plate` setups are not supported yet); a `@scan` has one axis; an
 untyped fresh cell whose distribution arguments are vector-shaped must be
 annotated (`v[:, j]::vector[T] ~ …`) until the plate typing snag
 `plate-untyped-ve-819ecfff` lands; typed locals inside a nested loop are not
-supported yet; a nested `@scan` whose setup and recurrence have different
-support is refused, since a per-coordinate bound across the promoted axes is not
-built yet. A bare `for` in a model body remains an error.
+supported yet. A bare `for` in a model body remains an error.
 
 ## `@deffun` iteration boundary
 
