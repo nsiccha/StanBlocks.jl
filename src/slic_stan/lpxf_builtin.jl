@@ -667,40 +667,82 @@ rng_expr(x) = begin
     spec.rng
 end
 # A sampled symbol's own USER bound — `sigma ~ normal(0, 1; lower=0)`, the
-# half-normal — is a truncation of the family. In the model block it is spelled
-# as the parameter's `<lower=0>` declaration plus the bare `sigma ~ normal(0, 1)`
-# (Stan drops the constant normaliser), so the `~` never carries a `truncated`
-# head. When that symbol is RE-DRAWN in generated quantities — prior-only
-# lowering with no likelihood, or a cv-flipped re-draw — the draw must come from
-# the truncated prior: `normal_rng(0, 1)` for a `<lower=0>` half-normal is a
-# negative scale half the time, silently (snag prior-predictive-7e463983). Route
-# such a re-draw through the `truncated` HOF's rejection sampler, exactly as an
-# authored `sigma ~ truncated(normal, 0, 1; lower=0)` would draw. Bounds the
-# family already implies (`exponential` ⇒ `lower=0`) are not re-truncated; a bound
-# that merely restates one is skipped, a different one (`exponential(1; lower=0.5)`)
-# is honoured. `offset=`/`multiplier=` are reparameterisations, not truncations,
-# and never change the draw. An observation's `<obs>_gen` twin keeps the bare
-# family (`rng_expr`): its likelihood is the bare family too.
+# half-normal — is a truncation of the family (`stanblocks-use` §8). Bounds the
+# family already implies (`exponential` ⇒ `lower=0`) are its support, not a
+# truncation: a bound that merely restates one is skipped, a different one
+# (`exponential(1; lower=0.5)`) truncates. `offset=`/`multiplier=` are
+# reparameterisations, never truncations.
 _bound_value(x::StanExpr) = _bound_value(expr(x))
 _bound_value(x) = x
 _restates_implied_bound(user, implied) =
     implied !== nothing && isequal(_bound_value(user), _bound_value(implied))
-_user_bounded_redraw(rhs::CanonicalExpr) = begin
-    isnothing(_distribution_hof(head(rhs))) || return rhs   # a HOF owns its own bounds
+_truncation_bounds(rhs::CanonicalExpr) = begin
+    isnothing(_distribution_hof(head(rhs))) || return (;)   # a HOF owns its own bounds
     implied = autokwargs(rhs)
-    bounds = (; [
+    (; [
         key => rhs.kwargs[key]
-        for key in (:lower, :upper)
+        for key in BOUND_KEYS
         if key in keys(rhs.kwargs) && !_restates_implied_bound(rhs.kwargs[key], get(implied, key, nothing))
     ]...)
-    isempty(bounds) && return rhs
-    rng_expr(head(rhs))   # a family with no rng at all fails here, with its own message
+end
+# The implementation call an authored `truncated(family, args...; bounds...)`
+# lowers to (`expand_inline_or_trace`), built from a base-family call.
+_truncated_impl_call(rhs::CanonicalExpr, bounds; kwargs...) = begin
     spec = _distribution_hof(builtin.truncated)
     call = CanonicalExpr(builtin.truncated, stan_expr(head(rhs)), rhs.args...; bounds...)
-    CanonicalExpr(_hof_variant(spec, call).head, _hof_call_args(spec, call)...)
+    CanonicalExpr(_hof_variant(spec, call).head, _hof_call_args(spec, call)...; kwargs...)
+end
+# When that symbol is RE-DRAWN in generated quantities — prior-only lowering with
+# no likelihood, or a cv-flipped re-draw — the draw must come from the truncated
+# prior: `normal_rng(0, 1)` for a `<lower=0>` half-normal is a negative scale half
+# the time, silently (snag prior-predictive-7e463983). Route such a re-draw
+# through the `truncated` HOF's rejection sampler, exactly as an authored
+# `sigma ~ truncated(normal, 0, 1; lower=0)` would draw. An observation's
+# `<obs>_gen` twin keeps the bare family (`rng_expr`): its likelihood is the bare
+# family too.
+_user_bounded_redraw(rhs::CanonicalExpr) = begin
+    bounds = _truncation_bounds(rhs)
+    isempty(bounds) && return rhs
+    rng_expr(head(rhs))   # a family with no rng at all fails here, with its own message
+    _truncated_impl_call(rhs, bounds)
 end
 redraw_rng_expr(token, rhs::StanExpr) = redraw_rng_expr(token, expr(rhs))
 redraw_rng_expr(token, rhs::CanonicalExpr) = rng_expr(token, _user_bounded_redraw(rhs))
+# The FITTED density carries the truncation too. The model block spells the bound
+# as the parameter's `<lower=0>` declaration plus its `~` statement, and a bare
+# `sigma ~ normal(0, s)` is the truncated density only because the normaliser it
+# drops, `-log(1 - F(0 | 0, s))`, is a constant. With a parameter location —
+# `x ~ normal(mu, 1; lower=0)` — it is not: the bare family silently gave `mu`
+# the prior `N(mu | 0, 1)·Φ(mu)` while the re-draw above drew from the truncated
+# law (todo 1l1odrx). Such a statement samples from the call an authored
+# `truncated(normal, mu, 1; lower=0)` lowers to; a provably constant normaliser
+# keeps the lean native statement. `support` adds the bound a declaration implies
+# without a kwarg (`positive_ordered`, `_center_support`).
+_normalised_truncation(rhs::StanExpr; support=(;)) = begin
+    c = expr(rhs)
+    c isa CanonicalExpr || return rhs
+    bounds = _truncation_bounds(remake(c, c.args...; support..., c.kwargs...))
+    (isempty(bounds) || _constant_truncation_normaliser(c, bounds)) && return rhs
+    StanExpr(_truncated_impl_call(c, bounds; c.kwargs...), type(rhs))
+end
+_normalised_truncation(rhs; support=(;)) = rhs
+# The normaliser is constant when it reads no parameter: every family argument and
+# bound is data. A family symmetric about its location and cut once, at that
+# location, keeps half its mass whatever its other arguments: `normal(0, s;
+# lower=0)` is the half-normal for every `s`, normaliser `log 2`.
+_constant_truncation_normaliser(rhs::CanonicalExpr, bounds) =
+    all(a -> qual(a) == :data, (rhs.args..., values(bounds)...)) ||
+    _cut_at_symmetry_centre(head(rhs), rhs.args, bounds)
+_symmetry_centre(family) = nothing
+_symmetry_centre(::Union{typeof.((
+    builtin.normal, builtin.cauchy, builtin.logistic, builtin.double_exponential,
+))...}) = 1
+_symmetry_centre(::typeof(builtin.student_t)) = 2
+_cut_at_symmetry_centre(family, args, bounds) = begin
+    i = _symmetry_centre(family)
+    (i === nothing || length(bounds) != 1 || length(args) < i) && return false
+    _same_bound(only(values(bounds)), args[i])
+end
 
 # Base-family companion selectors are compile-time calls. With no trailing
 # arguments they return the selected function token; with trailing arguments
