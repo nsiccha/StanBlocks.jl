@@ -235,6 +235,12 @@ m2(; y, z = StanBlocks.stan.maybecv(:z, z; held_out = t .> cutoff))
   where its density accepts them.
 - No cv taint is set, so every parameter stays a parameter and the unmarked elements
   fit it.
+- When the cv taint of another marked input reaches `z`'s density (a cv-marked
+  covariate, or a cv-marked group index whose re-drawn effects `z` reads), the whole
+  of `z` is held out already, and the mask has nothing left to do. The program is the
+  one `maybecv(:z, z)` gives: nothing of `z` is fitted, and Stan never reads
+  `z_held_out`. Only the twins stay those of the masked response, so a value Stan
+  refuses still scores `-Inf`.
 - Every element gets its `z_gen` draw, and a marked element's `z_likelihood` entry is
   its log predictive density. A ragged response keeps one `z_likelihood` entry per
   group. Where Stan would raise an error for a value, that entry is `-Inf`, scored

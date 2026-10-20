@@ -385,6 +385,169 @@ with a shared argument, which keeps the masked sum.
     @test logdensity(cm, [0.0, 0.0]) ≈ logdensity(cat_model(; ycat = ycat[1:2]), [0.0, 0.0])
 end
 
+"""
+Verify `slic: cv contagion subsumes an element hold-out mask`.
+
+Snag `element-hold-out-0f7241b8` (reported from BRM's replay of a row-masked fit
+with re-drawn group effects): when a cv-marked input reaches an element-masked
+observation's density, cv contagion already holds the whole observation out of the
+model block, so no element is fitted and the mask is subsumed. Such a program was
+refused (`no y ~ … statement observes y`): the guard against a mask on a binding no
+`~` observes asked whether the mask reached the data block, which a wholly held-out
+observation never does. It now asks whether a `~` applied the mask. The program
+equals the whole-mark (`maybecv(:y, y)`) program, descriptor included, except that
+a family with a Stan domain keeps the masked program's twin, which scores a refused
+value `-Inf`. Covers a cv-marked covariate, a cv-marked group index, a top-level
+ragged response over a tainted plate result, and `@plate for` and `plate` do-cells.
+"""
+@testitem "slic: cv contagion subsumes an element hold-out mask" tags=[:slic, :plate, :ragged, :descriptor, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    maybecv = StanBlocks.stan.maybecv
+    err(f) = try f(); nothing catch e sprint(showerror, e) end
+    inputs(m) = [(i.name, i.observed, i.held_out, i.derived) for i in stan_descriptor(m).inputs]
+    ops(m) = [op.name for op in stan_descriptor(m).operations]
+
+    x = [1.0, 2.0, 0.5, 1.5, -0.3]
+    y = [0.1, 0.2, 0.3, 0.5, -0.4]
+    held = [false, false, false, true, true]
+    covariate = @slic begin
+        mu ~ normal(0.0, 1.0)
+        sigma ~ exponential(1.0)
+        loc = mu .+ x
+        y ~ normal(loc, sigma)
+    end
+    g = [1, 2, 1, 3, 2]
+    group = @slic begin
+        tau ~ exponential(1.0)
+        sigma ~ exponential(1.0)
+        J = maximum(g)
+        alpha ~ normal(0.0, tau; n = J)
+        y ~ normal(alpha[g], sigma)
+    end
+    for (m, mark) in ((covariate, (; x = maybecv(:x, x))), (group, (; g = maybecv(:g, g))))
+        whole = m(; mark..., y = maybecv(:y, y))
+        masked = m(; mark..., y = maybecv(:y, y; held_out = held))
+        @test stan_code(masked) == stan_code(whole)
+        @test !occursin("y_held_out", stan_code(masked))
+        @test stanc_compiles(masked)
+        @test inputs(masked) == inputs(whole)
+        @test ops(masked) == ops(whole) && :fit ∉ ops(masked)
+    end
+
+    # Ragged responses: top-level over a tainted plate result, and plate cells.
+    yr = [[0.1, 0.2, 0.3], [0.4, 0.5], [0.6, 0.7, 0.8, 0.9]]
+    hr = [[false, false, true], [false, true], [false, false, false, true]]
+    ts = [[0.0, 1.0, 2.0], [0.5, 1.5], [0.0, 1.0, 2.0, 3.0]]
+    G = 3
+    gr = [1, 2, 1]
+    over_plate = @slic begin
+        a ~ normal(0.0, 1.0)
+        eta ~ plate(ts; outer = G) do t
+            m::typeof(t) = a .* t
+            m
+        end
+        yr ~ normal(eta, 1.0)
+    end
+    cells = @slic begin
+        tau ~ exponential(1.0)
+        J = maximum(gr)
+        b ~ normal(0.0, tau; n = J)
+        @plate for i in 1:G
+            yr[i] ~ normal(b[gr[i]], 1.0)
+        end
+    end
+    cells_do = @slic begin
+        tau ~ exponential(1.0)
+        J = maximum(gr)
+        b ~ normal(0.0, tau; n = J)
+        theta ~ plate(yr, gr; outer = G) do yi, gi
+            yi ~ normal(b[gi], 1.0)
+        end
+    end
+    for (m, mark) in (
+        (over_plate, (; ts = maybecv(:ts, ts), G)),
+        (cells, (; gr = maybecv(:gr, gr), G)),
+        (cells_do, (; gr = maybecv(:gr, gr), G)),
+    )
+        whole = m(; mark..., yr = maybecv(:yr, yr))
+        masked = m(; mark..., yr = maybecv(:yr, yr; held_out = hr))
+        @test stan_code(masked) == stan_code(whole)
+        @test stanc_compiles(masked)
+        @test inputs(masked) == inputs(whole)
+        @test only(i.held_out for i in stan_descriptor(masked).inputs if i.name === :yr)
+    end
+
+    # A family with a Stan domain: the model block is the whole mark's, and the
+    # twin scores the marked value outside lognormal's support `-Inf` instead of
+    # failing the generated-quantities draw.
+    lognormal_model = @slic begin
+        mu ~ normal(0.0, 1.0)
+        loc = mu .+ x
+        y ~ lognormal(loc, 0.5)
+    end
+    masked = lognormal_model(; x = maybecv(:x, x), y = maybecv(:y, y; held_out = held))
+    whole = lognormal_model(; x = maybecv(:x, x), y = maybecv(:y, y))
+    @test stan_block(stan_code(masked), "model") == stan_block(stan_code(whole), "model")
+    @test stanc_compiles(masked)
+    d = stan_descriptor(masked)
+    p = stan_execute(d, :instantiate)
+    ll = stan_execute(d, :pointwise_loglik; problem = p, draws = [0.2], seed = 1).y_likelihood
+    lnpdf(v, m) = -log(v) - log(0.5) - 0.5 * log(2pi) - 2 * (log(v) - m)^2
+    @test ll[1:4] ≈ lnpdf.(y[1:4], 0.2 .+ x[1:4])
+    @test ll[5] == -Inf
+
+    # A mask still needs a `~` that observes its binding, and a cv mark that does
+    # not reach the masked observation leaves the mask applied.
+    @test occursin("no `x ~ …` statement observes `x`",
+        something(err(() -> stan_code(covariate(; x = maybecv(:x, x; held_out = held), y = maybecv(:y, y)))), ""))
+    two = @slic begin
+        mu ~ normal(0.0, 1.0)
+        s ~ exponential(1.0)
+        y ~ normal(mu, 1.0)
+        z ~ normal(mu .* x, s)
+    end
+    partial = two(; x = maybecv(:x, x), z = y, y = maybecv(:y, y; held_out = held))
+    @test occursin("y ~ heldout_normal(y_held_out, mu, 1.0);", stan_block(stan_code(partial), "model"))
+    @test stanc_compiles(partial)
+end
+
+"""
+Verify `slic: an observed input stays held out through every read of it`.
+
+Found with snag `element-hold-out-0f7241b8`. When cv contagion holds an
+observation out, its observed input reports `held_out`. `backward!` rewrote the
+input's entry from each occurrence it reached, and an occurrence traced before the
+observation tainted the input (an earlier `ybar = mean(y)`, a `sum(y)` inside the
+observation's own density, an element hold-out's mask slice over a ragged group)
+cleared the taint again, so the descriptor reported `y` as not held out while
+`:fit` was gone. The taint now only grows; the emitted Stan was already correct.
+"""
+@testitem "slic: an observed input stays held out through every read of it" tags=[:slic, :plate, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    maybecv = StanBlocks.stan.maybecv
+    held_out(m) = only(i.held_out for i in stan_descriptor(m).inputs if i.name === :y)
+    x = [1.0, 2.0, 3.0, 4.0, 5.0]
+    y = [0.1, -0.3, 0.5, 0.2, 0.4]
+    early = @slic begin
+        phi ~ normal(0.0, 1.0)
+        ybar = mean(y)
+        loc = phi .* x
+        y ~ normal(loc .+ ybar, 1.0)
+    end
+    own = @slic begin
+        phi ~ normal(0.0, 1.0)
+        loc = phi .* x
+        @plate for t in 1:5
+            y[t] ~ normal(loc[t] + 0.1 * sum(y), 1.0)
+        end
+    end
+    for m in (early, own)
+        @test !held_out(m(; x, y))
+        tainted = m(; x = maybecv(:x, x), y)
+        @test held_out(tainted)
+        @test :fit ∉ [op.name for op in stan_descriptor(tainted).operations]
+    end
+end
+
 # snag `weighted-custom-33d611a8` (reported from BRM): `weighted(...)` over a
 # custom `@lpxf` family whose pointwise twin is sized by one of its OWN arg
 # tokens (not by `y`) transpiled-errored with `Typed assignment lp::vector[n] =

@@ -1644,6 +1644,8 @@ _held_out_rhs(lhs_raw, rhs_raw; info) = begin
         "`", k, "` carries an element hold-out mask, but `", f, "` is a joint ",
         "distribution: its elements have no separate densities to hold out. Hold out the whole ",
         "observation with `maybecv(:", k, ", ", k, ")`, or use an element-wise family.")
+    context = _trace_context(info)
+    context === nothing || push!(context.held_out_observed, k)
     CanonicalExpr(builtin.heldout, rhs_raw, _held_out_slice(lhs_raw, _held_out_name(k)))
 end
 # An untraced call head is the family's name (`canonical(::CanonicalExprV{:call})`),
@@ -1654,13 +1656,16 @@ _held_out_family_name(_) = nothing
 # The observation's (untraced) LHS with its base renamed to the mask.
 _held_out_slice(::Union{Symbol,StanExpr{Symbol}}, m) = m
 _held_out_slice(x::CanonicalExpr, m) = remake(x, _held_out_slice(x.args[1], m), x.args[2:end]...)
-# A mask reaches the data block only through the observation it marks; a mask on
-# a binding that no `~` observes would otherwise be silently ignored.
+# A mask on a binding that no `~` observes would otherwise be silently ignored.
+# An observed mask reaches the data block through the model-block density, unless
+# cv contagion holds the whole observation out (snag element-hold-out-0f7241b8):
+# then no element is fitted, the twins never read the mask, and the mask is
+# subsumed — so the check is whether a `~` applied it, not whether Stan reads it.
 _assert_held_out_masks_applied(names; info) = begin
-    data = content(block(info, :data))
+    observed = _trace_context(info).held_out_observed
     for k in names
         _held_out_mask(k; info) === nothing && continue
-        _held_out_name(k) in keys(data) || error(
+        k in observed || error(
             "`maybecv(:", k, ", …; held_out=mask)` holds out elements of an observation, but no ",
             "`", k, " ~ …` statement observes `", k, "`. Mark the observed response, or drop `held_out`.")
     end
