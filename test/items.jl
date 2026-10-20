@@ -8672,6 +8672,189 @@ scale is such a carrier.
 end
 
 """
+Verify `slic: descriptor outputs report their resolved dims`.
+
+Snag stan-descriptor-aa56f7f3 (from BRM): `ModelOutput.size` reports emitted
+size expressions, and nothing public evaluated a composite one (`n_levels - 1`)
+or one naming a transformed-data value (`J = maximum(subject)`, not an input).
+A consumer matching outputs to BridgeStan's names could not tell a legitimately
+empty output from a stale one. `ModelOutput.dims` now carries every size
+evaluated against the current data, the transformed-data definitions it reads
+and the ragged-plate layouts; a size Julia cannot evaluate fails closed.
+"""
+@testitem "slic: descriptor outputs report their resolved dims" tags=[:slic, :plate, :ragged, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    # Compiler-owned carrier names end in a trace counter; drop it.
+    dims(m) = Dict(
+        Symbol(replace(string(o.name), r"_\d+$" => "")) => o.dims
+        for o in stan_descriptor(m).outputs
+    )
+
+    # The reported shape (a one-level factor's contrast vector is empty), plus a
+    # transformed-data size and another composite one; rebinding re-evaluates.
+    factor = @slic (; n_levels = 1, subject = [1, 2, 2, 3], y = [0.1, -0.2, 0.3, 0.0]) begin
+        beta ~ std_normal(; n = n_levels - 1)
+        J = maximum(subject)
+        alpha ~ normal(0, 1; n = J)
+        z::vector[n_levels + 2] ~ std_normal()
+        sigma ~ exponential(1.0)
+        y ~ normal(alpha[subject] .+ sum(beta) .+ sum(z), sigma)
+    end
+    d = stan_descriptor(factor)
+    beta = only(o for o in d.outputs if o.name === :beta)
+    @test beta.size isa Tuple{StanBlocks.CanonicalExpr}
+    @test beta.dims == (0,)
+    @test only(o for o in d.outputs if o.name === :alpha).size == (:J,)
+    @test :J ∉ [i.name for i in d.inputs]
+    @test dims(factor) == Dict(
+        :beta => (0,), :alpha => (3,), :z => (3,), :sigma => (),
+        :y_likelihood => (4,), :y_gen => (4,),
+    )
+    rebound = StanBlocks.stan_model(factor)(; n_levels = 3, subject = [1, 5, 2], y = [0.1, 0.2, 0.3])
+    @test dims(rebound) == Dict(
+        :beta => (2,), :alpha => (5,), :z => (5,), :sigma => (),
+        :y_likelihood => (3,), :y_gen => (3,),
+    )
+
+    # Ragged plate carriers are sized `sum(<lens>)`, a transformed-data array
+    # filled in a loop: their dims come from the carrier's own layout.
+    plated = @slic (; K = [2, 3, 4], J = [1, 4, 2]) begin
+        b ~ plate(; outer = length(K)) do g
+            z::vector[K[g]] ~ std_normal()
+            w::vector[J[g]] ~ std_normal()
+            q ~ std_normal()
+            z
+        end
+    end
+    @test dims(plated) == Dict(:b__pl_mem => (9,), :b_z__pl_mem => (9,), :b_w__pl_mem => (7,), :b_q => (3,))
+    @test dims(StanBlocks.stan_model(plated)(; K = [1, 0, 3], J = [2, 2, 2])) ==
+        Dict(:b__pl_mem => (4,), :b_z__pl_mem => (4,), :b_w__pl_mem => (6,), :b_q => (3,))
+    chained = @slic (; xs = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]) begin
+        a ~ std_normal()
+        loc ~ plate(xs) do x
+            a .* x
+        end
+        s ~ plate(loc) do l
+            exp.(l)
+        end
+    end
+    @test dims(chained) == Dict(:a => (), :loc__pl_mem => (6,), :s__pl_mem => (6,))
+
+    # Ragged observation twins, auto-imputation, `@scan` innovations, a ragged
+    # constrained parameter (`sum(Ks .- 1)` lowers to `jbroadcasted`), and an
+    # array of matrices.
+    @test dims(@slic (; ys = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]) begin
+        mu ~ std_normal()
+        ys ~ normal(mu, 1.0)
+    end) == Dict(:mu => (), :ys_gen => (6,), :ys_likelihood => (3,))
+    @test dims(@slic (; y = [1.2, missing, 0.8, missing, 2.1], x = [0.1, 0.2, 0.3, 0.4, 0.5]) begin
+        a ~ std_normal()
+        sigma ~ exponential(1)
+        y ~ normal(a .* x, sigma)
+    end) == Dict(
+        :a => (), :sigma => (), :y_arg => (5,), :y_mis => (2,),
+        :y_obs_likelihood => (3,), :y_obs_gen => (3,), :y => (5,),
+    )
+    @test dims(@slic (; y = [0.1, 0.2, 0.3, 0.4, 0.5], T = 5) begin
+        phi ~ normal(0, 0.5)
+        s ~ exponential(1)
+        @scan begin
+            e1 ~ normal(0, 1)
+            h[1] = e1
+            for t in 2:T
+                eps ~ std_normal()
+                h[t] = phi * h[t-1] + s * eps
+            end
+        end
+        y ~ normal(h, 1)
+    end)[:h_eps] == (4,)
+    @test dims(@slic (; Ks = [2, 3, 4], y = 0.3) begin
+        p::simplex[Ks] ~ flat()
+        y ~ normal(sum(p[1]), 0.1)
+    end) == Dict(:p_free__rc => (6,), :p_mem__rc => (9,), :y_likelihood => (), :y_gen => ())
+    @test dims(@slic (; n = 3) begin
+        L::cholesky_factor_corr[n, 2] ~ lkj_corr_cholesky(2.0)
+    end)[:L] == (3, 2, 2)
+
+    # The Julia `jbroadcasted` runs its Stan element loop: a matrix argument
+    # contributes its rows, scalars pass through.
+    @test StanBlocks.jcall(Val(:jbroadcasted), StanBlocks, -, [2, 3, 4], 1) == [1, 2, 3]
+    @test StanBlocks.jcall(Val(:jbroadcasted), StanBlocks, sum, [1 2; 3 4]) == [3, 7]
+
+    # Every top-level size is data-only, so the only unevaluable one runs through
+    # a Stan-only function: it fails closed, naming the output and the fix.
+    @deffun dims_positive_count(x::vector[n])::int = begin
+        k = 0
+        for i in 1:n
+            if x[i] > 0
+                k += 1
+            end
+        end
+        k
+    end
+    @deffun @juliacompat dims_positive_count_jc(x::vector[n])::int = begin
+        k = 0
+        for i in 1:n
+            if x[i] > 0
+                k += 1
+            end
+        end
+        k
+    end
+    stan_only = @slic (; x = [1.0, -1.0, 2.0]) begin
+        k = dims_positive_count(x)
+        b ~ std_normal(; n = k)
+    end
+    msg = try
+        stan_descriptor(stan_only)
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    @test !isnothing(msg) && occursin("dimension 1 of output `b`", msg) && occursin("@juliacompat", msg)
+    @test dims(@slic (; x = [1.0, -1.0, 2.0]) begin
+        k = dims_positive_count_jc(x)
+        b ~ std_normal(; n = k)
+    end)[:b] == (2,)
+end
+
+"""
+Verify `slic: descriptor dims match BridgeStan's param_names`.
+
+Snag stan-descriptor-aa56f7f3: `prod(dims)` is the number of `param_names`
+entries a non-tuple output has, so a consumer can tell an empty output (no
+`name` / `name.i` entry, e.g. `vector[n_levels - 1]` at `n_levels == 1`) from a
+missing one.
+"""
+@testitem "slic: descriptor dims match BridgeStan's param_names" tags=[:slic, :ragged, :descriptor, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    entries(names, o) = count(s -> s == string(o.name) || startswith(s, string(o.name, ".")), names)
+    for m in (
+        @slic((; n_levels = 1, subject = [1, 2, 2, 3], y = [0.1, -0.2, 0.3, 0.0]), begin
+            beta ~ std_normal(; n = n_levels - 1)
+            J = maximum(subject)
+            alpha ~ normal(0, 1; n = J)
+            sigma ~ exponential(1.0)
+            y ~ normal(alpha[subject] .+ sum(beta), sigma)
+        end),
+        @slic((; K = [2, 0, 4], Ks = [2, 3], y = 0.3, ys = [[1.0, 2.0], [3.0]]), begin
+            b ~ plate(; outer = length(K)) do g
+                z::vector[K[g]] ~ std_normal()
+                z
+            end
+            p::simplex[Ks] ~ flat()
+            y ~ normal(sum(p[1]), 0.1)
+            mu ~ std_normal()
+            ys ~ normal(mu, 1.0)
+        end),
+    )
+        d = stan_descriptor(m)
+        names = BridgeStan.param_names(stan_execute(d, :instantiate).model; include_tp = true, include_gq = true)
+        for o in d.outputs
+            @test entries(names, o) == prod(o.dims)
+        end
+    end
+end
+
+"""
 Verify `slic: ragged obs broadcasts a distribution across groups (obs-outside)`.
 
 Snag ragged-dist-arg-dcffbc1b: a plate collects per-cell VECTORS of differing
