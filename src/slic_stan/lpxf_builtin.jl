@@ -697,9 +697,9 @@ end
 # prior: `normal_rng(0, 1)` for a `<lower=0>` half-normal is a negative scale half
 # the time, silently (snag prior-predictive-7e463983). Route such a re-draw
 # through the `truncated` HOF's rejection sampler, exactly as an authored
-# `sigma ~ truncated(normal, 0, 1; lower=0)` would draw. An observation's
-# `<obs>_gen` twin keeps the bare family (`rng_expr`): its likelihood is the bare
-# family too.
+# `sigma ~ truncated(normal, 0, 1; lower=0)` would draw. A bounded observation
+# samples from the `truncated` call itself (`_normalised_truncation`), so its
+# `<obs>_gen` twin draws from it through `rng_expr`.
 _user_bounded_redraw(rhs::CanonicalExpr) = begin
     bounds = _truncation_bounds(rhs)
     isempty(bounds) && return rhs
@@ -718,14 +718,20 @@ redraw_rng_expr(token, rhs::CanonicalExpr) = rng_expr(token, _user_bounded_redra
 # `truncated(normal, mu, 1; lower=0)` lowers to; a provably constant normaliser
 # keeps the lean native statement. `support` adds the bound a declaration implies
 # without a kwarg (`positive_ordered`, `_center_support`).
-_normalised_truncation(rhs::StanExpr; support=(;)) = begin
+#
+# An `observed` LHS is truncated whatever its normaliser: data carry no declared
+# bound, so only the `truncated` call checks the support, normalises the
+# pointwise `<obs>_likelihood` and draws `<obs>_gen` from the truncated law. A
+# bare call silently ignored the bound in all three.
+_normalised_truncation(rhs::StanExpr; support=(;), observed=false) = begin
     c = expr(rhs)
     c isa CanonicalExpr || return rhs
     bounds = _truncation_bounds(remake(c, c.args...; support..., c.kwargs...))
-    (isempty(bounds) || _constant_truncation_normaliser(c, bounds)) && return rhs
+    isempty(bounds) && return rhs
+    !observed && _constant_truncation_normaliser(c, bounds) && return rhs
     StanExpr(_truncated_impl_call(c, bounds; c.kwargs...), type(rhs))
 end
-_normalised_truncation(rhs; support=(;)) = rhs
+_normalised_truncation(rhs; support=(;), observed=false) = rhs
 # The normaliser is constant when it reads no parameter: every family argument and
 # bound is data. A family symmetric about its location and cut once, at that
 # location, keeps half its mass whatever its other arguments: `normal(0, s;

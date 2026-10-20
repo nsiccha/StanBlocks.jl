@@ -6,7 +6,10 @@ lower=0)` — the model block must carry the normaliser, exactly as the
 emitted the bare `x ~ normal(mu, 1.0)`, which gives `mu` the prior
 `N(mu | 0, 1)·Φ(mu)`, while the generated-quantities re-draw already drew from
 the truncated law (todo `1l1odrx`, found under snag `heterogeneous-pe-7668c283`).
-A provably constant normaliser keeps the lean native statement.
+A provably constant normaliser keeps the lean native statement. An observation's
+bound used to be ignored outright (no support check, unnormalised likelihood,
+untruncated `<obs>_gen`); it now samples from the `truncated` call whatever its
+normaliser. Decision `2026-10-20T14-59-36-177-0w4wyro`.
 """
 @testitem "slic: a kwarg bound with a parameter-dependent cut emits the truncated density" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stan_block, stanc_compiles
@@ -170,6 +173,64 @@ A provably constant normaliser keeps the lean native statement.
     @test stanc_compiles(ordered_prior)
 end
 
+@testitem "slic: a kwarg bound on an observation truncates its likelihood and draw" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block, stanc_compiles
+    spellings = [
+        "scalar" => (
+            @slic((; y=0.3), begin mu ~ normal(0., 1.); y ~ normal(mu, 1.0; lower=0.) end),
+            @slic((; y=0.3), begin mu ~ normal(0., 1.); y ~ truncated(normal, mu, 1.0; lower=0.) end)),
+        # Data carry no declared bound, so even a constant normaliser truncates:
+        # the `truncated` call is what checks the support and bounds `y_gen`.
+        "constant normaliser" => (
+            @slic((; y=0.3), begin s ~ exponential(1.); y ~ normal(0., s; lower=0.) end),
+            @slic((; y=0.3), begin s ~ exponential(1.); y ~ truncated(normal, 0., s; lower=0.) end)),
+        "vector" => (
+            @slic((; y=[0.3, 0.4]), begin mu ~ normal(0., 1.); y ~ normal(mu, 1.0; upper=1.) end),
+            @slic((; y=[0.3, 0.4]), begin mu ~ normal(0., 1.); y ~ truncated(normal, mu, 1.0; upper=1.) end)),
+        "discrete" => (
+            @slic((; k=[1, 2]), begin l ~ exponential(1.); k ~ poisson(l; lower=1) end),
+            @slic((; k=[1, 2]), begin l ~ exponential(1.); k ~ truncated(poisson, l; lower=1) end)),
+        "@plate for" => (
+            @slic((; y=[0.3, 0.2]), begin
+                mu ~ normal(0., 1.)
+                @plate for i in 1:2
+                    y[i] ~ normal(mu, 1.0; lower=0.)
+                end
+            end),
+            @slic((; y=[0.3, 0.2]), begin
+                mu ~ normal(0., 1.)
+                @plate for i in 1:2
+                    y[i] ~ truncated(normal, mu, 1.0; lower=0.)
+                end
+            end)),
+        "slices" => (
+            @slic((; y=[0.3, 0.2, 0.1]), begin
+                mu ~ normal(0., 1.); y[1:2] ~ normal(mu, 1.0; lower=0.); y[3] ~ normal(mu, 1.0)
+            end),
+            @slic((; y=[0.3, 0.2, 0.1]), begin
+                mu ~ normal(0., 1.); y[1:2] ~ truncated(normal, mu, 1.0; lower=0.); y[3] ~ normal(mu, 1.0)
+            end)),
+    ]
+    for (name, (kwarg, hof)) in spellings
+        @testset "$name" begin
+            @test stan_code(kwarg) == stan_code(hof)
+            @test stanc_compiles(kwarg)
+        end
+    end
+    code = stan_code(first(last(spellings[1])))
+    @test occursin("y ~ lower_conditioning_normal(0.0, mu, 1.0);", stan_block(code, "model"))
+    @test occursin("real y_likelihood = lower_conditioning_normal_lpdfs(y, 0.0, mu, 1.0);", code)
+    @test occursin("real y_gen = lower_conditioning_normal_rng(0.0, mu, 1.0);", code)
+
+    # A bound restating the family's own support is not a truncation.
+    restated = @slic (; y=[0.3, 0.4]) begin
+        r ~ exponential(1.); y ~ exponential(r; lower=0.)
+    end
+    code = stan_code(restated)
+    @test occursin("y ~ exponential(r);", stan_block(code, "model"))
+    @test !occursin("conditioning", code)
+end
+
 @testitem "slic: a kwarg-truncated prior has the normalised log density" tags=[:slic, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using LogDensityProblems
     y = 0.3
@@ -192,6 +253,23 @@ end
                 @test LogDensityProblems.logdensity(prob, a) - LogDensityProblems.logdensity(prob, b) ≈
                     hand(a) - hand(b)
             end
+
+            # A bounded observation: normalised likelihood in `mu`, draws inside the bound.
+            obs = @slic (; y) begin
+                mu ~ normal(0., 1.)
+                y ~ normal(mu, 1.0; lower=0.)
+            end
+            oprob = stan_instantiate(obs)
+            ohand(q) = -q[1]^2 / 2 - (y - q[1])^2 / 2 - logPhi(q[1])
+            for (a, b) in ((0.4, -1.2), (-1.2, 2.5))
+                @test LogDensityProblems.logdensity(oprob, [a]) - LogDensityProblems.logdensity(oprob, [b]) ≈
+                    ohand([a]) - ohand([b])
+            end
+            rng = BridgeStan.StanRNG(oprob.model, 1234)
+            names = BridgeStan.param_names(oprob.model; include_gq=true)
+            gen = findfirst(==("y_gen"), names)
+            draws = [BridgeStan.param_constrain(oprob.model, [-2.0]; include_gq=true, rng)[gen] for _ in 1:200]
+            @test all(>=(0), draws)
         end
     end
 end
