@@ -271,6 +271,16 @@ end
 # `lower=0` support, so a family that does not imply it is truncated there.
 _center_support(decl) =
     center_type(decl) === types.positive_ordered ? (; lower=stan_expr(0.0)) : (;)
+# Only a native family's support is known here. A custom family is its author's
+# contract (stanblocks-use §8): an `@lhs @lpxf f_lpdf(x::positive_ordered[n], …)`
+# declares the `positive_ordered` type itself, so the implied bound restates the
+# family's own support, and truncating there would demand an `f_lccdf` that such
+# a family never needs (docs `examples/isba-2024.md`). Its re-draw is exempt the
+# same way (`_ordered_redraw`).
+_builtin_family(family) = family isa Function && parentmodule(family) === builtin
+_implied_support(decl, rhs::StanExpr) =
+    expr(rhs) isa CanonicalExpr && _builtin_family(head(expr(rhs))) ? _center_support(decl) : (;)
+_implied_support(decl, rhs) = (;)
 # A bounded `~` samples from the `truncated` call (`_normalised_truncation`): an
 # observation always, a parameter prior that stays in the model block whenever
 # its bound cuts the family at a parameter-dependent point. Re-draws keep the bare
@@ -278,7 +288,7 @@ _center_support(decl) =
 _truncated_sampling_rhs(decl, rhs) =
     qual(decl) == :data ? _normalised_truncation(rhs; observed=true) :
     qual(decl) == :parameter && !cv(decl) ?
-        _normalised_truncation(rhs; support=_center_support(decl)) : rhs
+        _normalised_truncation(rhs; support=_implied_support(decl, rhs)) : rhs
 backward!(x::SamplingExpr{<:StanExpr{Symbol}}; info) = if qual(x.args[1]) == :data ||
         lqual(info[expr(x.args[1])]) == :affects_likelihood || !_gq_redrawable(x.args...)
     lhs, rhs = x.args
@@ -1076,8 +1086,7 @@ end
 _ordered_redraw(lhs, rhs, token) = begin
     exchangeable = _exchangeable_prior(rhs)
     if !exchangeable
-        family = head(expr(rhs))
-        family isa Function && parentmodule(family) === builtin || return _check_redraw_resolves(lhs, rhs, redraw_rng_expr(token, rhs))
+        _builtin_family(head(expr(rhs))) || return _check_redraw_resolves(lhs, rhs, redraw_rng_expr(token, rhs))
     end
     ct = center_type(lhs)
     rhs_c = expr(rhs)
