@@ -169,6 +169,49 @@ Rules:
 Write a custom whole-vector family (an `_lpdf`/`_lpdfs`/sized `_rng` triad with
 `autokwargs` support) only for a genuinely joint prior.
 
+## Bounded `ordered` and `positive_ordered` vectors
+
+Stan declares no bound on `ordered` or `positive_ordered`. A typed LHS can
+still carry one, written or implied by its family:
+
+```julia
+@slic (; y = 0.4) begin
+    c::ordered[3] ~ uniform(0., 1.)     # implied lower=0, upper=1
+    y ~ normal(c[1], 1.)
+end
+```
+
+A sampled one is declared as `c_free`, an `ordered` vector of the same shape,
+and `c` is the transformed parameter that one of Stan's constraint transforms
+makes of it. Each transform is increasing, so `c` stays ordered, and adds its
+own log-Jacobian:
+
+```stan
+parameters { ordered[3] c_free; }
+transformed parameters { ordered[3] c = lower_upper_bound_jacobian(c_free, 0.0, 1.0); }
+```
+
+| Constraint | `c` |
+|---|---|
+| `lower=L` | `lower_bound_jacobian(c_free, L)` |
+| `upper=U` | `upper_bound_jacobian(-c_free, U)` |
+| `lower=L, upper=U` | `lower_upper_bound_jacobian(c_free, L, U)` |
+| `offset=` / `multiplier=` | `offset_multiplier_jacobian(c_free, offset, multiplier)` |
+
+`positive_ordered` is bounded below at 0 already: a lower bound at or below 0
+adds nothing, and an `upper=U` lowers as `lower=0, upper=U`. A plate cell's
+`array[n] ordered[k]` carrier lowers the same way. A re-drawn one (prior-only
+or held out) is declared without the bound and drawn inside it.
+
+Rules:
+
+- Every constraint is a scalar: per-element bounds would not keep the elements
+  ordered.
+- `positive_ordered` takes no `offset=`/`multiplier=`, and its `lower=` must be
+  a number.
+- The sampler's coordinates are `c_free`: BridgeStan lists `c_free` as the
+  parameter and `c` as a transformed parameter.
+
 ## Generated observation twins
 
 A normal top-level observation such as `y ~ normal(mu, sigma)` produces two
@@ -356,7 +399,8 @@ and generated quantities.
 | Named/anonymous `@slic` call inside the cell | ✅ | Internal fresh bindings are discovered, namespaced, and promoted per cell |
 | A plate inside a called sub-model | ✅, dense | Scalar and fixed-vector cells work and caller sizes are substituted correctly |
 | Ragged-vector plate inside a called sub-model | ❌ | Keep the ragged plate at model scope; a cell may still call a sub-model that returns a ragged-sized vector |
-| Several independent plates reusing local names | ✅ | Cell-local bindings are hygienically namespaced by plate result |
+| Several independent plates reusing local names | ✅ | Cell-local bindings are hygienically namespaced by plate result; a namespaced name that is already bound (a data input `theta_t`, a second array-less `@plate for i`) takes a numbered suffix (`theta_t_2`) |
+| Two plates under one name | ❌ | One name, one plate: the name labels its carriers, so a second `theta ~ plate(…)` is refused, collecting or not |
 | Dependency on a previous cell | ❌ | Cells are independent; a recurrence that samples per step is the annotated `@scan begin … end` loop (below), a deterministic one a `@deffun` recurrence |
 | Vararg do-block parameters | ❌ | Use a fixed positional argument list |
 | Cell without a result (observation-only) | ✅ | The body ends in a `~`/`=` statement or `nothing`: fresh bindings keep the `<rv>_<name>` namespace and no `rv` is declared, filled or bound |
@@ -444,7 +488,8 @@ end
 The cell's fresh bindings are still namespaced by the plate's LHS (`pk_b`,
 `pk_m`), but `pk` itself is not declared, filled or bound, in the same way
 that `node ~ submodel(...)` binds nothing for a sub-model without `return`.
-Reading `pk` later is an error that says so. Collecting a value that nothing
+Reading `pk` later is an error that says so, and so is a second plate named
+`pk`. Collecting a value that nothing
 reads instead (`m` as the trailing expression) adds a generated-quantities
 copy of every cell value.
 
@@ -462,8 +507,10 @@ Stan `for` loop into the blocks that own each statement. Inside the body:
 - a bare fresh name (`t ~ …`, `tmp = …`) is a **per-iteration local**, hoisted
   to per-cell storage under a hygienic name (`x_t`, prefixed by the
   alphabetically first array the loop fills, or `loop_i_t` — the loop
-  variables — when it fills none). For a namespace of your choosing, use the
-  `plate` do-form, whose LHS names it even when the cell collects no result;
+  variables — when it fills none). A hygienic name that is already bound,
+  such as a second array-less loop's `loop_i_t`, takes a numbered suffix
+  (`loop_i_t_2`). For a namespace of your choosing, use the `plate` do-form,
+  whose LHS names it even when the cell collects no result;
 - `y[i] ~ …` on data is an observation, with the usual `y_gen` twin. Observe
   the data itself: `obs = y[i]; obs ~ …` is refused, because a name defined
   by `=` has nothing to draw when `y` is omitted;
@@ -528,21 +575,44 @@ included, moves to `generated quantities`.
 A carried array takes its support coordinate by coordinate, as slice statements
 do: with `x[1] ~ exponential(1.)` and an unbounded recurrence
 `x[t] ~ normal(x[t-1], 1.)`, only `x[1]` is bounded
-(`vector<lower=[0.0, negative_infinity(), negative_infinity()]'>[3] x`).
+(`vector<lower=[0.0, negative_infinity(), negative_infinity()]'>[3] x`). A
+recurrence bound that reads the loop index (`lower=L[t]`) is per coordinate
+too, built in `transformed data`.
 
 Annotated loops nest: a `@scan` inside a `@plate for j in 1:S` is the
 per-subject state-space shape. The enclosing loop promotes the inner arrays
 to per-subject storage and the indices compose into one Stan variable
-(`matrix[T, S] h`, `h[t, j] ~ normal(phi * h[t-1, j], s)`).
+(`matrix[T, S] h`, `h[t, j] ~ normal(phi * h[t-1, j], s)`). Support that every
+coordinate of every cell shares stays a scalar bound (`matrix<lower=0.0>[T, S] h`).
+Otherwise the bound is a `transformed data` matrix of the same shape, filled
+per cell and coordinate:
+
+```julia
+@slic (; y = randn(6), S = 2) begin
+    @plate for j in 1:S
+        @scan begin
+            h[1] ~ exponential(1.)               # h[1, j]: lower=0
+            for t in 2:3
+                h[t] ~ normal(h[t-1], 1.)        # h[2:3, j]: unbounded
+            end
+        end
+    end
+    y ~ normal(to_vector(h), 1.)
+end
+# matrix<lower=h__lower>[3, S] h;  h__lower[1, j] = 0.0;
+#                                  h__lower[t, j] = negative_infinity();
+```
+
+Such a bound may read data and the loop indices (`lower=L[j]`, `upper=U[t]`),
+but not a value the loop body binds per cell (`c = L[j]; … lower=c`): write the
+expression in the bound instead.
 
 Current limits: a setup fill uses a literal index (`x[1] ~ …`; slice and
 nested `@plate` setups are not supported yet); a `@scan` has one axis; an
 untyped fresh cell whose distribution arguments are vector-shaped must be
 annotated (`v[:, j]::vector[T] ~ …`) until the plate typing snag
 `plate-untyped-ve-819ecfff` lands; typed locals inside a nested loop are not
-supported yet; a nested `@scan` whose setup and recurrence have different
-support is refused, since a per-coordinate bound across the promoted axes is not
-built yet. A bare `for` in a model body remains an error.
+supported yet. A bare `for` in a model body remains an error.
 
 ## `@deffun` iteration boundary
 

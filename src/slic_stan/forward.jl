@@ -522,6 +522,50 @@ _plate_context_entry(name::Symbol; info) = begin
     end
     nothing
 end
+# A name the compiler makes up for a plate — a cell binding's carrier
+# `<ns>_<f>`, a hoisted invariant — must not take a name already bound: `base`,
+# else `base_2`, `base_3`, … (todo `1nws1vv`: two array-less `@plate for i`
+# loops both namespace `loop_i`; a data input `theta_t` takes plate `theta`'s
+# carrier for `t`). `taken` holds the names this loop has already chosen or
+# fills as arrays, which are not bound yet.
+#
+# A nested loop is traced twice: in its enclosing loop's discovery probe, and
+# in that loop's emit trace, where every name the probe chose is bound as the
+# enclosing loop's promoted storage. A bound name an enclosing context owns is
+# this loop's own unless an earlier loop of the same emit trace took it
+# (`claimed`), so the emit trace makes the probe's choices again, in order.
+_plate_fresh_name!(base::Symbol, taken; info) = begin
+    for k in Iterators.countfrom(1)
+        name = k == 1 ? base : Symbol(base, :_, k)
+        name in taken && continue
+        name in keys(info) || return name
+        entry = _plate_context_entry(name; info)
+        (entry === nothing || entry.global_name in entry.owner.claimed) && continue
+        push!(entry.owner.claimed, entry.global_name)
+        return name
+    end
+end
+# A discovery probe's names are discarded with its bindings: restore the claims
+# of every enclosing context, and the result-less plate names, after it.
+_plate_discard_probe_names(f, info) = begin
+    sets = Set{Symbol}[]
+    ctx = _plate_context(info)
+    while ctx !== nothing
+        push!(sets, ctx.claimed)
+        ctx = get(ctx, :parent, nothing)
+    end
+    context = _trace_context(info)
+    context === nothing || push!(sets, context.resultless_plates)
+    saved = Set{Symbol}[copy(s) for s in sets]
+    try
+        f()
+    finally
+        for (s, before) in zip(sets, saved)
+            empty!(s)
+            union!(s, before)
+        end
+    end
+end
 _plate_promoted_lhs(name::Symbol; info) = begin
     entry = _plate_context_entry(name; info)
     entry === nothing && return nothing
@@ -2036,6 +2080,57 @@ _check_lhs_rhs_support(lhs_type, support, rhs_discrete, name, type_expr) = begin
     )
     nothing
 end
+# The constraints of a typed `ordered` / `positive_ordered` LHS. Stan declares
+# none on these types; the emitter instead applies one elementwise, increasing
+# Stan constraint transform to an `ordered` free vector
+# (`_declare_lowered_ordered!`, passes.jl), so every constraint must be a
+# scalar. Other centers keep their constraints as folded. (A runtime check:
+# the `types` submodule is defined later, in functions.jl.)
+_ordered_constraints(ct, cons, rhs; name, type_expr, implied) = begin
+    ct in (types.ordered, types.positive_ordered) || return (cons, rhs)
+    _check_scalar_ordered_constraints(cons; name, type_expr, implied)
+    ct === types.positive_ordered || return (cons, rhs)
+    _positive_ordered_constraints(cons, rhs; name, type_expr, implied)
+end
+# `positive_ordered` IS the support (0, ∞). A lower bound at or below 0 restates
+# it, so it leaves the declaration (`positive_ordered<lower=0.0>[3]` is a stanc
+# syntax error), and an author's negative one is raised to 0 so that a
+# generated-quantities re-draw (`_ordered_redraw`) stays positive. A lower bound
+# above 0 stays; an upper bound alone is lowered with `lower=0`.
+_positive_ordered_constraints(cons, rhs; name, type_expr, implied) = begin
+    affine = filter(in(AFFINE_KEYS), keys(cons))
+    isempty(affine) || error(
+        "`", name, "::", pretty_type_expr(type_expr), "` has ", _constraint_sources(affine, implied),
+        ", but `positive_ordered` is bounded below at 0 and an affine transform does not ",
+        "keep it there. Declare `", name, "::ordered[…]` with the `offset=`/`multiplier=`, ",
+        "or drop them.")
+    :lower in keys(cons) || return (cons, rhs)
+    lower = _bound_value(cons.lower)
+    lower isa Real || error(
+        "`", name, "::", pretty_type_expr(type_expr), "` has ", _constraint_sources((:lower,), implied),
+        " that is not a number, but `positive_ordered` is already bounded below at 0, and ",
+        "which of the two bounds binds is only known at run time. Declare `", name,
+        "::ordered[…]` with `lower = fmax(0, …)` instead.")
+    lower > 0 && return (cons, rhs)
+    lower < 0 && :lower in keys(rhs.kwargs) &&
+        (rhs = remake(rhs, rhs.args...; rhs.kwargs..., lower=stan_expr(0.0)))
+    (Base.structdiff(cons, NamedTuple{(:lower,)}), rhs)
+end
+_check_scalar_ordered_constraints(cons; name, type_expr, implied) = begin
+    vector_keys = filter(k -> !_scalar_constraint(cons[k]), keys(cons))
+    isempty(vector_keys) && return cons
+    error(
+        "`", name, "::", pretty_type_expr(type_expr), "` has ", _constraint_sources(vector_keys, implied),
+        " that is not a scalar. An ordered vector takes one constraint for all of its ",
+        "elements: per-element bounds or affine transforms would not keep the elements in ",
+        "order. Use a scalar, or declare `", name, "::vector[…]` if the elements need not ",
+        "be ordered.")
+end
+_scalar_constraint(v::Real) = true
+_scalar_constraint(v::StanExpr) = stan_ndim(v) == 0
+_scalar_constraint(v) = false
+_constraint_sources(keys, implied) = join(
+    [k in implied ? "`$k=` (implied by the distribution)" : "`$k=`" for k in keys], " and ")
 forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     decl, rhs_raw = x.args
     name = decl.args[1]
@@ -2086,19 +2181,14 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # the typed-LHS path historically built the decl type from center+sizes
     # ONLY, silently dropping the constraint — so a positive scale
     # `tau::vector[K] ~ normal(0,1; lower=0)` emitted an UNCONSTRAINED
-    # `vector[K] tau`. Native-constrained centers (simplex/cholesky/…) carry no
-    # bound autokwargs and take no user bounds, so `cons` is empty for them.
+    # `vector[K] tau`. An `ordered` / `positive_ordered` center keeps its
+    # constraints too (`_ordered_constraints` below); Stan cannot declare them,
+    # so the emitter lowers them (`_declare_lowered_ordered!`, passes.jl).
     implied_kw = autokwargs(rhs_canonical)
     cons_kw = merge(implied_kw, (; kwargs_resolved...))
     cons = _fold_constraints(name, cons_kw; implied=keys(implied_kw))
-    # `positive_ordered` IS the `lower=0` support, and Stan declares no bound on
-    # it (`positive_ordered<lower=0.0>[3]` is a stanc syntax error). A family
-    # implying exactly that bound (`exponential`, `lognormal`, `gamma`, …), or
-    # an author restating it, adds nothing: drop it. Any other bound stays.
-    if ct_resolved === types.positive_ordered && :lower in keys(cons) &&
-            _bound_value(cons.lower) isa Real && iszero(_bound_value(cons.lower))
-        cons = Base.structdiff(cons, NamedTuple{(:lower,)})
-    end
+    cons, rhs_canonical = _ordered_constraints(ct_resolved, cons, rhs_canonical;
+        name, type_expr, implied=keys(implied_kw))
     base_lhs_type = StanType(ct_resolved, sizes_forwarded; cons...)
     # Reject a typed LHS whose support disagrees with the RHS distribution's
     # element kind (container-into-scalar, discrete-into-continuous, …) at trace
@@ -2643,11 +2733,17 @@ _slice_declared_bound(k, v, records, key, extra; info) = begin
         N = length(coords)
     end
     covered && all(b -> _same_bound(b, bounds[1]), bounds) && _bound_ndim(bounds[1]) == 0 &&
-        return bounds[1]
+        all(r -> _slice_bound_uniform(r, key), records) && return bounds[1]
     literal = _slice_literal_bound(key, N, default, records)
     literal === missing || return _slice_bound_vector(key, literal; info)
     _slice_bound_carrier!(k, key, T, default, records, extra; info, covered)
 end
+
+# A bound that holds for every coordinate its slice covers. A `@scan`
+# recurrence's bound that reads the loop index (`x[t] ~ normal(…; lower=L[t])`)
+# varies along it, so it is per coordinate even when it is the only record.
+_slice_bound_uniform(r, key) =
+    r.loop === nothing || !_plate_depends_on(getproperty(r, key), (r.loop.idx,))
 
 # Per-coordinate bounds as a Julia vector (`nothing` = unbounded) when the length,
 # every index and every bound are literals; `missing` otherwise.
@@ -2687,7 +2783,17 @@ end
 # the declaration's default and one fill per slice, and bound the declaration by
 # that carrier (the same shape plate constraint hoisting uses).
 _slice_bound_carrier!(k, key, T, default, records, extra; info, covered=false) = begin
-    N = stan_size(T)[1]
+    _check_slice_bounds_data(k, key, default, records)
+    carrier = _slice_carrier_name(k, key; info)
+    stmts = Any[:($carrier :: vector[$(stan_size(T)[1])])]
+    append!(stmts, _slice_bound_fills(key, stan_size(T)[1], default, records,
+        Symbol(carrier, :_i), i -> :($carrier[$i]); covered))
+    for s in stmts
+        push!(extra, forward!(canonical(s); info))
+    end
+    info[carrier]
+end
+_check_slice_bounds_data(k, key, default, records) = begin
     data_ok(b) = b === nothing || _bound_number(b) !== nothing || qual(b) == :data
     for b in (default, (getproperty(r, key) for r in records)...)
         data_ok(b) || error(
@@ -2695,16 +2801,24 @@ _slice_bound_carrier!(k, key, T, default, records, extra; info, covered=false) =
             "=` support, and one of those bounds depends on a parameter. A ",
             "per-coordinate bound must be data (Stan builds it before the parameters).")
     end
+end
+_slice_carrier_name(k, key; info) = begin
     carrier = Symbol(k, :__, key)
     while carrier in keys(info)
         carrier = Symbol(carrier, :_)
     end
-    j = Symbol(carrier, :_i)
+    carrier
+end
+# The statements filling a per-coordinate bound of length `N`: the declaration's
+# `default` where no slice covers a coordinate, then one fill per slice. `at(i)`
+# is the carrier element holding coordinate `i` (`carrier[i]` at model scope),
+# `j` a fresh loop variable.
+_slice_bound_fills(key, N, default, records, j, at; covered) = begin
     value(b) = b === nothing ? _infinity_expr(key) : b
-    stmts = Any[:($carrier :: vector[$N])]
+    stmts = Any[]
     # Coordinates no slice covers keep the declaration's own support.
     covered || push!(stmts, :(for $j in 1:$N
-        $carrier[$j] = $(_bound_ndim(default) == 1 ? :($default[$j]) : value(default))
+        $(at(j)) = $(_bound_ndim(default) == 1 ? :($default[$j]) : value(default))
     end))
     for r in records
         b = value(getproperty(r, key))
@@ -2712,24 +2826,21 @@ _slice_bound_carrier!(k, key, T, default, records, extra; info, covered=false) =
         if r.loop !== nothing
             t = r.loop.idx
             push!(stmts, Expr(:for, Expr(:(=), t, Expr(:call, :(:), r.loop.lo, r.loop.hi)),
-                Expr(:block, :($carrier[$t] = $b))))
+                Expr(:block, :($(at(t)) = $b))))
         elseif _is_range_index(r.idx)
             lo, hi = expr(r.idx).args
             push!(stmts, :(for $j in $lo:$hi
-                $carrier[$j] = $(vector_bound ? :($b[$j - $lo + 1]) : b)
+                $(at(j)) = $(vector_bound ? :($b[$j - $lo + 1]) : b)
             end))
         elseif stan_ndim(r.idx) == 0
-            push!(stmts, :($carrier[$(r.idx)] = $b))
+            push!(stmts, :($(at(r.idx)) = $b))
         else
             push!(stmts, :(for $j in 1:dims($(r.idx))[1]
-                $carrier[$(r.idx)[$j]] = $(vector_bound ? :($b[$j]) : b)
+                $(at(:($(r.idx)[$j]))) = $(vector_bound ? :($b[$j]) : b)
             end))
         end
     end
-    for s in stmts
-        push!(extra, forward!(canonical(s); info))
-    end
-    info[carrier]
+    stmts
 end
 
 # `tau ~ vcat(prior₁, prior₂, …)` — one vector, one prior family per block of
@@ -2858,17 +2969,19 @@ end
 # value to collect.
 _plate_is_statement(s) = s isa Expr &&
     (s.head === :(=) || (s.head === :call && length(s.args) >= 3 && s.args[1] === :~))
-# Result-less plate names, so reading one fails with the reason instead of a
-# bare "Could not find" (`forward!(::Symbol)`, tracing.jl).
+# Result-less plate names (global, so a sub-model called twice records two), so
+# reading one fails with the reason instead of a bare "Could not find"
+# (`forward!(::Symbol)`, tracing.jl), and a second plate under one is refused.
 _note_resultless_plate!(info, rv::Symbol) = begin
     context = _trace_context(info)
-    context === nothing || push!(context.resultless_plates, rv)
+    context === nothing || push!(context.resultless_plates, _plate_global_name(info, rv))
     nothing
 end
-_is_resultless_plate(info, x::Symbol) = begin
+_is_resultless_plate(info::Union{StanModel,SubModel}, x::Symbol) = begin
     context = _trace_context(info)
-    context !== nothing && x in context.resultless_plates
+    context !== nothing && _plate_global_name(info, x) in context.resultless_plates
 end
+_is_resultless_plate(_, ::Symbol) = false
 # Substitute only do-block parameters with their per-cell input accessors. Fresh
 # names are promoted during tracing via the explicit plate context, which also reaches
 # names introduced inside an inlined submodel (not present in this raw AST).
@@ -3116,23 +3229,67 @@ end
 # A `@scan` nested in an enclosing loop leaves its carried arrays to that loop,
 # which promotes them from the discovery probe's types. Those types hold the
 # scan's slice records (`_record_slice_support!`) rather than a folded bound, so
-# fold them here: a support every record shares becomes the cell's constraint.
-# Per-coordinate support across the promoted axes is not built yet — refuse it
-# rather than emit the setup's support for every coordinate.
-_plate_fold_inner_slices(f, T::StanType) = begin
+# fold them here: a scalar support every record shares in every cell becomes the
+# cell's constraint. Returns the folded type and the bound keys that vary by
+# coordinate or by cell; those get a carrier over the promoted declaration
+# (`_plate_slice_bound_carrier!`).
+_plate_fold_inner_slices(f, T::StanType, index_aliases) = begin
     records = get(T.info, :slice_supports, ())
-    isempty(records) && return T
+    isempty(records) && return (T, Symbol[])
     cons = Pair{Symbol,Any}[]
+    per_coordinate = Symbol[]
     for key in BOUND_KEYS
         b = getproperty(first(records), key)
-        all(r -> _same_bound(getproperty(r, key), b), records) || error(
-            "@scan: the setup and the recurrence of `", f, "` give its coordinates ",
-            "different `", key, "=` support (", join(map(r -> "`$(r.spelling) ~ …`", records), ", "),
-            "). Per-coordinate support is not supported yet for a @scan nested in another ",
-            "loop; give them the same support, or move the @scan to model scope.")
-        b === nothing || push!(cons, key => b)
+        if all(r -> _same_bound(getproperty(r, key), b) && _slice_bound_uniform(r, key), records) &&
+                _bound_ndim(b) == 0 && !_plate_depends_on(b, index_aliases)
+            b === nothing || push!(cons, key => b)
+        else
+            push!(per_coordinate, key)
+        end
     end
-    remake(T; cons...)
+    (remake(T; cons...), per_coordinate)
+end
+# The per-coordinate `key=` bound of a nested `@scan`'s carried array `f`: a
+# carrier of the promoted declaration's shape (`outer` axes around the cell),
+# filled in `transformed data` by the same per-slice fills as a model-scope
+# vector (`_slice_bound_fills`) inside the enclosing loop's axes:
+#
+#     for (j in 1:S) { h__lower[1, j] = 0.0;
+#                      for (t in 2:3) h__lower[t, j] = negative_infinity(); }
+#
+# `axes` are the enclosing loop's `(index, lo, hi)`, `positions` the cell's
+# storage position per axis (the index, or `index - (lo - 1)` for a recurrence
+# starting past 1). A bound may read the loop indices and data, but not a value
+# the loop computes per cell: the records were traced in the discovery probe,
+# where such a value is spelled differently from the emitted loop.
+_plate_slice_bound_carrier!(f, key, T::StanType, outer, axes, positions, cell_names; info, pending) = begin
+    _plate_cell_shape(T, f) === :vector || error(
+        "@scan: the slice statements of `", f, "` give its coordinates different `", key,
+        "=` support, which a @scan nested in another loop can only declare on a vector ",
+        "of reals; `", f, "` is a `", sigtype(T), "`.")
+    records = T.info.slice_supports
+    default = getproperty(T.info.slice_default, key)
+    _check_slice_bounds_data(f, key, default, records)
+    for r in records
+        _plate_depends_on(getproperty(r, key), cell_names) && error(
+            "@scan: the `", key, "=` bound of `", r.spelling, " ~ …` reads a value the ",
+            "enclosing loop binds per cell. A per-coordinate bound is data or an ",
+            "expression of data and the loop indices; write that expression in the ",
+            "bound itself (`", key, "=L[j]`).")
+    end
+    carrier = _slice_carrier_name(f, key; info)
+    fills = _slice_bound_fills(key, stan_size(T)[1], default, records, Symbol(carrier, :_i),
+        i -> _plate_cell_coordinate(carrier, T, positions, i);
+        covered=get(T.info, :slice_tiled, false))
+    nest = Expr(:block, fills...)
+    for (idx, lo, hi) in reverse(axes)
+        nest = Expr(:block, Expr(:for, Expr(:(=), idx, :($lo:$hi)), nest))
+    end
+    for s in (_plate_outer_decl(carrier, T, outer), only(nest.args))
+        emitted = forward!(canonical(s); info)
+        pending !== nothing && push!(pending, emitted)
+    end
+    info[carrier]
 end
 _plate_promoted_constraints(f, T::StanType, index_aliases) = begin
     cons = constraints(T)
@@ -3227,6 +3384,12 @@ _plate_cell_index(f, T::StanType, idxs) = begin
         return Expr(:ref, f, idxs...)
     indices = Any[idxs[2:end]...; Symbol(":"); idxs[1]]
     Expr(:ref, f, indices...)
+end
+# Coordinate `i` of a vector cell: its accessor with the free `:` slot set to `i`
+# (`f[:, j]` ⇒ `f[i, j]`).
+_plate_cell_coordinate(f, T::StanType, idxs, i) = begin
+    ref = _plate_cell_index(f, T, idxs)
+    Expr(:ref, f, Any[a === Symbol(":") ? i : a for a in ref.args[2:end]]...)
 end
 
 # An isolated copy of the tracing `info`, MIRRORING its structure so bindings
@@ -3553,8 +3716,10 @@ _plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs, id; info, keep=S
             _plate_probe_hoistable(e; info)) || return nothing
         n[] += 1
         # The do-form tags hoists with the trace id; the annotated sugar passes
-        # `id === nothing` for STABLE names (a nested loop is traced twice).
-        name = id === nothing ? Symbol(rv, :__pl_inv, n[]) : Symbol(rv, :__pl_inv, n[], :_, id)
+        # `id === nothing` for STABLE names (a nested loop is traced twice), so
+        # two array-less loops over one index would share them.
+        name = _plate_fresh_name!(
+            id === nothing ? Symbol(rv, :__pl_inv, n[]) : Symbol(rv, :__pl_inv, n[], :_, id), (); info)
         emit_hoist!(Expr(:(=), name, e))
         cache[e] = name
     end
@@ -3705,7 +3870,7 @@ _plate_size_defs!(defs, x::AssignmentExpr) = begin
 end
 
 _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanModel,SubModel}) =
-    _with_trace_state(info, :inline_pending, Any[]) do
+    _plate_discard_probe_names(info) do; _with_trace_state(info, :inline_pending, Any[]) do
         probe = _plate_probe(info)
         root = _plate_root_info(probe)
         before = Set(keys(root))
@@ -3777,7 +3942,7 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
         end
         (fresh=fresh, ret_type=ret === nothing ? nothing :
             _resolve_return_size_type(type(ret), size_table, "plate cell"))
-    end
+    end end
 
 # ── Plate emitter entry: the public `rv ~ plate(iters…; outer=…) do … end`. ──
 # Trace-then-promote (decision 1vujeta): `_plate_discover` probes the body once to
@@ -3847,6 +4012,13 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     (body_raw isa Expr && body_raw.head === :block) || error(
         "plate: the do-block body must be a `:block` Expr, got `$(typeof(body_raw))`."
     )
+    # One name, one plate (decision `0oim59p`): the name labels the carriers of
+    # its cell bindings (`theta_t`), so a second plate under it is refused like
+    # any rebinding. A collecting plate's name is bound (refused below); a
+    # result-less one is only recorded.
+    _is_resultless_plate(info, rv) && error(
+        "plate: `", rv, "` already names an earlier plate (one whose cell collects no ",
+        "result). Give each plate its own name.")
     params, vararg = _parse_lambda_lhs(lhs_raw)
     vararg === nothing || error("plate: vararg do-block params (`args...`) are not supported yet.")
     iterables = collect(plate.args[2:end])
@@ -3950,10 +4122,12 @@ end
 #     before the loop, so it must not receive an outer collection declaration.
 #   • `scan_arrays` — global names whose lag reads `x[i-k]` the emit trace
 #     resolves against the OUTER declaration (`forward!(::CanonicalExprV{:getindex})`).
+#   • `hygiene` — carrier names the sugar already chose for its locals
+#     (`_plate_fresh_name!` claims a name, so it is chosen once per trace).
 _forward_loop_core!(;
     kind, rv, rv_ct, id, idxs, outer_dims, outer_lo, params, iterables, input_subst,
     body_stmts, ret_expr, setup_stmts, public, probe_transform, probe_exclude,
-    scan_arrays, info, ns=nothing, hoist_tag=id,
+    scan_arrays, info, ns=nothing, hoist_tag=id, hygiene=Dict{Symbol,Symbol}(),
 ) = begin
     # Proven length mismatches between positionals and their outer axes (or
     # between siblings) are ill-typed — refuse before any renaming/hoisting.
@@ -3975,9 +4149,11 @@ _forward_loop_core!(;
     # its own `z ~ …` as "LHS bound to a parameter-qualified value", and even
     # discovery aside, two `vector[N] z;` declarations are invalid Stan. Give every
     # plate its own NAMESPACE by prefixing each fresh cell-local with the plate's
-    # result name `rv` (`z` → `b_subject_z`): `rv` is required and already unique
-    # in model scope (asserted below), so distinct plates get distinct carriers,
-    # and the emitted Stan reads as "the `z` of `b_subject`". The rename runs
+    # result name `rv` (`z` → `b_subject_z`), so the emitted Stan reads as "the
+    # `z` of `b_subject`". A namespaced name that is already bound — the sugar's
+    # `loop_i` is shared by every array-less loop over `i`, a data input can be
+    # spelled `b_subject_z` — takes a numbered suffix instead
+    # (`_plate_fresh_name!`), so distinct plates get distinct carriers. The rename runs
     # BEFORE discovery, so a submodel-internal flattened name (`cell_z`, derived
     # from the direct binding `cell`) inherits the prefix (`rv_cell_z`) for free —
     # matching how submodel flattening already namespaces. Only genuinely fresh
@@ -3991,23 +4167,9 @@ _forward_loop_core!(;
         fi === nothing && continue
         f = fi[1]
         (f in params || f in public || f in keys(info) || haskey(fresh_rename, f)) && continue
-        fresh_rename[f] = Symbol(ns, :_, f)
-    end
-    # The namespaced name must itself be fresh. `rv` being unbound does not
-    # guarantee that: a result-less plate binds no `rv`, so a second plate under
-    # the same name reaches here, as do an array-less `@plate for` over the same
-    # index (`loop_i_t` twice) and a data input spelled like a carrier
-    # (`theta_t`). Name the collision here instead of failing later in
-    # discovery or block routing. A name an enclosing loop owns is the nested
-    # emit pass re-declaring its own binding, not a collision.
-    for (f, g) in fresh_rename
-        g in keys(info) || continue
-        _plate_context(info) !== nothing && _plate_context_entry(g; info) !== nothing && continue
-        error(
-            "plate: the cell binding `", f, "` is stored as `", g, "`, which is already ",
-            "bound in model scope. Rename the binding, or the plate result (or, for an ",
-            "array-less `@plate for`, the loop variable) that makes `", ns, "` its namespace."
-        )
+        fresh_rename[f] = get(hygiene, f) do
+            _plate_fresh_name!(Symbol(ns, :_, f), Iterators.flatten((values(hygiene), values(fresh_rename), public)); info)
+        end
     end
     if !isempty(fresh_rename)
         body_stmts = Any[_subst_syms(s, fresh_rename) for s in body_stmts]
@@ -4283,12 +4445,15 @@ _forward_loop_core!(;
     # whole array — `x[1] ~ exponential(1.)` silently truncated an unbounded
     # recurrence to `vector<lower=0.0>[T] x`.
     scan_carried(f) = kind === :scan && f in public_global && length(idxs) == 1
+    # Storage position of a cell per axis, for a carrier laid out like the cell.
+    local_positions = Any[lo == 1 ? idx : :($idx - $(lo_offset(lo))) for (idx, lo) in zip(idxs, outer_lo)]
     for (f, T) in all_cell_types
         haskey(ragged_plans, f) && continue
         (vectorized_sample !== nothing && f === vectorized_sample.global_name) && continue
         tgt = f === rv ? info : root
-        outer_for_f = (f === rv || f in public_global) ? plate_outer : local_outer
-        T = _plate_fold_inner_slices(f, T)
+        own_axes = f === rv || f in public_global
+        outer_for_f = own_axes ? plate_outer : local_outer
+        T, per_coordinate = _plate_fold_inner_slices(f, T, index_aliases)
         cons, hoist = scan_carried(f) ? ((;), Pair{Symbol,Any}[]) :
             _plate_promoted_constraints(f, T, index_aliases)
         if !isempty(hoist)
@@ -4300,6 +4465,16 @@ _forward_loop_core!(;
             cons = _plate_hoist_cell_constraints!(
                 f, T, cons, hoist, idxs, outer_dims, id; info=tgt, pending,
             )
+        end
+        if !isempty(per_coordinate) && !scan_carried(f)
+            info isa SubModel && error(
+                "@scan: per-coordinate support of `", f, "` inside a called @slic ",
+                "submodel is not supported yet — declare `", f, "` at model scope.")
+            axes = collect(zip(idxs, outer_lo, outer_dims))
+            positions = own_axes ? idxs : local_positions
+            cons = merge(cons, (; (key => _plate_slice_bound_carrier!(
+                f, key, T, outer_for_f, axes, positions, keys(all_cell_types); info=tgt, pending,
+            ) for key in per_coordinate)...))
         end
         emitted = forward!(canonical(_plate_outer_decl(f, T, outer_for_f)); info=tgt)
         emitted = _plate_constrain_decl(f, emitted, cons; info=tgt)
@@ -4342,6 +4517,9 @@ _forward_loop_core!(;
         idxs=global_idxs, cell_types=cell_types, cell_accessors=cell_accessors,
         kind=kind, scan_arrays=Set{Symbol}(_plate_global_name(info, a) for a in scan_arrays),
         parent=_plate_context(info),      # an enclosing loop's context, for nested loops
+        # Names a nested loop may not choose (`_plate_fresh_name!`): this loop's
+        # own carriers and arrays from the start, then each nested loop's choice.
+        claimed=union(Set{Symbol}(_plate_global_name(info, g) for g in values(fresh_rename)), public_global),
     )
     emitted_loop = _with_trace_state(info, :plate_context, ctx) do
         forward!(canonical(loop); info)
@@ -4627,16 +4805,19 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     # the enclosing loop's probe pass (where our arrays are `public`) and in its
     # emit pass (where they are `owned`) — the union is identical in both.
     ns = isempty(arrays) ? Symbol(:loop_, join(idxs, "_")) : first(sort!(collect(arrays)))
-    # Nested emit pass: a local the enclosing loop already promoted (from our
-    # probe-pass declaration, under its hygienic name `ns_f`) is not re-declared;
-    # its bare references become explicit inner-indexed accesses of that name,
-    # which compose with the enclosing accessor.
+    # Each local's hygienic carrier: `ns_f`, or a numbered one when that is bound
+    # (`_plate_fresh_name!`). Nested emit pass: a local the enclosing loop
+    # already promoted (from our probe-pass declaration) is not re-declared; its
+    # bare references become explicit inner-indexed accesses of that name, which
+    # compose with the enclosing accessor.
+    hygiene = Dict{Symbol,Symbol}()
     owned_locals = Dict{Symbol,Any}()
     if !isempty(locals)
         lo_off(lo) = lo isa Integer ? lo - 1 : :($lo - 1)
         inner_ix = Any[lo == 1 ? idx : :($idx - $(lo_off(lo))) for (idx, lo) in zip(idxs, outer_lo)]
-        for f in locals
-            hygienic = Symbol(ns, :_, f)
+        for f in unique(locals)
+            hygienic = hygiene[f] =
+                _plate_fresh_name!(Symbol(ns, :_, f), Iterators.flatten((values(hygiene), arrays)); info)
             owned(hygienic) || continue
             any(s -> (l = _plate_stmt_lhs(s); l isa Expr && l.head === :(::) && l.args[1] === f), body_raw) &&
                 error(label, ": a typed local (`", f, "::…`) inside a nested annotated loop is not supported yet.")
@@ -4688,7 +4869,7 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
         params, iterables, input_subst, body_stmts, ret_expr=nothing,
         setup_stmts, public, probe_transform, probe_exclude=setup_plain,
         scan_arrays=(kind === :scan ? public : Set{Symbol}()), info,
-        ns, hoist_tag=nothing,
+        ns, hoist_tag=nothing, hygiene,
     )
 end
 

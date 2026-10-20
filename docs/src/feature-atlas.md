@@ -1289,6 +1289,38 @@ x = pmx_solve_rk45(onecpt_rhs, 2, to_array_1d(time), to_array_1d(amt), to_array_
                    to_array_1d(ii), evid, cmt, addl, ss, theta)
 ```
 
+The right-hand side may also be a closure with that signature, and the closure
+may capture model values. StanBlocks then emits a generated adapter at Torsten's
+signature and carries the captured values on the end of arguments Torsten
+already forwards: parameters on `theta`, data reals on `x_r` and integers on
+`x_i`. Here the data covariate `wt` scales clearance:
+
+```julia
+x = pmx_solve_rk45((t, y, theta, x_r, x_i) -> begin
+        dy = rep_vector(0.0, 2)
+        dy[1] = -theta[3] * y[1]
+        dy[2] = theta[3] * y[1] - theta[1] * (wt / 70.0)^0.75 / theta[2] * y[2]
+        dy
+    end, 2, to_array_1d(time), to_array_1d(amt), to_array_1d(rate),
+    to_array_1d(ii), evid, cmt, addl, ss, theta)
+```
+
+A closure may also take just `(t, y)` (coupled solvers: `(t, y, y_pk)`) and
+capture everything it reads. For `pmx_solve_rk45`/`bdf`/`adams` the call then
+drops `theta` as well, since only the right-hand side would read it; a coupled
+solver keeps `theta`, because its closed-form compartments read their
+parameters from it. This is also how a `@deffun` that takes its parameters as
+trailing arguments becomes a right-hand side:
+
+```julia
+x = pmx_solve_rk45((t, y) -> onecpt_rhs_args(t, y, cl, v, ka), 2,
+                   to_array_1d(time), to_array_1d(amt), to_array_1d(rate),
+                   to_array_1d(ii), evid, cmt, addl, ss)
+```
+
+A captured vector or matrix needs a literal size, because the adapter reads it
+back from the end of the packed argument.
+
 ### Other registered scientific primitives
 
 - `reduce_sum`, `reduce_sum_static`, and `simple_reduce_sum`;
