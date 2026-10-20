@@ -939,10 +939,10 @@ end
 _push_slice_obs_likelihood_decl!(b, k::Symbol; info) = begin
     lik = Symbol(k, "_likelihood")
     if lik in keys(info)
-        get(type(info[lik]).info, :slice_obs_source, nothing) === k && return lik
+        _obs_twin_source(info[lik]) === k && return lik
         _assert_twin_free(k, "_likelihood", info)
     end
-    t = StanType(types.vector, stan_size(info[k]); qual=:quantities, slice_obs_source=k)
+    t = StanType(types.vector, stan_size(info[k]); qual=:quantities, obs_twin_source=k)
     decl = StanExpr(lik, t)
     info[lik] = decl
     push!(b, StanExpr(CanonicalExpr(:(::), decl), t); info)
@@ -1069,6 +1069,12 @@ end
 # compiler-owned plate accessor exposes enough structure to declare flat storage.
 # RaggedMatrix and every other usertype/tuple carrier remain outside this path.
 _gen_twin_name(k::Symbol) = Symbol(k, "_gen")
+# The observation a per-cell or per-slice twin declaration was minted for. The
+# three sites that declare a twin ahead of its fills (`_push_obs_gen_decl!`,
+# `_push_slice_obs_likelihood_decl!`, `_push_ragged_obs_decls!`) stamp it on the
+# twin's type. The latter two dedupe on it, and the descriptor classifies the
+# twin by it (`_generative_role`). `nothing` for every other declaration.
+_obs_twin_source(x::StanExpr) = get(type(x).info, :obs_twin_source, nothing)
 _is_gen_declarable(T) = T isa Type &&
     (T <: types.real || T <: types.any_vector || T <: types.matrix)
 # STRICT indexed-LHS matcher. A SAMPLING lhs may be an arbitrary data-qualified
@@ -1226,10 +1232,16 @@ _obs_twin_targets(x::SamplingExpr; info) = begin
 end
 # Declare the twin once per model (a base observed by two plates must not emit
 # two declarations); registering it in `info` doubles as the dedup key.
+#
+# Unlike every other twin, this one may have no `_likelihood` companion reading
+# `k` (a per-cell observation, a joint-family slice). Held out, such a `k` leaves
+# the model block, and the fills here do not read it either, so `k` drops out of
+# the data block and only its sizes stay. The stamp is then the only record
+# that `<k>_gen` is `k`'s predictive draw.
 _push_obs_gen_decl!(b, k::Symbol; info) = begin
     gen = _gen_twin_name(k)
     gen in keys(info) && return
-    t = remake(type(info[k]); value=missing, qual=:quantities)
+    t = remake(type(info[k]); value=missing, qual=:quantities, obs_twin_source=k)
     decl = StanExpr(gen, t)
     info[gen] = decl
     push!(b, StanExpr(CanonicalExpr(:(::), decl), t); info)
@@ -1240,8 +1252,8 @@ _push_ragged_obs_decls!(b, k::Symbol; info) = begin
     names = (gen, lik)
     existing = filter(name -> name in keys(info), names)
     if !isempty(existing)
-        certified = length(existing) == 2 && all(name ->
-            get(type(info[name]).info, :ragged_obs_source, nothing) === k, names)
+        certified = length(existing) == 2 &&
+            all(name -> _obs_twin_source(info[name]) === k, names)
         certified && return
         error(
             "Ragged plate observation `", k, "[…] ~ …` needs compiler-owned names `",
@@ -1261,9 +1273,9 @@ _push_ragged_obs_decls!(b, k::Symbol; info) = begin
     # (`mem::array[] int`) draws into `array[] int`, a real one into `vector`.
     # (`_likelihood` below stays real — it holds per-group density scalars.)
     gen_type = StanType(center_type(arg_types.mem), (gen_size,);
-        value=missing, qual=:quantities, ragged_obs_source=k)
+        value=missing, qual=:quantities, obs_twin_source=k)
     lik_type = StanType(types.vector, (lik_size,);
-        value=missing, qual=:quantities, ragged_obs_source=k)
+        value=missing, qual=:quantities, obs_twin_source=k)
     for decl in (StanExpr(gen, gen_type), StanExpr(lik, lik_type))
         info[expr(decl)] = decl
         push!(b, StanExpr(CanonicalExpr(:(::), decl), type(decl)); info)
