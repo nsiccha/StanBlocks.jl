@@ -15566,9 +15566,10 @@ LHS only namespaces the cell's fresh bindings and is neither declared nor bound.
         end
         w ~ normal(sum(theta), 1.0)
     end))
-    # refused: reusing a plate name would bind its namespaced carriers twice
-    # (a collecting plate already refuses a second `theta ~ plate(…)`).
-    @test_throws "stored as `theta_t`, which is already bound" stan_code(@slic((; y, z = y), begin
+    # refused: one name, one plate (decision `0oim59p`). The name labels the
+    # carriers of its cell bindings, so a second plate under it is a rebinding,
+    # as a second collecting `theta ~ plate(…)` is — whatever the cells bind.
+    @test_throws "`theta` already names an earlier plate" stan_code(@slic((; y, z = y), begin
         sigma ~ normal(0, 1; lower = 0)
         theta ~ plate(y; outer = 6) do yi
             t ~ normal(0, 1)
@@ -15579,11 +15580,54 @@ LHS only namespaces the cell's fresh bindings and is neither declared nor bound.
             zi ~ normal(t, sigma)
         end
     end))
-    # Hygiene gap (StanBlocks todo `1nws1vv`): the compiler's namespaced
-    # name can collide although the author's names do not — two array-less
-    # `@plate for i` loops both store `t` as `loop_i_t`, and a data input
-    # `theta_t` collides with plate `theta`'s cell `t`. Both now fail with the
-    # collision named instead of a misleading downstream error.
+    @test_throws "`theta` already names an earlier plate" stan_code(@slic((; y, z = y), begin
+        sigma ~ normal(0, 1; lower = 0)
+        theta ~ plate(y; outer = 6) do yi
+            t ~ normal(0, 1)
+            yi ~ normal(t, sigma)
+        end
+        theta ~ plate(z; outer = 6) do zi
+            u ~ normal(0, 1)
+            zi ~ normal(u, sigma)
+        end
+    end))
+    @test_throws "`theta` already names an earlier plate" stan_code(@slic((; y, z = y), begin
+        sigma ~ normal(0, 1; lower = 0)
+        theta ~ plate(y; outer = 6) do yi
+            t ~ normal(0, 1)
+            yi ~ normal(t, sigma)
+        end
+        theta ~ plate(z; outer = 6) do zi
+            u ~ normal(0, 1)
+            zi ~ normal(u, sigma)
+            u
+        end
+    end))
+    # A sub-model called twice names two plates (`node1_obs`, `node2_obs`).
+    let m = @slic((; y), begin
+            sigma ~ normal(0, 1; lower = 0)
+            node1 ~ obs_only(; yy = y, n = 6, s = sigma)
+            node2 ~ obs_only(; yy = y, n = 6, s = sigma)
+        end), params = stan_block(stan_code(m), "parameters")
+        @test stanc_compiles(m)
+        @test occursin(r"vector\[6\] node1_obs_t;", params)
+        @test occursin(r"vector\[6\] node2_obs_t;", params)
+    end
+end
+
+"""
+Verify `slic: a bound carrier name gets a numbered suffix`.
+
+StanBlocks todo `1nws1vv`: the names the compiler makes up for a plate can
+collide although the author's names do not. Two array-less `@plate for i`
+loops both namespace their locals and hoisted invariants under `loop_i`; a data
+input `theta_t` takes the carrier of plate `theta`'s cell binding `t`. A bound
+name now gets a numbered suffix (`loop_i_t_2`), and the names of a model
+without a collision are unchanged.
+"""
+@testitem "slic: a bound carrier name gets a numbered suffix" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    y = [0.3, -0.2, 0.5, 0.1, -0.4, 0.2]
     two_loops = @slic (; y, z = y) begin
         sigma ~ normal(0, 1; lower = 0)
         @plate for i in 1:6
@@ -15595,8 +15639,21 @@ LHS only namespaces the cell's fresh bindings and is neither declared nor bound.
             z[i] ~ normal(t, sigma)
         end
     end
-    @test_broken stanc_compiles(two_loops)
-    @test_throws "stored as `loop_i_t`, which is already bound" stan_code(two_loops)
+    @test stanc_compiles(two_loops)
+    let code = stan_code(two_loops), params = stan_block(code, "parameters")
+        @test occursin(r"vector\[6\] loop_i_t;", params)
+        @test occursin(r"vector\[6\] loop_i_t_2;", params)
+        @test occursin("z[i] ~ normal(loop_i_t_2[i], sigma);", code)
+    end
+    # Without the second loop, the first keeps its name.
+    @test occursin(r"vector\[6\] loop_i_t;", stan_code(@slic((; y), begin
+        sigma ~ normal(0, 1; lower = 0)
+        @plate for i in 1:6
+            t ~ normal(0, 1)
+            y[i] ~ normal(t, sigma)
+        end
+    end)))
+
     carrier_named_data = @slic (; y, theta_t = y) begin
         sigma ~ normal(0, 1; lower = 0)
         theta ~ plate(y; outer = 6) do yi
@@ -15605,8 +15662,71 @@ LHS only namespaces the cell's fresh bindings and is neither declared nor bound.
             t
         end
     end
-    @test_broken stanc_compiles(carrier_named_data)
-    @test_throws "stored as `theta_t`, which is already bound" stan_code(carrier_named_data)
+    @test stanc_compiles(carrier_named_data)
+    @test occursin(r"vector\[6\] theta_t_2;", stan_block(stan_code(carrier_named_data), "parameters"))
+
+    # Hoisted invariants share the namespace too: `loop_i__pl_inv1` twice
+    # was an internal assertion failure.
+    hoisted = @slic (; y, z = y, a = 0.5) begin
+        sigma ~ normal(0, 1; lower = 0)
+        @plate for i in 1:6
+            t ~ normal(exp(a), 1)
+            y[i] ~ normal(t, sigma)
+        end
+        @plate for i in 1:6
+            u ~ normal(log1p(a), 1)
+            z[i] ~ normal(u, sigma)
+        end
+    end
+    @test stanc_compiles(hoisted)
+    let td = stan_block(stan_code(hoisted), "transformed data")
+        @test occursin("loop_i__pl_inv1 = exp(a);", td)
+        @test occursin("loop_i__pl_inv1_2 = log1p(a);", td)
+    end
+
+    # Nested loops are traced twice (the enclosing loop's discovery, then its
+    # emit), and both traces must choose the same names: two sibling inner
+    # loops keep distinct carriers, and an inner loop after a top-level one
+    # over the same index takes the next name.
+    Y = reshape(collect(1.0:12.0), 3, 4)
+    siblings = @slic (; Y, Z = Y, a = 0.5) begin
+        sigma ~ normal(0, 1; lower = 0)
+        @plate for j in 1:4
+            @plate for i in 1:3
+                t ~ normal(exp(a), 1)
+                Y[i, j] ~ normal(t, sigma)
+            end
+            @plate for i in 1:3
+                t ~ normal(log1p(a), 1)
+                Z[i, j] ~ normal(t, sigma)
+            end
+        end
+    end
+    @test stanc_compiles(siblings)
+    let code = stan_code(siblings)
+        @test occursin("loop_i_t[i, j] ~ normal(loop_i__pl_inv1[j], 1);", code)
+        @test occursin("Y[i, j] ~ normal(loop_i_t[i, j], sigma);", code)
+        @test occursin("loop_i_t_2[i, j] ~ normal(loop_i__pl_inv1_2[j], 1);", code)
+        @test occursin("Z[i, j] ~ normal(loop_i_t_2[i, j], sigma);", code)
+    end
+    after_top_level = @slic (; y = [0.1, 0.2, 0.3], Y) begin
+        sigma ~ normal(0, 1; lower = 0)
+        @plate for i in 1:3
+            t ~ normal(0, 1)
+            y[i] ~ normal(t, sigma)
+        end
+        @plate for j in 1:4
+            @plate for i in 1:3
+                t ~ normal(0, 1)
+                Y[i, j] ~ normal(t, sigma)
+            end
+        end
+    end
+    @test stanc_compiles(after_top_level)
+    let params = stan_block(stan_code(after_top_level), "parameters")
+        @test occursin(r"vector\[3\] loop_i_t;", params)
+        @test occursin(r"matrix\[3, 4\] loop_i_t_2;", params)
+    end
 end
 
 """

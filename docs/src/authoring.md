@@ -356,7 +356,8 @@ and generated quantities.
 | Named/anonymous `@slic` call inside the cell | ✅ | Internal fresh bindings are discovered, namespaced, and promoted per cell |
 | A plate inside a called sub-model | ✅, dense | Scalar and fixed-vector cells work and caller sizes are substituted correctly |
 | Ragged-vector plate inside a called sub-model | ❌ | Keep the ragged plate at model scope; a cell may still call a sub-model that returns a ragged-sized vector |
-| Several independent plates reusing local names | ✅ | Cell-local bindings are hygienically namespaced by plate result |
+| Several independent plates reusing local names | ✅ | Cell-local bindings are hygienically namespaced by plate result; a namespaced name that is already bound (a data input `theta_t`, a second array-less `@plate for i`) takes a numbered suffix (`theta_t_2`) |
+| Two plates under one name | ❌ | One name, one plate: the name labels its carriers, so a second `theta ~ plate(…)` is refused, collecting or not |
 | Dependency on a previous cell | ❌ | Cells are independent; a recurrence that samples per step is the annotated `@scan begin … end` loop (below), a deterministic one a `@deffun` recurrence |
 | Vararg do-block parameters | ❌ | Use a fixed positional argument list |
 | Cell without a result (observation-only) | ✅ | The body ends in a `~`/`=` statement or `nothing`: fresh bindings keep the `<rv>_<name>` namespace and no `rv` is declared, filled or bound |
@@ -444,7 +445,8 @@ end
 The cell's fresh bindings are still namespaced by the plate's LHS (`pk_b`,
 `pk_m`), but `pk` itself is not declared, filled or bound, in the same way
 that `node ~ submodel(...)` binds nothing for a sub-model without `return`.
-Reading `pk` later is an error that says so. Collecting a value that nothing
+Reading `pk` later is an error that says so, and so is a second plate named
+`pk`. Collecting a value that nothing
 reads instead (`m` as the trailing expression) adds a generated-quantities
 copy of every cell value.
 
@@ -462,8 +464,10 @@ Stan `for` loop into the blocks that own each statement. Inside the body:
 - a bare fresh name (`t ~ …`, `tmp = …`) is a **per-iteration local**, hoisted
   to per-cell storage under a hygienic name (`x_t`, prefixed by the
   alphabetically first array the loop fills, or `loop_i_t` — the loop
-  variables — when it fills none). For a namespace of your choosing, use the
-  `plate` do-form, whose LHS names it even when the cell collects no result;
+  variables — when it fills none). A hygienic name that is already bound,
+  such as a second array-less loop's `loop_i_t`, takes a numbered suffix
+  (`loop_i_t_2`). For a namespace of your choosing, use the `plate` do-form,
+  whose LHS names it even when the cell collects no result;
 - `y[i] ~ …` on data is an observation, with the usual `y_gen` twin. Observe
   the data itself: `obs = y[i]; obs ~ …` is refused, because a name defined
   by `=` has nothing to draw when `y` is omitted;
