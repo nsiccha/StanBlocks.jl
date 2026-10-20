@@ -7491,6 +7491,33 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
 end
 
 """
+A closure literal inside a plate cell captures what any other reference in the
+cell reads: a cell-local value's element of its promoted carrier, not the whole
+carrier. The lifted `ode_rk45` right-hand side therefore takes the cell's scalar,
+threaded as a trailing solver argument; it used to take the `vector` carrier,
+which stanc rejected.
+"""
+@testitem "slic: a closure in a plate cell captures the cell's element" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    m = @slic (; ts = [0.5, 1.0], obs = [0.55, 0.35]) begin
+        ke ~ lognormal(0.0, 0.5)
+        eta ~ normal(rep_vector(0.0, 2), 0.3)
+        pred ~ plate(; outer = 2) do i
+            ke_i = ke * exp(eta[i])
+            selected = to_vector(ode_rk45((t, y) -> -ke_i * y, rep_vector(1.0, 1), 0.0, to_array_1d(ts))[:, 1])
+            obs[i] ~ normal(selected[1], 0.1)
+            selected
+        end
+    end
+    @test transpiles(m)
+    @test stanc_compiles(m)
+    code = stan_code(m)
+    @test occursin(r"vector closure_\d+\(real t, vector y, real pred_ke_i\)", stan_block(code, "functions"))
+    @test occursin(r"ode_rk45\(closure_\d+, [^;]*, pred_ke_i\[plate_i__pl_\d+\]\)", code)
+end
+
+"""
 An ODE solver returns `array[] vector`. Plate collects that deterministic local
 with the plate axes prepended, then indexes those axes to recover the original
 trajectory inside the cell before selecting a state.
@@ -7606,8 +7633,11 @@ Torsten's functor event solvers (`pmx_solve_rk45`/`bdf`/`adams` and the coupled
 fixed signature `f(t, y, theta, x_r, x_i)` (coupled: `f(t, y, y_pk, theta, x_r,
 x_i)`), not Stan's variadic ODE one, so the `@deffun` must be emitted at exactly
 that signature and named in the solver's function slot. Snag
-`torsten-functor-96ddfe89`. The Torsten stanc and BridgeStan halves run only where
-the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
+`torsten-functor-96ddfe89`. A closure capturing values is emitted as a generated
+adapter at that signature: the captures are packed onto the end of `theta`
+(autodiff reals), `x_r` (data reals) and `x_i` (ints) and re-read in its body.
+The Torsten stanc and BridgeStan halves run only where the fleet Torsten build is
+provisioned (`~/.local/opt/torsten`).
 """
 @testitem "slic: Torsten functor pmx solvers emit the fixed-signature RHS" tags=[:slic, :stanc, :bridgestan, :torsten] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stan_block
@@ -7634,6 +7664,14 @@ the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
             K[2, 2] = -cl / v
             K
         end
+        # `pmx_test_rhs` with its parameters as trailing arguments, which Torsten's
+        # stanc refuses as a right-hand side; a short closure calls it.
+        pmx_test_rhs_v(t::real, y::vector[n], cl::real, v::real, ka::real)::vector[n] = begin
+            dy::vector[n]
+            dy[1] = -ka * y[1]
+            dy[2] = ka * y[1] - cl / v * y[2]
+            dy
+        end
         # Effect compartment driven by the closed-form central amount `y_pk[2]`.
         pmx_test_effect_rhs(t::real, y::vector[n], y_pk::vector[p], theta::real[k], x_r::real[m], x_i::int[l])::vector[n] = begin
             dy::vector[n]
@@ -7650,7 +7688,7 @@ the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
         :cmt => [1; fill(2, N - 1)], :addl => [1; zeros(Int, N - 1)],
         :ss => zeros(Int, N), :obs => collect(2:N),
         :y => [0.6, 1.0, 1.4, 1.5, 1.0, 1.9, 1.4, 0.6],
-        :xrm => ones(N, 1), :xi => ones(Int, N, 1),
+        :xrm => ones(N, 1), :xi => ones(Int, N, 1), :wt => 70.0, :nt => 1,
     )
     pk_model(call) = StanBlocks.SlicModel(quote
         cl ~ lognormal(log(5.0), 0.5)
@@ -7671,6 +7709,15 @@ the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
 
     rhs_sig = r"vector pmx_test_rhs\(\s*real t,\s*vector y,\s*array\[\] real theta,\s*array\[\] real x_r,\s*array\[\] int x_i\s*\)"
     effect_sig = r"vector pmx_test_effect_rhs\(\s*real t,\s*vector y,\s*vector y_pk,\s*array\[\] real theta,\s*array\[\] real x_r,\s*array\[\] int x_i\s*\)"
+    # `pmx_test_rhs` as a closure that captures the parameter `ka`, the data real
+    # `wt` and the data int `nt` (`wt / 70.0` and `nt` are both 1 here).
+    closure_rhs = :((t, yy, tht, xrr, xii) -> begin
+        dy = rep_vector(0.0, 2)
+        dy[1] = -ka * yy[1]
+        dy[2] = ka * yy[1] - nt * tht[1] / (tht[2] * wt / 70.0) * yy[2]
+        dy
+    end)
+    effect_closure = :((t, yy, ypk, tht, xrr, xii) -> rep_vector(ka * (ypk[2] - yy[1]) * wt / 70.0, 1))
     cases = Pair{String,Any}[
         "rk45" => :(pmx_solve_rk45(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th)),
         "rk45+theta-tol" => :(pmx_solve_rk45(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
@@ -7686,6 +7733,21 @@ the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
             the, rep_array(1.0, 3), rep_array(0.0, 3))),
         "twocpt_bdf" => :(pmx_solve_twocpt_bdf(pmx_test_effect_rhs, 1, ta, aa, ra, ia, evid, cmt, addl, ss,
             to_array_1d(append_row(append_row(to_vector(th), 1.0), the[4])), rep_array(1.0, 4), rep_array(0.0, 4))),
+        "closure" => :(pmx_solve_rk45($closure_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th)),
+        "closure+x_r/x_i+tol" => :(pmx_solve_adams($closure_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
+            rep_array(1.0, 2), rep_array(0.0, 2), xr, xi, 1e-8, 1e-8, 100000)),
+        "closure+per-event theta" => :(pmx_solve_bdf($closure_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss,
+            rep_array(th, size(ta)))),
+        "closure coupled" => :(pmx_solve_onecpt_rk45($effect_closure, 1, ta, aa, ra, ia, evid, cmt, addl, ss,
+            th, rep_array(1.0, 3), rep_array(0.0, 3))),
+        "short closure" => :(pmx_solve_rk45((t, yy) -> pmx_test_rhs_v(t, yy, cl, v, ka), 2,
+            ta, aa, ra, ia, evid, cmt, addl, ss)),
+        "short closure+data+tol" => :(pmx_solve_bdf((t, yy) -> nt * pmx_test_rhs_v(t, yy, cl, v * wt / 70.0, ka), 2,
+            ta, aa, ra, ia, evid, cmt, addl, ss, rep_array(1.0, 2), rep_array(0.0, 2), 1e-8, 1e-8, 100000)),
+        "short closure without captures" => :(pmx_solve_adams((t, yy) -> -0.1 * yy, 2,
+            ta, aa, ra, ia, evid, cmt, addl, ss)),
+        "short coupled" => :(pmx_solve_onecpt_rk45((t, yy, ypk) -> rep_vector(ka * (ypk[2] - yy[1]), 1), 1,
+            ta, aa, ra, ia, evid, cmt, addl, ss, th, rep_array(1.0, 3), rep_array(0.0, 3))),
     ]
     codes = Dict(label => stan_code(pk_model(call)) for (label, call) in cases)
 
@@ -7703,18 +7765,115 @@ the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
     @test occursin("matrix[2, time_n] x = pmx_solve_linode(", codes["linode"])
     @test occursin("matrix[3, time_n] x = pmx_solve_onecpt_effcpt(", codes["onecpt_effcpt"])
 
-    # A closure capturing a parameter cannot ride Torsten's fixed signature;
-    # supporting it needs a generated theta-packing adapter (capability gap).
-    capturing = pk_model(:(pmx_solve_rk45((t, yy, tht, xrr, xii) -> -ka * yy, 2, ta, aa, ra, ia,
-        evid, cmt, addl, ss, th)))
-    @test_broken (try stan_code(capturing); true catch; false end)
+    # A capturing closure becomes an adapter at Torsten's signature. Its captures
+    # ride the end of `theta` (the parameter `ka`), `x_r` (the data real `wt`)
+    # and `x_i` (the data int `nt`); the adapter re-reads them and re-binds the
+    # closure's own `theta` to the leading part.
+    adapter_sig = r"vector closure_\d+\(\s*real t,\s*vector yy,\s*array\[\] real theta_ext,\s*array\[\] real x_r_ext,\s*array\[\] int x_i_ext\s*\)"
+    for label in ("closure", "closure+x_r/x_i+tol", "closure+per-event theta")
+        fns = stan_block(codes[label], "functions")
+        @test occursin(adapter_sig, fns)
+        @test occursin("int theta_end = (size(theta_ext) - 1);", fns)
+        @test occursin("tht = theta_ext[1:theta_end];", fns)
+        @test occursin("real ka = theta_ext[(theta_end + 1)];", fns)
+        @test occursin("real wt = x_r_ext[(x_r_end + 1)];", fns)
+        @test occursin("int nt = x_i_ext[(x_i_end + 1)];", fns)
+        @test occursin(r"matrix\[2, time_n\] x = pmx_solve_(rk45|adams|bdf)\(\s*closure_\d+,\s*2,", codes[label])
+    end
+    # Without `x_r`/`x_i` in the call, Torsten's defaults `biovar = 1`, `tlag = 0`
+    # are inserted to reach them, and the data captures repeat once per event.
+    @test occursin(r"append_array\(th, to_array_1d\(\[ka\]'\)\),\s*rep_array\(1\.0, 2\),\s*rep_array\(0\.0, 2\),\s*rep_array\(to_array_1d\(\[wt\]'\), size\(ta\)\),\s*rep_array\(rep_array\(nt, 1\), size\(ta\)\)\s*\)", codes["closure"])
+    # The call's own per-event rows are extended, and its tolerances stay last.
+    @test occursin(r"pmx_append_each\(xr, to_array_1d\(\[wt\]'\)\),\s*pmx_append_each\(xi, rep_array\(nt, 1\)\),\s*1\.0e-8,\s*1\.0e-8,\s*100000\s*\)", codes["closure+x_r/x_i+tol"])
+    @test occursin(r"array\[, \] real pmx_append_each\(", stan_block(codes["closure+x_r/x_i+tol"], "functions"))
+    @test occursin(r"array\[, \] int pmx_append_each\(", stan_block(codes["closure+x_r/x_i+tol"], "functions"))
+    @test occursin("pmx_append_each(rep_array(th, size(ta)), to_array_1d([ka]'))", codes["closure+per-event theta"])
+    # A coupled solver forwards no `x_r`/`x_i`, so its data real rides `theta` too.
+    coupled_fns = stan_block(codes["closure coupled"], "functions")
+    @test occursin(r"vector closure_\d+\(\s*real t,\s*vector yy,\s*vector ypk,\s*array\[\] real theta_ext,\s*array\[\] real xrr,\s*array\[\] int xii\s*\)", coupled_fns)
+    @test occursin(r"x = pmx_solve_onecpt_rk45\(\s*closure_\d+,\s*1,[^;]*append_array\(th, to_array_1d\(\[wt, ka\]'\)\)", codes["closure coupled"])
+
+    # A short closure `(t, y)` takes everything else by capture, and the ODE
+    # family's call then omits `theta`: the packed captures are all of it. A
+    # `@deffun` with trailing parameters is called through one.
+    short_sig(theta, x_r, x_i) = Regex(string(raw"vector closure_\d+\(\s*real t,\s*vector yy,\s*array\[\] real ",
+        theta, raw",\s*array\[\] real ", x_r, raw",\s*array\[\] int ", x_i, raw"\s*\)"))
+    short_fns = stan_block(codes["short closure"], "functions")
+    @test occursin(short_sig("theta_ext", "x_r", "x_i"), short_fns)
+    @test occursin("return pmx_test_rhs_v(t, yy, cl, v, ka);", short_fns)
+    @test occursin(r"vector pmx_test_rhs_v\(", short_fns)
+    @test occursin(r"x = pmx_solve_rk45\(\s*closure_\d+,\s*2,\s*ta,[^;]*,\s*ss,\s*to_array_1d\(\[cl, v, ka\]'\)\s*\);", codes["short closure"])
+    @test occursin(short_sig("theta_ext", "x_r_ext", "x_i_ext"), stan_block(codes["short closure+data+tol"], "functions"))
+    @test occursin(r"ss,\s*to_array_1d\(\[cl, v, ka\]'\),\s*rep_array\(1\.0, 2\),\s*rep_array\(0\.0, 2\),\s*rep_array\(to_array_1d\(\[wt\]'\), size\(ta\)\),\s*rep_array\(rep_array\(nt, 1\), size\(ta\)\),\s*1\.0e-8,\s*1\.0e-8,\s*100000\s*\)", codes["short closure+data+tol"])
+    # Without captures the adapter still supplies Torsten's slots. Torsten refuses
+    # an empty `theta`, so it gets a one-element placeholder.
+    @test occursin(short_sig("theta", "x_r", "x_i"), stan_block(codes["short closure without captures"], "functions"))
+    @test occursin(r"ss,\s*rep_array\(0\.0, 1\)\s*\);", codes["short closure without captures"])
+    # A coupled solver keeps `theta`: its closed-form PK compartments read it.
+    @test occursin(r"vector closure_\d+\(\s*real t,\s*vector yy,\s*vector ypk,\s*array\[\] real theta_ext,", stan_block(codes["short coupled"], "functions"))
+    @test occursin(r"x = pmx_solve_onecpt_rk45\(\s*closure_\d+,\s*1,[^;]*,\s*ss,\s*append_array\(th, to_array_1d\(\[ka\]'\)\),\s*rep_array\(1\.0, 3\)", codes["short coupled"])
+
+    refusal(f) = try
+        f()
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    # refused: Torsten forwards no `x_i` to a coupled solver's right-hand side
+    # and its `theta` is real, so an int capture has no slot to ride.
+    coupled_int = refusal(() -> stan_code(pk_model(:(pmx_solve_onecpt_rk45(
+        (t, yy, ypk, tht, xrr, xii) -> rep_vector(nt * (ypk[2] - yy[1]), 1), 1, ta, aa, ra, ia,
+        evid, cmt, addl, ss, th, rep_array(1.0, 3), rep_array(0.0, 3))))))
+    @test !isnothing(coupled_int) && occursin("captures the int `nt`", coupled_int)
+    # refused: the adapter re-reads each capture from the end of `theta`/`x_r`/`x_i`
+    # inside a Stan function, which cannot see a data size (decision `1fp6sdv`,
+    # prong `sizes`); capturing the elements as scalars is the supported form.
+    data_size = refusal(() -> stan_code(pk_model(:(pmx_solve_rk45(
+        (t, yy) -> -(ka * y[1]) * yy, 2, ta, aa, ra, ia, evid, cmt, addl, ss)))))
+    @test !isnothing(data_size) && occursin("captures `y` of type `vector`, whose size is not a literal", data_size)
+    # refused: a `(t, y)` closure cannot read the per-event `x_r`/`x_i` the call
+    # passes, and silently dropping the caller's data would hide the mistake.
+    short_data = refusal(() -> stan_code(pk_model(:(pmx_solve_rk45(
+        (t, yy) -> -ka * yy, 2, ta, aa, ra, ia, evid, cmt, addl, ss,
+        rep_array(1.0, 2), rep_array(0.0, 2), xr, xi)))))
+    @test !isnothing(short_data) && occursin("cannot read the `x_r`/`x_i`", short_data)
+    # refused: Torsten calls the right-hand side as `(t, y, theta, x_r, x_i)` and its
+    # stanc refuses trailing arguments, so a `@deffun` taking other arguments has no
+    # method for that call; it is called through a closure (decision `1fp6sdv`,
+    # prong `variadic`) instead of reaching stanc as an undeclared identifier.
+    variadic = refusal(() -> stan_code(pk_model(:(pmx_solve_rk45(pmx_test_rhs_v, 2,
+        ta, aa, ra, ia, evid, cmt, addl, ss, th)))))
+    @test !isnothing(variadic) && occursin("`pmx_test_rhs_v` has no method for Torsten's call", variadic)
+
+    # Inside a plate cell a capture reads the cell's element of a cell-local value.
+    plate_model = StanBlocks.SlicModel(quote
+        cl ~ lognormal(log(5.0), 0.5)
+        v ~ lognormal(log(50.0), 0.5)
+        ka ~ lognormal(log(1.2), 0.5)
+        sigma ~ exponential(10.0)
+        eta ~ normal(rep_vector(0.0, 2), 0.3)
+        ta = to_array_1d(time)
+        aa = to_array_1d(amt)
+        ra = to_array_1d(rate)
+        ia = to_array_1d(ii)
+        pred ~ plate(; outer = 2) do i
+            ka_i = ka * exp(eta[i])
+            cp = to_vector(pmx_solve_rk45((t, yy) -> pmx_test_rhs_v(t, yy, cl, v, ka_i), 2,
+                ta, aa, ra, ia, evid, cmt, addl, ss)[2, :]) / v
+            ypeak[i] ~ lognormal(log(cp[3]), sigma)
+            cp
+        end
+    end, merge(copy(data), Dict{Symbol,Any}(:ypeak => [1.4, 1.1])), @__MODULE__)
+    plate_code = stan_code(plate_model)
+    @test occursin("real pred_ka_i = theta_ext[(theta_end + 3)];", stan_block(plate_code, "functions"))
+    @test occursin(r"to_array_1d\(\[cl, v, pred_ka_i\[plate_i__pl_\d+\]\]'\)", plate_code)
 
     torsten = joinpath(homedir(), ".local/opt/torsten")
     if !isdir(torsten)
         @test_skip "Torsten build not provisioned at $torsten"
     else
         tstanc = joinpath(torsten, "cmdstan/bin/stanc")
-        for (label, code) in codes
+        for (label, code) in (codes..., "plate" => plate_code)
             result = withenv("STANC_PATH" => tstanc) do
                 stanc_check(code; warn_pedantic=false)
             end
@@ -7730,11 +7889,25 @@ the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
             rep_array(1.0, 2), rep_array(0.0, 2), 1e-10, 1e-10, 1000000))); make_args)
         closed = instantiate(pk_model(:(pmx_solve_onecpt(ta, aa, ra, ia, evid, cmt, addl, ss, th))); make_args)
         @test LogDensityProblems.dimension(ode) == LogDensityProblems.dimension(closed) == 4
+        # The capturing closure solves the same system as `pmx_test_rhs`, with
+        # `ka`, `wt` and `nt` read back from `theta`, `x_r` and `x_i`.
+        closure = instantiate(pk_model(:(pmx_solve_rk45($closure_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
+            1e-10, 1e-10, 1000000))); make_args)
+        # The short form packs `theta` as `[cl, v, ka]`, which is exactly `th`.
+        short = instantiate(pk_model(:(pmx_solve_rk45((t, yy) -> pmx_test_rhs_v(t, yy, cl, v, ka), 2,
+            ta, aa, ra, ia, evid, cmt, addl, ss, rep_array(1.0, 2), rep_array(0.0, 2), 1e-10, 1e-10, 1000000))); make_args)
+        @test LogDensityProblems.dimension(closure) == LogDensityProblems.dimension(short) == 4
         for q in ([0.1, -0.2, 0.05, -0.3], [-0.3, 0.2, 0.4, 0.1])
             lo, go = LogDensityProblems.logdensity_and_gradient(ode, q)
             lc, gc = LogDensityProblems.logdensity_and_gradient(closed, q)
+            lf, gf = LogDensityProblems.logdensity_and_gradient(closure, q)
+            ls, gs = LogDensityProblems.logdensity_and_gradient(short, q)
             @test lo ≈ lc atol=1e-6
             @test go ≈ gc atol=1e-5
+            @test lf ≈ lo atol=1e-6
+            @test gf ≈ go atol=1e-5
+            @test ls ≈ lo atol=1e-12
+            @test gs ≈ go atol=1e-12
         end
     end
 end
