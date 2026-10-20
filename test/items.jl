@@ -14138,18 +14138,162 @@ parameter and a cv-held-out one re-drew as an UNSORTED `vector`.
             stan_block(code, "generated quantities"))
     end
 
-    # (g) A cv-held-out NON-exchangeable prior must be re-drawn but has no exact
-    #     draw yet (capability gap, todo StanBlocks/todos/2026-10-20T00-14-28-178-1spkwc8).
-    #     Until it exists the program fails at trace time instead of emitting the
-    #     unsorted family draw.
+    # (g) A cv-held-out NON-exchangeable prior has no sorted iid draw; it
+    #     re-draws by rejection (item `slic: a non-exchangeable ordered prior
+    #     re-draws by rejection when it must be re-drawn`).
     held_out_vec = @slic (; idx = StanBlocks.stan.maybecv(:idx, [1, 2, 3, 2]), y = [0.1, 0.2, 0.3, 0.4], m0 = [0.0, 1.0, 2.0]) begin
         n = maximum(idx)
         c::ordered[n] ~ normal(m0[1:n], 1.0)
         y ~ normal(c[idx], 1.0)
     end
-    @test_broken transpiles(held_out_vec; re = false)
-    let err = redraw_error(held_out_vec)
-        @test err !== nothing && occursin("its prior is not exchangeable", err)
+    @test transpiles(held_out_vec; re = false)
+    @test redraw_error(held_out_vec) === nothing
+end
+
+@testitem "slic: a non-exchangeable ordered prior re-draws by rejection when it must be re-drawn" tags=[:slic, :plate, :stanc, :bridgestan, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    # Todo StanBlocks:ordered-redraw/todos/2026-10-20T00-14-28-178-1spkwc8.
+    # Conditional on its arguments, `c::ordered[k] ~ f(θ)` is f restricted to the
+    # ordered region. Without exchangeability no sorted iid draw has that law
+    # (sorting the draw is a different law), and a cv-held-out or draw-reading
+    # prior must still be re-drawn: repeat the family's own vector draw until it
+    # is strictly increasing. It used to fail at trace time; before that it
+    # re-drew an unsorted `vector`.
+    empty_block(code, name) = strip(stan_block(code, name)) == "{\n}"
+    gq(m) = stan_block(stan_code(m), "generated quantities")
+    idx = StanBlocks.stan.maybecv(:idx, [1, 2, 3, 2])
+    y = [0.1, 0.2, 0.3, 0.4]
+
+    # (a) Elementwise family with a vector argument: the exact restricted law.
+    held_out = @slic (; idx, y, m0 = [0.0, 1.0, 2.0]) begin
+        n = maximum(idx)
+        c::ordered[n] ~ normal(m0[1:n], 1.0)
+        y ~ normal(c[idx], 1.0)
+    end
+    @test stanc_compiles(held_out)
+    let code = stan_code(held_out)
+        @test empty_block(code, "parameters") && empty_block(code, "model")
+        @test occursin("ordered[n] c = ordered_rejection_vector_normal_rng_rng(n, m0[1:n], 1.0);",
+            stan_block(code, "generated quantities"))
+        @test occursin("while((ordered_rejection_unsorted(draw) == 1))", stan_block(code, "functions"))
+    end
+    # 20k BridgeStan draws against an independent Julia rejection sampler of the
+    # same law. The naive `sort_asc` of the non-identical draw differs by ≈ 0.14
+    # in the first coordinate's mean (≈ 23 standard errors), so this tells the
+    # two apart.
+    prob = instantiate(held_out)
+    @test LogDensityProblems.dimension(prob) == 0
+    names_gq = BridgeStan.param_names(prob.model; include_tp = true, include_gq = true)
+    cols = [findfirst(==("c.$i"), names_gq) for i in 1:3]
+    rng = BridgeStan.StanRNG(prob.model, 4321)
+    n_draws = 20_000
+    draws = reduce(hcat, [BridgeStan.param_constrain(prob.model, Float64[];
+        include_tp = true, include_gq = true, rng)[cols] for _ in 1:n_draws])
+    @test all(issorted, eachcol(draws))
+    ref_rng = Xoshiro(1)
+    ref = Vector{Float64}[]
+    while length(ref) < 200_000
+        x = [0.0, 1.0, 2.0] .+ randn(ref_rng, 3)
+        x[1] < x[2] < x[3] && push!(ref, x)
+    end
+    ref = reduce(hcat, ref)
+    se = sqrt.(vec(var(draws; dims = 2)) ./ n_draws .+ vec(var(ref; dims = 2)) ./ size(ref, 2))
+    @test all(abs.(vec(mean(draws; dims = 2)) .- vec(mean(ref; dims = 2))) .< 6 .* se)
+    @test all(abs.(vec(std(draws; dims = 2)) .- vec(std(ref; dims = 2))) .< 0.05)
+
+    # (b) The parameter the prior reads stays fitted; only `c` is re-drawn.
+    hier = @slic (; idx, y, m0 = [0.0, 1.0, 2.0]) begin
+        n = maximum(idx)
+        mu ~ normal(0, 1)
+        c::ordered[n] ~ normal(mu .+ m0[1:n], 1.0)
+        y ~ normal(c[idx], 1.0)
+    end
+    @test stanc_compiles(hier)
+    let code = stan_code(hier)
+        @test occursin("real mu;", stan_block(code, "parameters"))
+        @test occursin("ordered[n] c = ordered_rejection_vector_normal_rng_rng(n, (mu + m0[1:n]), 1.0);",
+            stan_block(code, "generated quantities"))
+    end
+
+    # (c) Only the family's own draw is needed: a joint family, a `truncated`
+    #     prior, and `positive_ordered` (drawn inside `lower=0`, truncated where
+    #     the family does not imply it).
+    joint = @slic (; idx, y, m0 = [0.0, 1.0, 2.0], S = [1.0 0.5 0.2; 0.5 1.0 0.5; 0.2 0.5 1.0]) begin
+        n = maximum(idx)
+        c::ordered[n] ~ multi_normal(m0[1:n], S[1:n, 1:n])
+        y ~ normal(c[idx], 1.0)
+    end
+    trunc = @slic (; idx, y, m0 = [0.0, 1.0, 2.0]) begin
+        n = maximum(idx)
+        c::ordered[n] ~ truncated(normal, m0[1:n], 1.0; lower = -1.0)
+        y ~ normal(c[idx], 1.0)
+    end
+    pos_normal = @slic (; idx, y, m0 = [0.0, 1.0, 2.0]) begin
+        n = maximum(idx)
+        c::positive_ordered[n] ~ normal(m0[1:n], 1.0)
+        y ~ normal(c[idx], 1.0)
+    end
+    pos_exp = @slic (; idx, y, r0 = [3.0, 1.0, 0.5]) begin
+        n = maximum(idx)
+        c::positive_ordered[n] ~ exponential(r0[1:n])
+        y ~ normal(c[idx], 1.0)
+    end
+    for (m, line) in (
+            (joint, "ordered[n] c = ordered_rejection_vector_multi_normal_rng_rng(n, m0[1:n], S[1:n, 1:n]);"),
+            (trunc, "ordered[n] c = ordered_rejection_vector_lower_conditioning_rng_normal_rng(n, -1.0, m0[1:n], 1.0);"),
+            (pos_normal, "positive_ordered[n] c = ordered_rejection_vector_lower_conditioning_rng_normal_rng(n, 0.0, m0[1:n], 1.0);"),
+            (pos_exp, "positive_ordered[n] c = ordered_rejection_vector_exponential_rng_rng(n, r0[1:n]);"))
+        @test stanc_compiles(m)
+        @test occursin(line, gq(m))
+    end
+
+    # (d) A prior that reads a random draw is re-drawn without any cv mark.
+    reads_draw = @slic (; m0 = [0.0, 1.0, 2.0]) begin
+        s = normal_rng(0.0, 1.0)
+        c::ordered[3] ~ normal(m0 .+ s, 1.0)
+    end
+    @test stanc_compiles(reads_draw)
+    @test occursin("ordered[3] c = ordered_rejection_vector_normal_rng_rng(3, (m0 + s), 1.0);", gq(reads_draw))
+
+    # (e) A plate cell re-draws per cell.
+    cells = @slic (; group_idx = StanBlocks.stan.maybecv(:group_idx, [1, 2, 2]), y = [0.1, 0.2, 0.3], m0 = [0.0, 1.0, 2.0]) begin
+        n_g = maximum(group_idx)
+        s ~ exponential(1)
+        p ~ plate(; outer = (n_g,)) do g
+            c::ordered[3] ~ normal(m0, s)
+            c[1]
+        end
+        y ~ normal(p[group_idx], 1.0)
+    end
+    @test stanc_compiles(cells)
+    let code = gq(cells)
+        @test occursin(r"array\[n_g\] ordered\[3\] p_c;", code)
+        @test occursin(r"p_c\[plate_i\w*\] = ordered_rejection_vector_normal_rng_rng\(3, m0, s\);", code)
+    end
+
+    # (f) Prior-only, a non-exchangeable prior still stays a sampled parameter:
+    #     with a parameter argument the fitted joint drops P(sorted | θ), which a
+    #     whole-program draw cannot reproduce.
+    prior_only = @slic (; m0 = [0.0, 1.0, 2.0]) begin
+        mu ~ normal(0, 1)
+        c::ordered[3] ~ normal(mu .+ m0, 1.0)
+    end
+    @test occursin("ordered[3] c;", stan_block(stan_code(prior_only), "parameters"))
+
+    # (g) No increasing draw within the budget fails loudly at draw time.
+    hopeless = @slic (; idx, y, m0 = [2.0, 1.0, 0.0]) begin
+        n = maximum(idx)
+        c::ordered[n] ~ normal(m0[1:n], 0.05)
+        y ~ normal(c[idx], 1.0)
+    end
+    let prob = instantiate(hopeless), rng = BridgeStan.StanRNG(prob.model, 1)
+        err = try
+            BridgeStan.param_constrain(prob.model, Float64[]; include_tp = true, include_gq = true, rng)
+            nothing
+        catch e
+            sprint(showerror, e)
+        end
+        @test err !== nothing && occursin("found no increasing draw in 100000 attempts", err)
     end
 end
 
