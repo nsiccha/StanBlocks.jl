@@ -174,6 +174,65 @@ Stan was already correct.
     end
 end
 
+"""
+Verify `slic: a held-out per-cell observation keeps its predictive twin`.
+
+A held-out observation made inside a plate cell (`y[i] ~ …`) or by a joint
+slice (`y[1:3] ~ multi_normal(…)`) lowers to a `y_gen` fill alone. No
+`y_likelihood` reads `y`, so `y` leaves the data block and only its size `y_n`
+stays. The descriptor used to classify the twin by its stem's data-block
+membership, so it reported `y_gen` as `:derived` and offered no `:predict`. The
+twin's declaration now carries the compiler's `obs_twin_source` stamp. The
+bound models are the control: their descriptors are unchanged.
+"""
+@testitem "slic: a held-out per-cell observation keeps its predictive twin" tags=[:slic, :plate, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    maybecv = StanBlocks.stan.maybecv
+    yv = [0.1, 0.2, -0.3]
+    cell = @slic begin
+        mu0 ~ std_normal()
+        @plate for i in 1:3
+            e = mu0 + 0.5
+            y[i] ~ normal(e, 1.0)
+        end
+    end
+    slice = @slic begin
+        mu0 ~ std_normal()
+        y[1:3] ~ multi_normal(rep_vector(mu0, 3), diag_matrix(rep_vector(1.0, 3)))
+    end
+    ops(d) = [op.name for op in d.operations]
+    for m in (cell, slice)
+        bound = stan_descriptor(m(; y = yv))
+        held = stan_model(m(; y = maybecv(:y, yv)))
+        dheld = stan_descriptor(held)
+        for d in (bound, dheld)
+            gen = only(o for o in d.outputs if o.name === :y_gen)
+            @test (gen.generative, gen.source, gen.dims) == (:draw, :y, (3,))
+        end
+        @test ops(bound) == [:transpile, :instantiate, :fit, :predict]
+        @test ops(dheld) == [:transpile, :instantiate, :predict]
+        @test :y ∉ [i.name for i in dheld.inputs]
+        # The semantic display classifies through the same rows.
+        @test occursin("generated quantity / draw of y", sprint(show, MIME"text/plain"(), held))
+    end
+end
+
+@testitem "slic: a held-out per-cell observation predicts through BridgeStan" tags=[:slic, :plate, :descriptor, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    maybecv = StanBlocks.stan.maybecv
+    m = @slic (; y = maybecv(:y, [0.1, 0.2, -0.3])) begin
+        mu0 ~ std_normal()
+        @plate for i in 1:3
+            e = mu0 + 0.5
+            y[i] ~ normal(e, 1.0)
+        end
+    end
+    d = stan_descriptor(m)
+    pred = stan_execute(d, :predict; draws = [0.0], seed = 1)
+    @test keys(pred) == (:y_gen,)
+    @test length(pred.y_gen) == 3
+    @test all(isfinite, pred.y_gen)
+    @test size(stan_execute(d, :predict; draws = zeros(1, 4), seed = 2).y_gen) == (3, 4)
+end
+
 # snag `weighted-custom-33d611a8` (reported from BRM): `weighted(...)` over a
 # custom `@lpxf` family whose pointwise twin is sized by one of its OWN arg
 # tokens (not by `y`) transpiled-errored with `Typed assignment lp::vector[n] =
@@ -14425,6 +14484,122 @@ end
     for g in 1:4
         @test maximum(abs.(cov(draws[cols[g, :], :]') .- target)) < 0.2
         @test maximum(abs.(mean(draws[cols[g, :], :]; dims = 2))) < 0.1
+    end
+end
+
+"""
+Todo `1puhj2t`. Stan declares no bound or affine transform on `ordered` /
+`positive_ordered`, so a typed `c::ordered[k] ~ f(…; lower = …)`, or one whose
+family implies a bound (`exponential`, `uniform`, `beta`), declared a
+stanc-invalid `ordered<lower=…>[k]` that `transpiles` reported green. A sampled
+one now lowers to an `ordered` free vector `c_free` and the transformed
+parameter `c` that a Stan constraint transform makes of it; a plate carrier
+lowers the same way, and its collected result and re-drawn carrier are declared
+without the bound.
+"""
+@testitem "slic: a bounded ordered parameter is a constraint transform of an ordered free vector" tags=[:slic, :plate, :stanc, :bridgestan, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    fitted(stmt; obs = :(c[1])) = StanBlocks.SlicModel(quote
+        a ~ normal(0, 1)
+        $stmt
+        y ~ normal($obs, 1.0)
+    end, Dict{Symbol,Any}(:y => [0.5]), @__MODULE__)
+    trace_error(m) = try; stan_code(m); nothing; catch e; sprint(showerror, e); end
+
+    # (a) Every bound, written or implied by the family, is one transform of `c_free`.
+    for (stmt, decl, value) in (
+            (:(c::ordered[3] ~ exponential(1.0)), "ordered", "lower_bound_jacobian(c_free, 0.0)"),
+            (:(c::ordered[3] ~ normal(0, 1; lower = -1.0)), "ordered", "lower_bound_jacobian(c_free, -1.0)"),
+            (:(c::ordered[3] ~ normal(0, 1; upper = 2.0)), "ordered", "upper_bound_jacobian((-c_free), 2.0)"),
+            (:(c::ordered[3] ~ uniform(0.0, 1.0)), "ordered", "lower_upper_bound_jacobian(c_free, 0.0, 1.0)"),
+            (:(c::ordered[3] ~ normal(0, 1; lower = a)), "ordered", "lower_bound_jacobian(c_free, a)"),
+            (:(c::ordered[3] ~ normal(0, 1; offset = 1.0, multiplier = 2.0)), "ordered",
+                "offset_multiplier_jacobian(c_free, 1.0, 2.0)"),
+            (:(c::positive_ordered[3] ~ beta(2, 2)), "positive_ordered", "lower_upper_bound_jacobian(c_free, 0.0, 1)"),
+            (:(c::positive_ordered[3] ~ normal(0, 1; upper = 3.0)), "positive_ordered",
+                "lower_upper_bound_jacobian(c_free, 0.0, 3.0)"),
+            (:(c::positive_ordered[3] ~ normal(0, 1; lower = 1.0)), "positive_ordered",
+                "lower_bound_jacobian(c_free, 1.0)"))
+        m = fitted(stmt)
+        @test stanc_compiles(m)
+        code = stan_code(m)
+        @test occursin(r"^\s*ordered\[3\] c_free;"m, stan_block(code, "parameters"))
+        @test occursin("$decl[3] c = $value;", stan_block(code, "transformed parameters"))
+    end
+    # Prior-only, the same exchangeable priors still re-draw sorted inside the bound.
+    prior = StanBlocks.SlicModel(:(c::ordered[3] ~ normal(0, 1; lower = -1.0)), Dict{Symbol,Any}(), @__MODULE__)
+    @test occursin("ordered[3] c = sort_asc(lower_conditioning_vector_normal_rng(3, -1.0, 0, 1));",
+        stan_block(stan_code(prior), "generated quantities"))
+
+    # (b) A `positive_ordered` lower bound at or below 0 restates its support:
+    #     nothing is lowered, and a re-draw stays positive.
+    restated = fitted(:(c::positive_ordered[3] ~ normal(0, 1; lower = -1.0)))
+    @test stanc_compiles(restated)
+    @test occursin("positive_ordered[3] c;", stan_block(stan_code(restated), "parameters"))
+    restated_prior = StanBlocks.SlicModel(:(c::positive_ordered[3] ~ normal(0, 1; lower = -1.0)),
+        Dict{Symbol,Any}(), @__MODULE__)
+    @test occursin("positive_ordered[3] c = sort_asc(lower_conditioning_vector_normal_rng(3, 0.0, 0, 1));",
+        stan_block(stan_code(restated_prior), "generated quantities"))
+
+    # (c) A plate cell lowers its `array[n] ordered[k]` carrier; the collected
+    #     result, and a prior-only re-drawn carrier, are declared without the bound.
+    cells(cell; fit) = begin
+        body = quote
+            s ~ exponential(1)
+            p ~ plate(; outer = (n,)) do g
+                $cell
+                c
+            end
+        end
+        fit && push!(body.args, :(y ~ normal(p[1][1], 1.0)))
+        StanBlocks.SlicModel(body, Dict{Symbol,Any}(:n => 2, :k => 3, (fit ? (:y => [0.5],) : ())...), @__MODULE__)
+    end
+    plate_fit = cells(:(c::positive_ordered[k] ~ beta(2.0, s)); fit = true)
+    @test stanc_compiles(plate_fit)
+    let code = stan_code(plate_fit)
+        @test occursin("array[n] ordered[k] p_c_free;", stan_block(code, "parameters"))
+        tp = stan_block(code, "transformed parameters")
+        @test occursin("array[n] positive_ordered[k] p_c = lower_upper_bound_jacobian(p_c_free, 0.0, 1);", tp)
+        @test occursin("array[n] positive_ordered[k] p;", tp)
+    end
+    plate_prior = cells(:(c::ordered[k] ~ normal(0.0, s; lower = 0.5)); fit = false)
+    @test stanc_compiles(plate_prior)
+    @test occursin("array[n] ordered[k] p_c;", stan_block(stan_code(plate_prior), "generated quantities"))
+
+    # (d) The constrained values lie inside the bound, and the log-Jacobian the
+    #     model adds is that of the map from the unconstrained point to `c`
+    #     (every other parameter kept), by central differences.
+    for (m, name, lo, hi) in ((fitted(:(c::ordered[3] ~ normal(0, 1; upper = 2.0))), "c", -Inf, 2.0),
+                              (plate_fit, "p_c", 0.0, 1.0))
+        model = instantiate(m).model
+        names = BridgeStan.param_names(model; include_tp = true)
+        np = BridgeStan.param_num(model)
+        @test any(n -> startswith(n, "$(name)_free."), names[1:np])
+        out = vcat(findall(n -> !occursin("_free", n), names[1:np]),
+                   findall(n -> startswith(n, "$name."), names))
+        constrain(θ) = BridgeStan.param_constrain(model, θ; include_tp = true)[out]
+        d = BridgeStan.param_unc_num(model)
+        @test length(out) == d
+        rng = Xoshiro(1)
+        for _ in 1:5
+            θ = randn(rng, d)
+            values = BridgeStan.param_constrain(model, θ; include_tp = true)[findall(n -> startswith(n, "$name."), names)]
+            @test all(v -> lo < v < hi, values)
+            h = 1e-6
+            J = reduce(hcat, [(constrain(θ .+ h .* (1:d .== j)) .- constrain(θ .- h .* (1:d .== j))) ./ 2h for j in 1:d])
+            logjac = BridgeStan.log_density(model, θ; jacobian = true) -
+                BridgeStan.log_density(model, θ; jacobian = false)
+            @test logjac ≈ first(StanBlocks.LinearAlgebra.logabsdet(J)) atol = 1e-4
+        end
+    end
+
+    # (e) What one elementwise transform cannot keep ordered fails at trace time.
+    for (stmt, message) in (
+            (:(c::ordered[3] ~ normal(0, 1; lower = [0.0, 1.0, 2.0])), "has `lower=` that is not a scalar"),
+            (:(c::positive_ordered[3] ~ normal(0, 1; offset = 1.0)), "Declare `c::ordered[…]` with the `offset=`"),
+            (:(c::positive_ordered[3] ~ normal(0, 1; lower = a)), "with `lower = fmax(0, …)` instead"))
+        err = trace_error(fitted(stmt))
+        @test err !== nothing && occursin(message, err)
     end
 end
 

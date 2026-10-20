@@ -273,16 +273,20 @@ _descriptor_constraints(i) = (; [
 #      and still required for observation shapes with no generated twin.
 #      Resolving a ragged plate slice needs `_obs_projection_base`, not the
 #      dense getindex-only retarget; see the note there.
-#  (2) the `<stem>_gen` / `<stem>_likelihood` declarations in generated
-#      quantities, WHERE `<stem>` IS ITSELF A DATA INPUT. Needed because a
-#      cv-held-out observation routes to generated quantities ONLY — and by then
-#      it is an ASSIGNMENT (`y_gen = normal_vector_rng(…)`), not a `~`, so pass
-#      (1) cannot see it.
+#  (2) the compiler-owned `<stem>_gen` / `<stem>_likelihood` twins in
+#      generated quantities (`_generative_role`). Needed because a cv-held-out
+#      observation routes to generated quantities ONLY — and by then it is an
+#      ASSIGNMENT (`y_gen = normal_vector_rng(…)`), not a `~`, so pass (1)
+#      cannot see it.
 #
-# Pass (2) is a name match, but not a guess: SLIC mints those two names from
-# nowhere except a data-qualified sampling LHS, and anchoring the stem in the
-# data block is what makes it unambiguous. A user variable that happens to
-# collide is caught by `_assert_distinct_names`, not silently mislabelled.
+# Pass (2) is not a guess. A twin that `_push_obs_gen_decl!` or a sibling
+# declares ahead of its per-cell or per-slice fills carries the compiler's stamp
+# naming its observation (`_obs_twin_source`, passes.jl). Any other twin of a
+# bound observation is anchored by its stem being a data input: SLIC mints
+# those names from nowhere except a data-qualified sampling LHS, and each comes
+# with a `_likelihood` that reads the stem, which keeps the stem in the data
+# block even when it is held out. A user variable that happens to collide is
+# caught by `_assert_distinct_names`, not silently mislabelled.
 _observed_bases(x, acc) = acc
 _observed_bases(x::AbstractVector, acc) = (foreach(s -> _observed_bases(s, acc), x); acc)
 _observed_bases(x::AbstractDict, acc) = (foreach(s -> _observed_bases(s, acc), values(x)); acc)
@@ -364,21 +368,26 @@ _output_symbols(x::SamplingExpr, acc) = begin
     acc
 end
 
-# Generative role of a generated quantity: the compiler-owned twin of `stem`
-# when the name is `<stem>_gen` / `<stem>_likelihood` AND `stem` is a data input
-# of this model (pass (2) above) — or, for `_gen` only, a producer-declared
-# observation stem (`SlicModel(…, observations)`; snag
-# `unbound-observat-d32ac924`), whose twin aliases the forward-simulated draw.
-# `_likelihood` stays bound-only: pointwise needs observed values, and the
-# compiler never emits it for an unbound stem. `:derived` otherwise — in
-# particular a user variable that merely ends in `_gen` still needs its stem in
-# one of the two sets, so the suffix alone never classifies.
-_generative_role(name::Symbol, datanames, observations=()) = begin
+# Generative role of a generated quantity `name` declared by `decl`: the
+# compiler-owned twin of `stem` when the name is `<stem>_gen` /
+# `<stem>_likelihood` AND either `decl` carries the per-cell twin stamp naming
+# `stem`, or `stem` is a data input of this model (pass (2) above) — or, for
+# `_gen` only, a producer-declared observation stem (`SlicModel(…,
+# observations)`; snag `unbound-observat-d32ac924`), whose twin aliases the
+# forward-simulated draw. The stamp is what classifies a held-out per-cell
+# observation's `_gen`: its stem is no longer in the data block (see
+# `_push_obs_gen_decl!`). `_likelihood` stays bound-only: pointwise needs
+# observed values, and the compiler never emits it for an unbound stem.
+# `:derived` otherwise — in particular a user variable that merely ends in
+# `_gen` still needs its stem in one of those sets, so the suffix alone never
+# classifies.
+_generative_role(name::Symbol, decl, datanames, observations=()) = begin
     s = string(name)
+    source = _obs_twin_source(decl)
     for (suffix, role) in (("_likelihood", :pointwise_loglik), ("_gen", :draw))
         endswith(s, suffix) || continue
         stem = Symbol(s[1:end-length(suffix)])
-        stem in datanames && return (role, stem)
+        (stem === source || stem in datanames) && return (role, stem)
         role === :draw && stem in observations && return (role, stem)
     end
     (:derived, nothing)
@@ -678,7 +687,7 @@ _block_output_rows(scope, blockname::Symbol, kind::Symbol) = begin
     for (name, x) in pairs(acc)
         always_inline(x) && continue
         generative, source = kind === :generated_quantity ?
-            _generative_role(name, datanames, observations) : (:posterior, nothing)
+            _generative_role(name, x, datanames, observations) : (:posterior, nothing)
         push!(rows, (;
             name, kind, type=_descriptor_type(x), size=_descriptor_size(x),
             constraints=_descriptor_constraints(x), generative, source,
