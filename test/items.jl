@@ -14256,6 +14256,122 @@ end
 end
 
 """
+Todo `1puhj2t`. Stan declares no bound or affine transform on `ordered` /
+`positive_ordered`, so a typed `c::ordered[k] ~ f(…; lower = …)`, or one whose
+family implies a bound (`exponential`, `uniform`, `beta`), declared a
+stanc-invalid `ordered<lower=…>[k]` that `transpiles` reported green. A sampled
+one now lowers to an `ordered` free vector `c_free` and the transformed
+parameter `c` that a Stan constraint transform makes of it; a plate carrier
+lowers the same way, and its collected result and re-drawn carrier are declared
+without the bound.
+"""
+@testitem "slic: a bounded ordered parameter is a constraint transform of an ordered free vector" tags=[:slic, :plate, :stanc, :bridgestan, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    fitted(stmt; obs = :(c[1])) = StanBlocks.SlicModel(quote
+        a ~ normal(0, 1)
+        $stmt
+        y ~ normal($obs, 1.0)
+    end, Dict{Symbol,Any}(:y => [0.5]), @__MODULE__)
+    trace_error(m) = try; stan_code(m); nothing; catch e; sprint(showerror, e); end
+
+    # (a) Every bound, written or implied by the family, is one transform of `c_free`.
+    for (stmt, decl, value) in (
+            (:(c::ordered[3] ~ exponential(1.0)), "ordered", "lower_bound_jacobian(c_free, 0.0)"),
+            (:(c::ordered[3] ~ normal(0, 1; lower = -1.0)), "ordered", "lower_bound_jacobian(c_free, -1.0)"),
+            (:(c::ordered[3] ~ normal(0, 1; upper = 2.0)), "ordered", "upper_bound_jacobian((-c_free), 2.0)"),
+            (:(c::ordered[3] ~ uniform(0.0, 1.0)), "ordered", "lower_upper_bound_jacobian(c_free, 0.0, 1.0)"),
+            (:(c::ordered[3] ~ normal(0, 1; lower = a)), "ordered", "lower_bound_jacobian(c_free, a)"),
+            (:(c::ordered[3] ~ normal(0, 1; offset = 1.0, multiplier = 2.0)), "ordered",
+                "offset_multiplier_jacobian(c_free, 1.0, 2.0)"),
+            (:(c::positive_ordered[3] ~ beta(2, 2)), "positive_ordered", "lower_upper_bound_jacobian(c_free, 0.0, 1)"),
+            (:(c::positive_ordered[3] ~ normal(0, 1; upper = 3.0)), "positive_ordered",
+                "lower_upper_bound_jacobian(c_free, 0.0, 3.0)"),
+            (:(c::positive_ordered[3] ~ normal(0, 1; lower = 1.0)), "positive_ordered",
+                "lower_bound_jacobian(c_free, 1.0)"))
+        m = fitted(stmt)
+        @test stanc_compiles(m)
+        code = stan_code(m)
+        @test occursin(r"^\s*ordered\[3\] c_free;"m, stan_block(code, "parameters"))
+        @test occursin("$decl[3] c = $value;", stan_block(code, "transformed parameters"))
+    end
+    # Prior-only, the same exchangeable priors still re-draw sorted inside the bound.
+    prior = StanBlocks.SlicModel(:(c::ordered[3] ~ normal(0, 1; lower = -1.0)), Dict{Symbol,Any}(), @__MODULE__)
+    @test occursin("ordered[3] c = sort_asc(lower_conditioning_vector_normal_rng(3, -1.0, 0, 1));",
+        stan_block(stan_code(prior), "generated quantities"))
+
+    # (b) A `positive_ordered` lower bound at or below 0 restates its support:
+    #     nothing is lowered, and a re-draw stays positive.
+    restated = fitted(:(c::positive_ordered[3] ~ normal(0, 1; lower = -1.0)))
+    @test stanc_compiles(restated)
+    @test occursin("positive_ordered[3] c;", stan_block(stan_code(restated), "parameters"))
+    restated_prior = StanBlocks.SlicModel(:(c::positive_ordered[3] ~ normal(0, 1; lower = -1.0)),
+        Dict{Symbol,Any}(), @__MODULE__)
+    @test occursin("positive_ordered[3] c = sort_asc(lower_conditioning_vector_normal_rng(3, 0.0, 0, 1));",
+        stan_block(stan_code(restated_prior), "generated quantities"))
+
+    # (c) A plate cell lowers its `array[n] ordered[k]` carrier; the collected
+    #     result, and a prior-only re-drawn carrier, are declared without the bound.
+    cells(cell; fit) = begin
+        body = quote
+            s ~ exponential(1)
+            p ~ plate(; outer = (n,)) do g
+                $cell
+                c
+            end
+        end
+        fit && push!(body.args, :(y ~ normal(p[1][1], 1.0)))
+        StanBlocks.SlicModel(body, Dict{Symbol,Any}(:n => 2, :k => 3, (fit ? (:y => [0.5],) : ())...), @__MODULE__)
+    end
+    plate_fit = cells(:(c::positive_ordered[k] ~ beta(2.0, s)); fit = true)
+    @test stanc_compiles(plate_fit)
+    let code = stan_code(plate_fit)
+        @test occursin("array[n] ordered[k] p_c_free;", stan_block(code, "parameters"))
+        tp = stan_block(code, "transformed parameters")
+        @test occursin("array[n] positive_ordered[k] p_c = lower_upper_bound_jacobian(p_c_free, 0.0, 1);", tp)
+        @test occursin("array[n] positive_ordered[k] p;", tp)
+    end
+    plate_prior = cells(:(c::ordered[k] ~ normal(0.0, s; lower = 0.5)); fit = false)
+    @test stanc_compiles(plate_prior)
+    @test occursin("array[n] ordered[k] p_c;", stan_block(stan_code(plate_prior), "generated quantities"))
+
+    # (d) The constrained values lie inside the bound, and the log-Jacobian the
+    #     model adds is that of the map from the unconstrained point to `c`
+    #     (every other parameter kept), by central differences.
+    for (m, name, lo, hi) in ((fitted(:(c::ordered[3] ~ normal(0, 1; upper = 2.0))), "c", -Inf, 2.0),
+                              (plate_fit, "p_c", 0.0, 1.0))
+        model = instantiate(m).model
+        names = BridgeStan.param_names(model; include_tp = true)
+        np = BridgeStan.param_num(model)
+        @test any(n -> startswith(n, "$(name)_free."), names[1:np])
+        out = vcat(findall(n -> !occursin("_free", n), names[1:np]),
+                   findall(n -> startswith(n, "$name."), names))
+        constrain(θ) = BridgeStan.param_constrain(model, θ; include_tp = true)[out]
+        d = BridgeStan.param_unc_num(model)
+        @test length(out) == d
+        rng = Xoshiro(1)
+        for _ in 1:5
+            θ = randn(rng, d)
+            values = BridgeStan.param_constrain(model, θ; include_tp = true)[findall(n -> startswith(n, "$name."), names)]
+            @test all(v -> lo < v < hi, values)
+            h = 1e-6
+            J = reduce(hcat, [(constrain(θ .+ h .* (1:d .== j)) .- constrain(θ .- h .* (1:d .== j))) ./ 2h for j in 1:d])
+            logjac = BridgeStan.log_density(model, θ; jacobian = true) -
+                BridgeStan.log_density(model, θ; jacobian = false)
+            @test logjac ≈ first(StanBlocks.LinearAlgebra.logabsdet(J)) atol = 1e-4
+        end
+    end
+
+    # (e) What one elementwise transform cannot keep ordered fails at trace time.
+    for (stmt, message) in (
+            (:(c::ordered[3] ~ normal(0, 1; lower = [0.0, 1.0, 2.0])), "has `lower=` that is not a scalar"),
+            (:(c::positive_ordered[3] ~ normal(0, 1; offset = 1.0)), "Declare `c::ordered[…]` with the `offset=`"),
+            (:(c::positive_ordered[3] ~ normal(0, 1; lower = a)), "with `lower = fmax(0, …)` instead"))
+        err = trace_error(fitted(stmt))
+        @test err !== nothing && occursin(message, err)
+    end
+end
+
+"""
 A constrained square matrix (`cholesky_factor_corr[K]`, `cholesky_factor_cov[K]`,
 `cov_matrix[K]`, `corr_matrix[K]`) carries ONE declared size but is a K×K Stan
 `matrix`, so every matrix builtin types it exactly as it types a plain

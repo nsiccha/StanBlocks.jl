@@ -2036,6 +2036,57 @@ _check_lhs_rhs_support(lhs_type, support, rhs_discrete, name, type_expr) = begin
     )
     nothing
 end
+# The constraints of a typed `ordered` / `positive_ordered` LHS. Stan declares
+# none on these types; the emitter instead applies one elementwise, increasing
+# Stan constraint transform to an `ordered` free vector
+# (`_declare_lowered_ordered!`, passes.jl), so every constraint must be a
+# scalar. Other centers keep their constraints as folded. (A runtime check:
+# the `types` submodule is defined later, in functions.jl.)
+_ordered_constraints(ct, cons, rhs; name, type_expr, implied) = begin
+    ct in (types.ordered, types.positive_ordered) || return (cons, rhs)
+    _check_scalar_ordered_constraints(cons; name, type_expr, implied)
+    ct === types.positive_ordered || return (cons, rhs)
+    _positive_ordered_constraints(cons, rhs; name, type_expr, implied)
+end
+# `positive_ordered` IS the support (0, ∞). A lower bound at or below 0 restates
+# it, so it leaves the declaration (`positive_ordered<lower=0.0>[3]` is a stanc
+# syntax error), and an author's negative one is raised to 0 so that a
+# generated-quantities re-draw (`_ordered_redraw`) stays positive. A lower bound
+# above 0 stays; an upper bound alone is lowered with `lower=0`.
+_positive_ordered_constraints(cons, rhs; name, type_expr, implied) = begin
+    affine = filter(in(AFFINE_KEYS), keys(cons))
+    isempty(affine) || error(
+        "`", name, "::", pretty_type_expr(type_expr), "` has ", _constraint_sources(affine, implied),
+        ", but `positive_ordered` is bounded below at 0 and an affine transform does not ",
+        "keep it there. Declare `", name, "::ordered[…]` with the `offset=`/`multiplier=`, ",
+        "or drop them.")
+    :lower in keys(cons) || return (cons, rhs)
+    lower = _bound_value(cons.lower)
+    lower isa Real || error(
+        "`", name, "::", pretty_type_expr(type_expr), "` has ", _constraint_sources((:lower,), implied),
+        " that is not a number, but `positive_ordered` is already bounded below at 0, and ",
+        "which of the two bounds binds is only known at run time. Declare `", name,
+        "::ordered[…]` with `lower = fmax(0, …)` instead.")
+    lower > 0 && return (cons, rhs)
+    lower < 0 && :lower in keys(rhs.kwargs) &&
+        (rhs = remake(rhs, rhs.args...; rhs.kwargs..., lower=stan_expr(0.0)))
+    (Base.structdiff(cons, NamedTuple{(:lower,)}), rhs)
+end
+_check_scalar_ordered_constraints(cons; name, type_expr, implied) = begin
+    vector_keys = filter(k -> !_scalar_constraint(cons[k]), keys(cons))
+    isempty(vector_keys) && return cons
+    error(
+        "`", name, "::", pretty_type_expr(type_expr), "` has ", _constraint_sources(vector_keys, implied),
+        " that is not a scalar. An ordered vector takes one constraint for all of its ",
+        "elements: per-element bounds or affine transforms would not keep the elements in ",
+        "order. Use a scalar, or declare `", name, "::vector[…]` if the elements need not ",
+        "be ordered.")
+end
+_scalar_constraint(v::Real) = true
+_scalar_constraint(v::StanExpr) = stan_ndim(v) == 0
+_scalar_constraint(v) = false
+_constraint_sources(keys, implied) = join(
+    [k in implied ? "`$k=` (implied by the distribution)" : "`$k=`" for k in keys], " and ")
 forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     decl, rhs_raw = x.args
     name = decl.args[1]
@@ -2086,19 +2137,14 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # the typed-LHS path historically built the decl type from center+sizes
     # ONLY, silently dropping the constraint — so a positive scale
     # `tau::vector[K] ~ normal(0,1; lower=0)` emitted an UNCONSTRAINED
-    # `vector[K] tau`. Native-constrained centers (simplex/cholesky/…) carry no
-    # bound autokwargs and take no user bounds, so `cons` is empty for them.
+    # `vector[K] tau`. An `ordered` / `positive_ordered` center keeps its
+    # constraints too (`_ordered_constraints` below); Stan cannot declare them,
+    # so the emitter lowers them (`_declare_lowered_ordered!`, passes.jl).
     implied_kw = autokwargs(rhs_canonical)
     cons_kw = merge(implied_kw, (; kwargs_resolved...))
     cons = _fold_constraints(name, cons_kw; implied=keys(implied_kw))
-    # `positive_ordered` IS the `lower=0` support, and Stan declares no bound on
-    # it (`positive_ordered<lower=0.0>[3]` is a stanc syntax error). A family
-    # implying exactly that bound (`exponential`, `lognormal`, `gamma`, …), or
-    # an author restating it, adds nothing: drop it. Any other bound stays.
-    if ct_resolved === types.positive_ordered && :lower in keys(cons) &&
-            _bound_value(cons.lower) isa Real && iszero(_bound_value(cons.lower))
-        cons = Base.structdiff(cons, NamedTuple{(:lower,)})
-    end
+    cons, rhs_canonical = _ordered_constraints(ct_resolved, cons, rhs_canonical;
+        name, type_expr, implied=keys(implied_kw))
     base_lhs_type = StanType(ct_resolved, sizes_forwarded; cons...)
     # Reject a typed LHS whose support disagrees with the RHS distribution's
     # element kind (container-into-scalar, discrete-into-continuous, …) at trace
