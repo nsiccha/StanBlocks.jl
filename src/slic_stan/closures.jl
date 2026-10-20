@@ -83,7 +83,10 @@ forward!(x::CanonicalExprV{:->,A}; info) where {A} = begin
     captures = OrderedDict{Symbol,Any}()
     for k in keys(info)
         k in free || continue
-        captures[k] = info[k]
+        # Read `k` as any other reference to it would: inside a plate cell a
+        # cell-local name is its element of the promoted carrier, not the whole
+        # carrier its binding holds (`_plate_promoted_reference`).
+        captures[k] = something(_plate_promoted_reference(k, info), info[k])
     end
 
     id = _next_closure_id(info)

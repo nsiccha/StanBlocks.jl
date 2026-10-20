@@ -7432,6 +7432,33 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
 end
 
 """
+A closure literal inside a plate cell captures what any other reference in the
+cell reads: a cell-local value's element of its promoted carrier, not the whole
+carrier. The lifted `ode_rk45` right-hand side therefore takes the cell's scalar,
+threaded as a trailing solver argument; it used to take the `vector` carrier,
+which stanc rejected.
+"""
+@testitem "slic: a closure in a plate cell captures the cell's element" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    m = @slic (; ts = [0.5, 1.0], obs = [0.55, 0.35]) begin
+        ke ~ lognormal(0.0, 0.5)
+        eta ~ normal(rep_vector(0.0, 2), 0.3)
+        pred ~ plate(; outer = 2) do i
+            ke_i = ke * exp(eta[i])
+            selected = to_vector(ode_rk45((t, y) -> -ke_i * y, rep_vector(1.0, 1), 0.0, to_array_1d(ts))[:, 1])
+            obs[i] ~ normal(selected[1], 0.1)
+            selected
+        end
+    end
+    @test transpiles(m)
+    @test stanc_compiles(m)
+    code = stan_code(m)
+    @test occursin(r"vector closure_\d+\(real t, vector y, real pred_ke_i\)", stan_block(code, "functions"))
+    @test occursin(r"ode_rk45\(closure_\d+, [^;]*, pred_ke_i\[plate_i__pl_\d+\]\)", code)
+end
+
+"""
 An ODE solver returns `array[] vector`. Plate collects that deterministic local
 with the plate axes prepended, then indexes those axes to recover the original
 trajectory inside the cell before selecting a state.
