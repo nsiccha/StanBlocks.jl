@@ -238,48 +238,19 @@ _collect_derived_sizes!(d, st::StanType) = begin
     ats === nothing || foreach(at -> _collect_derived_sizes!(d, at), values(ats))
     nothing
 end
-_rebind_data_entries!(d, key, st::StanType) = begin
+_rebind_data_entries!(d, key, value) = begin
+    st = stan_type(key, value)
     d[key] = getvalue(st)
     _collect_derived_sizes!(d, st)
     nothing
-end
-_rebind_data_entries!(d, key, value) = _rebind_data_entries!(d, key, stan_type(key, value))
-# An element hold-out mask (`maybecv(:y, y; held_out = mask)`, forward.jl) is the
-# data input `y_held_out`, bound beside `y` when the model is traced. Re-binding
-# `y` with a new mark replaces the mask; re-binding it plainly keeps the traced
-# mask, which must still fit `y` — a stale mask would index out of bounds inside
-# `heldout_lpdf`. Which observation carries a mask is fixed at trace time, so a
-# mark on an input traced without one is refused.
-_held_out_shape(v::AbstractVector) = length(v)
-_held_out_shape(v::NamedTuple{(:mem, :ends)}) = v.ends
-_rebind_held_out(data, key, value) = begin
-    m = _held_out_name(key)
-    traced = m in keys(data) && get(type(data[m]).info, :held_out_mask_of, nothing) === key
-    if value isa StanExpr
-        mask = get(type(value).info, :held_out_mask, nothing)
-        traced && mask !== nothing || error(
-            "Re-binding `", key, "` on a traced model with a `maybecv` mark: which inputs are ",
-            "held out is fixed when the model is traced. Mark `", key, "` on the `@slic` model ",
-            "and trace it again.")
-        return (type(value), mask)
-    end
-    traced || return (value, nothing)
-    _held_out_shape(getvalue(stan_type(key, value))) == _held_out_shape(getvalue(data[m])) || error(
-        "`", key, "` holds out elements through the mask `", m, "` it was traced with, which ",
-        "does not fit the re-bound value. Re-bind it as `maybecv(:", key, ", ", key,
-        "; held_out = mask)`.")
-    (value, nothing)
 end
 
 "StanModels can update the associated data (via `new_model = model(;x=new_x)`)."
 (x::StanModel)(;kwargs...) = begin
     xkwargs = Dict{Symbol,Any}(pairs(kwargs))
-    data = block(x, :data).content
+    datakeys = keys(block(x, :data).content)
     for (key, value) in pairs(kwargs)
-        key in keys(data) || continue
-        value, mask = _rebind_held_out(data, key, value)
-        _rebind_data_entries!(xkwargs, key, value)
-        mask === nothing || _rebind_data_entries!(xkwargs, _held_out_name(key), mask)
+        key in datakeys && _rebind_data_entries!(xkwargs, key, value)
     end
     StanModel(x.meta, x.vars, merge(x.blocks, (;data=StanBlock(:data,OrderedDict([
         key=>StanExpr(expr(x), remake(type(x); value=get(xkwargs, key, getvalue(x))))

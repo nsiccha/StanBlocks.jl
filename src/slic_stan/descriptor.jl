@@ -49,10 +49,8 @@ StanBlocks.stan_descriptor).
 - `inlined::Bool` — `true` for a value the emitter folds into the generated
   source rather than passing as data (functions, closures, 0-dim type tokens).
 - `derived::Bool` — `true` when this input is another input's declared size
-  (`y_n` for `vector[y_n] y`), or the `y_held_out` mask an element hold-out
-  mark (`maybecv(:y, y; held_out = mask)`) passes to Stan. Re-binding the
-  container re-derives its size, and a re-bound `maybecv(:y, y; held_out =
-  mask)` mark replaces the mask, so a consumer must never ask for it separately.
+  (`y_n` for `vector[y_n] y`). Re-binding the container re-derives it, so a
+  consumer must never ask for it separately.
   Neither an `inlined` nor a `derived` input is part of
   [`required_inputs`](@ref StanBlocks.required_inputs), and neither belongs in a
   generated form.
@@ -709,8 +707,6 @@ See also [`stan_operation`](@ref StanBlocks.stan_operation),
 [`required_inputs`](@ref StanBlocks.required_inputs).
 """
 stan_descriptor(x::SlicModel; kwargs...) = stan_descriptor(stan_model(x); kwargs...)
-# The `<obs>_held_out` mask an element hold-out mark derives (forward.jl).
-_is_held_out_mask(x::StanExpr) = get(type(x).info, :held_out_mask_of, nothing) !== nothing
 stan_descriptor(m::StanModel; name=nothing) = begin
     code = stan_code(m)
     data = content(block(m, :data))
@@ -739,7 +735,7 @@ stan_descriptor(m::StanModel; name=nothing) = begin
     for (key, x) in pairs(data)
         push!(inputs, ModelInput(
             key, _descriptor_type(x), _descriptor_size(x), _descriptor_constraints(x),
-            getvalue(x), always_inline(x), key in sizes || _is_held_out_mask(x),
+            getvalue(x), always_inline(x), key in sizes,
             key in observed, cv(x),
         ))
     end

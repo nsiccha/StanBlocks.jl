@@ -208,57 +208,9 @@ end
   (`StanBlocks.SlicModel(body, data, mod, (:z,))`).
 
 To fit a model without conditioning on a response, omit the response. To predict a
-held-out response from an earlier fit, mark it.
-
-### Holding out some elements of a response
-
-`maybecv(:z, z)` holds out every element of `z`. To fit on some elements and score
-the others (a forecast window, or a block of test rows), mark only those elements:
-
-```julia
-m2(; y, z = StanBlocks.stan.maybecv(:z, z; held_out = t .> cutoff))
-```
-
-- The model block keeps the likelihood of the unmarked elements only:
-  `z ~ heldout_normal(z_held_out, mu, sigma_z)`. A marked element's density is
-  skipped, not multiplied by zero, and for a family whose density is elementwise in
-  its arguments it is never evaluated at all. That covers the scalar built-in
-  families (`normal`, `lognormal`, `gamma`, `poisson`, `binomial`, …), and
-  `weighted`, `truncated`, `censored` and `interval_censored` over one.
-  So a marked value outside the family's support cannot turn the target into `NaN`,
-  including where Stan raises an error instead of returning `-Inf` (`lognormal` or
-  `poisson` below 0, `gamma` at 0, `beta` outside [0, 1], `binomial` above its
-  trials).
-- A family with a shared or row-structured argument (`categorical(p)`,
-  `categorical_logit`, `ordered_logistic`, the fused GLMs, a custom `@lpxf` family)
-  is scored whole and its marked entries are dropped, so its marked values must lie
-  where its density accepts them.
-- No cv taint is set, so every parameter stays a parameter and the unmarked elements
-  fit it.
-- When the cv taint of another marked input reaches `z`'s density (a cv-marked
-  covariate, or a cv-marked group index whose re-drawn effects `z` reads), the whole
-  of `z` is held out already, and the mask has nothing left to do. The program is the
-  one `maybecv(:z, z)` gives: nothing of `z` is fitted, and Stan never reads
-  `z_held_out`. Only the twins stay those of the masked response, so a value Stan
-  refuses still scores `-Inf`.
-- Every element gets its `z_gen` draw, and a marked element's `z_likelihood` entry is
-  its log predictive density. A ragged response keeps one `z_likelihood` entry per
-  group. Where Stan would raise an error for a value, that entry is `-Inf`, scored
-  without calling the family, so a marked element outside the support cannot fail
-  the generated-quantities draw either. This applies to the scalar built-in families
-  with such values, alone or `weighted`. For every other family, `z_gen` and
-  `z_likelihood` are the same as without the mark.
-- The mask has the response's shape: a `Bool` vector for a vector response, one
-  `Bool` vector per group for a ragged response. It is indexed the same way as the
-  response, so the `z[i] ~ …` cells of a `@plate for` (and the cells of a `plate`
-  do-block over `z`) hold out their marked elements. Stan reads the mask as the data
-  input `z_held_out`, which the descriptor marks `derived`. Re-binding `z` on a
-  traced model keeps the mask when it still fits, and re-binding it as
-  `maybecv(:z, z; held_out = mask)` replaces it.
-- The mark only removes likelihood terms. Any other read of `z`, such as a lagged
-  response used as a covariate, still sees every element.
-- A joint family such as `multi_normal` has no per-element densities, so a mask on
-  its response is refused; hold out the whole response instead.
+held-out response from an earlier fit, mark it. A mark covers the whole input; to
+condition on some rows of a response only (a forecast window, a block of test rows),
+fit the model on the kept rows.
 
 ::: tip The descriptor sees this
 `stan_descriptor(model)` reports it directly. Each input's `held_out` flag is
