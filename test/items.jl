@@ -8680,7 +8680,9 @@ or one naming a transformed-data value (`J = maximum(subject)`, not an input).
 A consumer matching outputs to BridgeStan's names could not tell a legitimately
 empty output from a stale one. `ModelOutput.dims` now carries every size
 evaluated against the current data, the transformed-data definitions it reads
-and the ragged-plate layouts; a size Julia cannot evaluate fails closed.
+and the ragged-plate layouts; a size Julia cannot evaluate fails closed. The
+same evaluation resolves a ragged plate whose `outer` is a transformed-data
+value, for which `stan_descriptor` and printing the model used to throw.
 """
 @testitem "slic: descriptor outputs report their resolved dims" tags=[:slic, :plate, :ragged, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     # Compiler-owned carrier names end in a trace counter; drop it.
@@ -8738,6 +8740,19 @@ and the ragged-plate layouts; a size Julia cannot evaluate fails closed.
         end
     end
     @test dims(chained) == Dict(:a => (), :loc__pl_mem => (6,), :s__pl_mem => (6,))
+    # A plate whose `outer` is a transformed-data value: before this, both
+    # `stan_descriptor` and printing the model threw `non-integer outer size n_g`.
+    td_outer = @slic (; Ks = [2, 3, 2, 4], y = [0.1, 0.2, 0.3, 0.4]) begin
+        n_g = length(Ks)
+        b ~ plate(; outer = (n_g,)) do g
+            z::vector[Ks[g]] ~ std_normal()
+            sum(z)
+        end
+        y ~ normal(b, 1.0)
+    end
+    @test only(o.segments for o in stan_descriptor(td_outer).outputs if o.segments !== nothing) == [2, 5, 7, 11]
+    @test dims(td_outer)[:b_z__pl_mem] == (11,)
+    @test occursin("b_z__pl_mem", sprint(show, MIME"text/plain"(), StanBlocks.stan_model(td_outer)))
 
     # Ragged observation twins, auto-imputation, `@scan` innovations, a ragged
     # constrained parameter (`sum(Ks .- 1)` lowers to `jbroadcasted`), and an
@@ -8811,6 +8826,8 @@ and the ragged-plate layouts; a size Julia cannot evaluate fails closed.
         sprint(showerror, err)
     end
     @test !isnothing(msg) && occursin("dimension 1 of output `b`", msg) && occursin("@juliacompat", msg)
+    # Printing the model never evaluates `dims`, so it still works.
+    @test occursin("outputs", sprint(show, MIME"text/plain"(), StanBlocks.stan_model(stan_only)))
     @test dims(@slic (; x = [1.0, -1.0, 2.0]) begin
         k = dims_positive_count_jc(x)
         b ~ std_normal(; n = k)
