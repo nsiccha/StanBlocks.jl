@@ -511,77 +511,15 @@ _plate_layout_binding(ref::Symbol, layout, ends) =
     ref === layout.lens ? diff([0; ends]) :
     (; mem=nothing, ends)
 
-_ragged_plate_segments(m::StanModel, name::Symbol, data) = begin
-    haskey(vars(m), name) || return nothing
-    layout = get(info(type(vars(m)[name])), :ragged_plate_layout, nothing)
-    layout === nothing && return nothing
-    _ragged_plate_segments(m, name, layout, data, _ragged_plate_layouts(m), Symbol[])
-end
-_ragged_plate_segments(m::StanModel, name::Symbol, layout, data, layouts, active) = begin
-    layout.logical in active && error(
-        "stan_descriptor: ragged plate carrier `$name` reads its own layout through ",
-        join(("`$a`" for a in active), " -> "), "."
-    )
-    env = Dict{Symbol,Any}(pairs(data))
-    reads = _plate_layout_names!(_plate_layout_names!(Set{Symbol}(), layout.outer), layout.cell_size)
-    for ref in reads
-        haskey(env, ref) && continue
-        source = get(layouts, ref, nothing)
-        source === nothing && continue
-        ends = _ragged_plate_segments(
-            m, source.logical, source, data, layouts, [active; layout.logical],
-        )
-        env[ref] = _plate_layout_binding(ref, source, ends)
-    end
-    mod = get(meta(m), :mod, @__MODULE__)
-    n = _plate_layout_value(layout.outer, env, mod)
-    n isa Integer || error(
-        "stan_descriptor: ragged plate carrier `$name` has a non-integer outer size `$n`."
-    )
-    n >= 0 || error(
-        "stan_descriptor: ragged plate carrier `$name` has a negative outer size `$n`."
-    )
-    lengths = Int[]
-    sizehint!(lengths, n)
-    for i in 1:n
-        env[layout.index] = i
-        len = _plate_layout_value(layout.cell_size, env, mod)
-        len isa Integer || error(
-            "stan_descriptor: ragged plate carrier `$name` has non-integer cell size `$len` at group $i."
-        )
-        len >= 0 || error(
-            "stan_descriptor: ragged plate carrier `$name` has negative cell size `$len` at group $i."
-        )
-        push!(lengths, Int(len))
-    end
-    cumsum(lengths)
-end
-
-_output_segments(m::StanModel, name::Symbol, source, data) = begin
-    observed = _output_segments(source, data)
-    observed === nothing || return observed
-    layout = _ragged_plate_segments(m, name, data)
-    layout === nothing || return layout
-    haskey(vars(m), name) || return nothing
-    ends = get(type(vars(m)[name]).info, :ragged_observation_ends, nothing)
-    ends === nothing && return nothing
-    value = _plate_layout_value(ends, Dict{Symbol,Any}(pairs(data)), get(meta(m), :mod, @__MODULE__))
-    value isa AbstractVector{<:Integer} || error(
-        "stan_descriptor: ragged observation `", source, "` has non-integer group boundaries.")
-    collect(Int, value)
-end
-
-# --- resolved output dimensions (`ModelOutput.dims`) --------------------------
+# --- evaluating sizes and layouts against the data ----------------------------
 #
-# `size` reports the EMITTED size expressions. Stan requires every top-level
-# parameter, transformed-parameter and generated-quantity size to be data-only,
-# so each has a value under the bound data, but an entry may be a composite
-# (`n_levels - 1`) or name a transformed-data value (`J` for
-# `J = maximum(subject)`), and neither resolves against the inputs alone (snag
-# `stan-descriptor-aa56f7f3`). Evaluate each entry with the layout evaluator
-# above, against the CURRENT data block plus, on demand, the transformed-data
-# definitions it reads and the ragged-plate layouts that own compiler-generated
-# length and end arrays.
+# `segments` and `dims` both evaluate data-only expressions with the layout
+# evaluator above, against the CURRENT data block. Such an expression may also
+# read a transformed-data value (`J` for `J = maximum(subject)`, a plate's
+# `outer = n_g`), or an array a ragged plate fills in a loop (its `lens` and
+# `ends`). One scope per descriptor binds each of those on demand: a
+# transformed-data value from its defining assignment, a plate-owned array from
+# that carrier's own layout. Every binding is memoised in `env`.
 
 # Top-level transformed-data definitions by name. A name filled elementwise (in a
 # loop) has none; a name assigned more than once keeps every right-hand side, so
@@ -597,7 +535,7 @@ _td_definitions!(x::AssignmentExpr, acc) = begin
     acc
 end
 
-_dims_scope(m::StanModel, data) = (;
+_descriptor_scope(m::StanModel, data) = (;
     m, data,
     env=Dict{Symbol,Any}(pairs(data)),
     definitions=_td_definitions!(block(m, :transformed_data), Dict{Symbol,Vector{Any}}()),
@@ -605,13 +543,11 @@ _dims_scope(m::StanModel, data) = (;
     mod=get(meta(m), :mod, @__MODULE__),
     active=Symbol[],
 )
-_dims_bind!(scope, name::Symbol) = begin
+_scope_bind!(scope, name::Symbol) = begin
     haskey(scope.env, name) && return nothing
     layout = get(scope.layouts, name, nothing)
     if layout !== nothing
-        ends = _ragged_plate_segments(
-            scope.m, layout.logical, layout, scope.data, scope.layouts, Symbol[],
-        )
+        ends = _ragged_plate_segments(scope, layout.logical, layout)
         scope.env[name] = _plate_layout_binding(name, layout, ends)
         return nothing
     end
@@ -628,19 +564,83 @@ _dims_bind!(scope, name::Symbol) = begin
     )
     push!(scope.active, name)
     try
-        scope.env[name] = _dims_value(scope, only(definitions))
+        scope.env[name] = _scope_value(scope, only(definitions))
     finally
         pop!(scope.active)
     end
     nothing
 end
-_dims_value(scope, x) = begin
-    foreach(name -> _dims_bind!(scope, name), _plate_layout_names!(Set{Symbol}(), x))
+_scope_value(scope, x) = begin
+    foreach(name -> _scope_bind!(scope, name), _plate_layout_names!(Set{Symbol}(), x))
     _plate_layout_value(x, scope.env, scope.mod)
 end
+
+_ragged_plate_segments(scope, name::Symbol, layout) = begin
+    haskey(scope.env, layout.ends) && return scope.env[layout.ends]
+    layout.logical in scope.active && error(
+        "stan_descriptor: ragged plate carrier `$name` reads its own layout through ",
+        join(("`$a`" for a in scope.active), " -> "), "."
+    )
+    push!(scope.active, layout.logical)
+    env = try
+        reads = _plate_layout_names!(_plate_layout_names!(Set{Symbol}(), layout.outer), layout.cell_size)
+        delete!(reads, layout.index)
+        foreach(ref -> _scope_bind!(scope, ref), reads)
+        # The cell index is bound per group below; keep it out of the shared scope.
+        copy(scope.env)
+    finally
+        pop!(scope.active)
+    end
+    n = _plate_layout_value(layout.outer, env, scope.mod)
+    n isa Integer || error(
+        "stan_descriptor: ragged plate carrier `$name` has a non-integer outer size `$n`."
+    )
+    n >= 0 || error(
+        "stan_descriptor: ragged plate carrier `$name` has a negative outer size `$n`."
+    )
+    lengths = Int[]
+    sizehint!(lengths, n)
+    for i in 1:n
+        env[layout.index] = i
+        len = _plate_layout_value(layout.cell_size, env, scope.mod)
+        len isa Integer || error(
+            "stan_descriptor: ragged plate carrier `$name` has non-integer cell size `$len` at group $i."
+        )
+        len >= 0 || error(
+            "stan_descriptor: ragged plate carrier `$name` has negative cell size `$len` at group $i."
+        )
+        push!(lengths, Int(len))
+    end
+    scope.env[layout.ends] = cumsum(lengths)
+end
+
+_output_segments(scope, name::Symbol, source) = begin
+    observed = _output_segments(source, scope.data)
+    observed === nothing || return observed
+    haskey(vars(scope.m), name) || return nothing
+    t = info(type(vars(scope.m)[name]))
+    layout = get(t, :ragged_plate_layout, nothing)
+    layout === nothing || return _ragged_plate_segments(scope, name, layout)
+    ends = get(t, :ragged_observation_ends, nothing)
+    ends === nothing && return nothing
+    value = _scope_value(scope, ends)
+    value isa AbstractVector{<:Integer} || error(
+        "stan_descriptor: ragged observation `", source, "` has non-integer group boundaries.")
+    collect(Int, value)
+end
+
+# --- resolved output dimensions (`ModelOutput.dims`) --------------------------
+#
+# `size` reports the EMITTED size expressions. Stan requires every top-level
+# parameter, transformed-parameter and generated-quantity size to be data-only,
+# so each has a value under the bound data, but an entry may be a composite
+# (`n_levels - 1`) or name a transformed-data value, and neither resolves
+# against the inputs alone (snag `stan-descriptor-aa56f7f3`). The scope above
+# evaluates it; only a size computed through a function with no Julia method
+# cannot be, and that fails closed.
 _output_dim(scope, name::Symbol, i, s) = begin
     value = try
-        _dims_value(scope, s)
+        _scope_value(scope, s)
     catch
         error(
             "stan_descriptor: cannot resolve dimension ", i, " of output `", name,
@@ -658,25 +658,35 @@ end
 _output_dims(scope, name::Symbol, x::StanExpr) =
     Tuple(_output_dim(scope, name, i, s) for (i, s) in enumerate(stan_size(x)))
 
-_block_outputs(m::StanModel, blockname::Symbol, kind::Symbol, data, scope) = begin
+# One row per output a block declares, with every `ModelOutput` field except
+# `dims`; `decl` is the declaration they come from. The semantic display renders
+# these rows and never needs `dims`, so a size Julia cannot evaluate does not
+# make printing a model throw.
+_block_output_rows(scope, blockname::Symbol, kind::Symbol) = begin
     acc = OrderedDict{Symbol,Any}()
-    _output_symbols(block(m, blockname), acc)
-    datanames = keys(data)
-    observations = _model_observations(m)
-    rv = ModelOutput[]
+    _output_symbols(block(scope.m, blockname), acc)
+    datanames = keys(scope.data)
+    observations = _model_observations(scope.m)
+    rows = NamedTuple[]
     for (name, x) in pairs(acc)
         always_inline(x) && continue
         generative, source = kind === :generated_quantity ?
             _generative_role(name, datanames, observations) : (:posterior, nothing)
-        push!(rv, ModelOutput(
-            name, kind, _descriptor_type(x), _descriptor_size(x),
-            _descriptor_constraints(x), generative, source,
-            _output_segments(m, name, source, data),
-            _output_dims(scope, name, x),
+        push!(rows, (;
+            name, kind, type=_descriptor_type(x), size=_descriptor_size(x),
+            constraints=_descriptor_constraints(x), generative, source,
+            segments=_output_segments(scope, name, source), decl=x,
         ))
     end
-    rv
+    rows
 end
+_block_outputs(scope, blockname::Symbol, kind::Symbol) = [
+    ModelOutput(
+        row.name, row.kind, row.type, row.size, row.constraints, row.generative,
+        row.source, row.segments, _output_dims(scope, row.name, row.decl),
+    )
+    for row in _block_output_rows(scope, blockname, kind)
+]
 
 # --- included Stan definitions ----------------------------------------------
 #
@@ -833,11 +843,11 @@ stan_descriptor(m::StanModel; name=nothing) = begin
     code = stan_code(m)
     data = content(block(m, :data))
 
-    scope = _dims_scope(m, data)
+    scope = _descriptor_scope(m, data)
     outputs = vcat(
-        _block_outputs(m, :parameters, :parameter, data, scope),
-        _block_outputs(m, :transformed_parameters, :transformed_parameter, data, scope),
-        _block_outputs(m, :generated_quantities, :generated_quantity, data, scope),
+        _block_outputs(scope, :parameters, :parameter),
+        _block_outputs(scope, :transformed_parameters, :transformed_parameter),
+        _block_outputs(scope, :generated_quantities, :generated_quantity),
     )
     # Observations: pass (1) the model block's `~`, pass (2) the twins just
     # classified. See the two-pass note above `_observed_bases`.
