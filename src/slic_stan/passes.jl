@@ -367,10 +367,10 @@ backward!(x::StanExpr{Symbol}; info) = begin
         !isempty(_slice_records(info[key])) || !isempty(_slice_observations(info[key])))
     source = certified ? info[key] : x
     reached = remake(source; lqual=:affects_likelihood)
-    # cv taint only ever grows. An observation that reads its own base (a sum of
-    # the response, an element hold-out mask slice bounded by the response's
-    # `ends`) carries an occurrence forwarded before the observation tainted
-    # that base; keep the taint rather than clearing it with that snapshot.
+    # cv taint only ever grows. An observation that reads its own base (an
+    # earlier `mean(y)`, a `sum(y)` in its density) carries an occurrence
+    # forwarded before the observation tainted that base; keep the taint rather
+    # than clearing it with that snapshot.
     key in keys(info) && cv(info[key]) && !cv(reached) && (reached = remake(reached; cv=true))
     info[key] = reached
     # A parameter's declaration constraints participate in the unconstrained
@@ -1174,12 +1174,7 @@ _indexed_ragged_obs_assignments(x::SamplingExpr, spec; info) = begin
     rhs_expr isa CanonicalExpr || error(
         "internal: ragged observation twin reached a non-call distribution rhs `", rhs_expr, "`.")
     lhs_ct = center_type(lhs)
-    # A group's twins score and draw every element: an element hold-out's mask
-    # belongs to the model-block term only. A held-out group with a Stan domain
-    # sums its elements' `heldout_score`s, so a marked element outside the
-    # domain scores the group `-Inf` instead of failing the draw.
-    held_out = rhs_expr isa CanonicalExpr{typeof(builtin.heldout)}
-    rhs_expr = _assert_ragged_family_carrier(_heldout_family_call(rhs_expr), lhs_ct)
+    rhs_expr = _assert_ragged_family_carrier(rhs_expr, lhs_ct)
     # Preserve the ordinary sampling diagnostic as the first gate. Because the
     # gq declarations/assignments are built before the model-loop clone is
     # pushed, attempting the sized RNG first would mask an unresolved density
@@ -1199,10 +1194,9 @@ _indexed_ragged_obs_assignments(x::SamplingExpr, spec; info) = begin
         CanonicalExpr(getindex, lik, spec.group),
         remake(type(density); value=missing, qual=:quantities),
     )
-    score = held_out ? _heldout_group_score(lhs, rhs_expr) : density
     Any[
         CanonicalExpr(:(=), gen_lhs, draw),
-        CanonicalExpr(:(=), lik_lhs, score),
+        CanonicalExpr(:(=), lik_lhs, density),
     ]
 end
 _indexed_gq_assignments(x::SamplingExpr; info) = begin
