@@ -210,7 +210,8 @@ Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = autoprint(io, head(x), "(", J
 ), ")")
 # Torsten's functor solvers take the right-hand side by name in the first slot
 # like the ODE solvers above, but call it with a fixed signature, so there are
-# no closure captures to thread (`_pmx_check_functor_call` refuses them).
+# no closure captures to thread: a capturing closure has already been replaced
+# by its capture-free adapter (`_pmx_adapter_call`, builtin.jl).
 Base.show(io::IO, x::CanonicalExpr{<:PMXFunctorSolver}) = autoprint(io, head(x), "(", Join(
     (func_name(x.args[1], x.args[2:end]), stan_call_args(x.args[2:end])...), ", "
 ), ")")

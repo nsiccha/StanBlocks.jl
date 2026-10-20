@@ -244,8 +244,10 @@ _restore_sampling_kwargs(new, old) = new
 # `positive_ordered` prior whose density is exchangeable has an exact re-draw:
 # the sorted iid draw (`_ordered_redraw`). Any other ordered prior stays a
 # SAMPLED parameter — valid, descriptor-visible (`dimension > 0`), never a
-# silently unsorted draw. Ragged constrained parameters take their own sampled
-# path (`ragged_density`).
+# silently unsorted draw. Its rejection re-draw is exact only conditional on
+# the prior's arguments, and the fitted joint drops the normaliser
+# P(sorted | θ) that a whole-program prior draw would need. Ragged constrained
+# parameters take their own sampled path (`ragged_density`).
 _ordered_center(x) = center_type(x) in (types.ordered, types.positive_ordered)
 _gq_redrawable(x, rhs) = !_ordered_center(x) || _exchangeable_prior(rhs)
 # `c::ordered[k] ~ f(θ)` has the density ∏ f(c_i | θ) on the ordered region.
@@ -828,13 +830,82 @@ end
 Base.push!(b::DeclarativeBlock, x::SamplingExpr; info) = push!(b, x.args[1]; info)
 Base.push!(b::DeclarativeBlock, x::StanExpr{<:DeclExpr}; info) =
     push!(b, info[_decl_lhs_symbol(expr(x))]; info)
-Base.push!(b::DeclarativeBlock, x::StanExpr{Symbol}; info) = begin
+Base.push!(b::DeclarativeBlock, x::StanExpr{Symbol}; info) = _declare!(b, x; info)
+_declare!(b, x; info) = begin
     fetch_data!(type(x); info)
     get!(content(b), expr(x), x)
 end
+# Stan declares no bound or affine transform on `ordered` / `positive_ordered`:
+# `ordered<lower=0>[3] c;` is a stanc syntax error. A parameter whose typed LHS
+# carries one (forward.jl, `_ordered_constraints`) is declared as a
+# compiler-owned `<name>_free` of type `ordered` and the same shape instead, and
+# `<name>` becomes the transformed parameter that one of Stan's own constraint
+# transforms makes of it (`_ordered_transform`). Each transform is strictly
+# increasing elementwise, so the elements stay ordered, and each `_jacobian`
+# builtin adds its own log-Jacobian to the target. The builtins take arrays of
+# vectors too, so a plate's `array[n] ordered[k]` carrier lowers the same way.
+Base.push!(b::ParametersBlock, x::StanExpr{Symbol}; info) =
+    _lowered_ordered(type(x)) ? _declare_lowered_ordered!(b, x; info) : _declare!(b, x; info)
+_lowered_ordered(t::StanType) = _ordered_center(t) && !isempty(constraints(t))
+_unconstrained_info(t::StanType) = Base.structdiff(info(t), NamedTuple{CONSTRAINT_KEYS})
+_declare_lowered_ordered!(b, x; info) = begin
+    name, t = expr(x), type(x)
+    free_name = Symbol(name, :_free)
+    # A later `~` statement on the same parameter declares nothing new.
+    haskey(content(b), free_name) && return nothing
+    free_name in keys(info) && error(
+        "Cannot declare the compiler-owned `", free_name, "` behind the constrained `",
+        name, "::", nameof(center_type(t)), "`: the model already defines `", free_name,
+        "`. Rename the model's `", free_name, "`.",
+    )
+    cons = constraints(t)
+    _uses_model_local(values(cons), get(meta(info), :_model_local_transforms, ())) && error(
+        "The constraint on `", name, "::", nameof(center_type(t)), "` reads a value that ",
+        "contains an integer and is therefore computed in the model block, but `", name,
+        "` is computed from it in transformed parameters. Compute the bound from data ",
+        "or from real-valued parameters only.",
+    )
+    free = StanExpr(free_name, StanType(types.ordered, stan_size(t), _unconstrained_info(t)))
+    info[free_name] = free
+    _declare!(b, free; info)
+    center_type(t) === types.positive_ordered && !haskey(cons, :lower) &&
+        (cons = (; lower=0.0, cons...))
+    f, args... = _ordered_transform(free, Val(keys(cons)), cons)
+    value = StanExpr(CanonicalExpr(f, map(stan_expr, args)...),
+        StanType(center_type(t), stan_size(t); qual=:parameter))
+    push!(block(info, :transformed_parameters), CanonicalExpr(:(=), x, value); info)
+    nothing
+end
+_ordered_transform(free, ::Val{(:lower,)}, c) = (builtin.lower_bound_jacobian, free, c.lower)
+# `upper - exp(x)` decreases in `x`, so it is applied to `-free`.
+_ordered_transform(free, ::Val{(:upper,)}, c) =
+    (builtin.upper_bound_jacobian, StanExpr(CanonicalExpr(-, free), type(free)), c.upper)
+_ordered_transform(free, ::Val{(:lower, :upper)}, c) =
+    (builtin.lower_upper_bound_jacobian, free, c.lower, c.upper)
+_ordered_transform(free, ::Val{(:offset,)}, c) =
+    (builtin.offset_multiplier_jacobian, free, c.offset, 1.0)
+_ordered_transform(free, ::Val{(:multiplier,)}, c) =
+    (builtin.offset_multiplier_jacobian, free, 0.0, c.multiplier)
+_ordered_transform(free, ::Val{(:offset, :multiplier)}, c) =
+    (builtin.offset_multiplier_jacobian, free, c.offset, c.multiplier)
 Base.push!(b::ImperativeBlock, x; info) = begin 
     fetch_data!(x; info)
     push!(content(b), x)
+end
+# A constrained `ordered` / `positive_ordered` declared in a statement block (a
+# plate's collected result, a re-drawn plate carrier) is declared without its
+# constraint: Stan cannot spell one on these types, and what fills it satisfies
+# the constraint already — a lowered parameter (`_declare_lowered_ordered!`) or
+# a re-draw inside the bound (`_ordered_redraw`).
+Base.push!(b::ImperativeBlock, x::StanExpr{<:DeclExpr}; info) = begin
+    fetch_data!(x; info)
+    push!(content(b), _lowered_ordered(type(expr(x).args[1])) ? _unconstrained_decl(x) : x)
+end
+_unconstrained_decl(x) = begin
+    decl = expr(x).args[1]
+    t = type(decl)
+    unconstrained = StanExpr(expr(decl), StanType(center_type(t), stan_size(t), _unconstrained_info(t)))
+    StanExpr(remake(expr(x), unconstrained), type(x))
 end
 Base.push!(b::ImperativeBlock, x::DocumentExpr; info) = begin
     push!(remake(b, remake(x, x.args[1], b)), x.args[2]; info)
@@ -956,10 +1027,10 @@ end
 _push_slice_obs_likelihood_decl!(b, k::Symbol; info) = begin
     lik = Symbol(k, "_likelihood")
     if lik in keys(info)
-        get(type(info[lik]).info, :slice_obs_source, nothing) === k && return lik
+        _obs_twin_source(info[lik]) === k && return lik
         _assert_twin_free(k, "_likelihood", info)
     end
-    t = StanType(types.vector, stan_size(info[k]); qual=:quantities, slice_obs_source=k)
+    t = StanType(types.vector, stan_size(info[k]); qual=:quantities, obs_twin_source=k)
     decl = StanExpr(lik, t)
     info[lik] = decl
     push!(b, StanExpr(CanonicalExpr(:(::), decl), t); info)
@@ -993,26 +1064,20 @@ end
 # `lognormal`, … draw natively). The result keeps the declared center type, so
 # Stan still checks it at the end of generated quantities.
 #
-# Any other ordered prior has no exact re-draw. Reaching here, its symbol must
+# Any other native-family ordered prior reaches here only when its symbol must
 # be re-drawn all the same (it is cv-held-out, or its prior reads a draw), and
-# a native family's rng returns an UNSORTED vector, so refuse rather than emit
-# one. A custom family's sized `_rng` is its author's contract (stanblocks-use
-# §8) and draws as before.
+# the family's own draw is not sorted. Conditional on the prior's arguments its
+# law is the family's law restricted to the ordered region, which rejection
+# samples exactly (`_ordered_rejection`): repeat the family's own vector draw
+# until it is strictly increasing. That covers non-identical elementwise
+# arguments, joint families (`multi_normal`) and `truncated`, since only the
+# family's draw is needed. A custom family's sized `_rng` is its author's
+# contract (stanblocks-use §8) and draws as before.
 _ordered_redraw(lhs, rhs, token) = begin
-    if !_exchangeable_prior(rhs)
+    exchangeable = _exchangeable_prior(rhs)
+    if !exchangeable
         family = head(expr(rhs))
         family isa Function && parentmodule(family) === builtin || return _check_redraw_resolves(lhs, rhs, redraw_rng_expr(token, rhs))
-        name = _base_lhs_symbol(lhs)
-        error(
-            "`", name, " ~ ", nameof(_ragged_base_family(expr(rhs))), "(…)` is re-drawn in ",
-            "generated quantities — it is cv-held-out, or its prior reads a random draw — ",
-            "but `", name, "` is `", nameof(center_type(lhs)), "` and its prior is not ",
-            "exchangeable: an argument differs between elements, or the family is joint. ",
-            "Only an exchangeable prior has an exact draw (the sorted iid draw), and the ",
-            "family's own draw is not sorted. Give every element the same scalar arguments ",
-            "(`", name, "::ordered[k] ~ normal(mu, sigma)` with scalar `mu` and `sigma`), ",
-            "or keep a likelihood on `", name, "` so it stays a sampled parameter.",
-        )
     end
     ct = center_type(lhs)
     rhs_c = expr(rhs)
@@ -1021,8 +1086,17 @@ _ordered_redraw(lhs, rhs, token) = begin
         (rhs = StanExpr(remake(rhs_c, rhs_c.args...; support..., rhs_c.kwargs...), type(rhs)))
     vtoken = StanExpr(types.vector,
         StanType(types.tokenof{types.vector}, stan_size(token); value=types.vector, qual=:data))
-    sorted = stan_call(builtin.sort_asc, _check_redraw_resolves(lhs, rhs, redraw_rng_expr(vtoken, rhs)))
-    StanExpr(expr(sorted), StanType(ct, stan_size(sorted), type(sorted).info))
+    draw = _check_redraw_resolves(lhs, rhs, redraw_rng_expr(vtoken, rhs))
+    redrawn = exchangeable ? stan_call(builtin.sort_asc, draw) : _ordered_rejection(draw)
+    StanExpr(expr(redrawn), StanType(ct, stan_size(redrawn), type(redrawn).info))
+end
+# `draw` is the family's resolved vector draw `f_rng(token, args...)` — bounds,
+# `truncated` variants and `std_normal` already settled by `redraw_rng_expr` —
+# and `ordered_rejection_rng` (builtin.jl) repeats exactly that call. Each
+# attempt costs one vector draw; the expected count is 1 / P(sorted | args).
+_ordered_rejection(draw) = begin
+    call = expr(draw)
+    stan_call(builtin.ordered_rejection_rng, call.args[1], stan_expr(head(call)), call.args[2:end]...)
 end
 # `flat()` is the improper-uniform base measure: it has no `_rng` because there
 # is nothing to draw from. A symbol whose only density is `flat` and which no
@@ -1086,6 +1160,12 @@ end
 # compiler-owned plate accessor exposes enough structure to declare flat storage.
 # RaggedMatrix and every other usertype/tuple carrier remain outside this path.
 _gen_twin_name(k::Symbol) = Symbol(k, "_gen")
+# The observation a per-cell or per-slice twin declaration was minted for. The
+# three sites that declare a twin ahead of its fills (`_push_obs_gen_decl!`,
+# `_push_slice_obs_likelihood_decl!`, `_push_ragged_obs_decls!`) stamp it on the
+# twin's type. The latter two dedupe on it, and the descriptor classifies the
+# twin by it (`_generative_role`). `nothing` for every other declaration.
+_obs_twin_source(x::StanExpr) = get(type(x).info, :obs_twin_source, nothing)
 _is_gen_declarable(T) = T isa Type &&
     (T <: types.real || T <: types.any_vector || T <: types.matrix)
 # STRICT indexed-LHS matcher. A SAMPLING lhs may be an arbitrary data-qualified
@@ -1243,10 +1323,16 @@ _obs_twin_targets(x::SamplingExpr; info) = begin
 end
 # Declare the twin once per model (a base observed by two plates must not emit
 # two declarations); registering it in `info` doubles as the dedup key.
+#
+# Unlike every other twin, this one may have no `_likelihood` companion reading
+# `k` (a per-cell observation, a joint-family slice). Held out, such a `k` leaves
+# the model block, and the fills here do not read it either, so `k` drops out of
+# the data block and only its sizes stay. The stamp is then the only record
+# that `<k>_gen` is `k`'s predictive draw.
 _push_obs_gen_decl!(b, k::Symbol; info) = begin
     gen = _gen_twin_name(k)
     gen in keys(info) && return
-    t = remake(type(info[k]); value=missing, qual=:quantities)
+    t = remake(type(info[k]); value=missing, qual=:quantities, obs_twin_source=k)
     decl = StanExpr(gen, t)
     info[gen] = decl
     push!(b, StanExpr(CanonicalExpr(:(::), decl), t); info)
@@ -1257,8 +1343,8 @@ _push_ragged_obs_decls!(b, k::Symbol; info) = begin
     names = (gen, lik)
     existing = filter(name -> name in keys(info), names)
     if !isempty(existing)
-        certified = length(existing) == 2 && all(name ->
-            get(type(info[name]).info, :ragged_obs_source, nothing) === k, names)
+        certified = length(existing) == 2 &&
+            all(name -> _obs_twin_source(info[name]) === k, names)
         certified && return
         error(
             "Ragged plate observation `", k, "[…] ~ …` needs compiler-owned names `",
@@ -1278,9 +1364,9 @@ _push_ragged_obs_decls!(b, k::Symbol; info) = begin
     # (`mem::array[] int`) draws into `array[] int`, a real one into `vector`.
     # (`_likelihood` below stays real — it holds per-group density scalars.)
     gen_type = StanType(center_type(arg_types.mem), (gen_size,);
-        value=missing, qual=:quantities, ragged_obs_source=k)
+        value=missing, qual=:quantities, obs_twin_source=k)
     lik_type = StanType(types.vector, (lik_size,);
-        value=missing, qual=:quantities, ragged_obs_source=k)
+        value=missing, qual=:quantities, obs_twin_source=k)
     for decl in (StanExpr(gen, gen_type), StanExpr(lik, lik_type))
         info[expr(decl)] = decl
         push!(b, StanExpr(CanonicalExpr(:(::), decl), type(decl)); info)

@@ -174,6 +174,65 @@ Stan was already correct.
     end
 end
 
+"""
+Verify `slic: a held-out per-cell observation keeps its predictive twin`.
+
+A held-out observation made inside a plate cell (`y[i] ~ …`) or by a joint
+slice (`y[1:3] ~ multi_normal(…)`) lowers to a `y_gen` fill alone. No
+`y_likelihood` reads `y`, so `y` leaves the data block and only its size `y_n`
+stays. The descriptor used to classify the twin by its stem's data-block
+membership, so it reported `y_gen` as `:derived` and offered no `:predict`. The
+twin's declaration now carries the compiler's `obs_twin_source` stamp. The
+bound models are the control: their descriptors are unchanged.
+"""
+@testitem "slic: a held-out per-cell observation keeps its predictive twin" tags=[:slic, :plate, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    maybecv = StanBlocks.stan.maybecv
+    yv = [0.1, 0.2, -0.3]
+    cell = @slic begin
+        mu0 ~ std_normal()
+        @plate for i in 1:3
+            e = mu0 + 0.5
+            y[i] ~ normal(e, 1.0)
+        end
+    end
+    slice = @slic begin
+        mu0 ~ std_normal()
+        y[1:3] ~ multi_normal(rep_vector(mu0, 3), diag_matrix(rep_vector(1.0, 3)))
+    end
+    ops(d) = [op.name for op in d.operations]
+    for m in (cell, slice)
+        bound = stan_descriptor(m(; y = yv))
+        held = stan_model(m(; y = maybecv(:y, yv)))
+        dheld = stan_descriptor(held)
+        for d in (bound, dheld)
+            gen = only(o for o in d.outputs if o.name === :y_gen)
+            @test (gen.generative, gen.source, gen.dims) == (:draw, :y, (3,))
+        end
+        @test ops(bound) == [:transpile, :instantiate, :fit, :predict]
+        @test ops(dheld) == [:transpile, :instantiate, :predict]
+        @test :y ∉ [i.name for i in dheld.inputs]
+        # The semantic display classifies through the same rows.
+        @test occursin("generated quantity / draw of y", sprint(show, MIME"text/plain"(), held))
+    end
+end
+
+@testitem "slic: a held-out per-cell observation predicts through BridgeStan" tags=[:slic, :plate, :descriptor, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    maybecv = StanBlocks.stan.maybecv
+    m = @slic (; y = maybecv(:y, [0.1, 0.2, -0.3])) begin
+        mu0 ~ std_normal()
+        @plate for i in 1:3
+            e = mu0 + 0.5
+            y[i] ~ normal(e, 1.0)
+        end
+    end
+    d = stan_descriptor(m)
+    pred = stan_execute(d, :predict; draws = [0.0], seed = 1)
+    @test keys(pred) == (:y_gen,)
+    @test length(pred.y_gen) == 3
+    @test all(isfinite, pred.y_gen)
+    @test size(stan_execute(d, :predict; draws = zeros(1, 4), seed = 2).y_gen) == (3, 4)
+end
+
 # snag `weighted-custom-33d611a8` (reported from BRM): `weighted(...)` over a
 # custom `@lpxf` family whose pointwise twin is sized by one of its OWN arg
 # tokens (not by `y`) transpiled-errored with `Typed assignment lp::vector[n] =
@@ -7432,6 +7491,33 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
 end
 
 """
+A closure literal inside a plate cell captures what any other reference in the
+cell reads: a cell-local value's element of its promoted carrier, not the whole
+carrier. The lifted `ode_rk45` right-hand side therefore takes the cell's scalar,
+threaded as a trailing solver argument; it used to take the `vector` carrier,
+which stanc rejected.
+"""
+@testitem "slic: a closure in a plate cell captures the cell's element" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+
+    m = @slic (; ts = [0.5, 1.0], obs = [0.55, 0.35]) begin
+        ke ~ lognormal(0.0, 0.5)
+        eta ~ normal(rep_vector(0.0, 2), 0.3)
+        pred ~ plate(; outer = 2) do i
+            ke_i = ke * exp(eta[i])
+            selected = to_vector(ode_rk45((t, y) -> -ke_i * y, rep_vector(1.0, 1), 0.0, to_array_1d(ts))[:, 1])
+            obs[i] ~ normal(selected[1], 0.1)
+            selected
+        end
+    end
+    @test transpiles(m)
+    @test stanc_compiles(m)
+    code = stan_code(m)
+    @test occursin(r"vector closure_\d+\(real t, vector y, real pred_ke_i\)", stan_block(code, "functions"))
+    @test occursin(r"ode_rk45\(closure_\d+, [^;]*, pred_ke_i\[plate_i__pl_\d+\]\)", code)
+end
+
+"""
 An ODE solver returns `array[] vector`. Plate collects that deterministic local
 with the plate axes prepended, then indexes those axes to recover the original
 trajectory inside the cell before selecting a state.
@@ -7547,8 +7633,11 @@ Torsten's functor event solvers (`pmx_solve_rk45`/`bdf`/`adams` and the coupled
 fixed signature `f(t, y, theta, x_r, x_i)` (coupled: `f(t, y, y_pk, theta, x_r,
 x_i)`), not Stan's variadic ODE one, so the `@deffun` must be emitted at exactly
 that signature and named in the solver's function slot. Snag
-`torsten-functor-96ddfe89`. The Torsten stanc and BridgeStan halves run only where
-the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
+`torsten-functor-96ddfe89`. A closure capturing values is emitted as a generated
+adapter at that signature: the captures are packed onto the end of `theta`
+(autodiff reals), `x_r` (data reals) and `x_i` (ints) and re-read in its body.
+The Torsten stanc and BridgeStan halves run only where the fleet Torsten build is
+provisioned (`~/.local/opt/torsten`).
 """
 @testitem "slic: Torsten functor pmx solvers emit the fixed-signature RHS" tags=[:slic, :stanc, :bridgestan, :torsten] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stan_block
@@ -7575,6 +7664,14 @@ the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
             K[2, 2] = -cl / v
             K
         end
+        # `pmx_test_rhs` with its parameters as trailing arguments, which Torsten's
+        # stanc refuses as a right-hand side; a short closure calls it.
+        pmx_test_rhs_v(t::real, y::vector[n], cl::real, v::real, ka::real)::vector[n] = begin
+            dy::vector[n]
+            dy[1] = -ka * y[1]
+            dy[2] = ka * y[1] - cl / v * y[2]
+            dy
+        end
         # Effect compartment driven by the closed-form central amount `y_pk[2]`.
         pmx_test_effect_rhs(t::real, y::vector[n], y_pk::vector[p], theta::real[k], x_r::real[m], x_i::int[l])::vector[n] = begin
             dy::vector[n]
@@ -7591,7 +7688,7 @@ the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
         :cmt => [1; fill(2, N - 1)], :addl => [1; zeros(Int, N - 1)],
         :ss => zeros(Int, N), :obs => collect(2:N),
         :y => [0.6, 1.0, 1.4, 1.5, 1.0, 1.9, 1.4, 0.6],
-        :xrm => ones(N, 1), :xi => ones(Int, N, 1),
+        :xrm => ones(N, 1), :xi => ones(Int, N, 1), :wt => 70.0, :nt => 1,
     )
     pk_model(call) = StanBlocks.SlicModel(quote
         cl ~ lognormal(log(5.0), 0.5)
@@ -7612,6 +7709,15 @@ the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
 
     rhs_sig = r"vector pmx_test_rhs\(\s*real t,\s*vector y,\s*array\[\] real theta,\s*array\[\] real x_r,\s*array\[\] int x_i\s*\)"
     effect_sig = r"vector pmx_test_effect_rhs\(\s*real t,\s*vector y,\s*vector y_pk,\s*array\[\] real theta,\s*array\[\] real x_r,\s*array\[\] int x_i\s*\)"
+    # `pmx_test_rhs` as a closure that captures the parameter `ka`, the data real
+    # `wt` and the data int `nt` (`wt / 70.0` and `nt` are both 1 here).
+    closure_rhs = :((t, yy, tht, xrr, xii) -> begin
+        dy = rep_vector(0.0, 2)
+        dy[1] = -ka * yy[1]
+        dy[2] = ka * yy[1] - nt * tht[1] / (tht[2] * wt / 70.0) * yy[2]
+        dy
+    end)
+    effect_closure = :((t, yy, ypk, tht, xrr, xii) -> rep_vector(ka * (ypk[2] - yy[1]) * wt / 70.0, 1))
     cases = Pair{String,Any}[
         "rk45" => :(pmx_solve_rk45(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th)),
         "rk45+theta-tol" => :(pmx_solve_rk45(pmx_test_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
@@ -7627,6 +7733,21 @@ the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
             the, rep_array(1.0, 3), rep_array(0.0, 3))),
         "twocpt_bdf" => :(pmx_solve_twocpt_bdf(pmx_test_effect_rhs, 1, ta, aa, ra, ia, evid, cmt, addl, ss,
             to_array_1d(append_row(append_row(to_vector(th), 1.0), the[4])), rep_array(1.0, 4), rep_array(0.0, 4))),
+        "closure" => :(pmx_solve_rk45($closure_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th)),
+        "closure+x_r/x_i+tol" => :(pmx_solve_adams($closure_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
+            rep_array(1.0, 2), rep_array(0.0, 2), xr, xi, 1e-8, 1e-8, 100000)),
+        "closure+per-event theta" => :(pmx_solve_bdf($closure_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss,
+            rep_array(th, size(ta)))),
+        "closure coupled" => :(pmx_solve_onecpt_rk45($effect_closure, 1, ta, aa, ra, ia, evid, cmt, addl, ss,
+            th, rep_array(1.0, 3), rep_array(0.0, 3))),
+        "short closure" => :(pmx_solve_rk45((t, yy) -> pmx_test_rhs_v(t, yy, cl, v, ka), 2,
+            ta, aa, ra, ia, evid, cmt, addl, ss)),
+        "short closure+data+tol" => :(pmx_solve_bdf((t, yy) -> nt * pmx_test_rhs_v(t, yy, cl, v * wt / 70.0, ka), 2,
+            ta, aa, ra, ia, evid, cmt, addl, ss, rep_array(1.0, 2), rep_array(0.0, 2), 1e-8, 1e-8, 100000)),
+        "short closure without captures" => :(pmx_solve_adams((t, yy) -> -0.1 * yy, 2,
+            ta, aa, ra, ia, evid, cmt, addl, ss)),
+        "short coupled" => :(pmx_solve_onecpt_rk45((t, yy, ypk) -> rep_vector(ka * (ypk[2] - yy[1]), 1), 1,
+            ta, aa, ra, ia, evid, cmt, addl, ss, th, rep_array(1.0, 3), rep_array(0.0, 3))),
     ]
     codes = Dict(label => stan_code(pk_model(call)) for (label, call) in cases)
 
@@ -7644,18 +7765,115 @@ the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
     @test occursin("matrix[2, time_n] x = pmx_solve_linode(", codes["linode"])
     @test occursin("matrix[3, time_n] x = pmx_solve_onecpt_effcpt(", codes["onecpt_effcpt"])
 
-    # A closure capturing a parameter cannot ride Torsten's fixed signature;
-    # supporting it needs a generated theta-packing adapter (capability gap).
-    capturing = pk_model(:(pmx_solve_rk45((t, yy, tht, xrr, xii) -> -ka * yy, 2, ta, aa, ra, ia,
-        evid, cmt, addl, ss, th)))
-    @test_broken (try stan_code(capturing); true catch; false end)
+    # A capturing closure becomes an adapter at Torsten's signature. Its captures
+    # ride the end of `theta` (the parameter `ka`), `x_r` (the data real `wt`)
+    # and `x_i` (the data int `nt`); the adapter re-reads them and re-binds the
+    # closure's own `theta` to the leading part.
+    adapter_sig = r"vector closure_\d+\(\s*real t,\s*vector yy,\s*array\[\] real theta_ext,\s*array\[\] real x_r_ext,\s*array\[\] int x_i_ext\s*\)"
+    for label in ("closure", "closure+x_r/x_i+tol", "closure+per-event theta")
+        fns = stan_block(codes[label], "functions")
+        @test occursin(adapter_sig, fns)
+        @test occursin("int theta_end = (size(theta_ext) - 1);", fns)
+        @test occursin("tht = theta_ext[1:theta_end];", fns)
+        @test occursin("real ka = theta_ext[(theta_end + 1)];", fns)
+        @test occursin("real wt = x_r_ext[(x_r_end + 1)];", fns)
+        @test occursin("int nt = x_i_ext[(x_i_end + 1)];", fns)
+        @test occursin(r"matrix\[2, time_n\] x = pmx_solve_(rk45|adams|bdf)\(\s*closure_\d+,\s*2,", codes[label])
+    end
+    # Without `x_r`/`x_i` in the call, Torsten's defaults `biovar = 1`, `tlag = 0`
+    # are inserted to reach them, and the data captures repeat once per event.
+    @test occursin(r"append_array\(th, to_array_1d\(\[ka\]'\)\),\s*rep_array\(1\.0, 2\),\s*rep_array\(0\.0, 2\),\s*rep_array\(to_array_1d\(\[wt\]'\), size\(ta\)\),\s*rep_array\(rep_array\(nt, 1\), size\(ta\)\)\s*\)", codes["closure"])
+    # The call's own per-event rows are extended, and its tolerances stay last.
+    @test occursin(r"pmx_append_each\(xr, to_array_1d\(\[wt\]'\)\),\s*pmx_append_each\(xi, rep_array\(nt, 1\)\),\s*1\.0e-8,\s*1\.0e-8,\s*100000\s*\)", codes["closure+x_r/x_i+tol"])
+    @test occursin(r"array\[, \] real pmx_append_each\(", stan_block(codes["closure+x_r/x_i+tol"], "functions"))
+    @test occursin(r"array\[, \] int pmx_append_each\(", stan_block(codes["closure+x_r/x_i+tol"], "functions"))
+    @test occursin("pmx_append_each(rep_array(th, size(ta)), to_array_1d([ka]'))", codes["closure+per-event theta"])
+    # A coupled solver forwards no `x_r`/`x_i`, so its data real rides `theta` too.
+    coupled_fns = stan_block(codes["closure coupled"], "functions")
+    @test occursin(r"vector closure_\d+\(\s*real t,\s*vector yy,\s*vector ypk,\s*array\[\] real theta_ext,\s*array\[\] real xrr,\s*array\[\] int xii\s*\)", coupled_fns)
+    @test occursin(r"x = pmx_solve_onecpt_rk45\(\s*closure_\d+,\s*1,[^;]*append_array\(th, to_array_1d\(\[wt, ka\]'\)\)", codes["closure coupled"])
+
+    # A short closure `(t, y)` takes everything else by capture, and the ODE
+    # family's call then omits `theta`: the packed captures are all of it. A
+    # `@deffun` with trailing parameters is called through one.
+    short_sig(theta, x_r, x_i) = Regex(string(raw"vector closure_\d+\(\s*real t,\s*vector yy,\s*array\[\] real ",
+        theta, raw",\s*array\[\] real ", x_r, raw",\s*array\[\] int ", x_i, raw"\s*\)"))
+    short_fns = stan_block(codes["short closure"], "functions")
+    @test occursin(short_sig("theta_ext", "x_r", "x_i"), short_fns)
+    @test occursin("return pmx_test_rhs_v(t, yy, cl, v, ka);", short_fns)
+    @test occursin(r"vector pmx_test_rhs_v\(", short_fns)
+    @test occursin(r"x = pmx_solve_rk45\(\s*closure_\d+,\s*2,\s*ta,[^;]*,\s*ss,\s*to_array_1d\(\[cl, v, ka\]'\)\s*\);", codes["short closure"])
+    @test occursin(short_sig("theta_ext", "x_r_ext", "x_i_ext"), stan_block(codes["short closure+data+tol"], "functions"))
+    @test occursin(r"ss,\s*to_array_1d\(\[cl, v, ka\]'\),\s*rep_array\(1\.0, 2\),\s*rep_array\(0\.0, 2\),\s*rep_array\(to_array_1d\(\[wt\]'\), size\(ta\)\),\s*rep_array\(rep_array\(nt, 1\), size\(ta\)\),\s*1\.0e-8,\s*1\.0e-8,\s*100000\s*\)", codes["short closure+data+tol"])
+    # Without captures the adapter still supplies Torsten's slots. Torsten refuses
+    # an empty `theta`, so it gets a one-element placeholder.
+    @test occursin(short_sig("theta", "x_r", "x_i"), stan_block(codes["short closure without captures"], "functions"))
+    @test occursin(r"ss,\s*rep_array\(0\.0, 1\)\s*\);", codes["short closure without captures"])
+    # A coupled solver keeps `theta`: its closed-form PK compartments read it.
+    @test occursin(r"vector closure_\d+\(\s*real t,\s*vector yy,\s*vector ypk,\s*array\[\] real theta_ext,", stan_block(codes["short coupled"], "functions"))
+    @test occursin(r"x = pmx_solve_onecpt_rk45\(\s*closure_\d+,\s*1,[^;]*,\s*ss,\s*append_array\(th, to_array_1d\(\[ka\]'\)\),\s*rep_array\(1\.0, 3\)", codes["short coupled"])
+
+    refusal(f) = try
+        f()
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    # refused: Torsten forwards no `x_i` to a coupled solver's right-hand side
+    # and its `theta` is real, so an int capture has no slot to ride.
+    coupled_int = refusal(() -> stan_code(pk_model(:(pmx_solve_onecpt_rk45(
+        (t, yy, ypk, tht, xrr, xii) -> rep_vector(nt * (ypk[2] - yy[1]), 1), 1, ta, aa, ra, ia,
+        evid, cmt, addl, ss, th, rep_array(1.0, 3), rep_array(0.0, 3))))))
+    @test !isnothing(coupled_int) && occursin("captures the int `nt`", coupled_int)
+    # refused: the adapter re-reads each capture from the end of `theta`/`x_r`/`x_i`
+    # inside a Stan function, which cannot see a data size (decision `1fp6sdv`,
+    # prong `sizes`); capturing the elements as scalars is the supported form.
+    data_size = refusal(() -> stan_code(pk_model(:(pmx_solve_rk45(
+        (t, yy) -> -(ka * y[1]) * yy, 2, ta, aa, ra, ia, evid, cmt, addl, ss)))))
+    @test !isnothing(data_size) && occursin("captures `y` of type `vector`, whose size is not a literal", data_size)
+    # refused: a `(t, y)` closure cannot read the per-event `x_r`/`x_i` the call
+    # passes, and silently dropping the caller's data would hide the mistake.
+    short_data = refusal(() -> stan_code(pk_model(:(pmx_solve_rk45(
+        (t, yy) -> -ka * yy, 2, ta, aa, ra, ia, evid, cmt, addl, ss,
+        rep_array(1.0, 2), rep_array(0.0, 2), xr, xi)))))
+    @test !isnothing(short_data) && occursin("cannot read the `x_r`/`x_i`", short_data)
+    # refused: Torsten calls the right-hand side as `(t, y, theta, x_r, x_i)` and its
+    # stanc refuses trailing arguments, so a `@deffun` taking other arguments has no
+    # method for that call; it is called through a closure (decision `1fp6sdv`,
+    # prong `variadic`) instead of reaching stanc as an undeclared identifier.
+    variadic = refusal(() -> stan_code(pk_model(:(pmx_solve_rk45(pmx_test_rhs_v, 2,
+        ta, aa, ra, ia, evid, cmt, addl, ss, th)))))
+    @test !isnothing(variadic) && occursin("`pmx_test_rhs_v` has no method for Torsten's call", variadic)
+
+    # Inside a plate cell a capture reads the cell's element of a cell-local value.
+    plate_model = StanBlocks.SlicModel(quote
+        cl ~ lognormal(log(5.0), 0.5)
+        v ~ lognormal(log(50.0), 0.5)
+        ka ~ lognormal(log(1.2), 0.5)
+        sigma ~ exponential(10.0)
+        eta ~ normal(rep_vector(0.0, 2), 0.3)
+        ta = to_array_1d(time)
+        aa = to_array_1d(amt)
+        ra = to_array_1d(rate)
+        ia = to_array_1d(ii)
+        pred ~ plate(; outer = 2) do i
+            ka_i = ka * exp(eta[i])
+            cp = to_vector(pmx_solve_rk45((t, yy) -> pmx_test_rhs_v(t, yy, cl, v, ka_i), 2,
+                ta, aa, ra, ia, evid, cmt, addl, ss)[2, :]) / v
+            ypeak[i] ~ lognormal(log(cp[3]), sigma)
+            cp
+        end
+    end, merge(copy(data), Dict{Symbol,Any}(:ypeak => [1.4, 1.1])), @__MODULE__)
+    plate_code = stan_code(plate_model)
+    @test occursin("real pred_ka_i = theta_ext[(theta_end + 3)];", stan_block(plate_code, "functions"))
+    @test occursin(r"to_array_1d\(\[cl, v, pred_ka_i\[plate_i__pl_\d+\]\]'\)", plate_code)
 
     torsten = joinpath(homedir(), ".local/opt/torsten")
     if !isdir(torsten)
         @test_skip "Torsten build not provisioned at $torsten"
     else
         tstanc = joinpath(torsten, "cmdstan/bin/stanc")
-        for (label, code) in codes
+        for (label, code) in (codes..., "plate" => plate_code)
             result = withenv("STANC_PATH" => tstanc) do
                 stanc_check(code; warn_pedantic=false)
             end
@@ -7671,11 +7889,25 @@ the fleet Torsten build is provisioned (`~/.local/opt/torsten`).
             rep_array(1.0, 2), rep_array(0.0, 2), 1e-10, 1e-10, 1000000))); make_args)
         closed = instantiate(pk_model(:(pmx_solve_onecpt(ta, aa, ra, ia, evid, cmt, addl, ss, th))); make_args)
         @test LogDensityProblems.dimension(ode) == LogDensityProblems.dimension(closed) == 4
+        # The capturing closure solves the same system as `pmx_test_rhs`, with
+        # `ka`, `wt` and `nt` read back from `theta`, `x_r` and `x_i`.
+        closure = instantiate(pk_model(:(pmx_solve_rk45($closure_rhs, 2, ta, aa, ra, ia, evid, cmt, addl, ss, th,
+            1e-10, 1e-10, 1000000))); make_args)
+        # The short form packs `theta` as `[cl, v, ka]`, which is exactly `th`.
+        short = instantiate(pk_model(:(pmx_solve_rk45((t, yy) -> pmx_test_rhs_v(t, yy, cl, v, ka), 2,
+            ta, aa, ra, ia, evid, cmt, addl, ss, rep_array(1.0, 2), rep_array(0.0, 2), 1e-10, 1e-10, 1000000))); make_args)
+        @test LogDensityProblems.dimension(closure) == LogDensityProblems.dimension(short) == 4
         for q in ([0.1, -0.2, 0.05, -0.3], [-0.3, 0.2, 0.4, 0.1])
             lo, go = LogDensityProblems.logdensity_and_gradient(ode, q)
             lc, gc = LogDensityProblems.logdensity_and_gradient(closed, q)
+            lf, gf = LogDensityProblems.logdensity_and_gradient(closure, q)
+            ls, gs = LogDensityProblems.logdensity_and_gradient(short, q)
             @test lo ≈ lc atol=1e-6
             @test go ≈ gc atol=1e-5
+            @test lf ≈ lo atol=1e-6
+            @test gf ≈ go atol=1e-5
+            @test ls ≈ lo atol=1e-12
+            @test gs ≈ go atol=1e-12
         end
     end
 end
@@ -14142,18 +14374,162 @@ parameter and a cv-held-out one re-drew as an UNSORTED `vector`.
             stan_block(code, "generated quantities"))
     end
 
-    # (g) A cv-held-out NON-exchangeable prior must be re-drawn but has no exact
-    #     draw yet (capability gap, todo StanBlocks/todos/2026-10-20T00-14-28-178-1spkwc8).
-    #     Until it exists the program fails at trace time instead of emitting the
-    #     unsorted family draw.
+    # (g) A cv-held-out NON-exchangeable prior has no sorted iid draw; it
+    #     re-draws by rejection (item `slic: a non-exchangeable ordered prior
+    #     re-draws by rejection when it must be re-drawn`).
     held_out_vec = @slic (; idx = StanBlocks.stan.maybecv(:idx, [1, 2, 3, 2]), y = [0.1, 0.2, 0.3, 0.4], m0 = [0.0, 1.0, 2.0]) begin
         n = maximum(idx)
         c::ordered[n] ~ normal(m0[1:n], 1.0)
         y ~ normal(c[idx], 1.0)
     end
-    @test_broken transpiles(held_out_vec; re = false)
-    let err = redraw_error(held_out_vec)
-        @test err !== nothing && occursin("its prior is not exchangeable", err)
+    @test transpiles(held_out_vec; re = false)
+    @test redraw_error(held_out_vec) === nothing
+end
+
+@testitem "slic: a non-exchangeable ordered prior re-draws by rejection when it must be re-drawn" tags=[:slic, :plate, :stanc, :bridgestan, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    # Todo StanBlocks:ordered-redraw/todos/2026-10-20T00-14-28-178-1spkwc8.
+    # Conditional on its arguments, `c::ordered[k] ~ f(θ)` is f restricted to the
+    # ordered region. Without exchangeability no sorted iid draw has that law
+    # (sorting the draw is a different law), and a cv-held-out or draw-reading
+    # prior must still be re-drawn: repeat the family's own vector draw until it
+    # is strictly increasing. It used to fail at trace time; before that it
+    # re-drew an unsorted `vector`.
+    empty_block(code, name) = strip(stan_block(code, name)) == "{\n}"
+    gq(m) = stan_block(stan_code(m), "generated quantities")
+    idx = StanBlocks.stan.maybecv(:idx, [1, 2, 3, 2])
+    y = [0.1, 0.2, 0.3, 0.4]
+
+    # (a) Elementwise family with a vector argument: the exact restricted law.
+    held_out = @slic (; idx, y, m0 = [0.0, 1.0, 2.0]) begin
+        n = maximum(idx)
+        c::ordered[n] ~ normal(m0[1:n], 1.0)
+        y ~ normal(c[idx], 1.0)
+    end
+    @test stanc_compiles(held_out)
+    let code = stan_code(held_out)
+        @test empty_block(code, "parameters") && empty_block(code, "model")
+        @test occursin("ordered[n] c = ordered_rejection_vector_normal_rng_rng(n, m0[1:n], 1.0);",
+            stan_block(code, "generated quantities"))
+        @test occursin("while((ordered_rejection_unsorted(draw) == 1))", stan_block(code, "functions"))
+    end
+    # 20k BridgeStan draws against an independent Julia rejection sampler of the
+    # same law. The naive `sort_asc` of the non-identical draw differs by ≈ 0.14
+    # in the first coordinate's mean (≈ 23 standard errors), so this tells the
+    # two apart.
+    prob = instantiate(held_out)
+    @test LogDensityProblems.dimension(prob) == 0
+    names_gq = BridgeStan.param_names(prob.model; include_tp = true, include_gq = true)
+    cols = [findfirst(==("c.$i"), names_gq) for i in 1:3]
+    rng = BridgeStan.StanRNG(prob.model, 4321)
+    n_draws = 20_000
+    draws = reduce(hcat, [BridgeStan.param_constrain(prob.model, Float64[];
+        include_tp = true, include_gq = true, rng)[cols] for _ in 1:n_draws])
+    @test all(issorted, eachcol(draws))
+    ref_rng = Xoshiro(1)
+    ref = Vector{Float64}[]
+    while length(ref) < 200_000
+        x = [0.0, 1.0, 2.0] .+ randn(ref_rng, 3)
+        x[1] < x[2] < x[3] && push!(ref, x)
+    end
+    ref = reduce(hcat, ref)
+    se = sqrt.(vec(var(draws; dims = 2)) ./ n_draws .+ vec(var(ref; dims = 2)) ./ size(ref, 2))
+    @test all(abs.(vec(mean(draws; dims = 2)) .- vec(mean(ref; dims = 2))) .< 6 .* se)
+    @test all(abs.(vec(std(draws; dims = 2)) .- vec(std(ref; dims = 2))) .< 0.05)
+
+    # (b) The parameter the prior reads stays fitted; only `c` is re-drawn.
+    hier = @slic (; idx, y, m0 = [0.0, 1.0, 2.0]) begin
+        n = maximum(idx)
+        mu ~ normal(0, 1)
+        c::ordered[n] ~ normal(mu .+ m0[1:n], 1.0)
+        y ~ normal(c[idx], 1.0)
+    end
+    @test stanc_compiles(hier)
+    let code = stan_code(hier)
+        @test occursin("real mu;", stan_block(code, "parameters"))
+        @test occursin("ordered[n] c = ordered_rejection_vector_normal_rng_rng(n, (mu + m0[1:n]), 1.0);",
+            stan_block(code, "generated quantities"))
+    end
+
+    # (c) Only the family's own draw is needed: a joint family, a `truncated`
+    #     prior, and `positive_ordered` (drawn inside `lower=0`, truncated where
+    #     the family does not imply it).
+    joint = @slic (; idx, y, m0 = [0.0, 1.0, 2.0], S = [1.0 0.5 0.2; 0.5 1.0 0.5; 0.2 0.5 1.0]) begin
+        n = maximum(idx)
+        c::ordered[n] ~ multi_normal(m0[1:n], S[1:n, 1:n])
+        y ~ normal(c[idx], 1.0)
+    end
+    trunc = @slic (; idx, y, m0 = [0.0, 1.0, 2.0]) begin
+        n = maximum(idx)
+        c::ordered[n] ~ truncated(normal, m0[1:n], 1.0; lower = -1.0)
+        y ~ normal(c[idx], 1.0)
+    end
+    pos_normal = @slic (; idx, y, m0 = [0.0, 1.0, 2.0]) begin
+        n = maximum(idx)
+        c::positive_ordered[n] ~ normal(m0[1:n], 1.0)
+        y ~ normal(c[idx], 1.0)
+    end
+    pos_exp = @slic (; idx, y, r0 = [3.0, 1.0, 0.5]) begin
+        n = maximum(idx)
+        c::positive_ordered[n] ~ exponential(r0[1:n])
+        y ~ normal(c[idx], 1.0)
+    end
+    for (m, line) in (
+            (joint, "ordered[n] c = ordered_rejection_vector_multi_normal_rng_rng(n, m0[1:n], S[1:n, 1:n]);"),
+            (trunc, "ordered[n] c = ordered_rejection_vector_lower_conditioning_rng_normal_rng(n, -1.0, m0[1:n], 1.0);"),
+            (pos_normal, "positive_ordered[n] c = ordered_rejection_vector_lower_conditioning_rng_normal_rng(n, 0.0, m0[1:n], 1.0);"),
+            (pos_exp, "positive_ordered[n] c = ordered_rejection_vector_exponential_rng_rng(n, r0[1:n]);"))
+        @test stanc_compiles(m)
+        @test occursin(line, gq(m))
+    end
+
+    # (d) A prior that reads a random draw is re-drawn without any cv mark.
+    reads_draw = @slic (; m0 = [0.0, 1.0, 2.0]) begin
+        s = normal_rng(0.0, 1.0)
+        c::ordered[3] ~ normal(m0 .+ s, 1.0)
+    end
+    @test stanc_compiles(reads_draw)
+    @test occursin("ordered[3] c = ordered_rejection_vector_normal_rng_rng(3, (m0 + s), 1.0);", gq(reads_draw))
+
+    # (e) A plate cell re-draws per cell.
+    cells = @slic (; group_idx = StanBlocks.stan.maybecv(:group_idx, [1, 2, 2]), y = [0.1, 0.2, 0.3], m0 = [0.0, 1.0, 2.0]) begin
+        n_g = maximum(group_idx)
+        s ~ exponential(1)
+        p ~ plate(; outer = (n_g,)) do g
+            c::ordered[3] ~ normal(m0, s)
+            c[1]
+        end
+        y ~ normal(p[group_idx], 1.0)
+    end
+    @test stanc_compiles(cells)
+    let code = gq(cells)
+        @test occursin(r"array\[n_g\] ordered\[3\] p_c;", code)
+        @test occursin(r"p_c\[plate_i\w*\] = ordered_rejection_vector_normal_rng_rng\(3, m0, s\);", code)
+    end
+
+    # (f) Prior-only, a non-exchangeable prior still stays a sampled parameter:
+    #     with a parameter argument the fitted joint drops P(sorted | θ), which a
+    #     whole-program draw cannot reproduce.
+    prior_only = @slic (; m0 = [0.0, 1.0, 2.0]) begin
+        mu ~ normal(0, 1)
+        c::ordered[3] ~ normal(mu .+ m0, 1.0)
+    end
+    @test occursin("ordered[3] c;", stan_block(stan_code(prior_only), "parameters"))
+
+    # (g) No increasing draw within the budget fails loudly at draw time.
+    hopeless = @slic (; idx, y, m0 = [2.0, 1.0, 0.0]) begin
+        n = maximum(idx)
+        c::ordered[n] ~ normal(m0[1:n], 0.05)
+        y ~ normal(c[idx], 1.0)
+    end
+    let prob = instantiate(hopeless), rng = BridgeStan.StanRNG(prob.model, 1)
+        err = try
+            BridgeStan.param_constrain(prob.model, Float64[]; include_tp = true, include_gq = true, rng)
+            nothing
+        catch e
+            sprint(showerror, e)
+        end
+        @test err !== nothing && occursin("found no increasing draw in 100000 attempts", err)
     end
 end
 
@@ -14256,6 +14632,122 @@ end
     for g in 1:4
         @test maximum(abs.(cov(draws[cols[g, :], :]') .- target)) < 0.2
         @test maximum(abs.(mean(draws[cols[g, :], :]; dims = 2))) < 0.1
+    end
+end
+
+"""
+Todo `1puhj2t`. Stan declares no bound or affine transform on `ordered` /
+`positive_ordered`, so a typed `c::ordered[k] ~ f(…; lower = …)`, or one whose
+family implies a bound (`exponential`, `uniform`, `beta`), declared a
+stanc-invalid `ordered<lower=…>[k]` that `transpiles` reported green. A sampled
+one now lowers to an `ordered` free vector `c_free` and the transformed
+parameter `c` that a Stan constraint transform makes of it; a plate carrier
+lowers the same way, and its collected result and re-drawn carrier are declared
+without the bound.
+"""
+@testitem "slic: a bounded ordered parameter is a constraint transform of an ordered free vector" tags=[:slic, :plate, :stanc, :bridgestan, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    fitted(stmt; obs = :(c[1])) = StanBlocks.SlicModel(quote
+        a ~ normal(0, 1)
+        $stmt
+        y ~ normal($obs, 1.0)
+    end, Dict{Symbol,Any}(:y => [0.5]), @__MODULE__)
+    trace_error(m) = try; stan_code(m); nothing; catch e; sprint(showerror, e); end
+
+    # (a) Every bound, written or implied by the family, is one transform of `c_free`.
+    for (stmt, decl, value) in (
+            (:(c::ordered[3] ~ exponential(1.0)), "ordered", "lower_bound_jacobian(c_free, 0.0)"),
+            (:(c::ordered[3] ~ normal(0, 1; lower = -1.0)), "ordered", "lower_bound_jacobian(c_free, -1.0)"),
+            (:(c::ordered[3] ~ normal(0, 1; upper = 2.0)), "ordered", "upper_bound_jacobian((-c_free), 2.0)"),
+            (:(c::ordered[3] ~ uniform(0.0, 1.0)), "ordered", "lower_upper_bound_jacobian(c_free, 0.0, 1.0)"),
+            (:(c::ordered[3] ~ normal(0, 1; lower = a)), "ordered", "lower_bound_jacobian(c_free, a)"),
+            (:(c::ordered[3] ~ normal(0, 1; offset = 1.0, multiplier = 2.0)), "ordered",
+                "offset_multiplier_jacobian(c_free, 1.0, 2.0)"),
+            (:(c::positive_ordered[3] ~ beta(2, 2)), "positive_ordered", "lower_upper_bound_jacobian(c_free, 0.0, 1)"),
+            (:(c::positive_ordered[3] ~ normal(0, 1; upper = 3.0)), "positive_ordered",
+                "lower_upper_bound_jacobian(c_free, 0.0, 3.0)"),
+            (:(c::positive_ordered[3] ~ normal(0, 1; lower = 1.0)), "positive_ordered",
+                "lower_bound_jacobian(c_free, 1.0)"))
+        m = fitted(stmt)
+        @test stanc_compiles(m)
+        code = stan_code(m)
+        @test occursin(r"^\s*ordered\[3\] c_free;"m, stan_block(code, "parameters"))
+        @test occursin("$decl[3] c = $value;", stan_block(code, "transformed parameters"))
+    end
+    # Prior-only, the same exchangeable priors still re-draw sorted inside the bound.
+    prior = StanBlocks.SlicModel(:(c::ordered[3] ~ normal(0, 1; lower = -1.0)), Dict{Symbol,Any}(), @__MODULE__)
+    @test occursin("ordered[3] c = sort_asc(lower_conditioning_vector_normal_rng(3, -1.0, 0, 1));",
+        stan_block(stan_code(prior), "generated quantities"))
+
+    # (b) A `positive_ordered` lower bound at or below 0 restates its support:
+    #     nothing is lowered, and a re-draw stays positive.
+    restated = fitted(:(c::positive_ordered[3] ~ normal(0, 1; lower = -1.0)))
+    @test stanc_compiles(restated)
+    @test occursin("positive_ordered[3] c;", stan_block(stan_code(restated), "parameters"))
+    restated_prior = StanBlocks.SlicModel(:(c::positive_ordered[3] ~ normal(0, 1; lower = -1.0)),
+        Dict{Symbol,Any}(), @__MODULE__)
+    @test occursin("positive_ordered[3] c = sort_asc(lower_conditioning_vector_normal_rng(3, 0.0, 0, 1));",
+        stan_block(stan_code(restated_prior), "generated quantities"))
+
+    # (c) A plate cell lowers its `array[n] ordered[k]` carrier; the collected
+    #     result, and a prior-only re-drawn carrier, are declared without the bound.
+    cells(cell; fit) = begin
+        body = quote
+            s ~ exponential(1)
+            p ~ plate(; outer = (n,)) do g
+                $cell
+                c
+            end
+        end
+        fit && push!(body.args, :(y ~ normal(p[1][1], 1.0)))
+        StanBlocks.SlicModel(body, Dict{Symbol,Any}(:n => 2, :k => 3, (fit ? (:y => [0.5],) : ())...), @__MODULE__)
+    end
+    plate_fit = cells(:(c::positive_ordered[k] ~ beta(2.0, s)); fit = true)
+    @test stanc_compiles(plate_fit)
+    let code = stan_code(plate_fit)
+        @test occursin("array[n] ordered[k] p_c_free;", stan_block(code, "parameters"))
+        tp = stan_block(code, "transformed parameters")
+        @test occursin("array[n] positive_ordered[k] p_c = lower_upper_bound_jacobian(p_c_free, 0.0, 1);", tp)
+        @test occursin("array[n] positive_ordered[k] p;", tp)
+    end
+    plate_prior = cells(:(c::ordered[k] ~ normal(0.0, s; lower = 0.5)); fit = false)
+    @test stanc_compiles(plate_prior)
+    @test occursin("array[n] ordered[k] p_c;", stan_block(stan_code(plate_prior), "generated quantities"))
+
+    # (d) The constrained values lie inside the bound, and the log-Jacobian the
+    #     model adds is that of the map from the unconstrained point to `c`
+    #     (every other parameter kept), by central differences.
+    for (m, name, lo, hi) in ((fitted(:(c::ordered[3] ~ normal(0, 1; upper = 2.0))), "c", -Inf, 2.0),
+                              (plate_fit, "p_c", 0.0, 1.0))
+        model = instantiate(m).model
+        names = BridgeStan.param_names(model; include_tp = true)
+        np = BridgeStan.param_num(model)
+        @test any(n -> startswith(n, "$(name)_free."), names[1:np])
+        out = vcat(findall(n -> !occursin("_free", n), names[1:np]),
+                   findall(n -> startswith(n, "$name."), names))
+        constrain(θ) = BridgeStan.param_constrain(model, θ; include_tp = true)[out]
+        d = BridgeStan.param_unc_num(model)
+        @test length(out) == d
+        rng = Xoshiro(1)
+        for _ in 1:5
+            θ = randn(rng, d)
+            values = BridgeStan.param_constrain(model, θ; include_tp = true)[findall(n -> startswith(n, "$name."), names)]
+            @test all(v -> lo < v < hi, values)
+            h = 1e-6
+            J = reduce(hcat, [(constrain(θ .+ h .* (1:d .== j)) .- constrain(θ .- h .* (1:d .== j))) ./ 2h for j in 1:d])
+            logjac = BridgeStan.log_density(model, θ; jacobian = true) -
+                BridgeStan.log_density(model, θ; jacobian = false)
+            @test logjac ≈ first(StanBlocks.LinearAlgebra.logabsdet(J)) atol = 1e-4
+        end
+    end
+
+    # (e) What one elementwise transform cannot keep ordered fails at trace time.
+    for (stmt, message) in (
+            (:(c::ordered[3] ~ normal(0, 1; lower = [0.0, 1.0, 2.0])), "has `lower=` that is not a scalar"),
+            (:(c::positive_ordered[3] ~ normal(0, 1; offset = 1.0)), "Declare `c::ordered[…]` with the `offset=`"),
+            (:(c::positive_ordered[3] ~ normal(0, 1; lower = a)), "with `lower = fmax(0, …)` instead"))
+        err = trace_error(fitted(stmt))
+        @test err !== nothing && occursin(message, err)
     end
 end
 
@@ -15570,9 +16062,10 @@ LHS only namespaces the cell's fresh bindings and is neither declared nor bound.
         end
         w ~ normal(sum(theta), 1.0)
     end))
-    # refused: reusing a plate name would bind its namespaced carriers twice
-    # (a collecting plate already refuses a second `theta ~ plate(…)`).
-    @test_throws "stored as `theta_t`, which is already bound" stan_code(@slic((; y, z = y), begin
+    # refused: one name, one plate (decision `0oim59p`). The name labels the
+    # carriers of its cell bindings, so a second plate under it is a rebinding,
+    # as a second collecting `theta ~ plate(…)` is — whatever the cells bind.
+    @test_throws "`theta` already names an earlier plate" stan_code(@slic((; y, z = y), begin
         sigma ~ normal(0, 1; lower = 0)
         theta ~ plate(y; outer = 6) do yi
             t ~ normal(0, 1)
@@ -15583,11 +16076,54 @@ LHS only namespaces the cell's fresh bindings and is neither declared nor bound.
             zi ~ normal(t, sigma)
         end
     end))
-    # Hygiene gap (StanBlocks todo `1nws1vv`): the compiler's namespaced
-    # name can collide although the author's names do not — two array-less
-    # `@plate for i` loops both store `t` as `loop_i_t`, and a data input
-    # `theta_t` collides with plate `theta`'s cell `t`. Both now fail with the
-    # collision named instead of a misleading downstream error.
+    @test_throws "`theta` already names an earlier plate" stan_code(@slic((; y, z = y), begin
+        sigma ~ normal(0, 1; lower = 0)
+        theta ~ plate(y; outer = 6) do yi
+            t ~ normal(0, 1)
+            yi ~ normal(t, sigma)
+        end
+        theta ~ plate(z; outer = 6) do zi
+            u ~ normal(0, 1)
+            zi ~ normal(u, sigma)
+        end
+    end))
+    @test_throws "`theta` already names an earlier plate" stan_code(@slic((; y, z = y), begin
+        sigma ~ normal(0, 1; lower = 0)
+        theta ~ plate(y; outer = 6) do yi
+            t ~ normal(0, 1)
+            yi ~ normal(t, sigma)
+        end
+        theta ~ plate(z; outer = 6) do zi
+            u ~ normal(0, 1)
+            zi ~ normal(u, sigma)
+            u
+        end
+    end))
+    # A sub-model called twice names two plates (`node1_obs`, `node2_obs`).
+    let m = @slic((; y), begin
+            sigma ~ normal(0, 1; lower = 0)
+            node1 ~ obs_only(; yy = y, n = 6, s = sigma)
+            node2 ~ obs_only(; yy = y, n = 6, s = sigma)
+        end), params = stan_block(stan_code(m), "parameters")
+        @test stanc_compiles(m)
+        @test occursin(r"vector\[6\] node1_obs_t;", params)
+        @test occursin(r"vector\[6\] node2_obs_t;", params)
+    end
+end
+
+"""
+Verify `slic: a bound carrier name gets a numbered suffix`.
+
+StanBlocks todo `1nws1vv`: the names the compiler makes up for a plate can
+collide although the author's names do not. Two array-less `@plate for i`
+loops both namespace their locals and hoisted invariants under `loop_i`; a data
+input `theta_t` takes the carrier of plate `theta`'s cell binding `t`. A bound
+name now gets a numbered suffix (`loop_i_t_2`), and the names of a model
+without a collision are unchanged.
+"""
+@testitem "slic: a bound carrier name gets a numbered suffix" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    y = [0.3, -0.2, 0.5, 0.1, -0.4, 0.2]
     two_loops = @slic (; y, z = y) begin
         sigma ~ normal(0, 1; lower = 0)
         @plate for i in 1:6
@@ -15599,8 +16135,21 @@ LHS only namespaces the cell's fresh bindings and is neither declared nor bound.
             z[i] ~ normal(t, sigma)
         end
     end
-    @test_broken stanc_compiles(two_loops)
-    @test_throws "stored as `loop_i_t`, which is already bound" stan_code(two_loops)
+    @test stanc_compiles(two_loops)
+    let code = stan_code(two_loops), params = stan_block(code, "parameters")
+        @test occursin(r"vector\[6\] loop_i_t;", params)
+        @test occursin(r"vector\[6\] loop_i_t_2;", params)
+        @test occursin("z[i] ~ normal(loop_i_t_2[i], sigma);", code)
+    end
+    # Without the second loop, the first keeps its name.
+    @test occursin(r"vector\[6\] loop_i_t;", stan_code(@slic((; y), begin
+        sigma ~ normal(0, 1; lower = 0)
+        @plate for i in 1:6
+            t ~ normal(0, 1)
+            y[i] ~ normal(t, sigma)
+        end
+    end)))
+
     carrier_named_data = @slic (; y, theta_t = y) begin
         sigma ~ normal(0, 1; lower = 0)
         theta ~ plate(y; outer = 6) do yi
@@ -15609,8 +16158,71 @@ LHS only namespaces the cell's fresh bindings and is neither declared nor bound.
             t
         end
     end
-    @test_broken stanc_compiles(carrier_named_data)
-    @test_throws "stored as `theta_t`, which is already bound" stan_code(carrier_named_data)
+    @test stanc_compiles(carrier_named_data)
+    @test occursin(r"vector\[6\] theta_t_2;", stan_block(stan_code(carrier_named_data), "parameters"))
+
+    # Hoisted invariants share the namespace too: `loop_i__pl_inv1` twice
+    # was an internal assertion failure.
+    hoisted = @slic (; y, z = y, a = 0.5) begin
+        sigma ~ normal(0, 1; lower = 0)
+        @plate for i in 1:6
+            t ~ normal(exp(a), 1)
+            y[i] ~ normal(t, sigma)
+        end
+        @plate for i in 1:6
+            u ~ normal(log1p(a), 1)
+            z[i] ~ normal(u, sigma)
+        end
+    end
+    @test stanc_compiles(hoisted)
+    let td = stan_block(stan_code(hoisted), "transformed data")
+        @test occursin("loop_i__pl_inv1 = exp(a);", td)
+        @test occursin("loop_i__pl_inv1_2 = log1p(a);", td)
+    end
+
+    # Nested loops are traced twice (the enclosing loop's discovery, then its
+    # emit), and both traces must choose the same names: two sibling inner
+    # loops keep distinct carriers, and an inner loop after a top-level one
+    # over the same index takes the next name.
+    Y = reshape(collect(1.0:12.0), 3, 4)
+    siblings = @slic (; Y, Z = Y, a = 0.5) begin
+        sigma ~ normal(0, 1; lower = 0)
+        @plate for j in 1:4
+            @plate for i in 1:3
+                t ~ normal(exp(a), 1)
+                Y[i, j] ~ normal(t, sigma)
+            end
+            @plate for i in 1:3
+                t ~ normal(log1p(a), 1)
+                Z[i, j] ~ normal(t, sigma)
+            end
+        end
+    end
+    @test stanc_compiles(siblings)
+    let code = stan_code(siblings)
+        @test occursin("loop_i_t[i, j] ~ normal(loop_i__pl_inv1[j], 1);", code)
+        @test occursin("Y[i, j] ~ normal(loop_i_t[i, j], sigma);", code)
+        @test occursin("loop_i_t_2[i, j] ~ normal(loop_i__pl_inv1_2[j], 1);", code)
+        @test occursin("Z[i, j] ~ normal(loop_i_t_2[i, j], sigma);", code)
+    end
+    after_top_level = @slic (; y = [0.1, 0.2, 0.3], Y) begin
+        sigma ~ normal(0, 1; lower = 0)
+        @plate for i in 1:3
+            t ~ normal(0, 1)
+            y[i] ~ normal(t, sigma)
+        end
+        @plate for j in 1:4
+            @plate for i in 1:3
+                t ~ normal(0, 1)
+                Y[i, j] ~ normal(t, sigma)
+            end
+        end
+    end
+    @test stanc_compiles(after_top_level)
+    let params = stan_block(stan_code(after_top_level), "parameters")
+        @test occursin(r"vector\[3\] loop_i_t;", params)
+        @test occursin(r"matrix\[3, 4\] loop_i_t_2;", params)
+    end
 end
 
 """
