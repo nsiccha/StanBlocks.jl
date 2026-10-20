@@ -173,6 +173,39 @@ normaliser. Decision `2026-10-20T14-59-36-177-0w4wyro`.
     @test stanc_compiles(ordered_prior)
 end
 
+"""
+The `lower=0` a `positive_ordered` declaration implies is a truncation only for a
+native family. A custom `@lhs @lpxf` family whose signature types its value
+`positive_ordered[n]` declares that support itself, so the implied bound restates
+it: the `~` keeps the family's own statement and needs no `_lccdf`. Truncating
+there broke every log-link model of the docs example `examples/isba-2024.md`
+(`family hetero requires companion hetero_lccdf`) once `57e60f2` landed.
+"""
+@testitem "slic: a custom family typed positive_ordered keeps its own support" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block, stanc_compiles
+
+    @deffun begin
+        @lhs @lpxf pospath_lpdf(x::positive_ordered[n], s, n) = normal_lpdf(x, 0., s)
+    end
+    # The LHS type comes from the family's `@lhs` (bare) or is restated (typed);
+    # the scale `s` is a parameter, so a truncation would not be constant.
+    for (name, m) in [
+            "bare" => @slic((; y=[0.3, 0.2]), begin
+                s ~ exponential(1.); xi ~ pospath(s, 2); y ~ normal(xi, 1.0)
+            end),
+            "typed" => @slic((; y=[0.3, 0.2]), begin
+                s ~ exponential(1.); xi::positive_ordered[2] ~ pospath(s, 2); y ~ normal(xi, 1.0)
+            end)]
+        @testset "$name" begin
+            code = stan_code(m)
+            @test occursin("positive_ordered[2] xi;", stan_block(code, "parameters"))
+            @test occursin("xi ~ pospath(s, 2);", stan_block(code, "model"))
+            @test !occursin("conditioning", code)
+            @test stanc_compiles(m)
+        end
+    end
+end
+
 @testitem "slic: a kwarg bound on an observation truncates its likelihood and draw" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stan_block, stanc_compiles
     spellings = [
