@@ -10,48 +10,22 @@ maybedata(expr, value; kwargs...) = stan_expr(expr, value; qual=:data, kwargs...
 maybedata(expr, value::Function; kwargs...) = stan_expr(value, value; qual=:data, kwargs...)
 """
     maybecv(name, value)
-    maybecv(name, value; held_out = mask)
 
-Bind `value` as cross-validation data. The first form holds out the whole
-variable: its likelihood leaves the model and cv taint reaches everything it
-feeds.
-
-With `held_out`, only the marked ELEMENTS of an observation are held out (snag
-hold-out-a-subse-b48c943c). `mask` is shaped like `value` — a `Bool` vector for a
-vector observation, one `Bool` vector per group for a ragged one. The marked
-elements' likelihood terms leave the model block; the unmarked ones stay, no cv
-taint is set, so every parameter keeps its block, and the observation's
-`<name>_gen` / `<name>_likelihood` twins still cover every element. The mask is
-passed to Stan as the derived data input `<name>_held_out`.
+Bind `value` as cross-validation data: the quantities its cv taint reaches are
+re-drawn in generated quantities, given an earlier fit's draws (population
+prediction), and its likelihood terms leave the model block. `maybecv` marks
+quantities; it never holds out some observations, so it takes no `held_out`
+mask. To condition on some rows only, fit the model on the kept rows.
 """
-maybecv(expr, value; held_out=nothing) = held_out === nothing ?
-    stan_expr(expr, value; cv=true) :
-    stan_expr(expr, value; held_out_mask=_held_out_mask_value(expr, value, held_out))
-# The 0/1 integer mask Stan reads, checked against the observation's shape.
-_held_out_mask_value(name, value::AbstractVector{<:Real}, mask::AbstractVector) =
-    _held_out_flags(name, length(value), mask, "")
-_held_out_mask_value(name, value::AbstractVector{<:AbstractVector{<:Real}}, mask::AbstractVector) = begin
-    length(mask) == length(value) || error(
-        "maybecv(:", name, ", …; held_out=mask): `", name, "` has ", length(value),
-        " groups but the mask has ", length(mask), "; give one mask vector per group.")
-    [_held_out_flags(name, length(v), m, " group $g") for (g, (v, m)) in enumerate(zip(value, mask))]
-end
-_held_out_mask_value(name, value, mask) = error(
-    "maybecv(:", name, ", …; held_out=mask) holds out elements of a vector observation ",
-    "(a `Bool` mask of the same length) or of a ragged one (one `Bool` vector per group); ",
-    "got a `", typeof(value), "` observation and a `", typeof(mask), "` mask. ",
-    "To hold out the whole variable, call `maybecv(:", name, ", ", name, ")`.")
-_held_out_flags(name, n, mask, where) = begin
-    mask isa AbstractVector || error(
-        "maybecv(:", name, ", …; held_out=mask):", where, " mask is a `", typeof(mask),
-        "`, not a vector of `Bool`s.")
-    length(mask) == n || error(
-        "maybecv(:", name, ", …; held_out=mask):", where, " has ", n,
-        " elements but its mask has ", length(mask), ".")
-    all(x -> x isa Bool || (x isa Integer && x in (0, 1)), mask) || error(
-        "maybecv(:", name, ", …; held_out=mask):", where,
-        " mask entries must be `Bool` (or 0/1); got `", eltype(mask), "`.")
-    Int[x for x in mask]
+maybecv(expr, value; kwargs...) = begin
+    # The element hold-out mask was removed (user decision 1bwqnxs).
+    haskey(kwargs, :held_out) && error(
+        "`maybecv(:", expr, ", …; held_out = …)`: `maybecv` marks quantities for population ",
+        "prediction and never holds out observations, so it takes no hold-out mask. To condition ",
+        "on some rows only, fit the model on the kept rows.")
+    isempty(kwargs) || error(
+        "`maybecv(name, value)` takes no keyword arguments; got `", join(keys(kwargs), "`, `"), "`.")
+    stan_expr(expr, value; cv=true)
 end
 
 """
@@ -132,7 +106,6 @@ _stan_model(x::SlicModel; info) = begin
         lowered = backward!(traced; info)
         info = remake(info; _model_local_transforms=_model_local_transforms(lowered; info))
         distribute!(lowered; info)
-        _assert_held_out_masks_applied(keys(data(x)); info)
         emission_lnn = _diagnostic_lnn(
             context.expr_stack,
             _deref_lnn(context.current_lnn),
@@ -395,7 +368,6 @@ forward!(x::SlicModel; info=StanModel()) = begin
         key in keys(missing_vars) && continue   # split vars already registered above
         maybedata!(info, key, value)
     end
-    _bind_held_out_masks!(keys(data(x)); info)
     raw_body = model(x)
     _reject_observed_definitions(Meta.isexpr(raw_body, :block) ? raw_body.args : Any[raw_body], "model";
         allow_computed=true)

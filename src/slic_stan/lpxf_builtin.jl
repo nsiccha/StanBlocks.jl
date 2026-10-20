@@ -55,20 +55,6 @@ _distribution_hof(::typeof(builtin.weighted)) = (
     lpmfs = builtin.weighted_lpmfs,
     rng = builtin.weighted_rng,
 )
-# The element hold-out wrapper (`maybecv(:y, y; held_out=mask)`): `held` is the
-# observation-aligned 0/1 mask. It carries only the aggregate density — the
-# `<obs>_gen` / `<obs>_likelihood` twins resolve through the wrapped family
-# (`_heldout_family_call` below), so it has no pointwise or RNG companion.
-_distribution_hof(::typeof(builtin.heldout)) = (
-    name = :heldout,
-    family_arg = 1,
-    data_args = (2,),
-    requires_data_lhs = true,
-    nestable = (:weighted, :truncated, :censored, :interval_censored),
-    forwarded_kwargs = (:lower, :upper),
-    lpdf = builtin.heldout_lpdf,
-    lpmf = builtin.heldout_lpmf,
-)
 _distribution_hof(::typeof(builtin.truncated)) = (
     name = :truncated,
     family_arg = 1,
@@ -522,7 +508,7 @@ _normalized_hof_call(rhs::CanonicalExpr) = begin
     something(_nested_hof_call(spec, rhs), rhs)
 end
 expand_inline_or_trace(
-    x::CanonicalExpr{<:Union{typeof(builtin.weighted),typeof(builtin.heldout)}};
+    x::CanonicalExpr{typeof(builtin.weighted)};
     info,
 ) = begin
     spec = _distribution_hof(head(x))
@@ -640,62 +626,6 @@ likelihood_expr(lhs, rhs::CanonicalExpr) = begin
     stan_call(_hof_pointwise(spec, family, rhs), lhs, _hof_call_args(spec, rhs)...)
 end
 likelihood_expr(rhs) = error("$rhs is missing `likelihood_expr`")
-# An element hold-out masks only the model-block term. Its twins score and draw
-# every element from the wrapped family, exactly as the unmasked observation's
-# twins do (snag hold-out-a-subse-b48c943c).
-_heldout_family_call(rhs::CanonicalExpr{typeof(builtin.heldout)}) = _normalized_hof_call(
-    CanonicalExpr(_family_function(rhs.args[1]), rhs.args[3:end]...; rhs.kwargs...))
-_heldout_family_call(rhs) = rhs
-# Whether an element hold-out can evaluate `family` one element at a time
-# (builtin.jl `_elementwise_pointwise`). A bounded combinator broadcasts its own
-# scalar form; a weighting is elementwise exactly when its base family is.
-_heldout_elementwise(family, args) = begin
-    spec = _distribution_hof(family)
-    isnothing(spec) && return _elementwise_pointwise(likelihood_expr(family))
-    spec.name === :weighted || return true
-    i = _hof_base_family_index(spec, args)
-    _heldout_elementwise(_family_function(args[i]), args[i+1:end])
-end
-# The model-block terms of a held-out observation (`heldout_lpdf`'s whole-
-# observation form): an elementwise family is evaluated only at the unmarked
-# elements, by broadcasting the scalar form that skips a marked one, so a marked
-# value outside the family's domain is never passed to it (snag
-# heldout-lpdf-eva-a8569726). Any other family is scored whole by its pointwise
-# companion, which knows how its arguments align with the observation, and the
-# marked entries are dropped.
-expand_inline_or_trace(x::CanonicalExpr{typeof(builtin.heldout_terms)}; info) = begin
-    scalar, family, y, held = x.args[1:4]
-    args = x.args[5:end]
-    terms = _heldout_elementwise(_family_function(family), args) ?
-        CanonicalExpr(builtin.jbroadcasted, scalar, y, family, held, args...) :
-        CanonicalExpr(builtin.heldout_unmarked,
-            CanonicalExpr(builtin.pointwise, family, y, args...), held)
-    forward!(terms; info)
-end
-# The twins score every element, marked or not. Where the family has a Stan
-# domain (builtin.jl `_HELDOUT_DOMAINS`), each element is scored by
-# `heldout_score`, which gives `-Inf` instead of passing a refused value to the
-# family, so a marked element outside the domain cannot fail the
-# generated-quantities draw. A plain family or a weighting of one qualifies.
-_heldout_scored(call::CanonicalExpr) = begin
-    family = head(call)
-    spec = _distribution_hof(family)
-    if !isnothing(spec)
-        spec.name === :weighted || return false
-        family = _family_function(call.args[spec.family_arg])
-    end
-    _heldout_has_domain(family) && _heldout_elementwise(head(call), call.args)
-end
-_heldout_scores(lhs, call::CanonicalExpr) =
-    stan_call(builtin.jbroadcasted, builtin.heldout_score, lhs, head(call), call.args...)
-# A held-out ragged group's `<obs>_likelihood` entry: the sum of its elements'
-# scores, or the family's aggregate density where no Stan domain applies.
-_heldout_group_score(group, call::CanonicalExpr) = _heldout_scored(call) ?
-    stan_call(sum, _heldout_scores(group, call)) : lpxf_expr(group, call)
-likelihood_expr(lhs, rhs::CanonicalExpr{typeof(builtin.heldout)}) = begin
-    call = _heldout_family_call(rhs)
-    _heldout_scored(call) ? _heldout_scores(lhs, call) : likelihood_expr(lhs, call)
-end
 # gq `~` synthesis: `rng_expr(token, rhs)` builds either `rng_fn(args...)` (for
 # scalar tokens — matches Stan's native rng signatures) or `rng_fn(token, args...)`
 # (for sized tokens — dispatched into per-shape `*_rng` @deffun overloads).
@@ -731,10 +661,6 @@ rng_expr(token::StanExpr2{<:types.tokenof}, rhs::CanonicalExpr) = begin
     _distribution_hof_family(spec, rhs)
     stan_call(_hof_rng(spec, rhs), token, _hof_rng_args(spec, rhs)...)
 end
-rng_expr(token::StanExpr2{<:types.tokenof,0}, rhs::CanonicalExpr{typeof(builtin.heldout)}) =
-    rng_expr(token, _heldout_family_call(rhs))
-rng_expr(token::StanExpr2{<:types.tokenof}, rhs::CanonicalExpr{typeof(builtin.heldout)}) =
-    rng_expr(token, _heldout_family_call(rhs))
 rng_expr(x) = begin
     spec = _distribution_hof(x)
     isnothing(spec) && error("$x is missing `rng_expr`")

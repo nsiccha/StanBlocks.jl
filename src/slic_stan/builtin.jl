@@ -33,14 +33,6 @@ end
 @builtin_module [
     weighted_lpdf
     weighted_lpmf
-    # Compiler-owned: what an element hold-out mark (`maybecv(:y, y; held_out=m)`)
-    # wraps an observation's family in. Not a user spelling.
-    heldout_lpdf
-    heldout_lpmf
-    heldout_terms
-    heldout_unmarked
-    heldout_score
-    heldout_domain
     # Public distribution-HOF tokens match Julia's distribution vocabulary;
     # collision-free conditioning/clamping names remain implementation details.
     truncated censored interval_censored
@@ -455,64 +447,6 @@ import Statistics
         predictive(family, vector[n], args...)
     weighted_rng(int[n], family, weight, args...) =
         predictive(family, int[n], args...)
-
-    # Element hold-out (`maybecv(:y, y; held_out=mask)`, snag
-    # hold-out-a-subse-b48c943c). `held` is the mask's 0/1 slice aligned with
-    # `y`; a held-out element's density is SKIPPED, never multiplied by 0, so
-    # an element outside the family's support (`-Inf`) cannot make the target
-    # `NaN`. Only the model-block term carries the mask: the `<obs>_gen` /
-    # `<obs>_likelihood` twins resolve through the bare family
-    # (`rng_expr`/`likelihood_expr` in lpxf_builtin.jl), so every element keeps
-    # its draw and its unmasked pointwise score.
-    heldout_lpdf(y, family, held::int, args...)::real = begin
-        rv::real[1]
-        rv[1] = 0.0
-        if held == 0
-            rv[1] = density(family, y, args...)
-        end
-        rv[1]
-    end
-    heldout_lpmf(y, family, held::int, args...)::real = begin
-        rv::real[1]
-        rv[1] = 0.0
-        if held == 0
-            rv[1] = density(family, y, args...)
-        end
-        rv[1]
-    end
-    # A whole observation: `heldout_terms` (lpxf_builtin.jl) evaluates an
-    # elementwise family only at the unmarked elements, so a marked element
-    # outside the family's domain, where Stan raises an error instead of
-    # returning `-Inf`, is never evaluated (snag heldout-lpdf-eva-a8569726).
-    # Any other family is scored whole by its pointwise companion and its
-    # marked entries dropped (`heldout_unmarked`).
-    heldout_lpdf(y::anything[n], family, held::int[n], args...)::real =
-        sum(heldout_terms(heldout_lpdf, family, y, held, args...))
-    heldout_lpmf(y::anything[n], family, held::int[n], args...)::real =
-        sum(heldout_terms(heldout_lpmf, family, y, held, args...))
-    # `lp` is unannotated for the reason given at `weighted_lpdf` above; the
-    # shared `n` is checked at runtime.
-    heldout_unmarked(lp, held::int[n])::vector[n] = begin
-        rv = rep_vector(0.0, n)
-        for i in 1:n
-            if held[i] == 0
-                rv[i] = lp[i]
-            end
-        end
-        rv
-    end
-    # The `<obs>_likelihood` score of one element of a held-out observation
-    # whose family has a Stan domain (`heldout_domain` below): `-Inf` for a
-    # value Stan's density refuses, so a marked element outside the domain
-    # cannot fail the generated-quantities draw.
-    heldout_score(y, family, args...)::real = begin
-        rv::real[1]
-        rv[1] = negative_infinity()
-        if heldout_domain(y, family, args...)
-            rv[1] = density(family, y, args...)
-        end
-        rv[1]
-    end
 
     # Mathematical truncation (`truncated`) ---------------------------------
     # Public optional kwargs select one of these lower/upper/two-sided
@@ -1766,10 +1700,10 @@ end
 #
 # `_elementwise_pointwise` marks a companion that broadcasts its scalar density
 # over the observation (`jbroadcasted`, which aligns every array argument with
-# it). Its family can be evaluated one element at a time, which is how an
-# element hold-out skips the marked elements (`heldout_terms`, lpxf_builtin.jl).
-# A family with a shared or row-structured argument (`categorical(p)`,
-# `ordered_logistic(eta, c)`, the GLMs, a custom `@lpxf` family) is not one.
+# it), so its family treats the elements independently. An exchangeable
+# ordered prior relies on it (`_exchangeable_prior`, passes.jl). A family with
+# a shared or row-structured argument (`categorical(p)`, `ordered_logistic(eta,
+# c)`, the GLMs, a custom `@lpxf` family) is not one.
 _elementwise_pointwise(f) = false
 for lpmfs in (bernoulli_lpmfs, bernoulli_logit_lpmfs, binomial_lpmfs, binomial_logit_lpmfs)
     @eval _elementwise_pointwise(::typeof($lpmfs)) = true
@@ -1812,33 +1746,6 @@ for (base, params) in (
     @eval @deffun @stanonly $lpdfs(obs::anything[n], $(params...)) = jbroadcasted($lpdfs, obs, $(params...))
     @eval _elementwise_pointwise(::typeof($lpdfs)) = true
 end
-
-# The observation values Stan Math 5.3 refuses with a domain error rather than
-# scoring `-Inf` (the `check_*` of "Random variable" in
-# `stan/math/prim/prob/<family>_lp?f.hpp`). Any other elementwise family raises
-# only on a NaN or infinite value, which the data block cannot hold. A held-out
-# element's `<obs>_likelihood` scores such a value `-Inf` (`heldout_score`).
-const _HELDOUT_DOMAINS = (
-    (:(y >= 0), (:lognormal, :exponential, :chi_square,
-        :poisson, :poisson_log, :neg_binomial, :neg_binomial_2, :neg_binomial_2_log)),
-    (:(y > 0), (:gamma, :loglogistic, :frechet, :rayleigh)),
-    (:(y >= 0 && y <= 1), (:beta, :beta_proportion, :bernoulli, :bernoulli_logit)),
-)
-_heldout_has_domain(family) = false
-for (domain, families) in _HELDOUT_DOMAINS, family in families
-    @eval @deffun @stanonly heldout_domain(y, ::typeof($family), args...) = $domain
-    @eval _heldout_has_domain(::typeof($family)) = true
-end
-# Domains that read the family's first argument: the trials `N`, the location
-# `mu`. A weighting has its base family's domain.
-@deffun @stanonly begin
-    heldout_domain(y, ::typeof(binomial), N, args...) = y >= 0 && y <= N
-    heldout_domain(y, ::typeof(binomial_logit), N, args...) = y >= 0 && y <= N
-    heldout_domain(y, ::typeof(pareto_type_2), mu, args...) = y >= mu
-    heldout_domain(y, ::typeof(weighted), family, weight, args...) =
-        heldout_domain(y, family, args...)
-end
-_heldout_has_domain(::Union{typeof.((binomial, binomial_logit, pareto_type_2))...}) = true
 
 # --- Ragged vector/matrix usertypes + Julia-dispatched accessors -------------
 # A ragged vector is conceptually `Vector{<:AbstractVector{<:Real}}` — a
@@ -2128,10 +2035,6 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_density)}; info) = 
     rhs = _assert_ragged_family_carrier(_ragged_group_call(x), center_type(x.args[1]))
     # The AGGREGATE density of the whole group — one scalar. Never `_lpdfs`.
     lpxf_expr(x.args[1], rhs)
-end
-expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_score)}; info) = begin
-    rhs = _assert_ragged_family_carrier(_ragged_group_call(x), center_type(x.args[1]))
-    _heldout_group_score(x.args[1], rhs)
 end
 
 # `v[mask]` with `mask :: bool[n]` (an element-wise comparison result such as
