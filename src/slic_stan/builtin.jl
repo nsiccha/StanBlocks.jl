@@ -133,6 +133,7 @@ end
     pmx_solve_onecpt_effcpt pmx_solve_twocpt_effcpt pmx_solve_linode
     pmx_solve_rk45 pmx_solve_bdf pmx_solve_adams
     pmx_solve_onecpt_rk45 pmx_solve_onecpt_bdf pmx_solve_twocpt_rk45 pmx_solve_twocpt_bdf
+    pmx_append_each
     append_array
     append_row
     append_col
@@ -372,6 +373,8 @@ import Statistics
     rep_array(x::int, m, n)::int[m, n]
     rep_array(x::real, n)::real[n]
     rep_array(x::real, m, n)::real[m, n]
+    rep_array(x::int[k], n)::int[n, k]
+    rep_array(x::real[k], n)::real[n, k]
     rep_vector(v, n)::vector[n]
     rep_matrix(v::vector[m], n)::matrix[m, n]
     rep_matrix(x::real, m, n)::matrix[m,n]
@@ -394,6 +397,7 @@ import Statistics
     append_col(x::row_vector[n], y::real)::row_vector[n+1]
     append_col(x::real, y::row_vector[n])::row_vector[n+1]
     append_array(lhs::anything[m],rhs::anything[n])::real[m+n]
+    append_array(lhs::int[m],rhs::int[n])::int[m+n]
     append_array(lhs::anything[m],rhs::real)::real[m+1]
     append_row(lhs::vector[m],rhs::real)::vector[m+1]
     append_row(lhs::vector[m],rhs::vector[n])::vector[m+n]
@@ -3383,6 +3387,7 @@ end
         (int[n],) => int[n]
         (real[m,n],) => real[m*n]
         (int[m,n],) => int[m*n]
+        (matrix[m,n],) => real[m*n]
     end
     # min/max for more types
     Union{typeof.((min, max))...} => begin
@@ -3472,8 +3477,8 @@ tracetype(x::CanonicalExpr{typeof(pmx_solve_linode)}) = StanType(
 # passes empty arrays when they are omitted (and the coupled family has none).
 # The RHS is fetched at exactly that call (`_pmx_rhs_call`), and the solver call
 # names it in the function slot (`show(::CanonicalExpr{<:PMXFunctorSolver})`). A
-# capturing closure cannot be threaded through that fixed signature, so it is
-# refused at trace time rather than emitted as Stan stanc would reject.
+# closure that captures values cannot be threaded through that fixed signature
+# as it is; the call is rewritten to a generated adapter first (below).
 const PMXODESolver = Union{typeof.((pmx_solve_rk45, pmx_solve_bdf, pmx_solve_adams))...}
 const PMXCoupledSolver = Union{typeof.((
     pmx_solve_onecpt_rk45, pmx_solve_onecpt_bdf, pmx_solve_twocpt_rk45, pmx_solve_twocpt_bdf,
@@ -3482,6 +3487,15 @@ const PMXFunctorSolver = Union{PMXODESolver, PMXCoupledSolver}
 _pmx_n_pk(::CanonicalExpr{<:Union{typeof(pmx_solve_onecpt_rk45), typeof(pmx_solve_onecpt_bdf)}}) = 2
 _pmx_n_pk(::CanonicalExpr{<:Union{typeof(pmx_solve_twocpt_rk45), typeof(pmx_solve_twocpt_bdf)}}) = 3
 _pmx_check_functor_call(x::CanonicalExpr) = begin
+    _pmx_check_arguments(x)
+    # `expand_inline_or_trace` replaces a capturing closure by its capture-free
+    # adapter before the call is traced; one arriving here bypassed that rewrite.
+    isempty(_closure_captures(x.args[1])) || error(
+        "$(nameof(head(x))): internal error — a capturing right-hand-side closure ",
+        "reached the solver's tracetype without the theta-packing rewrite."
+    )
+end
+_pmx_check_arguments(x::CanonicalExpr) = begin
     fname = nameof(head(x))
     length(x.args) >= 11 || error(
         "$fname: expected at least 11 arguments `(f, n, time, amt, rate, ii, evid, cmt, ",
@@ -3491,14 +3505,6 @@ _pmx_check_functor_call(x::CanonicalExpr) = begin
     (center_type(n) <: types.int && stan_ndim(n) == 0) || error(
         "$fname: the second argument (the compartment / ODE count) must be an `int`, ",
         "got `$(sigtype(n))`."
-    )
-    captures = _closure_captures(x.args[1])
-    isempty(captures) || error(
-        "$fname: the ODE right-hand side is a closure capturing ",
-        join(map(k -> "`$k`", collect(keys(type(x.args[1]).info.value.captures))), ", "), ". ",
-        "Torsten calls it with the fixed signature `f(t, y, theta, x_r, x_i)` and cannot ",
-        "forward captured values. Pass parameters through `theta` (array[] real) and data ",
-        "through `x_r`/`x_i`, and define the right-hand side as a `@deffun`."
     )
 end
 tracetype(x::CanonicalExpr{<:PMXODESolver}) = begin
@@ -3515,9 +3521,18 @@ _pmx_state(n) = StanExpr(:_, StanType(types.vector, (n,)))
 _pmx_states(x::CanonicalExpr{<:PMXODESolver}) = (_pmx_state(x.args[2]),)
 _pmx_states(x::CanonicalExpr{<:PMXCoupledSolver}) =
     (_pmx_state(x.args[2]), _pmx_state(stan_expr(_pmx_n_pk(x))))
-_pmx_has_data_rows(x::CanonicalExpr{<:PMXODESolver}) =
-    length(x.args) >= 15 && stan_ndim(x.args[14]) == 2
-_pmx_has_data_rows(::CanonicalExpr{<:PMXCoupledSolver}) = false
+# The optional tail after `theta` (argument 11), as `(biovar_tlag, x_r_x_i,
+# tolerances)`: `biovar, tlag` are arrays, the per-event `x_r, x_i` are 2-D
+# arrays that follow them (ODE family only), and the tolerances are scalars.
+_pmx_tail(x::CanonicalExpr{<:PMXODESolver}) = begin
+    tail = x.args[12:end]
+    nb = length(tail) >= 2 && stan_ndim(tail[1]) >= 1 ? 2 : 0
+    nx = nb == 2 && length(tail) >= 4 && stan_ndim(tail[3]) == 2 ? 2 : 0
+    (tail[1:nb], tail[nb+1:nb+nx], tail[nb+nx+1:end])
+end
+_pmx_tail(x::CanonicalExpr{<:PMXCoupledSolver}) =
+    (x.args[12:min(13, end)], (), x.args[14:end])
+_pmx_has_data_rows(x) = !isempty(_pmx_tail(x)[2])
 _pmx_data_rows(x, context) = _pmx_has_data_rows(x) ?
     (_jb_elem(x.args[14], context), _jb_elem(x.args[15], context)) :
     (StanExpr(:_, StanType(types.real, (stan_expr(0),))),
@@ -3528,6 +3543,199 @@ _pmx_rhs_call(x::CanonicalExpr{<:PMXFunctorSolver}, context) = CanonicalExpr(
 )
 fetch_functions!(x::CanonicalExpr{<:PMXFunctorSolver}; info) =
     fetch_functions!(_pmx_rhs_call(x, _trace_context(info)); info)
+
+# ── Capturing closures as functor right-hand sides: a generated adapter ──
+# Torsten calls the right-hand side with its fixed signature, so a closure's
+# captured values cannot follow as trailing call arguments the way `ode_rk45`
+# threads them (`show(::CanonicalExpr{<:ODESolver})`). The call is rewritten
+# before it is traced instead:
+#   - each capture is flattened onto the END of an argument Torsten forwards to
+#     the right-hand side: autodiff reals onto `theta` (onto every row of a
+#     per-event `array[,] real` theta), model-scope data reals onto `x_r`, ints
+#     onto `x_i`.
+#     Reaching `x_r`/`x_i` inserts Torsten's documented defaults `biovar = 1`,
+#     `tlag = 0` when the call omitted them, and empty per-event rows for the
+#     other one of the pair when only one carries captures;
+#   - the closure is replaced by a capture-free closure at Torsten's arity whose
+#     body first re-reads each capture from that tail, re-binds the user's own
+#     argument to the leading part, and then runs the user's body. It lifts to a
+#     Stan function through the ordinary closure `_fundef`.
+# Reading the captures from the END leaves the user's own arguments any size,
+# so only a capture needs a literal size. The coupled solvers forward no
+# `x_r`/`x_i`: their data reals ride `theta`, and an int capture is refused.
+@deffun begin
+    @stanonly begin
+    # A per-event `theta`/`x_r`/`x_i` argument with `extra` appended to each row.
+    pmx_append_each(rows::real[n, k], extra::real[m])::real[n, k + m] = begin
+        out::real[n, k + m]
+        for i in 1:n
+            out[i] = append_array(rows[i], extra)
+        end
+        out
+    end
+    pmx_append_each(rows::int[n, k], extra::int[m])::int[n, k + m] = begin
+        out::int[n, k + m]
+        for i in 1:n
+            out[i] = append_array(rows[i], extra)
+        end
+        out
+    end
+    end
+end
+_pmx_rhs_slots(::CanonicalExpr{<:PMXODESolver}) = (:t, :y, :theta, :x_r, :x_i)
+_pmx_rhs_slots(::CanonicalExpr{<:PMXCoupledSolver}) = (:t, :y, :y_pk, :theta, :x_r, :x_i)
+_pmx_forwards_data(::CanonicalExpr{<:PMXODESolver}) = true
+_pmx_forwards_data(::CanonicalExpr{<:PMXCoupledSolver}) = false
+expand_inline_or_trace(x::CanonicalExpr{<:PMXFunctorSolver}; info) =
+    isempty(_closure_captures(x.args[1])) ?
+        invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info) :
+        forward!(_pmx_adapter_call(x, type(x.args[1]).info.value; info); info)
+_pmx_adapter_call(x, cl; info) = begin
+    _pmx_check_arguments(x)
+    fname = nameof(head(x))
+    slots = _pmx_rhs_slots(x)
+    (isnothing(cl.vararg_name) && length(cl.arg_names) == length(slots)) || error(
+        "$fname: the right-hand-side closure takes `(", join(cl.arg_names, ", "),
+        isnothing(cl.vararg_name) ? "" : ", $(cl.vararg_name)...", ")`, but Torsten ",
+        "calls it as `(", join(slots, ", "), ")`."
+    )
+    user = Dict(zip(slots, cl.arg_names))
+    stmts = Meta.isexpr(cl.body, :block) ? cl.body.args : Any[cl.body]
+    referenced = Set{Symbol}()
+    _collect_all_syms!(cl.body, referenced)
+    taken = union(referenced, cl.arg_names)
+    caps = [_pmx_capture(x, name, v; info) for (name, v) in cl.captures]
+    names = copy(user)
+    prologue = Any[]
+    packed = Dict{Symbol,Any}()
+    for slot in (:theta, :x_r, :x_i)
+        here = filter(c -> c.slot === slot, caps)
+        isempty(here) && continue
+        order, packed[slot] = _pmx_pack(here)
+        a = names[slot] = _pmx_fresh(Symbol(slot, :_ext), taken)
+        o = _pmx_fresh(Symbol(slot, :_end), taken)
+        push!(prologue, :($o = size($a) - $(sum(c -> c.len, order))))
+        user[slot] in referenced && push!(prologue, :($(user[slot]) = $a[1:$o]))
+        first = 1
+        for c in order
+            push!(prologue, :($(c.name) = $(_pmx_unpack(c.T, c.dims, a, o, first))))
+            first += c.len
+        end
+    end
+    adapter = _closure_stan_expr((
+        arg_names = Tuple(names[s] for s in slots),
+        vararg_name = nothing,
+        body = Expr(:block, prologue..., stmts...),
+        captures = OrderedDict{Symbol,Any}(),
+        kwargs = (),
+        source = cl.source,
+        id = _next_closure_id(info),
+        mod = cl.mod,
+    ))
+    biovar_tlag, data, tol = _pmx_tail(x)
+    if haskey(packed, :x_r) || haskey(packed, :x_i)
+        n = x.args[2]
+        isempty(biovar_tlag) && (biovar_tlag = (
+            CanonicalExpr(builtin.rep_array, 1.0, n), CanonicalExpr(builtin.rep_array, 0.0, n),
+        ))
+        x_r, x_i = isempty(data) ? (nothing, nothing) : data
+        data = (
+            _pmx_rows_with(x, x_r, get(packed, :x_r, nothing), 0.0),
+            _pmx_rows_with(x, x_i, get(packed, :x_i, nothing), 0),
+        )
+    end
+    CanonicalExpr(
+        head(x), adapter, x.args[2:10]...,
+        _pmx_theta_with(x.args[11], get(packed, :theta, nothing)),
+        biovar_tlag..., data..., tol...,
+    )
+end
+# A capture as the adapter carries it: the slot it rides, its center type, and
+# its literal value shape (`()` for a scalar) and flat length.
+_pmx_capture(x, name, v; info) = begin
+    fname = nameof(head(x))
+    T = center_type(v)
+    shape = _pmx_capture_shape(T, v)
+    isnothing(shape) && error(
+        "$fname: the right-hand-side closure captures `$name` of type `$(sigtype(v))`, ",
+        "which cannot be packed into Torsten's `theta`/`x_r`/`x_i`. A capture may be an ",
+        "`int` or `real` scalar or 1-D array, a `vector`, a `row_vector` or a `matrix`; ",
+        "pass anything else through `theta` yourself."
+    )
+    dims = map(_pmx_literal_size, shape)
+    any(isnothing, dims) && error(
+        "$fname: the right-hand-side closure captures `$name` of type `$(sigtype(v))`, ",
+        "whose size is not a literal. The generated right-hand side reads each capture ",
+        "from the end of `theta`/`x_r`/`x_i` and cannot see a data size; capture its ",
+        "elements as scalars, or pass it through `theta` yourself."
+    )
+    (; name, T, dims, value = v, len = prod(dims; init = 1), slot = _pmx_capture_slot(x, name, v, T; info))
+end
+_pmx_capture_shape(::Type{<:types.real}, v) = stan_ndim(v) <= 1 ? stan_size(v) : nothing
+_pmx_capture_shape(::Type{<:types.any_vector}, v) = stan_ndim(v) == 1 ? stan_size(v) : nothing
+_pmx_capture_shape(::Type{<:types.matrix}, v) = length(index_shape(v)) == 2 ? index_shape(v) : nothing
+_pmx_capture_shape(::Type, v) = nothing
+_pmx_literal_size(s::Integer) = Int(s)
+_pmx_literal_size(s::StanExpr) = _pmx_literal_size(expr(s))
+_pmx_literal_size(_) = nothing
+_pmx_capture_slot(x, name, v, ::Type{<:types.int}; info) = _pmx_forwards_data(x) ? :x_i : error(
+    "$(nameof(head(x))): the right-hand-side closure captures the int `$name`, but the ",
+    "coupled solvers forward no `x_i` to the right-hand side, and `theta` holds reals. ",
+    "Capture a real instead, or solve the whole system with `pmx_solve_rk45`/`bdf`/`adams`."
+)
+# Torsten's `x_r` is data-only. Inside a `@deffun` body even a `:data`-qualified
+# value is a function argument (or derived from one), which Stan never treats
+# as data, so only a model-scope data real rides `x_r`.
+_pmx_capture_slot(x, name, v, ::Type; info) =
+    qual(v) == :data && _pmx_forwards_data(x) && _is_model_decl_scope(info) ? :x_r : :theta
+# The captures riding one slot in packed order — real scalars first, as one
+# `[…]` literal — and the 1-D array they pack to at the call site.
+_pmx_real_scalar(c) = isempty(c.dims) && !(c.T <: types.int)
+_pmx_pack(caps) = begin
+    scalars = filter(_pmx_real_scalar, caps)
+    others = filter(!_pmx_real_scalar, caps)
+    parts = Any[_pmx_flat(c.T, c.value, c.dims) for c in others]
+    isempty(scalars) || pushfirst!(parts, CanonicalExpr(
+        builtin.to_array_1d, CanonicalExpr(:vect, (c.value for c in scalars)...)
+    ))
+    (vcat(scalars, others), foldl((a, b) -> CanonicalExpr(builtin.append_array, a, b), parts))
+end
+_pmx_flat(::Type{<:types.int}, v, dims) = isempty(dims) ? CanonicalExpr(builtin.rep_array, v, 1) : v
+_pmx_flat(::Type{<:types.real}, v, dims) = v
+_pmx_flat(::Type, v, dims) = CanonicalExpr(builtin.to_array_1d, v)
+# The adapter's expression re-reading a capture at `a[o + first]` onward, where
+# `o` is the length of the user's own part of `a`.
+_pmx_unpack(::Type{<:types.real}, dims, a, o, first) =
+    isempty(dims) ? :($a[$o + $first]) : _pmx_segment(a, o, first, only(dims))
+_pmx_unpack(::Type{<:types.vector}, dims, a, o, first) =
+    :(to_vector($(_pmx_segment(a, o, first, only(dims)))))
+_pmx_unpack(::Type{<:types.row_vector}, dims, a, o, first) =
+    :(to_row_vector($(_pmx_segment(a, o, first, only(dims)))))
+_pmx_unpack(::Type{<:types.matrix}, (m, n), a, o, first) =
+    :(to_matrix($(_pmx_segment(a, o, first, m * n)), $m, $n))
+_pmx_segment(a, o, first, len) = :($a[($o + $first):($o + $(first + len - 1))])
+_pmx_fresh(base, taken) = begin
+    name = base
+    i = 1
+    while name in taken
+        name = Symbol(base, :_, i)
+        i += 1
+    end
+    push!(taken, name)
+    name
+end
+_pmx_theta_with(theta, ::Nothing) = theta
+_pmx_theta_with(theta, packed) = stan_ndim(theta) == 2 ?
+    CanonicalExpr(builtin.pmx_append_each, theta, packed) :
+    CanonicalExpr(builtin.append_array, theta, packed)
+# A per-event `x_r`/`x_i` argument carrying `packed` on every row: the call's own
+# rows extended, or `packed` repeated once per event (`empty` columns without it).
+_pmx_rows_with(x, ::Nothing, ::Nothing, empty) =
+    CanonicalExpr(builtin.rep_array, empty, CanonicalExpr(size, x.args[3]), 0)
+_pmx_rows_with(x, rows, ::Nothing, _) = rows
+_pmx_rows_with(x, ::Nothing, packed, _) =
+    CanonicalExpr(builtin.rep_array, packed, CanonicalExpr(size, x.args[3]))
+_pmx_rows_with(x, rows, packed, _) = CanonicalExpr(builtin.pmx_append_each, rows, packed)
 
 # ── Generalised `jbroadcasted(f, a1, …, ak)` — trace-level element loop ──
 # Applies `f` element-wise over its iterated args (any arity, any position):
