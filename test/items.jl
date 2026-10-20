@@ -174,6 +174,65 @@ Stan was already correct.
     end
 end
 
+"""
+Verify `slic: a held-out per-cell observation keeps its predictive twin`.
+
+A held-out observation made inside a plate cell (`y[i] ~ …`) or by a joint
+slice (`y[1:3] ~ multi_normal(…)`) lowers to a `y_gen` fill alone. No
+`y_likelihood` reads `y`, so `y` leaves the data block and only its size `y_n`
+stays. The descriptor used to classify the twin by its stem's data-block
+membership, so it reported `y_gen` as `:derived` and offered no `:predict`. The
+twin's declaration now carries the compiler's `obs_twin_source` stamp. The
+bound models are the control: their descriptors are unchanged.
+"""
+@testitem "slic: a held-out per-cell observation keeps its predictive twin" tags=[:slic, :plate, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    maybecv = StanBlocks.stan.maybecv
+    yv = [0.1, 0.2, -0.3]
+    cell = @slic begin
+        mu0 ~ std_normal()
+        @plate for i in 1:3
+            e = mu0 + 0.5
+            y[i] ~ normal(e, 1.0)
+        end
+    end
+    slice = @slic begin
+        mu0 ~ std_normal()
+        y[1:3] ~ multi_normal(rep_vector(mu0, 3), diag_matrix(rep_vector(1.0, 3)))
+    end
+    ops(d) = [op.name for op in d.operations]
+    for m in (cell, slice)
+        bound = stan_descriptor(m(; y = yv))
+        held = stan_model(m(; y = maybecv(:y, yv)))
+        dheld = stan_descriptor(held)
+        for d in (bound, dheld)
+            gen = only(o for o in d.outputs if o.name === :y_gen)
+            @test (gen.generative, gen.source, gen.dims) == (:draw, :y, (3,))
+        end
+        @test ops(bound) == [:transpile, :instantiate, :fit, :predict]
+        @test ops(dheld) == [:transpile, :instantiate, :predict]
+        @test :y ∉ [i.name for i in dheld.inputs]
+        # The semantic display classifies through the same rows.
+        @test occursin("generated quantity / draw of y", sprint(show, MIME"text/plain"(), held))
+    end
+end
+
+@testitem "slic: a held-out per-cell observation predicts through BridgeStan" tags=[:slic, :plate, :descriptor, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    maybecv = StanBlocks.stan.maybecv
+    m = @slic (; y = maybecv(:y, [0.1, 0.2, -0.3])) begin
+        mu0 ~ std_normal()
+        @plate for i in 1:3
+            e = mu0 + 0.5
+            y[i] ~ normal(e, 1.0)
+        end
+    end
+    d = stan_descriptor(m)
+    pred = stan_execute(d, :predict; draws = [0.0], seed = 1)
+    @test keys(pred) == (:y_gen,)
+    @test length(pred.y_gen) == 3
+    @test all(isfinite, pred.y_gen)
+    @test size(stan_execute(d, :predict; draws = zeros(1, 4), seed = 2).y_gen) == (3, 4)
+end
+
 # snag `weighted-custom-33d611a8` (reported from BRM): `weighted(...)` over a
 # custom `@lpxf` family whose pointwise twin is sized by one of its OWN arg
 # tokens (not by `y`) transpiled-errored with `Typed assignment lp::vector[n] =
