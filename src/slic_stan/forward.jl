@@ -4455,13 +4455,12 @@ _forward_loop_core!(;
             # The cell's support reaches its flat memory: a bound every coordinate
             # of every cell shares is a scalar bound, and a nested scan's setup and
             # recurrence with different supports take a per-element bound vector.
+            # A constraint that depends on the cell (`lower=L[g]`, a declared
+            # missing cell's `censored(…; lower=ll)` threshold) is not declared on
+            # the flat memory yet: a re-drawn cell's draw honours it, a sampled
+            # cell explores without it.
             T, per_coordinate = _plate_fold_inner_slices(plan.logical, plan.cell_type, index_aliases)
-            cons, hoist = _plate_promoted_constraints(plan.logical, T, index_aliases)
-            isempty(hoist) || error(
-                "plate: the `", first(first(hoist)), "=` constraint of the varying-length cell `",
-                plan.logical, "` depends on the cell position, which its flat memory cannot ",
-                "declare yet; make it independent of the cell, or declare `", plan.logical,
-                "` at model scope.")
+            cons, _ = _plate_promoted_constraints(plan.logical, T, index_aliases)
             for key in per_coordinate
                 cons = merge(cons, (; key => _plate_ragged_bound_carrier!(
                     plan, key, T, outer_dims[1], idxs[1], keys(all_cell_types); info, pending)))
