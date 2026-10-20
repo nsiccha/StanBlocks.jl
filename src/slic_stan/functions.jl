@@ -623,6 +623,24 @@ function _julia_log_sum_exp(x::AbstractArray{<:Real})
     m + log(sum(exp.(x .- m)))
 end
 
+# Stan Math's gamma family.  `lgamma` is C's `lgamma_r`, `log|Γ(x)|`: finite
+# where `Γ(x) < 0` (SpecialFunctions' `loggamma` throws there) and `+Inf` at the
+# poles, zero and the negative integers.  At a pole `tgamma` raises a domain
+# error, `digamma` is `NaN` (Boost's pole policy in Stan Math) and `trigamma`
+# is `+Inf`; SpecialFunctions instead returns `Inf` from `gamma(0)` and `-Inf`
+# from `digamma`, and throws from `digamma(-Inf)` and `trigamma(-Inf)`.  Stan
+# Math's `is_nonpositive_integer` finds the poles, and its `floor(x) == x` test
+# counts `-Inf` as one.
+_julia_is_nonpositive_integer(x) = x <= zero(x) && floor(x) == x
+_julia_lgamma(x) = first(SpecialFunctions.logabsgamma(x))
+_julia_tgamma(x) = _julia_is_nonpositive_integer(x) ?
+    throw(DomainError(x, "tgamma(x) requires x to be neither zero nor a negative integer")) :
+    SpecialFunctions.gamma(x)
+_julia_digamma(x) =
+    _julia_is_nonpositive_integer(x) ? oftype(float(x), NaN) : SpecialFunctions.digamma(x)
+_julia_trigamma(x) =
+    _julia_is_nonpositive_integer(x) ? oftype(float(x), Inf) : SpecialFunctions.trigamma(x)
+
 # Stan Math's `check_matching_sizes` for elementwise binary builtins.
 _julia_check_matching_sizes(name, x, y) = size(x) == size(y) || throw(DimensionMismatch(
     "$name requires arguments of equal size, got $(size(x)) and $(size(y))"))
@@ -639,6 +657,14 @@ jcall(::Val{:log1p_exp}, ::_JuliaScope, x) = _julia_log1p_exp(x)
 jcall(::Val{:log1p_exp}, ::_JuliaScope, x::AbstractArray) = _julia_log1p_exp.(x)
 jcall(::Val{:log1m_exp}, ::_JuliaScope, x) = _julia_log1m_exp(x)
 jcall(::Val{:log1m_exp}, ::_JuliaScope, x::AbstractArray) = _julia_log1m_exp.(x)
+jcall(::Val{:lgamma}, ::_JuliaScope, x) = _julia_lgamma(x)
+jcall(::Val{:lgamma}, ::_JuliaScope, x::AbstractArray) = _julia_lgamma.(x)
+jcall(::Val{:tgamma}, ::_JuliaScope, x) = _julia_tgamma(x)
+jcall(::Val{:tgamma}, ::_JuliaScope, x::AbstractArray) = _julia_tgamma.(x)
+jcall(::Val{:digamma}, ::_JuliaScope, x) = _julia_digamma(x)
+jcall(::Val{:digamma}, ::_JuliaScope, x::AbstractArray) = _julia_digamma.(x)
+jcall(::Val{:trigamma}, ::_JuliaScope, x) = _julia_trigamma(x)
+jcall(::Val{:trigamma}, ::_JuliaScope, x::AbstractArray) = _julia_trigamma.(x)
 jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::Real, y::Real) = _julia_log_sum_exp(x, y)
 jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::AbstractArray{<:Real}) = _julia_log_sum_exp(x)
 function jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::AbstractArray{<:Real}, y::AbstractArray{<:Real})

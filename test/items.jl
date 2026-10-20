@@ -3209,6 +3209,190 @@ concrete result type.
 end
 
 """
+An opted-in deterministic helper can call Stan's gamma family in Julia:
+`lgamma`, `tgamma`, `digamma` and `trigamma`, on a scalar and elementwise on a
+vector, row vector, real array or matrix. The Julia values match Stan Math's,
+including negative arguments where `Γ(x) < 0` and the poles at zero and the
+negative integers. Regression for snag `juliacompat-lgam-9741765a`.
+"""
+@testitem "slic: @juliacompat gamma family" tags=[:slic, :stanc, :bridgestan] setup=[StanBlocksImports] begin
+    helpers = Module(:JuliaCompatGamma)
+    Core.eval(helpers, :(using StanBlocks))
+    Core.eval(helpers, quote
+        @deffun @juliacompat begin
+            lg(x::real)::real = lgamma(x)
+            tg(x::real)::real = tgamma(x)
+            dg(x::real)::real = digamma(x)
+            trg(x::real)::real = trigamma(x)
+            lg_vector(x::vector[n])::vector[n] = lgamma(x)
+            tg_vector(x::vector[n])::vector[n] = tgamma(x)
+            dg_vector(x::vector[n])::vector[n] = digamma(x)
+            trg_vector(x::vector[n])::vector[n] = trigamma(x)
+            lg_row(x::row_vector[n])::row_vector[n] = lgamma(x)
+            dg_array(x::real[n])::real[n] = digamma(x)
+            trg_matrix(x::matrix[m, n])::matrix[m, n] = trigamma(x)
+            gamma_log_density(t::real, rate::real, shape::real)::real =
+                shape * log(rate) - lgamma(shape) + (shape - 1.0) * log(t) - rate * t
+        end
+    end)
+    call(f, args...) = Base.invokelatest(getproperty(helpers, f), args...)
+
+    @test call(:lg, 5.0) ≈ log(24) atol=1e-14
+    @test call(:lg, 5) ≈ log(24) atol=1e-14
+    @test call(:lg, 0.5) ≈ log(sqrt(pi)) atol=1e-14
+    @test call(:tg, 5.0) ≈ 24 atol=1e-12
+    @test call(:tg, 5) == 24
+    @test call(:tg, 0.5) ≈ sqrt(pi) atol=1e-14
+    @test call(:dg, 1.0) ≈ -Base.MathConstants.eulergamma atol=1e-14
+    @test call(:trg, 1.0) ≈ pi^2 / 6 atol=1e-14
+    @test call(:gamma_log_density, 1.5, 2.0, 3.0) ≈ log(2.0^3 / 2 * 1.5^2 * exp(-3.0)) atol=1e-14
+    # Γ(-0.5) = -2√π: Stan's lgamma is log|Γ(x)|, finite where Γ(x) < 0.
+    @test call(:lg, -0.5) ≈ log(2sqrt(pi)) atol=1e-14
+    @test call(:tg, -0.5) ≈ -2sqrt(pi) atol=1e-14
+    # The poles, where Stan Math's lgamma is +Inf, tgamma rejects, digamma is
+    # NaN and trigamma is +Inf. Stan's `floor(x) == x` test counts -Inf too.
+    for x in (0.0, -1.0, -3.0, 0, -2, -Inf)
+        @test call(:lg, x) == Inf
+        @test_throws DomainError call(:tg, x)
+        @test isnan(call(:dg, x))
+        @test call(:trg, x) == Inf
+    end
+    @test call(:lg, Inf) == Inf
+    @test call(:tg, Inf) == Inf
+    @test all(isnan, (call(:lg, NaN), call(:tg, NaN), call(:dg, NaN), call(:trg, NaN)))
+
+    # Elementwise over every registered container shape.
+    x = [0.3, 1.7, 4.2, 12.5, -0.5, -1.5, -2.5]
+    X = [0.3 1.7 -0.5; 4.2 12.5 -2.5]
+    @test call(:lg_vector, x) == map(v -> call(:lg, v), x)
+    @test call(:tg_vector, x) == map(v -> call(:tg, v), x)
+    @test call(:dg_vector, x) == map(v -> call(:dg, v), x)
+    @test call(:trg_vector, x) == map(v -> call(:trg, v), x)
+    @test call(:lg_row, x) == map(v -> call(:lg, v), x)
+    @test call(:dg_array, x) == map(v -> call(:dg, v), x)
+    @test call(:trg_matrix, X) == map(v -> call(:trg, v), X)
+    @test call(:lg_vector, [2, 3]) ≈ [0.0, log(2)] atol=1e-15
+    @test_throws DomainError call(:tg_vector, [1.5, 0.0])
+
+    # Stan evaluates the same calls: in the model block through the helpers,
+    # and directly in generated quantities, which `theta = 0` evaluates at the
+    # data points exactly.
+    poles = [0.0, -1.0, -3.0]
+    z = [0.4, 1.1, 2.3]
+    model = Core.eval(helpers, quote
+        @slic (; x = $x, poles = $poles, z = $z, t = 1.5, obs = 1.3) begin
+            theta ~ normal(0.0, 1.0)
+            shape = 2.0 + exp(theta)
+            mu = gamma_log_density(t, 2.0, shape) + lg(shape) + tg(shape) + dg(shape) +
+                 sum(lg_vector(z * shape))
+            obs ~ normal(mu, 10.0)
+            lg_x = lgamma(x + theta)
+            tg_x = tgamma(x + theta)
+            dg_x = digamma(x + theta)
+            trg_x = trigamma(x + theta)
+            lg_poles = lgamma(poles + theta)
+            dg_poles = digamma(poles + theta)
+            trg_poles = trigamma(poles + theta)
+        end
+    end)
+    code = stan_code(model)
+    for call_text in ("lgamma(", "tgamma(", "digamma(", "trigamma(")
+        @test occursin(call_text, code)
+    end
+    @test stanc_check(code; warn_pedantic=false).ok
+
+    problem = instantiate(stan_model(model))
+    @test LogDensityProblems.dimension(problem) == 1
+    draw = Dict(zip(
+        BridgeStan.param_names(problem.model; include_tp=true, include_gq=true),
+        BridgeStan.param_constrain(problem.model, [0.0]; include_tp=true, include_gq=true,
+            rng=BridgeStan.StanRNG(problem.model, 1)),
+    ))
+    stan_values(stem, n) = [draw["$stem.$i"] for i in 1:n]
+    # Equal non-finite values, else within `rtol`.
+    agrees(a, b; rtol) = length(a) == length(b) &&
+        all(isequal(u, v) || isapprox(u, v; rtol) for (u, v) in zip(a, b))
+    @test agrees(stan_values("lg_x", length(x)), call(:lg_vector, x); rtol=1e-14)
+    @test agrees(stan_values("tg_x", length(x)), call(:tg_vector, x); rtol=1e-14)
+    # Boost's digamma differs by a few ulps, most where reflection cancels.
+    @test agrees(stan_values("dg_x", length(x)), call(:dg_vector, x); rtol=1e-13)
+    # Stan Math's trigamma is a truncated asymptotic series, off by up to
+    # about 3e-9 relative; SpecialFunctions' is accurate to rounding.
+    @test agrees(stan_values("trg_x", length(x)), call(:trg_vector, x); rtol=1e-8)
+    @test agrees(stan_values("lg_poles", 3), call(:lg_vector, poles); rtol=0.0)
+    @test agrees(stan_values("dg_poles", 3), call(:dg_vector, poles); rtol=0.0)
+    @test agrees(stan_values("trg_poles", 3), call(:trg_vector, poles); rtol=0.0)
+
+    # Compare the native Stan density and gradient against the Julia helper
+    # chain. Taking density differences removes any normalization convention.
+    # `trigamma` stays out of it: its values are compared above.
+    julia_mu(th) = begin
+        shape = 2.0 + exp(th)
+        call(:gamma_log_density, 1.5, 2.0, shape) + call(:lg, shape) + call(:tg, shape) +
+            call(:dg, shape) + sum(call(:lg_vector, z * shape))
+    end
+    julia_lp(th) = -0.5th^2 - 0.5((1.3 - julia_mu(th)) / 10)^2
+    t0, t1 = 0.0, 0.4
+    lp0 = LogDensityProblems.logdensity(problem, [t0])
+    lp1, grad1 = LogDensityProblems.logdensity_and_gradient(problem, [t1])
+    @test lp1 - lp0 ≈ julia_lp(t1) - julia_lp(t0) atol=1e-9
+    h = 1e-6
+    @test grad1[1] ≈ (julia_lp(t1 + h) - julia_lp(t1 - h)) / (2h) atol=1e-6
+end
+
+@testsnippet JuliaCompatGammaADFixtures begin
+    using StanBlocks
+    import StanBlocks.stan: @deffun
+    @deffun @juliacompat begin
+        ad_lg(x::real)::real = lgamma(x)
+        ad_tg(x::real)::real = tgamma(x)
+        ad_dg(x::real)::real = digamma(x)
+        ad_trg(x::real)::real = trigamma(x)
+        ad_lg_vector(x::vector[n])::vector[n] = lgamma(x)
+    end
+end
+
+"""
+Mooncake differentiates the Julia gamma-family methods, each derivative being
+the next member of the family, and each method infers a concrete result type.
+"""
+@testitem "slic: @juliacompat gamma family is Mooncake differentiable" tags=[:slic, :ad] setup=[StanBlocksImports, JuliaCompatGammaADFixtures] begin
+    import Mooncake
+    gradient(f, x...) = begin
+        cache = Mooncake.prepare_gradient_cache(f, x...)
+        Mooncake.value_and_gradient!!(cache, f, x...)
+    end
+    h = 1e-6
+    central(f, x) = (f(x + h) - f(x - h)) / (2h)
+
+    # -0.5 lies where Γ(x) < 0, so lgamma differentiates log|Γ(x)|.
+    for x in (0.7, 2.5, 9.0, -0.5)
+        value, (_, d) = gradient(ad_lg, x)
+        @test value ≈ ad_lg(x) atol=1e-12
+        @test d ≈ ad_dg(x) atol=1e-12
+        value, (_, d) = gradient(ad_tg, x)
+        @test value ≈ ad_tg(x) atol=1e-12
+        @test d ≈ ad_tg(x) * ad_dg(x) rtol=1e-12
+        value, (_, d) = gradient(ad_dg, x)
+        @test value ≈ ad_dg(x) atol=1e-12
+        @test d ≈ ad_trg(x) rtol=1e-12
+        value, (_, d) = gradient(ad_trg, x)
+        @test value ≈ ad_trg(x) atol=1e-12
+        @test d ≈ central(ad_trg, x) rtol=1e-6
+    end
+
+    x = [0.3, 1.7, 4.2, -0.5]
+    value, (_, dx) = gradient(v -> sum(ad_lg_vector(v)), x)
+    @test value ≈ sum(ad_lg_vector(x)) atol=1e-12
+    @test dx ≈ ad_dg.(x) atol=1e-12
+
+    for f in (ad_lg, ad_tg, ad_dg, ad_trg)
+        @test Base.return_types(f, (Float64,)) == [Float64]
+    end
+    @test Base.return_types(ad_lg_vector, (Vector{Float64},)) == [Vector{Float64}]
+end
+
+"""
 Verify `slic: normal(loc,scale)` in an isolated test item.
 """
 @testitem "slic: normal(loc,scale)" tags=[:slic, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
