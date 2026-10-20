@@ -734,6 +734,18 @@ jcall(::Val{:mean}, ::_JuliaScope, x) = Statistics.mean(x)
 jcall(::Val{:sd}, ::_JuliaScope, x) = Statistics.std(x)
 jcall(::Val{:broadcasted_getindex}, ::_JuliaScope, x, i) = x isa AbstractArray ? x[i] : x
 jcall(::Val{:jmap}, ::_JuliaScope, f, x) = map(f, x)
+# `jbroadcasted(f, args...)` runs the element loop its generated Stan function
+# runs: over the leading dimension of the first array argument, slicing every
+# array argument there (a vector's element, a matrix's row) and passing scalars
+# through. Plain `broadcast` would iterate a matrix elementwise instead.
+_julia_jb_elem(x::AbstractVector, i) = x[i]
+_julia_jb_elem(x::AbstractArray, i) = collect(selectdim(x, 1, i))
+_julia_jb_elem(x, i) = x
+function jcall(::Val{:jbroadcasted}, ::_JuliaScope, f, args...)
+    k = findfirst(a -> a isa AbstractArray, args)
+    k === nothing && return f(args...)
+    [f(map(a -> _julia_jb_elem(a, i), args)...) for i in axes(args[k], 1)]
+end
 jcall(::Val{:reject}, ::_JuliaScope, args...) = throw(ArgumentError(join(string.(args))))
 
 _deffun_julia_numeric_type(x::Number) = typeof(x)

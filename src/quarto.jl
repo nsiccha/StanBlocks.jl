@@ -47,7 +47,8 @@ _display_input_semantics(input::ModelInput) = begin
     isempty(flags) ? "data" : join(flags, ", ")
 end
 
-_display_output_semantics(output::ModelOutput) = begin
+# `output` is a descriptor output row (`_block_output_rows`) or a `ModelOutput`.
+_display_output_semantics(output) = begin
     role = string(replace(string(output.kind), "_" => " "), " / ",
         replace(string(output.generative), "_" => " "))
     output.source === nothing || (role = string(role, " of ", output.source))
@@ -62,13 +63,15 @@ end
 # traced blocks and are therefore safe for default display.
 _display_traced_parts(x::StanModel) = begin
     datacontent = content(block(x, :data))
-    # `_block_outputs` takes the data CONTENT, not just its names: a ragged
+    # The scope takes the data CONTENT, not just its names: a ragged
     # observation's twins carry the carrier's group boundaries, which live on
-    # the data value (`ModelOutput.segments`).
+    # the data value (`ModelOutput.segments`). Rows carry every output field the
+    # display shows; resolved `dims` are not shown, so they are not evaluated.
+    scope = _descriptor_scope(x, datacontent)
     outputs = vcat(
-        _block_outputs(x, :parameters, :parameter, datacontent),
-        _block_outputs(x, :transformed_parameters, :transformed_parameter, datacontent),
-        _block_outputs(x, :generated_quantities, :generated_quantity, datacontent),
+        _block_output_rows(scope, :parameters, :parameter),
+        _block_output_rows(scope, :transformed_parameters, :transformed_parameter),
+        _block_output_rows(scope, :generated_quantities, :generated_quantity),
     )
 
     observed = _observed_bases(block(x, :model), Set{Symbol}())

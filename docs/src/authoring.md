@@ -576,7 +576,7 @@ use cross-target indexing such as `x[m,k,:,:]` when selecting a nested matrix.
 d = stan_descriptor(model; name = :demo)
 
 d.inputs       # type, size, value, observed/held-out/derived flags
-d.outputs      # parameters, generated quantities, generative role, source, segments
+d.outputs      # parameters, generated quantities, generative role, source, segments, dims
 d.definitions  # exact emitted Stan functions and dependency links
 d.operations   # derived :transpile/:instantiate/:fit/:predict/:pointwise_loglik
 ```
@@ -592,6 +592,17 @@ Different named members of one plate may use different ragged axes, so use the
 `segments` on each output entry itself; do not parse `__pl_*` names or borrow a
 sibling/input layout. Re-binding a `StanModel`'s data updates these reflected
 boundaries.
+
+`ModelOutput.size` holds the emitted size expressions, which may be composite
+(`n_levels - 1`) or name a transformed-data value (`J = maximum(subject)`) that
+is not an input. `ModelOutput.dims` holds them resolved against the current
+data: one nonnegative `Int` per entry, `()` for a scalar. A
+`vector[n_levels - 1]` at `n_levels == 1` reports `(0,)`, and for any output
+that is not a tuple `prod(dims)` is the number of `param_names` entries
+BridgeStan lists for it, so an empty output is distinguishable from a missing
+one. Every top-level Stan size is data-only, so `dims` always exists; a size
+computed through a Stan-only `@deffun` makes `stan_descriptor` throw, and
+marking that function `@juliacompat` gives it the Julia method it needs.
 
 ```julia
 problem = stan_execute(d, :fit)

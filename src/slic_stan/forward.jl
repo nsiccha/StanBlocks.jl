@@ -4228,10 +4228,14 @@ _forward_loop_core!(;
             # a canonical graph: an outer inferred from the first positional is
             # the raw Julia `:(length(it))`, which the descriptor's evaluator
             # cannot walk, so normalise it to the same form as an explicit
-            # `outer=length(it)` (snag `stan-descriptor-18cffc24`).
+            # `outer=length(it)` (snag `stan-descriptor-18cffc24`). `lens` names
+            # the per-group length array the flat memory is sized by
+            # (`sum(lens)`), so the descriptor can resolve that size too (snag
+            # `stan-descriptor-aa56f7f3`).
             info[plan.mem] = remake(info[plan.mem]; ragged_plate_layout=(;
                 logical=plan.logical,
                 ends=plan.ends,
+                lens=plan.lens,
                 outer=_plate_as_canonical(outer_dims[1]),
                 index=idxs[1],
                 cell_size=plan.size_expr,
