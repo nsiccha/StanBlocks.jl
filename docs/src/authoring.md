@@ -382,7 +382,7 @@ and generated quantities.
 | N-dimensional outer shape | ✅ | Use a non-empty tuple; with no positional inputs, take one do-block index per axis; tested through four axes |
 | Positional input slicing | ✅ | One do-block argument per positional input, indexed over all outer axes |
 | Lexically captured values | ✅ | Shared across cells; loop-invariant expressions are hoisted when safe |
-| Fresh scalar `~` or `=` binding | ✅ | Collected as a `vector[N]` for one outer axis; additional axes use matrix/array storage |
+| Fresh scalar `~` or `=` binding | ✅ | Collected as a `vector[N]` for one outer axis; additional axes use matrix/array storage. An integer binding (`k = 2 * i + 1`) stays an integer, `array[N] int`, so it can index |
 | Fixed `vector[K]` binding/result | ✅ | Collected as `matrix[K,N]` for one outer axis; extra axes add Stan array prefixes |
 | Observing a cell binding defined by `=` (`a = yi; a ~ …`) | ❌ | Refused: observe the data itself (`yi ~ …`, `ys[i] ~ …`), so that omitting it still gives the prior simulation |
 | Sampled fixed `int[K]` cell binding | ✅ | Sampled (`~`) side bindings collect as `array[N,K] int` for one outer axis; deterministic int cells (findall/boolean-mask index arrays) still inline at each use |
@@ -403,7 +403,7 @@ and generated quantities.
 | Two plates under one name | ❌ | One name, one plate: the name labels its carriers, so a second `theta ~ plate(…)` is refused, collecting or not |
 | Dependency on a previous cell | ❌ | Cells are independent; a recurrence that samples per step is the annotated `@scan begin … end` loop (below), a deterministic one a `@deffun` recurrence |
 | Vararg do-block parameters | ❌ | Use a fixed positional argument list |
-| Cell without a result (observation-only) | ✅ | The body ends in a `~`/`=` statement or `nothing`: fresh bindings keep the `<rv>_<name>` namespace and no `rv` is declared, filled or bound |
+| Cell without a result (observation-only) | ✅ | The body ends in a `~`/`=` statement, an annotated loop (`@scan begin … end`), or `nothing`: fresh bindings keep the `<rv>_<name>` namespace and no `rv` is declared, filled or bound |
 | Fully dead/prior-only plate | ✅ | The whole plate — fresh samples, collected result and loop — lowers to `generated quantities` with everything it reads; `parameters {}` stays empty |
 | Cross-validation taint | ✅ | Taint from `outer` sizes or a cell prior RHS moves the affected cell path to generated quantities |
 
@@ -572,6 +572,71 @@ is empty while the block re-draws in `generated quantities` in step order;
 mark a size or input with `maybecv` and the whole chain, observation
 included, moves to `generated quantities`.
 
+### Observed scans
+
+A scan may observe data and read it back at a lag. This is how an
+autoregressive likelihood is written: each observation is conditioned on the
+observed past.
+
+```julia
+@slic (; y, mu, T) begin
+    phi ~ uniform(-1, 1); sigma ~ exponential(1)
+    @scan begin
+        y[1] ~ normal(mu[1], sigma / sqrt(1 - phi^2))       # stationary start
+        for t in 2:T
+            y[t] ~ normal(mu[t] + phi * (y[t-1] - mu[t-1]), sigma)
+        end
+    end
+end
+```
+
+- The `model` block gets the conditional densities as written, reading the
+  observed `y[t-1]`.
+- `y_gen` is the whole simulated trajectory: the scan the same body runs when
+  `y` is omitted, laid out like `y`. Its lags read `y_gen`, so it is a draw of
+  `y` given the parameters, not a one-step-ahead prediction from the observed
+  past.
+- `y_likelihood` holds each element's conditional log density, so it sums to
+  the log likelihood.
+
+Holding `y` out with `maybecv` drops the densities from `model` and keeps both
+twins. Each step of `y_gen` is drawn the way that observation's own `_gen` twin
+would be: a bounded family is truncated, `censored(…)` clamps the draw (and the
+next step reads the clamped value, as the observed model does), and
+`weighted(…)` draws from the base family. A deterministic statement that reads the observations and feeds one of
+them, such as a carried residual (`err[t] = y[t] - nu`, read as `err[t-1]` by a
+moving-average term), is replayed along the trajectory as `err_gen`. Sampled
+statements are not re-drawn: like every predictive twin, the trajectory is
+drawn given the posterior latents. An array observed per step and never read
+back (`y[t] ~ normal(h[t], s)`) keeps its ordinary per-cell `y_gen`.
+
+Each element is observed exactly once and given earlier elements only: the
+setup observes `y[1:m]` with literal steps, the loop observes `y[t]` from
+`m + 1`, lags reach back at most `m`, a 1-D `y` has exactly as many elements as
+the scan runs, and no observation reads its own current value. Each violation is
+refused with a message naming `y`. Conditioning on unmodelled initial values
+(observing only `y[2:T]`) is not supported yet.
+
+The same holds in a plate cell. Dense data is observed per cell as `y[t, j]`
+(the scan step first, then the cell), and its `y_gen` and `y_likelihood` are
+matrices like `y`. A group of nested-vector data is observed through the
+container clause or as `ys[p][t]`, and its `ys_gen` and `ys_likelihood` are flat
+vectors with the data's group `segments`:
+
+```julia
+@slic (; ys) begin                       # ys = [randn(3), randn(5), randn(2)]
+    phi ~ uniform(-1, 1); sigma ~ exponential(1)
+    @plate for y in ys                   # or: @plate for p in eachindex(ys) … ys[p][t] …
+        @scan begin
+            y[1] ~ normal(0, sigma / sqrt(1 - phi^2))
+            for t in 2:length(y)
+                y[t] ~ normal(phi * y[t-1], sigma)
+            end
+        end
+    end
+end
+```
+
 A carried array takes its support coordinate by coordinate, as slice statements
 do: with `x[1] ~ exponential(1.)` and an unbounded recurrence
 `x[t] ~ normal(x[t-1], 1.)`, only `x[1]` is bounded
@@ -606,6 +671,15 @@ end
 Such a bound may read data and the loop indices (`lower=L[j]`, `upper=U[t]`),
 but not a value the loop body binds per cell (`c = L[j]; … lower=c`): write the
 expression in the bound instead.
+
+A nested scan may run to a per-cell length, `for t in 2:T[j]` or
+`for t in 2:length(y)` over a container group. Its carried arrays and per-step
+locals are then stored as the plate's flat memory (one segment per cell, like a
+varying-length plate cell), and element `t` of cell `j` is
+`h__pl_mem[ragged_start(ends, j) + t - 1]`. This works in every mode, and support
+reaches the flat memory as it does a fixed-length cell: a bound every element
+shares is a scalar bound, and a setup and recurrence with different supports
+take a per-element bound vector built in `transformed data`.
 
 Current limits: a setup fill uses a literal index (`x[1] ~ …`; slice and
 nested `@plate` setups are not supported yet); a `@scan` has one axis; an

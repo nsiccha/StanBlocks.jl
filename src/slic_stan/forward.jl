@@ -3331,6 +3331,33 @@ _plate_slice_bound_carrier!(f, key, T::StanType, outer, axes, positions, cell_na
     end
     info[carrier]
 end
+# The per-element `key=` bound of a varying-length cell's flat memory, when a
+# nested `@scan`'s setup and recurrence give its coordinates different support:
+# a `transformed data` vector laid out like the memory, filled per cell
+# (`_slice_bound_fills`) at `ragged_start(ends, i) + t - 1`.
+_plate_ragged_bound_carrier!(plan, key, T::StanType, outer, idx, cell_names; info, pending) = begin
+    f = plan.logical
+    records = T.info.slice_supports
+    default = getproperty(T.info.slice_default, key)
+    _check_slice_bounds_data(f, key, default, records)
+    for r in records
+        _plate_depends_on(getproperty(r, key), cell_names) && error(
+            "@scan: the `", key, "=` bound of `", r.spelling, " ~ …` reads a value the ",
+            "enclosing loop binds per cell. A per-coordinate bound is data or an ",
+            "expression of data and the loop indices; write that expression in the ",
+            "bound itself (`", key, "=L[j]`).")
+    end
+    carrier = _slice_carrier_name(plan.mem, key; info)
+    start = :(ragged_start($(plan.ends), $idx))
+    fills = _slice_bound_fills(key, plan.size_expr, default, records, Symbol(carrier, :_i),
+        i -> Expr(:ref, carrier, _ragged_offset(start, i)); covered=get(T.info, :slice_tiled, false))
+    loop = Expr(:for, Expr(:(=), idx, :(1:$outer)), Expr(:block, fills...))
+    for s in (Expr(:(::), carrier, :(vector[sum($(plan.lens))])), loop)
+        emitted = forward!(canonical(s); info)
+        pending !== nothing && push!(pending, emitted)
+    end
+    info[carrier]
+end
 _plate_promoted_constraints(f, T::StanType, index_aliases) = begin
     cons = constraints(T)
     isempty(cons) && return (cons, Pair{Symbol,Any}[])
@@ -4425,6 +4452,21 @@ _forward_loop_core!(;
             mem_ct = center_type(plan.cell_type) === types.int ? :int : :vector
             mem_decl = Expr(:(::), plan.mem, Expr(:ref, mem_ct, :(sum($(plan.lens)))))
             emitted = forward!(canonical(mem_decl); info)
+            # The cell's support reaches its flat memory: a bound every coordinate
+            # of every cell shares is a scalar bound, and a nested scan's setup and
+            # recurrence with different supports take a per-element bound vector.
+            T, per_coordinate = _plate_fold_inner_slices(plan.logical, plan.cell_type, index_aliases)
+            cons, hoist = _plate_promoted_constraints(plan.logical, T, index_aliases)
+            isempty(hoist) || error(
+                "plate: the `", first(first(hoist)), "=` constraint of the varying-length cell `",
+                plan.logical, "` depends on the cell position, which its flat memory cannot ",
+                "declare yet; make it independent of the cell, or declare `", plan.logical,
+                "` at model scope.")
+            for key in per_coordinate
+                cons = merge(cons, (; key => _plate_ragged_bound_carrier!(
+                    plan, key, T, outer_dims[1], idxs[1], keys(all_cell_types); info, pending)))
+            end
+            emitted = _plate_constrain_decl(plan.mem, emitted, cons; info)
             pending !== nothing && push!(pending, emitted)
             if plan.logical in unbound_cells
                 info[plan.mem] = remake(info[plan.mem]; unbound_observation=plan.logical)

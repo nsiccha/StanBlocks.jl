@@ -127,12 +127,47 @@ predictive twin, the trajectory is drawn given the posterior latents.
     @test occursin("err[t] = (y[t] - err_nu[(t - 1)]);", tp)
     gq = stan_block(code, "generated quantities")
     # The draw at step t precedes the residual that reads it.
-    @test occursin("""
-                err_nu_gen[(t - 1)] = (mu + (phi * y_gen[(t - 1)]) + (theta * err_gen[(t - 1)]));
-                y_gen[t] = normal_rng(err_nu_gen[(t - 1)], sigma);
-                err_gen[t] = (y_gen[t] - err_nu_gen[(t - 1)]);""", gq)
+    @test occursin(join([
+        "err_nu_gen[(t - 1)] = (mu + (phi * y_gen[(t - 1)]) + (theta * err_gen[(t - 1)]));",
+        "y_gen[t] = normal_rng(err_nu_gen[(t - 1)], sigma);",
+        "err_gen[t] = (y_gen[t] - err_nu_gen[(t - 1)]);"], "\n        "), gq)
     @test occursin("y_gen[1] = normal_rng(mu, sigma);\n    err_gen[1] = (y_gen[1] - mu);", gq)
     @test stanc_compiles(arma)
+
+    # Each step draws as its observation's own twin would: truncated, clamped,
+    # unweighted; an integer series draws integers.
+    hof(obs) = StanBlocks.SlicModel(quote
+        phi ~ uniform(-1, 1); s ~ exponential(1)
+        @scan begin
+            y[1] ~ $(obs(:(0.0), :(1.0), 1))
+            for t in 2:T
+                y[t] ~ $(obs(:(phi * y[t-1]), :s, :t))
+            end
+        end
+    end, Dict{Symbol,Any}(:y => abs.(randn(5)), :w => ones(5), :T => 5), @__MODULE__)
+    truncated_gq = stan_block(stan_code(hof((m, s, i) -> :(normal($m, $s; lower = 0)))), "generated quantities")
+    @test occursin("y_gen[t] = lower_conditioning_normal_rng(0, (phi * y_gen[(t - 1)]), s);", truncated_gq)
+    censored_m = hof((m, s, i) -> :(censored(normal($m, $s); lower = 0.1)))
+    @test occursin("y_gen[t] = lower_clamping_normal_rng(0.1, (phi * y_gen[(t - 1)]), s);",
+        stan_block(stan_code(censored_m), "generated quantities"))
+    @test stanc_compiles(censored_m)
+    weighted_m = hof((m, s, i) -> :(weighted(normal($m, $s), w[$i])))
+    @test occursin("y_gen[t] = weighted_normal_rng(w[t], (phi * y_gen[(t - 1)]), s);",
+        stan_block(stan_code(weighted_m), "generated quantities"))
+    @test stanc_compiles(weighted_m)
+    counts = @slic (; y = [1, 3, 2, 0, 4], T = 5) begin
+        a ~ normal(0, 1); b ~ normal(0, 0.3)
+        @scan begin
+            y[1] ~ poisson(exp(a))
+            for t in 2:T
+                y[t] ~ poisson(exp(a + b * y[t-1]))
+            end
+        end
+    end
+    gq = stan_block(stan_code(counts), "generated quantities")
+    @test occursin("array[y_n] int y_gen;", gq)
+    @test occursin("y_gen[t] = poisson_rng(exp((a + (b * y_gen[(t - 1)]))));", gq)
+    @test stanc_compiles(counts)
 
     mixed = @slic (; y = randn(5), T = 5) begin
         phi ~ uniform(-1, 1); s ~ exponential(1); r ~ normal(0, 1)
@@ -314,6 +349,40 @@ its outer declaration first`).
         end
     end
     @test stanc_compiles(container)
+
+    # Support reaches the flat memory: one shared bound is scalar; a setup and a
+    # recurrence with different supports take a per-element bound vector.
+    bounded(step) = StanBlocks.SlicModel(quote
+        phi ~ uniform(-1, 1); s ~ exponential(1)
+        @plate for j in 1:J
+            @scan begin
+                h[1] ~ exponential(1)
+                for t in 2:T[j]
+                    h[t] ~ $step
+                end
+            end
+            obs[j] ~ normal(h, 1.0)
+        end
+    end, Dict{Symbol,Any}(:T => [3, 4, 5], :J => 3, :obs => obs), @__MODULE__)
+    shared = stan_code(bounded(:(exponential(1 / (1 + h[t-1])))))
+    @test occursin("vector<lower=0.0>[sum(h__pl_len_1)] h__pl_mem_1;", stan_block(shared, "parameters"))
+    mixed = bounded(:(normal(phi * h[t-1], s)))
+    code = stan_code(mixed)
+    @test occursin("vector<lower=h__pl_mem_1__lower>[sum(h__pl_len_1)] h__pl_mem_1;", stan_block(code, "parameters"))
+    td = stan_block(code, "transformed data")
+    @test occursin("h__pl_mem_1__lower[ragged_start(h__pl_end_1, j)] = 0.0;", td)
+    @test occursin("h__pl_mem_1__lower[((ragged_start(h__pl_end_1, j) + t) - 1)] = negative_infinity();", td)
+    @test stanc_compiles(mixed)
+
+    # A plain varying-length plate cell keeps its family's support too.
+    cell = @slic (; K = [2, 3], G = 2, obs = [randn(2), randn(3)]) begin
+        z ~ plate(; outer = G) do g
+            zz::vector[K[g]] ~ exponential(1)
+            zz
+        end
+        obs ~ normal(z, 1.0)
+    end
+    @test occursin("vector<lower=0.0>[sum(z_zz__pl_len_1)] z_zz__pl_mem_1;", stan_block(stan_code(cell), "parameters"))
 end
 
 """
