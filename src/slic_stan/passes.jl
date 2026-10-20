@@ -267,10 +267,23 @@ _exchangeable_prior(rhs::CanonicalExpr) = begin
     bounds = filter(in(BOUND_KEYS), keys(rhs.kwargs))
     all(a -> stan_ndim(a) == 0, rhs.args) && all(k -> stan_ndim(rhs.kwargs[k]) == 0, bounds)
 end
+# The bound a declaration implies without a kwarg: `positive_ordered` IS the
+# `lower=0` support, so a family that does not imply it is truncated there.
+_center_support(decl) =
+    center_type(decl) === types.positive_ordered ? (; lower=stan_expr(0.0)) : (;)
+# A bounded `~` samples from the `truncated` call (`_normalised_truncation`): an
+# observation always, a parameter prior that stays in the model block whenever
+# its bound cuts the family at a parameter-dependent point. Re-draws keep the bare
+# call: `_gq_redraw` truncates them itself.
+_truncated_sampling_rhs(decl, rhs) =
+    qual(decl) == :data ? _normalised_truncation(rhs; observed=true) :
+    qual(decl) == :parameter && !cv(decl) ?
+        _normalised_truncation(rhs; support=_center_support(decl)) : rhs
 backward!(x::SamplingExpr{<:StanExpr{Symbol}}; info) = if qual(x.args[1]) == :data ||
         lqual(info[expr(x.args[1])]) == :affects_likelihood || !_gq_redrawable(x.args...)
     lhs, rhs = x.args
-    remake(x, info[expr(x.args[1])], _restore_sampling_kwargs(backward!(rhs; info), rhs))
+    decl = info[expr(x.args[1])]
+    remake(x, decl, _truncated_sampling_rhs(decl, _restore_sampling_kwargs(backward!(rhs; info), rhs)))
 else
     lhs, rhs = x.args
     remake(x, remake(lhs, qual=:quantities), rhs)
@@ -300,7 +313,7 @@ backward!(x::SamplingExpr; info) = begin
             # the declaration `:quantities` (see `_forward_indexed_sampling!` in
             # forward.jl); this is the matching half that turns the `~` itself
             # into the generated-quantities re-draw.
-            remake(x, lhs, _restore_sampling_kwargs(backward!(rhs; info), rhs))
+            remake(x, lhs, _truncated_sampling_rhs(info[key], _restore_sampling_kwargs(backward!(rhs; info), rhs)))
         else
             # Prior-only plate locals are generated quantities, matching the
             # existing prior-predictive treatment of unused Symbol samples. The
@@ -316,7 +329,10 @@ backward!(x::SamplingExpr; info) = begin
         remake(x, backward!(lhs; info), backward!(rhs; info))
     else
         @assert qual(lhs) == :data
-        remake(x, backward!(lhs; info), backward!(rhs; info))
+        traced = backward!(rhs; info)
+        restored = _restore_sampling_kwargs(traced, rhs)
+        truncated = _truncated_sampling_rhs(lhs, restored)
+        remake(x, backward!(lhs; info), truncated === restored ? traced : truncated)
     end
 end
 backward!(x::ReturnExpr; info) = x
@@ -942,9 +958,10 @@ Base.push!(b::GeneratedQuantitiesBlock, x::SamplingExpr; info) = begin
     # @deffun dispatch on the shape.
     lhs_ct = center_type(lhs)
     token = StanExpr(lhs_ct, StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
-    # An observation's `<obs>_gen` twin draws from the bare family (its likelihood
-    # is the bare family); a PARAMETER re-draw must respect the sampled symbol's
-    # own `lower=`/`upper=` bounds — see `redraw_rng_expr`.
+    # An observation's `<obs>_gen` twin draws from its own family (a bounded one
+    # is already the `truncated` call, `_truncated_sampling_rhs`); a PARAMETER
+    # re-draw must respect the sampled symbol's own `lower=`/`upper=` bounds —
+    # see `redraw_rng_expr`.
     rng_rhs = is_observation ? rng_expr(token, rhs) : _gq_redraw(lhs, rhs, token)
     lhs = StanExpr(expr(lhs), remake(type(rng_rhs); value=missing))
     push!(b, CanonicalExpr(:(=), lhs, rng_rhs); info)
@@ -1064,9 +1081,9 @@ _ordered_redraw(lhs, rhs, token) = begin
     end
     ct = center_type(lhs)
     rhs_c = expr(rhs)
-    if ct === types.positive_ordered && !(:lower in keys(rhs_c.kwargs))
-        rhs = StanExpr(remake(rhs_c, rhs_c.args...; rhs_c.kwargs..., lower=stan_expr(0.0)), type(rhs))
-    end
+    support = _center_support(lhs)
+    isempty(support) ||
+        (rhs = StanExpr(remake(rhs_c, rhs_c.args...; support..., rhs_c.kwargs...), type(rhs)))
     vtoken = StanExpr(types.vector,
         StanType(types.tokenof{types.vector}, stan_size(token); value=types.vector, qual=:data))
     draw = _check_redraw_resolves(lhs, rhs, redraw_rng_expr(vtoken, rhs))
