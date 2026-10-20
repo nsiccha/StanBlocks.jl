@@ -332,24 +332,66 @@ end
         y ~ normal(to_vector(h), 1.)
     end
     @test stanc_compiles(nested)
-    # Capability gap, not a refusal of the shape: a per-coordinate bound across
-    # a nested scan's promoted axes is not built yet (todo StanBlocks 2026-10-16T17-32-53-378-1eyqyrh).
-    @test_broken try
-        stan_code(@slic (; y=randn(6), S=2) begin
-            @plate for j in 1:S
-                @scan begin
-                    h[1] ~ exponential(1.)
-                    for t in 2:3
-                        h[t] ~ normal(h[t-1], 1.)
-                    end
+    @test occursin("matrix[3, S] h;", stan_block(stan_code(nested), "parameters"))
+
+    # A recurrence bound that reads the loop index varies along it, even with
+    # no setup statement to differ from. It used to fold as one scalar bound,
+    # `vector<lower=L[t]>[3] x`, naming `t` outside its loop.
+    indexed = @slic (; y=randn(3), L=[0., 1., 2.]) begin
+        @scan begin
+            for t in 1:3
+                x[t] ~ normal(0., 1.; lower=L[t])
+            end
+        end
+        y ~ normal(x, 1.)
+    end
+    code = stan_code(indexed)
+    @test occursin("vector<lower=x__lower>[3] x;", stan_block(code, "parameters"))
+    @test occursin("x__lower[t] = L[t];", stan_block(code, "transformed data"))
+    @test stanc_compiles(indexed)
+
+    # Nested in a @plate for, each cell's setup and recurrence keep their own
+    # support: a bound matrix over the promoted axes (todo
+    # StanBlocks 2026-10-16T17-32-53-378-1eyqyrh). It used to be refused, and
+    # before that the setup's support bounded every coordinate.
+    per_cell = @slic (; y=randn(6), S=2) begin
+        @plate for j in 1:S
+            @scan begin
+                h[1] ~ exponential(1.)
+                for t in 2:3
+                    h[t] ~ normal(h[t-1], 1.)
                 end
             end
-            y ~ normal(to_vector(h), 1.)
-        end)
-        true
-    catch
-        false
+        end
+        y ~ normal(to_vector(h), 1.)
     end
+    code = stan_code(per_cell)
+    @test occursin("matrix<lower=h__lower>[3, S] h;", stan_block(code, "parameters"))
+    td = stan_block(code, "transformed data")
+    @test occursin("matrix[3, S] h__lower;", td)
+    @test occursin("h__lower[1, j] = 0.0;", td)
+    @test occursin("h__lower[t, j] = negative_infinity();", td)
+    @test stanc_compiles(per_cell)
+
+    # A bound may read data through the loop indices, and every enclosing
+    # axis gets its own coordinates (`array[S] matrix[3, R]`, indexed `[j, t, i]`).
+    axes = @slic (; y=randn(3), S=2, R=2, L=[0., 1.], U=[2., 3., 4.]) begin
+        @plate for i in 1:R, j in 1:S
+            @scan begin
+                h[1] ~ normal(0., 1.; lower=L[j])
+                for t in 2:3
+                    h[t] ~ normal(h[t-1], 1.; upper=U[t])
+                end
+            end
+        end
+        y ~ normal(h[2][:, 1], 1.)
+    end
+    code = stan_code(axes)
+    @test occursin("array[S] matrix<lower=h__lower, upper=h__upper>[3, R] h;", stan_block(code, "parameters"))
+    td = stan_block(code, "transformed data")
+    @test occursin("h__lower[j, 1, i] = L[j];", td)
+    @test occursin("h__upper[j, t, i] = U[t];", td)
+    @test stanc_compiles(axes)
 end
 
 @testitem "slic: per-coordinate support constrains and draws natively" tags=[:slic, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin

@@ -83,7 +83,10 @@ forward!(x::CanonicalExprV{:->,A}; info) where {A} = begin
     captures = OrderedDict{Symbol,Any}()
     for k in keys(info)
         k in free || continue
-        captures[k] = info[k]
+        # Read `k` as any other reference to it would: inside a plate cell a
+        # cell-local name is its element of the promoted carrier, not the whole
+        # carrier its binding holds (`_plate_promoted_reference`).
+        captures[k] = something(_plate_promoted_reference(k, info), info[k])
     end
 
     id = _next_closure_id(info)
@@ -102,16 +105,18 @@ forward!(x::CanonicalExprV{:->,A}; info) where {A} = begin
         # tracing the closure body in a fresh `info` scope.
         mod        = get_module(info),
     )
-    # The closure's qual must reflect its captures' quals — at any HOF
-    # call site, `stan_expr(::CanonicalExpr)` computes its qual via
-    # `maximum(qual, x.args)`, which decides which Stan block the call
-    # lands in. A closure that captures a parameter (e.g. `shift`) must
-    # therefore *itself* be parameter-qual so the surrounding call routes
-    # to `transformed parameters` / `model` / `generated quantities`,
-    # not `transformed data`.
-    closure_qual = isempty(captures) ? :data : maximum(qual, values(captures); init=:data)
-    StanExpr(record, StanType(types.closure; value=record, qual=closure_qual))
+    _closure_stan_expr(record)
 end
+# The closure's qual must reflect its captures' quals — at any HOF
+# call site, `stan_expr(::CanonicalExpr)` computes its qual via
+# `maximum(qual, x.args)`, which decides which Stan block the call
+# lands in. A closure that captures a parameter (e.g. `shift`) must
+# therefore *itself* be parameter-qual so the surrounding call routes
+# to `transformed parameters` / `model` / `generated quantities`,
+# not `transformed data`.
+_closure_stan_expr(record) = StanExpr(record, StanType(
+    types.closure; value=record, qual=maximum(qual, values(record.captures); init=:data)
+))
 
 # A call whose head is a closure StanExpr: pull the record off the head's
 # StanType and feed `expand_inline!` directly. Same machinery as
