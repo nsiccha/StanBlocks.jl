@@ -13028,20 +13028,24 @@ end
     @test bounded_decl !== nothing
     @test first(location_decl) < first(bounded_decl)
     @test occursin("location ~ normal(0, 1);", model_block)
-    @test occursin("bounded ~ normal(0.2, 0.7);", model_block)
+    # The bounds move with `location`, so `bounded`'s prior is the truncated
+    # density, normaliser included (decision 2026-10-20T14-59-36-177-0w4wyro).
+    @test occursin("bounded ~ conditioning_normal(location, (location + 2), 0.2, 0.7);", model_block)
     @test !occursin("location = normal_rng", generated_quantities)
     @test stanc_compiles(fitted)
 
     problem = instantiate(stan_model(fitted))
     @test LogDensityProblems.dimension(problem) == 2
     @test BridgeStan.param_names(problem.model) == ["location", "bounded"]
+    Phi(z) = StanBlocks.SpecialFunctions.erfc(-z / sqrt(2)) / 2
     expected_logdensity(unconstrained) = begin
         location = unconstrained[1]
         unit = inv(1 + exp(-unconstrained[2]))
         bounded = location + 2unit
         log_jacobian = log(2unit * (1 - unit))
+        log_normaliser = log(Phi((location + 2 - 0.2) / 0.7) - Phi((location - 0.2) / 0.7))
         _stan_normal(location, 0, 1) +
-            _stan_normal(bounded, 0.2, 0.7) +
+            _stan_normal(bounded, 0.2, 0.7) - log_normaliser +
             sum(_stan_normal.(y, bounded, 0.8)) + log_jacobian
     end
     reference = [0.0, 0.0]
