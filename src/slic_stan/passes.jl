@@ -244,8 +244,10 @@ _restore_sampling_kwargs(new, old) = new
 # `positive_ordered` prior whose density is exchangeable has an exact re-draw:
 # the sorted iid draw (`_ordered_redraw`). Any other ordered prior stays a
 # SAMPLED parameter — valid, descriptor-visible (`dimension > 0`), never a
-# silently unsorted draw. Ragged constrained parameters take their own sampled
-# path (`ragged_density`).
+# silently unsorted draw. Its rejection re-draw is exact only conditional on
+# the prior's arguments, and the fitted joint drops the normaliser
+# P(sorted | θ) that a whole-program prior draw would need. Ragged constrained
+# parameters take their own sampled path (`ragged_density`).
 _ordered_center(x) = center_type(x) in (types.ordered, types.positive_ordered)
 _gq_redrawable(x, rhs) = !_ordered_center(x) || _exchangeable_prior(rhs)
 # `c::ordered[k] ~ f(θ)` has the density ∏ f(c_i | θ) on the ordered region.
@@ -976,26 +978,20 @@ end
 # `lognormal`, … draw natively). The result keeps the declared center type, so
 # Stan still checks it at the end of generated quantities.
 #
-# Any other ordered prior has no exact re-draw. Reaching here, its symbol must
+# Any other native-family ordered prior reaches here only when its symbol must
 # be re-drawn all the same (it is cv-held-out, or its prior reads a draw), and
-# a native family's rng returns an UNSORTED vector, so refuse rather than emit
-# one. A custom family's sized `_rng` is its author's contract (stanblocks-use
-# §8) and draws as before.
+# the family's own draw is not sorted. Conditional on the prior's arguments its
+# law is the family's law restricted to the ordered region, which rejection
+# samples exactly (`_ordered_rejection`): repeat the family's own vector draw
+# until it is strictly increasing. That covers non-identical elementwise
+# arguments, joint families (`multi_normal`) and `truncated`, since only the
+# family's draw is needed. A custom family's sized `_rng` is its author's
+# contract (stanblocks-use §8) and draws as before.
 _ordered_redraw(lhs, rhs, token) = begin
-    if !_exchangeable_prior(rhs)
+    exchangeable = _exchangeable_prior(rhs)
+    if !exchangeable
         family = head(expr(rhs))
         family isa Function && parentmodule(family) === builtin || return _check_redraw_resolves(lhs, rhs, redraw_rng_expr(token, rhs))
-        name = _base_lhs_symbol(lhs)
-        error(
-            "`", name, " ~ ", nameof(_ragged_base_family(expr(rhs))), "(…)` is re-drawn in ",
-            "generated quantities — it is cv-held-out, or its prior reads a random draw — ",
-            "but `", name, "` is `", nameof(center_type(lhs)), "` and its prior is not ",
-            "exchangeable: an argument differs between elements, or the family is joint. ",
-            "Only an exchangeable prior has an exact draw (the sorted iid draw), and the ",
-            "family's own draw is not sorted. Give every element the same scalar arguments ",
-            "(`", name, "::ordered[k] ~ normal(mu, sigma)` with scalar `mu` and `sigma`), ",
-            "or keep a likelihood on `", name, "` so it stays a sampled parameter.",
-        )
     end
     ct = center_type(lhs)
     rhs_c = expr(rhs)
@@ -1004,8 +1000,17 @@ _ordered_redraw(lhs, rhs, token) = begin
     end
     vtoken = StanExpr(types.vector,
         StanType(types.tokenof{types.vector}, stan_size(token); value=types.vector, qual=:data))
-    sorted = stan_call(builtin.sort_asc, _check_redraw_resolves(lhs, rhs, redraw_rng_expr(vtoken, rhs)))
-    StanExpr(expr(sorted), StanType(ct, stan_size(sorted), type(sorted).info))
+    draw = _check_redraw_resolves(lhs, rhs, redraw_rng_expr(vtoken, rhs))
+    redrawn = exchangeable ? stan_call(builtin.sort_asc, draw) : _ordered_rejection(draw)
+    StanExpr(expr(redrawn), StanType(ct, stan_size(redrawn), type(redrawn).info))
+end
+# `draw` is the family's resolved vector draw `f_rng(token, args...)` — bounds,
+# `truncated` variants and `std_normal` already settled by `redraw_rng_expr` —
+# and `ordered_rejection_rng` (builtin.jl) repeats exactly that call. Each
+# attempt costs one vector draw; the expected count is 1 / P(sorted | args).
+_ordered_rejection(draw) = begin
+    call = expr(draw)
+    stan_call(builtin.ordered_rejection_rng, call.args[1], stan_expr(head(call)), call.args[2:end]...)
 end
 # `flat()` is the improper-uniform base measure: it has no `_rng` because there
 # is nothing to draw from. A symbol whose only density is `flat` and which no
