@@ -240,15 +240,33 @@ _restore_sampling_kwargs(new, old) = new
 # A prior-only sampled symbol is re-drawn in generated quantities from its
 # family's `_rng` — which must produce a value of the symbol's declared CENTER
 # type. For `simplex ~ dirichlet` / `cholesky_factor_corr ~ lkj_corr_cholesky`
-# the family rng does; for an `ordered` / `positive_ordered` prior no family rng
-# yields a sorted vector (a sorted iid draw is exact only for exchangeable
-# element densities, and nothing checks that yet). Such a symbol stays a SAMPLED
-# parameter — valid, descriptor-visible (`dimension > 0`), never a silently
-# unsorted draw that Stan rejects at the end of generated quantities. Ragged
-# constrained parameters take their own sampled path (`ragged_density`).
-_gq_redrawable(x::StanExpr) = !(center_type(x) in (types.ordered, types.positive_ordered))
+# the family rng does. No family rng yields a sorted vector, but an `ordered` /
+# `positive_ordered` prior whose density is exchangeable has an exact re-draw:
+# the sorted iid draw (`_ordered_redraw`). Any other ordered prior stays a
+# SAMPLED parameter — valid, descriptor-visible (`dimension > 0`), never a
+# silently unsorted draw. Ragged constrained parameters take their own sampled
+# path (`ragged_density`).
+_ordered_center(x) = center_type(x) in (types.ordered, types.positive_ordered)
+_gq_redrawable(x, rhs) = !_ordered_center(x) || _exchangeable_prior(rhs)
+# `c::ordered[k] ~ f(θ)` has the density ∏ f(c_i | θ) on the ordered region.
+# When that product is symmetric in the elements — a native elementwise family
+# whose every argument is a scalar — each of the k! orderings of k iid draws
+# has the same mass, so the normaliser is 1/k! whatever θ is, and `c` is
+# distributed exactly as the sorted iid draw (snag ordered-prior-re-c3734f49).
+# A vector argument (`normal(mu_vec, s)`), a joint family (`multi_normal`), a
+# distribution HOF and a custom family are not certified: the normaliser can
+# depend on θ, or nothing here knows how the family treats the elements.
+_exchangeable_prior(rhs::StanExpr) = _exchangeable_prior(expr(rhs))
+_exchangeable_prior(rhs) = false
+_exchangeable_prior(rhs::CanonicalExpr) = begin
+    family = head(rhs)
+    isnothing(_distribution_hof(family)) || return false
+    family === builtin.std_normal || _elementwise_pointwise(likelihood_expr(family)) || return false
+    bounds = filter(in(BOUND_KEYS), keys(rhs.kwargs))
+    all(a -> stan_ndim(a) == 0, rhs.args) && all(k -> stan_ndim(rhs.kwargs[k]) == 0, bounds)
+end
 backward!(x::SamplingExpr{<:StanExpr{Symbol}}; info) = if qual(x.args[1]) == :data ||
-        lqual(info[expr(x.args[1])]) == :affects_likelihood || !_gq_redrawable(x.args[1])
+        lqual(info[expr(x.args[1])]) == :affects_likelihood || !_gq_redrawable(x.args...)
     lhs, rhs = x.args
     remake(x, info[expr(x.args[1])], _restore_sampling_kwargs(backward!(rhs; info), rhs))
 else
@@ -265,7 +283,7 @@ backward!(x::SamplingExpr; info) = begin
         (_is_fresh_decl(info[key]) && _decl_role(info[key]) == :sampled) ||
         _is_flat_decl(info[key]))
     if sliced
-        if (lqual(info[key]) == :affects_likelihood || !_gq_redrawable(info[key])) && !cv(info[key])
+        if (lqual(info[key]) == :affects_likelihood || !_gq_redrawable(info[key], rhs)) && !cv(info[key])
             # A plate parameter used by a later likelihood remains a parameter;
             # propagate that reachability into its prior's RHS exactly like the
             # established bare-Symbol sampling path above.
@@ -930,20 +948,64 @@ _push_slice_obs_likelihood_decl!(b, k::Symbol; info) = begin
     push!(b, StanExpr(CanonicalExpr(:(::), decl), t); info)
     lik
 end
-_indexed_rng_assignment(x::SamplingExpr) = begin
+_indexed_rng_assignment(x::SamplingExpr; info) = begin
     lhs, rhs = x.args
     lhs_ct = center_type(lhs)
     token = StanExpr(lhs_ct,
         StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
+    # A cell of an `array[…] ordered[k]` declaration indexes to a plain vector;
+    # re-draw it as the declaration's center (`_ordered_redraw`).
+    base = _base_lhs_symbol(lhs)
+    redrawn = base in keys(info) && _ordered_center(info[base]) ?
+        StanExpr(expr(lhs), StanType(center_type(info[base]), stan_size(lhs), type(lhs).info)) : lhs
     # A per-cell PARAMETER re-draw: honour the cell prior's own bounds.
-    CanonicalExpr(:(=), lhs, _gq_redraw(lhs, rhs, token))
+    CanonicalExpr(:(=), lhs, _gq_redraw(redrawn, rhs, token))
 end
 # The one generated-quantities re-draw of a sampled symbol (top-level or
 # per-cell): bounds honoured, and the two families that CANNOT be re-drawn fail
 # here with the reason rather than deep inside `tracetype`/emission.
 _gq_redraw(lhs, rhs, token) = begin
     _check_redraw_improper(lhs, rhs)
+    _ordered_center(lhs) && return _ordered_redraw(lhs, rhs, token)
     _check_redraw_resolves(lhs, rhs, redraw_rng_expr(token, rhs))
+end
+# An exchangeable ordered prior (`_exchangeable_prior`) re-draws as the sorted iid
+# draw: k elements from the family as a plain `vector[k]`, then `sort_asc`. A
+# `positive_ordered` one draws inside `lower=0`, which `_user_bounded_redraw`
+# truncates only where the family does not imply it already (`exponential`,
+# `lognormal`, … draw natively). The result keeps the declared center type, so
+# Stan still checks it at the end of generated quantities.
+#
+# Any other ordered prior has no exact re-draw. Reaching here, its symbol must
+# be re-drawn all the same (it is cv-held-out, or its prior reads a draw), and
+# a native family's rng returns an UNSORTED vector, so refuse rather than emit
+# one. A custom family's sized `_rng` is its author's contract (stanblocks-use
+# §8) and draws as before.
+_ordered_redraw(lhs, rhs, token) = begin
+    if !_exchangeable_prior(rhs)
+        family = head(expr(rhs))
+        family isa Function && parentmodule(family) === builtin || return _check_redraw_resolves(lhs, rhs, redraw_rng_expr(token, rhs))
+        name = _base_lhs_symbol(lhs)
+        error(
+            "`", name, " ~ ", nameof(_ragged_base_family(expr(rhs))), "(…)` is re-drawn in ",
+            "generated quantities — it is cv-held-out, or its prior reads a random draw — ",
+            "but `", name, "` is `", nameof(center_type(lhs)), "` and its prior is not ",
+            "exchangeable: an argument differs between elements, or the family is joint. ",
+            "Only an exchangeable prior has an exact draw (the sorted iid draw), and the ",
+            "family's own draw is not sorted. Give every element the same scalar arguments ",
+            "(`", name, "::ordered[k] ~ normal(mu, sigma)` with scalar `mu` and `sigma`), ",
+            "or keep a likelihood on `", name, "` so it stays a sampled parameter.",
+        )
+    end
+    ct = center_type(lhs)
+    rhs_c = expr(rhs)
+    if ct === types.positive_ordered && !(:lower in keys(rhs_c.kwargs))
+        rhs = StanExpr(remake(rhs_c, rhs_c.args...; rhs_c.kwargs..., lower=stan_expr(0.0)), type(rhs))
+    end
+    vtoken = StanExpr(types.vector,
+        StanType(types.tokenof{types.vector}, stan_size(token); value=types.vector, qual=:data))
+    sorted = stan_call(builtin.sort_asc, _check_redraw_resolves(lhs, rhs, redraw_rng_expr(vtoken, rhs)))
+    StanExpr(expr(sorted), StanType(ct, stan_size(sorted), type(sorted).info))
 end
 # `flat()` is the improper-uniform base measure: it has no `_rng` because there
 # is nothing to draw from. A symbol whose only density is `flat` and which no
@@ -1149,7 +1211,7 @@ _indexed_gq_assignments(x::SamplingExpr; info) = begin
     k = _indexed_obs_gen_base(x.args[1]; info)
     k === nothing || return Any[_indexed_obs_gen_assignment(x, k)]
     spec = _indexed_ragged_obs_slice(x.args[1]; info)
-    spec === nothing ? Any[_indexed_rng_assignment(x)] :
+    spec === nothing ? Any[_indexed_rng_assignment(x; info)] :
         _indexed_ragged_obs_assignments(x, spec; info)
 end
 

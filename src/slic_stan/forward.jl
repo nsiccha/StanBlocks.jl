@@ -2161,6 +2161,14 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     implied_kw = autokwargs(rhs_canonical)
     cons_kw = merge(implied_kw, (; kwargs_resolved...))
     cons = _fold_constraints(name, cons_kw; implied=keys(implied_kw))
+    # `positive_ordered` IS the `lower=0` support, and Stan declares no bound on
+    # it (`positive_ordered<lower=0.0>[3]` is a stanc syntax error). A family
+    # implying exactly that bound (`exponential`, `lognormal`, `gamma`, …), or
+    # an author restating it, adds nothing: drop it. Any other bound stays.
+    if ct_resolved === types.positive_ordered && :lower in keys(cons) &&
+            _bound_value(cons.lower) isa Real && iszero(_bound_value(cons.lower))
+        cons = Base.structdiff(cons, NamedTuple{(:lower,)})
+    end
     base_lhs_type = StanType(ct_resolved, sizes_forwarded; cons...)
     # Reject a typed LHS whose support disagrees with the RHS distribution's
     # element kind (container-into-scalar, discrete-into-continuous, …) at trace

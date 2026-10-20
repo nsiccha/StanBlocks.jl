@@ -9749,15 +9749,24 @@ ragged constrained cells (`K` per plate index) and constrained MATRIX families
         end
     end
     @test stanc_compiles(ordered_cell)
-    # An `ordered` prior has no exact re-draw (no family rng yields a sorted
-    # vector), so it deliberately STAYS a sampled parameter even with no
-    # likelihood; only the unconsumed collected result moves to gq.
+    # No likelihood: the exchangeable `ordered` prior re-draws per cell as the
+    # sorted iid draw (snag ordered-prior-re-c3734f49), into the native
+    # `array[n] ordered[k]` declaration in gq.
     let code = stan_code(ordered_cell)
-        @test occursin(r"array\[n\] ordered\[k\] p_c;", stan_block(code, "parameters"))
-        @test occursin(r"p_c\[plate_i\w*\] ~ normal", stan_block(code, "model"))
-        @test occursin(r"array\[n\] ordered\[k\] p;", stan_block(code, "generated quantities"))
+        @test strip(stan_block(code, "parameters")) == "{\n}"
+        gq = stan_block(code, "generated quantities")
+        @test occursin(r"array\[n\] ordered\[k\] p_c;", gq)
+        @test occursin(r"p_c\[plate_i\w*\] = sort_asc\(normal_vector_rng\(k, 0\.0, 1\.0\)\);", gq)
     end
-    @test LogDensityProblems.dimension(instantiate(ordered_cell)) == 2 * 4
+    @test LogDensityProblems.dimension(instantiate(ordered_cell)) == 0
+    # With a likelihood on the collected result it is the sampled parameter:
+    # N cells × K free coords each.
+    ordered_fit = Base.merge(ordered_cell, quote
+        obs ~ normal(p[1][1], 0.5)
+    end)(; obs = [0.2])
+    @test stanc_compiles(ordered_fit)
+    @test occursin(r"array\[n\] ordered\[k\] p_c;", stan_block(stan_code(ordered_fit), "parameters"))
+    @test LogDensityProblems.dimension(instantiate(ordered_fit)) == 2 * 4
 
     # N-dimensional outer: `array[a, b] simplex[k]`.
     nd_cell = @slic (; a = 2, b = 2, k = 3) begin
@@ -13956,6 +13965,146 @@ end
     @test err !== nothing
     @test occursin("`p ~ flat(…)` is an improper prior", err)
     @test occursin("nothing to draw from", err)
+end
+
+"""
+Snag ordered-prior-re-c3734f49 (reported from a downstream model that kept a
+hand-written ordered family only for its sorting `_rng`). `c::ordered[k] ~ f(θ)`
+has the density ∏ f(c_i | θ) on the ordered region. When that product is
+exchangeable — a native elementwise family whose every argument is a scalar —
+its normaliser is 1/k! for every θ, so `c` is distributed exactly as k sorted
+iid draws. A prior-only, cv-held-out or draw-reading program now re-draws it
+that way in generated quantities; before, a prior-only one stayed a sampled
+parameter and a cv-held-out one re-drew as an UNSORTED `vector`.
+"""
+@testitem "slic: an exchangeable ordered prior re-draws as the sorted iid draw" tags=[:slic, :plate, :stanc, :descriptor, :bridgestan, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    empty_block(code, name) = strip(stan_block(code, name)) == "{\n}"
+    redraw_error(m) = try; stan_code(m); nothing; catch e; sprint(showerror, e); end
+
+    # (a) Hierarchical scalar location/scale: a fixed_param prior program.
+    hier = @slic begin
+        loc ~ normal(0, 1)
+        scale ~ exponential(1)
+        c::ordered[3] ~ normal(loc, scale)
+    end
+    @test stanc_compiles(hier)
+    let code = stan_code(hier)
+        @test empty_block(code, "parameters") && empty_block(code, "model")
+        @test occursin("ordered[3] c = sort_asc(normal_vector_rng(3, loc, scale));",
+            stan_block(code, "generated quantities"))
+    end
+    d = stan_descriptor(hier; name = :hier)
+    @test [op.name for op in d.operations] == [:transpile, :instantiate]
+    let c = only(o for o in d.outputs if o.name == :c)
+        @test c.kind == :generated_quantity && c.type == :ordered
+    end
+
+    # The draw is the order statistics of k iid normals: exact moments of the
+    # sorted triple are loc + scale .* (-3/(2√π), 0, 3/(2√π)).
+    fixed = @slic (; loc = 0.5, scale = 2.0) begin
+        c::ordered[3] ~ normal(loc, scale)
+    end
+    prob = instantiate(fixed)
+    @test LogDensityProblems.dimension(prob) == 0
+    @test BridgeStan.param_names(prob.model; include_tp = true, include_gq = true) == ["c.1", "c.2", "c.3"]
+    rng = BridgeStan.StanRNG(prob.model, 1234)
+    n_draws = 20_000
+    draws = reduce(hcat, [BridgeStan.param_constrain(prob.model, Float64[];
+        include_tp = true, include_gq = true, rng) for _ in 1:n_draws])
+    @test all(issorted, eachcol(draws))
+    e1 = 3 / (2 * sqrt(pi))
+    se = vec(std(draws; dims = 2)) ./ sqrt(n_draws)
+    @test all(abs.(vec(mean(draws; dims = 2)) .- (0.5 .+ 2.0 .* [-e1, 0.0, e1])) .< 6 .* se)
+
+    # (b) Every native elementwise family qualifies, zero-argument std_normal included.
+    for (rhs, draw) in (
+            (:(std_normal()), "sort_asc(std_normal_vector_rng(4))"),
+            (:(student_t(3.0, 0.0, 1.0)), "sort_asc(student_t_vector_rng(4, 3.0, 0.0, 1.0))"))
+        m = StanBlocks.SlicModel(Expr(:block, :(c::ordered[4] ~ $rhs)), Dict{Symbol,Any}(), @__MODULE__)
+        @test stanc_compiles(m)
+        @test occursin("ordered[4] c = $draw;", stan_block(stan_code(m), "generated quantities"))
+    end
+
+    # (c) positive_ordered draws inside lower=0: natively for a family that
+    #     implies it, through the truncated sampler otherwise. Its declaration
+    #     carries no bound — `positive_ordered<lower=0.0>` is a stanc syntax
+    #     error, and used to be emitted for `exponential` even when fitted.
+    pos_exp = @slic begin
+        c::positive_ordered[3] ~ exponential(1.0)
+    end
+    pos_normal = @slic begin
+        c::positive_ordered[3] ~ normal(0.0, 1.0)
+    end
+    @test stanc_compiles(pos_exp) && stanc_compiles(pos_normal)
+    @test occursin("positive_ordered[3] c = sort_asc(exponential_vector_rng(3, 1.0));",
+        stan_block(stan_code(pos_exp), "generated quantities"))
+    @test occursin("positive_ordered[3] c = sort_asc(lower_conditioning_vector_normal_rng(3, 0.0, 0.0, 1.0));",
+        stan_block(stan_code(pos_normal), "generated quantities"))
+    for rhs in (:(exponential(1.0)), :(lognormal(0.0, 1.0)), :(normal(0.0, 1.0; lower = 0.0)))
+        fit = StanBlocks.SlicModel(quote
+            c::positive_ordered[3] ~ $rhs
+            y ~ normal(c[1], 1.0)
+        end, Dict{Symbol,Any}(:y => [0.5]), @__MODULE__)
+        @test stanc_compiles(fit)
+        @test occursin("positive_ordered[3] c;", stan_block(stan_code(fit), "parameters"))
+    end
+
+    # (d) A non-exchangeable prior has no exact sorted draw: prior-only, it
+    #     stays a sampled parameter, as before.
+    vec_loc = @slic (; mu = [0.0, 1.0, 2.0]) begin
+        c::ordered[3] ~ normal(mu, 1.0)
+    end
+    joint = @slic (; mu = [0.0, 0.0], S = [1.0 0.5; 0.5 1.0]) begin
+        c::ordered[2] ~ multi_normal(mu, S)
+    end
+    @test occursin("ordered[3] c;", stan_block(stan_code(vec_loc), "parameters"))
+    @test occursin("ordered[2] c;", stan_block(stan_code(joint), "parameters"))
+
+    # (e) A plate cell re-draws per cell; the program has no sampler dimension.
+    cells = @slic (; n = 2, k = 3) begin
+        s ~ exponential(1)
+        p ~ plate(; outer = (n,)) do g
+            c::positive_ordered[k] ~ gamma(2.0, s)
+            c
+        end
+    end
+    @test stanc_compiles(cells)
+    let gq = stan_block(stan_code(cells), "generated quantities")
+        @test occursin(r"array\[n\] positive_ordered\[k\] p_c;", gq)
+        @test occursin(r"p_c\[plate_i\w*\] = sort_asc\(gamma_vector_rng\(k, 2\.0, s\)\);", gq)
+    end
+    @test LogDensityProblems.dimension(instantiate(cells)) == 0
+
+    # (f) A cv-held-out exchangeable prior re-draws sorted from the fitted
+    #     population; `mu` stays a parameter. It used to be
+    #     `vector[n] c = normal_ordered_rng(n, mu, 1.0)`: unsorted, stanc-clean.
+    held_out = @slic (; idx = StanBlocks.stan.maybecv(:idx, [1, 2, 3, 2]), y = [0.1, 0.2, 0.3, 0.4]) begin
+        n = maximum(idx)
+        mu ~ normal(0, 1)
+        c::ordered[n] ~ normal(mu, 1.0)
+        y ~ normal(c[idx], 1.0)
+    end
+    @test stanc_compiles(held_out)
+    let code = stan_code(held_out)
+        @test occursin("real mu;", stan_block(code, "parameters"))
+        @test occursin("ordered[n] c = sort_asc(normal_vector_rng(n, mu, 1.0));",
+            stan_block(code, "generated quantities"))
+    end
+
+    # (g) A cv-held-out NON-exchangeable prior must be re-drawn but has no exact
+    #     draw yet (capability gap, todo StanBlocks/todos/2026-10-20T00-14-28-178-1spkwc8).
+    #     Until it exists the program fails at trace time instead of emitting the
+    #     unsorted family draw.
+    held_out_vec = @slic (; idx = StanBlocks.stan.maybecv(:idx, [1, 2, 3, 2]), y = [0.1, 0.2, 0.3, 0.4], m0 = [0.0, 1.0, 2.0]) begin
+        n = maximum(idx)
+        c::ordered[n] ~ normal(m0[1:n], 1.0)
+        y ~ normal(c[idx], 1.0)
+    end
+    @test_broken transpiles(held_out_vec; re = false)
+    let err = redraw_error(held_out_vec)
+        @test err !== nothing && occursin("its prior is not exchangeable", err)
+    end
 end
 
 @testitem "slic: array-of-vector multivariate priors re-draw in generated quantities" tags=[:slic, :plate, :stanc, :bridgestan, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
