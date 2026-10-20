@@ -2643,11 +2643,17 @@ _slice_declared_bound(k, v, records, key, extra; info) = begin
         N = length(coords)
     end
     covered && all(b -> _same_bound(b, bounds[1]), bounds) && _bound_ndim(bounds[1]) == 0 &&
-        return bounds[1]
+        all(r -> _slice_bound_uniform(r, key), records) && return bounds[1]
     literal = _slice_literal_bound(key, N, default, records)
     literal === missing || return _slice_bound_vector(key, literal; info)
     _slice_bound_carrier!(k, key, T, default, records, extra; info, covered)
 end
+
+# A bound that holds for every coordinate its slice covers. A `@scan`
+# recurrence's bound that reads the loop index (`x[t] ~ normal(…; lower=L[t])`)
+# varies along it, so it is per coordinate even when it is the only record.
+_slice_bound_uniform(r, key) =
+    r.loop === nothing || !_plate_depends_on(getproperty(r, key), (r.loop.idx,))
 
 # Per-coordinate bounds as a Julia vector (`nothing` = unbounded) when the length,
 # every index and every bound are literals; `missing` otherwise.
@@ -2687,7 +2693,17 @@ end
 # the declaration's default and one fill per slice, and bound the declaration by
 # that carrier (the same shape plate constraint hoisting uses).
 _slice_bound_carrier!(k, key, T, default, records, extra; info, covered=false) = begin
-    N = stan_size(T)[1]
+    _check_slice_bounds_data(k, key, default, records)
+    carrier = _slice_carrier_name(k, key; info)
+    stmts = Any[:($carrier :: vector[$(stan_size(T)[1])])]
+    append!(stmts, _slice_bound_fills(key, stan_size(T)[1], default, records,
+        Symbol(carrier, :_i), i -> :($carrier[$i]); covered))
+    for s in stmts
+        push!(extra, forward!(canonical(s); info))
+    end
+    info[carrier]
+end
+_check_slice_bounds_data(k, key, default, records) = begin
     data_ok(b) = b === nothing || _bound_number(b) !== nothing || qual(b) == :data
     for b in (default, (getproperty(r, key) for r in records)...)
         data_ok(b) || error(
@@ -2695,16 +2711,24 @@ _slice_bound_carrier!(k, key, T, default, records, extra; info, covered=false) =
             "=` support, and one of those bounds depends on a parameter. A ",
             "per-coordinate bound must be data (Stan builds it before the parameters).")
     end
+end
+_slice_carrier_name(k, key; info) = begin
     carrier = Symbol(k, :__, key)
     while carrier in keys(info)
         carrier = Symbol(carrier, :_)
     end
-    j = Symbol(carrier, :_i)
+    carrier
+end
+# The statements filling a per-coordinate bound of length `N`: the declaration's
+# `default` where no slice covers a coordinate, then one fill per slice. `at(i)`
+# is the carrier element holding coordinate `i` (`carrier[i]` at model scope),
+# `j` a fresh loop variable.
+_slice_bound_fills(key, N, default, records, j, at; covered) = begin
     value(b) = b === nothing ? _infinity_expr(key) : b
-    stmts = Any[:($carrier :: vector[$N])]
+    stmts = Any[]
     # Coordinates no slice covers keep the declaration's own support.
     covered || push!(stmts, :(for $j in 1:$N
-        $carrier[$j] = $(_bound_ndim(default) == 1 ? :($default[$j]) : value(default))
+        $(at(j)) = $(_bound_ndim(default) == 1 ? :($default[$j]) : value(default))
     end))
     for r in records
         b = value(getproperty(r, key))
@@ -2712,24 +2736,21 @@ _slice_bound_carrier!(k, key, T, default, records, extra; info, covered=false) =
         if r.loop !== nothing
             t = r.loop.idx
             push!(stmts, Expr(:for, Expr(:(=), t, Expr(:call, :(:), r.loop.lo, r.loop.hi)),
-                Expr(:block, :($carrier[$t] = $b))))
+                Expr(:block, :($(at(t)) = $b))))
         elseif _is_range_index(r.idx)
             lo, hi = expr(r.idx).args
             push!(stmts, :(for $j in $lo:$hi
-                $carrier[$j] = $(vector_bound ? :($b[$j - $lo + 1]) : b)
+                $(at(j)) = $(vector_bound ? :($b[$j - $lo + 1]) : b)
             end))
         elseif stan_ndim(r.idx) == 0
-            push!(stmts, :($carrier[$(r.idx)] = $b))
+            push!(stmts, :($(at(r.idx)) = $b))
         else
             push!(stmts, :(for $j in 1:dims($(r.idx))[1]
-                $carrier[$(r.idx)[$j]] = $(vector_bound ? :($b[$j]) : b)
+                $(at(:($(r.idx)[$j]))) = $(vector_bound ? :($b[$j]) : b)
             end))
         end
     end
-    for s in stmts
-        push!(extra, forward!(canonical(s); info))
-    end
-    info[carrier]
+    stmts
 end
 
 # `tau ~ vcat(prior₁, prior₂, …)` — one vector, one prior family per block of
@@ -3116,23 +3137,67 @@ end
 # A `@scan` nested in an enclosing loop leaves its carried arrays to that loop,
 # which promotes them from the discovery probe's types. Those types hold the
 # scan's slice records (`_record_slice_support!`) rather than a folded bound, so
-# fold them here: a support every record shares becomes the cell's constraint.
-# Per-coordinate support across the promoted axes is not built yet — refuse it
-# rather than emit the setup's support for every coordinate.
-_plate_fold_inner_slices(f, T::StanType) = begin
+# fold them here: a scalar support every record shares in every cell becomes the
+# cell's constraint. Returns the folded type and the bound keys that vary by
+# coordinate or by cell; those get a carrier over the promoted declaration
+# (`_plate_slice_bound_carrier!`).
+_plate_fold_inner_slices(f, T::StanType, index_aliases) = begin
     records = get(T.info, :slice_supports, ())
-    isempty(records) && return T
+    isempty(records) && return (T, Symbol[])
     cons = Pair{Symbol,Any}[]
+    per_coordinate = Symbol[]
     for key in BOUND_KEYS
         b = getproperty(first(records), key)
-        all(r -> _same_bound(getproperty(r, key), b), records) || error(
-            "@scan: the setup and the recurrence of `", f, "` give its coordinates ",
-            "different `", key, "=` support (", join(map(r -> "`$(r.spelling) ~ …`", records), ", "),
-            "). Per-coordinate support is not supported yet for a @scan nested in another ",
-            "loop; give them the same support, or move the @scan to model scope.")
-        b === nothing || push!(cons, key => b)
+        if all(r -> _same_bound(getproperty(r, key), b) && _slice_bound_uniform(r, key), records) &&
+                _bound_ndim(b) == 0 && !_plate_depends_on(b, index_aliases)
+            b === nothing || push!(cons, key => b)
+        else
+            push!(per_coordinate, key)
+        end
     end
-    remake(T; cons...)
+    (remake(T; cons...), per_coordinate)
+end
+# The per-coordinate `key=` bound of a nested `@scan`'s carried array `f`: a
+# carrier of the promoted declaration's shape (`outer` axes around the cell),
+# filled in `transformed data` by the same per-slice fills as a model-scope
+# vector (`_slice_bound_fills`) inside the enclosing loop's axes:
+#
+#     for (j in 1:S) { h__lower[1, j] = 0.0;
+#                      for (t in 2:3) h__lower[t, j] = negative_infinity(); }
+#
+# `axes` are the enclosing loop's `(index, lo, hi)`, `positions` the cell's
+# storage position per axis (the index, or `index - (lo - 1)` for a recurrence
+# starting past 1). A bound may read the loop indices and data, but not a value
+# the loop computes per cell: the records were traced in the discovery probe,
+# where such a value is spelled differently from the emitted loop.
+_plate_slice_bound_carrier!(f, key, T::StanType, outer, axes, positions, cell_names; info, pending) = begin
+    _plate_cell_shape(T, f) === :vector || error(
+        "@scan: the slice statements of `", f, "` give its coordinates different `", key,
+        "=` support, which a @scan nested in another loop can only declare on a vector ",
+        "of reals; `", f, "` is a `", sigtype(T), "`.")
+    records = T.info.slice_supports
+    default = getproperty(T.info.slice_default, key)
+    _check_slice_bounds_data(f, key, default, records)
+    for r in records
+        _plate_depends_on(getproperty(r, key), cell_names) && error(
+            "@scan: the `", key, "=` bound of `", r.spelling, " ~ …` reads a value the ",
+            "enclosing loop binds per cell. A per-coordinate bound is data or an ",
+            "expression of data and the loop indices; write that expression in the ",
+            "bound itself (`", key, "=L[j]`).")
+    end
+    carrier = _slice_carrier_name(f, key; info)
+    fills = _slice_bound_fills(key, stan_size(T)[1], default, records, Symbol(carrier, :_i),
+        i -> _plate_cell_coordinate(carrier, T, positions, i);
+        covered=get(T.info, :slice_tiled, false))
+    nest = Expr(:block, fills...)
+    for (idx, lo, hi) in reverse(axes)
+        nest = Expr(:block, Expr(:for, Expr(:(=), idx, :($lo:$hi)), nest))
+    end
+    for s in (_plate_outer_decl(carrier, T, outer), only(nest.args))
+        emitted = forward!(canonical(s); info)
+        pending !== nothing && push!(pending, emitted)
+    end
+    info[carrier]
 end
 _plate_promoted_constraints(f, T::StanType, index_aliases) = begin
     cons = constraints(T)
@@ -3227,6 +3292,12 @@ _plate_cell_index(f, T::StanType, idxs) = begin
         return Expr(:ref, f, idxs...)
     indices = Any[idxs[2:end]...; Symbol(":"); idxs[1]]
     Expr(:ref, f, indices...)
+end
+# Coordinate `i` of a vector cell: its accessor with the free `:` slot set to `i`
+# (`f[:, j]` ⇒ `f[i, j]`).
+_plate_cell_coordinate(f, T::StanType, idxs, i) = begin
+    ref = _plate_cell_index(f, T, idxs)
+    Expr(:ref, f, Any[a === Symbol(":") ? i : a for a in ref.args[2:end]]...)
 end
 
 # An isolated copy of the tracing `info`, MIRRORING its structure so bindings
@@ -4283,12 +4354,15 @@ _forward_loop_core!(;
     # whole array — `x[1] ~ exponential(1.)` silently truncated an unbounded
     # recurrence to `vector<lower=0.0>[T] x`.
     scan_carried(f) = kind === :scan && f in public_global && length(idxs) == 1
+    # Storage position of a cell per axis, for a carrier laid out like the cell.
+    local_positions = Any[lo == 1 ? idx : :($idx - $(lo_offset(lo))) for (idx, lo) in zip(idxs, outer_lo)]
     for (f, T) in all_cell_types
         haskey(ragged_plans, f) && continue
         (vectorized_sample !== nothing && f === vectorized_sample.global_name) && continue
         tgt = f === rv ? info : root
-        outer_for_f = (f === rv || f in public_global) ? plate_outer : local_outer
-        T = _plate_fold_inner_slices(f, T)
+        own_axes = f === rv || f in public_global
+        outer_for_f = own_axes ? plate_outer : local_outer
+        T, per_coordinate = _plate_fold_inner_slices(f, T, index_aliases)
         cons, hoist = scan_carried(f) ? ((;), Pair{Symbol,Any}[]) :
             _plate_promoted_constraints(f, T, index_aliases)
         if !isempty(hoist)
@@ -4300,6 +4374,16 @@ _forward_loop_core!(;
             cons = _plate_hoist_cell_constraints!(
                 f, T, cons, hoist, idxs, outer_dims, id; info=tgt, pending,
             )
+        end
+        if !isempty(per_coordinate) && !scan_carried(f)
+            info isa SubModel && error(
+                "@scan: per-coordinate support of `", f, "` inside a called @slic ",
+                "submodel is not supported yet — declare `", f, "` at model scope.")
+            axes = collect(zip(idxs, outer_lo, outer_dims))
+            positions = own_axes ? idxs : local_positions
+            cons = merge(cons, (; (key => _plate_slice_bound_carrier!(
+                f, key, T, outer_for_f, axes, positions, keys(all_cell_types); info=tgt, pending,
+            ) for key in per_coordinate)...))
         end
         emitted = forward!(canonical(_plate_outer_decl(f, T, outer_for_f)); info=tgt)
         emitted = _plate_constrain_decl(f, emitted, cons; info=tgt)
