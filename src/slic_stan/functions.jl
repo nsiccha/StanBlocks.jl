@@ -801,13 +801,17 @@ function jcall(::Val{:jbroadcasted}, ::_JuliaScope, f, args...)
 end
 jcall(::Val{:reject}, ::_JuliaScope, args...) = throw(ArgumentError(join(string.(args))))
 
+# The element type of a real-valued typed local: the promotion of every numeric
+# argument's type, Float64 when none is numeric or all are integers. Fold over
+# the arguments one at a time. Broadcasting over the argument tuple instead
+# inferred `Any` once the arguments spanned four distinct types (a matrix, a
+# vector, a real and an int), the local became an abstract `Vector`, and the
+# whole helper inferred `Any` (snag `called-the-julia-391794fa`).
 _deffun_julia_numeric_type(x::Number) = typeof(x)
 _deffun_julia_numeric_type(x::AbstractArray{<:Number}) = eltype(x)
-_deffun_julia_numeric_type(_) = nothing
+_deffun_julia_numeric_type(_) = Union{}
 _deffun_julia_real_type(args...) = begin
-    ts = filter(!isnothing, _deffun_julia_numeric_type.(args))
-    isempty(ts) && return Float64
-    T = promote_type(ts...)
+    T = Base.afoldl((S, x) -> promote_type(S, _deffun_julia_numeric_type(x)), Union{}, args...)
     T <: Integer ? Float64 : T
 end
 _deffun_julia_alloc(::Val{:int}, dims::Tuple, args...) = Array{Int}(undef, dims)
