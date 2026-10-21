@@ -2384,8 +2384,13 @@ _forward_indexed_sampling!(x; info, user_slice::Bool=false) = begin
         ix = parts === nothing ? nothing : forward!(lhs_raw.args[2]; info)
         if ix !== nothing && stan_ndim(ix) == 0 && center_type(ix) <: types.int
             pos = _ragged_offset(:(ragged_start($(parts.ends), $(parts.idx))), ix)
-            return _forward_indexed_sampling!(remake(x, canonical(Expr(:ref, parts.mem, pos)), rhs_raw);
-                info, user_slice)
+            flat = canonical(Expr(:ref, parts.mem, pos))
+            # In a called submodel the flat memory, its ends and the cell index
+            # are root names: sample at the root, the right-hand side traced
+            # first in the submodel's own scope.
+            info isa SubModel && return _forward_indexed_sampling!(
+                remake(x, flat, forward!(rhs_raw; info)); info=_plate_root_info(info), user_slice)
+            return _forward_indexed_sampling!(remake(x, flat, rhs_raw); info, user_slice)
         end
     end
     k in keys(info) || error(
@@ -4299,9 +4304,12 @@ _forward_loop_core!(;
     probe_body = probe_transform === nothing ? body_stmts :
         probe_transform(setup_stmts, body_stmts)
     discovered = _plate_discover(probe_body, ret_expr, params, iterables, idxs; info)
+    # Discovery keys its bindings by GLOBAL name, so a submodel's probe junk and
+    # setup names carry its prefix (`hh___loopprobe_1`, `hh_eps1`).
+    excluded = Set{Symbol}(_plate_global_name(info, s) for s in probe_exclude)
     fresh = probe_transform === nothing ? discovered.fresh :
         Pair{Symbol,Any}[p for p in discovered.fresh
-                         if !_is_probe_junk_name(p.first) && !(p.first in probe_exclude)]
+                         if !_is_probe_junk_name(p.first; info) && !(p.first in excluded)]
     # The trajectory of data a nested `@scan` observes (`_observed_scan_shadow`)
     # is laid out like the data, not per cell: declare it once, before this loop,
     # unless an enclosing loop already did.
@@ -4576,7 +4584,8 @@ _forward_loop_core!(;
     # exists only for the iterations that run, so `vector[hi]` storage would leave
     # `1:lo-1` as never-sampled improper-flat coordinates. The loop's own
     # model-scope arrays keep `hi` — the setup fills their `1:lo-1`.
-    public_global = Set{Symbol}(_plate_global_name(info, p) for p in public)
+    public_local = Dict{Symbol,Symbol}(_plate_global_name(info, p) => p for p in public)
+    public_global = Set{Symbol}(keys(public_local))
     offset_axes = Bool[lo != 1 for lo in outer_lo]
     lo_offset(lo) = lo isa Integer ? lo - 1 : :($lo - 1)      # fold a literal `lo`
     local_outer = any(offset_axes) ?
@@ -4631,6 +4640,11 @@ _forward_loop_core!(;
         # An int collection over this loop's iterations is promoted, not inlined,
         # by an ENCLOSING loop (`_is_loop_collection`).
         f !== rv && center_type(T) <: types.int && (tgt[f] = remake(tgt[f]; loop_collection=true))
+        # Inside a called submodel an annotated loop's own array is declared at
+        # the root under its flattened name; bind the submodel's local spelling
+        # to it, as a do-form result is bound, so the scan's setup statements and
+        # code after the loop (`return h`) resolve it.
+        f in public_global && _plate_bind_local!(info, public_local[f], tgt[f])
         pending !== nothing && push!(pending, emitted)
     end
     if vectorized_sample !== nothing
@@ -4671,6 +4685,11 @@ _forward_loop_core!(;
     emitted_loop = _with_trace_state(info, :plate_context, ctx) do
         forward!(canonical(loop); info)
     end
+    # The emit trace bound a submodel's local spelling of each array to the
+    # current cell (`hh_h[hh_t]`); after the loop it names the whole array again.
+    for f in public_global
+        f in keys(root) && _plate_bind_local!(info, public_local[f], root[f])
+    end
     for plan in values(ragged_plans)
         forward!(canonical(:($(plan.logical) = RaggedVector($(plan.mem), $(plan.ends)))); info)
     end
@@ -4704,7 +4723,7 @@ end
 # bare name, so the existing promotion context yields `x[i]` back at emit time;
 # lag reads stay indexed. A `@scan` block's setup statements (`x[1] ~ …`) keep
 # their literal indices and are traced at model scope before the loop.
-_is_probe_junk_name(f::Symbol) = startswith(String(f), "__loopprobe_")
+_is_probe_junk_name(f::Symbol; info) = startswith(String(f), String(_plate_global_name(info, :__loopprobe_)))
 
 _annotated_ref_base(lhs) =
     (lhs isa Expr && lhs.head === :ref && lhs.args[1] isa Symbol) ? lhs.args[1] : nothing
@@ -4856,13 +4875,19 @@ _observed_scan_shadow(label, setup, body, t::Symbol, is_data; info) = begin
         if n in reaches && n in needed && !(n in carried) && !(n in observed))
     twins = Dict{Symbol,Symbol}(n => Symbol(n, :_gen) for n in union(carried, replayed))
     bound_here = Set{Symbol}(n for n in (_scan_stmt_lhs_name(s) for s in stmts) if n !== nothing)
+    root = _plate_root_info(info)
     for (n, g) in twins
-        taken = g in bound_here ||
-            (g in keys(info) && !(n in carried && _obs_shadow_of(info[g]) === n))
+        # A carried array's trajectory is the twin of its data at the root
+        # (`_declare_obs_shadow!`); a replayed statement's is local.
+        y_root = n in carried ? _observed_root_name(n; info) : nothing
+        name = y_root === nothing ? g : _gen_twin_name(y_root)
+        own(v) = y_root !== nothing && _obs_shadow_of(v) === y_root
+        taken = g in bound_here || (g in keys(info) && !own(info[g])) ||
+            (y_root !== nothing && name in keys(root) && !own(root[name]))
         taken && error(
             label, ": `", n, "` ", n in carried ? "is observed and read back by the scan" :
-            "feeds an observation the scan reads back", ", so its simulated trajectory is named `", g,
-            "` — but the model already binds `", g, "`. Rename that variable ",
+            "feeds an observation the scan reads back", ", so its simulated trajectory is named `", name,
+            "` — but the model already binds `", name, "`. Rename that variable ",
             "(`<name>_gen` names are reserved for predictive twins).")
     end
     # Check the observations and the reads of the statements that are replayed:
@@ -4999,19 +5024,38 @@ _obs_shadow_of(x::StanType) = get(x.info, :obs_shadow_of, nothing)
 _obs_shadow_of(::Any) = nothing
 # An int collection a loop declared over its own iterations (`_forward_loop_core!`).
 _is_loop_collection(x::StanType) = get(x.info, :loop_collection, false)
-# Declare the shadow `g` of observed data `y` in `info`, laid out like `y` (a
-# nested-vector `y` by its flat memory), and queue the declaration in `pending`.
+# The name observed data `y` has at the root: the caller's data a submodel's
+# keyword alias stands for (`obs = y` ⇒ `y`), or `y` itself at model scope.
+_observed_root_name(y::Symbol; info) = begin
+    b = expr(info[y])
+    b isa Symbol && return b
+    error("@scan: `", y, "` is observed and read back, so it must name data whose trajectory the ",
+        "scan can simulate: a data variable (`", y, " = y`), a column (`", y, " = Y[:, j]`) or a ",
+        "nested-vector group (`", y, " = ys[j]`). It is bound to `", b, "`.")
+end
+# Declare the shadow of observed data `y` (the trajectory the scan simulates),
+# laid out like `y` (a nested-vector `y` by its flat memory), once, and queue the
+# declaration in `pending`. The shadow is `y`'s `<y>_gen` twin, so it is named
+# after the data at the root and declared there: a scan in a called submodel
+# observing a keyword alias `obs = y` simulates `y_gen`, as the same scan at
+# model scope does. The scan's local spelling `g` is bound to it.
 _declare_obs_shadow!(g::Symbol, y::Symbol; info, pending) = begin
     base = info[y]
-    decl = if center_type(base) <: RaggedVector
-        mem_ct = center_type(type(base).info.arg_types.mem)
-        Expr(:(::), g, Expr(:ref, mem_ct === types.int ? :int : :vector, :(num_elements($y.mem))))
-    else
-        Expr(:(::), g, Expr(:ref, nameof(center_type(base)), stan_size(base)...))
+    root = _plate_root_info(info)
+    y_root = _observed_root_name(y; info)
+    g_root = _gen_twin_name(y_root)
+    if !(g_root in keys(root))
+        decl = if center_type(base) <: RaggedVector
+            mem_ct = center_type(type(base).info.arg_types.mem)
+            Expr(:(::), g_root, Expr(:ref, mem_ct === types.int ? :int : :vector, :(num_elements($y_root.mem))))
+        else
+            Expr(:(::), g_root, Expr(:ref, nameof(center_type(base)), stan_size(base)...))
+        end
+        emitted = forward!(canonical(decl); info=root)
+        root[g_root] = remake(root[g_root]; obs_shadow_of=y_root)
+        pending !== nothing && push!(pending, emitted)
     end
-    emitted = forward!(canonical(decl); info)
-    info[g] = remake(info[g]; obs_shadow_of=y)
-    pending !== nothing && push!(pending, emitted)
+    _plate_bind_local!(info, g, root[g_root])
     nothing
 end
 
@@ -5026,6 +5070,62 @@ _nested_scan_containers(stmts, params, iterables, idxs; info) = begin
         if _plate_is_ragged_iterable(_plate_iterable_type(it, info)))
     isempty(subst) && return stmts
     Any[_is_scan_macrocall(s) ? _subst_syms(s, subst) : s for s in stmts]
+end
+# A called submodel's keyword bound to a VIEW of the caller's data, a column
+# `obs = Y[:, j]` or a nested-vector group `obs = ys[j]`, is observed by its
+# `@scan` as that data, exactly as the same scan written in the caller observes
+# `Y[t, j]` / `ys[j][t]`: its trajectory is `Y_gen` / `ys_gen`, its likelihood
+# `Y_likelihood` / `ys_likelihood`. Each element reference `obs[s]` of an
+# observed view is rewritten to that spelling, over fresh locals bound to the
+# traced data and cell index.
+_scan_data_views(setup, body; info) = begin
+    info isa SubModel || return setup, body
+    observed = Set{Symbol}()
+    for s in Iterators.flatten((setup, body))
+        _is_tilde_stmt(s) || continue
+        lhs = _annotated_untyped(s.args[2])
+        (lhs isa Expr && lhs.head === :ref && length(lhs.args) == 2 && lhs.args[1] isa Symbol) &&
+            push!(observed, lhs.args[1])
+    end
+    spell = Dict{Symbol,Any}()
+    for b in observed
+        b in keys(info) || continue
+        view = _data_view(info[b])
+        view === nothing && continue
+        vb = Symbol(b, "__view")
+        _plate_bind_local!(info, vb, view.base)
+        cells = Symbol[]
+        for (k, c) in enumerate(view.cell)
+            push!(cells, Symbol(b, "__cell", k))
+            _plate_bind_local!(info, cells[end], c)
+        end
+        spell[b] = view.ragged ? (s -> Expr(:ref, Expr(:ref, vb, only(cells)), s)) :
+            (s -> Expr(:ref, vb, s, cells...))
+    end
+    isempty(spell) && return setup, body
+    rw(e) = begin
+        e isa Expr || return e
+        (e.head === :ref && length(e.args) == 2 && e.args[1] isa Symbol && haskey(spell, e.args[1])) &&
+            return spell[e.args[1]](rw(e.args[2]))
+        Expr(e.head, Any[rw(a) for a in e.args]...)
+    end
+    Any[rw(s) for s in setup], Any[rw(s) for s in body]
+end
+# `(; base, cell, ragged)` when a traced value is a column `Y[:, j…]` or a group
+# `ys[j]` of data, else `nothing`.
+_data_view(v) = nothing
+_data_view(v::StanExpr) = begin
+    e = expr(v)
+    (qual(v) == :data && e isa CanonicalExpr && head(e) === getindex) || return nothing
+    base = e.args[1]
+    (base isa StanExpr && expr(base) isa Symbol && qual(base) == :data) || return nothing
+    index(c) = c isa StanExpr && stan_ndim(c) == 0 && center_type(c) <: types.int
+    if center_type(base) <: RaggedVector
+        (length(e.args) == 2 && index(e.args[2])) || return nothing
+        return (; base, cell=Any[e.args[2]], ragged=true)
+    end
+    (length(e.args) >= 3 && e.args[2] isa Colon && all(index, e.args[3:end])) || return nothing
+    (; base, cell=Any[e.args[3:end]...], ragged=false)
 end
 _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     label = kind === :plate ? "@plate" : "@scan"
@@ -5095,13 +5195,14 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     is_data(name) = name in keys(info) && qual(info[name]) == :data
     obs_twins = Dict{Symbol,Symbol}(); obs_cover = Dict{Symbol,Set{Int}}(); obs_lags = Dict{Symbol,Int}()
     if kind === :scan
+        setup_raw, body_raw = _scan_data_views(setup_raw, body_raw; info)
         setup_raw, body_raw, obs_twins, obs_cover, obs_lags =
             _observed_scan_shadow(label, setup_raw, body_raw, idxs[1], is_data; info)
         # The shadow is declared once, before the outermost loop: here at model
         # scope, or by the enclosing loop that discovers it in its probe
         # (`_forward_loop_core!`), in whose emit trace it is already bound.
         for (y, g) in obs_twins
-            g in keys(info) || _declare_obs_shadow!(g, y; info, pending=_get_inline_pending(info))
+            _declare_obs_shadow!(g, y; info, pending=_get_inline_pending(info))
         end
     end
     obs_gens = Set{Symbol}(values(obs_twins))
@@ -5191,6 +5292,18 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
             owned(tl) || push!(setup_plain, tl)
         end
         push!(setup_stmts, s)   # traced at model scope, in order, before the loop
+    end
+    # In an enclosing loop's emit trace inside a called submodel, an array that
+    # loop promoted lives at the root under its flattened name: bind the
+    # submodel's spelling to it, as `_forward_loop_core!` does for the arrays
+    # this loop declares itself. (A per-cell-length array is the enclosing
+    # loop's flat memory, which its accessor reaches without a binding.)
+    if info isa SubModel
+        root = _plate_root_info(info)
+        for f in owned_arrays
+            g = _plate_global_name(info, f)
+            g in keys(root) && _plate_bind_local!(info, f, root[g])
+        end
     end
     arrays = union(public, owned_arrays)   # every array this loop fills
     for f in arrays
@@ -5374,7 +5487,7 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     # The observations of a carried data array get a per-element `_likelihood`
     # instead of the per-cell one-step-ahead draw (`_indexed_obs_twin_target`).
     for (y, g) in obs_twins
-        info[y] = remake(info[y]; scan_observed=g)
+        info[y] = remake(info[y]; scan_observed=_gen_twin_name(_observed_root_name(y; info)))
     end
     emitted
 end
@@ -5398,8 +5511,10 @@ forward!(x::CanonicalExprV{:getindex}; info) = begin
         ctx = _plate_context(info)
         gname = _plate_global_name(info, base)
         if length(x.args) == 2 && haskey(ctx, :scan_arrays) && gname in ctx.scan_arrays
+            # The declaration lives at the root under its flattened name (a
+            # submodel's `h` is `<lhs>_h` there).
             base_decl = _with_trace_state(info, :plate_context, nothing) do
-                forward!(base; info=_plate_root_info(info))
+                forward!(gname; info=_plate_root_info(info))
             end
             lag = forward!(x.args[2]; info)
             return invoke(forward!, Tuple{CanonicalExpr}, CanonicalExpr(:getindex, base_decl, lag); info)
@@ -5439,7 +5554,7 @@ forward!(x::CanonicalExprV{:getindex}; info) = begin
                 for (s, ix) in zip(slots, inner); composed[s] = ix; end
                 return _with_trace_state(info, :plate_context, nothing) do
                     invoke(forward!, Tuple{CanonicalExpr},
-                        CanonicalExpr(:getindex, base, composed...); info=_plate_root_info(info))
+                        CanonicalExpr(:getindex, entry.global_name, composed...); info=_plate_root_info(info))
                 end
             end
         end
