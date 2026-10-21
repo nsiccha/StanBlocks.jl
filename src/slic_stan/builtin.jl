@@ -385,6 +385,8 @@ import Statistics
     rep_array(x::real[k], n)::real[n, k]
     rep_vector(v, n)::vector[n]
     rep_matrix(v::vector[m], n)::matrix[m, n]
+    # A row vector repeats DOWN the rows: `m` copies of `rv` stacked.
+    rep_matrix(rv::row_vector[n], m)::matrix[m, n]
     rep_matrix(x::real, m, n)::matrix[m,n]
     to_array_2d(v, m, n)::real[m,n]
     # Stan's native matrix → 2-D real array (row-major). Matrix data ingests as
