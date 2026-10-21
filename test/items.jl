@@ -11445,7 +11445,11 @@ is skipped for a ragged plate-sliced obs.
     @test !isdefined(sb, :_marked_backed)
     @test sb.udf_backed(sb.builtin.truncated_normal_lpdf)
     @test !sb.native_backed(sb.builtin.truncated_normal_lpdf)
-    @test !sb.udf_backed(sb.builtin.normal_lpdf)
+    @test !sb.udf_backed(sb.builtin.poisson_lpmf)
+    @test sb.native_backed(sb.builtin.poisson_lpmf)
+    # Mixed: `normal_lpdf` is native for its Stan shapes and a UDF for its
+    # matrix variate (`builtin.jl`, snag matrix-parameter-94e1f96c).
+    @test sb.udf_backed(sb.builtin.normal_lpdf)
     @test sb.native_backed(sb.builtin.normal_lpdf)
     @test sb.udf_backed(sb.builtin.lkj_corr_cholesky_lpdf)
     @test sb.native_backed(sb.builtin.lkj_corr_cholesky_lpdf)
