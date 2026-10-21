@@ -2951,6 +2951,65 @@ infer.
 end
 
 """
+Verify a `@juliacompat` typed local infers over mixed argument types.
+
+Regression for snag `called-the-julia-391794fa`. A real-valued typed local
+such as `y::vector[n]` allocates with the promotion of the helper's numeric
+argument types. That promotion broadcast over the argument tuple, which
+inference widened to `Any` once the arguments spanned four distinct types (a
+matrix, a vector, a real and an int). The local was then an abstract `Vector`
+and the helper inferred `Any`, although each statement of its body inferred
+on its own.
+"""
+@testitem "slic: @juliacompat typed locals infer over mixed argument types" tags=[:slic] setup=[StanBlocksImports] begin
+    using InteractiveUtils: code_typed
+    helpers = Module(:JuliaCompatMixedArgs)
+    Core.eval(helpers, :(using StanBlocks))
+    Core.eval(helpers, quote
+        @deffun @juliacompat begin
+            mixed_iterate(A::matrix[n, n], x::vector[n], shift, steps::int, pin::int)::vector[n] = begin
+                y::vector[n]
+                y .= x
+                y[pin] += shift
+                for s in 1:steps
+                    y = A * y
+                end
+                y
+            end
+        end
+    end)
+    f = getproperty(helpers, :mixed_iterate)
+    types = (Matrix{Float64}, Vector{Float64}, Float64, Int, Int)
+    @test Base.return_types(f, types) == [Vector{Float64}]
+    # No local infers `Any` (what `@code_warntype` flags), and the typed local
+    # is a concrete vector.
+    slottypes = first(only(code_typed(f, types; optimize=false))).slottypes
+    @test !any(==(Any), slottypes)
+    @test Vector{Float64} in slottypes
+    A, x = [0.5 0.1; 0.2 0.7], [1.0, 2.0]
+    expected = let y = copy(x)
+        y[2] += 0.25
+        for _ in 1:3
+            y = A * y
+        end
+        y
+    end
+    @test Base.invokelatest(f, A, x, 0.25, 3, 2) ≈ expected
+
+    # The element type keeps its meaning: integers and non-numeric arguments
+    # promote to Float64, wider or narrower floats are kept.
+    real_type = StanBlocks._deffun_julia_real_type
+    @test real_type() === Float64
+    @test real_type(1, [2, 3], true) === Float64
+    @test real_type(1f0, 2) === Float32
+    @test real_type([1f0], 2.0) === Float64
+    @test real_type([1.0], :a, "b", Any[1]) === Float64
+    @test real_type(big(1.0), 1) === BigFloat
+    many = (zeros(2, 2), zeros(2), 1.0, 1, 1f0, [1, 2], true, :a)
+    @test Base.return_types(real_type, typeof.(many)) == [Type{Float64}]
+end
+
+"""
 Verify nested `@juliacompat` helpers dispatch statically.
 
 Regression for snag `juliacompat-inne-4b5d98b3`. Every lowered call went
