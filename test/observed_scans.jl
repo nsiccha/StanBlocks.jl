@@ -270,6 +270,106 @@ is laid out like the data (a flat `ys_gen` for nested vectors, with the data's
 end
 
 """
+A do-block parameter may reuse the name of the data it slices
+(`plate(y) do y`), as in Julia, and the cell lowers exactly like the
+distinct-name spelling (snag `observed-scan-in-63843c19`). The compiler writes
+outer references into the cell (the per-cell accessor, a nested scan's
+`y[i][t]`), so a parameter that shadows an outer name is renamed before the cell
+is traced. Before this, an observed scan over the shadowed group refused
+(`@scan: unsupported statement LHS (y[plate_i__pl_1])[t]`).
+"""
+@testitem "slic: a plate do-parameter may shadow the data it slices" tags=[:slic, :scan, :plate, :ragged, :regression, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block, stanc_compiles
+    ys = [[0.12, 0.31, 0.2], [-0.05, 0.1, 0.42, 0.3], [0.3, -0.2]]
+    observed_shadow = @slic (; y = ys) begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        level ~ normal(0, 1; n = 3)
+        y_cell ~ plate(level, y; outer = (3,)) do level, y
+            @scan begin
+                y[1] ~ normal(level, sigma / sqrt(1 - phi^2))
+                for t in 2:length(y)
+                    y[t] ~ normal(level + phi * (y[t-1] - level), sigma)
+                end
+            end
+        end
+    end
+    observed_distinct = @slic (; y = ys) begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        level ~ normal(0, 1; n = 3)
+        y_cell ~ plate(level, y; outer = (3,)) do l, yy
+            @scan begin
+                yy[1] ~ normal(l, sigma / sqrt(1 - phi^2))
+                for t in 2:length(yy)
+                    yy[t] ~ normal(l + phi * (yy[t-1] - l), sigma)
+                end
+            end
+        end
+    end
+    code = stan_code(observed_shadow)
+    @test code == stan_code(observed_distinct)
+    @test occursin(r"y\.1\[ragged_start\(y\.2, \w+\)\] ~ normal\(level\[\w+\], ", stan_block(code, "model"))
+    gq = stan_block(code, "generated quantities")
+    @test occursin("vector[num_elements(y.1)] y_gen;", gq)
+    @test occursin(r"\(y_gen\[\(\(loop_t__pl_inv\d+\[\w+\] \+ \(t - 1\)\) - 1\)\] - level\[\w+\]\)", gq)
+    @test stanc_compiles(observed_shadow)
+    out = Dict(o.name => o for o in stan_descriptor(observed_shadow).outputs)
+    @test (out[:y_gen].generative, out[:y_gen].segments) == (:draw, [3, 7, 9])
+    @test (out[:y_likelihood].generative, out[:y_likelihood].segments) == (:pointwise_loglik, [3, 7, 9])
+
+    # A latent scan and a plain in-cell observation over the shadowed group.
+    latent(shadow) = shadow ? @slic((; y = ys), begin
+        phi ~ uniform(-1, 1); s ~ exponential(1)
+        res ~ plate(y) do y
+            @scan begin
+                h[1] ~ normal(0, 1)
+                for t in 2:length(y)
+                    h[t] ~ normal(phi * h[t-1], s)
+                end
+            end
+            y ~ normal(h, 1.0)
+        end
+    end) : @slic((; y = ys), begin
+        phi ~ uniform(-1, 1); s ~ exponential(1)
+        res ~ plate(y) do yy
+            @scan begin
+                h[1] ~ normal(0, 1)
+                for t in 2:length(yy)
+                    h[t] ~ normal(phi * h[t-1], s)
+                end
+            end
+            yy ~ normal(h, 1.0)
+        end
+    end)
+    @test stan_code(latent(true)) == stan_code(latent(false))
+    @test stanc_compiles(latent(true))
+    # A parameter may shadow the data ANOTHER positional slices: `z` reads the
+    # outer `y`, not the cell's `y` (a slice of `x`).
+    cross(shadow) = shadow ? @slic((; x = randn(3), y = randn(3)), begin
+        res ~ plate(x, y; outer = (3,)) do y, z
+            z ~ normal(y, 1.0)
+        end
+    end) : @slic((; x = randn(3), y = randn(3)), begin
+        res ~ plate(x, y; outer = (3,)) do a, b
+            b ~ normal(a, 1.0)
+        end
+    end)
+    @test stan_code(cross(true)) == stan_code(cross(false))
+    @test occursin(r"y\[(\w+)\] ~ normal\(x\[\1\], 1\.0\);", stan_block(stan_code(cross(true)), "model"))
+    # Messages keep the author's parameter name.
+    err = try
+        stan_code(@slic (; y = randn(3)) begin
+            res ~ plate(y; outer = (4,)) do y
+                y ~ normal(0, 1)
+            end
+        end)
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test err !== nothing && occursin("positional `y` (param `y`) has length 3", err)
+end
+
+"""
 A scan nested in a plate may run to a per-cell length (`for t in 2:T[j]`, or
 `length(y)` of a ragged cell). Its carried arrays and per-step locals are then
 stored as the plate's flat memory, and an element of cell `j` is
