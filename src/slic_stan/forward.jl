@@ -1589,8 +1589,13 @@ forward!(x::AssignmentExpr; info) = begin
     lhs_raw isa DeclExpr && _check_typed_assignment(local_key, type(lhs), type(rhs); info)
     hoisted && return _bind_hoisted!(local_key, type(lhs), rhs; info)
     k = local_key in keys(info) ? local_key : _base_lhs_symbol(lhs)
-    if k in keys(info)
-        base = info[k]
+    # A compiler fill in a called submodel may target a root declaration the
+    # submodel does not bind (an enclosing loop's flat per-cell memory):
+    # classify it there.
+    scope = (!(k in keys(info)) && info isa SubModel && k isa Symbol &&
+        k in keys(_plate_root_info(info))) ? _plate_root_info(info) : info
+    if k in keys(scope)
+        base = scope[k]
         # A fill CARRIES cv, exactly like the ordinary expression path
         # (`passes.jl` `cv=any(cv, x.args) || cv(tt)`): cv propagates through
         # every expression it reaches. Without this the plate's collected result
@@ -1610,13 +1615,13 @@ forward!(x::AssignmentExpr; info) = begin
                 # flat-prior parameter, then its FIRST certified indexed fill
                 # reclassifies it as a transformed fill target.  Reset (rather
                 # than promote) the qualifier to that first RHS.
-                info[k] = remake(base; decl_role=:fill, qual=qual(rhs), cv=tainted)
+                scope[k] = remake(base; decl_role=:fill, qual=qual(rhs), cv=tainted)
             else
                 role == :fill || error("Fresh declaration `", k, "` has unknown declaration role `", role, "`.")
-                info[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)), cv=tainted)
+                scope[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)), cv=tainted)
             end
         else
-            info[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)), cv=tainted)
+            scope[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)), cv=tainted)
         end
     end
     fwd
@@ -5435,6 +5440,13 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
             any(s -> (l = _plate_stmt_lhs(s); l isa Expr && l.head === :(::) && l.args[1] === f), body_raw) &&
                 error(label, ": a typed local (`", f, "::…`) inside a nested annotated loop is not supported yet.")
             owned_locals[f] = Expr(:ref, hygienic, inner_ix...)
+            # Inside a called submodel, bind its spelling of the promoted storage
+            # (as for owned arrays, below).
+            if info isa SubModel
+                g = _plate_global_name(info, hygienic)
+                root = _plate_root_info(info)
+                g in keys(root) && _plate_bind_local!(info, hygienic, root[g])
+            end
         end
         isempty(owned_locals) || (body_stmts = Any[_subst_syms(s, owned_locals) for s in body_stmts])
     end

@@ -86,6 +86,48 @@ setup refused (`Indexed sampling h[…] ~ … needs h to be declared first`).
     @test occursin("loop_p_hp_h__pl_mem_1[ragged_start(loop_p_hp_h__pl_end_1, p)] ~ normal(0, sigma);",
         stan_block(code, "model"))
     @test stanc_compiles(ragged)
+
+    # Non-centered, with per-step locals: at model scope and per cell.
+    noncentered = @slic begin
+        @scan begin
+            e1 ~ std_normal()
+            h[1] = e1
+            for t in 2:n
+                eps ~ std_normal()
+                h[t] = phi * h[t-1] + s * eps
+            end
+        end
+        return h
+    end
+    top = @slic (; y = randn(5)) begin
+        phi ~ uniform(-1, 1); s ~ exponential(1)
+        hh ~ noncentered(; n = 5, phi, s)
+        y ~ normal(hh, 1.0)
+    end
+    code = stan_code(top)
+    @test occursin("vector[(5 - 1)] hh_h_eps;", stan_block(code, "parameters"))
+    @test occursin("hh_h[hh_t] = ((phi * hh_h[(hh_t - 1)]) + (s * hh_h_eps[(hh_t - 1)]));",
+        stan_block(code, "transformed parameters"))
+    @test stanc_compiles(top)
+    cells = @slic (; Y = randn(5, 3)) begin
+        phi ~ uniform(-1, 1); s ~ exponential(1)
+        @plate for p in 1:3
+            hp ~ noncentered(; n = 5, phi, s)
+            Y[:, p] ~ normal(hp, 1.0)
+        end
+    end
+    code = stan_code(cells)
+    @test occursin("matrix[(5 - 1), 3] loop_p_hp_h_eps;", stan_block(code, "parameters"))
+    @test occursin("loop_p_hp_h_eps[(loop_p_hp_t - 1), p] ~ std_normal();", stan_block(code, "model"))
+    @test stanc_compiles(cells)
+    lengths = @slic (; T = [3, 4, 2], obs = [randn(3), randn(4), randn(2)]) begin
+        phi ~ uniform(-1, 1); s ~ exponential(1)
+        @plate for p in 1:3
+            hp ~ noncentered(; n = T[p], phi, s)
+            obs[p] ~ normal(hp, 0.5)
+        end
+    end
+    @test stanc_compiles(lengths)
 end
 
 """
@@ -200,6 +242,30 @@ an ordinary latent array: the prior-predictive trajectory.
     @test !occursin("~ normal((", stan_block(stan_code(held), "model"))
     @test Set(o.name for o in stan_descriptor(held).operations) == Set([:transpile, :instantiate, :predict, :pointwise_loglik])
     @test stanc_compiles(held)
+
+    # Irregular time gaps: an integer step local over a per-subject group is
+    # data, computed once in transformed data, as in the caller's spelling.
+    gapped = @slic begin
+        @scan begin
+            obs[1] ~ normal(mu[1], sigma / sqrt(1 - phi^2))
+            for t in 2:n
+                k = time[t] - time[t-1]
+                obs[t] ~ normal(mu[t] + phi^k * (obs[t-1] - mu[t-1]), sigma * sqrt((1 - phi^(2k)) / (1 - phi^2)))
+            end
+        end
+    end
+    days = [[1, 2, 4], [1, 3, 4, 7], [2, 5]]
+    g = @slic (; ys, mus, days) begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        @plate for p in eachindex(ys)
+            node ~ gapped(; obs = ys[p], mu = mus[p], time = days[p], n = length(ys[p]), phi, sigma)
+        end
+    end
+    code = stan_code(g)
+    @test occursin("array[sum(loop_p_node_loop_t_k__pl_len_1)] int loop_p_node_loop_t_k__pl_mem_1;",
+        stan_block(code, "transformed data"))
+    @test stanc_compiles(g)
+    @test Set(o.name for o in stan_descriptor(g).operations) == Set([:transpile, :instantiate, :fit, :predict, :pointwise_loglik])
 
     # Anything else has no trajectory to simulate: say what to bind instead.
     err = try
