@@ -742,7 +742,9 @@ length. It is data, so it is computed once in `transformed data`.
 A `@scan` may sit in a called `@slic` sub-model, at model scope or per plate
 cell. Its carried arrays are declared under the sub-model's namespace (`hh_h`
 for `hh ~ latent(; …)`), and the sub-model's own name for them works in the
-setup, in the lag reads and after the loop. All three modes behave as at model
+setup, in the lag reads and after the loop. Per-step locals (a non-centered
+innovation, an integer time gap `k = time[t] - time[t-1]`) and per-cell lengths
+(`n = T[p]`) work as in the caller, and all three modes behave as at model
 scope.
 
 ```julia
