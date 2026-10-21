@@ -2932,6 +2932,7 @@ rebound names bare, so every Julia-side matrix build recursed until
             shim_append_row3(a::vector[n], b::vector[n], c::vector[n])::vector[3 * n] = append_row(a, b, c)
             shim_append_row_mr(x::matrix[n, k], r::row_vector[k])::matrix[n + 1, k] = append_row(x, r)
             shim_append_row_rm(r::row_vector[k], x::matrix[n, k])::matrix[n + 1, k] = append_row(r, x)
+            shim_rep_matrix_rv(b::vector[k], m::int)::matrix[m, k] = rep_matrix(b', m)
         end
     end)
     call(f, args...) = Base.invokelatest(getproperty(shims, f), args...)
@@ -2949,6 +2950,9 @@ rebound names bare, so every Julia-side matrix build recursed until
     @test call(:shim_append_row3, a, b, c) == vcat(a, b, c)
     @test call(:shim_append_row_mr, [a b], [1.0, 2.0]) == [a b; 1.0 2.0]
     @test call(:shim_append_row_rm, [1.0, 2.0], [a b]) == [1.0 2.0; a b]
+    # `b'` reaches Julia as a one-row matrix; Stan stacks `m` copies of it.
+    @test call(:shim_rep_matrix_rv, [1.0, 2.0], 3) == [1.0 2.0; 1.0 2.0; 1.0 2.0]
+    @test_throws DimensionMismatch StanBlocks.jcall(Val(:rep_matrix), shims, [a b], 2)
 
     # The package builtins' own Julia methods reach the same shims.
     @test StanBlocks.builtin.append_col(a, b, c) == [a b c]
@@ -5738,6 +5742,17 @@ Verify `shapes: matrix creation` in an isolated test item.
         model = @slic (;m=3, n=4, obs=randn(3)) begin
             v   = rep_vector(1., m)
             A   = rep_matrix(v, n)
+            obs ~ normal(A * rep_vector(0., n), 1.)
+        end
+        @test check_type(model, :A, "matrix")
+        @test stanc_compiles(model)
+    end
+    # Snag `rep-matrix-row-v-e9979018`: Stan's `rep_matrix(row_vector, int)`
+    # stacks `m` copies of the row; it had no signature row.
+    @testset "rep_matrix(rv::row_vector[n], m) :: matrix[m,n]" begin
+        model = @slic (;m=3, n=4, obs=randn(3)) begin
+            rv  = rep_row_vector(1., n)
+            A   = rep_matrix(rv, m)
             obs ~ normal(A * rep_vector(0., n), 1.)
         end
         @test check_type(model, :A, "matrix")

@@ -703,6 +703,13 @@ jcall(::Val{:rep_vector}, ::_JuliaScope, x, n::Integer) = fill(x, n)
 jcall(::Val{:rep_array}, ::_JuliaScope, x, dims::Integer...) = fill(x, dims...)
 jcall(::Val{:rep_matrix}, ::_JuliaScope, x::Number, m::Integer, n::Integer) = fill(x, m, n)
 jcall(::Val{:rep_matrix}, ::_JuliaScope, x::AbstractVector, n::Integer) = repeat(x, 1, n)
+# A row vector that reaches Julia as a one-row matrix (`v'`) stacks `m` copies.
+# A row vector held as a plain `Vector` takes the method above (todo `15foikj`).
+function jcall(::Val{:rep_matrix}, ::_JuliaScope, x::AbstractMatrix, m::Integer)
+    size(x, 1) == 1 || throw(DimensionMismatch(
+        "rep_matrix: expected a row vector (one row), got a $(size(x, 1))×$(size(x, 2)) matrix"))
+    repeat(x, m, 1)
+end
 jcall(::Val{:to_vector}, ::_JuliaScope, x) = vec(x)
 jcall(::Val{:to_row_vector}, ::_JuliaScope, x) = vec(x)
 jcall(::Val{:to_array_1d}, ::_JuliaScope, x) = collect(vec(x))

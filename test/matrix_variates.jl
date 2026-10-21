@@ -169,3 +169,58 @@ end
         end
     end
 end
+
+"""
+Stan's `rep_matrix(row_vector rv, int m)` stacks `m` copies of `rv`, so
+`rep_matrix(b', m)` gives an `m × n` matrix variate one location per column.
+It had no signature row and failed at trace time with ``tracetype not defined
+for rep_matrix(::row_vector, ::int)`` (snag `rep-matrix-row-v-e9979018`); the
+outer product `rep_vector(1.0, m) * b'` was the workaround.
+"""
+@testitem "slic: rep_matrix(row_vector, m) locates a matrix variate by column" tags=[:slic, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using LogDensityProblems
+    using .StanBlocksTestSetup: stan_block
+    # Unequal sizes: a transposed `matrix[n_probes, n_hours]` result would fail at run time.
+    nh, np = 4, 3
+    dose = reshape(collect(range(-1.0, 1.0; length=nh * np)), nh, np)
+    repeated = @slic (; n_hours=nh, n_probes=np, dose) begin
+        b::vector[n_probes] ~ normal(0.0, 1.0)
+        log_sigma::vector[n_probes] ~ normal(0.0, 1.0)
+        loc = rep_matrix(b', n_hours)
+        dose ~ normal(loc, rep_matrix(exp(log_sigma)', n_hours))
+    end
+    outer = @slic (; n_hours=nh, n_probes=np, dose) begin
+        b::vector[n_probes] ~ normal(0.0, 1.0)
+        log_sigma::vector[n_probes] ~ normal(0.0, 1.0)
+        loc = rep_vector(1.0, n_hours) * b'
+        dose ~ normal(loc, rep_vector(1.0, n_hours) * exp(log_sigma)')
+    end
+    code = stan_code(repeated)
+    @test occursin("matrix[n_hours, n_probes] loc = rep_matrix((b'), n_hours);",
+        stan_block(code, "transformed parameters"))
+    @test stanc_check(code; warn_pedantic=false).ok
+    m_daily = [0.5, 1.0, 1.5, 2.0, 2.5]
+    prior = @slic (; n_probes=np, m_daily) begin
+        M::matrix[n_probes, 5] ~ normal(rep_matrix(100.0 * m_daily', n_probes), 0.001)
+    end
+    mktempdir() do dir
+        cd(dir) do
+            pr, po = stan_instantiate(repeated), stan_instantiate(outer)
+            @test LogDensityProblems.dimension(pr) == LogDensityProblems.dimension(po) == 2np
+            rng = Random.Xoshiro(3)
+            for _ in 1:5
+                q = 0.3 .* randn(rng, 2np)
+                lr, gr = LogDensityProblems.logdensity_and_gradient(pr, q)
+                lo, go = LogDensityProblems.logdensity_and_gradient(po, q)
+                @test lr ≈ lo
+                @test gr ≈ go
+            end
+            # Every row of a prior-only draw lands on the repeated row vector.
+            pp = stan_instantiate(prior)
+            @test LogDensityProblems.dimension(pp) == 0
+            draw = BridgeStan.param_constrain(pp.model, Float64[]; include_gq=true,
+                rng=BridgeStan.StanRNG(pp.model, 11))
+            @test maximum(abs.(reshape(draw, np, 5) .- 100.0 .* m_daily')) < 0.01
+        end
+    end
+end

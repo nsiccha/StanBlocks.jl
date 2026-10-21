@@ -318,7 +318,7 @@ _check_matrix_variate_args(lhs, rhs::CanonicalExpr) = begin
             "variate takes each argument of an elementwise family as a scalar or as a `matrix` ",
             "of the variate's own shape; there is no `vector`, `row_vector` or array argument ",
             "form. Pass a matrix: `rep_matrix(mu, n)` repeats a `vector[m]` location `mu` ",
-            "across the `n` columns, and `rep_matrix(mu', m)'` repeats a `row_vector[n]` one ",
+            "across the `n` columns, and `rep_matrix(mu, m)` repeats a `row_vector[n]` one ",
             "down the `m` rows."
         )
     end
