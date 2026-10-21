@@ -561,12 +561,28 @@ end
 # module is static, and the callee's binding resolves during inference.
 # Plain `Module` scopes stay accepted for callers that hold a module value,
 # such as descriptor layout evaluation.
+#
+# `jcall` declares no keyword arguments, and its keyword calls are
+# `Core.kwcall` methods written out (as Base forwards `invokelatest`).  A
+# `; kwargs...` signature would put Julia's generated keyword-body function
+# between every lowered call and its callee.  When `@juliacompat` helpers call
+# helpers, that same `jcall` -> body pair nests, inference's recursion limit
+# widens it, and the helpers infer `Any`: every call in their loops then
+# dispatched at run time (snag `juliacompat-inne-4b5d98b3`).  `Vararg{Any,N}`
+# makes a call that is not inlined compile for its own arity, where a plain
+# `args...` is compiled as a widened `Vararg` once it is longer than the method
+# table's other signatures.  No compatibility shim takes keywords, so a keyword
+# call goes to the resolved binding.
 struct _JuliaCallScope{M} end
 const _JuliaScope = Union{Module,_JuliaCallScope}
 _jcall_callee(mod::Module, ::Val{name}) where {name} = getglobal(mod, name)
 _jcall_callee(::_JuliaCallScope{M}, ::Val{name}) where {M,name} = getglobal(M, name)
-jcall(f, args...; kwargs...) = f(args...; kwargs...)
-jcall(tag::Val, scope::_JuliaScope, args...; kwargs...) =
+jcall(f, args::Vararg{Any,N}) where {N} = f(args...)
+jcall(tag::Val, scope::_JuliaScope, args::Vararg{Any,N}) where {N} =
+    _jcall_callee(scope, tag)(args...)
+Core.kwcall(kwargs::NamedTuple, ::typeof(jcall), f, args::Vararg{Any,N}) where {N} =
+    f(args...; kwargs...)
+Core.kwcall(kwargs::NamedTuple, ::typeof(jcall), tag::Val, scope::_JuliaScope, args::Vararg{Any,N}) where {N} =
     _jcall_callee(scope, tag)(args...; kwargs...)
 
 for f in (:sqrt, :exp, :log, :log10, :sin, :cos, :asin, :acos, :tan, :atan,
@@ -1524,14 +1540,16 @@ begin
             "Probability, RNG, ODE, and reduce_sum parity is outside the deterministic compatibility layer; ",
             "remove the explicit `@juliacompat` opt-in."
         )
-        if f isa Symbol && f in locals
-            Expr(:call, :($stan.jcall), params..., f, positional...)
-        elseif f isa Symbol
+        if f isa Symbol && !(f in locals)
             tag = :($Val{$(QuoteNode(f))}())
             scope = :($stan._JuliaCallScope{$def_mod}())
             Expr(:call, :($stan.jcall), params..., tag, scope, positional...)
         else
-            Expr(:call, :($stan.jcall), params..., f, positional...)
+            # A local (a higher-order argument) or computed callee is called as
+            # written.  Passed to `jcall` instead, a function argument is never
+            # called in the generated method, so Julia compiles that method for
+            # `::Function` and every call through it dispatches at run time.
+            Expr(:call, f, params..., positional...)
         end
     end
 

@@ -2805,6 +2805,109 @@ infer.
 end
 
 """
+Verify nested `@juliacompat` helpers dispatch statically.
+
+Regression for snag `juliacompat-inne-4b5d98b3`. Every lowered call went
+through `jcall`, whose `; kwargs...` signature put Julia's generated
+keyword-body function before each callee. Once helpers called helpers, that
+same pair nested, inference's recursion limit widened it, and calls inside the
+helpers' loops dispatched at run time: a closed-form response evaluated over
+many lags ran 6-7x slower than the same code written in Julia. A higher-order
+argument was passed to `jcall` rather than called, so its helper compiled for
+`::Function` and dispatched per element. `jcall` now has no keyword body, and
+a local callee is called as written.
+
+The return types alone do not show this: the results land in typed buffers,
+so the helpers inferred their declared types on the old code too.
+"""
+@testitem "slic: nested @juliacompat helpers dispatch statically" tags=[:slic] setup=[StanBlocksImports] begin
+    using InteractiveUtils: code_typed
+    helpers = Module(:JuliaCompatNested)
+    Core.eval(helpers, :(using StanBlocks))
+    Core.eval(helpers, quote
+        @deffun @juliacompat begin
+            nest_weights(a, b, c)::vector[2] = [a + b, b * c]
+            nest_series(s, w)::real = begin
+                term = 1. / s
+                acc = term
+                n = 1
+                while n <= 16
+                    term = term * w / (s + n)
+                    acc = acc + term
+                    n = n + 1
+                end
+                acc
+            end
+            nest_mode(lambda, t, rate, shape, c1, c2)::real = begin
+                y = 0.
+                if t > 0.
+                    y = c1 * exp(-lambda * t) * nest_series(shape, rate * t) + c2
+                end
+                y
+            end
+            nest_response(ts::vector[n], a, b, c, rate, shape)::vector[n] = begin
+                d = nest_weights(a, b, c)
+                rv = rep_vector(0., n)
+                for i in 1:n
+                    rv[i] = d[1] * nest_mode(d[2], ts[i], rate, shape, a, b)
+                end
+                rv
+            end
+            nest_scaled(ts::vector[n], a; scale)::vector[n] = scale * nest_response(ts, a, a, a, 1.0, 2.0)
+            nest_keyword(ts::vector[n], a)::vector[n] = nest_scaled(ts, a; scale = 2.0)
+            nest_apply(f, x::vector[n])::real = begin
+                acc = 0.
+                for i in 1:n
+                    acc = acc + f(x[i], 0.5)
+                end
+                acc
+            end
+            nest_shift(x, c) = x * x + c
+            nest_hof(x::vector[n])::real = nest_apply(nest_shift, x)
+        end
+    end)
+    f(name) = getproperty(helpers, name)
+    call(name, args...; kwargs...) = Base.invokelatest(f(name), args...; kwargs...)
+    # A statement that still dispatches at run time: a call to anything but a
+    # builtin, or a splat (`Core._apply_iterate`) of a tuple of unknown length.
+    runtime_calls(name, types) = [
+        s for s in first(only(code_typed(f(name), types))).code
+        if Meta.isexpr(s, :call) && !(s.args[1] isa Core.IntrinsicFunction) &&
+           !(s.args[1] isa GlobalRef && s.args[1].name !== :_apply_iterate &&
+             getglobal(s.args[1].mod, s.args[1].name) isa Core.Builtin)
+    ]
+
+    response_types = (Vector{Float64}, Float64, Float64, Float64, Float64, Float64)
+    @test isempty(runtime_calls(:nest_response, response_types))
+    @test isempty(runtime_calls(:nest_keyword, (Vector{Float64}, Float64)))
+    @test isempty(runtime_calls(:nest_hof, (Vector{Float64},)))
+    @test Base.return_types(f(:nest_response), response_types) == [Vector{Float64}]
+
+    series(s, w) = (term = 1 / s; acc = term; for n in 1:16; term *= w / (s + n); acc += term; end; acc)
+    mode(lambda, t, rate, shape, c1, c2) = t > 0 ? c1 * exp(-lambda * t) * series(shape, rate * t) + c2 : 0.0
+    response(ts, a, b, c, rate, shape) = [(a + b) * mode(b * c, t, rate, shape, a, b) for t in ts]
+    ts = [0.0, 0.5, 1.5, 4.0]
+    @test call(:nest_response, ts, 0.3, 0.2, 0.7, 1.1, 2.5) ≈ response(ts, 0.3, 0.2, 0.7, 1.1, 2.5)
+    @test call(:nest_keyword, ts, 0.3) ≈ 2 .* response(ts, 0.3, 0.3, 0.3, 1.0, 2.0)
+    x = [0.5, -1.0, 2.0]
+    @test call(:nest_hof, x) ≈ sum(xi -> xi^2 + 0.5, x)
+
+    # The higher-order helper compiles for the function it is given, never
+    # for `::Function`.
+    apply_types = [mi.specTypes for mi in Base.specializations(only(methods(f(:nest_apply))))
+                   if mi isa Core.MethodInstance]
+    @test !isempty(apply_types)
+    @test all(T -> T.parameters[2] !== Function, apply_types)
+
+    # Keyword calls through `jcall` reach the binding, with a typed scope or
+    # the plain module descriptor layout evaluation passes.
+    scope = StanBlocks._JuliaCallScope{helpers}()
+    @test StanBlocks.jcall(Val(:nest_scaled), scope, ts, 0.3; scale = 2.0) ≈ call(:nest_keyword, ts, 0.3)
+    @test StanBlocks.jcall(Val(:nest_scaled), helpers, ts, 0.3; scale = 2.0) ≈ call(:nest_keyword, ts, 0.3)
+    @test StanBlocks.jcall(f(:nest_scaled), ts, 0.3; scale = 2.0) ≈ call(:nest_keyword, ts, 0.3)
+end
+
+"""
 Verify `@juliacompat` matrix builders reach Julia's own `hcat`/`reshape`.
 
 Regression for snag `juliacompat-appe-8a38f4f3`. `StanBlocks` rebinds some
