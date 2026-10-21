@@ -5078,8 +5078,9 @@ _nested_scan_containers(stmts, params, iterables, idxs; info) = begin
     Any[_is_scan_macrocall(s) ? _subst_syms(s, subst) : s for s in stmts]
 end
 # A called submodel's keyword bound to a VIEW of the caller's data, a column
-# `obs = Y[:, j]` or a nested-vector group `obs = ys[j]` (also the group a
-# `plate(ys) do y` / `@plate for y in ys` cell passes as `obs = y`), is observed
+# `obs = Y[:, j]` or a nested-vector group `obs = ys[j]` (also the column or
+# group a `plate(EachCol(Y)) do y` / `plate(ys) do y` / `@plate for y in ys`
+# cell passes as `obs = y`), is observed
 # by its `@scan` as that data, exactly as the same scan written in the caller
 # observes `Y[t, j]` / `ys[j][t]`: its trajectory is `Y_gen` / `ys_gen`, its
 # likelihood `Y_likelihood` / `ys_likelihood`. Each element reference `obs[s]`
@@ -5122,20 +5123,27 @@ end
 # `ys[j]` of data, else `nothing`. A plate cell receives its group of
 # nested-vector data as the inline projection
 # `ys.mem[ragged_start(ys.ends, j):ragged_end(ys.ends, j)]`
-# (`_plate_input_accessor`), which is the same group.
+# (`_plate_input_accessor`), which is the same group, and its column of an
+# `EachCol(Y)` iterable as `col(Y, j)`, which is `Y[:, j]`.
 _data_view(v) = nothing
 _data_view(v::StanExpr) = begin
     qual(v) == :data || return nothing
     index(c) = c isa StanExpr && stan_ndim(c) == 0 && center_type(c) <: types.int
+    named_data(b) = b isa StanExpr && expr(b) isa Symbol && qual(b) == :data
     g = _ragged_group_projection(v)
     if g !== nothing
         (qual(g.base) == :data && center_type(g.base) <: RaggedVector && index(g.group)) || return nothing
         return (; base=g.base, cell=Any[g.group], ragged=true)
     end
     e = expr(v)
-    (e isa CanonicalExpr && head(e) === getindex) || return nothing
+    e isa CanonicalExpr || return nothing
+    if head(e) === builtin.col
+        (length(e.args) == 2 && named_data(e.args[1]) && index(e.args[2])) || return nothing
+        return (; base=e.args[1], cell=Any[e.args[2]], ragged=false)
+    end
+    head(e) === getindex || return nothing
     base = e.args[1]
-    (base isa StanExpr && expr(base) isa Symbol && qual(base) == :data) || return nothing
+    named_data(base) || return nothing
     if center_type(base) <: RaggedVector
         (length(e.args) == 2 && index(e.args[2])) || return nothing
         return (; base, cell=Any[e.args[2]], ragged=true)

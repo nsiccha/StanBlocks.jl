@@ -285,10 +285,12 @@ A plate cell receives its group of nested-vector data as a parameter
 (`plate(ys) do y`, `@plate for y in ys`). Passed to a called submodel's
 observed `@scan` (`obs = y`), it observes `ys` as `obs = ys[p]` does: the twins
 are `ys_gen` / `ys_likelihood` with the data's `segments`, and the parameter may
-share the data's name. Before snag `submodel-scan-ob-50a09edb` the keyword
-refused (`obs` is observed and read back, so it must name data …): the group
-reaches the submodel as the flat-memory slice
-`ys.mem[ragged_start(ys.ends, i):ragged_end(ys.ends, i)]`. A slice of that
+share the data's name. An `EachCol(Y)` cell's column is observed as
+`obs = Y[:, p]`. Before snag `submodel-scan-ob-50a09edb` the keyword refused
+(`obs` is observed and read back, so it must name data …): the group reaches
+the submodel as the flat-memory slice
+`ys.mem[ragged_start(ys.ends, i):ragged_end(ys.ends, i)]`, the column as
+`col(Y, i)`. A slice of that
 memory that is not one group is not observed as a group: before the same snag,
 `ys.mem[1:2] ~ …` emitted `ys_likelihood[nothing] = …`, which stanc rejects.
 """
@@ -354,6 +356,21 @@ memory that is not one group is not observed as a group: before the same snag,
     out = Dict(o.name => o for o in stan_descriptor(contained).outputs)
     @test (out[:ys_gen].generative, out[:ys_gen].source, out[:ys_gen].segments) == (:draw, :ys, [3, 7, 9])
 
+    # An `EachCol(Y)` cell's column (`col(Y, i)`) is observed as `Y[:, i]`.
+    columns = @slic (; Y = randn(5, 3), M = randn(5, 3)) begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        cells ~ plate(EachCol(Y), EachCol(M)) do y, m
+            node ~ stream(; obs = y, mu = m, n = 5, phi, sigma)
+        end
+    end
+    kcode = stan_code(columns)
+    @test occursin("Y[cells_node_t, plate_i__pl_1] ~ normal(", stan_block(kcode, "model"))
+    @test occursin("matrix[Y_m, Y_n] Y_gen;", stan_block(kcode, "generated quantities"))
+    @test stanc_compiles(columns)
+    roles = Dict(o.name => (o.generative, o.source, o.dims) for o in stan_descriptor(columns).outputs)
+    @test roles[:Y_gen] == (:draw, :Y, (5, 3))
+    @test roles[:Y_likelihood] == (:pointwise_loglik, :Y, (5, 3))
+
     # A slice of the flat memory that is not one group is not a group.
     err = try
         stan_code(@slic (; ys) begin
@@ -383,8 +400,8 @@ end
 """
 The called submodel's observed scan evaluates the same density as the scan
 written in the caller, at model scope and per plate cell over nested-vector
-groups (also when the cell passes its group as a do-block parameter), and its
-`ys_likelihood` sums to it.
+groups (also when the cell passes its group, or an `EachCol` column, as a
+do-block parameter), and its `ys_likelihood` sums to it.
 """
 @testitem "slic: an observed @scan in a called submodel matches the inline density" tags=[:slic, :scan, :plate, :ragged, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     import BridgeStan
@@ -442,6 +459,23 @@ groups (also when the cell passes its group as a do-block parameter), and its
                 @test sum(gq(a, th, 1)[idx(a, "ys_likelihood")]) ≈ lpa - (log(0.5) - s)
                 @test length(idx(a, "ys_gen")) == 10
             end
+            # An `EachCol(Y)` cell's column, against `obs = Y[:, p]`.
+            Y = randn(4, 3); M = randn(4, 3)
+            indexed = stan_instantiate(@slic (; Y, M) begin
+                phi ~ uniform(-1, 1); sigma ~ exponential(1)
+                @plate for p in 1:3
+                    node ~ stream(; obs = Y[:, p], mu = M[:, p], n = 4, phi, sigma)
+                end
+            end).model
+            columns = stan_instantiate(@slic (; Y, M) begin
+                phi ~ uniform(-1, 1); sigma ~ exponential(1)
+                cells ~ plate(EachCol(Y), EachCol(M)) do y, m
+                    node ~ stream(; obs = y, mu = m, n = 4, phi, sigma)
+                end
+            end).model
+            th = BridgeStan.param_unconstrain(indexed, [0.4, 0.9])
+            @test BridgeStan.log_density(columns, th) ≈ BridgeStan.log_density(indexed, th)
+            @test gq(columns, th, 2) ≈ gq(indexed, th, 2)
         end
     end
 end
