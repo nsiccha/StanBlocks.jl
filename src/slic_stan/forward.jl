@@ -3511,21 +3511,21 @@ end
 _plate_length_value(x) = nothing
 _plate_as_canonical(it::CanonicalExpr) = it
 _plate_as_canonical(it) = canonical(it)
-_plate_probe_length(d, probe) = begin
+_plate_probe_forward(d, probe) = begin
     fwd = try
         forward!(_plate_as_canonical(d); info=probe)
     catch
         return nothing
     end
-    fwd isa StanExpr ? _plate_length_value(fwd) : nothing
+    fwd isa StanExpr ? fwd : nothing
+end
+_plate_probe_length(d, probe) = begin
+    fwd = _plate_probe_forward(d, probe)
+    fwd === nothing ? nothing : _plate_length_value(fwd)
 end
 _plate_probe_iterable_type(it, probe) = begin
-    fwd = try
-        forward!(_plate_as_canonical(it); info=probe)
-    catch
-        return nothing
-    end
-    fwd isa StanExpr && type(fwd) isa StanType ? type(fwd) : nothing
+    fwd = _plate_probe_forward(it, probe)
+    fwd !== nothing && type(fwd) isa StanType ? type(fwd) : nothing
 end
 _plate_arg_type(T::StanType, key) = begin
     haskey(info(T), :arg_types) || return nothing
@@ -3534,39 +3534,63 @@ _plate_arg_type(T::StanType, key) = begin
     haskey(at, key) || return nothing
     at[key]
 end
-# Per-axis lengths of a whole-forwarded positional, in outer-axis order, as
-# `(length, unit)` with `length === nothing` when unresolvable. Dense
-# containers read `stan_size`; a certified ragged carrier counts its `ends`
-# (one entry per group, 1-D only, matching `_plate_input_accessor`'s ragged
-# scope); EachCol/EachRow count the wrapped matrix's columns/rows. Anything
-# else (scalars — already loud downstream — tuples, closures, unrecognized
-# views) yields no lengths and stays unchecked.
-_plate_iterable_lengths(T::StanType) = begin
+# Per-axis declared sizes of a whole-forwarded positional, in outer-axis order,
+# as `(size, unit)` with `size === nothing` when unresolvable. Dense containers
+# read `stan_size`; a certified ragged carrier counts its `ends` (one entry per
+# group, 1-D only, matching `_plate_input_accessor`'s ragged scope);
+# EachCol/EachRow count the wrapped matrix's columns/rows. Anything else
+# (scalars — already loud downstream — tuples, closures, unrecognized views)
+# yields no sizes and stays unchecked. `_plate_iterable_lengths` resolves them to
+# values.
+_plate_iterable_sizes(T::StanType) = begin
     if _plate_is_ragged_iterable(T)
         ends = _plate_arg_type(T, :ends)
-        n = ends isa StanType && !isempty(stan_size(ends)) ?
-            _plate_length_value(stan_size(ends)[1]) : nothing
+        n = ends isa StanType && !isempty(stan_size(ends)) ? stan_size(ends)[1] : nothing
         return Any[(n, "groups")]
     end
     if center_type(T) <: builtin.EachCol
         X = _plate_arg_type(T, :X)
-        n = X isa StanType && length(stan_size(X)) >= 2 ?
-            _plate_length_value(stan_size(X)[2]) : nothing
+        n = X isa StanType && length(stan_size(X)) >= 2 ? stan_size(X)[2] : nothing
         return Any[(n, "columns")]
     end
     if center_type(T) <: builtin.EachRow
         X = _plate_arg_type(T, :X)
-        n = X isa StanType && !isempty(stan_size(X)) ?
-            _plate_length_value(stan_size(X)[1]) : nothing
+        n = X isa StanType && !isempty(stan_size(X)) ? stan_size(X)[1] : nothing
         return Any[(n, "rows")]
     end
-    Any[(_plate_length_value(s), "length") for s in stan_size(T)]
+    Any[(s, "length") for s in stan_size(T)]
+end
+_plate_iterable_lengths(T::StanType) =
+    Any[(_plate_length_value(s), unit) for (s, unit) in _plate_iterable_sizes(T)]
+# A plate count read off a container — `length(x)`: the do-form's count without
+# `outer`, `eachindex(x)`, a container clause `@plate for v in x` — sizes every
+# top-level declaration and transformed-data index table the plate emits, and
+# Stan admits only data there. For a parameter `lev::vector[n]`, `length(lev)`
+# emits `num_elements(lev)`: a non-data size in `parameters`, out of scope in
+# `transformed data` (snag `per-cell-scan-le-8b202289`). Its declared count `n`
+# is data and equal, so the count is spelled by it. A data `length(x)`, and an
+# `x` without exactly one declared axis, keep the spelling as written.
+_plate_data_count(d; info) = begin
+    c = _plate_as_canonical(d)
+    (isexpr(c, :length) && length(c.args) == 1) || return d
+    _with_trace_state(info, :inline_pending, Any[]) do
+        probe = _plate_probe(info)
+        n = _plate_probe_forward(c, probe)
+        (n === nothing || qual(n) === :data) && return d
+        T = _plate_probe_iterable_type(only(c.args), probe)
+        T === nothing && return d
+        sizes = _plate_iterable_sizes(T)
+        length(sizes) == 1 || return d
+        s = first(only(sizes))
+        s !== nothing && qual(s) === :data ? s : d
+    end
 end
 # Error-message spelling for iterable/outer expressions: `string` on a canonical
 # call renders its mangled Stan name (`length_K(K)`), so unwrap the two shapes
 # that reach here — indexing and calls — back to readable Julia.
 _plate_spelling(it::Symbol) = string(it)
 _plate_spelling(it::Number) = string(it)
+_plate_spelling(it::StanExpr) = _plate_spelling(expr(it))     # a declared count (`_plate_data_count`)
 _plate_spelling(it::CanonicalExprV{:getindex}) = string(
     _plate_spelling(it.args[1]), "[", join(_plate_spelling.(it.args[2:end]), ", "), "]",
 )
@@ -3944,12 +3968,6 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
         for idx in idxs
             probe[idx] = StanExpr(idx, StanType(types.int; qual=:data))
         end
-        # A do-block parameter may shadow the outer iterable (`plate(reads)
-        # do reads`). Its accessor still names the OUTER `reads` in emitted
-        # Stan. Keep that pre-binding as the size resolver's terminal; mapping
-        # the name back to the accessor would recursively expand `reads` into
-        # `reads[plate_i]` inside itself.
-        shadowed = Dict{Symbol,Any}(a => probe[a] for a in params if a in keys(probe))
         if isempty(iterables)
             for (param, idx) in zip(params, idxs)
                 # The do-block parameter is an alias for this plate axis, not a
@@ -3985,7 +4003,6 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
             v isa StanExpr && (size_table[k] = v)
             _return_size_harvest!(caller_syms, v)
         end
-        merge!(size_table, shadowed)
         for s in caller_syms
             haskey(size_table, s) || (size_table[s] = StanExpr(s, StanType(types.int)))
         end
@@ -4089,16 +4106,39 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     params, vararg = _parse_lambda_lhs(lhs_raw)
     vararg === nothing || error("plate: vararg do-block params (`args...`) are not supported yet.")
     iterables = collect(plate.args[2:end])
+    # A do-block parameter may reuse an outer name (`plate(y) do y`): in the
+    # cell it shadows that name, as in Julia. The compiler also writes outer
+    # references into the cell (the iterable's accessor `y[plate_i]`, a nested
+    # scan's `ys[i][t]`, inferred sizes), and the cell binding would capture
+    # them. So the parameter is renamed to a fresh name first, and the cell
+    # traces exactly like the distinct-name spelling (snag
+    # `observed-scan-in-63843c19`). Only messages keep the author's name.
+    spellings = Dict{Symbol,Symbol}()
+    for a in params
+        a in keys(info) || continue
+        fresh = Symbol(a, "__cell")
+        k = 1
+        while fresh in keys(info) || fresh in params || haskey(spellings, fresh)
+            k += 1; fresh = Symbol(a, "__cell_", k)
+        end
+        spellings[fresh] = a
+    end
+    if !isempty(spellings)
+        rename = Dict{Symbol,Symbol}(a => fresh for (fresh, a) in spellings)
+        params = Symbol[get(rename, a, a) for a in params]
+        body_raw = _subst_syms(body_raw, rename)
+    end
 
     # Explicit `outer` accepts an int or a non-empty tuple. Without it, infer the
-    # shipped 1-D shape from the first positional iterable.
+    # shipped 1-D shape from the first positional iterable. Either way a count
+    # read off a container is spelled as data (`_plate_data_count`).
     outer = get(plate.kwargs, :outer, nothing)
     outer_dims = if outer !== nothing
         dims = outer isa CanonicalExprV{:tuple} ? collect(outer.args) : Any[outer]
         isempty(dims) && error("plate: `outer=()` is invalid; pass an int or a non-empty tuple.")
-        dims
+        Any[_plate_data_count(d; info) for d in dims]
     elseif !isempty(iterables)
-        Any[:(length($(iterables[1])))]
+        Any[_plate_data_count(:(length($(iterables[1]))); info)]
     else
         error("plate: cannot size the plate — pass `outer=N`, `outer=(dims...)`, or at least one iterable.")
     end
@@ -4162,7 +4202,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         outer_lo=Any[1 for _ in outer_dims], params, iterables, input_subst, body_stmts,
         ret_expr,
         setup_stmts=Any[], public=Set{Symbol}(), probe_transform=nothing,
-        probe_exclude=Set{Symbol}(), scan_arrays=Set{Symbol}(), info, ns=rv,
+        probe_exclude=Set{Symbol}(), scan_arrays=Set{Symbol}(), info, ns=rv, spellings,
     )
 end
 
@@ -4192,15 +4232,18 @@ end
 #     resolves against the OUTER declaration (`forward!(::CanonicalExprV{:getindex})`).
 #   • `hygiene` — carrier names the sugar already chose for its locals
 #     (`_plate_fresh_name!` claims a name, so it is chosen once per trace).
+#   • `spellings` — the author's name of each renamed do-block parameter (one
+#     that shadowed an outer name), for messages.
 _forward_loop_core!(;
     kind, rv, rv_ct, id, idxs, outer_dims, outer_lo, params, iterables, input_subst,
     body_stmts, ret_expr, setup_stmts, public, probe_transform, probe_exclude,
     scan_arrays, info, ns=nothing, hoist_tag=id, hygiene=Dict{Symbol,Symbol}(),
+    spellings=Dict{Symbol,Symbol}(),
 ) = begin
     # Proven length mismatches between positionals and their outer axes (or
     # between siblings) are ill-typed — refuse before any renaming/hoisting.
     # No-ops for iterable-free loops (scan, index-only plates).
-    _plate_check_iterable_lengths(rv, params, iterables, outer_dims; info)
+    _plate_check_iterable_lengths(rv, Symbol[get(spellings, a, a) for a in params], iterables, outer_dims; info)
     _reject_observed_definitions(body_stmts, kind === :scan ? "scan step" : "plate cell")
 
     # Namespace for hygiene renames and hoisted invariants: the do-form's result
@@ -5014,7 +5057,7 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
             kind === :plate && lo != 1 && error(
                 label, ": a plate iterates a full `1:N` range (got `", src,
                 "`); use `@scan` for a recurrence over `lo:hi`.")
-            push!(idxs, var); push!(outer_lo, lo); push!(outer_dims, hi)
+            push!(idxs, var); push!(outer_lo, lo); push!(outer_dims, _plate_data_count(hi; info))
         else
             kind === :scan && error(label, ": iterate over a range `lo:hi`, not a container (`", src, "`).")
             push!(params, var); push!(iterables, src)
@@ -5025,7 +5068,7 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
             label, ": mixing range axes with a container clause is not supported — ",
             "iterate ONE container (`for di in doses`) or ranges.")
         push!(idxs, Symbol(:plate_i, "__pl_", id))
-        push!(outer_lo, 1); push!(outer_dims, :(length($(iterables[1]))))
+        push!(outer_lo, 1); push!(outer_dims, _plate_data_count(:(length($(iterables[1]))); info))
     end
     (kind === :plate || length(idxs) == 1) || error(label, ": a scan has exactly one axis.")
     input_subst = Dict{Symbol,Any}()

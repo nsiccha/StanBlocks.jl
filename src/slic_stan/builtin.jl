@@ -413,6 +413,7 @@ import Statistics
     append_row(::matrix[m1,n], ::matrix[m2,n])::matrix[m1+m2,n]
     append_row(x::row_vector[n], y::row_vector[n])::matrix[2, n]
     append_row(x::matrix[m, n], y::row_vector[n])::matrix[m+1, n]
+    append_row(x::row_vector[n], y::matrix[m, n])::matrix[m+1, n]
     flat_lpdf(args...)
     # Observation weighting is an ordinary higher-order distribution family.
     # `family` is an always-inline base token, encoded into the emitted wrapper
