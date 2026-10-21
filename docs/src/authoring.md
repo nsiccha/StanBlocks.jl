@@ -796,7 +796,10 @@ nested `@plate` setups are not supported yet); a `@scan` has one axis; an
 untyped fresh cell whose distribution arguments are vector-shaped must be
 annotated (`v[:, j]::vector[T] ~ …`) until the plate typing snag
 `plate-untyped-ve-819ecfff` lands; typed locals inside a nested loop are not
-supported yet. A bare `for` in a model body remains an error.
+supported yet; a nested scan that observes a nested-vector group per step
+without reading it back (`ys[p][t] ~ normal(h[t], s)`) is refused
+(`unsupported statement LHS`), not supported yet. A bare `for` in a model body
+remains an error.
 
 ## `@deffun` iteration boundary
 
