@@ -295,8 +295,35 @@ validate_sampling_rhs(lhs, rhs::StanExpr{<:CanonicalExpr}; info) = begin
     canonical = expr(rhs)
     spec = _distribution_hof(head(canonical))
     isnothing(spec) || _validate_distribution_hof(spec, lhs, canonical; unbound)
+    _check_matrix_variate_args(lhs, canonical)
     nothing
 end
+# A `matrix` variate of an elementwise family (`z::matrix[m, n] ~ normal(…)`, or
+# matrix data) resolves through the matrix overloads in builtin.jl, which take
+# each argument as a scalar or as a matrix of the variate's shape (snag
+# matrix-parameter-94e1f96c). Stan has no other argument form for it: a vector
+# location would reach stanc as an ill-typed `z ~ normal(mu_vec, 1)`, which
+# neither the call's type (`real`, the native stub's) nor `_check_lpxf_resolves`
+# (the name is native-backed) flags. The families opt in in builtin.jl.
+_matrix_variate_family(f) = false
+_check_matrix_variate_args(lhs, rhs::CanonicalExpr) = begin
+    family = head(rhs)
+    _matrix_variate_family(family) || return
+    center_type(lhs) <: types.matrix || return
+    for (i, arg) in enumerate(rhs.args)
+        (stan_ndim(arg) == 0 || center_type(arg) <: types.matrix) && continue
+        error(
+            "`", _base_lhs_symbol(lhs), " ~ ", nameof(family), "(…)` samples a `matrix`, but ",
+            "argument ", i, " of `", nameof(family), "` is a `", sigtype(arg), "`. A matrix ",
+            "variate takes each argument of an elementwise family as a scalar or as a `matrix` ",
+            "of the variate's own shape; there is no `vector`, `row_vector` or array argument ",
+            "form. Pass a matrix: `rep_matrix(mu, n)` repeats a `vector[m]` location `mu` ",
+            "across the `n` columns, and `rep_matrix(mu', m)'` repeats a `row_vector[n]` one ",
+            "down the `m` rows."
+        )
+    end
+end
+_check_matrix_variate_args(lhs, rhs) = nothing
 _declared_observation_lhs(lhs; info) = begin
     key = _sampling_lhs_key(lhs)
     key === nothing && return false

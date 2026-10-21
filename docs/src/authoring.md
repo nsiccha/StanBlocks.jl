@@ -212,6 +212,49 @@ Rules:
 - The sampler's coordinates are `c_free`: BridgeStan lists `c_free` as the
   parameter and `c` as a transformed parameter.
 
+## Matrix parameters and observations of elementwise families
+
+A typed matrix LHS takes an iid prior from any continuous elementwise family,
+and a matrix of data is observed the same way:
+
+```julia
+@slic (; R, C, Y, M) begin
+    A::matrix[R, C] ~ normal(0.0, 2.0)
+    B::matrix[R, C] ~ lognormal(0.0, 0.5)
+    s ~ exponential(1.0)
+    Y ~ normal(M, s)              # Y, M: R×C data matrices
+end
+```
+
+Stan vectorises these families over no matrix, so StanBlocks supplies matrix
+overloads of each family's density, pointwise companion and sized `_rng`. The
+model block keeps the statement as written (`A ~ normal(0.0, 2.0);`); its
+density is the family's over `to_vector(A)`, with the normalising constants
+dropped exactly as `to_vector(A) ~ normal(0.0, 2.0)` drops them.
+
+- Each argument is a scalar or a matrix of the variate's own shape; Stan checks
+  that shape at run time. A `vector`, `row_vector` or array argument is refused
+  at trace time: write `rep_matrix(mu, n)` to repeat a `vector[m]` location
+  across the `n` columns, or `rep_matrix(mu', m)'` for a `row_vector[n]` one
+  down the rows.
+- A prior-only or held-out matrix is re-drawn with its own shape, and a matrix
+  observation's `Y_gen` and `Y_likelihood` are `matrix`-shaped, one entry per
+  element.
+- Families: `std_normal`, `normal`, `student_t`, `cauchy`, `lognormal`,
+  `exponential`, `gamma`, `inv_gamma`, `beta`, `uniform`, `weibull`, `frechet`,
+  `double_exponential`, `logistic`, `gumbel`, `pareto`, `pareto_type_2`,
+  `scaled_inv_chi_square`, `chi_square`, `inv_chi_square`, `rayleigh`,
+  `von_mises`, `loglogistic`, `skew_normal`, `exp_mod_normal`,
+  `skew_double_exponential`.
+- Not yet: the distribution combinators (`truncated`, `censored`,
+  `interval_censored`, `weighted`, and a `lower=`/`upper=` cut whose normaliser
+  depends on a parameter) over a matrix variate, and integer-matrix
+  observations of the discrete families. Both fail at trace time. Before the
+  matrix overloads (snag `matrix-parameter-94e1f96c`), every matrix form above
+  transpiled to a statement stanc rejects (`Ill-typed arguments supplied to
+  function "normal": (matrix, real, real)`), and a prior-only one failed at
+  trace time.
+
 ## Generated observation twins
 
 A normal top-level observation such as `y ~ normal(mu, sigma)` produces two
@@ -369,10 +412,17 @@ Here `yi` means `y[i]`, while `mu0` and `sigma` are the same captured values in
 every cell. Every positional's length must equal its outer axis (and every
 sibling positional): a provable mismatch errors at trace time naming the
 plate, the positional, and both lengths. A ragged input counts groups and
-`EachCol`/`EachRow` count columns/rows; a `length(X)`-style `outer` carries no
-trace-time value and stays unchecked. The compiler emits the necessary loops
-separately in the Stan blocks that own the declarations, fills, densities,
-and generated quantities.
+`EachCol`/`EachRow` count columns/rows; a `length(X)`-style `outer` over data
+carries no trace-time value and stays unchecked. The compiler emits the
+necessary loops separately in the Stan blocks that own the declarations, fills,
+densities, and generated quantities.
+
+With positional inputs, `outer` may be omitted: the plate counts its first
+positional. A parameter or transformed parameter counts by its declared size,
+so `plate(lev, ys) do l, y` with `lev::vector[n]` emits the same program as
+`plate(lev, ys; outer=(n,))`. Stan admits only data in the sizes of the
+plate's declarations and `transformed data` index tables, which
+`num_elements(lev)` is not.
 
 ### Plate support matrix
 

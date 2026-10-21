@@ -191,7 +191,7 @@ Base.show(io::IO, x::CanonicalExpr) = begin
     # `func_name` still operates on the *unexpanded* args so the mangled
     # receiver name reflects the closure's identity, not just its captures.
     fargs = stan_call_args(x.args)
-    is_lxxf = endswith(string(fname), r"_lp[md]f|_l?c?cdf")
+    is_lxxf = endswith(string(fname), r"_lu?p[md]f|_l?c?cdf")
     if is_lxxf && length(fargs) > 1
         autoprint(io, fname, "(", fargs[1], " | ", Join(fargs[2:end], ", "), ")")
     else

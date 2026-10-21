@@ -2505,6 +2505,69 @@ for dist in (:student_t, :skew_normal, :exp_mod_normal,
     end
 end
 
+# A matrix variate for the continuous elementwise families (snag
+# matrix-parameter-94e1f96c). Stan vectorises these families over a scalar,
+# `vector`, `row_vector` or 1-D array variate, never a `matrix`, so a
+# `z::matrix[m, n] ~ normal(0, 1)` prior or a `Y ~ normal(mu, sigma)` matrix
+# observation emitted a statement stanc rejects (`Ill-typed arguments supplied
+# to function "normal": (matrix, real, real)`), and its generated-quantities
+# draw had no companion at all. Each family gets three matrix overloads, whose
+# arguments are scalars or matrices of the variate's own shape
+# (`_check_matrix_variate_args`, lpxf_builtin.jl, refuses any other shape at
+# trace time); `matrix_variate_arg` flattens a matrix argument like the variate:
+#   - the density, a Stan UDF overload of the library name (as
+#     `multinomial_lpmf` above), so the model block keeps `z ~ normal(0, 1);`.
+#     Its body calls the family's `_lupdf`, which inherits the caller's propto
+#     flag: a `~` drops the normalising constants exactly as
+#     `to_vector(z) ~ normal(0, 1)` does, and an explicit `normal_lpdf(z | 0, 1)`
+#     keeps them;
+#   - the pointwise companion, one entry per element, laid out like the variate;
+#   - the sized `_rng`, the family's vector draw reshaped column-major, which
+#     is how `to_vector` lays the variate out.
+# No `@lhs`: it would register a base `normal(::real, ::real)` tracetype
+# returning a matrix, which every untyped `x ~ normal(0, 1)` would then pick
+# up. The variate's shape always comes from a typed LHS or from the data.
+@eval builtin function matrix_variate_arg end
+const matrix_variate_arg = builtin.matrix_variate_arg
+@deffun matrix_variate_arg(x::real, m::int, n::int)::real = x
+@deffun matrix_variate_arg(x::matrix[o, p], m::int, n::int)::vector[o * p] = begin
+    @stan_assert o == m && p == n "matrix variate: a matrix argument of an elementwise family must have the variate's own shape."
+    to_vector(x)
+end
+for (dist, params) in (
+    (:std_normal, ()),
+    (:normal, (:loc, :scale)), (:cauchy, (:loc, :scale)), (:lognormal, (:loc, :scale)),
+    (:gamma, (:alpha, :beta)), (:inv_gamma, (:alpha, :beta)), (:beta, (:alpha, :beta)),
+    (:uniform, (:lo, :hi)), (:weibull, (:alpha, :sigma)), (:frechet, (:alpha, :sigma)),
+    (:double_exponential, (:mu, :sigma)), (:logistic, (:mu, :sigma)),
+    (:gumbel, (:mu, :beta)), (:pareto, (:y_min, :alpha)),
+    (:scaled_inv_chi_square, (:nu, :sigma)), (:von_mises, (:mu, :kappa)),
+    (:loglogistic, (:alpha, :beta)),
+    (:exponential, (:rate,)), (:chi_square, (:nu,)), (:inv_chi_square, (:nu,)),
+    (:rayleigh, (:sigma,)),
+    (:student_t, (:nu, :loc, :scale)), (:skew_normal, (:mu, :sigma, :alpha)),
+    (:exp_mod_normal, (:mu, :sigma, :lambda)),
+    (:skew_double_exponential, (:mu, :sigma, :tau)),
+    (:pareto_type_2, (:mu, :lambda, :alpha)),
+)
+    dlpdf, dlupdf = Symbol(dist, :_lpdf), Symbol(dist, :_lupdf)
+    dlpdfs, drng = Symbol(dist, :_lpdfs), Symbol(dist, :_rng)
+    @eval builtin function $dlupdf end
+    @eval const $dlupdf = builtin.$dlupdf
+    @eval @deffun $dlupdf(args...)::real
+    @eval _matrix_variate_family(::typeof(builtin.$dist)) = true
+    flat_args = [:(matrix_variate_arg($p, m, n)) for p in params]
+    @eval @deffun $dlpdf(obs::matrix[m, n], $(params...))::real =
+        $dlupdf(to_vector(obs), $(flat_args...))
+    # `std_normal` has no vector pointwise companion to reshape (a vector
+    # observation of it has no `y_likelihood` either).
+    dist === :std_normal ||
+        @eval @deffun $dlpdfs(obs::matrix[m, n], $(params...))::matrix[m, n] =
+            to_matrix($dlpdfs(to_vector(obs), $(flat_args...)), m, n)
+    @eval @deffun $drng(matrix[m, n], $(params...))::matrix[m, n] =
+        to_matrix($drng(vector[m * n], $(flat_args...)), m, n)
+end
+
 # 1-arg discrete families (output is int[n]; no to_vector wrap). Single native
 # arg — same immunity as the 1-arg continuous loop above (todo 19n8abc).
 for dist in (:bernoulli, :bernoulli_logit, :poisson, :poisson_log)
