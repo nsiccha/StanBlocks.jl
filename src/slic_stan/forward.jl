@@ -4323,9 +4323,18 @@ _forward_loop_core!(;
     # It stays in the promoted set and collects to an outer `array[N…] int[K]`
     # (fixed width) or a ragged flat-memory carrier (varying width), exactly like
     # a continuous response cell. (Snag omitted-integer-f59f449a.)
+    #
+    # Nor is an int array a NESTED loop collected over its own iterations — a
+    # `@scan` step local (`k = d[t] - d[t-1]`, `int[T-1]` per cell) or a carried
+    # int array. Its defining statement lives inside that loop, so there is
+    # nothing here to inline. It promotes like its real-valued twin: an outer
+    # `array[N…] int[K]`, or flat memory for a per-cell length. Dropping it left
+    # an in-cell declaration that the transformed-data/model split puts out of
+    # scope. (Snag deterministic-st-a7afc47c.)
     inline_int_names = Set{Symbol}(
         f for (f, T) in fresh if center_type(T) <: types.int && stan_ndim(T) >= 1 &&
-            !(center_type(T) === types.int && _decl_role(T) === :sampled)
+            !(center_type(T) === types.int && _decl_role(T) === :sampled) &&
+            !_is_loop_collection(T)
     )
     if !isempty(inline_int_names)
         fresh = Pair{Symbol,Any}[p for p in fresh if !(p.first in inline_int_names)]
@@ -4594,6 +4603,9 @@ _forward_loop_core!(;
                 hi=forward!(canonical(plate_outer[1]); info))
             tgt[f] = remake(tgt[f]; scan_loop=coverage, slice_tiled=true)
         end
+        # An int collection over this loop's iterations is promoted, not inlined,
+        # by an ENCLOSING loop (`_is_loop_collection`).
+        f !== rv && center_type(T) <: types.int && (tgt[f] = remake(tgt[f]; loop_collection=true))
         pending !== nothing && push!(pending, emitted)
     end
     if vectorized_sample !== nothing
@@ -4960,6 +4972,8 @@ end
 _obs_shadow_of(x::StanExpr) = _obs_shadow_of(type(x))
 _obs_shadow_of(x::StanType) = get(x.info, :obs_shadow_of, nothing)
 _obs_shadow_of(::Any) = nothing
+# An int collection a loop declared over its own iterations (`_forward_loop_core!`).
+_is_loop_collection(x::StanType) = get(x.info, :loop_collection, false)
 # Declare the shadow `g` of observed data `y` in `info`, laid out like `y` (a
 # nested-vector `y` by its flat memory), and queue the declaration in `pending`.
 _declare_obs_shadow!(g::Symbol, y::Symbol; info, pending) = begin
