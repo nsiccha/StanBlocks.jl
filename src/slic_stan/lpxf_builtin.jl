@@ -301,7 +301,10 @@ _declared_observation_lhs(lhs; info) = begin
     key = _sampling_lhs_key(lhs)
     key === nothing && return false
     key in _model_observations(info) && return true
-    key in keys(info) && get(type(info[key]).info, :unbound_observation, nothing) !== nothing
+    # The simulated trajectory of an observed `@scan` array is that observation's
+    # draw (forward.jl, `_observed_scan_shadow`).
+    key in keys(info) && (get(type(info[key]).info, :unbound_observation, nothing) !== nothing ||
+        _obs_shadow_of(info[key]) !== nothing)
 end
 # Forward tracing cannot yet know whether a declared missing response is a draw
 # or a latent parameter. Recheck at block placement, after activity analysis.

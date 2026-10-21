@@ -390,9 +390,11 @@ backward!(x::StanExpr{Symbol}; info) = begin
     # A declaration whose slice statements set its support (forward.jl,
     # `_finalize_slice_supports!`) gets its bounds after the forward pass, so an
     # occurrence forwarded earlier carries none: keep the current entry, as for
-    # the ragged-density certificate.
+    # the ragged-density certificate. Data an observed `@scan` reads back is
+    # marked after its loop is traced, likewise (`scan_observed`).
     certified = key in keys(info) && (get(type(info[key]).info, :ragged_density, false) ||
-        !isempty(_slice_records(info[key])) || !isempty(_slice_observations(info[key])))
+        !isempty(_slice_records(info[key])) || !isempty(_slice_observations(info[key])) ||
+        _scan_observed(info[key]) !== nothing)
     source = certified ? info[key] : x
     reached = remake(source; lqual=:affects_likelihood)
     # cv taint only ever grows. An observation that reads its own base (an
@@ -1241,7 +1243,29 @@ _indexed_ragged_obs_slice(lhs; info) = begin
         isequal(expr(lo_group), expr(hi_group)) || return nothing
     (; base=k, mem=e.args[1], group=lo_group, slice)
 end
+_scan_observed(x::StanExpr) = get(type(x).info, :scan_observed, nothing)
+# A carried data array a `@scan` observes and reads back (forward.jl,
+# `_observed_scan_shadow`): its `<base>_gen` is the shadow trajectory the scan
+# itself simulates, so each observation contributes only its pointwise
+# conditional log density to a per-element `<base>_likelihood`.
+_scan_obs_base(lhs; info) = begin
+    expr(lhs) isa Symbol && return nothing
+    k = _getindex_chain_base(lhs)
+    k === nothing && (k = _ragged_mem_element_base(lhs))
+    (k isa Symbol && k in keys(info)) || return nothing
+    base = info[k]
+    qual(base) == :data && _scan_observed(base) !== nothing ? k : nothing
+end
+# `ys.mem[k]` — an element of an observed group of nested-vector data, in the
+# flat form the scan rewrites `ys[c][i]` to: `ys`, else `nothing`.
+_ragged_mem_element_base(lhs) = begin
+    e = expr(lhs)
+    (e isa CanonicalExpr && head(e) === getindex && length(e.args) == 2) || return nothing
+    _ragged_field_base(e.args[1], 1)
+end
 _indexed_obs_twin_target(lhs; info) = begin
+    k = _scan_obs_base(lhs; info)
+    k === nothing || return (; kind=:scan, base=k)
     k = _indexed_obs_gen_base(lhs; info)
     k === nothing || return (; kind=:dense, base=k)
     spec = _indexed_ragged_obs_slice(lhs; info)
@@ -1308,6 +1332,15 @@ end
 _indexed_gq_assignments(x::SamplingExpr; info) = begin
     expr(x.args[1]) isa Symbol && error(
         "Compiler-owned loop contains a non-indexed generated-quantities sample. Plate locals must use an outer declaration and indexed sampling.")
+    k = _scan_obs_base(x.args[1]; info)
+    if k !== nothing
+        lhs, rhs = x.args
+        lik = Symbol(k, "_likelihood")
+        target = _getindex_chain_base(lhs) === k ? _rename_lhs_base(lhs, lik) : StanExpr(
+            CanonicalExpr(getindex, info[lik], expr(lhs).args[2]),
+            remake(type(lhs); value=missing, qual=:quantities))
+        return Any[CanonicalExpr(:(=), target, likelihood_expr(lhs, rhs))]
+    end
     k = _indexed_obs_gen_base(x.args[1]; info)
     k === nothing || return Any[_indexed_obs_gen_assignment(x, k)]
     spec = _indexed_ragged_obs_slice(x.args[1]; info)
@@ -1384,7 +1417,33 @@ end
 _push_indexed_obs_twin_decls!(b, target; info) =
     target.kind === :dense ? _push_obs_gen_decl!(b, target.base; info) :
     target.kind === :ragged ? _push_ragged_obs_decls!(b, target.base; info) :
+    target.kind === :scan ? _push_scan_obs_likelihood_decl!(b, target.base; info) :
     error("internal: unknown indexed observation twin kind `", target.kind, "`.")
+# One real log density per observed element, laid out like the observation: a
+# `vector` for a 1-D array (or the flat memory of nested-vector data), a
+# `matrix` for a 2-D one.
+_push_scan_obs_likelihood_decl!(b, k::Symbol; info) = begin
+    lik = Symbol(k, "_likelihood")
+    if lik in keys(info)
+        _obs_twin_source(info[lik]) === k && return lik
+        _assert_twin_free(k, "_likelihood", info)
+    end
+    base = info[k]
+    sz = if center_type(base) <: RaggedVector
+        mem = StanExpr(CanonicalExpr(Base.getfield, base,
+            StanExpr(1, StanType(types.int; value=1, qual=:data))), type(base).info.arg_types.mem)
+        (_trace_stan_call(builtin.num_elements, mem; info),)
+    else
+        stan_size(base)
+    end
+    ct = length(sz) == 1 ? types.vector : length(sz) == 2 ? types.matrix : error(
+        "internal: an observed @scan array `", k, "` of rank ", length(sz), " has no likelihood layout.")
+    t = StanType(ct, sz; qual=:quantities, obs_twin_source=k)
+    decl = StanExpr(lik, t)
+    info[lik] = decl
+    push!(b, StanExpr(CanonicalExpr(:(::), decl), t); info)
+    lik
+end
 
 function lpxf_expr end
 function rng_expr end

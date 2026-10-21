@@ -2374,6 +2374,20 @@ end
 _forward_indexed_sampling!(x; info, user_slice::Bool=false) = begin
     lhs_raw, rhs_raw = x.args
     k = _base_lhs_symbol(lhs_raw)
+    # An element of an enclosing loop's varying-length cell (a nested `@scan`
+    # carried array running to `T[j]`) is an element of that loop's flat memory;
+    # the rewritten LHS samples it there (see `forward!(::CanonicalExprV{:getindex})`).
+    if !(k in keys(info)) && k isa Symbol && info isa Union{StanModel,SubModel} &&
+            lhs_raw isa CanonicalExprV{:getindex} && length(lhs_raw.args) == 2
+        entry = _plate_context_entry(k; info)
+        parts = entry === nothing ? nothing : _ragged_accessor_parts(entry.accessor)
+        ix = parts === nothing ? nothing : forward!(lhs_raw.args[2]; info)
+        if ix !== nothing && stan_ndim(ix) == 0 && center_type(ix) <: types.int
+            pos = _ragged_offset(:(ragged_start($(parts.ends), $(parts.idx))), ix)
+            return _forward_indexed_sampling!(remake(x, canonical(Expr(:ref, parts.mem, pos)), rhs_raw);
+                info, user_slice)
+        end
+    end
     k in keys(info) || error(
         user_slice ?
             "Indexed sampling `$k[…] ~ …` needs `$k` to be declared first, e.g. `$k::vector[n]`." :
@@ -2438,7 +2452,10 @@ _forward_indexed_sampling!(x; info, user_slice::Bool=false) = begin
             retainted = true
         end
     end
-    if qual(info[k]) != :data && (user_slice || _scan_loop(info[k]) !== nothing)
+    # The trajectory of observed data (`_observed_scan_shadow`) is a predictive
+    # draw from the observations' own families; it records no slice support.
+    if qual(info[k]) != :data && _obs_shadow_of(info[k]) === nothing &&
+            (user_slice || _scan_loop(info[k]) !== nothing)
         rhs = _record_slice_support!(k, lhs, rhs; info, loop=user_slice ? nothing : _scan_loop(info[k]))
     elseif user_slice
         _record_slice_observation!(k, lhs, rhs; info)
@@ -2968,7 +2985,9 @@ end
 # A `~` or `=` statement, whatever its LHS: a plate cell ending in one has no
 # value to collect.
 _plate_is_statement(s) = s isa Expr &&
-    (s.head === :(=) || (s.head === :call && length(s.args) >= 3 && s.args[1] === :~))
+    (s.head === :(=) || (s.head === :call && length(s.args) >= 3 && s.args[1] === :~) ||
+     # an annotated loop (`@scan begin … end`, `@plate for … end`) has no value
+     (s.head === :macrocall && s.args[1] in (Symbol("@scan"), Symbol("@plate"))))
 # Result-less plate names (global, so a sub-model called twice records two), so
 # reading one fails with the reason instead of a bare "Could not find"
 # (`forward!(::Symbol)`, tracing.jl), and a second plate under one is refused.
@@ -3131,6 +3150,23 @@ _plate_is_ragged_cell(T::StanType, idxs) =
     stan_ndim(T) == 1 && _plate_depends_on(stan_size(T)[1], idxs) &&
     (center_type(T) <: types.vector || center_type(T) === types.int)
 
+# Flat position of element `i` of a group starting at `start`: `start + i - 1`,
+# folded for a literal `i`.
+_ragged_offset(start, i) = begin
+    n = i isa Integer ? i : i isa StanExpr && expr(i) isa Integer ? expr(i) : nothing
+    n === nothing ? :($start + $i - 1) : n == 1 ? start : :($start + $(n - 1))
+end
+# The parts of a ragged cell accessor `mem[ragged_start(ends, i):ragged_end(ends, i)]`
+# (`_plate_ragged_plan`), or `nothing` for any other accessor.
+_ragged_accessor_parts(a) = begin
+    (a isa Expr && a.head === :ref && length(a.args) == 2 && a.args[1] isa Symbol) || return nothing
+    r = a.args[2]
+    (r isa Expr && r.head === :call && length(r.args) == 3 && r.args[1] === :(:)) || return nothing
+    lo, hi = r.args[2], r.args[3]
+    (lo isa Expr && lo.head === :call && lo.args[1] === :ragged_start && length(lo.args) == 3) || return nothing
+    (hi isa Expr && hi.head === :call && hi.args[1] === :ragged_end && hi.args[2:3] == lo.args[2:3]) || return nothing
+    (; mem=a.args[1], ends=lo.args[2], idx=lo.args[3])
+end
 _plate_ragged_plan(f, T::StanType, outer, idxs, id) = begin
     length(outer) == 1 || error(
         "plate: ragged vector/int cells currently require a one-dimensional `outer`; ",
@@ -3165,9 +3201,13 @@ _plate_outer_decl(f, T::StanType, outer) = begin
     isempty(outer) && error("plate: `outer` must contain at least one dimension.")
     shape = _plate_cell_shape(T, f)
     if shape === :scalar
-        length(outer) == 1 && return Expr(:(::), f, _plate_type_expr(:vector, outer))
+        # An integer cell (`k = 2p + 1`, or a step-invariant index a nested scan
+        # lifts out of its recurrence) stays an integer, usable as an index:
+        # `array[outer…] int`, laid out like the real cells' axes.
+        int = center_type(T) === types.int
+        length(outer) == 1 && return Expr(:(::), f, _plate_type_expr(int ? :int : :vector, outer))
         sizes = Any[outer[3:end]...; outer[1]; outer[2]]
-        return Expr(:(::), f, _plate_type_expr(:matrix, sizes))
+        return Expr(:(::), f, _plate_type_expr(int ? :int : :matrix, sizes))
     end
     if shape === :array_vector
         # SLIC `vector[outer..., T, K]` renders as the Stan declaration
@@ -3286,6 +3326,33 @@ _plate_slice_bound_carrier!(f, key, T::StanType, outer, axes, positions, cell_na
         nest = Expr(:block, Expr(:for, Expr(:(=), idx, :($lo:$hi)), nest))
     end
     for s in (_plate_outer_decl(carrier, T, outer), only(nest.args))
+        emitted = forward!(canonical(s); info)
+        pending !== nothing && push!(pending, emitted)
+    end
+    info[carrier]
+end
+# The per-element `key=` bound of a varying-length cell's flat memory, when a
+# nested `@scan`'s setup and recurrence give its coordinates different support:
+# a `transformed data` vector laid out like the memory, filled per cell
+# (`_slice_bound_fills`) at `ragged_start(ends, i) + t - 1`.
+_plate_ragged_bound_carrier!(plan, key, T::StanType, outer, idx, cell_names; info, pending) = begin
+    f = plan.logical
+    records = T.info.slice_supports
+    default = getproperty(T.info.slice_default, key)
+    _check_slice_bounds_data(f, key, default, records)
+    for r in records
+        _plate_depends_on(getproperty(r, key), cell_names) && error(
+            "@scan: the `", key, "=` bound of `", r.spelling, " ~ …` reads a value the ",
+            "enclosing loop binds per cell. A per-coordinate bound is data or an ",
+            "expression of data and the loop indices; write that expression in the ",
+            "bound itself (`", key, "=L[j]`).")
+    end
+    carrier = _slice_carrier_name(plan.mem, key; info)
+    start = :(ragged_start($(plan.ends), $idx))
+    fills = _slice_bound_fills(key, plan.size_expr, default, records, Symbol(carrier, :_i),
+        i -> Expr(:ref, carrier, _ragged_offset(start, i)); covered=get(T.info, :slice_tiled, false))
+    loop = Expr(:for, Expr(:(=), idx, :(1:$outer)), Expr(:block, fills...))
+    for s in (Expr(:(::), carrier, :(vector[sum($(plan.lens))])), loop)
         emitted = forward!(canonical(s); info)
         pending !== nothing && push!(pending, emitted)
     end
@@ -4065,7 +4132,8 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         end
     end
 
-    stmts = Any[s for s in body_raw.args if !(s isa LineNumberNode)]
+    stmts = _nested_scan_containers(Any[s for s in body_raw.args if !(s isa LineNumberNode)],
+        params, iterables, idxs; info)
     isempty(stmts) && error("plate: empty do-block body.")
     # The cell collects its last line when that line is a value. A cell ending in
     # a `~`/`=` statement, or in `nothing`, has no value to collect (snag
@@ -4191,6 +4259,12 @@ _forward_loop_core!(;
     fresh = probe_transform === nothing ? discovered.fresh :
         Pair{Symbol,Any}[p for p in discovered.fresh
                          if !_is_probe_junk_name(p.first) && !(p.first in probe_exclude)]
+    # The trajectory of data a nested `@scan` observes (`_observed_scan_shadow`)
+    # is laid out like the data, not per cell: declare it once, before this loop,
+    # unless an enclosing loop already did.
+    shadows = Pair{Symbol,Symbol}[p.first => _obs_shadow_of(p.second) for p in fresh
+                                  if _obs_shadow_of(p.second) !== nothing]
+    isempty(shadows) || (fresh = Pair{Symbol,Any}[p for p in fresh if _obs_shadow_of(p.second) === nothing])
     # Discovery sees a declared missing observation under its hygienic cell
     # name. Emission samples the promoted storage instead, so retain the names
     # here for both the storage declaration and its public predictive alias.
@@ -4345,6 +4419,10 @@ _forward_loop_core!(;
     # then trace ONLY the loop under promotion. `forward!(::ForExpr)` binds the
     # loop index before its body, so promoted references can resolve `f[idx]`.
     pending = _get_inline_pending(info)
+    for (g, y) in shadows
+        g in keys(_plate_root_info(info)) ||
+            _declare_obs_shadow!(g, y; info=_plate_root_info(info), pending)
+    end
     # Ragged vector cells get a data-sized flat-memory carrier. First materialise
     # each cell length in transformed data (this accepts arbitrary data-only size
     # expressions, not merely `K[i]`), then cumulative ends and flat storage.
@@ -4374,6 +4452,20 @@ _forward_loop_core!(;
             mem_ct = center_type(plan.cell_type) === types.int ? :int : :vector
             mem_decl = Expr(:(::), plan.mem, Expr(:ref, mem_ct, :(sum($(plan.lens)))))
             emitted = forward!(canonical(mem_decl); info)
+            # The cell's support reaches its flat memory: a bound every coordinate
+            # of every cell shares is a scalar bound, and a nested scan's setup and
+            # recurrence with different supports take a per-element bound vector.
+            # A constraint that depends on the cell (`lower=L[g]`, a declared
+            # missing cell's `censored(…; lower=ll)` threshold) is not declared on
+            # the flat memory yet: a re-drawn cell's draw honours it, a sampled
+            # cell explores without it.
+            T, per_coordinate = _plate_fold_inner_slices(plan.logical, plan.cell_type, index_aliases)
+            cons, _ = _plate_promoted_constraints(plan.logical, T, index_aliases)
+            for key in per_coordinate
+                cons = merge(cons, (; key => _plate_ragged_bound_carrier!(
+                    plan, key, T, outer_dims[1], idxs[1], keys(all_cell_types); info, pending)))
+            end
+            emitted = _plate_constrain_decl(plan.mem, emitted, cons; info)
             pending !== nothing && push!(pending, emitted)
             if plan.logical in unbound_cells
                 info[plan.mem] = remake(info[plan.mem]; unbound_observation=plan.logical)
@@ -4576,6 +4668,308 @@ _annotated_lag(ix, idx::Symbol) = begin
     nothing
 end
 
+# ── Observed carried arrays (`@scan` over bound data) ────────────────────────
+# A scan whose recurrence observes DATA and reads it back at a lag
+#
+#     y[1] ~ normal(mu[1], sigma / sqrt(1 - phi^2))
+#     for t in 2:T; y[t] ~ normal(mu[t] + phi * (y[t-1] - mu[t-1]), sigma); end
+#
+# is the conditional likelihood of `y`: each observation reads the observed past.
+# Its predictive twin is NOT that statement with `_rng` in place of `~` — a
+# one-step-ahead draw from the observed past is not a draw of `y` — but the
+# whole trajectory: exactly the scan the same body runs when `y` is omitted. So
+# every observation of a carried data array gets a SHADOW statement on `y_gen`,
+# a compiler-owned declaration laid out like `y` itself, at the observation's
+# own indices and with every read of the observed arrays redirected to their
+# shadows. `y_gen` is an ordinary latent declaration that no likelihood reaches,
+# so activity analysis re-draws it in generated quantities in step order — the
+# prior-predictive machinery, unchanged. A deterministic statement that reads an
+# observed array and feeds one of its observations (a carried residual,
+# `err[t] = y[t] - nu`) is replayed on the shadows too (`err_gen`). Sampled
+# statements are never replayed: like every other predictive twin, `y_gen` is
+# drawn given the posterior latents.
+#
+# An observed array is written `y[i, c...]` — `y` dense data, `i` the scan step,
+# `c...` the cell of an enclosing loop (none at top level) — or `ys[c][i]` for
+# a group of nested-vector data, which reads its flat memory
+# `ys.mem[ragged_start(ys.ends, c) + i - 1]` and is shadowed in the flat
+# `ys_gen`. The observations themselves stay (the model-block likelihood); their
+# default per-cell twin is replaced by a per-element `y_likelihood`
+# (`scan_observed`, passes.jl).
+_scan_stmt_lhs_name(s) = begin
+    lhs = _plate_stmt_lhs(s)
+    lhs === nothing && return nothing
+    tl = _annotated_untyped(lhs)
+    b = _annotated_ref_base(tl)
+    b !== nothing ? b : tl isa Symbol ? tl : nothing
+end
+_is_tilde_stmt(s) = s isa Expr && s.head === :call && length(s.args) == 3 && s.args[1] === :~
+# Every name an expression reads as a value: call heads and keyword names are
+# not reads (`normal(…; lower=lo)` reads `lo`, not `normal` or `lower`).
+_value_syms!(acc, x) = acc
+_value_syms!(acc, x::Symbol) = (push!(acc, x); acc)
+_value_syms!(acc, x::Expr) = begin
+    if x.head === :call
+        foreach(a -> _value_syms!(acc, a), x.args[2:end])
+    elseif x.head === :kw
+        _value_syms!(acc, x.args[2])
+    elseif x.head === :.
+        _value_syms!(acc, x.args[1])
+    else
+        foreach(a -> _value_syms!(acc, a), x.args)
+    end
+    acc
+end
+# The flat-memory element of observed group `c` of nested-vector data `ys`.
+_ragged_element(ys, c, i, mem=:($ys.mem)) = Expr(:ref, mem, _ragged_offset(:(ragged_start($ys.ends, $c)), i))
+# `ys.mem[k]`, the flat form an observed group element is rewritten to: `ys`.
+_ragged_mem_base(tl) =
+    (tl isa Expr && tl.head === :ref && length(tl.args) == 2 && tl.args[1] isa Expr &&
+        tl.args[1].head === :. && tl.args[1].args[1] isa Symbol && tl.args[1].args[2] == QuoteNode(:mem)) ?
+        tl.args[1].args[1] : nothing
+
+_observed_scan_shadow(label, setup, body, t::Symbol, is_data; info) = begin
+    ragged_data(x) = center_type(info[x]) <: RaggedVector
+    # `(; name, step, cell, ragged)` for a reference to an element of observed
+    # data, else `nothing`.
+    obs_ref(e) = begin
+        (e isa Expr && e.head === :ref) || return nothing
+        b = e.args[1]
+        if b isa Symbol
+            (is_data(b) && !ragged_data(b) && length(e.args) >= 2) || return nothing
+            return (; name=b, step=e.args[2], cell=e.args[3:end], ragged=false)
+        end
+        (b isa Expr && b.head === :ref && length(b.args) == 2 && b.args[1] isa Symbol &&
+            length(e.args) == 2 && is_data(b.args[1]) && ragged_data(b.args[1])) || return nothing
+        (; name=b.args[1], step=e.args[2], cell=Any[b.args[2]], ragged=true)
+    end
+    obs_lhs(s) = _is_tilde_stmt(s) ? obs_ref(_annotated_untyped(s.args[2])) : nothing
+    observed = Set{Symbol}(o.name for o in (obs_lhs(s) for s in Iterators.flatten((setup, body))) if o !== nothing)
+    none = (setup, body, Dict{Symbol,Symbol}(), Dict{Symbol,Set{Int}}(), Dict{Symbol,Int}())
+    isempty(observed) && return none
+    # Every element reference of an observed array inside `e`.
+    refs!(acc, e) = begin
+        e isa Expr || return acc
+        o = obs_ref(e)
+        o !== nothing && o.name in observed && push!(acc, o)
+        foreach(a -> refs!(acc, a), o === nothing ? e.args : vcat(o.cell, Any[o.step]))
+        acc
+    end
+    # Carried: the scan reads the observed array back — anywhere in the setup,
+    # or at another step than the current one in the recurrence. An array
+    # observed per step and never read back (a state-space observation
+    # `y[t] ~ normal(h[t], s)`) keeps its ordinary per-cell twin.
+    carried = Set{Symbol}()
+    for s in setup, o in refs!(Any[], _annotated_rhs(s)); push!(carried, o.name); end
+    for s in body, o in refs!(Any[], _annotated_rhs(s))
+        o.step === t || push!(carried, o.name)
+    end
+    isempty(carried) && return none
+    # Deterministic statements on the path from an observed array back into one of
+    # its observations: forward-reachable from the observed arrays and
+    # backward-reachable from the observations' right-hand sides.
+    stmts = collect(Iterators.flatten((setup, body)))
+    det = [s for s in stmts if s isa Expr && s.head === :(=) && _scan_stmt_lhs_name(s) isa Symbol]
+    is_carried_obs(s) = (o = obs_lhs(s); o !== nothing && o.name in carried)
+    reaches = copy(carried)
+    changed = true
+    while changed
+        changed = false
+        for s in det
+            n = _scan_stmt_lhs_name(s)
+            n in reaches && continue
+            isempty(intersect(_value_syms!(Set{Symbol}(), _annotated_rhs(s)), reaches)) && continue
+            push!(reaches, n); changed = true
+        end
+    end
+    needed = Set{Symbol}()
+    for s in stmts
+        is_carried_obs(s) && _value_syms!(needed, s.args[3])
+    end
+    changed = true
+    while changed
+        changed = false
+        for s in det
+            n = _scan_stmt_lhs_name(s)
+            (n in needed && n in reaches) || continue
+            before = length(needed)
+            _value_syms!(needed, _annotated_rhs(s))
+            changed |= length(needed) != before
+        end
+    end
+    replayed = Set{Symbol}(n for n in (_scan_stmt_lhs_name(s) for s in det)
+        if n in reaches && n in needed && !(n in carried) && !(n in observed))
+    twins = Dict{Symbol,Symbol}(n => Symbol(n, :_gen) for n in union(carried, replayed))
+    bound_here = Set{Symbol}(n for n in (_scan_stmt_lhs_name(s) for s in stmts) if n !== nothing)
+    for (n, g) in twins
+        taken = g in bound_here ||
+            (g in keys(info) && !(n in carried && _obs_shadow_of(info[g]) === n))
+        taken && error(
+            label, ": `", n, "` ", n in carried ? "is observed and read back by the scan" :
+            "feeds an observation the scan reads back", ", so its simulated trajectory is named `", g,
+            "` — but the model already binds `", g, "`. Rename that variable ",
+            "(`<name>_gen` names are reserved for predictive twins).")
+    end
+    # Check the observations and the reads of the statements that are replayed:
+    # one cell per observed array, its observations at a literal setup index or the
+    # current step, and its reads at the current step or a lag.
+    cells = Dict{Symbol,Any}()
+    cover = Dict{Symbol,Set{Int}}(y => Set{Int}() for y in carried)
+    lags = Dict{Symbol,Int}()
+    check_cell!(o, what) = begin
+        c = get!(cells, o.name, o.cell)
+        c == o.cell || error(
+            label, ": `", o.name, "` is observed in cell `[", join(c, ", "), "]` but ", what,
+            " reads cell `[", join(o.cell, ", "), "]` — a scan reads back only its own cell.")
+    end
+    for (in_setup, list) in ((true, setup), (false, body)), s in list
+        o = obs_lhs(s)
+        if o !== nothing && o.name in carried
+            check_cell!(o, "an observation")
+            if in_setup
+                (o.step isa Integer && o.step >= 1) || error(
+                    label, ": a setup observation of `", o.name, "` uses a literal step (`",
+                    o.name, "[1]`); got `", _annotated_untyped(s.args[2]), "`.")
+                o.step in cover[o.name] && error(label, ": the setup observes `", o.name, "[", o.step, "]` twice.")
+                push!(cover[o.name], o.step)
+            else
+                o.step === t || error(
+                    label, ": `", _annotated_untyped(s.args[2]), "`: an observed array the scan reads back ",
+                    "is observed at the loop index `", t, "` in the recurrence — every element exactly once.")
+            end
+        end
+        (is_carried_obs(s) || (s isa Expr && s.head === :(=) && _scan_stmt_lhs_name(s) in replayed)) || continue
+        for r in refs!(Any[], _annotated_rhs(s))
+            r.name in carried || continue
+            check_cell!(r, "a replayed statement")
+            in_setup && continue
+            r.step === t && continue
+            k = _annotated_lag(r.step, t)
+            k === nothing && error(
+                label, ": `", r.name, "` is read at step `", r.step, "`: a scan reads an observed array ",
+                "back at the loop index or at a lag `", t, " - k` with `k ≥ 1`.")
+            k isa Integer && (lags[r.name] = max(get(lags, r.name, 0), k))
+        end
+    end
+    for y in carried
+        any(s -> (o = obs_lhs(s); o !== nothing && o.name === y), body) || error(
+            label, ": `", y, "` is observed only in the setup but read back in the loop — ",
+            "observe it in the loop too (`", y, "[", t, "] ~ …`).")
+    end
+    # The shadow of an observed element, and the flat form of a ragged one.
+    gen_ref(o) = o.ragged ? _ragged_element(o.name, only(o.cell), o.step, twins[o.name]) :
+        Expr(:ref, twins[o.name], o.step, o.cell...)
+    flat(e) = begin
+        e isa Expr || return e
+        o = obs_ref(e)
+        o !== nothing && o.ragged && return _ragged_element(o.name, only(o.cell), flat(o.step))
+        Expr(e.head, Any[flat(a) for a in e.args]...)
+    end
+    replay(e) = begin
+        e isa Symbol && return e in replayed ? twins[e] : e
+        e isa Expr || return e
+        o = obs_ref(e)
+        o !== nothing && o.name in carried && return gen_ref((; o..., step=replay(o.step)))
+        e.head === :call && return Expr(:call, e.args[1], Any[replay(a) for a in e.args[2:end]]...)
+        e.head === :kw && return Expr(:kw, e.args[1], replay(e.args[2]))
+        e.head === :. && return Expr(:., replay(e.args[1]), e.args[2:end]...)
+        Expr(e.head, Any[replay(a) for a in e.args]...)
+    end
+    shadow(s) = begin
+        lhs = s.head === :(=) ? s.args[1] : s.args[2]
+        untyped = _annotated_untyped(lhs)
+        renamed = replay(untyped)
+        lhs isa Expr && lhs.head === :(::) && (renamed = Expr(:(::), renamed, lhs.args[2]))
+        rhs = replay(_annotated_rhs(s))
+        s.head === :(=) ? Expr(:(=), renamed, rhs) : Expr(:call, :~, renamed, rhs)
+    end
+    # Ordering keys, in terms of the original names: a statement fills
+    # `(name, step)` (`step === nothing` for a local) and reads the elements its
+    # right-hand side names.
+    fill_key(s) = begin
+        o = obs_lhs(s)
+        o !== nothing && return (o.name, o.step)
+        lhs = _annotated_untyped(s.args[1])
+        lhs isa Symbol ? (lhs, nothing) : (lhs.args[1], lhs.args[2])
+    end
+    read_keys!(acc, e) = begin
+        if e isa Symbol
+            e in replayed && push!(acc, (e, nothing))
+        elseif e isa Expr
+            o = obs_ref(e)
+            if o !== nothing
+                o.name in carried && push!(acc, (o.name, o.step))
+                foreach(a -> read_keys!(acc, a), vcat(o.cell, Any[o.step]))
+            elseif e.head === :ref && e.args[1] isa Symbol && e.args[1] in replayed
+                push!(acc, (e.args[1], length(e.args) == 2 ? e.args[2] : nothing))
+                foreach(a -> read_keys!(acc, a), e.args[2:end])
+            else
+                foreach(a -> read_keys!(acc, a), e.head === :call ? e.args[2:end] : e.args)
+            end
+        end
+        acc
+    end
+    # The shadows follow the originals of their part (setup, or one step), in an
+    # order where each reads only shadows already filled. Source order does not
+    # give one: the original `err[t] = y[t] - nu` may precede `y[t] ~ …` because
+    # the observed `y[t]` is data, but its shadow reads the DRAW `y_gen[t]`. Lag
+    # reads were filled at an earlier step.
+    expand(list) = begin
+        out = Any[]; pending = Any[]
+        for s in list
+            push!(out, flat(s))
+            if is_carried_obs(s) || (s isa Expr && s.head === :(=) && _scan_stmt_lhs_name(s) in replayed)
+                push!(pending, s)
+            end
+        end
+        defined = Set(fill_key(s) for s in pending)
+        filled = Set{Any}()
+        while !isempty(pending)
+            i = findfirst(s -> all(k -> !(k in defined) || k in filled,
+                read_keys!(Set{Any}(), _annotated_rhs(s))), pending)
+            i === nothing && error(
+                label, ": the observation of `", join(sort!(String.(collect(carried))), "`, `"),
+                "` reads its own current value (through `", pending[1],
+                "`) — a scan observes each element given earlier ones only.")
+            s = popat!(pending, i)
+            push!(out, shadow(s)); push!(filled, fill_key(s))
+        end
+        out
+    end
+    obs = Dict{Symbol,Symbol}(y => twins[y] for y in carried)
+    expand(setup), expand(body), obs, cover, lags
+end
+_obs_shadow_of(x::StanExpr) = _obs_shadow_of(type(x))
+_obs_shadow_of(x::StanType) = get(x.info, :obs_shadow_of, nothing)
+_obs_shadow_of(::Any) = nothing
+# Declare the shadow `g` of observed data `y` in `info`, laid out like `y` (a
+# nested-vector `y` by its flat memory), and queue the declaration in `pending`.
+_declare_obs_shadow!(g::Symbol, y::Symbol; info, pending) = begin
+    base = info[y]
+    decl = if center_type(base) <: RaggedVector
+        mem_ct = center_type(type(base).info.arg_types.mem)
+        Expr(:(::), g, Expr(:ref, mem_ct === types.int ? :int : :vector, :(num_elements($y.mem))))
+    else
+        Expr(:(::), g, Expr(:ref, nameof(center_type(base)), stan_size(base)...))
+    end
+    emitted = forward!(canonical(decl); info)
+    info[g] = remake(info[g]; obs_shadow_of=y)
+    pending !== nothing && push!(pending, emitted)
+    nothing
+end
+
+# Inside a nested `@scan`, a cell's group of nested-vector data is spelled
+# through the data (`y` ⇒ `ys[i]`), in both traces of the enclosing loop. An
+# observed scan over it then reads `ys[i][t]` in each (`_observed_scan_shadow`),
+# where the per-cell slice substituted only into the emit trace would hide it.
+_is_scan_macrocall(s) = s isa Expr && s.head === :macrocall && s.args[1] === Symbol("@scan")
+_nested_scan_containers(stmts, params, iterables, idxs; info) = begin
+    length(idxs) == 1 || return stmts
+    subst = Dict{Symbol,Any}(a => Expr(:ref, it, only(idxs)) for (a, it) in zip(params, iterables)
+        if _plate_is_ragged_iterable(_plate_iterable_type(it, info)))
+    isempty(subst) && return stmts
+    Any[_is_scan_macrocall(s) ? _subst_syms(s, subst) : s for s in stmts]
+end
 _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     label = kind === :plate ? "@plate" : "@scan"
     # ── 1. Split the annotated form into setup statements + the loop ─────────
@@ -4638,9 +5032,27 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     for (a, it) in zip(params, iterables)
         input_subst[a] = _plate_input_accessor(it, idxs, info)
     end
-    body_raw = Any[s for s in body.args if !(s isa LineNumberNode)]
+    body_raw = _nested_scan_containers(Any[s for s in body.args if !(s isa LineNumberNode)],
+        params, iterables, idxs; info)
     isempty(body_raw) && error(label, ": empty loop body.")
     is_data(name) = name in keys(info) && qual(info[name]) == :data
+    obs_twins = Dict{Symbol,Symbol}(); obs_cover = Dict{Symbol,Set{Int}}(); obs_lags = Dict{Symbol,Int}()
+    if kind === :scan
+        setup_raw, body_raw, obs_twins, obs_cover, obs_lags =
+            _observed_scan_shadow(label, setup_raw, body_raw, idxs[1], is_data; info)
+        # The shadow is declared once, before the outermost loop: here at model
+        # scope, or by the enclosing loop that discovers it in its probe
+        # (`_forward_loop_core!`), in whose emit trace it is already bound.
+        for (y, g) in obs_twins
+            g in keys(info) || _declare_obs_shadow!(g, y; info, pending=_get_inline_pending(info))
+        end
+    end
+    obs_gens = Set{Symbol}(values(obs_twins))
+    # A statement this loop does not own: an observation of data (`y[i] ~ …`, or
+    # the flat `ys.mem[k] ~ …` an observed group element is rewritten to), or the
+    # shadow of an observed array, which the trajectory declaration owns.
+    is_obs_or_shadow(tl, base) = base !== nothing ? (is_data(base) || base in obs_gens) :
+        ((b = _ragged_mem_base(tl)) !== nothing && is_data(b))
     # NESTED loops: this loop is traced twice by an enclosing plate / annotated
     # loop — first in its discovery probe (no enclosing context: we declare our
     # arrays and locals as usual, the enclosing loop discovers and promotes them
@@ -4665,8 +5077,8 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
         lhs === nothing && continue
         tl = _annotated_untyped(lhs)
         base = _annotated_ref_base(tl)
+        is_obs_or_shadow(tl, base) && continue          # `y[i] ~ …`: an observation
         if base !== nothing
-            is_data(base) && continue                       # `y[i] ~ …`: an observation
             owned(base) || base in keys(info) && error(
                 label, ": `", base, "[…]` writes to a value bound outside the loop — ",
                 "SB models never mutate; give the loop its own array.")
@@ -4702,8 +5114,11 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
         lhs = _plate_stmt_lhs(s)
         tl = lhs === nothing ? nothing : _annotated_untyped(lhs)
         base = _annotated_ref_base(tl)
+        if tl !== nothing && is_obs_or_shadow(tl, base)
+            push!(setup_stmts, s)                       # an observation, traced at model scope
+            continue
+        end
         if base !== nothing
-            is_data(base) && error(label, ": setup `", tl, "`: `", base, "` is data.")
             owned(base) || base in keys(info) && error(
                 label, ": setup `", tl, "` writes to a value bound outside the block — SB models never mutate.")
             ix = tl.args[2:end]
@@ -4760,6 +5175,34 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     # ── 6. Coverage / lag bounds (decidable literal cases; `1ntdzr8`) ────────
     if kind === :scan
         lo = outer_lo[1]
+        # An observed array the scan reads back is simulated as a whole trajectory
+        # (`_observed_scan_shadow`), so it obeys a carried array's coverage: every
+        # element observed exactly once, in order.
+        for (y, cov) in obs_cover
+            m = length(cov)
+            cov == Set(1:m) || error(
+                label, ": the setup must observe `", y, "[1:m]` contiguously, got steps ",
+                sort!(collect(cov)), ".")
+            (lo isa Integer && lo != m + 1) && error(
+                label, ": the loop starts at ", lo, " but the setup observes ",
+                m == 0 ? "no element of `$y`" : "`$y[1:$m]`",
+                " — a scan that reads `", y, "` back observes every element exactly once, ",
+                "so the setup observes `", y, "[1:", lo - 1, "]` and the loop the rest.")
+            k = get(obs_lags, y, 0)
+            k > m && error(
+                label, ": `", y, "[", idxs[1], " - ", k, "]` reads before the setup — the setup ",
+                "observes `", y, "[1:", m, "]`, so only lags up to ", m, " are covered.")
+            # A provably shorter or longer scan would leave elements of a 1-D `y`
+            # unobserved or read past its end.
+            yv = info[y]
+            hi = _slice_int(forward!(canonical(outer_dims[1]); info); values=true)
+            if hi !== nothing && stan_ndim(yv) == 1 && !(center_type(yv) <: RaggedVector) &&
+                    hasvalue(yv) && hi != length(getvalue(yv))
+                error(label, ": the scan runs to `", outer_dims[1], "` = ", hi, " but `", y,
+                    "` has ", length(getvalue(yv)), " elements — a scan that reads `", y,
+                    "` back observes every element of it.")
+            end
+        end
         for f in arrays
             cov = get(setup_cover, f, Set{Int}())
             m = length(cov)
@@ -4864,13 +5307,19 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
         end
         out
     end
-    _forward_loop_core!(;
+    emitted = _forward_loop_core!(;
         kind, rv=nothing, rv_ct=nothing, id, idxs, outer_dims, outer_lo,
         params, iterables, input_subst, body_stmts, ret_expr=nothing,
         setup_stmts, public, probe_transform, probe_exclude=setup_plain,
         scan_arrays=(kind === :scan ? public : Set{Symbol}()), info,
         ns, hoist_tag=nothing, hygiene,
     )
+    # The observations of a carried data array get a per-element `_likelihood`
+    # instead of the per-cell one-step-ahead draw (`_indexed_obs_twin_target`).
+    for (y, g) in obs_twins
+        info[y] = remake(info[y]; scan_observed=g)
+    end
+    emitted
 end
 
 forward!(x::CanonicalExprV{:plate_loop}; info) = _forward_annotated_loop!(:plate, x.args[1]; info)
@@ -4905,6 +5354,21 @@ forward!(x::CanonicalExprV{:getindex}; info) = begin
         # assignable). The composed reference is forwarded at the root with the
         # contexts disabled, exactly like a promoted accessor.
         entry = _plate_context_entry(base; info)
+        # A cell of varying length (`h::vector[T[j]]` from a scan running to
+        # `T[j]`) is stored as the enclosing loop's flat memory; element `ix` of
+        # cell `j` is `mem[ragged_start(ends, j) + ix - 1]`, again one assignable
+        # Stan variable.
+        # (A slice or index array keeps the generic `mem[start:end][ix]`.)
+        ragged = entry === nothing ? nothing : _ragged_accessor_parts(entry.accessor)
+        if ragged !== nothing && length(x.args) == 2
+            inner = forward!(x.args[2]; info)
+            if stan_ndim(inner) == 0 && center_type(inner) <: types.int
+                pos = _ragged_offset(:(ragged_start($(ragged.ends), $(ragged.idx))), inner)
+                return _with_trace_state(info, :plate_context, nothing) do
+                    forward!(canonical(Expr(:ref, ragged.mem, pos)); info=_plate_root_info(info))
+                end
+            end
+        end
         if entry !== nothing && entry.accessor === nothing
             raw = _plate_cell_index(entry.global_name, entry.cell_type, entry.idxs)
             slots = findall(a -> a === Symbol(":"), raw.args[2:end])
