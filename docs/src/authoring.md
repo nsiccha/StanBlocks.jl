@@ -51,6 +51,25 @@ runtime bounds reject the Stan proposal. `lower` and `upper` are Stan reserved
 identifiers, so name bound data `lo`/`hi` (or `lloq`/`uloq`) and map them with
 `lower=lo, upper=hi` as above.
 
+`interval_censored` takes its interval positionally, as above, or by keyword on
+a family call. The keyword form is the spelling BayesianRegressionModels uses:
+
+```julia
+y ~ interval_censored(normal(mu, sigma); upper=hi)            # (y, hi]: y is the lower endpoint
+y ~ interval_censored(normal(mu, sigma); lower=lo, upper=hi)  # (lo, hi]
+y ~ weighted(interval_censored(normal(mu, sigma); upper=hi), w)
+```
+
+Each keyword call emits the same Stan as its positional form
+(`interval_censored(normal(mu, sigma), y, hi)`), in a `plate` cell too.
+`upper=` is required. The keywords need the family call: in the token form
+(`interval_censored(normal, …; upper=hi)`) the endpoints cannot be told apart
+from the family's arguments, so that is an error. A declared observation
+without data has no value to serve as the lower endpoint and needs `lower=`.
+
+Every combinator refuses a keyword it does not take: `censored(…; uper=hi)`
+fails at trace time instead of silently dropping the bound.
+
 `weighted` accepts scalar or vector weights, but weights must be data-qualified;
 weighted priors and parameter-dependent weights reject.
 

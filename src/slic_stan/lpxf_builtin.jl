@@ -183,6 +183,7 @@ _forward_call_kwargs(
     resolved_head::StanExpr2{<:types.func};
     info,
 ) = begin
+    _check_hof_keywords(_family_function(resolved_head), x)
     spec = _distribution_hof(_family_function(resolved_head))
     optional = isnothing(spec) ? () :
         (get(spec, :optional_kwargs, ())..., get(spec, :forwarded_kwargs, ())...)
@@ -198,6 +199,55 @@ _forward_call_kwargs(
     ]...)
     forward!(kept; info)
 end
+# A public combinator refuses a keyword it does not take: dropping it changed the
+# model without a word (`censored(normal(mu, s); lower=lo, uper=hi)` lost its upper
+# bound; snag in-cell-interval-c354f5f4). Its own bounds pass, and so do the
+# keywords any sampling call may carry for the declaration it implies (`autotype`,
+# functions.jl). Only the public heads are checked: the implementation calls they
+# lower to keep their bounds as kwargs for `autotype`.
+const _SAMPLING_SHAPE_KWARGS = (:type, :m, :n, :o, :size)
+_check_hof_keywords(f, x::CanonicalExpr) = nothing
+_check_hof_keywords(
+    f::Union{typeof(builtin.truncated),typeof(builtin.censored),typeof(builtin.weighted)},
+    x::CanonicalExpr,
+) = begin
+    spec = _distribution_hof(f)
+    own = (get(spec, :optional_kwargs, ())..., get(spec, :forwarded_kwargs, ())...)
+    unknown = Tuple(k for k in keys(x.kwargs) if !(k in own || k in _SAMPLING_SHAPE_KWARGS))
+    isempty(unknown) || error(
+        "$(spec.name): no keyword argument `", join(unknown, "`, `"), "`. ",
+        _hof_keyword_help(f),
+    )
+    nothing
+end
+_check_hof_keywords(f::typeof(builtin.interval_censored), x::CanonicalExpr) = begin
+    bounds = Tuple(k for k in keys(x.kwargs) if k in BOUND_KEYS)
+    isempty(bounds) || error(
+        "interval_censored: ",
+        :upper in bounds ?
+            "`lower=`/`upper=` are taken only with one family call as the only " *
+            "positional argument, directly on a sampling statement. " :
+            "the interval needs its upper endpoint, `upper=`. ",
+        _hof_keyword_help(f),
+    )
+    unknown = Tuple(k for k in keys(x.kwargs) if !(k in _SAMPLING_SHAPE_KWARGS))
+    isempty(unknown) || error(
+        "interval_censored: no keyword argument `", join(unknown, "`, `"), "`. ",
+        _hof_keyword_help(f),
+    )
+    nothing
+end
+_hof_keyword_help(::Union{typeof(builtin.truncated),typeof(builtin.censored)}) =
+    "Its bounds are `lower=` and `upper=`."
+_hof_keyword_help(::typeof(builtin.weighted)) =
+    "Its only keywords are `lower=` and `upper=`, which bound a `truncated` or " *
+    "`censored` token in its family slot."
+_hof_keyword_help(::typeof(builtin.interval_censored)) =
+    "Write the interval positionally, `interval_censored(normal(mu, s), lo, hi)` or " *
+    "`interval_censored(normal, lo, hi, mu, s)`, or by keyword on the family call: " *
+    "`y ~ interval_censored(normal(mu, s); upper = hi)` is the interval `(y, hi]`, " *
+    "`lower = lo` makes it `(lo, hi]`, and the same call may sit in `weighted`'s " *
+    "family slot."
 # The position of a HOF call's BASE family. A nestable combinator in the family
 # slot (`weighted(lower_clamping, w, normal, lo, mu, sigma)`) takes this HOF's
 # trailing arguments as its own, so kind, carrier and RNG checks look through it.
@@ -490,6 +540,55 @@ expand_inline_or_trace(
     spliced !== nothing && return forward!(spliced; info)
     forward!(_hof_impl_call(x; x.kwargs...); info)
 end
+# `y ~ interval_censored(normal(mu, s); upper = hi)` is BRM's spelling (decision
+# 0jz7uw4): the observation is the interval's lower endpoint, unless `lower = lo`
+# names another. The `~` statement is rewritten as it is built, before anything
+# is traced, to the positional `y ~ interval_censored(normal(mu, s), y, hi)`, so
+# every later pass (ragged and plate twins, the descriptor) sees only that form.
+# The same call in `weighted`'s family slot is rewritten too. Every other keyword
+# use of `interval_censored` is left for `_check_hof_keywords` to refuse.
+const _IntervalCensoredHead = Union{Val{:interval_censored},typeof(builtin.interval_censored)}
+const _WeightedHead = Union{Val{:weighted},typeof(builtin.weighted)}
+canonical(x::SamplingExpr{<:Any,<:CanonicalExpr{<:Union{_IntervalCensoredHead,_WeightedHead}}}) = begin
+    lhs, rhs = x.args
+    rewritten = _interval_keyword_rhs(lhs, rhs)
+    rewritten === rhs ? x : CanonicalExpr(:(~), lhs, rewritten)
+end
+_interval_keyword_rhs(lhs, rhs) = rhs
+_interval_keyword_rhs(lhs, rhs::CanonicalExpr{<:_WeightedHead}) = begin
+    isempty(rhs.args) && return rhs
+    family = _interval_keyword_rhs(lhs, rhs.args[1])
+    family === rhs.args[1] && return rhs
+    CanonicalExpr(head(rhs), family, rhs.args[2:end]...; rhs.kwargs...)
+end
+_interval_keyword_rhs(lhs, rhs::CanonicalExpr{<:_IntervalCensoredHead}) = begin
+    kw = rhs.kwargs
+    given(k) = haskey(kw, k) && !_is_compile_time_nothing(kw[k])
+    given(:upper) && length(rhs.args) == 1 && rhs.args[1] isa CanonicalExpr || return rhs
+    observed = _observed_endpoint(lhs)
+    lower = given(:lower) ? kw[:lower] :
+        observed === nothing ? (return rhs) : CanonicalExpr(_observed_lower_endpoint, observed)
+    rest = (; (k => v for (k, v) in pairs(kw) if !(k in BOUND_KEYS))...)
+    CanonicalExpr(head(rhs), rhs.args[1], lower, kw[:upper]; rest...)
+end
+_observed_endpoint(lhs::Symbol) = lhs
+_observed_endpoint(lhs::CanonicalExprV{:getindex}) = lhs
+_observed_endpoint(lhs::DeclExpr) = _observed_endpoint(lhs.args[1])
+_observed_endpoint(lhs) = nothing
+# The defaulted lower endpoint: the observation itself, forwarded exactly as the
+# positional spelling would forward it. A declared observation without data has
+# no value to bound the interval with.
+function _observed_lower_endpoint end
+forward!(x::CanonicalExpr{typeof(_observed_lower_endpoint)}; info) = begin
+    lhs = only(x.args)
+    key = _sampling_lhs_key(lhs)
+    key === nothing || key in keys(info) || error(
+        "`", key, " ~ interval_censored(…; upper = …)` takes the interval's lower ",
+        "endpoint from the observed `", key, "`, which has no data. Bind `", key,
+        "`, or give the lower endpoint as `lower = …`."
+    )
+    forward!(lhs; info)
+end
 # Token form of a nested combinator — `weighted(censored, w, normal, mu, sigma;
 # lower=lo)` — lowers its family to the implementation call, exactly as the
 # combinator alone would: `weighted(lower_clamping, w, normal, lo, mu, sigma)`.
@@ -514,7 +613,8 @@ _nested_hof_call(spec, x::CanonicalExpr) = begin
     haskey(nested, :optional_kwargs) || isempty(bounds) || error(
         "$(spec.name): `", join(keys(bounds), "=`, `"), "=` on `$(spec.name)` has no ",
         "`truncated`/`censored` token to bound — a combinator call carries its own ",
-        "bounds, and `interval_censored` takes them positionally",
+        "bounds, and `interval_censored` takes them positionally or on its family ",
+        "call, `$(spec.name)(interval_censored(normal(mu, s); upper = hi), w)`",
     )
     j = _hof_trailing_arg(spec)
     inner = CanonicalExpr(family, x.args[j:end]...; bounds...)
