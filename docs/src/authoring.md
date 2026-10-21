@@ -789,6 +789,11 @@ end
 end
 ```
 
+The group may also reach the cell as a parameter: `cells ~ plate(ys, mus) do
+y, m; node ~ ar1(; obs = y, mu = m, n = length(y), phi, sigma) end`, or
+`@plate for y in ys … obs = y`, emits the same program (and the parameter may
+share the data's name, `plate(ys) do ys`).
+
 Without the keyword, `obs` is the sub-model's own latent array, the
 prior-predictive trajectory (`node_obs`). An observed array bound to anything
 else (a row `Y[j, :]`, a computed vector) is refused, naming what to bind.
