@@ -349,6 +349,7 @@ its outer declaration first`).
         end
     end
     @test stanc_compiles(container)
+    @test Dict(o.name => o.segments for o in stan_descriptor(container).outputs)[:h__pl_mem_1] == [3, 7, 12]
 
     # Support reaches the flat memory: one shared bound is scalar; a setup and a
     # recurrence with different supports take a per-element bound vector.

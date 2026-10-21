@@ -2381,8 +2381,8 @@ _forward_indexed_sampling!(x; info, user_slice::Bool=false) = begin
             lhs_raw isa CanonicalExprV{:getindex} && length(lhs_raw.args) == 2
         entry = _plate_context_entry(k; info)
         parts = entry === nothing ? nothing : _ragged_accessor_parts(entry.accessor)
-        if parts !== nothing
-            ix = forward!(lhs_raw.args[2]; info)
+        ix = parts === nothing ? nothing : forward!(lhs_raw.args[2]; info)
+        if ix !== nothing && stan_ndim(ix) == 0 && center_type(ix) <: types.int
             pos = _ragged_offset(:(ragged_start($(parts.ends), $(parts.idx))), ix)
             return _forward_indexed_sampling!(remake(x, canonical(Expr(:ref, parts.mem, pos)), rhs_raw);
                 info, user_slice)
@@ -5358,15 +5358,15 @@ forward!(x::CanonicalExprV{:getindex}; info) = begin
         # `T[j]`) is stored as the enclosing loop's flat memory; element `ix` of
         # cell `j` is `mem[ragged_start(ends, j) + ix - 1]`, again one assignable
         # Stan variable.
+        # (A slice or index array keeps the generic `mem[start:end][ix]`.)
         ragged = entry === nothing ? nothing : _ragged_accessor_parts(entry.accessor)
-        if ragged !== nothing
-            length(x.args) == 2 || error(
-                "`", base, "[…]`: indexes a varying-length `", sigtype(entry.cell_type),
-                "` cell of an enclosing loop with ", length(x.args) - 1, " indices; a vector cell takes one.")
+        if ragged !== nothing && length(x.args) == 2
             inner = forward!(x.args[2]; info)
-            pos = _ragged_offset(:(ragged_start($(ragged.ends), $(ragged.idx))), inner)
-            return _with_trace_state(info, :plate_context, nothing) do
-                forward!(canonical(Expr(:ref, ragged.mem, pos)); info=_plate_root_info(info))
+            if stan_ndim(inner) == 0 && center_type(inner) <: types.int
+                pos = _ragged_offset(:(ragged_start($(ragged.ends), $(ragged.idx))), inner)
+                return _with_trace_state(info, :plate_context, nothing) do
+                    forward!(canonical(Expr(:ref, ragged.mem, pos)); info=_plate_root_info(info))
+                end
             end
         end
         if entry !== nothing && entry.accessor === nothing

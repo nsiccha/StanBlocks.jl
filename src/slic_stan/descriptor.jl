@@ -464,6 +464,12 @@ _plate_layout_call(f, mod, args...; kwargs...) = begin
     elseif f === ragged_length && length(args) == 2
         ends, i = _plate_layout_ragged_value(args[1]) ? args[1].ends : args[1], args[2]
         return ends[i] - (i == 1 ? 0 : ends[i - 1])
+    elseif f === getindex && length(args) == 2 && _plate_layout_ragged_value(args[1]) && args[2] isa Integer
+        # `ys[i]`, group `i` (a scan nested in `@plate for y in ys` runs to
+        # `length(ys[i])`); a value with group structure alone stands in by length.
+        rv, i = args
+        lo = i == 1 ? 1 : rv.ends[i - 1] + 1
+        return rv.mem === nothing ? Base.OneTo(rv.ends[i] - lo + 1) : rv.mem[lo:rv.ends[i]]
     end
     _plate_layout_jcall(f, args...; kwargs...)
 end
