@@ -5036,7 +5036,8 @@ _observed_root_name(y::Symbol; info) = begin
     b isa Symbol && return b
     error("@scan: `", y, "` is observed and read back, so it must name data whose trajectory the ",
         "scan can simulate: a data variable (`", y, " = y`), a column (`", y, " = Y[:, j]`) or a ",
-        "nested-vector group (`", y, " = ys[j]`). It is bound to `", b, "`.")
+        "nested-vector group (`", y, " = ys[j]`, or the `y` of a `plate(ys) do y` cell). It is ",
+        "bound to `", b, "`.")
 end
 # Declare the shadow of observed data `y` (the trajectory the scan simulates),
 # laid out like `y` (a nested-vector `y` by its flat memory), once, and queue the
@@ -5077,12 +5078,13 @@ _nested_scan_containers(stmts, params, iterables, idxs; info) = begin
     Any[_is_scan_macrocall(s) ? _subst_syms(s, subst) : s for s in stmts]
 end
 # A called submodel's keyword bound to a VIEW of the caller's data, a column
-# `obs = Y[:, j]` or a nested-vector group `obs = ys[j]`, is observed by its
-# `@scan` as that data, exactly as the same scan written in the caller observes
-# `Y[t, j]` / `ys[j][t]`: its trajectory is `Y_gen` / `ys_gen`, its likelihood
-# `Y_likelihood` / `ys_likelihood`. Each element reference `obs[s]` of an
-# observed view is rewritten to that spelling, over fresh locals bound to the
-# traced data and cell index.
+# `obs = Y[:, j]` or a nested-vector group `obs = ys[j]` (also the group a
+# `plate(ys) do y` / `@plate for y in ys` cell passes as `obs = y`), is observed
+# by its `@scan` as that data, exactly as the same scan written in the caller
+# observes `Y[t, j]` / `ys[j][t]`: its trajectory is `Y_gen` / `ys_gen`, its
+# likelihood `Y_likelihood` / `ys_likelihood`. Each element reference `obs[s]`
+# of an observed view is rewritten to that spelling, over fresh locals bound to
+# the traced data and cell index.
 _scan_data_views(setup, body; info) = begin
     info isa SubModel || return setup, body
     observed = Set{Symbol}()
@@ -5117,14 +5119,23 @@ _scan_data_views(setup, body; info) = begin
     Any[rw(s) for s in setup], Any[rw(s) for s in body]
 end
 # `(; base, cell, ragged)` when a traced value is a column `Y[:, j…]` or a group
-# `ys[j]` of data, else `nothing`.
+# `ys[j]` of data, else `nothing`. A plate cell receives its group of
+# nested-vector data as the inline projection
+# `ys.mem[ragged_start(ys.ends, j):ragged_end(ys.ends, j)]`
+# (`_plate_input_accessor`), which is the same group.
 _data_view(v) = nothing
 _data_view(v::StanExpr) = begin
+    qual(v) == :data || return nothing
+    index(c) = c isa StanExpr && stan_ndim(c) == 0 && center_type(c) <: types.int
+    g = _ragged_group_projection(v)
+    if g !== nothing
+        (qual(g.base) == :data && center_type(g.base) <: RaggedVector && index(g.group)) || return nothing
+        return (; base=g.base, cell=Any[g.group], ragged=true)
+    end
     e = expr(v)
-    (qual(v) == :data && e isa CanonicalExpr && head(e) === getindex) || return nothing
+    (e isa CanonicalExpr && head(e) === getindex) || return nothing
     base = e.args[1]
     (base isa StanExpr && expr(base) isa Symbol && qual(base) == :data) || return nothing
-    index(c) = c isa StanExpr && stan_ndim(c) == 0 && center_type(c) <: types.int
     if center_type(base) <: RaggedVector
         (length(e.args) == 2 && index(e.args[2])) || return nothing
         return (; base, cell=Any[e.args[2]], ragged=true)
