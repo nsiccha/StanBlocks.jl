@@ -449,6 +449,7 @@ plate's declarations and `transformed data` index tables, which
 | Named/anonymous `@slic` call inside the cell | ✅ | Internal fresh bindings are discovered, namespaced, and promoted per cell |
 | A plate inside a called sub-model | ✅, dense | Scalar and fixed-vector cells work and caller sizes are substituted correctly |
 | Ragged-vector plate inside a called sub-model | ❌ | Keep the ragged plate at model scope; a cell may still call a sub-model that returns a ragged-sized vector |
+| A `@scan` inside a called sub-model, at model scope or per cell | ✅ | Carried arrays live under the sub-model's namespace; an observed scan observes the caller's data passed by keyword (see "A scan inside a called sub-model" below) |
 | Several independent plates reusing local names | ✅ | Cell-local bindings are hygienically namespaced by plate result; a namespaced name that is already bound (a data input `theta_t`, a second array-less `@plate for i`) takes a numbered suffix (`theta_t_2`) |
 | Two plates under one name | ❌ | One name, one plate: the name labels its carriers, so a second `theta ~ plate(…)` is refused, collecting or not |
 | Dependency on a previous cell | ❌ | Cells are independent; a recurrence that samples per step is the annotated `@scan begin … end` loop (below), a deterministic one a `@deffun` recurrence |
@@ -736,12 +737,71 @@ a carried int array (`c[t] = c[t - 1] + k`), is collected the same way: as
 `array[S, T - 1] int` (one row per cell), or as flat int memory for a per-cell
 length. It is data, so it is computed once in `transformed data`.
 
+### A scan inside a called sub-model
+
+A `@scan` may sit in a called `@slic` sub-model, at model scope or per plate
+cell. Its carried arrays are declared under the sub-model's namespace (`hh_h`
+for `hh ~ latent(; …)`), and the sub-model's own name for them works in the
+setup, in the lag reads and after the loop. Per-step locals (a non-centered
+innovation, an integer time gap `k = time[t] - time[t-1]`) and per-cell lengths
+(`n = T[p]`) work as in the caller, and all three modes behave as at model
+scope.
+
+```julia
+latent = @slic begin
+    @scan begin
+        h[1] ~ normal(0, sigma)
+        for t in 2:n
+            h[t] ~ normal(phi * h[t-1], sigma)
+        end
+    end
+    return h
+end
+@slic (; y = randn(5)) begin
+    phi ~ uniform(-1, 1); sigma ~ exponential(1)
+    hh ~ latent(; n = 5, phi, sigma)     # vector[5] hh_h;  vector[5] hh = hh_h;
+    y ~ normal(hh, 1.0)
+end
+```
+
+An observed scan in a sub-model observes the caller's data passed by keyword:
+a data variable (`obs = y`), a column (`obs = Y[:, p]`) or a nested-vector
+group (`obs = ys[p]`). The program is the one the same scan emits when written
+in the caller (`y[t]`, `Y[t, p]`, `ys[p][t]`): the trajectory is `y_gen`,
+`Y_gen` or `ys_gen`, and the likelihood `y_likelihood`, `Y_likelihood` or
+`ys_likelihood`, twins of the caller's data. A sub-model is then a reusable
+observation family over a series, called once per subject:
+
+```julia
+ar1 = @slic begin
+    @scan begin
+        obs[1] ~ normal(mu[1], sigma / sqrt(1 - phi^2))
+        for t in 2:n
+            obs[t] ~ normal(mu[t] + phi * (obs[t-1] - mu[t-1]), sigma)
+        end
+    end
+end
+@slic (; ys, mus) begin                  # nested vectors, one series per subject
+    phi ~ uniform(-1, 1); sigma ~ exponential(1)
+    @plate for p in eachindex(ys)
+        node ~ ar1(; obs = ys[p], mu = mus[p], n = length(ys[p]), phi, sigma)
+    end
+end
+```
+
+Without the keyword, `obs` is the sub-model's own latent array, the
+prior-predictive trajectory (`node_obs`). An observed array bound to anything
+else (a row `Y[j, :]`, a computed vector) is refused, naming what to bind.
+
 Current limits: a setup fill uses a literal index (`x[1] ~ …`; slice and
 nested `@plate` setups are not supported yet); a `@scan` has one axis; an
 untyped fresh cell whose distribution arguments are vector-shaped must be
 annotated (`v[:, j]::vector[T] ~ …`) until the plate typing snag
 `plate-untyped-ve-819ecfff` lands; typed locals inside a nested loop are not
-supported yet. A bare `for` in a model body remains an error.
+supported yet; a nested scan that observes a nested-vector group per step
+without reading it back (`ys[p][t] ~ normal(h[t], s)`) is refused
+(`unsupported statement LHS`), not supported yet. A bare `for` in a model body
+remains an error.
 
 ## `@deffun` iteration boundary
 

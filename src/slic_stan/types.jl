@@ -277,10 +277,41 @@ end
 # model (`theta_x`, not `x`).  Replacing its type metadata later (qualifier,
 # declaration role, likelihood reachability) must keep that one prefix rather
 # than feeding the already-prefixed symbol through `supvalue` a second time.
+#
+# A local that ALIASES a caller binding — a keyword argument `obs = y` binds
+# `obs` to the caller's `y` — is not flattened: its new metadata (an
+# observation's slice record, cv taint, a `@scan`'s `scan_observed` mark) belongs
+# to `y` itself, at the root, and to every scope's view of it. Flattening it
+# minted a second data variable `<lhs>_obs` that later statements observed in
+# place of `y` (snag `scan-inside-call-2ea17cef`).
 Base.setindex!(x::SubModel, value::StanExpr{Symbol}, local_name) = begin
+    aliased = _submodel_alias(x, value, local_name)
+    aliased === nothing || return _set_aliased!(x, aliased, type(value))
     parent_name = supname(x, local_name)
     setindex!(parent(x), StanExpr(parent_name, type(value)), parent_name)
     setindex!(locals(x), getindex(parent(x), parent_name), local_name)
+end
+# The root name `local_name` aliases when `value` re-types that alias, else `nothing`.
+_submodel_alias(x::SubModel, value::StanExpr{Symbol}, local_name) = begin
+    local_name isa Symbol || return nothing
+    current = get(locals(x), local_name, nothing)
+    (current isa StanExpr{Symbol} && expr(current) === expr(value)) || return nothing
+    target = expr(value)
+    target === _plate_global_name(x, local_name) && return nothing   # its own flattened name
+    target in keys(_plate_root_info(x)) ? target : nothing
+end
+_set_aliased!(x::SubModel, target::Symbol, T) = begin
+    root = _plate_root_info(x)
+    root[target] = StanExpr(target, T)
+    scope = x
+    while scope isa SubModel
+        for k in collect(keys(locals(scope)))
+            v = locals(scope)[k]
+            v isa StanExpr{Symbol} && expr(v) === target && (locals(scope)[k] = root[target])
+        end
+        scope = parent(scope)
+    end
+    root[target]
 end
 Base.keys(x::SubModel) = keys(locals(x))
 # Compiler-owned loops temporarily register their index in whichever scope is
