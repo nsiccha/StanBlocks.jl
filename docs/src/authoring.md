@@ -369,10 +369,17 @@ Here `yi` means `y[i]`, while `mu0` and `sigma` are the same captured values in
 every cell. Every positional's length must equal its outer axis (and every
 sibling positional): a provable mismatch errors at trace time naming the
 plate, the positional, and both lengths. A ragged input counts groups and
-`EachCol`/`EachRow` count columns/rows; a `length(X)`-style `outer` carries no
-trace-time value and stays unchecked. The compiler emits the necessary loops
-separately in the Stan blocks that own the declarations, fills, densities,
-and generated quantities.
+`EachCol`/`EachRow` count columns/rows; a `length(X)`-style `outer` over data
+carries no trace-time value and stays unchecked. The compiler emits the
+necessary loops separately in the Stan blocks that own the declarations, fills,
+densities, and generated quantities.
+
+With positional inputs, `outer` may be omitted: the plate counts its first
+positional. A parameter or transformed parameter counts by its declared size,
+so `plate(lev, ys) do l, y` with `lev::vector[n]` emits the same program as
+`plate(lev, ys; outer=(n,))`. Stan admits only data in the sizes of the
+plate's declarations and `transformed data` index tables, which
+`num_elements(lev)` is not.
 
 ### Plate support matrix
 
