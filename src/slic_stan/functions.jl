@@ -301,9 +301,11 @@ else
     StanType(types.anything)
 end
 # Broadcast `.* ./ .^` route to `Base.BroadcastFunction` (unlike `.+`/`.-`, which
-# `broadcast_callee` rewrites to plain `+`/`-` above). Reject scalar-array operands
-# the same way, then preserve the generic fallthrough so valid-but-untabulated
-# broadcasts (e.g. `matrix .* matrix`) keep their current inferred type.
+# `broadcast_callee` rewrites to plain `+`/`-` above). The native-container operand
+# combinations Stan supports are tabulated in builtin.jl; reject scalar-array and
+# RaggedVector operands with an actionable message, and leave any other untabulated
+# combination (`vector .* row_vector`, `matrix .* vector`, `.÷`) to the generic
+# `anything` floor, which errors as soon as the result is used.
 tracetype(x::CanonicalExpr{<:Base.BroadcastFunction}) = begin
     _reject_scalar_array_elementwise(x)
     _reject_ragged_vector_arithmetic(x)
