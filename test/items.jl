@@ -9187,6 +9187,124 @@ value, for which `stan_descriptor` and printing the model used to throw.
 end
 
 """
+Verify `slic: descriptor lists a typed assignment like an untyped one`.
+
+Snag stan-descriptor-19ef14e6 (from BRM): a typed `r::vector[3] = exp(z)` is
+traced whole, so its statement is a `StanExpr` around the assignment with the
+declaration as LHS. The descriptor's statement walkers read only a bare
+assignment with a bare-name LHS. `d.outputs` therefore lacked a typed
+transformed parameter or generated quantity although the emitted Stan declared
+it, and a typed transformed-data size (`J::int = maximum(subject)`) made
+`stan_descriptor` throw resolving the `dims` it sizes. Each typed spelling must
+describe exactly as its untyped twin does.
+"""
+@testitem "slic: descriptor lists a typed assignment like an untyped one" tags=[:slic, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    rows(m) = [
+        (o.name, o.kind, o.type, o.size, o.constraints, o.generative, o.source, o.segments, o.dims)
+        for o in stan_descriptor(m).outputs
+    ]
+    same(typed, untyped) =
+        rows(typed) == rows(untyped) &&
+        stan_descriptor(typed).operations == stan_descriptor(untyped).operations
+    kind(m, name) = only(o.kind for o in stan_descriptor(m).outputs if o.name === name)
+    y = [0.1, 0.2, 0.3]
+
+    # The reported shape: a typed transformed parameter.
+    tp_typed = @slic (; y) begin
+        z::vector[3] ~ normal(0.0, 1.0)
+        r::vector[3] = exp(z)
+        y ~ normal(r, 1.0)
+    end
+    tp_untyped = @slic (; y) begin
+        z::vector[3] ~ normal(0.0, 1.0)
+        r = exp(z)
+        y ~ normal(r, 1.0)
+    end
+    @test kind(tp_typed, :r) === :transformed_parameter
+    @test same(tp_typed, tp_untyped)
+    scalar_typed = @slic (; y) begin
+        a ~ normal(0.0, 1.0)
+        b::real = exp(a)
+        y ~ normal(b, 1.0)
+    end
+    scalar_untyped = @slic (; y) begin
+        a ~ normal(0.0, 1.0)
+        b = exp(a)
+        y ~ normal(b, 1.0)
+    end
+    @test kind(scalar_typed, :b) === :transformed_parameter
+    @test same(scalar_typed, scalar_untyped)
+
+    # Nothing reads it: a generated quantity.
+    gq_typed = @slic (; y) begin
+        z::vector[3] ~ normal(0.0, 1.0)
+        r::vector[3] = exp(z)
+        y ~ normal(z, 1.0)
+    end
+    gq_untyped = @slic (; y) begin
+        z::vector[3] ~ normal(0.0, 1.0)
+        r = exp(z)
+        y ~ normal(z, 1.0)
+    end
+    @test kind(gq_typed, :r) === :generated_quantity
+    @test same(gq_typed, gq_untyped)
+
+    # The prior-only and cv-held-out programs of the reported model.
+    prior_typed = @slic begin
+        z::vector[3] ~ normal(0.0, 1.0)
+        r::vector[3] = exp(z)
+        y ~ normal(r, 1.0)
+    end
+    prior_untyped = @slic begin
+        z::vector[3] ~ normal(0.0, 1.0)
+        r = exp(z)
+        y ~ normal(r, 1.0)
+    end
+    @test kind(prior_typed, :r) === :generated_quantity
+    @test same(prior_typed, prior_untyped)
+    @test same(
+        tp_typed(; y = StanBlocks.stan.maybecv(:y, y)),
+        tp_untyped(; y = StanBlocks.stan.maybecv(:y, y)),
+    )
+
+    # Inside a called submodel, the namespaced `e_r`.
+    inner_typed = @slic begin
+        z::vector[3] ~ normal(0.0, 1.0)
+        r::vector[3] = exp(z)
+        return r
+    end
+    inner_untyped = @slic begin
+        z::vector[3] ~ normal(0.0, 1.0)
+        r = exp(z)
+        return r
+    end
+    nested_typed = @slic (; y) begin
+        e ~ inner_typed()
+        y ~ normal(e, 1.0)
+    end
+    nested_untyped = @slic (; y) begin
+        e ~ inner_untyped()
+        y ~ normal(e, 1.0)
+    end
+    @test kind(nested_typed, :e_r) === :transformed_parameter
+    @test same(nested_typed, nested_untyped)
+
+    # A typed transformed-data value sizing an output resolves its dims.
+    td_typed = @slic (; subject = [1, 2, 2, 3], y = [0.1, 0.2, 0.3, 0.4]) begin
+        J::int = maximum(subject)
+        alpha ~ normal(0, 1; n = J)
+        y ~ normal(alpha[subject], 1.0)
+    end
+    td_untyped = @slic (; subject = [1, 2, 2, 3], y = [0.1, 0.2, 0.3, 0.4]) begin
+        J = maximum(subject)
+        alpha ~ normal(0, 1; n = J)
+        y ~ normal(alpha[subject], 1.0)
+    end
+    @test only(o.dims for o in stan_descriptor(td_typed).outputs if o.name === :alpha) == (3,)
+    @test same(td_typed, td_untyped)
+end
+
+"""
 Verify `slic: descriptor dims match BridgeStan's param_names`.
 
 Snag stan-descriptor-aa56f7f3: `prod(dims)` is the number of `param_names`

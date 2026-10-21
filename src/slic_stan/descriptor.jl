@@ -358,10 +358,23 @@ _output_symbols(x::StanExpr{<:DeclExpr}, acc) = begin
     acc
 end
 _output_symbols(x::AssignmentExpr, acc) = begin
-    lhs = x.args[1]
-    expr(lhs) isa Symbol && get!(acc, expr(lhs), lhs)
+    b = _assigned_binding(x.args[1])
+    b === nothing || get!(acc, expr(b), b)
     acc
 end
+# A TYPED assignment (`r::vector[3] = exp(z)`) is traced whole by the generic
+# `forward!(::AssignmentExpr)` (forward.jl), so the statement is a `StanExpr`
+# around the assignment and its LHS is the traced declaration. Skipping it left
+# a typed transformed parameter or generated quantity out of `d.outputs` while
+# the emitted Stan declared it (snag `stan-descriptor-19ef14e6`).
+_output_symbols(x::StanExpr{<:CanonicalExprV{:(=)}}, acc) = _output_symbols(expr(x), acc)
+
+# The binding an assignment LHS declares: a bare name, or the typed name inside
+# a typed assignment's declaration. An indexed fill (`out[i] = …`) declares
+# nothing; its base is declared by its own statement.
+_assigned_binding(lhs::StanExpr{Symbol}) = lhs
+_assigned_binding(lhs::StanExpr{<:DeclExpr}) = _assigned_binding(expr(lhs).args[1])
+_assigned_binding(::StanExpr) = nothing
 _output_symbols(x::SamplingExpr, acc) = begin
     lhs = x.args[1]
     expr(lhs) isa Symbol && get!(acc, expr(lhs), lhs)
@@ -549,10 +562,12 @@ _td_definitions!(x::StanBlock, acc) = _td_definitions!(content(x), acc)
 _td_definitions!(x::BlockExpr, acc) = _td_definitions!(x.args, acc)
 _td_definitions!(x::DocumentExpr, acc) = _td_definitions!(x.args[2], acc)
 _td_definitions!(x::AssignmentExpr, acc) = begin
-    name = expr(x.args[1])
-    name isa Symbol && push!(get!(Vector{Any}, acc, name), x.args[2])
+    b = _assigned_binding(x.args[1])
+    b === nothing || push!(get!(Vector{Any}, acc, expr(b)), x.args[2])
     acc
 end
+# A typed definition (`J::int = maximum(subject)`); see `_output_symbols`.
+_td_definitions!(x::StanExpr{<:CanonicalExprV{:(=)}}, acc) = _td_definitions!(expr(x), acc)
 
 _descriptor_scope(m::StanModel, data) = (;
     m, data,
