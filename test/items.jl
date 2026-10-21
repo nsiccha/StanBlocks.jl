@@ -1204,6 +1204,152 @@ end
     @test !isnothing(missing_bound) && occursin("provide at least one of `lower=` or `upper=`", missing_bound)
 end
 
+"""
+Verify `slic: interval_censored takes the interval by keyword; combinators refuse unknown keywords`.
+
+Snag `in-cell-interval-c354f5f4` (from BRM, decision `0jz7uw4`).
+`y ~ interval_censored(normal(mu, s); upper = hi)` is BRM's spelling of the
+interval `(y, hi]`: the observation is the lower endpoint, and `lower = lo` names
+another one. StanBlocks took the interval positionally only. It read `mu` and `s`
+as the endpoints, called `normal` with no arguments and dropped `upper=`, so a
+ragged in-cell observation failed with a misleading "no SIZED predictive
+companion". The keyword call now lowers to the positional form, so it emits the
+same Stan, in plate cells too. Any keyword a combinator does not take is refused,
+where it used to be dropped silently.
+"""
+@testitem "slic: interval_censored takes the interval by keyword; combinators refuse unknown keywords" tags=[:slic, :regression, :ragged, :plate, :descriptor, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    y = [0.1, -0.2, 0.3]
+    lo = [-0.1, -0.3, -0.3]
+    hi = [0.6, 0.7, 0.5]
+    w = [1.0, 0.5, 2.0]
+    # Per-subject groups, one of them empty.
+    ys = [[-0.2, 0.3], Float64[], [0.1]]
+    his = [[0.6, 0.7], Float64[], [0.5]]
+    ts = [[0.2, 0.5], Float64[], [0.7]]
+    G = 3
+
+    # The keyword spelling emits exactly the positional one.
+    same(a, b) = stan_code(a) == stan_code(b)
+    @test same(
+        @slic((; y, hi), begin mu ~ normal(0.0, 1.0); y ~ interval_censored(normal(mu, 0.8); upper = hi) end),
+        @slic((; y, hi), begin mu ~ normal(0.0, 1.0); y ~ interval_censored(normal(mu, 0.8), y, hi) end))
+    @test same(
+        @slic((; y, lo, hi), begin mu ~ normal(0.0, 1.0); y ~ interval_censored(normal(mu, 0.8); lower = lo, upper = hi) end),
+        @slic((; y, lo, hi), begin mu ~ normal(0.0, 1.0); y ~ interval_censored(normal(mu, 0.8), lo, hi) end))
+    @test same(
+        @slic((; y, hi), begin mu ~ normal(0.0, 1.0); y ~ interval_censored(normal(mu, 0.8); lower = nothing, upper = hi) end),
+        @slic((; y, hi), begin mu ~ normal(0.0, 1.0); y ~ interval_censored(normal(mu, 0.8), y, hi) end))
+    @test same(
+        @slic((; ys, his), begin mu ~ normal(0.0, 1.0); ys ~ interval_censored(normal(mu, 0.8); upper = his) end),
+        @slic((; ys, his), begin mu ~ normal(0.0, 1.0); ys ~ interval_censored(normal(mu, 0.8), ys, his) end))
+    @test same(
+        @slic((; y, hi, w), begin mu ~ normal(0.0, 1.0); y ~ weighted(interval_censored(normal(mu, 0.8); upper = hi), w) end),
+        @slic((; y, hi, w), begin mu ~ normal(0.0, 1.0); y ~ weighted(interval_censored(normal(mu, 0.8), y, hi), w) end))
+    # The plate cell BRM emits: do-parameters shadowing the model's names.
+    cell_data = (; t = ts, y_ragged = ys, hi_ragged = his, n_cells = G)
+    keyword_cell = @slic(cell_data, begin
+        theta ~ normal(0.0, 1.0; n = 3)
+        pred ~ plate(theta, t, y_ragged, hi_ragged; outer = (n_cells,)) do theta, t, y, hi
+            pred = t * theta
+            y ~ interval_censored(normal(pred, 0.8); upper = hi)
+            pred
+        end
+    end)
+    @test same(keyword_cell, @slic(cell_data, begin
+        theta ~ normal(0.0, 1.0; n = 3)
+        pred ~ plate(theta, t, y_ragged, hi_ragged; outer = (n_cells,)) do theta, t, y, hi
+            pred = t * theta
+            y ~ interval_censored(normal(pred, 0.8), y, hi)
+            pred
+        end
+    end))
+    # Under `@plate for` the lower endpoint is read through the slice the
+    # observation itself reads; the positional `ys[i]` reads it through
+    # `getindex_RaggedVector`. Same values, so compare densities below.
+    indexed_cell = @slic((; ts, ys, his, G), begin
+        theta ~ normal(0.0, 1.0; n = G)
+        @plate for i in 1:G
+            pred[i] = ts[i] * theta[i]
+            ys[i] ~ interval_censored(normal(pred[i], 0.8); upper = his[i])
+        end
+    end)
+    @test stanc_compiles(keyword_cell)
+    @test stanc_compiles(indexed_cell)
+
+    # The density is the interval mass log(Φ(hi) - Φ(y)) plus the prior.
+    normal_pdf(x, m, s) = exp(-0.5 * abs2((x - m) / s)) / (s * sqrt(2pi))
+    mass(a, b, m, s; n = 2000) = begin   # Simpson's rule
+        h = (b - a) / n
+        h / 3 * sum((i == 0 || i == n ? 1 : iseven(i) ? 2 : 4) * normal_pdf(a + i * h, m, s) for i in 0:n)
+    end
+    oracle(theta) = sum(-0.5 * log(2pi) - 0.5 * th^2 for th in theta) +
+        sum(log(mass(ys[i][j], his[i][j], ts[i][j] * theta[i], 0.8)) for i in 1:G for j in eachindex(ys[i]))
+    d = stan_descriptor(keyword_cell; name = :interval_keyword_cell)
+    @test issubset([:fit, :predict, :pointwise_loglik], [o.name for o in d.operations])
+    twins = Dict(o.name => (o.generative, o.source, o.segments) for o in d.outputs if o.name in (:y_ragged_gen, :y_ragged_likelihood))
+    @test twins == Dict(
+        :y_ragged_gen => (:draw, :y_ragged, [2, 2, 3]),
+        :y_ragged_likelihood => (:pointwise_loglik, :y_ragged, [2, 2, 3]),
+    )
+    cell_problem = stan_execute(d, :fit)
+    indexed_problem = instantiate(stan_model(indexed_cell))
+    for theta in ([0.0, 0.0, 0.0], [0.3, -0.2, 0.5])
+        @test BridgeStan.log_density(cell_problem.model, theta; propto = false) ≈ oracle(theta) atol = 1e-10
+        @test BridgeStan.log_density(indexed_problem.model, theta; propto = false) ≈ oracle(theta) atol = 1e-10
+    end
+
+    # A declared observation with no data has no lower endpoint to default to.
+    unbound(body, data) = StanBlocks.SlicModel(body, Dict{Symbol,Any}(pairs(data)...), @__MODULE__, (:y,))
+    @test_throws "takes the interval's lower endpoint from the observed `y`, which has no data" stan_code(unbound(quote
+        mu ~ normal(0.0, 1.0)
+        y ~ interval_censored(normal(mu, 0.8); upper = hi)
+    end, (; hi)))
+    @test stanc_compiles(unbound(quote
+        mu ~ normal(0.0, 1.0)
+        y ~ interval_censored(normal(mu, 0.8); lower = lo, upper = hi)
+    end, (; lo, hi)))
+
+    # refused: an unknown keyword changed the model silently by being dropped (dev §1).
+    @test_throws "censored: no keyword argument `foo`" stan_code(@slic((; y, lo), begin
+        mu ~ normal(0.0, 1.0); y ~ censored(normal(mu, 0.8); lower = lo, foo = lo)
+    end))
+    @test_throws "truncated: no keyword argument `uper`" stan_code(@slic((; y, lo, hi), begin
+        mu ~ normal(0.0, 1.0); y ~ truncated(normal(mu, 0.8); lower = lo, uper = hi)
+    end))
+    @test_throws "truncated: no keyword argument `foo`" stan_code(@slic((; y), begin
+        s ~ truncated(normal(0.0, 1.0); lower = 0.0, foo = 2.0); y ~ normal(0.0, s)
+    end))
+    @test_throws "weighted: no keyword argument `foo`" stan_code(@slic((; y, w), begin
+        mu ~ normal(0.0, 1.0); y ~ weighted(normal(mu, 0.8), w; foo = 3.0)
+    end))
+    @test_throws "interval_censored: no keyword argument `foo`" stan_code(@slic((; y, lo, hi), begin
+        mu ~ normal(0.0, 1.0); y ~ interval_censored(normal(mu, 0.8), lo, hi; foo = 1.0)
+    end))
+    # refused: with interval keywords the token form cannot tell its endpoints
+    # from the family's arguments; the keywords belong on the family call.
+    @test_throws "taken only with one family call" stan_code(@slic((; y, hi), begin
+        mu ~ normal(0.0, 1.0); y ~ interval_censored(normal, mu, 0.8; upper = hi)
+    end))
+    @test_throws "taken only with one family call" stan_code(@slic((; y, lo, hi), begin
+        mu ~ normal(0.0, 1.0); y ~ interval_censored(normal(mu, 0.8), lo; upper = hi)
+    end))
+    # refused: an interval has an upper endpoint.
+    @test_throws "needs its upper endpoint" stan_code(@slic((; y, lo), begin
+        mu ~ normal(0.0, 1.0); y ~ interval_censored(normal(mu, 0.8); lower = lo)
+    end))
+    @test_throws "weighted(interval_censored(normal(mu, s); upper = hi), w)" stan_code(@slic((; y, hi, w), begin
+        mu ~ normal(0.0, 1.0); y ~ weighted(interval_censored, w, normal, mu, 0.8; upper = hi)
+    end))
+    # Shape keywords and omitted bounds still pass.
+    @test stanc_compiles(@slic((; y), begin
+        s ~ truncated(normal(0.0, 1.0); lower = 0.0, n = 3); y ~ normal(0.0, s)
+    end))
+    @test stanc_compiles(@slic((; y, lo), begin
+        mu ~ normal(0.0, 1.0); y ~ censored(normal(mu, 0.8); lower = lo, upper = nothing)
+    end))
+end
+
 @testmodule StanBlocksTestSetup begin
     using Random, Statistics
     using StanBlocks
