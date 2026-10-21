@@ -3590,6 +3590,7 @@ end
 # that reach here — indexing and calls — back to readable Julia.
 _plate_spelling(it::Symbol) = string(it)
 _plate_spelling(it::Number) = string(it)
+_plate_spelling(it::StanExpr) = _plate_spelling(expr(it))     # a declared count (`_plate_data_count`)
 _plate_spelling(it::CanonicalExprV{:getindex}) = string(
     _plate_spelling(it.args[1]), "[", join(_plate_spelling.(it.args[2:end]), ", "), "]",
 )

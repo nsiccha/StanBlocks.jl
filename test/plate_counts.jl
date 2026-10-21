@@ -172,6 +172,19 @@ It is now `lev`'s declared count `n`: the program is the one `outer=(n,)` emits.
     @test same(scan, scan_n)
     @test stanc_compiles(scan)
 
+    # The declared count has a value, so a positional of another length is
+    # refused at trace time, as it is under `outer=(n,)`.
+    errmsg(m) = try (stan_code(m); "") catch e; sprint(showerror, e) end
+    ys4 = [[0.1, 0.2], [0.3], [0.4, 0.5], [0.6]]
+    short = @slic (; ys4, n=3) begin
+        lev ~ normal(0, 1; n=n)
+        res ~ plate(lev, ys4) do l, y
+            y ~ normal(l, 1)
+            nothing
+        end
+    end
+    @test occursin("`outer=(n,)` needs 3 cells, but positional `ys4` (param `y`) has 4 groups", errmsg(short))
+
     # A data positional keeps its own `length` spelling.
     data_first = @slic (; y3) begin
         res ~ plate(y3) do yi
