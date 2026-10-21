@@ -281,9 +281,127 @@ an ordinary latent array: the prior-predictive trajectory.
 end
 
 """
+A plate cell receives its group of nested-vector data as a parameter
+(`plate(ys) do y`, `@plate for y in ys`). Passed to a called submodel's
+observed `@scan` (`obs = y`), it observes `ys` as `obs = ys[p]` does: the twins
+are `ys_gen` / `ys_likelihood` with the data's `segments`, and the parameter may
+share the data's name. An `EachCol(Y)` cell's column is observed as
+`obs = Y[:, p]`. Before snag `submodel-scan-ob-50a09edb` the keyword refused
+(`obs` is observed and read back, so it must name data …): the group reaches
+the submodel as the flat-memory slice
+`ys.mem[ragged_start(ys.ends, i):ragged_end(ys.ends, i)]`, the column as
+`col(Y, i)`. A slice of that
+memory that is not one group is not observed as a group: before the same snag,
+`ys.mem[1:2] ~ …` emitted `ys_likelihood[nothing] = …`, which stanc rejects.
+"""
+@testitem "slic: a plate cell's nested-vector group is observed through a called submodel" tags=[:slic, :scan, :plate, :ragged, :regression, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block, stanc_compiles
+    import StanBlocks.stan: maybecv
+    stream = @slic begin
+        @scan begin
+            obs[1] ~ normal(mu[1], sigma / sqrt(1 - phi^2))
+            for t in 2:n
+                obs[t] ~ normal(mu[t] + phi * (obs[t-1] - mu[t-1]), sigma)
+            end
+        end
+    end
+    ys = [randn(3), randn(4), randn(2)]; mus = [randn(3), randn(4), randn(2)]
+    sliced(data) = @slic data begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        cells ~ plate(ys, mus) do y, m
+            node ~ stream(; obs = y, mu = m, n = length(y), phi, sigma)
+        end
+    end
+    s = sliced((; ys, mus))
+    code = stan_code(s)
+    mb = stan_block(code, "model")
+    @test occursin("ys.1[ragged_start(ys.2, plate_i__pl_1)] ~ normal(", mb)
+    @test occursin("ys.1[((ragged_start(ys.2, plate_i__pl_1) + cells_node_t) - 1)] ~ normal(", mb)
+    gq = stan_block(code, "generated quantities")
+    @test occursin("vector[num_elements(ys.1)] ys_gen;", gq)
+    @test occursin("vector[num_elements(ys.1)] ys_likelihood;", gq)
+    @test !occursin("cells_node_obs", code)
+    @test stanc_compiles(s)
+    d = stan_descriptor(s)
+    @test Set(o.name for o in d.operations) == Set([:transpile, :instantiate, :fit, :predict, :pointwise_loglik])
+    out = Dict(o.name => o for o in d.outputs)
+    @test (out[:ys_gen].generative, out[:ys_gen].source, out[:ys_gen].segments) == (:draw, :ys, [3, 7, 9])
+    @test (out[:ys_likelihood].generative, out[:ys_likelihood].segments) == (:pointwise_loglik, [3, 7, 9])
+
+    # The parameters may shadow the data they slice.
+    shadowed = @slic (; ys, mus) begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        cells ~ plate(ys, mus) do ys, mus
+            node ~ stream(; obs = ys, mu = mus, n = length(ys), phi, sigma)
+        end
+    end
+    @test stan_code(shadowed) == code
+
+    # Held out, the densities drop and both twins stay.
+    held = sliced((; ys = maybecv(:ys, ys), mus))
+    @test !occursin("~ normal((", stan_block(stan_code(held), "model"))
+    @test Set(o.name for o in stan_descriptor(held).operations) == Set([:transpile, :instantiate, :predict, :pointwise_loglik])
+    @test stanc_compiles(held)
+
+    # The `@plate for y in ys` container clause passes the same group.
+    contained = @slic (; ys) begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        @plate for y in ys
+            node ~ stream(; obs = y, mu = rep_vector(0.0, length(y)), n = length(y), phi, sigma)
+        end
+    end
+    ccode = stan_code(contained)
+    @test occursin("vector[num_elements(ys.1)] ys_gen;", stan_block(ccode, "generated quantities"))
+    @test stanc_compiles(contained)
+    out = Dict(o.name => o for o in stan_descriptor(contained).outputs)
+    @test (out[:ys_gen].generative, out[:ys_gen].source, out[:ys_gen].segments) == (:draw, :ys, [3, 7, 9])
+
+    # An `EachCol(Y)` cell's column (`col(Y, i)`) is observed as `Y[:, i]`.
+    columns = @slic (; Y = randn(5, 3), M = randn(5, 3)) begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        cells ~ plate(EachCol(Y), EachCol(M)) do y, m
+            node ~ stream(; obs = y, mu = m, n = 5, phi, sigma)
+        end
+    end
+    kcode = stan_code(columns)
+    @test occursin("Y[cells_node_t, plate_i__pl_1] ~ normal(", stan_block(kcode, "model"))
+    @test occursin("matrix[Y_m, Y_n] Y_gen;", stan_block(kcode, "generated quantities"))
+    @test stanc_compiles(columns)
+    roles = Dict(o.name => (o.generative, o.source, o.dims) for o in stan_descriptor(columns).outputs)
+    @test roles[:Y_gen] == (:draw, :Y, (5, 3))
+    @test roles[:Y_likelihood] == (:pointwise_loglik, :Y, (5, 3))
+
+    # A slice of the flat memory that is not one group is not a group.
+    err = try
+        stan_code(@slic (; ys) begin
+            phi ~ uniform(-1, 1); sigma ~ exponential(1)
+            node ~ stream(; obs = ys.mem[ragged_start(ys.ends, 1):4], mu = rep_vector(0.0, 4), n = 4, phi, sigma)
+        end)
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test err !== nothing && occursin("`obs` is observed and read back, so it must name data", err)
+    for flat in (@slic((; ys), begin
+                    mu ~ normal(0, 1)
+                    ys.mem[1:2] ~ normal(mu, 1)
+                 end),
+                 @slic((; ys), begin
+                    mu ~ normal(0, 1)
+                    ys.mem[ragged_start(ys.ends, 1):4] ~ normal(mu, 1)
+                 end))
+        fcode = stan_code(flat)
+        @test !occursin("ys_likelihood", fcode)
+        @test occursin("~ normal(mu, 1);", stan_block(fcode, "model"))
+        @test stanc_compiles(flat)
+    end
+end
+
+"""
 The called submodel's observed scan evaluates the same density as the scan
 written in the caller, at model scope and per plate cell over nested-vector
-groups, and its `ys_likelihood` sums to it.
+groups (also when the cell passes its group, or an `EachCol` column, as a
+do-block parameter), and its `ys_likelihood` sums to it.
 """
 @testitem "slic: an observed @scan in a called submodel matches the inline density" tags=[:slic, :scan, :plate, :ragged, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     import BridgeStan
@@ -315,19 +433,49 @@ groups, and its `ys_likelihood` sums to it.
             end
         end
     end
+    # The cell's group as a do-block parameter (snag `submodel-scan-ob-50a09edb`).
+    sliced = @slic (; ys, mus) begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        cells ~ plate(ys, mus) do y, m
+            node ~ stream(; obs = y, mu = m, n = length(y), phi, sigma)
+        end
+    end
     gq(bm, th, seed) = BridgeStan.param_constrain(bm, th; include_tp=true, include_gq=true, rng=BridgeStan.StanRNG(bm, seed))
     idx(bm, prefix) = findall(n -> startswith(n, prefix * "."), BridgeStan.param_names(bm; include_tp=true, include_gq=true))
     mktempdir() do dir
         cd(dir) do
             a = stan_instantiate(called).model
             b = stan_instantiate(inline).model
+            c = stan_instantiate(sliced).model
+            @test BridgeStan.param_names(c; include_tp=true, include_gq=true) ==
+                BridgeStan.param_names(a; include_tp=true, include_gq=true)
             for (phi, s) in ((0.3, 0.7), (-0.6, 1.4))
                 th = BridgeStan.param_unconstrain(a, [phi, s])
                 lpa = BridgeStan.log_density(a, th; propto=false, jacobian=false)
                 @test lpa ≈ BridgeStan.log_density(b, th; propto=false, jacobian=false)
+                @test lpa ≈ BridgeStan.log_density(c, th; propto=false, jacobian=false)
+                @test BridgeStan.log_density_gradient(c, th)[2] ≈ BridgeStan.log_density_gradient(a, th)[2]
+                @test gq(c, th, 1) ≈ gq(a, th, 1)
                 @test sum(gq(a, th, 1)[idx(a, "ys_likelihood")]) ≈ lpa - (log(0.5) - s)
                 @test length(idx(a, "ys_gen")) == 10
             end
+            # An `EachCol(Y)` cell's column, against `obs = Y[:, p]`.
+            Y = randn(4, 3); M = randn(4, 3)
+            indexed = stan_instantiate(@slic (; Y, M) begin
+                phi ~ uniform(-1, 1); sigma ~ exponential(1)
+                @plate for p in 1:3
+                    node ~ stream(; obs = Y[:, p], mu = M[:, p], n = 4, phi, sigma)
+                end
+            end).model
+            columns = stan_instantiate(@slic (; Y, M) begin
+                phi ~ uniform(-1, 1); sigma ~ exponential(1)
+                cells ~ plate(EachCol(Y), EachCol(M)) do y, m
+                    node ~ stream(; obs = y, mu = m, n = 4, phi, sigma)
+                end
+            end).model
+            th = BridgeStan.param_unconstrain(indexed, [0.4, 0.9])
+            @test BridgeStan.log_density(columns, th) ≈ BridgeStan.log_density(indexed, th)
+            @test gq(columns, th, 2) ≈ gq(indexed, th, 2)
         end
     end
 end

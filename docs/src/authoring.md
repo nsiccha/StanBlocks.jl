@@ -789,6 +789,12 @@ end
 end
 ```
 
+The group may also reach the cell as a parameter: `cells ~ plate(ys, mus) do
+y, m; node ~ ar1(; obs = y, mu = m, n = length(y), phi, sigma) end`, or
+`@plate for y in ys … obs = y`, emits the same program (and the parameter may
+share the data's name, `plate(ys) do ys`). Likewise an `EachCol(Y)` cell's
+column, `plate(EachCol(Y)) do y … obs = y`, is observed as `obs = Y[:, p]`.
+
 Without the keyword, `obs` is the sub-model's own latent array, the
 prior-predictive trajectory (`node_obs`). An observed array bound to anything
 else (a row `Y[j, :]`, a computed vector) is refused, naming what to bind.
@@ -800,8 +806,10 @@ annotated (`v[:, j]::vector[T] ~ …`) until the plate typing snag
 `plate-untyped-ve-819ecfff` lands; typed locals inside a nested loop are not
 supported yet; a nested scan that observes a nested-vector group per step
 without reading it back (`ys[p][t] ~ normal(h[t], s)`) is refused
-(`unsupported statement LHS`), not supported yet. A bare `for` in a model body
-remains an error.
+(`unsupported statement LHS`), not supported yet; an observed scan written
+inline in a `plate(EachCol(Y)) do y` cell over `y` is refused, not supported
+yet (pass the column to a sub-model, or index `Y[t, p]`). A bare `for` in a
+model body remains an error.
 
 ## `@deffun` iteration boundary
 
