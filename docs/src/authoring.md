@@ -731,6 +731,11 @@ reaches the flat memory as it does a fixed-length cell: a bound every element
 shares is a scalar bound, and a setup and recurrence with different supports
 take a per-element bound vector built in `transformed data`.
 
+An integer a nested step computes, such as a time gap `k = d[t] - d[t - 1]` or
+a carried int array (`c[t] = c[t - 1] + k`), is collected the same way: as
+`array[S, T - 1] int` (one row per cell), or as flat int memory for a per-cell
+length. It is data, so it is computed once in `transformed data`.
+
 Current limits: a setup fill uses a literal index (`x[1] ~ …`; slice and
 nested `@plate` setups are not supported yet); a `@scan` has one axis; an
 untyped fresh cell whose distribution arguments are vector-shaped must be

@@ -487,6 +487,102 @@ its outer declaration first`).
 end
 
 """
+An integer that a nested `@scan` computes per step — a step local such as the
+time gap `k = d[t] - d[t - 1]`, or a carried int array — promotes to the
+enclosing plate's storage like a real-valued one: `array[S, T - 1] int` for a
+fixed length, flat int memory for a per-cell length. It is data, so it is
+computed once in `transformed data`. The plate used to drop it from promotion as
+if it were a per-cell `findall` index; its definition sits inside the scan, so
+nothing inlined it, and stanc rejected the model's read of an in-cell
+declaration (`Identifier "loop_t_k" not in scope`; snag
+`deterministic-st-a7afc47c`).
+"""
+@testitem "slic: a nested @scan promotes its integer step locals and carried arrays" tags=[:slic, :scan, :plate, :ragged, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block, stanc_compiles
+    ys = [[0.1, 0.2, 0.4], [0.3, 0.5], [0.2, 0.1, 0.0, 0.3]]
+    ts = [[1, 2, 4], [1, 3], [2, 3, 4, 7]]
+    gaps = @slic (; ys, ts, n = 3) begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        res ~ plate(ys, ts; outer = (n,)) do y, d
+            @scan begin
+                y[1] ~ normal(0, sigma / sqrt(1 - phi^2))
+                for t in 2:length(d)
+                    k = d[t] - d[t - 1]
+                    y[t] ~ normal(phi^k * y[t - 1], sigma * sqrt((1 - phi^(2 * k)) / (1 - phi^2)))
+                end
+            end
+            nothing
+        end
+    end
+    code = stan_code(gaps)
+    td = stan_block(code, "transformed data")
+    @test occursin("array[sum(loop_t_k__pl_len_1)] int loop_t_k__pl_mem_1;", td)
+    @test occursin("loop_t_k__pl_mem_1[((ragged_start(loop_t_k__pl_end_1, plate_i__pl_1) + (t - 1)) - 1)] = (", td)
+    @test occursin("phi ^ loop_t_k__pl_mem_1[((ragged_start(loop_t_k__pl_end_1, plate_i__pl_1) + (t - 1)) - 1)]", stan_block(code, "model"))
+    @test !occursin("int loop_t_k;", code)
+    @test stanc_compiles(gaps)
+
+    # Omitting the response simulates the trajectory, reading the same gaps.
+    prior = @slic (; ts, n = 3) begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        res ~ plate(ts; outer = (n,)) do d
+            @scan begin
+                y[1] ~ normal(0, sigma / sqrt(1 - phi^2))
+                for t in 2:length(d)
+                    k = d[t] - d[t - 1]
+                    y[t] ~ normal(phi^k * y[t - 1], sigma * sqrt((1 - phi^(2 * k)) / (1 - phi^2)))
+                end
+            end
+            nothing
+        end
+    end
+    code = stan_code(prior)
+    @test occursin("array[sum(y_k__pl_len_1)] int y_k__pl_mem_1;", stan_block(code, "transformed data"))
+    @test occursin("phi ^ y_k__pl_mem_1[", stan_block(code, "generated quantities"))
+    @test stanc_compiles(prior)
+
+    # The `@plate for` spelling of the same model.
+    sugar = @slic (; ys, ts, n = 3) begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        @plate for i in 1:n
+            @scan begin
+                ys[i][1] ~ normal(0, sigma)
+                for t in 2:length(ts[i])
+                    k = ts[i][t] - ts[i][t - 1]
+                    ys[i][t] ~ normal(phi^k * ys[i][t - 1], sigma)
+                end
+            end
+        end
+    end
+    @test occursin("array[sum(loop_t_k__pl_len_1)] int loop_t_k__pl_mem_1;", stan_block(stan_code(sugar), "transformed data"))
+    @test stanc_compiles(sugar)
+
+    # Fixed length: a step local and a carried int array, one row per cell.
+    D = [1 2 4; 1 3 5; 2 3 7]
+    Y = [0.1 0.2 0.3; 0.2 0.1 0.0; 0.4 0.5 0.3]
+    dense = @slic (; Y, D, T = 3, S = 3) begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        @plate for j in 1:S
+            @scan begin
+                c[1] = D[1, j]
+                Y[1, j] ~ normal(0, sigma)
+                for t in 2:T
+                    k = D[t, j] - D[t - 1, j]
+                    c[t] = c[t - 1] + k
+                    Y[t, j] ~ normal(phi^k * Y[t - 1, j] + 0.01 * c[t], sigma)
+                end
+            end
+        end
+    end
+    code = stan_code(dense)
+    td = stan_block(code, "transformed data")
+    @test occursin("array[S, (T - 1)] int c_k;", td)   # locals take the first filled array's prefix
+    @test occursin("array[S, T] int c;", td)
+    @test occursin("(phi ^ c_k[j][(t - 1)])", stan_block(code, "model"))
+    @test stanc_compiles(dense)
+end
+
+"""
 A per-cell integer binding in a plate stays an integer (`array[N] int`), so it
 can index. It used to collect as a real `vector[N]`, and indexing with it failed
 to trace — which a nested scan hits whenever it lifts a step-invariant index
@@ -692,6 +788,45 @@ draw would have variance 1.
                 ref += sum(normlpdf(obs[j][t], hj[t], 0.5) for t in 1:Ts[j])
             end
             @test BridgeStan.log_density(prob.model, x; propto=false, jacobian=false) ≈ ref
+        end
+    end
+end
+
+"""
+A nested scan's integer step local evaluates to the density of the same model
+written with the local inlined: an AR(1) over irregular time gaps `k`.
+"""
+@testitem "slic: a nested @scan's integer step local matches a reference density" tags=[:slic, :scan, :plate, :ragged, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    import BridgeStan
+    normlpdf(x, m, s) = -0.5 * log(2pi) - log(s) - 0.5 * ((x - m) / s)^2
+    ys = [[0.1, 0.2, 0.4], [0.3, 0.5], [0.2, 0.1, 0.0, 0.3]]
+    ts = [[1, 2, 4], [1, 3], [2, 3, 4, 7]]
+    gaps = @slic (; ys, ts, n = 3) begin
+        phi ~ uniform(-1, 1); sigma ~ exponential(1)
+        res ~ plate(ys, ts; outer = (n,)) do y, d
+            @scan begin
+                y[1] ~ normal(0, sigma / sqrt(1 - phi^2))
+                for t in 2:length(d)
+                    k = d[t] - d[t - 1]
+                    y[t] ~ normal(phi^k * y[t - 1], sigma * sqrt((1 - phi^(2 * k)) / (1 - phi^2)))
+                end
+            end
+            nothing
+        end
+    end
+    ref(phi, s) = log(0.5) - s + sum(zip(ys, ts)) do (y, d)
+        normlpdf(y[1], 0, s / sqrt(1 - phi^2)) + sum(2:length(d)) do t
+            k = d[t] - d[t - 1]
+            normlpdf(y[t], phi^k * y[t - 1], s * sqrt((1 - phi^(2k)) / (1 - phi^2)))
+        end
+    end
+    mktempdir() do dir
+        cd(dir) do
+            bm = stan_instantiate(gaps).model
+            for (phi, s) in ((0.3, 0.7), (0.85, 1.3), (-0.5, 0.4))
+                th = BridgeStan.param_unconstrain(bm, [phi, s])
+                @test BridgeStan.log_density(bm, th; propto=false, jacobian=false) ≈ ref(phi, s)
+            end
         end
     end
 end
