@@ -16525,7 +16525,7 @@ through the value constructor — and both must emit identical Stan.
 @testitem "slic: value families lower without method registration" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stan_block, eval_state
     vd = :(@lhs @lpxf tw_hetero_lpdf(x::vector[n], mu::vector[n])::real = begin
-        if any(x .< 0)
+        if minimum(x) < 0
             return negative_infinity()
         end
         normal_lpdf(x[1], mu[1], 1.0) + exponential_lpdf(x[2], 1.0)

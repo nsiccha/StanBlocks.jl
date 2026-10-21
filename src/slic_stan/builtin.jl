@@ -3359,7 +3359,16 @@ end
         (int[n], real, vector[n]) => int[n]
         (int[n], vector[n], vector[n]) => int[n]
     end
-    Base.BroadcastFunction => begin
+    # Stan's elementwise operators `.*` / `./` / `.^` (`elt_multiply`,
+    # `elt_divide`, `pow`) take two operands of one native container type, or a
+    # container and a scalar, and return that container — the complete
+    # non-complex, non-array census of stanc 2.39 `--dump-stan-math-signatures`
+    # (snag matrix-elementwi-c69bbd9a). Keyed on exactly these three: `.÷` and
+    # the dotted comparisons also canonicalize to a `Base.BroadcastFunction`, but
+    # Stan has no such operator for any operand type, so they must fail at trace
+    # time instead of typing and rendering `BroadcastFunction(div)(…)` into the
+    # program.
+    Union{typeof(.*), typeof(./), typeof(.^)} => begin
         (real, real) => real
         # NOTE: scalar-array operand rows (`(real[n], real[n])`, `(real[n], real)`,
         # `(real, real[n])`, `(int[n], int)`, `(int[n], int[n])`) are deliberately
@@ -3369,7 +3378,12 @@ end
         (vector[n], real) => vector[n]
         (real, vector[n]) => vector[n]
         (vector[n], vector[n]) => vector[n]
+        (row_vector[n], real) => row_vector[n]
+        (real, row_vector[n]) => row_vector[n]
         (row_vector[n], row_vector[n]) => row_vector[n]
+        (matrix[m,n], real) => matrix[m,n]
+        (real, matrix[m,n]) => matrix[m,n]
+        (matrix[m,n], matrix[m,n]) => matrix[m,n]
     end
     typeof(cholesky_decompose) => begin
         (matrix[n,n],) => matrix[n,n]
