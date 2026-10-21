@@ -3968,12 +3968,6 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
         for idx in idxs
             probe[idx] = StanExpr(idx, StanType(types.int; qual=:data))
         end
-        # A do-block parameter may shadow the outer iterable (`plate(reads)
-        # do reads`). Its accessor still names the OUTER `reads` in emitted
-        # Stan. Keep that pre-binding as the size resolver's terminal; mapping
-        # the name back to the accessor would recursively expand `reads` into
-        # `reads[plate_i]` inside itself.
-        shadowed = Dict{Symbol,Any}(a => probe[a] for a in params if a in keys(probe))
         if isempty(iterables)
             for (param, idx) in zip(params, idxs)
                 # The do-block parameter is an alias for this plate axis, not a
@@ -4009,7 +4003,6 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
             v isa StanExpr && (size_table[k] = v)
             _return_size_harvest!(caller_syms, v)
         end
-        merge!(size_table, shadowed)
         for s in caller_syms
             haskey(size_table, s) || (size_table[s] = StanExpr(s, StanType(types.int)))
         end
@@ -4113,6 +4106,28 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     params, vararg = _parse_lambda_lhs(lhs_raw)
     vararg === nothing || error("plate: vararg do-block params (`args...`) are not supported yet.")
     iterables = collect(plate.args[2:end])
+    # A do-block parameter may reuse an outer name (`plate(y) do y`): in the
+    # cell it shadows that name, as in Julia. The compiler also writes outer
+    # references into the cell (the iterable's accessor `y[plate_i]`, a nested
+    # scan's `ys[i][t]`, inferred sizes), and the cell binding would capture
+    # them. So the parameter is renamed to a fresh name first, and the cell
+    # traces exactly like the distinct-name spelling (snag
+    # `observed-scan-in-63843c19`). Only messages keep the author's name.
+    spellings = Dict{Symbol,Symbol}()
+    for a in params
+        a in keys(info) || continue
+        fresh = Symbol(a, "__cell")
+        k = 1
+        while fresh in keys(info) || fresh in params || haskey(spellings, fresh)
+            k += 1; fresh = Symbol(a, "__cell_", k)
+        end
+        spellings[fresh] = a
+    end
+    if !isempty(spellings)
+        rename = Dict{Symbol,Symbol}(a => fresh for (fresh, a) in spellings)
+        params = Symbol[get(rename, a, a) for a in params]
+        body_raw = _subst_syms(body_raw, rename)
+    end
 
     # Explicit `outer` accepts an int or a non-empty tuple. Without it, infer the
     # shipped 1-D shape from the first positional iterable. Either way a count
@@ -4187,7 +4202,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         outer_lo=Any[1 for _ in outer_dims], params, iterables, input_subst, body_stmts,
         ret_expr,
         setup_stmts=Any[], public=Set{Symbol}(), probe_transform=nothing,
-        probe_exclude=Set{Symbol}(), scan_arrays=Set{Symbol}(), info, ns=rv,
+        probe_exclude=Set{Symbol}(), scan_arrays=Set{Symbol}(), info, ns=rv, spellings,
     )
 end
 
@@ -4217,15 +4232,18 @@ end
 #     resolves against the OUTER declaration (`forward!(::CanonicalExprV{:getindex})`).
 #   • `hygiene` — carrier names the sugar already chose for its locals
 #     (`_plate_fresh_name!` claims a name, so it is chosen once per trace).
+#   • `spellings` — the author's name of each renamed do-block parameter (one
+#     that shadowed an outer name), for messages.
 _forward_loop_core!(;
     kind, rv, rv_ct, id, idxs, outer_dims, outer_lo, params, iterables, input_subst,
     body_stmts, ret_expr, setup_stmts, public, probe_transform, probe_exclude,
     scan_arrays, info, ns=nothing, hoist_tag=id, hygiene=Dict{Symbol,Symbol}(),
+    spellings=Dict{Symbol,Symbol}(),
 ) = begin
     # Proven length mismatches between positionals and their outer axes (or
     # between siblings) are ill-typed — refuse before any renaming/hoisting.
     # No-ops for iterable-free loops (scan, index-only plates).
-    _plate_check_iterable_lengths(rv, params, iterables, outer_dims; info)
+    _plate_check_iterable_lengths(rv, Symbol[get(spellings, a, a) for a in params], iterables, outer_dims; info)
     _reject_observed_definitions(body_stmts, kind === :scan ? "scan step" : "plate cell")
 
     # Namespace for hygiene renames and hoisted invariants: the do-form's result

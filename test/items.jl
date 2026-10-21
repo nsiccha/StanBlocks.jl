@@ -2828,6 +2828,7 @@ rebound names bare, so every Julia-side matrix build recursed until
             shim_reshape(v::vector[n])::matrix[2, 2] = reshape(v, 2, 2)
             shim_append_row3(a::vector[n], b::vector[n], c::vector[n])::vector[3 * n] = append_row(a, b, c)
             shim_append_row_mr(x::matrix[n, k], r::row_vector[k])::matrix[n + 1, k] = append_row(x, r)
+            shim_append_row_rm(r::row_vector[k], x::matrix[n, k])::matrix[n + 1, k] = append_row(r, x)
         end
     end)
     call(f, args...) = Base.invokelatest(getproperty(shims, f), args...)
@@ -2844,6 +2845,7 @@ rebound names bare, so every Julia-side matrix build recursed until
     @test call(:shim_reshape, v) == [1.0 3.0; 2.0 4.0]
     @test call(:shim_append_row3, a, b, c) == vcat(a, b, c)
     @test call(:shim_append_row_mr, [a b], [1.0, 2.0]) == [a b; 1.0 2.0]
+    @test call(:shim_append_row_rm, [1.0, 2.0], [a b]) == [1.0 2.0; a b]
 
     # The package builtins' own Julia methods reach the same shims.
     @test StanBlocks.builtin.append_col(a, b, c) == [a b c]
@@ -5750,6 +5752,30 @@ Verify `shapes: append functions` in an isolated test item.
         end
         @test check_type(model, :v3, "vector")
         @test stanc_compiles(model)
+    end
+    @testset "append_row(r::row_vector[n], A::matrix[m,n]) / (A, r) :: matrix[m+1,n]" begin
+        # Regression for snag `append-row-row-v-8cf94e09`: Stan's
+        # append_row(row_vector, matrix) had no tracetype, so stacking an
+        # ordered first row on top of a matrix failed at transpile.
+        prepend_model = @slic (;K=4, m=2, obs=randn(12)) begin
+            first_row::ordered[K] ~ normal(0., 1.5)
+            rest_v::vector[m * K] ~ normal(0., 1.)
+            rest   = to_matrix(rest_v, m, K)
+            M      = append_row(first_row', rest)
+            obs   ~ normal(to_vector(M), 1.)
+        end
+        @test check_type(prepend_model, :M, "matrix")
+        @test occursin("append_row((first_row'), rest)", stan_code(prepend_model))
+        @test stanc_compiles(prepend_model)
+        append_model = @slic (;K=4, m=2, obs=randn(12)) begin
+            last_row::ordered[K] ~ normal(0., 1.5)
+            rest_v::vector[m * K] ~ normal(0., 1.)
+            rest   = to_matrix(rest_v, m, K)
+            M      = append_row(rest, last_row')
+            obs   ~ normal(to_vector(M), 1.)
+        end
+        @test check_type(append_model, :M, "matrix")
+        @test stanc_compiles(append_model)
     end
     @testset "append_col(r1::row_vector[m], r2::row_vector[n]) :: row_vector[m+n]" begin
         # Two row_vectors concatenate COLUMN-wise into a longer row_vector, NOT
