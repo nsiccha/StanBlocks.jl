@@ -2983,9 +2983,9 @@ on its own.
     @test Base.return_types(f, types) == [Vector{Float64}]
     # No local infers `Any` (what `@code_warntype` flags), and the typed local
     # is a concrete vector.
-    slottypes = first(only(code_typed(f, types; optimize=false))).slottypes
-    @test !any(==(Any), slottypes)
-    @test Vector{Float64} in slottypes
+    body = first(only(code_typed(f, types; optimize=false)))
+    @test !any(==(Any), body.slottypes)
+    @test body.slottypes[only(findall(==(:y), body.slotnames))] == Vector{Float64}
     A, x = [0.5 0.1; 0.2 0.7], [1.0, 2.0]
     expected = let y = copy(x)
         y[2] += 0.25
