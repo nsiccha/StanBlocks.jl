@@ -3511,21 +3511,21 @@ end
 _plate_length_value(x) = nothing
 _plate_as_canonical(it::CanonicalExpr) = it
 _plate_as_canonical(it) = canonical(it)
-_plate_probe_length(d, probe) = begin
+_plate_probe_forward(d, probe) = begin
     fwd = try
         forward!(_plate_as_canonical(d); info=probe)
     catch
         return nothing
     end
-    fwd isa StanExpr ? _plate_length_value(fwd) : nothing
+    fwd isa StanExpr ? fwd : nothing
+end
+_plate_probe_length(d, probe) = begin
+    fwd = _plate_probe_forward(d, probe)
+    fwd === nothing ? nothing : _plate_length_value(fwd)
 end
 _plate_probe_iterable_type(it, probe) = begin
-    fwd = try
-        forward!(_plate_as_canonical(it); info=probe)
-    catch
-        return nothing
-    end
-    fwd isa StanExpr && type(fwd) isa StanType ? type(fwd) : nothing
+    fwd = _plate_probe_forward(it, probe)
+    fwd !== nothing && type(fwd) isa StanType ? type(fwd) : nothing
 end
 _plate_arg_type(T::StanType, key) = begin
     haskey(info(T), :arg_types) || return nothing
@@ -3534,33 +3534,56 @@ _plate_arg_type(T::StanType, key) = begin
     haskey(at, key) || return nothing
     at[key]
 end
-# Per-axis lengths of a whole-forwarded positional, in outer-axis order, as
-# `(length, unit)` with `length === nothing` when unresolvable. Dense
-# containers read `stan_size`; a certified ragged carrier counts its `ends`
-# (one entry per group, 1-D only, matching `_plate_input_accessor`'s ragged
-# scope); EachCol/EachRow count the wrapped matrix's columns/rows. Anything
-# else (scalars — already loud downstream — tuples, closures, unrecognized
-# views) yields no lengths and stays unchecked.
-_plate_iterable_lengths(T::StanType) = begin
+# Per-axis declared sizes of a whole-forwarded positional, in outer-axis order,
+# as `(size, unit)` with `size === nothing` when unresolvable. Dense containers
+# read `stan_size`; a certified ragged carrier counts its `ends` (one entry per
+# group, 1-D only, matching `_plate_input_accessor`'s ragged scope);
+# EachCol/EachRow count the wrapped matrix's columns/rows. Anything else
+# (scalars — already loud downstream — tuples, closures, unrecognized views)
+# yields no sizes and stays unchecked. `_plate_iterable_lengths` resolves them to
+# values.
+_plate_iterable_sizes(T::StanType) = begin
     if _plate_is_ragged_iterable(T)
         ends = _plate_arg_type(T, :ends)
-        n = ends isa StanType && !isempty(stan_size(ends)) ?
-            _plate_length_value(stan_size(ends)[1]) : nothing
+        n = ends isa StanType && !isempty(stan_size(ends)) ? stan_size(ends)[1] : nothing
         return Any[(n, "groups")]
     end
     if center_type(T) <: builtin.EachCol
         X = _plate_arg_type(T, :X)
-        n = X isa StanType && length(stan_size(X)) >= 2 ?
-            _plate_length_value(stan_size(X)[2]) : nothing
+        n = X isa StanType && length(stan_size(X)) >= 2 ? stan_size(X)[2] : nothing
         return Any[(n, "columns")]
     end
     if center_type(T) <: builtin.EachRow
         X = _plate_arg_type(T, :X)
-        n = X isa StanType && !isempty(stan_size(X)) ?
-            _plate_length_value(stan_size(X)[1]) : nothing
+        n = X isa StanType && !isempty(stan_size(X)) ? stan_size(X)[1] : nothing
         return Any[(n, "rows")]
     end
-    Any[(_plate_length_value(s), "length") for s in stan_size(T)]
+    Any[(s, "length") for s in stan_size(T)]
+end
+_plate_iterable_lengths(T::StanType) =
+    Any[(_plate_length_value(s), unit) for (s, unit) in _plate_iterable_sizes(T)]
+# A plate count read off a container — `length(x)`: the do-form's count without
+# `outer`, `eachindex(x)`, a container clause `@plate for v in x` — sizes every
+# top-level declaration and transformed-data index table the plate emits, and
+# Stan admits only data there. For a parameter `lev::vector[n]`, `length(lev)`
+# emits `num_elements(lev)`: a non-data size in `parameters`, out of scope in
+# `transformed data` (snag `per-cell-scan-le-8b202289`). Its declared count `n`
+# is data and equal, so the count is spelled by it. A data `length(x)`, and an
+# `x` without exactly one declared axis, keep the spelling as written.
+_plate_data_count(d; info) = begin
+    c = _plate_as_canonical(d)
+    (isexpr(c, :length) && length(c.args) == 1) || return d
+    _with_trace_state(info, :inline_pending, Any[]) do
+        probe = _plate_probe(info)
+        n = _plate_probe_forward(c, probe)
+        (n === nothing || qual(n) === :data) && return d
+        T = _plate_probe_iterable_type(only(c.args), probe)
+        T === nothing && return d
+        sizes = _plate_iterable_sizes(T)
+        length(sizes) == 1 || return d
+        s = first(only(sizes))
+        s !== nothing && qual(s) === :data ? s : d
+    end
 end
 # Error-message spelling for iterable/outer expressions: `string` on a canonical
 # call renders its mangled Stan name (`length_K(K)`), so unwrap the two shapes
@@ -4091,14 +4114,15 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     iterables = collect(plate.args[2:end])
 
     # Explicit `outer` accepts an int or a non-empty tuple. Without it, infer the
-    # shipped 1-D shape from the first positional iterable.
+    # shipped 1-D shape from the first positional iterable. Either way a count
+    # read off a container is spelled as data (`_plate_data_count`).
     outer = get(plate.kwargs, :outer, nothing)
     outer_dims = if outer !== nothing
         dims = outer isa CanonicalExprV{:tuple} ? collect(outer.args) : Any[outer]
         isempty(dims) && error("plate: `outer=()` is invalid; pass an int or a non-empty tuple.")
-        dims
+        Any[_plate_data_count(d; info) for d in dims]
     elseif !isempty(iterables)
-        Any[:(length($(iterables[1])))]
+        Any[_plate_data_count(:(length($(iterables[1]))); info)]
     else
         error("plate: cannot size the plate — pass `outer=N`, `outer=(dims...)`, or at least one iterable.")
     end
@@ -5014,7 +5038,7 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
             kind === :plate && lo != 1 && error(
                 label, ": a plate iterates a full `1:N` range (got `", src,
                 "`); use `@scan` for a recurrence over `lo:hi`.")
-            push!(idxs, var); push!(outer_lo, lo); push!(outer_dims, hi)
+            push!(idxs, var); push!(outer_lo, lo); push!(outer_dims, _plate_data_count(hi; info))
         else
             kind === :scan && error(label, ": iterate over a range `lo:hi`, not a container (`", src, "`).")
             push!(params, var); push!(iterables, src)
@@ -5025,7 +5049,7 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
             label, ": mixing range axes with a container clause is not supported — ",
             "iterate ONE container (`for di in doses`) or ranges.")
         push!(idxs, Symbol(:plate_i, "__pl_", id))
-        push!(outer_lo, 1); push!(outer_dims, :(length($(iterables[1]))))
+        push!(outer_lo, 1); push!(outer_dims, _plate_data_count(:(length($(iterables[1]))); info))
     end
     (kind === :plate || length(idxs) == 1) || error(label, ": a scan has exactly one axis.")
     input_subst = Dict{Symbol,Any}()
