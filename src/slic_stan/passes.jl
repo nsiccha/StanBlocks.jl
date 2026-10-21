@@ -1225,23 +1225,35 @@ _ragged_bound_group(x, bound, k::Symbol) = begin
     _ragged_field_base(e.args[1], 2) === k || return nothing
     e.args[2]
 end
-_indexed_ragged_obs_slice(lhs; info) = begin
-    lhs isa StanExpr || return nothing
-    e = expr(lhs)
+# The traced shape alone: `(; base, mem, group, slice)` with `base` the traced
+# `dv`, else `nothing`. Both bounds must be present and name the same group: a
+# user-written `dv.mem[1:2]` or `dv.mem[ragged_start(dv.ends, 1):2]` is not a
+# group (before snag `submodel-scan-ob-50a09edb` such a slice matched with
+# `group = nothing` and emitted `dv_likelihood[nothing]`).
+_ragged_group_projection(x) = begin
+    x isa StanExpr || return nothing
+    e = expr(x)
     e isa CanonicalExpr && head(e) === getindex && length(e.args) == 2 || return nothing
     k = _ragged_field_base(e.args[1], 1)
-    (k isa Symbol && k in keys(info)) || return nothing
-    base = info[k]
-    T = center_type(base)
-    qual(base) == :data && T isa Type && T <: RaggedVector || return nothing
+    k isa Symbol || return nothing
     slice = e.args[2]
     se = slice isa StanExpr ? expr(slice) : slice
     se isa CanonicalExpr && head(se) isa Colon && length(se.args) == 2 || return nothing
     lo_group = _ragged_bound_group(se.args[1], builtin.ragged_start, k)
     hi_group = _ragged_bound_group(se.args[2], builtin.ragged_end, k)
-    lo_group === nothing || hi_group === nothing ||
-        isequal(expr(lo_group), expr(hi_group)) || return nothing
-    (; base=k, mem=e.args[1], group=lo_group, slice)
+    (lo_group === nothing || hi_group === nothing ||
+        !isequal(expr(lo_group), expr(hi_group))) && return nothing
+    (; base=expr(e.args[1]).args[1], mem=e.args[1], group=lo_group, slice)
+end
+_indexed_ragged_obs_slice(lhs; info) = begin
+    p = _ragged_group_projection(lhs)
+    p === nothing && return nothing
+    k = expr(p.base)
+    k in keys(info) || return nothing
+    base = info[k]
+    T = center_type(base)
+    qual(base) == :data && T isa Type && T <: RaggedVector || return nothing
+    (; base=k, mem=p.mem, group=p.group, slice=p.slice)
 end
 _scan_observed(x::StanExpr) = get(type(x).info, :scan_observed, nothing)
 # A carried data array a `@scan` observes and reads back (forward.jl,
