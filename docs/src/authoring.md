@@ -235,8 +235,8 @@ dropped exactly as `to_vector(A) ~ normal(0.0, 2.0)` drops them.
 - Each argument is a scalar or a matrix of the variate's own shape; Stan checks
   that shape at run time. A `vector`, `row_vector` or array argument is refused
   at trace time: write `rep_matrix(mu, n)` to repeat a `vector[m]` location
-  across the `n` columns, or `rep_matrix(mu', m)'` for a `row_vector[n]` one
-  down the rows.
+  across the `n` columns, or `rep_matrix(mu, m)` to repeat a `row_vector[n]`
+  one down the `m` rows (`rep_matrix(b', m)` for a `vector[n]` `b`).
 - A prior-only or held-out matrix is re-drawn with its own shape, and a matrix
   observation's `Y_gen` and `Y_likelihood` are `matrix`-shaped, one entry per
   element.
