@@ -694,6 +694,8 @@ jcall(::Val{:append_array}, ::_JuliaScope, xs...) = vcat(xs...)
 jcall(::Val{:append_row}, ::_JuliaScope, xs...) = vcat(xs...)
 jcall(::Val{:append_row}, ::_JuliaScope, x::AbstractMatrix, y::AbstractVector) =
     vcat(x, Base.reshape(y, 1, length(y)))
+jcall(::Val{:append_row}, ::_JuliaScope, x::AbstractVector, y::AbstractMatrix) =
+    vcat(Base.reshape(x, 1, length(x)), y)
 jcall(::Val{:append_col}, ::_JuliaScope, xs...) = Base.hcat(xs...)
 jcall(::Val{:hcat}, ::_JuliaScope, xs...) = Base.hcat(xs...)
 jcall(::Val{:reshape}, ::_JuliaScope, x, dims::Integer...) = Base.reshape(x, dims...)
