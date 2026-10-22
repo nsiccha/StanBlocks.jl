@@ -17176,12 +17176,15 @@ end
             :(tau ~ vbnd(mu; lower=0.0)), Dict{Symbol,Any}(:mu => 0.0), @__MODULE__)))
     @test threw
     @test occursin("documented follow-ups", msg)
-    # HOF-wrapping a value family.
+    # A bounded HOF over a value family built without CDF companions names the
+    # missing one and its constructor keyword (the slot itself takes values
+    # since snag valuefamily-as-t-c50cc47d).
     msg, threw = loud(() -> stan_model(StanBlocks.SlicModel(
             :(y ~ censored(vbnd, mu; lower=-1.0)),
             Dict{Symbol,Any}(:y => 0.2, :mu => 0.0), @__MODULE__)))
     @test threw
-    @test occursin("documented follow-ups", msg)
+    @test occursin("requires companion `vbnd_lcdf`", msg)
+    @test occursin("`lcdf=`", msg)
     # Selector over a value family.
     msg, threw = loud(() -> stan_model(StanBlocks.SlicModel(
             :(begin
@@ -17237,6 +17240,298 @@ end
     msg, threw = loud(() -> ValueFamily(:bad_lpdf, :lpdf, vd, vp, vr, @__MODULE__))
     @test threw
     @test occursin("ends in", msg)
+end
+
+"""
+Verify `slic: value families stand in the distribution-HOF family slot`.
+
+Snag `valuefamily-as-t-c50cc47d` (reported from a downstream module that builds
+its mixture families as values): a `ValueFamily` in the family slot of
+`weighted`, `truncated`, `censored` or `interval_censored` failed at transpile in
+both spellings. The token form failed with `ValueFamily … has no Stan expression
+outside call-head position`, the call form with `expected a base distribution
+function token`, and the constructor could not carry the `_lcdf`/`_lccdf`
+companions the bounded forms select. The slot now reads the value as a family
+token and the constructor takes `lcdf=`/`lccdf=`: every spelling emits what the
+same bodies emit through `@deffun`, scalar-only overloads broadcast over vector
+arguments in both spellings, and a missing companion names its keyword.
+"""
+@testitem "slic: value families stand in the distribution-HOF family slot" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: eval_state, stan_block
+    strip_value_comments(code) = replace(code, r"^// value UDF .*\n"m => "")
+    loud(f) = try
+        f()
+        ""
+    catch e
+        sprint(showerror, e)
+    end
+
+    # A two-component normal mixture with scalar and vector overloads.
+    dens = Any[
+        :(hmix_lpdf(y::real, w::real, m1::real, m2::real, s::real)::real =
+            log_sum_exp(log1m(w) + normal_lpdf(y, m1, s), log(w) + normal_lpdf(y, m2, s))),
+        :(hmix_lpdf(y::vector[n], w::vector[n], m1::vector[n], m2::vector[n], s::vector[n])::real = begin
+            rv = 0.0
+            for i in 1:n
+                rv = rv + hmix_lpdf(y[i], w[i], m1[i], m2[i], s[i])::real
+            end
+            rv
+        end),
+    ]
+    ptws = :(hmix_lpdfs(y::vector[n], w::vector[n], m1::vector[n], m2::vector[n], s::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = hmix_lpdf(y[i], w[i], m1[i], m2[i], s[i])
+        end
+        rv
+    end)
+    rngs = Any[
+        :(hmix_rng(w::real, m1::real, m2::real, s::real)::real =
+            uniform_rng(0, 1) < w ? normal_rng(m2, s) : normal_rng(m1, s)),
+        :(hmix_rng(vector[n], w::vector[n], m1::vector[n], m2::vector[n], s::vector[n])::vector[n] = begin
+            rv::vector[n]
+            for i in 1:n
+                rv[i] = hmix_rng(w[i], m1[i], m2[i], s[i])
+            end
+            rv
+        end),
+    ]
+    cdf = :(hmix_lcdf(y::real, w::real, m1::real, m2::real, s::real)::real =
+        log_sum_exp(log1m(w) + normal_lcdf(y, m1, s), log(w) + normal_lcdf(y, m2, s)))
+    ccdf = :(hmix_lccdf(y::real, w::real, m1::real, m2::real, s::real)::real =
+        log_sum_exp(log1m(w) + normal_lccdf(y, m1, s), log(w) + normal_lccdf(y, m2, s)))
+    # Scaffolding twin: the same bodies through the method-registration surface.
+    Core.eval(@__MODULE__, :(@deffun @stanonly begin
+        @lpxf @lhs $(dens[1])
+        @lhs $(dens[2])
+        $ptws
+        $(rngs[1])
+        $(rngs[2])
+        $cdf
+        $ccdf
+    end))
+    vmix = ValueFamily(:hmix, :lpdf, dens, ptws, rngs, @__MODULE__; lcdf=cdf, lccdf=ccdf)
+
+    data = Dict{Symbol,Any}(:y => [-2.0, -1.0, 0.5, 2.0], :w => fill(0.3, 4),
+        :lo => fill(-2.0, 4), :hi => fill(2.5, 4), :wt => [1.0, 0.5, 2.0, 1.0])
+    code_of(rhs) = stan_code(stan_model(StanBlocks.SlicModel(
+        Expr(:block, :(mu ~ normal(0.0, 1.0)), Expr(:call, :~, :y, rhs)), data, @__MODULE__)))
+    args = Any[:w, :(rep_vector(mu, 4)), :(rep_vector(mu + 1.0, 4)), :(rep_vector(1.0, 4))]
+    kw(ps...) = Expr(:parameters, (Expr(:kw, k, v) for (k, v) in ps)...)
+    spellings(F) = [
+        Expr(:call, :weighted, F, :wt, args...),
+        Expr(:call, :censored, kw(:lower => :lo), F, args...),
+        Expr(:call, :censored, kw(:upper => :hi), F, args...),
+        Expr(:call, :censored, kw(:lower => :lo, :upper => :hi), F, args...),
+        Expr(:call, :truncated, kw(:lower => :lo), F, args...),
+        Expr(:call, :truncated, kw(:upper => :hi), F, args...),
+        Expr(:call, :truncated, kw(:lower => :lo, :upper => :hi), F, args...),
+        Expr(:call, :interval_censored, F, :lo, :hi, args...),
+        Expr(:call, :weighted, Expr(:call, F, args...), :wt),
+        Expr(:call, :censored, kw(:lower => :lo), Expr(:call, F, args...)),
+        Expr(:call, :truncated, kw(:lower => :lo, :upper => :hi), Expr(:call, F, args...)),
+        Expr(:call, :interval_censored, Expr(:call, F, args...), :lo, :hi),
+        Expr(:call, :interval_censored, kw(:upper => :hi), Expr(:call, F, args...)),
+        Expr(:call, :weighted, Expr(:call, :censored, kw(:lower => :lo), Expr(:call, F, args...)), :wt),
+        Expr(:call, :weighted, kw(:lower => :lo), :censored, :wt, F, args...),
+    ]
+    for (rv, rf) in zip(spellings(vmix), spellings(:hmix))
+        @test strip_value_comments(code_of(rv)) == code_of(rf)
+    end
+    code = code_of(Expr(:call, :censored, kw(:lower => :lo), Expr(:call, vmix, args...)))
+    @test occursin("y ~ lower_clamping_hmix(", stan_block(code, "model"))
+    @test occursin("// value UDF hmix_lcdf\nreal hmix_lcdf(", code)
+    @test occursin("lower_clamping_vector_hmix_rng(", stan_block(code, "generated quantities"))
+
+    # Scalar-only overloads broadcast over vector arguments, call and token form;
+    # a truncated parameter takes the bound onto its declaration.
+    sd = :(hsn_lpdf(y::real, mu::real, s::real)::real = normal_lpdf(y, mu + 0.5, s))
+    sp = :(hsn_lpdfs(y::real, mu::real, s::real)::real = normal_lpdf(y, mu + 0.5, s))
+    sr = :(hsn_rng(mu::real, s::real)::real = normal_rng(mu + 0.5, s))
+    sc = :(hsn_lcdf(y::real, mu::real, s::real)::real = normal_lcdf(y, mu + 0.5, s))
+    scc = :(hsn_lccdf(y::real, mu::real, s::real)::real = log1m_exp(hsn_lcdf(y, mu, s)))
+    Core.eval(@__MODULE__, :(@deffun @stanonly begin
+        @lpxf @lhs $sd
+        $sp
+        $sr
+        $sc
+        $scc
+    end))
+    vsn = ValueFamily(:hsn, :lpdf, sd, sp, sr, @__MODULE__; lcdf=sc, lccdf=scc)
+    data_s = Dict{Symbol,Any}(:y => [0.3, -1.0, 0.9], :lo => [-1.0, -1.0, 0.0], :m => 0.1)
+    code_s(rhs) = stan_code(stan_model(StanBlocks.SlicModel(
+        Expr(:block, :(mu ~ normal(0.0, 1.0)), Expr(:call, :~, :y, rhs)), data_s, @__MODULE__)))
+    for (rv, rf) in (
+        (Expr(:call, :censored, kw(:lower => :lo), Expr(:call, vsn, :(rep_vector(mu, 3)), 1.0)),
+            :(censored(hsn(rep_vector(mu, 3), 1.0); lower = lo))),
+        (Expr(:call, :censored, kw(:lower => :lo), vsn, :(rep_vector(mu, 3)), 1.0),
+            :(censored(hsn, rep_vector(mu, 3), 1.0; lower = lo))),
+    )
+        cv = code_s(rv)
+        @test strip_value_comments(cv) == code_s(rf)
+        @test occursin("jbroadcasted_lower_clamping_lpdf_hsn(", cv)
+    end
+    prior(rhs) = stan_code(stan_model(StanBlocks.SlicModel(
+        Expr(:block, Expr(:call, :~, :theta, rhs)), Dict{Symbol,Any}(:m => 0.1), @__MODULE__)))
+    cp = prior(Expr(:call, :truncated, kw(:lower => 0.0), vsn, :m, 1.0))
+    @test strip_value_comments(cp) == prior(:(truncated(hsn, m, 1.0; lower = 0.0)))
+    @test occursin("real theta = lower_conditioning_hsn_rng(0.0, m, 1.0);", cp)
+
+    # A discrete value family selects the `_lpmf` wrappers.
+    zd = :(hzp_lpmf(y::int, lam::real)::real = poisson_lpmf(y, lam))
+    zp = :(hzp_lpmfs(y::int, lam::real)::real = poisson_lpmf(y, lam))
+    zr = :(hzp_rng(lam::real)::int = poisson_rng(lam))
+    zc = :(hzp_lcdf(y::int, lam::real)::real = poisson_lcdf(y, lam))
+    zcc = :(hzp_lccdf(y::int, lam::real)::real = poisson_lccdf(y, lam))
+    Core.eval(@__MODULE__, :(@deffun @stanonly begin
+        @lpxf @lhs $zd
+        $zp
+        $zr
+        $zc
+        $zcc
+    end))
+    vzp = ValueFamily(:hzp, :lpmf, zd, zp, zr, @__MODULE__; lcdf=zc, lccdf=zcc)
+    data_d = Dict{Symbol,Any}(:k => [0, 2, 3], :lo => [0, 1, 1], :hi => [3, 3, 4])
+    code_d(rhs) = stan_code(stan_model(StanBlocks.SlicModel(
+        Expr(:block, :(lam ~ exponential(1.0)), Expr(:call, :~, :k, rhs)), data_d, @__MODULE__)))
+    for (rv, rf) in (
+        (Expr(:call, :censored, kw(:lower => :lo), Expr(:call, vzp, :(rep_vector(lam, 3)))),
+            :(censored(hzp(rep_vector(lam, 3)); lower = lo))),
+        (Expr(:call, :censored, kw(:upper => :hi), vzp, :lam), :(censored(hzp, lam; upper = hi))),
+        (Expr(:call, :truncated, kw(:lower => :lo, :upper => :hi), vzp, :lam),
+            :(truncated(hzp, lam; lower = lo, upper = hi))),
+    )
+        cv = code_d(rv)
+        @test strip_value_comments(cv) == code_d(rf)
+        @test occursin("_hzp_lpmf(", cv)
+    end
+
+    # A missing companion names its keyword; `weighted` needs none.
+    bare = ValueFamily(:hmix, :lpdf, dens, ptws, rngs, @__MODULE__)
+    @test occursin("y ~ weighted_hmix(", code_of(Expr(:call, :weighted, bare, :wt, args...)))
+    msg = loud(() -> code_of(Expr(:call, :censored, kw(:lower => :lo), Expr(:call, bare, args...))))
+    @test occursin("requires companion `hmix_lcdf`", msg)
+    @test occursin("`lcdf=`", msg)
+    msg = loud(() -> code_of(Expr(:call, :truncated, kw(:lower => :lo), bare, args...)))
+    @test occursin("requires companion `hmix_lccdf`", msg)
+    # A family call takes positional arguments only, as for a function family.
+    msg = loud(() -> code_s(Expr(:call, :censored, kw(:lower => :lo),
+        Expr(:call, vsn, kw(:n => 3), :mu, 1.0))))
+    @test occursin("the family call `hsn(...)` takes only positional arguments", msg)
+
+    # Same label, same content: one wrapper. Different content: loud.
+    two(a, b) = Expr(:block, :(mu ~ normal(0.0, 1.0)),
+        Expr(:call, :~, :y, Expr(:call, :censored, kw(:lower => :lo), a, :(rep_vector(mu, 3)), 1.0)),
+        Expr(:call, :~, :z, Expr(:call, :censored, kw(:lower => :lo), b, :(rep_vector(mu, 3)), 1.0)))
+    data_t = merge(data_s, Dict{Symbol,Any}(:z => [0.1, 0.2, 0.3]))
+    same = ValueFamily(:hsn, :lpdf, sd, sp, sr, @__MODULE__; lcdf=sc, lccdf=scc)
+    code_t = stan_code(stan_model(StanBlocks.SlicModel(two(vsn, same), data_t, @__MODULE__)))
+    @test count("real hsn_lcdf(", code_t) == 1
+    @test count("vector lower_clamping_hsn_lpdfs(", code_t) == 1
+    other = ValueFamily(:hsn, :lpdf, sd, sp, sr, @__MODULE__;
+        lcdf=:(hsn_lcdf(y::real, mu::real, s::real)::real = normal_lcdf(y, mu, s)), lccdf=scc)
+    msg = loud(() -> stan_code(stan_model(StanBlocks.SlicModel(two(vsn, other), data_t, @__MODULE__))))
+    @test occursin("two different bodies", msg)
+
+    # Ragged observations over a value family stay a loud v1 boundary.
+    msg = loud(() -> stan_code(stan_model(StanBlocks.SlicModel(
+        Expr(:block, :(mu ~ normal(0.0, 1.0)),
+            Expr(:call, :~, :y, Expr(:call, :censored, kw(:lower => -1.0), Expr(:call, vsn, :mu, 1.0)))),
+        Dict{Symbol,Any}(:y => [[0.1, 0.2], [0.3]]), @__MODULE__))))
+    @test occursin("documented follow-ups", msg)
+
+    # Construction and tracing still define no bindings or methods.
+    vfam2 = code2 = s1 = s0 = nothing
+    s0 = eval_state(@__MODULE__, StanBlocks)
+    vfam2 = ValueFamily(:hmix, :lpdf, dens, ptws, rngs, @__MODULE__; lcdf=cdf, lccdf=ccdf)
+    code2 = code_of(Expr(:call, :censored, kw(:lower => :lo), Expr(:call, vfam2, args...)))
+    s1 = eval_state(@__MODULE__, StanBlocks)
+    @test s0 == s1
+    @test code2 == code
+end
+
+"""
+Verify `slic: value families in distribution HOFs compile and evaluate`.
+
+Companion to the item above (snag `valuefamily-as-t-c50cc47d`): stanc accepts
+`weighted`, `censored` and `truncated` over a value mixture family, and the
+BridgeStan log density equals the mixture law computed by hand: a threshold atom
+at the censoring bound, the interval normaliser for truncation, and the weights.
+"""
+@testitem "slic: value families in distribution HOFs compile and evaluate" tags=[:slic, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+    dens = Any[
+        :(hmix_lpdf(y::real, w::real, m1::real, m2::real, s::real)::real =
+            log_sum_exp(log1m(w) + normal_lpdf(y, m1, s), log(w) + normal_lpdf(y, m2, s))),
+        :(hmix_lpdf(y::vector[n], w::vector[n], m1::vector[n], m2::vector[n], s::vector[n])::real = begin
+            rv = 0.0
+            for i in 1:n
+                rv = rv + hmix_lpdf(y[i], w[i], m1[i], m2[i], s[i])::real
+            end
+            rv
+        end),
+    ]
+    ptws = :(hmix_lpdfs(y::vector[n], w::vector[n], m1::vector[n], m2::vector[n], s::vector[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = hmix_lpdf(y[i], w[i], m1[i], m2[i], s[i])
+        end
+        rv
+    end)
+    rngs = Any[
+        :(hmix_rng(w::real, m1::real, m2::real, s::real)::real =
+            uniform_rng(0, 1) < w ? normal_rng(m2, s) : normal_rng(m1, s)),
+        :(hmix_rng(vector[n], w::vector[n], m1::vector[n], m2::vector[n], s::vector[n])::vector[n] = begin
+            rv::vector[n]
+            for i in 1:n
+                rv[i] = hmix_rng(w[i], m1[i], m2[i], s[i])
+            end
+            rv
+        end),
+    ]
+    cdf = :(hmix_lcdf(y::real, w::real, m1::real, m2::real, s::real)::real =
+        log_sum_exp(log1m(w) + normal_lcdf(y, m1, s), log(w) + normal_lcdf(y, m2, s)))
+    ccdf = :(hmix_lccdf(y::real, w::real, m1::real, m2::real, s::real)::real =
+        log_sum_exp(log1m(w) + normal_lccdf(y, m1, s), log(w) + normal_lccdf(y, m2, s)))
+    vmix = ValueFamily(:hmix, :lpdf, dens, ptws, rngs, @__MODULE__; lcdf=cdf, lccdf=ccdf)
+
+    y = [-2.0, -1.0, 0.5, 2.0]
+    wt = [1.0, 0.5, 2.0, 1.0]
+    lo, hi = -2.0, 2.5
+    data = Dict{Symbol,Any}(:y => y, :w => fill(0.3, 4), :lo => fill(lo, 4), :hi => hi, :wt => wt)
+    model(rhs) = StanBlocks.SlicModel(
+        Expr(:block, :(mu ~ normal(0.0, 1.0)), Expr(:call, :~, :y, rhs)), data, @__MODULE__)
+    mixargs = (Expr(:call, vmix, :w, :(rep_vector(mu, 4)), :(rep_vector(mu + 1.0, 4)), :(rep_vector(1.0, 4))),)
+    kw(ps...) = Expr(:parameters, (Expr(:kw, k, v) for (k, v) in ps)...)
+
+    Φ(z) = 0.5 * StanBlocks.SpecialFunctions.erfc(-z / sqrt(2))
+    mixpdf(x, mu) = 0.7 * exp(-0.5 * (x - mu)^2) / sqrt(2pi) + 0.3 * exp(-0.5 * (x - mu - 1)^2) / sqrt(2pi)
+    mixcdf(x, mu) = 0.7 * Φ(x - mu) + 0.3 * Φ(x - mu - 1)
+    cases = (
+        (Expr(:call, :censored, kw(:lower => :lo), mixargs...),
+            mu -> sum(x == lo ? log(mixcdf(lo, mu)) : log(mixpdf(x, mu)) for x in y)),
+        (Expr(:call, :truncated, kw(:lower => :lo, :upper => :hi), mixargs...),
+            mu -> sum(log(mixpdf(x, mu)) - log(mixcdf(hi, mu) - mixcdf(lo, mu)) for x in y)),
+        (Expr(:call, :weighted, mixargs..., :wt),
+            mu -> sum(wt .* log.(mixpdf.(y, mu)))),
+    )
+    for (rhs, loglik) in cases
+        m = model(rhs)
+        @test stanc_compiles(m)
+        problem = instantiate(stan_model(m))
+        for mu in (-0.4, 0.7)
+            @test LogDensityProblems.logdensity(problem, [mu]) ≈ -0.5mu^2 + loglik(mu) atol=1e-8
+        end
+    end
+
+    # Censored predictive draws sit on or above the threshold atom.
+    problem = instantiate(stan_model(model(first(first(cases)))))
+    names = BridgeStan.param_names(problem.model; include_tp=true, include_gq=true)
+    idx = findall(n -> startswith(n, "y_gen"), names)
+    draw = BridgeStan.param_constrain(problem.model, [0.3]; include_tp=true, include_gq=true,
+        rng=BridgeStan.StanRNG(problem.model, 1234))
+    @test length(idx) == 4
+    @test all(>=(lo), draw[idx])
 end
 
 @testitem "slic: concurrent value-family builds are serial-identical" tags=[:slic] setup=[StanBlocksImports, StanBlocksTestSetup] begin
