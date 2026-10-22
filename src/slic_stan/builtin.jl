@@ -393,9 +393,18 @@ import Statistics
     # `matrix`, so this is how data reaches an `array[,] real` slot such as
     # Torsten's per-event `x_r`.
     to_array_2d(x::matrix[m, n])::real[m, n]
+    # Stan's dot product takes either orientation on either side, or two real
+    # arrays (an int array promotes).
     dot_product(x::vector[n], y::vector[n])::real
+    dot_product(x::vector[n], y::row_vector[n])::real
+    dot_product(x::row_vector[n], y::vector[n])::real
+    dot_product(x::row_vector[n], y::row_vector[n])::real
+    dot_product(x::real[n], y::real[n])::real
     matrix_exp(x::matrix[m,m])::matrix[m,m]
     rows_dot_product(x::matrix[m,n], y::matrix[m,n])::vector[m]
+    # A vector has n one-element rows, a row vector one n-element row.
+    rows_dot_product(x::vector[n], y::vector[n])::vector[n]
+    rows_dot_product(x::row_vector[n], y::row_vector[n])::vector[1]
     append_col(x::anything[n], y::anything[n])::matrix[n,2]
     append_col(x::matrix[m, n1], y::matrix[m, n2])::matrix[m, n1+n2]
     append_col(x::anything[m], y::matrix[m, n2])::matrix[m, 1+n2]
@@ -3149,14 +3158,22 @@ end
         (vector[n],) => real
         (row_vector[n],) => real
     end
+    # The row/column products and self products also take a vector (n rows,
+    # one column) or a row vector (one row, n columns).
     typeof(columns_dot_product) => begin
         (matrix[m,n], matrix[m,n]) => row_vector[n]
+        (vector[n], vector[n]) => row_vector[1]
+        (row_vector[n], row_vector[n]) => row_vector[n]
     end
     typeof(columns_dot_self) => begin
         (matrix[m,n],) => row_vector[n]
+        (vector[n],) => row_vector[1]
+        (row_vector[n],) => row_vector[n]
     end
     typeof(rows_dot_self) => begin
         (matrix[m,n],) => vector[m]
+        (vector[n],) => vector[n]
+        (row_vector[n],) => vector[1]
     end
     Union{typeof.((sort_asc, sort_desc))...} => begin
         (int[n],)=>int[n]

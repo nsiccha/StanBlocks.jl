@@ -728,9 +728,15 @@ jcall(::Val{:reshape}, ::_JuliaScope, x, dims::Integer...) = Base.reshape(x, dim
 # so a Stan row vector result is a plain vector here, as for `to_row_vector`.
 # `LinearAlgebra.dot` rejects unequal lengths itself; the row and column forms
 # check sizes first because broadcasting would stretch a singleton dimension.
-jcall(::Val{:dot_product}, ::_JuliaScope, x::AbstractVector{<:Real}, y::AbstractVector{<:Real}) =
-    LinearAlgebra.dot(x, y)
-jcall(::Val{:dot_self}, ::_JuliaScope, x::AbstractVector{<:Real}) = LinearAlgebra.dot(x, x)
+# A Stan row vector arrives as a plain vector (`A[i, :]`, `to_row_vector`) or
+# as an adjoint (`x'`); a dot product is the same in either orientation.
+const _JuliaDotOperand = Union{AbstractVector{<:Real},LinearAlgebra.AdjOrTransAbsVec{<:Real}}
+_julia_dot_operand(x::AbstractVector) = x
+_julia_dot_operand(x::LinearAlgebra.AdjOrTransAbsVec) = parent(x)
+jcall(::Val{:dot_product}, ::_JuliaScope, x::_JuliaDotOperand, y::_JuliaDotOperand) =
+    LinearAlgebra.dot(_julia_dot_operand(x), _julia_dot_operand(y))
+jcall(::Val{:dot_self}, ::_JuliaScope, x::_JuliaDotOperand) =
+    LinearAlgebra.dot(_julia_dot_operand(x), _julia_dot_operand(x))
 function jcall(::Val{:rows_dot_product}, ::_JuliaScope, x::AbstractMatrix{<:Real}, y::AbstractMatrix{<:Real})
     _julia_check_matching_sizes(:rows_dot_product, x, y)
     vec(sum(x .* y; dims=2))
