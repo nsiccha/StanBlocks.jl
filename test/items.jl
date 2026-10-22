@@ -3450,8 +3450,9 @@ end
 """
 An opted-in deterministic helper can call Stan's dot-product family in Julia:
 `dot_product`, `dot_self`, and the `rows_`/`columns_` products and self
-products. The same authored calls emit Stan. Regression for snag
-`called-a-stanblo-1cc2d09d`.
+products. The same authored calls emit Stan. A row vector, whether a matrix
+row or an adjoint `x'`, dots with a vector or another row vector. Regressions
+for snags `called-a-stanblo-1cc2d09d` and `in-a-deffun-juli-2c77962a`.
 """
 @testitem "slic: @juliacompat dot-product family" tags=[:slic, :stanc, :bridgestan] setup=[StanBlocksImports] begin
     helpers = Module(:JuliaCompatDotProducts)
@@ -3468,6 +3469,22 @@ products. The same authored calls emit Stan. Regression for snag
             dp_free(x::vector[n], y::vector[k])::real = dot_product(x, y)
             rdp_free(x::matrix[m, n], y::matrix[p, q])::vector[m] = rows_dot_product(x, y)
             cdp_free(x::matrix[m, n], y::matrix[p, q])::row_vector[n] = columns_dot_product(x, y)
+            # A matrix row is a row vector. The untyped return feeds the
+            # caller's arithmetic, so the Stan side needs the call's type.
+            row_products(A::matrix[r, n], B::matrix[n, s]) = begin
+                M = rep_matrix(0.0, r, s)
+                for i in 1:r
+                    for j in 1:s
+                        M[i, j] = dot_product(A[i, :], B[:, j])
+                    end
+                end
+                M
+            end
+            dp_rv(x::vector[n], y::vector[n]) = dot_product(x', y)
+            dp_vr(x::vector[n], y::vector[n]) = dot_product(x, y')
+            dp_rr(x::vector[n], y::vector[n]) = dot_product(x', y')
+            ds_r(x::vector[n]) = dot_self(x')
+            dp_free_r(x::vector[n], y::vector[k])::real = dot_product(x', y)
         end
     end)
     call(f, args...) = Base.invokelatest(getproperty(helpers, f), args...)
@@ -3492,18 +3509,28 @@ products. The same authored calls emit Stan. Regression for snag
     @test_throws DimensionMismatch call(:rdp_free, X, Y[1:1, :])
     @test_throws DimensionMismatch call(:cdp_free, X, Y[1:1, :])
     @test_throws DimensionMismatch call(:cdp_free, X, Y[:, 1:1])
+    @test call(:row_products, X, Y') ≈ X * Y' atol=1e-14
+    for f in (:dp_rv, :dp_vr, :dp_rr)
+        @test call(f, x, y) ≈ 3.7 atol=1e-14
+    end
+    @test call(:ds_r, x) ≈ 2.54 atol=1e-14
+    @test_throws DimensionMismatch call(:dp_free_r, x, y[1:2])
 
     model = Core.eval(helpers, quote
-        @slic (; x = $x, X = $X, Y = $Y, obs = 1.3) begin
+        @slic (; x = $x, y = $y, X = $X, Y = $Y, obs = 1.3) begin
             theta ~ normal(0.0, 1.0)
             mu = dp(x, x * theta) + ds(x * theta) + sum(rdp(X * theta, Y)) +
-                 sum(cdp(X, Y * theta)) + sum(rds(X * theta)) + sum(cds(Y * theta))
+                 sum(cdp(X, Y * theta)) + sum(rds(X * theta)) + sum(cds(Y * theta)) +
+                 sum(row_products(X * theta, Y')) + dp_rv(x * theta, y) +
+                 2 * dp_vr(x, y * theta) + 3 * dp_rr(x * theta, x) + ds_r(y * theta)
             obs ~ normal(mu, 10.0)
         end
     end)
     code = stan_code(model)
     for call_text in ("dot_product(x, y)", "dot_self(x)", "rows_dot_product(x, y)",
-                      "columns_dot_product(x, y)", "rows_dot_self(x)", "columns_dot_self(x)")
+                      "columns_dot_product(x, y)", "rows_dot_self(x)", "columns_dot_self(x)",
+                      "dot_product(A[i, :], B[:, j])", "dot_product((x'), y)",
+                      "dot_product(x, (y'))", "dot_product((x'), (y'))", "dot_self((x'))")
         @test occursin(call_text, code)
     end
     @test stanc_check(code; warn_pedantic=false).ok
@@ -3513,7 +3540,9 @@ products. The same authored calls emit Stan. Regression for snag
     problem = instantiate(stan_model(model))
     @test LogDensityProblems.dimension(problem) == 1
     julia_mu(t) = call(:dp, x, x * t) + call(:ds, x * t) + sum(call(:rdp, X * t, Y)) +
-        sum(call(:cdp, X, Y * t)) + sum(call(:rds, X * t)) + sum(call(:cds, Y * t))
+        sum(call(:cdp, X, Y * t)) + sum(call(:rds, X * t)) + sum(call(:cds, Y * t)) +
+        sum(call(:row_products, X * t, Y')) + call(:dp_rv, x * t, y) +
+        2 * call(:dp_vr, x, y * t) + 3 * call(:dp_rr, x * t, x) + call(:ds_r, y * t)
     julia_lp(t) = -0.5t^2 - 0.5((1.3 - julia_mu(t)) / 10)^2
     t0, t1 = 0.0, 0.4
     lp0 = LogDensityProblems.logdensity(problem, [t0])
@@ -3533,6 +3562,8 @@ end
         ad_cdp(x::matrix[m, n], y::matrix[m, n])::row_vector[n] = columns_dot_product(x, y)
         ad_rds(x::matrix[m, n])::vector[m] = rows_dot_self(x)
         ad_cds(x::matrix[m, n])::row_vector[n] = columns_dot_self(x)
+        ad_dp_rv(x::vector[n], y::vector[n])::real = dot_product(x', y)
+        ad_ds_r(x::vector[n])::real = dot_self(x')
     end
 end
 
@@ -3558,6 +3589,13 @@ concrete result type.
     @test dy ≈ x atol=1e-12
     _, (_, dself) = gradient(ad_ds, x)
     @test dself ≈ 2x atol=1e-12
+    # A row vector `x'` reaches the shim as an adjoint.
+    value, (_, dx, dy) = gradient(ad_dp_rv, x, y)
+    @test value ≈ ad_dp_rv(x, y) atol=1e-12
+    @test dx ≈ y atol=1e-12
+    @test dy ≈ x atol=1e-12
+    _, (_, dself) = gradient(ad_ds_r, x)
+    @test dself ≈ 2x atol=1e-12
 
     # Weighted sums give every output element a distinct cotangent.
     _, (_, dX, dY) = gradient((A, B) -> w_rows' * ad_rdp(A, B), X, Y)
@@ -3571,8 +3609,12 @@ concrete result type.
     _, (_, dX) = gradient(A -> w_cols' * ad_cds(A), X)
     @test dX ≈ 2w_cols' .* X atol=1e-12
 
-    @test Base.return_types(ad_dp, (Vector{Float64}, Vector{Float64})) == [Float64]
-    @test Base.return_types(ad_ds, (Vector{Float64},)) == [Float64]
+    for f in (ad_dp, ad_dp_rv)
+        @test Base.return_types(f, (Vector{Float64}, Vector{Float64})) == [Float64]
+    end
+    for f in (ad_ds, ad_ds_r)
+        @test Base.return_types(f, (Vector{Float64},)) == [Float64]
+    end
     for f in (ad_rdp, ad_cdp)
         @test Base.return_types(f, (Matrix{Float64}, Matrix{Float64})) == [Vector{Float64}]
     end
@@ -6189,6 +6231,64 @@ Verify `shapes: linear algebra` in an isolated test item.
             obs ~ normal(diag_post_multiply(A, v) * rep_vector(0., n), 1.)
         end)
     end
+end
+
+"""
+Stan's dot-product family takes vectors and row vectors as well as matrices:
+`dot_product` in either orientation on either side or over two real arrays,
+and the `rows_`/`columns_` products and self products over a vector (`n`
+one-element rows) or a row vector (one `n`-element row). Each result gets
+Stan's type and size, and the native density matches the closed form.
+Regression for snag `in-a-deffun-juli-2c77962a`.
+"""
+@testitem "shapes: dot-product family over vectors and row vectors" tags=[:slic, :shapes, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    x, y, w = [0.2, -0.5, 1.5], [1.0, 2.0, 3.0], [0.7, -1.1, 0.3]
+    k = [1, 2, 3]
+    model = @slic (; x, y, w, k, obs = 1.3) begin
+        t ~ normal(0.0, 1.0)
+        xt = x * t
+        a = dot_product(xt, y')
+        b = dot_product(xt', y)
+        c = dot_product(xt', y')
+        d = dot_product(to_array_1d(xt), to_array_1d(y))
+        e = dot_product(k, to_array_1d(xt))
+        rv = rows_dot_product(xt, y)
+        rr = rows_dot_product(xt', y')
+        cv = columns_dot_product(xt, y)
+        cr = columns_dot_product(xt', y')
+        sv = rows_dot_self(xt)
+        sr = rows_dot_self(xt')
+        qv = columns_dot_self(xt)
+        qr = columns_dot_self(xt')
+        mu = a + 2b + 3c + 4d + 5e + dot_product(w, rv) + 6rr[1] + 7cv[1] + cr * w +
+             dot_product(w, sv) + 8sr[1] + 9qv[1] + qr * w
+        obs ~ normal(mu, 10.0)
+    end
+    code = stan_code(model)
+    for name in (:a, :b, :c, :d, :e)
+        @test occursin("real $name = dot_product(", code)
+    end
+    @test check_type(model, :rv, "vector")
+    @test check_type(model, :sv, "vector")
+    @test check_type(model, :cr, "row_vector")
+    @test check_type(model, :qr, "row_vector")
+    for decl in ("vector[1] rr", "row_vector[1] cv", "vector[1] sr", "row_vector[1] qv")
+        @test occursin(decl, code)
+    end
+    @test stanc_compiles(model)
+
+    # Taking density differences removes any normalization convention.
+    xy, xx, kx = sum(x .* y), sum(x .* x), sum(k .* x)
+    julia_mu(t) = 23t * xy + 5t * kx + 2t * sum(w .* x .* y) +
+                  17t^2 * xx + 2t^2 * sum(w .* x .* x)
+    julia_lp(t) = -0.5t^2 - 0.5((1.3 - julia_mu(t)) / 10)^2
+    problem = instantiate(stan_model(model))
+    t0, t1 = 0.0, 0.4
+    lp0 = LogDensityProblems.logdensity(problem, [t0])
+    lp1, grad1 = LogDensityProblems.logdensity_and_gradient(problem, [t1])
+    @test lp1 - lp0 ≈ julia_lp(t1) - julia_lp(t0) atol=1e-9
+    h = 1e-6
+    @test grad1[1] ≈ (julia_lp(t1 + h) - julia_lp(t1 - h)) / (2h) atol=1e-6
 end
 
 """
