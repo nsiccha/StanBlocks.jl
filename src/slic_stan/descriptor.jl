@@ -41,9 +41,10 @@ StanBlocks.stan_descriptor).
   *emitted expressions*: a literal, a `Symbol` naming another input, or a larger
   expression. Resolve a symbolic entry against the other inputs' `value`.
 - `constraints::NamedTuple` — the `lower`/`upper`/`offset`/`multiplier` subset
-  actually spelled on the declaration. Empty does **not** mean unconstrained:
-  a natively constrained center (`simplex`, `cholesky_factor_corr`, …) carries
-  its support in `type`.
+  actually spelled on the declaration, each as spelled: a literal, or an emitted
+  expression. Read `constraint_values` for the values. Empty does **not** mean
+  unconstrained: a natively constrained center (`simplex`,
+  `cholesky_factor_corr`, …) carries its support in `type`.
 - `value` — the bound Julia value. Always present: a symbol with no value never
   reaches the data block (an unresolvable one fails at *tracing* time, not here).
 - `inlined::Bool` — `true` for a value the emitter folds into the generated
@@ -61,6 +62,9 @@ StanBlocks.stan_descriptor).
   aware, not a record of what you marked** — cv propagates through every
   expression it reaches, so marking one input via `StanBlocks.stan.maybecv` can
   make several inputs report `held_out`.
+- `constraint_values::NamedTuple` — `constraints` evaluated against the bound
+  data, with the same keys; see [`ModelOutput`](@ref StanBlocks.ModelOutput).
+  A data declaration's bounds read only data, so every entry has a value.
 """
 struct ModelInput
     name::Symbol
@@ -72,6 +76,7 @@ struct ModelInput
     derived::Bool
     observed::Bool
     held_out::Bool
+    constraint_values::NamedTuple
 end
 
 """
@@ -88,7 +93,8 @@ StanBlocks.stan_descriptor).
 - `type::Symbol`, `size::Tuple`, `constraints::NamedTuple` — as for
   [`ModelInput`](@ref StanBlocks.ModelInput), except that an output's size
   entry may also name a transformed-data value (`J` for `J = maximum(subject)`),
-  which is not an input. Read `dims` for the resolved values.
+  which is not an input. Read `dims` for the resolved sizes and
+  `constraint_values` for the evaluated bounds.
 - `generative::Symbol` — what the quantity MEANS:
   - `:posterior` — a sampled parameter or a deterministic function of one.
   - `:draw` — a predictive draw of an observation (the compiler-owned
@@ -123,6 +129,17 @@ StanBlocks.stan_descriptor).
   rebuilds the value from them. A tuple-typed output reports its own container
   size here; its fields' sizes are part of `type`. A rebound model reports
   rebound values, as for `segments`.
+- `constraint_values::NamedTuple` — `constraints` evaluated against the model's
+  current data, with the same keys, so a consumer that reproduces Stan's
+  constraining transform never evaluates an emitted expression itself.
+  `real<lower=fmax(0.0, (2 * floor_))>` with `floor_ = 0.3` reports
+  `(lower = 0.6,)`. Evaluation follows Stan: `lower=(k / 2)` with the integer
+  `k = 7` is `3`. A per-coordinate bound is an array with one entry per
+  coordinate, `-Inf` or `Inf` where a coordinate is unbounded, including the
+  bound arrays the compiler fills in `transformed data`; a bound that names a
+  data input is that input's value. A bound that reads a parameter or a
+  generated quantity (`real<lower=a>`) has no value without a draw and holds
+  `nothing`. A rebound model reports rebound values, as for `dims`.
 """
 struct ModelOutput
     name::Symbol
@@ -134,6 +151,7 @@ struct ModelOutput
     source::Union{Symbol,Nothing}
     segments::Union{Nothing,Vector{Int}}
     dims::Tuple{Vararg{Int}}
+    constraint_values::NamedTuple
 end
 
 """
@@ -543,36 +561,57 @@ _plate_layout_binding(ref::Symbol, layout, ends) =
     ref === layout.lens ? diff([0; ends]) :
     (; mem=nothing, ends)
 
-# --- evaluating sizes and layouts against the data ----------------------------
+# --- evaluating sizes, bounds and layouts against the data --------------------
 #
-# `segments` and `dims` both evaluate data-only expressions with the layout
-# evaluator above, against the CURRENT data block. Such an expression may also
-# read a transformed-data value (`J` for `J = maximum(subject)`, a plate's
-# `outer = n_g`), or an array a ragged plate fills in a loop (its `lens` and
-# `ends`). One scope per descriptor binds each of those on demand: a
-# transformed-data value from its defining assignment, a plate-owned array from
-# that carrier's own layout. Every binding is memoised in `env`.
+# `segments`, `dims` and `constraint_values` all evaluate data-only expressions
+# with the layout evaluator above, against the CURRENT data block. Such an
+# expression may also read a transformed-data value (`J` for
+# `J = maximum(subject)`, a plate's `outer = n_g`), an array a ragged plate fills
+# in a loop (its `lens` and `ends`), or a per-coordinate bound array the
+# compiler fills in a loop (`tau__lower`). One scope per descriptor binds each of
+# those on demand: a plate-owned array from that carrier's own layout, any other
+# transformed-data name by running the statements that define it. Every binding
+# is memoised in `env`.
 
-# Top-level transformed-data definitions by name. A name filled elementwise (in a
-# loop) has none; a name assigned more than once keeps every right-hand side, so
-# the resolver refuses it rather than pick one.
-_td_definitions!(x, acc) = acc
-_td_definitions!(x::AbstractVector, acc) = (foreach(s -> _td_definitions!(s, acc), x); acc)
-_td_definitions!(x::StanBlock, acc) = _td_definitions!(content(x), acc)
-_td_definitions!(x::BlockExpr, acc) = _td_definitions!(x.args, acc)
-_td_definitions!(x::DocumentExpr, acc) = _td_definitions!(x.args[2], acc)
-_td_definitions!(x::AssignmentExpr, acc) = begin
-    b = _assigned_binding(x.args[1])
-    b === nothing || push!(get!(Vector{Any}, acc, expr(b)), x.args[2])
+# The top-level transformed-data statements that declare or write each name, in
+# program order: `J = maximum(subject)` alone, or a bare declaration
+# (`vector[n] tau__lower;`) followed by the loops that fill it elementwise
+# (`for (i in 1:2) tau__lower[i] = rate[i];`). The compiler builds every
+# per-coordinate bound the second way (`_slice_bound_carrier!`,
+# `_plate_slice_bound_carrier!`, `_plate_ragged_bound_carrier!`,
+# `_plate_hoist_cell_constraints!`).
+_td_statements!(x, acc) = acc
+_td_statements!(x::AbstractVector, acc) = (foreach(s -> _td_statements!(s, acc), x); acc)
+_td_statements!(x::StanBlock, acc) = _td_statements!(content(x), acc)
+_td_statements!(x::BlockExpr, acc) = _td_statements!(x.args, acc)
+_td_statements!(x::DocumentExpr, acc) = _td_statements!(x.args[2], acc)
+_td_statements!(x::Union{StanExpr,CanonicalExpr}, acc) = begin
+    for name in _td_writes!(Set{Symbol}(), x)
+        push!(get!(Vector{Any}, acc, name), x)
+    end
     acc
 end
-# A typed definition (`J::int = maximum(subject)`); see `_output_symbols`.
-_td_definitions!(x::StanExpr{<:CanonicalExprV{:(=)}}, acc) = _td_definitions!(expr(x), acc)
+
+# Every name a statement declares or assigns, also inside its loops and
+# branches. An indexed fill (`x[i] = …`) writes its base.
+_td_writes!(acc, x) = acc
+_td_writes!(acc, x::StanExpr) = _td_writes!(acc, expr(x))
+_td_writes!(acc, x::Union{BlockExpr,DocumentExpr,IfExpr,ElseIfExpr,WhileExpr}) =
+    (foreach(a -> _td_writes!(acc, a), x.args); acc)
+_td_writes!(acc, x::AbstractVector) = (foreach(a -> _td_writes!(acc, a), x); acc)
+# The iteration spec `i = lo:hi` binds the loop index, which is not a write.
+_td_writes!(acc, x::ForExpr) = _td_writes!(acc, x.args[2])
+_td_writes!(acc, x::Union{DeclExpr,CanonicalExprV{:(=)}}) = _td_written_base!(acc, x.args[1])
+_td_written_base!(acc, x) = acc
+_td_written_base!(acc, x::StanExpr) = _td_written_base!(acc, expr(x))
+_td_written_base!(acc, x::Symbol) = push!(acc, x)
+_td_written_base!(acc, x::DeclExpr) = _td_written_base!(acc, x.args[1])
+_td_written_base!(acc, x::CanonicalExpr{typeof(getindex)}) = _td_written_base!(acc, x.args[1])
 
 _descriptor_scope(m::StanModel, data) = (;
     m, data,
     env=Dict{Symbol,Any}(pairs(data)),
-    definitions=_td_definitions!(block(m, :transformed_data), Dict{Symbol,Vector{Any}}()),
+    statements=_td_statements!(block(m, :transformed_data), Dict{Symbol,Vector{Any}}()),
     layouts=_ragged_plate_layouts(m),
     mod=get(meta(m), :mod, @__MODULE__),
     active=Symbol[],
@@ -585,12 +624,9 @@ _scope_bind!(scope, name::Symbol) = begin
         scope.env[name] = _plate_layout_binding(name, layout, ends)
         return nothing
     end
-    definitions = get(scope.definitions, name, ())
-    isempty(definitions) && error(
-        "`", name, "` is neither a data input nor a transformed-data value defined by one assignment.",
-    )
-    length(definitions) == 1 || error(
-        "transformed-data `", name, "` is assigned ", length(definitions), " times.",
+    statements = get(scope.statements, name, ())
+    isempty(statements) && error(
+        "`", name, "` is neither a data input nor a transformed-data value.",
     )
     name in scope.active && error(
         "transformed-data `", name, "` depends on itself through ",
@@ -598,7 +634,7 @@ _scope_bind!(scope, name::Symbol) = begin
     )
     push!(scope.active, name)
     try
-        scope.env[name] = _scope_value(scope, only(definitions))
+        scope.env[name] = _td_replay(scope, name, statements)
     finally
         pop!(scope.active)
     end
@@ -608,6 +644,75 @@ _scope_value(scope, x) = begin
     foreach(name -> _scope_bind!(scope, name), _plate_layout_names!(Set{Symbol}(), x))
     _plate_layout_value(x, scope.env, scope.mod)
 end
+
+# Run the statements that define transformed-data `name`, as Stan runs them, and
+# return its value. `env` holds the loop indices and `name` itself while they
+# run; every other name it reads binds through the scope. A statement that
+# writes another name too, or one this replay has no rule for, fails by name
+# rather than leave part of the value unset.
+_td_replay(scope, name::Symbol, statements) = begin
+    env = Dict{Symbol,Any}()
+    for s in statements
+        _td_run!(scope, env, name, s)
+    end
+    haskey(env, name) || error("transformed-data `", name, "` is declared but never assigned.")
+    env[name]
+end
+_td_value(scope, env, x) = begin
+    for n in _plate_layout_names!(Set{Symbol}(), x)
+        haskey(env, n) && continue
+        _scope_bind!(scope, n)
+        env[n] = scope.env[n]
+    end
+    _plate_layout_value(x, env, scope.mod)
+end
+_td_run!(scope, env, name, x::StanExpr) = _td_run!(scope, env, name, expr(x))
+_td_run!(scope, env, name, x::DocumentExpr) = _td_run!(scope, env, name, x.args[2])
+_td_run!(scope, env, name, x::BlockExpr) = foreach(s -> _td_run!(scope, env, name, s), x.args)
+_td_run!(scope, env, name, x::ForExpr) = begin
+    spec, body = x.args
+    index = _td_loop_index(spec.args[1])
+    for i in _td_value(scope, env, spec.args[2])
+        env[index] = i
+        _td_run!(scope, env, name, body)
+    end
+    delete!(env, index)
+    nothing
+end
+_td_loop_index(x::Symbol) = x
+_td_loop_index(x::StanExpr{Symbol}) = expr(x)
+# A bare declaration allocates the value as Stan does: reals start as NaN.
+_td_run!(scope, env, name, x::DeclExpr) = begin
+    target = x.args[1]
+    _td_target(name, expr(target))
+    dims = _declared_dims(scope, "transformed-data array", name, target)
+    env[name] = center_type(target) <: types.int ? fill(typemin(Int), dims) : fill(NaN, dims)
+    nothing
+end
+_td_run!(scope, env, name, x::CanonicalExprV{:(=)}) =
+    _td_assign!(scope, env, name, x.args[1], _td_value(scope, env, x.args[2]))
+_td_run!(scope, env, name, x) = error(
+    "stan_descriptor: cannot evaluate transformed-data `", name, "`: it is written by a `",
+    x isa CanonicalExpr ? head(x) : typeof(x), "` statement, which the descriptor cannot run.",
+)
+_td_assign!(scope, env, name, lhs::StanExpr, value) = _td_assign!(scope, env, name, expr(lhs), value)
+_td_assign!(scope, env, name, lhs::DeclExpr, value) = _td_assign!(scope, env, name, lhs.args[1], value)
+# Stan assigns by value. Copy an array, so a later indexed fill never writes
+# into the data value (or other binding) it was assigned from.
+_td_assign!(scope, env, name, lhs::Symbol, value) =
+    (_td_target(name, lhs); env[name] = _td_owned(value); nothing)
+_td_owned(x) = x
+_td_owned(x::AbstractArray) = copy(x)
+_td_assign!(scope, env, name, lhs::CanonicalExpr{typeof(getindex)}, value) = begin
+    _td_target(name, expr(lhs.args[1]))
+    haskey(env, name) || error("transformed-data `", name, "` is filled before it is declared.")
+    setindex!(env[name], value, (_td_value(scope, env, i) for i in lhs.args[2:end])...)
+    nothing
+end
+_td_target(name, base) = base === name || error(
+    "stan_descriptor: cannot evaluate transformed-data `", name, "`: a statement that ",
+    "writes it also writes `", base, "`.",
+)
 
 _ragged_plate_segments(scope, name::Symbol, layout) = begin
     haskey(scope.env, layout.ends) && return scope.env[layout.ends]
@@ -675,30 +780,66 @@ end
 # `index_shape`: a constrained square matrix declared by one size (`r_ndim == 1`)
 # has two axes of that size, as its K×K entries in `param_names` do (snag
 # `modeloutput-dims-5ab23309`).
-_output_dim(scope, name::Symbol, i, s) = begin
-    value = try
-        _scope_value(scope, s)
-    catch
-        error(
-            "stan_descriptor: cannot resolve dimension ", i, " of output `", name,
-            "` (declared size `", expr(s), "`). Every top-level size is a data-only ",
-            "expression, so one that calls a Stan-only `@deffun` needs a Julia method: ",
-            "mark that function `@juliacompat`.",
-        )
-    end
+
+# Evaluate a data-only expression a declaration carries; `what` names it for the
+# error. Such an expression always has a value under the bound data, so failing
+# to compute one means it calls a function with no Julia method (a Stan-only
+# `@deffun`), which `@juliacompat` gives one. The cause is kept, since a
+# transformed-data statement the scope cannot run fails here too.
+_descriptor_value(scope, x, what...) = try
+    _scope_value(scope, x)
+catch e
+    error(
+        "stan_descriptor: cannot evaluate ", what..., ". It is a data-only expression, ",
+        "so one that calls a Stan-only `@deffun` needs a Julia method: mark that ",
+        "function `@juliacompat`. Cause: ", sprint(showerror, e),
+    )
+end
+_declared_dim(scope, owner, name::Symbol, i, s) = begin
+    value = _descriptor_value(scope, s,
+        "dimension ", i, " of ", owner, " `", name, "` (declared size `", expr(s), "`)")
     value isa Integer && value >= 0 || error(
-        "stan_descriptor: dimension ", i, " of output `", name, "` (declared size `",
+        "stan_descriptor: dimension ", i, " of ", owner, " `", name, "` (declared size `",
         expr(s), "`) evaluates to `", value, "`, not a nonnegative integer.",
     )
     Int(value)
 end
-_output_dims(scope, name::Symbol, x::StanExpr) =
-    Tuple(_output_dim(scope, name, i, s) for (i, s) in enumerate(index_shape(x)))
+_declared_dims(scope, owner, name::Symbol, x::StanExpr) =
+    Tuple(_declared_dim(scope, owner, name, i, s) for (i, s) in enumerate(index_shape(x)))
+
+# --- resolved constraint values (`constraint_values`) -------------------------
+#
+# `constraints` reports each bound as spelled: a literal, an expression over
+# data (`fmax(0.0, 2 * floor_)`), a transformed-data value, or a per-coordinate
+# array the compiler fills in transformed data (`tau__lower`). A consumer that
+# reproduces Stan's constraining transform needs the number (snag
+# `read-the-numeric-9a6adfef`). A bound that reads only data has one under the
+# bound data, and the scope evaluates it as it does a size; a data-only bound
+# Julia cannot evaluate fails closed the same way. A bound that reads a
+# parameter (`real<lower=a>`) or a generated quantity has no value until a draw
+# exists. Its traced qualifier says so, and it reports `nothing`.
+_constraint_spelling(x) = x
+_constraint_spelling(x::StanExpr) = expr(x)
+_constraint_resolved(scope, owner, name::Symbol, key::Symbol, x) =
+    _constraint_resolved(Val(qual(x)), scope, owner, name, key, x)
+_constraint_resolved(::Val{:data}, scope, owner, name, key, x) = _descriptor_value(scope, x,
+    "the `", key, "` constraint of ", owner, " `", name, "` (declared `", key, "=",
+    _constraint_spelling(x), "`)")
+_constraint_resolved(::Union{Val{:parameter},Val{:quantities}}, scope, owner, name, key, x) = nothing
+_constraint_resolved(::Val{q}, scope, owner, name, key, x) where {q} = error(
+    "stan_descriptor: the `", key, "` constraint of ", owner, " `", name, "` (declared `",
+    key, "=", _constraint_spelling(x), "`) has qualifier `", q, "`, so whether it ",
+    "reads only data is unknown.",
+)
+_constraint_values(scope, owner, name::Symbol, constraints::NamedTuple) =
+    NamedTuple{keys(constraints)}(Tuple(
+        _constraint_resolved(scope, owner, name, key, x) for (key, x) in pairs(constraints)
+    ))
 
 # One row per output a block declares, with every `ModelOutput` field except
-# `dims`; `decl` is the declaration they come from. The semantic display renders
-# these rows and never needs `dims`, so a size Julia cannot evaluate does not
-# make printing a model throw.
+# `dims` and `constraint_values`; `decl` is the declaration they come from. The
+# semantic display renders these rows and never evaluates either, so a size or
+# bound Julia cannot evaluate does not make printing a model throw.
 _block_output_rows(scope, blockname::Symbol, kind::Symbol) = begin
     acc = OrderedDict{Symbol,Any}()
     _output_symbols(block(scope.m, blockname), acc)
@@ -720,10 +861,34 @@ end
 _block_outputs(scope, blockname::Symbol, kind::Symbol) = [
     ModelOutput(
         row.name, row.kind, row.type, row.size, row.constraints, row.generative,
-        row.source, row.segments, _output_dims(scope, row.name, row.decl),
+        row.source, row.segments, _declared_dims(scope, "output", row.name, row.decl),
+        _constraint_values(scope, "output", row.name, row.constraints),
     )
     for row in _block_output_rows(scope, blockname, kind)
 ]
+
+# One row per data input, with every `ModelInput` field except
+# `constraint_values`; the semantic display renders these rows.
+#
+# A data variable that is another data variable's declared SIZE (`y_n` for
+# `vector[y_n] y`) is not something a consumer supplies: re-binding the
+# container re-derives it (`_record_size_kwargs!`). Asking for it in a
+# generated form is both noise and an opportunity to contradict the data.
+_input_rows(data, observed) = begin
+    sizes = Set{Symbol}()
+    for (_, x) in pairs(data), s in stan_size(x)
+        _size_symbols(expr(s), sizes)
+    end
+    [
+        (;
+            name, type=_descriptor_type(x), size=_descriptor_size(x),
+            constraints=_descriptor_constraints(x), value=getvalue(x),
+            inlined=always_inline(x), derived=name in sizes, observed=name in observed,
+            held_out=cv(x),
+        )
+        for (name, x) in pairs(data)
+    ]
+end
 
 # --- included Stan definitions ----------------------------------------------
 #
@@ -847,14 +1012,24 @@ Julia cannot compute one (a size computed through a Stan-only `@deffun` with no
 Julia method), `stan_descriptor` throws, naming the output and the expression.
 Mark that function `@juliacompat` to give it a Julia method.
 
+# Evaluated constraints
+
+Each input's and output's `constraint_values` holds its `constraints` evaluated
+the same way, with Stan's semantics: `real<lower=fmax(0.0, (2 * floor_))>` with
+`floor_ = 0.3` reports `(lower = 0.6,)`, and a per-coordinate bound reports one
+value per coordinate (`-Inf`/`Inf` where unbounded). A bound that reads a
+parameter reports `nothing`. A data-only bound computed through a Stan-only
+`@deffun` makes `stan_descriptor` throw, naming the output and the key, as a
+size does.
+
 # Example
 
 ```julia
-m = @slic begin
+m = @slic (; y) begin
     sigma ~ exponential(1.)
     mu ~ normal(0., 10.)
     y ~ normal(mu, sigma)
-end (; y)
+end
 
 d = stan_descriptor(m; name=:simple)
 d.id                                        # "…" — stable, content-derived
@@ -862,6 +1037,7 @@ required_inputs(d)                          # (:y,) — not the derived size `y_
 [i.name for i in d.inputs if i.observed]    # [:y]
 [o.name for o in d.outputs if o.generative == :draw]   # [:y_gen]
 [(o.name, o.dims) for o in d.outputs]       # [(:sigma, ()), (:mu, ()), …, (:y_gen, (length(y),))]
+d.outputs[1].constraint_values              # (lower = 0.0,): `sigma`'s support
 [f.name for f in d.definitions]             # emitted `functions` inventory
 [op.name for op in d.operations]            # [:transpile, :instantiate, :fit, :predict, :pointwise_loglik]
 
@@ -894,28 +1070,20 @@ stan_descriptor(m::StanModel; name=nothing) = begin
         o.source === nothing || push!(observed, o.source)
     end
 
-    # A data variable that is another data variable's declared SIZE (`y_n` for
-    # `vector[y_n] y`) is not something a consumer supplies: re-binding the
-    # container re-derives it (`_record_size_kwargs!`). Asking for it in a
-    # generated form is both noise and an opportunity to contradict the data.
-    sizes = Set{Symbol}()
-    for (_, x) in pairs(data), s in stan_size(x)
-        _size_symbols(expr(s), sizes)
-    end
-    inputs = ModelInput[]
-    for (key, x) in pairs(data)
-        push!(inputs, ModelInput(
-            key, _descriptor_type(x), _descriptor_size(x), _descriptor_constraints(x),
-            getvalue(x), always_inline(x), key in sizes,
-            key in observed, cv(x),
-        ))
-    end
+    inputs = Tuple(
+        ModelInput(
+            row.name, row.type, row.size, row.constraints, row.value, row.inlined,
+            row.derived, row.observed, row.held_out,
+            _constraint_values(scope, "input", row.name, row.constraints),
+        )
+        for row in _input_rows(data, observed)
+    )
 
     d = ModelDescriptor(
         string(hash(code); base=16),
         something(name, meta(m).name),
         get(meta(m), :docstring, ""),
-        m, Tuple(inputs), Tuple(outputs), _model_definitions(m, code), (),
+        m, inputs, Tuple(outputs), _model_definitions(m, code), (),
     )
     _assert_distinct_names(d)
     ModelDescriptor(d.id, d.name, d.docstring, d.model, d.inputs, d.outputs,
