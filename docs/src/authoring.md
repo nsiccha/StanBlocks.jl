@@ -861,8 +861,8 @@ use cross-target indexing such as `x[m,k,:,:]` when selecting a nested matrix.
 ```julia
 d = stan_descriptor(model; name = :demo)
 
-d.inputs       # type, size, value, observed/held-out/derived flags
-d.outputs      # parameters, generated quantities, generative role, source, segments, dims
+d.inputs       # type, size, constraints, value, observed/held-out/derived flags
+d.outputs      # parameters, generated quantities, generative role, source, segments, dims, constraint values
 d.definitions  # exact emitted Stan functions and dependency links
 d.operations   # derived :transpile/:instantiate/:fit/:predict/:pointwise_loglik
 ```
@@ -894,6 +894,20 @@ one. Those entries run first index fastest, so `reshape(values, dims)` rebuilds
 the value. Every top-level Stan size is data-only, so `dims` always exists; a size
 computed through a Stan-only `@deffun` makes `stan_descriptor` throw, and
 marking that function `@juliacompat` gives it the Julia method it needs.
+
+`constraints` holds each declared `lower`/`upper`/`offset`/`multiplier` as
+spelled: a literal, or an emitted expression such as `fmax(0.0, (2 * floor_))`.
+`constraint_values` holds the same keys evaluated against the current data, as
+`dims` is, so `real<lower=fmax(0.0, (2 * floor_))>` with `floor_ = 0.3` reports
+`(lower = 0.6,)`. Evaluation follows Stan, so `lower = k / 2` with the integer
+`k = 7` is `3`. A per-coordinate bound is an array with one entry per
+coordinate, `-Inf` or `Inf` where a coordinate is unbounded. That includes the
+bound arrays the compiler fills in `transformed data` for slice statements,
+`vcat` priors, plate cells and `@scan` recurrences. A bound that names a data
+input is that input's value. A bound that reads a parameter
+(`b ~ normal(0, 1; lower = a)`) has no value without a draw and reports
+`nothing`. A data-only bound computed through a Stan-only `@deffun` makes
+`stan_descriptor` throw, as a size does; `@juliacompat` gives it a value.
 
 ```julia
 problem = stan_execute(d, :fit)

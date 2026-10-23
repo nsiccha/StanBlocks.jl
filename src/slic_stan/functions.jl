@@ -691,6 +691,15 @@ function jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::AbstractArray{<:Real}, y::
 end
 jcall(::Val{:square}, ::_JuliaScope, x) = x * x
 jcall(::Val{:square}, ::_JuliaScope, x::AbstractArray) = x .* x
+# Stan divides two integers as integers, truncating toward zero like C++ (and
+# `div`); Julia's `/` would return a float. A size `vector[n / 2]`, a bound
+# `lower=k / 2` and a `@juliacompat` body's `n / 2` all depend on it.
+jcall(::Val{:/}, ::_JuliaScope, x::Integer, y::Integer) = div(x, y)
+# Stan's non-finite constants, which an unbounded coordinate of a per-coordinate
+# bound is spelled with (`show.jl` prints non-finite floats this way).
+jcall(::Val{:negative_infinity}, ::_JuliaScope) = -Inf
+jcall(::Val{:positive_infinity}, ::_JuliaScope) = Inf
+jcall(::Val{:not_a_number}, ::_JuliaScope) = NaN
 jcall(::Val{:fmin}, ::_JuliaScope, x, y) = min(x, y)
 jcall(::Val{:fmax}, ::_JuliaScope, x, y) = max(x, y)
 jcall(::Val{:max}, ::_JuliaScope, x::AbstractArray) = maximum(x)

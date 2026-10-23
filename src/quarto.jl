@@ -38,7 +38,8 @@ _display_declaration(type, size, constraints) = string(
     type, _display_size_text(size), _display_constraint_text(constraints)
 )
 
-_display_input_semantics(input::ModelInput) = begin
+# `input` is a descriptor input row (`_input_rows`) or a `ModelInput`.
+_display_input_semantics(input) = begin
     flags = String[]
     input.observed && push!(flags, "observed")
     input.held_out && push!(flags, "held-out")
@@ -65,8 +66,9 @@ _display_traced_parts(x::StanModel) = begin
     datacontent = content(block(x, :data))
     # The scope takes the data CONTENT, not just its names: a ragged
     # observation's twins carry the carrier's group boundaries, which live on
-    # the data value (`ModelOutput.segments`). Rows carry every output field the
-    # display shows; resolved `dims` are not shown, so they are not evaluated.
+    # the data value (`ModelOutput.segments`). Rows carry every input and output
+    # field the display shows; resolved `dims` and `constraint_values` are not
+    # shown, so they are not evaluated.
     scope = _descriptor_scope(x, datacontent)
     outputs = vcat(
         _block_output_rows(scope, :parameters, :parameter),
@@ -79,19 +81,7 @@ _display_traced_parts(x::StanModel) = begin
         output.source === nothing || push!(observed, output.source)
     end
 
-    sizes = Set{Symbol}()
-    for (_, value) in pairs(datacontent), size in stan_size(value)
-        _size_symbols(expr(size), sizes)
-    end
-
-    inputs = ModelInput[]
-    for (key, value) in pairs(datacontent)
-        push!(inputs, ModelInput(
-            key, _descriptor_type(value), _descriptor_size(value),
-            _descriptor_constraints(value), getvalue(value), always_inline(value),
-            key in sizes, key in observed, cv(value),
-        ))
-    end
+    inputs = _input_rows(datacontent, observed)
 
     operations = Symbol[:transpile, :instantiate]
     any(output -> output.kind === :parameter, outputs) &&
