@@ -1253,8 +1253,8 @@ import Statistics
     # Mills-ratio expansion log Φ(z) = -z²/2 - log(-z) - log(2π)/2 + log1p(S),
     # S = Σₖ₌₁⁶ (-1)ᵏ(2k-1)!!/z²ᵏ, again built from exact-derivative primitives.
     # At |z| ≥ 35 the first omitted term is < 3.3e-17, so value and gradient sit
-    # at the double-precision floor (≤ 1.5e-16 relative vs a 256-bit reference,
-    # out to 1e8σ). Stan's native `std_normal_lcdf` is no substitute: its
+    # at the double-precision floor (within 1.6e-16 relative of a 512-bit
+    # reference, out to 1e8σ). Stan's native `std_normal_lcdf` is no substitute: its
     # deep-tail gradient is off by 7e-6 at 40σ and 4e-4 at 60σ (BridgeStan
     # 2.9.0). The ternary evaluates only the selected branch, so no underflowed
     # erfc node reaches the AD tape; for |z| ≤ 35 the erfc branch is unchanged.
