@@ -522,6 +522,41 @@ _hof_call_family_splice(spec, x::CanonicalExpr) = begin
         x.kwargs...,
     )
 end
+# A family VALUE (`ValueFamily`, valuefamily.jl) in a distribution HOF call is
+# read BEFORE the arguments are traced and becomes its family token, the
+# `types.func` StanExpr a function family traces to. Raw or module-bound (token
+# form, `censored(fam, mu, s; lower=lo)`, or the base family trailing a nested
+# combinator token, `weighted(censored, w, fam, mu, s; lower=lo)`) a forwarded
+# value is swapped for it; no other HOF argument is ever a family value. As the
+# head of the family-slot call (`censored(fam(mu, s); lower=lo)`) the call is
+# spliced to that token form here, untraced. A value family's call matches its
+# density overloads strictly, so with scalar-only overloads and vector
+# arguments it would refuse a sampling shape the slot never samples; a function
+# family's call traces leniently and keeps the traced splice above. The inner
+# arguments are traced where the call stood, so declarations keep the order the
+# call form gives a function family. Snag valuefamily-as-t-c50cc47d.
+_family_value_token(x) = nothing
+_family_values_tokenized(args) = map(args) do a
+    token = _family_value_token(a)
+    isnothing(token) ? a : token
+end
+_forward_call_args(x::CanonicalExpr, resolved_head::StanExpr2{<:types.func}; info) = begin
+    spec = _distribution_hof(_family_function(resolved_head))
+    isnothing(spec) && return forward!(x.args; info)
+    i = spec.family_arg
+    fam = i <= length(x.args) ? x.args[i] : nothing
+    called = _is_canonical_expr(fam) ? _family_value_token(_forward_head(head(fam), info)) : nothing
+    isnothing(called) && return _family_values_tokenized(forward!(x.args; info))
+    isempty(fam.kwargs) || error(
+        "$(spec.name): the family call `$(nameof(type(called).info.value))(...)` takes " *
+        "only positional arguments; keyword argument(s) " *
+        "`$(join(keys(fam.kwargs), ", "))` belong on `$(spec.name)` itself"
+    )
+    before = forward!(x.args[1:i-1]; info)
+    inner = forward!(fam.args; info)
+    after = forward!(x.args[i+1:end]; info)
+    _family_values_tokenized((before..., called, after..., inner...))
+end
 # The implementation call a bounded combinator lowers to: optional bounds select
 # the lower/upper/two-sided variant and become positional, `interval_censored`
 # renames to its implementation head, and a variant head is already lowered.

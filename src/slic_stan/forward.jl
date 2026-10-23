@@ -59,6 +59,9 @@ forward!(x::Colon; info) = x
 forward!(x::StanExpr{Symbol}; info) = x
 forward!(x::StanExpr; info) = x
 _forward_call_kwargs(x::CanonicalExpr, resolved_head; info) = forward!(x.kwargs; info)
+# The positional twin of `_forward_call_kwargs`: a head that reads an argument
+# before it is traced (a distribution HOF's family slot, lpxf_builtin.jl).
+_forward_call_args(x::CanonicalExpr, resolved_head; info) = forward!(x.args; info)
 # Resolving a CALL's HEAD is not the same as forwarding a value. A sub-model in
 # head position is a callee to be EMBEDDED: its kwargs bind its data inputs, and
 # `stan_expr(::CanonicalExpr{<:Union{SlicModel,SubmodelFn}})` (passes.jl) applies
@@ -162,7 +165,7 @@ forward!(x::CanonicalExpr; info) = begin
         _reject_nullary_constant_call(x, resolved_head)
     resolved = CanonicalExpr(
         resolved_head,
-        forward!(x.args; info)...;
+        _forward_call_args(x, resolved_head; info)...;
         _forward_call_kwargs(x, resolved_head; info)...,
     )
     s = _get_expr_stack(info)

@@ -30,11 +30,14 @@
 # - density bodies may call sibling companions (`density`/`pointwise`/`rng`)
 #   and the family by label; the constructor splices the companion VALUES
 #   (self-contained families, no module bindings).
+# - a family stands in a distribution HOF's family slot (`weighted`,
+#   `truncated`, `censored`, `interval_censored`; token or call form) as a
+#   family TOKEN (`_family_token`), and carries optional `_lcdf`/`_lccdf`
+#   companions for the bounded forms to select.
 # - NOT in v1 (each names its follow-up in the `ValueFamily` docstring):
-#   HOF-wrapping (`truncated`/`censored`/`weighted`/… over a value family),
 #   explicit user bounds at a value `~` site (put bounds in intrinsic
-#   `support=`), selector/HOF-argument positions, data-dict carriage, ragged
-#   observations, `_lcdf`/`_lccdf` kinds, and `:void` companions.
+#   `support=`), companion-selector and `@deffun` function-argument positions,
+#   data-dict carriage, ragged observations, and `:void` companions.
 
 # --- Representation ------------------------------------------------------
 
@@ -89,6 +92,10 @@ struct ValueFamily
     density::ValueUDF
     pointwise::ValueUDF
     rng::ValueUDF
+    # Optional CDF companions (`<label>_lcdf`/`<label>_lccdf`), selected by the
+    # bounded distribution HOFs exactly like an `@lpxf` family's.
+    lcdf::Union{Nothing,ValueUDF}
+    lccdf::Union{Nothing,ValueUDF}
     support::NamedTuple
     mod::Module
 end
@@ -100,6 +107,10 @@ Base.show(io::IO, v::ValueUDF) =
 
 _value_label(v::ValueFamily) = v.label
 _value_label(v::ValueUDF) = v.label
+# A family's name in diagnostics (`nameof(family)` across the distribution-HOF
+# and ragged-observation messages) is its label, as a function's is its name.
+Base.nameof(v::ValueFamily) = v.label
+Base.nameof(v::ValueUDF) = v.label
 
 # --- Def parsing (mirrors the `@deffun` single-definition grammar) ---------
 
@@ -227,7 +238,7 @@ _value_parse_formals!(label::Symbol, all_args, mod::Module) = begin
 end
 
 # Parse one `@deffun`-shaped `sig = body` definition into an overload.
-# `role` is `:density`, `:pointwise`, `:rng`, or `:udf`.
+# `role` is `:density`, `:pointwise`, `:rng`, `:cdf`, or `:udf`.
 _value_parse_def(label::Symbol, role::Symbol, raw_def, mod::Module) = begin
     def = deepcopy(raw_def)
     def isa Expr || error(
@@ -404,7 +415,7 @@ _value_check_family_label(label::Symbol) = begin
 end
 
 """
-    ValueFamily(label::Symbol, kind::Symbol, density_defs, pointwise_defs, rng_defs, mod::Module; support=(;))
+    ValueFamily(label::Symbol, kind::Symbol, density_defs, pointwise_defs, rng_defs, mod::Module; support=(;), lcdf=nothing, lccdf=nothing)
 
 A value-based sampling distribution: the `_lpdf`/`_lpmf` + pointwise + `_rng`
 triad as DATA, usable in `y ~ family(…)` with no `Core.eval`, no Julia
@@ -417,39 +428,57 @@ exactly like `@lpxf` derives them (`<label>_<kind>`, `<label>_<kind>s`,
 kept on ONE native parameter declaration). `mod` is the defining module
 (actual identity, not a printed name): companion bodies trace in its context.
 
-Companion bodies spell sibling labels bare (`density` calling `pointwise`,
-RNG recursing across overloads, …) exactly as in `@deffun` source; the
-constructor links them to the companion values, so `@deffun`-shaped ASTs
-migrate by swapping the `Core.eval` for this constructor. Splice the family
-into a generated body (`Expr(:call, family, args…)`) or bind it in a module
-and reference it by name.
+`lcdf`/`lccdf` optionally supply the log-CDF and log-CCDF companions, defs
+shaped like the triad's and labelled `<label>_lcdf`/`<label>_lccdf` (the
+names `@deffun` families use). The family then stands in the family slot of
+the distribution HOFs — `weighted`, `truncated`, `censored`,
+`interval_censored`, token form (`censored(family, args…; lower=lo)`) or call
+form (`censored(family(args…); lower=lo)`) — exactly like an `@lpxf` family;
+each bounded form needs the companion(s) the `stanblocks-use` §8.1 table
+lists, and `weighted` needs none.
 
-v1 FOLLOW-UPS (each fails loudly today): HOF-wrapping a value family
-(`truncated`/`censored`/`weighted`/…), explicit user bounds at a value `~`
-site (put bounds in `support=`), selector/HOF-argument positions,
-data-dict carriage, ragged observations, `_lcdf`/`_lccdf` kinds.
+Companion bodies spell sibling labels bare (`density` calling `pointwise`,
+RNG recursing across overloads, a CCDF calling the CDF, …) exactly as in
+`@deffun` source; the constructor links them to the companion values, so
+`@deffun`-shaped ASTs migrate by swapping the `Core.eval` for this
+constructor. Splice the family into a generated body
+(`Expr(:call, family, args…)`) or bind it in a module and reference it by
+name.
+
+v1 FOLLOW-UPS (each fails loudly today): explicit user bounds at a value `~`
+site (put bounds in `support=`, or write `truncated(family, …)`),
+companion selectors (`density(family, …)`) and `@deffun` function-argument
+positions, data-dict carriage, ragged observations.
 """
 ValueFamily(
     label::Symbol, kind::Symbol, density_defs, pointwise_defs, rng_defs,
-    mod::Module; support::NamedTuple=(;),
+    mod::Module; support::NamedTuple=(;), lcdf=nothing, lccdf=nothing,
 ) = begin
     _value_check_family_label(label)
     (kind === :lpdf || kind === :lpmf) || error(
         "ValueFamily `", label, "`: kind must be `:lpdf` or `:lpmf`, got `", kind,
-        "` (`:lcdf`/`:lccdf` companions are a v1 follow-up).",
+        "` (CDF companions are the `lcdf=`/`lccdf=` keywords, not a kind).",
     )
     density_label = Symbol(label, :_, kind)
     pointwise_label = Symbol(density_label, :s)
     rng_label = Symbol(label, :_rng)
+    lcdf_label = Symbol(label, :_lcdf)
+    lccdf_label = Symbol(label, :_lccdf)
     links = Dict{Symbol,Any}()
     density = _value_build_udf(density_label, :density, _value_defs(density_defs), mod, links)
     pointwise = _value_build_udf(pointwise_label, :pointwise, _value_defs(pointwise_defs), mod, links)
     rng = _value_build_udf(rng_label, :rng, _value_defs(rng_defs), mod, links)
-    family = ValueFamily(label, kind, density, pointwise, rng, support, mod)
+    cdf = isnothing(lcdf) ? nothing :
+        _value_build_udf(lcdf_label, :cdf, _value_defs(lcdf), mod, links)
+    ccdf = isnothing(lccdf) ? nothing :
+        _value_build_udf(lccdf_label, :cdf, _value_defs(lccdf), mod, links)
+    family = ValueFamily(label, kind, density, pointwise, rng, cdf, ccdf, support, mod)
     links[label] = family
     links[density_label] = density
     links[pointwise_label] = pointwise
     links[rng_label] = rng
+    isnothing(cdf) || (links[lcdf_label] = cdf)
+    isnothing(ccdf) || (links[lccdf_label] = ccdf)
     family
 end
 
@@ -650,9 +679,10 @@ _resolve_module_value(v::ValueUDF, info) = v
 _value_position_error(v, where::String) = error(
     _value_kind_str(v), " `", _value_label(v), "` ", where, " — v1 supports ",
     "value families/companions in call-head and `~` positions (spliced or ",
-    "module-bound) only. Selector/HOF-argument positions, explicit user bounds, ",
-    "data-dict carriage, and ragged generated-quantities are documented ",
-    "follow-ups (see the `ValueFamily` docstring).",
+    "module-bound) and value families in a distribution HOF's family slot ",
+    "only. Selector and `@deffun` function-argument positions, explicit user ",
+    "bounds, data-dict carriage, and ragged generated-quantities are ",
+    "documented follow-ups (see the `ValueFamily` docstring).",
 )
 
 _value_kind_str(::ValueFamily) = "ValueFamily"
@@ -674,6 +704,8 @@ stan_type(expr, v::ValueUDF; kwargs...) =
 # arg/data flows like HOF family splices do).
 type(v::ValueFamily) = _value_position_error(v, "has no Stan type outside call-head position")
 type(v::ValueUDF) = _value_position_error(v, "has no Stan type outside call-head position")
+center_type(v::ValueFamily) = _value_position_error(v, "has no Stan type outside call-head position")
+center_type(v::ValueUDF) = _value_position_error(v, "has no Stan type outside call-head position")
 expr(v::ValueFamily) = _value_position_error(v, "has no Stan expression outside call-head position")
 expr(v::ValueUDF) = _value_position_error(v, "has no Stan expression outside call-head position")
 
@@ -695,10 +727,22 @@ expand_inline_or_trace(x::CanonicalExpr{<:DistributionFamilySelector}; info) = b
     invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info)
 end
 
-# HOF token positions (`truncated(family, …)`, ragged-GQ markers) take
-# function tokens; a value names the boundary.
-_family_function(v::ValueFamily) = _value_position_error(v, "cannot serve as an HOF family")
-_family_function(v::ValueUDF) = _value_position_error(v, "cannot serve as an HOF family")
+# A distribution HOF's family slot (`censored(family, …)`, `weighted(family(…),
+# w)`) takes a value family as a family TOKEN (`_forward_call_args`,
+# lpxf_builtin.jl): the `types.func` StanExpr a function family traces to,
+# carrying the value as `info.value`. Everything downstream (`_family_function`,
+# the companion selectors in the HOF bodies, `func_name` mangling,
+# `always_inline` argument dropping) then reads it exactly as it reads `normal`.
+# The token exists only there: a raw value in any other argument position still
+# reaches the `stan_expr`/`type` backstops.
+_family_value_token(v::ValueFamily) =
+    StanExpr(v, StanType(types.func{ValueFamily}; value=v, qual=:data))
+# Like a function token, a family token reads no data.
+fetch_data!(x::StanExpr{<:ValueFamily}; info) = nothing
+# A raw value reaching the token reader came from outside an HOF call (a ragged
+# observation's group markers carry the family raw).
+_family_function(v::ValueFamily) = _value_position_error(v, "cannot serve as a family token outside a distribution HOF call")
+_family_function(v::ValueUDF) = _value_position_error(v, "cannot serve as an HOF family (a ValueUDF is not a family)")
 
 # One companion call's result type: match, bind sizes, resolve the return.
 _tracetype(x::CanonicalExpr{<:ValueUDF}, context) = begin
@@ -839,6 +883,16 @@ end
 lpxf_expr(v::ValueFamily) = v.density
 rng_expr(v::ValueFamily) = v.rng
 likelihood_expr(v::ValueFamily) = v.pointwise
+# The bounded HOFs select these (`logcdf`/`logccdf` in their bodies); a missing
+# one names the constructor keyword, as `@deffun` names the missing function.
+logcdf_expr(v::ValueFamily) = isnothing(v.lcdf) ? _value_missing_cdf(v, :lcdf) : v.lcdf
+logccdf_expr(v::ValueFamily) = isnothing(v.lccdf) ? _value_missing_cdf(v, :lccdf) : v.lccdf
+_value_missing_cdf(v::ValueFamily, kind::Symbol) = error(
+    "distribution HOF: value family `", v.label, "` requires companion `",
+    v.label, "_", kind, "`, but it was built without one — pass `", kind,
+    "=` defs (`", v.label, "_", kind, "(y, args...)::real = …`) to its ",
+    "`ValueFamily` constructor.",
+)
 
 # Intrinsic support bounds (the `autokwargs` contract): the stored values flow
 # through the same downstream normalization as method-returned bounds.
@@ -865,3 +919,16 @@ _is_rng_callee(v::ValueUDF) = endswith(String(v.label), "_rng")
 # (consumers read only the stored definitions).
 sig_expr(x::CanonicalExpr{<:ValueUDF}) =
     CanonicalExpr(:valueudf, head(x).label, sig_expr(x.args)...)
+# A family TOKEN's key (an HOF wrapper specialised on it, `censored_mix2_lpdf`)
+# is the family's content, not its identity: two separately built identical
+# families share one wrapper, and two same-label families with different bodies
+# key two wrappers whose companion fetches then collide on the divergence check
+# above, loudly, instead of the first wrapper silently serving both.
+sig_expr(v::ValueFamily) = (
+    :valuefamily, v.label, v.kind, v.support,
+    map(_value_udf_key, (v.density, v.pointwise, v.rng, v.lcdf, v.lccdf))...,
+)
+_value_udf_key(::Nothing) = nothing
+_value_udf_key(u::ValueUDF) = Tuple(
+    (_value_overload_key(o.patterns, o.vararg), o.body_key) for o in u.overloads
+)
