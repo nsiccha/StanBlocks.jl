@@ -709,7 +709,8 @@ logccdf_expr(family) = _family_probability_companion(family, :_lccdf)
 # are inaccurate (~1e-6) and `normal_lccdf` diverges past ~9σ, so every
 # `censored`/`truncated`/`interval_censored(normal, …)` tail mass would inherit
 # a wrong gradient. The erfc form `log(0.5·erfc(∓z/√2))` autodiffs exactly and
-# is value-identical. See snag censored-normal-410c4e35.
+# is value-identical; past 35σ an asymptotic branch replaces it before `erfc`
+# underflows. See snags censored-normal-410c4e35 and fit-a-left-censo-942540f9.
 logcdf_expr(::typeof(builtin.normal)) = builtin.normal_lcdf_stable
 logccdf_expr(::typeof(builtin.normal)) = builtin.normal_lccdf_stable
 
