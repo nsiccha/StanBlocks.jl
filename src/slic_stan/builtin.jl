@@ -253,8 +253,11 @@ end
     # censored/truncated/interval-censored normal tail masses autodiff exactly.
     # Must be registered here too: `@deffun` builtins are asserted against this
     # manifest (`_assert_builtin_registered`). snag censored-normal-410c4e35.
+    # `std_normal_lcdf_tail` is their shared deep-tail branch past 35σ (snag
+    # fit-a-left-censo-942540f9).
     normal_lcdf_stable
     normal_lccdf_stable
+    std_normal_lcdf_tail
 
     # Longitudinal dose/time-response building blocks. The obs model is a
     # censored normal w/ limits of quantification (`truncated_normal` — the
@@ -1241,11 +1244,32 @@ import Statistics
     # is not in the probability family, so `@deffun` would otherwise install a
     # Julia target calling the Stan-only `erfc` token — these are Stan-emission
     # only. See snag censored-normal-410c4e35 for the isolated-kernel measurement.
+    #
+    # Past ~37.6σ the erfc form breaks: `erfc` goes subnormal (gradient ±Inf),
+    # then underflows to 0 (value -Inf, gradient 0·Inf = NaN). A NaN gradient
+    # survives a `log_sum_exp` whose other term is finite, so a censored mixture
+    # rejects every start (snag fit-a-left-censo-942540f9). Beyond 35σ the
+    # helpers therefore switch to `std_normal_lcdf_tail`, the asymptotic
+    # Mills-ratio expansion log Φ(z) = -z²/2 - log(-z) - log(2π)/2 + log1p(S),
+    # S = Σₖ₌₁⁶ (-1)ᵏ(2k-1)!!/z²ᵏ, again built from exact-derivative primitives.
+    # At |z| ≥ 35 the first omitted term is < 3.3e-17, so value and gradient sit
+    # at the double-precision floor (within 1.6e-16 relative of a 512-bit
+    # reference, out to 1e8σ). Stan's native `std_normal_lcdf` is no substitute: its
+    # deep-tail gradient is off by 7e-6 at 40σ and 4e-4 at 60σ (BridgeStan
+    # 2.9.0). The ternary evaluates only the selected branch, so no underflowed
+    # erfc node reaches the AD tape; for |z| ≤ 35 the erfc branch is unchanged.
     @stanonly begin
+    std_normal_lcdf_tail(z::real)::real = begin
+        w = inv(square(z))
+        -0.5 * square(z) - log(-z) - 0.9189385332046728 +
+            log1p(w * (-1 + w * (3 + w * (-15 + w * (105 + w * (-945 + w * 10395))))))
+    end
     normal_lcdf_stable(x::real, loc::real, scale::real)::real =
-        log(erfc(-(x - loc) / (scale * sqrt(2.)))) - log(2.)
+        (x - loc) / scale < -35 ? std_normal_lcdf_tail((x - loc) / scale) :
+            log(erfc(-(x - loc) / (scale * sqrt(2.)))) - log(2.)
     normal_lccdf_stable(x::real, loc::real, scale::real)::real =
-        log(erfc((x - loc) / (scale * sqrt(2.)))) - log(2.)
+        (x - loc) / scale > 35 ? std_normal_lcdf_tail((loc - x) / scale) :
+            log(erfc((x - loc) / (scale * sqrt(2.)))) - log(2.)
     end
     student_t_lcdf(args...)
     student_t_lccdf(args...)
