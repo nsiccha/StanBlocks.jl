@@ -587,11 +587,25 @@ Core.kwcall(kwargs::NamedTuple, ::typeof(jcall), f, args::Vararg{Any,N}) where {
 Core.kwcall(kwargs::NamedTuple, ::typeof(jcall), tag::Val, scope::_JuliaScope, args::Vararg{Any,N}) where {N} =
     _jcall_callee(scope, tag)(args...; kwargs...)
 
-for f in (:sqrt, :exp, :log, :log10, :sin, :cos, :asin, :acos, :tan, :atan,
-          :cosh, :sinh, :tanh, :acosh, :asinh, :atanh, :expm1, :abs,
-          :exp2, :log2, :ceil, :floor, :round, :trunc)
-    bf = getproperty(Base, f)
-    @eval jcall(::Val{$(QuoteNode(f))}, ::_JuliaScope, x::AbstractArray) = $bf.(x)
+# Stan vectorises its math builtins elementwise. A unary one applies to each
+# element of a container. A binary or ternary one takes any mix of scalars and
+# containers: each scalar goes to every element, and the containers must have
+# one size (Stan Math's `apply_scalar_binary` checks it). A nested array
+# recurses into its elements. Julia's methods of the same names do something
+# else: `max` and `min` of two vectors compare them lexicographically, `inv` of
+# a matrix inverts it, and most have no container method at all. A data-only
+# bound `stan_descriptor` evaluates and a `@juliacompat` body both reach these
+# builtins through `jcall`, so a container call applies the builtin's scalar
+# twin to each element (snag `stanblocks-stan-458f365d`). `builtin.jl` adds
+# the container methods for each builtin Stan vectorises, from the lists that
+# also type them.
+_julia_matching_container(tag, ref, x) = ref
+_julia_matching_container(tag, ::Nothing, x::AbstractArray) = x
+_julia_matching_container(::Val{name}, ref::AbstractArray, x::AbstractArray) where {name} =
+    (_julia_check_matching_sizes(name, ref, x); ref)
+function _julia_elementwise(tag::Val, scope, args::Vararg{Any,N}) where {N}
+    Base.afoldl((ref, x) -> _julia_matching_container(tag, ref, x), nothing, args...)
+    jcall.(Ref(tag), Ref(scope), args...)
 end
 
 for f in (:+, :-)
@@ -664,25 +678,18 @@ _julia_check_matching_sizes(name, x, y) = size(x) == size(y) || throw(DimensionM
     "$name requires arguments of equal size, got $(size(x)) and $(size(y))"))
 
 jcall(::Val{:inv_logit}, ::_JuliaScope, x) = inv(one(x) + exp(-x))
-jcall(::Val{:inv_logit}, ::_JuliaScope, x::AbstractArray) = jcall.(Ref(Val(:inv_logit)), Ref(@__MODULE__), x)
 jcall(::Val{:logit}, ::_JuliaScope, x) = _julia_logit(x)
-jcall(::Val{:logit}, ::_JuliaScope, x::AbstractArray) = _julia_logit.(x)
 jcall(::Val{:log_inv_logit}, ::_JuliaScope, x) = _julia_log_inv_logit(x)
-jcall(::Val{:log_inv_logit}, ::_JuliaScope, x::AbstractArray) = _julia_log_inv_logit.(x)
 jcall(::Val{:log1m}, ::_JuliaScope, x) = _julia_log1m(x)
-jcall(::Val{:log1m}, ::_JuliaScope, x::AbstractArray) = _julia_log1m.(x)
 jcall(::Val{:log1p_exp}, ::_JuliaScope, x) = _julia_log1p_exp(x)
-jcall(::Val{:log1p_exp}, ::_JuliaScope, x::AbstractArray) = _julia_log1p_exp.(x)
 jcall(::Val{:log1m_exp}, ::_JuliaScope, x) = _julia_log1m_exp(x)
-jcall(::Val{:log1m_exp}, ::_JuliaScope, x::AbstractArray) = _julia_log1m_exp.(x)
 jcall(::Val{:lgamma}, ::_JuliaScope, x) = _julia_lgamma(x)
-jcall(::Val{:lgamma}, ::_JuliaScope, x::AbstractArray) = _julia_lgamma.(x)
 jcall(::Val{:tgamma}, ::_JuliaScope, x) = _julia_tgamma(x)
-jcall(::Val{:tgamma}, ::_JuliaScope, x::AbstractArray) = _julia_tgamma.(x)
 jcall(::Val{:digamma}, ::_JuliaScope, x) = _julia_digamma(x)
-jcall(::Val{:digamma}, ::_JuliaScope, x::AbstractArray) = _julia_digamma.(x)
 jcall(::Val{:trigamma}, ::_JuliaScope, x) = _julia_trigamma(x)
-jcall(::Val{:trigamma}, ::_JuliaScope, x::AbstractArray) = _julia_trigamma.(x)
+# This package binds `log2` to its own builtin (Stan's zero-argument `log2()`
+# shares the name), which has no Julia method.
+jcall(::Val{:log2}, ::_JuliaScope, x::Number) = Base.log2(x)
 jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::Real, y::Real) = _julia_log_sum_exp(x, y)
 jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::AbstractArray{<:Real}) = _julia_log_sum_exp(x)
 function jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::AbstractArray{<:Real}, y::AbstractArray{<:Real})
@@ -690,7 +697,6 @@ function jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::AbstractArray{<:Real}, y::
     _julia_log_sum_exp.(x, y)
 end
 jcall(::Val{:square}, ::_JuliaScope, x) = x * x
-jcall(::Val{:square}, ::_JuliaScope, x::AbstractArray) = x .* x
 # Stan divides two integers as integers, truncating toward zero like C++ (and
 # `div`); Julia's `/` would return a float. A size `vector[n / 2]`, a bound
 # `lower=k / 2` and a `@juliacompat` body's `n / 2` all depend on it.
@@ -700,8 +706,10 @@ jcall(::Val{:/}, ::_JuliaScope, x::Integer, y::Integer) = div(x, y)
 jcall(::Val{:negative_infinity}, ::_JuliaScope) = -Inf
 jcall(::Val{:positive_infinity}, ::_JuliaScope) = Inf
 jcall(::Val{:not_a_number}, ::_JuliaScope) = NaN
-jcall(::Val{:fmin}, ::_JuliaScope, x, y) = min(x, y)
-jcall(::Val{:fmax}, ::_JuliaScope, x, y) = max(x, y)
+# Stan's `fmin`/`fmax` are C's: a NaN argument yields the other one, where
+# Julia's `min`/`max` return NaN.
+jcall(::Val{:fmin}, ::_JuliaScope, x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : min(x, y)
+jcall(::Val{:fmax}, ::_JuliaScope, x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : max(x, y)
 jcall(::Val{:max}, ::_JuliaScope, x::AbstractArray) = maximum(x)
 jcall(::Val{:min}, ::_JuliaScope, x::AbstractArray) = minimum(x)
 jcall(::Val{:dims}, ::_JuliaScope, x) = collect(size(x))

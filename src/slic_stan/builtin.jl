@@ -3065,14 +3065,41 @@ end
     end
 end
 
+# The math builtins Stan vectorises elementwise, unary ones (typed below over
+# every container) and those with more arguments, with their argument count
+# (stanc 2.39 accepts each over real, vector, matrix and array arguments; an
+# argument the builtin requires to be an int takes an int array). Their Julia
+# twins apply the scalar twin to each element (`_julia_elementwise`,
+# functions.jl).
+const _ELEMENTWISE_UNARY = (sqrt, inv_sqrt, exp, log, log10, sin, cos, asin, acos, tan, atan,
+    cosh, sinh, tanh, acosh, asinh, atanh,
+    log1m, inv_logit, logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs,
+    log1p_exp, Base.inv, Base.log1p,
+    exp2, log2, cbrt, ceil, floor, round, trunc,
+    square, erf, erfc, tgamma, digamma, trigamma,
+    Phi_approx, inv_Phi, inv_cloglog, lambert_w0)
+const _ELEMENTWISE_NARY = (
+    (fmin, 2), (fmax, 2), (fdim, 2), (fmod, 2), (atan2, 2), (lbeta, 2), (log_diff_exp, 2),
+    (owens_t, 2), (gamma_p, 2), (gamma_q, 2), (binary_log_loss, 2),
+    (bessel_first_kind, 2), (bessel_second_kind, 2),
+    (modified_bessel_first_kind, 2), (modified_bessel_second_kind, 2),
+    (log_modified_bessel_first_kind, 2), (fma, 3),
+)
+for f in _ELEMENTWISE_UNARY
+    @eval jcall(tag::Val{$(QuoteNode(nameof(f)))}, scope::_JuliaScope, x::AbstractArray) =
+        _julia_elementwise(tag, scope, x)
+end
+# One method per mix of scalar and container arguments that holds a container;
+# the all-scalar call stays with the scalar twin.
+for (f, n) in _ELEMENTWISE_NARY, kinds in Iterators.product(ntuple(_ -> (Number, AbstractArray), n)...)
+    all(==(Number), kinds) && continue
+    xs = [Symbol(:x, i) for i in 1:n]
+    @eval jcall(tag::Val{$(QuoteNode(nameof(f)))}, scope::_JuliaScope,
+        $((:($x::$k) for (x, k) in zip(xs, kinds))...)) = _julia_elementwise(tag, scope, $(xs...))
+end
+
 @defsig begin
-    Union{typeof.((sqrt, inv_sqrt, exp, log, log10, sin, cos, asin, acos, tan, atan,
-        cosh, sinh, tanh, acosh, asinh, atanh,
-        log1m, inv_logit, logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs,
-        log1p_exp, log1m_exp, Base.inv, Base.log1p,
-        exp2, log2, cbrt, ceil, floor, round, trunc,
-        square, erf, erfc, tgamma, digamma, trigamma,
-        Phi_approx, inv_Phi, inv_cloglog, lambert_w0))...} => begin
+    Union{typeof.(_ELEMENTWISE_UNARY)...} => begin
         (real,)=>real
         (vector[n],)=>vector[n]
         (row_vector[n],)=>row_vector[n]

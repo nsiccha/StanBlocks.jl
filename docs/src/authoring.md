@@ -845,7 +845,10 @@ Bodyful deterministic `@deffun` definitions are Stan-only by default. Add
 be unit-tested directly. Probability/RNG/ODE families remain Stan-only, and the
 opt-in target is not a promise of full Julia runtime parity for every Stan
 builtin. `@stanonly` can document the default or opt one definition out of a
-surrounding `@juliacompat` group.
+surrounding `@juliacompat` group. The math builtins Stan vectorises (`exp`,
+`inv`, `log1p`, `fmax`, `fmin`, …) apply elementwise to containers in the Julia
+method as in Stan: `inv` of a matrix is its elementwise reciprocal, not its
+inverse, and `fmax` of two vectors pairs them up.
 
 For a raw `matrix`, the final two annotation dimensions are the native matrix
 shape and every leading dimension is a Stan array prefix. Thus
@@ -900,7 +903,9 @@ spelled: a literal, or an emitted expression such as `fmax(0.0, (2 * floor_))`.
 `constraint_values` holds the same keys evaluated against the current data, as
 `dims` is, so `real<lower=fmax(0.0, (2 * floor_))>` with `floor_ = 0.3` reports
 `(lower = 0.6,)`. Evaluation follows Stan, so `lower = k / 2` with the integer
-`k = 7` is `3`. A per-coordinate bound is an array with one entry per
+`k = 7` is `3`, and a builtin Stan vectorises applies elementwise:
+`vector<lower=fmax(0.0, lo)>[2]` with `lo = [0.1, -0.2]` reports
+`(lower = [0.1, 0.0],)`. A per-coordinate bound is an array with one entry per
 coordinate, `-Inf` or `Inf` where a coordinate is unbounded. That includes the
 bound arrays the compiler fills in `transformed data` for slice statements,
 `vcat` priors, plate cells and `@scan` recurrences. A bound that names a data

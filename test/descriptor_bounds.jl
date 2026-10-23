@@ -201,6 +201,98 @@ function returns `3`, and `stan_descriptor` threw for the valid size
 end
 
 """
+Verify `slic: Stan's vectorised builtins evaluate elementwise in the Julia layer`.
+
+Snag stanblocks-stan-458f365d (from a downstream regression package): a vector
+parameter bounded by `fmax(0.0, lo)` over a data vector, which Stan evaluates
+elementwise, made `stan_descriptor` throw, because the Julia twin of `fmax` was
+`max(x, y)`. `fmax` of two vectors did not throw but returned the
+lexicographically larger vector, and `inv` of a matrix returned the matrix
+inverse. Every math builtin Stan vectorises now applies its scalar twin to each
+element, in a descriptor bound and a `@juliacompat` body alike.
+"""
+@testitem "slic: Stan's vectorised builtins evaluate elementwise in the Julia layer" tags=[:slic, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    bound_values(m, name) = only(o.constraint_values for o in stan_descriptor(m).outputs if o.name === name)
+    data = (; lo = [0.1, -0.2], hi = [3.0, 4.0], y = [1.0, 2.0])
+    # The reported shape: a data vector floored by a scalar, one bound per coordinate.
+    floored = @slic data begin
+        rho::vector[2] ~ lognormal(0., 4.; lower = fmax(0.0, lo))
+        y ~ normal(sum(rho), 1.)
+    end
+    @test bound_values(floored, :rho) == (lower = [0.1, 0.0],)
+    @test bound_values(StanBlocks.stan_model(floored)(; lo = [-1.0, 2.0]), :rho) == (lower = [0.0, 2.0],)
+    @test bound_values(@slic(data, begin
+        rho::vector[2] ~ lognormal(0., 4.; lower = fmax(lo, 0.0))
+        y ~ normal(sum(rho), 1.)
+    end), :rho) == (lower = [0.1, 0.0],)
+    @test bound_values(@slic(data, begin
+        rho::vector[2] ~ normal(0., 4.; upper = fmin(3.5, hi))
+        y ~ normal(sum(rho), 1.)
+    end), :rho) == (upper = [3.0, 3.5],)
+    # Two vectors pair up elementwise; Julia's `max` returns all of `lo`.
+    @test bound_values(@slic(data, begin
+        rho::vector[2] ~ lognormal(0., 4.; lower = fmax(lo, hi .- 3.5))
+        y ~ normal(sum(rho), 1.)
+    end), :rho) == (lower = [0.1, 0.5],)
+    @test bound_values(@slic(data, begin
+        rho::vector[2] ~ normal(0., 4.; lower = log1p(hi))
+        y ~ normal(sum(rho), 1.)
+    end), :rho) == (lower = log1p.([3.0, 4.0]),)
+
+    jc(name, args...) = StanBlocks.jcall(Val(name), StanBlocks, args...)
+    # Stan's `inv` is elementwise; Julia's `inv` of a matrix inverts it.
+    @test jc(:inv, [1.0 2.0; 4.0 8.0]) == [1.0 0.5; 0.25 0.125]
+    @test jc(:fmin, [1.0 5.0; -1.0 3.0], 2.0) == [1.0 2.0; -1.0 2.0]
+    # A nested array recurses into its elements.
+    @test jc(:fmax, 0.0, [[-1.0, 1.0], [2.0, -2.0, 3.0]]) == [[0.0, 1.0], [2.0, 0.0, 3.0]]
+    # Stan's `fmax`/`fmin` are C's: a NaN argument yields the other one.
+    @test jc(:fmax, NaN, 1.0) === 1.0 && jc(:fmin, 2.0, NaN) === 2.0
+    @test jc(:fmax, [NaN, 1.0], 0.5) == [0.5, 1.0]
+    # refused: Stan Math's `apply_scalar_binary` requires containers of one size,
+    # where Julia's broadcast would stretch the one-element vector.
+    @test_throws DimensionMismatch jc(:fmax, [1.0], [1.0, 2.0])
+    # This package binds `log2` to its own builtin; the twin is still Julia's.
+    @test jc(:log2, 8.0) === 3.0 && jc(:log2, [2.0, 4.0]) == [1.0, 2.0]
+
+    @deffun @juliacompat elementwise_floor(x::vector[n])::vector[n] = fmax(0.0, x)
+    @deffun @juliacompat elementwise_inv(x::matrix[m, n])::matrix[m, n] = inv(x)
+    @test Base.invokelatest(elementwise_floor, [0.1, -0.2]) == [0.1, 0.0]
+    @test Base.invokelatest(elementwise_inv, [1.0 2.0; 4.0 8.0]) == [1.0 0.5; 0.25 0.125]
+
+    # Every vectorised builtin's container call agrees with its scalar twin.
+    # Those still without a scalar twin are tracked by todo
+    # `StanBlocks/todos/2026-10-23T09-47-31-458-1j6rdy6`.
+    no_twin = (:inv_sqrt, :Phi, :cbrt, :erf, :erfc, :Phi_approx, :inv_Phi, :inv_cloglog,
+        :lambert_w0, :fdim, :fmod, :atan2, :lbeta, :log_diff_exp, :owens_t, :gamma_p, :gamma_q,
+        :binary_log_loss, :bessel_first_kind, :bessel_second_kind, :modified_bessel_first_kind,
+        :modified_bessel_second_kind, :log_modified_bessel_first_kind, :fma)
+    base = [0.1 0.2; 0.3 0.45]
+    for f in StanBlocks._ELEMENTWISE_UNARY
+        name, owner = nameof(f), parentmodule(f)
+        twin(x) = StanBlocks.jcall(Val(name), owner, x)
+        # Inside each builtin's domain.
+        x = name === :acosh ? 1 .+ base : name === :log1m_exp ? -base : base
+        if name in no_twin
+            @test_broken twin(x[1]) isa Real
+        else
+            @test isequal(twin(x), map(twin, x))
+            @test isequal(twin(vec(x)), map(twin, vec(x)))
+        end
+    end
+    for (f, n) in StanBlocks._ELEMENTWISE_NARY
+        name, owner = nameof(f), parentmodule(f)
+        twin(args...) = StanBlocks.jcall(Val(name), owner, args...)
+        if name in no_twin
+            @test_broken twin(ntuple(_ -> 1, n)...) isa Real
+        else
+            @test isequal(twin(base, 0.25), map(x -> twin(x, 0.25), base))
+            @test isequal(twin(0.25, base), map(x -> twin(0.25, x), base))
+            @test isequal(twin(base, base'), map(twin, base, base'))
+        end
+    end
+end
+
+"""
 Verify `slic: descriptor constraint values are the bounds Stan applies`.
 
 Snag read-the-numeric-9a6adfef: each parameter's `constraint_values`, put
@@ -269,6 +361,14 @@ nested in a `@plate for`, and a varying-length cell's flat memory.
                 obs[j] ~ normal(h, 1.0)
             end
         end, Dict{Symbol,Any}(:T => [2, 3], :J => 2, :obs => [[0.1, 0.2], [0.3, 0.4, 0.5]]), @__MODULE__),
+        # Stan's vectorised `fmax`/`fmin` bound each coordinate by its own entry
+        # (snag stanblocks-stan-458f365d).
+        @slic((; lo = [0.1, -0.2], hi = [3.0, 4.0], y = [1.0, 2.0]), begin
+            r1::vector[2] ~ lognormal(0., 4.; lower = fmax(0.0, lo))
+            r2::vector[2] ~ lognormal(0., 4.; lower = fmax(lo, hi .- 3.5))
+            r3::vector[2] ~ normal(0., 4.; upper = fmin(3.5, hi))
+            y ~ normal(sum(r1) + sum(r2) + sum(r3), 1.)
+        end),
     )
     for m in models
         d = stan_descriptor(m)
