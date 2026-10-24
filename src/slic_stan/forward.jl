@@ -426,9 +426,9 @@ _ragged_rhs_is_flat(rhs) = _is_canonical_expr(rhs) && head(rhs) === :flat &&
     isempty(rhs.args) && isempty(rhs.kwargs)
 
 # Is the ragged density argument cv-tainted (cross-validation held-out)? A ragged
-# plate result sampled from a cv-marked group count moves its flat backing
-# (`<name>__pl_mem_<id>`) to `generated quantities`; a per-group MODEL-block
-# density loop over it then references a GQ-only symbol and stanc rejects it as
+# plate result sampled from a cv-marked group count moves its flat backing (the
+# Stan variable of the same name) to `generated quantities`; a per-group
+# MODEL-block density loop over it then references a GQ-only symbol and stanc rejects it as
 # out of scope (snag ragged-obs-not-c-5b1180c7). Detect the taint the same way
 # `stan_expr(::CanonicalExpr)` contagion would compute it from the FORWARDED args
 # — any referenced value is cv — but do it SYNTACTICALLY over the RAW rhs: a
@@ -3180,7 +3180,24 @@ _ragged_accessor_parts(a) = begin
     (hi isa Expr && hi.head === :call && hi.args[1] === :ragged_end && hi.args[2:3] == lo.args[2:3]) || return nothing
     (; mem=a.args[1], ends=lo.args[2], idx=lo.args[3])
 end
-_plate_ragged_plan(f, T::StanType, outer, idxs, id) = begin
+# Once the model is traced, each ragged plate binding's name goes back to its
+# flat-memory declaration: the lowering passes and `stan_descriptor` look a
+# variable up by its Stan name, and no statement refers to the view.
+_restore_ragged_storage!(info::StanModel) = begin
+    for (name, x) in collect(pairs(vars(info)))
+        mem = get(type(x).info, :ragged_storage, nothing)
+        mem === nothing || (info[name] = mem)
+    end
+    info
+end
+
+# A ragged cell's flat memory takes the binding's own Stan name `f` (a `@plate
+# for` array `wash`, a do-form result `rv`, a cell local's carrier `rv_t`), so
+# the names in a program do not depend on how many inline expansions precede
+# the loop. Its per-group lengths and inclusive ends are transformed data,
+# `f__pl_len` / `f__pl_end` (`_plate_fresh_name!` numbers a taken one); after
+# the loop `f` names the `RaggedVector` view over memory and ends.
+_plate_ragged_plan(f, T::StanType, outer, idxs, taken; info) = begin
     length(outer) == 1 || error(
         "plate: ragged vector/int cells currently require a one-dimensional `outer`; ",
         "got $(length(outer)) axes for `$f`."
@@ -3196,9 +3213,11 @@ _plate_ragged_plan(f, T::StanType, outer, idxs, id) = begin
         "$(qual(stan_size(T)[1]))-qualified size expression. Stan parameter ",
         "dimensions cannot depend on parameters or generated quantities."
     )
-    mem = Symbol(f, :__pl_mem_, id)
-    lens = Symbol(f, :__pl_len_, id)
-    ends = Symbol(f, :__pl_end_, id)
+    mem = f
+    lens = _plate_fresh_name!(Symbol(f, :__pl_len), taken; info)
+    push!(taken, lens)
+    ends = _plate_fresh_name!(Symbol(f, :__pl_end), taken; info)
+    push!(taken, ends)
     idx = only(idxs)
     accessor = :($mem[ragged_start($ends, $idx):ragged_end($ends, $idx)])
     (; logical=f, cell_type=T, mem, lens, ends,
@@ -3778,7 +3797,7 @@ end
 # in the enclosing block) and returns the rewritten `(body_stmts, ret_expr)`.
 # Runs BEFORE `_plate_discover`, so a lifted name is already in `info` when
 # discovery snapshots `before` and is therefore never promoted to a cell.
-_plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs, id; info, keep=Set{Symbol}()) = begin
+_plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs; info, keep=Set{Symbol}()) = begin
     pending = _get_inline_pending(info)
     varying = Set{Symbol}(idxs)
     union!(varying, params)
@@ -3819,11 +3838,10 @@ _plate_hoist_invariants(body_stmts, ret_expr, rv, params, idxs, id; info, keep=S
         (_plate_is_hoist_candidate(e) && _plate_is_invariant(e, varying) &&
             _plate_probe_hoistable(e; info)) || return nothing
         n[] += 1
-        # The do-form tags hoists with the trace id; the annotated sugar passes
-        # `id === nothing` for STABLE names (a nested loop is traced twice), so
-        # two array-less loops over one index would share them.
-        name = _plate_fresh_name!(
-            id === nothing ? Symbol(rv, :__pl_inv, n[]) : Symbol(rv, :__pl_inv, n[], :_, id), (); info)
+        # Named after the loop's namespace, never a trace id: a nested loop is
+        # traced twice and must choose the same names both times. Two loops
+        # sharing a namespace get numbered names (`_plate_fresh_name!`).
+        name = _plate_fresh_name!(Symbol(rv, :__pl_inv, n[]), (); info)
         emit_hoist!(Expr(:(=), name, e))
         cache[e] = name
     end
@@ -4250,7 +4268,7 @@ end
 _forward_loop_core!(;
     kind, rv, rv_ct, id, idxs, outer_dims, outer_lo, params, iterables, input_subst,
     body_stmts, ret_expr, setup_stmts, public, probe_transform, probe_exclude,
-    scan_arrays, info, ns=nothing, hoist_tag=id, hygiene=Dict{Symbol,Symbol}(),
+    scan_arrays, info, ns=nothing, hygiene=Dict{Symbol,Symbol}(),
     spellings=Dict{Symbol,Symbol}(),
 ) = begin
     # Proven length mismatches between positionals and their outer axes (or
@@ -4304,7 +4322,7 @@ _forward_loop_core!(;
     # anything else looks at the body, so discovery never sees a lifted name and
     # never promotes it to a per-cell collection. Emits into `info` + `pending`.
     body_stmts, ret_expr =
-        _plate_hoist_invariants(body_stmts, ret_expr, ns, params, idxs, hoist_tag; info, keep=public)
+        _plate_hoist_invariants(body_stmts, ret_expr, ns, params, idxs; info, keep=public)
 
     # Trace once in isolation to discover EVERY fresh binding — including
     # submodel-internal flattened names — and the cell result type. The emit
@@ -4428,6 +4446,9 @@ _forward_loop_core!(;
         push!(index_aliases, _plate_global_name(info, s))
     end
     ragged_plans = Dict{Symbol,Any}()
+    # Every cell binding is declared under its own name, so none of them may
+    # name a carrier's lengths or ends.
+    plan_taken = Set{Symbol}(keys(all_cell_types))
     for (f, T) in all_cell_types
         # A constrained cell's single size parameter becomes a DIMENSION of the
         # promoted Stan declaration (`array[N…] <ct>[K]`). Stan cannot declare a
@@ -4443,7 +4464,7 @@ _forward_loop_core!(;
             )
         end
         _plate_is_ragged_cell(T, index_aliases) || continue
-        ragged_plans[f] = _plate_ragged_plan(f, T, outer_dims, idxs, id)
+        ragged_plans[f] = _plate_ragged_plan(f, T, outer_dims, idxs, plan_taken; info)
     end
     # A ragged cell's flat-memory carriers (lens/ends/mem) are declared in the
     # plate's own `info` scope and indexed by the raw loop index; hoisting them out
@@ -4698,8 +4719,18 @@ _forward_loop_core!(;
     for f in public_global
         f in keys(root) && _plate_bind_local!(info, public_local[f], root[f])
     end
+    # After the loop a ragged binding's name reads as the `RaggedVector` view over
+    # its flat memory, which has the same Stan name, for the rest of the trace.
+    # The view keeps the memory's layout and observation marks, which lookups by
+    # that name read (a missing observation's twins), and the declaration itself,
+    # which the lowering passes key by Stan name (`_restore_ragged_storage!`).
+    storage = Dict{Symbol,Any}()
     for plan in values(ragged_plans)
-        forward!(canonical(:($(plan.logical) = RaggedVector($(plan.mem), $(plan.ends)))); info)
+        mem = storage[plan.logical] = info[plan.mem]
+        view = forward!(canonical(:(RaggedVector($(plan.mem), $(plan.ends)))); info)
+        marks = (; (k => v for (k, v) in pairs(type(mem).info)
+                    if k in (:ragged_plate_layout, :unbound_observation))...)
+        info[plan.logical] = remake(view; marks..., ragged_storage=mem)
     end
     # A missing observation's indexed samples draw once into their promoted
     # storage. Alias that completed storage after the loop, just as a top-level
@@ -4707,8 +4738,7 @@ _forward_loop_core!(;
     # the storage is a flat plate carrier.
     twins = Any[]
     for f in unbound_cells
-        storage = haskey(ragged_plans, f) ? ragged_plans[f].mem : f
-        push!(twins, CanonicalExpr(_unbound_ragged_twin, f, root[storage]))
+        push!(twins, CanonicalExpr(_unbound_ragged_twin, f, get(storage, f, root[f])))
     end
     isempty(twins) ? emitted_loop : CanonicalExpr(:block, emitted_loop, twins...)
 end
@@ -5238,6 +5268,10 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     # shadow of an observed array, which the trajectory declaration owns.
     is_obs_or_shadow(tl, base) = base !== nothing ? (is_data(base) || base in obs_gens) :
         ((b = _ragged_mem_base(tl)) !== nothing && is_data(b))
+    # Only a `~` observes data; an `=` fill of a data name would rebind it.
+    reject_data_fill(s, base) = (s.head === :(=) && base !== nothing && is_data(base)) && error(
+        label, ": `", base, "[…] = …` writes to the data input `", base, "` — SB models never ",
+        "mutate; give the loop's array another name.")
     # NESTED loops: this loop is traced twice by an enclosing plate / annotated
     # loop — first in its discovery probe (no enclosing context: we declare our
     # arrays and locals as usual, the enclosing loop discovers and promotes them
@@ -5262,6 +5296,7 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
         lhs === nothing && continue
         tl = _annotated_untyped(lhs)
         base = _annotated_ref_base(tl)
+        reject_data_fill(s, base)
         is_obs_or_shadow(tl, base) && continue          # `y[i] ~ …`: an observation
         if base !== nothing
             owned(base) || base in keys(info) && error(
@@ -5299,6 +5334,7 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
         lhs = _plate_stmt_lhs(s)
         tl = lhs === nothing ? nothing : _annotated_untyped(lhs)
         base = _annotated_ref_base(tl)
+        tl === nothing || reject_data_fill(s, base)
         if tl !== nothing && is_obs_or_shadow(tl, base)
             push!(setup_stmts, s)                       # an observation, traced at model scope
             continue
@@ -5441,10 +5477,11 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
             for s in body_stmts
         ]
     end
-    # A STABLE namespace for the loop's hoisted locals / invariants: the same in
-    # the enclosing loop's probe pass (where our arrays are `public`) and in its
-    # emit pass (where they are `owned`) — the union is identical in both.
-    ns = isempty(arrays) ? Symbol(:loop_, join(idxs, "_")) : first(sort!(collect(arrays)))
+    # A STABLE namespace for the loop's hoisted locals / invariants, named after
+    # the loop variables (`loop_i`, `loop_d` for `for d in doses`): the same in
+    # the enclosing loop's probe pass and in its emit pass, and unchanged when a
+    # statement of the body is added, removed or reordered.
+    ns = Symbol(:loop_, join(isempty(params) ? idxs : params, "_"))
     # Each local's hygienic carrier: `ns_f`, or a numbered one when that is bound
     # (`_plate_fresh_name!`). Nested emit pass: a local the enclosing loop
     # already promoted (from our probe-pass declaration) is not re-declared; its
@@ -5516,7 +5553,7 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
         params, iterables, input_subst, body_stmts, ret_expr=nothing,
         setup_stmts, public, probe_transform, probe_exclude=setup_plain,
         scan_arrays=(kind === :scan ? public : Set{Symbol}()), info,
-        ns, hoist_tag=nothing, hygiene,
+        ns, hygiene,
     )
     # The observations of a carried data array get a per-element `_likelihood`
     # instead of the per-cell one-step-ahead draw (`_indexed_obs_twin_target`).

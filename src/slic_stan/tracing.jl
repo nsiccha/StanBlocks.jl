@@ -101,7 +101,9 @@ _stan_model(x::SlicModel; info) = begin
     source_lnn = _first_source_lnn(model(x))
     stage = :trace
     try
-        traced = _finalize_slice_supports!(forward!(x; info); info)
+        traced = forward!(x; info)
+        _restore_ragged_storage!(info)
+        traced = _finalize_slice_supports!(traced; info)
         stage = :lowering
         lowered = backward!(traced; info)
         info = remake(info; _model_local_transforms=_model_local_transforms(lowered; info))

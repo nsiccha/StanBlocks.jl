@@ -82,8 +82,8 @@ setup refused (`Indexed sampling h[…] ~ … needs h to be declared first`).
         end
     end
     code = stan_code(ragged)
-    @test occursin("vector[sum(loop_p_hp_h__pl_len_1)] loop_p_hp_h__pl_mem_1;", stan_block(code, "parameters"))
-    @test occursin("loop_p_hp_h__pl_mem_1[ragged_start(loop_p_hp_h__pl_end_1, p)] ~ normal(0, sigma);",
+    @test occursin("vector[sum(loop_p_hp_h__pl_len)] loop_p_hp_h;", stan_block(code, "parameters"))
+    @test occursin("loop_p_hp_h[ragged_start(loop_p_hp_h__pl_end, p)] ~ normal(0, sigma);",
         stan_block(code, "model"))
     @test stanc_compiles(ragged)
 
@@ -105,8 +105,8 @@ setup refused (`Indexed sampling h[…] ~ … needs h to be declared first`).
         y ~ normal(hh, 1.0)
     end
     code = stan_code(top)
-    @test occursin("vector[(5 - 1)] hh_h_eps;", stan_block(code, "parameters"))
-    @test occursin("hh_h[hh_t] = ((phi * hh_h[(hh_t - 1)]) + (s * hh_h_eps[(hh_t - 1)]));",
+    @test occursin("vector[(5 - 1)] hh_loop_t_eps;", stan_block(code, "parameters"))
+    @test occursin("hh_h[hh_t] = ((phi * hh_h[(hh_t - 1)]) + (s * hh_loop_t_eps[(hh_t - 1)]));",
         stan_block(code, "transformed parameters"))
     @test stanc_compiles(top)
     cells = @slic (; Y = randn(5, 3)) begin
@@ -117,8 +117,8 @@ setup refused (`Indexed sampling h[…] ~ … needs h to be declared first`).
         end
     end
     code = stan_code(cells)
-    @test occursin("matrix[(5 - 1), 3] loop_p_hp_h_eps;", stan_block(code, "parameters"))
-    @test occursin("loop_p_hp_h_eps[(loop_p_hp_t - 1), p] ~ std_normal();", stan_block(code, "model"))
+    @test occursin("matrix[(5 - 1), 3] loop_p_hp_loop_t_eps;", stan_block(code, "parameters"))
+    @test occursin("loop_p_hp_loop_t_eps[(loop_p_hp_t - 1), p] ~ std_normal();", stan_block(code, "model"))
     @test stanc_compiles(cells)
     lengths = @slic (; T = [3, 4, 2], obs = [randn(3), randn(4), randn(2)]) begin
         phi ~ uniform(-1, 1); s ~ exponential(1)
@@ -262,7 +262,7 @@ an ordinary latent array: the prior-predictive trajectory.
         end
     end
     code = stan_code(g)
-    @test occursin("array[sum(loop_p_node_loop_t_k__pl_len_1)] int loop_p_node_loop_t_k__pl_mem_1;",
+    @test occursin("array[sum(loop_p_node_loop_t_k__pl_len)] int loop_p_node_loop_t_k;",
         stan_block(code, "transformed data"))
     @test stanc_compiles(g)
     @test Set(o.name for o in stan_descriptor(g).operations) == Set([:transpile, :instantiate, :fit, :predict, :pointwise_loglik])
@@ -521,7 +521,7 @@ check on `t`.
     @test !occursin("num_elements(days", code)
     @test occursin("for(cells_node_t in 2:ragged_length(days.2, plate_i__pl_1))", stan_block(code, "model"))
     @test occursin("days.1[((ragged_start(days.2, plate_i__pl_1) + cells_node_t) - 1)]", stan_block(code, "transformed data"))
-    @test occursin("cells_m__pl_mem_1[((ragged_start(cells_m__pl_end_1, plate_i__pl_1) + cells_node_t) - 1)]", stan_block(code, "model"))
+    @test occursin("cells_m[((ragged_start(cells_m__pl_end, plate_i__pl_1) + cells_node_t) - 1)]", stan_block(code, "model"))
     @test stanc_compiles(local_mu)
 
     # The mean gathered from a model-scope vector by the cell's row indices.

@@ -575,12 +575,12 @@ Stan `for` loop into the blocks that own each statement. Inside the body:
   **model-scope array**, registered under its own name and visible after the
   loop; a whole vector cell is written `v[:, i]`;
 - a bare fresh name (`t ~ …`, `tmp = …`) is a **per-iteration local**, hoisted
-  to per-cell storage under a hygienic name (`x_t`, prefixed by the
-  alphabetically first array the loop fills, or `loop_i_t` — the loop
-  variables — when it fills none). A hygienic name that is already bound,
-  such as a second array-less loop's `loop_i_t`, takes a numbered suffix
-  (`loop_i_t_2`). For a namespace of your choosing, use the `plate` do-form,
-  whose LHS names it even when the cell collects no result;
+  to per-cell storage under a hygienic name prefixed by the loop variables
+  (`loop_i_t`; [Stan names of plate values](#Stan-names-of-plate-values)).
+  A hygienic name that is already bound, such as a second loop's `loop_i_t`,
+  takes a numbered suffix (`loop_i_t_2`). For a namespace of your choosing,
+  use the `plate` do-form, whose LHS names it even when the cell collects no
+  result;
 - `y[i] ~ …` on data is an observation, with the usual `y_gen` twin. Observe
   the data itself: `obs = y[i]; obs ~ …` is refused, because a name defined
   by `=` has nothing to draw when `y` is omitted;
@@ -595,7 +595,7 @@ arrays at any index other than the loop variable's is an error.
     sigma ~ normal(0, 1; lower = 0)
     @plate for i in 1:6
         x[i] ~ normal(mu0, 1)         # vector[6] x
-        t ~ exponential(1)            # per-cell local → vector<lower=0>[6] x_t
+        t ~ exponential(1)            # per-cell local → vector<lower=0>[6] loop_i_t
         y[i] ~ normal(x[i] + t, sigma)
     end
 end
@@ -630,7 +630,7 @@ end
 
 Several carried arrays in one loop (`u[t] ~ f(u[t-1], v[t-2])`,
 `v[t] ~ g(…)`) are just several indexed LHS. Per-step locals are sized by the
-iteration count (`vector[T-1] x_eps` for a loop over `2:T`), so the
+iteration count (`vector[T-1] loop_t_eps` for a loop over `2:T`), so the
 non-centered spelling `eps ~ std_normal(); x[t] = phi * x[t-1] + s * eps`
 has no never-sampled coordinate.
 
@@ -746,7 +746,7 @@ A nested scan may run to a per-cell length, `for t in 2:T[j]` or
 `for t in 2:length(y)` over a container group. Its carried arrays and per-step
 locals are then stored as the plate's flat memory (one segment per cell, like a
 varying-length plate cell), and element `t` of cell `j` is
-`h__pl_mem[ragged_start(ends, j) + t - 1]`. This works in every mode, and support
+`h[ragged_start(h__pl_end, j) + t - 1]`. This works in every mode, and support
 reaches the flat memory as it does a fixed-length cell: a bound every element
 shares is a scalar bound, and a setup and recurrence with different supports
 take a per-element bound vector built in `transformed data`.
@@ -830,6 +830,51 @@ inline in a `plate(EachCol(Y)) do y` cell over `y` is refused, not supported
 yet (pass the column to a sub-model, or index `Y[t, p]`). A bare `for` in a
 model body remains an error.
 
+## Stan names of plate values
+
+The Stan name of every value a plate or an annotated loop stores follows from
+that value's own name. It does not change when another statement of the loop is
+added, removed or reordered, or when another plate comes before it, so a program
+run outside Julia (CmdStan, CmdStanPy, BridgeStan) can rely on it:
+
+| Value | Stan name |
+|---|---|
+| An array a `@plate for` / `@scan` fills at the loop index (`mu[i] = …`, `x[i] ~ …`) | its own name: `mu`, `x` |
+| A per-iteration local of a `@plate for` / `@scan` (`t ~ …`, `tmp = …`) | `loop_<variables>_<name>`: `loop_i_t` for `for i in …`, `loop_i_j_t` for `for i in …, j in …`, `loop_d_t` for `for d in doses` |
+| The collected result of `rv ~ plate(…) do … end` | `rv` |
+| A cell binding of that do-form | `<rv>_<name>`: `rv_t` |
+| An observation's predictive draw and pointwise log likelihood | `<obs>_gen`, `<obs>_likelihood` |
+
+A sub-model prefixes the names it declares as usual (`hh_x`). A local or cell
+binding whose name is already bound takes a numbered suffix (`loop_i_t_2` for a
+second loop over `i` with a local `t`). An array a loop fills, or a do-form
+result, named like a value that is already bound is refused, since a model never
+rebinds a name. Names the compiler makes for loop-invariant expressions it lifts
+out of a loop (`<prefix>__pl_inv<k>`, numbered in body order) are not part of
+this contract.
+
+**Ragged values.** A value whose length differs between cells (a `vector[K[i]]`
+or `int[K[i]]` cell) is one flat Stan `vector` (or `array[] int`) under its
+name: the cells concatenated in plate order. Its per-cell lengths and inclusive
+1-based ends are `transformed data` (`<name>__pl_len`, `<name>__pl_end`), so they
+are not in a fit's output: cell `g` is `<name>[ends[g-1]+1:ends[g]]`, with the
+ends rebuilt from the data or read from `ModelOutput.segments` in
+[`stan_descriptor`](@ref StanBlocks.stan_descriptor). After the loop, `mu` reads
+as a `RaggedVector` in the model body, so `mu[g]` is cell `g`.
+
+A ragged data input `y` (a vector of vectors) is passed to Stan the same way: a
+tuple of its flat values and inclusive ends, with the two sizes,
+
+```stan
+int y_mem_n;    // number of values
+int y_ends_n;   // number of groups
+tuple(vector[y_mem_n], array[y_ends_n] int) y;
+```
+
+so `y = [[0.1, 0.2, 0.3], [0.4]]` is `y_mem_n = 4`, `y_ends_n = 2` and, in
+CmdStan JSON, `"y": {"1": [0.1, 0.2, 0.3, 0.4], "2": [3, 4]}`. An integer group
+uses `array[y_mem_n] int` for the values.
+
 ## `@deffun` iteration boundary
 
 Inside `@deffun`, index and value iteration, `enumerate`, `zip`, one-line nested
@@ -878,8 +923,8 @@ a predictive draw; `:pointwise_loglik` requires a likelihood twin.
 observation twin or an emitted flat-memory carrier belonging to a ragged plate
 result/member, it contains that exact output's inclusive 1-based group ends.
 Different named members of one plate may use different ragged axes, so use the
-`segments` on each output entry itself; do not parse `__pl_*` names or borrow a
-sibling/input layout. Re-binding a `StanModel`'s data updates these reflected
+`segments` on each output entry itself rather than borrowing a sibling's or an
+input's layout. Re-binding a `StanModel`'s data updates these reflected
 boundaries.
 
 `ModelOutput.size` holds the emitted size expressions, which may be composite

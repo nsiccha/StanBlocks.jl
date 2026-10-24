@@ -105,7 +105,7 @@ end
         end, data, @__MODULE__, (:pred_z,))
         code = stan_code(m)
         gq = stan_block(code, "generated quantities")
-        @test occursin(r"pred_z_gen\s*=\s*pred_z__pl_mem_\d+;", gq)
+        @test occursin(r"pred_z_gen\s*=\s*pred_z;", gq)
         @test !occursin("pred_z_likelihood", code)
         @test stanc_compiles(m)
 
@@ -251,16 +251,16 @@ Deterministic int cells (findall/boolean-mask) keep inlining (plate-cell-int).
     @test strip(stan_block(code, "parameters")) == "{\n}"
     @test strip(stan_block(code, "model")) == "{\n}"
     gq = stan_block(code, "generated quantities")
-    @test occursin(r"array\[sum\(pred_cc__pl_len_\d+\)\] int pred_cc__pl_mem_\d+;", gq)
-    @test occursin(r"array\[sum\(pred_bb__pl_len_\d+\)\] int pred_bb__pl_mem_\d+;", gq)
+    @test occursin(r"array\[sum\(pred_cc__pl_len\)\] int pred_cc;", gq)
+    @test occursin(r"array\[sum\(pred_bb__pl_len\)\] int pred_bb;", gq)
     @test occursin("tcat_int_rng(", gq)
     @test occursin("tresp_int_rng(", gq)
     # The findall index still inlines at its use (plate-cell-int preserved).
     @test occursin("findall(", gq)
     @test !occursin("boolmask_idx", stan_block(code, "transformed data"))
     d = stan_descriptor(m)
-    for prefix in ("pred_cc__pl_mem_", "pred_bb__pl_mem_")
-        output = only(o for o in d.outputs if startswith(string(o.name), prefix))
+    for name in (:pred_cc, :pred_bb)
+        output = only(o for o in d.outputs if o.name === name)
         @test output.kind == :generated_quantity
         @test output.type == :int
         @test output.segments == [3, 3, 5]
@@ -271,8 +271,8 @@ Deterministic int cells (findall/boolean-mask) keep inlining (plate-cell-int).
         cmt = [[1], [2, 2, 1], [2]],
     )
     rd = stan_descriptor(rebound)
-    for prefix in ("pred_cc__pl_mem_", "pred_bb__pl_mem_")
-        output = only(o for o in rd.outputs if startswith(string(o.name), prefix))
+    for name in (:pred_cc, :pred_bb)
+        output = only(o for o in rd.outputs if o.name === name)
         @test output.segments == [1, 4, 5]
     end
 
@@ -364,9 +364,9 @@ end
     p = instantiate(stan_model(m))
     @test LogDensityProblems.dimension(p) == 0
     names = BridgeStan.param_names(p.model; include_tp = true, include_gq = true)
-    cc_idx = findall(n -> startswith(n, "pred_cc__pl_mem_"), names)
-    bb_idx = findall(n -> startswith(n, "pred_bb__pl_mem_"), names)
-    r_idx = findall(n -> startswith(n, "pred_r__pl_mem_"), names)
+    cc_idx = findall(n -> startswith(n, "pred_cc."), names)
+    bb_idx = findall(n -> startswith(n, "pred_bb."), names)
+    r_idx = findall(n -> startswith(n, "pred_r."), names)
     @test length(cc_idx) == 5
     @test length(bb_idx) == 5
     draw_at(seed) = BridgeStan.param_constrain(
