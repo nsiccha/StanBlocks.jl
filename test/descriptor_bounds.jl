@@ -132,7 +132,7 @@ function fails closed, as a size does.
             obs[j] ~ normal(h, 1.0)
         end
     end, Dict{Symbol,Any}(:T => [2, 3], :J => 2, :obs => [[0.1, 0.2], [0.3, 0.4, 0.5]]), @__MODULE__)
-    @test bounds(ragged)[:h__pl_mem] == (lower = [0.0, -Inf, 0.0, -Inf, -Inf],)
+    @test bounds(ragged)[:h] == (lower = [0.0, -Inf, 0.0, -Inf, -Inf],)
 
     # A bound that reads a parameter has no data value.
     param = @slic (; y = [1.0, 2.0]) begin

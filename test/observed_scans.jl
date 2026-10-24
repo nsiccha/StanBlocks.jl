@@ -124,13 +124,13 @@ predictive twin, the trajectory is drawn given the posterior latents.
     end
     code = stan_code(arma)
     tp = stan_block(code, "transformed parameters")
-    @test occursin("err[t] = (y[t] - err_nu[(t - 1)]);", tp)
+    @test occursin("err[t] = (y[t] - loop_t_nu[(t - 1)]);", tp)
     gq = stan_block(code, "generated quantities")
     # The draw at step t precedes the residual that reads it.
     @test occursin(join([
-        "err_nu_gen[(t - 1)] = (mu + (phi * y_gen[(t - 1)]) + (theta * err_gen[(t - 1)]));",
-        "y_gen[t] = normal_rng(err_nu_gen[(t - 1)], sigma);",
-        "err_gen[t] = (y_gen[t] - err_nu_gen[(t - 1)]);"], "\n        "), gq)
+        "loop_t_nu_gen[(t - 1)] = (mu + (phi * y_gen[(t - 1)]) + (theta * err_gen[(t - 1)]));",
+        "y_gen[t] = normal_rng(loop_t_nu_gen[(t - 1)], sigma);",
+        "err_gen[t] = (y_gen[t] - loop_t_nu_gen[(t - 1)]);"], "\n        "), gq)
     @test occursin("y_gen[1] = normal_rng(mu, sigma);\n    err_gen[1] = (y_gen[1] - mu);", gq)
     @test stanc_compiles(arma)
 
@@ -394,9 +394,9 @@ its outer declaration first`).
     code = stan_code(prior)
     @test strip(stan_block(code, "parameters")) == "{\n}"
     gq = stan_block(code, "generated quantities")
-    @test occursin("vector[sum(h__pl_len_1)] h__pl_mem_1;", gq)
-    @test occursin("h__pl_mem_1[ragged_start(h__pl_end_1, j)] = normal_rng(0, 1);", gq)
-    @test occursin("h__pl_mem_1[((ragged_start(h__pl_end_1, j) + t) - 1)] = normal_rng((phi * h__pl_mem_1[((ragged_start(h__pl_end_1, j) + (t - 1)) - 1)]), s);", gq)
+    @test occursin("vector[sum(h__pl_len)] h;", gq)
+    @test occursin("h[ragged_start(h__pl_end, j)] = normal_rng(0, 1);", gq)
+    @test occursin("h[((ragged_start(h__pl_end, j) + t) - 1)] = normal_rng((phi * h[((ragged_start(h__pl_end, j) + (t - 1)) - 1)]), s);", gq)
     @test stanc_compiles(prior)
 
     obs = [randn(3), randn(4), randn(5)]
@@ -413,7 +413,7 @@ its outer declaration first`).
         end
     end
     code = stan_code(fitted)
-    @test occursin("vector[sum(h__pl_len_1)] h__pl_mem_1;", stan_block(code, "parameters"))
+    @test occursin("vector[sum(h__pl_len)] h;", stan_block(code, "parameters"))
     @test stanc_compiles(fitted)
 
     noncentered = @slic (; T = [3, 4, 5], J = 3, obs) begin
@@ -432,8 +432,8 @@ its outer declaration first`).
     end
     code = stan_code(noncentered)
     td = stan_block(code, "transformed data")
-    @test occursin("x_eps__pl_len_1[j] = (T[j] - 1);", td)
-    @test occursin("vector[sum(x_eps__pl_len_1)] x_eps__pl_mem_1;", stan_block(code, "parameters"))
+    @test occursin("loop_t_eps__pl_len[j] = (T[j] - 1);", td)
+    @test occursin("vector[sum(loop_t_eps__pl_len)] loop_t_eps;", stan_block(code, "parameters"))
     @test stanc_compiles(noncentered)
 
     container = @slic (; ys = obs) begin
@@ -449,7 +449,7 @@ its outer declaration first`).
         end
     end
     @test stanc_compiles(container)
-    @test Dict(o.name => o.segments for o in stan_descriptor(container).outputs)[:h__pl_mem_1] == [3, 7, 12]
+    @test Dict(o.name => o.segments for o in stan_descriptor(container).outputs)[:h] == [3, 7, 12]
 
     # Support reaches the flat memory: one shared bound is scalar; a setup and a
     # recurrence with different supports take a per-element bound vector.
@@ -466,13 +466,13 @@ its outer declaration first`).
         end
     end, Dict{Symbol,Any}(:T => [3, 4, 5], :J => 3, :obs => obs), @__MODULE__)
     shared = stan_code(bounded(:(exponential(1 / (1 + h[t-1])))))
-    @test occursin("vector<lower=0.0>[sum(h__pl_len_1)] h__pl_mem_1;", stan_block(shared, "parameters"))
+    @test occursin("vector<lower=0.0>[sum(h__pl_len)] h;", stan_block(shared, "parameters"))
     mixed = bounded(:(normal(phi * h[t-1], s)))
     code = stan_code(mixed)
-    @test occursin("vector<lower=h__pl_mem_1__lower>[sum(h__pl_len_1)] h__pl_mem_1;", stan_block(code, "parameters"))
+    @test occursin("vector<lower=h__lower>[sum(h__pl_len)] h;", stan_block(code, "parameters"))
     td = stan_block(code, "transformed data")
-    @test occursin("h__pl_mem_1__lower[ragged_start(h__pl_end_1, j)] = 0.0;", td)
-    @test occursin("h__pl_mem_1__lower[((ragged_start(h__pl_end_1, j) + t) - 1)] = negative_infinity();", td)
+    @test occursin("h__lower[ragged_start(h__pl_end, j)] = 0.0;", td)
+    @test occursin("h__lower[((ragged_start(h__pl_end, j) + t) - 1)] = negative_infinity();", td)
     @test stanc_compiles(mixed)
 
     # A plain varying-length plate cell keeps its family's support too.
@@ -483,7 +483,7 @@ its outer declaration first`).
         end
         obs ~ normal(z, 1.0)
     end
-    @test occursin("vector<lower=0.0>[sum(z_zz__pl_len_1)] z_zz__pl_mem_1;", stan_block(stan_code(cell), "parameters"))
+    @test occursin("vector<lower=0.0>[sum(z_zz__pl_len)] z_zz;", stan_block(stan_code(cell), "parameters"))
 end
 
 """
@@ -516,10 +516,10 @@ declaration (`Identifier "loop_t_k" not in scope`; snag
     end
     code = stan_code(gaps)
     td = stan_block(code, "transformed data")
-    @test occursin("array[sum(loop_t_k__pl_len_1)] int loop_t_k__pl_mem_1;", td)
-    @test occursin("loop_t_k__pl_mem_1[((ragged_start(loop_t_k__pl_end_1, plate_i__pl_1) + (t - 1)) - 1)] = (", td)
-    @test occursin("phi ^ loop_t_k__pl_mem_1[((ragged_start(loop_t_k__pl_end_1, plate_i__pl_1) + (t - 1)) - 1)]", stan_block(code, "model"))
-    @test !occursin("int loop_t_k;", code)
+    @test occursin("array[sum(loop_t_k__pl_len)] int loop_t_k;", td)
+    @test occursin("loop_t_k[((ragged_start(loop_t_k__pl_end, plate_i__pl_1) + (t - 1)) - 1)] = (", td)
+    @test occursin("phi ^ loop_t_k[((ragged_start(loop_t_k__pl_end, plate_i__pl_1) + (t - 1)) - 1)]", stan_block(code, "model"))
+    @test !occursin(r"(?m)^\s*int loop_t_k;", code)
     @test stanc_compiles(gaps)
 
     # Omitting the response simulates the trajectory, reading the same gaps.
@@ -537,8 +537,8 @@ declaration (`Identifier "loop_t_k" not in scope`; snag
         end
     end
     code = stan_code(prior)
-    @test occursin("array[sum(y_k__pl_len_1)] int y_k__pl_mem_1;", stan_block(code, "transformed data"))
-    @test occursin("phi ^ y_k__pl_mem_1[", stan_block(code, "generated quantities"))
+    @test occursin("array[sum(loop_t_k__pl_len)] int loop_t_k;", stan_block(code, "transformed data"))
+    @test occursin("phi ^ loop_t_k[", stan_block(code, "generated quantities"))
     @test stanc_compiles(prior)
 
     # The `@plate for` spelling of the same model.
@@ -554,7 +554,7 @@ declaration (`Identifier "loop_t_k" not in scope`; snag
             end
         end
     end
-    @test occursin("array[sum(loop_t_k__pl_len_1)] int loop_t_k__pl_mem_1;", stan_block(stan_code(sugar), "transformed data"))
+    @test occursin("array[sum(loop_t_k__pl_len)] int loop_t_k;", stan_block(stan_code(sugar), "transformed data"))
     @test stanc_compiles(sugar)
 
     # Fixed length: a step local and a carried int array, one row per cell.
@@ -576,9 +576,9 @@ declaration (`Identifier "loop_t_k" not in scope`; snag
     end
     code = stan_code(dense)
     td = stan_block(code, "transformed data")
-    @test occursin("array[S, (T - 1)] int c_k;", td)   # locals take the first filled array's prefix
+    @test occursin("array[S, (T - 1)] int loop_t_k;", td)   # locals take the first filled array's prefix
     @test occursin("array[S, T] int c;", td)
-    @test occursin("(phi ^ c_k[j][(t - 1)])", stan_block(code, "model"))
+    @test occursin("(phi ^ loop_t_k[j][(t - 1)])", stan_block(code, "model"))
     @test stanc_compiles(dense)
 end
 
@@ -598,7 +598,7 @@ such as `ragged_start(ys.ends, p)` out of its recurrence.
         end
     end
     td = stan_block(stan_code(sugar), "transformed data")
-    @test occursin("array[P] int h_k;", td)
+    @test occursin("array[P] int loop_p_k;", td)
     @test stanc_compiles(sugar)
     doform = @slic (; xs = randn(9), P = 3) begin
         phi ~ uniform(-1, 1)

@@ -45,7 +45,7 @@ end
     @test !occursin("_arg", source)
     outputs = collect(stan_descriptor(traced).outputs)
     for stem in ("loc", "loc_shifted")
-        carrier = only(filter(o -> startswith(string(o.name), stem * "__pl_mem_"), outputs))
+        carrier = only(filter(o -> o.name === Symbol(stem), outputs))
         @test carrier.segments == [2, 2, 3]
     end
     @test isequal(data, saved)
@@ -58,7 +58,7 @@ end
         rebound_outputs = collect(stan_descriptor(rebound).outputs)
         ends = cumsum(length.(xs))
         for stem in ("loc", "loc_shifted")
-            carrier = only(filter(o -> startswith(string(o.name), stem * "__pl_mem_"), rebound_outputs))
+            carrier = only(filter(o -> o.name === Symbol(stem), rebound_outputs))
             @test carrier.segments == ends
         end
     end
@@ -114,8 +114,8 @@ end
             include_gq=true, rng=BridgeStan.StanRNG(p.model, 1234))
         draw = Dict(zip(names, values))
         for i in eachindex(flat_x)
-            @test draw["loc_shifted__pl_mem_1.$i"] ≈ flat_x[i] + a
-            @test draw["loc__pl_mem_1.$i"] ≈ (flat_x[i] + a) * b
+            @test draw["loc_shifted.$i"] ≈ flat_x[i] + a
+            @test draw["loc.$i"] ≈ (flat_x[i] + a) * b
         end
     end
 end

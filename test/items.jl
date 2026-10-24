@@ -7870,8 +7870,8 @@ Verify `slic: public plate() do-block emitter` in an isolated test item.
         # correlated random effect purely from where this landed (the fitted
         # case is pinned by `slic: plate hoists loop-invariant cell-body
         # expressions`).
-        @test occursin(r"matrix\[6, 6\] b__pl_inv\d+_\d+ = diag_pre_multiply\(tau, L\);", gq)
-        @test occursin(r"b\[:, plate_i\w*\] = \(b__pl_inv\d+_\d+ \* b_z\[:, plate_i", gq)
+        @test occursin(r"matrix\[6, 6\] b__pl_inv\d+ = diag_pre_multiply\(tau, L\);", gq)
+        @test occursin(r"b\[:, plate_i\w*\] = \(b__pl_inv\d+ \* b_z\[:, plate_i", gq)
         # …and the loop itself is left with no copy of the invariant.
         let li = findfirst("for(", gq)
             @test li !== nothing && !occursin("diag_pre_multiply", gq[first(li):end])
@@ -8442,8 +8442,8 @@ is never lifted, however invariant its arguments look.
     let tp = stan_block(stan_code(inline_nc), "transformed parameters")
         # `tau`/`L` are parameters, so the hoist is parameter-qualified and lands in
         # `transformed parameters` — the same block the hand-hoisted spelling uses.
-        @test occursin(r"matrix\[n_terms, n_terms\] b__pl_inv\d+_\d+ = diag_pre_multiply\(tau, L\);", tp)
-        @test occursin(r"b\[:, plate_i\w*\] = \(b__pl_inv\d+_\d+ \* b_z\[:, plate_i", tp)
+        @test occursin(r"matrix\[n_terms, n_terms\] b__pl_inv\d+ = diag_pre_multiply\(tau, L\);", tp)
+        @test occursin(r"b\[:, plate_i\w*\] = \(b__pl_inv\d+ \* b_z\[:, plate_i", tp)
         let li = findfirst("for(", tp)
             @test li !== nothing && !occursin("diag_pre_multiply", tp[first(li):end])
         end
@@ -8482,12 +8482,12 @@ is never lifted, however invariant its arguments look.
     let code = stan_code(inline_c)
         @test occursin("array[n_groups] vector[n_terms] b_bc;",
                        stan_block(code, "parameters"))
-        @test occursin(r"vector\[n_terms\] b__pl_inv\d+_\d+ = rep_vector\(0\.0, n_terms\);",
+        @test occursin(r"vector\[n_terms\] b__pl_inv\d+ = rep_vector\(0\.0, n_terms\);",
                        stan_block(code, "transformed data"))
-        @test occursin(r"matrix\[n_terms, n_terms\] b__pl_inv\d+_\d+ = diag_pre_multiply\(tau, L\);",
+        @test occursin(r"matrix\[n_terms, n_terms\] b__pl_inv\d+ = diag_pre_multiply\(tau, L\);",
                        stan_block(code, "transformed parameters"))
         let mb = stan_block(code, "model")
-            @test occursin(r"b_bc ~ multi_normal_cholesky\(b__pl_inv\d+_\d+, b__pl_inv\d+_\d+\);", mb)
+            @test occursin(r"b_bc ~ multi_normal_cholesky\(b__pl_inv\d+, b__pl_inv\d+\);", mb)
             @test !occursin(r"b_bc\[", mb)
             @test !occursin("for(", mb)
             @test !occursin("rep_vector", mb)
@@ -8922,21 +8922,21 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
     direct = stan_code(c3_plate_ragged_model)
     let td = stan_block(direct, "transformed data")
         # rv `b`, fresh cell-local `z` → `b_z`; ragged carriers keep the `__pl_*` suffixes.
-        @test occursin(r"array\[num_elements\(K\)\] int b_z__pl_len_\d+", td)
-        @test occursin(r"b_z__pl_len_\d+\[plate_i__pl_\d+\] = K\[plate_i__pl_\d+\]", td)
+        @test occursin(r"array\[num_elements\(K\)\] int b_z__pl_len", td)
+        @test occursin(r"b_z__pl_len\[plate_i__pl_\d+\] = K\[plate_i__pl_\d+\]", td)
         @test occursin("cumulative_sum", td)
     end
-    @test occursin(r"vector\[sum\(b_z__pl_len_\d+\)\] b_z__pl_mem_\d+", stan_block(direct, "parameters"))
+    @test occursin(r"vector\[sum\(b_z__pl_len\)\] b_z\b", stan_block(direct, "parameters"))
     @test occursin(
-        r"b_z__pl_mem_\d+\[ragged_start\(.*\):ragged_end\(.*\)\] ~ std_normal",
+        r"b_z\[ragged_start\(.*\):ragged_end\(.*\)\] ~ std_normal",
         stan_block(direct, "model"),
     )
-    @test occursin(r"vector\[sum\(b__pl_len_\d+\)\] b__pl_mem_\d+", stan_block(direct, "transformed parameters"))
+    @test occursin(r"vector\[sum\(b__pl_len\)\] b\b", stan_block(direct, "transformed parameters"))
 
     called = stan_code(c3_plate_ragged_submodel_model)
-    @test occursin(r"vector\[sum\(b_cell_z__pl_len_\d+\)\] b_cell_z__pl_mem_\d+", stan_block(called, "parameters"))
-    @test occursin(r"(?s)b_cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", stan_block(called, "model"))
-    @test occursin(r"(?s)b__pl_mem_\d+\[.*?\]\s*=\s*b_cell__pl_mem_\d+\[", stan_block(called, "transformed parameters"))
+    @test occursin(r"vector\[sum\(b_cell_z__pl_len\)\] b_cell_z\b", stan_block(called, "parameters"))
+    @test occursin(r"(?s)b_cell_z\[.*?\]\s*~\s*std_normal", stan_block(called, "model"))
+    @test occursin(r"(?s)\bb\[.*?\]\s*=\s*b_cell\[", stan_block(called, "transformed parameters"))
 
     # Descriptor ownership is per emitted carrier, not per plate or first input:
     # two named members may have different ragged axes, while dense members stay
@@ -8950,7 +8950,7 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
         end
     end
     outputs = collect(stan_descriptor(layouts; name = :ragged_layouts).outputs)
-    carrier(stem) = only(filter(o -> startswith(string(o.name), stem * "__pl_mem_"), outputs))
+    carrier(stem) = only(filter(o -> o.name === Symbol(stem), outputs))
     @test carrier("b_z").segments == [2, 5, 9]
     @test carrier("b_w").segments == [1, 5, 7]
     @test carrier("b").segments == [2, 5, 9]
@@ -8961,7 +8961,7 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
     rebound = StanBlocks.stan_model(layouts)(; K = [1, 1, 3], J = [2, 2, 2])
     rebound_outputs = collect(stan_descriptor(rebound; name = :rebound_layouts).outputs)
     rebound_carrier(stem) = only(filter(
-        o -> startswith(string(o.name), stem * "__pl_mem_"), rebound_outputs,
+        o -> o.name === Symbol(stem), rebound_outputs,
     ))
     @test rebound_carrier("b_z").segments == [1, 2, 5]
     @test rebound_carrier("b_w").segments == [2, 4, 6]
@@ -8980,7 +8980,7 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
     end
     input_outputs = collect(stan_descriptor(input_shaped; name = :input_shaped).outputs)
     input_carrier(stem) = only(filter(
-        o -> startswith(string(o.name), stem * "__pl_mem_"), input_outputs,
+        o -> o.name === Symbol(stem), input_outputs,
     ))
     @test input_carrier("y_z").segments == [2, 3, 6]
     @test input_carrier("y").segments == [2, 3, 6]
@@ -8992,7 +8992,7 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
         rebound_input; name = :rebound_input_shaped,
     ).outputs)
     rebound_input_carrier(stem) = only(filter(
-        o -> startswith(string(o.name), stem * "__pl_mem_"), rebound_input_outputs,
+        o -> o.name === Symbol(stem), rebound_input_outputs,
     ))
     @test rebound_input_carrier("y_z").segments == [1, 4]
     @test rebound_input_carrier("y").segments == [1, 4]
@@ -9011,7 +9011,7 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
     end
     max_outputs = collect(stan_descriptor(max_shaped; name = :max_shaped).outputs)
     max_carrier(stem) = only(filter(
-        o -> startswith(string(o.name), stem * "__pl_mem_"), max_outputs,
+        o -> o.name === Symbol(stem), max_outputs,
     ))
     @test max_carrier("pk_loc_dense_conc").segments == [3, 7, 12]
     @test max_carrier("pk_loc").segments == [1, 3, 6]
@@ -9023,7 +9023,7 @@ Verify `slic: public plate emits heterogeneous vector cells` in an isolated test
         rebound_max; name = :rebound_max_shaped,
     ).outputs)
     rebound_max_carrier(stem) = only(filter(
-        o -> startswith(string(o.name), stem * "__pl_mem_"), rebound_max_outputs,
+        o -> o.name === Symbol(stem), rebound_max_outputs,
     ))
     @test rebound_max_carrier("pk_loc_dense_conc").segments == [2, 7]
     @test rebound_max_carrier("pk_loc").segments == [1, 5]
@@ -9063,11 +9063,11 @@ dense vector sliced alongside a ragged one.
     @test stan_code(inferred) == stan_code(explicit)
 
     segmented(model) = Dict(
-        (startswith(string(o.name), "m__pl_mem_") ? :m__pl_mem : o.name) => (o.kind, o.segments)
+        o.name => (o.kind, o.segments)
         for o in stan_descriptor(model).outputs if o.segments !== nothing
     )
     expected = Dict(
-        :m__pl_mem => (:transformed_parameter, [2, 2, 5]),
+        :m => (:transformed_parameter, [2, 2, 5]),
         :y_gen => (:generated_quantity, [2, 2, 5]),
         :y_likelihood => (:generated_quantity, [2, 2, 5]),
     )
@@ -9080,7 +9080,7 @@ dense vector sliced alongside a ragged one.
         y = [[1.0], [2.0, 3.0, 4.0]], ref = [[0.5], [0.1, 0.2, 0.3]],
     )
     @test segmented(rebound) == Dict(
-        :m__pl_mem => (:transformed_parameter, [1, 4]),
+        :m => (:transformed_parameter, [1, 4]),
         :y_gen => (:generated_quantity, [1, 4]),
         :y_likelihood => (:generated_quantity, [1, 4]),
     )
@@ -9094,7 +9094,7 @@ dense vector sliced alongside a ragged one.
             wi .* r .* s
         end
     end
-    @test segmented(dense_first) == Dict(:m__pl_mem => (:generated_quantity, [2, 2, 5]))
+    @test segmented(dense_first) == Dict(:m => (:generated_quantity, [2, 2, 5]))
 end
 
 """
@@ -9126,11 +9126,11 @@ scale is such a carrier.
         end
     end
     @test segmented(chained) == Dict(
-        :loc__pl_mem => [2, 3, 6], :s__pl_mem => [2, 3, 6], :t__pl_mem => [2, 3, 6],
+        :loc => [2, 3, 6], :s => [2, 3, 6], :t => [2, 3, 6],
     )
     rebound = StanBlocks.stan_model(chained)(; xs = [[1.0], [2.0, 3.0, 4.0]])
     @test segmented(rebound) == Dict(
-        :loc__pl_mem => [1, 4], :s__pl_mem => [1, 4], :t__pl_mem => [1, 4],
+        :loc => [1, 4], :s => [1, 4], :t => [1, 4],
     )
 
     # Reporter-shaped: an omitted ragged response whose censored law reads the
@@ -9152,13 +9152,13 @@ scale is such a carrier.
     d = stan_descriptor(omitted)
     @test stan_operation(d, :predict).outputs == (:y_gen,)
     @test segmented(omitted) == Dict(
-        :sd__pl_mem => [2, 2, 5], :y__obs_mem => [2, 2, 5], :y_gen => [2, 2, 5],
+        :sd => [2, 2, 5], :y__obs_mem => [2, 2, 5], :y_gen => [2, 2, 5],
     )
     rebound_omitted = StanBlocks.stan_model(omitted)(;
         ts = [[1.0], [2.0, 3.0]], lo = [[0.1], [0.1, 0.1]],
     )
     @test segmented(rebound_omitted) == Dict(
-        :sd__pl_mem => [1, 3], :y__obs_mem => [1, 3], :y_gen => [1, 3],
+        :sd => [1, 3], :y__obs_mem => [1, 3], :y_gen => [1, 3],
     )
 end
 
@@ -9218,9 +9218,9 @@ value, for which `stan_descriptor` and printing the model used to throw.
             z
         end
     end
-    @test dims(plated) == Dict(:b__pl_mem => (9,), :b_z__pl_mem => (9,), :b_w__pl_mem => (7,), :b_q => (3,))
+    @test dims(plated) == Dict(:b => (9,), :b_z => (9,), :b_w => (7,), :b_q => (3,))
     @test dims(StanBlocks.stan_model(plated)(; K = [1, 0, 3], J = [2, 2, 2])) ==
-        Dict(:b__pl_mem => (4,), :b_z__pl_mem => (4,), :b_w__pl_mem => (6,), :b_q => (3,))
+        Dict(:b => (4,), :b_z => (4,), :b_w => (6,), :b_q => (3,))
     chained = @slic (; xs = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]) begin
         a ~ std_normal()
         loc ~ plate(xs) do x
@@ -9230,7 +9230,7 @@ value, for which `stan_descriptor` and printing the model used to throw.
             exp.(l)
         end
     end
-    @test dims(chained) == Dict(:a => (), :loc__pl_mem => (6,), :s__pl_mem => (6,))
+    @test dims(chained) == Dict(:a => (), :loc => (6,), :s => (6,))
     # A plate whose `outer` is a transformed-data value: before this, both
     # `stan_descriptor` and printing the model threw `non-integer outer size n_g`.
     td_outer = @slic (; Ks = [2, 3, 2, 4], y = [0.1, 0.2, 0.3, 0.4]) begin
@@ -9242,8 +9242,8 @@ value, for which `stan_descriptor` and printing the model used to throw.
         y ~ normal(b, 1.0)
     end
     @test only(o.segments for o in stan_descriptor(td_outer).outputs if o.segments !== nothing) == [2, 5, 7, 11]
-    @test dims(td_outer)[:b_z__pl_mem] == (11,)
-    @test occursin("b_z__pl_mem", sprint(show, MIME"text/plain"(), StanBlocks.stan_model(td_outer)))
+    @test dims(td_outer)[:b_z] == (11,)
+    @test occursin(r"\bb_z\b", sprint(show, MIME"text/plain"(), StanBlocks.stan_model(td_outer)))
 
     # Ragged observation twins, auto-imputation, `@scan` innovations, a ragged
     # constrained parameter (`sum(Ks .- 1)` lowers to `jbroadcasted`), and an
@@ -9272,7 +9272,7 @@ value, for which `stan_descriptor` and printing the model used to throw.
             end
         end
         y ~ normal(h, 1)
-    end)[:h_eps] == (4,)
+    end)[:loop_t_eps] == (4,)
     @test dims(@slic (; Ks = [2, 3, 4], y = 0.3) begin
         p::simplex[Ks] ~ flat()
         y ~ normal(sum(p[1]), 0.1)
@@ -9550,7 +9550,7 @@ Correctness for BOTH:
     let mb = stan_block(stan_code(model), "model")
         # Per-group loop over the ragged obs — NOT a flattened `.mem` density.
         @test occursin(r"for\(g__ro_\d+ in 1:num_elements_RaggedVector\(ys\)\)", mb)
-        @test occursin(r"getindex_RaggedVector\(ys, g__ro_\d+\) ~ normal\(mu__pl_mem_\d+\[", mb)
+        @test occursin(r"getindex_RaggedVector\(ys, g__ro_\d+\) ~ normal\(mu\[", mb)
     end
     # Numerically identical to the obs-in-cell twin, end-to-end through BridgeStan.
     p_out = instantiate(model)
@@ -10005,9 +10005,9 @@ Verify `slic: ragged obs cv-taint routes the held-out density loop out of the mo
 Snag ragged-obs-not-c-5b1180c7. A top-level ragged observation `ys ~ dist(mu, …)`
 whose density argument `mu` is a ragged plate result sized from a CV-marked group
 count: under resample (`maybecv` on the group count) the plate parameter — hence
-`mu`'s flat backing `mu__pl_mem_<id>` — moves to `generated quantities`. The
-per-group MODEL-block density loop
-`getindex_RaggedVector(ys, g) ~ dist(mu__pl_mem_<id>[…], …)` then referenced a
+`mu`'s flat backing (the Stan variable `mu`) — moves to `generated quantities`.
+The per-group MODEL-block density loop
+`getindex_RaggedVector(ys, g) ~ dist(mu[…], …)` then referenced a
 GQ-only symbol and stanc rejected the program (`Identifier not in scope`), while
 the FIT (no cv) is stanc-valid.
 
@@ -10051,7 +10051,7 @@ The non-cv path is byte-unchanged.
 
     # FIT (no cv): the held-out density loop IS the model likelihood, stanc-valid.
     @test occursin(
-        r"getindex_RaggedVector\(ys, g__ro_\d+\) ~ normal\(mu__pl_mem_\d+\[",
+        r"getindex_RaggedVector\(ys, g__ro_\d+\) ~ normal\(mu\[",
         stan_block(stan_code(outside), "model"),
     )
     @test stanc_compiles(outside)
@@ -10068,10 +10068,10 @@ The non-cv path is byte-unchanged.
 
         # the held-out per-group density loop is gone from the model block ...
         @test !occursin("getindex_RaggedVector(ys", mb)
-        @test !occursin("mu__pl_mem", mb)
+        @test !occursin(r"\bmu\b", mb)
         # ... and its backing is declared ONLY in generated quantities.
-        @test occursin(r"vector\[sum\(mu__pl_len_\d+\)\] mu__pl_mem_\d+;", gq)
-        @test !occursin("mu__pl_mem", tp)
+        @test occursin(r"vector\[sum\(mu__pl_len\)\] mu;", gq)
+        @test !occursin(r"\bmu\b", tp)
         # The population noise scale stays SAMPLED (reused from the original fit): the
         # density statement survived `backward!` even though it is not emitted.
         @test occursin("real<lower=0.0> sigma;", par)
@@ -10678,17 +10678,17 @@ Verify `slic: BRM-shaped ragged constraints compose with plate` in an isolated t
 
     let parameters = stan_block(code, "parameters")
         @test occursin("p_free__rcm_", parameters)
-        @test occursin(r"vector\[sum\(b_cell_z__pl_len_\d+\)\] b_cell_z__pl_mem_\d+", parameters)
+        @test occursin(r"vector\[sum\(b_cell_z__pl_len\)\] b_cell_z\b", parameters)
     end
     let tp = stan_block(code, "transformed parameters")
         @test occursin("cholesky_factor_corr_jacobian", tp)
         @test occursin("to_matrix", tp)
-        @test occursin(r"(?s)cell__pl_mem_\d+\[.*?\]\s*=\s*\(.*?to_matrix.*?\*.*?cell_z__pl_mem_\d+", tp)
+        @test occursin(r"(?s)cell\[.*?\]\s*=\s*\(.*?to_matrix.*?\*.*?cell_z\b", tp)
     end
     let model_block = stan_block(code, "model")
         @test occursin("~ lkj_corr_cholesky(2.0)", model_block)
-        @test occursin(r"(?s)cell_z__pl_mem_\d+\[.*?\]\s*~\s*std_normal", model_block)
-        @test occursin(r"y ~ normal\(sum\(b__pl_mem_\d+\[", model_block)
+        @test occursin(r"(?s)cell_z\[.*?\]\s*~\s*std_normal", model_block)
+        @test occursin(r"y ~ normal\(sum\(b\[", model_block)
     end
 end
 
@@ -10864,7 +10864,7 @@ Verify `slic: ragged Cholesky factors use flattened matrix carriers` in an isola
     # stale.
     #
     # `(?s)` + lazy quantifiers is the house style for a wrapped call (see the
-    # `cell__pl_mem_` assertion in the plate item). Tightened while here: name
+    # `b_cell` assertion in the plate item). Tightened while here: name
     # the ragged memory slice and BOTH square dimensions, so this now checks the
     # informative prior lands on the reconstructed per-group matrix rather than
     # merely that some `to_matrix` appears somewhere before the `~`.
@@ -12510,7 +12510,7 @@ generated quantities.
     )
         code = stan_code(model)
         @test stanc_compiles(model)
-        @test occursin(r"x_e\[i\] = normal_rng\((mu0|0\.0), 1\.0\);", stan_block(code, block))
+        @test occursin(r"loop_i_e\[i\] = normal_rng\((mu0|0\.0), 1\.0\);", stan_block(code, block))
         @test !occursin("__pl_inv", code)
     end
     let model = @slic((; y = heldout), begin
@@ -12754,9 +12754,9 @@ The unmarked emission must stay byte-identical; the flat spelling is the control
         code = stan_code(tainted),
         gq = stan_block(code, "generated quantities")
         @test stanc_compiles(tainted)
-        @test !occursin("__pl_mem", stan_block(code, "parameters"))
+        @test !occursin(r"\bb_z\b", stan_block(code, "parameters"))
         @test occursin("std_normal_vector_rng(", gq)
-        @test occursin("__pl_mem", gq)
+        @test occursin("vector[sum(b_z__pl_len)] b_z;", gq)
     end
 end
 
@@ -14637,7 +14637,7 @@ end
         @test findfirst("matrix[n_subject, 2] b = ", gq) > findfirst("vector[2] tau = ", gq)
         @test occursin("vector[X_m] k = exp(", gq)
         # … and the ragged plate's carrier + loop are in GQ too.
-        @test occursin(r"vector\[sum\(pred__pl_len_\d+\)\] pred__pl_mem_\d+;", gq)
+        @test occursin(r"vector\[sum\(pred__pl_len\)\] pred;", gq)
         @test occursin(r"for\(plate_i__pl_\d+ in 1:n_subject\)", gq)
     end
     d = stan_descriptor(prior_shape; name = :prior_shape)
@@ -14656,7 +14656,7 @@ end
                      "real<lower=0.4, upper=2.0> rho;", "real<lower=0.0> sigma;")
             @test occursin(decl, params)
         end
-        @test occursin(r"vector\[sum\(pred__pl_len_\d+\)\] pred__pl_mem_\d+;", stan_block(code, "transformed parameters"))
+        @test occursin(r"vector\[sum\(pred__pl_len\)\] pred;", stan_block(code, "transformed parameters"))
         @test occursin("~ normal(", stan_block(code, "model"))
     end
     @test :fit in [op.name for op in stan_descriptor(fit_shape; name = :fit_shape).operations]
@@ -15641,12 +15641,12 @@ lag reads (`17cilkc`).
     let code = stan_code(pf)
         params = stan_block(code, "parameters")
         @test occursin("vector[6] x;", params)
-        @test occursin("vector<lower=0.0>[6] x_t;", params)
+        @test occursin("vector<lower=0.0>[6] loop_i_t;", params)
         mb = stan_block(code, "model")
         @test occursin("for(i in 1:6)", mb)
         @test occursin("x[i] ~ normal(mu0, 1.0);", mb)
-        @test occursin("x_t[i] ~ exponential(1.0);", mb)
-        @test occursin("y[i] ~ normal((x[i] + x_t[i]), sigma);", mb)
+        @test occursin("loop_i_t[i] ~ exponential(1.0);", mb)
+        @test occursin("y[i] ~ normal((x[i] + loop_i_t[i]), sigma);", mb)
         # `z` reaches no likelihood: a generated quantity reading the collected array.
         @test occursin("real z = normal_rng(sum(x), 1.0);", stan_block(code, "generated quantities"))
     end
@@ -15736,13 +15736,13 @@ lag reads (`17cilkc`).
     @test stanc_compiles(nc)
     let code = stan_code(nc)
         params = stan_block(code, "parameters")
-        @test occursin("vector[(T - 1)] x_eps;", params)
+        @test occursin("vector[(T - 1)] loop_t_eps;", params)
         @test occursin("real eps1;", params)
         tp = stan_block(code, "transformed parameters")
         @test occursin("vector[T] x;", tp)
         @test occursin("x[1] = (s * eps1);", tp)
-        @test occursin("x[t] = ((phi * x[(t - 1)]) + (s * x_eps[(t - 1)]));", tp)
-        @test occursin("x_eps[(t - 1)] ~ std_normal();", stan_block(code, "model"))
+        @test occursin("x[t] = ((phi * x[(t - 1)]) + (s * loop_t_eps[(t - 1)]));", tp)
+        @test occursin("loop_t_eps[(t - 1)] ~ std_normal();", stan_block(code, "model"))
     end
 
     # 7. N-D `@plate for`, and value iteration over a ragged container with the
@@ -15942,13 +15942,13 @@ enclosing accessor (`h[t]` under `h[:, j]` → `h[t, j]`), so all three modes
     let code = stan_code(nc)
         params = stan_block(code, "parameters")
         @test occursin("vector[S] e1;", params)
-        @test occursin("matrix[(T - 1), S] x_eps;", params)
+        @test occursin("matrix[(T - 1), S] loop_t_eps;", params)
         tp = stan_block(code, "transformed parameters")
         @test occursin("x[1, j] = (s * e1[j]);", tp)
-        @test occursin("x[t, j] = ((phi * x[(t - 1), j]) + (s * x_eps[(t - 1), j]));", tp)
+        @test occursin("x[t, j] = ((phi * x[(t - 1), j]) + (s * loop_t_eps[(t - 1), j]));", tp)
         mb = stan_block(code, "model")
         @test occursin("e1[j] ~ std_normal();", mb)
-        @test occursin("x_eps[(t - 1), j] ~ std_normal();", mb)
+        @test occursin("loop_t_eps[(t - 1), j] ~ std_normal();", mb)
     end
 end
 
@@ -16344,7 +16344,7 @@ Verify a plate-local alias preserves the per-cell size of a vector-valued UDF.
     code = stan_code(aliased)
     @test code == stan_code(direct)
     @test code == stan_code(chained)
-    @test occursin(r"out_conc__pl_mem_\d+", code)
+    @test occursin(r"out_conc\b", code)
     @test !occursin("matrix[max(out_local_reads)", stan_block(code, "transformed data"))
 
     # Keep the public do-block spelling too: the cell parameter may have the
@@ -16577,9 +16577,9 @@ LHS only namespaces the cell's fresh bindings and is neither declared nor bound.
     @test stanc_compiles(ragged_resultless)
     let d = stan_descriptor(ragged_resultless), with = stan_descriptor(ragged_collected)
         # Only the unread collected copy of every prediction disappears.
-        @test :cp__pl_mem_1 in [o.name for o in with.outputs]
-        @test [o.name for o in d.outputs] == [o.name for o in with.outputs if o.name !== :cp__pl_mem_1]
-        @test only(o for o in d.outputs if o.name === :cp_m__pl_mem_1).segments == [3, 5, 9]
+        @test :cp in [o.name for o in with.outputs]
+        @test [o.name for o in d.outputs] == [o.name for o in with.outputs if o.name !== :cp]
+        @test only(o for o in d.outputs if o.name === :cp_m).segments == [3, 5, 9]
         @test [op.name for op in d.operations] == [op.name for op in with.operations]
     end
 
@@ -16864,9 +16864,9 @@ the local and the function — when a size cannot be expressed in arguments
     # The plate sizes storage from the local's DEFINITION (`2 * max(...)`
     # over the cell slice) and promotes ragged memory — never the bare
     # local, never a fixed matrix.
-    @test occursin(r"__pl_len_1\[plate_i\w+\] = \(2 \* max\(read_idx", code)
+    @test occursin(r"__pl_len\[plate_i\w+\] = \(2 \* max\(read_idx", code)
     @test occursin(
-        r"vector\[sum\(pk_reads_pr__pl_len_1\)\] pk_reads_pr__pl_mem_1", code,
+        r"vector\[sum\(pk_reads_pr__pl_len\)\] pk_reads_pr\b", code,
     )
     td = stan_block(code, "transformed data")
     @test !occursin("matrix[", td)
@@ -16901,7 +16901,7 @@ the local and the function — when a size cannot be expressed in arguments
     end
     @test transpiles(chain_model)
     @test stanc_compiles(chain_model)
-    @test occursin(r"__pl_len_1\[plate_i\w+\] = \(2 \* max\(read_idx", stan_code(chain_model))
+    @test occursin(r"__pl_len\[plate_i\w+\] = \(2 \* max\(read_idx", stan_code(chain_model))
 
     # The same substitution applies outside a plate: a top-level caller's
     # declaration carries the arg-expressed size.

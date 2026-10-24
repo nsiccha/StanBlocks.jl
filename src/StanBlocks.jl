@@ -13,6 +13,7 @@ Base.Experimental.@max_methods 1
 export @slic, @defsig, @deffun, @juliacompat, @stanonly, @lpxf, @lhs, @stan_assert, @plate, @scan
 export return_type_of, stan_code, stan_model, compile_slic_bundle, slic_eval, stan_instantiate, stan_library, stanc_check
 export stan_descriptor, stan_definition, stan_definition_closure, stan_operation, stan_execute
+export stan_interface, stan_data_json
 export ModelDescriptor, ModelInput, ModelOutput, ModelDefinition, ModelOperation
 export StanBlocksError, StanBlocksDiagnostic, diagnostic
 export ValueFamily, ValueUDF
