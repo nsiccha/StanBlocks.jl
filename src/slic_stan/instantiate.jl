@@ -238,12 +238,23 @@ stan_data(x::StanModel) = Dict([
 _collect_data_entry!(d, s::StanExpr) =
     (expr(s) isa Symbol && hasvalue(s) && (d[expr(s)] = getvalue(s)); nothing)
 _collect_data_entry!(d, s) = nothing
-_collect_derived_sizes!(d, st::StanType) = begin
-    foreach(s -> _collect_data_entry!(d, s), stan_size(st))
-    ats = get(info(st), :arg_types, nothing)
-    ats === nothing || foreach(at -> _collect_derived_sizes!(d, at), values(ats))
+_collect_derived_sizes!(d, st::StanType) = _foreach_declared_size(s -> _collect_data_entry!(d, s), st)
+
+# Every size a data type declares: its own entries, then each Stan tuple
+# component's, recursively — a ragged carrier's `mem`/`ends`, a table's columns,
+# a `NamedTuple`/`Tuple` value's fields. A tuple's own size is only its array
+# dims, so a walk that stops at the top level misses every component size. Both
+# re-bind (above) and the descriptor's `derived` flag read this one walk.
+_foreach_declared_size(f, x::StanExpr) = _foreach_declared_size(f, type(x))
+_foreach_declared_size(f, st::StanType) = begin
+    foreach(f, stan_size(st))
+    foreach(at -> _foreach_declared_size(f, at), values(_tuple_component_types(st)))
     nothing
 end
+# A Stan tuple's component types, in tuple order: a `NamedTuple` keyed by field
+# name, or a `Tuple` for a positional one.
+_tuple_component_types(::StanType) = ()
+_tuple_component_types(st::StanType{<:types.tup}) = info(st).arg_types
 _rebind_data_entries!(d, key, value) = begin
     st = stan_type(key, value)
     d[key] = getvalue(st)

@@ -722,15 +722,19 @@ stan_type(expr, value::AbstractMatrix{<:Integer}; kwargs...) = StanType(
 # `value` carries the raw text; the rendered form quotes it.
 stan_type(expr, value::AbstractString; kwargs...) = StanType(types.anything; value, kwargs..., qual=:data)
 stan_type(expr, value::Function; kwargs...) = StanType(types.func{typeof(value)}; value, qual=:data, kwargs...)
-stan_type(expr, value::Tuple; kwargs...) = StanType(
-    types.tup, tuple();
-    arg_types=ntuple(i->stan_type(Symbol(expr, "_", i), value[i]), length(value)), value, kwargs...
-)
-stan_type(expr, value::NamedTuple; kwargs...) = StanType(
-    types.ntup, tuple();
-    arg_types=(;[key=>stan_type(Symbol(expr, "_", key), val) for (key, val) in pairs(value)]...),
-    value, kwargs...
-)
+# A tuple's value is its components' INGESTED values, not the caller's: a field
+# that ingests to another representation (a ragged vector-of-vectors becomes
+# `(mem, ends)`) must reach `prepare_for_stan` in the layout the Stan tuple
+# declares, as it does at top level. Keeping the raw value made NamedTuple data
+# with a ragged field unencodable.
+stan_type(expr, value::Tuple; kwargs...) = begin
+    arg_types = ntuple(i->stan_type(Symbol(expr, "_", i), value[i]), length(value))
+    StanType(types.tup, tuple(); arg_types, value=map(getvalue, arg_types), kwargs...)
+end
+stan_type(expr, value::NamedTuple; kwargs...) = begin
+    arg_types = (;[key=>stan_type(Symbol(expr, "_", key), val) for (key, val) in pairs(value)]...)
+    StanType(types.ntup, tuple(); arg_types, value=map(getvalue, arg_types), kwargs...)
+end
 """
 Encode a vector of real-valued subvectors as a ragged vector: a `NamedTuple` with
 `mem::Vector` (concatenation of all subvectors) and `ends::Vector{Int}` (inclusive
