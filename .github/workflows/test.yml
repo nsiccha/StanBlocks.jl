@@ -75,6 +75,11 @@ jobs:
   stan:
     name: stan (BridgeStan toolchain)
     runs-on: ubuntu-latest
+    # A native abort inside a Stan model (`double free or corruption`, SIGABRT)
+    # can leave Julia hung in its own signal handler, so the job used to sit
+    # at GitHub's 360-minute default (devibe bfc4346 and fd91d0c, 2026-10-24).
+    # Green lanes take at most ~130 minutes (Julia `1`) and ~80 (`lts`).
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -94,12 +99,23 @@ jobs:
       # The schema token is deliberate: BridgeStan only validates the cached
       # Makefile, so an older incomplete cache can look installed while lacking
       # `bin/stanc`. Bump the token whenever this cache contract changes.
+      #
+      # The cache holds compiled native objects (BridgeStan's bridge object,
+      # TBB, SUNDIALS), and each model compiled later links against them. So
+      # the key names the toolchain that built them. `runner.os` alone let an
+      # Ubuntu 26.04 runner (GCC 15, glibc 2.43) restore objects an Ubuntu
+      # 24.04 runner (GCC 13, glibc 2.39) had built, once this workflow's
+      # `ubuntu-latest` jobs started landing on 26.04 (first seen 2026-10-24).
+      - name: Identify the native toolchain
+        run: |
+          . /etc/os-release
+          echo "NATIVE_TOOLCHAIN=${ID}${VERSION_ID}-gcc$(g++ -dumpfullversion)-glibc$(getconf GNU_LIBC_VERSION | cut -d' ' -f2)" >> "$GITHUB_ENV"
       - name: Cache BridgeStan toolchain
         uses: actions/cache@v4
         with:
           path: ~/.bridgestan
-          key: bridgestan-v3-${{ runner.os }}-${{ hashFiles('Project.toml') }}
-          restore-keys: bridgestan-v3-${{ runner.os }}-
+          key: bridgestan-v4-${{ runner.os }}-${{ env.NATIVE_TOOLCHAIN }}-${{ hashFiles('Project.toml') }}
+          restore-keys: bridgestan-v4-${{ runner.os }}-${{ env.NATIVE_TOOLCHAIN }}-
       - name: Download BridgeStan
         run: julia --project=test -e 'using BridgeStan; path = BridgeStan.get_bridgestan_path(; download=true); stanc = joinpath(path, "bin", "stanc"); isfile(stanc) || run(`make -C $path bin/stanc`); isfile(stanc) || error("BridgeStan setup has no stanc binary at $stanc"); open(ENV["GITHUB_ENV"], "a") do io; println(io, "BRIDGESTAN=", path); println(io, "STANC_PATH=", stanc); end; println(path)'
       # Compiled models land in `tmp/<hash(stan_code)>.stan` + its shared
