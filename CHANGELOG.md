@@ -4,6 +4,20 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## Unreleased
+
+- **Tuple inputs and outputs in the model descriptor.** `ModelInput` and
+  `ModelOutput` gain a trailing `fields`: for a Stan tuple entry (a ragged
+  vector, a table, `NamedTuple` or `Tuple` data, a record a `@deffun` returns)
+  one row per component in tuple order with its `type`, `size`, nested
+  `fields` and `value` (inputs) or `dims` (outputs); `(;)` otherwise. Component
+  sizes such as a ragged `y`'s `y_mem_n`/`y_ends_n` or a table's `df_nrow` are
+  now `derived`, so `required_inputs` no longer asks for them. Code that
+  constructs these structs positionally must pass the new field.
+- **`NamedTuple`/`Tuple` data with a ragged field encodes.** Its value now holds
+  the field's ingested `(mem, ends)` form, as a top-level ragged input does;
+  before, `prepare_for_stan` failed on the raw vector of vectors.
+
 ## v0.2.1 — additive transpiler features since v0.2.0
 
 **Non-breaking** — additive to the `v0.2.0` transpiler API.
