@@ -2977,9 +2977,9 @@ _vcat_size(x) = x
 # the cell's observation of `y`: drop the pair from the slices, so the cell's
 # `y ~ …` traces as a fresh cell sample, a declared observation whose storage
 # the loop core taints cv and whose draw it aliases as `y_gen`. Returns the
-# remaining params/iterables, the body, and `param => marked name`.
+# remaining params/iterables, the body, and each param's `_CVCell`.
 _plate_cv_positionals(rv, params, iterables, body_raw, outer; info) = begin
-    cv_params = Dict{Symbol,Symbol}()
+    cv_params = Dict{Symbol,_CVCell}()
     (isempty(iterables) || length(params) != length(iterables)) && return params, iterables, body_raw, cv_params
     keep = Int[]
     for (k, (a, it)) in enumerate(zip(params, iterables))
@@ -2993,7 +2993,7 @@ _plate_cv_positionals(rv, params, iterables, body_raw, outer; info) = begin
                 "plate: positional `", it, "` is bound to `maybecv(:", it, ")`, which has no ",
                 "values, so its do-block parameter `", a, "` must be observed whole in the cell ",
                 "(`", a, " ~ …`).")
-            cv_params[a] = it
+            cv_params[a] = (; marked=it, param=a, plate=rv)
         else
             push!(keep, k)
         end
@@ -4314,7 +4314,7 @@ _forward_loop_core!(;
     kind, rv, rv_ct, id, idxs, outer_dims, outer_lo, params, iterables, input_subst,
     body_stmts, ret_expr, setup_stmts, public, probe_transform, probe_exclude,
     scan_arrays, info, ns=nothing, hoist_tag=id, hygiene=Dict{Symbol,Symbol}(),
-    spellings=Dict{Symbol,Symbol}(), cv_params=Dict{Symbol,Symbol}(),
+    spellings=Dict{Symbol,Symbol}(), cv_params=Dict{Symbol,_CVCell}(),
 ) = begin
     # Proven length mismatches between positionals and their outer axes (or
     # between siblings) are ill-typed — refuse before any renaming/hoisting.
@@ -4366,8 +4366,8 @@ _forward_loop_core!(;
     # under its hygienic name; record which marked name it observes.
     if !isempty(cv_params)
         context = _trace_context(info)
-        for (a, marked) in cv_params
-            context.cv_cells[_plate_global_name(info, get(fresh_rename, a, a))] = marked
+        for (a, cell) in cv_params
+            context.cv_cells[_plate_global_name(info, get(fresh_rename, a, a))] = cell
         end
     end
 

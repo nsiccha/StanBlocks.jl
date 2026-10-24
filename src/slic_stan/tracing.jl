@@ -74,9 +74,26 @@ _cv_observations(x::SubModel) = _cv_observations(parent(x))
 _cv_observations(_) = ()
 # A plate cell observing a marked positional carries a hygienic name
 # (`mu_y`); the trace context maps it to the marked data name (`y`).
-_cv_public_name(f::Symbol; info) = begin
+_cv_cell(f::Symbol; info) = begin
     context = _trace_context(info)
-    context === nothing ? f : get(context.cv_cells, f, f)
+    context === nothing ? nothing : get(context.cv_cells, f, nothing)
+end
+_cv_public_name(f::Symbol; info) = (cell = _cv_cell(f; info); cell === nothing ? f : cell.marked)
+# A read of a values-free observation that `forward!` reaches before its `~`
+# bound the draw (snag `values-free-mayb-dfa6bab5`). A plate cell's read names
+# the author's do-block parameter, not its hygienic name.
+_cv_values_read_error(f::Symbol; info) = begin
+    cell = _cv_cell(f; info)
+    subject, obs, where = cell === nothing ?
+        ("`$(f)` is bound to `maybecv(:$(f))`, which", f,
+            " (at model scope or as a `plate` positional's do-block parameter)") :
+        ("plate `$(cell.plate)`: do-block parameter `$(cell.param)` is the cell's slice of " *
+            "`$(cell.marked)`, bound to `maybecv(:$(cell.marked))`, which", cell.param, " in the cell")
+    string(subject, " has no values to read. A values-free observation is only drawn, ",
+        "at its `", obs, " ~ …` statement", where, ": read it after that statement, where it ",
+        "is the draw. A distribution that reads its own observation, directly or through a ",
+        "value computed from it, has nothing to draw from. Take sizes and plate counts from ",
+        "another input (a plate needs `outer` or another positional).")
 end
 _is_cv_observation(f::Symbol; info) = _cv_public_name(f; info) in _cv_observations(info)
 _is_cv_observation(f; info) = false
@@ -686,10 +703,6 @@ forward!(x::Symbol; info) = begin
         "`$(x)` names a plate whose cell collects no result: its do-block ends in a ",
         "`~`/`=` statement or `nothing`, so `$(x)` is not bound. End the cell with the ",
         "value to collect (for example its cell parameter).")
-    x in _cv_observations(info) && error(
-        "`$(x)` is bound to `maybecv(:$(x))`, which has no values to read. A values-free ",
-        "observation is observed whole (`$(x) ~ …`, at model scope or as a `plate` ",
-        "positional's do-block parameter); take sizes and plate counts from another input ",
-        "(a plate needs `outer` or another positional).")
+    _is_cv_observation(x; info) && error(_cv_values_read_error(x; info))
     error("Could not find $(x) in model, builtin, $(mod) or Main!")
 end
