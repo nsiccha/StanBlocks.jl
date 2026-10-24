@@ -42,6 +42,12 @@ _checked_observations(obs) = begin
     tup
 end
 SlicModel(model, data) = SlicModel(model, data, Main)
+# What `maybecv(name)` binds: an observation with no values, to predict given
+# a fit (tracing.jl).
+struct CVMark
+    name::Symbol
+end
+Base.show(io::IO, x::CVMark) = print(io, "maybecv(:", x.name, ")")
 "The inferred Stan model, post-tracing. Can be instantiated via `stan_instantiate`."
 struct StanModel#{M,V,B}
     meta#::M
@@ -80,8 +86,13 @@ mutable struct TraceContext
     # `_ragged_scratch_assign`): each generated-quantities statement that reads
     # one re-declares it inside its own local scope.
     ragged_scratch::OrderedDict{Symbol,Any}
+    # Values-free `maybecv(name)` observations (tracing.jl `_cv_marks`): the
+    # hygienic plate-cell name of each one observed through a plate positional,
+    # mapped to its marked name, and the marked names some `~` observed.
+    cv_cells::Dict{Symbol,Symbol}
+    cv_observed::Set{Symbol}
 end
-TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0, OrderedDict{Symbol,Any}())
+TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0, OrderedDict{Symbol,Any}(), Dict{Symbol,Symbol}(), Set{Symbol}())
 _context_or_new(context) = context === nothing ? TraceContext() : context
 """
 A named sub-model function, produced by `@slic f(args...) = body`. The value
@@ -690,6 +701,13 @@ _table_stan_type(expr, tbl; kwargs...) = begin
     StanType(types.ntup, tuple(); arg_types, value=cols, kwargs...)
 end
 stan_type(expr, value::Integer; kwargs...) = StanType(types.int; value, kwargs..., qual=:data)
+# A values-free mark changes which program the model is, so it is bound where
+# the model is traced, never ingested as data (re-binding a traced model, a
+# submodel keyword, a fixed merge value).
+stan_type(expr, value::CVMark; kwargs...) = error(
+    "`", expr, " = ", value, "` marks an observation with no values; it cannot be data. ",
+    "Bind it on the `SlicModel` being compiled (`m(; ", value.name, " = maybecv(:", value.name,
+    "))`, then trace it), not on a traced model or inside a submodel.")
 stan_type(expr, value::AbstractFloat; kwargs...) = StanType(types.real; value, kwargs...)
 stan_type(expr, value::AbstractVector{<:Real}; kwargs...) = StanType(
     types.vector,
