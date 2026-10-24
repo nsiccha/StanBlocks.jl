@@ -259,10 +259,14 @@ generated quantities {
   `mu ~ plate(y, t; outer = (n,)) do y, t … y ~ normal(m, sigma) … end` with
   `y = maybecv(:y)` draws each cell's group into one flat `y_gen` with the plate's
   segments. The plate takes its count from `outer` or another positional.
-- Refused, each with a message: a mark that no `~` observes, reading the marked name
-  (`length(y)`, `y[i]`), a cell that observes a slice of a marked positional instead of
-  all of it, and a mark on a traced model's re-bind (`stan_model(m)(; y = …)`), because
-  the mark changes the program.
+- A read of the marked name before its `y ~ …` statement is refused, at model scope
+  and in a plate cell reading its do-block parameter alike: `length(y)`, `y[i]`, or any
+  value computed from it. A distribution that reads its own observation
+  (`m = sum(y) .* x; y ~ normal(m, s)`) has no draw to predict from. After that
+  statement the name is the draw, so `z = sum(y)` is a generated quantity.
+- Also refused, each with a message: a mark that no `~` observes, a cell that observes
+  a slice of a marked positional instead of all of it, and a mark on a traced model's
+  re-bind (`stan_model(m)(; y = …)`), because the mark changes the program.
 
 Omitting `y` instead (above) is the prior-predictive program, which re-draws `b` and
 `s` from their priors.
