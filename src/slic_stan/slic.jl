@@ -24,6 +24,7 @@ include("show.jl")
 include("build.jl")
 include("instantiate.jl")
 include("descriptor.jl")
+include("interface.jl")
 include("bundle.jl")
 
 include("test.jl")

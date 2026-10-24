@@ -42,6 +42,8 @@ StanBlocks.stan_library
 ```@docs
 StanBlocks.stan_descriptor
 StanBlocks.required_inputs
+StanBlocks.stan_interface
+StanBlocks.stan_data_json
 StanBlocks.stan_definition
 StanBlocks.stan_definition_closure
 StanBlocks.stan_operation
