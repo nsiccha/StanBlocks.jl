@@ -381,3 +381,196 @@ end
     # an accidental collision has probability zero).
     @test draw_at(18)[r_idx] != draw1[r_idx]
 end
+
+"""
+A values-free `maybecv(:y)` (snag held-out-observa-58a2eb13, design decision
+1kj6hva) binds an observation with no values as a quantity to predict given an
+earlier fit: a forecast. What the observation reads stays a parameter, `y_gen`
+takes the shape of its other arguments, and there is neither a `y` input nor a
+`y_likelihood`. It is reached from the fit program's own body by rebinding data,
+including through a `plate` positional.
+"""
+@testitem "slic: a values-free maybecv observation is predicted given a fit" tags=[:slic, :plate, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block
+    maybecv = StanBlocks.stan.maybecv
+    ops(d) = getproperty.(d.operations, :name)
+    output(d, name) = only(o for o in d.outputs if o.name == name)
+
+    body = quote
+        b ~ normal(0.0, 1.0)
+        s ~ exponential(1.0)
+        y ~ normal(b .+ x, s)
+    end
+    fit = StanBlocks.SlicModel(body, Dict{Symbol,Any}(:x => [0.4, 0.5], :y => [0.1, 0.2]), @__MODULE__)
+    forecast = fit(; y = maybecv(:y))
+    code = stan_code(forecast)
+    @test occursin("real b;", stan_block(code, "parameters"))
+    @test occursin("real<lower=0.0> s;", stan_block(code, "parameters"))
+    @test !occursin("y", stan_block(code, "model"))
+    @test !occursin("y", stan_block(code, "data"))
+    @test occursin("vector[x_n] y = normal_vector_rng(x_n, (b + x), s);", code)
+    @test occursin("vector[x_n] y_gen = y;", code)
+    @test !occursin("y_likelihood", code)
+    d = stan_descriptor(forecast)
+    @test ops(d) == (:transpile, :instantiate, :predict)
+    @test StanBlocks.required_inputs(d) == (:x,)
+    @test output(d, :y_gen).generative == :draw
+    @test output(d, :y_gen).source == :y
+    @test output(d, :b).kind == :parameter
+    # Omitting `y` is still the prior program, and the fit program is unchanged.
+    prior = StanBlocks.SlicModel(body, Dict{Symbol,Any}(:x => [0.4, 0.5]), @__MODULE__, (:y,))
+    @test strip(stan_block(stan_code(prior), "parameters")) == "{\n}"
+    @test occursin("y ~ normal((b + x), s);", stan_block(stan_code(fit), "model"))
+
+    # A second, bound observation keeps its likelihood, so the program is fitted.
+    mixed = StanBlocks.SlicModel(quote
+        mu ~ normal(0.0, 1.0); sy ~ exponential(1.0); sz ~ exponential(1.0)
+        y ~ normal(mu .+ x, sy)
+        z ~ normal(mu, sz)
+    end, Dict{Symbol,Any}(:x => [0.1, 0.2], :z => [0.3, 0.4, 0.5], :y => maybecv(:y)), @__MODULE__)
+    md = stan_descriptor(mixed)
+    @test :fit in ops(md)
+    @test output(md, :y_gen).generative == :draw
+    @test output(md, :sy).kind == :parameter
+    @test !occursin("y_likelihood", stan_code(mixed))
+
+    # Ragged and censored: the arguments give the groups and the bounds.
+    ragged = StanBlocks.SlicModel(quote
+        s ~ exponential(1.0)
+        y ~ censored(normal(mu, s); lower = lo)
+    end, Dict{Symbol,Any}(:mu => [[1.0, 2.0], [3.0]], :lo => [[0.1, 0.2], [0.3]], :y => maybecv(:y)), @__MODULE__)
+    rd = stan_descriptor(ragged)
+    @test ops(rd) == (:transpile, :instantiate, :predict)
+    @test output(rd, :y_gen).segments == [2, 3]
+    @test output(rd, :s).kind == :parameter
+
+    # A plate positional bound to the mark: the cell's observation is the draw,
+    # named after the data input as in the fit program, and the cell's values
+    # (and what they read) stay parameters and transformed parameters.
+    cell_body = quote
+        b ~ normal(0.0, 1.0)
+        logsigma ~ normal(-1.0, 1.0)
+        sigma = exp(logsigma)
+        mu ~ plate(y, t; outer = (nsub,)) do y, t
+            m = b .+ 2.0 .* t
+            y ~ normal(m, sigma)
+            m
+        end
+    end
+    cell_data = Dict{Symbol,Any}(:t => [[0.1, 0.2, 0.3], [0.4]], :nsub => 2)
+    cell_fit = StanBlocks.SlicModel(cell_body, merge(cell_data, Dict{Symbol,Any}(:y => [[1.0, 2.0, 3.0], [4.0]])), @__MODULE__)
+    cell_forecast = cell_fit(; y = maybecv(:y))
+    cc = stan_code(cell_forecast)
+    @test occursin("real b;", stan_block(cc, "parameters"))
+    @test occursin("real logsigma;", stan_block(cc, "parameters"))
+    @test !occursin("for(", stan_block(cc, "model"))
+    @test occursin("for(", stan_block(stan_code(cell_fit), "model"))
+    @test occursin(r"y_gen\s*=\s*mu_y__pl_mem_\d+;", stan_block(cc, "generated quantities"))
+    cd = stan_descriptor(cell_forecast)
+    @test ops(cd) == (:transpile, :instantiate, :predict)
+    @test !(:y in StanBlocks.required_inputs(cd))
+    @test output(cd, :y_gen).source == :y
+    @test output(cd, :y_gen).segments == [3, 4]
+    fit_d = stan_descriptor(cell_fit)
+    @test output(fit_d, :y_gen).segments == [3, 4]
+    rebound = stan_model(cell_forecast)(; t = [[0.1], [0.2, 0.3]])
+    @test output(stan_descriptor(rebound), :y_gen).segments == [1, 3]
+    # The count may come from another positional instead of `outer`.
+    counted = StanBlocks.SlicModel(quote
+        b ~ normal(0.0, 1.0)
+        mu ~ plate(y, t) do y, t
+            m = b .+ t
+            y ~ normal(m, 1.0)
+            m
+        end
+    end, Dict{Symbol,Any}(:t => [[0.1, 0.2], [0.3]], :y => maybecv(:y)), @__MODULE__)
+    @test output(stan_descriptor(counted), :y_gen).segments == [2, 3]
+    # A dense per-cell observation.
+    dense_cell = StanBlocks.SlicModel(quote
+        b ~ normal(0.0, 1.0); s ~ exponential(1.0)
+        theta ~ plate(y, x; outer = n) do y, x
+            y ~ normal(b + x, s)
+        end
+    end, Dict{Symbol,Any}(:x => [0.1, 0.2, 0.3], :n => 3, :y => maybecv(:y)), @__MODULE__)
+    dd = stan_descriptor(dense_cell)
+    @test ops(dd) == (:transpile, :instantiate, :predict)
+    @test output(dd, :y_gen).dims == (3,)
+    @test output(dd, :s).kind == :parameter
+
+    # Refused: a mark no `~` observes would silently change nothing (dev §1).
+    @test_throws "no `z ~ …` statement observes it" stan_code(fit(; z = maybecv(:z)))
+    # Refused: a values-free observation has no values to read, only to draw.
+    @test_throws "has no values to read" stan_code(StanBlocks.SlicModel(quote
+        s ~ exponential(1.0); y ~ normal(rep_vector(0.0, length(y)), s)
+    end, Dict{Symbol,Any}(:y => maybecv(:y)), @__MODULE__))
+    # Refused: the mark names the observation it is bound to.
+    @test_throws "write `y = maybecv(:y)`" stan_code(fit(; y = maybecv(:w)))
+    # Refused: a traced model re-binds data only, and the mark changes the program.
+    @test_throws "cannot be data" stan_model(fit)(; y = maybecv(:y))
+    # Refused: a marked positional has no slices, so only a whole `y ~ …` observes it.
+    @test_throws "must be observed whole" stan_code(StanBlocks.SlicModel(quote
+        mu ~ plate(y, t) do y, t
+            y[1] ~ normal(0.0, 1.0)
+            t
+        end
+    end, Dict{Symbol,Any}(:t => [[0.1, 0.2], [0.3]], :y => maybecv(:y)), @__MODULE__))
+    # Refused: a plate with no other positional and no `outer` has no cell count.
+    @test_throws "pass `outer=N`" stan_code(StanBlocks.SlicModel(quote
+        s ~ exponential(1.0)
+        mu ~ plate(y) do y
+            y ~ normal(0.0, s)
+        end
+    end, Dict{Symbol,Any}(:y => maybecv(:y)), @__MODULE__))
+end
+
+@testitem "slic: a values-free maybecv forecast stanc acceptance" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+    maybecv = StanBlocks.stan.maybecv
+    @test stanc_compiles(StanBlocks.SlicModel(quote
+        b ~ normal(0.0, 1.0); s ~ exponential(1.0); y ~ normal(b .+ x, s)
+    end, Dict{Symbol,Any}(:x => [0.4, 0.5], :y => maybecv(:y)), @__MODULE__))
+    @test stanc_compiles(StanBlocks.SlicModel(quote
+        s ~ exponential(1.0); y ~ censored(normal(mu, s); lower = lo)
+    end, Dict{Symbol,Any}(:mu => [[1.0, 2.0], [3.0]], :lo => [[0.1, 0.2], [0.3]], :y => maybecv(:y)), @__MODULE__))
+    @test stanc_compiles(StanBlocks.SlicModel(quote
+        b ~ normal(0.0, 1.0)
+        logsigma ~ normal(-1.0, 1.0)
+        mu ~ plate(y, t; outer = (nsub,)) do y, t
+            m = b .+ 2.0 .* t
+            y ~ normal(m, exp(logsigma))
+            m
+        end
+    end, Dict{Symbol,Any}(:t => [[0.1, 0.2, 0.3], [0.4]], :nsub => 2, :y => maybecv(:y)), @__MODULE__))
+end
+
+@testitem "slic: a values-free maybecv forecast executes from fit draws" tags=[:slic, :plate, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    maybecv = StanBlocks.stan.maybecv
+    # Fit-shaped unconstrained draws feed the forecast: with b = 5 and a tiny
+    # scale every predicted entry sits at its mean.
+    forecast = StanBlocks.SlicModel(quote
+        b ~ normal(0.0, 1.0); s ~ exponential(1.0); y ~ normal(b .+ x, s)
+    end, Dict{Symbol,Any}(:x => [0.4, 0.5], :y => maybecv(:y)), @__MODULE__)
+    d = stan_descriptor(forecast)
+    p = stan_execute(d, :instantiate)
+    @test LogDensityProblems.dimension(p) == 2
+    draws = repeat([5.0, log(1e-4)], 1, 3)
+    pred = stan_execute(d, :predict; problem = p, draws, seed = 3)
+    @test keys(pred) == (:y_gen,)
+    @test size(pred.y_gen) == (2, 3)
+    @test all(abs.(pred.y_gen .- [5.4, 5.5]) .< 0.01)
+
+    cell = StanBlocks.SlicModel(quote
+        b ~ normal(0.0, 1.0)
+        logsigma ~ normal(-1.0, 1.0)
+        mu ~ plate(y, t; outer = (nsub,)) do y, t
+            m = b .+ 2.0 .* t
+            y ~ normal(m, exp(logsigma))
+            m
+        end
+    end, Dict{Symbol,Any}(:t => [[0.1, 0.2, 0.3], [0.4]], :nsub => 2, :y => maybecv(:y)), @__MODULE__)
+    cd = stan_descriptor(cell)
+    cp = stan_execute(cd, :instantiate)
+    @test LogDensityProblems.dimension(cp) == 2
+    cpred = stan_execute(cd, :predict; problem = cp, draws = [5.0, log(1e-4)], seed = 3)
+    @test all(abs.(cpred.y_gen .- (5.0 .+ 2.0 .* [0.1, 0.2, 0.3, 0.4])) .< 0.01)
+end

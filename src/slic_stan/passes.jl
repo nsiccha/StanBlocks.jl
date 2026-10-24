@@ -289,8 +289,18 @@ _truncated_sampling_rhs(decl, rhs) =
     qual(decl) == :data ? _normalised_truncation(rhs; observed=true) :
     qual(decl) == :parameter && !cv(decl) ?
         _normalised_truncation(rhs; support=_implied_support(decl, rhs)) : rhs
+# A values-free `maybecv(:y)` observation (tracing.jl `_cv_marks`) is held out
+# given a fit like a bound one: reachability treats it as an observation, so
+# everything its distribution reads stays a parameter, while its own cv-tainted
+# declaration is re-drawn in generated quantities. The storage of a ragged or
+# plate-cell one names it as `unbound_observation`.
+_cv_observation_storage(T::StanExpr; info) = begin
+    name = get(type(T).info, :unbound_observation, nothing)
+    name isa Symbol && _is_cv_observation(name; info)
+end
 backward!(x::SamplingExpr{<:StanExpr{Symbol}}; info) = if qual(x.args[1]) == :data ||
-        lqual(info[expr(x.args[1])]) == :affects_likelihood || !_gq_redrawable(x.args...)
+        lqual(info[expr(x.args[1])]) == :affects_likelihood || !_gq_redrawable(x.args...) ||
+        _is_cv_observation(expr(x.args[1]); info)
     lhs, rhs = x.args
     decl = info[expr(x.args[1])]
     remake(x, decl, _truncated_sampling_rhs(decl, _restore_sampling_kwargs(backward!(rhs; info), rhs)))
@@ -328,6 +338,10 @@ backward!(x::SamplingExpr; info) = begin
             # Prior-only plate locals are generated quantities, matching the
             # existing prior-predictive treatment of unused Symbol samples. The
             # separate outer declaration reads this updated qualifier later.
+            # A values-free `maybecv` observation's storage is re-drawn the same
+            # way, but what its draw reads stays likelihood-reachable.
+            _cv_observation_storage(info[key]; info) &&
+                (rhs = _restore_sampling_kwargs(backward!(rhs; info), rhs))
             info[key] = remake(info[key]; qual=:quantities)
             remake(x, remake(lhs; qual=:quantities), rhs)
         end

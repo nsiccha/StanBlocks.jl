@@ -1902,7 +1902,10 @@ forward!(x::SamplingExpr{Symbol,<:StanExpr}; info) = begin
         stan.cv(rhs) && (info[name] = remake(info[name]; cv=true))
     else
         autotype = _broadcast_fresh_sample_type(stan.autotype(rhs), rhs)
-        cv = stan.cv(autotype) || stan.cv(rhs)
+        # A values-free `maybecv(:name)` observation is a cv-tainted draw.
+        marked = _is_cv_observation(name; info)
+        marked && _note_cv_observed!(name; info)
+        cv = marked || stan.cv(autotype) || stan.cv(rhs)
         # A prior (or declared size) that reads a random draw (`_rng_qual`,
         # passes.jl) cannot be a model-block density: the parameter is itself a
         # generated quantity, re-drawn from that prior exactly like a cv-tainted one.
@@ -1926,7 +1929,11 @@ forward!(x::CanonicalExpr{typeof(_unbound_observation_storage)}; info) = begin
     cons = (; (k => (v isa StanExpr && center_type(v) <: RaggedVector ?
         forward!(CanonicalExpr(Base.getfield, v, 1); info) : v)
         for (k, v) in pairs(constraints(autotype(rhs))))...)
-    info[mem] = remake(info[mem]; cons..., unbound_observation=name)
+    # A values-free `maybecv(:name)` taints the storage before its group loop
+    # samples it, which makes that loop a generated-quantities draw
+    # (`_forward_indexed_sampling!`).
+    marked = _is_cv_observation(name; info) ? (; cv=true) : (;)
+    info[mem] = remake(info[mem]; cons..., unbound_observation=name, marked...)
     prototype === nothing && return nothing
     original = forward!(CanonicalExpr(Base.getfield, prototype, 1); info)
     ends = forward!(CanonicalExpr(Base.getfield, prototype, 2); info)
@@ -1939,6 +1946,7 @@ end
 forward!(x::CanonicalExpr{typeof(_unbound_ragged_twin)}; info) =
     CanonicalExpr(_unbound_ragged_twin, x.args[1], forward!(x.args[2]; info))
 _forward_unbound_ragged!(name, rhs, ragged; info) = begin
+    _is_cv_observation(name; info) && _note_cv_observed!(name; info)
     prototype = first(ragged)
     backing = forward!(CanonicalExpr(Base.getfield, prototype, 1); info)
     ends = forward!(CanonicalExpr(Base.getfield, prototype, 2); info)
@@ -2964,6 +2972,58 @@ end
 _vcat_size(x::StanExpr) = (n = _slice_int(x; values=false); n === nothing ? x : n)
 _vcat_size(x) = x
 
+# A positional bound to a values-free `maybecv(:y)` (snag
+# `held-out-observa-58a2eb13`) has nothing to slice. Its do-block parameter is
+# the cell's observation of `y`: drop the pair from the slices, so the cell's
+# `y ~ …` traces as a fresh cell sample, a declared observation whose storage
+# the loop core taints cv and whose draw it aliases as `y_gen`. Returns the
+# remaining params/iterables, the body, and `param => marked name`.
+_plate_cv_positionals(rv, params, iterables, body_raw, outer; info) = begin
+    cv_params = Dict{Symbol,Symbol}()
+    (isempty(iterables) || length(params) != length(iterables)) && return params, iterables, body_raw, cv_params
+    keep = Int[]
+    for (k, (a, it)) in enumerate(zip(params, iterables))
+        if it isa Symbol && !(it in keys(info)) && it in _cv_observations(info)
+            observed = any(body_raw.args) do s
+                _is_raw_sampling(s) || return false
+                lhs = s.args[2]
+                lhs === a || (Meta.isexpr(lhs, :(::)) && lhs.args[1] === a)
+            end
+            observed || error(
+                "plate: positional `", it, "` is bound to `maybecv(:", it, ")`, which has no ",
+                "values, so its do-block parameter `", a, "` must be observed whole in the cell ",
+                "(`", a, " ~ …`).")
+            cv_params[a] = it
+        else
+            push!(keep, k)
+        end
+    end
+    isempty(cv_params) && return params, iterables, body_raw, cv_params
+    # A parameter shadowing a model-scope name would sample that name; rename
+    # it first, as the shadowing do-parameters below are.
+    rename = Dict{Symbol,Symbol}()
+    for a in collect(keys(cv_params))
+        a in keys(info) || continue
+        fresh = Symbol(a, "__cell")
+        k = 1
+        while fresh in keys(info) || fresh in params
+            k += 1; fresh = Symbol(a, "__cell_", k)
+        end
+        rename[a] = fresh
+        cv_params[fresh] = pop!(cv_params, a)
+    end
+    isempty(rename) || (body_raw = _subst_syms(body_raw, rename))
+    params, iterables = params[keep], iterables[keep]
+    if isempty(iterables)
+        outer === nothing && error(
+            "plate: `", rv, "` has no positional left to count its cells once its values-free ",
+            "`maybecv` positionals are dropped; pass `outer=N`.")
+        # The do-form without positionals binds one cell index per outer axis.
+        naxes = outer isa CanonicalExprV{:tuple} ? length(outer.args) : 1
+        params = Symbol[Symbol(:cv_plate_i, k, "__unused") for k in 1:naxes]
+    end
+    params, iterables, body_raw, cv_params
+end
 # --- Public `plate` do-block emitter (Feature 2, surface decision n35u3c) -----
 # Lowers `rv ~ plate(iter1, …; outer=(dims...)) do a1, …; body…; cell_output; end`
 # into the plate PRODUCER CONTRACT that the `~`-aware routing (landed on
@@ -4119,6 +4179,8 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     params, vararg = _parse_lambda_lhs(lhs_raw)
     vararg === nothing || error("plate: vararg do-block params (`args...`) are not supported yet.")
     iterables = collect(plate.args[2:end])
+    params, iterables, body_raw, cv_params =
+        _plate_cv_positionals(rv, params, iterables, body_raw, get(plate.kwargs, :outer, nothing); info)
     # A do-block parameter may reuse an outer name (`plate(y) do y`): in the
     # cell it shadows that name, as in Julia. The compiler also writes outer
     # references into the cell (the iterable's accessor `y[plate_i]`, a nested
@@ -4216,6 +4278,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         ret_expr,
         setup_stmts=Any[], public=Set{Symbol}(), probe_transform=nothing,
         probe_exclude=Set{Symbol}(), scan_arrays=Set{Symbol}(), info, ns=rv, spellings,
+        cv_params,
     )
 end
 
@@ -4251,7 +4314,7 @@ _forward_loop_core!(;
     kind, rv, rv_ct, id, idxs, outer_dims, outer_lo, params, iterables, input_subst,
     body_stmts, ret_expr, setup_stmts, public, probe_transform, probe_exclude,
     scan_arrays, info, ns=nothing, hoist_tag=id, hygiene=Dict{Symbol,Symbol}(),
-    spellings=Dict{Symbol,Symbol}(),
+    spellings=Dict{Symbol,Symbol}(), cv_params=Dict{Symbol,Symbol}(),
 ) = begin
     # Proven length mismatches between positionals and their outer axes (or
     # between siblings) are ill-typed — refuse before any renaming/hoisting.
@@ -4299,6 +4362,14 @@ _forward_loop_core!(;
         body_stmts = Any[_subst_syms(s, fresh_rename) for s in body_stmts]
         ret_expr = _subst_syms(ret_expr, fresh_rename)
     end
+    # A dropped `maybecv(:y)` positional's parameter is now a fresh cell sample
+    # under its hygienic name; record which marked name it observes.
+    if !isempty(cv_params)
+        context = _trace_context(info)
+        for (a, marked) in cv_params
+            context.cv_cells[_plate_global_name(info, get(fresh_rename, a, a))] = marked
+        end
+    end
 
     # Lift every cell-INVARIANT binding and subexpression out of the loop before
     # anything else looks at the body, so discovery never sees a lifted name and
@@ -4328,7 +4399,10 @@ _forward_loop_core!(;
     # name. Emission samples the promoted storage instead, so retain the names
     # here for both the storage declaration and its public predictive alias.
     unbound_cells = Symbol[f for (f, T) in fresh
-        if f in _model_observations(info) && _decl_role(T) === :sampled]
+        if (f in _model_observations(info) || _is_cv_observation(f; info)) && _decl_role(T) === :sampled]
+    for f in unbound_cells
+        _is_cv_observation(f; info) && _note_cv_observed!(f; info)
+    end
     rv_type = rv === nothing ? nothing :
         rv_ct === nothing ? discovered.ret_type :
         _plate_resolve_cell_type(rv_ct, discovered.ret_type, outer_dims, rv; info)
@@ -4536,7 +4610,10 @@ _forward_loop_core!(;
             emitted = _plate_constrain_decl(plan.mem, emitted, cons; info)
             pending !== nothing && push!(pending, emitted)
             if plan.logical in unbound_cells
-                info[plan.mem] = remake(info[plan.mem]; unbound_observation=plan.logical)
+                # A values-free `maybecv` cell: tainting the storage before the
+                # loop samples it makes the loop's draw a generated quantity.
+                marked = _is_cv_observation(plan.logical; info) ? (; cv=true) : (;)
+                info[plan.mem] = remake(info[plan.mem]; unbound_observation=plan.logical, marked...)
             end
             # Retain the carrier's OWN data-computable layout recipe for public
             # descriptor reflection.  The logical RaggedVector binding below
@@ -4639,6 +4716,8 @@ _forward_loop_core!(;
         end
         emitted = forward!(canonical(_plate_outer_decl(f, T, outer_for_f)); info=tgt)
         emitted = _plate_constrain_decl(f, emitted, cons; info=tgt)
+        f in unbound_cells && _is_cv_observation(f; info) &&
+            (tgt[f] = remake(tgt[f]; unbound_observation=f, cv=true))
         if scan_carried(f)
             coverage = (; idx=_plate_global_name(info, idxs[1]),
                 lo=forward!(canonical(outer_lo[1]); info),
@@ -4708,7 +4787,8 @@ _forward_loop_core!(;
     twins = Any[]
     for f in unbound_cells
         storage = haskey(ragged_plans, f) ? ragged_plans[f].mem : f
-        push!(twins, CanonicalExpr(_unbound_ragged_twin, f, root[storage]))
+        # A `maybecv(:y)` cell's draw is `y_gen`, as the fit program's twin is.
+        push!(twins, CanonicalExpr(_unbound_ragged_twin, _cv_public_name(f; info), root[storage]))
     end
     isempty(twins) ? emitted_loop : CanonicalExpr(:block, emitted_loop, twins...)
 end
