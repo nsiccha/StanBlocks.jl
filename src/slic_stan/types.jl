@@ -48,6 +48,9 @@ struct CVMark
     name::Symbol
 end
 Base.show(io::IO, x::CVMark) = print(io, "maybecv(:", x.name, ")")
+# A plate cell observing a marked positional: the marked name, the author's
+# do-block parameter, and the plate.
+const _CVCell = @NamedTuple{marked::Symbol, param::Symbol, plate::Symbol}
 "The inferred Stan model, post-tracing. Can be instantiated via `stan_instantiate`."
 struct StanModel#{M,V,B}
     meta#::M
@@ -88,11 +91,12 @@ mutable struct TraceContext
     ragged_scratch::OrderedDict{Symbol,Any}
     # Values-free `maybecv(name)` observations (tracing.jl `_cv_marks`): the
     # hygienic plate-cell name of each one observed through a plate positional,
-    # mapped to its marked name, and the marked names some `~` observed.
-    cv_cells::Dict{Symbol,Symbol}
+    # mapped to its marked name plus, for messages, the author's do-block
+    # parameter and the plate; and the marked names some `~` observed.
+    cv_cells::Dict{Symbol,_CVCell}
     cv_observed::Set{Symbol}
 end
-TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0, OrderedDict{Symbol,Any}(), Dict{Symbol,Symbol}(), Set{Symbol}())
+TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0, OrderedDict{Symbol,Any}(), Dict{Symbol,_CVCell}(), Set{Symbol}())
 _context_or_new(context) = context === nothing ? TraceContext() : context
 """
 A named sub-model function, produced by `@slic f(args...) = body`. The value

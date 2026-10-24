@@ -519,6 +519,33 @@ including through a `plate` positional.
     @test_throws "write `y = maybecv(:y)`" stan_code(fit(; y = maybecv(:w)))
     # Refused: a traced model re-binds data only, and the mark changes the program.
     @test_throws "cannot be data" stan_model(fit)(; y = maybecv(:y))
+    # Refused: a cell reading its marked positional before observing it, here in
+    # its own distribution, has no values and no draw yet (snag
+    # values-free-mayb-dfa6bab5); the refusal names the author's parameter and
+    # the marked positional, never the cell's hygienic `pred_y`.
+    self_read(read) = StanBlocks.SlicModel(quote
+        s ~ exponential(1.0)
+        pred ~ plate(ys, x; outer = (n,)) do y, xi
+            m = $read .* xi
+            y ~ normal(m, s)
+            m
+        end
+    end, Dict{Symbol,Any}(:ys => maybecv(:ys), :x => [1.0, 2.0], :n => 2), @__MODULE__)
+    for read in (:(sum(y)), :(rep_vector(1.0, length(y))))
+        msg = try; stan_code(self_read(read)); nothing; catch e; StanBlocks.diagnostic(e).message; end
+        @test occursin("plate `pred`: do-block parameter `y` is the cell's slice of `ys`, bound to " *
+            "`maybecv(:ys)`, which has no values to read", msg)
+        @test !occursin("pred_y", msg)
+    end
+    # Read after its `~`, the cell's observation is the draw.
+    after = stan_code(StanBlocks.SlicModel(quote
+        s ~ exponential(1.0)
+        pred ~ plate(ys, x; outer = (n,)) do y, xi
+            y ~ normal(xi, s)
+            sum(y)
+        end
+    end, Dict{Symbol,Any}(:ys => maybecv(:ys), :x => [[1.0, 2.0], [3.0]], :n => 2), @__MODULE__))
+    @test occursin(r"pred\[plate_i__pl_1\] = sum\(\s*pred_y__pl_mem_1\[", stan_block(after, "generated quantities"))
     # Refused: a marked positional has no slices, so only a whole `y ~ …` observes it.
     @test_throws "must be observed whole" stan_code(StanBlocks.SlicModel(quote
         mu ~ plate(y, t) do y, t
