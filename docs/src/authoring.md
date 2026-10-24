@@ -981,6 +981,39 @@ Use `stan_definition` and `stan_definition_closure` to select an included
 function and its exact transitive dependency closure. Lookups and execution
 raise on absent or ambiguous names/operations instead of guessing.
 
+### Running a program outside Julia
+
+CmdStan, CmdStanPy and BridgeStan run `stan_code(model)` without Julia. Two
+functions give them what the program expects:
+
+```julia
+write("model.stan", stan_code(model))
+write("model.data.json", stan_data_json(model))              # the bound data, as BridgeStan receives it
+write("model.interface.json", StanBlocks.JSON.json(stan_interface(model), 2))
+```
+
+`stan_interface(model)` is plain JSON data. Its `"data"` lists every data
+variable in data-block order. A variable the caller supplies has an
+`"encoding"`:
+
+- `"value"`: written as is (a matrix as a list of rows);
+- `"ragged"`: a list of groups, written as the tuple `{"1": <values
+  concatenated>, "2": <inclusive ends>}`;
+- `"tuple"`: a record, written as an object keyed by component position.
+
+A size such as `y_mem_n` or `M_n` is `"supplied": false`, and its `"computed"`
+rule names the value and axis it measures:
+`{"rule": "size", "of": "y", "component": ["mem"], "axis": 1}`.
+
+`"parameters"` lists the parameter variables in BridgeStan's and CmdStan's
+order. `"outputs"` gives each output's block, `dims` and generative role. For a
+ragged output it also gives a `"segments_rule"` naming where its group ends come
+from: `{"rule": "groups_of", "of": "idx"}` (the groups of a ragged input),
+`{"rule": "lengths", "of": "K"}` (group `g` has `K[g]` values), or the per-cell
+length as a Stan expression. `"program_id"` is the descriptor `id`, so a stale
+interface file is detectable. A consumer that encodes its own values from the
+interface writes the same JSON as `stan_data_json`.
+
 ## Current high-level limits
 
 - `@slic` remains flat: no ordinary model-level control flow, mutation, or
