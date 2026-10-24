@@ -227,6 +227,46 @@ held-out response from an earlier fit, mark it. A mark covers the whole input; t
 condition on some rows of a response only (a forecast window, a block of test rows),
 fit the model on the kept rows.
 
+### Predicting a response that has no values (a forecast)
+
+Rows whose response was never measured have only a shape. Bind the response to
+`StanBlocks.stan.maybecv(:y)`, with no value, on the fit program's own body:
+
+```julia
+fit      = m4(; x = x_fit, y = y_fit)
+forecast = fit(; x = x_new, y = StanBlocks.stan.maybecv(:y))   # m4: b, s priors; y ~ normal(b .+ x, s)
+```
+
+```stan
+data { int x_n; vector[x_n] x; }
+parameters { real b; real<lower=0.0> s; }
+model { b ~ normal(0.0, 1.0); s ~ exponential(1.0); }
+generated quantities {
+    vector[x_n] y = normal_vector_rng(x_n, (b + x), s);
+    vector[x_n] y_gen = y;
+}
+```
+
+- Everything `y ~ …` reads stays a parameter, exactly as with `maybecv(:y, y)`, so an
+  earlier fit's draws feed it (`stan_execute(d, :predict; draws, seed)`, CmdStan
+  `generate_quantities`, BridgeStan `param_constrain`).
+- `y` is drawn with the shape its distribution's other arguments give: dense, ragged
+  (the groups and `segments` of a ragged argument), and through `censored(…)` bounds.
+  There is no `y` data input and no `y_likelihood`.
+- The descriptor offers `:predict` but not `:fit`, unless another observation stays
+  bound. Its draw is `y_gen`, as in the fit program.
+- In a `plate`, bind the positional the cell observes:
+  `mu ~ plate(y, t; outer = (n,)) do y, t … y ~ normal(m, sigma) … end` with
+  `y = maybecv(:y)` draws each cell's group into one flat `y_gen` with the plate's
+  segments. The plate takes its count from `outer` or another positional.
+- Refused, each with a message: a mark that no `~` observes, reading the marked name
+  (`length(y)`, `y[i]`), a cell that observes a slice of a marked positional instead of
+  all of it, and a mark on a traced model's re-bind (`stan_model(m)(; y = …)`), because
+  the mark changes the program.
+
+Omitting `y` instead (above) is the prior-predictive program, which re-draws `b` and
+`s` from their priors.
+
 ::: tip The descriptor sees this
 `stan_descriptor(model)` reports it directly. Each input's `held_out` flag is
 contagion-aware — marking one input routinely flips several to `held_out` — and the

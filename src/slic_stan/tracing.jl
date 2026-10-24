@@ -18,14 +18,72 @@ quantities; it never holds out some observations, so it takes no `held_out`
 mask. To condition on some rows only, fit the model on the kept rows.
 """
 maybecv(expr, value; kwargs...) = begin
+    _check_maybecv_kwargs(expr, kwargs)
+    stan_expr(expr, value; cv=true)
+end
+"""
+    maybecv(name)
+
+Bind the observation `name` with NO values as a quantity to predict given an
+earlier fit (a forecast): `m(; y = maybecv(:y))` on the fit program's own body.
+Everything the observation reads stays a parameter, so the fit's draws feed it,
+and `name` is drawn in generated quantities with the shape its distribution's
+other arguments give, aliased as `<name>_gen`. There is no `name` data input and
+no `<name>_likelihood`, so the program offers `:predict` but not `:fit`.
+
+Bind it in place of the data of an observation written `name ~ …` at model
+scope, or of a `plate` positional whose do-block parameter the cell observes
+(`plate(y, R; outer = n) do y, R … y ~ … end`; the plate then needs `outer` or
+another positional for its count). Omitting `name` instead gives the
+prior-predictive program.
+"""
+maybecv(expr; kwargs...) = begin
+    _check_maybecv_kwargs(expr, kwargs)
+    expr isa Symbol || error(
+        "`maybecv(name)` marks an observation by its bare name, e.g. `maybecv(:y)`; got `", expr, "`.")
+    CVMark(expr)
+end
+_check_maybecv_kwargs(expr, kwargs) = begin
     # The element hold-out mask was removed (user decision 1bwqnxs).
     haskey(kwargs, :held_out) && error(
         "`maybecv(:", expr, ", …; held_out = …)`: `maybecv` marks quantities for population ",
         "prediction and never holds out observations, so it takes no hold-out mask. To condition ",
         "on some rows only, fit the model on the kept rows.")
     isempty(kwargs) || error(
-        "`maybecv(name, value)` takes no keyword arguments; got `", join(keys(kwargs), "`, `"), "`.")
-    stan_expr(expr, value; cv=true)
+        "`maybecv` takes no keyword arguments; got `", join(keys(kwargs), "`, `"), "`.")
+    nothing
+end
+# The names a model binds to a values-free `maybecv(name)` (snag
+# `held-out-observa-58a2eb13`). They never reach the data block: each is a
+# declared observation (`_model_observations`) whose draw is cv-tainted, so its
+# arguments stay likelihood-reachable (`backward!`) while it is re-drawn in
+# generated quantities.
+_cv_marks(x::SlicModel) = begin
+    marks = Symbol[]
+    for (key, value) in pairs(data(x))
+        value isa CVMark || continue
+        value.name === key || error(
+            "`", key, " = maybecv(:", value.name, ")`: a values-free `maybecv` mark names the ",
+            "observation it is bound to; write `", key, " = maybecv(:", key, ")`.")
+        push!(marks, key)
+    end
+    Tuple(marks)
+end
+_cv_observations(x::StanModel) = get(meta(x), :cv_observations, ())
+_cv_observations(x::SubModel) = _cv_observations(parent(x))
+_cv_observations(_) = ()
+# A plate cell observing a marked positional carries a hygienic name
+# (`mu_y`); the trace context maps it to the marked data name (`y`).
+_cv_public_name(f::Symbol; info) = begin
+    context = _trace_context(info)
+    context === nothing ? f : get(context.cv_cells, f, f)
+end
+_is_cv_observation(f::Symbol; info) = _cv_public_name(f; info) in _cv_observations(info)
+_is_cv_observation(f; info) = false
+_note_cv_observed!(f::Symbol; info) = begin
+    context = _trace_context(info)
+    context === nothing || push!(context.cv_observed, _cv_public_name(f; info))
+    nothing
 end
 
 """
@@ -97,13 +155,22 @@ _stan_model(x::SlicModel; info) = begin
     # The producer's observation declaration rides in trace meta so both the
     # GQ twin emission (`distribute!`) and the descriptor (`meta(m)`) see it.
     # `remake` merges, so `forward!`'s local `mod` remake preserves it.
-    info = remake(info; _trace_context=context, observations=x.observations)
+    # A values-free `maybecv(name)` declares `name` an observation as well.
+    marks = _cv_marks(x)
+    info = remake(info; _trace_context=context,
+        observations=Tuple(union(x.observations, marks)), cv_observations=marks)
     source_lnn = _first_source_lnn(model(x))
     stage = :trace
     try
         traced = forward!(x; info)
         _restore_ragged_storage!(info)
         traced = _finalize_slice_supports!(traced; info)
+        unobserved = setdiff(marks, context.cv_observed)
+        isempty(unobserved) || error(
+            "`", first(unobserved), " = maybecv(:", first(unobserved), ")` marks an observation ",
+            "with no values, but no `", first(unobserved), " ~ …` statement observes it. ",
+            "Write the observation at model scope, or pass `", first(unobserved),
+            "` as a `plate` positional whose do-block parameter the cell observes.")
         stage = :lowering
         lowered = backward!(traced; info)
         info = remake(info; _model_local_transforms=_model_local_transforms(lowered; info))
@@ -368,6 +435,8 @@ forward!(x::SlicModel; info=StanModel()) = begin
     missing_vars = _scan_and_register_missing_vars!(data(x), info)
     for (key, value) in pairs(data(x))
         key in keys(missing_vars) && continue   # split vars already registered above
+        # A values-free `maybecv(:key)` is no data: `_stan_model` declared it.
+        value isa CVMark && info isa StanModel && key in _cv_observations(info) && continue
         maybedata!(info, key, value)
     end
     raw_body = model(x)
@@ -619,5 +688,10 @@ forward!(x::Symbol; info) = begin
         "`$(x)` names a plate whose cell collects no result: its do-block ends in a ",
         "`~`/`=` statement or `nothing`, so `$(x)` is not bound. End the cell with the ",
         "value to collect (for example its cell parameter).")
+    x in _cv_observations(info) && error(
+        "`$(x)` is bound to `maybecv(:$(x))`, which has no values to read. A values-free ",
+        "observation is observed whole (`$(x) ~ …`, at model scope or as a `plate` ",
+        "positional's do-block parameter); take sizes and plate counts from another input ",
+        "(a plate needs `outer` or another positional).")
     error("Could not find $(x) in model, builtin, $(mod) or Main!")
 end
