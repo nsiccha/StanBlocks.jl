@@ -8,9 +8,18 @@
 # enter. Reclaim therefore re-checks the file under a separate short guard.
 # `dead_age`: seconds without an mtime refresh (holders refresh every sixth of
 # it) before a reclaim; `poll`: seconds between a waiter's checks.
-function _with_build_lock(f, path; dead_age=60, poll=10)
-    mkpath(dirname(path))
-    lock = _acquire_build_lock(path, dead_age, poll)
+# `unwritable`, when given, runs instead of `f` once the lock file cannot be
+# created because this process may not write its directory (`_unwritable`). A
+# lock file that exists still reads as taken there, so a live holder is waited
+# for first, as by any waiter; only a dead one is not reclaimed.
+function _with_build_lock(f, path; dead_age=60, poll=10, unwritable=nothing)
+    lock = try
+        mkpath(dirname(path))
+        _acquire_build_lock(path, dead_age, poll)
+    catch err
+        (unwritable !== nothing && _unwritable(err)) || rethrow()
+        return unwritable()
+    end
     try
         f()
     finally
@@ -37,6 +46,10 @@ function _wait_build_lock_change(path, poll)
     end
     nothing
 end
+
+# Whether `err` says this process may not create a file where it tried: a
+# read-only mount or store path, or a directory another user owns.
+_unwritable(err) = err isa Base.IOError && err.code in (Base.UV_EROFS, Base.UV_EACCES, Base.UV_EPERM)
 
 _process_exists(pid) = ccall(:uv_kill, Cint, (Cint, Cint), pid, 0) != Base.UV_ESRCH
 
@@ -166,6 +179,14 @@ through `BridgeStan.compile_model`, may build those shared files and use it to
 exclude StanBlocks' toolchain builds and each other. The lock is never expired
 while its holder runs; a lock left by a process that died on this host is
 reclaimed.
+
+A tree StanBlocks may not write (a read-only mount or store path, another
+user's install) cannot hold this lock, and nothing StanBlocks runs builds its
+shared files. StanBlocks then waits while a live holder holds the lock and
+compiles models against the tree as it stands once make reports the shared
+files current for the call's `make_args`; otherwise it raises naming those that
+are not, to be built where the tree is writable. `with_toolchain_lock` itself
+still needs a writable tree.
 """
 with_toolchain_lock(f, toolchain) = _with_build_lock(f, _toolchain_lock_path(realpath(toolchain)))
 _toolchain_lock_path(home) = joinpath(home, ".stanblocks-build.pid")
@@ -173,9 +194,20 @@ _toolchain_lock_path(home) = joinpath(home, ".stanblocks-build.pid")
 function _bridgestan_build_home()
     # BridgeStan may install its default source distribution on first use. The
     # installer lock has a stable location even before that distribution exists.
-    _with_build_lock(joinpath(homedir(), ".bridgestan", "stanblocks-install.pid")) do
+    # Where that location is not writable nothing can be installed there, so
+    # only `$BRIDGESTAN` or an installed default distribution can be used.
+    _with_build_lock(joinpath(homedir(), ".bridgestan", "stanblocks-install.pid");
+            unwritable=_installed_bridgestan_home) do
         realpath(BridgeStan.get_bridgestan_path())
     end
+end
+
+function _installed_bridgestan_home()
+    home = BridgeStan.get_bridgestan_path(; download=false)
+    isempty(home) && error("BridgeStan is not installed and StanBlocks cannot install it: ",
+        joinpath(homedir(), ".bridgestan"), " is not writable. Set BRIDGESTAN to a BridgeStan ",
+        "source/build tree, or install BridgeStan's default distribution where it is writable.")
+    realpath(home)
 end
 
 _build_file_digest(path) = isfile(path) ? bytes2hex(open(SHA.sha256, path)) : nothing
@@ -226,6 +258,30 @@ function _build_shared_targets(home, make_args)
             "Output:\n", read(path, String))
     end
     true
+end
+
+# For a toolchain tree this process may not write, which therefore cannot hold
+# the toolchain lock: require its shared targets for `make_args` to be current,
+# since nothing here can build them, so that a model build writes only next to
+# its own source. Returns `true` like `_build_shared_targets`. make's question
+# mode (`-q`) runs no recipe.
+function _current_shared_targets(home, make_args)
+    targets = _shared_build_targets(home, make_args)
+    targets === nothing && error("StanBlocks may not write the BridgeStan tree ", home,
+        " and its Makefile names no shared build targets (`make print-BRIDGE_O`), so ",
+        "it cannot tell whether a model build there writes shared files. Use a ",
+        "writable tree: set BRIDGESTAN to one.")
+    current(names) = success(pipeline(Cmd(`$(BridgeStan.get_make()) -q $make_args $names`; dir=home);
+        stdout=devnull, stderr=devnull))
+    current(targets) && return true
+    stale = filter(target -> !current([target]), targets)
+    error("StanBlocks may not write the BridgeStan tree ", home, ", and these of its ",
+        "shared build files are not current for make_args=", repr(make_args), ": ",
+        join(isempty(stale) ? targets : stale, ", "), ". Build them where the tree is ",
+        "writable (one stan_library or stan_instantiate call there with the same ",
+        "make_args builds them), or set BRIDGESTAN to a writable tree. Check with: ",
+        Base.shell_escape("cd", home), " && ",
+        Base.shell_escape(BridgeStan.get_make(), "-q", make_args..., targets...))
 end
 
 # BridgeStan.compile_model (2.9.0) splices `stanc_args` into the single word
@@ -509,9 +565,11 @@ function _artifact_library(sc; filename="model.stan", make_args, stanc_args=Stri
     published === nothing || return published
     # Distinct artifacts share the toolchain's stanc, bridge object and Stan
     # Math libraries. Build them under the toolchain lock, and read the context
-    # after them so that it names the toolchain later calls find.
+    # after them so that it names the toolchain later calls find. A tree this
+    # process may not write is used as it stands once they are current.
     toolchain_lock = _toolchain_lock_path(home)
-    shared, current = _with_build_lock(toolchain_lock) do
+    shared, current = _with_build_lock(toolchain_lock;
+            unwritable=() -> (_current_shared_targets(home, args), context())) do
         _build_shared_targets(home, args), context()
     end
     source, library = _artifact_paths(sc, current, filename)
