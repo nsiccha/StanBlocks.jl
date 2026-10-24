@@ -864,8 +864,8 @@ use cross-target indexing such as `x[m,k,:,:]` when selecting a nested matrix.
 ```julia
 d = stan_descriptor(model; name = :demo)
 
-d.inputs       # type, size, constraints, value, observed/held-out/derived flags
-d.outputs      # parameters, generated quantities, generative role, source, segments, dims, constraint values
+d.inputs       # type, size, constraints, value, observed/held-out/derived flags, tuple fields
+d.outputs      # parameters, generated quantities, generative role, source, segments, dims, constraint values, tuple fields
 d.definitions  # exact emitted Stan functions and dependency links
 d.operations   # derived :transpile/:instantiate/:fit/:predict/:pointwise_loglik
 ```
@@ -881,6 +881,18 @@ Different named members of one plate may use different ragged axes, so use the
 `segments` on each output entry itself; do not parse `__pl_*` names or borrow a
 sibling/input layout. Re-binding a `StanModel`'s data updates these reflected
 boundaries.
+
+A ragged vector, a table, and `NamedTuple` or `Tuple` data are Stan tuple
+inputs: a ragged `y` is emitted as `tuple(vector[y_mem_n], array[y_ends_n] int)
+y`. Such an input's `fields` describes its components, one entry per component
+in Stan tuple order, keyed by the Julia field name (`Symbol("1")`, … for a
+positional `Tuple`), each with its `type`, `size`, `value` and own `fields`:
+`y.fields.mem.size == (:y_mem_n,)`, and an integer ragged vector reports
+`mem.type == :int`. Position `i` is the key `"i"` of the input's object in the
+CmdStan JSON data. Component sizes such as `y_mem_n`, `y_ends_n` and a table's
+`df_nrow` are `derived`, so `required_inputs` lists `y` alone. A tuple output (a
+record a `@deffun` returns) carries the same `fields`, with each component's
+resolved `dims` in place of `value`. Every other entry reports `fields == (;)`.
 
 `ModelOutput.size` holds the emitted size expressions, which may be composite
 (`n_levels - 1`) or name a transformed-data value (`J = maximum(subject)`) that
