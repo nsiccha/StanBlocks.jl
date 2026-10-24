@@ -496,6 +496,18 @@ including through a `plate` positional.
     @test ops(dd) == (:transpile, :instantiate, :predict)
     @test output(dd, :y_gen).dims == (3,)
     @test output(dd, :s).kind == :parameter
+    # The annotated loop's model-scope array is the observation under its own name.
+    looped = StanBlocks.SlicModel(quote
+        b ~ normal(0.0, 1.0); s ~ exponential(1.0)
+        @plate for i in 1:n
+            y[i] ~ normal(b + x[i], s)
+        end
+    end, Dict{Symbol,Any}(:x => [0.1, 0.2, 0.3], :n => 3, :y => maybecv(:y)), @__MODULE__)
+    ld = stan_descriptor(looped)
+    @test ops(ld) == (:transpile, :instantiate, :predict)
+    @test output(ld, :y_gen).source == :y
+    @test output(ld, :b).kind == :parameter
+    @test !occursin("for(", stan_block(stan_code(looped), "model"))
 
     # Refused: a mark no `~` observes would silently change nothing (dev §1).
     @test_throws "no `z ~ …` statement observes it" stan_code(fit(; z = maybecv(:z)))
