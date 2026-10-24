@@ -479,3 +479,170 @@ do-block parameter), and its `ys_likelihood` sums to it.
         end
     end
 end
+
+"""
+A `@scan` in a plate cell reads the cell's ragged groups one element per step
+(snag `scan-per-step-re-621a8f94`). A cell sees a group of nested-vector data as
+the slice `ds.mem[ragged_start(ds.ends, i):ragged_end(ds.ends, i)]`, a
+cell-local as the same slice of its flat memory, and `rows[i]` inside an inline
+scan as `getindex_RaggedVector(rows, i)`. Before the snag every scalar read of
+such a group, its length in a loop bound, and a gather through it
+(`mu_all[r][t]`) re-sliced the whole group at every step, so the gradient was
+quadratic in the group's length. Now `group[t]` reads the flat memory at
+`ragged_start(ends, i) + t - 1`, `length(group)` is `ragged_length(ends, i)`,
+and `x[I][t]` reads `x[I[t]]`. A general slice `x[a:b][t]` keeps Stan's bound
+check on `t`.
+"""
+@testitem "slic: a @scan reads a plate cell's ragged groups one element per step" tags=[:slic, :scan, :plate, :ragged, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block, stanc_compiles
+    ar1 = @slic begin
+        @scan begin
+            obs[1] ~ normal(mu[1], sigma / sqrt(1 - phi^2))
+            for t in 2:n
+                k = time[t] - time[t-1]
+                obs[t] ~ normal(mu[t] + phi^k * (obs[t-1] - mu[t-1]), sigma * sqrt((1 - phi^(2 * k)) / (1 - phi^2)))
+            end
+        end
+    end
+    data = (; ys = [randn(4), randn(3)], xs = [randn(4), randn(3)], days = [[0, 1, 3, 4], [1, 2, 4]],
+        rows = [[5, 1, 7, 2], [3, 6, 4]], xflat = randn(7))
+    sliced_reads(code) = occursin(r"ragged_end\([^()]*\)\s*\]\s*\[", code)
+
+    # A cell-local mean and the group's length as the scan's bound.
+    local_mu = @slic data begin
+        a ~ normal(0, 1); sigma ~ exponential(1); phi ~ uniform(-1, 1)
+        cells ~ plate(ys, xs, days) do y, x, day
+            m = a .* x
+            node ~ ar1(; obs = y, mu = m, sigma, phi, n = length(day), time = day)
+        end
+    end
+    code = stan_code(local_mu)
+    @test !sliced_reads(code)
+    @test !occursin("num_elements(days", code)
+    @test occursin("for(cells_node_t in 2:ragged_length(days.2, plate_i__pl_1))", stan_block(code, "model"))
+    @test occursin("days.1[((ragged_start(days.2, plate_i__pl_1) + cells_node_t) - 1)]", stan_block(code, "transformed data"))
+    @test occursin("cells_m__pl_mem_1[((ragged_start(cells_m__pl_end_1, plate_i__pl_1) + cells_node_t) - 1)]", stan_block(code, "model"))
+    @test stanc_compiles(local_mu)
+
+    # The mean gathered from a model-scope vector by the cell's row indices.
+    gathered = @slic data begin
+        a ~ normal(0, 1); sigma ~ exponential(1); phi ~ uniform(-1, 1)
+        mu_all = a .* xflat
+        cells ~ plate(ys, days, rows) do y, day, r
+            node ~ ar1(; obs = y, mu = mu_all[r], sigma, phi, n = length(day), time = day)
+        end
+    end
+    code = stan_code(gathered)
+    @test !sliced_reads(code)
+    @test occursin("mu_all[rows.1[((ragged_start(rows.2, plate_i__pl_1) + cells_node_t) - 1)]]", stan_block(code, "model"))
+    @test stanc_compiles(gathered)
+
+    # The scan written in the cell, reading `rows[i]` and `days[i]`.
+    inline = @slic data begin
+        a ~ normal(0, 1); sigma ~ exponential(1); phi ~ uniform(-1, 1)
+        mu_all = a .* xflat
+        cells ~ plate(ys, days, rows) do y, day, r
+            @scan begin
+                y[1] ~ normal(mu_all[r][1], sigma / sqrt(1 - phi^2))
+                for t in 2:length(day)
+                    y[t] ~ normal(mu_all[r][t] + phi * (y[t-1] - mu_all[r][t-1]), sigma)
+                end
+            end
+        end
+    end
+    code = stan_code(inline)
+    mb = stan_block(code, "model")
+    @test !sliced_reads(code)
+    @test !occursin("getindex_RaggedVector", mb)
+    @test occursin("for(t in 2:ragged_length(days.2, plate_i__pl_1))", mb)
+    @test occursin("mu_all[rows.1[((ragged_start(rows.2, plate_i__pl_1) + t) - 1)]]", mb)
+    @test occursin("mu_all[rows.1[ragged_start(rows.2, plate_i__pl_1)]]", mb)
+    @test stanc_compiles(inline)
+
+    # A slice that is not a group keeps its bound check.
+    general = @slic (; x = randn(5), y = 0.5) begin
+        s ~ exponential(1)
+        y ~ normal(x[2:3][2], s)
+    end
+    @test occursin("x[2:3][2]", stan_block(stan_code(general), "model"))
+end
+
+"""
+The element reads of a ragged group (`group[t]`, `length(group)`, a gather
+`x[I][t]`, snag `scan-per-step-re-621a8f94`) evaluate the AR(1) density with
+uneven time gaps, written as a called submodel with a cell-local or a gathered
+mean and inline in the cell, equal to the same density computed in Julia.
+"""
+@testitem "slic: per-element ragged group reads match a reference density" tags=[:slic, :scan, :plate, :ragged, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    import BridgeStan
+    using Random
+    Random.seed!(17)
+    ar1 = @slic begin
+        @scan begin
+            obs[1] ~ normal(mu[1], sigma / sqrt(1 - phi^2))
+            for t in 2:n
+                k = time[t] - time[t-1]
+                obs[t] ~ normal(mu[t] + phi^k * (obs[t-1] - mu[t-1]), sigma * sqrt((1 - phi^(2 * k)) / (1 - phi^2)))
+            end
+        end
+    end
+    days = [[0, 1, 3, 4], [0, 2, 3, 5, 6, 9], [1, 2, 4]]
+    rows = [[5, 1, 9, 2], [13, 3, 7, 11, 4, 6], [10, 8, 12]]
+    xflat = randn(13)
+    ys = [randn(length(d)) for d in days]
+    xs = [xflat[r] for r in rows]
+    data = (; ys, xs, days, rows, xflat)
+    local_mu = @slic data begin
+        a ~ normal(0, 1); sigma ~ exponential(1); phi ~ uniform(-1, 1)
+        cells ~ plate(ys, xs, days) do y, x, day
+            m = a .* x
+            node ~ ar1(; obs = y, mu = m, sigma, phi, n = length(day), time = day)
+        end
+    end
+    gathered = @slic data begin
+        a ~ normal(0, 1); sigma ~ exponential(1); phi ~ uniform(-1, 1)
+        mu_all = a .* xflat
+        cells ~ plate(ys, days, rows) do y, day, r
+            node ~ ar1(; obs = y, mu = mu_all[r], sigma, phi, n = length(day), time = day)
+        end
+    end
+    inline = @slic data begin
+        a ~ normal(0, 1); sigma ~ exponential(1); phi ~ uniform(-1, 1)
+        mu_all = a .* xflat
+        cells ~ plate(ys, days, rows) do y, day, r
+            @scan begin
+                y[1] ~ normal(mu_all[r][1], sigma / sqrt(1 - phi^2))
+                for t in 2:length(day)
+                    k = day[t] - day[t-1]
+                    y[t] ~ normal(mu_all[r][t] + phi^k * (y[t-1] - mu_all[r][t-1]), sigma * sqrt((1 - phi^(2 * k)) / (1 - phi^2)))
+                end
+            end
+        end
+    end
+    lognormal(x, m, s) = -0.5 * ((x - m) / s)^2 - log(s) - 0.5 * log(2pi)
+    reference(a, sigma, phi) = begin
+        lp = lognormal(a, 0, 1) - sigma - log(2)
+        for (y, d, r) in zip(ys, days, rows)
+            m = a .* xflat[r]
+            lp += lognormal(y[1], m[1], sigma / sqrt(1 - phi^2))
+            for t in 2:length(y)
+                k = d[t] - d[t-1]
+                lp += lognormal(y[t], m[t] + phi^k * (y[t-1] - m[t-1]), sigma * sqrt((1 - phi^(2k)) / (1 - phi^2)))
+            end
+        end
+        lp
+    end
+    mktempdir() do dir
+        cd(dir) do
+            models = map(s -> stan_instantiate(s).model, (local_mu, gathered, inline))
+            for theta in ([0.3, 0.7, 0.4], [-1.1, 1.6, -0.7])
+                th = BridgeStan.param_unconstrain(models[1], theta)
+                lps = map(bm -> BridgeStan.log_density(bm, th; propto=false, jacobian=false), models)
+                @test all(lp -> lp ≈ reference(theta...), lps)
+                grads = map(bm -> BridgeStan.log_density_gradient(bm, th)[2], models)
+                @test grads[2] ≈ grads[1]
+                @test grads[3] ≈ grads[1]
+            end
+        end
+    end
+end
