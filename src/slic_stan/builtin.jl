@@ -2211,6 +2211,72 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
     _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
 
+# --- Per-element reads of a ragged group --------------------------------------
+# Snag scan-per-step-re-621a8f94 (reported by BRM). A plate cell sees a ragged
+# input as one group: the slice `ys.mem[ragged_start(ys.ends, g):ragged_end(ys.ends, g)]`
+# (`_plate_input_accessor`), the same slice of a cell-local's flat memory, or
+# `rv[g]` of a bound RaggedVector. A loop over the group that indexes it by a
+# scalar, or bounds itself by its length, re-reads the whole group at every
+# step: the C++ stanc emits copies an `int`-array slice and a gather
+# (`mu[rows[g]]`) on each read, so a `@scan` over a group of `n` rows was
+# O(n^2). These reads go to the flat memory instead:
+#
+#   group[t]       → mem[ragged_start(ends, g) + t - 1]
+#   length(group)  → ragged_length(ends, g)
+#   x[I][t]        → x[I[t]]         (`I` an integer index array)
+#
+# `x[I][t]` is exact. `group[t]` no longer checks `t` against the group's own
+# length, as the flat reads of an observed group already do (`_ragged_element`
+# in forward.jl). A general slice `x[a:b][t]` keeps Stan's bound check on `t`.
+_same_rendering(a, b) = sprint(show, a) == sprint(show, b)
+_traced_call(x, f, n) = begin
+    e = x isa StanExpr ? expr(x) : x
+    e isa CanonicalExpr && head(e) === f && length(e.args) == n ? e : nothing
+end
+# `(; mem, ends, group)` of `mem[ragged_start(ends, g):ragged_end(ends, g)]`.
+_ragged_slice_group(x; info) = begin
+    e = _traced_call(x, getindex, 2)
+    e === nothing && return nothing
+    r = e.args[2] isa StanExpr ? expr(e.args[2]) : e.args[2]
+    (r isa CanonicalExpr && head(r) isa Colon && length(r.args) == 2) || return nothing
+    lo = _traced_call(r.args[1], builtin.ragged_start, 2)
+    hi = _traced_call(r.args[2], builtin.ragged_end, 2)
+    (lo === nothing || hi === nothing) && return nothing
+    all(i -> _same_rendering(lo.args[i], hi.args[i]), 1:2) || return nothing
+    (; mem=e.args[1], ends=lo.args[1], group=lo.args[2])
+end
+# `rv[g]` of a bound RaggedVector (traced as `getindex_RaggedVector(rv, g)`); a
+# construction's `rv[g]` already traces to the slice above.
+_ragged_bound_group(x; info) = begin
+    e = _traced_call(x, getindex, 2)
+    e === nothing && return nothing
+    rv, g = e.args
+    (rv isa StanExpr2{<:RaggedVector} && !_is_ragged_construction(rv)) || return nothing
+    (; mem=_ragged_field(rv, 1; info), ends=_ragged_field(rv, 2; info), group=g)
+end
+_ragged_group(x; info) = something(_ragged_slice_group(x; info), _ragged_bound_group(x; info), Some(nothing))
+_is_scalar_int(x) = x isa StanExpr2{<:types.int} && stan_ndim(type(x)) == 0
+_is_index_array(x) = x isa StanExpr2{<:types.int} && stan_ndim(type(x)) == 1 &&
+    !(expr(x) isa CanonicalExpr && head(expr(x)) isa Colon)
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex)}; info) = begin
+    length(x.args) == 2 && _is_scalar_int(x.args[2]) || return invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info)
+    sliced, t = x.args
+    g = _ragged_group(sliced; info)
+    g === nothing || return forward!(canonical(
+        Expr(:ref, g.mem, _ragged_offset(_trace_stan_call(builtin.ragged_start, g.ends, g.group; info), t))
+    ); info)
+    gather = _traced_call(sliced, getindex, 2)
+    gather !== nothing && _is_index_array(gather.args[2]) && return forward!(canonical(
+        Expr(:ref, gather.args[1], Expr(:ref, gather.args[2], t))
+    ); info)
+    invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info)
+end
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex),typeof(builtin.num_elements)}}; info) = begin
+    g = length(x.args) == 1 ? _ragged_group(x.args[1]; info) : nothing
+    g === nothing ? invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info) :
+        _trace_stan_call(builtin.ragged_length, g.ends, g.group; info)
+end
+
 # --- Elementwise arithmetic on RaggedVector operands --------------------------
 # Snag raggedvector-ari-19d214fa (reported by BRM). A RaggedVector is flat memory
 # split into groups, so ELEMENTWISE arithmetic is arithmetic on `mem` that keeps
