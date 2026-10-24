@@ -92,7 +92,11 @@ BridgeStan setup/build locks coordinate Julia tasks and cooperating processes;
 independent tracing stays parallel. Only building the toolchain's shared files
 (`stanc`, BridgeStan's bridge object, Stan Math's libraries) takes the
 toolchain lock; distinct models then compile concurrently under their own
-artifact locks. Native constructor calls are serialized within the process.
+artifact locks. A BridgeStan tree this process may not write (a read-only
+mount or store path, another user's install) is used as it stands: models
+compile once make reports its shared files current, and otherwise the call
+raises naming them (`StanBlocks.with_toolchain_lock`). Only the build directory
+must be writable. Native constructor calls are serialized within the process.
 Compilation publishes only a completed library from a private staging
 directory. Failures propagate and release the locks; partial build outputs are
 discarded.
@@ -169,7 +173,9 @@ artifact's own build lock, so concurrent calls in this and other processes
 publish each library once while distinct programs compile at the same time.
 Only bringing the toolchain's shared files (`stanc`, BridgeStan's bridge
 object, Stan Math's libraries) up to date takes the toolchain build lock
-(`StanBlocks.with_toolchain_lock`). Unlike `stan_instantiate`,
+(`StanBlocks.with_toolchain_lock`); a toolchain this process may not write
+compiles programs once those files are current, and otherwise the call raises
+naming them. Unlike `stan_instantiate`,
 this function constructs no native model: serializing construction and
 evaluation is the caller's responsibility.
 """

@@ -509,6 +509,99 @@ end
     end
 end
 
+@testitem "artifact library: a toolchain it may not write compiles once its shared files are current" tags=[:slic, :regression] begin
+    # Snag stanblocks-toolc-6d8cf00a: every model build created the toolchain
+    # lock inside the BridgeStan tree, so a tree this process may not write (a
+    # read-only container mount, a store path, another user's install) failed
+    # with EROFS or EACCES although its shared files were current. Only building
+    # those files needs the lock, and nothing here can build them there.
+    using StanBlocks
+    # The stand-in Makefile needs a POSIX make and shell. Root writes into a
+    # directory whatever its mode, so a chmod cannot take the tree from it.
+    if !Sys.iswindows() && ccall(:geteuid, Cuint, ()) != 0
+        code = "parameters { real x; } model { x ~ normal(0, 1); }\n"
+        args = ["STAN_THREADS=true"]
+        fixture = joinpath(@__DIR__, "fixtures", "toolchain.mk")
+        mktempdir() do dir
+            function toolchain(name, makefile)
+                local tree = realpath(mkpath(joinpath(dir, name)))
+                write(joinpath(tree, "Makefile"), makefile)
+                tree
+            end
+            home = toolchain("bridgestan", read(fixture, String))
+            unnamed = toolchain("unnamed", join(filter(!startswith("print-%"), readlines(fixture)), '\n') * '\n')
+            lockfile = joinpath(home, ".stanblocks-build.pid")
+            rendezvous = mkpath(joinpath(dir, "rendezvous"))
+            write(joinpath(rendezvous, "other"), "")  # each model builds alone here
+            log = joinpath(dir, "build.log")
+            # A HOME the installer lock cannot be created in either.
+            user = mkpath(joinpath(dir, "user"))
+            build(source; make_args=args) = StanBlocks._artifact_library(source; make_args)
+            withenv("BRIDGESTAN" => home, "STANBLOCKS_BUILD_DIR" => joinpath(dir, "build"),
+                    "STANBLOCKS_TEST_RENDEZVOUS" => rendezvous, "STANBLOCKS_TEST_BUILD_LOG" => log) do
+                # Writable: the shared files are built once, under the lock.
+                @test read(build("// 1\n" * code), String) == "// 1\n" * code
+                shared = ["bin/stanc locked", "src/bridge.o locked",
+                          "lib/sundials.a locked", "lib/tbb.so locked"]
+                @test readlines(log) == [shared; "model unlocked"]
+                foreach(path -> chmod(path, 0o555), (home, unnamed, user))
+                try
+                    withenv("HOME" => user) do
+                        # Its shared files current, the tree compiles a distinct model
+                        # without the lock, and nothing is written into it.
+                        @test read(build("// 2\n" * code), String) == "// 2\n" * code
+                        @test readlines(log) == [shared; "model unlocked"; "model unlocked"]
+                        @test !ispath(lockfile)
+                        # A flag variant whose bridge object is missing is not built:
+                        # the call names the file and the tree instead.
+                        err = try
+                            build(code; make_args=[args; "VARIANT=hess"])
+                        catch e
+                            e
+                        end
+                        @test err isa ErrorException
+                        @test occursin("./src/bridge_hess.o", err.msg) && occursin(home, err.msg)
+                        @test length(readlines(log)) == 6
+                        # refused: a tree that cannot hold the toolchain lock and whose
+                        # Makefile names no shared targets gives no way to tell that a
+                        # model build writes only next to its source (`0cb7c06` keeps
+                        # such builds under the lock for that reason).
+                        withenv("BRIDGESTAN" => unnamed) do
+                            err = try
+                                build(code)
+                            catch e
+                                e
+                            end
+                            @test err isa ErrorException && occursin("names no shared build targets", err.msg)
+                        end
+                    end
+                    # A live holder, a process that may write the tree, is still
+                    # waited for, as by every build.
+                    chmod(home, 0o755)
+                    release = Channel{Nothing}(1)
+                    holder = Threads.@spawn StanBlocks.with_toolchain_lock(() -> take!(release), home)
+                    @test timedwait(() -> ispath(lockfile), 30) === :ok
+                    chmod(home, 0o555)
+                    waiter = Threads.@spawn build("// 3\n" * code)
+                    try
+                        sleep(3)
+                        @test !istaskdone(waiter)
+                        @test length(readlines(log)) == 6
+                    finally
+                        chmod(home, 0o755)
+                        put!(release, nothing)
+                        fetch(holder)
+                    end
+                    @test timedwait(() -> istaskdone(waiter), 60) === :ok
+                    @test istaskdone(waiter) && read(fetch(waiter), String) == "// 3\n" * code
+                finally
+                    foreach(path -> chmod(path, 0o755), (home, unnamed, user))
+                end
+            end
+        end
+    end
+end
+
 @testitem "thread safety: shared native artifact across processes" tags=[:slic, :regression, :bridgestan] begin
     using StanBlocks
     worker = joinpath(@__DIR__, "fixtures", "native_build_worker.jl")
