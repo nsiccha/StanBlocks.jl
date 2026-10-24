@@ -50,8 +50,10 @@ StanBlocks.stan_descriptor).
 - `inlined::Bool` — `true` for a value the emitter folds into the generated
   source rather than passing as data (functions, closures, 0-dim type tokens).
 - `derived::Bool` — `true` when this input is another input's declared size
-  (`y_n` for `vector[y_n] y`). Re-binding the container re-derives it, so a
-  consumer must never ask for it separately.
+  (`y_n` for `vector[y_n] y`), including the size of a tuple input's component
+  (`y_mem_n`/`y_ends_n` of a ragged `y`, a table's shared `df_nrow`; see
+  `fields`). Re-binding the container re-derives it, so a consumer must never
+  ask for it separately.
   Neither an `inlined` nor a `derived` input is part of
   [`required_inputs`](@ref StanBlocks.required_inputs), and neither belongs in a
   generated form.
@@ -65,6 +67,26 @@ StanBlocks.stan_descriptor).
 - `constraint_values::NamedTuple` — `constraints` evaluated against the bound
   data, with the same keys; see [`ModelOutput`](@ref StanBlocks.ModelOutput).
   A data declaration's bounds read only data, so every entry has a value.
+- `fields::NamedTuple` — the components of a Stan **tuple** input, `(;)` for
+  any other input. Tuple inputs are a ragged vector (`type = :RaggedVector`,
+  components `mem` and `ends`), a table (one component per column, all sized by
+  the shared row count), and `NamedTuple` or `Tuple` data. There is one entry
+  per component, in Stan tuple order, keyed by the Julia field name; a
+  positional `Tuple`'s components are keyed `Symbol("1")`, `Symbol("2")`, ….
+  Position `i` is the key `"i"` of the input's object in the CmdStan JSON data.
+  Each entry is a `NamedTuple` `(; type, size, value, fields)`: the component's
+  center type, size expressions and bound value as for the input itself, and its
+  own components (a ragged field of `NamedTuple` data nests one level). The input's own
+  `type` and `size` describe only the tuple (`size` is its array dims, `()` for
+  a single tuple). For `y = [[0.1, 0.2], [0.3]]`, emitted as
+  `tuple(vector[y_mem_n], array[y_ends_n] int) y`:
+
+  ```julia
+  y.fields.mem   # (type = :vector, size = (:y_mem_n,), value = [0.1, 0.2, 0.3], fields = (;))
+  y.fields.ends  # (type = :int, size = (:y_ends_n,), value = [2, 3], fields = (;))
+  ```
+
+  An integer ragged vector reports `mem.type == :int`.
 """
 struct ModelInput
     name::Symbol
@@ -77,6 +99,7 @@ struct ModelInput
     observed::Bool
     held_out::Bool
     constraint_values::NamedTuple
+    fields::NamedTuple
 end
 
 """
@@ -127,7 +150,7 @@ StanBlocks.stan_descriptor).
   so an empty output (no `name.i` entry at all) is distinguishable from a
   missing one. Those entries run first index fastest, so `reshape(values, dims)`
   rebuilds the value from them. A tuple-typed output reports its own container
-  size here; its fields' sizes are part of `type`. A rebound model reports
+  size here; its components' shapes are in `fields`. A rebound model reports
   rebound values, as for `segments`.
 - `constraint_values::NamedTuple` — `constraints` evaluated against the model's
   current data, with the same keys, so a consumer that reproduces Stan's
@@ -140,6 +163,12 @@ StanBlocks.stan_descriptor).
   data input is that input's value. A bound that reads a parameter or a
   generated quantity (`real<lower=a>`) has no value without a draw and holds
   `nothing`. A rebound model reports rebound values, as for `dims`.
+- `fields::NamedTuple` — the components of a Stan **tuple** output (a record a
+  `@deffun` returns, such as `(; loc = a, count = n)`), `(;)` for any other
+  output. Keys and order are as for [`ModelInput`](@ref StanBlocks.ModelInput)'s
+  `fields`. Each entry is a `NamedTuple` `(; type, size, dims, fields)`: the
+  component's center type, size expressions, resolved shape (as `dims` is for
+  the output itself) and own components.
 """
 struct ModelOutput
     name::Symbol
@@ -152,6 +181,7 @@ struct ModelOutput
     segments::Union{Nothing,Vector{Int}}
     dims::Tuple{Vararg{Int}}
     constraint_values::NamedTuple
+    fields::NamedTuple
 end
 
 """
@@ -261,14 +291,54 @@ end
 
 # `Base.show(::Type{<:types.anything})` prints `T.name.name`; the descriptor
 # reports that same Symbol so `type` round-trips against the emitted Stan.
-_descriptor_type(x::StanExpr) = _descriptor_type(center_type(x))
+_descriptor_type(x::Union{StanExpr,StanType}) = _descriptor_type(center_type(x))
 _descriptor_type(T::Type) = T.name.name
 _descriptor_type(::Any) = :anything
 
 # Size entries are EMITTED expressions, not values: a literal, a `Symbol` naming
 # another declaration, or a larger expression. Unwrap the StanExpr wrapper so a
 # consumer sees the expression itself.
-_descriptor_size(x::StanExpr) = map(expr, stan_size(x))
+_descriptor_size(x::Union{StanExpr,StanType}) = map(expr, stan_size(x))
+
+# The components of a tuple-typed entry (`fields`), one row per Stan tuple
+# component in tuple order, keyed by its Julia name; a positional `Tuple`'s
+# component `i` is keyed `Symbol(i)`. Position `i` is also the key `"i"` that
+# `prepare_for_stan` writes into the CmdStan JSON. The outer `type` (a
+# `RaggedVector`, a `ntup`) names no component layout, and its `size` lists only
+# array dims, so without these rows a consumer can encode a tuple only by
+# reproducing the names `stan_type` gives its component sizes. Every other entry
+# has no components: `(;)`.
+_component_rows(f, ::StanType) = (;)
+_component_rows(f, st::StanType{<:types.tup}) = _component_rows(f, _tuple_component_types(st))
+_component_rows(f, ats::NamedTuple) =
+    NamedTuple{keys(ats)}(map(f, ntuple(identity, length(ats)), keys(ats), values(ats)))
+_component_rows(f, ats::Tuple) = NamedTuple{ntuple(Symbol, length(ats))}(
+    map(f, ntuple(identity, length(ats)), ntuple(Symbol, length(ats)), ats))
+
+# A component's value is read from the input's own value by position, as
+# `prepare_for_stan` writes it into the JSON — not from the component's traced
+# type, whose value a re-bind (`model(; y = …)`) does not refresh.
+_input_fields(name::Symbol, ::StanType, value) = (;)
+_input_fields(name::Symbol, st::StanType{<:types.tup}, value) = begin
+    ats = _tuple_component_types(st)
+    length(value) == length(ats) || error(
+        "stan_descriptor: tuple input `", name, "` declares ", length(ats),
+        " components but its value has ", length(value), ".",
+    )
+    _component_rows(ats) do i, key, at
+        v = values(value)[i]
+        (; type=_descriptor_type(at), size=_descriptor_size(at), value=v,
+            fields=_input_fields(Symbol(name, ".", key), at, v))
+    end
+end
+# An output's component shapes resolve against the model's data like the output's
+# own `dims`; `path` names the component in errors (`rec.loc`).
+_output_fields(scope, path::Symbol, st::StanType) = _component_rows(st) do _, key, at
+    component = Symbol(path, ".", key)
+    (; type=_descriptor_type(at), size=_descriptor_size(at),
+        dims=_declared_dims(scope, "output", component, StanExpr(component, at)),
+        fields=_output_fields(scope, component, at))
+end
 
 # Every bare name a size expression mentions — `y_n` in `vector[y_n]`, both of
 # `m` and `n` in `matrix[m, n]`, and `n` in a composite `n - 1`.
@@ -863,6 +933,7 @@ _block_outputs(scope, blockname::Symbol, kind::Symbol) = [
         row.name, row.kind, row.type, row.size, row.constraints, row.generative,
         row.source, row.segments, _declared_dims(scope, "output", row.name, row.decl),
         _constraint_values(scope, "output", row.name, row.constraints),
+        _output_fields(scope, row.name, type(row.decl)),
     )
     for row in _block_output_rows(scope, blockname, kind)
 ]
@@ -874,17 +945,21 @@ _block_outputs(scope, blockname::Symbol, kind::Symbol) = [
 # `vector[y_n] y`) is not something a consumer supplies: re-binding the
 # container re-derives it (`_record_size_kwargs!`). Asking for it in a
 # generated form is both noise and an opportunity to contradict the data.
+#
+# That includes the sizes of a tuple's components (a ragged carrier's
+# `<x>_mem_n`/`<x>_ends_n`, a table's `<x>_nrow`): re-binding the tuple
+# re-derives them too, through the same walk.
 _input_rows(data, observed) = begin
     sizes = Set{Symbol}()
-    for (_, x) in pairs(data), s in stan_size(x)
-        _size_symbols(expr(s), sizes)
+    for (_, x) in pairs(data)
+        _foreach_declared_size(s -> _size_symbols(s, sizes), x)
     end
     [
         (;
             name, type=_descriptor_type(x), size=_descriptor_size(x),
             constraints=_descriptor_constraints(x), value=getvalue(x),
             inlined=always_inline(x), derived=name in sizes, observed=name in observed,
-            held_out=cv(x),
+            held_out=cv(x), fields=_input_fields(name, type(x), getvalue(x)),
         )
         for (name, x) in pairs(data)
     ]
@@ -1074,7 +1149,7 @@ stan_descriptor(m::StanModel; name=nothing) = begin
         ModelInput(
             row.name, row.type, row.size, row.constraints, row.value, row.inlined,
             row.derived, row.observed, row.held_out,
-            _constraint_values(scope, "input", row.name, row.constraints),
+            _constraint_values(scope, "input", row.name, row.constraints), row.fields,
         )
         for row in _input_rows(data, observed)
     )
@@ -1206,9 +1281,11 @@ end
 
 The input names a consumer must actually supply — every input that is neither
 `inlined` (folded into the generated source; it never reaches the data JSON) nor
-`derived` (another input's declared size, re-derived when that container is
-re-bound). This is the set a generated form should collect, and it is what each
-operation's `inputs` field reports.
+`derived` (another input's declared size, or the size of a tuple input's
+component, re-derived when that container is re-bound). This is the set a
+generated form should collect, and it is what each operation's `inputs` field
+reports. A ragged `y` is one required input; its `y_mem_n` and `y_ends_n` are
+derived.
 
 The data block itself is wider than this: `d.inputs` also carries the derived
 sizes, so a consumer that wants the full JSON payload can still see them.
