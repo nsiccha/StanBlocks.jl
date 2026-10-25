@@ -971,6 +971,7 @@ posterior = base(; y = [1, 0, 1], x = [-1.0, 0.0, 1.0])
 | `[1.0, 2.0]` | `vector[2]` |
 | `Matrix{Float64}` | `matrix[m,n]` (transposed during Stan data preparation) |
 | `Vector{Vector{<:Real}}` | `RaggedVector` carrier, not a dense 2-D array |
+| `Vector{Matrix{<:Real}}` | `RaggedMatrix` carrier: real column-major values, ends, and each matrix's rows and columns |
 
 Calling a traced `StanModel` with new data reuses the trace and replaces only
 the values. Changing a structure that affects tracing—such as whether an
