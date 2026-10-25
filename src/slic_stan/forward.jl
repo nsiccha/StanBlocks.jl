@@ -518,8 +518,9 @@ _plate_context_entry(name::Symbol; info) = begin
     while ctx !== nothing
         if haskey(ctx.cell_types, global_name)
             accessor = get(ctx.cell_accessors, global_name, nothing)
+            fill = get(ctx.cell_fills, global_name, nothing)
             return (global_name=global_name, cell_type=ctx.cell_types[global_name],
-                    idxs=ctx.idxs, accessor, owner=ctx)
+                    idxs=ctx.idxs, accessor, fill, owner=ctx)
         end
         ctx = get(ctx, :parent, nothing)
     end
@@ -575,6 +576,14 @@ _plate_promoted_lhs(name::Symbol; info) = begin
     canonical(entry.accessor === nothing ?
         _plate_cell_index(entry.global_name, entry.cell_type, entry.idxs) : entry.accessor)
 end
+# Where an `=` stores a promoted cell binding: its accessor, except for a
+# ragged matrix cell, whose reader `to_matrix(span, …)` is not assignable and
+# which is stored through its flat span (`_forward_plate_assignment!`).
+_plate_promoted_target(name::Symbol; info) = begin
+    entry = _plate_context_entry(name; info)
+    entry === nothing || entry.fill === nothing ? _plate_promoted_lhs(name; info) :
+        canonical(entry.fill)
+end
 _plate_promoted_reference(name::Symbol, info::Union{StanModel,SubModel}) = begin
     lhs = _plate_promoted_lhs(name; info)
     lhs === nothing && return nothing
@@ -595,6 +604,9 @@ _forward_plate_assignment!(x, name, lhs, rhs_raw; info) = begin
         "`$name = <void-call>(...)`: cannot bind the return value of a void UDF. ",
         "Drop the `$name = ` and call as a statement."
     )
+    # A ragged matrix cell is stored column-major in its flat span.
+    _plate_context_entry(name; info).fill === nothing ||
+        (rhs = _trace_stan_call(builtin.to_vector, rhs; info))
     # `lhs` is already the promoted outer accessor. Suppress promotion while
     # forwarding it, otherwise its base Symbol becomes indexed a second time.
     fwd = _with_trace_state(info, :plate_context, nothing) do
@@ -1424,7 +1436,7 @@ _check_assignment_rhs(name, resolved) = error(
 
 forward!(x::AssignmentExpr{Symbol}; info) = begin
     name, rhs = x.args
-    promoted = _plate_promoted_lhs(name; info)
+    promoted = _plate_promoted_target(name; info)
     promoted === nothing || return _forward_plate_assignment!(x, name, promoted, rhs; info)
     name in keys(info) && _is_submodel_info(info) && return nothing
     resolved = forward!(rhs; info)
@@ -1449,7 +1461,7 @@ else
 end
 forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args
-    promoted = _plate_promoted_lhs(name; info)
+    promoted = _plate_promoted_target(name; info)
     promoted === nothing || return _forward_plate_assignment!(x, name, promoted, rhs; info)
     if name in keys(info) && !_is_model_decl_scope(info)
         # `name` is already bound and we are inside a `@deffun` body → this is a
@@ -1577,7 +1589,7 @@ forward!(x::AssignmentExpr; info) = begin
     lhs_raw = x.args[1]
     if lhs_raw isa DeclExpr && lhs_raw.args[1] isa Symbol
         name = lhs_raw.args[1]
-        promoted = _plate_promoted_lhs(name; info)
+        promoted = _plate_promoted_target(name; info)
         promoted === nothing || return _forward_plate_assignment!(x, name, promoted, x.args[2]; info)
     end
     # Keep the local/raw key before forwarding: inside a `SubModel`, forwarding
@@ -3196,6 +3208,12 @@ _plate_cell_shape(T, name) = begin
     # leading plate axes then recovers the original per-cell trajectory, so it
     # can be bound once and consumed by later statements in the same cell.
     center_type(T) === types.vector && stan_ndim(T) == 2 && return :array_vector
+    # A plain matrix cell (a per-cell covariance, a Torsten `pmx_solve_*`
+    # result) is collected as `array[outer...] matrix[R, C]` — and an
+    # `array[A...] matrix[R, C]` cell as `array[outer..., A...] matrix[R, C]` —
+    # indexed by its plate axes as a whole element. Its varying-size form is
+    # flat memory (`_plate_ragged_plan`). Snag binding-a-per-ce-e16efa8d.
+    center_type(T) === types.matrix && stan_ndim(T) >= 2 && return :matrix
     if center_type(T) <: types.vector && stan_ndim(T) == 1
         # A native-constrained vector cell (simplex/ordered/positive_ordered) is
         # stored as a Stan `array[N…] <ct>[K]` so Stan applies the constraint
@@ -3205,7 +3223,7 @@ _plate_cell_shape(T, name) = begin
     end
     error(
         "plate: unsupported per-cell type `", sigtype(T), "` for `", name,
-        "` — scalar, vector[K], int[K], or array[T] vector[K] only (MVP)."
+        "` — scalar, vector[K], int[K], array[T] vector[K], or matrix[R, C] only (MVP)."
     )
 end
 
@@ -3220,8 +3238,11 @@ _plate_depends_on(x::CanonicalExpr, idxs) = any(a -> _plate_depends_on(a, idxs),
 _plate_depends_on(x::Union{Tuple,NamedTuple,AbstractVector}, idxs) =
     any(a -> _plate_depends_on(a, idxs), x)
 _plate_is_ragged_cell(T::StanType, idxs) =
-    stan_ndim(T) == 1 && _plate_depends_on(stan_size(T)[1], idxs) &&
-    (center_type(T) <: types.vector || center_type(T) === types.int)
+    (stan_ndim(T) == 1 && _plate_depends_on(stan_size(T)[1], idxs) &&
+        (center_type(T) <: types.vector || center_type(T) === types.int)) ||
+    # A matrix cell whose row or column count depends on the cell.
+    (center_type(T) === types.matrix && stan_ndim(T) == 2 &&
+        any(s -> _plate_depends_on(s, idxs), stan_size(T)))
 
 # Flat position of element `i` of a group starting at `start`: `start + i - 1`,
 # folded for a literal `i`.
@@ -3257,32 +3278,67 @@ end
 # the loop. Its per-group lengths and inclusive ends are transformed data,
 # `f__pl_len` / `f__pl_end` (`_plate_fresh_name!` numbers a taken one); after
 # the loop `f` names the `RaggedVector` view over memory and ends.
+#
+# A matrix cell flattens column-major into the same memory, with its row and
+# column counts in transformed data `f__pl_rows` / `f__pl_cols`: the cell reads
+# `to_matrix(<its span>, rows[i], cols[i])` and is written as
+# `<its span> = to_vector(…)` (`fill`), and after the loop `f` names the
+# `RaggedMatrix` view. For a vector cell the span is both.
 _plate_ragged_plan(f, T::StanType, outer, idxs, taken; info) = begin
     length(outer) == 1 || error(
-        "plate: ragged vector/int cells currently require a one-dimensional `outer`; ",
-        "got $(length(outer)) axes for `$f`."
+        "plate: ragged vector/int/matrix cells currently require a one-dimensional ",
+        "`outer`; got $(length(outer)) axes for `$f`."
     )
-    (center_type(T) === types.vector || center_type(T) === types.int) || error(
+    matrix = center_type(T) === types.matrix
+    (center_type(T) === types.vector || center_type(T) === types.int || matrix) || error(
         "plate: ragged constrained cell `$f::$(sigtype(T))` needs the constrained-",
         "parameter transform path and is not represented as unconstrained flat memory. ",
         "Use a plain `vector[K[i]]` cell here, or declare the ragged constrained ",
         "parameter at model scope."
     )
-    qual(stan_size(T)[1]) == :data || error(
-        "plate: ragged cell length for `$f` must be data-computable, got a ",
-        "$(qual(stan_size(T)[1]))-qualified size expression. Stan parameter ",
-        "dimensions cannot depend on parameters or generated quantities."
-    )
+    for s in stan_size(T)
+        qual(s) == :data || error(
+            "plate: ragged cell size for `$f` must be data-computable, got a ",
+            "$(qual(s))-qualified size expression. Stan parameter ",
+            "dimensions cannot depend on parameters or generated quantities."
+        )
+    end
     mem = f
     lens = _plate_fresh_name!(Symbol(f, :__pl_len), taken; info)
     push!(taken, lens)
     ends = _plate_fresh_name!(Symbol(f, :__pl_end), taken; info)
     push!(taken, ends)
     idx = only(idxs)
-    accessor = :($mem[ragged_start($ends, $idx):ragged_end($ends, $idx)])
-    (; logical=f, cell_type=T, mem, lens, ends,
-       size_expr=expr(stan_size(T)[1]), accessor)
+    span = :($mem[ragged_start($ends, $idx):ragged_end($ends, $idx)])
+    matrix || return (; logical=f, cell_type=T, mem, lens, ends,
+        size_expr=expr(stan_size(T)[1]), accessor=span, fill=span, shape=nothing)
+    rows = _plate_fresh_name!(Symbol(f, :__pl_rows), taken; info)
+    push!(taken, rows)
+    cols = _plate_fresh_name!(Symbol(f, :__pl_cols), taken; info)
+    push!(taken, cols)
+    nr, nc = expr.(stan_size(T))
+    # Canonical, so `stan_descriptor` can evaluate it as the layout's cell size.
+    (; logical=f, cell_type=T, mem, lens, ends, size_expr=canonical(:($nr * $nc)),
+       accessor=:(to_matrix($span, $rows[$idx], $cols[$idx])), fill=span,
+       shape=(; rows, cols, size_exprs=(nr, nc)))
 end
+# The transformed-data size tables of a ragged plan, and the statements that
+# fill them for cell `idx`.
+_plate_ragged_size_carriers(plan) = _plate_ragged_size_carriers(plan, plan.shape)
+_plate_ragged_size_carriers(plan, ::Nothing) = (plan.lens,)
+_plate_ragged_size_carriers(plan, shape::NamedTuple) = (shape.rows, shape.cols, plan.lens)
+_plate_ragged_sizing(plan, idx) = _plate_ragged_sizing(plan, plan.shape, idx)
+_plate_ragged_sizing(plan, ::Nothing, idx) = (:($(plan.lens)[$idx] = $(plan.size_expr)),)
+_plate_ragged_sizing(plan, shape::NamedTuple, idx) = (
+    :($(shape.rows)[$idx] = $(shape.size_exprs[1])),
+    :($(shape.cols)[$idx] = $(shape.size_exprs[2])),
+    :($(plan.lens)[$idx] = $(shape.rows)[$idx] * $(shape.cols)[$idx]),
+)
+# The value a ragged binding names after its loop: a view over the flat memory.
+_plate_ragged_view(plan) = _plate_ragged_view(plan, plan.shape)
+_plate_ragged_view(plan, ::Nothing) = :(RaggedVector($(plan.mem), $(plan.ends)))
+_plate_ragged_view(plan, shape::NamedTuple) =
+    :(RaggedMatrix($(plan.mem), $(plan.ends), $(shape.rows), $(shape.cols)))
 
 # Outer collection decl + per-cell accessor from DISCOVERED StanTypes. The
 # shipped 1-D shapes stay dense (`vector[N]`, `matrix[K,N]`). Additional outer
@@ -3301,13 +3357,14 @@ _plate_outer_decl(f, T::StanType, outer) = begin
         sizes = Any[outer[3:end]...; outer[1]; outer[2]]
         return Expr(:(::), f, _plate_type_expr(int ? :int : :matrix, sizes))
     end
-    if shape === :array_vector
+    if shape in (:array_vector, :matrix)
         # SLIC `vector[outer..., T, K]` renders as the Stan declaration
-        # `array[outer..., T] vector[K]`: all dimensions except the vector
-        # center's final K are array axes.
+        # `array[outer..., T] vector[K]`, and `matrix[outer..., R, C]` as
+        # `array[outer...] matrix[R, C]`: every dimension except the center's
+        # own trailing ones is an array axis.
         return Expr(
             :(::), f,
-            _plate_type_expr(:vector, Any[outer...; stan_size(T)...]),
+            _plate_type_expr(center_type(T).name.name, Any[outer...; stan_size(T)...]),
         )
     end
     # Keep `K` as the traced StanExpr (not its bare `expr`). A submodel arg-derived
@@ -3537,9 +3594,9 @@ _plate_cell_index(f, T::StanType, idxs) = begin
     end
     # A native-constrained `array[N…] <ct>[K]` cell is indexed by its plate axes
     # as a whole element (`cell[g]`); the plain-vector matrix packing takes a
-    # column (`cell[:, g]`) instead. A fixed `array[N…] int[K]` cell likewise
-    # reads back as a whole element.
-    shape in (:constrained_vector, :constrained_matrix, :array_vector, :int_array) &&
+    # column (`cell[:, g]`) instead. A fixed `array[N…] int[K]` cell and an
+    # `array[N…] matrix[R, C]` cell likewise read back as a whole element.
+    shape in (:constrained_vector, :constrained_matrix, :array_vector, :int_array, :matrix) &&
         return Expr(:ref, f, idxs...)
     indices = Any[idxs[2:end]...; Symbol(":"); idxs[1]]
     Expr(:ref, f, indices...)
@@ -4539,6 +4596,14 @@ _forward_loop_core!(;
         end
         _plate_is_ragged_cell(T, index_aliases) || continue
         ragged_plans[f] = _plate_ragged_plan(f, T, outer_dims, idxs, plan_taken; info)
+        # Sampling a varying-size matrix cell would target its `to_matrix`
+        # reader, which neither a `~` nor a generated-quantities re-draw can
+        # assign to yet.
+        (ragged_plans[f].shape !== nothing && f !== rv && _decl_role(T) === :sampled) && error(
+            "plate: sampled matrix cell `", f, "::", sigtype(T), "` has a size that varies ",
+            "by cell, which is not supported yet. Sample a `vector` cell of length rows * cols ",
+            "and reshape it (`Z = to_matrix(z, rows, cols)`), or give the matrix a fixed size."
+        )
     end
     # A ragged cell's flat-memory carriers (lens/ends/mem) are declared in the
     # plate's own `info` scope and indexed by the raw loop index; hoisting them out
@@ -4547,7 +4612,8 @@ _forward_loop_core!(;
     if info isa SubModel && !isempty(ragged_plans)
         # Name the actual ragged centers so the refusal stays precise for both
         # the vector shape the contract pins and the newer int shape.
-        kinds = sort!(unique!([center_type(plan.cell_type) === types.int ? "int" : "vector"
+        kinds = sort!(unique!([center_type(plan.cell_type) === types.int ? "int" :
+                               plan.shape !== nothing ? "matrix" : "vector"
                                for plan in values(ragged_plans)]))
         error(
             "plate: ragged ", join(kinds, "/"), " cells inside a called @slic submodel are not supported yet — ",
@@ -4557,6 +4623,11 @@ _forward_loop_core!(;
     cell_accessors = Dict{Symbol,Any}(
         f => plan.accessor for (f, plan) in ragged_plans if haskey(cell_types, f)
     )
+    # A ragged matrix cell is written through its flat span, not its reader.
+    cell_fills = Dict{Symbol,Any}(
+        f => plan.fill for (f, plan) in ragged_plans
+        if haskey(cell_types, f) && plan.shape !== nothing
+    )
 
     # Positional do-block params still lower syntactically to per-cell input
     # accessors. Fresh names stay untouched: the trace-local promotion context
@@ -4564,9 +4635,13 @@ _forward_loop_core!(;
     loop_body = Any[_subst_syms(s, input_subst) for s in body_stmts]
     if rv !== nothing
         ret_cell = _subst_syms(ret_expr, input_subst)
-        rv_accessor = haskey(ragged_plans, rv) ?
-            ragged_plans[rv].accessor : _plate_cell_index(rv, rv_type, idxs)
-        push!(loop_body, :($rv_accessor = $ret_cell))
+        if haskey(ragged_plans, rv)
+            plan = ragged_plans[rv]
+            push!(loop_body, plan.shape === nothing ? :($(plan.fill) = $ret_cell) :
+                :($(plan.fill) = to_vector($ret_cell)))
+        else
+            push!(loop_body, :($(_plate_cell_index(rv, rv_type, idxs)) = $ret_cell))
+        end
     end
 
     # NB: build each iteration spec as `Expr(:(=), idx, lo:N)` — a hand-built
@@ -4591,14 +4666,13 @@ _forward_loop_core!(;
     # expressions, not merely `K[i]`), then cumulative ends and flat storage.
     # The logical RaggedVector binding is installed after the emit trace so it
     # captures the memory declaration's final promoted qualifier.
-    for plan in values(ragged_plans)
-        emitted = forward!(canonical(:($(plan.lens) :: int[$(outer_dims[1])])); info)
+    for plan in values(ragged_plans), carrier in _plate_ragged_size_carriers(plan)
+        emitted = forward!(canonical(:($carrier :: int[$(outer_dims[1])])); info)
         pending !== nothing && push!(pending, emitted)
     end
     if !isempty(ragged_plans)
         sizing_body = Any[
-            :($(plan.lens)[$(idxs[1])] = $(plan.size_expr))
-            for plan in values(ragged_plans)
+            s for plan in values(ragged_plans) for s in _plate_ragged_sizing(plan, idxs[1])
         ]
         sizing_loop = Expr(
             :for,
@@ -4784,7 +4858,7 @@ _forward_loop_core!(;
     end
     ctx = (
         idxs=global_idxs, cell_types=cell_types, cell_accessors=cell_accessors,
-        kind=kind, scan_arrays=Set{Symbol}(_plate_global_name(info, a) for a in scan_arrays),
+        cell_fills=cell_fills, kind=kind, scan_arrays=Set{Symbol}(_plate_global_name(info, a) for a in scan_arrays),
         parent=_plate_context(info),      # an enclosing loop's context, for nested loops
         # Names a nested loop may not choose (`_plate_fresh_name!`): this loop's
         # own carriers and arrays from the start, then each nested loop's choice.
@@ -4806,7 +4880,7 @@ _forward_loop_core!(;
     storage = Dict{Symbol,Any}()
     for plan in values(ragged_plans)
         mem = storage[plan.logical] = info[plan.mem]
-        view = forward!(canonical(:(RaggedVector($(plan.mem), $(plan.ends)))); info)
+        view = forward!(canonical(_plate_ragged_view(plan)); info)
         marks = (; (k => v for (k, v) in pairs(type(mem).info)
                     if k in (:ragged_plate_layout, :unbound_observation))...)
         info[plan.logical] = remake(view; marks..., ragged_storage=mem)
