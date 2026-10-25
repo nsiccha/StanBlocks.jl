@@ -142,6 +142,31 @@ end
     @test count("append_row", code) == 1
     @test stanc_compiles(reused)
 
+    # A matrix built from data alone (each cell's 0/1 matrix summing its zones
+    # into its groups, stored column-major in a ragged data value, with per-cell
+    # row and column counts) is filled once in transformed data, then read
+    # (snag a-brm-plate-cell-a9b491d3).
+    grp = [[1, 1, 2], [1, 1], [1, 2, 3, 3]]
+    summing_data = (; agg = [vec(Float64[g[z] == b for b in 1:maximum(g), z in eachindex(g)]) for g in grp],
+        n_groups = maximum.(grp), n_zones = length.(grp), x = [[1.0, 2.0, 0.5], [0.3, 0.7], [1.0, 0.2, 0.4, 0.9]],
+        y = [[0.5, -0.1], [0.2], [0.1, -0.3, 0.4]])
+    summed = @slic summing_data begin
+        g ~ normal(0, 1)
+        @plate for c in eachindex(n_zones)
+            A = reshape(agg[c], n_groups[c], n_zones[c])
+            m = exp(g) .* x[c]
+            y[c] ~ normal(A * m, A * (m .^ 2) .+ 0.1)
+        end
+    end
+    code = stan_code(summed)
+    td = stan_block(code, "transformed data")
+    @test occursin("loop_c_A__pl_rows[c] = n_groups[c];", td)
+    @test occursin("loop_c_A__pl_cols[c] = n_zones[c];", td)
+    @test occursin("loop_c_A[ragged_start(loop_c_A__pl_end, c):ragged_end(loop_c_A__pl_end, c)] = to_vector(reshape(getindex_RaggedVector(agg, c), n_groups[c], n_zones[c]));", td)
+    @test count("getindex_RaggedVector(agg, c)", code) == 1
+    @test !occursin("loop_c_A;", stan_block(code, "transformed parameters"))
+    @test stanc_compiles(summed)
+
     # With no likelihood the cell, its matrix included, is a generated quantity.
     prior = @slic (; ys = data.y) begin
         g ~ normal(0, 1)
@@ -176,7 +201,8 @@ end
 end
 
 @testitem "slic: a matrix plate cell local has the density of its inline spelling" tags=[:slic, :plate, :ragged, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
-    using LogDensityProblems, LinearAlgebra, Random
+    using LogDensityProblems, Random
+    using StanBlocks.LinearAlgebra: Diagonal, dot, logdet
     data = (; y = [[0.1, 0.2, 0.15], [0.2, 0.1], [0.3, 0.05, 0.1, 0.2]])
     bound = @slic data begin
         s0 ~ normal(0, 1; lower = 0)
@@ -216,6 +242,27 @@ end
             nothing
         end
     end
+    # A data-only matrix of per-cell size, filled once in transformed data.
+    grp = [[1, 1, 2], [1, 1], [1, 2, 3, 3]]
+    summing_data = (; agg = [vec(Float64[g[z] == b for b in 1:maximum(g), z in eachindex(g)]) for g in grp],
+        n_groups = maximum.(grp), n_zones = length.(grp), x = [[1.0, 2.0, 0.5], [0.3, 0.7], [1.0, 0.2, 0.4, 0.9]],
+        y = [[0.5, -0.1], [0.2], [0.1, -0.3, 0.4]])
+    summed_bound = @slic summing_data begin
+        g ~ normal(0, 1)
+        @plate for c in eachindex(n_zones)
+            A = reshape(agg[c], n_groups[c], n_zones[c])
+            m = exp(g) .* x[c]
+            y[c] ~ normal(A * m, A * (m .^ 2) .+ 0.1)
+        end
+    end
+    summed_inline = @slic summing_data begin
+        g ~ normal(0, 1)
+        @plate for c in eachindex(n_zones)
+            m = exp(g) .* x[c]
+            y[c] ~ normal(reshape(agg[c], n_groups[c], n_zones[c]) * m,
+                reshape(agg[c], n_groups[c], n_zones[c]) * (m .^ 2) .+ 0.1)
+        end
+    end
     # An independent plain-Julia joint density of the varying-size model, on
     # the unconstrained scale (`s0 = exp(theta[1])`), up to a constant.
     reference(theta) = begin
@@ -230,8 +277,20 @@ end
         end
         lp
     end
+    summed_reference(theta) = begin
+        g = only(theta)
+        lp = -g^2 / 2
+        for (a, nr, nc, xi, yi) in zip(summing_data.agg, summing_data.n_groups, summing_data.n_zones,
+                                       summing_data.x, summing_data.y)
+            A, m = reshape(a, nr, nc), exp(g) .* xi
+            sd = A * (m .^ 2) .+ 0.1
+            lp -= sum(log.(sd) .+ (yi .- A * m) .^ 2 ./ (2 .* sd .^ 2))
+        end
+        lp
+    end
     rng = Xoshiro(20261025)
-    for (a, b, ref) in ((bound, inline, reference), (fixed_bound, fixed_inline, nothing))
+    for (a, b, ref) in ((bound, inline, reference), (fixed_bound, fixed_inline, nothing),
+                        (summed_bound, summed_inline, summed_reference))
         pa, pb = instantiate(a), instantiate(b)
         n = LogDensityProblems.dimension(pa)
         @test n == LogDensityProblems.dimension(pb)
