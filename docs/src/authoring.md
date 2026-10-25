@@ -561,6 +561,9 @@ stored matrix. Its size is the length of the cell's group, so it is stored
 column-major in one flat `vector` (`loop_s_ccov`) and read back as
 `to_matrix(loop_s_ccov[...], loop_s_ccov__pl_rows[s], loop_s_ccov__pl_cols[s])`.
 A matrix of fixed size is collected as `array[outer...] matrix[R, C]` instead.
+A matrix built from data alone, such as a per-cell 0/1 matrix summing the
+cell's zones into its groups, `A = reshape(agg[c], n_groups[c], n_zones[c])`,
+is filled once in `transformed data` and read back the same way.
 
 ### Where to put an observation
 
