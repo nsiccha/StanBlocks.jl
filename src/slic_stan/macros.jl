@@ -6,6 +6,8 @@ defined in the same module (e.g. a package extension) are found during symbol re
 
 A leading string literal inside the `begin ... end` block is captured as the model
 docstring and rendered as a `// ...` comment header in the generated Stan code.
+A Julia docstring before a named definition, `"doc" @slic f(args...) = body`,
+documents that method of `f` instead.
 """
 macro slic(model)
     # `@slic f(args...) = body` — a NAMED sub-model function (see `_slic_fn`);

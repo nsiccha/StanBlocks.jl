@@ -197,7 +197,9 @@ end
 
 Typed arguments select Julia methods on the traced Stan center type. Multiple
 definitions of `@slic f(::real)` and `@slic f(::int)` are distinct methods;
-untyped positional arguments match any traced value.
+untyped positional arguments match any traced value. A docstring before a
+definition documents that method, so `?f` lists each method's docstring; a
+leading string inside the body is the model's `// …` Stan comment instead.
 
 ### Post-hoc variants with `Base.merge`
 
