@@ -4182,9 +4182,10 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
 # re-traced under the explicit plate context that maps each cell name to
 # its outer array slot. VERIFIED contract boundary (BRM Complete-PLATE snag,
 # 2026-07-16) — consumers must not assume more than this is owned:
-#   • Cell VALUES: scalar, 1-D `vector[K]`, or a SAMPLED 1-D `int[K]`
-#     (`_plate_cell_shape`); `ndim≥2`/matrix cells error, as does an int-array
-#     plate RESULT (sampled int SIDE cells promote; snag omitted-integer).
+#   • Cell VALUES: scalar, 1-D `vector[K]`, a SAMPLED 1-D `int[K]`,
+#     `array[T] vector[K]`, or a plain `matrix[R, C]` (`_plate_cell_shape`;
+#     snag binding-a-per-ce-e16efa8d); other `ndim≥2` cells error, as does an
+#     int-array plate RESULT (sampled int SIDE cells promote; snag omitted-integer).
 #     A NATIVE-constrained 1-D vector center
 #     (simplex/ordered/positive_ordered, fixed `K`) IS carried now: it emits a
 #     Stan `array[N…] <ct>[K]` parameter (`:constrained_vector`) so Stan applies
@@ -4200,7 +4201,8 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
 #     constrained vectors. The two-size `cholesky_factor_corr[m, n]`
 #     matrix-of-matrices form still rejects — declare those at model scope.
 #   • RAGGED cells: 1-D plain-vector or sampled-`int` with a DATA-computable
-#     per-cell length only (`_plate_is_ragged_cell` / `_plate_ragged_plan`).
+#     per-cell length, or a deterministic plain matrix with DATA-computable
+#     per-cell sizes (`_plate_is_ragged_cell` / `_plate_ragged_plan`).
 #     N-D/arbitrary raggedness and ragged CONSTRAINED cells (varying-`K`
 #     simplex/…) are rejected — Stan cannot declare `array[N] simplex[K[g]]`.
 #   • Per-cell LIKELIHOOD: the pointwise DENSITY (lpdf/lpmf) loop is compiler-owned
