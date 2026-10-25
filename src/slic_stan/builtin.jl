@@ -1500,6 +1500,8 @@ import Statistics
     bessel_second_kind(v::int, x::real)::real
     modified_bessel_first_kind(v::int, x::real)::real
     modified_bessel_second_kind(v::int, x::real)::real
+    # Log space, so a large `z` does not overflow; the order `v` may be any real.
+    log_modified_bessel_first_kind(v::real, z::real)::real
     is_inf(x::real)::int
     is_nan(x::real)::int
 
@@ -3156,12 +3158,11 @@ end
     end
 end
 
-# The math builtins Stan vectorises elementwise, unary ones (typed below over
-# every container) and those with more arguments, with their argument count
-# (stanc 2.39 accepts each over real, vector, matrix and array arguments; an
-# argument the builtin requires to be an int takes an int array). Their Julia
-# twins apply the scalar twin to each element (`_julia_elementwise`,
-# functions.jl).
+# The math builtins Stan vectorises elementwise: unary ones, binary ones over
+# real arguments, binary ones whose first argument is an int (a Bessel order, a
+# binary label), and the ternary `fma`. The `@defsig` groups below type them
+# over containers (stanc 2.39's tables); their Julia twins apply the scalar twin
+# to each element (`_julia_elementwise`, functions.jl).
 const _ELEMENTWISE_UNARY = (sqrt, inv_sqrt, exp, log, log10, sin, cos, asin, acos, tan, atan,
     cosh, sinh, tanh, acosh, asinh, atanh,
     log1m, inv_logit, logit, log_inv_logit, log1m_exp, expm1, Phi, lgamma, abs,
@@ -3169,12 +3170,13 @@ const _ELEMENTWISE_UNARY = (sqrt, inv_sqrt, exp, log, log10, sin, cos, asin, aco
     exp2, log2, cbrt, ceil, floor, round, trunc,
     square, erf, erfc, tgamma, digamma, trigamma,
     Phi_approx, inv_Phi, inv_cloglog, lambert_w0)
+const _ELEMENTWISE_BINARY = (fmin, fmax, fdim, fmod, atan2, lbeta, log_diff_exp,
+    owens_t, gamma_p, gamma_q, log_modified_bessel_first_kind)
+const _ELEMENTWISE_INT_BINARY = (binary_log_loss, bessel_first_kind, bessel_second_kind,
+    modified_bessel_first_kind, modified_bessel_second_kind)
+# Each with its argument count.
 const _ELEMENTWISE_NARY = (
-    (fmin, 2), (fmax, 2), (fdim, 2), (fmod, 2), (atan2, 2), (lbeta, 2), (log_diff_exp, 2),
-    (owens_t, 2), (gamma_p, 2), (gamma_q, 2), (binary_log_loss, 2),
-    (bessel_first_kind, 2), (bessel_second_kind, 2),
-    (modified_bessel_first_kind, 2), (modified_bessel_second_kind, 2),
-    (log_modified_bessel_first_kind, 2), (fma, 3),
+    ((f, 2) for f in (_ELEMENTWISE_BINARY..., _ELEMENTWISE_INT_BINARY...))..., (fma, 3),
 )
 for f in _ELEMENTWISE_UNARY
     @eval jcall(tag::Val{$(QuoteNode(nameof(f)))}, scope::_JuliaScope, x::AbstractArray) =
@@ -3209,25 +3211,65 @@ end
         (real, real) => real
         (vector[n], vector[n]) => vector[n]
     end
-    # `log_modified_bessel_first_kind(v, z)` — the log of the modified Bessel
-    # function of the first kind, order `v` (any real, not just int) at `z`.
-    # Stan vectorises it over both arguments. `types.int <: types.real`, so the
-    # single scalar row also covers every `(int, real)` / `(real, int)` /
-    # `(int, int)` mix (all return `real`), and the `real[n]` rows admit an
-    # `int[n]` argument in either slot — stanc's own table lists
-    # `(array[] int, real)`, `(real, array[] int)` and the same-kind array
-    # pairs, and it accepts the mixed `(array[] int, array[] real)` pair by
-    # int->real array promotion (verified on stanc3 v2.39.0), so every shape a
-    # row here admits is one stanc compiles. `row_vector` / `matrix` /
-    # nested-array forms are not registered.
-    typeof(log_modified_bessel_first_kind) => begin
-        (real, real) => real
+    # Binary builtins Stan vectorises: a scalar with a container, or two
+    # containers of one kind (stanc rejects `fmax(vector, row_vector)` and
+    # `fmax(array[] real, vector)`). `types.int <: types.real`, so every row
+    # also takes an int scalar, and the `real[n]` rows an `int[n]` in either
+    # slot, which stanc promotes to `array[] real` (the mixed
+    # `(array[] int, array[] real)` pair included; verified on stanc3 v2.39.0).
+    # The scalar rows are in the "Scalar math" block. Nested arrays
+    # (`array[] vector`, `array[,] real`) are not registered.
+    Union{typeof.(_ELEMENTWISE_BINARY)...} => begin
         (real, vector[n]) => vector[n]
         (vector[n], real) => vector[n]
         (vector[n], vector[n]) => vector[n]
+        (real, row_vector[n]) => row_vector[n]
+        (row_vector[n], real) => row_vector[n]
+        (row_vector[n], row_vector[n]) => row_vector[n]
+        (real, matrix[m,n]) => matrix[m,n]
+        (matrix[m,n], real) => matrix[m,n]
+        (matrix[m,n], matrix[m,n]) => matrix[m,n]
         (real, real[n]) => real[n]
         (real[n], real) => real[n]
         (real[n], real[n]) => real[n]
+    end
+    # The int-first-argument binaries: an int with any container, or an int
+    # array with a scalar or a 1-D container (stanc has no
+    # `(array[] int, matrix)`).
+    Union{typeof.(_ELEMENTWISE_INT_BINARY)...} => begin
+        (int, vector[n]) => vector[n]
+        (int, row_vector[n]) => row_vector[n]
+        (int, matrix[m,n]) => matrix[m,n]
+        (int, real[n]) => real[n]
+        (int[n], real) => real[n]
+        (int[n], vector[n]) => vector[n]
+        (int[n], row_vector[n]) => row_vector[n]
+        (int[n], real[n]) => real[n]
+    end
+    # `fma(x, y, z)`: scalars mixed with ONE of vector, row_vector or matrix
+    # (stanc has no array forms).
+    typeof(fma) => begin
+        (vector[n], real, real) => vector[n]
+        (real, vector[n], real) => vector[n]
+        (real, real, vector[n]) => vector[n]
+        (vector[n], vector[n], real) => vector[n]
+        (vector[n], real, vector[n]) => vector[n]
+        (real, vector[n], vector[n]) => vector[n]
+        (vector[n], vector[n], vector[n]) => vector[n]
+        (row_vector[n], real, real) => row_vector[n]
+        (real, row_vector[n], real) => row_vector[n]
+        (real, real, row_vector[n]) => row_vector[n]
+        (row_vector[n], row_vector[n], real) => row_vector[n]
+        (row_vector[n], real, row_vector[n]) => row_vector[n]
+        (real, row_vector[n], row_vector[n]) => row_vector[n]
+        (row_vector[n], row_vector[n], row_vector[n]) => row_vector[n]
+        (matrix[m,n], real, real) => matrix[m,n]
+        (real, matrix[m,n], real) => matrix[m,n]
+        (real, real, matrix[m,n]) => matrix[m,n]
+        (matrix[m,n], matrix[m,n], real) => matrix[m,n]
+        (matrix[m,n], real, matrix[m,n]) => matrix[m,n]
+        (real, matrix[m,n], matrix[m,n]) => matrix[m,n]
+        (matrix[m,n], matrix[m,n], matrix[m,n]) => matrix[m,n]
     end
     # Matrix reductions returning real
     Union{typeof.((trace, determinant, log_determinant, log_determinant_spd))...} => begin
