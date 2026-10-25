@@ -4575,6 +4575,71 @@ Snag `slicmodel-value-8e7afcdb`, reported by BayesianRegressionModels.
 end
 
 """
+A Julia docstring before a named sub-model, `"doc" @slic f(args…) = body`,
+documents that method of `f`, as a docstring documents a function method: it is
+filed under the method's positional signature, so typed overloads keep their own
+docstrings. It used to abort the load with `cannot document the following
+expression: (StanBlocks.slic_eval)(…)`, because the definition evaluates through
+a `slic_eval` call that Julia's `@doc` cannot attach to. A leading string INSIDE
+the body stays the model's `// …` Stan comment.
+Snag `put-a-docstring-fc7e83ed`, reported by a downstream module.
+"""
+@testitem "slic: a docstring documents a named sub-model method" tags=[:slic, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    Docs = Base.Docs
+    workspace = Module(gensym(:SubmodelDocs))
+    Core.eval(workspace, :(using StanBlocks))
+    include_string(workspace, """
+    \"\"\"Shifted standard-normal effect.\"\"\"
+    @slic doc_shift(k, j) = begin
+        z ~ normal(0, 1)
+        return z + k
+    end
+    \"\"\"Real-argument method.\"\"\"
+    @slic doc_case(s::real) = begin z ~ normal(0, 1); return z + s end
+    @doc "Int-argument method." StanBlocks.@slic doc_case(s::int) = begin
+        z ~ normal(0, 5)
+        return z + s
+    end
+    @slic doc_plain(s) = begin z ~ normal(0, 1); return z + s end
+    \"\"\"Julia documentation.\"\"\"
+    @slic doc_both(s) = begin
+        "Stan comment."
+        z ~ normal(0, 1)
+        return z + s
+    end
+    const doc_parent = @slic (; x = 0.5, i = 2, y = [1.0, 2.0]) begin
+        mu ~ doc_shift(x, 1)
+        a ~ doc_case(x)
+        b ~ doc_case(i)
+        c ~ doc_plain(x)
+        y ~ normal(mu + a + b + c, 1)
+    end
+    """, "submodel-docs")
+    text(name, sig) = only(Docs.docstr(Docs.Binding(workspace, name), sig).text)
+    docs = Docs.meta(workspace)
+
+    @test text(:doc_shift, Tuple{Any,Any}) == "Shifted standard-normal effect."
+    @test !haskey(docs[Docs.Binding(workspace, :doc_shift)].docs, Union{})
+    # Each typed overload keeps its own docstring, keyed on its signature.
+    case_sigs = docs[Docs.Binding(workspace, :doc_case)].order
+    @test length(case_sigs) == 2
+    @test [text(:doc_case, sig) for sig in case_sigs] == ["Real-argument method.", "Int-argument method."]
+    # An undocumented definition files nothing, and no placeholder entry remains.
+    @test !haskey(docs, Docs.Binding(workspace, :doc_plain))
+    @test !haskey(docs, Docs.Binding(StanBlocks, :_SLIC_DOC_SLOT))
+    # The Julia docstring is not the Stan comment; the body string is.
+    @test text(:doc_both, Tuple{Any}) == "Julia documentation."
+    both_code = Base.invokelatest(() -> stan_code(workspace.doc_both(0.5)))
+    @test startswith(both_code, "// Stan comment.\n")
+    @test !occursin("Julia documentation", both_code)
+
+    # Documented sub-models embed and dispatch as before.
+    code = Base.invokelatest(() -> stan_code(workspace.doc_parent))
+    @test occursin("a_z ~ normal(0, 1);", code)
+    @test occursin("b_z ~ normal(0, 5);", code)
+end
+
+"""
 `compile_slic_bundle` owns the fresh-module / ordered-`@deffun` / ordered-`@slic`
 integration that interactive authoring consumers otherwise have to reproduce
 with synthetic macrocalls and `Core.eval`. It traces once, then returns the

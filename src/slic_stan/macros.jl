@@ -87,7 +87,7 @@ _slic_fn(model, mod) = begin
     sigargs = [_slic_argsig(a, fname) for a in argspecs]
     methsig = Expr(:call, Expr(:(::), :(typeof($fname))), Expr(:parameters, :(kwargs...)), sigargs...)
     methbody = :($SlicModel($qbody, merge(Dict{Symbol,Any}(:docstring => $doc, $(data_pairs...)), kwargs), $mod))
-    _slic_definition_expr(mod, Expr(:block,
+    definition = _slic_definition_expr(mod, Expr(:block,
         quote
             if !isdefined($mod, $(QuoteNode(fname)))
                 global $fname = $ftype($mod)
@@ -99,6 +99,32 @@ _slic_fn(model, mod) = begin
         end,
         Expr(:(=), methsig, methbody),
     ))
+    # The positional types of the call method, the key a docstring is filed under.
+    docsig = Expr(:curly, Tuple, [Meta.isexpr(a, :(::)) ? a.args[2] : Any for a in sigargs]...)
+    esc(Expr(:block,
+        definition,
+        Expr(:macrocall, GlobalRef(Core, Symbol("@__doc__")), nothing, _SLIC_DOC_SLOT_REF),
+        :($_slic_doc_method!($mod, $(QuoteNode(fname)), $docsig)),
+    ))
+end
+
+# `"doc" @slic f(args...) = body` documents that METHOD of `f`, as a docstring
+# documents a function method. Julia's `@doc` cannot attach to the
+# `slic_eval(...)` call a definition evaluates through, so the expansion also
+# carries an `@__doc__` marker on this placeholder binding: when the definition
+# is documented, Julia files the docstring there, and `_slic_doc_method!` moves
+# it onto `f` under the method's signature. Undocumented, the marker only reads
+# the constant. A leading string INSIDE the body stays the model's `// ...`
+# Stan comment (`extract_leading_docstring`).
+const _SLIC_DOC_SLOT = nothing
+const _SLIC_DOC_SLOT_REF = Expr(:., @__MODULE__, QuoteNode(:_SLIC_DOC_SLOT))
+_slic_doc_method!(mod::Module, name::Symbol, sig) = begin
+    docs = Base.Docs.meta(mod; autoinit=false)
+    docs === nothing && return nothing
+    slot = pop!(docs, Base.Docs.Binding(@__MODULE__, :_SLIC_DOC_SLOT), nothing)
+    slot === nothing && return nothing
+    Base.Docs.doc!(mod, Base.Docs.Binding(mod, name), slot.docs[Union{}], sig)
+    nothing
 end
 
 """
