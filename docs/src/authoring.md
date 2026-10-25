@@ -185,6 +185,41 @@ Rules:
   slice (`multi_normal`) has no per-coordinate likelihood, so `y` then gets `y_gen`
   only.
 
+The same statements give a per-cell vector its per-coordinate priors in a
+`plate` cell, a `@plate for` loop (as a local or a `tau[:, s]` array) and a
+`@scan` step. Each cell is a column of the storage the loop declares, and that
+storage carries the support: a scalar bound when every coordinate shares one,
+otherwise a `transformed data` bound of the storage's own shape, filled per cell.
+
+```julia
+tau_s ~ plate(; outer=n_strata) do s
+    tau::vector[n_terms] ~ vcat(exponential(0.5), lognormal(0.0, 0.5))
+    tau
+end
+```
+
+```stan
+parameters { matrix<lower=0.0>[n_terms, n_strata] tau_s_tau; }
+model {
+    for (plate_i__pl_1 in 1:n_strata) {
+        tau_s_tau[1, plate_i__pl_1] ~ exponential(0.5);
+        tau_s_tau[2, plate_i__pl_1] ~ lognormal(0.0, 0.5);
+    }
+}
+```
+
+In a `plate` cell, slice statements on a bare cell declaration
+(`tau::vector[2]`, then `tau[1] ~ …`) emit the same program; in a `@plate for`
+body an indexed left-hand side names an array the loop fills, so write `vcat`
+there. A bare cell declaration alone is an improper-flat cell parameter. Not
+supported yet, each refused at trace time:
+coordinates with different support in a plate inside a called sub-model (only
+shared support works there), a `vcat` local in a nested annotated loop, and
+observing a plate positional's cell with `vcat` (`yi ~ vcat(…)`; write slice
+statements `yi[1] ~ …`). Before StanBlocks `ac830ba` a cell refused
+`tau ~ vcat(…)`, and its slice-statement and bare-declaration spellings failed
+with `tracetype not defined for ::vector[Colon(), ::int]`.
+
 Write a custom whole-vector family (an `_lpdf`/`_lpdfs`/sized `_rng` triad with
 `autokwargs` support) only for a genuinely joint prior.
 
@@ -473,6 +508,8 @@ plate's declarations and `transformed data` index tables, which
 | Lexically captured values | ✅ | Shared across cells; loop-invariant expressions are hoisted when safe |
 | Fresh scalar `~` or `=` binding | ✅ | Collected as a `vector[N]` for one outer axis; additional axes use matrix/array storage. An integer binding (`k = 2 * i + 1`) stays an integer, `array[N] int`, so it can index |
 | Fixed `vector[K]` binding/result | ✅ | Collected as `matrix[K,N]` for one outer axis; extra axes add Stan array prefixes |
+| Per-coordinate priors on a vector cell | ✅ | `tau ~ vcat(…)`, or slice statements `tau[1] ~ …` on a bare `tau::vector[K]`; shared support is a scalar bound on the storage, mixed support a `transformed data` bound of its shape; inside a called sub-model only shared support |
+| Bare cell declaration `tau::vector[K]` | ✅ | An improper-flat cell parameter with no density statement |
 | Observing a cell binding defined by `=` (`a = yi; a ~ …`) | ❌ | Refused: observe the data itself (`yi ~ …`, `ys[i] ~ …`), so that omitting it still gives the prior simulation |
 | Sampled fixed `int[K]` cell binding | ✅ | Sampled (`~`) side bindings collect as `array[N,K] int` for one outer axis; deterministic int cells (findall/boolean-mask index arrays) still inline at each use |
 | Dense `array[T] vector[K]` binding/result | ✅ | Collected as `array[outer...,T] vector[K]`; includes a raw ODE trajectory bound once and consumed inside the cell |
