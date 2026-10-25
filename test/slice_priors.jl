@@ -275,6 +275,167 @@ end
     @test lik.generative == :pointwise_loglik && lik.source == :y
 end
 
+# Before snag a-vcat-prior-fam-4a4fae26 a cell refused `tau ~ vcat(…)` ("not
+# supported yet; declare `tau` at model scope"), and its other spellings — slice
+# statements on a bare cell declaration, or the bare declaration alone —
+# re-declared the cell over its promoted storage and failed with `tracetype not
+# defined for ::vector[Colon(), ::int]`.
+@testitem "slic: a vcat(...) prior in a plate or loop cell" tags=[:slic, :plate, :regression, :stanc, :descriptor] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block, stanc_compiles
+
+    # The reporter's shape: per-stratum scale priors, every coordinate `lower=0`.
+    shared = @slic (; n_terms=2, n_strata=3, y=[0.4, -0.2, 1.1]) begin
+        tau_s ~ plate(; outer=(n_strata,)) do s
+            tau::vector[n_terms] ~ vcat(exponential(0.5; lower=0.0), lognormal(0.0, 0.5; lower=0.0))
+            tau
+        end
+        y ~ normal(to_vector(tau_s[1, :]), to_vector(tau_s[2, :]))
+    end
+    code = stan_code(shared)
+    @test occursin("matrix<lower=0.0>[n_terms, n_strata] tau_s_tau;", stan_block(code, "parameters"))
+    model = stan_block(code, "model")
+    @test occursin("tau_s_tau[1, plate_i__pl_1] ~ exponential(0.5);", model)
+    @test occursin("tau_s_tau[2, plate_i__pl_1] ~ lognormal(0.0, 0.5);", model)
+    @test stanc_compiles(shared)
+
+    # Mixed support: a transformed-data bound shaped like the cell storage.
+    mixed = @slic (; n_strata=3, y=[0.4, -0.2, 1.1]) begin
+        tau_s ~ plate(; outer=n_strata) do s
+            tau ~ vcat(normal(0.0, 1.0), exponential(1.0))
+            tau
+        end
+        y ~ normal(to_vector(tau_s[1, :]), to_vector(tau_s[2, :]))
+    end
+    code = stan_code(mixed)
+    @test occursin("matrix<lower=tau_s_tau__lower>[2, n_strata] tau_s_tau;", stan_block(code, "parameters"))
+    td = stan_block(code, "transformed data")
+    @test occursin("tau_s_tau__lower[1, plate_i__pl_1] = negative_infinity();", td)
+    @test occursin("tau_s_tau__lower[2, plate_i__pl_1] = 0.0;", td)
+    @test stanc_compiles(mixed)
+    out = only(o for o in stan_descriptor(mixed).outputs if o.name == :tau_s_tau)
+    @test out.dims == (2, 3)
+    @test isequal(out.constraint_values.lower, [-Inf -Inf -Inf; 0.0 0.0 0.0])
+
+    # Slice statements on a bare cell declaration are the same program.
+    slices = @slic (; n_terms=2, n_strata=3, y=[0.4, -0.2, 1.1]) begin
+        tau_s ~ plate(; outer=(n_strata,)) do s
+            tau::vector[n_terms]
+            tau[1] ~ exponential(0.5)
+            tau[2] ~ lognormal(0.0, 0.5)
+            tau
+        end
+        y ~ normal(to_vector(tau_s[1, :]), to_vector(tau_s[2, :]))
+    end
+    @test stan_code(slices) == stan_code(shared)
+    # A bare cell declaration alone is an improper-flat cell parameter.
+    bare = @slic (; n_strata=3, y=[0.4, -0.2, 1.1]) begin
+        tau_s ~ plate(; outer=n_strata) do s
+            tau::vector[2]
+            tau
+        end
+        y ~ normal(to_vector(tau_s[1, :]), 1.0)
+    end
+    code = stan_code(bare)
+    @test occursin("matrix[2, n_strata] tau_s_tau;", stan_block(code, "parameters"))
+    @test !occursin("tau_s_tau[", stan_block(code, "model"))
+    @test stanc_compiles(bare)
+
+    # Prior only: the cells re-draw in generated quantities, each block inside
+    # its own support.
+    prior = @slic (; n_strata=3) begin
+        tau_s ~ plate(; outer=n_strata) do s
+            tau ~ vcat(normal(0.0, 1.0; lower=0.0), exponential(1.0))
+            tau
+        end
+    end
+    gq = stan_block(stan_code(prior), "generated quantities")
+    @test occursin("tau_s_tau[1, plate_i__pl_1] = lower_conditioning_normal_rng(0.0, 0.0, 1.0);", gq)
+    @test occursin("tau_s_tau[2, plate_i__pl_1] = exponential_rng(1.0);", gq)
+    @test stanc_compiles(prior)
+
+    # Annotated loops: a `@plate for` local, its indexed-array spelling, and a
+    # `@scan` step local.
+    local_cell = @slic (; S=3, y=[0.4, -0.2, 1.1]) begin
+        @plate for s in 1:S
+            tau ~ vcat(normal(0.0, 1.0), exponential(1.0))
+            y[s] ~ normal(tau[1], tau[2])
+        end
+    end
+    code = stan_code(local_cell)
+    @test occursin("matrix<lower=loop_s_tau__lower>[2, S] loop_s_tau;", stan_block(code, "parameters"))
+    @test occursin("loop_s_tau[2, s] ~ exponential(1.0);", stan_block(code, "model"))
+    @test stanc_compiles(local_cell)
+    array_cell = @slic (; S=3, y=[0.4, -0.2, 1.1]) begin
+        @plate for s in 1:S
+            tau[:, s] ~ vcat(normal(0.0, 1.0), exponential(1.0))
+            y[s] ~ normal(sum(tau[:, s]), 1.0)
+        end
+    end
+    @test occursin("matrix<lower=tau__lower>[2, S] tau;", stan_block(stan_code(array_cell), "parameters"))
+    @test stanc_compiles(array_cell)
+    step = @slic (; T=4, y=[0.4, -0.2, 1.1, 0.3]) begin
+        @scan begin
+            x[1] ~ normal(0.0, 1.0)
+            for t in 2:T
+                tau ~ vcat(normal(0.0, 1.0), exponential(1.0))
+                x[t] ~ normal(x[t-1] + tau[1], tau[2])
+            end
+        end
+        y ~ normal(x, 1.0)
+    end
+    @test occursin("matrix<lower=loop_t_tau__lower>[2, (T - 1)] loop_t_tau;", stan_block(stan_code(step), "parameters"))
+    @test stanc_compiles(step)
+
+    # A plate in a called submodel, with support every coordinate shares.
+    scales = @slic begin
+        tau_s ~ plate(; outer=n) do s
+            tau ~ vcat(exponential(0.5), lognormal(0.0, 0.5))
+            tau
+        end
+        return tau_s
+    end
+    called = @slic (; n=3, y=[0.4, -0.2, 1.1]) begin
+        t ~ scales(; n)
+        y ~ normal(to_vector(t[1, :]), to_vector(t[2, :]))
+    end
+    code = stan_code(called)
+    @test occursin("matrix<lower=0.0>[2, n] t_tau_s_tau;", stan_block(code, "parameters"))
+    @test occursin("t_tau_s_tau[2, t_plate_i__pl_1] ~ lognormal(0.0, 0.5);", stan_block(code, "model"))
+    @test stanc_compiles(called)
+
+    # Not built yet. Per-coordinate support in a submodel's plate (todo
+    # `StanBlocks/todos/2026-10-25T18-37-35-165-1i9cmkt`):
+    mixed_scales = @slic begin
+        tau_s ~ plate(; outer=n) do s
+            tau ~ vcat(normal(0.0, 1.0), exponential(1.0))
+            tau
+        end
+        return tau_s
+    end
+    @test_broken transpiles(@slic((; n=3, y=[0.4, -0.2, 1.1]), begin
+        t ~ mixed_scales(; n)
+        y ~ normal(to_vector(t[1, :]), to_vector(t[2, :]))
+    end); re=false)
+    # A `vcat` local in a nested annotated loop, like a typed local there (todo
+    # `StanBlocks/todos/2026-10-25T18-37-35-254-1ich1nr`):
+    @test_broken transpiles(@slic((; J=2, S=3, y=randn(2, 3)), begin
+        @plate for j in 1:J
+            @plate for s in 1:S
+                tau ~ vcat(normal(0.0, 1.0), exponential(1.0))
+                y[j, s] ~ normal(tau[1], tau[2])
+            end
+        end
+    end); re=false)
+    # Observing a plate positional's cell with `vcat` (todo
+    # `StanBlocks/todos/2026-10-25T18-37-35-329-1i5w32n`):
+    @test_broken transpiles(@slic((; Y=randn(2, 3)), begin
+        mu ~ normal(0.0, 1.0)
+        r ~ plate(EachCol(Y); outer=3) do yi
+            yi ~ vcat(normal(mu, 1.0), normal(mu, 2.0))
+        end
+    end); re=false)
+end
+
 @testitem "slic: @scan setup and recurrence keep their own support" tags=[:slic, :scan, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stan_block, stanc_compiles
 
