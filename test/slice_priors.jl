@@ -598,3 +598,37 @@ end
         end
     end
 end
+
+@testitem "slic: a vcat(...) cell constrains each coordinate natively" tags=[:slic, :plate, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using LogDensityProblems
+    import BridgeStan
+    y = [0.4, -0.2, 1.1]
+    cells = @slic (; n_strata=3, y) begin
+        tau_s ~ plate(; outer=n_strata) do s
+            tau ~ vcat(normal(0.0, 1.0), exponential(1.0))
+            tau
+        end
+        y ~ normal(to_vector(tau_s[1, :]), to_vector(tau_s[2, :]))
+    end
+    mktempdir() do dir
+        cd(dir) do
+            prob = stan_instantiate(cells)
+            @test LogDensityProblems.dimension(prob) == 6
+            # Column-major `matrix[2, 3]`: row 1 is the identity, row 2 log-transformed.
+            for x in ([0.1, -0.3, -1.2, 0.5, 0.7, -0.4], [-0.7, 0.4, 2.0, -1.1, 0.3, 0.9])
+                tau = reshape(BridgeStan.param_constrain(prob.model, x)[1:6], 2, 3)
+                u = reshape(x, 2, 3)
+                @test tau[1, :] ≈ u[1, :]
+                @test tau[2, :] ≈ exp.(u[2, :])
+            end
+            # Log density (with Jacobian) up to a constant, against a hand computation.
+            hand(x) = begin
+                u = reshape(x, 2, 3)
+                m, s = u[1, :], exp.(u[2, :])
+                sum(-m .^ 2 ./ 2) - sum(s) - sum((y .- m) .^ 2 ./ (2 .* s .^ 2) .+ log.(s)) + sum(u[2, :])
+            end
+            a, b = [0.1, -0.3, -1.2, 0.5, 0.7, -0.4], [-0.7, 0.4, 2.0, -1.1, 0.3, 0.9]
+            @test LogDensityProblems.logdensity(prob, a) - LogDensityProblems.logdensity(prob, b) ≈ hand(a) - hand(b)
+        end
+    end
+end
