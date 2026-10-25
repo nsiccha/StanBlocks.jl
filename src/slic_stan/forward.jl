@@ -3686,13 +3686,14 @@ end
 # Per-axis declared sizes of a whole-forwarded positional, in outer-axis order,
 # as `(size, unit)` with `size === nothing` when unresolvable. Dense containers
 # read `stan_size`; a certified ragged carrier counts its `ends` (one entry per
-# group, 1-D only, matching `_plate_input_accessor`'s ragged scope);
+# group, 1-D only, matching `_plate_input_accessor`'s ragged scope), and so does
+# a `RaggedMatrix` (one matrix per group, read through its getindex);
 # EachCol/EachRow count the wrapped matrix's columns/rows. Anything else
 # (scalars — already loud downstream — tuples, closures, unrecognized views)
 # yields no sizes and stays unchecked. `_plate_iterable_lengths` resolves them to
 # values.
 _plate_iterable_sizes(T::StanType) = begin
-    if _plate_is_ragged_iterable(T)
+    if _plate_is_ragged_iterable(T) || center_type(T) <: RaggedMatrix
         ends = _plate_arg_type(T, :ends)
         n = ends isa StanType && !isempty(stan_size(ends)) ? stan_size(ends)[1] : nothing
         return Any[(n, "groups")]

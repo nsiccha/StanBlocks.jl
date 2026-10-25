@@ -6,6 +6,13 @@ breaking digit).
 
 ## Unreleased
 
+- **A vector of matrices is ragged matrix data.** A `Vector{<:AbstractMatrix{<:Real}}`
+  data kwarg (one design matrix per group, say) ingests as a `RaggedMatrix`,
+  as a vector of vectors ingests as a `RaggedVector`: `X[g]` is the `g`th matrix
+  and `length(X)` the number of matrices, in the model body, in a plate cell, as
+  a plate positional, and passed to a submodel or a `@deffun`. Stan receives one
+  tuple of the column-major values, ends, rows and columns. It used to fail with
+  "Do not know how to handle `stan_type(X, …)`".
 - **Tuple inputs and outputs in the model descriptor.** `ModelInput` and
   `ModelOutput` gain a trailing `fields`: for a Stan tuple entry (a ragged
   vector, a table, `NamedTuple` or `Tuple` data, a record a `@deffun` returns)

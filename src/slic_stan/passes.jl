@@ -29,10 +29,15 @@ _deanon_size_expr(e::Symbol, s, x, tok) = begin
     i = parse(Int, suf)
     i <= length(x.args) ? x.args[i] : s
 end
+# The size expression's own type is deanonymized too: a result size that reads a
+# field of a tuple argument (`matrix[rv.rows[i], rv.cols[i]]`) holds the
+# subexpression `rv.rows`, typed `int[<the argument's size>]`, which is a
+# `CallSizeRef` until it is rewritten against the call's real argument.
 _deanon_size_expr(e::CanonicalExpr, s, x, tok) = begin
     new_args = map(a -> deanon_size(a, x, tok), e.args)
-    new_args == e.args && return s
-    StanExpr(remake(e, new_args...), type(s))
+    tt = deanon_type(type(s), x, tok)
+    new_args == e.args && tt === type(s) && return s
+    StanExpr(remake(e, new_args...), tt)
 end
 _deanon_size_expr(_, s, _, tok) = s
 # A COMPOSITE type (`tup`/`ntup`, incl. every `usertype` built on one) keeps its
