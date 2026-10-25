@@ -2421,6 +2421,13 @@ _forward_indexed_sampling!(x; info, user_slice::Bool=false) = begin
             return _forward_indexed_sampling!(remake(x, flat, rhs_raw); info, user_slice)
         end
     end
+    # A slice statement in a called submodel's plate cell (`tau[1] ~ …`, or the
+    # lowering of `tau ~ vcat(…)`) names the cell by its local spelling; the loop
+    # declared the promoted storage at the root, so sample that declaration.
+    if !(k in keys(info)) && k isa Symbol && info isa SubModel
+        entry = _plate_context_entry(k; info)
+        entry === nothing || _plate_bind_local!(info, k, _plate_root_info(info)[entry.global_name])
+    end
     k in keys(info) || error(
         user_slice ?
             "Indexed sampling `$k[…] ~ …` needs `$k` to be declared first, e.g. `$k::vector[n]`." :
@@ -2910,20 +2917,33 @@ forward!(x::SamplingExpr{<:DeclExpr,<:CanonicalExprV{:vcat}}; info) = begin
     decl.args[1] isa Symbol || error("`… ~ vcat(…)`: a typed LHS must name a Symbol, got `$(decl.args[1])`.")
     _forward_vcat!(decl.args[1], decl.args[2], x.args[2]; info)
 end
+# An indexed left-hand side — an element or slice (`tau[:, 1] ~ vcat(…)`), or a
+# plate positional's cell, which the emit trace spells as its accessor
+# (`Y[:, i] ~ vcat(…)` for `yi ~ vcat(…)` in `plate(EachCol(Y)) do yi`).
+forward!(x::SamplingExpr{<:CanonicalExprV{:getindex},<:CanonicalExprV{:vcat}}; info) = error(
+    "`", _stan_snippet(forward!(x.args[1]; info)), " ~ vcat(…)`: `vcat(…)` gives the ",
+    "coordinates of a whole vector their prior families, so its left-hand side must ",
+    "be a name: a new parameter (`tau ~ vcat(…)`, also in a plate or loop cell) or a ",
+    "data vector (`y ~ vcat(…)`). Observing an element or a slice with it, or a ",
+    "plate positional's cell (`yi ~ vcat(…)`), is not supported yet; write a slice ",
+    "statement per block (`yi[1] ~ …`).")
 _vcat_add(a::Integer, b::Integer) = a + b
 _vcat_add(a, b) = :($a + $b)
 _vcat_add(a, b::Integer) = b == 0 ? a : b < 0 ? :($a - $(-b)) : :($a + $b)
 _forward_vcat!(name::Symbol, type_expr, rhs; info) = begin
-    _plate_context(info) === nothing || error(
-        "`", name, " ~ vcat(…)` inside a plate or @scan cell is not supported yet; ",
-        "declare `", name, "` at model scope.")
+    # In a plate or annotated-loop cell, discovery traces this lowering on a
+    # fresh cell declaration, whose slice records the loop core folds onto the
+    # storage it declares for every cell (`_plate_fold_inner_slices`). The emit
+    # trace then finds `name` promoted to that storage: only the block
+    # statements remain, sampling the cell's coordinates of it.
+    promoted = _plate_promoted_lhs(name; info) !== nothing
     isempty(rhs.kwargs) || error(
         "`", name, " ~ vcat(…)` takes no keyword arguments; put each block's bounds on ",
         "the block itself (`vcat(normal(0., 1.; lower=0.), …)`).")
     blocks = collect(rhs.args)
     isempty(blocks) && error("`", name, " ~ vcat()` needs at least one block.")
-    observed = name in keys(info) && qual(info[name]) == :data
-    name in keys(info) && !observed && error(
+    observed = !promoted && name in keys(info) && qual(info[name]) == :data
+    !promoted && name in keys(info) && !observed && error(
         "`", name, " ~ vcat(…)`: `", name, "` is already bound to a ", qual(info[name]),
         "-qualified value; `vcat(…)` declares a new parameter or observes data.")
     lens = Any[]
@@ -2970,9 +2990,9 @@ _forward_vcat!(name::Symbol, type_expr, rhs; info) = begin
         push!(stmts, Expr(:call, :~, Expr(:ref, name, idx), b))
         lo = _vcat_add(hi, 1)
     end
-    observed || pushfirst!(stmts, :($name :: vector[$size_expr]))
+    observed || promoted || pushfirst!(stmts, :($name :: vector[$size_expr]))
     traced = forward!(canonical(Expr(:block, stmts...)); info)
-    if !observed
+    if !observed && !promoted
         _is_fresh_decl(info[name]) || error(
             "`", name, " ~ vcat(…)` must be written in a model or sub-model body.")
         # The blocks tile `1:n` by construction, so a support they share is
@@ -3060,6 +3080,8 @@ _plate_fresh_info(s) = begin
         s.args[2]                         # `lhs ~ dist`  (raw `~` ⇒ Expr(:call, :~, lhs, rhs))
     elseif s isa Expr && s.head === :(=)
         s.args[1]                         # `lhs = rhs`
+    elseif _plate_is_bare_decl(s)
+        s                                 # `lhs::T`, a bare declaration
     else
         return nothing
     end
@@ -3067,6 +3089,14 @@ _plate_fresh_info(s) = begin
     (lhs isa Expr && lhs.head === :(::) && lhs.args[1] isa Symbol) && return (lhs.args[1], lhs.args[2])
     nothing
 end
+# A cell's bare declaration `tau::vector[K]` — an unfilled cell parameter, or the
+# declaration slice statements `tau[1] ~ …` sample (`tau ~ vcat(…)` lowers to
+# both). Discovery types it; the loop core then declares its promoted storage,
+# so the emit trace drops the statement rather than re-declaring the name.
+_plate_is_bare_decl(s) = s isa Expr && s.head === :(::) && length(s.args) == 2 && s.args[1] isa Symbol
+# A raw `lhs ~ vcat(…)` statement.
+_is_raw_vcat_prior(s) = s isa Expr && s.head === :call && length(s.args) == 3 && s.args[1] === :~ &&
+    Meta.isexpr(s.args[3], :call) && !isempty(s.args[3].args) && s.args[3].args[1] === :vcat
 # A `~` or `=` statement, whatever its LHS: a plate cell ending in one has no
 # value to collect.
 _plate_is_statement(s) = s isa Expr &&
@@ -3453,19 +3483,13 @@ end
 # where such a value is spelled differently from the emitted loop.
 _plate_slice_bound_carrier!(f, key, T::StanType, outer, axes, positions, cell_names; info, pending) = begin
     _plate_cell_shape(T, f) === :vector || error(
-        "@scan: the slice statements of `", f, "` give its coordinates different `", key,
-        "=` support, which a @scan nested in another loop can only declare on a vector ",
-        "of reals; `", f, "` is a `", sigtype(T), "`.")
+        "The slice statements of `", f, "` give its coordinates different `", key,
+        "=` support, which a loop cell can only declare on a vector of reals; `", f,
+        "` is a `", sigtype(T), "`.")
     records = T.info.slice_supports
     default = getproperty(T.info.slice_default, key)
     _check_slice_bounds_data(f, key, default, records)
-    for r in records
-        _plate_depends_on(getproperty(r, key), cell_names) && error(
-            "@scan: the `", key, "=` bound of `", r.spelling, " ~ …` reads a value the ",
-            "enclosing loop binds per cell. A per-coordinate bound is data or an ",
-            "expression of data and the loop indices; write that expression in the ",
-            "bound itself (`", key, "=L[j]`).")
-    end
+    _check_slice_bounds_cell_free(key, records, cell_names)
     carrier = _slice_carrier_name(f, key; info)
     fills = _slice_bound_fills(key, stan_size(T)[1], default, records, Symbol(carrier, :_i),
         i -> _plate_cell_coordinate(carrier, T, positions, i);
@@ -3480,6 +3504,17 @@ _plate_slice_bound_carrier!(f, key, T::StanType, outer, axes, positions, cell_na
     end
     info[carrier]
 end
+# The records were traced in the discovery probe, where a value the loop binds
+# per cell is spelled differently from the emitted loop: a cell bound must be
+# data or an expression of data and the loop indices.
+_check_slice_bounds_cell_free(key, records, cell_names) = begin
+    for r in records
+        _plate_depends_on(getproperty(r, key), cell_names) && error(
+            "The `", key, "=` bound of `", r.spelling, " ~ …` reads a value the loop binds ",
+            "per cell. A per-coordinate bound is data or an expression of data and the ",
+            "loop indices; write that expression in the bound itself (`", key, "=L[j]`).")
+    end
+end
 # The per-element `key=` bound of a varying-length cell's flat memory, when a
 # nested `@scan`'s setup and recurrence give its coordinates different support:
 # a `transformed data` vector laid out like the memory, filled per cell
@@ -3489,13 +3524,7 @@ _plate_ragged_bound_carrier!(plan, key, T::StanType, outer, idx, cell_names; inf
     records = T.info.slice_supports
     default = getproperty(T.info.slice_default, key)
     _check_slice_bounds_data(f, key, default, records)
-    for r in records
-        _plate_depends_on(getproperty(r, key), cell_names) && error(
-            "@scan: the `", key, "=` bound of `", r.spelling, " ~ …` reads a value the ",
-            "enclosing loop binds per cell. A per-coordinate bound is data or an ",
-            "expression of data and the loop indices; write that expression in the ",
-            "bound itself (`", key, "=L[j]`).")
-    end
+    _check_slice_bounds_cell_free(key, records, cell_names)
     carrier = _slice_carrier_name(plan.mem, key; info)
     start = :(ragged_start($(plan.ends), $idx))
     fills = _slice_bound_fills(key, plan.size_expr, default, records, Symbol(carrier, :_i),
@@ -4635,7 +4664,8 @@ _forward_loop_core!(;
     # Positional do-block params still lower syntactically to per-cell input
     # accessors. Fresh names stay untouched: the trace-local promotion context
     # rewrites them while tracing, including names hidden inside submodels.
-    loop_body = Any[_subst_syms(s, input_subst) for s in body_stmts]
+    loop_body = Any[_subst_syms(s, input_subst) for s in body_stmts
+                    if !(_plate_is_bare_decl(s) && haskey(cell_types, _plate_global_name(info, s.args[1])))]
     if rv !== nothing
         ret_cell = _subst_syms(ret_expr, input_subst)
         if haskey(ragged_plans, rv)
@@ -4804,8 +4834,10 @@ _forward_loop_core!(;
         end
         if !isempty(per_coordinate) && !scan_carried(f)
             info isa SubModel && error(
-                "@scan: per-coordinate support of `", f, "` inside a called @slic ",
-                "submodel is not supported yet — declare `", f, "` at model scope.")
+                "Per-coordinate support of `", f, "` (different bounds per coordinate of a ",
+                "cell, from slice statements, `vcat(…)` blocks or a @scan's setup and ",
+                "recurrence) inside a called @slic submodel is not supported yet — write ",
+                "the loop at model scope.")
             axes = collect(zip(idxs, outer_lo, outer_dims))
             positions = own_axes ? idxs : local_positions
             cons = merge(cons, (; (key => _plate_slice_bound_carrier!(
@@ -5655,6 +5687,10 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
             owned(hygienic) || continue
             any(s -> (l = _plate_stmt_lhs(s); l isa Expr && l.head === :(::) && l.args[1] === f), body_raw) &&
                 error(label, ": a typed local (`", f, "::…`) inside a nested annotated loop is not supported yet.")
+            # `f ~ vcat(…)` declares `f::vector[n]` (`_forward_vcat!`), a typed local too.
+            any(s -> _plate_stmt_lhs(s) === f && _is_raw_vcat_prior(s), body_raw) &&
+                error(label, ": `", f, " ~ vcat(…)` inside a nested annotated loop is not supported ",
+                    "yet; like a typed local, it declares `", f, "::vector[n]`.")
             owned_locals[f] = Expr(:ref, hygienic, inner_ix...)
             # Inside a called submodel, bind its spelling of the promoted storage
             # (as for owned arrays, below).
