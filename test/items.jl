@@ -10,6 +10,7 @@ using TestItemRunner
     import StanBlocks.stan: @deffun, full_cqual_eq, transpiles, stan_model, stan_code, stanc_check, instantiate
     # View usertypes are not exported; alias so @deffun signatures can name them.
     const RaggedVector = StanBlocks.RaggedVector
+    const RaggedMatrix = StanBlocks.RaggedMatrix
     using PosteriorDB
 end
 
