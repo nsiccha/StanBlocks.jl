@@ -769,7 +769,23 @@ to_ragged(x::AbstractVector{<:AbstractVector{T}}) where {T<:Real} = (;
     mem=reduce(vcat, x; init=T[]),
     ends=cumsum(length.(x)),
 )
-# `stan_type(expr, ::AbstractVector{<:AbstractVector{<:Real}})` — ragged DATA ingest —
-# lives in `builtin.jl` (after `RaggedVector` is defined), minting a nominal
-# `RaggedVector` so ragged data is a first-class indexable container everywhere
-# (decision 2026-07-17T00-14-01-598-1g0cf6y, approach B). `to_ragged` stays here.
+"""
+Encode a vector of real-valued matrices as a ragged matrix: a `NamedTuple` with
+`mem::Vector` (each matrix flattened column-major, concatenated), `ends::Vector{Int}`
+(inclusive 1-based end index of each matrix in `mem`), and `rows`/`cols::Vector{Int}`
+(each matrix's size). `mem` is real: a Stan `matrix` has no integer form.
+
+Passing a `Vector{<:AbstractMatrix{<:Real}}` directly as a data kwarg to a `SlicModel`
+applies this transformation automatically.
+"""
+to_ragged(x::AbstractVector{<:AbstractMatrix{T}}) where {T<:Real} = (;
+    mem=reduce(vcat, (vec(m) for m in x); init=float(T)[]),
+    ends=cumsum(length.(x)),
+    rows=Int[size(m, 1) for m in x],
+    cols=Int[size(m, 2) for m in x],
+)
+# `stan_type(expr, ::AbstractVector{<:AbstractVector{<:Real}})` and its matrix twin —
+# ragged DATA ingest — live in `builtin.jl` (after `RaggedVector`/`RaggedMatrix` are
+# defined), minting a nominal `RaggedVector`/`RaggedMatrix` so ragged data is a
+# first-class indexable container everywhere (decision
+# 2026-07-17T00-14-01-598-1g0cf6y, approach B). `to_ragged` stays here.

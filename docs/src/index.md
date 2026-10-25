@@ -838,6 +838,9 @@ groups = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]
 end
 ```
 
+A `Vector{<:AbstractMatrix{<:Real}}` data kwarg becomes a `RaggedMatrix` the
+same way: `X[g]` is the `g`th matrix and `length(X)` the number of matrices.
+
 `ragged_start`, `ragged_end`, and `ragged_length` expose offsets for UDF size
 math. Elementwise arithmetic (`2.0 * groups`, `groups .^ 2`, `groups + other`
 with the same group ends) keeps the groups. Ragged observations, ragged

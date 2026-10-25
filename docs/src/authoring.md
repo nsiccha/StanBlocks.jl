@@ -342,6 +342,26 @@ groups = [[1.0, 2.0], [3.0], [4.0, 5.0, 6.0]]
 end
 ```
 
+A `Vector{<:AbstractMatrix{<:Real}}` data kwarg, such as one design matrix per
+group, is a `RaggedMatrix` in the same way: `X[g]` is the `g`th matrix and
+`length(X)` the number of matrices, in the model body, in a plate cell, as a
+plate positional, and passed to a submodel or a `@deffun`:
+
+```julia
+X = [[0.5 -0.2; 0.1 0.3], [0.2 0.4; -0.6 0.1; 0.3 0.7]]
+y = [[0.1, -0.3], [0.4, 0.2, -0.1]]
+
+@slic (; X, y) begin
+    b1 ~ normal(0, 1)
+    b2 ~ normal(0, 1)
+    @plate for i in eachindex(y)
+        y[i] ~ normal(X[i] * [b1, b2], 1)
+    end
+end
+```
+
+Its values are real, since a Stan `matrix` has no integer form.
+
 Elementwise arithmetic keeps the groups. `2.0 * x`, `a + b * x`, `x / s`,
 `x .^ 2`, `-x`, and `x + z` / `x .* z` for two RaggedVectors with the same
 group ends all give a `RaggedVector`. The result works anywhere a RaggedVector
@@ -466,7 +486,7 @@ plate's declarations and `transformed data` index tables, which
 | Other higher-rank cell value | ❌ | `array[T] vector[K]` and matrix cells are the dense rank-2 forms; declare other shared values outside the plate |
 | Varying-size constrained cell | ❌ | Declare the ragged constrained parameter at model scope, then index it in the plate |
 | Int-array plate result | ❌ | MVP: sampled int side cells promote, but the loop's own return cannot collect as an int array; collect a scalar or vector cell instead |
-| Positional `RaggedVector`, `EachCol`, `EachRow` | ✅ | Each cell receives one ragged group, matrix column, or matrix row |
+| Positional `RaggedVector`, `RaggedMatrix`, `EachCol`, `EachRow` | ✅ | Each cell receives one ragged group, one matrix of a vector of matrices, a matrix column, or a matrix row |
 | Named/anonymous `@slic` call inside the cell | ✅ | Internal fresh bindings are discovered, namespaced, and promoted per cell |
 | A plate inside a called sub-model | ✅, dense | Scalar and fixed-vector cells work and caller sizes are substituted correctly |
 | Ragged-vector plate inside a called sub-model | ❌ | Keep the ragged plate at model scope; a cell may still call a sub-model that returns a ragged-sized vector |
@@ -899,7 +919,16 @@ tuple(vector[y_mem_n], array[y_ends_n] int) y;
 
 so `y = [[0.1, 0.2, 0.3], [0.4]]` is `y_mem_n = 4`, `y_ends_n = 2` and, in
 CmdStan JSON, `"y": {"1": [0.1, 0.2, 0.3, 0.4], "2": [3, 4]}`. An integer group
-uses `array[y_mem_n] int` for the values.
+uses `array[y_mem_n] int` for the values. A vector of matrices `X` adds each
+matrix's row and column counts,
+
+```stan
+tuple(vector[X_mem_n], array[X_ends_n] int, array[X_rows_n] int, array[X_cols_n] int) X;
+```
+
+with each matrix column-major in the values: `X = [[1.0 3.0; 2.0 4.0], [5.0 6.0]]`
+is `"X": {"1": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "2": [4, 6], "3": [2, 1], "4": [2, 2]}`,
+and its descriptor input lists the four components in `fields`.
 
 ## `@deffun` iteration boundary
 

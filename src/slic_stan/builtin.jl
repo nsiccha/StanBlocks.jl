@@ -1860,20 +1860,21 @@ end
 # keeps matching; the NEW `y[g]`-anywhere capability comes from `RaggedVector`'s getindex
 # dispatch (a bound data name is not a construction → the tuple-representation UDF).
 # (decision 2026-07-17T00-14-01-598-1g0cf6y, approach B — unify data/param ragged carriers.)
-stan_type(expr, value::AbstractVector{<:AbstractVector{<:Real}}; kwargs...) = begin
-    r = to_ragged(value)
-    StanType(RaggedVector, tuple();
-        arg_types=(;
-            mem=stan_type(Symbol(expr, "_mem"), r.mem),
-            ends=stan_type(Symbol(expr, "_ends"), r.ends),
-        ),
-        value=r, kwargs...,
-    )
-end
+stan_type(expr, value::AbstractVector{<:AbstractVector{<:Real}}; kwargs...) =
+    _ragged_data_type(RaggedVector, expr, to_ragged(value); kwargs...)
+# Each component of the encoded `r` is ordinary data (`<expr>_mem`, `<expr>_ends`, …).
+_ragged_data_type(T, expr, r::NamedTuple; kwargs...) = StanType(T, tuple();
+    arg_types=NamedTuple{keys(r)}(map((k, v) -> stan_type(Symbol(expr, "_", k), v), keys(r), values(r))),
+    value=r, kwargs...,
+)
 
 # `RaggedMatrix` extends the same flat-memory representation to matrix-valued
 # groups. `ends` indexes each flattened matrix, while data-qualified `rows` and
-# `cols` reconstruct the selected group with `to_matrix`.
+# `cols` reconstruct the selected group with `to_matrix`. Matrix DATA
+# (`Vector{<:AbstractMatrix{<:Real}}`, e.g. one design matrix per group) ingests as
+# one, so `X[g]` is the g-th matrix anywhere (snag `ragged-matrix-da-163255e9`).
+stan_type(expr, value::AbstractVector{<:AbstractMatrix{<:Real}}; kwargs...) =
+    _ragged_data_type(RaggedMatrix, expr, to_ragged(value); kwargs...)
 
 # A `RaggedVector` is a COMPILE-TIME pairing of its two components, never a
 # materialised Stan tuple. Reason: when `mem` is parameter-derived
