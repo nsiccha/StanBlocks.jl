@@ -461,7 +461,9 @@ plate's declarations and `transformed data` index tables, which
 | Fixed native-constrained vector cell | ✅ | `simplex[K]`, `ordered[K]`, and `positive_ordered[K]`; emitted as `array[outer...] <type>[K]` |
 | Shared scalar constraints | ✅ | `lower`, `upper`, `offset`, and `multiplier` are preserved when they do not depend on the cell position |
 | Cell-position-dependent constraint | ❌ | Rejected because the promoted declaration lives outside the loop |
-| Matrix or other higher-rank cell value | ❌ | Declare shared matrices outside the plate; the sole dense rank-2 cell form is `array[T] vector[K]` |
+| Fixed-size `matrix[R, C]` binding/result | ✅ | Collected as `array[outer...] matrix[R, C]` (an `array[A] matrix[R, C]` cell as `array[outer..., A] matrix[R, C]`); a cell reads and writes it as the whole element `f[i]` |
+| Matrix whose size varies by cell | ✅, narrow | One-dimensional outer shape and data-computable sizes; each cell is stored column-major in flat memory with transformed-data `f__pl_rows`/`f__pl_cols`, read back with `to_matrix`, a `RaggedMatrix` after the loop; the descriptor output carries the flat group ends in `segments`. A *sampled* matrix of varying size is refused: sample a `vector` of length rows × cols and reshape it with `to_matrix` |
+| Other higher-rank cell value | ❌ | `array[T] vector[K]` and matrix cells are the dense rank-2 forms; declare other shared values outside the plate |
 | Varying-size constrained cell | ❌ | Declare the ragged constrained parameter at model scope, then index it in the plate |
 | Int-array plate result | ❌ | MVP: sampled int side cells promote, but the loop's own return cannot collect as an int array; collect a scalar or vector cell instead |
 | Positional `RaggedVector`, `EachCol`, `EachRow` | ✅ | Each cell receives one ragged group, matrix column, or matrix row |
@@ -513,8 +515,32 @@ end
 
 Here `trajectory` is collected as `array[N,T] vector[K]`, and references inside
 the cell lower to `trajectory[i]`, recovering the original
-`array[T] vector[K]`. Matrix-per-cell and arbitrary nested-array values remain
-unsupported.
+`array[T] vector[K]`. Arbitrary nested-array values remain unsupported.
+
+### Matrix cells
+
+A cell may name a matrix before using it, such as a covariance that depends
+on the cell:
+
+```julia
+@slic (; y = [[0.1, 0.2, 0.15], [0.2, 0.1], [0.3, 0.05, 0.1, 0.2]]) begin
+    s0 ~ normal(0, 1; lower = 0)
+    g ~ normal(0, 1)
+    @plate for s in eachindex(y)
+        v = exp(g) .* (1.0 .+ y[s] .^ 2)
+        c = sqrt(s0) .* v
+        ccov = diag_matrix(v) .+ c * c' ./ (1.0 + sum(v))
+        y[s] ~ multi_normal(g .* v, ccov)
+    end
+end
+```
+
+Like every cell binding, `ccov` is stored per cell and computed once per
+evaluation, so the density and the `y_gen`/`y_likelihood` twins all read the
+stored matrix. Its size is the length of the cell's group, so it is stored
+column-major in one flat `vector` (`loop_s_ccov`) and read back as
+`to_matrix(loop_s_ccov[...], loop_s_ccov__pl_rows[s], loop_s_ccov__pl_cols[s])`.
+A matrix of fixed size is collected as `array[outer...] matrix[R, C]` instead.
 
 ### Where to put an observation
 
