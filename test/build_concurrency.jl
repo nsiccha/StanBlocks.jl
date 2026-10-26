@@ -818,15 +818,23 @@ end
             make_args = ["STAN_THREADS=true", "USER_HEADER=$header"]
             stanc_args = ["--allow-undefined", "--warn-pedantic"]
 
-            # Control: BridgeStan.compile_model emits one STANCFLAGS assignment
-            # per stanc argument and make keeps the last, so only
+            # Control: up to 2.9.0, BridgeStan.compile_model emits one STANCFLAGS
+            # assignment per stanc argument and make keeps the last, so only
             # --warn-pedantic reaches stanc, which then rejects the declared
-            # but undefined function.
+            # but undefined function (roualdes/bridgestan#349). The fix (#350)
+            # joins them into one assignment, so later releases build the
+            # direct call too. A checkout of BridgeStan's main between 2.9.0
+            # and the next release carries the fix under version 2.9.0.
             toolchain = realpath(BridgeStan.get_bridgestan_path(; download=false))
             direct = joinpath(dir, "direct.stan")
             write(direct, source)
-            @test_throws ErrorException StanBlocks.with_toolchain_lock(toolchain) do
+            compile_direct() = StanBlocks.with_toolchain_lock(toolchain) do
                 BridgeStan.compile_model(direct; make_args, stanc_args)
+            end
+            if pkgversion(BridgeStan) <= v"2.9.0"
+                @test_throws ErrorException compile_direct()
+            else
+                @test density(compile_direct()) == -0.5
             end
 
             one = stan_library(source; make_args, stanc_args)
