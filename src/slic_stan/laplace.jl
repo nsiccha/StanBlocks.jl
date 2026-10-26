@@ -183,6 +183,11 @@ end
 _laplace_lhs_base(x::Symbol) = x
 _laplace_lhs_base(x::Expr) = x.head in (:ref, :., :(::)) ? _laplace_lhs_base(x.args[1]) : nothing
 _laplace_lhs_base(_) = nothing
+_laplace_is_submodel_call(rhs; info) = begin
+    (Meta.isexpr(rhs, :call) && rhs.args[1] isa Symbol) || return false
+    mod = get_module(info)
+    isdefined(mod, rhs.args[1]) && getfield(mod, rhs.args[1]) isa Union{SlicModel,SubmodelFn}
+end
 _laplace_classify(name, arg, body; info) = begin
     stmts = NamedTuple[]
     for s in body.args
@@ -196,6 +201,14 @@ _laplace_classify(name, arg, body; info) = begin
             base === arg && error(
                 "laplace_marginal: the do block samples the latent `", arg, "` itself; its prior ",
                 "is the argument of `laplace_marginal`.")
+            _laplace_is_submodel_call(s.args[3]; info) && error(
+                "laplace_marginal: the do block of `", name, "` embeds the sub-model `", s.args[3].args[1],
+                "`; a sub-model inside the do block is not supported yet. Write its observations ",
+                "in the do block itself.")
+            base in keys(info) && s.args[2] isa Symbol && center_type(info[base]) <: RaggedVector && error(
+                "laplace_marginal: the do block of `", name, "` observes the whole ragged `", base, "`. ",
+                "Observe one group per latent instead, in a plate: `@plate for g in eachindex(", base,
+                ") … ", base, "[g] ~ … end` with the `laplace_marginal` statement in the loop body.")
             kind = if base in keys(info)
                 qual(info[base]) == :data || error(
                     "laplace_marginal: the do block of `", name, "` samples `", s.args[2], "`, which is ",
@@ -316,6 +329,18 @@ _laplace_map_body(f, s::Expr) = begin
     lhs, body = lambda.args
     body = Meta.isexpr(body, :block) ? Expr(:block, map(f, body.args)...) : f(body)
     Expr(:call, :~, s.args[2], Expr(:do, call, Expr(:->, lhs, body)))
+end
+# The names a raw `laplace_marginal` statement's do block binds with `=`: in a
+# plate cell they are cell locals, renamed into the plate's namespace with the
+# statement's own LHS (`_forward_loop_core!`).
+_laplace_block_locals(s) = begin
+    names = Symbol[]
+    _laplace_map_body(s) do b
+        Meta.isexpr(b, :(=)) && (l = _laplace_lhs_base(b.args[1])) isa Symbol &&
+            !Meta.isexpr(b.args[1], :ref) && push!(names, l)
+        b
+    end
+    names
 end
 # Each replayed observation of the likelihood leaves the model block: its density
 # is inside the approximation. It keeps its generated-quantities twins.

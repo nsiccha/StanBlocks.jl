@@ -39,6 +39,23 @@ decision `1wf36ma`). The model block gets one compiler-written
     zo = only(o for o in d.outputs if o.name === :z)
     @test zo.kind === :generated_quantity
     @test only(o for o in d.outputs if o.name === :y_gen).generative === :draw
+
+    # Integrating the latent out keeps every output name of the sampled spelling.
+    sampled = @slic (; y, X, k=4) begin
+        s ~ exponential(1.0); tau ~ exponential(1.0)
+        z::vector[k] ~ normal(0.0, tau)
+        eta = X * z
+        y ~ normal(eta, s)
+    end
+    integrated = @slic (; y, X, k=4) begin
+        s ~ exponential(1.0); tau ~ exponential(1.0)
+        z::vector[k] ~ laplace_marginal(normal(0.0, tau)) do z
+            eta = X * z
+            y ~ normal(eta, s)
+        end
+    end
+    output_names(m) = sort([o.name for o in stan_descriptor(m).outputs])
+    @test output_names(integrated) == output_names(sampled) == [:eta, :s, :tau, :y_gen, :y_likelihood, :z]
 end
 
 """
@@ -166,8 +183,8 @@ Newton start) shifted by the prior mean.
         @test t ≈ a atol=1e-4
     end
     # The latent draw is named after the latent.
-    names = BridgeStan.param_names(p1.model; include_gq=true)
-    @test names[3:4] == ["u.1", "u.2"]
+    pnames = BridgeStan.param_names(p1.model; include_gq=true)
+    @test pnames[3:4] == ["u.1", "u.2"]
     draw = BridgeStan.param_constrain(p1.model, [0.1, 0.2]; include_gq=true, rng=BridgeStan.StanRNG(p1.model, 1))
     @test all(isfinite, draw)
 end
@@ -279,6 +296,49 @@ cells match their exact marginals.
     d = stan_descriptor(platefor)
     @test [op.name for op in d.operations] == [:transpile, :instantiate, :fit, :predict, :pointwise_loglik]
     @test only(o for o in d.outputs if o.name === :counts_gen).segments == [3, 5, 9]
+
+    # A do-block binding is a cell local: it takes the plate's namespace, as in
+    # the sampled spelling, so every output keeps its name.
+    output_names(m) = sort([o.name for o in stan_descriptor(m).outputs])
+    sampled_for = @slic (; counts, mus) begin
+        tau ~ exponential(1.0)
+        @plate for g in eachindex(counts)
+            u ~ normal(mus[g], tau)
+            eta = u .+ 0.0
+            counts[g] ~ poisson_log(eta)
+        end
+    end
+    integrated_for = @slic (; counts, mus) begin
+        tau ~ exponential(1.0)
+        @plate for g in eachindex(counts)
+            u ~ laplace_marginal(normal(mus[g], tau)) do u
+                eta = u .+ 0.0
+                counts[g] ~ poisson_log(eta)
+            end
+        end
+    end
+    sampled_do = @slic (; counts, mus) begin
+        tau ~ exponential(1.0)
+        cells ~ plate(counts, mus) do c, m
+            u ~ normal(m, tau)
+            eta = u .+ 0.0
+            c ~ poisson_log(eta)
+            nothing
+        end
+    end
+    integrated_do = @slic (; counts, mus) begin
+        tau ~ exponential(1.0)
+        cells ~ plate(counts, mus) do c, m
+            u ~ laplace_marginal(normal(m, tau)) do u
+                eta = u .+ 0.0
+                c ~ poisson_log(eta)
+            end
+            nothing
+        end
+    end
+    @test output_names(integrated_for) == output_names(sampled_for) == [:counts_gen, :counts_likelihood, :loop_g_eta, :loop_g_u, :tau]
+    @test output_names(integrated_do) == output_names(sampled_do) == [:cells_eta, :cells_u, :counts_gen, :counts_likelihood, :tau]
+    @test all(stanc_compiles, (integrated_for, integrated_do))
 
     rng = Xoshiro(4)
     ys = [randn(rng, 3), randn(rng, 2), randn(rng, 4)]
@@ -408,6 +468,21 @@ time, each naming what to write instead.
         tau ~ exponential(1.0)
         u::vector[4] ~ laplace_marginal(normal(0.0, tau); hessian_block_size=tau) do u
             c ~ poisson_log(u)
+        end
+    end))))
+    @test occursin("observes the whole ragged `counts`", msg(() -> stan_code(@slic((; counts=[[1, 0], [2]], n=3), begin
+        tau ~ exponential(1.0)
+        u::vector[n] ~ laplace_marginal(normal(0.0, tau)) do u
+            counts ~ poisson_log(u)
+        end
+    end))))
+    stream = @slic begin
+        obs ~ poisson_log(eta)
+    end
+    @test occursin("embeds the sub-model `stream`", msg(() -> stan_code(@slic((; c), begin
+        tau ~ exponential(1.0)
+        u::vector[4] ~ laplace_marginal(normal(0.0, tau)) do u
+            node ~ stream(; obs=c, eta=u)
         end
     end))))
     later = msg(() -> stan_code(@slic((; c, w), begin

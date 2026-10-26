@@ -4455,14 +4455,18 @@ _forward_loop_core!(;
     # left alone, and a do-block PARAMETER used as an observation LHS
     # (`yi ~ normal(t, sigma)`) is a sliced INPUT, not a cell-local, so it is
     # excluded too (it lowers via `input_subst` to `y[plate_i]`).
+    # The `=` bindings inside a `laplace_marginal` do block (laplace.jl) are cell
+    # locals too: they replay in the cell after the latent's draw.
     fresh_rename = Dict{Symbol,Symbol}()
     for s in body_stmts
         fi = _plate_fresh_info(s)
-        fi === nothing && continue
-        f = fi[1]
-        (f in params || f in public || f in keys(info) || haskey(fresh_rename, f)) && continue
-        fresh_rename[f] = get(hygiene, f) do
-            _plate_fresh_name!(Symbol(ns, :_, f), Iterators.flatten((values(hygiene), values(fresh_rename), public)); info)
+        names = fi === nothing ? Symbol[] : Symbol[fi[1]]
+        append!(names, _laplace_block_locals(s))
+        for f in names
+            (f in params || f in public || f in keys(info) || haskey(fresh_rename, f)) && continue
+            fresh_rename[f] = get(hygiene, f) do
+                _plate_fresh_name!(Symbol(ns, :_, f), Iterators.flatten((values(hygiene), values(fresh_rename), public)); info)
+            end
         end
     end
     if !isempty(fresh_rename)
