@@ -6,6 +6,12 @@ breaking digit).
 
 ## Unreleased
 
+- **Arrays of rank three or more are data.** A real `Array{<:Real,N}` data
+  kwarg with `N ≥ 3` is declared as an array of matrices over its last two
+  dimensions (`array[A_d1] matrix[A_d2, A_d3] A;`) and an integer one as
+  `array[A_d1, A_d2, A_d3] int A;`, with the sizes `A_d1`, … added as data.
+  `A[i, j, k]` reads the same element as in Julia, and `A[i]` is the `i`th
+  matrix. It used to fail with "Do not know how to handle `stan_type(A, …)`".
 - **A vector of matrices is ragged matrix data.** A `Vector{<:AbstractMatrix{<:Real}}`
   data kwarg (one design matrix per group, say) ingests as a `RaggedMatrix`,
   as a vector of vectors ingests as a `RaggedVector`: `X[g]` is the `g`th matrix

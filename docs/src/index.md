@@ -136,7 +136,7 @@ sm = stan_model(m)                  # trace once (expensive)
 m2 = sm(;y=randn(100))              # StanModel call: re-data only (cheap)
 ```
 
-For each `Vector` data kwarg `x`, an `Int` `x_n = length(x)` is added automatically; for each `Matrix`, both `x_m` and `x_n` are added. So you can refer to those names inside the model without ceremony. `Vector{<:AbstractVector{<:Real}}` data is automatically [encoded as a ragged vector](#ragged-vectors).
+For each `Vector` data kwarg `x`, an `Int` `x_n = length(x)` is added automatically; for each `Matrix`, both `x_m` and `x_n` are added; for each array of rank three or more, `x_d1`, `x_d2`, … are added, one per dimension. So you can refer to those names inside the model without ceremony. A real array of rank three or more is declared as an array of matrices over its last two dimensions (`array[x_d1] matrix[x_d2, x_d3] x;`), an integer one as `array[x_d1, x_d2, x_d3] int x;`, and `x[i, j, k]` reads the same element as in Julia. `Vector{<:AbstractVector{<:Real}}` data is automatically [encoded as a ragged vector](#ragged-vectors).
 
 You can append or replace statements without mutating the base model through
 `Base.merge`:
