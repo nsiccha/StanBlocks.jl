@@ -714,11 +714,14 @@ logccdf_expr(family) = _family_probability_companion(family, :_lccdf)
 logcdf_expr(::typeof(builtin.normal)) = builtin.normal_lcdf_stable
 logccdf_expr(::typeof(builtin.normal)) = builtin.normal_lccdf_stable
 
-lpxf_expr(lhs, rhs::StanExpr) = lpxf_expr(lhs, expr(rhs))
-lpxf_expr(lhs, rhs::CanonicalExpr) = begin
+# `validate=false` only for a copy of an observation whose `~` was validated
+# already: the embedded-Laplace likelihood function (laplace.jl) reads the data
+# through a function argument, which is not data-qualified there.
+lpxf_expr(lhs, rhs::StanExpr; validate=true) = lpxf_expr(lhs, expr(rhs); validate)
+lpxf_expr(lhs, rhs::CanonicalExpr; validate=true) = begin
     spec = _distribution_hof(head(rhs))
     isnothing(spec) && return stan_call(lpxf_expr(head(rhs)), lhs, rhs.args...)
-    _validate_distribution_hof(spec, lhs, rhs)
+    validate && _validate_distribution_hof(spec, lhs, rhs)
     family = _distribution_hof_family(spec, rhs)
     stan_call(_hof_probability(spec, family, rhs), lhs, _hof_call_args(spec, rhs)...)
 end

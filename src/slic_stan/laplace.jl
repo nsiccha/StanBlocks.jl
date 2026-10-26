@@ -340,12 +340,14 @@ _forward_laplace_unconditioned!(name, spec, n, pargs, stmts; info) = begin
 end
 
 # `y ~ family(…)` inside the likelihood function: the log density the `~`
-# itself selects (an observed bound truncates, as for an observation).
+# itself selects (an observed bound truncates, as for an observation). The
+# replayed `~` (`_laplace_replay_block`) validates the observation against the
+# data itself; here the data is a function argument.
 expand_inline_or_trace(x::CanonicalExpr{typeof(_laplace_density)}; info) = begin
     lhs, rhs = x.args
     rhs = _normalised_truncation(rhs; observed=true)
     lpmf = _dual_lpmf_call(lhs, rhs)
-    density = isnothing(lpmf) ? lpxf_expr(lhs, rhs) : lpmf
+    density = isnothing(lpmf) ? lpxf_expr(lhs, rhs; validate=false) : lpmf
     _check_lpxf_resolves(density)
     density
 end

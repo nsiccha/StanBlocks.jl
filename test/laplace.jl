@@ -173,6 +173,65 @@ Newton start) shifted by the prior mean.
 end
 
 """
+An observation in the do block may use any family its `~` accepts: a custom
+`@lpxf` family, a distribution combinator (its bound validated by the replayed
+`~` against the data itself), a discrete family. A one-capture tuple renders as
+Stan's `(x,)`.
+"""
+@testitem "slic: laplace_marginal observes through custom families and combinators" tags=[:slic, :laplace, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    @deffun begin
+        @lhs @lpxf lapshift_lpdf(y::vector[n], loc::vector[n], s::real)::real = normal_lpdf(y, loc .+ 0.5, s)
+        lapshift_lpdfs(y::vector[n], loc::vector[n], s::real)::vector[n] = begin
+            out::vector[n]
+            for i in 1:n; out[i] = normal_lpdf(y[i], loc[i] + 0.5, s); end
+            out
+        end
+        lapshift_rng(vector[n], loc::vector[n], s::real)::vector[n] = begin
+            out::vector[n]
+            for i in 1:n; out[i] = normal_rng(loc[i] + 0.5, s); end
+            out
+        end
+    end
+    rng = Xoshiro(5)
+    y = max.(randn(rng, 6), -0.5); b = rand(rng, 0:1, 6); lo = -0.5
+    custom = @slic (; y) begin
+        s ~ exponential(1.0); tau ~ exponential(1.0)
+        z::vector[6] ~ laplace_marginal(normal(0.0, tau)) do z
+            y ~ lapshift(z, s)
+        end
+    end
+    exact = @slic (; y) begin
+        s ~ exponential(1.0); tau ~ exponential(1.0)
+        y ~ normal(0.5, sqrt(square(tau) + square(s)))
+    end
+    cens = @slic (; y, lo) begin
+        s ~ exponential(1.0); tau ~ exponential(1.0)
+        z::vector[6] ~ laplace_marginal(normal(0.0, tau)) do z
+            y ~ censored(normal(z, s); lower=lo)
+        end
+    end
+    bern = @slic (; b) begin
+        tau ~ exponential(1.0)
+        z::vector[6] ~ laplace_marginal(normal(0.0, tau); hessian_block_size=1) do z
+            b ~ bernoulli_logit(z)
+        end
+    end
+    @test occursin(r"(?s)laplace_marginal\(closure_\d+, \(b,\), 1, closure_\d+, \(tau, 6\)\)", stan_block(stan_code(bern), "model"))
+    @test all(stanc_compiles, (custom, cens, bern))
+    pc, pe = instantiate(stan_model(custom)), instantiate(stan_model(exact))
+    for _ in 1:3
+        u = 0.4 .* randn(rng, 2)
+        @test BridgeStan.log_density(pc.model, u; propto=false) ≈ BridgeStan.log_density(pe.model, u; propto=false) atol=1e-9
+    end
+    for m in (cens, bern)
+        p = instantiate(stan_model(m))
+        lp, g = BridgeStan.log_density_gradient(p.model, 0.3 .* randn(rng, LogDensityProblems.dimension(p)); propto=false)
+        @test isfinite(lp) && all(isfinite, g)
+    end
+end
+
+"""
 In a plate cell the latent is the cell's integrated latent: the model loop holds
 one `target += laplace_marginal(...)` per cell, the latent fills its cell storage
 in generated quantities, and a ragged observation keeps its flat `<obs>_gen` and
