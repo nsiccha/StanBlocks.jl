@@ -325,15 +325,22 @@ tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype
 # `array[T] vector[K]`); selecting the whole prefix leaves the native core. This
 # general rule covers arbitrary array depth beyond the finite signature table
 # below while preserving that table's core slice inference.
+#
+# The peeled type keeps the container's remaining sizes but not its data `value`,
+# which describes the whole container. It is spelled out rather than as
+# `remake(t, sizes...)`: with no sizes left — a scalar element of an
+# `array[...] int` — that call is the size-keeping `remake(t)`, and the element
+# came back typed as the whole array.
+_peeled_type(t, sizes) = StanType(center_type(t), Tuple(sizes), info(t); value=missing)
 tracetype(x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr,Vararg{Any}}}) = begin
     value = x.args[1]
     nl = l_ndim(type(value))
     indices = x.args[2:end]
     if nl > 0 && !isempty(indices) && length(indices) < nl &&
         all(i -> i isa StanExpr2{<:types.int,0}, indices)
-        return remake(type(value), stan_size(type(value))[length(indices)+1:end]...)
+        return _peeled_type(type(value), stan_size(type(value))[length(indices)+1:end])
     elseif nl > 0 && length(indices) >= nl && all(i -> i isa StanExpr2{<:types.int,0}, indices[1:nl])
-        core_type = remake(type(value), stan_size(type(value))[nl+1:end]...)
+        core_type = _peeled_type(type(value), stan_size(type(value))[nl+1:end])
         rest = indices[nl+1:end]
         isempty(rest) && return core_type
         core = StanExpr(missing, core_type)
