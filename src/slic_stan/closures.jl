@@ -50,6 +50,29 @@ else
     error("closure: unsupported lambda LHS `$lhs` (head `$(lhs.head)`). Phase 1 supports `x -> ...`, `(x, y) -> ...`, and `(args...) -> ...`.")
 end
 
+# The captures of a closure body: every free name of `body` (all its names
+# minus `bound` and its own locals) that is already in scope. Names that aren't
+# in `info` (e.g. builtin function refs like `sin`) stay as Symbols so they
+# re-resolve at the closure's call site through the regular SLIC path.
+# Iterate `info` (an OrderedDict) so capture ordering is deterministic —
+# matters for phase 2 where captures become positional Stan args.
+_closure_scope_captures(body, bound; info) = begin
+    bound = copy(bound)
+    _collect_locals!(body, bound)
+    all_syms = Set{Symbol}()
+    _collect_all_syms!(body, all_syms)
+    free = setdiff(all_syms, bound)
+    captures = OrderedDict{Symbol,Any}()
+    for k in keys(info)
+        k in free || continue
+        # Read `k` as any other reference to it would: inside a plate cell a
+        # cell-local name is its element of the promoted carrier, not the whole
+        # carrier its binding holds (`_plate_promoted_reference`).
+        captures[k] = something(_plate_promoted_reference(k, info), info[k])
+    end
+    captures
+end
+
 # Trace-time entry point for `(x) -> body`. Snapshots free vars in `body`
 # that resolve in the current `info` scope and packages them with the raw
 # body Expr as a `types.closure` StanExpr. The receiver UDF (or
@@ -67,27 +90,7 @@ forward!(x::CanonicalExprV{:->,A}; info) where {A} = begin
 
     bound = Set{Symbol}(arg_names)
     vararg_name !== nothing && push!(bound, vararg_name)
-    locals = Set{Symbol}()
-    _collect_locals!(body, locals)
-    union!(bound, locals)
-
-    all_syms = Set{Symbol}()
-    _collect_all_syms!(body, all_syms)
-    free = setdiff(all_syms, bound)
-
-    # Snapshot every free var that's already in scope. Names that aren't in
-    # `info` (e.g. builtin function refs like `sin`) stay as Symbols so they
-    # re-resolve at the closure's call site through the regular SLIC path.
-    # Iterate `info` (an OrderedDict) so capture ordering is deterministic —
-    # matters for phase 2 where captures become positional Stan args.
-    captures = OrderedDict{Symbol,Any}()
-    for k in keys(info)
-        k in free || continue
-        # Read `k` as any other reference to it would: inside a plate cell a
-        # cell-local name is its element of the promoted carrier, not the whole
-        # carrier its binding holds (`_plate_promoted_reference`).
-        captures[k] = something(_plate_promoted_reference(k, info), info[k])
-    end
+    captures = _closure_scope_captures(body, bound; info)
 
     id = _next_closure_id(info)
     source = something(_get_lnn(info), LineNumberNode(0, :none))

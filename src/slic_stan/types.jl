@@ -95,8 +95,11 @@ mutable struct TraceContext
     # parameter and the plate; and the marked names some `~` observed.
     cv_cells::Dict{Symbol,_CVCell}
     cv_observed::Set{Symbol}
+    # Latents an embedded-Laplace statement integrated out (laplace.jl), each a
+    # draw that a later likelihood term may not read.
+    laplace_latents::Set{Symbol}
 end
-TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0, OrderedDict{Symbol,Any}(), Dict{Symbol,_CVCell}(), Set{Symbol}())
+TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0, OrderedDict{Symbol,Any}(), Dict{Symbol,_CVCell}(), Set{Symbol}(), Set{Symbol}())
 _context_or_new(context) = context === nothing ? TraceContext() : context
 """
 A named sub-model function, produced by `@slic f(args...) = body`. The value

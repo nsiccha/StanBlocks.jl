@@ -1300,8 +1300,11 @@ _outputs_with(d::ModelDescriptor, role::Symbol) =
 # block. A cv-held-out observation routes to generated quantities ONLY, so a
 # model whose every observation is held out has parameters but nothing to
 # condition on — it can be instantiated, but calling it a "fit" would be a lie.
+# An embedded-Laplace term (`laplace.jl`) carries its observations' densities
+# into the model block without a `~` of its own.
 _has_likelihood(d::ModelDescriptor) =
-    !isempty(_observed_bases(block(d.model, :model), Set{Symbol}()))
+    !isempty(_observed_bases(block(d.model, :model), Set{Symbol}())) ||
+    _has_laplace_term(block(d.model, :model))
 _has_parameters(d::ModelDescriptor) = any(o -> o.kind === :parameter, d.outputs)
 
 # --- operations --------------------------------------------------------------

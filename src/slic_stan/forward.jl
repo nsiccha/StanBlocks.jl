@@ -4455,14 +4455,18 @@ _forward_loop_core!(;
     # left alone, and a do-block PARAMETER used as an observation LHS
     # (`yi ~ normal(t, sigma)`) is a sliced INPUT, not a cell-local, so it is
     # excluded too (it lowers via `input_subst` to `y[plate_i]`).
+    # The `=` bindings inside a `laplace_marginal` do block (laplace.jl) are cell
+    # locals too: they replay in the cell after the latent's draw.
     fresh_rename = Dict{Symbol,Symbol}()
     for s in body_stmts
         fi = _plate_fresh_info(s)
-        fi === nothing && continue
-        f = fi[1]
-        (f in params || f in public || f in keys(info) || haskey(fresh_rename, f)) && continue
-        fresh_rename[f] = get(hygiene, f) do
-            _plate_fresh_name!(Symbol(ns, :_, f), Iterators.flatten((values(hygiene), values(fresh_rename), public)); info)
+        names = fi === nothing ? Symbol[] : Symbol[fi[1]]
+        append!(names, _laplace_block_locals(s))
+        for f in names
+            (f in params || f in public || f in keys(info) || haskey(fresh_rename, f)) && continue
+            fresh_rename[f] = get(hygiene, f) do
+                _plate_fresh_name!(Symbol(ns, :_, f), Iterators.flatten((values(hygiene), values(fresh_rename), public)); info)
+            end
         end
     end
     if !isempty(fresh_rename)
@@ -5655,16 +5659,17 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     # not recognise the LHS, so the cell got its density but no `yr_gen` /
     # `yr_likelihood`. Only the observation LHS is rewritten, and only for a
     # one-axis plate indexed by the loop variable itself — the shape the ragged
-    # twins support.
+    # twins support. An observation inside a `laplace_marginal` do block of the
+    # body (`_laplace_map_body`, laplace.jl) is one of the cell's observations too.
     if kind === :plate && length(idxs) == 1
         ragged_obs(lhs) = lhs isa Expr && lhs.head === :ref && length(lhs.args) == 2 &&
             lhs.args[1] isa Symbol && lhs.args[2] === idxs[1] && is_data(lhs.args[1]) &&
             _plate_is_ragged_iterable(_plate_iterable_type(lhs.args[1], info))
-        body_stmts = Any[
+        ragged_rw(s) =
             (s isa Expr && s.head === :call && length(s.args) == 3 && s.args[1] === :~ && ragged_obs(s.args[2])) ?
-                Expr(:call, :~, _plate_input_accessor(s.args[2].args[1], idxs, info), s.args[3]) : s
-            for s in body_stmts
-        ]
+                Expr(:call, :~, _plate_input_accessor(s.args[2].args[1], idxs, info), s.args[3]) :
+                _laplace_map_body(ragged_rw, s)
+        body_stmts = Any[ragged_rw(s) for s in body_stmts]
     end
     # A STABLE namespace for the loop's hoisted locals / invariants, named after
     # the loop variables (`loop_i`, `loop_d` for `for d in doses`): the same in
