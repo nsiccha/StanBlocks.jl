@@ -544,11 +544,20 @@ qual(x::SamplingExpr) = qual(x.args[1])
 # quantities are out of scope — and a target that depends on a fresh random draw
 # is not a log density. Refuse at trace time instead of emitting stanc-invalid
 # Stan (snag `rng-draw-read-by-9ad81a23`).
-_reject_draw_in_likelihood(x::SamplingExpr) = begin
+_reject_draw_in_likelihood(x::SamplingExpr; info) = begin
     lhs, rhs = x.args
     qual(rhs) == :quantities || return nothing
     draws = unique!(_draw_reads(rhs))
     obs = _sampling_lhs_key(lhs)
+    # A latent `laplace_marginal` integrated out (laplace.jl) is a draw too, but
+    # holding the observation out is not what its author wants.
+    latents = _laplace_latent_reads(rhs; info)
+    isempty(latents) || error(
+        "Observation `", _stan_snippet(lhs), " ~ ", _stan_snippet(rhs), "` reads `", first(latents),
+        "`, which `laplace_marginal` integrates out of the model block: outside its do block ",
+        "it is a draw in generated quantities. Observe `", something(obs, _stan_snippet(lhs)),
+        "` inside the do block of `", first(latents), "`, so that its density is part of the approximation.",
+    )
     # A computed observation (`(2.0 * sum(v)) ~ …`) names no variable to hold out.
     remedy = obs === nothing ? "Compute the location without an `_rng` call." : string(
         "To predict `", obs, "` from the draw, hold it out — bind it as ",
@@ -582,7 +591,7 @@ else
     (:generated_quantities, )
 end
 distribution_blocks(x::SamplingExpr; info) = if qual(x) == :data
-    cv(x.args[1]) || _reject_draw_in_likelihood(x)
+    cv(x.args[1]) || _reject_draw_in_likelihood(x; info)
     if !(expr(x.args[1]) isa Symbol)
         # Indexed observation inside a compiler-owned plate loop. The ordinary
         # gq expansion assumes a whole named LHS and cannot write one cell of a

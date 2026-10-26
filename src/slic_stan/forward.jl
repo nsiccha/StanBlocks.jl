@@ -5655,16 +5655,17 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     # not recognise the LHS, so the cell got its density but no `yr_gen` /
     # `yr_likelihood`. Only the observation LHS is rewritten, and only for a
     # one-axis plate indexed by the loop variable itself — the shape the ragged
-    # twins support.
+    # twins support. An observation inside a `laplace_marginal` do block of the
+    # body (`_laplace_map_body`, laplace.jl) is one of the cell's observations too.
     if kind === :plate && length(idxs) == 1
         ragged_obs(lhs) = lhs isa Expr && lhs.head === :ref && length(lhs.args) == 2 &&
             lhs.args[1] isa Symbol && lhs.args[2] === idxs[1] && is_data(lhs.args[1]) &&
             _plate_is_ragged_iterable(_plate_iterable_type(lhs.args[1], info))
-        body_stmts = Any[
+        ragged_rw(s) =
             (s isa Expr && s.head === :call && length(s.args) == 3 && s.args[1] === :~ && ragged_obs(s.args[2])) ?
-                Expr(:call, :~, _plate_input_accessor(s.args[2].args[1], idxs, info), s.args[3]) : s
-            for s in body_stmts
-        ]
+                Expr(:call, :~, _plate_input_accessor(s.args[2].args[1], idxs, info), s.args[3]) :
+                _laplace_map_body(ragged_rw, s)
+        body_stmts = Any[ragged_rw(s) for s in body_stmts]
     end
     # A STABLE namespace for the loop's hoisted locals / invariants, named after
     # the loop variables (`loop_i`, `loop_d` for `for d in doses`): the same in

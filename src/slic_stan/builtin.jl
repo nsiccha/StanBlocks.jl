@@ -129,6 +129,9 @@ end
     ode_ckrk ode_ckrk_tol
     ode_adams ode_adams_tol
     ode_bdf ode_bdf_tol
+    # Stan's embedded Laplace approximation (Stan >= 2.37), lowered from
+    # `z ~ laplace_marginal(prior) do z … end` (laplace.jl).
+    laplace_marginal laplace_marginal_tol laplace_latent_rng laplace_latent_tol_rng
     # Torsten (metrumresearchgroup/Torsten) PK event-schedule solvers.
     pmx_solve_onecpt pmx_solve_twocpt
     pmx_solve_onecpt_effcpt pmx_solve_twocpt_effcpt pmx_solve_linode
