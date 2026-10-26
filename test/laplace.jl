@@ -178,8 +178,12 @@ Newton start) shifted by the prior mean.
         b, gb = BridgeStan.log_density_gradient(p2.model, v; propto=false)
         t = BridgeStan.log_density(p3.model, v; propto=false)
         @test isfinite(a) && all(isfinite, ga)
-        @test a ≈ b atol=1e-9
-        @test ga ≈ gb atol=1e-9
+        # The two Hessian structures run separate Newton solves, each stopping
+        # at Stan's default `tol = 1.49012e-8`, so they agree to the solver's
+        # tolerance rather than to rounding (CI measured 3e-9 in the density
+        # and 4e-8 in the gradient).
+        @test a ≈ b atol=1e-6
+        @test ga ≈ gb atol=1e-6
         @test t ≈ a atol=1e-4
     end
     # The latent draw is named after the latent.
