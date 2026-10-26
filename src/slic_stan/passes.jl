@@ -93,6 +93,7 @@ _is_rng_callee(f::Expr) = f.head === :. && _is_rng_callee(f.args[end])
 _is_rng_callee(f::QuoteNode) = _is_rng_callee(f.value)
 Base.@nospecializeinfer _stan_expr(@nospecialize(x::CanonicalExpr), context) = begin
     _reject_untyped_args(x)
+    _reject_call_kwargs(x)
     context = _context_or_new(context)
     tok = _next_anon_id(context)
     tt = deanon_type(_tracetype(anon_canonical(x, tok), context), x, tok)

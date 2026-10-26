@@ -17,14 +17,22 @@ _forward_module_value(v::Irrational, info) = forward!(v; info)
 # `include("functions.jl")` (which defines `module types`); placing it
 # here would error at module-load time with `UndefVarError: types`.
 _forward_module_value(_, _) = nothing
-forward!(x::Function; info) = stan_expr(x)
+# A call head can be a Julia FUNCTION VALUE instead of a name: a producer that
+# splices the evaluated callable into the body (BRM's model scope builds
+# `Expr(:call, f, args...)`), or an interpolated `$(f)`. Where StanBlocks
+# provides that function as one of its own builtins, `_slic_callable` names the
+# builtin, so the value traces exactly like the name (`Statistics.mean` ↦
+# `builtin.mean`). The mapping methods live beside the builtins (builtin.jl);
+# any other function is its own SLIC callable.
+_slic_callable(f::Function) = f
+forward!(x::Function; info) = stan_expr(_slic_callable(x))
 # `macroexpand` (used by `slic_macroexpand`) hygienically resolves all free
 # names — including model-scope SLIC variables and SLIC builtins like
 # `mean`/`length` — to `GlobalRef(mod, :name)`. Always try SLIC's own
 # resolution chain (model → builtin → mod → Main) first so that e.g.
 # `mean` resolves to `stan.builtin.mean` (with a registered tracetype),
-# not `Statistics.mean` (which lacks one). Fall back to the GlobalRef's
-# native module only when nothing else matches.
+# not `Statistics.mean` (which `_slic_callable` maps to it). Fall back to the
+# GlobalRef's native module only when nothing else matches.
 forward!(x::GlobalRef; info) = begin
     rv = _try_symbol_lookup(x.name; info)
     rv === nothing || return forward!(rv; info)
