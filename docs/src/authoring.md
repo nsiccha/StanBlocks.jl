@@ -1060,11 +1060,15 @@ the compiler does.
 - **The do block** may bind values with `=` and observe data with any family,
   including the distribution combinators and custom `@lpxf` families. It may not
   sample a parameter or use control flow. Statements the observations do not need
-  are left out of the likelihood function.
+  are left out of the likelihood function. Not supported yet, each refused with a
+  message: an observation sub-model embedded in the do block, and a whole ragged
+  observation (observe one group per latent, in a plate).
 - **Generated quantities:** the do block replays after the draw, reading it. Each
   observation keeps its `<obs>_gen` and `<obs>_likelihood` twins, and the
   descriptor offers `:fit`, `:predict` and `:pointwise_loglik` as for the sampled
-  latent. A likelihood term after the statement that reads `z` is refused: `z`
+  latent. Every output keeps the name it has when the latent is sampled; in a
+  plate cell a binding inside the do block takes the cell's namespace
+  (`loop_g_eta`, `rv_eta`). A likelihood term after the statement that reads `z` is refused: `z`
   is a draw there, so observe that data inside the do block.
 - **Options** (keywords of `laplace_marginal`): `hessian_block_size` defaults to
   the latent's length, a dense Hessian, which is always correct. A smaller value
