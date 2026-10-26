@@ -13,6 +13,7 @@ what ragged data means, and the exact boundary of `plate`.
 | Write deterministic control flow | `@deffun` | Inference-first signatures with optional type/shape annotations; Stan-compatible loops, branches, mutation, iteration, and bounded comprehensions |
 | Repeat a parameter-generating cell | `plate(...) do ... end` | The compiler-owned model loop; fresh cell bindings are promoted to outer storage |
 | Combine a base distribution with observation semantics | `weighted`, `truncated`, `censored`, `interval_censored` | One base-family token; the compiler selects density, pointwise, CDF, and RNG companions |
+| Integrate a Gaussian latent out of the model block | `z ~ laplace_marginal(prior) do z ... end` | Stan's embedded Laplace approximation; the do block is the latent's likelihood, and its observations keep their twins |
 | Reflect or execute a traced declaration | `stan_descriptor`, `stan_execute` | Inputs, outputs, included definitions, and available operations are derived from the model |
 
 An ordinary Julia `for` or `if` is not legal at model level because Stan must
@@ -1012,6 +1013,82 @@ shape and every leading dimension is a Stan array prefix. Thus
 `array[,] matrix`. These annotations work on arguments, returns, and fresh
 locals; the default Julia method represents them as equal-rank dense arrays, so
 use cross-target indexing such as `x[m,k,:,:]` when selecting a nested matrix.
+
+## Embedded Laplace: integrating a Gaussian latent out
+
+`z ~ laplace_marginal(prior) do z … end` integrates a Gaussian latent out of the
+model block with Stan's embedded Laplace approximation (Stan 2.37 or later).
+HMC samples only the remaining parameters; generated quantities draw `z`
+afterwards. The do block is the latent's likelihood, written as ordinary
+statements:
+
+```julia
+@slic (; y, X, k) begin
+    s ~ exponential(1.0)
+    tau ~ exponential(1.0)
+    z::vector[k] ~ laplace_marginal(normal(0.0, tau)) do z
+        y ~ normal(X * z, s)
+    end
+end
+```
+
+```stan
+model {
+    s ~ exponential(1.0);
+    tau ~ exponential(1.0);
+    target += laplace_marginal(closure_1, (y, X, s), k, closure_2, (tau, k));
+}
+generated quantities {
+    vector[k] z = laplace_latent_rng(closure_1, (y, X, s), k, closure_2, (tau, k));
+    vector[y_n] y_likelihood = normal_lpdfs(y, (X * z), s);
+    vector[y_n] y_gen = normal_vector_rng(y_n, (X * z), s);
+}
+```
+
+`closure_1` is the likelihood function `real (vector θ, y, X, s)`: the do block,
+with each observation replaced by the log density its own `~` selects.
+`closure_2` builds the prior covariance. The model writes no `target +=`;
+the compiler does.
+
+- **The prior** is the latent's Gaussian prior, spelled as it would be to sample
+  the latent: `std_normal()`, `normal(mu, sigma)` (independent coordinates,
+  scalars or vectors), `multi_normal(mu, Sigma)`, `multi_normal_cholesky(mu, L)`
+  or `multi_normal_prec(mu, Omega)`. Stan's prior has mean zero, so a non-zero
+  `mu` is added to the latent in the likelihood function and to the draw.
+- **The latent's length** is its declared `vector[n]`, the prior's `n=`, or the
+  length of the prior's first vector or matrix argument.
+- **The do block** may bind values with `=` and observe data with any family,
+  including the distribution combinators and custom `@lpxf` families. It may not
+  sample a parameter or use control flow. Statements the observations do not need
+  are left out of the likelihood function.
+- **Generated quantities:** the do block replays after the draw, reading it. Each
+  observation keeps its `<obs>_gen` and `<obs>_likelihood` twins, and the
+  descriptor offers `:fit`, `:predict` and `:pointwise_loglik` as for the sampled
+  latent. A likelihood term after the statement that reads `z` is refused: `z`
+  is a draw there, so observe that data inside the do block.
+- **Options** (keywords of `laplace_marginal`): `hessian_block_size` defaults to
+  the latent's length, a dense Hessian, which is always correct. A smaller value
+  declares a block-diagonal Hessian of the log likelihood, for example `1` when
+  each observation reads one coordinate; a wrong one gives a wrong or `NaN`
+  density. Any of `theta_init` (the Newton start for the latent, default the
+  prior mean), `tol`, `max_num_steps`, `solver`, `max_steps_line_search` and
+  `allow_fallthrough` selects `laplace_marginal_tol`; the controls left out take
+  Stan Math 5.3.0's defaults (`1.49012e-8`, `500`, `1`, `1000`, `1`).
+- **In a plate cell** (`plate(…) do`, `@plate for`) the latent is per cell: the
+  model loop holds one `target +=` per cell, and a ragged observation keeps its
+  flat `<obs>_gen` and per-group `<obs>_likelihood`. A cell latent's length (a
+  ragged group's) is the data `int` Stan requires.
+- **Nothing to condition on:** with every observation of the do block unbound
+  (the prior simulation) or `maybecv`-held-out, the latent is drawn from its
+  prior and the block replays as ordinary statements.
+
+The approximation is exact for a Gaussian likelihood: such a model's log density
+and gradient equal the analytic marginal's (`test/laplace.jl`). With BridgeStan
+2.9.0 (Stan Math 5.3.0) the call returns `NaN` when the likelihood is not
+log-concave and the LU solver meets a negative pivot; the fix is the open pull
+request [stan-dev/math#3438](https://github.com/stan-dev/math/pull/3438).
+Log-concave likelihoods (Gaussian, Poisson-log, Bernoulli-logit) are not
+affected.
 
 ## Executable model descriptors
 
