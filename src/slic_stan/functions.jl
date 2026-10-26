@@ -152,6 +152,11 @@ end
 # Statement nodes carry `anything` by construction (an `elseif` branch is an
 # `anything`-typed argument of its `if`), and their bodies are statements.
 _reject_untyped_args(::Union{ForExpr,WhileExpr,IfExpr,ElseIfExpr,BlockExpr}) = nothing
+# A builtin whose Stan function takes no keyword arguments while its Julia twin
+# does (`mean(x; dims=1)`, `std(x; corrected=false)`) refuses them here: its
+# positional signature would drop them and emit `mean(x)`. Methods sit beside the
+# `_slic_callable` table (builtin.jl).
+_reject_call_kwargs(@nospecialize(x::CanonicalExpr)) = nothing
 tracetype(x::CanonicalExpr) = StanType(types.anything)
 
 """

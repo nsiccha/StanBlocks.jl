@@ -3699,6 +3699,36 @@ end
     end
 end
 
+# Julia's own functions for builtins the `@builtin_module` manifest declares
+# as fresh functions. A body that names `mean` resolves the builtin, but one
+# that holds the VALUE `Statistics.mean` (BRM's model scope, a `$(f)` splice)
+# reached no tracetype and failed as `mean(::vector)::anything` (snag
+# `mean-vector-trac-306ef1b4`). Each pair computes the same thing:
+# `Statistics.std` / `Statistics.var` are Stan's `sd` / `variance` (both divide
+# by N - 1; one element gives Stan 0, Julia NaN), `quantile` is Hyndman-Fan
+# type 7 in both, and `hcat` / `reshape` are the `@juliacompat` forms written
+# to match Base. Not here: `gamma`, `beta` and `binomial` are SLIC distribution
+# families, while Julia's are special functions.
+for (f, g) in (
+    (Statistics.mean, mean), (Statistics.std, sd), (Statistics.var, variance),
+    (Statistics.quantile, quantile),
+    (SpecialFunctions.erf, erf), (SpecialFunctions.erfc, erfc),
+    (SpecialFunctions.digamma, digamma), (SpecialFunctions.trigamma, trigamma),
+    (Base.log2, log2), (Base.cbrt, cbrt), (Base.fma, fma),
+    (Base.hcat, hcat), (Base.reshape, reshape),
+)
+    @eval _slic_callable(::typeof($f)) = $g
+end
+# Of those, the Statistics functions take keywords in Julia and Stan's take none,
+# so a keyword cannot reach the emitted call (functions.jl, `_reject_call_kwargs`).
+_reject_call_kwargs(x::CanonicalExpr{<:Union{typeof.((mean, sd, variance, quantile))...}}) =
+    isempty(x.kwargs) || error(
+        "`", nameof(head(x)), "` takes no keyword arguments in Stan, so `",
+        join(keys(x.kwargs), "`, `"), "` cannot be honoured; the keyword forms of ",
+        "Julia's `Statistics` functions (`mean(x; dims=1)`, `std(x; corrected=false)`) ",
+        "have no Stan counterpart. Call it without keywords, or write the computation out.",
+    )
+
 # Stan's per-axis multidimensional GP overload accepts `array[] real`, whereas
 # an ordinary dense real vector in SLIC has Stan type `vector`. Keep the native
 # @defsig rows exact and provide the consumer-facing vector convenience as a
