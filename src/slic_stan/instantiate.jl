@@ -47,6 +47,10 @@ prepare_for_stan(x::AbstractVector{T}) where {T >: Missing} = error(
     "check that it was passed as a keyword argument to the SlicModel."
 )
 prepare_for_stan(x::AbstractMatrix{<:Number}) = x'
+# Stan's JSON nests an array by its first index (`A[i][j][k]`), while JSON.jl
+# writes a Julia array's LAST dimension outermost; reversing the dimensions puts
+# `A[i, j, k]` at `A[i][j][k]`. The matrix transpose above is the rank-2 case.
+prepare_for_stan(x::AbstractArray{<:Number}) = permutedims(x, ndims(x):-1:1)
 prepare_for_stan(x::NamedTuple) = prepare_for_stan(values(x))
 prepare_for_stan(x::Tuple) = prepare_for_stan(Dict(enumerate(x)))
 bridgestan_data(x::Dict) = JSON.json(prepare_for_stan(x))
