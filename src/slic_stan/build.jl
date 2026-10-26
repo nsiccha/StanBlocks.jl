@@ -284,12 +284,14 @@ function _current_shared_targets(home, make_args)
         Base.shell_escape(BridgeStan.get_make(), "-q", make_args..., targets...))
 end
 
-# BridgeStan.compile_model (2.9.0) splices `stanc_args` into the single word
+# BridgeStan.compile_model (up to 2.9.0) splices `stanc_args` into the single word
 # `"STANCFLAGS=--include-paths=. $stanc_args"`, which Julia expands as a cartesian
 # product: one `STANCFLAGS=` assignment per element, appended after the caller's
 # make arguments. make keeps the LAST assignment, so of several stanc arguments
-# only the last reaches stanc, and any of them replaces a `STANCFLAGS=` make
-# argument. Collect every stanc word here; `_compile_stanc_args` passes them as one.
+# only the last reaches stanc (roualdes/bridgestan#349, fixed by #350 after 2.9.0).
+# In every version its assignment comes after the make arguments, so it replaces a
+# `STANCFLAGS=` make argument. Collect every stanc word here; `_compile_stanc_args`
+# passes them as one.
 function _split_stanc_make_args(make_args, stanc_args)
     make, stanc = String[], String[]
     for arg in make_args
