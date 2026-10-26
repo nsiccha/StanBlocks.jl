@@ -743,6 +743,22 @@ stan_type(expr, value::AbstractMatrix{<:Integer}; kwargs...) = StanType(
     stan_expr.((Symbol(expr, "_m"), Symbol(expr, "_n"), ), size(value));
     value, kwargs..., qual=:data
 )
+# A rank-3+ array is the equal-rank container: a real one is
+# `matrix[d1, …, dN]`, whose final two dimensions are the native matrix and
+# every leading one a Stan array prefix (`array[A_d1] matrix[A_d2, A_d3] A;`) —
+# the reading a `@deffun` `matrix[K, N, J]` annotation and its Julia method's
+# equal-rank dense array already share, so `A[i, j, k]` names one element on
+# every target. An integer one is `array[d1, …, dN] int`. Vectors and matrices
+# keep their more specific methods above.
+_array_sizes(expr, value) = begin
+    ndims(value) == 0 && throw(ArgumentError(
+        "Data `$expr` is a zero-dimensional array; pass its element `$expr[]` as a scalar."))
+    stan_expr.(ntuple(i -> Symbol(expr, "_d", i), ndims(value)), size(value))
+end
+stan_type(expr, value::AbstractArray{<:Real}; kwargs...) =
+    StanType(types.matrix, _array_sizes(expr, value); value, kwargs...)
+stan_type(expr, value::AbstractArray{<:Integer}; kwargs...) =
+    StanType(types.int, _array_sizes(expr, value); value, kwargs..., qual=:data)
 # String literals — used as messages for `reject` / `print`. The
 # `value` carries the raw text; the rendered form quotes it.
 stan_type(expr, value::AbstractString; kwargs...) = StanType(types.anything; value, kwargs..., qual=:data)

@@ -1359,7 +1359,8 @@ sampled through the usual CmdStan workflow.
 | A loop that introduces independent parameters | `plate(...) do … end`, or its sugar `@plate for i in 1:N … end` |
 | A scan where cell `i` consumes cell `i-1` | Yes: `@scan begin <setup>; for i in lo:hi … end end` (sampled states, backward-only fixed-lag reads) |
 | Matrix-valued plate cell | No: shared matrix outside, scalar/vector cell result |
-| General 3-D+ Julia container | No |
+| Dense 3-D+ `Array` as data | Yes: a real one is `array[…] matrix[…]` over its last two dimensions, an integer one `array[…] int` |
+| Other 3-D+ Julia container (comprehension, `EachSlice`) | No |
 | Filtered/stepped/ragged comprehension | No; write an explicit supported loop |
 | Missing continuous outcome vector | Automatic |
 | Missing predictor or discrete outcome | Explicit model required |
