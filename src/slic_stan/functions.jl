@@ -834,6 +834,96 @@ jcall(tag::Val{:tail}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec, n:
     _julia_rewrap(v, jcall(tag, scope, parent(v), n))
 jcall(tag::Val{:reverse}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec) =
     _julia_rewrap(v, jcall(tag, scope, parent(v)))
+# Stan Math 5.3.0 `sum_to_zero_constrain` / `sum_to_zero_free`
+# (`prim/constraint/sum_to_zero_*.hpp`), loop for loop with 1-based indices. The
+# free form checks its input as `check_sum_to_zero` does: nonempty, and the sum
+# of all elements within `CONSTRAINT_TOLERANCE` of zero (for a matrix, the total
+# only). The transform is linear, so `sum_to_zero_jacobian` adds nothing.
+_julia_sum_to_zero_type(x) = promote_type(eltype(x), Float64)
+function _julia_sum_to_zero_constrain(y::AbstractVector{<:Real})
+    N = length(y)
+    z = zeros(_julia_sum_to_zero_type(y), N + 1)
+    sum_w = zero(eltype(z))
+    for i in N:-1:1
+        w = y[i] * inv(sqrt(i * (i + 1.0)))
+        sum_w += w
+        z[i] += sum_w
+        z[i + 1] -= w * i
+    end
+    z
+end
+function _julia_sum_to_zero_constrain(x::AbstractMatrix{<:Real})
+    N, M = size(x)
+    Z = zeros(_julia_sum_to_zero_type(x), N + 1, M + 1)
+    (N == 0 || M == 0) && return Z
+    beta = zeros(eltype(Z), N)
+    for j in M:-1:1
+        ax_previous = zero(eltype(Z))
+        a_j = inv(sqrt(j * (j + 1.0)))
+        b_j = j * a_j
+        for i in N:-1:1
+            a_i = inv(sqrt(i * (i + 1.0)))
+            b_i = i * a_i
+            b_i_x = b_i * x[i, j] - ax_previous
+            Z[i, j] = b_j * b_i_x - beta[i]
+            beta[i] += a_j * b_i_x
+            Z[N + 1, j] -= Z[i, j]
+            Z[i, M + 1] -= Z[i, j]
+            ax_previous += a_i * x[i, j]
+        end
+        Z[N + 1, M + 1] -= Z[N + 1, j]
+    end
+    Z
+end
+function _julia_check_sum_to_zero(z)
+    isempty(z) && throw(ArgumentError(
+        "sum_to_zero_unconstrain: sum_to_zero variable has size 0, but must have a non-zero size"))
+    total = sum(z)
+    abs(total) <= 1e-8 || throw(DomainError(total,
+        "sum_to_zero_unconstrain: sum_to_zero variable does not sum to zero"))
+    nothing
+end
+function _julia_sum_to_zero_unconstrain(z::AbstractVector{<:Real})
+    _julia_check_sum_to_zero(z)
+    N = length(z) - 1
+    y = zeros(_julia_sum_to_zero_type(z), N)
+    N == 0 && return y
+    y[N] = -z[N + 1] * sqrt(N * (N + 1)) / N
+    sum_w = zero(eltype(y))
+    for i in N-1:-1:1
+        n = Float64(i)
+        w = y[i + 1] / sqrt((n + 1) * (n + 2))
+        sum_w += w
+        y[i] = (sum_w - z[i + 1]) * sqrt(n * (n + 1)) / n
+    end
+    y
+end
+function _julia_sum_to_zero_unconstrain(z::AbstractMatrix{<:Real})
+    _julia_check_sum_to_zero(z)
+    N, M = size(z) .- 1
+    x = zeros(_julia_sum_to_zero_type(z), N, M)
+    (N == 0 || M == 0) && return x
+    beta = zeros(eltype(x), N)
+    for j in M:-1:1
+        ax_previous = zero(eltype(x))
+        a_j = inv(sqrt(j * (j + 1.0)))
+        b_j = j * a_j
+        for i in N:-1:1
+            a_i = inv(sqrt(i * (i + 1.0)))
+            b_i = i * a_i
+            x[i, j] = (z[i, j] + beta[i] + b_j * ax_previous) / (b_j * b_i)
+            beta[i] += a_j * (b_i * x[i, j] - ax_previous)
+            ax_previous += a_i * x[i, j]
+        end
+    end
+    x
+end
+jcall(::Val{:sum_to_zero_constrain}, ::_JuliaScope, y::AbstractVecOrMat{<:Real}) =
+    _julia_sum_to_zero_constrain(y)
+jcall(::Val{:sum_to_zero_jacobian}, ::_JuliaScope, y::AbstractVecOrMat{<:Real}) =
+    _julia_sum_to_zero_constrain(y)
+jcall(::Val{:sum_to_zero_unconstrain}, ::_JuliaScope, z::AbstractVecOrMat{<:Real}) =
+    _julia_sum_to_zero_unconstrain(z)
 jcall(::Val{:mean}, ::_JuliaScope, x) = Statistics.mean(x)
 jcall(::Val{:sd}, ::_JuliaScope, x) = Statistics.std(x)
 jcall(::Val{:broadcasted_getindex}, ::_JuliaScope, x, i) = x isa AbstractArray ? x[i] : x

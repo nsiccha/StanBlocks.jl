@@ -181,6 +181,28 @@ Base.show(io::IO, x::AssignmentExpr{<:StanExpr{Symbol}}) = begin
     print(io, type(rhs), " ", name, " = ", rhs)
 end
 Base.show(io::IO, x::AssignmentExpr) = print(io, x.args[1], " = ", x.args[2])
+# A loop-local scratch binding (forward.jl `_loop_scratch`) declares a Stan
+# local, which carries no constraint: a bound or a constrained center
+# (`simplex`, `cov_matrix`, …) would be a stanc error there.
+Base.show(io::IO, x::CanonicalExpr{typeof(_loop_scratch)}) = begin
+    stmt = only(x.args)
+    if stmt isa DocumentExpr
+        print(io, commentstring(stmt.args[1]), current_indent(io))
+        stmt = stmt.args[2]
+    end
+    stmt isa StanExpr && (stmt = expr(stmt))
+    lhs, rhs = stmt.args
+    binding = _loop_scratch_binding(lhs)
+    T = expr(lhs) isa Symbol ? type(rhs) : type(binding)
+    print(io, _local_decl_type(T), " ", expr(binding), " = ", rhs)
+end
+_local_decl_type(T::StanType) = begin
+    ct = center_type(T)
+    ct <: types.square_matrix ?
+        StanType(types.matrix, _square_matrix_sig_size(stan_size(T)), _unconstrained_info(T)) :
+    ct <: types.vector ? StanType(types.vector, stan_size(T), _unconstrained_info(T)) :
+        StanType(ct, stan_size(T), _unconstrained_info(T))
+end
 
 prettystring(f) = " $f "
 prettystring(f::Base.BroadcastFunction) = " .$(f.f) "

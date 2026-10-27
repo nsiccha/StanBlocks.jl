@@ -4,10 +4,12 @@ outside Julia can rely on them (todo `19ijy0g`). In a `@plate for` loop an
 array filled at the loop index (`mu[i] = …`) is declared under its own name,
 also when its cells have different lengths: its flat memory is `mu`, with
 transformed-data group lengths `mu__pl_len` and inclusive ends `mu__pl_end`. A
-per-iteration local is stored as `loop_<i>_<name>`, named after the loop
-variable. Neither name depends on the other statements of the loop or on how
-many plates came before it; both used to (`mu__pl_mem_1`, locals prefixed by
-the alphabetically first array).
+per-iteration local that is stored (a `~` local, or a data-only `=` local in
+transformed data) is named `loop_<i>_<name>`, after the loop variable; a
+parameter-dependent `=` local is a Stan local of the loop body, not an output.
+Neither name depends on the other statements of the loop or on how many plates
+came before it; both used to (`mu__pl_mem_1`, locals prefixed by the
+alphabetically first array).
 """
 @testitem "slic: plate names do not depend on unrelated statements" tags=[:slic, :plate, :ragged, :descriptor, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
@@ -56,7 +58,6 @@ the alphabetically first array).
     expected = Dict(
         :effect => (:transformed_parameter, [4, 6]),
         :mu => (:transformed_parameter, [4, 6]),
-        :loop_i_scale => (:transformed_parameter, [4, 6]),
         :y_gen => (:generated_quantity, [4, 6]),
         :y_likelihood => (:generated_quantity, [4, 6]),
     )
@@ -64,6 +65,8 @@ the alphabetically first array).
         @test stanc_compiles(m)
         d = described(m)
         @test all(d[k] == v for (k, v) in expected)
+        # `scale` is a local of each loop that reads it (`1rgglep`).
+        @test !haskey(d, :loop_i_scale)
     end
     @test setdiff(keys(described(extended)), keys(described(base))) == Set([:amp])
     @test setdiff(keys(described(reordered)), keys(described(base))) == Set([:u, :u_t])

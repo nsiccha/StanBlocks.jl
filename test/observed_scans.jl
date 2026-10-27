@@ -124,13 +124,14 @@ predictive twin, the trajectory is drawn given the posterior latents.
     end
     code = stan_code(arma)
     tp = stan_block(code, "transformed parameters")
-    @test occursin("err[t] = (y[t] - loop_t_nu[(t - 1)]);", tp)
+    # The step local `nu` is a local of each loop that reads it (`1rgglep`).
+    @test occursin("real loop_t_nu = (mu + (phi * y[(t - 1)]) + (theta * err[(t - 1)]));\n        err[t] = (y[t] - loop_t_nu);", tp)
     gq = stan_block(code, "generated quantities")
     # The draw at step t precedes the residual that reads it.
     @test occursin(join([
-        "loop_t_nu_gen[(t - 1)] = (mu + (phi * y_gen[(t - 1)]) + (theta * err_gen[(t - 1)]));",
-        "y_gen[t] = normal_rng(loop_t_nu_gen[(t - 1)], sigma);",
-        "err_gen[t] = (y_gen[t] - loop_t_nu_gen[(t - 1)]);"], "\n        "), gq)
+        "real loop_t_nu_gen = (mu + (phi * y_gen[(t - 1)]) + (theta * err_gen[(t - 1)]));",
+        "y_gen[t] = normal_rng(loop_t_nu_gen, sigma);",
+        "err_gen[t] = (y_gen[t] - loop_t_nu_gen);"], "\n        "), gq)
     @test occursin("y_gen[1] = normal_rng(mu, sigma);\n    err_gen[1] = (y_gen[1] - mu);", gq)
     @test stanc_compiles(arma)
 

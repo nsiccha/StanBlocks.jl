@@ -78,9 +78,11 @@ and read back with `reshape(Xf[i], n[i], k)`.
         b ~ normal(0.0, 1.0)
         @plate for Xi in X
             s = sum(Xi * rep_vector(b, 2))
+            t ~ normal(s, 1.0)
         end
     end
-    @test occursin(r"loop_Xi_s\[plate_i__pl_\d+\] = sum\(\(getindex_RaggedMatrix\(X, plate_i__pl_\d+\)", stan_code(container))
+    # `s` is a local of the loop that reads it (`1rgglep`).
+    @test occursin(r"real loop_Xi_s = sum\(\(getindex_RaggedMatrix\(X, plate_i__pl_\d+\)", stan_code(container))
     @test stanc_compiles(container)
 
     # A positional whose group count differs from another positional's is refused.
