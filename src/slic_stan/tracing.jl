@@ -220,7 +220,14 @@ _stan_model(x::SlicModel; info) = begin
 end
 maybedata!(x::StanModel, key, value) = x[key] = maybedata(key, value)
 maybedata!(x::StanModel, key, value::AbstractString) = nothing
-maybedata!(x::SubModel, key, value) = locals(x)[key] = maybedata(key, value)
+# A submodel's own bound data belongs to that instance, like its parameters: a
+# value fixed with `Base.merge(sub, (; k = v))`, bound with `sub(; k = v)` before
+# the call, or given to `@slic (; k = v)` is declared under the receiving LHS
+# (`hx_k` for `hx ~ sub(…)`). Declared as `k`, two instances binding different
+# values shared one data variable and the second value was dropped (snag
+# `submodel-instanc-09f67aba`). A caller expression passed as a keyword
+# (`sub(; k = caller_k)`) is already a `StanExpr` and keeps the caller's name.
+maybedata!(x::SubModel, key, value) = locals(x)[key] = maybedata(_plate_global_name(x, key), value)
 
 # --- Partly-missing-vector imputation helpers --------------------------------
 

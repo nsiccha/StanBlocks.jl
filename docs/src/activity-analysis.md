@@ -258,7 +258,7 @@ generated quantities {
   predictive companion, `foo_rng(vector[n], mu::vector[n], …)::vector[n]`: when the
   family's other arguments carry `n`, `y` is a `vector[n]` (per cell in a `plate`), and
   a vector function of `y` after its `~` statement is a vector of the draw. The density
-  needs no `@lhs` for this. Before StanBlocks v0.2.3 such a `y` was a scalar unless the
+  needs no `@lhs` for this. Before StanBlocks v0.2.4 such a `y` was a scalar unless the
   density carried `@lhs`, so the re-draw asked for a scalar `foo_rng` and a read of the
   draw failed to type (snag `forecast-replay-b98962bf`).
 - The descriptor offers `:predict` but not `:fit`, unless another observation stays

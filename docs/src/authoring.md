@@ -968,7 +968,9 @@ run outside Julia (CmdStan, CmdStanPy, BridgeStan) can rely on it:
 
 A computed per-iteration local (`tmp = …` reading a parameter) is not an
 output: it is a Stan local of the loops that read it, under the same
-`loop_<variables>_<name>` name. A sub-model prefixes the names it declares as usual (`hh_x`). A local or cell
+`loop_<variables>_<name>` name. A sub-model prefixes the names it declares as usual (`hh_x`),
+data it binds itself included (`hh_k` for a `k` fixed with
+`Base.merge(sub, (; k = …))`). A local or cell
 binding whose name is already bound takes a numbered suffix (`loop_i_t_2` for a
 second loop over `i` with a local `t`). An array a loop fills, or a do-form
 result, named like a value that is already bound is refused, since a model never
