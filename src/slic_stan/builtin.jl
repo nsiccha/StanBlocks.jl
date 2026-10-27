@@ -145,6 +145,8 @@ end
     reshape
     ragged_n ragged_total ragged_start ragged_end ragged_length as_matrix
     ragged_common_ends ragged_matched_group
+    ragged_select_length ragged_select_total ragged_select_ends ragged_select_index
+    ragged_sum ragged_mean
     # Stan 2.37 exposed constraint transforms (Feature 1) — @deffun sigs below.
     sum_to_zero_constrain sum_to_zero_unconstrain sum_to_zero_jacobian
     simplex_constrain simplex_unconstrain simplex_jacobian
@@ -1997,6 +1999,75 @@ end
     end
 end
 
+# Group selection `rv[idx]` and group reductions `sum(rv)` / `mean(rv)` over a
+# ragged value's flat `(mem, ends)`, lowered by the hooks below. A RaggedVector is a
+# vector of groups, as Julia's vector of vectors: `rv[idx]` is the groups `idx`, and
+# `sum(rv)` adds the groups elementwise (`rv[1] + rv[2] + …`). The selection offsets
+# depend only on the data `ends` and `idx`, so they size declarations and are
+# evaluated in Julia by the descriptor: `@juliacompat`. Snag selecting-severa-027a8191.
+@deffun begin
+    # Length of the selected group `g`, which must be one of the groups.
+    @juliacompat ragged_select_length(ends::int[n], g::int)::int = begin
+        @stan_assert g >= 1 && g <= n "RaggedVector selection: rv[idx] selects groups 1 to length(rv), and idx holds a value outside that range."
+        ragged_length(ends, g)
+    end
+    # Number of entries in the groups `idx`.
+    @juliacompat ragged_select_total(ends::int[n], idx::int[k])::int = begin
+        total = 0
+        for j in 1:k
+            total = total + ragged_select_length(ends, idx[j])
+        end
+        total
+    end
+    # Inclusive ends of the groups `idx`, laid end to end: the selection's own ends.
+    @juliacompat ragged_select_ends(ends::int[n], idx::int[k])::int[k] = begin
+        rv::int[k]
+        total = 0
+        for j in 1:k
+            total = total + ragged_select_length(ends, idx[j])
+            rv[j] = total
+        end
+        rv
+    end
+    # Positions in `mem` of the groups `idx`, laid end to end: `mem[...]` gathers them.
+    @juliacompat ragged_select_index(ends::int[n], idx::int[k])::int[ragged_select_total(ends, idx)] = begin
+        total = ragged_select_total(ends, idx)
+        rv::int[total]
+        pos = 0
+        for j in 1:k
+            for e in ragged_start(ends, idx[j]):ragged_end(ends, idx[j])
+                pos = pos + 1
+                rv[pos] = e
+            end
+        end
+        rv
+    end
+    # `rv[1] + rv[2] + … + rv[n]`; every group must have the length of group 1.
+    ragged_sum(mem::vector[m], ends::int[n])::vector[ragged_length(ends, 1)] = begin
+        k = ragged_length(ends, 1)
+        rv = rep_vector(0.0, k)
+        for i in 1:n
+            @stan_assert ragged_length(ends, i) == k "sum: the RaggedVector's groups have different lengths. sum(rv) adds the groups elementwise (rv[1] + rv[2] + ...), so every group must have the same length; sum(rv.mem) is the total of every entry."
+            rv = rv + mem[ragged_start(ends, i):ragged_end(ends, i)]
+        end
+        rv
+    end
+    ragged_sum(mem::int[m], ends::int[n])::int[ragged_length(ends, 1)] = begin
+        k = ragged_length(ends, 1)
+        rv = rep_array(0, k)
+        for i in 1:n
+            @stan_assert ragged_length(ends, i) == k "sum: the RaggedVector's groups have different lengths. sum(rv) adds the groups elementwise (rv[1] + rv[2] + ...), so every group must have the same length; sum(rv.mem) is the total of every entry."
+            lo = ragged_start(ends, i)
+            for j in 1:k
+                rv[j] = rv[j] + mem[lo + j - 1]
+            end
+        end
+        rv
+    end
+    ragged_mean(mem::anything[m], ends::int[n])::vector[ragged_length(ends, 1)] =
+        to_vector(ragged_sum(mem, ends)) / n
+end
+
 # Constructors bind ragged StanExprs verbatim into `info` (mirrors the closure
 # verbatim-bind) so their component StanExprs survive, and emit no Stan
 # declaration (`nothing` → `forward!(::BlockExpr)` skips them).
@@ -2181,30 +2252,67 @@ end
 # "Identifier not in scope"). Recomputing the index inline keeps it in the using
 # block; the plate emitter mirrors this for an explicit `idx = findall(...)` local
 # (forward.jl). Snag plate-cell-int.
-expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2,<:StanExpr2{<:types.bool}}}; info) = begin
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2,<:StanExpr2{<:types.bool}}}; info) =
+    _getindex_bool_mask(x; info)
+_getindex_bool_mask(x::CanonicalExpr; info) = begin
     stan_ndim(type(x.args[2])) >= 1 || return fold_shape_query(_trace_stan_expr(x, info))
     idx_val = forward!(CanonicalExpr(Base.findall, x.args[2]); info)
+    forward!(CanonicalExpr(getindex, x.args[1], _hoist_index(idx_val, :boolmask_idx_; info)); info)
+end
+# Bind an index computation to a fresh `<stem><id>` in its own statement, so a
+# data-derived one lands in `transformed data` (computed once) and every use reads
+# the name. With no statement context, or inside a plate loop, it stays inline (see
+# above).
+_hoist_index(val, stem; info) = begin
     pending = _get_inline_pending(info)
-    idx_ref = if pending === nothing || _plate_context(info) !== nothing
-        idx_val                                   # no statement context, or inside a plate
-                                                  # loop → inline the findall (see above)
-    else
-        id = _next_inline_id(info)
-        name = Symbol(:boolmask_idx_, id)
-        while name in keys(info)
-            id = _next_inline_id(info); name = Symbol(:boolmask_idx_, id)
-        end
-        push!(pending, forward!(CanonicalExpr(:(=), name, idx_val); info))
-        info[name]
+    (pending === nothing || _plate_context(info) !== nothing) && return val
+    id = _next_inline_id(info)
+    name = Symbol(stem, id)
+    while name in keys(info)
+        id = _next_inline_id(info); name = Symbol(stem, id)
     end
-    forward!(CanonicalExpr(getindex, x.args[1], idx_ref); info)
+    push!(pending, forward!(CanonicalExpr(:(=), name, val); info))
+    info[name]
+end
+# A ragged value indexed by a boolean mask selects groups like the integer indices
+# `findall(mask)`. Breaks the tie between the mask hook above and the ragged
+# getindex hooks below.
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:RaggedVector},<:StanExpr2{<:types.bool}}}; info) =
+    _getindex_bool_mask(x; info)
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.bool}}}; info) =
+    _getindex_bool_mask(x; info)
+
+# `rv[idx]` with an integer array or a range selects GROUPS, as Julia's `vv[idx]`
+# does on a vector of vectors: the groups `idx`, in that order, as a RaggedVector
+# construction (so every RaggedVector consumer takes it). Its memory gathers the
+# selected entries and its ends are the selected lengths laid end to end; both index
+# arrays are computed from the data `ends` and `idx` and hoisted. A ragged data
+# input, a plate result, an arithmetic result and a `@deffun` argument all select
+# the same way. Snag selecting-severa-027a8191.
+_is_group_selection(idx) = stan_ndim(type(idx)) == 1
+# A range index `a:b` is not a Stan value outside an index position; spell it out.
+_index_array(idx; info) = begin
+    e = expr(idx)
+    (e isa CanonicalExpr && head(e) isa Colon && length(e.args) == 2) || return idx
+    _trace_stan_call(builtin.robust_linspaced_int_array, only(stan_size(type(idx))), e.args...; info)
+end
+_ragged_select(rv, idx; info) = begin
+    ends = _ragged_field(rv, 2; info)
+    idx = _index_array(idx; info)
+    sel_ends = _hoist_index(_trace_stan_call(builtin.ragged_select_ends, ends, idx; info), :ragged_select_ends_; info)
+    sel_index = _hoist_index(_trace_stan_call(builtin.ragged_select_index, ends, idx; info), :ragged_select_index_; info)
+    mem = forward!(CanonicalExpr(getindex, _ragged_field(rv, 1; info), sel_index); info)
+    (; idx, mem, ends=sel_ends)
 end
 
 # `rv[i]` → `mem[ragged_start(ends, i):ragged_end(ends, i)]` (a parameter vector
 # sliced by data bounds). Intercepts before `tracetype`, so a construction never
 # needs a tuple-taking UDF or a materialised tuple.
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:RaggedVector},<:StanExpr2{<:types.int}}}; info) =
-    if _is_ragged_construction(x.args[1])
+    if _is_group_selection(x.args[2])
+        sel = _ragged_select(x.args...; info)
+        forward!(CanonicalExpr(RaggedVector, sel.mem, sel.ends); info)
+    elseif _is_ragged_construction(x.args[1])
         rv, i = x.args
         record = _ragged_elementwise_record(rv)
         record === nothing || return _ragged_elementwise_group(record, i; info)
@@ -2233,7 +2341,13 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(as_matrix),<:Tuple{<:StanExpr2{<:
     end
 # `rm[i]` → reconstruct the selected flat slice with its data-only dimensions.
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
-    if _is_ragged_construction(x.args[1])
+    if _is_group_selection(x.args[2])
+        rm = x.args[1]
+        sel = _ragged_select(rm, x.args[2]; info)
+        rows = forward!(CanonicalExpr(getindex, _ragged_field(rm, 3; info), sel.idx); info)
+        cols = forward!(CanonicalExpr(getindex, _ragged_field(rm, 4; info), sel.idx); info)
+        forward!(CanonicalExpr(RaggedMatrix, sel.mem, sel.ends, rows, cols); info)
+    elseif _is_ragged_construction(x.args[1])
         rv, i = x.args
         ends = _ragged_ends(rv)
         lo = _trace_stan_call(builtin.ragged_start, ends, i; info)
@@ -2245,6 +2359,16 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:R
     else
         fold_shape_query(_trace_stan_expr(x, info))
     end
+# `sum(rv)` / `mean(rv)` reduce over the GROUPS, as Julia's `sum`/`mean` of a vector
+# of vectors do: `sum(rv) == rv[1] + rv[2] + …`, as long as each group (every group
+# must have that length; Stan checks at runtime). The total of every entry is
+# `sum(rv.mem)`. Snag selecting-severa-027a8191.
+expand_inline_or_trace(x::CanonicalExpr{typeof(sum),<:Tuple{<:StanExpr2{<:RaggedVector}}}; info) =
+    _ragged_reduce(builtin.ragged_sum, only(x.args); info)
+expand_inline_or_trace(x::CanonicalExpr{typeof(builtin.mean),<:Tuple{<:StanExpr2{<:RaggedVector}}}; info) =
+    _ragged_reduce(builtin.ragged_mean, only(x.args); info)
+_ragged_reduce(f, rv; info) =
+    _trace_stan_call(f, _ragged_field(rv, 1; info), _ragged_field(rv, 2; info); info)
 # `length(rv)` / `lastindex(rv)` → number of groups = `num_elements(ends)`.
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedVector}}}; info) =
     _is_ragged_construction(x.args[1]) ? _trace_stan_call(length, _ragged_ends(x.args[1]); info) : fold_shape_query(_trace_stan_expr(x, info))
