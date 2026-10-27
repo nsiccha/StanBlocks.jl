@@ -4,8 +4,18 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
-## Unreleased
+## v0.2.2
 
+- **A RaggedVector selects groups and sums them as Julia does.** `rv[idx]`
+  with an integer array, a range or a comparison mask is the groups `idx` as a
+  RaggedVector, for ragged data, a plate result, an arithmetic result and a
+  `@deffun` argument (a `RaggedMatrix` selects matrices the same way); it used
+  to fail to trace. `sum(rv)` is `rv[1] + rv[2] + …` (groups of equal length,
+  checked by Stan) and `mean(rv)` is `sum(rv) / length(rv)`; both used to
+  transpile to an undeclared `sum_RaggedVector` / `mean_RaggedVector` that
+  stanc rejected. `sum(rv.mem)` is the total of every entry. `sd(rv)`, which
+  emitted an undeclared `sd_RaggedVector` the same way, is refused when the
+  program is built, naming `sd(rv[g])` and `sd(rv.mem)`.
 - **A computed `@plate for` / `@scan` local is a loop local, not an output.**
   A bare `tmp = …` (or `tmp::T = …`, or an `=` binding of a `laplace_marginal`
   do block) in an annotated loop body that reads a parameter is now a Stan local
