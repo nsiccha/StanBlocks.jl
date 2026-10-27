@@ -818,6 +818,22 @@ function jcall(::Val{:matrix_power}, ::_JuliaScope, x::AbstractMatrix{<:Real}, n
     Base.:^(x, n)
 end
 jcall(::Val{:cumulative_sum}, ::_JuliaScope, x) = cumsum(x)
+# Stan's `head` / `tail` take `0 <= n <= length(v)` elements; a negative `n` is
+# out of range, where Julia's empty `1:n` would return no elements. A row vector
+# held as an adjoint stays one.
+_julia_slice_length(v, n) = 0 <= n <= length(v) ? n : throw(BoundsError(v, n))
+jcall(::Val{:head}, ::_JuliaScope, v::AbstractVector, n::Integer) = v[1:_julia_slice_length(v, n)]
+jcall(::Val{:tail}, ::_JuliaScope, v::AbstractVector, n::Integer) =
+    v[end-_julia_slice_length(v, n)+1:end]
+jcall(::Val{:reverse}, ::_JuliaScope, v::AbstractVector) = Base.reverse(v)
+_julia_rewrap(::LinearAlgebra.Adjoint, x) = adjoint(x)
+_julia_rewrap(::LinearAlgebra.Transpose, x) = transpose(x)
+jcall(tag::Val{:head}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec, n::Integer) =
+    _julia_rewrap(v, jcall(tag, scope, parent(v), n))
+jcall(tag::Val{:tail}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec, n::Integer) =
+    _julia_rewrap(v, jcall(tag, scope, parent(v), n))
+jcall(tag::Val{:reverse}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec) =
+    _julia_rewrap(v, jcall(tag, scope, parent(v)))
 jcall(::Val{:mean}, ::_JuliaScope, x) = Statistics.mean(x)
 jcall(::Val{:sd}, ::_JuliaScope, x) = Statistics.std(x)
 jcall(::Val{:broadcasted_getindex}, ::_JuliaScope, x, i) = x isa AbstractArray ? x[i] : x

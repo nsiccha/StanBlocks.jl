@@ -289,6 +289,37 @@ for glm in (:normal_id_glm_lpdf, :poisson_log_glm_lpmf, :neg_binomial_2_log_glm_
     end
 end
 
+# Stan's `head`, `tail` and `reverse` share their names with StanBlocks' own
+# `head` (a call node's function) and Base's `reverse`, so they cannot have the
+# package-level alias the manifest adds (`const head = builtin.head`): it would
+# replace those functions inside this package. They are defined in `builtin`
+# alone, where a body's names resolve (`_is_builtin_name`), and this package
+# spells them `builtin.head`, `builtin.tail` and `builtin.reverse`.
+for name in (:head, :tail, :reverse)
+    @eval builtin function $name end
+end
+# `head(v, n)` / `tail(v, n)` are the first / last `n` elements of a vector, row
+# vector or array, and `reverse(v)` all of them in reverse order. Stan's array
+# overloads are generic in the element type (`array[] T head(array[] T, int)`),
+# so the result is typed like `getindex`'s peel (`_peeled_type`, functions.jl):
+# the argument's type with its leading size replaced, at any array depth. Taken
+# from a vector itself, the elements lose a `simplex`/`ordered` constraint and
+# the result is a plain `vector` (`row_vector`). A matrix or a scalar has no
+# such overload and stays untyped.
+_sequence_core(::Type{<:types.vector}) = types.vector
+_sequence_core(::Type{<:types.row_vector}) = types.row_vector
+_sequence_core(_) = nothing
+_sequence_type(t::StanType, sizes) = if l_ndim(t) > 0
+    StanType(center_type(t), sizes, info(t); value=missing)
+else
+    core = _sequence_core(center_type(t))
+    isnothing(core) ? StanType(types.anything) : StanType(core, sizes)
+end
+tracetype(x::CanonicalExpr{<:Union{typeof(builtin.head),typeof(builtin.tail)},<:Tuple{<:StanExpr,<:StanExpr2{<:types.int,0}}}) =
+    _sequence_type(type(x.args[1]), (x.args[2], stan_size(type(x.args[1]))[2:end]...))
+tracetype(x::CanonicalExpr{typeof(builtin.reverse),<:Tuple{<:StanExpr}}) =
+    _sequence_type(type(x.args[1]), stan_size(type(x.args[1])))
+
 for name in (:real, :int, :vector, :row_vector, :matrix, :ordered, :simplex, :positive_ordered, :cov_matrix, :corr_matrix, :cholesky_factor_cov, :cholesky_factor_corr)
     T = getproperty(types, name)
     @eval builtin const $name = $T
@@ -3707,15 +3738,17 @@ end
 # `Statistics.std` / `Statistics.var` are Stan's `sd` / `variance` (both divide
 # by N - 1; one element gives Stan 0, Julia NaN), `quantile` is Hyndman-Fan
 # type 7 in both, and `hcat` / `reshape` are the `@juliacompat` forms written
-# to match Base. Not here: `gamma`, `beta` and `binomial` are SLIC distribution
-# families, while Julia's are special functions.
+# to match Base. `builtin.reverse` has no package-level alias (see its
+# definition). Not here: `gamma`, `beta` and `binomial` are SLIC distribution
+# families, while Julia's are special functions; `Base.tail` drops a tuple's
+# first element, which is not Stan's `tail`.
 for (f, g) in (
     (Statistics.mean, mean), (Statistics.std, sd), (Statistics.var, variance),
     (Statistics.quantile, quantile),
     (SpecialFunctions.erf, erf), (SpecialFunctions.erfc, erfc),
     (SpecialFunctions.digamma, digamma), (SpecialFunctions.trigamma, trigamma),
     (Base.log2, log2), (Base.cbrt, cbrt), (Base.fma, fma),
-    (Base.hcat, hcat), (Base.reshape, reshape),
+    (Base.hcat, hcat), (Base.reshape, reshape), (Base.reverse, builtin.reverse),
 )
     @eval _slic_callable(::typeof($f)) = $g
 end

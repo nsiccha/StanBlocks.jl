@@ -268,7 +268,6 @@ program rather than hidden by notebook prose.
 Main.FeatureAtlasDocs.comparisons(Main, raw"""
 using StanBlocks
 @deffun @stanonly begin
-    Base.reverse(x::vector[n])::vector[n]
     StanBlocks.stan.std_normal_lcdf(x)::real
     Base.log2()::real
     std_normal_lcdfs(x::real) = std_normal_lcdf(x)
