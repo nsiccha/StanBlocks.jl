@@ -2407,9 +2407,22 @@ end
 # below). A plate's own promoted cells arrive with a forwarded RHS and keep the
 # plate's constraint promotion; a `@scan` carried array opts in through its
 # `scan_loop` marker instead.
+# A producer may splice an already-traced value into the LHS (`$obs[i] ~ …`).
+# Inside a called submodel its expression carries the binding's flattened root
+# name (`routed_obs` for the local `obs`, including the submodel's own data,
+# `maybedata!`); map it back to the local key that binds it.
+_local_binding_key(info, k) = k
+_local_binding_key(info::SubModel, k::Symbol) = begin
+    k in keys(info) && return k
+    for (key, v) in locals(info)
+        key isa Symbol && v isa StanExpr{Symbol} && expr(v) === k &&
+            k === _plate_global_name(info, key) && return key
+    end
+    k
+end
 _forward_indexed_sampling!(x; info, user_slice::Bool=false) = begin
     lhs_raw, rhs_raw = x.args
-    k = _base_lhs_symbol(lhs_raw)
+    k = _local_binding_key(info, _base_lhs_symbol(lhs_raw))
     # An element of an enclosing loop's varying-length cell (a nested `@scan`
     # carried array running to `T[j]`) is an element of that loop's flat memory;
     # the rewritten LHS samples it there (see `forward!(::CanonicalExprV{:getindex})`).

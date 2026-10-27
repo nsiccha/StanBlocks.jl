@@ -162,6 +162,14 @@ the mixed form above is unambiguous.
 
 This differs deliberately from `base_model(; beta=value)`, which only binds
 data and leaves an existing `beta ~ ...` statement contributing a likelihood.
+
+A model with its own data, called as a sub-model, keeps that data to itself,
+as it keeps its parameters: in a parent's `hx ~ fixed()`, the fixed `beta` is
+the data variable `hx_beta`. Two calls may therefore fix or bind one name to
+different values: with `a = Base.merge(m, (; rho=0.3))` and
+`b = Base.merge(m, (; rho=0.9))`, the calls `hx ~ a()` and `hu ~ b()` read
+`hx_rho` and `hu_rho`. Data the caller passes by keyword (`hx ~ m(; X=Xdat)`)
+keeps the caller's name.
 The old positional splice `base_model(quote ... end)` is not an alias: model
 calls with kwargs bind data, while structural composition and explicit fixing
 go through `Base.merge`.

@@ -907,6 +907,22 @@ _declare!(b, x; info) = begin
     fetch_data!(type(x); info)
     get!(content(b), expr(x), x)
 end
+# One data name, one value. `_declare!` keeps the first declaration of a name,
+# so a second binding of it with another value would silently read the first
+# (snag `submodel-instanc-09f67aba`: two submodel instances fixing `rho_iso` to
+# 0.3 and 0.9 both read 0.3).
+Base.push!(b::DataBlock, x::StanExpr{Symbol}; info) = begin
+    existing = get(content(b), expr(x), nothing)
+    existing === nothing || isequal(getvalue(existing), getvalue(x)) || error(
+        "Two bindings declare the data variable `", expr(x), "` with different values: ",
+        repr(getvalue(existing); context=:limit => true), " and ",
+        repr(getvalue(x); context=:limit => true), ". A data name holds one value; ",
+        "rename one of them. (Data a submodel binds itself is declared under its ",
+        "receiving LHS, `hx_k` for its `k` in `hx ~ sub(…)`, so such a name can ",
+        "collide with one the model binds.)"
+    )
+    _declare!(b, x; info)
+end
 # Stan declares no bound or affine transform on `ordered` / `positive_ordered`:
 # `ordered<lower=0>[3] c;` is a stanc syntax error. A parameter whose typed LHS
 # carries one (forward.jl, `_ordered_constraints`) is declared as a

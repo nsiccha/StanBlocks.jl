@@ -7780,31 +7780,33 @@ Verify `slic: mixed sampling/fill routing in compiler-owned plate loop` in an is
     @test transpiles(c3_plate_router_model)
     @test stanc_compiles(c3_plate_router_model)
     code = stan_code(c3_plate_router_model)
+    # The sub-model's own data `obs`, `n` is the call's: `routed_obs`, `routed_n`.
+    @test occursin("int routed_n;", stan_block(code, "data")) && !occursin(r"\bint n;", code)
 
     let parameters = stan_block(code, "parameters")
-        @test occursin("vector[n] routed_plate_x", parameters)
-        @test occursin("vector[n] routed_plate_y", parameters)
+        @test occursin("vector[routed_n] routed_plate_x", parameters)
+        @test occursin("vector[routed_n] routed_plate_y", parameters)
         @test occursin("real routed_plate_flat", parameters)
         @test !occursin("routed_plate_rv", parameters)
     end
     let td = stan_block(code, "transformed data")
-        @test occursin("for(routed_plate_i in 1:n)", td)
-        @test occursin("routed_plate_data_copy[routed_plate_i] = obs[routed_plate_i]", td)
+        @test occursin("for(routed_plate_i in 1:routed_n)", td)
+        @test occursin("routed_plate_data_copy[routed_plate_i] = routed_obs[routed_plate_i]", td)
     end
     let tp = stan_block(code, "transformed parameters")
-        @test occursin("for(routed_plate_i in 1:n)", tp)
+        @test occursin("for(routed_plate_i in 1:routed_n)", tp)
         @test occursin("routed_plate_rv[routed_plate_i] =", tp)
     end
     let model_block = stan_block(code, "model")
-        @test occursin("for(routed_plate_i in 1:n)", model_block)
+        @test occursin("for(routed_plate_i in 1:routed_n)", model_block)
         @test occursin("routed_plate_x[routed_plate_i] ~ normal", model_block)
         @test occursin("routed_plate_y[routed_plate_i] ~ normal", model_block)
-        @test occursin("obs[routed_plate_i] ~ normal", model_block)
+        @test occursin("routed_obs[routed_plate_i] ~ normal", model_block)
         @test !occursin("routed_plate_rv[routed_plate_i] =", model_block)
     end
     let gq = stan_block(code, "generated quantities")
-        @test occursin("vector[n] routed_plate_prior", gq)
-        @test occursin("for(routed_plate_i in 1:n)", gq)
+        @test occursin("vector[routed_n] routed_plate_prior", gq)
+        @test occursin("for(routed_plate_i in 1:routed_n)", gq)
         @test occursin("routed_plate_prior[routed_plate_i] = normal_rng", gq)
     end
 end
