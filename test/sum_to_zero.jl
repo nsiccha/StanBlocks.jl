@@ -160,7 +160,9 @@ projection onto the sum-to-zero values.
     @test dz .- Statistics.mean(dz) ≈ stz(y) atol=1e-12
 
     Y, W = [0.4 -0.3 1.1; 0.2 0.9 -0.7], [0.1 0.4 -0.6 0.2; 1.0 -0.3 0.5 0.0; 0.3 0.2 -0.1 0.8]
-    centred = W .- Statistics.mean(W; dims=1) .- Statistics.mean(W; dims=2) .+ Statistics.mean(W)
+    centre(W) = W .- Statistics.mean(W; dims=1) .- Statistics.mean(W; dims=2) .+ Statistics.mean(W)
     _, (_, dY) = gradient(Y -> sum(W .* stzm(Y)), Y)
-    @test dY ≈ stzm_free(centred) atol=1e-12
+    @test dY ≈ stzm_free(centre(W)) atol=1e-12
+    _, (_, dZ) = gradient(Z -> sum(Y .* stzm_free(Z)), stzm(Y))
+    @test centre(dZ) ≈ stzm(Y) atol=1e-12
 end
