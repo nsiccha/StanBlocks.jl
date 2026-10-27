@@ -4397,6 +4397,28 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
     )
 end
 
+# A loop-local scratch binding of the annotated-loop sugar (`tmp = …` in a
+# `@plate for` / `@scan` body, user decision `1rgglep`): a Stan local declared
+# and assigned inside the loop body. The marker wraps the traced assignment;
+# distribution copies it into each block's loop that reads it (passes.jl
+# `_loop_select`), where it renders as a local declaration (show.jl).
+function _loop_scratch end
+_loop_scratch_binding(x::StanExpr{Symbol}) = x
+_loop_scratch_binding(x::StanExpr{<:DeclExpr}) = _loop_scratch_binding(expr(x).args[1])
+_loop_scratch_binding(_) = nothing
+# The name a loop-body statement binds as a plain or typed `name = rhs`.
+_loop_scratch_name(_) = nothing
+_loop_scratch_name(x::DocumentExpr) = _loop_scratch_name(x.args[2])
+# A typed `name::T = rhs` is traced whole, as a `StanExpr` (`forward!(::AssignmentExpr)`).
+_loop_scratch_name(x::StanExpr{<:CanonicalExprV{:(=)}}) = _loop_scratch_name(expr(x))
+_loop_scratch_name(x::AssignmentExpr) = (b = _loop_scratch_binding(x.args[1]); b === nothing ? nothing : expr(b))
+_loop_scratch_wrap(x, names) = _loop_scratch_name(x) in names ? CanonicalExpr(_loop_scratch, x) : x
+_loop_scratch_wrap(x::BlockExpr, names) = remake(x, Any[_loop_scratch_wrap(s, names) for s in x.args]...)
+_loop_scratch_wrap(x::StanExpr{<:ForExpr}, names) = begin
+    head, body = expr(x).args
+    StanExpr(remake(expr(x), head, _loop_scratch_wrap(body, names)), type(x))
+end
+
 # The shared compiler-owned-loop core behind BOTH the `plate(...) do` primitive
 # and the annotated `@plate for … end` / `@scan begin … end` sugar (decisions
 # `10mrh0f`, `1375uo5`): neither form is a HOF at lowering time — the loop body
@@ -4425,11 +4447,15 @@ end
 #     (`_plate_fresh_name!` claims a name, so it is chosen once per trace).
 #   • `spellings` — the author's name of each renamed do-block parameter (one
 #     that shadowed an outer name), for messages.
+#   • `scratch` — the sugar's bare `tmp = …` locals and the `=` bindings of a
+#     `laplace_marginal` do block in its body (author names): loop-local
+#     scratch, never per-cell storage (`_loop_scratch`).
 _forward_loop_core!(;
     kind, rv, rv_ct, id, idxs, outer_dims, outer_lo, params, iterables, input_subst,
     body_stmts, ret_expr, setup_stmts, public, probe_transform, probe_exclude,
     scan_arrays, info, ns=nothing, hygiene=Dict{Symbol,Symbol}(),
     spellings=Dict{Symbol,Symbol}(), cv_params=Dict{Symbol,_CVCell}(),
+    scratch=Set{Symbol}(),
 ) = begin
     # Proven length mismatches between positionals and their outer axes (or
     # between siblings) are ill-typed — refuse before any renaming/hoisting.
@@ -4514,6 +4540,17 @@ _forward_loop_core!(;
     shadows = Pair{Symbol,Symbol}[p.first => _obs_shadow_of(p.second) for p in fresh
                                   if _obs_shadow_of(p.second) !== nothing]
     isempty(shadows) || (fresh = Pair{Symbol,Any}[p for p in fresh if _obs_shadow_of(p.second) === nothing])
+    # Loop-local scratch (user decision `1rgglep`): the sugar's bare `tmp = …`
+    # is a Stan local inside the loop body of each block that reads it, not
+    # per-cell storage, so it is never written to the draws. A data-only one
+    # keeps its transformed-data storage: computed once, and transformed data is
+    # not an output either. A nested annotated loop's scratch is that loop's own
+    # local, so this loop does not promote it.
+    candidates = Set{Symbol}(_plate_global_name(info, get(fresh_rename, s, s)) for s in scratch)
+    scratch_globals = Set{Symbol}(f for (f, T) in fresh
+        if f in candidates && _decl_role(T) !== :sampled && qual(T) !== :data)
+    fresh = Pair{Symbol,Any}[p for p in fresh
+        if !(p.first in scratch_globals) && !get(p.second.info, :loop_scratch, false)]
     # Discovery sees a declared missing observation under its hygienic cell
     # name. Emission samples the promoted storage instead, so retain the names
     # here for both the storage declaration and its public predictive alias.
@@ -4913,6 +4950,15 @@ _forward_loop_core!(;
     )
     emitted_loop = _with_trace_state(info, :plate_context, ctx) do
         forward!(canonical(loop); info)
+    end
+    # The emit trace bound each scratch local as a plain `name = rhs` inside the
+    # loop body. Mark the statement for distribution, and the binding for an
+    # enclosing loop's discovery.
+    if !isempty(scratch_globals)
+        for g in scratch_globals
+            g in keys(root) && (root[g] = remake(root[g]; loop_scratch=true))
+        end
+        emitted_loop = _loop_scratch_wrap(emitted_loop, scratch_globals)
     end
     # The emit trace bound a submodel's local spelling of each array to the
     # current cell (`hh_h[hh_t]`); after the loop it names the whole array again.
@@ -5492,6 +5538,7 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     owned_arrays = Set{Symbol}()      # arrays an enclosing loop already promoted
     filled_in_body = Set{Symbol}()
     locals = Symbol[]
+    scratch_locals = Set{Symbol}()    # the `=` ones: loop-local scratch (`1rgglep`)
     for s in body_raw
         lhs = _plate_stmt_lhs(s)
         lhs === nothing && continue
@@ -5523,6 +5570,7 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
                 "index it (`", tl, "[", idx_list, "]`) for a per-cell array, or move it outside.")
             tl in idxs && error(label, ": cannot assign the loop variable `", tl, "`.")
             push!(locals, tl)   # a bare fresh name: a per-iteration local (`1rgglep`)
+            s.head === :(=) && push!(scratch_locals, tl)
         else
             error(label, ": unsupported statement LHS `", lhs, "`.")
         end
@@ -5760,6 +5808,12 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
         setup_stmts, public, probe_transform, probe_exclude=setup_plain,
         scan_arrays=(kind === :scan ? public : Set{Symbol}()), info,
         ns, hygiene,
+        # A local an enclosing loop promoted is that loop's storage, not scratch.
+        # A `laplace_marginal` do block's `=` bindings replay in the cell as
+        # locals of it too, so the integrated latent keeps the sampled
+        # spelling's outputs.
+        scratch=union(Set{Symbol}(f for f in scratch_locals if !haskey(owned_locals, f)),
+            (_laplace_block_locals(s) for s in body_raw)...),
     )
     # The observations of a carried data array get a per-element `_likelihood`
     # instead of the per-cell one-step-ahead draw (`_indexed_obs_twin_target`).
