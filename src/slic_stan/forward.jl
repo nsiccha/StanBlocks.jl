@@ -1879,8 +1879,9 @@ validate_sampling_rhs(lhs, rhs; info) = nothing
 # non-scalar, adopt the draw's SIZE as the natural container (real→vector /
 # matrix, matching `autotype`'s own container rule at functions.jl and the typed
 # spelling `yj::vector[T]`), preserving `at`'s folded constraints via its info.
-# A family whose `_rng` does not resolve for this shape (`rng_expr` throws) keeps
-# the scalar autotype unchanged — the author must annotate, exactly as before.
+# A family whose scalar-token draw does not resolve may still have a sized one
+# (`_sized_predictive_type`); with neither, the scalar autotype is kept and the
+# author must annotate, exactly as before.
 _broadcast_fresh_sample_type(at, rhs) = begin
     stan_ndim(at) == 0 || return at
     hinted = _distribution_sample_shape(at, rhs)
@@ -1890,8 +1891,11 @@ _broadcast_fresh_sample_type(at, rhs) = begin
         token = StanExpr(ct0, StanType(types.tokenof{ct0}, (); value=ct0, qual=:data))
         rng_expr(token, rhs)
     catch
-        return at
+        nothing
     end
+    resolved = !isnothing(draw) &&
+        !(center_type(type(draw)) === types.anything && stan_ndim(type(draw)) == 0)
+    resolved || return something(_sized_predictive_type(at, rhs), at)
     sz = stan_size(type(draw))
     (1 <= length(sz) <= 2) || return at
     dct = center_type(type(draw))
@@ -1899,6 +1903,36 @@ _broadcast_fresh_sample_type(at, rhs) = begin
         (types.real, types.vector, types.matrix)[1 + length(sz)] : dct
     StanType(newct, sz, info(at))
 end
+# A custom family whose draw is a whole vector or matrix ships only the
+# sized-token companion `foo_rng(vector[n], mu::vector[n], …)::vector[n]`
+# (stanblocks-use §8), so the scalar-token probe above finds no draw, and without
+# `@lhs` on its density the fresh LHS used to stay a scalar. Every program that
+# draws that LHS then failed: a forecast's values-free observation, the omitted
+# response of a prior program, a latent parameter (snag `forecast-replay-b98962bf`).
+# The companion's signature already says what it draws. Probe it with a token
+# whose sizes are unknown, the placeholder the `@lhs` base tracetype seeds an
+# unsized observation with (functions.jl), and adopt the draw's type when the
+# family's other arguments bind every size. A size that only the token carries
+# stays unknown, and the probe is refused, so the scalar autotype is kept.
+_sized_predictive_type(at, rhs) = begin
+    for (ct, nd) in ((types.vector, 1), (types.matrix, 2))
+        unknown = ntuple(_ -> StanExpr(missing, StanType(types.int)), nd)
+        token = StanExpr(ct, StanType(types.tokenof{ct}, unknown; value=ct, qual=:data))
+        draw = try
+            rng_expr(token, rhs)
+        catch
+            continue
+        end
+        t = type(draw)
+        sz = stan_size(t)
+        center_type(t) === ct && length(sz) == nd && !any(_unknown_size, sz) || continue
+        return StanType(ct, sz, info(at))
+    end
+    nothing
+end
+_unknown_size(x::StanExpr) = ismissing(expr(x)) || _unknown_size(expr(x))
+_unknown_size(x::CanonicalExpr) = any(_unknown_size, x.args)
+_unknown_size(x) = false
 # Distribution combinators may carry the observation axis in their controls
 # (for example a vector censoring threshold with scalar location and scale).
 _distribution_sample_shape(at, rhs) = at
