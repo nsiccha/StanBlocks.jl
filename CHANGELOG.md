@@ -4,6 +4,21 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.3
+
+- **A sub-model's own data is scoped to its call, like its parameters.** Data
+  a sub-model binds itself — a value fixed with `Base.merge(sub, (; k = v))`,
+  bound with `sub(; k = v)` before the call, or given to `@slic (; k = v)` — is
+  now declared under the receiving LHS (`hx_k` for `hx ~ sub(…)`; nested calls
+  compose, `o_w_k`). It used to be declared as plain `k`, so two calls binding
+  different values shared one data variable and silently read the first value
+  (two HSGP terms fixed to length scales 0.3 and 0.9 both used 0.3). Data the
+  caller passes by keyword (`sub(; k = caller_k)`) keeps the caller's name. The
+  data names a program declares for such a sub-model change accordingly, in the
+  Stan code, `stan_data`, the descriptor's inputs and re-binding
+  (`stan_model(m)(; hx_k = …)`). Two bindings that still declare one data name
+  with different values are refused, naming both values.
+
 ## v0.2.2
 
 - **A RaggedVector selects groups and sums them as Julia does.** `rv[idx]`
