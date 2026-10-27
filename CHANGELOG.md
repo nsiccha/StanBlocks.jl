@@ -4,6 +4,20 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.3
+
+- **A custom family's sized draw types an untyped observation.** For a family
+  whose draw is a whole vector or matrix and whose only predictive companion is
+  the sized-token form (`foo_rng(vector[n], mu::vector[n], …)::vector[n]`), an
+  untyped `y ~ foo(mu, …)` is now a `vector[n]` whenever the family's other
+  arguments carry `n`, with no `@lhs` on the density. This is the shape of a
+  forecast's values-free `maybecv(:y)` observation (per cell in a `plate` or
+  `@plate for`), of the response a prior program omits, and of a latent
+  parameter of the family. Such a `y` used to be a scalar: its re-draw asked
+  for a scalar `foo_rng`, and a vector function of the draw failed to type. A
+  size that only the token carries still leaves `y` a scalar, and that error
+  now says how to give it a shape.
+
 ## v0.2.2
 
 - **A RaggedVector selects groups and sums them as Julia does.** `rv[idx]`

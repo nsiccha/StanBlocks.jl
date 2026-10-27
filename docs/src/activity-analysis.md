@@ -128,7 +128,8 @@ draw = BridgeStan.param_constrain(prob.model, Float64[]; include_tp = true, incl
 
 Every prior that is re-drawn needs its family's `_rng` companion for that shape
 (a custom `@lpxf foo_lpdf` family ships `foo_rng`, sized-token overload
-included); a missing one is a trace-time error naming the symbol, the family and
+included; an untyped `y ~ foo(mu, …)` takes its shape from that sized overload
+when `mu` carries the size); a missing one is a trace-time error naming the symbol, the family and
 the signature to add, and an improper `flat()` prior — nothing to draw from — is
 an error too. An `ordered` / `positive_ordered` prior whose elements share one
 scalar density (`c::ordered[k] ~ normal(loc, scale)`) is re-drawn as `sort_asc`
@@ -253,6 +254,13 @@ generated quantities {
 - `y` is drawn with the shape its distribution's other arguments give: dense, ragged
   (the groups and `segments` of a ragged argument), and through `censored(…)` bounds.
   There is no `y` data input and no `y_likelihood`.
+- A custom family whose draw is a whole vector gives that shape through its sized
+  predictive companion, `foo_rng(vector[n], mu::vector[n], …)::vector[n]`: when the
+  family's other arguments carry `n`, `y` is a `vector[n]` (per cell in a `plate`), and
+  a vector function of `y` after its `~` statement is a vector of the draw. The density
+  needs no `@lhs` for this. Before StanBlocks v0.2.3 such a `y` was a scalar unless the
+  density carried `@lhs`, so the re-draw asked for a scalar `foo_rng` and a read of the
+  draw failed to type (snag `forecast-replay-b98962bf`).
 - The descriptor offers `:predict` but not `:fit`, unless another observation stays
   bound. Its draw is `y_gen`, as in the fit program.
 - In a `plate`, bind the positional the cell observes:
