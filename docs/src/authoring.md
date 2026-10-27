@@ -424,6 +424,25 @@ elementwise meaning are rejected with the supported forms listed: `x * z`,
 `s / x`, `x ^ 2`, and a dense vector operand (per group or per element?). Write
 `.*`, `./`, and `.^` for the elementwise versions.
 
+An integer array, a range or a comparison mask selects several groups, as in
+Julia: `x[idx]` is the groups `idx`, in that order, as a RaggedVector (a
+`RaggedMatrix` selects matrices the same way). `sum(x)` adds the groups
+elementwise, `x[1] + x[2] + …`, so every group must have the same length (Stan
+rejects the program otherwise), and `mean(x)` is `sum(x) / length(x)`. The
+total of every entry is `sum(x.mem)`:
+
+```julia
+@slic (; ys = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], idx = [1, 3], obs = [6.1, 7.9]) begin
+    s ~ normal(1, 1)
+    obs ~ normal(s * sum(ys[idx]), 1)   # s * ([1, 2] + [5, 6])
+end
+```
+
+The selection's offsets depend only on the data, so they are computed once in
+`transformed data`. Any other function of a whole RaggedVector fails when the
+program is built; apply it to one group, `sd(x[g])`, or to every entry,
+`sd(x.mem)`.
+
 `ragged_start`, `ragged_end`, and `ragged_length` expose flat offsets for UDF
 size math. `EachCol(X)` and `EachRow(X)` are zero-cost dense views:
 `EachCol(X)[j]` lowers to `col(X, j)`, and `EachRow(X)[i]` lowers to

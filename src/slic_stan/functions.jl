@@ -2588,10 +2588,32 @@ sig_expr(x::StanType{<:types.func}) = StanType(center_type(x), map(sig_expr_size
 # while the second call site still emitted `f_closure_2(...)` → stanc rejects
 # with "undeclared identifier". Keying on the id realigns dedup with naming.
 sig_expr(x::StanExpr2{<:types.closure}) = StanExpr(type(x).info.value.id, sig_expr(type(x)))
+# A usertype argument adds its tag to the call's Stan name (`sum_RaggedVector(…)`),
+# a function only StanBlocks can define. With no definition behind it (a native
+# Stan function, or a signature-only stub reached through an untyped formal such as
+# `Base.sum(x)::real`), `transpiles()` accepted the program and stanc rejected the
+# undeclared name (snag selecting-severa-027a8191). Refuse it here, naming the value
+# and the two spellings that exist. Calls with their own rendering (`rv.1`) carry
+# no such name.
+_reject_undefined_usertype_call(@nospecialize(x::CanonicalExpr)) = begin
+    i = findfirst(a -> a isa StanExpr2{<:types.usertype} && !always_inline(a), x.args)
+    isnothing(i) && return
+    which(Base.show, Tuple{IO,typeof(x)}) === which(Base.show, Tuple{IO,CanonicalExpr}) || return
+    T = center_type(x.args[i]).name.name
+    error(
+        "`", short_expr(x), "` passes a whole `", T, "` to a function with no Stan ",
+        "definition for it: the program would call `", func_name(head(x), x.args), "`, ",
+        "which stanc rejects as an undeclared identifier. A ", T, " is a vector of ",
+        "groups (`x[g]` is group g, `length(x)` the number of groups). Apply the ",
+        "function to one group (`f(x[g])`) or to the entries of every group laid end ",
+        "to end (`f(x.mem)`)."
+    )
+end
 Base.@nospecializeinfer fetch_functions!(@nospecialize(x::CanonicalExpr); info) = begin
     sx = sig_expr(x)
     _haskey_erased(info, sx) && return
     def = _fundef(x, _trace_context(info))
+    isnothing(def) && _reject_undefined_usertype_call(x)
     _setindex_erased!(info, def, sx)
     isnothing(def) && return
     fetch_subfunctions!(def.body; info)
