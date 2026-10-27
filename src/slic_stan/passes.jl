@@ -755,17 +755,53 @@ _loop_distribution_blocks(x::StanExpr{<:ForExpr}; info) = begin
     Tuple(unique(blocks))
 end
 _loop_distribution_blocks(x; info) = distribution_blocks(x; info)
+# A loop-local scratch binding (forward.jl `_loop_scratch`) has no block of its
+# own: it follows the statements that read it (`_loop_select`).
+_loop_distribution_blocks(::CanonicalExpr{typeof(_loop_scratch)}; info) = ()
+# Its declaration is a local, never a fill target, so no slice-fill certificate
+# applies (a computed `tmp::typeof(…) = …` is no fresh declaration). It only
+# passes likelihood reach on to what it reads, when a likelihood reads it.
+backward!(x::CanonicalExpr{typeof(_loop_scratch)}; info) =
+    lqual(info[_loop_scratch_name(only(x.args))]) == :affects_likelihood ?
+        CanonicalExpr(_loop_scratch, _loop_scratch_backward!(only(x.args); info)) : x
+_loop_scratch_backward!(x::DocumentExpr; info) = remake(x, x.args[1], _loop_scratch_backward!(x.args[2]; info))
+_loop_scratch_backward!(x::StanExpr; info) = StanExpr(_loop_scratch_backward!(expr(x); info), type(x))
+_loop_scratch_backward!(x::AssignmentExpr; info) = remake(x, x.args[1], backward!(x.args[2]; info))
 _loop_distribution_stmt(x, ::Val; info) = x
 _loop_distribution_stmts(x, v::Val; info) = Any[_loop_distribution_stmt(x, v; info)]
-_loop_distribution_stmt(x::StanExpr{<:ForExpr}, ::Val{B}; info) where {B} = begin
+_loop_distribution_stmt(x::StanExpr{<:ForExpr}, v::Val; info) = begin
     fe = expr(x)
     head, body = fe.args
-    selected = Any[]
-    for stmt in body.args
-        B in _loop_distribution_blocks(stmt; info) || continue
-        append!(selected, _loop_distribution_stmts(stmt, Val(B); info))
+    StanExpr(remake(fe, head, remake(body, _loop_select(body.args, v; info)...)), type(x))
+end
+# The statements of a loop body that block `B`'s copy of the loop runs, in
+# source order: each statement routed to `B`, and each scratch local those
+# statements read, directly or through a later scratch local. Every block's copy
+# recomputes the scratch it reads, as a local of that copy's loop body.
+_loop_select(stmts, v::Val{B}; info) where {B} = begin
+    groups = Vector{Any}[]
+    scratch = Pair{Int,Symbol}[]
+    for (k, stmt) in enumerate(stmts)
+        if stmt isa CanonicalExpr{typeof(_loop_scratch)}
+            push!(scratch, k => _loop_scratch_name(only(stmt.args)))
+            push!(groups, Any[stmt])
+        else
+            push!(groups, B in _loop_distribution_blocks(stmt; info) ?
+                _loop_distribution_stmts(stmt, v; info) : Any[])
+        end
     end
-    StanExpr(remake(fe, head, remake(body, selected...)), type(x))
+    isempty(scratch) && return reduce(vcat, groups; init=Any[])
+    needed = Set{Symbol}()
+    keep = falses(length(stmts))
+    for k in reverse(eachindex(stmts))
+        is_scratch = stmts[k] isa CanonicalExpr{typeof(_loop_scratch)}
+        is_scratch && !(_loop_scratch_name(only(stmts[k].args)) in needed) && continue
+        keep[k] = true
+        for (j, name) in scratch
+            j < k && _uses_model_local(groups[k], (name,)) && push!(needed, name)
+        end
+    end
+    reduce(vcat, (groups[k] for k in eachindex(stmts) if keep[k]); init=Any[])
 end
 _loop_distribution_stmts(x::SamplingExpr, ::Val{:generated_quantities}; info) =
     _indexed_gq_assignments(x; info)
@@ -781,19 +817,14 @@ distribute!(x::StanExpr{<:ForExpr}; info) = begin
         for target in unique(_obs_twin_targets(x; info))
             _push_indexed_obs_twin_decls!(block(info, :generated_quantities), target; info)
         end
-        grouped = OrderedDict{Symbol,Vector{Any}}()
-        for stmt in body.args
-            for b in _loop_distribution_blocks(stmt; info)
-                b in (:data, :parameters) && error(
-                    "Compiler-owned loop body statement `", stmt, "` tried to emit into declarative block `", b,
-                    "`. Plate parameters must have an outer declaration before the loop and use indexed sampling inside it."
-                )
-                append!(get!(() -> Any[], grouped, b),
-                    _loop_distribution_stmts(stmt, Val(b); info))
-            end
+        for stmt in body.args, b in _loop_distribution_blocks(stmt; info)
+            b in (:data, :parameters) && error(
+                "Compiler-owned loop body statement `", stmt, "` tried to emit into declarative block `", b,
+                "`. Plate parameters must have an outer declaration before the loop and use indexed sampling inside it."
+            )
         end
-        for (b, stmts) in grouped
-            loop = StanExpr(remake(fe, head, remake(body, stmts...)), type(x))
+        for b in _loop_distribution_blocks(x; info)
+            loop = StanExpr(remake(fe, head, remake(body, _loop_select(body.args, Val(b); info)...)), type(x))
             push!(block(info, b), _ragged_scoped(b, loop; info); info)
         end
     finally

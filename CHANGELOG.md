@@ -6,6 +6,17 @@ breaking digit).
 
 ## Unreleased
 
+- **A computed `@plate for` / `@scan` local is a loop local, not an output.**
+  A bare `tmp = …` (or `tmp::T = …`, or an `=` binding of a `laplace_marginal`
+  do block) in an annotated loop body that reads a parameter is now a Stan local
+  declared inside the loop of each block that reads it, as the annotated-loop
+  scoping decision specified, instead of a per-cell `transformed parameters` /
+  `generated quantities` array. Its `loop_<i>_<name>` output, and for a ragged
+  or varying-size value its `__pl_len`/`__pl_end` sizing data, are gone from
+  the draws and the descriptor; write `tmp[i] = …` to keep a value. A local
+  computed from data alone stays in `transformed data`; `~` locals, indexed
+  arrays and every `plate(...) do` cell binding are stored as before. A typed
+  `=` local now also works inside a nested annotated loop.
 - **Arrays of rank three or more are data.** A real `Array{<:Real,N}` data
   kwarg with `N ≥ 3` is declared as an array of matrices over its last two
   dimensions (`array[A_d1] matrix[A_d2, A_d3] A;`) and an integer one as

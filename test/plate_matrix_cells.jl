@@ -95,22 +95,43 @@ end
             y[s] ~ multi_normal(g .* v, ccov)
         end
     end
+    # In a `@plate for` loop the covariance is a `=` local: a Stan local of the
+    # model loop and of the generated-quantities loop, not stored (`1rgglep`).
     code = stan_code(joint)
+    local_decl = r"matrix\[\s*\(1 \+ \(ragged_end_RaggedVector\(y, s\) - ragged_start_RaggedVector\(y, s\)\)\),\s*\(1 \+ \(ragged_end_RaggedVector\(y, s\) - ragged_start_RaggedVector\(y, s\)\)\)\s*\] loop_s_ccov = \(diag_matrix\(loop_s_v\)"
+    @test occursin(local_decl, stan_block(code, "model"))
+    @test occursin(local_decl, stan_block(code, "generated quantities"))
+    @test !occursin("loop_s_ccov__pl", code)
+    @test !any(o -> o.name === :loop_s_ccov, stan_descriptor(joint).outputs)
+    @test stanc_compiles(joint)
+    # The do-form stores every cell binding: the covariance is column-major flat
+    # memory, read back with `to_matrix`.
+    stored = @slic data begin
+        s0 ~ normal(0, 1; lower = 0)
+        g ~ normal(0, 1)
+        cells ~ plate(y) do ys
+            v = exp(g) .* (1.0 .+ ys .^ 2)
+            c = sqrt(s0) .* v
+            ccov = diag_matrix(v) .+ c * c' ./ (1.0 + sum(v))
+            ys ~ multi_normal(g .* v, ccov)
+        end
+    end
+    code = stan_code(stored)
     td = stan_block(code, "transformed data")
-    @test occursin("loop_s_ccov__pl_rows[s] = (1 + (ragged_end_RaggedVector(y, s) - ragged_start_RaggedVector(y, s)));", td)
-    @test occursin("loop_s_ccov__pl_len[s] = (loop_s_ccov__pl_rows[s] * loop_s_ccov__pl_cols[s]);", td)
+    @test occursin("cells_ccov__pl_rows[plate_i__pl_1] = (1 + (ragged_end(y.2, plate_i__pl_1) - ragged_start(y.2, plate_i__pl_1)));", td)
+    @test occursin("cells_ccov__pl_len[plate_i__pl_1] = (cells_ccov__pl_rows[plate_i__pl_1] * cells_ccov__pl_cols[plate_i__pl_1]);", td)
     tp = stan_block(code, "transformed parameters")
-    @test occursin("vector[sum(loop_s_ccov__pl_len)] loop_s_ccov;", tp)
-    @test occursin("loop_s_ccov[ragged_start(loop_s_ccov__pl_end, s):ragged_end(loop_s_ccov__pl_end, s)] = to_vector(", tp)
-    reader = r"to_matrix\(\s*loop_s_ccov\[ragged_start\(loop_s_ccov__pl_end, s\):ragged_end\(loop_s_ccov__pl_end, s\)\],\s*loop_s_ccov__pl_rows\[s\],\s*loop_s_ccov__pl_cols\[s\]\s*\)"
+    @test occursin("vector[sum(cells_ccov__pl_len)] cells_ccov;", tp)
+    @test occursin(r"cells_ccov\[\s*ragged_start\(cells_ccov__pl_end, plate_i__pl_1\):ragged_end\(cells_ccov__pl_end, plate_i__pl_1\)\s*\] = to_vector\(", tp)
+    reader = r"to_matrix\(\s*cells_ccov\[\s*ragged_start\(cells_ccov__pl_end, plate_i__pl_1\):ragged_end\(cells_ccov__pl_end, plate_i__pl_1\)\s*\],\s*cells_ccov__pl_rows\[plate_i__pl_1\],\s*cells_ccov__pl_cols\[plate_i__pl_1\]\s*\)"
     @test occursin(reader, stan_block(code, "model"))
     # The observation keeps its ragged twins, which read the stored covariance.
     gq = stan_block(code, "generated quantities")
     @test occursin("vector[num_elements(y.1)] y_gen;", gq)
     @test occursin("vector[num_elements(y.2)] y_likelihood;", gq)
     @test !occursin("diag_matrix", gq)
-    @test stanc_compiles(joint)
-    out = only(o for o in stan_descriptor(joint).outputs if o.name === :loop_s_ccov)
+    @test stanc_compiles(stored)
+    out = only(o for o in stan_descriptor(stored).outputs if o.name === :cells_ccov)
     @test out.kind === :transformed_parameter
     @test out.segments == [9, 13, 29]           # 3x3, 2x2 and 4x4 cells, column-major
     @test out.dims == (29,)
@@ -130,7 +151,7 @@ end
     @test stanc_compiles(result)
     @test only(o.segments for o in stan_descriptor(result).outputs if o.name === :M) == [9, 13, 29]
 
-    # A matrix read several times in its cell is computed once, then read.
+    # A matrix read several times in its cell is computed once per loop, then read.
     reused = @slic (; ys = data.y, ts = [[1.0, 2.0, 3.0], [1.0, 2.0], [0.5, 1.0, 2.0, 3.0]]) begin
         k ~ normal(0, 1; lower = 0)
         @plate for i in eachindex(ys)
@@ -139,7 +160,8 @@ end
         end
     end
     code = stan_code(reused)
-    @test count("append_row", code) == 1
+    @test count("append_row", stan_block(code, "model")) == 1
+    @test count("append_row", stan_block(code, "generated quantities")) == 1
     @test stanc_compiles(reused)
 
     # A matrix built from data alone (each cell's 0/1 matrix summing its zones
@@ -167,7 +189,7 @@ end
     @test !occursin("loop_c_A;", stan_block(code, "transformed parameters"))
     @test stanc_compiles(summed)
 
-    # With no likelihood the cell, its matrix included, is a generated quantity.
+    # With no likelihood the cell is a generated quantity, its matrix a local there.
     prior = @slic (; ys = data.y) begin
         g ~ normal(0, 1)
         @plate for s in eachindex(ys)
@@ -177,7 +199,8 @@ end
         end
     end
     code = stan_code(prior)
-    @test occursin("vector[sum(loop_s_C__pl_len)] loop_s_C;", stan_block(code, "generated quantities"))
+    @test occursin(r"\] loop_s_C = diag_matrix\(loop_s_v\);", stan_block(code, "generated quantities"))
+    @test !occursin("loop_s_C__pl", code)
     @test stanc_compiles(prior)
 
     # A sampled matrix whose size varies by cell is refused; the reshape it

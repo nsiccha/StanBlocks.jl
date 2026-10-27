@@ -593,12 +593,17 @@ on the cell:
 end
 ```
 
-Like every cell binding, `ccov` is stored per cell and computed once per
-evaluation, so the density and the `y_gen`/`y_likelihood` twins all read the
-stored matrix. Its size is the length of the cell's group, so it is stored
-column-major in one flat `vector` (`loop_s_ccov`) and read back as
-`to_matrix(loop_s_ccov[...], loop_s_ccov__pl_rows[s], loop_s_ccov__pl_cols[s])`.
-A matrix of fixed size is collected as `array[outer...] matrix[R, C]` instead.
+In a `@plate for` loop `ccov` is a per-iteration local: a Stan local
+`matrix[…] loop_s_ccov = …;` inside the model loop and inside the
+generated-quantities loop of the `y_gen`/`y_likelihood` twins, computed once in
+each and never written to the draws (see "Annotated loops" below).
+The do-form stores every cell binding instead: written as
+`cells ~ plate(y) do ys … end`, `ccov` is computed once per evaluation and its
+size is the length of the cell's group, so it is stored column-major in one
+flat `vector` (`cells_ccov`) and read back as
+`to_matrix(cells_ccov[...], cells_ccov__pl_rows[i], cells_ccov__pl_cols[i])`.
+A stored matrix of fixed size is collected as `array[outer...] matrix[R, C]`
+instead.
 A matrix built from data alone, such as a per-cell 0/1 matrix summing the
 cell's zones into its groups, `A = reshape(agg[c], n_groups[c], n_zones[c])`,
 is filled once in `transformed data` and read back the same way.
@@ -655,19 +660,29 @@ copy of every cell value.
 A top-level model loop that introduces parameters is written as an
 *annotated* loop. Both forms are sugar over the compiler-owned loop behind
 `plate`: the tracer inlines them (neither is a function call), discovers the
-body's fresh bindings once, promotes them to outer storage and emits a plain
-Stan `for` loop into the blocks that own each statement. Inside the body:
+body's fresh bindings once, promotes the ones it stores to outer storage and
+emits a plain Stan `for` loop into the blocks that own each statement. Inside
+the body:
 
 - an LHS indexed by the loop variable (`x[i] ~ …`, `y[i] = …`) is a
   **model-scope array**, registered under its own name and visible after the
   loop; a whole vector cell is written `v[:, i]`;
-- a bare fresh name (`t ~ …`, `tmp = …`) is a **per-iteration local**, hoisted
-  to per-cell storage under a hygienic name prefixed by the loop variables
-  (`loop_i_t`; [Stan names of plate values](#Stan-names-of-plate-values)).
-  A hygienic name that is already bound, such as a second loop's `loop_i_t`,
-  takes a numbered suffix (`loop_i_t_2`). For a namespace of your choosing,
-  use the `plate` do-form, whose LHS names it even when the cell collects no
-  result;
+- a bare fresh name (`t ~ …`, `tmp = …`) is a **per-iteration local** under a
+  hygienic name prefixed by the loop variables (`loop_i_t`;
+  [Stan names of plate values](#Stan-names-of-plate-values)). A sampled
+  `t ~ …` is a per-cell parameter, hoisted to per-cell storage. A computed
+  `tmp = …` (also `tmp::T = …`, and the `=` bindings of a `laplace_marginal`
+  do block in the body) is per-iteration scratch: a Stan local declared inside
+  the loop of each block that reads it (`real loop_i_tmp = …;` in the model
+  loop, again in the generated-quantities loop that draws a twin from it, and
+  in a transformed-parameters loop that fills an array from it), recomputed
+  there and never written to the draws. Only a `tmp` computed from data alone
+  is stored, once, in `transformed data`. To keep a value in the draws, index
+  it (`tmp[i] = …`). A hygienic name that is already bound, such as a second
+  loop's `loop_i_t`, takes a numbered suffix (`loop_i_t_2`). For a namespace of
+  your choosing, use the `plate` do-form, whose LHS names it even when the
+  cell collects no result; the do-form stores every cell binding, `=` ones
+  included;
 - `y[i] ~ …` on data is an observation, with the usual `y_gen` twin. Observe
   the data itself: `obs = y[i]; obs ~ …` is refused, because a name defined
   by `=` has nothing to draw when `y` is omitted;
@@ -716,8 +731,8 @@ end
 ```
 
 Several carried arrays in one loop (`u[t] ~ f(u[t-1], v[t-2])`,
-`v[t] ~ g(…)`) are just several indexed LHS. Per-step locals are sized by the
-iteration count (`vector[T-1] loop_t_eps` for a loop over `2:T`), so the
+`v[t] ~ g(…)`) are just several indexed LHS. Per-step `~` locals are sized by
+the iteration count (`vector[T-1] loop_t_eps` for a loop over `2:T`), so the
 non-centered spelling `eps ~ std_normal(); x[t] = phi * x[t-1] + s * eps`
 has no never-sampled coordinate.
 
@@ -830,8 +845,8 @@ but not a value the loop body binds per cell (`c = L[j]; … lower=c`): write th
 expression in the bound instead.
 
 A nested scan may run to a per-cell length, `for t in 2:T[j]` or
-`for t in 2:length(y)` over a container group. Its carried arrays and per-step
-locals are then stored as the plate's flat memory (one segment per cell, like a
+`for t in 2:length(y)` over a container group. Its carried arrays and stored
+per-step locals are then stored as the plate's flat memory (one segment per cell, like a
 varying-length plate cell), and element `t` of cell `j` is
 `h[ragged_start(h__pl_end, j) + t - 1]`. This works in every mode, and support
 reaches the flat memory as it does a fixed-length cell: a bound every element
@@ -909,8 +924,8 @@ Current limits: a setup fill uses a literal index (`x[1] ~ …`; slice and
 nested `@plate` setups are not supported yet); a `@scan` has one axis; an
 untyped fresh cell whose distribution arguments are vector-shaped must be
 annotated (`v[:, j]::vector[T] ~ …`) until the plate typing snag
-`plate-untyped-ve-819ecfff` lands; typed locals inside a nested loop are not
-supported yet; a nested scan that observes a nested-vector group per step
+`plate-untyped-ve-819ecfff` lands; a typed `~` local, and a typed `=` local
+computed from data alone, inside a nested loop are not supported yet; a nested scan that observes a nested-vector group per step
 without reading it back (`ys[p][t] ~ normal(h[t], s)`) is refused
 (`unsupported statement LHS`), not supported yet; an observed scan written
 inline in a `plate(EachCol(Y)) do y` cell over `y` is refused, not supported
@@ -927,12 +942,14 @@ run outside Julia (CmdStan, CmdStanPy, BridgeStan) can rely on it:
 | Value | Stan name |
 |---|---|
 | An array a `@plate for` / `@scan` fills at the loop index (`mu[i] = …`, `x[i] ~ …`) | its own name: `mu`, `x` |
-| A per-iteration local of a `@plate for` / `@scan` (`t ~ …`, `tmp = …`) | `loop_<variables>_<name>`: `loop_i_t` for `for i in …`, `loop_i_j_t` for `for i in …, j in …`, `loop_d_t` for `for d in doses` |
+| A stored per-iteration local of a `@plate for` / `@scan` (`t ~ …`, or a `tmp = …` computed from data alone, in transformed data) | `loop_<variables>_<name>`: `loop_i_t` for `for i in …`, `loop_i_j_t` for `for i in …, j in …`, `loop_d_t` for `for d in doses` |
 | The collected result of `rv ~ plate(…) do … end` | `rv` |
 | A cell binding of that do-form | `<rv>_<name>`: `rv_t` |
 | An observation's predictive draw and pointwise log likelihood | `<obs>_gen`, `<obs>_likelihood` |
 
-A sub-model prefixes the names it declares as usual (`hh_x`). A local or cell
+A computed per-iteration local (`tmp = …` reading a parameter) is not an
+output: it is a Stan local of the loops that read it, under the same
+`loop_<variables>_<name>` name. A sub-model prefixes the names it declares as usual (`hh_x`). A local or cell
 binding whose name is already bound takes a numbered suffix (`loop_i_t_2` for a
 second loop over `i` with a local `t`). An array a loop fills, or a do-form
 result, named like a value that is already bound is refused, since a model never
@@ -1066,9 +1083,10 @@ the compiler does.
 - **Generated quantities:** the do block replays after the draw, reading it. Each
   observation keeps its `<obs>_gen` and `<obs>_likelihood` twins, and the
   descriptor offers `:fit`, `:predict` and `:pointwise_loglik` as for the sampled
-  latent. Every output keeps the name it has when the latent is sampled; in a
-  plate cell a binding inside the do block takes the cell's namespace
-  (`loop_g_eta`, `rv_eta`). A likelihood term after the statement that reads `z` is refused: `z`
+  latent. The outputs are those of the sampled spelling: in a `@plate for` a
+  binding inside the do block is a loop local (`loop_g_eta`), as `eta = …` is
+  there, and in a do-form cell it is stored under the cell's namespace
+  (`rv_eta`). A likelihood term after the statement that reads `z` is refused: `z`
   is a draw there, so observe that data inside the do block.
 - **Options** (keywords of `laplace_marginal`): `hessian_block_size` defaults to
   the latent's length, a dense Hessian, which is always correct. A smaller value
