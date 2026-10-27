@@ -146,6 +146,7 @@ end
     ragged_n ragged_total ragged_start ragged_end ragged_length as_matrix
     ragged_common_ends ragged_matched_group
     # Stan 2.37 exposed constraint transforms (Feature 1) — @deffun sigs below.
+    sum_to_zero_constrain sum_to_zero_unconstrain sum_to_zero_jacobian
     simplex_constrain simplex_unconstrain simplex_jacobian
     ordered_constrain ordered_unconstrain ordered_jacobian
     positive_ordered_constrain positive_ordered_unconstrain positive_ordered_jacobian
@@ -361,6 +362,15 @@ import Statistics
     # emit `<family>_jacobian(free_slice)` calls per ragged slice. `_jacobian`
     # constrains AND increments the target Jacobian implicitly (no `jacobian +=`
     # block needed). simplex: free vector[n] (=N-1) <-> simplex vector[n+1] (=N).
+    # sum_to_zero is linear (isometric), so its `_jacobian` adds nothing; the
+    # matrix form has zero row and column sums, one larger in each dimension.
+    # The `@juliacompat` methods are `jcall` shims (functions.jl).
+    sum_to_zero_constrain(y::vector[n])::vector[n+1]
+    sum_to_zero_jacobian(y::vector[n])::vector[n+1]
+    sum_to_zero_unconstrain(x::vector[n])::vector[n-1]
+    sum_to_zero_constrain(y::matrix[m,n])::matrix[m+1,n+1]
+    sum_to_zero_jacobian(y::matrix[m,n])::matrix[m+1,n+1]
+    sum_to_zero_unconstrain(x::matrix[m,n])::matrix[m-1,n-1]
     simplex_constrain(y::vector[n])::vector[n+1]
     simplex_jacobian(y::vector[n])::vector[n+1]
     simplex_unconstrain(x::vector[n])::vector[n-1]
