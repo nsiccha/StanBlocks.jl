@@ -12556,7 +12556,8 @@ generated quantities.
         @test occursin("StanBlocks.stan.maybecv(:y, y)", err)
     end
 
-    # A draw inside a plate cell is drawn once per cell, never hoisted as invariant.
+    # A draw inside a plate cell is drawn once per cell, never hoisted as invariant
+    # (as a `@plate for` local it is a local of the loop, `1rgglep`).
     for (model, block) in (
         (@slic((; n = 3), begin
             mu0 ~ std_normal()
@@ -12576,7 +12577,7 @@ generated quantities.
     )
         code = stan_code(model)
         @test stanc_compiles(model)
-        @test occursin(r"loop_i_e\[i\] = normal_rng\((mu0|0\.0), 1\.0\);", stan_block(code, block))
+        @test occursin(r"real loop_i_e = normal_rng\((mu0|0\.0), 1\.0\);", stan_block(code, block))
         @test !occursin("__pl_inv", code)
     end
     let model = @slic((; y = heldout), begin

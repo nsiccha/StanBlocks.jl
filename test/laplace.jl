@@ -301,8 +301,10 @@ cells match their exact marginals.
     @test [op.name for op in d.operations] == [:transpile, :instantiate, :fit, :predict, :pointwise_loglik]
     @test only(o for o in d.outputs if o.name === :counts_gen).segments == [3, 5, 9]
 
-    # A do-block binding is a cell local: it takes the plate's namespace, as in
-    # the sampled spelling, so every output keeps its name.
+    # A do-block binding is a cell local, as in the sampled spelling, so the
+    # outputs are the same: in a `@plate for` it is a local of each loop that
+    # reads it (`1rgglep`), in the do-form it is stored under the plate's
+    # namespace.
     output_names(m) = sort([o.name for o in stan_descriptor(m).outputs])
     sampled_for = @slic (; counts, mus) begin
         tau ~ exponential(1.0)
@@ -340,7 +342,7 @@ cells match their exact marginals.
             nothing
         end
     end
-    @test output_names(integrated_for) == output_names(sampled_for) == [:counts_gen, :counts_likelihood, :loop_g_eta, :loop_g_u, :tau]
+    @test output_names(integrated_for) == output_names(sampled_for) == [:counts_gen, :counts_likelihood, :loop_g_u, :tau]
     @test output_names(integrated_do) == output_names(sampled_do) == [:cells_eta, :cells_u, :counts_gen, :counts_likelihood, :tau]
     @test all(stanc_compiles, (integrated_for, integrated_do))
 

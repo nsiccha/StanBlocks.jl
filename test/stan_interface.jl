@@ -54,7 +54,9 @@ knows only the interface and its own raw values writes that same file.
     @test outputs["mu"]["block"] == "transformed_parameters"
     @test outputs["mu"]["dims"] == [6] && outputs["mu"]["segments"] == [4, 6]
     @test outputs["mu"]["segments_rule"] == Dict("rule" => "groups_of", "of" => "idx")
-    @test outputs["effect"]["segments_rule"] == outputs["loop_i_scale"]["segments_rule"]
+    @test outputs["effect"]["segments_rule"] == outputs["mu"]["segments_rule"]
+    # A deterministic loop local is a Stan local, not an output (`1rgglep`).
+    @test !haskey(outputs, "loop_i_scale")
     @test outputs["y_gen"]["generative"] == "draw" && outputs["y_gen"]["source"] == "y"
     @test outputs["y_likelihood"]["segments_rule"] == Dict("rule" => "groups_of", "of" => "y")
     @test outputs["r"]["segments_rule"] == Dict("rule" => "lengths", "of" => "K")
