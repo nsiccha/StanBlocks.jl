@@ -648,6 +648,29 @@ end
     end
 end
 
+# Snag two-concurrent-i-5d59afdc: separate instances of one published library
+# evaluate on every thread at once. The default build is threaded; a library
+# built without STAN_THREADS shares one autodiff tape across threads and
+# crashes this worker within seconds.
+@testitem "thread safety: separate instances of one library evaluate concurrently" tags=[:slic, :regression, :bridgestan] begin
+    worker = joinpath(@__DIR__, "fixtures", "native_eval_worker.jl")
+    project = dirname(Base.active_project())
+    mktempdir() do dir
+        log = joinpath(dir, "worker.log")
+        cmd = `$(Base.julia_cmd()) --startup-file=no --threads=4 --project=$project $worker $dir 5`
+        process = open(log, "w") do io
+            run(pipeline(ignorestatus(cmd); stdout=io, stderr=io))
+        end
+        output = read(log, String)
+        result = match(r"(?m)^RESULT evals=(\d+) mismatches=(\d+) threads=(\d+) threaded=(\w+)$", output)
+        result === nothing && error("native evaluation worker returned no result:\n" * output)
+        @test success(process)
+        @test result[4] == "true"
+        @test parse(Int, result[1]) > 0
+        @test parse(Int, result[2]) == 0
+    end
+end
+
 @testitem "thread safety: native cold warm and explicit-path construction" tags=[:slic, :regression, :bridgestan] begin
     using StanBlocks
     using LogDensityProblems: logdensity

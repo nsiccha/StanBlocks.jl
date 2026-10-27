@@ -91,17 +91,20 @@ Compile `model` (a [`SlicModel`](@ref StanBlocks.SlicModel) or
   [`stan_library`](@ref StanBlocks.stan_library).
 - `warn::Bool = false` — forwarded to BridgeStan.
 
-Concurrent calls own separate model instances. Artifact, source-alias, and
-BridgeStan setup/build locks coordinate Julia tasks and cooperating processes;
-independent tracing stays parallel. Only building the toolchain's shared files
-(`stanc`, BridgeStan's bridge object, Stan Math's libraries) takes the
-toolchain lock; distinct models then compile concurrently under their own
-artifact locks. A BridgeStan tree this process may not write (a read-only
-mount or store path, another user's install) is used as it stands: models
-compile once make reports its shared files current, and otherwise the call
-raises naming them (`StanBlocks.with_toolchain_lock`). Only the build directory
-must be writable. Native constructor calls are serialized within the process.
-Compilation publishes only a completed library from a private staging
+Concurrent calls own separate model instances. Calls for identical content, in
+one process or in several processes on one host, share one published library:
+the first compiles it, the others wait for it or load it, and none rewrites it,
+so a process that loaded it keeps evaluating the same bytes. Artifact,
+source-alias, and BridgeStan setup/build locks coordinate Julia tasks and
+cooperating processes; independent tracing stays parallel. Only building the
+toolchain's shared files (`stanc`, BridgeStan's bridge object, Stan Math's
+libraries) takes the toolchain lock; distinct models then compile concurrently
+under their own artifact locks. A BridgeStan tree this process may not write (a
+read-only mount or store path, another user's install) is used as it stands:
+models compile once make reports its shared files current, and otherwise the
+call raises naming them (`StanBlocks.with_toolchain_lock`). Only the build
+directory must be writable. Native constructor calls are serialized within the
+process. Compilation publishes only a completed library from a private staging
 directory. Failures propagate and release the locks; partial build outputs are
 discarded.
 An abruptly killed process can leave a pidfile: confirm that its owner has
@@ -113,12 +116,17 @@ and toolchain paths named by `make_args` or the build environment. The default
 BridgeStan home's own trees are identified by its version and location; for
 source edits there, or external compiler inputs not represented in that
 configuration, use a new `STANBLOCKS_BUILD_DIR`. Direct external BridgeStan
-builds must not mutate the same toolchain concurrently. This construction
-contract does not grant shared ownership of the returned model's workspaces or
-RNG, or make native evaluation without threading support thread-safe. Keep
-BridgeStan's threading/ABI configuration consistent across libraries loaded in
-one process. Stan enables threading for any nonempty `STAN_THREADS` value,
-including `false`; an empty value disables it.
+builds must not mutate the same toolchain concurrently.
+
+With the default threaded build, any number of threads may evaluate at once,
+on one returned problem or on several problems that share a library:
+BridgeStan gives every thread its own autodiff tape. A `BridgeStan.StanRNG` is
+not thread-safe; give each task its own. A library built without threading
+shares one tape across threads and must be evaluated from one thread at a
+time; evaluating it from several crashes the process. Keep BridgeStan's
+threading/ABI configuration consistent across libraries loaded in one process.
+Stan enables threading for any nonempty `STAN_THREADS` value, including
+`false`; an empty value disables it.
 """
 instantiate(x::SlicModel; kwargs...) = instantiate(stan_model(x); kwargs...)
 function instantiate(x::StanModel; nan_on_error=true, make_args=["STAN_THREADS=true"], warn=false, path=nothing)
