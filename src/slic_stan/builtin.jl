@@ -189,7 +189,7 @@ end
     Phi_approx inv_Phi inv_cloglog
     erf erfc tgamma digamma trigamma
     lambert_w0
-    lbeta inc_beta gamma_p gamma_q
+    lbeta lchoose inc_beta gamma_p gamma_q
     bessel_first_kind bessel_second_kind
     modified_bessel_first_kind modified_bessel_second_kind
     # Log-space first-kind modified Bessel (Stan >= 2.24; real order `v`).
@@ -1538,6 +1538,7 @@ import Statistics
     fmod(x::real, y::real)::real
     binary_log_loss(y::int, y_hat::real)::real
     lbeta(a::real, b::real)::real
+    lchoose(n::real, k::real)::real
     inc_beta(a::real, b::real, x::real)::real
     gamma_p(a::real, x::real)::real
     gamma_q(a::real, x::real)::real
@@ -3338,7 +3339,7 @@ const _ELEMENTWISE_UNARY = (sqrt, inv_sqrt, exp, log, log10, sin, cos, asin, aco
     exp2, log2, cbrt, ceil, floor, round, trunc,
     square, erf, erfc, tgamma, digamma, trigamma,
     Phi_approx, inv_Phi, inv_cloglog, lambert_w0)
-const _ELEMENTWISE_BINARY = (fmin, fmax, fdim, fmod, atan2, lbeta, log_diff_exp,
+const _ELEMENTWISE_BINARY = (fmin, fmax, fdim, fmod, atan2, lbeta, lchoose, log_diff_exp,
     owens_t, gamma_p, gamma_q, log_modified_bessel_first_kind)
 const _ELEMENTWISE_INT_BINARY = (binary_log_loss, bessel_first_kind, bessel_second_kind,
     modified_bessel_first_kind, modified_bessel_second_kind)
