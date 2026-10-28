@@ -249,8 +249,10 @@ generated quantities {
 ```
 
 - Everything `y ~ …` reads stays a parameter, exactly as with `maybecv(:y, y)`, so an
-  earlier fit's draws feed it (`stan_execute(d, :predict; draws, seed)`, CmdStan
-  `generate_quantities`, BridgeStan `param_constrain`).
+  earlier fit's draws feed it: `stan_execute(d, :predict; draws, seed)`, or BridgeStan's
+  `param_constrain(…; include_tp = true, include_gq = true)`, which also recomputes the
+  transformed parameters (a linear predictor, a `plate` cell's location) on the new
+  rows.
 - `y` is drawn with the shape its distribution's other arguments give: dense, ragged
   (the groups and `segments` of a ragged argument), and through `censored(…)` bounds.
   There is no `y` data input and no `y_likelihood`.
