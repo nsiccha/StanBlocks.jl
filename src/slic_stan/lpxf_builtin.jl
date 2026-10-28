@@ -683,6 +683,14 @@ expand_inline_or_trace(
     nested !== nothing && return forward!(nested; info)
     invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info)
 end
+# Where a custom `@lpxf` family's `<base><suffix>` companion would be bound.
+_family_companion_binding(family, suffix::Symbol) = begin
+    probability = lpxf_expr(family)
+    probability_name = string(nameof(probability))
+    probability_suffix = _probability_kind(family) === :lpdf ? "_lpdf" : "_lpmf"
+    base_name = probability_name[1:end-length(probability_suffix)]
+    (parentmodule(probability), Symbol(base_name, suffix))
+end
 _family_probability_companion(family, suffix::Symbol) = begin
     if parentmodule(family) === builtin && !(family isa CdfCapableBuiltinFamily)
         error(
@@ -690,18 +698,15 @@ _family_probability_companion(family, suffix::Symbol) = begin
             "`$(nameof(family))$(suffix)` companion; choose a CDF-capable family"
         )
     end
-    probability = lpxf_expr(family)
-    probability_name = string(nameof(probability))
-    probability_suffix = _probability_kind(family) === :lpdf ? "_lpdf" : "_lpmf"
-    base_name = probability_name[1:end-length(probability_suffix)]
-    companion_name = Symbol(base_name, suffix)
-    mod = parentmodule(probability)
+    mod, companion_name = _family_companion_binding(family, suffix)
     isdefined(mod, companion_name) || error(
         "distribution HOF: family $(nameof(family)) requires companion " *
         "`$companion_name`, but it is not defined in $mod"
     )
     getfield(mod, companion_name)
 end
+_has_logccdf(family) = parentmodule(family) === builtin ?
+    family isa CdfCapableBuiltinFamily : isdefined(_family_companion_binding(family, :_lccdf)...)
 logcdf_expr(family) = _family_probability_companion(family, :_lcdf)
 logccdf_expr(family) = _family_probability_companion(family, :_lccdf)
 # `normal` overrides its Stan-native companions with the erfc reformulation
@@ -713,6 +718,44 @@ logccdf_expr(family) = _family_probability_companion(family, :_lccdf)
 # underflows. See snags censored-normal-410c4e35 and fit-a-left-censo-942540f9.
 logcdf_expr(::typeof(builtin.normal)) = builtin.normal_lcdf_stable
 logccdf_expr(::typeof(builtin.normal)) = builtin.normal_lccdf_stable
+
+# The truncated draws' inversion (`*_conditioning_inverse_rng`, builtin.jl) reads
+# a family's upper tail through `conditioning_logccdf`: the most precise log
+# CCDF it has. Stan Math's `neg_binomial`, `neg_binomial_2` and `binomial` CCDFs
+# lose the tail below ~1e-16 of mass, so these three take their `_lccdf_precise`
+# builtins; any other family its `_lccdf` companion. A custom family needs only
+# `_lcdf` for a two-sided `truncated`, and without `_lccdf` gets `log1m_exp` of
+# its log CDF, as precise as the CDF scale allows. snag truncated-rng-re-bd555cae.
+_precise_logccdf(family) = _has_logccdf(family) ? logccdf_expr(family) : nothing
+_precise_logccdf(::typeof(builtin.neg_binomial_2)) = builtin.neg_binomial_2_lccdf_precise
+_precise_logccdf(::typeof(builtin.neg_binomial)) = builtin.neg_binomial_lccdf_precise
+_precise_logccdf(::typeof(builtin.binomial)) = builtin.binomial_lccdf_precise
+expand_inline_or_trace(
+    x::CanonicalExpr{typeof(builtin.conditioning_logccdf),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}};
+    info,
+) = begin
+    family = _family_function(x.args[1])
+    rest = x.args[2:end]
+    precise = _precise_logccdf(family)
+    isnothing(precise) || return forward!(CanonicalExpr(precise, rest...); info)
+    forward!(CanonicalExpr(builtin.log1m_exp,
+        forward!(CanonicalExpr(logcdf_expr(family), rest...); info)); info)
+end
+# A family's implied support (its `autokwargs`), where a one-sided real inversion
+# stops widening its bracket: past it Stan's CDFs of bounded families throw.
+# Unbounded sides are infinite.
+_support_side(::typeof(builtin.conditioning_support_lower)) = (:lower, builtin.negative_infinity)
+_support_side(::typeof(builtin.conditioning_support_upper)) = (:upper, builtin.positive_infinity)
+expand_inline_or_trace(
+    x::CanonicalExpr{<:Union{
+        typeof(builtin.conditioning_support_lower),typeof(builtin.conditioning_support_upper),
+    },<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}};
+    info,
+) = begin
+    key, unbounded = _support_side(head(x))
+    support = autokwargs(CanonicalExpr(_family_function(x.args[1]), x.args[2:end]...))
+    forward!(haskey(support, key) ? support[key] : CanonicalExpr(unbounded); info)
+end
 
 # `validate=false` only for a copy of an observation whose `~` was validated
 # already: the embedded-Laplace likelihood function (laplace.jl) reads the data

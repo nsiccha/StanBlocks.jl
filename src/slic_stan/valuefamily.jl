@@ -887,6 +887,7 @@ likelihood_expr(v::ValueFamily) = v.pointwise
 # one names the constructor keyword, as `@deffun` names the missing function.
 logcdf_expr(v::ValueFamily) = isnothing(v.lcdf) ? _value_missing_cdf(v, :lcdf) : v.lcdf
 logccdf_expr(v::ValueFamily) = isnothing(v.lccdf) ? _value_missing_cdf(v, :lccdf) : v.lccdf
+_has_logccdf(v::ValueFamily) = !isnothing(v.lccdf)
 _value_missing_cdf(v::ValueFamily, kind::Symbol) = error(
     "distribution HOF: value family `", v.label, "` requires companion `",
     v.label, "_", kind, "`, but it was built without one — pass `", kind,

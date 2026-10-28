@@ -45,6 +45,10 @@ end
     interval_evidence_impl_lpdf interval_evidence_impl_lpmf
     lower_conditioning_cell_rng upper_conditioning_cell_rng conditioning_cell_rng
     conditioning_outside
+    lower_conditioning_inverse_rng upper_conditioning_inverse_rng conditioning_inverse_rng
+    conditioning_edge conditioning_ccdf_tail conditioning_cdf_tail conditioning_midpoint
+    conditioning_bisect conditioning_bracket_up conditioning_bracket_down
+    neg_binomial_2_lccdf_precise neg_binomial_lccdf_precise binomial_lccdf_precise
     ordered_rejection_rng ordered_rejection_unsorted
     lower_clamping_cell_rng upper_clamping_cell_rng clamping_cell_rng
     jbroadcasted_rng
@@ -182,6 +186,9 @@ end
     # Compile-time distribution-family selectors. These consume a base family
     # token (e.g. `normal`) and disappear before Stan emission.
     density pointwise predictive logcdf logccdf
+    # The truncated draws' inverse-CDF fallback (lpxf_builtin.jl): the most
+    # precise upper-tail log CCDF a family has, and its implied support.
+    conditioning_logccdf conditioning_support_lower conditioning_support_upper
 
     # Unary math (Stan-specific, not Julia builtins)
     square inv_sqrt log_diff_exp log_mix atan2
@@ -552,17 +559,21 @@ import Statistics
         jbroadcasted(lower_conditioning_lpdf, y, family, lo, args...)
     lower_conditioning_lpmfs(y::anything[n], family, lo, args...)::vector[n] =
         jbroadcasted(lower_conditioning_lpmf, y, family, lo, args...)
+    # A truncated draw redraws the base family until it lands in range, then,
+    # after 100 misses, inverts the base CDF on the range (`*_inverse_rng`
+    # below). The mixture is exact: a redraw that lands is a draw from the
+    # truncated law, and so is the inversion.
     lower_conditioning_rng(family, lo, args...) = begin
         draw::typeof(predictive(family, args...))[1]
         attempts::int[1]
         draw[1] = predictive(family, args...)
         attempts[1] = 1
-        while draw[1] < lo
-            if attempts[1] >= 100000
-                reject("truncated: lower-tail rejection sampler exceeded 100000 draws")
-            end
+        while draw[1] < lo && attempts[1] < 100
             draw[1] = predictive(family, args...)
             attempts[1] = attempts[1] + 1
+        end
+        if draw[1] < lo
+            draw[1] = lower_conditioning_inverse_rng(draw[1], family, lo, args...)
         end
         draw[1]
     end
@@ -611,12 +622,12 @@ import Statistics
         attempts::int[1]
         draw[1] = predictive(family, args...)
         attempts[1] = 1
-        while draw[1] > hi
-            if attempts[1] >= 100000
-                reject("truncated: upper-tail rejection sampler exceeded 100000 draws")
-            end
+        while draw[1] > hi && attempts[1] < 100
             draw[1] = predictive(family, args...)
             attempts[1] = attempts[1] + 1
+        end
+        if draw[1] > hi
+            draw[1] = upper_conditioning_inverse_rng(draw[1], family, hi, args...)
         end
         draw[1]
     end
@@ -689,12 +700,190 @@ import Statistics
         attempts::int[1]
         draw[1] = predictive(family, args...)
         attempts[1] = 1
-        while conditioning_outside(draw[1], lo, hi) == 1
-            if attempts[1] >= 100000
-                reject("truncated: rejection sampler exceeded 100000 draws")
-            end
+        while conditioning_outside(draw[1], lo, hi) == 1 && attempts[1] < 100
             draw[1] = predictive(family, args...)
             attempts[1] = attempts[1] + 1
+        end
+        if conditioning_outside(draw[1], lo, hi) == 1
+            draw[1] = conditioning_inverse_rng(draw[1], family, lo, hi, args...)
+        end
+        draw[1]
+    end
+
+    # Inverse-CDF draws (snag truncated-rng-re-bd555cae). Redrawing alone needs
+    # about 1/mass attempts, so a range holding 1e-7 of the base law's mass
+    # exhausted any budget. The inversion takes the smallest x in the range with
+    # tail(x) <= t, for a decreasing `tail` of the base CDF and a t that places a
+    # uniform draw between the range's ends on that scale: an integer draw is the
+    # exact quantile, a real one is bisected until no float lies between the
+    # brackets. Each scale keeps its precision in its own tail, so a lower bound
+    # inverts the log CCDF, an upper bound the log CDF, and a two-sided range the
+    # CCDF when it lies above the base median. The first argument is the missed
+    # draw, which only selects the integer or real method. A range whose mass is
+    # not representable in floating point on its scale rejects, saying so.
+    conditioning_ccdf_tail(family, x, args...)::real = conditioning_logccdf(family, x, args...)
+    conditioning_cdf_tail(family, x, args...)::real = -logcdf(family, x, args...)
+    # The last point below the range: `lo - 1` for a count, `lo` for a real.
+    conditioning_edge(x::int, lo) = lo - 1
+    conditioning_edge(x::real, lo) = lo
+    # (a + b) ÷ 2, without forming a + b or b - a, either of which can leave
+    # Stan's 32-bit integers.
+    conditioning_midpoint(a::int, b::int)::int =
+        a ÷ 2 + b ÷ 2 + ((a - 2 * (a ÷ 2)) + (b - 2 * (b ÷ 2))) ÷ 2
+    # The smallest x in (a, b] with tail(x) <= t, given tail(a) > t >= tail(b).
+    conditioning_bisect(x::int, tail, family, t::real, a::int, b::int, args...)::int = begin
+        bracket::int[2]
+        bracket[1] = a
+        bracket[2] = b
+        while bracket[1] + 1 < bracket[2]
+            mid = conditioning_midpoint(bracket[1], bracket[2])
+            if tail(family, mid, args...) <= t
+                bracket[2] = mid
+            else
+                bracket[1] = mid
+            end
+        end
+        bracket[2]
+    end
+    conditioning_bisect(x::real, tail, family, t::real, a, b, args...)::real = begin
+        bracket::real[2]
+        mid::real[1]
+        bracket[1] = a
+        bracket[2] = b
+        mid[1] = 0.5 * bracket[1] + 0.5 * bracket[2]
+        while bracket[1] < mid[1] && mid[1] < bracket[2]
+            if tail(family, mid[1], args...) <= t
+                bracket[2] = mid[1]
+            else
+                bracket[1] = mid[1]
+            end
+            mid[1] = 0.5 * bracket[1] + 0.5 * bracket[2]
+        end
+        bracket[2]
+    end
+    # The open end of a one-sided range: from a known end, double the step until
+    # tail crosses t. A count stops at Stan's largest integer, a real at the
+    # family's support, where its CDF is still defined.
+    conditioning_bracket_up(x::int, tail, family, t::real, a::int, args...)::int = begin
+        b::int[1]
+        step::int[1]
+        b[1] = a + 1
+        step[1] = 1
+        while tail(family, b[1], args...) > t
+            if b[1] == 2147483647
+                reject("truncated: the draw lies above Stan's largest integer")
+            end
+            if b[1] > 2147483647 - step[1]
+                b[1] = 2147483647
+            else
+                b[1] = b[1] + step[1]
+            end
+            if step[1] < 1073741824
+                step[1] = 2 * step[1]
+            end
+        end
+        b[1]
+    end
+    conditioning_bracket_up(x::real, tail, family, t::real, a, args...)::real = begin
+        support = conditioning_support_upper(family, args...)
+        b::real[1]
+        step::real[1]
+        step[1] = fmax(1.0, fmax(a, -a))
+        b[1] = fmin(a + step[1], support)
+        while tail(family, b[1], args...) > t
+            if b[1] >= support
+                reject("truncated: the draw lies above the family's support")
+            end
+            step[1] = 2 * step[1]
+            b[1] = fmin(a + step[1], support)
+        end
+        if is_inf(b[1]) == 1
+            reject("truncated: the draw lies above the largest finite real")
+        end
+        b[1]
+    end
+    conditioning_bracket_down(x::int, tail, family, t::real, b::int, args...)::int = begin
+        a::int[1]
+        step::int[1]
+        a[1] = b - 1
+        step[1] = 1
+        while tail(family, a[1], args...) <= t
+            if a[1] == -2147483647
+                reject("truncated: the draw lies below Stan's smallest integer")
+            end
+            if a[1] < -2147483647 + step[1]
+                a[1] = -2147483647
+            else
+                a[1] = a[1] - step[1]
+            end
+            if step[1] < 1073741824
+                step[1] = 2 * step[1]
+            end
+        end
+        a[1]
+    end
+    conditioning_bracket_down(x::real, tail, family, t::real, b, args...)::real = begin
+        support = conditioning_support_lower(family, args...)
+        a::real[1]
+        step::real[1]
+        step[1] = fmax(1.0, fmax(b, -b))
+        a[1] = fmax(b - step[1], support)
+        while tail(family, a[1], args...) <= t
+            if a[1] <= support
+                reject("truncated: the draw lies below the family's support")
+            end
+            step[1] = 2 * step[1]
+            a[1] = fmax(b - step[1], support)
+        end
+        if is_inf(a[1]) == 1
+            reject("truncated: the draw lies below the smallest finite real")
+        end
+        a[1]
+    end
+    lower_conditioning_inverse_rng(x, family, lo, args...) = begin
+        edge = conditioning_edge(x, lo)
+        log_mass = conditioning_logccdf(family, edge, args...)
+        if is_nan(log_mass) == 1 || log_mass == negative_infinity()
+            reject("truncated: no probability above the lower bound is representable in floating point")
+        end
+        t = log1m(uniform_rng(0, 1)) + log_mass
+        conditioning_bisect(x, conditioning_ccdf_tail, family, t, edge,
+            conditioning_bracket_up(x, conditioning_ccdf_tail, family, t, edge, args...), args...)
+    end
+    upper_conditioning_inverse_rng(x, family, hi, args...) = begin
+        log_mass = logcdf(family, hi, args...)
+        if is_nan(log_mass) == 1 || log_mass == negative_infinity()
+            reject("truncated: no probability below the upper bound is representable in floating point")
+        end
+        t = -(log1m(uniform_rng(0, 1)) + log_mass)
+        conditioning_bisect(x, conditioning_cdf_tail, family, t,
+            conditioning_bracket_down(x, conditioning_cdf_tail, family, t, hi, args...), hi, args...)
+    end
+    conditioning_inverse_rng(x, family, lo, hi, args...) = begin
+        if lo > hi
+            reject("truncated: lower bound must not exceed upper bound")
+        end
+        draw::typeof(x)[1]
+        edge = conditioning_edge(x, lo)
+        log_cdf_edge = logcdf(family, edge, args...)
+        log_v = log1m(uniform_rng(0, 1))
+        if log_cdf_edge > log(0.5)
+            log_ccdf_edge = conditioning_logccdf(family, edge, args...)
+            log_ccdf_hi = conditioning_logccdf(family, hi, args...)
+            log_mass = log_diff_exp(log_ccdf_edge, log_ccdf_hi)
+            if is_nan(log_mass) == 1 || log_mass == negative_infinity()
+                reject("truncated: no probability between the bounds is representable in floating point")
+            end
+            draw[1] = conditioning_bisect(x, conditioning_ccdf_tail, family,
+                log_sum_exp(log_ccdf_hi, log_v + log_mass), edge, hi, args...)
+        else
+            log_cdf_hi = logcdf(family, hi, args...)
+            log_mass = log_diff_exp(log_cdf_hi, log_cdf_edge)
+            if is_nan(log_mass) == 1 || log_mass == negative_infinity()
+                reject("truncated: no probability between the bounds is representable in floating point")
+            end
+            draw[1] = conditioning_bisect(x, conditioning_cdf_tail, family,
+                -log_sum_exp(log_cdf_edge, log_v + log_mass), edge, hi, args...)
         end
         draw[1]
     end
@@ -709,7 +898,8 @@ import Statistics
 
     # Ordered re-draw by rejection (`_ordered_rejection`, passes.jl) ---------
     # `rng` is a family's resolved vector draw. Stan's `ordered` check is strict,
-    # so a tie is a rejection too. Same budget and failure as `truncated`.
+    # so a tie is a rejection too. An ordered vector has no CDF to invert, so
+    # the redraws stop with a `reject` after 100000 attempts.
     ordered_rejection_unsorted(x::vector[n])::int = begin
         rv::int[1]
         rv[1] = 0
@@ -1316,6 +1506,19 @@ import Statistics
     normal_lccdf_stable(x::real, loc::real, scale::real)::real =
         (x - loc) / scale > 35 ? std_normal_lcdf_tail((loc - x) / scale) :
             log(erfc((x - loc) / (scale * sqrt(2.)))) - log(2.)
+    # Stan Math computes these three CCDFs as `log(1 - inc_beta(…))`, which is
+    # -Inf once the upper-tail mass falls below ~1e-16
+    # (`neg_binomial_2_lccdf(249 | 70, 50)` is -Inf; the mass is 5.1e-21). The
+    # incomplete-beta symmetry 1 - I_p(a, b) = I_{1-p}(b, a) evaluates the same
+    # tail directly, to full relative precision. Selected only by the truncated
+    # draws' inversion (`conditioning_logccdf`, lpxf_builtin.jl); the densities
+    # keep Stan's companions. snag truncated-rng-re-bd555cae.
+    neg_binomial_2_lccdf_precise(n::int, mu::real, phi::real)::real =
+        n < 0 ? 0.0 : log(inc_beta(n + 1.0, phi, mu / (mu + phi)))
+    neg_binomial_lccdf_precise(n::int, alpha::real, beta::real)::real =
+        n < 0 ? 0.0 : log(inc_beta(n + 1.0, alpha, 1.0 / (1.0 + beta)))
+    binomial_lccdf_precise(n::int, N::int, theta::real)::real =
+        n < 0 ? 0.0 : (n >= N ? negative_infinity() : log(inc_beta(n + 1.0, N - n, theta)))
     end
     student_t_lcdf(args...)
     student_t_lccdf(args...)
