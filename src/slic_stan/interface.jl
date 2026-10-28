@@ -1,14 +1,15 @@
 # --- The interface: a traced program described for consumers outside Julia ---
 #
-# CmdStan, CmdStanPy and BridgeStan run the emitted `.stan` file without Julia.
-# They need the data as a CmdStan JSON file and return draws under the emitted
-# names, so a non-Julia consumer otherwise re-implements StanBlocks' naming: the
-# derived sizes of a container (`y_n`, a ragged input's `y_mem_n`/`y_ends_n`, a
-# table's `df_nrow`), the tuple encoding of a ragged input, and the group layout
-# of a ragged output. `stan_interface` publishes those facts as plain JSON data,
-# projected from the descriptor (todo `0gr4e02`, user decision `0soyu1b`, prong
-# `interface`); `stan_data_json` writes the exact data file a program receives.
-# Nothing here traces or emits.
+# BridgeStan runs the emitted `.stan` file without Julia (its Python package,
+# or nutpie on top of it); it is the runtime StanBlocks supports, CmdStan is not
+# (user, decision `0i2b1wr`). Such a consumer needs the data as a Stan JSON data
+# file and reads draws under the emitted names, so it otherwise re-implements
+# StanBlocks' naming: the derived sizes of a container (`y_n`, a ragged input's
+# `y_mem_n`/`y_ends_n`, a table's `df_nrow`), the tuple encoding of a ragged
+# input, and the group layout of a ragged output. `stan_interface` publishes
+# those facts as plain JSON data, projected from the descriptor (todo `0gr4e02`,
+# user decision `0soyu1b`, prong `interface`); `stan_data_json` writes the exact
+# data file a program receives. Nothing here traces or emits.
 
 const _INTERFACE_FORMAT = "stanblocks-interface/1"
 const _INTERFACE_BLOCKS = Dict(
@@ -20,13 +21,14 @@ const _INTERFACE_BLOCKS = Dict(
 """
     stan_interface(model) -> OrderedDict{String,Any}
 
-Describe a traced program for a consumer that runs its Stan code outside Julia
-(CmdStan, CmdStanPy, BridgeStan from Python). `model` is a
-[`SlicModel`](@ref StanBlocks.SlicModel), a [`StanModel`](@ref
+Describe a traced program for a consumer that runs its Stan code outside Julia,
+through BridgeStan (from Python, for example, with nutpie for sampling). `model`
+is a [`SlicModel`](@ref StanBlocks.SlicModel), a [`StanModel`](@ref
 StanBlocks.StanModel) or a [`ModelDescriptor`](@ref StanBlocks.ModelDescriptor).
 The result holds only strings, numbers, booleans, `nothing`, vectors and
 dictionaries, so `JSON.json(stan_interface(m))` is the interface file; it is
-regenerated with the program and pinned to it by `program_id`.
+regenerated with the program and pinned to it by `program_id`. CmdStan is not a
+supported runtime; see "Running a program outside Julia" in the authoring guide.
 
 Top level:
 
@@ -35,7 +37,7 @@ Top level:
 - `"name"` — the model name.
 - `"data"` — one entry per data-block variable, in data-block order (below).
 - `"parameters"` — the parameter variables in the order BridgeStan's
-  `param_unc_names` / `param_names` and a CmdStan CSV list their coordinates.
+  `param_unc_names` / `param_names` list their coordinates.
 - `"outputs"` — one entry per parameter, transformed parameter and generated
   quantity (below).
 
@@ -102,13 +104,14 @@ end
 """
     stan_data_json(model) -> String
 
-The data `model` binds, as the CmdStan JSON file its program reads — the same
+The data `model` binds, as the Stan JSON data file its program reads — the same
 bytes [`instantiate`](@ref StanBlocks.instantiate) hands BridgeStan. Matrices
 are written as lists of rows and Stan tuples (a ragged input, a table) as
 objects keyed by component position. `model` is a
 [`SlicModel`](@ref StanBlocks.SlicModel), a [`StanModel`](@ref
 StanBlocks.StanModel) or a [`ModelDescriptor`](@ref StanBlocks.ModelDescriptor);
-write it with `write(path, stan_data_json(model))` for CmdStan's `data file=`.
+write it with `write(path, stan_data_json(model))` and pass the path to
+BridgeStan's `StanModel`.
 [`stan_interface`](@ref StanBlocks.stan_interface) describes how each entry is
 encoded.
 """

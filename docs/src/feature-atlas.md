@@ -1348,8 +1348,9 @@ back from the end of the packed argument.
 
 `transpiles(model)` checks only tracing/code generation. A meaningful compiler
 change still needs `stanc` and, where semantics matter, a BridgeStan
-log-density/gradient comparison. The generated Stan may also be compiled and
-sampled through the usual CmdStan workflow.
+log-density/gradient comparison. StanBlocks runs its programs through
+BridgeStan, from Julia or from another language
+([running a program outside Julia](authoring.md#running-a-program-outside-julia)).
 
 ## Honest current boundaries
 

@@ -956,7 +956,7 @@ model body remains an error.
 The Stan name of every value a plate or an annotated loop stores follows from
 that value's own name. It does not change when another statement of the loop is
 added, removed or reordered, or when another plate comes before it, so a program
-run outside Julia (CmdStan, CmdStanPy, BridgeStan) can rely on it:
+run outside Julia (through BridgeStan from Python, say) can rely on it:
 
 | Value | Stan name |
 |---|---|
@@ -1214,14 +1214,30 @@ raise on absent or ambiguous names/operations instead of guessing.
 
 ### Running a program outside Julia
 
-CmdStan, CmdStanPy and BridgeStan run `stan_code(model)` without Julia. Two
-functions give them what the program expects:
+BridgeStan runs `stan_code(model)` without Julia: its Python package compiles
+the same program, and nutpie samples a BridgeStan-compiled model from Python.
+BridgeStan is the runtime StanBlocks supports. StanBlocks itself evaluates,
+samples and replays its programs through it (`instantiate`, `stan_execute`), so
+a Python service using BridgeStan gets the same results. Two functions give it
+what the program expects:
 
 ```julia
 write("model.stan", stan_code(model))
 write("model.data.json", stan_data_json(model))              # the bound data, as BridgeStan receives it
 write("model.interface.json", StanBlocks.JSON.json(stan_interface(model), 2))
 ```
+
+::: info CmdStan
+StanBlocks does not support CmdStan as a runtime and does not shape its programs
+for CmdStan's interfaces. The programs are ordinary Stan, but replaying a fit's
+draws on new data, as `stan_execute(d, :predict)` does, relies on BridgeStan's
+`param_constrain(…; include_tp = true, include_gq = true)`, which recomputes
+transformed parameters and generated quantities on whatever data the model was
+built with. CmdStan's standalone `generate_quantities` writes generated
+quantities only: a transformed parameter, such as a linear predictor for the new
+rows, is missing from its output, and CmdStanPy's `stan_variable` then answers
+that name with the fit's draws for the fitted rows.
+:::
 
 `stan_interface(model)` is plain JSON data. Its `"data"` lists every data
 variable in data-block order. A variable the caller supplies has an
@@ -1236,8 +1252,8 @@ A size such as `y_mem_n` or `M_n` is `"supplied": false`, and its `"computed"`
 rule names the value and axis it measures:
 `{"rule": "size", "of": "y", "component": ["mem"], "axis": 1}`.
 
-`"parameters"` lists the parameter variables in BridgeStan's and CmdStan's
-order. `"outputs"` gives each output's block, `dims` and generative role. For a
+`"parameters"` lists the parameter variables in BridgeStan's order.
+`"outputs"` gives each output's block, `dims` and generative role. For a
 ragged output it also gives a `"segments_rule"` naming where its group ends come
 from: `{"rule": "groups_of", "of": "idx"}` (the groups of a ragged input),
 `{"rule": "lengths", "of": "K"}` (group `g` has `K[g]` values), or the per-cell
