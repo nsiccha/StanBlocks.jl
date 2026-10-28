@@ -4,6 +4,23 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.6
+
+- **A `truncated` draw succeeds whatever mass its range holds.** A predictive
+  or prior draw through `truncated(...)` (or a family's `lower=`/`upper=`)
+  still redraws the base family until a draw lands inside the bounds, but after
+  100 misses it now inverts the base CDF on the range: an integer draw is the
+  exact quantile, a real one is bisected to float resolution inside the
+  family's support. It used to redraw up to 100000 times and then fail with
+  `truncated: rejection sampler exceeded 100000 draws`, so a range holding less
+  than about 1e-5 of the base law's mass (a count class far above the drawn
+  mean, `normal(0, 1)` beyond 6σ) could not be drawn. Draws from
+  `neg_binomial`, `neg_binomial_2` and `binomial` read the upper tail through
+  the incomplete-beta symmetry, since Stan Math's CCDFs of these families are
+  `-Inf` below about 1e-16 of mass. A range whose mass is not representable in
+  floating point rejects with a message saying so. Seeded draws from a range
+  holding less than about 5% of the mass can differ from earlier versions.
+
 ## v0.2.5
 
 - **Stan's `lchoose` is a builtin.** `lchoose(n, k)`, the log of the binomial

@@ -604,7 +604,10 @@ end
 
 The density rejects invalid bounds, assigns negative infinity outside them, and
 subtracts a stable two-sided normalizing term inside. The predictive companion
-uses bounded rejection sampling and fails explicitly after 100,000 attempts.
+redraws the base family until a draw lands in range and, after 100 misses,
+inverts the base CDF on the range, so a range holding little mass still gives an
+exact draw. A range whose mass is not representable in floating point rejects
+explicitly.
 
 #### Censored observations
 

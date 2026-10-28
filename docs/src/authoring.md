@@ -41,7 +41,7 @@ end
 | Combinator | Meaning | Parameter LHS? | Predictive draw |
 |---|---|---:|---|
 | `weighted(family, w, args...)` | Multiply an observation's log density by data-qualified `w`; `family` may be a bounded combinator | No | Draw from the unweighted family |
-| `truncated(family, args...; lower, upper)` | Condition the latent draw to lie inside the supplied bound(s) | Yes | Rejection-sampled inside the inclusive bounds |
+| `truncated(family, args...; lower, upper)` | Condition the latent draw to lie inside the supplied bound(s) | Yes | Redrawn until inside the inclusive bounds, then by inverting the base CDF on the range |
 | `censored(family, args...; lower, upper)` | Place tail probability on threshold atoms; interior values keep their ordinary density | No | Clamp the base-family draw to the thresholds |
 | `interval_censored(family, lower, upper, args...)` | Observe that the latent value lies in `(lower, upper]` | No | Draw from the uncoarsened base family |
 
@@ -51,6 +51,20 @@ removed at compile time. Bounds may be scalar or observation-shaped. Invalid
 runtime bounds reject the Stan proposal. `lower` and `upper` are Stan reserved
 identifiers, so name bound data `lo`/`hi` (or `lloq`/`uloq`) and map them with
 `lower=lo, upper=hi` as above.
+
+A `truncated` predictive draw redraws the base family until a draw lands inside
+the bounds. After 100 misses it inverts the base CDF on the range instead, so a
+range holding little of the base law's mass, such as a count class far above
+the drawn mean, still gives an exact draw: an integer draw is the exact
+quantile, a real one is bisected to float resolution inside the family's
+support. A lower bound inverts the log CCDF, an upper bound the log CDF, and a
+two-sided range the log CCDF when it lies above the base median. Stan Math's
+`neg_binomial`, `neg_binomial_2` and `binomial` CCDFs are `-Inf` below about
+1e-16 of mass, so these draws read the upper tail through the incomplete-beta
+symmetry instead. A range whose mass is not representable in floating point
+rejects with a message saying so. Before v0.2.6 the draw only redrew and failed
+after 100000 attempts, so a range holding less than about 1e-5 of the mass
+could not be drawn.
 
 `interval_censored` takes its interval positionally, as above, or by keyword on
 a family call. The keyword form is the spelling BayesianRegressionModels uses:

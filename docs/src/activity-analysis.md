@@ -105,8 +105,8 @@ generated quantities {
 ```
 
 A prior's own `lower=` / `upper=` bound is a truncation of it: `tau ~ std_normal(;
-lower = 0.)` is a half-normal, so its draw goes through the same rejection sampler
-the `truncated(...)` distribution combinator uses, never a bare `std_normal_rng()`
+lower = 0.)` is a half-normal, so it is drawn exactly as the `truncated(...)`
+distribution combinator draws, never by a bare `std_normal_rng()`
 (which would be negative half the time). Bounds the family already implies
 (`exponential` ⇒ `lower = 0`) need no truncation and draw natively.
 
