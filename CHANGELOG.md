@@ -4,6 +4,15 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.5
+
+- **Stan's `lchoose` is a builtin.** `lchoose(n, k)`, the log of the binomial
+  coefficient, traces in a `@slic` or `@deffun` body, in the forms `lbeta`
+  takes: two ints or reals, a scalar with a vector, row vector, matrix or real
+  array, or two containers of one kind. It used to fail with `Could not find
+  lchoose in model, builtin, … or Main!`. A `@juliacompat` helper gets its Julia
+  method too, with Stan Math's values, domain error and NaN rule.
+
 ## v0.2.4
 
 - **A custom family's sized draw types an untyped observation.** For a family
