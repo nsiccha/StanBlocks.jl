@@ -66,7 +66,7 @@ end
 
 """
 Stan vectorises its binary math builtins (`fmin`, `fmax`, `fdim`, `fmod`,
-`atan2`, `lbeta`, `log_diff_exp`, `owens_t`, `gamma_p`, `gamma_q`,
+`atan2`, `lbeta`, `lchoose`, `log_diff_exp`, `owens_t`, `gamma_p`, `gamma_q`,
 `log_modified_bessel_first_kind`), the binaries whose first argument is an int
 (`binary_log_loss` and the Bessel functions of an int order) and the ternary
 `fma`. Only their scalar forms traced: `mg ./ fmax(nfit, 1.0)` with

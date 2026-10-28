@@ -1035,7 +1035,7 @@ the shapes stanc accepts:
 | Builtins | Container forms |
 |---|---|
 | unary (`exp`, `log1p`, `inv_logit`, `lgamma`, …) | a vector, row vector, matrix or real array, returned as the same container |
-| `fmin`, `fmax`, `fdim`, `fmod`, `atan2`, `lbeta`, `log_diff_exp`, `owens_t`, `gamma_p`, `gamma_q`, `log_modified_bessel_first_kind` | a scalar with one of those containers, or two containers of one kind |
+| `fmin`, `fmax`, `fdim`, `fmod`, `atan2`, `lbeta`, `lchoose`, `log_diff_exp`, `owens_t`, `gamma_p`, `gamma_q`, `log_modified_bessel_first_kind` | a scalar with one of those containers, or two containers of one kind |
 | `binary_log_loss`, `bessel_first_kind`, `bessel_second_kind`, `modified_bessel_first_kind`, `modified_bessel_second_kind` | an int with any of those containers; an int array with a scalar, vector, row vector or real array |
 | `fma` | scalars mixed with one vector, row vector or matrix kind |
 

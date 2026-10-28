@@ -684,6 +684,23 @@ _julia_digamma(x) =
     _julia_is_nonpositive_integer(x) ? oftype(float(x), NaN) : SpecialFunctions.digamma(x)
 _julia_trigamma(x) =
     _julia_is_nonpositive_integer(x) ? oftype(float(x), Inf) : SpecialFunctions.trigamma(x)
+# Stan's `lchoose`, Stan Math's `binomial_coefficient_log`, branch for branch:
+# NaN propagates; `k > n / 2` takes the symmetric `lchoose(n, n - k)`; Stan
+# raises a domain error unless `n >= -1`, `k >= -1` and `n + 1 - k >= 0`;
+# `k == 0` is exactly 0; and from `n + 1 = 10` (Stan Math's
+# `lgamma_stirling_diff_useful`) it is `-lbeta(n + 1 - k, k + 1) - log1p(n)`, so
+# three large `lgamma`s do not cancel. `k == n + 1` is `-Inf` on either branch.
+function _julia_lchoose(n::Real, k::Real)
+    x, y = promote(float(n), float(k))
+    (isnan(x) || isnan(y)) && return oftype(x, NaN)
+    x > -1 && y > x / 2 + 1e-8 && return _julia_lchoose(x, x - y)
+    x >= -1 || throw(DomainError(n, "lchoose(n, k) requires n >= -1"))
+    y >= -1 || throw(DomainError(k, "lchoose(n, k) requires k >= -1"))
+    x + 1 - y >= 0 || throw(DomainError((n, k), "lchoose(n, k) requires n + 1 - k >= 0"))
+    iszero(y) && return zero(x)
+    x + 1 < 10 && return _julia_lgamma(x + 1) - _julia_lgamma(y + 1) - _julia_lgamma(x + 1 - y)
+    -SpecialFunctions.logbeta(x + 1 - y, y + 1) - log1p(x)
+end
 
 # Stan Math's `check_matching_sizes` for elementwise binary builtins.
 _julia_check_matching_sizes(name, x, y) = size(x) == size(y) || throw(DimensionMismatch(
@@ -697,6 +714,7 @@ jcall(::Val{:log1p_exp}, ::_JuliaScope, x) = _julia_log1p_exp(x)
 jcall(::Val{:log1m_exp}, ::_JuliaScope, x) = _julia_log1m_exp(x)
 jcall(::Val{:lgamma}, ::_JuliaScope, x) = _julia_lgamma(x)
 jcall(::Val{:tgamma}, ::_JuliaScope, x) = _julia_tgamma(x)
+jcall(::Val{:lchoose}, ::_JuliaScope, n::Real, k::Real) = _julia_lchoose(n, k)
 jcall(::Val{:digamma}, ::_JuliaScope, x) = _julia_digamma(x)
 jcall(::Val{:trigamma}, ::_JuliaScope, x) = _julia_trigamma(x)
 # This package binds `log2` to its own builtin (Stan's zero-argument `log2()`
