@@ -613,3 +613,165 @@ end
     cpred = stan_execute(cd, :predict; problem = cp, draws = [5.0, log(1e-4)], seed = 3)
     @test all(abs.(cpred.y_gen .- (5.0 .+ 2.0 .* [0.1, 0.2, 0.3, 0.4])) .< 0.01)
 end
+
+"""
+A custom family whose draw is a whole vector ships only the sized-token
+companion `f_rng(vector[n], mu::vector[n], …)::vector[n]` (stanblocks-use §8).
+Without `@lhs` on its density, a fresh `y ~ f(mu, …)` used to be typed a scalar,
+so every program that draws it failed (snag forecast-replay-b98962bf): the
+forecast of a values-free observation, the prior program's omitted response,
+and a latent parameter. The sized companion's signature now types the draw.
+"""
+@testitem "slic: a custom family's sized draw types an untyped fresh observation" tags=[:slic, :plate, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block
+    maybecv = StanBlocks.stan.maybecv
+    output(d, name) = only(o for o in d.outputs if o.name == name)
+
+    @deffun begin
+        "Synthetic two-scale mixture, a joint vector family without `@lhs`."
+        @lpxf vmix_lpdf(y::vector[n], mu::vector[n], sigma::vector[n], p::real)::real = begin
+            lp = 0.0
+            for i in 1:n
+                lp += log_mix(p, normal_lpdf(y[i], mu[i], 2.0 * sigma[i]), normal_lpdf(y[i], mu[i], sigma[i]))
+            end
+            lp
+        end
+        vmix_lpdfs(y::vector[n], mu::vector[n], sigma::vector[n], p::real)::vector[n] = begin
+            lp::vector[n]
+            for i in 1:n
+                lp[i] = log_mix(p, normal_lpdf(y[i], mu[i], 2.0 * sigma[i]), normal_lpdf(y[i], mu[i], sigma[i]))
+            end
+            lp
+        end
+        vmix_rng(vector[n], mu::vector[n], sigma::vector[n], p::real)::vector[n] = begin
+            out::vector[n]
+            for i in 1:n
+                out[i] = bernoulli_rng(p) == 1 ? normal_rng(mu[i], 2.0 * sigma[i]) : normal_rng(mu[i], sigma[i])
+            end
+            out
+        end
+        "A vector read-out of the observation."
+        vexcess(y::vector[n], mu::vector[n], sigma::vector[n])::vector[n] = (y - mu) ./ sigma
+        "A family whose sized draw takes its size from the token alone."
+        @lpxf tokmix_lpdf(y::vector[n], mu::real)::real = normal_lpdf(y, mu, 1.0)
+        tokmix_lpdfs(y::vector[n], mu::real)::vector[n] = y - mu
+        tokmix_rng(vector[n], mu::real)::vector[n] = to_vector(normal_rng(rep_vector(mu, n), 1.0))
+    end
+
+    # The annotated cell of a forecast: the observation is a vector per cell,
+    # drawn by the sized companion, and read after its `~` as a vector.
+    cell(tail...) = quote
+        b ~ normal(0.0, 1.0); s ~ exponential(1.0)
+        @plate for i in eachindex(x)
+            mu[i] = b .+ x[i]
+            s_obs = s .+ 0.1 .* x[i]
+            $(tail...)
+        end
+    end
+    observe = :(y[i] ~ vmix(mu[i], s_obs, 0.2))
+    read = :(z[i] = vexcess(y[i], mu[i], s_obs))
+    x = [[0.1, 0.2, 0.3], [0.4, 0.5]]
+    data = Dict{Symbol,Any}(:x => x, :y => [[1.0, 2.0, 3.0], [4.0, 5.0]])
+    for tail in ((observe, read), (observe,))
+        fit = StanBlocks.SlicModel(cell(tail...), data, @__MODULE__)
+        @test occursin("vmix(", stan_block(stan_code(fit), "model"))
+        forecast = fit(; y = maybecv(:y))
+        gq = stan_block(stan_code(forecast), "generated quantities")
+        @test occursin(r"y\[ragged_start\(y__pl_end, i\):ragged_end\(y__pl_end, i\)\] = vmix_vector_rng\(", gq)
+        @test occursin("vector[sum(y__pl_len)] y_gen = y;", gq)
+        d = stan_descriptor(forecast)
+        @test output(d, :y_gen).segments == [3, 5]
+        @test output(d, :b).kind == :parameter
+        tail === (observe,) && continue
+        @test occursin(r"z\[ragged_start\(z__pl_end, i\):ragged_end\(z__pl_end, i\)\] = vexcess\(\s*y\[", gq)
+    end
+    # Read before its `~`, the observation still has nothing to read.
+    @test_throws "has no values to read" stan_code(
+        StanBlocks.SlicModel(cell(read, observe), data, @__MODULE__)(; y = maybecv(:y)))
+
+    # The do-form cell with the marked positional, a model-scope forecast, and
+    # the prior program that omits the response.
+    doform = StanBlocks.SlicModel(quote
+        b ~ normal(0.0, 1.0); s ~ exponential(1.0)
+        pred ~ plate(y, x) do y, x
+            m = b .+ x
+            y ~ vmix(m, s .+ 0.1 .* x, 0.2)
+            vexcess(y, m, s .+ 0.1 .* x)
+        end
+    end, Dict{Symbol,Any}(:x => x, :y => maybecv(:y)), @__MODULE__)
+    dc = stan_code(doform)
+    @test occursin(r"pred_y\[[^\]]*\] = vmix_vector_rng\(", dc)
+    @test output(stan_descriptor(doform), :y_gen).segments == [3, 5]
+    dense = StanBlocks.SlicModel(quote
+        b ~ normal(0.0, 1.0); s ~ exponential(1.0)
+        y ~ vmix(b .+ x, s .+ 0.0 .* x, 0.2)
+    end, Dict{Symbol,Any}(:x => [0.1, 0.2, 0.3], :y => maybecv(:y)), @__MODULE__)
+    @test occursin("vector[x_n] y = vmix_vector_rng(x_n, (b + x), (s + (0.0 .* x)), 0.2);", stan_code(dense))
+    prior = StanBlocks.SlicModel(cell(observe), Dict{Symbol,Any}(:x => x), @__MODULE__, (:y,))
+    pc = stan_code(prior)
+    @test strip(stan_block(pc, "parameters")) == "{\n}"
+    @test occursin("vmix_vector_rng(", stan_block(pc, "generated quantities"))
+
+    # A latent parameter of the family is a vector parameter.
+    latent = stan_code(StanBlocks.SlicModel(quote
+        b ~ normal(0.0, 1.0)
+        th ~ vmix(b .+ x, 1.0 .+ 0.0 .* x, 0.2)
+        y ~ normal(th, 1.0)
+    end, Dict{Symbol,Any}(:x => [0.1, 0.2, 0.3], :y => [1.0, 2.0, 3.0]), @__MODULE__))
+    @test occursin("vector[x_n] th;", stan_block(latent, "parameters"))
+
+    # A size only the token carries is unknown: the sized draw cannot type the
+    # observation, which stays a scalar as before (the author annotates it).
+    msg = try
+        stan_code(StanBlocks.SlicModel(quote
+            b ~ normal(0.0, 1.0)
+            y ~ tokmix(b)
+        end, Dict{Symbol,Any}(:y => maybecv(:y)), @__MODULE__))
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test occursin("no predictive companion for a `real`", msg)
+    @test occursin("If `y` is not a scalar, its sized companion `tokmix_rng(vector[n], …)` " *
+        "must take `n` from another argument", msg)
+end
+
+@testitem "slic: a custom family's sized draw stanc acceptance" tags=[:slic, :plate, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles
+    maybecv = StanBlocks.stan.maybecv
+    @deffun begin
+        @lpxf vmix_lpdf(y::vector[n], mu::vector[n], sigma::vector[n], p::real)::real =
+            log_mix(p, normal_lpdf(y, mu, 2.0 * sigma), normal_lpdf(y, mu, sigma))
+        vmix_lpdfs(y::vector[n], mu::vector[n], sigma::vector[n], p::real)::vector[n] = begin
+            lp::vector[n]
+            for i in 1:n
+                lp[i] = log_mix(p, normal_lpdf(y[i], mu[i], 2.0 * sigma[i]), normal_lpdf(y[i], mu[i], sigma[i]))
+            end
+            lp
+        end
+        vmix_rng(vector[n], mu::vector[n], sigma::vector[n], p::real)::vector[n] = begin
+            out::vector[n]
+            for i in 1:n
+                out[i] = bernoulli_rng(p) == 1 ? normal_rng(mu[i], 2.0 * sigma[i]) : normal_rng(mu[i], sigma[i])
+            end
+            out
+        end
+        vexcess(y::vector[n], mu::vector[n], sigma::vector[n])::vector[n] = (y - mu) ./ sigma
+    end
+    fit = StanBlocks.SlicModel(quote
+        b ~ normal(0.0, 1.0); s ~ exponential(1.0)
+        @plate for i in eachindex(x)
+            mu[i] = b .+ x[i]
+            s_obs = s .+ 0.1 .* x[i]
+            y[i] ~ vmix(mu[i], s_obs, 0.2)
+            z[i] = vexcess(y[i], mu[i], s_obs)
+        end
+    end, Dict{Symbol,Any}(:x => [[0.1, 0.2, 0.3], [0.4, 0.5]], :y => [[1.0, 2.0, 3.0], [4.0, 5.0]]), @__MODULE__)
+    @test stanc_compiles(fit)
+    @test stanc_compiles(fit(; y = maybecv(:y)))
+    @test stanc_compiles(StanBlocks.SlicModel(quote
+        b ~ normal(0.0, 1.0)
+        th ~ vmix(b .+ x, 1.0 .+ 0.0 .* x, 0.2)
+        y ~ normal(th, 1.0)
+    end, Dict{Symbol,Any}(:x => [0.1, 0.2, 0.3], :y => [1.0, 2.0, 3.0]), @__MODULE__))
+end

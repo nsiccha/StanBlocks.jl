@@ -1218,6 +1218,13 @@ _check_redraw_resolves(lhs, rhs, draw) = begin
     shape = nd == 0 ? string(ct) : string(ct, "[", join(("n" for _ in 1:nd), ", "), "]")
     signature = nd == 0 ? string(rng, "(<the family's args…>)::", shape) :
         string(rng, "(", shape, ", <the family's args…>)::", shape)
+    # An untyped `name` is a scalar only because nothing gave it a shape
+    # (`_broadcast_fresh_sample_type`, forward.jl): a sized companion types it
+    # when the family's other arguments carry its size.
+    unshaped = nd == 0 ? string(
+        " If `", name, "` is not a scalar, its sized companion `", rng, "(vector[n], …)` ",
+        "must take `n` from another argument of the family (`mu::vector[n]`), or ",
+        "declare the shape (`", name, "::vector[n] ~ …`).") : ""
     error(
         "`", name, " ~ ", nameof(family), "(…)` is re-drawn in generated quantities — ",
         "no likelihood reaches `", name, "` (a prior-only / prior-predictive program), ",
@@ -1226,6 +1233,7 @@ _check_redraw_resolves(lhs, rhs, draw) = begin
         "`: `", rng, "` resolved to an untyped (`anything`) result. Add\n    @deffun ",
         signature, " = …\nalongside the density (the sized-token protocol every ",
         "vector-shaped predictive draw uses; see `normal_rng(vector[n], …)` in `builtin.jl`).",
+        unshaped,
     )
 end
 
