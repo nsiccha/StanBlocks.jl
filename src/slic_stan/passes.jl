@@ -255,7 +255,22 @@ _restore_sampling_kwargs(new, old) = new
 # P(sorted | θ) that a whole-program prior draw would need. Ragged constrained
 # parameters take their own sampled path (`ragged_density`).
 _ordered_center(x) = center_type(x) in (types.ordered, types.positive_ordered)
-_gq_redrawable(x, rhs) = !_ordered_center(x) || _exchangeable_prior(rhs)
+_gq_redrawable(x, rhs) = (!_ordered_center(x) || _exchangeable_prior(rhs)) && _restricted_redrawable(rhs)
+# A `restricted(...)` prior is the family's plain kernel on its bounds, so the
+# fitted joint drops the normaliser P(lo <= x <= hi | θ), exactly as an ordered
+# prior drops P(sorted | θ). Its truncated re-draw is exact given its arguments
+# (a cv-held-out or draw-reading re-draw), and for a whole prior-only program
+# only when that normaliser is constant; otherwise it stays a sampled parameter.
+_restricted_redrawable(rhs::StanExpr) = _restricted_redrawable(expr(rhs))
+_restricted_redrawable(rhs::CanonicalExpr) = !_is_restricted(rhs) ||
+    _constant_truncation_normaliser(rhs, _truncation_bounds(rhs))
+_restricted_redrawable(rhs) = true
+# A prior kept in the model block only because it cannot be re-drawn
+# (`_gq_redrawable`) is reached by no likelihood, so nothing has traversed the
+# constraints of its declaration: a bound that reads another parameter
+# (`restricted(normal, 0, 1; lower=a)`) must keep `a` sampled too.
+_reach_kept_constraints!(decl; info) =
+    lqual(decl) == :affects_likelihood || backward!(values(constraints(type(decl))); info)
 # `c::ordered[k] ~ f(θ)` has the density ∏ f(c_i | θ) on the ordered region.
 # When that product is symmetric in the elements — a native elementwise family
 # whose every argument is a scalar — each of the k! orderings of k iid draws
@@ -309,6 +324,7 @@ backward!(x::SamplingExpr{<:StanExpr{Symbol}}; info) = if qual(x.args[1]) == :da
         _is_cv_observation(expr(x.args[1]); info)
     lhs, rhs = x.args
     decl = info[expr(x.args[1])]
+    qual(decl) == :parameter && !_gq_redrawable(x.args...) && _reach_kept_constraints!(decl; info)
     remake(x, decl, _truncated_sampling_rhs(decl, _restore_sampling_kwargs(backward!(rhs; info), rhs)))
 else
     lhs, rhs = x.args
@@ -339,6 +355,7 @@ backward!(x::SamplingExpr; info) = begin
             # the declaration `:quantities` (see `_forward_indexed_sampling!` in
             # forward.jl); this is the matching half that turns the `~` itself
             # into the generated-quantities re-draw.
+            _gq_redrawable(info[key], rhs) || _reach_kept_constraints!(info[key]; info)
             remake(x, lhs, _truncated_sampling_rhs(info[key], _restore_sampling_kwargs(backward!(rhs; info), rhs)))
         else
             # Prior-only plate locals are generated quantities, matching the

@@ -35,7 +35,7 @@ end
     weighted_lpmf
     # Public distribution-HOF tokens match Julia's distribution vocabulary;
     # collision-free conditioning/clamping names remain implementation details.
-    truncated censored interval_censored
+    truncated censored interval_censored restricted
     lower_conditioning_lpdf lower_conditioning_lpmf
     upper_conditioning_lpdf upper_conditioning_lpmf
     conditioning_lpdf conditioning_lpmf

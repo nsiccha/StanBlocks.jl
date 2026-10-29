@@ -136,6 +136,17 @@ _distribution_hof(::typeof(builtin.interval_censored)) = (
 )
 _distribution_hof(::typeof(builtin.interval_evidence_impl)) =
     _distribution_hof(builtin.interval_censored)
+# `restricted` is Stan's `real<lower=lo> x; x ~ family(args);`: the bounds go on
+# the declaration and the model block keeps the family's plain kernel, with no
+# truncation normaliser. It never reaches the companion selection below: it
+# lowers to the bounded base-family call (`_restricted_call`).
+_distribution_hof(::typeof(builtin.restricted)) = (
+    name = :restricted,
+    family_arg = 1,
+    data_args = (),
+    requires_data_lhs = false,
+    optional_kwargs = (:lower, :upper),
+)
 _fixed_distribution_hof(name, variant; requires_data_lhs = false) = (
     name,
     family_arg = 1,
@@ -208,7 +219,8 @@ end
 const _SAMPLING_SHAPE_KWARGS = (:type, :m, :n, :o, :size)
 _check_hof_keywords(f, x::CanonicalExpr) = nothing
 _check_hof_keywords(
-    f::Union{typeof(builtin.truncated),typeof(builtin.censored),typeof(builtin.weighted)},
+    f::Union{typeof(builtin.truncated),typeof(builtin.censored),typeof(builtin.weighted),
+        typeof(builtin.restricted)},
     x::CanonicalExpr,
 ) = begin
     spec = _distribution_hof(f)
@@ -237,7 +249,7 @@ _check_hof_keywords(f::typeof(builtin.interval_censored), x::CanonicalExpr) = be
     )
     nothing
 end
-_hof_keyword_help(::Union{typeof(builtin.truncated),typeof(builtin.censored)}) =
+_hof_keyword_help(::Union{typeof(builtin.truncated),typeof(builtin.censored),typeof(builtin.restricted)}) =
     "Its bounds are `lower=` and `upper=`."
 _hof_keyword_help(::typeof(builtin.weighted)) =
     "Its only keywords are `lower=` and `upper=`, which bound a `truncated` or " *
@@ -343,6 +355,7 @@ validate_sampling_rhs(lhs, rhs::StanExpr{<:CanonicalExpr}; info) = begin
     unbound = _declared_observation_lhs(lhs; info)
     unbound || _validate_parameter_constraint_scope(lhs)
     canonical = expr(rhs)
+    _check_restricted_lhs(lhs, canonical; unbound)
     spec = _distribution_hof(head(canonical))
     isnothing(spec) || _validate_distribution_hof(spec, lhs, canonical; unbound)
     _check_matrix_variate_args(lhs, canonical)
@@ -387,6 +400,7 @@ end
 # or a latent parameter. Recheck at block placement, after activity analysis.
 validate_sampled_rhs(lhs, rhs::StanExpr{<:CanonicalExpr}; info) = begin
     _validate_parameter_constraint_scope(lhs)
+    _check_restricted_lhs(lhs, expr(rhs))
     spec = _distribution_hof(head(expr(rhs)))
     isnothing(spec) || _validate_distribution_hof(spec, lhs, expr(rhs))
     nothing
@@ -574,6 +588,49 @@ expand_inline_or_trace(
     spliced = _hof_call_family_splice(_distribution_hof(head(x)), x)
     spliced !== nothing && return forward!(spliced; info)
     forward!(_hof_impl_call(x; x.kwargs...); info)
+end
+# `restricted(family, args...; lower, upper)` lowers to the bounded base-family
+# call `family(args...; lower, upper)` the kwarg spelling builds, marked so
+# that the fitted density keeps the plain kernel where the kwarg spelling
+# truncates (`_normalised_truncation`). Everything else is that call's:
+# `autotype` puts the bounds on the declaration, and a re-draw in generated
+# quantities is the truncated draw (`_user_bounded_redraw`), the law of the
+# restricted variable given its arguments. The key is not a writable keyword,
+# so the marker cannot be spelled on a base family directly.
+const _RESTRICTED_KEY = Symbol("#restricted")
+_is_restricted(rhs::StanExpr) = _is_restricted(expr(rhs))
+_is_restricted(rhs::CanonicalExpr) = haskey(rhs.kwargs, _RESTRICTED_KEY)
+_is_restricted(rhs) = false
+expand_inline_or_trace(x::CanonicalExpr{typeof(builtin.restricted)}; info) = begin
+    spec = _distribution_hof(head(x))
+    spliced = _hof_call_family_splice(spec, x)
+    spliced !== nothing && return forward!(spliced; info)
+    family = _family_function(x.args[spec.family_arg])
+    nested = _distribution_hof(family)
+    isnothing(nested) || _check_nestable(spec, nested)
+    family isa Function || error(
+        "restricted: the family slot takes a function family; a value family ",
+        "declares its support with `support=` instead",
+    )
+    any(in(keys(x.kwargs)), BOUND_KEYS) || error(
+        "restricted: provide at least one of `lower=` or `upper=`",
+    )
+    forward!(CanonicalExpr(family, x.args[spec.family_arg+1:end]...;
+        x.kwargs..., _RESTRICTED_KEY => true); info)
+end
+# A restricted law is a prior. On an observation the plain kernel is the bare
+# family, so the bounds would change nothing but a support check; a truncated
+# likelihood is `truncated(...)`.
+_check_restricted_lhs(lhs, rhs; unbound=false) = begin
+    _is_restricted(rhs) || return nothing
+    (qual(lhs) == :data || unbound) || return nothing
+    error(
+        "restricted: `", _base_lhs_symbol(lhs), "` is an observation, and `restricted` ",
+        "is a prior: it bounds a parameter's declaration and keeps the family's plain ",
+        "kernel. On an observation the plain kernel is the bare family ",
+        "(`y ~ normal(mu, s)`); a truncated likelihood is `truncated(normal, mu, s; ",
+        "lower=lo)`.",
+    )
 end
 # `y ~ interval_censored(normal(mu, s); upper = hi)` is BRM's spelling (decision
 # 0jz7uw4): the observation is the interval's lower endpoint, unless `lower = lo`
@@ -942,6 +999,11 @@ redraw_rng_expr(token, rhs::CanonicalExpr) = rng_expr(token, _user_bounded_redra
 _normalised_truncation(rhs::StanExpr; support=(;), observed=false) = begin
     c = expr(rhs)
     c isa CanonicalExpr || return rhs
+    # `restricted(...)` keeps the plain kernel; `_check_restricted_lhs` refuses
+    # it on an observation before it gets here.
+    _is_restricted(c) && return observed ? error(
+        "restricted: an observation keeps no restricted law (`_check_restricted_lhs`)",
+    ) : rhs
     bounds = _truncation_bounds(remake(c, c.args...; support..., c.kwargs...))
     isempty(bounds) && return rhs
     !observed && _constant_truncation_normaliser(c, bounds) && return rhs
