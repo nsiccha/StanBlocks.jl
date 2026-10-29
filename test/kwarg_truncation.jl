@@ -306,3 +306,27 @@ end
         end
     end
 end
+
+"""
+`flat(; lower=a)` declares the support of an improper uniform. It has no mass,
+so a bound that reads a parameter is no truncation: since StanBlocks `37c9537`
+it was rewritten to `truncated(flat, …)` and failed with `built-in family flat
+has no Stan flat_lccdf companion`.
+"""
+@testitem "slic: a flat declaration bounded by a parameter declares its support" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stan_block, stanc_compiles
+    for (name, m, decl) in [
+            ("scalar", @slic((; y=0.3), begin
+                a ~ normal(0., 1.); x ~ flat(; lower=a); y ~ normal(x, 1.)
+            end), "real<lower=a> x;"),
+            ("typed vector", @slic((; y=[0.3, 0.2]), begin
+                a ~ normal(0., 1.); x::vector[2] ~ flat(; upper=a); y ~ normal(x, 1.)
+            end), "vector<upper=a>[2] x;")]
+        @testset "$name" begin
+            code = stan_code(m)
+            @test occursin(decl, stan_block(code, "parameters"))
+            @test !occursin("conditioning", code)
+            @test stanc_compiles(m)
+        end
+    end
+end

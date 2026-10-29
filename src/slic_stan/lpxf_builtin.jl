@@ -890,6 +890,10 @@ _restates_implied_bound(user, implied) =
     implied !== nothing && isequal(_bound_value(user), _bound_value(implied))
 _truncation_bounds(rhs::CanonicalExpr) = begin
     isnothing(_distribution_hof(head(rhs))) || return (;)   # a HOF owns its own bounds
+    # `flat(; lower=a)` declares the support of an improper uniform: it has no
+    # mass to normalise, so its bounds never truncate it. Truncating it asked
+    # for a `flat_lccdf` whenever a bound was a parameter.
+    head(rhs) === builtin.flat && return (;)
     implied = autokwargs(rhs)
     (; [
         key => rhs.kwargs[key]
