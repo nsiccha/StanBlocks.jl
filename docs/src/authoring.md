@@ -13,6 +13,7 @@ what ragged data means, and the exact boundary of `plate`.
 | Write deterministic control flow | `@deffun` | Inference-first signatures with optional type/shape annotations; Stan-compatible loops, branches, mutation, iteration, and bounded comprehensions |
 | Repeat a parameter-generating cell | `plate(...) do ... end` | The compiler-owned model loop; fresh cell bindings are promoted to outer storage |
 | Combine a base distribution with observation semantics | `weighted`, `truncated`, `censored`, `interval_censored` | One base-family token; the compiler selects density, pointwise, CDF, and RNG companions |
+| Bound a prior with Stan's plain kernel | `restricted(family, args...; lower, upper)` | The bounds go on the declaration; the model block keeps the family's statement |
 | Integrate a Gaussian latent out of the model block | `z ~ laplace_marginal(prior) do z ... end` | Stan's embedded Laplace approximation; the do block is the latent's likelihood, and its observations keep their twins |
 | Reflect or execute a traced declaration | `stan_descriptor`, `stan_execute` | Inputs, outputs, included definitions, and available operations are derived from the model |
 
@@ -44,8 +45,9 @@ end
 | `truncated(family, args...; lower, upper)` | Condition the latent draw to lie inside the supplied bound(s) | Yes | Redrawn until inside the inclusive bounds, then by inverting the base CDF on the range |
 | `censored(family, args...; lower, upper)` | Place tail probability on threshold atoms; interior values keep their ordinary density | No | Clamp the base-family draw to the thresholds |
 | `interval_censored(family, lower, upper, args...)` | Observe that the latent value lies in `(lower, upper]` | No | Draw from the uncoarsened base family |
+| `restricted(family, args...; lower, upper)` | Bound a parameter's declaration and keep the family's plain kernel (Stan's `real<lower=lo> x; x ~ family(args);`) | Only | The truncated draw, where the law allows it (below) |
 
-For `truncated` and `censored`, at least one of `lower=` or `upper=` is
+For `truncated`, `censored` and `restricted`, at least one of `lower=` or `upper=` is
 required. An omitted side and an explicit `nothing` are equivalent and are
 removed at compile time. Bounds may be scalar or observation-shaped. Invalid
 runtime bounds reject the Stan proposal. `lower` and `upper` are Stan reserved
@@ -65,6 +67,56 @@ symmetry instead. A range whose mass is not representable in floating point
 rejects with a message saying so. Before v0.2.6 the draw only redrew and failed
 after 100000 attempts, so a range holding less than about 1e-5 of the mass
 could not be drawn.
+
+### Bounded priors: `truncated` or `restricted`
+
+A bound on a parameter prior has two laws, and each has its spelling:
+
+```julia
+@slic (; y) begin
+    a ~ normal(0, 1)
+    x ~ truncated(normal(0, 1); lower=a)   # the normalised law
+    w ~ restricted(normal(0, 1); lower=a)  # Stan's plain kernel
+    y ~ normal(x + w, 1)
+end
+```
+
+```stan
+parameters { real a; real<lower=a> x; real<lower=a> w; }
+model {
+    a ~ normal(0, 1);
+    x ~ lower_conditioning_normal(a, 0, 1);
+    w ~ normal(0, 1);
+    y ~ normal((x + w), 1);
+}
+```
+
+- `truncated` divides the density by the mass inside the bounds, so `x` given
+  `a` is the normal truncated at `a`, and prior draws match the density. A
+  `lower=`/`upper=` keyword on the family (`normal(0, 1; lower=a)`) is this law
+  too.
+- `restricted` puts the bounds on the declaration and keeps the family's plain
+  kernel, as a hand-written Stan model does without `T[,]`: the joint is the
+  unbounded joint restricted to the bounds. It needs no CDF companion, so a
+  custom family takes it as it is.
+- When the bounds and the family's arguments are all data, or a symmetric
+  family is cut once at its location (`normal(0, s; lower=0)`), the two laws
+  differ by a constant and emit the same model block. They differ where the
+  mass inside the bounds moves with a parameter.
+
+`restricted` takes a token or a family call, like the other combinators:
+`restricted(normal, mu, s; lower=lo)` is `restricted(normal(mu, s); lower=lo)`.
+It works wherever a prior does: a bare or typed LHS, a `plate` cell, a
+`@plate for` body, a `vcat` block and a slice statement. Given its arguments
+its law is the truncated law, so where the compiler re-draws it in generated
+quantities (held out given a fit, or reading a random draw) the draw is the
+`truncated` draw. In a prior-only program it is drawn only when the mass
+inside its bounds is a constant. Otherwise the program's joint drops that
+mass, no independent draw is exact, and the prior stays a sampled parameter
+together with what its bounds and arguments read, as a non-exchangeable
+`ordered` prior does. `restricted` is a prior: an observation's plain kernel is
+the bare family (`y ~ normal(mu, s)`), so `y ~ restricted(…)` on data is an
+error, as are a call without a bound and a combinator in its family slot.
 
 `interval_censored` takes its interval positionally, as above, or by keyword on
 a family call. The keyword form is the spelling BayesianRegressionModels uses:
