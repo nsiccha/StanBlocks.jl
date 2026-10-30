@@ -4,6 +4,27 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.7
+
+- **`restricted(...)` bounds a prior with Stan's plain kernel.**
+  `x ~ restricted(normal, mu, s; lower=lo, upper=hi)`, or the call form
+  `restricted(normal(mu, s); lower=lo)`, emits `real<lower=lo, upper=hi> x;`
+  and `x ~ normal(mu, s);`, as a hand-written Stan model without `T[,]` does,
+  whatever the bounds and arguments read. `truncated(...)` and a family's
+  `lower=`/`upper=` keep the normalised law, which divides by the mass inside
+  the bounds. A bounded prior whose bound or arguments are parameters
+  previously had only that normalised spelling. `restricted` takes no CDF
+  companion, works in plate cells, `@plate for` bodies, `vcat` blocks and
+  slice statements, and is a prior only: on an observation it is an error.
+  Held out given a fit, it is re-drawn from its truncated law given the fitted
+  arguments; a prior-only program draws it only when the mass inside its
+  bounds is a constant, and otherwise keeps it, and what its bounds and
+  arguments read, a sampled parameter.
+- **A `flat` declaration bounded by a parameter declares its support.**
+  `x ~ flat(; lower=a)` with `a` a parameter failed at transpile with
+  `built-in family flat has no Stan flat_lccdf companion`; it now emits
+  `real<lower=a> x;` with no statement.
+
 ## v0.2.6
 
 - **A `truncated` draw succeeds whatever mass its range holds.** A predictive
