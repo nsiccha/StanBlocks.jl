@@ -271,6 +271,14 @@ end
     normal_lcdf_stable
     normal_lccdf_stable
     std_normal_lcdf_tail
+    # Stable scaled log-CDF `log Φ(z) + z²/2` and the two densities whose Stan
+    # Math kernels take `log(erfc(·))` directly and underflow in deep tails
+    # (`@deffun` bodies + rationale beside `std_normal_lcdf_tail`; snag
+    # ap3-native-skew-db722fb4).
+    std_normal_scaled_lcdf_tail
+    std_normal_scaled_lcdf
+    exp_mod_normal_lpdf_stable
+    skew_normal_lpdf_stable
 
     # Longitudinal dose/time-response building blocks. The obs model is a
     # censored normal w/ limits of quantification (`truncated_normal` — the
@@ -1528,18 +1536,49 @@ import Statistics
     # deep-tail gradient is off by 7e-6 at 40σ and 4e-4 at 60σ (BridgeStan
     # 2.9.0). The ternary evaluates only the selected branch, so no underflowed
     # erfc node reaches the AD tape; for |z| ≤ 35 the erfc branch is unchanged.
+    #
+    # The expansion is kept in its scaled form `log Φ(z) + z²/2` =
+    # log(erfcx(-z/√2)/2) (`std_normal_scaled_lcdf_tail`), so a caller that
+    # adds `z²/2` back never forms the large opposite-signed pair
+    # `-z²/2 + z²/2`. `std_normal_scaled_lcdf` is that scaled log-CDF for all z
+    # (erfc form within 35σ, absolute error ≲ 1.4e-13 there).
+    #
+    # Stan Math 5.3.0/5.4.0 `exp_mod_normal_lpdf` and `skew_normal_lpdf` take
+    # `log(erfc(r))` directly, so past r ≈ 26.5 the value is -Inf and the
+    # gradient NaN (exp_mod_normal: 0/0) or -Inf (skew_normal). The `_stable`
+    # densities below are the same normalized laws written through the stable
+    # normal log-CDF: exp_mod_normal(y | μ, σ, λ) = log λ + λ(μ - y) + λ²σ²/2 +
+    # log Φ(z), z = (y - μ)/σ - λσ, taken for z < 0 as
+    # log λ - ((y - μ)/σ)²/2 + [log Φ(z) + z²/2], which drops the λ(μ - y) +
+    # λ²σ²/2 versus -z²/2 cancellation at large λσ; skew_normal(y | ξ, ω, α) =
+    # log 2 + normal_lpdf(y | ξ, ω) + log Φ(α(y - ξ)/ω). snag
+    # ap3-native-skew-db722fb4; upstream stan-dev/math#3406.
     @stanonly begin
-    std_normal_lcdf_tail(z::real)::real = begin
+    std_normal_scaled_lcdf_tail(z::real)::real = begin
         w = inv(square(z))
-        -0.5 * square(z) - log(-z) - 0.9189385332046728 +
+        -log(-z) - 0.9189385332046728 +
             log1p(w * (-1 + w * (3 + w * (-15 + w * (105 + w * (-945 + w * 10395))))))
     end
+    std_normal_lcdf_tail(z::real)::real = -0.5 * square(z) + std_normal_scaled_lcdf_tail(z)
+    std_normal_scaled_lcdf(z::real)::real =
+        z < -35 ? std_normal_scaled_lcdf_tail(z) :
+            log(erfc(-z / sqrt(2.))) - log(2.) + 0.5 * square(z)
     normal_lcdf_stable(x::real, loc::real, scale::real)::real =
         (x - loc) / scale < -35 ? std_normal_lcdf_tail((x - loc) / scale) :
             log(erfc(-(x - loc) / (scale * sqrt(2.)))) - log(2.)
     normal_lccdf_stable(x::real, loc::real, scale::real)::real =
         (x - loc) / scale > 35 ? std_normal_lcdf_tail((loc - x) / scale) :
             log(erfc((x - loc) / (scale * sqrt(2.)))) - log(2.)
+    exp_mod_normal_lpdf_stable(y::real, mu::real, sigma::real, lambda::real)::real = begin
+        z = (y - mu) / sigma - lambda * sigma
+        z < 0 ? log(lambda) - 0.5 * square((y - mu) / sigma) + std_normal_scaled_lcdf(z) :
+            log(lambda) + lambda * (mu - y) + 0.5 * square(lambda * sigma) + normal_lcdf_stable(z, 0., 1.)
+    end
+    # -0.2257913526447274 = log(2) - log(2π)/2
+    skew_normal_lpdf_stable(y::real, xi::real, omega::real, alpha::real)::real = begin
+        z = (y - xi) / omega
+        -0.5 * square(z) - log(omega) - 0.2257913526447274 + normal_lcdf_stable(alpha * z, 0., 1.)
+    end
     # Stan Math computes these three CCDFs as `log(1 - inc_beta(…))`, which is
     # -Inf once the upper-tail mass falls below ~1e-16
     # (`neg_binomial_2_lccdf(249 | 70, 50)` is -Inf; the mass is 5.1e-21). The
