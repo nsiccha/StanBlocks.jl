@@ -279,6 +279,18 @@ end
     std_normal_scaled_lcdf
     exp_mod_normal_lpdf_stable
     skew_normal_lpdf_stable
+    # Student-t log-CDF/CCDF companions with a finite gradient where the
+    # observation equals the location (Stan Math's are NaN there) and no
+    # `1 - x` cancellation in either tail; selected for the `student_t` family
+    # like the normal pair above (`@deffun` bodies + rationale beside
+    # `std_normal_lcdf_tail`; snag native-student-t-b7023f91).
+    std_student_t_lcdf
+    std_student_t_lcdf_center
+    std_student_t_ltail
+    std_student_t_ltail_far
+    std_student_t_tail_series
+    student_t_lcdf_stable
+    student_t_lccdf_stable
 
     # Longitudinal dose/time-response building blocks. The obs model is a
     # censored normal w/ limits of quantification (`truncated_normal` — the
@@ -1579,6 +1591,78 @@ import Statistics
         z = (y - xi) / omega
         -0.5 * square(z) - log(omega) - 0.2257913526447274 + normal_lcdf_stable(alpha * z, 0., 1.)
     end
+    # Stan Math 5.3.0/5.4.0 `student_t_lcdf`, `student_t_lccdf` and
+    # `student_t_cdf` work with q = ν/t², t = (y - μ)/σ. At t = 0 the Jacobian
+    # 2r²q/t is 0·∞/0, so every partial (y, ν, μ, σ) is NaN exactly where the
+    # observation equals the location, although the value log(1/2) is right;
+    # below |t| ≈ 1e-154 t² underflows to the same point. A censored Student-t
+    # likelihood whose limit equals the location therefore has a NaN gradient.
+    # The same kernels form 1 - x and 1 - I by subtraction, which loses the
+    # tail mass (stan-dev/math#2923, open PR #3433 fixes those but keeps 2r²q/t).
+    #
+    # `std_student_t_lcdf(t, ν)` = log P(T_ν ≤ t), from exact-derivative pieces:
+    # - u·max(1, (ν+1)/2) < 1e-8, u = t²/ν: the series
+    #   F(t) = 1/2 + t f₀ ₂F₁(1/2, (ν+1)/2; 3/2; -u),
+    #   f₀ = 1/(√ν B(1/2, ν/2)) the density at 0, kept to u²: each term is at
+    #   most 1e-8 times the one before, so the first omitted one is below 1e-24
+    #   relative. It is analytic at t = 0, where its derivative is the density.
+    # - otherwise the one-sided tail mass log P(T_ν ≤ -|t|) (`std_student_t_ltail`),
+    #   taken for t > 0 as log1m_exp of it. For t² ≤ 4 it is
+    #   log(1 - I_r(1/2, ν/2)) - log 2, r = t²/(ν+t²), and the complement
+    #   1 - I_r is at least 0.045; beyond, by symmetry, log I_x(ν/2, 1/2) - log 2,
+    #   x = ν/(ν+t²), which carries the small tail mass directly. r and x are
+    #   formed without subtraction. `beta_lccdf`/`beta_lcdf` give the partial in
+    #   r or x in closed form and call Stan's incomplete-beta shape gradient only
+    #   when ν is a parameter.
+    # - past t² = 4, a tail mass below e^-700 would underflow `beta_lcdf` (log 0,
+    #   NaN partial). There log I_x(a, 1/2), a = ν/2, is taken in log space as
+    #   log[x^a (1-x)^(1/2) / (a B(a, 1/2))] + log ₂F₁(a+1/2, 1; a+1; x)
+    #   (DLMF 8.17.8). Each series term is below x times the one before; the loop
+    #   runs only in that region, where it needs about 0.03ν terms, so it
+    #   converges before its 1e5-term cap for ν below about 3e6. The log
+    #   prefactor bounds the tail mass from below, so it is the branch test.
+    # ±∞ return -∞ / 0 with a zero gradient, as Stan's kernels do. Stan's reverse
+    # pass runs every node on the tape, and an unused node with an infinite
+    # partial still adds 0·∞ = NaN (r^-1/2 at t = 0, 2t at t = ±∞). So each branch
+    # is a ternary, and the only node formed before its branch is chosen is the
+    # far-tail log prefactor, whose partials are finite there.
+    std_student_t_tail_series(x::real, a::real)::real = begin
+        s = 1.0
+        term = 1.0
+        k = 0
+        while term > 1e-17 * s && k < 100000
+            term = term * x * (a + 0.5 + k) / (a + 1 + k)
+            s = s + term
+            k = k + 1
+        end
+        s
+    end
+    std_student_t_ltail_far(t::real, nu::real)::real = begin
+        u = square(t) / nu
+        a = 0.5 * nu
+        lp = -a * log1p(u) - 0.5 * log1p(inv(u)) - log(a) - lbeta(a, 0.5) - log(2.)
+        lp > -700 ? beta_lcdf(inv(1 + u), a, 0.5) - log(2.) :
+            lp + log(std_student_t_tail_series(inv(1 + u), a))
+    end
+    std_student_t_ltail(t::real, nu::real)::real =
+        square(t) <= 4 ? beta_lccdf(square(t) / (nu + square(t)), 0.5, 0.5 * nu) - log(2.) :
+            std_student_t_ltail_far(t, nu)
+    std_student_t_lcdf_center(t::real, nu::real)::real = begin
+        u = square(t) / nu
+        c = 0.5 * nu + 0.5
+        log1p(2 * t * exp(-lbeta(0.5, 0.5 * nu) - 0.5 * log(nu)) *
+            (1 - c * u / 3 * (1 - 0.3 * (c + 1) * u))) - log(2.)
+    end
+    std_student_t_lcdf(t::real, nu::real)::real =
+        is_inf(t) ? (t < 0 ? negative_infinity() : 0.) :
+            (square(t) * fmax(1., 0.5 * nu + 0.5) < 1e-8 * nu ? std_student_t_lcdf_center(t, nu) :
+                (t < 0 ? std_student_t_ltail(t, nu) : log1m_exp(std_student_t_ltail(t, nu))))
+    # An infinite bound is answered before (y - μ)/σ is formed: that node's
+    # σ-partial -(y - μ)/σ² is infinite there (an interval's -∞ lower end).
+    student_t_lcdf_stable(y::real, nu::real, mu::real, sigma::real)::real =
+        is_inf(y) ? (y < 0 ? negative_infinity() : 0.) : std_student_t_lcdf((y - mu) / sigma, nu)
+    student_t_lccdf_stable(y::real, nu::real, mu::real, sigma::real)::real =
+        is_inf(y) ? (y > 0 ? negative_infinity() : 0.) : std_student_t_lcdf((mu - y) / sigma, nu)
     # Stan Math computes these three CCDFs as `log(1 - inc_beta(…))`, which is
     # -Inf once the upper-tail mass falls below ~1e-16
     # (`neg_binomial_2_lccdf(249 | 70, 50)` is -Inf; the mass is 5.1e-21). The
@@ -3502,15 +3586,17 @@ end
     # `obs`; the two coincide when a censored observation is recorded at its
     # limit, and each family keeps its own published semantics. `~
     # truncated_student_t(dof, loc, scale, lloq, uloq)` samples; SLIC auto-emits
-    # the GQ log-lik + predictive draw.
+    # the GQ log-lik + predictive draw. The tail masses take the stable
+    # `student_t_lcdf_stable`/`student_t_lccdf_stable`: Stan's native pair has a
+    # NaN gradient when `loc` equals the limit (snag native-student-t-b7023f91).
     truncated_student_t_lpdf(obs::real, dof::real, loc::real, scale::real, lloq::real, uloq::real)::real = begin
         rv::real[1]
         rv[1] = student_t_lpdf(obs, dof, loc, scale)
         if obs <= lloq
-            rv[1] = student_t_lcdf(lloq, dof, loc, scale)
+            rv[1] = student_t_lcdf_stable(lloq, dof, loc, scale)
         else
             if obs >= uloq
-                rv[1] = student_t_lccdf(uloq, dof, loc, scale)
+                rv[1] = student_t_lccdf_stable(uloq, dof, loc, scale)
             end
         end
         rv[1]
