@@ -4,6 +4,24 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.9
+
+- **Stable `exp_mod_normal` and `skew_normal` densities in deep tails.**
+  `exp_mod_normal_lpdf_stable(y, mu, sigma, lambda)` and
+  `skew_normal_lpdf_stable(y, xi, omega, alpha)` are scalar builtins for any
+  `@deffun` or `@slic` body. They evaluate the same normalized laws as Stan's
+  `exp_mod_normal_lpdf` / `skew_normal_lpdf`, through the stable normal
+  log-CDF of `normal_lcdf_stable`. Stan Math 5.3.0 and 5.4.0 take
+  `log(erfc(r))` directly in both kernels, so past `r ≈ 26.5` they return
+  `-Inf` with a `NaN` or `-Inf` gradient, also inside a `log_mix` whose other
+  term is finite. Left of its mode the exponentially modified normal is
+  evaluated in the scaled form
+  `log λ - ((y-μ)/σ)²/2 + [log Φ(z) + z²/2]`, `z = (y-μ)/σ - λσ`, so a large
+  `λσ` does not cancel two large terms. The new builtin
+  `std_normal_scaled_lcdf(z)` is that bracket, `log Φ(z) + z²/2`.
+  `y ~ exp_mod_normal(...)` and `y ~ skew_normal(...)` still emit Stan's own
+  kernels.
+
 ## v0.2.8
 
 - **`dirichlet_multinomial` family with an explicit total.**
