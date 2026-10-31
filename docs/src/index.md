@@ -683,7 +683,7 @@ Several hundred built-in Stan functions and distributions are pre-registered wit
 - **Random draws** (in `generated_quantities`): `normal_rng`, `binomial_rng`, `dirichlet_rng`, `multi_normal_rng`, `multi_normal_cholesky_rng`, …
 - **ODE integrators**: `ode_rk45`, `ode_rk45_tol`, `ode_ckrk`, `ode_adams`, `ode_bdf` and their `_tol` variants
 - **GP covariances**: `gp_exp_quad_cov`, `gp_exponential_cov`, `gp_matern32_cov`, `gp_matern52_cov`, `gp_periodic_cov`, `gp_dot_prod_cov`
-- **Distributions**: `normal`, `student_t`, `cauchy`, `lognormal`, `gamma`, `beta`, `exponential`, `uniform`, `bernoulli`, `bernoulli_logit`, `binomial`, `binomial_logit`, `neg_binomial_2`, `multi_normal`, `multi_normal_cholesky`, `dirichlet`, `lkj_corr`, `lkj_corr_cholesky`, `wishart`, … (each with `_lpdf`/`_lpmf`, `_lpdfs`/`_lpmfs` and `_rng` variants where appropriate)
+- **Distributions**: `normal`, `student_t`, `cauchy`, `lognormal`, `gamma`, `beta`, `exponential`, `uniform`, `bernoulli`, `bernoulli_logit`, `binomial`, `binomial_logit`, `neg_binomial_2`, `multi_normal`, `multi_normal_cholesky`, `dirichlet`, `lkj_corr`, `lkj_corr_cholesky`, `wishart`, … (each with `_lpdf`/`_lpmf`, `_lpdfs`/`_lpmfs` and `_rng` variants where appropriate). The count compositions `multinomial` and `dirichlet_multinomial` take their total explicitly, `y ~ dirichlet_multinomial(alpha, N)`, because their draws need it.
 
 A few short examples (drawn from the test suite, which doubles as an executable spec):
 
