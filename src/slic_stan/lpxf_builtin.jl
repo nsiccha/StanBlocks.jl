@@ -775,6 +775,12 @@ logccdf_expr(family) = _family_probability_companion(family, :_lccdf)
 # underflows. See snags censored-normal-410c4e35 and fit-a-left-censo-942540f9.
 logcdf_expr(::typeof(builtin.normal)) = builtin.normal_lcdf_stable
 logccdf_expr(::typeof(builtin.normal)) = builtin.normal_lccdf_stable
+# `student_t` likewise: Stan Math's `student_t_lcdf`/`student_t_lccdf` have a
+# NaN gradient where the bound equals the location (a 0·∞/0 Jacobian at t = 0)
+# and lose the tail mass to `1 - x` cancellation; the builtin.jl pair is
+# analytic at t = 0 and forms neither difference. snag native-student-t-b7023f91.
+logcdf_expr(::typeof(builtin.student_t)) = builtin.student_t_lcdf_stable
+logccdf_expr(::typeof(builtin.student_t)) = builtin.student_t_lccdf_stable
 
 # The truncated draws' inversion (`*_conditioning_inverse_rng`, builtin.jl) reads
 # a family's upper tail through `conditioning_logccdf`: the most precise log
