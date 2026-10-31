@@ -111,7 +111,10 @@ objects keyed by component position. `model` is a
 [`SlicModel`](@ref StanBlocks.SlicModel), a [`StanModel`](@ref
 StanBlocks.StanModel) or a [`ModelDescriptor`](@ref StanBlocks.ModelDescriptor);
 write it with `write(path, stan_data_json(model))` and pass the path to
-BridgeStan's `StanModel`.
+BridgeStan's `StanModel`. A non-finite real is written as the bare token
+`Infinity`, `-Infinity` or `NaN`, which Stan's JSON reader takes (and Python's
+`json` writes); strict JSON has no such numbers, so read the file back in Julia
+with `JSON.parse(text; allownan=true)`.
 [`stan_interface`](@ref StanBlocks.stan_interface) describes how each entry is
 encoded.
 """

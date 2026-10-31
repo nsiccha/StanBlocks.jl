@@ -25,7 +25,7 @@ PosteriorDBExt = "PosteriorDB"
 
 [compat]
 BridgeStan = "2.9"
-JSON = "0.18, 0.19, 0.20, 0.21, 1"
+JSON = "1"
 LogDensityProblems = "2.1"
 Mooncake = "0.5"
 OrderedCollections = "1.8"

@@ -53,7 +53,15 @@ prepare_for_stan(x::AbstractMatrix{<:Number}) = x'
 prepare_for_stan(x::AbstractArray{<:Number}) = permutedims(x, ndims(x):-1:1)
 prepare_for_stan(x::NamedTuple) = prepare_for_stan(values(x))
 prepare_for_stan(x::Tuple) = prepare_for_stan(Dict(enumerate(x)))
-bridgestan_data(x::Dict) = JSON.json(prepare_for_stan(x))
+# A real datum may be non-finite: an observation-shaped censoring bound holds
+# `-Inf`/`Inf` for a row with no bound on that side, and Stan reads `NaN` data.
+# Strict JSON has no such numbers, so JSON.jl refuses them unless `allownan`;
+# Stan's reader (RapidJSON with `kParseNanAndInfFlag`, `stan/io/json`) takes
+# the bare tokens `Infinity`, `-Infinity` and `NaN`, as Python's `json` writes
+# them. Naming the tokens keeps the file fixed if JSON.jl's defaults change
+# (snag `stan-json-infini-725445b0`).
+bridgestan_data(x::Dict) = JSON.json(prepare_for_stan(x);
+    allownan=true, inf="Infinity", ninf="-Infinity", nan="NaN")
 """
     instantiate(model; nan_on_error=true, make_args=["STAN_THREADS=true"], warn=false, path=…) -> StanProblem
     stan_instantiate(model; ...) -> StanProblem
