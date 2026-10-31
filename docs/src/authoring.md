@@ -49,8 +49,10 @@ end
 
 For `truncated`, `censored` and `restricted`, at least one of `lower=` or `upper=` is
 required. An omitted side and an explicit `nothing` are equivalent and are
-removed at compile time. Bounds may be scalar or observation-shaped. Invalid
-runtime bounds reject the Stan proposal. `lower` and `upper` are Stan reserved
+removed at compile time. Bounds may be scalar or observation-shaped. Bound
+data may hold `-Inf` or `Inf`: a `censored` row whose bound is infinite keeps
+its ordinary density, so one bound vector can mix censored and uncensored rows.
+Invalid runtime bounds reject the Stan proposal. `lower` and `upper` are Stan reserved
 identifiers, so name bound data `lo`/`hi` (or `lloq`/`uloq`) and map them with
 `lower=lo, upper=hi` as above.
 
@@ -1325,7 +1327,10 @@ from: `{"rule": "groups_of", "of": "idx"}` (the groups of a ragged input),
 `{"rule": "lengths", "of": "K"}` (group `g` has `K[g]` values), or the per-cell
 length as a Stan expression. `"program_id"` is the descriptor `id`, so a stale
 interface file is detectable. A consumer that encodes its own values from the
-interface writes the same JSON as `stan_data_json`.
+interface writes the same JSON as `stan_data_json`. A non-finite real is the
+bare token `Infinity`, `-Infinity` or `NaN`, which Stan's JSON reader takes and
+Python's `json` module writes; strict JSON has no such numbers, so read the
+file in Julia with `JSON.parse(text; allownan=true)`.
 
 ## Current high-level limits
 
