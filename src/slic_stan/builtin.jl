@@ -239,7 +239,7 @@ end
     wiener_lpdf
     discrete_range_lpmf
     hypergeometric_lpmf
-    multinomial_lpmf
+    multinomial_lpmf dirichlet_multinomial_lpmf
     categorical_lpmf categorical_logit_lpmf
     poisson_lpmf poisson_log_lpmf
     neg_binomial_lpmf neg_binomial_2_log_lpmf
@@ -1361,6 +1361,40 @@ import Statistics
         end
         rv
     end
+    # Dirichlet-multinomial has multinomial's asymmetry (Stan's density reads
+    # N as sum(obs), its RNG needs N), so it takes the same explicit-N contract
+    # and the same single / shared-alpha row-batched forms. `alpha` is the
+    # strictly positive concentration vector; Stan Math rejects a zero or
+    # non-finite entry. The `_lpmf` calls are Stan's normalised density, so the
+    # pointwise twin carries the multinomial coefficient and Gamma terms. Both
+    # RNG forms sit outside the empty-segment guarded class, as multinomial's
+    # do (audit todo 19n8abc).
+    @lhs dirichlet_multinomial_lpmf(obs::int[K], alpha::vector[K], N::int)::real = begin
+        if sum(obs) != N
+            reject("dirichlet_multinomial: explicit N must equal sum(obs)")
+        end
+        dirichlet_multinomial_lpmf(obs, alpha)
+    end
+    dirichlet_multinomial_lpmfs(obs::int[K], alpha::vector[K], N::int)::real =
+        dirichlet_multinomial_lpmf(obs, alpha, N)
+    @lhs dirichlet_multinomial_lpmf(obs::int[n,K], alpha::vector[K], row_N::int[n])::real =
+        sum(dirichlet_multinomial_lpmfs(obs, alpha, row_N))
+    dirichlet_multinomial_lpmfs(obs::int[n,K], alpha::vector[K], row_N::int[n])::vector[n] = begin
+        rv::vector[n]
+        for i in 1:n
+            rv[i] = dirichlet_multinomial_lpmf(obs[i, :], alpha, row_N[i])
+        end
+        rv
+    end
+    dirichlet_multinomial_rng(int[K], alpha::vector[K], N::int)::int[K] =
+        dirichlet_multinomial_rng(alpha, N)
+    dirichlet_multinomial_rng(int[n,K], alpha::vector[K], row_N::int[n])::int[n,K] = begin
+        rv::int[n,K]
+        for i in 1:n
+            rv[i, :] = dirichlet_multinomial_rng(alpha, row_N[i])
+        end
+        rv
+    end
     # A vector-valued plate cell is collected as matrix[k, n], one observation
     # per column. Stan's categorical-logit primitive accepts only one vector of
     # logits at a time, so provide the density and pointwise companions for the
@@ -1640,6 +1674,7 @@ import Statistics
     discrete_range_lpmf(args...)
     hypergeometric_lpmf(args...)
     multinomial_lpmf(args...)
+    dirichlet_multinomial_lpmf(args...)
     categorical_lpmf(args...)
     categorical_logit_lpmf(args...)
     ordered_logistic_lpmf(args...)
@@ -1697,6 +1732,7 @@ import Statistics
     discrete_range_rng(::int, ::int)::int
     dirichlet_rng(::vector[n])::vector[n]
     multinomial_rng(::vector[n], ::int)::int[n]
+    dirichlet_multinomial_rng(::vector[n], ::int)::int[n]
 
     # Matrix construction
     rep_row_vector(x, n)::row_vector[n]
