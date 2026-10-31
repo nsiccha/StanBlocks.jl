@@ -88,8 +88,10 @@ checked against a 256-bit reference in the body, deep in both tails and at
             end
         end
 
-        # λσ = 1e4: the unscaled form would cancel λ(μ-y) + λ²σ²/2 ≈ 5e7
-        # against log Φ(z) ≈ -5e7, an absolute error near 1e-8.
+        # λσ = 1e4: the unscaled form cancels λ(μ-y) + λ²σ²/2 ≈ 5e7 against
+        # log Φ(z) ≈ -5e7; even with a correctly rounded log Φ(z) it is off by
+        # about 1e-9 here (7e-6 at λσ = 1e6), while the scaled form stays
+        # within 2e-15.
         wide = @slic (; y = [0.0], k = 1, p = 0.5, s = 1.0, l = 1e4, w = 1.0, a = 1.0) begin
             theta ~ flat()
             y ~ tailpair(k, p, theta, s, l, theta, w, a)
