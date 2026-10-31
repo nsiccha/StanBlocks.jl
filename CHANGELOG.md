@@ -4,6 +4,26 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.11
+
+- **Student-t censoring has a finite gradient where the limit equals the
+  location.** Stan Math 5.3.0 and 5.4.0 `student_t_lcdf` / `student_t_lccdf`
+  work with `q = ν/t²`, `t = (y-μ)/σ`; at `t = 0` their Jacobian is `0·∞/0`, so
+  every partial is `NaN` there although the value `log(1/2)` is right. A
+  `censored` Student-t observation whose limit equals its location therefore
+  had a `NaN` gradient. The same kernels also lose the tail mass (errors up to
+  `4e-5` at `|t| = 1e6`, and `-Inf` once it underflows).
+  `censored`, `truncated` and `interval_censored(student_t, …)` now take their
+  tail masses from the new scalar builtins
+  `student_t_lcdf_stable(y, nu, mu, sigma)` /
+  `student_t_lccdf_stable(y, nu, mu, sigma)`, as the `normal` family takes
+  `normal_lcdf_stable` / `normal_lccdf_stable`, and `truncated_student_t` uses
+  them for its LOQ tails. For `ν ≤ 30` and `t` from 0 to `±1e6`, value and
+  gradient match a 256-bit reference within `6e-13`; a tail whose mass is below
+  a double's range, where the native kernels return `-Inf`, keeps a finite
+  value and gradient to the same accuracy. A direct `student_t_lcdf(...)` / `student_t_lccdf(...)` call,
+  and `y ~ student_t(...)`, emit Stan's own kernels as before.
+
 ## v0.2.10
 
 - **Non-finite real data reaches BridgeStan.** A data value holding `-Inf`,
