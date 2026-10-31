@@ -1,7 +1,7 @@
 name = "StanBlocks"
 uuid = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
 authors = ["Nikolas Siccha <nikolassiccha@gmail.com>"]
-version = "0.2.9"
+version = "0.2.10"
 
 [deps]
 BridgeStan = "c88b6f0a-829e-4b0b-94b7-f06ab5908f5a"
@@ -25,7 +25,7 @@ PosteriorDBExt = "PosteriorDB"
 
 [compat]
 BridgeStan = "2.9"
-JSON = "0.18, 0.19, 0.20, 0.21, 1"
+JSON = "1"
 LogDensityProblems = "2.1"
 Mooncake = "0.5"
 OrderedCollections = "1.8"

@@ -4,6 +4,18 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.10
+
+- **Non-finite real data reaches BridgeStan.** A data value holding `-Inf`,
+  `Inf` or `NaN`, such as an observation-shaped `censored` bound for a row with
+  no bound on one side, made `stan_instantiate` and `stan_data_json` raise
+  JSON.jl's `-Inf not allowed to be written in JSON spec` before Stan saw the
+  data. The data file now writes these values as the bare tokens `Infinity`,
+  `-Infinity` and `NaN`, which Stan's JSON reader takes, so the model receives
+  the exact values. Finite data is written as before. StanBlocks now requires
+  JSON.jl 1 (`JSON = "1"`), whose writer has this option. JSON.jl 0.21 wrote
+  such values as `null`, which Stan rejects.
+
 ## v0.2.9
 
 - **Stable `exp_mod_normal` and `skew_normal` densities in deep tails.**
