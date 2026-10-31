@@ -44,8 +44,8 @@ normalised `dirichlet_multinomial_lpmf`; `alpha` must be strictly positive.
     @test stanc_compiles(single)
     problem = instantiate(stan_model(single))
     # The full normalised density at phi = exp(u): the lognormal prior, its
-    # log-Jacobian u, and the Dirichlet-multinomial mass. At u = 0 this is the
-    # downstream module's reference value, -9.90632568353638.
+    # log-Jacobian u, and the Dirichlet-multinomial mass. At u = 0 an
+    # independent implementation of this model gives -9.90632568353638.
     full(u) = (phi = exp(u); lognormal_lpdf(phi, 3, 1) + u + dm_lpmf(y, phi .* p))
     for u in (0.0, -0.7, 1.3)
         @test BridgeStan.log_density(problem.model, [u]; propto = false, jacobian = true) ≈ full(u) rtol = 1e-12
