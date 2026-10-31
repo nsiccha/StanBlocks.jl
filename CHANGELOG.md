@@ -4,6 +4,20 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.8
+
+- **`dirichlet_multinomial` family with an explicit total.**
+  `y ~ dirichlet_multinomial(alpha, N)` observes one count vector, and
+  `Y ~ dirichlet_multinomial(alpha, row_N)` one per row of an integer matrix
+  with a shared `alpha`. Inside `@plate for k in 1:G`, `ys[k] ~
+  dirichlet_multinomial(alpha_k, ns[k])` observes ragged groups of unequal
+  length. Each composition gets one pointwise log-likelihood, Stan's
+  normalised `dirichlet_multinomial_lpmf`, and a predictive draw of the
+  same total; without an observation the composition is drawn. As for
+  `multinomial`, `N` is required because Stan's draw needs it, and a supplied
+  `N` that is not `sum(y)` is rejected. `alpha` must be strictly positive. The
+  family previously failed with `Could not find dirichlet_multinomial`.
+
 ## v0.2.7
 
 - **`restricted(...)` bounds a prior with Stan's plain kernel.**

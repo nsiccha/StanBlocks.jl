@@ -850,6 +850,7 @@ for lpxf_rhs in (
     :neg_binomial_2_log_glm_lpmf,
     :poisson_lpmf, :poisson_log_lpmf, :poisson_log_glm_lpmf,
     :discrete_range_lpmf, :hypergeometric_lpmf, :multinomial_lpmf,
+    :dirichlet_multinomial_lpmf,
     :categorical_lpmf, :categorical_logit_lpmf,
     :ordered_logistic_lpmf,
 )
