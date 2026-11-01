@@ -717,6 +717,10 @@ jcall(::Val{:tgamma}, ::_JuliaScope, x) = _julia_tgamma(x)
 jcall(::Val{:lchoose}, ::_JuliaScope, n::Real, k::Real) = _julia_lchoose(n, k)
 jcall(::Val{:digamma}, ::_JuliaScope, x) = _julia_digamma(x)
 jcall(::Val{:trigamma}, ::_JuliaScope, x) = _julia_trigamma(x)
+# Stan's `erfc` is the C++ standard library's; SpecialFunctions' Float64 method
+# calls openlibm's. The stable normal and exponentially modified normal helpers
+# (builtin.jl) reach it from their Julia methods.
+jcall(::Val{:erfc}, ::_JuliaScope, x) = SpecialFunctions.erfc(x)
 # This package binds `log2` to its own builtin (Stan's zero-argument `log2()`
 # shares the name), which has no Julia method.
 jcall(::Val{:log2}, ::_JuliaScope, x::Number) = Base.log2(x)
@@ -740,6 +744,12 @@ jcall(::Val{:not_a_number}, ::_JuliaScope) = NaN
 # Julia's `min`/`max` return NaN.
 jcall(::Val{:fmin}, ::_JuliaScope, x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : min(x, y)
 jcall(::Val{:fmax}, ::_JuliaScope, x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : max(x, y)
+# This package binds `hypot` to its own builtin, which has no Julia method.
+# Stan Math's `hypot` is C++'s `std::hypot` and Julia's is the same IEEE
+# function: no intermediate square that overflows or underflows, `Inf` when
+# either argument is infinite (even beside a NaN), and no domain check (a
+# negative side has its absolute value's length).
+jcall(::Val{:hypot}, ::_JuliaScope, x::Real, y::Real) = Base.hypot(x, y)
 jcall(::Val{:max}, ::_JuliaScope, x::AbstractArray) = maximum(x)
 jcall(::Val{:min}, ::_JuliaScope, x::AbstractArray) = minimum(x)
 jcall(::Val{:dims}, ::_JuliaScope, x) = collect(size(x))

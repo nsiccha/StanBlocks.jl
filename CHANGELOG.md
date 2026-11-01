@@ -4,6 +4,49 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.13
+
+- **`exp_mod_normal` from a standardized residual and log scale.**
+  `exp_mod_normal_lpdf_standardized(u, log_sigma, log_lambda)` is
+  `exp_mod_normal_lpdf_stable(y, mu, sigma, lambda)` at `u = (y - mu)/sigma`,
+  `log_sigma = log(sigma)` and `log_lambda = log(lambda)`, for a scale or `λσ`
+  that does not fit in a Float64, such as a noise scale proportional to an
+  amplitude carried as a logarithm. Forming `sigma = exp(1000)` first made
+  `exp_mod_normal_lpdf_stable` `NaN`. For `log(λσ) > 20` and `u < λσ/2` the new
+  builtin is the Mills-ratio form `-log σ - log(2π)/2 - u²/2 - log1p(-u/(λσ))`,
+  whose omitted terms are below `1.7e-17`; otherwise it evaluates the scaled
+  form `exp_mod_normal_lpdf_stable` evaluates, which the two now share. From
+  ordinary scales to `σ = e^1000`, values are within `1.3e-16` and gradients
+  within `1.3e-15` relative of a 256-bit reference, and the emitted Stan
+  matches the same reference through BridgeStan.
+- **Julia methods for the stable normal and exponentially modified normal
+  helpers.** `normal_lcdf_stable`, `normal_lccdf_stable`,
+  `std_normal_lcdf_tail`, `std_normal_scaled_lcdf_tail`,
+  `exp_mod_normal_lpdf_stable` and `exp_mod_normal_lpdf_standardized` are now
+  `@juliacompat`. Each is an ordinary Julia function that computes what the
+  emitted Stan computes and that Mooncake differentiates, and a `@juliacompat`
+  body can call it. `erfc` has a Julia method too.
+  `std_normal_scaled_lcdf` stays Stan-only, because a name ending in `_lcdf`
+  has no Julia method.
+- `exp_mod_normal_lpdf_stable` on its exponential side (`y - μ ≥ λσ²`) now
+  forms `λ(μ - y) + λ²σ²/2` as `λσ(λσ/2 - u)`, which cannot give `Inf - Inf`;
+  values agree with the old form to rounding. Its emitted Stan calls the shared
+  `exp_mod_normal_standardized_core`. The emitted Stan of the `normal` family's
+  censored and truncated tail masses is byte-identical.
+
+## v0.2.12
+
+- **Stan's `hypot` is a builtin.** `hypot(x, y)`, `sqrt(x^2 + y^2)` computed
+  without forming either square, traces in a `@slic` or `@deffun` body in the
+  forms `fmax` takes: two ints or reals, a scalar with a vector, row vector,
+  matrix or real array, or two containers of one kind. A body holding Julia's
+  `Base.hypot` value (a producer's spliced callable) traces the same way. It
+  used to fail with `tracetype not defined for s = hypot(::real, ::vector)::anything!`,
+  which left `sqrt(square(sigma) + square(extra))`, infinite once `sigma`
+  passes `1.34e154`, or a hand-rescaled form.
+  A `@juliacompat` helper gets `Base.hypot`, the same IEEE function as Stan
+  Math's `std::hypot`.
+
 ## v0.2.11
 
 - **Student-t censoring has a finite gradient where the limit equals the

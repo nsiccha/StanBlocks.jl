@@ -262,7 +262,7 @@ element, in a descriptor bound and a `@juliacompat` body alike.
     # Every vectorised builtin's container call agrees with its scalar twin.
     # Those still without a scalar twin are tracked by todo
     # `StanBlocks/todos/2026-10-23T09-47-31-458-1j6rdy6`.
-    no_twin = (:inv_sqrt, :Phi, :cbrt, :erf, :erfc, :Phi_approx, :inv_Phi, :inv_cloglog,
+    no_twin = (:inv_sqrt, :Phi, :cbrt, :erf, :Phi_approx, :inv_Phi, :inv_cloglog,
         :lambert_w0, :fdim, :fmod, :atan2, :lbeta, :log_diff_exp, :owens_t, :gamma_p, :gamma_q,
         :binary_log_loss, :bessel_first_kind, :bessel_second_kind, :modified_bessel_first_kind,
         :modified_bessel_second_kind, :log_modified_bessel_first_kind, :fma)
