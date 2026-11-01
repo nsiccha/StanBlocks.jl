@@ -41,6 +41,7 @@ instead of dropped from the emitted call.
         (Base.log2, :log2, (:s,), :out),
         (Base.cbrt, :cbrt, (:s,), :out),
         (Base.fma, :fma, (:s, :s, :s), :out),
+        (Base.hypot, :hypot, (:s, :v), :(sum(out))),
         (Base.hcat, :hcat, (:v, :v), :(sum(out))),
         (Base.reshape, :reshape, (:v, 1, 2), :(sum(out))),
     ]

@@ -1103,7 +1103,7 @@ the shapes stanc accepts:
 | Builtins | Container forms |
 |---|---|
 | unary (`exp`, `log1p`, `inv_logit`, `lgamma`, …) | a vector, row vector, matrix or real array, returned as the same container |
-| `fmin`, `fmax`, `fdim`, `fmod`, `atan2`, `lbeta`, `lchoose`, `log_diff_exp`, `owens_t`, `gamma_p`, `gamma_q`, `log_modified_bessel_first_kind` | a scalar with one of those containers, or two containers of one kind |
+| `fmin`, `fmax`, `fdim`, `fmod`, `hypot`, `atan2`, `lbeta`, `lchoose`, `log_diff_exp`, `owens_t`, `gamma_p`, `gamma_q`, `log_modified_bessel_first_kind` | a scalar with one of those containers, or two containers of one kind |
 | `binary_log_loss`, `bessel_first_kind`, `bessel_second_kind`, `modified_bessel_first_kind`, `modified_bessel_second_kind` | an int with any of those containers; an int array with a scalar, vector, row vector or real array |
 | `fma` | scalars mixed with one vector, row vector or matrix kind |
 
@@ -1112,6 +1112,12 @@ An int scalar or int array takes a real one's place, as Stan promotes it, so
 for two different container kinds (`fmax(v, rv)` with a row vector `rv`), a real
 Bessel order, or an array `fma`; those fail at trace time. Nested arrays
 (`array[] vector`) are not registered yet.
+
+`hypot(x, y)` is `sqrt(x^2 + y^2)` computed without either square, so a scale
+combined from two parts, `s = hypot(sigma, extra)`, stays finite for a `sigma`
+past `1.34e154`, where `sqrt(square(sigma) + square(extra))` is `Inf`. A body
+may also hold Julia's `Base.hypot` itself, as a producer that splices function
+values does; it traces as Stan's two-argument `hypot`.
 
 For a raw `matrix`, the final two annotation dimensions are the native matrix
 shape and every leading dimension is a Stan array prefix. Thus

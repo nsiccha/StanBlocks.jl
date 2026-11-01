@@ -4,6 +4,19 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.12
+
+- **Stan's `hypot` is a builtin.** `hypot(x, y)`, `sqrt(x^2 + y^2)` computed
+  without forming either square, traces in a `@slic` or `@deffun` body in the
+  forms `fmax` takes: two ints or reals, a scalar with a vector, row vector,
+  matrix or real array, or two containers of one kind. A body holding Julia's
+  `Base.hypot` value (a producer's spliced callable) traces the same way. It
+  used to fail with `tracetype not defined for s = hypot(::real, ::vector)::anything!`,
+  which left `sqrt(square(sigma) + square(extra))`, infinite once `sigma`
+  passes `1.34e154`, or a hand-rescaled form.
+  A `@juliacompat` helper gets `Base.hypot`, the same IEEE function as Stan
+  Math's `std::hypot`.
+
 ## v0.2.11
 
 - **Student-t censoring has a finite gradient where the limit equals the
