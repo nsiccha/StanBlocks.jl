@@ -848,6 +848,7 @@ end
 
 A `Vector{<:AbstractMatrix{<:Real}}` data kwarg becomes a `RaggedMatrix` the
 same way: `X[g]` is the `g`th matrix and `length(X)` the number of matrices.
+For integer matrices `X[g]` is an `array[rows, cols] int`.
 
 `ragged_start`, `ragged_end`, and `ragged_length` expose offsets for UDF size
 math. Elementwise arithmetic (`2.0 * groups`, `groups .^ 2`, `groups + other`
