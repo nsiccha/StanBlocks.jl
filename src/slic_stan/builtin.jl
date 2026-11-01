@@ -296,6 +296,20 @@ end
     std_student_t_tail_series
     student_t_lcdf_stable
     student_t_lccdf_stable
+    # LogNormal log-CDF/CCDF through the stable normal pair (selected for the
+    # `lognormal` family like the normal pair), and the normalized mean and
+    # variance of a lower-truncated LogNormal with their inverse-Mills-ratio
+    # helpers (`@deffun` bodies + rationale beside `std_normal_lcdf_tail`;
+    # snag bounded-lognorma-c225e536).
+    lognormal_lcdf_stable
+    lognormal_lccdf_stable
+    std_normal_inv_mills_cf_depth
+    std_normal_inv_mills_cf
+    std_normal_scaled_lcdf_mills
+    std_normal_inv_mills
+    lognormal_truncated_moments
+    lognormal_truncated_mean
+    lognormal_truncated_variance
 
     # Longitudinal dose/time-response building blocks. The obs model is a
     # censored normal w/ limits of quantification (`truncated_normal` — the
@@ -1599,12 +1613,19 @@ import Statistics
     std_normal_scaled_lcdf(z::real)::real =
         z < -35 ? std_normal_scaled_lcdf_tail(z) :
             log(erfc(-z / sqrt(2.))) - log(2.) + 0.5 * square(z)
+    # On the side holding more than half the mass, log1m of the small
+    # complement keeps the log-probability accurate relative to its own size as
+    # it approaches 0 (log(erfc(·)) - log 2 is only absolutely accurate there,
+    # so log1m_exp of it lost all digits once the mass was within 1e-16 of 1;
+    # snag bounded-lognorma-c225e536).
     normal_lcdf_stable(x::real, loc::real, scale::real)::real =
         (x - loc) / scale < -35 ? std_normal_lcdf_tail((x - loc) / scale) :
-            log(erfc(-(x - loc) / (scale * sqrt(2.)))) - log(2.)
+            ((x - loc) / scale <= 0 ? log(erfc(-(x - loc) / (scale * sqrt(2.)))) - log(2.) :
+                log1m(0.5 * erfc((x - loc) / (scale * sqrt(2.)))))
     normal_lccdf_stable(x::real, loc::real, scale::real)::real =
         (x - loc) / scale > 35 ? std_normal_lcdf_tail((loc - x) / scale) :
-            log(erfc((x - loc) / (scale * sqrt(2.)))) - log(2.)
+            ((x - loc) / scale >= 0 ? log(erfc((x - loc) / (scale * sqrt(2.)))) - log(2.) :
+                log1m(0.5 * erfc(-(x - loc) / (scale * sqrt(2.)))))
     # The two z < 0 branches are `std_normal_scaled_lcdf(z)`'s, written out with
     # the same arithmetic: a call to an `_lcdf`-named function has no Julia
     # method (the `@juliacompat` family-name rule), so `std_normal_scaled_lcdf`
@@ -1703,6 +1724,183 @@ import Statistics
         is_inf(y) ? (y < 0 ? negative_infinity() : 0.) : std_student_t_lcdf((y - mu) / sigma, nu)
     student_t_lccdf_stable(y::real, nu::real, mu::real, sigma::real)::real =
         is_inf(y) ? (y > 0 ? negative_infinity() : 0.) : std_student_t_lcdf((mu - y) / sigma, nu)
+    # LogNormal log-CDF/CCDF: the stable normal pair at log y, so a support
+    # mass below a double's range (log P(X ≥ 1) = -804.6 for μ = -40, σ = 1)
+    # keeps a finite value and gradient where Stan's `lognormal_lccdf` takes
+    # log(erfc(·)) and returns -Inf. y ≤ 0 and y = ∞ are answered before
+    # log y is formed: its partial 1/y is infinite at 0 (the tape trap above).
+    lognormal_lcdf_stable(y::real, mu::real, sigma::real)::real =
+        y <= 0 ? negative_infinity() : (is_inf(y) ? 0. : normal_lcdf_stable(log(y), mu, sigma))
+    lognormal_lccdf_stable(y::real, mu::real, sigma::real)::real =
+        y <= 0 ? 0. : (is_inf(y) ? negative_infinity() : normal_lccdf_stable(log(y), mu, sigma))
+    # Normalized moments of X | X ≥ L, X ~ LogNormal(μ, σ), L > 0. With
+    # x = (log L - μ)/σ and F(x) = φ(x)/Φ(-x), the reciprocal Mills ratio,
+    #   E[X | X ≥ L] = L·F(x)/F(x - σ),
+    #   Var[X | X ≥ L]/E² = F(x - σ)²/(F(x)F(x - 2σ)) - 1.
+    # The textbook forms exp(μ + σ²/2)·Φ(σ - x)/Φ(-x) and E[X²] - E² fail where
+    # truncation matters: Φ(-x) underflows past x ≈ 38; Stan has no erfcx, so
+    # log Φ(c) + c²/2 from erfc carries an error of c²/2 ulps; and the variance
+    # is a second difference of log F at spacing σ, which cancels like 1/σ²
+    # (x = 15, σ = 0.2 loses six digits). So that difference is never formed
+    # by subtraction:
+    # - All three nodes x₀ = x, x₁ = x - σ, x₂ = x - 2σ at least 2: Laplace's
+    #   continued fraction F(x) = x + 1/(x + 2/(x + 3/(x + …))) runs in
+    #   divided-difference (Opitz) arithmetic. The upper-triangular matrix of
+    #   f(xᵢ), f[xᵢ, xᵢ₊₁] and f[x₀, x₁, x₂] is closed under +, × and inversion,
+    #   so F(x₁)² - F(x₀)F(x₂) = σ²(F[x₀,x₁]F[x₁,x₂] - 2F(x₁)F[x₀,x₁,x₂]) comes
+    #   out with no cancellation for any σ. 8 + 400/x₂² terms of the backward
+    #   recurrence reach 2e-16 (measured for x ≥ 1.5).
+    # - Otherwise, for σ ≥ 0.5: the direct second difference of
+    #   S(c) = log Φ(c) + c²/2 at c = -x₀, -x₁, -x₂ (log Φ alone when every node
+    #   is ≥ 0), with the continued fraction for c ≤ -2. σ ≥ 0.5 bounds the
+    #   cancellation.
+    # - Otherwise (σ < 0.5, midpoint c₁ = -x₁ > -2.5): a Taylor series about the
+    #   midpoint, log[F(x₁)²/(F(x₀)F(x₂))] = σ² + Σₖ Q₂ₖ₋₁σ²ᵏ/k, where Qₙ are the
+    #   Taylor coefficients at c₁ of the inverse Mills ratio q = φ(c)/Φ(c). From
+    #   q' = -q(c + q): (n + 1)Qₙ₊₁ = -c₁Qₙ - Qₙ₋₁ - Σᵢ QᵢQₙ₋ᵢ. q's poles (the
+    #   zeros of Φ) lie at least 2.8 from the real axis, so 8 terms suffice.
+    # The mean's first difference is formed the same way, so its gradient does
+    # not lose 1/σ either: 1 + σF[x₀,x₁]/F(x₁) in the continued fraction, and
+    # for σ < 0.1 the series log E = μ + σ²/2 + Σₙ (-1)ⁿ⁺¹Qₙ₋₁σⁿ/n of
+    # log Φ(c₁) - log Φ(c₁ - σ); for wider σ, log L + S(-x₁) - S(-x₀).
+    # Against an 80-digit reference over σ from 1e-9 to 20 and x from -1e3 to
+    # 1e6 (L = 1), the relative error is below 8e-14 for the variance and, for
+    # |μ| ≤ 10 and σ ≤ 3, 2e-15 for the mean (beyond, the rounding of
+    # exp(μ + σ²/2) itself: 1.6e-14 at μ = 300). Everything is arithmetic, log,
+    # exp, erfc and loops over values, so Stan's reverse mode differentiates
+    # it. L ≤ 0 truncates nothing (the plain LogNormal moments); L = ∞ gives ∞.
+    std_normal_inv_mills_cf_depth(x::real)::int = begin
+        n = 8
+        while (n - 8) * square(x) < 400
+            n = n + 1
+        end
+        n
+    end
+    # F(x) = φ(x)/Φ(-x) for x ≥ 2, by the backward recurrence.
+    std_normal_inv_mills_cf(x::real)::real = begin
+        t = 0.
+        k = std_normal_inv_mills_cf_depth(x)
+        while k > 0
+            t = 1 / (x + (k + 1) * t)
+            k = k - 1
+        end
+        x + t
+    end
+    # log Φ(c) + c²/2 to a few ulps of its own size; -0.918… = -log(2π)/2.
+    std_normal_scaled_lcdf_mills(c::real)::real =
+        c <= -2 ? -log(std_normal_inv_mills_cf(-c)) - 0.9189385332046728 :
+            (c < 0 ? log(erfc(-c / sqrt(2.))) - log(2.) + 0.5 * square(c) :
+                log1m(0.5 * erfc(c / sqrt(2.))) + 0.5 * square(c))
+    # The inverse Mills ratio φ(c)/Φ(c); 0.797… = √(2/π).
+    std_normal_inv_mills(c::real)::real =
+        c <= -2 ? std_normal_inv_mills_cf(-c) :
+            0.7978845608028654 * exp(-0.5 * square(c)) / erfc(-c / sqrt(2.))
+    # Mean and variance together: [E, Var].
+    lognormal_truncated_moments(mu::real, sigma::real, lb::real)::vector[2] = begin
+        rv::vector[2]
+        if lb <= 0
+            rv[1] = exp(mu + 0.5 * square(sigma))
+            rv[2] = expm1(square(sigma)) * exp(2 * mu + square(sigma))
+        elseif is_inf(lb)
+            rv[1] = positive_infinity()
+            rv[2] = positive_infinity()
+        else
+            x0 = (log(lb) - mu) / sigma
+            x1 = x0 - sigma
+            x2 = x0 - 2 * sigma
+            if x2 >= 2
+                # Matrices of T_k = 1/(x + (k + 1)T_{k+1}): diagonal t0, t1, t2,
+                # first divided differences t01, t12, second t02; F = x + T_1.
+                t0 = 0.
+                t1 = 0.
+                t2 = 0.
+                t01 = 0.
+                t12 = 0.
+                t02 = 0.
+                k = std_normal_inv_mills_cf_depth(x2)
+                while k > 0
+                    g0 = x0 + (k + 1) * t0
+                    g1 = x1 + (k + 1) * t1
+                    g2 = x2 + (k + 1) * t2
+                    g01 = 1 + (k + 1) * t01
+                    g12 = 1 + (k + 1) * t12
+                    g02 = (k + 1) * t02
+                    t0 = 1 / g0
+                    t1 = 1 / g1
+                    t2 = 1 / g2
+                    t01 = -g01 * t0 * t1
+                    t12 = -g12 * t1 * t2
+                    t02 = (g01 * g12 - g02 * g1) * t0 * t1 * t2
+                    k = k - 1
+                end
+                f1 = x1 + t1
+                # F(x0)/F(x1) = 1 + σF[x0, x1]/F(x1), with no difference of F.
+                rv[1] = lb * (1 + sigma * (1 + t01) / f1)
+                rv[2] = square(rv[1] * sigma) * ((1 + t01) * (1 + t12) - 2 * f1 * t02) /
+                    ((x0 + t0) * (x2 + t2))
+            else
+                d = 0.
+                lm = 0.
+                if sigma >= 0.1
+                    # log E: log Φ difference where both nodes are ≥ 0 (c = -x),
+                    # else log L + S(-x1) - S(-x0).
+                    if x0 < 0
+                        lm = mu + 0.5 * square(sigma) + log1m(0.5 * erfc(-x1 / sqrt(2.))) -
+                            log1m(0.5 * erfc(-x0 / sqrt(2.)))
+                    else
+                        lm = log(lb) + std_normal_scaled_lcdf_mills(-x1) - std_normal_scaled_lcdf_mills(-x0)
+                    end
+                end
+                if sigma >= 0.5
+                    if x0 <= 0
+                        d = square(sigma) + log1m(0.5 * erfc(-x2 / sqrt(2.))) -
+                            2 * log1m(0.5 * erfc(-x1 / sqrt(2.))) + log1m(0.5 * erfc(-x0 / sqrt(2.)))
+                    else
+                        d = std_normal_scaled_lcdf_mills(-x2) - 2 * std_normal_scaled_lcdf_mills(-x1) +
+                            std_normal_scaled_lcdf_mills(-x0)
+                    end
+                else
+                    # Taylor coefficients q[n + 1] = Qₙ of φ(c)/Φ(c) at c₁ = -x1.
+                    c1 = -x1
+                    q = rep_vector(0., 16)
+                    q[1] = std_normal_inv_mills(c1)
+                    for j in 1:15
+                        acc = c1 * q[j]
+                        if j > 1
+                            acc = acc + q[j - 1]
+                        end
+                        for i in 1:j
+                            acc = acc + q[i] * q[j + 1 - i]
+                        end
+                        q[j + 1] = -acc / j
+                    end
+                    d = square(sigma)
+                    p = square(sigma)
+                    for j in 1:8
+                        d = d + q[2 * j] * p / j
+                        p = p * square(sigma)
+                    end
+                    if sigma < 0.1
+                        # log E = μ + σ²/2 + log Φ(c₁) - log Φ(c₁ - σ), as its
+                        # series Σₙ (-1)ⁿ⁺¹Qₙ₋₁σⁿ/n (ratio ≤ σ/2.8).
+                        lm = mu + 0.5 * square(sigma)
+                        p = sigma
+                        for j in 1:16
+                            lm = lm + q[j] * p / j
+                            p = -p * sigma
+                        end
+                    end
+                end
+                rv[1] = exp(lm)
+                rv[2] = square(rv[1]) * expm1(d)
+            end
+        end
+        rv
+    end
+    lognormal_truncated_mean(mu::real, sigma::real, lb::real)::real =
+        lognormal_truncated_moments(mu, sigma, lb)[1]
+    lognormal_truncated_variance(mu::real, sigma::real, lb::real)::real =
+        lognormal_truncated_moments(mu, sigma, lb)[2]
     # Stan Math computes these three CCDFs as `log(1 - inc_beta(…))`, which is
     # -Inf once the upper-tail mass falls below ~1e-16
     # (`neg_binomial_2_lccdf(249 | 70, 50)` is -Inf; the mass is 5.1e-21). The
