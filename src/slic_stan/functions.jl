@@ -740,6 +740,12 @@ jcall(::Val{:not_a_number}, ::_JuliaScope) = NaN
 # Julia's `min`/`max` return NaN.
 jcall(::Val{:fmin}, ::_JuliaScope, x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : min(x, y)
 jcall(::Val{:fmax}, ::_JuliaScope, x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : max(x, y)
+# This package binds `hypot` to its own builtin, which has no Julia method.
+# Stan Math's `hypot` is C++'s `std::hypot` and Julia's is the same IEEE
+# function: no intermediate square that overflows or underflows, `Inf` when
+# either argument is infinite (even beside a NaN), and no domain check (a
+# negative side has its absolute value's length).
+jcall(::Val{:hypot}, ::_JuliaScope, x::Real, y::Real) = Base.hypot(x, y)
 jcall(::Val{:max}, ::_JuliaScope, x::AbstractArray) = maximum(x)
 jcall(::Val{:min}, ::_JuliaScope, x::AbstractArray) = minimum(x)
 jcall(::Val{:dims}, ::_JuliaScope, x) = collect(size(x))

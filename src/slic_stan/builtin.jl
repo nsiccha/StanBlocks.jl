@@ -205,7 +205,7 @@ end
     # block below, beside `log_sum_exp`.
     log_modified_bessel_first_kind
     owens_t binary_log_loss
-    fma fmin fmax fdim fmod cbrt
+    fma fmin fmax fdim fmod hypot cbrt
 
     # Array/vector operations
     norm1 norm2 distance squared_distance
@@ -1898,6 +1898,7 @@ import Statistics
     fmax(x::real, y::real)::real
     fdim(x::real, y::real)::real
     fmod(x::real, y::real)::real
+    hypot(x::real, y::real)::real
     binary_log_loss(y::int, y_hat::real)::real
     lbeta(a::real, b::real)::real
     lchoose(n::real, k::real)::real
@@ -3703,7 +3704,7 @@ const _ELEMENTWISE_UNARY = (sqrt, inv_sqrt, exp, log, log10, sin, cos, asin, aco
     exp2, log2, cbrt, ceil, floor, round, trunc,
     square, erf, erfc, tgamma, digamma, trigamma,
     Phi_approx, inv_Phi, inv_cloglog, lambert_w0)
-const _ELEMENTWISE_BINARY = (fmin, fmax, fdim, fmod, atan2, lbeta, lchoose, log_diff_exp,
+const _ELEMENTWISE_BINARY = (fmin, fmax, fdim, fmod, hypot, atan2, lbeta, lchoose, log_diff_exp,
     owens_t, gamma_p, gamma_q, log_modified_bessel_first_kind)
 const _ELEMENTWISE_INT_BINARY = (binary_log_loss, bessel_first_kind, bessel_second_kind,
     modified_bessel_first_kind, modified_bessel_second_kind)
@@ -4238,15 +4239,17 @@ end
 # by N - 1; one element gives Stan 0, Julia NaN), `quantile` is Hyndman-Fan
 # type 7 in both, and `hcat` / `reshape` are the `@juliacompat` forms written
 # to match Base. `builtin.reverse` has no package-level alias (see its
-# definition). Not here: `gamma`, `beta` and `binomial` are SLIC distribution
-# families, while Julia's are special functions; `Base.tail` drops a tuple's
-# first element, which is not Stan's `tail`.
+# definition). Julia's `hypot` also takes one or three and more arguments;
+# Stan's takes two, so those calls stop at trace time. Not here: `gamma`,
+# `beta` and `binomial` are SLIC distribution families, while Julia's are
+# special functions; `Base.tail` drops a tuple's first element, which is not
+# Stan's `tail`.
 for (f, g) in (
     (Statistics.mean, mean), (Statistics.std, sd), (Statistics.var, variance),
     (Statistics.quantile, quantile),
     (SpecialFunctions.erf, erf), (SpecialFunctions.erfc, erfc),
     (SpecialFunctions.digamma, digamma), (SpecialFunctions.trigamma, trigamma),
-    (Base.log2, log2), (Base.cbrt, cbrt), (Base.fma, fma),
+    (Base.log2, log2), (Base.cbrt, cbrt), (Base.fma, fma), (Base.hypot, hypot),
     (Base.hcat, hcat), (Base.reshape, reshape), (Base.reverse, builtin.reverse),
 )
     @eval _slic_callable(::typeof($f)) = $g
