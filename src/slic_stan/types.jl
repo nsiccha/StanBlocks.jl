@@ -800,20 +800,25 @@ to_ragged(x::AbstractVector{<:AbstractVector{T}}) where {T<:Real} = (;
     ends=cumsum(length.(x)),
 )
 """
-Encode a vector of real-valued matrices as a ragged matrix: a `NamedTuple` with
+Encode a vector of matrices as a ragged matrix: a `NamedTuple` with
 `mem::Vector` (each matrix flattened column-major, concatenated), `ends::Vector{Int}`
 (inclusive 1-based end index of each matrix in `mem`), and `rows`/`cols::Vector{Int}`
-(each matrix's size). `mem` is real: a Stan `matrix` has no integer form.
+(each matrix's size). Integer matrices keep integer memory, as a dense
+`Matrix{<:Integer}` is `array[m, n] int` and a ragged `Vector{Vector{Int}}` keeps its
+integer `mem`; the g-th group is then an `array[rows[g], cols[g]] int`, not a real
+`matrix` (snag `pass-a-vector-ma-b68fc7c9`). `Bool` memory is stored as `Int`.
 
 Passing a `Vector{<:AbstractMatrix{<:Real}}` directly as a data kwarg to a `SlicModel`
 applies this transformation automatically.
 """
 to_ragged(x::AbstractVector{<:AbstractMatrix{T}}) where {T<:Real} = (;
-    mem=_flat_groups(float(T), x),
+    mem=_flat_groups(_ragged_matrix_eltype(T), x),
     ends=cumsum(length.(x)),
     rows=Int[size(m, 1) for m in x],
     cols=Int[size(m, 2) for m in x],
 )
+_ragged_matrix_eltype(::Type{T}) where {T<:Real} = float(T)
+_ragged_matrix_eltype(::Type{T}) where {T<:Integer} = promote_type(T, Int)
 # `stan_type(expr, ::AbstractVector{<:AbstractVector{<:Real}})` and its matrix twin —
 # ragged DATA ingest — live in `builtin.jl` (after `RaggedVector`/`RaggedMatrix` are
 # defined), minting a nominal `RaggedVector`/`RaggedMatrix` so ragged data is a
