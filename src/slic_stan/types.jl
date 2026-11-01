@@ -776,6 +776,17 @@ stan_type(expr, value::NamedTuple; kwargs...) = begin
     arg_types = (;[key=>stan_type(Symbol(expr, "_", key), val) for (key, val) in pairs(value)]...)
     StanType(types.ntup, tuple(); arg_types, value=map(getvalue, arg_types), kwargs...)
 end
+# The groups of `x`, flattened column-major into one fresh `Vector{T}`, in one
+# pass over its elements. `reduce(vcat, x; init)` is not Base's `reduce(vcat, x)`:
+# the `init` selects the generic left fold, which copies everything so far at each
+# group, 8·T·G²/2 bytes for G groups of T reals (snag `stan-descriptor-4e1c6bcb`).
+_flat_groups(::Type{T}, x) where {T} = begin
+    mem = sizehint!(T[], sum(length, x; init=0))
+    for group in x
+        append!(mem, vec(group))
+    end
+    mem
+end
 """
 Encode a vector of real-valued subvectors as a ragged vector: a `NamedTuple` with
 `mem::Vector` (concatenation of all subvectors) and `ends::Vector{Int}` (inclusive
@@ -785,7 +796,7 @@ Passing a `Vector{<:AbstractVector{<:Real}}` directly as a data kwarg to a `Slic
 applies this transformation automatically.
 """
 to_ragged(x::AbstractVector{<:AbstractVector{T}}) where {T<:Real} = (;
-    mem=reduce(vcat, x; init=T[]),
+    mem=_flat_groups(T, x),
     ends=cumsum(length.(x)),
 )
 """
@@ -798,7 +809,7 @@ Passing a `Vector{<:AbstractMatrix{<:Real}}` directly as a data kwarg to a `Slic
 applies this transformation automatically.
 """
 to_ragged(x::AbstractVector{<:AbstractMatrix{T}}) where {T<:Real} = (;
-    mem=reduce(vcat, (vec(m) for m in x); init=float(T)[]),
+    mem=_flat_groups(float(T), x),
     ends=cumsum(length.(x)),
     rows=Int[size(m, 1) for m in x],
     cols=Int[size(m, 2) for m in x],
