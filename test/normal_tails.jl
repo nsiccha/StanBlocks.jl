@@ -97,3 +97,43 @@ reference in both tails and inside a mixture's `log_sum_exp`.
         end
     end
 end
+
+"""
+`normal_lcdf_stable` / `normal_lccdf_stable` have `@juliacompat` Julia methods
+(snag `evaluate-the-unc-30e61f31`, which needed them for
+`exp_mod_normal_lpdf_standardized`'s Julia method). They run the same branches
+as the emitted Stan: the erfc form within 35 scales and the asymptotic series
+beyond. Values and Mooncake gradients match a 256-bit reference in both tails.
+"""
+@testitem "slic: the stable normal log-CDF and log-CCDF evaluate in Julia and under Mooncake" tags=[:slic, :ad, :regression] setup=[StanBlocksImports] begin
+    import Mooncake
+    gradient(g, x...) = begin
+        cache = Mooncake.prepare_gradient_cache(g, x...)
+        value, grads = Mooncake.value_and_gradient!!(cache, g, x...)
+        value, collect(grads[2:end])
+    end
+    reference(g, x...) = setprecision(BigFloat, 256) do
+        logPhi(z) = log(StanBlocks.SpecialFunctions.erfc(-z / sqrt(big(2))) / 2)
+        law(x, loc, scale) = g === StanBlocks.normal_lcdf_stable ?
+            logPhi((x - loc) / scale) : logPhi((loc - x) / scale)
+        h = big(1e-30)
+        b = big.(x)
+        value = law(b...)
+        grad = map(1:3) do j
+            e = ntuple(i -> i == j ? h : zero(h), 3)
+            (law((b .+ e)...) - law((b .- e)...)) / 2h
+        end
+        value, grad
+    end
+    # Standardized distances -60, -36, -20, 0, 3, 20, 36, 60.
+    points = ((-1.2, 0.0, 0.02), (-0.72, 0.0, 0.02), (-0.4, 0.0, 0.02), (0.1, 0.1, 1.0),
+              (3.0, 0.0, 1.0), (0.4, 0.0, 0.02), (0.72, 0.0, 0.02), (1.2, 0.0, 0.02))
+    for g in (StanBlocks.normal_lcdf_stable, StanBlocks.normal_lccdf_stable), p in points
+        value, grad = gradient(g, p...)
+        ref, dref = reference(g, p...)
+        @test isfinite(value) && all(isfinite, grad)
+        @test value ≈ ref rtol = 1e-13 atol = 1e-13
+        @test all(isapprox.(grad, dref; rtol = 1e-11, atol = 1e-13))
+    end
+    @test Base.return_types(StanBlocks.normal_lccdf_stable, (Float64, Float64, Float64)) == [Float64]
+end

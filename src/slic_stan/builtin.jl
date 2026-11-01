@@ -279,6 +279,11 @@ end
     std_normal_scaled_lcdf
     exp_mod_normal_lpdf_stable
     skew_normal_lpdf_stable
+    # The exp_mod_normal law from a standardized residual, log scale and log
+    # rate, finite where the scale or λσ exceeds Float64, and the scaled form it
+    # shares with `exp_mod_normal_lpdf_stable` (snag evaluate-the-unc-30e61f31).
+    exp_mod_normal_standardized_core
+    exp_mod_normal_lpdf_standardized
     # Student-t log-CDF/CCDF companions with a finite gradient where the
     # observation equals the location (Stan Math's are NaN there) and no
     # `1 - x` cancellation in either tail; selected for the `student_t` family
@@ -1530,10 +1535,12 @@ import Statistics
     # ~1e-14 finite-difference truth) in the practical regime, and `normal_lccdf`
     # diverges (value -Inf, gradient +Inf) past ~9σ where the erfc form is still
     # correct to ~37σ. `log(0.5·erfc(∓z/√2))` (z = (x-loc)/scale) autodiffs
-    # through exact-derivative primitives (`erfc`, `log`). `@stanonly`: the name
-    # is not in the probability family, so `@deffun` would otherwise install a
-    # Julia target calling the Stan-only `erfc` token — these are Stan-emission
-    # only. See snag censored-normal-410c4e35 for the isolated-kernel measurement.
+    # through exact-derivative primitives (`erfc`, `log`). See snag
+    # censored-normal-410c4e35 for the isolated-kernel measurement. The normal
+    # and exponentially modified normal helpers below are `@juliacompat`: their
+    # Julia methods evaluate the same expressions, with `erfc` from
+    # SpecialFunctions (functions.jl), so a Julia caller (an RK observation law)
+    # gets the law the emitted Stan computes.
     #
     # Past ~37.6σ the erfc form breaks: `erfc` goes subnormal (gradient ±Inf),
     # then underflows to 0 (value -Inf, gradient 0·Inf = NaN). A NaN gradient
@@ -1565,7 +1572,24 @@ import Statistics
     # λ²σ²/2 versus -z²/2 cancellation at large λσ; skew_normal(y | ξ, ω, α) =
     # log 2 + normal_lpdf(y | ξ, ω) + log Φ(α(y - ξ)/ω). snag
     # ap3-native-skew-db722fb4; upstream stan-dev/math#3406.
-    @stanonly begin
+    #
+    # `exp_mod_normal_lpdf_standardized(u, log_sigma, log_lambda)` is the same
+    # exp_mod_normal law, log p(y | μ, σ, λ), from u = (y - μ)/σ, log σ and
+    # log λ, so it stays finite when σ or τ = λσ exceeds Float64 (snag
+    # evaluate-the-unc-30e61f31). With log τ = log σ + log λ and r = u/τ the
+    # law is log λ - u²/2 + [log Φ(u - τ) + (u - τ)²/2]. For log τ > 20 and
+    # r < 1/2, |u - τ| > e²⁰/2, and the bracket's Mills expansion
+    # -log(τ - u) - log(2π)/2 + log1p(S), S = -1/(u - τ)² + …, has
+    # |S| < 1.7e-17. With log(τ - u) = log τ + log1p(-r) the law is then
+    # -log σ - log(2π)/2 - u²/2 - log1p(-r), with S dropped: τ is never formed
+    # and no two large terms cancel. Otherwise τ = exp(log τ) is finite
+    # (at most e^709) and `exp_mod_normal_standardized_core` evaluates the
+    # scaled form, the one `exp_mod_normal_lpdf_stable` evaluates with τ = λσ.
+    # r ≥ 1/2 with log τ > 709 means u > 4e307, where the log density is below
+    # -8e614, so -Inf. Each branch is a ternary, so exp(log τ) is never formed
+    # where it overflows: Stan's reverse pass runs every node on the tape, and
+    # an unused node with an infinite partial still adds 0·∞ = NaN.
+    @juliacompat begin
     std_normal_scaled_lcdf_tail(z::real)::real = begin
         w = inv(square(z))
         -log(-z) - 0.9189385332046728 +
@@ -1581,11 +1605,27 @@ import Statistics
     normal_lccdf_stable(x::real, loc::real, scale::real)::real =
         (x - loc) / scale > 35 ? std_normal_lcdf_tail((loc - x) / scale) :
             log(erfc((x - loc) / (scale * sqrt(2.)))) - log(2.)
-    exp_mod_normal_lpdf_stable(y::real, mu::real, sigma::real, lambda::real)::real = begin
-        z = (y - mu) / sigma - lambda * sigma
-        z < 0 ? log(lambda) - 0.5 * square((y - mu) / sigma) + std_normal_scaled_lcdf(z) :
-            log(lambda) + lambda * (mu - y) + 0.5 * square(lambda * sigma) + normal_lcdf_stable(z, 0., 1.)
+    # The two z < 0 branches are `std_normal_scaled_lcdf(z)`'s, written out with
+    # the same arithmetic: a call to an `_lcdf`-named function has no Julia
+    # method (the `@juliacompat` family-name rule), so `std_normal_scaled_lcdf`
+    # itself stays Stan-only in this group.
+    exp_mod_normal_standardized_core(u::real, log_lambda::real, tau::real)::real = begin
+        z = u - tau
+        z < -35 ? log_lambda - 0.5 * square(u) + std_normal_scaled_lcdf_tail(z) :
+            (z < 0 ? log_lambda - 0.5 * square(u) + (normal_lcdf_stable(z, 0., 1.) + 0.5 * square(z)) :
+                log_lambda + tau * (0.5 * tau - u) + normal_lcdf_stable(z, 0., 1.))
     end
+    exp_mod_normal_lpdf_stable(y::real, mu::real, sigma::real, lambda::real)::real =
+        exp_mod_normal_standardized_core((y - mu) / sigma, log(lambda), lambda * sigma)
+    exp_mod_normal_lpdf_standardized(u::real, log_sigma::real, log_lambda::real)::real = begin
+        log_tau = log_sigma + log_lambda
+        r = log_tau > 20 ? u * exp(-log_tau) : 1.
+        r < 0.5 ? -log_sigma - 0.9189385332046728 - 0.5 * square(u) - log1p(-r) :
+            (log_tau > 709 ? negative_infinity() :
+                exp_mod_normal_standardized_core(u, log_lambda, exp(log_tau)))
+    end
+    end
+    @stanonly begin
     # -0.2257913526447274 = log(2) - log(2π)/2
     skew_normal_lpdf_stable(y::real, xi::real, omega::real, alpha::real)::real = begin
         z = (y - xi) / omega
