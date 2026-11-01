@@ -4,6 +4,40 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.14
+
+- **Lower-truncated LogNormal moments and a stable LogNormal survival.** New
+  scalar builtins for any `@deffun` or `@slic` body:
+  `lognormal_truncated_mean(mu, sigma, lower)` and
+  `lognormal_truncated_variance(mu, sigma, lower)` are the normalized mean and
+  variance of `X | X ≥ lower`, `X ~ LogNormal(mu, sigma)`, and
+  `lognormal_truncated_moments(mu, sigma, lower)` returns both as a
+  `vector[2]`. A `lower ≤ 0` truncates nothing and gives the plain LogNormal
+  moments. `lognormal_lccdf_stable(y, mu, sigma)` /
+  `lognormal_lcdf_stable(y, mu, sigma)` are `log P(X ≥ y)` / `log P(X ≤ y)`
+  through the stable normal pair. With `x = (log lower - mu)/sigma` and `F` the
+  reciprocal Mills ratio, the mean is `lower·F(x)/F(x - sigma)` and the
+  variance over the squared mean is `F(x - σ)²/(F(x)F(x - 2σ)) - 1`. Neither
+  difference is formed by subtraction: in the lower tail Laplace's continued
+  fraction for `F` runs in divided-difference arithmetic at the three nodes;
+  otherwise a Taylor series about the midpoint (narrow scales) or a direct
+  difference (wide scales) is used. Against an 80-digit reference the relative
+  error is below `8e-14` for `sigma` from `1e-9` to `20` and bounds from far
+  below the distribution to `x = 1e6`, where the textbook `Φ` ratio underflows
+  past `x ≈ 38` and the `E[X²] - E²` form loses `~1/σ²` of its precision.
+  Stan's reverse-mode gradients in location, log scale and log bound match a
+  256-bit reference within `1.3e-12`, also at `sigma = 1e-6`. The `lognormal`
+  family's `censored`, `truncated` and `interval_censored` tail masses now take
+  the stable pair, as `normal` and `student_t` do: Stan's own
+  `lognormal_lccdf` returns `-Inf` with a `NaN` gradient past `~38σ`. A direct
+  `lognormal_lcdf(...)` / `lognormal_lccdf(...)` call and `y ~ lognormal(...)`
+  emit Stan's kernels as before.
+- **`normal_lcdf_stable` / `normal_lccdf_stable` stay accurate relative to
+  their size near 0.** On the side holding more than half the mass they now
+  take `log1m` of the small complement instead of `log(erfc(·)) - log(2)`,
+  which was only absolutely accurate there: a mass within `1e-16` of 1 gave
+  exactly `0`, so `log1m_exp` of it was `-Inf`. Values elsewhere are unchanged.
+
 ## v0.2.13
 
 - **`exp_mod_normal` from a standardized residual and log scale.**

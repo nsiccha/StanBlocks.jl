@@ -781,6 +781,12 @@ logccdf_expr(::typeof(builtin.normal)) = builtin.normal_lccdf_stable
 # analytic at t = 0 and forms neither difference. snag native-student-t-b7023f91.
 logcdf_expr(::typeof(builtin.student_t)) = builtin.student_t_lcdf_stable
 logccdf_expr(::typeof(builtin.student_t)) = builtin.student_t_lccdf_stable
+# `lognormal` likewise: Stan Math's `lognormal_lcdf`/`lognormal_lccdf` take
+# log(erfc(·)) of the log-scale z-score and return -Inf (gradient NaN) past
+# ~38σ; the builtin.jl pair is the stable normal pair at log y.
+# snag bounded-lognorma-c225e536.
+logcdf_expr(::typeof(builtin.lognormal)) = builtin.lognormal_lcdf_stable
+logccdf_expr(::typeof(builtin.lognormal)) = builtin.lognormal_lccdf_stable
 
 # The truncated draws' inversion (`*_conditioning_inverse_rng`, builtin.jl) reads
 # a family's upper tail through `conditioning_logccdf`: the most precise log
