@@ -449,7 +449,10 @@ end
 A `Vector{<:AbstractMatrix{<:Real}}` data kwarg, such as one design matrix per
 group, is a `RaggedMatrix` in the same way: `X[g]` is the `g`th matrix and
 `length(X)` the number of matrices, in the model body, in a plate cell, as a
-plate positional, and passed to a submodel or a `@deffun`:
+plate positional, and passed to a submodel or a `@deffun`. Integer matrices keep
+integer values: `X[g]` is then an `array[rows, cols] int`, as a dense
+`Matrix{<:Integer}` is `array[m, n] int`, so it can index a shared state or be
+passed to a `@deffun` taking `int[R, K]`:
 
 ```julia
 X = [[0.5 -0.2; 0.1 0.3], [0.2 0.4; -0.6 0.1; 0.3 0.7]]
@@ -1066,8 +1069,8 @@ tuple(vector[y_mem_n], array[y_ends_n] int) y;
 
 so `y = [[0.1, 0.2, 0.3], [0.4]]` is `y_mem_n = 4`, `y_ends_n = 2` and, in
 CmdStan JSON, `"y": {"1": [0.1, 0.2, 0.3, 0.4], "2": [3, 4]}`. An integer group
-uses `array[y_mem_n] int` for the values. A vector of matrices `X` adds each
-matrix's row and column counts,
+uses `array[y_mem_n] int` for the values, and so does a vector of integer
+matrices. A vector of matrices `X` adds each matrix's row and column counts,
 
 ```stan
 tuple(vector[X_mem_n], array[X_ends_n] int, array[X_rows_n] int, array[X_cols_n] int) X;

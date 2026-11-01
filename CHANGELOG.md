@@ -4,6 +4,26 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.15
+
+- **A vector of integer matrices keeps integer values.** A
+  `Vector{<:AbstractMatrix{<:Integer}}` data kwarg is still a `RaggedMatrix`,
+  but its values are now `array[X_mem_n] int` (a `Bool` matrix is stored as
+  `Int`), and `X[g]` is an `array[rows[g], cols[g]] int`, as a dense
+  `Matrix{<:Integer}` is `array[m, n] int` and a ragged `Vector{Vector{Int}}`
+  keeps integer values. A group can therefore index a shared state or be passed
+  to a `@deffun` taking `int[R, K]`, in the model body, a plate cell, as a plate
+  positional, a group selection and a `@deffun` `RaggedMatrix` argument. Before,
+  the values were stored as real, so `X[g]` was a `matrix` and a call such as
+  `f(X[g])` with `f(ix::int[R, K])` failed with "`tracetype` not defined for
+  f(::matrix)::anything". A model that used an integer `X[g]` in real matrix arithmetic
+  (`X[g] * beta`) must now pass real matrices (`float.(X)`), as for a dense
+  `Matrix{Int}`.
+- **`reshape(v, m, k)` takes an integer array** and returns an
+  `array[m, k] int`, filled column-major as in Julia (Stan's `to_matrix` would
+  make it real, and Stan has no integer reshape). Stan rejects a length other
+  than `m * k` at run time.
+
 ## v0.2.14
 
 - **Lower-truncated LogNormal moments and a stable LogNormal survival.** New

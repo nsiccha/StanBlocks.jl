@@ -1990,9 +1990,23 @@ import Statistics
     @juliacompat hcat(x::matrix[m, n], y::vector[m])::matrix[m, n+1] = append_col(x, y)
     @juliacompat hcat(x, y, z, args...) = hcat(hcat(x, y), z, args...)
 
-    # reshape: vector -> matrix only, matching Base.reshape(v, m, k) with fully
+    # reshape: vector -> matrix, matching Base.reshape(v, m, k) with fully
     # specified dims. Grow as needed.
     @juliacompat reshape(v::vector[n], m::int, k::int)::matrix[m, k] = to_matrix(v, m, k)
+    # An integer array reshapes to a 2-D integer array (`array[m, k] int`), column-major
+    # like Base.reshape: Stan's `to_matrix` would make it real, and Stan has no integer
+    # reshape. An integer `RaggedMatrix` group is read through this (snag
+    # pass-a-vector-ma-b68fc7c9).
+    @juliacompat reshape(v::int[n], m::int, k::int)::int[m, k] = begin
+        @stan_assert n == m * k "reshape: an integer array of length n cannot be reshaped to m rows and k columns unless n == m * k."
+        out::int[m, k]
+        for j in 1:k
+            for i in 1:m
+                out[i, j] = v[(j - 1) * m + i]
+            end
+        end
+        out
+    end
 
     # `jmap(f, x)` — element-wise map whose output CONTAINER is inferred from
     # `f`'s per-element return type (`typeof(f(x[1]))`): an `int`-returning `f`
@@ -2941,7 +2955,11 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(as_matrix),<:Tuple{<:StanExpr2{<:
             "(`as_matrix(pred)`), not on a name rebound from one."
         )
     end
-# `rm[i]` → reconstruct the selected flat slice with its data-only dimensions.
+# `rm[i]` → reconstruct the selected flat slice with its data-only dimensions: a
+# `matrix` from real memory, an `array[rows[i], cols[i]] int` from integer memory
+# (integer matrix data, snag pass-a-vector-ma-b68fc7c9). A bound real RaggedMatrix (a
+# data tuple, a `@deffun` argument) reads through the `getindex_RaggedMatrix` UDF; a
+# bound integer one is sliced inline here, because that UDF returns a real `matrix`.
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
     if _is_group_selection(x.args[2])
         rm = x.args[1]
@@ -2951,16 +2969,28 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:R
         forward!(CanonicalExpr(RaggedMatrix, sel.mem, sel.ends, rows, cols); info)
     elseif _is_ragged_construction(x.args[1])
         rv, i = x.args
-        ends = _ragged_ends(rv)
-        lo = _trace_stan_call(builtin.ragged_start, ends, i; info)
-        hi = _trace_stan_call(builtin.ragged_end, ends, i; info)
-        slice = _trace_stan_call(getindex, _ragged_mem(rv), _trace_stan_call(Colon(), lo, hi; info); info)
-        nr = _trace_stan_call(getindex, _ragged_rows(rv), i; info)
-        nc = _trace_stan_call(getindex, _ragged_cols(rv), i; info)
-        _trace_stan_call(builtin.to_matrix, slice, nr, nc; info)
+        _ragged_matrix_group(_ragged_mem(rv), _ragged_ends(rv), _ragged_rows(rv), _ragged_cols(rv), i; info)
+    elseif _ragged_int_memory(x.args[1])
+        rv, i = x.args
+        _ragged_matrix_group((_ragged_field(rv, k; info) for k in 1:4)..., i; info)
     else
         fold_shape_query(_trace_stan_expr(x, info))
     end
+_ragged_matrix_group(mem, ends, rows, cols, i; info) = begin
+    lo = _trace_stan_call(builtin.ragged_start, ends, i; info)
+    hi = _trace_stan_call(builtin.ragged_end, ends, i; info)
+    slice = _trace_stan_call(getindex, mem, _trace_stan_call(Colon(), lo, hi; info); info)
+    nr = _trace_stan_call(getindex, rows, i; info)
+    nc = _trace_stan_call(getindex, cols, i; info)
+    f = center_type(type(slice)) <: types.int ? builtin.reshape : builtin.to_matrix
+    _trace_stan_call(f, slice, nr, nc; info)
+end
+# Whether a ragged carrier's flat memory is integer (integer matrix data).
+_ragged_int_memory(rv) = begin
+    at = get(type(rv).info, :arg_types, nothing)
+    at isa NamedTuple && haskey(at, :mem) || return false
+    at.mem isa StanType && center_type(at.mem) <: types.int
+end
 # `sum(rv)` / `mean(rv)` reduce over the GROUPS, as Julia's `sum`/`mean` of a vector
 # of vectors do: `sum(rv) == rv[1] + rv[2] + …`, as long as each group (every group
 # must have that length; Stan checks at runtime). The total of every entry is
