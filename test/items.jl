@@ -23,9 +23,11 @@ end
 # Registered Enzyme raises `EnzymeRuntimeActivityError` where constant weights
 # meet active data, as in `w .* f(y)` and `w' * f(y)`. It also cannot compile the
 # derivative of `tgamma`, and gets `digamma`'s wrong at negative half-integers and
-# `hypot`'s where the operands differ by more than about 1e8. Dogfood
-# differentiates all of them, the last three from `76d5adf` on. Those checks stay
-# as written, pinned broken on registered Enzyme.
+# `hypot`'s where the operands differ by more than about 1e8, and it loses
+# gradients below about 1e-154 (`skew_emg_cdf.jl`). Dogfood differentiates all of
+# them, `tgamma`, `digamma` and `hypot` from `76d5adf` on and the tiny gradients
+# from `0be7fc2` on. Those checks stay as written, pinned broken on registered
+# Enzyme.
 @testsnippet EnzymeGradient begin
     import Enzyme
     const ENZYME_DOGFOOD = isdefined(Enzyme.Compiler, :RestoreSafepointEffectsPass)
