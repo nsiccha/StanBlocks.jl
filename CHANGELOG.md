@@ -4,6 +4,25 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.19
+
+- **`/=` in `@deffun` bodies.** An updating division lowers to Stan's `/=`, as
+  `+=`, `-=` and `*=` already did: an indexed element (`x[j] /= factor[j]`), a
+  whole vector or matrix (`x /= 2.0`), a scalar local and a matrix element
+  (`B[1, 1] /= s`). It used to stop tracing with `Could not find /= in model,
+  builtin, … or Main!`, so a back-substitution written with `/=` could not be
+  called from a model, nor from a family's `_rng` in a prior-only model. A
+  `@juliacompat` method runs Julia's own `/=`.
+- **An updating assignment of a bare local refuses a result size routed
+  through that local.** `m += 1`, `m /= 2` and `v .= …` reassign the local,
+  exactly as `m = m + 1` does, so a `@deffun` whose inferred result size reads
+  it is refused by name, with the same message. Previously the size was
+  substituted from the local's first definition: `m = n; m += 1;
+  rep_vector(0.0, m)` declared the caller's result `vector[n]` for an
+  `n + 1`-element value, which stanc accepts and Stan rejects at run time. An
+  indexed update (`x[i] += …`) leaves the definition in place, as an indexed
+  `=` does.
+
 ## v0.2.18
 
 - **`segment(v, i, n)` has a `@juliacompat` Julia method.** A shared
