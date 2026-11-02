@@ -3163,6 +3163,74 @@ end
 # both). Discovery types it; the loop core then declares its promoted storage,
 # so the emit trace drops the statement rather than re-declaring the name.
 _plate_is_bare_decl(s) = s isa Expr && s.head === :(::) && length(s.args) == 2 && s.args[1] isa Symbol
+# `local x ~ …`, `local x::T = …`, `local x::T`: a plate-cell or annotated-loop
+# binding that shadows an outer `x` for the whole body, as `local` does in a
+# Julia closure (snag `reflect-a-fixed-d777e837`, user decision `02bhgp2`).
+# Without it, a body binding of a name bound outside is refused (a model never
+# rebinds a name): an unmarked `y ~ …` is far more often a forgotten `y[i]`.
+# Returns the statements with the wrapper removed and the names declared `local`.
+_is_doc_macro(x) = x == GlobalRef(Core, Symbol("@doc")) || x === Symbol("@doc")
+_unwrap_cell_locals(stmts, label) = begin
+    names = Symbol[]
+    out = Any[]
+    for s in stmts
+        doc = s isa Expr && s.head === :macrocall && _is_doc_macro(s.args[1]) && Meta.isexpr(s.args[end], :local)
+        l = doc ? s.args[end] : s
+        if !Meta.isexpr(l, :local)
+            push!(out, s); continue
+        end
+        fi = length(l.args) == 1 ? _plate_fresh_info(l.args[1]) : nothing
+        fi === nothing && error(
+            label, ": `local` declares one binding of a name (`local x ~ …`, `local x = …`, ",
+            "`local x::T ~ …`, `local x::T = …` or `local x::T`), got `", l, "`.")
+        fi[1] in names && error(label, ": `", fi[1], "` is declared `local` twice.")
+        push!(names, fi[1])
+        push!(out, doc ? Expr(:macrocall, s.args[1:end-1]..., l.args[1]) : l.args[1])
+    end
+    out, names
+end
+# Does a raw statement read `f`? (A keyword argument's name is not a read.)
+_raw_reads(x, f) = false
+_raw_reads(x::Symbol, f) = x === f
+_raw_reads(x::Expr, f) = x.head === :kw ? _raw_reads(x.args[2], f) : any(a -> _raw_reads(a, f), x.args)
+# What a binding statement reads besides the name it binds: its RHS and its type.
+_raw_binding_reads(s::Expr, f) = begin
+    lhs, rest = s.head === :(::) ? (nothing, s.args[2]) :
+        s.head === :(=) ? (s.args[1], s.args[2]) : (s.args[2], s.args[3])
+    (lhs isa Expr && lhs.head === :(::) && _raw_reads(lhs.args[2], f)) || _raw_reads(rest, f)
+end
+_raw_binding_reads(_, f) = false
+# A `local` binding shadows the outer name for the WHOLE body, so a read of it
+# before (or inside) its own binding statement cannot see the outer value.
+_reject_reads_before_local(stmts, shadow, label, outer) = for f in shadow
+    i = findfirst(s -> (fi = _plate_fresh_info(s); fi !== nothing && fi[1] === f), stmts)
+    i === nothing && continue
+    early = any(s -> _raw_reads(s, f), stmts[1:i-1]) || _raw_binding_reads(stmts[i], f)
+    early && error(
+        label, ": `", f, "` is read before (or by) the `local ", f, "` statement that binds it. ",
+        "That binding shadows the ", outer, " `", f, "` in the whole ", label in ("@scan", "@plate") ? "loop body" : "cell",
+        ", so the read cannot see the outer value. Bind the outer value to another name outside, ",
+        "or move the read after the `local` statement.")
+end
+# What a name bound outside a cell is, for messages.
+_outer_binding_kind(f; info) = begin
+    v = info[f]
+    q = v isa StanExpr ? qual(v) : nothing
+    q === :data ? (info isa SubModel ? "data input or caller keyword" : "data input") :
+    q === :parameter ? "model-scope parameter" : "model-scope value"
+end
+# A cell / loop-body binding of a name bound outside that is not declared `local`.
+_reject_unmarked_shadow(label, f, s; info) = error(
+    label, ": the ", label in ("@scan", "@plate") ? "loop body" : "cell", " binds `", f,
+    "`, which is already bound outside it (a ", _outer_binding_kind(f; info), "), and a model never ",
+    "rebinds a name. To observe the outer `", f, "` per cell, index it (`", f, "[…] ~ …`) or pass it ",
+    "as a positional; for a separate per-cell `", f, "` that shadows the outer one, declare it ",
+    "`local` (`local ", s, "`); or give the binding another name.")
+# `local` anywhere else (model scope, a `@deffun` body) has no enclosing scope to shadow.
+forward!(x::CanonicalExprV{:local}; info) = error(
+    "`local` declares a binding local to a `plate(…) do` cell or an annotated `@plate for` / ",
+    "`@scan` loop body, shadowing an outer name there; it is not valid at model scope or in a ",
+    "function body. Drop the `local`.")
 # A raw `lhs ~ vcat(…)` statement.
 _is_raw_vcat_prior(s) = s isa Expr && s.head === :call && length(s.args) == 3 && s.args[1] === :~ &&
     Meta.isexpr(s.args[3], :call) && !isempty(s.args[3].args) && s.args[3].args[1] === :vcat
@@ -4354,6 +4422,13 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         "result). Give each plate its own name.")
     params, vararg = _parse_lambda_lhs(lhs_raw)
     vararg === nothing || error("plate: vararg do-block params (`args...`) are not supported yet.")
+    label = string("plate `", rv, "`")
+    cell_stmts, shadow = _unwrap_cell_locals(body_raw.args, label)
+    body_raw = Expr(:block, cell_stmts...)
+    for f in shadow
+        f in params && error(
+            label, ": `", f, "` is this cell's do-block parameter; `local` cannot declare it again.")
+    end
     iterables = collect(plate.args[2:end])
     params, iterables, body_raw, cv_params =
         _plate_cv_positionals(rv, params, iterables, body_raw, get(plate.kwargs, :outer, nothing); info)
@@ -4454,7 +4529,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         ret_expr,
         setup_stmts=Any[], public=Set{Symbol}(), probe_transform=nothing,
         probe_exclude=Set{Symbol}(), scan_arrays=Set{Symbol}(), info, ns=rv, spellings,
-        cv_params,
+        cv_params, shadow=Set{Symbol}(shadow), label,
     )
 end
 
@@ -4511,12 +4586,15 @@ end
 #   • `scratch` — the sugar's bare `tmp = …` locals and the `=` bindings of a
 #     `laplace_marginal` do block in its body (author names): loop-local
 #     scratch, never per-cell storage (`_loop_scratch`).
+#   • `shadow` — the body's `local` names (author spellings, `_unwrap_cell_locals`):
+#     the only bindings allowed to reuse a name bound outside, which they shadow.
+#   • `label` — how messages name this loop (`plate `rv``, `@plate`, `@scan`).
 _forward_loop_core!(;
     kind, rv, rv_ct, id, idxs, outer_dims, outer_lo, params, iterables, input_subst,
     body_stmts, ret_expr, setup_stmts, public, probe_transform, probe_exclude,
     scan_arrays, info, ns=nothing, hygiene=Dict{Symbol,Symbol}(),
     spellings=Dict{Symbol,Symbol}(), cv_params=Dict{Symbol,_CVCell}(),
-    scratch=Set{Symbol}(),
+    scratch=Set{Symbol}(), shadow=Set{Symbol}(), label=string(kind),
 ) = begin
     # Proven length mismatches between positionals and their outer axes (or
     # between siblings) are ill-typed — refuse before any renaming/hoisting.
@@ -4552,13 +4630,21 @@ _forward_loop_core!(;
     # excluded too (it lowers via `input_subst` to `y[plate_i]`).
     # The `=` bindings inside a `laplace_marginal` do block (laplace.jl) are cell
     # locals too: they replay in the cell after the latent's draw.
+    # A binding of a name bound OUTSIDE (a data input, a model-scope value, a
+    # sub-model caller's keyword) must be declared `local` (`shadow`), which makes
+    # it a fresh cell binding like any other; unmarked it is refused. Before snag
+    # `reflect-a-fixed-d777e837` it was skipped as a "capture": at model scope the
+    # un-promoted binding then crashed the emitter, and inside a sub-model a
+    # caller's keyword silently replaced the cell's binding.
+    _reject_reads_before_local(body_stmts, shadow, label, "outer")
     fresh_rename = Dict{Symbol,Symbol}()
     for s in body_stmts
         fi = _plate_fresh_info(s)
         names = fi === nothing ? Symbol[] : Symbol[fi[1]]
         append!(names, _laplace_block_locals(s))
         for f in names
-            (f in params || f in public || f in keys(info) || haskey(fresh_rename, f)) && continue
+            (f in params || f in public || haskey(fresh_rename, f)) && continue
+            f in keys(info) && !(f in shadow) && _reject_unmarked_shadow(label, f, s; info)
             fresh_rename[f] = get(hygiene, f) do
                 _plate_fresh_name!(Symbol(ns, :_, f), Iterators.flatten((values(hygiene), values(fresh_rename), public)); info)
             end
@@ -5514,6 +5600,10 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     end
     head_raw, body = forx.args
     (body isa Expr && body.head === :block) || error(label, ": the loop body must be a block.")
+    # `local x …` loop-body bindings may shadow a name bound outside the loop.
+    body_args, shadow_list = _unwrap_cell_locals(body.args, label)
+    body = Expr(:block, body_args...)
+    shadow = Set{Symbol}(shadow_list)
     binds = (head_raw isa Expr && head_raw.head === :block) ? head_raw.args : Any[head_raw]
     binds = Any[b for b in binds if !(b isa LineNumberNode)]
     # ── 2. Iteration head: ranges (`1:N`, `lo:hi`) or ONE container clause ──
@@ -5620,15 +5710,18 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
             push!(owned(base) ? owned_arrays : public, base); push!(filled_in_body, base)
         elseif tl isa Symbol
             if tl in params
+                tl in shadow && error(
+                    label, ": `", tl, "` is the loop's container element; `local` cannot declare it again.")
                 # `d ~ dist(…)` on the container clause's element is an observation
                 # on the per-cell slice (the do-form's `yi ~ …`); assigning it is not.
                 (s isa Expr && s.head === :call) || error(
                     label, ": cannot assign the container element `", tl, "`.")
                 continue
             end
-            tl in keys(info) && error(
+            tl in keys(info) && !(tl in shadow) && error(
                 label, ": `", tl, "` is bound outside the loop — SB models never mutate; ",
-                "index it (`", tl, "[", idx_list, "]`) for a per-cell array, or move it outside.")
+                "index it (`", tl, "[", idx_list, "]`) for a per-cell array, declare a loop-local ",
+                "that shadows it (`local ", s, "`), or move it outside.")
             tl in idxs && error(label, ": cannot assign the loop variable `", tl, "`.")
             push!(locals, tl)   # a bare fresh name: a per-iteration local (`1rgglep`)
             s.head === :(=) && push!(scratch_locals, tl)
@@ -5868,7 +5961,7 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
         params, iterables, input_subst, body_stmts, ret_expr=nothing,
         setup_stmts, public, probe_transform, probe_exclude=setup_plain,
         scan_arrays=(kind === :scan ? public : Set{Symbol}()), info,
-        ns, hygiene,
+        ns, hygiene, shadow, label,
         # A local an enclosing loop promoted is that loop's storage, not scratch.
         # A `laplace_marginal` do block's `=` bindings replay in the cell as
         # locals of it too, so the integrated latent keeps the sampled

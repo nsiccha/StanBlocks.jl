@@ -4,6 +4,31 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.20
+
+- **`local` declares a plate-cell binding that shadows an outer name.** In a
+  `plate(…) do` cell, `local x ~ …`, `local x = …`, `local x::T ~ …`,
+  `local x::T = …` and `local x::T` declare a cell binding even when `x` is
+  already bound outside the cell (a data input, a model-scope value, or a
+  keyword a sub-model's caller passes). The binding shadows the outer `x` in
+  the whole cell, as `local` does in a Julia closure, and emits exactly the
+  program it emits when no outer `x` exists. So a per-cell
+  `local Omega::cholesky_factor_corr[K] ~ lkj_corr_cholesky(2.0)` is not
+  affected by a data field named `Omega`. A bare per-iteration binding of an
+  annotated `@plate for` / `@scan` body takes `local` the same way. A read of
+  the name before (or inside) its `local` statement is refused, and so is
+  `local` at model scope.
+- **An unmarked cell binding of an outer name is refused with the remedies.**
+  The message offers three fixes: index it to observe per cell, declare it
+  `local`, or rename. Such a binding used to crash transpilation at model
+  scope with an internal error (`Compiler-owned loop body statement … tried
+  to emit into declarative block parameters`, `non-indexed
+  generated-quantities sample`, `name ∉ keys(info)`). Inside a called
+  sub-model it silently took the caller's keyword in place of the cell's
+  binding: a cell `sigma = 1.0` used the caller's `sigma`, and a cell
+  `sigma ~ …` observed it once per cell. That case is now refused too; a
+  shared default belongs at sub-model scope.
+
 ## v0.2.19
 
 - **`/=` in `@deffun` bodies.** An updating division lowers to Stan's `/=`, as
