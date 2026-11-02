@@ -4,6 +4,29 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.17
+
+- **The stable exponentially modified normal and skew-normal builtins return
+  a limit, never NaN, at an infinite or overflowing standardized residual**, as
+  an extreme sampler proposal produces. `exp_mod_normal_lpdf_standardized(Inf,
+  log_sigma, log_lambda)` is `-Inf`; it was `NaN` once `exp(log_sigma +
+  log_lambda)` underflowed to 0 (log λσ below about -745), and so was
+  `exp_mod_normal_lpdf_stable` at `y = Inf` with λσ underflowing. An infinite
+  center makes `exp_mod_normal_interval_lprob_standardized` and
+  `skew_normal_interval_lprob_standardized` `-Inf` (an empty interval);
+  `skew_normal_lpdf_stable` at an infinite `y` with `alpha = 0` is `-Inf`; an
+  interval whose two ends lie past Float64 on one side of the law has log mass
+  `-Inf` in every family's `interval_censored`; and the skew-normal log CDF and
+  CCDF, and the exponentially modified normal log CDF, give their limits where
+  the normal log CDF or CCDF of the residual is `-Inf` (past about 1.3e154).
+- **Where λσ underflows (log λσ < -709), the exponentially modified normal log
+  CDF and CCDF, and the interval masses taken from them, keep their value**:
+  log F(u) = log Φ(u) + log(1 - e^-D) with log D = log λσ + log S'(u),
+  S(c) = log Φ(c) + c²/2, which is F = λσ(uΦ(u) + φ(u)) to first order. Before,
+  D was formed from λσ = 0, so log F was `-Inf` and an interval mass `NaN`.
+  For log λσ > 709 and u ≥ λσ/2, log F is log Φ(u); past u = λσ it threw a
+  `log1p` domain error.
+
 ## v0.2.16
 
 - **Stable skew-normal and exponentially modified normal CDFs, and interval
