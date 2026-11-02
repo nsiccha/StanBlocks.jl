@@ -352,11 +352,15 @@ Base.show(io::StanIO, x::SamplingExpr) = begin
     end
 end
 
-for f in (:+=,:-=,:*=)
+# Stan's compound assignments. Each lowers to itself (forward.jl
+# `_forward_updating_assignment!`) and prints joined by the operator. `/=` was
+# missing (snag `compile-a-deffun-0cacca7d`), so its head fell through to a
+# function lookup: `Could not find /= in model, builtin, …`.
+for f in (:+=,:-=,:*=,:/=)
     qf = Meta.quot(f)
-    @eval forward!(x::CanonicalExprV{$qf}; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+    @eval forward!(x::CanonicalExprV{$qf}; info) = _forward_updating_assignment!(x; info)
     @eval Base.show(io::IO, x::CanonicalExprV{$qf}) = print(io, Join(x.args, prettystring($qf)))
 end
-@eval forward!(x::CanonicalExprV{:(.=)}; info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+@eval forward!(x::CanonicalExprV{:(.=)}; info) = _forward_updating_assignment!(x; info)
 @eval Base.show(io::IO, x::CanonicalExprV{:(.=)}) = print(io, Join(x.args, " = "))
 @specialize

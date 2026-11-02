@@ -1467,6 +1467,27 @@ maybe_lazy_size(key::Symbol, i, sizei::StanExpr{<:CanonicalExpr}; info) = if is_
 else
     forward!(canonical(:(dims($key)[$i])); info)
 end
+# A reassigned local has no single defining expression, so a result size routed
+# through it cannot be expressed in the UDF's arguments: tombstone any
+# inference-trace def (functions.jl `forward_return!` refuses loudly on it).
+# Only fresh-trace locals tombstone; an argument rebinding keeps its pre-trace
+# (caller-valid) resolution. An indexed LHS writes one element, which leaves the
+# binding's definition in place, as an indexed `=` does.
+_tombstone_reassigned!(name::Symbol; info) = let defs = _return_size_defs(info)
+    defs === nothing || (haskey(defs, name) && (defs[name] = nothing))
+    nothing
+end
+_tombstone_reassigned!(::Any; info) = nothing
+# An updating assignment (`+=`, `-=`, `*=`, `/=`, and the broadcast `.=`) of an
+# already-bound local lowers to itself. To a bare name it is a reassignment, like
+# a plain `=` to a bound name below. Before snag `compile-a-deffun-0cacca7d` it
+# did not tombstone, so `m = n; m += 1; rep_vector(0.0, m)` declared the
+# caller's result `vector[n]` for an `n + 1`-element value.
+_forward_updating_assignment!(x::CanonicalExpr; info) = begin
+    rv = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+    _tombstone_reassigned!(x.args[1]; info)
+    rv
+end
 forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args
     promoted = _plate_promoted_target(name; info)
@@ -1484,14 +1505,7 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
         # (`acc = acc + xi`) and scalar loop state (`t = t + dt` inside a `while`) both
         # take this path. `@slic` model/submodel scope keeps single-assignment
         # discipline via the assert below.
-        # A reassigned local has no single defining expression, so a result
-        # size routed through it cannot be expressed in the UDF's arguments —
-        # tombstone any inference-trace def (functions.jl `forward_return!`
-        # refuses loudly on it). Only fresh-trace locals tombstone: an
-        # argument rebinding keeps its pre-trace (caller-valid) resolution.
-        let defs = _return_size_defs(info)
-            defs === nothing || (haskey(defs, name) && (defs[name] = nothing))
-        end
+        _tombstone_reassigned!(name; info)
         return _trace_stan_expr(CanonicalExpr(Symbol(".="), info[name], rhs), info)
     end
     _is_hoisted(name; info) && return _bind_hoisted!(name, type(rhs), rhs; info)
