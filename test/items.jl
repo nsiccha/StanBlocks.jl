@@ -21,8 +21,11 @@ end
 # `ENZYME_DOGFOOD` names the ecosystem's dogfood line (`enzyme-use`), which runs
 # only on the host that has its libEnzyme build, so CI runs registered Enzyme.
 # Registered Enzyme raises `EnzymeRuntimeActivityError` where constant weights
-# meet active data, as in `w .* f(y)` and `w' * f(y)`. Dogfood differentiates
-# both. Those checks stay as written, pinned broken on registered Enzyme.
+# meet active data, as in `w .* f(y)` and `w' * f(y)`. It also cannot compile the
+# derivative of `tgamma`, and gets `digamma`'s wrong at negative half-integers and
+# `hypot`'s where the operands differ by more than about 1e8. Dogfood
+# differentiates all of them, the last three from `76d5adf` on. Those checks stay
+# as written, pinned broken on registered Enzyme.
 @testsnippet EnzymeGradient begin
     import Enzyme
     const ENZYME_DOGFOOD = isdefined(Enzyme.Compiler, :RestoreSafepointEffectsPass)
@@ -3792,14 +3795,14 @@ Enzyme can differentiate them.
         value, (d,) = gradient(ad_lg, x)
         @test value ≈ ad_lg(x) atol=1e-12
         @test d ≈ ad_dg(x) atol=1e-12
-        # Enzyme cannot compile the derivative of `gamma` yet: it needs a C
+        # Registered Enzyme cannot compile the derivative of `gamma`: it needs a C
         # `digamma` that no library provides (Enzyme snag `gamma-derivative-e2043b60`).
-        @test_broken gradient(ad_tg, x)[2][1] ≈ ad_tg(x) * ad_dg(x) rtol=1e-12
+        @test gradient(ad_tg, x)[2][1] ≈ ad_tg(x) * ad_dg(x) rtol=1e-12 broken=!ENZYME_DOGFOOD
         value, (d,) = gradient(ad_dg, x)
         @test value ≈ ad_dg(x) atol=1e-12
-        # Enzyme's derivative of `digamma` is NaN at negative half-integers
-        # (Enzyme snag `digamma-derivati-d3be2196`).
-        @test d ≈ ad_trg(x) rtol=1e-12 broken=(x == -0.5)
+        # Registered Enzyme's derivative of `digamma` is NaN at negative
+        # half-integers (Enzyme snag `digamma-derivati-d3be2196`).
+        @test d ≈ ad_trg(x) rtol=1e-12 broken=(x == -0.5 && !ENZYME_DOGFOOD)
         value, (d,) = gradient(ad_trg, x)
         @test value ≈ ad_trg(x) atol=1e-12
         @test d ≈ central(ad_trg, x) rtol=1e-6
