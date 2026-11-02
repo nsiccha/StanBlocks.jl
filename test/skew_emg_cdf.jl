@@ -89,7 +89,9 @@ central differences of the reference at h = 1e-12.
     # error, about 1e-16·|log p|: the tolerance a log probability can meet.
     cdf_rtol(r) = 1e-13 * max(1.0, -log(abs(Float64(r))))
     # Gradients below about 1e-154 that registered Enzyme 0.13.216 loses (Enzyme
-    # snag `reverse-gradient-1717f5f9`); Stan's are right there.
+    # snag `reverse-gradient-1717f5f9`); Stan's are right there. Dogfood's
+    # libEnzyme build `df199913` (Enzyme `0be7fc2`) keeps them, so the items pin
+    # them broken only where `!ENZYME_DOGFOOD`.
     const ENZYME_TINY_ADJOINT = Set([(:sn_lcdf, 30.0, 2.0), (:emg_lccdf, -30.0, 37.0)])
     # Central differences of a reference in each argument.
     reference_gradient(f, x...) = setprecision(BigFloat, 192) do
@@ -113,7 +115,10 @@ Their `@juliacompat` methods run the branches the emitted Stan runs: values and
 Enzyme gradients in all four arguments match the 256-bit references.
 """
 @testitem "slic: stable skew_normal and exp_mod_normal log CDF / CCDF in Julia and under Enzyme" tags=[:slic, :ad, :regression] setup=[StanBlocksImports, EnzymeGradient, SkewEMGCDFReference] begin
-    B = StanBlocks
+    # `const`: a testitem body runs at module top level, and Enzyme on Julia 1.12+
+    # cannot differentiate a non-const global's `B.f` lookup (Enzyme snag
+    # `reverse-gradient-dbf59c00`).
+    const B = StanBlocks
     for f in (B.skew_normal_lcdf_stable, B.skew_normal_lccdf_stable,
               B.exp_mod_normal_lcdf_stable, B.exp_mod_normal_lccdf_stable)
         @test Base.return_types(f, NTuple{4,Float64}) == [Float64]
@@ -145,7 +150,7 @@ Enzyme gradients in all four arguments match the 256-bit references.
                 # At z = 30 the log CDF is log1m_exp of a log CCDF near -455; its
                 # gradient (1.7e-196) is one registered Enzyme loses.
                 @test all(isapprox.(grad, dr; rtol = 1e-9, atol = 1e-12 * maximum(abs, dr))) broken =
-                    (key, z, a) in ENZYME_TINY_ADJOINT
+                    !ENZYME_DOGFOOD && (key, z, a) in ENZYME_TINY_ADJOINT
             end
         end
     end
@@ -168,7 +173,7 @@ Enzyme gradients in all four arguments match the 256-bit references.
                 @test isfinite(value) && all(isfinite, grad)
                 @test value ≈ Float64(r) rtol = cdf_rtol(r)
                 @test all(isapprox.(grad, dr; rtol = 1e-9, atol = 1e-12 * maximum(abs, dr))) broken =
-                    (key, u, t) in ENZYME_TINY_ADJOINT
+                    !ENZYME_DOGFOOD && (key, u, t) in ENZYME_TINY_ADJOINT
             end
         end
     end
@@ -193,7 +198,7 @@ modified normal, so a scale beyond Float64 or a half-width below it is never
 formed. Values and Enzyme gradients match the density integrated at 256 bits.
 """
 @testitem "slic: skew_normal and exp_mod_normal interval log mass, narrow and in the tails" tags=[:slic, :ad, :regression] setup=[StanBlocksImports, EnzymeGradient, SkewEMGCDFReference] begin
-    B = StanBlocks
+    const B = StanBlocks
     xi, om = 0.3, 1.7
     # (z_lo, z_hi, α): straddling, below and above the median, deep tails, and
     # narrow intervals down to 1e-12 of the scale.
@@ -295,7 +300,7 @@ true value (snag `odl-native-and-s-929bc7d0`).
 """
 @testitem "slic: stable skew_normal and exp_mod_normal CDFs and interval masses in Stan" tags=[:slic, :ad, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup, EnzymeGradient, SkewEMGCDFReference] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
-    B = StanBlocks
+    const B = StanBlocks
     # `k` selects one builtin; the flat parameters (a, b, c, d) shift its
     # arguments, so the gradient at 0 is the builtin's gradient.
     @deffun begin
