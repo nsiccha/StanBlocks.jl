@@ -189,6 +189,9 @@ end
     # The truncated draws' inverse-CDF fallback (lpxf_builtin.jl): the most
     # precise upper-tail log CCDF a family has, and its implied support.
     conditioning_logccdf conditioning_support_lower conditioning_support_upper
+    # The `interval_censored` log mass (lpxf_builtin.jl): a family's own
+    # interval builtin, else `interval_logmass_cdf`.
+    interval_logmass interval_logmass_cdf interval_logmass_cdf_finite
 
     # Unary math (Stan-specific, not Julia builtins)
     square inv_sqrt log_diff_exp log_mix atan2
@@ -284,6 +287,39 @@ end
     # shares with `exp_mod_normal_lpdf_stable` (snag evaluate-the-unc-30e61f31).
     exp_mod_normal_standardized_core
     exp_mod_normal_lpdf_standardized
+    # Stable log CDF / CCDF and interval log mass of `exp_mod_normal` and
+    # `skew_normal`, selected for those families by `logcdf_expr` /
+    # `logccdf_expr` / `interval_logmass_expr` (lpxf_builtin.jl), and their
+    # shared pieces (`@deffun` bodies + rationale beside
+    # `exp_mod_normal_lpdf_standardized`; snag odl-native-and-s-929bc7d0).
+    std_normal_inv_mills_cf_excess
+    std_normal_scaled_lcdf_slope
+    exp_mod_normal_std_cdf_gap
+    exp_mod_normal_std_logcdf
+    exp_mod_normal_std_logccdf_sum
+    exp_mod_normal_std_logccdf
+    exp_mod_normal_std_logccdf_given
+    exp_mod_normal_lcdf_stable
+    exp_mod_normal_lccdf_stable
+    std_interval_cdf_gap
+    std_interval_cdf_lmass
+    std_interval_legendre_nodes
+    std_interval_legendre_logweights
+    exp_mod_normal_std_interval_core
+    exp_mod_normal_interval_lprob
+    exp_mod_normal_interval_lprob_standardized
+    skew_normal_std_mills
+    skew_normal_tail_integral
+    skew_normal_std_lower_tail
+    skew_normal_std_logcdf_pos
+    skew_normal_std_logccdf_pos
+    skew_normal_std_logcdf
+    skew_normal_std_logccdf
+    skew_normal_lcdf_stable
+    skew_normal_lccdf_stable
+    skew_normal_std_interval_core
+    skew_normal_interval_lprob
+    skew_normal_interval_lprob_standardized
     # Student-t log-CDF/CCDF companions with a finite gradient where the
     # observation equals the location (Stan Math's are NaN there) and no
     # `1 - x` cancellation in either tail; selected for the `student_t` family
@@ -1150,14 +1186,17 @@ import Statistics
     # Genuine interval evidence: latent value is known only to lie in
     # `(lower, upper]`. The observed marker drives shape; predictive draws stay
     # on the uncoarsened base-family scale.
+    # The mass is `interval_logmass` (lpxf_builtin.jl): the family's own
+    # interval builtin, else `interval_logmass_cdf` below. Both take it on the
+    # side of the median holding less of it: log(F(hi) - F(lo)) alone loses an
+    # interval above the median, where both log CDFs round to 0 (snag
+    # odl-native-and-s-929bc7d0).
     interval_evidence_impl_lpdf(y, family, lo, hi, args...)::real = begin
         rv::real[1]
         if lo >= hi
             reject("interval_censored: lower bound must be less than upper bound")
         end
-        rv[1] = log_diff_exp(
-            logcdf(family, hi, args...), logcdf(family, lo, args...)
-        )
+        rv[1] = interval_logmass(family, lo, hi, args...)
         rv[1]
     end
     interval_evidence_impl_lpmf(y, family, lo, hi, args...)::real = begin
@@ -1165,11 +1204,19 @@ import Statistics
         if lo >= hi
             reject("interval_censored: lower bound must be less than upper bound")
         end
-        rv[1] = log_diff_exp(
-            logcdf(family, hi, args...), logcdf(family, lo, args...)
-        )
+        rv[1] = interval_logmass(family, lo, hi, args...)
         rv[1]
     end
+    # An infinite end is answered without evaluating the family there:
+    # (-∞, hi] is the log CDF at hi, (lo, ∞) the log CCDF at lo.
+    interval_logmass_cdf(family, lo, hi, args...)::real =
+        is_inf(lo) ? (is_inf(hi) ? 0. : logcdf(family, hi, args...)) :
+            (is_inf(hi) ? conditioning_logccdf(family, lo, args...) :
+                interval_logmass_cdf_finite(
+                    logcdf(family, lo, args...), conditioning_logccdf(family, lo, args...),
+                    logcdf(family, hi, args...), conditioning_logccdf(family, hi, args...)))
+    interval_logmass_cdf_finite(la::real, ua::real, lb::real, ub::real)::real =
+        std_interval_cdf_lmass(la, ua, lb, ub, std_interval_cdf_gap(la, ua, lb, ub))
     interval_evidence_impl_lpdf(y::anything[n], family, lo, hi, args...)::real =
         sum(interval_evidence_impl_lpdfs(y, family, lo, hi, args...))
     interval_evidence_impl_lpmf(y::anything[n], family, lo, hi, args...)::real =
@@ -1645,13 +1692,337 @@ import Statistics
             (log_tau > 709 ? negative_infinity() :
                 exp_mod_normal_standardized_core(u, log_lambda, exp(log_tau)))
     end
-    end
-    @stanonly begin
     # -0.2257913526447274 = log(2) - log(2π)/2
     skew_normal_lpdf_stable(y::real, xi::real, omega::real, alpha::real)::real = begin
         z = (y - xi) / omega
         -0.5 * square(z) - log(omega) - 0.2257913526447274 + normal_lcdf_stable(alpha * z, 0., 1.)
     end
+    # Laplace's continued fraction for the reciprocal Mills ratio,
+    # φ(x)/Φ(-x) = x + 1/(x + 2/(x + 3/(x + …))), x ≥ 2. 8 + 400/x² terms of the
+    # backward recurrence reach 2e-16 (measured for x ≥ 1.5). `_excess` is the
+    # part after x, so φ(x)/Φ(-x) - x is formed without cancellation.
+    std_normal_inv_mills_cf_depth(x::real)::int = begin
+        n = 8
+        while (n - 8) * square(x) < 400
+            n = n + 1
+        end
+        n
+    end
+    std_normal_inv_mills_cf_excess(x::real)::real = begin
+        t = 0.
+        k = std_normal_inv_mills_cf_depth(x)
+        while k > 0
+            t = 1 / (x + (k + 1) * t)
+            k = k - 1
+        end
+        t
+    end
+    std_normal_inv_mills_cf(x::real)::real = x + std_normal_inv_mills_cf_excess(x)
+    # log Φ(c) + c²/2 to a few ulps of its own size; -0.918… = -log(2π)/2.
+    std_normal_scaled_lcdf_mills(c::real)::real =
+        c <= -2 ? -log(std_normal_inv_mills_cf(-c)) - 0.9189385332046728 :
+            (c < 0 ? log(erfc(-c / sqrt(2.))) - log(2.) + 0.5 * square(c) :
+                log1m(0.5 * erfc(c / sqrt(2.))) + 0.5 * square(c))
+    # The inverse Mills ratio φ(c)/Φ(c); 0.797… = √(2/π).
+    std_normal_inv_mills(c::real)::real =
+        c <= -2 ? std_normal_inv_mills_cf(-c) :
+            0.7978845608028654 * exp(-0.5 * square(c)) / erfc(-c / sqrt(2.))
+    # S'(c) for S(c) = log Φ(c) + c²/2: φ(c)/Φ(c) + c, positive and increasing,
+    # without the cancellation of φ(c)/Φ(c) ≈ -c for c ≪ 0.
+    std_normal_scaled_lcdf_slope(c::real)::real =
+        c <= -2 ? std_normal_inv_mills_cf_excess(-c) : std_normal_inv_mills(c) + c
+
+    # Stable log CDF / CCDF / interval mass of the exponentially modified normal
+    # (snag odl-native-and-s-929bc7d0). Stan Math 5.3.0's `exp_mod_normal_lcdf`
+    # rounds 1 + erf((z - λσ)/√2) to 0 once z - λσ < -8.3, so its CDF collapses to
+    # Φ(z) (13 % off in the log at λσ = 10); it forms exp(λ²σ²/2) (NaN past
+    # λσ ≈ 37.7) and subtracts two nearly equal terms in the lower tail.
+    #
+    # Standardized, U = (Y - μ)/σ = Z + E with Z ~ N(0, 1), E ~ Exp(τ), τ = λσ:
+    #   1 - F(u) = Q(u) + φ(u)Φ(u - τ)/φ(u - τ)      (two positive terms; below
+    #              the median, where it is near 1, log1m_exp of log F instead)
+    #   log F(u) = log Φ(u) + log1m_exp(-D),  D = S(u) - S(u - τ) = ∫_{u-τ}^{u} S'(x) dx,
+    # S(c) = log Φ(c) + c²/2 as above. log φ(u)Φ(u - τ)/φ(u - τ) is
+    # `exp_mod_normal_standardized_core(u, 0., τ)`, the density's own term, so
+    # exp(τ²/2) is never formed. D is small where E dominates (small τ) or deep
+    # in the lower tail (|u| ≫ τ); there it is an 8-point Gauss–Legendre rule
+    # on S' (positive, increasing). S' varies on scale max(1, |x|) below 0, but
+    # above it S' = x + φ(x)/Φ(x), whose second term decays on scale 1/x, so the
+    # rule spans at most 0.5·max(1, -u) for u ≤ 0 and 0.5/max(1, u) above.
+    # Elsewhere D is the difference, without cancellation there: for u ≥ τ it
+    # is τ(u - τ/2) + log Φ(u) - log Φ(u - τ), both near 0. For log τ > 709,
+    # where τ is not representable, S(u - τ) = -log(τ - u) - log(2π)/2 to below
+    # 1e-600.
+    exp_mod_normal_std_cdf_gap(u::real, tau::real)::real = begin
+        gap = 0.
+        if tau <= (u <= 0 ? 0.5 * fmax(1., -u) : 0.5 / fmax(1., u))
+            x = [-0.9602898564975363, -0.7966664774136267, -0.525532409916329, -0.1834346424956498,
+                 0.1834346424956498, 0.525532409916329, 0.7966664774136267, 0.9602898564975363]
+            w = [0.10122853629037626, 0.22238103445337448, 0.31370664587788727, 0.362683783378362,
+                 0.362683783378362, 0.31370664587788727, 0.22238103445337448, 0.10122853629037626]
+            for i in 1:8
+                gap = gap + w[i] * std_normal_scaled_lcdf_slope(u - 0.5 * tau * (1 - x[i]))
+            end
+            gap = 0.5 * tau * gap
+        else
+            gap = normal_lcdf_stable(u, 0., 1.) - exp_mod_normal_standardized_core(u, 0., tau)
+        end
+        gap
+    end
+    # Both from log τ: τ = exp(log τ) is formed only where it is finite.
+    exp_mod_normal_std_logcdf(u::real, log_tau::real)::real =
+        log_tau > 709 ?
+            normal_lcdf_stable(u, 0., 1.) + log1m_exp(-(std_normal_scaled_lcdf_mills(u) +
+                0.9189385332046728 + log_tau + log1p(-u * exp(-log_tau)))) :
+            normal_lcdf_stable(u, 0., 1.) + log1m_exp(-exp_mod_normal_std_cdf_gap(u, exp(log_tau)))
+    # The sum Q(u) + φ(u)Φ(u - τ)/φ(u - τ): accurate relative to its own size
+    # where it is at most 1/2; below the median it is 1 - F with F formed by
+    # cancellation, so there the log CCDF is log1m_exp of the log CDF instead.
+    exp_mod_normal_std_logccdf_sum(u::real, log_tau::real)::real =
+        log_tau > 709 ?
+            (u * exp(-log_tau) < 0.5 ?
+                log_sum_exp(normal_lccdf_stable(u, 0., 1.),
+                    -0.5 * square(u) - 0.9189385332046728 - log_tau - log1p(-u * exp(-log_tau))) :
+                negative_infinity()) :
+            log_sum_exp(normal_lccdf_stable(u, 0., 1.), exp_mod_normal_standardized_core(u, 0., exp(log_tau)))
+    exp_mod_normal_std_logccdf(u::real, log_tau::real)::real = begin
+        s = exp_mod_normal_std_logccdf_sum(u, log_tau)
+        s > -0.6931471805599453 ? log1m_exp(exp_mod_normal_std_logcdf(u, log_tau)) : s
+    end
+    # Both from one log CDF: below the median the log CCDF is its log1m_exp.
+    exp_mod_normal_std_logccdf_given(u::real, log_tau::real, lc::real)::real =
+        lc < -0.6931471805599453 ? log1m_exp(lc) : exp_mod_normal_std_logccdf_sum(u, log_tau)
+    # An infinite bound is answered before (y - μ)/σ is formed: that node's
+    # σ-partial is infinite there (Stan's reverse pass runs every node).
+    exp_mod_normal_lcdf_stable(y::real, mu::real, sigma::real, lambda::real)::real =
+        is_inf(y) ? (y < 0 ? negative_infinity() : 0.) :
+            exp_mod_normal_std_logcdf((y - mu) / sigma, log(lambda) + log(sigma))
+    exp_mod_normal_lccdf_stable(y::real, mu::real, sigma::real, lambda::real)::real =
+        is_inf(y) ? (y > 0 ? negative_infinity() : 0.) :
+            exp_mod_normal_std_logccdf((y - mu) / sigma, log(lambda) + log(sigma))
+
+    # The log mass of (a, b] from the log CDF and CCDF at both ends, taken on
+    # the side of the median holding less of it: log(S(a) - S(b)) when a is
+    # above the median, log(F(b) - F(a)) when b is below it, else
+    # log(1 - F(a) - S(b)). `std_interval_cdf_gap` is the log ratio inside
+    # log1m_exp: near 0 the interval holds a fraction of that side's mass the
+    # difference cannot resolve (each log CDF is exact to about 1e-16 of its own
+    # size), and a family's interval builtin integrates its density instead.
+    std_interval_cdf_gap(la::real, ua::real, lb::real, ub::real)::real =
+        ua < la ? ub - ua : (lb < ub ? la - lb : log_sum_exp(la, ub))
+    std_interval_cdf_lmass(la::real, ua::real, lb::real, ub::real, gap::real)::real =
+        ua < la ? ua + log1m_exp(gap) : (lb < ub ? lb + log1m_exp(gap) : log1m_exp(gap))
+    # An 8-point Gauss–Legendre rule on [-1, 1] and its log weights: the log mass
+    # of (c - h, c + h] is lhw + log_sum_exp(log w + lpdf(c + h·x)), h = exp(lhw).
+    std_interval_legendre_nodes()::vector[8] =
+        [-0.9602898564975363, -0.7966664774136267, -0.525532409916329, -0.1834346424956498,
+         0.1834346424956498, 0.525532409916329, 0.7966664774136267, 0.9602898564975363]
+    std_interval_legendre_logweights()::vector[8] =
+        [-2.290374582723506, -1.5033629969804017, -1.159296978552829, -1.014223944532757,
+         -1.014223944532757, -1.159296978552829, -1.5033629969804017, -2.290374582723506]
+    # (a, b] in standardized units, with its center c and log half-width lhw
+    # (a = c - h, b = c + h, h = exp(lhw)), and log τ.
+    exp_mod_normal_std_interval_core(a::real, b::real, c::real, lhw::real, log_tau::real)::real = begin
+        la = exp_mod_normal_std_logcdf(a, log_tau)
+        ua = exp_mod_normal_std_logccdf_given(a, log_tau, la)
+        lb = exp_mod_normal_std_logcdf(b, log_tau)
+        ub = exp_mod_normal_std_logccdf_given(b, log_tau, lb)
+        gap = std_interval_cdf_gap(la, ua, lb, ub)
+        out = 0.
+        if gap > -0.002
+            x = std_interval_legendre_nodes()
+            lp::vector[8]
+            for i in 1:8
+                lp[i] = exp_mod_normal_lpdf_standardized(c + exp(lhw) * x[i], 0., log_tau)
+            end
+            out = lhw + log_sum_exp(std_interval_legendre_logweights() + lp)
+        else
+            out = std_interval_cdf_lmass(la, ua, lb, ub, gap)
+        end
+        out
+    end
+    # log P(lo < Y ≤ hi). lo == hi is an empty interval (-Inf); lo > hi rejects.
+    exp_mod_normal_interval_lprob(lo::real, hi::real, mu::real, sigma::real, lambda::real)::real = begin
+        if hi < lo
+            reject("exp_mod_normal_interval_lprob: lo must not exceed hi")
+        end
+        lo == hi ? negative_infinity() :
+            (is_inf(lo) ? (lo > 0 ? negative_infinity() : exp_mod_normal_lcdf_stable(hi, mu, sigma, lambda)) :
+                (is_inf(hi) ? exp_mod_normal_lccdf_stable(lo, mu, sigma, lambda) :
+                    exp_mod_normal_std_interval_core((lo - mu) / sigma, (hi - mu) / sigma,
+                        (0.5 * lo + 0.5 * hi - mu) / sigma, log(0.5 * hi - 0.5 * lo) - log(sigma),
+                        log(lambda) + log(sigma))))
+    end
+    # The interval (u - h, u + h] of the standardized residual U = (Y - μ)/σ,
+    # h = exp(log_half_width), with log σ and log λ: σ, λσ and h are never formed
+    # where they leave Float64. Past e^709 the half-width covers every double.
+    exp_mod_normal_interval_lprob_standardized(center::real, log_half_width::real, log_sigma::real,
+            log_lambda::real)::real =
+        log_half_width > 709 ? 0. :
+            exp_mod_normal_std_interval_core(center - exp(log_half_width), center + exp(log_half_width),
+                center, log_half_width, log_sigma + log_lambda)
+
+    # Stable log CDF / CCDF / interval mass of the skew-normal (snag
+    # odl-native-and-s-929bc7d0). Stan Math 5.3.0's `skew_normal_lcdf` forms
+    # Φ(z) - 2T(z, α) (Owen's T), which cancels to rounding noise in the lower tail
+    # of a right-skewed law (log CDF -41.4 against a true -125.2 at z = -3, α = 5),
+    # and its `skew_normal_lccdf` mirrors that. No step below subtracts two nearly
+    # equal masses. For the standard law (ξ = 0, ω = 1), h ≥ 0, α ≥ 0, with
+    # k = √(1 + α²), δ = α/k, H = kh and b = αh:
+    #   P(Z ≤ -h) = 2φ(H)/(k√(2π)) ∫_0^∞ exp(-bw - w²/2) M(H + δw) dw,
+    # M(x) = Q(x)/φ(x) the Mills ratio: the density is 2φ(kt)M(-αt)/√(2π), and
+    # M(δs) = ∫_0^∞ exp(-δsw - w²/2) dw integrates s out in closed form. The
+    # integrand is positive and smooth, and exp(-H²/2) stays a logarithm. The
+    # integral is a fixed rule: 32-point half-range Gauss–Hermite (weight
+    # e^(-w²/2) on [0, ∞)) for b ≤ 4, 32-point Gauss–Laguerre in u = bw + w²/2
+    # beyond (both computed at 512 bits). Against a 192-bit quadrature of the
+    # integral the first is within 8e-15 up to b = 10 and the second from
+    # b = 2.5 on (the substitution's branch point at u = -b²/2 slows it below
+    # that), so the switch at 4 has margin on both sides. The other quadrants
+    # follow exactly:
+    # F(z) - F(-z) = Φ(z) - Φ(-z) for z > 0 (T is even in z), so
+    # F(z) = erf(z/√2) + F(-z) and 1 - F(z) = 2Q(z) - F(-z) ≥ Q(z), each a sum
+    # or a difference that loses at most a factor 2; α < 0 is the mirror
+    # F(z; α) = 1 - F(-z; -α).
+    # M(x), x ≥ 0: erfc·exp below 10 (relative error ≤ x²/2 ulps), the
+    # continued fraction (≤ 12 terms) beyond.
+    skew_normal_std_mills(x::real)::real =
+        x < 10 ? 1.2533141373155003 * erfc(0.7071067811865476 * x) * exp(0.5 * square(x)) :
+            1 / std_normal_inv_mills_cf(x)
+    skew_normal_tail_integral(b::real, H::real, d::real)::real = begin
+        s = 0.
+        if b <= 4.0
+            x = [0.010128781896912147, 0.05319424244367038, 0.12997871759518695, 0.2393691656090844,
+                 0.3798543436482733, 0.5496455979334752, 0.7467901653542002, 0.9692758581539489,
+                 1.2151197927567845, 1.4824375520891862, 1.7694927318704563, 2.0747292170304297,
+                 2.3967897407266667, 2.734524585497435, 3.0869940526534756, 3.4534678594306283,
+                 3.8334241424043385, 4.226550390562291, 4.632748495051341, 5.052146267879434,
+                 5.485118365418631, 5.93232076586201, 6.394745207225159, 6.8738041367849725,
+                 7.371464544977495, 7.890464600740636, 8.434680157505573, 9.009785727262104,
+                 9.624559242192175, 10.293819327568544, 11.04655434209949, 11.959025340918634]
+            w = [0.025972431101089037, 0.059985222947424574, 0.0925255755855183,
+                 0.12168023193887471, 0.14463354393578778, 0.15803265747135647, 0.15901159060138292,
+                 0.14659315210010407, 0.12277657817622414, 0.09246888730922384,
+                 0.061937180648328365, 0.03647724564200707, 0.018671713174269924,
+                 0.008210642440967997, 0.003065342546002568, 0.0009599454341255168,
+                 0.00024901490865472995, 5.279972103866912e-5, 9.019914910011276e-6,
+                 1.2218174905261208e-6, 1.2888426437837339e-7, 1.0368268508261238e-8,
+                 6.205495877164426e-10, 2.681447130674893e-11, 8.05814564577952e-13,
+                 1.6050948279880587e-14, 1.9876930795612066e-16, 1.3994029230829748e-18,
+                 4.9039442025006345e-21, 6.889367999769572e-24, 2.5812175755969876e-27,
+                 9.281477150840713e-32]
+            for i in 1:32
+                s = s + w[i] * exp(-b * x[i]) * skew_normal_std_mills(H + d * x[i])
+            end
+        else
+            x = [0.04448936583326702, 0.23452610951961853, 0.5768846293018864, 1.0724487538178176,
+                 1.7224087764446454, 2.5283367064257947, 3.4922132730219944, 4.616456769749767,
+                 5.903958504174244, 7.358126733186241, 8.982940924212595, 10.783018632539973,
+                 12.763697986742725, 14.931139755522556, 17.292454336715316, 19.855860940336054,
+                 22.630889013196775, 25.628636022459247, 28.862101816323474, 32.346629153964734,
+                 36.10049480575197, 40.14571977153944, 44.509207995754934, 49.22439498730864,
+                 54.33372133339691, 59.89250916213402, 65.97537728793505, 72.68762809066271,
+                 80.18744697791352, 88.7353404178924, 98.82954286828397, 111.7513980979377]
+            w = [0.10921834195238497, 0.21044310793881324, 0.235213229669848, 0.19590333597288104,
+                 0.12998378628607177, 0.07057862386571744, 0.03176091250917507,
+                 0.011918214834838558, 0.0037388162946115247, 0.0009808033066149551,
+                 0.0002148649188013642, 3.920341967987947e-5, 5.9345416128686326e-6,
+                 7.416404578667552e-7, 7.604567879120781e-8, 6.350602226625806e-9,
+                 4.281382971040929e-10, 2.3058994918913362e-11, 9.799379288727094e-13,
+                 3.2378016577292665e-14, 8.171823443420719e-16, 1.5421338333938235e-17,
+                 2.1197922901636187e-19, 2.0544296737880453e-21, 1.3469825866373952e-23,
+                 5.661294130397359e-26, 1.4185605454630368e-28, 1.9133754944542244e-31,
+                 1.1922487600982224e-34, 2.671511219240137e-38, 1.3386169421062562e-42,
+                 4.510536193898974e-48]
+            for i in 1:32
+                r = sqrt(square(b) + 2 * x[i])
+                s = s + w[i] * skew_normal_std_mills(H + d * (2 * x[i] / (r + b))) / r
+            end
+        end
+        s
+    end
+    # log P(Z ≤ -h), h ≥ 0, α ≥ 0; -1.1447… = log 2 - log(2π) = -log π.
+    skew_normal_std_lower_tail(h::real, a::real)::real = begin
+        k = hypot(1., a)
+        -1.1447298858494002 - log(k) - 0.5 * square(k * h) +
+            log(skew_normal_tail_integral(a * h, k * h, a / k))
+    end
+    # α ≥ 0. Above 0 the log CCDF is formed first; past the median (log CCDF
+    # below log 1/2) the log CDF is its log1m_exp, which keeps it exact as F → 1.
+    skew_normal_std_logcdf_pos(z::real, a::real)::real = begin
+        out = 0.
+        if z <= 0
+            out = skew_normal_std_lower_tail(-z, a)
+        else
+            g = skew_normal_std_lower_tail(z, a)
+            lq = normal_lccdf_stable(z, 0., 1.)
+            lc = lq + log1p(-expm1(g - lq))
+            out = lc < -0.6931471805599453 ? log1m_exp(lc) :
+                log_sum_exp(log(erf(0.7071067811865476 * z)), g)
+        end
+        out
+    end
+    # Above 0 and still below the median (1 - F > 1/2) the log CCDF is
+    # log1m_exp of the positive-sum F, exact as it approaches 0.
+    skew_normal_std_logccdf_pos(z::real, a::real)::real = begin
+        out = 0.
+        if z <= 0
+            out = log1m_exp(skew_normal_std_lower_tail(-z, a))
+        else
+            g = skew_normal_std_lower_tail(z, a)
+            lq = normal_lccdf_stable(z, 0., 1.)
+            lc = lq + log1p(-expm1(g - lq))
+            out = lc > -0.6931471805599453 ?
+                log1m_exp(log_sum_exp(log(erf(0.7071067811865476 * z)), g)) : lc
+        end
+        out
+    end
+    skew_normal_std_logcdf(z::real, a::real)::real =
+        a >= 0 ? skew_normal_std_logcdf_pos(z, a) : skew_normal_std_logccdf_pos(-z, -a)
+    skew_normal_std_logccdf(z::real, a::real)::real =
+        a >= 0 ? skew_normal_std_logccdf_pos(z, a) : skew_normal_std_logcdf_pos(-z, -a)
+    skew_normal_lcdf_stable(y::real, xi::real, omega::real, alpha::real)::real =
+        is_inf(y) ? (y < 0 ? negative_infinity() : 0.) : skew_normal_std_logcdf((y - xi) / omega, alpha)
+    skew_normal_lccdf_stable(y::real, xi::real, omega::real, alpha::real)::real =
+        is_inf(y) ? (y > 0 ? negative_infinity() : 0.) : skew_normal_std_logccdf((y - xi) / omega, alpha)
+    # As `exp_mod_normal_std_interval_core`: (a, b] in standardized units, its
+    # center c and log half-width lhw.
+    skew_normal_std_interval_core(a::real, b::real, c::real, lhw::real, alpha::real)::real = begin
+        la = skew_normal_std_logcdf(a, alpha)
+        ua = skew_normal_std_logccdf(a, alpha)
+        lb = skew_normal_std_logcdf(b, alpha)
+        ub = skew_normal_std_logccdf(b, alpha)
+        gap = std_interval_cdf_gap(la, ua, lb, ub)
+        out = 0.
+        if gap > -0.002
+            x = std_interval_legendre_nodes()
+            lp::vector[8]
+            for i in 1:8
+                lp[i] = skew_normal_lpdf_stable(c + exp(lhw) * x[i], 0., 1., alpha)
+            end
+            out = lhw + log_sum_exp(std_interval_legendre_logweights() + lp)
+        else
+            out = std_interval_cdf_lmass(la, ua, lb, ub, gap)
+        end
+        out
+    end
+    skew_normal_interval_lprob(lo::real, hi::real, xi::real, omega::real, alpha::real)::real = begin
+        if hi < lo
+            reject("skew_normal_interval_lprob: lo must not exceed hi")
+        end
+        lo == hi ? negative_infinity() :
+            (is_inf(lo) ? (lo > 0 ? negative_infinity() : skew_normal_lcdf_stable(hi, xi, omega, alpha)) :
+                (is_inf(hi) ? skew_normal_lccdf_stable(lo, xi, omega, alpha) :
+                    skew_normal_std_interval_core((lo - xi) / omega, (hi - xi) / omega,
+                        (0.5 * lo + 0.5 * hi - xi) / omega, log(0.5 * hi - 0.5 * lo) - log(omega), alpha)))
+    end
+    # (z - h, z + h] of the standard law Z = (Y - ξ)/ω, h = exp(log_half_width).
+    skew_normal_interval_lprob_standardized(center::real, log_half_width::real, alpha::real)::real =
+        log_half_width > 709 ? 0. :
+            skew_normal_std_interval_core(center - exp(log_half_width), center + exp(log_half_width),
+                center, log_half_width, alpha)
+    end
+    @stanonly begin
     # Stan Math 5.3.0/5.4.0 `student_t_lcdf`, `student_t_lccdf` and
     # `student_t_cdf` work with q = ν/t², t = (y - μ)/σ. At t = 0 the Jacobian
     # 2r²q/t is 0·∞/0, so every partial (y, ν, μ, σ) is NaN exactly where the
@@ -1769,32 +2140,9 @@ import Statistics
     # exp(μ + σ²/2) itself: 1.6e-14 at μ = 300). Everything is arithmetic, log,
     # exp, erfc and loops over values, so Stan's reverse mode differentiates
     # it. L ≤ 0 truncates nothing (the plain LogNormal moments); L = ∞ gives ∞.
-    std_normal_inv_mills_cf_depth(x::real)::int = begin
-        n = 8
-        while (n - 8) * square(x) < 400
-            n = n + 1
-        end
-        n
-    end
-    # F(x) = φ(x)/Φ(-x) for x ≥ 2, by the backward recurrence.
-    std_normal_inv_mills_cf(x::real)::real = begin
-        t = 0.
-        k = std_normal_inv_mills_cf_depth(x)
-        while k > 0
-            t = 1 / (x + (k + 1) * t)
-            k = k - 1
-        end
-        x + t
-    end
-    # log Φ(c) + c²/2 to a few ulps of its own size; -0.918… = -log(2π)/2.
-    std_normal_scaled_lcdf_mills(c::real)::real =
-        c <= -2 ? -log(std_normal_inv_mills_cf(-c)) - 0.9189385332046728 :
-            (c < 0 ? log(erfc(-c / sqrt(2.))) - log(2.) + 0.5 * square(c) :
-                log1m(0.5 * erfc(c / sqrt(2.))) + 0.5 * square(c))
-    # The inverse Mills ratio φ(c)/Φ(c); 0.797… = √(2/π).
-    std_normal_inv_mills(c::real)::real =
-        c <= -2 ? std_normal_inv_mills_cf(-c) :
-            0.7978845608028654 * exp(-0.5 * square(c)) / erfc(-c / sqrt(2.))
+    # The continued-fraction helpers (`std_normal_inv_mills_cf` and friends)
+    # are in the `@juliacompat` group above, which the skew-normal and
+    # exponentially modified normal CDFs share.
     # Mean and variance together: [E, Var].
     lognormal_truncated_moments(mu::real, sigma::real, lb::real)::vector[2] = begin
         rv::vector[2]
