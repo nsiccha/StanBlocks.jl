@@ -119,12 +119,13 @@ StanBlocks descends from [SlicStan](https://github.com/mgorinova/SlicStan): the
 same destination (clean Stan), a different route. One traced model is lowered by
 four compiler verbs — **`capture`**, **`forward!`**, **`backward!`**, and
 **`distribute!`** — into a single dependency graph, then emitted (via
-`Base.show`) at each execution time. Downstream, the compiled log-density is
-differentiated with [Mooncake](https://github.com/chalk-lab/Mooncake.jl).
+`Base.show`) at each execution time. Downstream, BridgeStan evaluates the
+compiled log-density, and Stan Math supplies its gradient.
 
 Almost anything expressible in Julia can be transpiled to Stan. Whether you
 *should* is a separate question: unless Stan is meaningfully faster than
-Julia + Mooncake for your model, staying in Julia keeps many advantages.
+Julia + [Enzyme](https://github.com/EnzymeAD/Enzyme.jl) for your model, staying
+in Julia keeps many advantages.
 
 See the [user guide](https://nsiccha.github.io/StanBlocks.jl/dev/) for `@deffun`,
 `@inline` UDFs, sub-models, posterior pointwise likelihood / predictive draws,

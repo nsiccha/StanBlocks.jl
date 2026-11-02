@@ -50,18 +50,12 @@ exp_mod_normal law from a standardized residual, log scale and log rate, so it
 stays finite where σ or λσ exceeds Float64 (snag `evaluate-the-unc-30e61f31`,
 from a downstream module whose noise scale grows with an amplitude it carries
 as a logarithm). Its `@juliacompat` Julia method runs the branches the emitted
-Stan runs: values and Mooncake gradients match the 256-bit reference, central
+Stan runs: values and Enzyme gradients match the 256-bit reference, central
 differences of the gradient match the reference curvature, and at ordinary
 scales it equals `exp_mod_normal_lpdf_stable`.
 """
-@testitem "slic: exp_mod_normal_lpdf_standardized stays exact past Float64 scales in Julia and under Mooncake" tags=[:slic, :ad, :regression] setup=[StanBlocksImports, EMGLogScaleReference] begin
-    import Mooncake
+@testitem "slic: exp_mod_normal_lpdf_standardized stays exact past Float64 scales in Julia and under Enzyme" tags=[:slic, :ad, :regression] setup=[StanBlocksImports, EnzymeGradient, EMGLogScaleReference] begin
     f = StanBlocks.exp_mod_normal_lpdf_standardized
-    gradient(g, x...) = begin
-        cache = Mooncake.prepare_gradient_cache(g, x...)
-        value, grads = Mooncake.value_and_gradient!!(cache, g, x...)
-        value, collect(grads[2:end])
-    end
     @test Base.return_types(f, (Float64, Float64, Float64)) == [Float64]
 
     for p in EMG_POINTS
@@ -82,7 +76,7 @@ scales it equals `exp_mod_normal_lpdf_stable`.
     # u > 4e307 with λσ beyond Float64: the log density is below -1e615.
     @test f(1.0e308, 0.0, 709.5) == -Inf
 
-    # Curvature: central differences of the Mooncake gradient against the
+    # Curvature: central differences of the Enzyme gradient against the
     # reference's second derivatives (differences of its central gradient).
     curvature_points = EMG_POINTS[[1, 2, 3, 4, 7, 11, 12, 13, 14, 15]]
     for p in curvature_points

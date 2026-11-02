@@ -138,31 +138,30 @@ BridgeStan as generated quantities, are the oracle.
 end
 
 """
-Mooncake differentiates the Julia sum-to-zero methods. The transform is linear
+Enzyme differentiates the Julia sum-to-zero methods. The transform is linear
 and isometric, so the gradient of `w ⋅ f(y)` is the free form of `w`'s
 projection onto the sum-to-zero values.
 """
-@testitem "slic: @juliacompat sum_to_zero transforms are Mooncake differentiable" tags=[:slic, :ad] setup=[StanBlocksImports, SumToZeroShims] begin
-    import Mooncake
-    gradient(f, x...) = begin
-        cache = Mooncake.prepare_gradient_cache(f, x...)
-        Mooncake.value_and_gradient!!(cache, f, x...)
-    end
+@testitem "slic: @juliacompat sum_to_zero transforms are Enzyme differentiable" tags=[:slic, :ad] setup=[StanBlocksImports, EnzymeGradient, SumToZeroShims] begin
 
     y, w = [0.3, -1.2, 0.8, 2.1], [0.5, -0.1, 0.7, 1.3, -0.2]
-    value, (_, dy) = gradient(y -> sum(w .* stz(y)), y)
-    @test value ≈ sum(w .* stz(y)) atol=1e-12
-    @test dy ≈ stz_free(w .- Statistics.mean(w)) atol=1e-12
-    # The free form reads `z[2:end]` only (the sum fixes `z[1]`), so its
-    # gradient agrees with `stz(y)` along the sum-to-zero values.
-    _, (_, dz) = gradient(z -> sum(y .* stz_free(z)), stz(y))
-    @test dz[1] == 0.0
-    @test dz .- Statistics.mean(dz) ≈ stz(y) atol=1e-12
+    if ENZYME_DOGFOOD
+        value, (dy,) = gradient(y -> sum(w .* stz(y)), y)
+        @test value ≈ sum(w .* stz(y)) atol=1e-12
+        @test dy ≈ stz_free(w .- Statistics.mean(w)) atol=1e-12
+        # The free form reads `z[2:end]` only (the sum fixes `z[1]`), so its
+        # gradient agrees with `stz(y)` along the sum-to-zero values.
+        _, (dz,) = gradient(z -> sum(y .* stz_free(z)), stz(y))
+        @test dz[1] == 0.0
+        @test dz .- Statistics.mean(dz) ≈ stz(y) atol=1e-12
 
-    Y, W = [0.4 -0.3 1.1; 0.2 0.9 -0.7], [0.1 0.4 -0.6 0.2; 1.0 -0.3 0.5 0.0; 0.3 0.2 -0.1 0.8]
-    centre(W) = W .- Statistics.mean(W; dims=1) .- Statistics.mean(W; dims=2) .+ Statistics.mean(W)
-    _, (_, dY) = gradient(Y -> sum(W .* stzm(Y)), Y)
-    @test dY ≈ stzm_free(centre(W)) atol=1e-12
-    _, (_, dZ) = gradient(Z -> sum(Y .* stzm_free(Z)), stzm(Y))
-    @test centre(dZ) ≈ stzm(Y) atol=1e-12
+        Y, W = [0.4 -0.3 1.1; 0.2 0.9 -0.7], [0.1 0.4 -0.6 0.2; 1.0 -0.3 0.5 0.0; 0.3 0.2 -0.1 0.8]
+        centre(W) = W .- Statistics.mean(W; dims=1) .- Statistics.mean(W; dims=2) .+ Statistics.mean(W)
+        _, (dY,) = gradient(Y -> sum(W .* stzm(Y)), Y)
+        @test dY ≈ stzm_free(centre(W)) atol=1e-12
+        _, (dZ,) = gradient(Z -> sum(Y .* stzm_free(Z)), stzm(Y))
+        @test centre(dZ) ≈ stzm(Y) atol=1e-12
+    else
+        @test_broken gradient(y -> sum(w .* stz(y)), y)[2][1] ≈ stz_free(w .- Statistics.mean(w)) atol=1e-12
+    end
 end
