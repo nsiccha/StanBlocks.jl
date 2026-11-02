@@ -260,8 +260,8 @@ formed. Values and Enzyme gradients match the density integrated at 256 bits.
     @deffun @juliacompat binmix_lprob(u::real, log_hw::real, log_sigma::real, log_lambda::real,
                                       alpha::real, p::real)::real = begin
         d = alpha / hypot(1., alpha)
-        sd = sqrt(1 - 0.6366197723675814 * square(d))   # sd of the standard skew-normal
-        z = u * sd + 0.7978845608028654 * d             # its mean is d·√(2/π)
+        sd = sqrt(1 - 0.6366197723675814 * square(d))   # sd; the mean is d·√(2/π)
+        z = u * sd + 0.7978845608028654 * d
         log_sum_exp(log(p) + exp_mod_normal_interval_lprob_standardized(u, log_hw, log_sigma, log_lambda),
                     log1m(p) + skew_normal_interval_lprob_standardized(z, log_hw + log(sd), alpha))
     end
