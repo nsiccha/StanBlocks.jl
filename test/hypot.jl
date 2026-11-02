@@ -132,9 +132,10 @@ end
 Enzyme differentiates the Julia `hypot`: its partial derivatives are
 `x / hypot(x, y)` and `y / hypot(x, y)`, which Stan Math's reverse mode uses too,
 also where the squares would overflow or underflow. Base's `hypot` returns the
-larger operand when the operands differ by a factor above about 1e8, and Enzyme
-differentiates that branch, so the smaller operand's partial is 0 there (Enzyme
-snag `hypot-derivative-be3799a1`).
+larger operand when the operands differ by a factor above about 1e8, and
+registered Enzyme differentiates that branch, so the smaller operand's partial is
+0 there (Enzyme snag `hypot-derivative-be3799a1`). Dogfood's rule for the binary
+`hypot` gives both partials.
 """
 @testitem "slic: @juliacompat hypot is Enzyme differentiable" tags=[:slic, :ad] setup=[StanBlocksImports, EnzymeGradient, HypotShims] begin
     for (x, y) in ((3.0, 4.0), (0.003, 0.02), (-3.0, 4.0), (1e155, 1e154), (1e155, 1.0), (1e-200, 3e-200))
@@ -142,7 +143,7 @@ snag `hypot-derivative-be3799a1`).
         h = hypot(x, y)
         @test value == h
         @test dx ≈ x / h rtol=1e-14
-        @test dy ≈ y / h rtol=1e-14 atol=1e-300 broken=((x, y) == (1e155, 1.0))
+        @test dy ≈ y / h rtol=1e-14 atol=1e-300 broken=((x, y) == (1e155, 1.0) && !ENZYME_DOGFOOD)
     end
     x, y = [3.0, 1e155], [4.0, 1e154]
     _, (dx, dy) = gradient((x, y) -> sum(hyp_vector(x, y)), x, y)
