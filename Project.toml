@@ -25,9 +25,9 @@ PosteriorDBExt = "PosteriorDB"
 
 [compat]
 BridgeStan = "2.9"
+Enzyme = "0.13"
 JSON = "1"
 LogDensityProblems = "2.1"
-Mooncake = "0.5"
 OrderedCollections = "1.8"
 PosteriorDB = "0.5, 0.6"
 SpecialFunctions = "2"
@@ -37,11 +37,11 @@ TestItemRunner = "1"
 julia = "1.10"
 
 [extras]
-Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
+Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 PosteriorDB = "1c4bc282-d2f5-44f9-b6d1-8c4424a23ad4"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 
 [targets]
-test = ["Mooncake", "PosteriorDB", "Random", "Test", "TestItemRunner"]
+test = ["Enzyme", "PosteriorDB", "Random", "Test", "TestItemRunner"]

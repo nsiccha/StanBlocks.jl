@@ -126,25 +126,20 @@ as a generated quantity, is the oracle.
 end
 
 """
-Mooncake differentiates the Julia `lchoose`. Its partial derivatives are
+Enzyme differentiates the Julia `lchoose`. Its partial derivatives are
 `digamma(n + 1) - digamma(n - k + 1)` in `n` and
 `digamma(n - k + 1) - digamma(k + 1)` in `k`, on both the `lgamma` and the
 `lbeta` branch and after the symmetric branch.
 """
-@testitem "slic: @juliacompat lchoose is Mooncake differentiable" tags=[:slic, :ad] setup=[StanBlocksImports, LChooseShims] begin
-    import Mooncake
-    gradient(f, x...) = begin
-        cache = Mooncake.prepare_gradient_cache(f, x...)
-        Mooncake.value_and_gradient!!(cache, f, x...)
-    end
+@testitem "slic: @juliacompat lchoose is Enzyme differentiable" tags=[:slic, :ad] setup=[StanBlocksImports, EnzymeGradient, LChooseShims] begin
     for (n, k) in ((5.0, 2.0), (5.0, 3.5), (2.5, 0.7), (40.0, 12.0), (40.0, 31.0), (1.0e4, 3.0))
-        value, (_, dn, dk) = gradient(lch, n, k)
+        value, (dn, dk) = gradient(lch, n, k)
         @test value == lch(n, k)
         @test dn ≈ dg(n + 1) - dg(n - k + 1) rtol=1e-10
         @test dk ≈ dg(n - k + 1) - dg(k + 1) rtol=1e-10
     end
     n, k = [5.0, 40.0], [2.0, 12.0]
-    _, (_, dn, dk) = gradient((n, k) -> sum(lch_vector(n, k)), n, k)
+    _, (dn, dk) = gradient((n, k) -> sum(lch_vector(n, k)), n, k)
     @test dn ≈ dg.(n .+ 1) .- dg.(n .- k .+ 1) rtol=1e-10
     @test dk ≈ dg.(n .- k .+ 1) .- dg.(k .+ 1) rtol=1e-10
     @test Base.return_types(lch, (Float64, Float64)) == [Float64]

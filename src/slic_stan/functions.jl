@@ -804,8 +804,8 @@ function jcall(::Val{:columns_dot_product}, ::_JuliaScope, x::AbstractMatrix{<:R
 end
 jcall(::Val{:rows_dot_self}, ::_JuliaScope, x::AbstractMatrix{<:Real}) = vec(sum(x .* x; dims=2))
 jcall(::Val{:columns_dot_self}, ::_JuliaScope, x::AbstractMatrix{<:Real}) = vec(sum(x .* x; dims=1))
-# LinearAlgebra.exp uses LAPACK balancing, whose foreign call has no Mooncake
-# rule.  Scaling and squaring a short Taylor series keeps the Julia target
+# LinearAlgebra.exp uses LAPACK balancing, whose foreign call `gebal` has no
+# Enzyme rule.  Scaling and squaring a short Taylor series keeps the Julia target
 # differentiable through matrix products.  At norm <= 1/2, the 24-term tail
 # is below 4e-33 before roundoff and squaring.
 function _deffun_julia_matrix_exp(x::AbstractMatrix{<:Real})

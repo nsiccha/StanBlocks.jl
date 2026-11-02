@@ -103,15 +103,9 @@ end
 (snag `evaluate-the-unc-30e61f31`, which needed them for
 `exp_mod_normal_lpdf_standardized`'s Julia method). They run the same branches
 as the emitted Stan: the erfc form within 35 scales and the asymptotic series
-beyond. Values and Mooncake gradients match a 256-bit reference in both tails.
+beyond. Values and Enzyme gradients match a 256-bit reference in both tails.
 """
-@testitem "slic: the stable normal log-CDF and log-CCDF evaluate in Julia and under Mooncake" tags=[:slic, :ad, :regression] setup=[StanBlocksImports] begin
-    import Mooncake
-    gradient(g, x...) = begin
-        cache = Mooncake.prepare_gradient_cache(g, x...)
-        value, grads = Mooncake.value_and_gradient!!(cache, g, x...)
-        value, collect(grads[2:end])
-    end
+@testitem "slic: the stable normal log-CDF and log-CCDF evaluate in Julia and under Enzyme" tags=[:slic, :ad, :regression] setup=[StanBlocksImports, EnzymeGradient] begin
     reference(g, x...) = setprecision(BigFloat, 256) do
         logPhi(z) = log(StanBlocks.SpecialFunctions.erfc(-z / sqrt(big(2))) / 2)
         law(x, loc, scale) = g === StanBlocks.normal_lcdf_stable ?
