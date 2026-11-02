@@ -138,3 +138,98 @@ vector held as an adjoint stays one.
     @test z ≈ stan_sum_to_zero(c[2:end])
     @test abs(sum(z)) < 1e-12
 end
+
+"""
+`segment(v, i, n)` in a `@juliacompat` helper: the shared deterministic
+helpers that slice a vector, a row vector held as an adjoint, and the weighted
+pair the Enzyme item differentiates.
+"""
+@testsnippet JuliaCompatSegmentFixtures begin
+    using StanBlocks
+    import StanBlocks.stan: @deffun
+    @deffun @juliacompat begin
+        prefix_sum(x::vector[n])::real = sum(segment(x, 1, 2))
+        seg(v::vector[n], i::int, k::int)::vector[k] = segment(v, i, k)
+        seg_rv(v::vector[n], i::int, k::int)::row_vector[k] = segment(v', i, k)
+        lagged_products(x::vector[n])::real = sum(segment(x, 2, n - 1) .* segment(x, 1, n - 1))
+    end
+end
+
+"""
+The `@juliacompat` method of `segment(v, i, n)` is `v[i:i + n - 1]`, as in
+Stan. Before, a helper calling it raised `UndefVarError: segment not defined`
+from its Julia method, while its emitted Stan compiled (snag
+`evaluate-a-deter-61980279`). Stan Math's range check carries over: `i` must be
+an index of `v` even when `n == 0`, and so must `i + n - 1` when `n > 0`.
+"""
+@testitem "slic: @juliacompat segment follows Stan" tags=[:slic, :regression] setup=[StanBlocksImports, JuliaCompatSegmentFixtures] begin
+    # The reported helper.
+    @test prefix_sum([1.0, 2.0, 3.0]) === 3.0
+
+    v = [1.0, 2.0, 3.0, 4.0]
+    @test seg(v, 2, 2) == [2.0, 3.0]
+    @test seg(v, 1, 4) == v
+    @test seg(v, 4, 1) == [4.0]
+    @test seg(v, 3, 0) == Float64[]
+    @test seg(v, 4, 0) == Float64[]
+    @test seg_rv(v, 2, 3) == [2.0 3.0 4.0]
+    @test lagged_products(v) == 2.0 + 6.0 + 12.0
+    for (i, k) in ((0, 1), (0, 0), (5, 0), (3, 3), (1, 5), (2, -1))
+        @test_throws BoundsError seg(v, i, k)
+    end
+    @test_throws BoundsError seg(Float64[], 1, 0)
+
+    # Stan's other overloads: a row vector, and an array of any element type.
+    jcall(args...) = StanBlocks.jcall(Val(:segment), @__MODULE__, args...)
+    @test jcall(transpose(v), 2, 1) == transpose([2.0])
+    @test jcall([3, 1, 2], 2, 2) == [1, 2]
+    @test jcall([[1.0, 2.0], [3.0], [4.0]], 2, 2) == [[3.0], [4.0]]
+end
+
+"""
+The emitted Stan of a `segment` helper and its Julia method agree: BridgeStan
+evaluates the helpers as transformed parameters at an unconstrained point, and
+the Julia methods give the same values.
+"""
+@testitem "slic: segment in a @juliacompat helper matches its emitted Stan" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup, JuliaCompatSegmentFixtures] begin
+    using .StanBlocksTestSetup: stanc_compiles
+
+    x = [1.0, 2.0, 3.0, 4.0]
+    model = @slic (; x, obs=0.2) begin
+        mu ~ normal(0.0, 1.0)
+        obs ~ normal(mu, 1.0)
+        total = prefix_sum(x + mu)
+        mid = seg(x + mu, 2, 2)
+        lagged = lagged_products(x + mu)
+    end
+    code = stan_code(model)
+    @test occursin("segment(x, 1, 2)", code)
+    @test stanc_compiles(model)
+
+    p = instantiate(stan_model(model))
+    names = BridgeStan.param_names(p.model; include_tp=true, include_gq=true)
+    mu = 0.3
+    values = BridgeStan.param_constrain(p.model, [mu]; include_tp=true, include_gq=true,
+        rng=BridgeStan.StanRNG(p.model, 1))
+    stan(name) = values[[s == name || startswith(s, name * ".") for s in names]]
+    @test stan("total") ≈ [prefix_sum(x .+ mu)] rtol=1e-15
+    @test stan("mid") ≈ seg(x .+ mu, 2, 2) rtol=1e-15
+    @test stan("lagged") ≈ [lagged_products(x .+ mu)] rtol=1e-15
+end
+
+"""
+Enzyme differentiates through the Julia `segment`: each selected element gets
+its cotangent and the others get zero, for a vector and a row vector.
+"""
+@testitem "slic: @juliacompat segment is Enzyme differentiable" tags=[:slic, :ad] setup=[StanBlocksImports, EnzymeGradient, JuliaCompatSegmentFixtures] begin
+    x = [0.5, -1.0, 2.0, 0.25]
+    value, (dx,) = gradient(prefix_sum, x)
+    @test value == prefix_sum(x)
+    @test dx == [1.0, 1.0, 0.0, 0.0]
+    # x[2] x[1] + x[3] x[2] + x[4] x[3]
+    value, (dx,) = gradient(lagged_products, x)
+    @test value ≈ x[2] * x[1] + x[3] * x[2] + x[4] * x[3] atol=1e-15
+    @test dx ≈ [x[2], x[1] + x[3], x[2] + x[4], x[3]] atol=1e-15
+    _, (dx,) = gradient(v -> sum(abs2, seg_rv(v, 2, 2)), x)
+    @test dx ≈ [0.0, 2x[2], 2x[3], 0.0] atol=1e-15
+end

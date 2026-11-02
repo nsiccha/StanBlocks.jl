@@ -4,6 +4,17 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.18
+
+- **`segment(v, i, n)` has a `@juliacompat` Julia method.** A shared
+  deterministic helper that slices with Stan's `segment` now evaluates in
+  Julia, as `v[i:i + n - 1]`, on a vector, a row vector (an adjoint `v'` stays
+  one) or an array of any element type, and Enzyme differentiates it. It keeps
+  Stan Math's range check: `i` must be an index of `v` even when `n == 0`, and
+  so must `i + n - 1` when `n > 0`; otherwise it raises `BoundsError`. Before,
+  the helper's Julia method raised `UndefVarError: segment not defined`, while
+  its emitted Stan was unaffected.
+
 ## v0.2.17
 
 - **The stable exponentially modified normal and skew-normal builtins return
