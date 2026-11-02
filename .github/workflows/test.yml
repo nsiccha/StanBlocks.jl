@@ -78,8 +78,11 @@ jobs:
     # A native abort inside a Stan model (`double free or corruption`, SIGABRT)
     # can leave Julia hung in its own signal handler, so the job used to sit
     # at GitHub's 360-minute default (devibe bfc4346 and fd91d0c, 2026-10-24).
-    # Green lanes take at most ~130 minutes (Julia `1`) and ~80 (`lts`).
-    timeout-minutes: 180
+    # Green lanes took ~130 minutes (Julia `1`) and ~80 (`lts`) on 2026-10-24,
+    # and ~179 (Julia `1`, 1ff04cf) and ~97 (`lts`) on 2026-11-02, when the
+    # next Julia `1` run hit the old 180-minute cap and was cancelled. The cap
+    # keeps ~40% headroom over the slowest green lane.
+    timeout-minutes: 250
     strategy:
       fail-fast: false
       matrix:
