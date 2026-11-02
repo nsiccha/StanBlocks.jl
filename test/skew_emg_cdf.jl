@@ -10,7 +10,11 @@ normal log CDF, log CCDF and interval log mass (snag `odl-native-and-s-929bc7d0`
   CCDF through 1 - F(z; α) = F(-z; -α).
 - Exponentially modified normal, U = Z + E, E ~ Exp(τ): the closed forms
   1 - F(u) = Q(u) + exp(τ²/2 - τu)Φ(u - τ) and F(u) = Φ(u) - exp(τ²/2 - τu)Φ(u - τ)
-  at a precision that absorbs the latter's cancellation.
+  at a precision that absorbs the latter's cancellation, with
+  exp(τ²/2 - τu)Φ(u - τ) = φ(u)M(τ - u) and, for u ≤ 0, F(u) = φ(u)(M(-u) - M(τ - u)).
+  Past x = 1e4, M(x) is the integral ∫_0^∞ exp(-xt - t²/2) dt, so no reference
+  forms exp(x²/2) or a vanishing erfc there: each fits a 32-bit MPFR exponent
+  (±2^30 bits, Windows), where exp(5e9) at τ = 1e5 or φ(-1e6) do not.
 - Interval masses: the density integrated over the interval at 256 bits.
 
 References run at 192 bits with quadrature tolerance 1e-34; gradients are
@@ -27,6 +31,12 @@ central differences of the reference at h = 1e-12.
         pts = [a; bps; b]
         sum(quadgk(f, pts[i], pts[i+1]; rtol = se_rtol(), order = 15)[1] for i in 1:length(pts)-1)
     end
+    # The Mills ratio Q(x)/φ(x). se_mills needs x²/(2 log 2) exponent bits, past
+    # a 32-bit MPFR exponent from x ≈ 3.9e4; past x = 1e4 the quadrature fits it
+    # however large x is.
+    se_R(x) = x <= 10_000 ? se_mills(x) :
+        se_quad(t -> exp(-x * t - t^2 / 2), big(0), big(Inf); scale = 1 / x)
+    se_logphi(x) = -x^2 / 2 - log(2 * big(pi)) / 2
     # F_SN(z; α) for z ≤ 0.
     function sn_lower_F(z, a)
         h = -z
@@ -58,24 +68,26 @@ central differences of the reference at h = 1e-12.
     # cancellation; each log is taken from whichever of the two is below 1/2.
     emg_upper_S(u, tau) = setprecision(BigFloat, 512) do
         u, tau = big(u), big(tau)
-        se_Phi(-u) + exp(tau^2 / 2 - tau * u) * se_Phi(u - tau)
+        se_Phi(-u) + exp(se_logphi(u)) * se_R(tau - u)
     end
-    emg_lower_F(u, tau) = setprecision(BigFloat, 1024 + ceil(Int, 2 * log2(2 + abs(Float64(u)) / Float64(tau)) +
-                                                     2 * log2(2 + 1 / Float64(tau)))) do
+    # log F(u), in log space so that φ(u) at u = -1e6 never forms.
+    emg_lower_logF(u, tau) = setprecision(BigFloat, 1024 + ceil(Int, 2 * log2(2 + abs(Float64(u)) / Float64(tau)) +
+                                                        2 * log2(2 + 1 / Float64(tau)))) do
         u, tau = big(u), big(tau)
-        se_Phi(u) - exp(tau^2 / 2 - tau * u) * se_Phi(u - tau)
+        u <= 0 ? se_logphi(u) + log(se_R(-u) - se_R(tau - u)) :
+                 log(se_Phi(u) - exp(se_logphi(u)) * se_R(tau - u))
     end
     emg_lcdf_reference(u, tau) = setprecision(BigFloat, 512) do
         S = emg_upper_S(u, tau)
-        S < 0.5 ? log1p(-S) : log(emg_lower_F(u, tau))
+        S < 0.5 ? log1p(-S) : emg_lower_logF(u, tau)
     end
     emg_lccdf_reference(u, tau) = setprecision(BigFloat, 512) do
         S = emg_upper_S(u, tau)
-        S < 0.5 ? log(S) : log1p(-emg_lower_F(u, tau))
+        S < 0.5 ? log(S) : log1p(-exp(emg_lower_logF(u, tau)))
     end
     # Densities of the standard laws, and an interval's log mass by quadrature.
     sn_pdf(z, a) = 2 * exp(-z^2 / 2) / sqrt(2 * big(pi)) * se_Phi(a * z)
-    emg_pdf(u, tau) = tau * exp(-u^2 / 2) * se_mills(tau - u) / sqrt(2 * big(pi))
+    emg_pdf(u, tau) = tau * exp(se_logphi(u)) * se_R(tau - u)
     interval_reference(pdf, lo, hi, p...) = setprecision(BigFloat, 192) do
         lo, hi = big(lo), big(hi)
         log(quadgk(x -> pdf(x, big.(p)...), lo, (lo + hi) / 2, hi; rtol = se_rtol(), order = 15)[1])
