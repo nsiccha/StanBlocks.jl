@@ -1,1 +1,0 @@
-/home/niko/github/nsiccha/Claude/CLAUDE.md
