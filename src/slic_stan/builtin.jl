@@ -1650,6 +1650,12 @@ import Statistics
     # -8e614, so -Inf. Each branch is a ternary, so exp(log τ) is never formed
     # where it overflows: Stan's reverse pass runs every node on the tape, and
     # an unused node with an infinite partial still adds 0·∞ = NaN.
+    #
+    # At u = +∞ the density's limit is -Inf for every τ > 0, and the scaled
+    # form returns it directly: once τ = exp(log τ) underflows to 0 (log τ
+    # below about -745), τ(τ/2 - u) would be 0·(-∞) = NaN (snag
+    # emg-standardized-3a08ab62, an overflowed residual in a downstream SMC).
+    # u = -∞ already reaches -Inf through the z < -35 branch.
     @juliacompat begin
     std_normal_scaled_lcdf_tail(z::real)::real = begin
         w = inv(square(z))
@@ -1681,7 +1687,8 @@ import Statistics
         z = u - tau
         z < -35 ? log_lambda - 0.5 * square(u) + std_normal_scaled_lcdf_tail(z) :
             (z < 0 ? log_lambda - 0.5 * square(u) + (normal_lcdf_stable(z, 0., 1.) + 0.5 * square(z)) :
-                log_lambda + tau * (0.5 * tau - u) + normal_lcdf_stable(z, 0., 1.))
+                (is_inf(u) ? negative_infinity() :
+                    log_lambda + tau * (0.5 * tau - u) + normal_lcdf_stable(z, 0., 1.)))
     end
     exp_mod_normal_lpdf_stable(y::real, mu::real, sigma::real, lambda::real)::real =
         exp_mod_normal_standardized_core((y - mu) / sigma, log(lambda), lambda * sigma)
@@ -1692,10 +1699,12 @@ import Statistics
             (log_tau > 709 ? negative_infinity() :
                 exp_mod_normal_standardized_core(u, log_lambda, exp(log_tau)))
     end
-    # -0.2257913526447274 = log(2) - log(2π)/2
+    # -0.2257913526447274 = log(2) - log(2π)/2. At an infinite z the limit is
+    # -Inf for every α, answered before α·z, which is 0·∞ = NaN at α = 0.
     skew_normal_lpdf_stable(y::real, xi::real, omega::real, alpha::real)::real = begin
         z = (y - xi) / omega
-        -0.5 * square(z) - log(omega) - 0.2257913526447274 + normal_lcdf_stable(alpha * z, 0., 1.)
+        is_inf(z) ? negative_infinity() :
+            -0.5 * square(z) - log(omega) - 0.2257913526447274 + normal_lcdf_stable(alpha * z, 0., 1.)
     end
     # Laplace's continued fraction for the reciprocal Mills ratio,
     # φ(x)/Φ(-x) = x + 1/(x + 2/(x + 3/(x + …))), x ≥ 2. 8 + 400/x² terms of the
@@ -1752,7 +1761,16 @@ import Statistics
     # Elsewhere D is the difference, without cancellation there: for u ≥ τ it
     # is τ(u - τ/2) + log Φ(u) - log Φ(u - τ), both near 0. For log τ > 709,
     # where τ is not representable, S(u - τ) = -log(τ - u) - log(2π)/2 to below
-    # 1e-600.
+    # 1e-600. For log τ < -709, where τ is subnormal or 0, D = τ S'(u) to a
+    # relative τ/S'(u) · max S'' (below 1e-300 over every double u), so
+    # log D = log τ + log S'(u) and log(1 - e^(-D)) = log D - D/2 + … is log D
+    # to 2e-18 once log D < -40. Above that S'(u) > e^669 and log τ > -750, so
+    # D = e^(log τ + 700) · (S'(u)·e^-700), whose first exponent is exact (it is
+    # within a factor 2 of 700) and whose factors are normal doubles; e^(log D)
+    # would carry log S'(u)'s rounding, ~1e-13 at 709, into D. 9.859…e-305 =
+    # e^-700. F is then τ(uΦ(u) + φ(u)) to first order, the
+    # mass of the exponential's first stretch; with τ formed, D was 0 and
+    # log F -Inf (snag emg-standardized-3a08ab62).
     exp_mod_normal_std_cdf_gap(u::real, tau::real)::real = begin
         gap = 0.
         if tau <= (u <= 0 ? 0.5 * fmax(1., -u) : 0.5 / fmax(1., u))
@@ -1769,12 +1787,26 @@ import Statistics
         end
         gap
     end
-    # Both from log τ: τ = exp(log τ) is formed only where it is finite.
-    exp_mod_normal_std_logcdf(u::real, log_tau::real)::real =
-        log_tau > 709 ?
-            normal_lcdf_stable(u, 0., 1.) + log1m_exp(-(std_normal_scaled_lcdf_mills(u) +
-                0.9189385332046728 + log_tau + log1p(-u * exp(-log_tau)))) :
-            normal_lcdf_stable(u, 0., 1.) + log1m_exp(-exp_mod_normal_std_cdf_gap(u, exp(log_tau)))
+    # Both from log τ: τ = exp(log τ) is formed only where it is a normal double.
+    # The Mills form for log τ > 709 needs τ - u > τ/2; past u = τ/2, D is at
+    # least about τ²/8, beyond Float64, and log F = log Φ(u) (log1p(-u/τ) would
+    # leave its domain once u > τ). F ≤ Φ(u), so log F is -Inf where log Φ(u)
+    # is (u below about -1.3e154), not -Inf - (-Inf) = NaN; F(+∞) = 1.
+    exp_mod_normal_std_logcdf(u::real, log_tau::real)::real = begin
+        lphi = normal_lcdf_stable(u, 0., 1.)
+        log_gap = log_tau < -709 && is_inf(u) == 0 ? log_tau + log(std_normal_scaled_lcdf_slope(u)) : 0.
+        is_inf(lphi) ? lphi :
+            (is_inf(u) ? 0. :
+            (log_tau > 709 ?
+                (u * exp(-log_tau) < 0.5 ?
+                    lphi + log1m_exp(-(std_normal_scaled_lcdf_mills(u) +
+                        0.9189385332046728 + log_tau + log1p(-u * exp(-log_tau)))) :
+                    lphi) :
+                (log_tau < -709 ?
+                    lphi + (log_gap < -40 ? log_gap :
+                        log1m_exp(-exp(log_tau + 700) * (std_normal_scaled_lcdf_slope(u) * 9.85967654375977e-305))) :
+                    lphi + log1m_exp(-exp_mod_normal_std_cdf_gap(u, exp(log_tau))))))
+    end
     # The sum Q(u) + φ(u)Φ(u - τ)/φ(u - τ): accurate relative to its own size
     # where it is at most 1/2; below the median it is 1 - F with F formed by
     # cancellation, so there the log CCDF is log1m_exp of the log CDF instead.
@@ -1808,8 +1840,13 @@ import Statistics
     # log1m_exp: near 0 the interval holds a fraction of that side's mass the
     # difference cannot resolve (each log CDF is exact to about 1e-16 of its own
     # size), and a family's interval builtin integrates its density instead.
+    # When the inner end's log mass on that side is -Inf the whole side is
+    # below Float64, so is the interval's: the gap is then -Inf, which makes
+    # the mass -Inf, where the difference was -Inf - (-Inf) = NaN (snag
+    # emg-standardized-3a08ab62).
     std_interval_cdf_gap(la::real, ua::real, lb::real, ub::real)::real =
-        ua < la ? ub - ua : (lb < ub ? la - lb : log_sum_exp(la, ub))
+        ua < la ? (is_inf(ua) ? negative_infinity() : ub - ua) :
+            (lb < ub ? (is_inf(lb) ? negative_infinity() : la - lb) : log_sum_exp(la, ub))
     std_interval_cdf_lmass(la::real, ua::real, lb::real, ub::real, gap::real)::real =
         ua < la ? ua + log1m_exp(gap) : (lb < ub ? lb + log1m_exp(gap) : log1m_exp(gap))
     # An 8-point Gauss–Legendre rule on [-1, 1] and its log weights: the log mass
@@ -1856,11 +1893,14 @@ import Statistics
     # The interval (u - h, u + h] of the standardized residual U = (Y - μ)/σ,
     # h = exp(log_half_width), with log σ and log λ: σ, λσ and h are never formed
     # where they leave Float64. Past e^709 the half-width covers every double.
+    # Otherwise an infinite center (an overflowed residual) leaves an empty
+    # interval, log mass -Inf, answered before c ± h is formed.
     exp_mod_normal_interval_lprob_standardized(center::real, log_half_width::real, log_sigma::real,
             log_lambda::real)::real =
         log_half_width > 709 ? 0. :
-            exp_mod_normal_std_interval_core(center - exp(log_half_width), center + exp(log_half_width),
-                center, log_half_width, log_sigma + log_lambda)
+            (is_inf(center) ? negative_infinity() :
+                exp_mod_normal_std_interval_core(center - exp(log_half_width), center + exp(log_half_width),
+                    center, log_half_width, log_sigma + log_lambda))
 
     # Stable log CDF / CCDF / interval mass of the skew-normal (snag
     # odl-native-and-s-929bc7d0). Stan Math 5.3.0's `skew_normal_lcdf` forms
@@ -1941,14 +1981,19 @@ import Statistics
         end
         s
     end
-    # log P(Z ≤ -h), h ≥ 0, α ≥ 0; -1.1447… = log 2 - log(2π) = -log π.
+    # log P(Z ≤ -h), h ≥ 0, α ≥ 0; -1.1447… = log 2 - log(2π) = -log π. At
+    # h = ∞ it is -Inf, answered before α·h (0·∞ = NaN at α = 0).
     skew_normal_std_lower_tail(h::real, a::real)::real = begin
         k = hypot(1., a)
-        -1.1447298858494002 - log(k) - 0.5 * square(k * h) +
-            log(skew_normal_tail_integral(a * h, k * h, a / k))
+        is_inf(h) ? negative_infinity() :
+            -1.1447298858494002 - log(k) - 0.5 * square(k * h) +
+                log(skew_normal_tail_integral(a * h, k * h, a / k))
     end
     # α ≥ 0. Above 0 the log CCDF is formed first; past the median (log CCDF
     # below log 1/2) the log CDF is its log1m_exp, which keeps it exact as F → 1.
+    # 1 - F(z) = 2Q(z) - F(-z) ≤ 2Q(z), so where log Q(z) is -Inf (z past about
+    # 1.3e154, where z²/2 overflows) the log CCDF is -Inf too, not
+    # -Inf - (-Inf) = NaN (snag emg-standardized-3a08ab62).
     skew_normal_std_logcdf_pos(z::real, a::real)::real = begin
         out = 0.
         if z <= 0
@@ -1956,7 +2001,7 @@ import Statistics
         else
             g = skew_normal_std_lower_tail(z, a)
             lq = normal_lccdf_stable(z, 0., 1.)
-            lc = lq + log1p(-expm1(g - lq))
+            lc = is_inf(lq) ? lq : lq + log1p(-expm1(g - lq))
             out = lc < -0.6931471805599453 ? log1m_exp(lc) :
                 log_sum_exp(log(erf(0.7071067811865476 * z)), g)
         end
@@ -1971,7 +2016,7 @@ import Statistics
         else
             g = skew_normal_std_lower_tail(z, a)
             lq = normal_lccdf_stable(z, 0., 1.)
-            lc = lq + log1p(-expm1(g - lq))
+            lc = is_inf(lq) ? lq : lq + log1p(-expm1(g - lq))
             out = lc > -0.6931471805599453 ?
                 log1m_exp(log_sum_exp(log(erf(0.7071067811865476 * z)), g)) : lc
         end
@@ -2016,11 +2061,13 @@ import Statistics
                     skew_normal_std_interval_core((lo - xi) / omega, (hi - xi) / omega,
                         (0.5 * lo + 0.5 * hi - xi) / omega, log(0.5 * hi - 0.5 * lo) - log(omega), alpha)))
     end
-    # (z - h, z + h] of the standard law Z = (Y - ξ)/ω, h = exp(log_half_width).
+    # (z - h, z + h] of the standard law Z = (Y - ξ)/ω, h = exp(log_half_width);
+    # an infinite center is an empty interval, as for exp_mod_normal above.
     skew_normal_interval_lprob_standardized(center::real, log_half_width::real, alpha::real)::real =
         log_half_width > 709 ? 0. :
-            skew_normal_std_interval_core(center - exp(log_half_width), center + exp(log_half_width),
-                center, log_half_width, alpha)
+            (is_inf(center) ? negative_infinity() :
+                skew_normal_std_interval_core(center - exp(log_half_width), center + exp(log_half_width),
+                    center, log_half_width, alpha))
     end
     @stanonly begin
     # Stan Math 5.3.0/5.4.0 `student_t_lcdf`, `student_t_lccdf` and
