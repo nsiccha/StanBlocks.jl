@@ -858,6 +858,17 @@ jcall(::Val{:head}, ::_JuliaScope, v::AbstractVector, n::Integer) = v[1:_julia_s
 jcall(::Val{:tail}, ::_JuliaScope, v::AbstractVector, n::Integer) =
     v[end-_julia_slice_length(v, n)+1:end]
 jcall(::Val{:reverse}, ::_JuliaScope, v::AbstractVector) = Base.reverse(v)
+# Stan's `segment(v, i, n)` is the `n` elements from `i`, `v[i:i + n - 1]`.
+# Stan Math (`prim/fun/segment.hpp`) requires `1 <= i <= length(v)` even when
+# `n == 0`, and the last index `i + n - 1` in range otherwise. A negative `n`
+# is out of range, as for `head`.
+function _julia_segment_range(v, i, n)
+    1 <= i <= length(v) || throw(BoundsError(v, i))
+    0 <= n <= length(v) - i + 1 || throw(BoundsError(v, i:i + n - 1))
+    i:i + n - 1
+end
+jcall(::Val{:segment}, ::_JuliaScope, v::AbstractVector, i::Integer, n::Integer) =
+    v[_julia_segment_range(v, i, n)]
 _julia_rewrap(::LinearAlgebra.Adjoint, x) = adjoint(x)
 _julia_rewrap(::LinearAlgebra.Transpose, x) = transpose(x)
 jcall(tag::Val{:head}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec, n::Integer) =
@@ -866,6 +877,8 @@ jcall(tag::Val{:tail}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec, n:
     _julia_rewrap(v, jcall(tag, scope, parent(v), n))
 jcall(tag::Val{:reverse}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec) =
     _julia_rewrap(v, jcall(tag, scope, parent(v)))
+jcall(tag::Val{:segment}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec, i::Integer, n::Integer) =
+    _julia_rewrap(v, jcall(tag, scope, parent(v), i, n))
 # Stan Math 5.3.0 `sum_to_zero_constrain` / `sum_to_zero_free`
 # (`prim/constraint/sum_to_zero_*.hpp`), loop for loop with 1-based indices. The
 # free form checks its input as `check_sum_to_zero` does: nonempty, and the sum
