@@ -589,6 +589,34 @@ so `plate(lev, ys) do l, y` with `lev::vector[n]` emits the same program as
 plate's declarations and `transformed data` index tables, which
 `num_elements(lev)` is not.
 
+**Cell bindings and outer names.** A cell binding is new to its cell, so its
+name must not already be bound outside it: a data input, a model-scope value,
+or a keyword a sub-model's caller passes. An unmarked collision is refused,
+because a binding such as `y ~ normal(mu, 1)` next to data `y` usually means
+`y[i] ~ …`. To declare a separate per-cell variable under that name, write
+`local`:
+
+```julia
+@slic (; K = 2, y = [zeros(2), zeros(2)], Omega = [1.0 0.4; 0.4 1.0]) begin
+    out ~ plate(y) do yi
+        local Omega::cholesky_factor_corr[K] ~ lkj_corr_cholesky(2.0)
+        yi ~ multi_normal_cholesky(rep_vector(0.0, K), Omega)
+        nothing
+    end
+end
+```
+
+As with `local` in a Julia closure, `local x ~ …`, `local x = …`,
+`local x::T ~ …`, `local x::T = …` and `local x::T` shadow the outer `x` in
+the whole cell. The binding is stored as `out_Omega` and emits exactly the
+program it emits when no outer `Omega` exists, so a data field of that name
+does not reach it. A read of the name before (or inside) its own `local`
+statement is refused, since the outer value is no longer visible there.
+`local` on a name that is not bound outside is accepted and changes nothing,
+so an emitter may write it on every cell binding. An annotated `@plate for` /
+`@scan` body takes `local` for its bare per-iteration bindings in the same way.
+`local` at model scope is refused.
+
 ### Plate support matrix
 
 | Capability | Status | Exact boundary |
@@ -597,6 +625,7 @@ plate's declarations and `transformed data` index tables, which
 | N-dimensional outer shape | ✅ | Use a non-empty tuple; with no positional inputs, take one do-block index per axis; tested through four axes |
 | Positional input slicing | ✅ | One do-block argument per positional input, indexed over all outer axes |
 | Lexically captured values | ✅ | Shared across cells; loop-invariant expressions are hoisted when safe |
+| Cell binding named like an outer name | ✅ with `local` | `local x ~ …` / `local x = …` / `local x::T …` shadows the outer `x` (data input, model-scope value or sub-model caller keyword) in the whole cell; unmarked it is refused with the remedies (index it, declare it `local`, rename) |
 | Fresh scalar `~` or `=` binding | ✅ | Collected as a `vector[N]` for one outer axis; additional axes use matrix/array storage. An integer binding (`k = 2 * i + 1`) stays an integer, `array[N] int`, so it can index |
 | Fixed `vector[K]` binding/result | ✅ | Collected as `matrix[K,N]` for one outer axis; extra axes add Stan array prefixes |
 | Per-coordinate priors on a vector cell | ✅ | `tau ~ vcat(…)`, or slice statements `tau[1] ~ …` on a bare `tau::vector[K]`; shared support is a scalar bound on the storage, mixed support a `transformed data` bound of its shape; inside a called sub-model only shared support |
@@ -778,6 +807,8 @@ the body:
   by `=` has nothing to draw when `y` is omitted;
 - a write to a name bound outside the loop is rejected — SB models never
   mutate — and every element of a loop-filled array is assigned exactly once.
+  A bare per-iteration binding declared `local` (`local t ~ …`) is the
+  exception: it shadows the outer name in the loop body, as in a `plate` cell.
 
 `@plate for` is the independent-cell loop: reading one of the loop's own
 arrays at any index other than the loop variable's is an error.
