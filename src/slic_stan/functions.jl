@@ -721,6 +721,10 @@ jcall(::Val{:trigamma}, ::_JuliaScope, x) = _julia_trigamma(x)
 # calls openlibm's. The stable normal and exponentially modified normal helpers
 # (builtin.jl) reach it from their Julia methods.
 jcall(::Val{:erfc}, ::_JuliaScope, x) = SpecialFunctions.erfc(x)
+# The stable skew-normal and exponentially modified normal CDF helpers
+# (builtin.jl) also reach `erf` and `is_inf`.
+jcall(::Val{:erf}, ::_JuliaScope, x::Number) = SpecialFunctions.erf(x)
+jcall(::Val{:is_inf}, ::_JuliaScope, x::Real) = isinf(x)
 # This package binds `log2` to its own builtin (Stan's zero-argument `log2()`
 # shares the name), which has no Julia method.
 jcall(::Val{:log2}, ::_JuliaScope, x::Number) = Base.log2(x)

@@ -4,6 +4,37 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.16
+
+- **Stable skew-normal and exponentially modified normal CDFs, and interval
+  log masses, in Stan and in Julia.** New scalar builtins for any `@deffun` or
+  `@slic` body, each with a `@juliacompat` Julia method that Enzyme
+  differentiates:
+  - `skew_normal_lcdf_stable` / `skew_normal_lccdf_stable(y, xi, omega, alpha)`
+    and `exp_mod_normal_lcdf_stable` / `exp_mod_normal_lccdf_stable(y, mu,
+    sigma, lambda)`, accurate relative to their own size in both tails (a
+    value near 0, `log(1 - p)` for a tail mass `p`, carries `p`'s relative
+    error, about `1e-16·|log p|`);
+  - `skew_normal_interval_lprob(lo, hi, xi, omega, alpha)` and
+    `exp_mod_normal_interval_lprob(lo, hi, mu, sigma, lambda)`, log P(lo < Y ≤
+    hi), exact also for an interval far narrower than the scale;
+  - `skew_normal_interval_lprob_standardized(center, log_half_width, alpha)`
+    and `exp_mod_normal_interval_lprob_standardized(center, log_half_width,
+    log_sigma, log_lambda)`, the interval of the standardized variable, finite
+    where σ, λσ or the half-width leave Float64.
+
+  `censored`, `truncated` and `interval_censored` of `skew_normal` and
+  `exp_mod_normal` now use them instead of Stan Math's `skew_normal_lcdf` /
+  `exp_mod_normal_lcdf`, which were wrong in ordinary regimes: Stan Math 5.3.0's
+  `exp_mod_normal_lcdf(0.5 | 0, 1, 10)` is -0.369 (log Φ(0.5)) against a true
+  -0.423 and NaN past λσ ≈ 37.7, and `skew_normal_lcdf(-3 | 0, 1, 5)` is -41.4
+  against -125.2. `skew_normal_lpdf_stable` gains a Julia method.
+- **`interval_censored` takes its mass on the side of the median holding less
+  of it**, for every family: log(S(lo) - S(hi)) above the median, where
+  log(F(hi) - F(lo)) rounded both terms to 0 (`interval_censored(normal, 40,
+  41, 0, 1)` was -Inf). An infinite end is answered without evaluating the
+  family there.
+
 ## v0.2.15
 
 - **A vector of integer matrices keeps integer values.** A

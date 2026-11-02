@@ -787,6 +787,35 @@ logccdf_expr(::typeof(builtin.student_t)) = builtin.student_t_lccdf_stable
 # snag bounded-lognorma-c225e536.
 logcdf_expr(::typeof(builtin.lognormal)) = builtin.lognormal_lcdf_stable
 logccdf_expr(::typeof(builtin.lognormal)) = builtin.lognormal_lccdf_stable
+# `skew_normal` and `exp_mod_normal` likewise. Stan Math's `skew_normal_lcdf`
+# forms Φ(z) - 2T(z, α), which cancels to noise in the lower tail of a
+# right-skewed law (and its lccdf mirror); `exp_mod_normal_lcdf` rounds
+# 1 + erf((z - λσ)/√2) to 0 once z - λσ < -8.3, so the CDF collapses to Φ(z)
+# (13 % off in the log at λσ = 10), and is NaN past λσ ≈ 37.7. The builtin.jl
+# pairs are accurate relative to their own size everywhere.
+# snag odl-native-and-s-929bc7d0.
+logcdf_expr(::typeof(builtin.skew_normal)) = builtin.skew_normal_lcdf_stable
+logccdf_expr(::typeof(builtin.skew_normal)) = builtin.skew_normal_lccdf_stable
+logcdf_expr(::typeof(builtin.exp_mod_normal)) = builtin.exp_mod_normal_lcdf_stable
+logccdf_expr(::typeof(builtin.exp_mod_normal)) = builtin.exp_mod_normal_lccdf_stable
+
+# `interval_logmass(family, lo, hi, args...)` is the log mass of (lo, hi], the
+# `interval_censored` likelihood. A family with its own interval builtin (which
+# also stays exact for an interval narrower than the CDFs can resolve) uses
+# it; every other family takes `interval_logmass_cdf`, the CDF difference on
+# the side of the median holding less mass.
+interval_logmass_expr(family) = builtin.interval_logmass_cdf
+interval_logmass_expr(::typeof(builtin.skew_normal)) = builtin.skew_normal_interval_lprob
+interval_logmass_expr(::typeof(builtin.exp_mod_normal)) = builtin.exp_mod_normal_interval_lprob
+expand_inline_or_trace(
+    x::CanonicalExpr{typeof(builtin.interval_logmass),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}};
+    info,
+) = begin
+    family = _family_function(x.args[1])
+    target = interval_logmass_expr(family)
+    forward!(target === builtin.interval_logmass_cdf ?
+        CanonicalExpr(target, x.args...) : CanonicalExpr(target, x.args[2:end]...); info)
+end
 
 # The truncated draws' inversion (`*_conditioning_inverse_rng`, builtin.jl) reads
 # a family's upper tail through `conditioning_logccdf`: the most precise log
