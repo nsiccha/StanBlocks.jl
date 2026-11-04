@@ -17,6 +17,7 @@ export stan_interface, stan_data_json
 export ModelDescriptor, ModelInput, ModelOutput, ModelDefinition, ModelOperation
 export StanBlocksError, StanBlocksDiagnostic, diagnostic
 export ValueFamily, ValueUDF
+export family_support
 
 using OrderedCollections, JSON, StanLogDensityProblems, LogDensityProblems, Markdown
 using BridgeStan

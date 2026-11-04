@@ -4,6 +4,18 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.23
+
+- **Inspect family support before generating a model.** `family_support(f,
+  :(mu::real), ...)` reports probability kind, observation type and shape,
+  and intrinsic bounds from SLIC's typed registrations. Symbolic bounds remain
+  symbolic; unresolved signatures raise an error instead of being classified
+  as unconstrained scalar laws.
+- **Same-named ordinary functions from distinct modules retain their identity
+  in Stan.** Colliding families receive consistent names across sampling,
+  density and RNG calls, function-token specializations and model descriptors.
+  Unambiguous names keep their existing spelling.
+
 ## v0.2.22
 
 - **Integer-order Bessel functions work in `@juliacompat` helpers.**
