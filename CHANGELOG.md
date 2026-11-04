@@ -4,7 +4,7 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
-## v0.2.21
+## v0.2.22
 
 - **Integer-order Bessel functions work in `@juliacompat` helpers.**
   `bessel_first_kind`, `bessel_second_kind`, `modified_bessel_first_kind`
@@ -14,6 +14,17 @@ breaking digit).
   The first-kind functions reject NaN; the second-kind functions reject zero
   and negative arguments, propagate NaN and return zero at positive infinity,
   as Stan does.
+
+## v0.2.21
+
+- **An omitted observation keeps its upper-only interval statement.**
+  `y ~ interval_censored(normal(mu, sigma); upper=hi)` now works when `y`
+  is declared as an observation and omitted from the data for prediction.
+  It draws from the base family, with no interval likelihood, and `y_gen`
+  aliases that draw. Retained bounds and family arguments supply scalar,
+  dense or ragged shapes, including empty groups. No dummy lower endpoint
+  is needed. Binding `y` still contributes the interval mass `(y, hi]`;
+  using an interval observation as an actual latent prior remains refused.
 
 ## v0.2.20
 

@@ -668,12 +668,17 @@ _observed_endpoint(lhs::CanonicalExprV{:getindex}) = lhs
 _observed_endpoint(lhs::DeclExpr) = _observed_endpoint(lhs.args[1])
 _observed_endpoint(lhs) = nothing
 # The defaulted lower endpoint: the observation itself, forwarded exactly as the
-# positional spelling would forward it. A declared observation without data has
-# no value to bound the interval with.
+# positional spelling would forward it. For a declared missing observation,
+# leave an erased function token: its predictive RNG does not use endpoints.
+# Activity analysis still rejects an interval used as an actual latent prior.
 function _observed_lower_endpoint end
 forward!(x::CanonicalExpr{typeof(_observed_lower_endpoint)}; info) = begin
     lhs = only(x.args)
     key = _sampling_lhs_key(lhs)
+    if _declared_observation_lhs(lhs; info) &&
+       (key ∉ keys(info) || qual(info[key]) !== :data)
+        return stan_expr(_observed_lower_endpoint)
+    end
     key === nothing || key in keys(info) || error(
         "`", key, " ~ interval_censored(…; upper = …)` takes the interval's lower ",
         "endpoint from the observed `", key, "`, which has no data. Bind `", key,
