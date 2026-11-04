@@ -973,16 +973,16 @@ end
 # that block iterates the same dictionary. Reflect it directly so descriptor
 # order, source, names and transitive inclusion cannot drift from execution.
 
-_definition_name(f::StanFunction3) = Symbol(func_name(f.parent, f.args))
+_definition_name(f::StanFunction3, names) = Symbol(_named_func_name(f.parent, f.args, names))
 _definition_binding(f::StanFunction3) = f.parent isa Function ? nameof(f.parent) : nothing
 _definition_kind(f::StanFunction3) =
     f.parent isa StanExpr2{<:types.closure} ? :closure : :function
-_definition_signature(f::StanFunction3) = string(
-    sigtype(f.rv_type), " ", func_name(f.parent, f.args), "(", func_args(f.args), ")",
+_definition_signature(f::StanFunction3, names) = string(
+    sigtype(f.rv_type), " ", _named_func_name(f.parent, f.args, names), "(", func_args(f.args), ")",
 )
-_definition_source(f::StanFunction3) = begin
+_definition_source(f::StanFunction3, names) = begin
     io = IOBuffer()
-    show(StanIO(io), f)
+    show(StanIO(io; callable_names=names), f)
     String(take!(io))
 end
 
@@ -1006,32 +1006,33 @@ Base.@nospecializeinfer _definition_dependency_keys!(@nospecialize(x::CanonicalE
     nothing
 end
 
-_definition_dependencies(f::StanFunction3, functions) = begin
+_definition_dependencies(f::StanFunction3, functions, names) = begin
     keys = Any[]
     _definition_dependency_keys!(f.body, functions, keys, Set{Any}())
     defs = map(key -> functions[key], keys)
     (
-        Tuple(_definition_name(dep) for dep in defs),
-        Tuple(_definition_signature(dep) for dep in defs),
+        Tuple(_definition_name(dep, names) for dep in defs),
+        Tuple(_definition_signature(dep, names) for dep in defs),
     )
 end
 
 _model_definitions(m::StanModel, code::AbstractString) = begin
     functions = content(block(m, :functions))
+    names = _emission_names(functions)
     entries = [(key, f) for (key, f) in pairs(functions) if !isnothing(f)]
     rv = ModelDefinition[]
     cursor = firstindex(code)
     for (_, f) in entries
-        source = _definition_source(f)
+        source = _definition_source(f, names)
         span = findnext(source, code, cursor)
         isnothing(span) && error(
             "Model descriptor: an included definition did not occur in the emitted Stan source. ",
-            "The functions inventory and emitter have diverged for `", _definition_name(f), "`.",
+            "The functions inventory and emitter have diverged for `", _definition_name(f, names), "`.",
         )
-        dependencies, dependency_signatures = _definition_dependencies(f, functions)
+        dependencies, dependency_signatures = _definition_dependencies(f, functions, names)
         push!(rv, ModelDefinition(
-            _definition_name(f), _definition_binding(f), _definition_kind(f),
-            _definition_signature(f), source, span, dependencies,
+            _definition_name(f, names), _definition_binding(f), _definition_kind(f),
+            _definition_signature(f, names), source, span, dependencies,
             dependency_signatures,
         ))
         cursor = nextind(code, last(span))

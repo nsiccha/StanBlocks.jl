@@ -543,7 +543,7 @@ function Base.show(io::IO, f::StanFunction3)
         print(io, f.docstring)
         autoprint(
             io,
-            sigtype(f.rv_type), " ", func_name(f.parent, f.args), "(", func_args(f.args), ")",
+            sigtype(f.rv_type), " ", _emitted_func_name(io, f.parent, f.args), "(", func_args(f.args), ")",
             StanBlock(Symbol(), body),
         )
     catch e
@@ -2872,13 +2872,16 @@ Base.@nospecializeinfer func_name(@nospecialize(f), @nospecialize(args)) = begin
     # mistakes a function-valued argument such as `normal_lpdf` for the outer
     # function's suffix and makes call-site and definition names disagree.
     receiver = _stan_callable_name(join(vcat(func_name(f)), "_"))
-    suffix_idxs = findfirst(r"_(rng|u?lp(m|d)fs?)$", receiver)
+    _specialized_func_name(receiver, func_name(args))
+end
+_specialized_func_name(receiver, fragments) = begin
+    suffix_idxs = findfirst(r"_(rng|lu?p[md]fs?|lccdf|lcdf)$", receiver)
     if isnothing(suffix_idxs)
-        join(vcat(receiver, func_name(args)), "_")
+        join(vcat(receiver, fragments), "_")
     else
         suffix = receiver[suffix_idxs]
         base = receiver[1:suffix_idxs[1]-1]
-        join(vcat(base, func_name(args)), "_") * suffix
+        join(vcat(base, fragments), "_") * suffix
     end
 end
 func_name(args::NamedTuple) = func_name(values(args))
@@ -2908,6 +2911,84 @@ func_name(x::StanExpr2{<:types.usertype}) = [string(center_type(x).name.name)]
 func_name(x::StanExpr2{<:types.tokenof}) = [func_name(type(x).info.value)]
 func_name(::Type{T}) where {T<:types.anything} = string(T.name.name)
 func_name(x::Function) = string(x)
+
+# A Julia module is part of a callable's identity, whereas Stan has one flat
+# function namespace. Allocate names once per emission from the collected
+# call signatures, in first-use order. A family and its companions share a
+# module/stem key, including a sampling head that has no emitted definition.
+# No global registry, module-name guessing, object-id suffix or AST mutation.
+_callable_stem(name) = replace(name, r"_(rng|lu?p[md]fs?|lccdf|lcdf)$" => "")
+_callable_key(f::Function) = (parentmodule(f), _callable_stem(_stan_callable_name(string(func_name(f)))))
+_collect_name_callables!(acc, x) = nothing
+_collect_name_callables!(acc, f::Function) = (push!(acc, f); nothing)
+_collect_name_callables!(acc, xs::Union{Tuple,NamedTuple}) =
+    foreach(x -> _collect_name_callables!(acc, x), xs)
+_collect_name_callables!(acc, x::StanExpr) =
+    always_inline(x) && hasvalue(x) ? _collect_name_callables!(acc, getvalue(x)) : nothing
+
+function _emission_names(functions)
+    groups = OrderedDict{String,Any}()
+    reserved = Set{String}()
+    for (call, def) in pairs(functions)
+        # ValueUDF/closure labels also reserve their original spelling.
+        push!(reserved, _callable_stem(_stan_callable_name(join(vcat(func_name(head(call))), "_"))))
+        callables = Function[]
+        _collect_name_callables!(callables, (head(call), call.args))
+        for f in callables
+            key = _callable_key(f)
+            push!(reserved, key[2])
+            group = get!(groups, key[2]) do
+                OrderedDict{Module,Set{Function}}()
+            end
+            push!(get!(() -> Set{Function}(), group, key[1]), f)
+        end
+    end
+    names = Dict{Tuple{Module,String},String}()
+    for (stem, group) in groups
+        length(group) > 1 || continue
+        # Native functions must keep Stan's name. Otherwise the first module
+        # keeps the old spelling, so unrelated model output remains unchanged.
+        native = Set(mod for (mod, fs) in group if any(native_backed, fs))
+        keep = isempty(native) ? first(keys(group)) : nothing
+        i = 2
+        for mod in keys(group)
+            (mod in native || mod === keep) && continue
+            candidate = string(stem, "__", i)
+            while candidate in reserved
+                i += 1
+                candidate = string(stem, "__", i)
+            end
+            push!(reserved, candidate)
+            names[(mod, stem)] = candidate
+            i += 1
+        end
+    end
+    names
+end
+_named_fragment(x, names) = func_name(x)
+_named_fragment(f::Function, names) = begin
+    original = string(func_name(f))
+    key = _callable_key(f)
+    alias = get(names, key, nothing)
+    alias === nothing && return original
+    escaped = _stan_callable_name(original)
+    alias * escaped[nextind(escaped, lastindex(key[2])):end]
+end
+_named_fragment(x::StanExpr, names) =
+    always_inline(x) && hasvalue(x) && getvalue(x) isa Function ?
+        [_named_fragment(getvalue(x), names)] : func_name(x)
+_named_fragment(xs::Union{Tuple,NamedTuple}, names) = begin
+    out = Any[]
+    for x in xs
+        append!(out, vcat(_named_fragment(x, names)))
+    end
+    out
+end
+_named_func_name(f, args, names) = _specialized_func_name(
+    _stan_callable_name(join(vcat(_named_fragment(f, names)), "_")),
+    _named_fragment(args, names),
+)
+_emitted_func_name(io, f, args) = func_name(f, args)
 # Operator + renamed-function Stan-name table, generated as an @eval loop
 # (mirrors the operator @eval loop in show.jl). Each entry maps a Julia
 # function to its Stan-side name fragment used for call-site mangling.

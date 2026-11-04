@@ -33,6 +33,8 @@ struct StanIO{P} <: WrappedIO
     StanIO(parent; kwargs...) = new{typeof(parent)}(parent, kwargs)
 end
 remake(io::StanIO, p=parent(io); kwargs...) = StanIO(p; io.info..., kwargs...)
+_emitted_func_name(io::StanIO, f, args) = haskey(io.info, :callable_names) ?
+    _named_func_name(f, args, io.info[:callable_names]) : func_name(f, args)
 current_indent(io) = repeat("    ", get(io, :_autoprint_indent, 0))
 current_indent(io::StanIO) = repeat("    ", current_indent_level(io))
 current_indent_level(io::StanIO) = get(io.info, :current_indent_level, 0)
@@ -84,6 +86,7 @@ end
 # Base's `print(io, x)` would compile per node type before reaching `show`.
 Base.print(io::StanIO, x::Union{CanonicalExpr,StanExpr,StanType}) = (show(io, x); nothing)
 Base.show(io::StanIO, x::StanModel) = begin
+    io = remake(io; callable_names=_emission_names(content(block(x, :functions))))
     print(io, maybedoc(get(x.meta, :docstring, "")))
     print(io, Join(blocks(x), "\n"))
 end
@@ -207,7 +210,7 @@ end
 prettystring(f) = " $f "
 prettystring(f::Base.BroadcastFunction) = " .$(f.f) "
 Base.show(io::IO, x::CanonicalExpr) = begin
-    fname = func_name(head(x), x.args)
+    fname = _emitted_func_name(io, head(x), x.args)
     # `stan_call_args` expands closure args to their captures and drops
     # always_inline args (functions, 0-dim tokens, capture-free closures).
     # `func_name` still operates on the *unexpanded* args so the mangled
@@ -227,7 +230,7 @@ Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = autoprint(io, head(x), "(", J
     # trailing args so Stan's ODE solver forwards them to the lifted
     # function — `expand_call_args` only catches closures in the args
     # being rendered, not the function-position arg.
-    (func_name(x.args[1], x.args[2:end]), stan_call_args(x.args[2:end])...,
+    (_emitted_func_name(io, x.args[1], x.args[2:end]), stan_call_args(x.args[2:end])...,
      _closure_captures(x.args[1])...), ", "
 ), ")")
 # Torsten's functor solvers take the right-hand side by name in the first slot
@@ -235,7 +238,7 @@ Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = autoprint(io, head(x), "(", J
 # no closure captures to thread: a capturing closure has already been replaced
 # by its capture-free adapter (`_pmx_adapter_call`, builtin.jl).
 Base.show(io::IO, x::CanonicalExpr{<:PMXFunctorSolver}) = autoprint(io, head(x), "(", Join(
-    (func_name(x.args[1], x.args[2:end]), stan_call_args(x.args[2:end])...), ", "
+    (_emitted_func_name(io, x.args[1], x.args[2:end]), stan_call_args(x.args[2:end])...), ", "
 ), ")")
 commentstring(x::String) = "// " * replace(x, "\n"=>"\n    // ") * "\n"
 # A docstring arg can arrive traced (a `StanExpr` wrapping the String) rather
@@ -320,7 +323,7 @@ Base.show(io::IO, x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.
 # helper name is produced by `func_name` with the usertype tag
 # contributing.
 Base.show(io::IO, x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.usertype}, <:StanExpr2{<:types.int}}}) = autoprint(io,
-    func_name(getindex, x.args), "(", Join(stan_call_args(x.args), ", "), ")"
+    _emitted_func_name(io, getindex, x.args), "(", Join(stan_call_args(x.args), ", "), ")"
 )
 for f in (-,+,*,\,/,^,.*,./,.^,<,<=,==,!=,>=,>,&,|)
     @eval Base.show(io::IO, x::CanonicalExpr{typeof($f)}) = autoprint(io, "(", Join(x.args, prettystring($f)), ")")
@@ -344,8 +347,8 @@ Base.show(io::StanIO, x::SamplingExpr) = begin
     rc = rhs isa CanonicalExpr ? rhs :
         (rhs isa StanExpr && expr(rhs) isa CanonicalExpr ? expr(rhs) : nothing)
     if !isnothing(rc) &&
-       endswith(string(func_name(head(rc), rc.args)), r"_lp[md]f|_l?c?cdf")
-        print(io, func_name(head(rc), rc.args), "(",
+       endswith(string(_emitted_func_name(io, head(rc), rc.args)), r"_lp[md]f|_l?c?cdf")
+        print(io, _emitted_func_name(io, head(rc), rc.args), "(",
               Join(stan_call_args(rc.args), ", "), ")")
     else
         print(io, rhs)
