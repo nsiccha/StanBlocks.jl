@@ -4,6 +4,17 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.21
+
+- **An omitted observation keeps its upper-only interval statement.**
+  `y ~ interval_censored(normal(mu, sigma); upper=hi)` now works when `y`
+  is declared as an observation and omitted from the data for prediction.
+  It draws from the base family, with no interval likelihood, and `y_gen`
+  aliases that draw. Retained bounds and family arguments supply scalar,
+  dense or ragged shapes, including empty groups. No dummy lower endpoint
+  is needed. Binding `y` still contributes the interval mass `(y, hi]`;
+  using an interval observation as an actual latent prior remains refused.
+
 ## v0.2.20
 
 - **`local` declares a plate-cell binding that shadows an outer name.** In a
