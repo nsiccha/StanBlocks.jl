@@ -4,6 +4,19 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.24
+
+- **Omitted responses retain self-bound censoring syntax.** A declared response
+  in `y ~ censored(normal(mu, sigma); lower=y)` (or `upper=y`) can be omitted
+  without reading its missing value. Only self endpoints disappear from the
+  predictive law; independent thresholds still clamp. Scalar, dense and ragged
+  shapes, weighted calls, plate cells and values-free forecasts preserve one
+  draw and its `y_gen` alias. Observed responses retain their censoring evidence,
+  and actual censored latent priors remain refused.
+- **Broadcasted RNG helpers keep consistent names.** Module-aware emission
+  preserves the RNG suffix at both calls and definitions, including predictive
+  censoring with vector thresholds.
+
 ## v0.2.23
 
 - **Inspect family support before generating a model.** `family_support(f,

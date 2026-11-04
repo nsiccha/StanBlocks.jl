@@ -5345,6 +5345,14 @@ func_name(::typeof(jbroadcasted), args) = invoke(
     _jb_parent(first(args)),
     args,
 )
+# Emission's module-aware naming must retain the same semantic RNG receiver.
+_named_func_name(::typeof(jbroadcasted), args, names) = invoke(
+    _named_func_name,
+    Tuple{Any,Any,Any},
+    _jb_parent(first(args)),
+    args,
+    names,
+)
 _jb_infer(x::CanonicalExpr, context=nothing) = begin
     context = _context_or_new(context)
     f, dargs = x.args[1], x.args[2:end]
