@@ -3253,12 +3253,22 @@ _is_resultless_plate(info::Union{StanModel,SubModel}, x::Symbol) = begin
     context !== nothing && _plate_global_name(info, x) in context.resultless_plates
 end
 _is_resultless_plate(_, ::Symbol) = false
-# Substitute only do-block parameters with their per-cell input accessors. Fresh
-# names are promoted during tracing via the explicit plate context, which also reaches
-# names introduced inside an inlined submodel (not present in this raw AST).
+# Rename cell bindings and substitute do-parameters with per-cell accessors in
+# raw syntax. Promotion during tracing also reaches names introduced inside an
+# inlined submodel (not present in this raw AST).
 _subst_syms(x, m) = x
 _subst_syms(x::Symbol, m) = get(m, x, x)
-_subst_syms(x::Expr, m) = Expr(x.head, Any[_subst_syms(a, m) for a in x.args]...)
+_subst_syms(x::Expr, m) = if x.head === :kw
+    # A keyword (including a named-tuple field) names an input, not a binding
+    # in this scope. Rename only its value, as in `inline_substitute`.
+    Expr(:kw, x.args[1], _subst_syms(x.args[2], m))
+elseif x.head === :parameters
+    # Expand `f(; x)` before renaming x, retaining the implicit input label.
+    Expr(:parameters, Any[a isa Symbol ? Expr(:kw, a, _subst_syms(a, m)) :
+        _subst_syms(a, m) for a in x.args]...)
+else
+    Expr(x.head, Any[_subst_syms(a, m) for a in x.args]...)
+end
 
 # Resolve a typed plate-result annotation to a StanType. Bare result LHSs use
 # discovery's `ret_type` directly.

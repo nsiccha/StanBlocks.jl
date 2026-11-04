@@ -4,6 +4,13 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.25
+
+- **Plate renaming preserves keyword names.** Submodel calls such as
+  `sub(; x=x)` and `sub(; x)` retain the input label when a plate parameter
+  or cell-local value is renamed. The same rule preserves distribution-bound
+  keywords and named-tuple field labels.
+
 ## v0.2.24
 
 - **Omitted responses retain self-bound censoring syntax.** A declared response
