@@ -264,8 +264,7 @@ element, in a descriptor bound and a `@juliacompat` body alike.
     # `StanBlocks/todos/2026-10-23T09-47-31-458-1j6rdy6`.
     no_twin = (:inv_sqrt, :Phi, :cbrt, :Phi_approx, :inv_Phi, :inv_cloglog,
         :lambert_w0, :fdim, :fmod, :atan2, :lbeta, :log_diff_exp, :owens_t, :gamma_p, :gamma_q,
-        :binary_log_loss, :bessel_first_kind, :bessel_second_kind, :modified_bessel_first_kind,
-        :modified_bessel_second_kind, :log_modified_bessel_first_kind, :fma)
+        :binary_log_loss, :log_modified_bessel_first_kind, :fma)
     base = [0.1 0.2; 0.3 0.45]
     for f in StanBlocks._ELEMENTWISE_UNARY
         name, owner = nameof(f), parentmodule(f)
@@ -285,9 +284,12 @@ element, in a descriptor bound and a `@juliacompat` body alike.
         if name in no_twin
             @test_broken twin(ntuple(_ -> 1, n)...) isa Real
         else
-            @test isequal(twin(base, 0.25), map(x -> twin(x, 0.25), base))
-            @test isequal(twin(0.25, base), map(x -> twin(0.25, x), base))
-            @test isequal(twin(base, base'), map(twin, base, base'))
+            # The Bessel family takes integer orders even when vectorised.
+            firsts = f in StanBlocks._ELEMENTWISE_INT_BINARY ? [0 1; 2 3] : base
+            first_scalar = f in StanBlocks._ELEMENTWISE_INT_BINARY ? 1 : 0.25
+            @test isequal(twin(firsts, 0.25), map(x -> twin(x, 0.25), firsts))
+            @test isequal(twin(first_scalar, base), map(x -> twin(first_scalar, x), base))
+            @test isequal(twin(firsts, base'), map(twin, firsts, base'))
         end
     end
 end
