@@ -576,7 +576,10 @@ end
 # renames to its implementation head, and a variant head is already lowered.
 _hof_impl_call(x::CanonicalExpr{<:OptionalBoundDistributionHOF}; kwargs...) = begin
     spec = _distribution_hof(head(x))
-    CanonicalExpr(_hof_variant(spec, x).head, _hof_call_args(spec, x)...; kwargs...)
+    # An erased observation endpoint remains positional until activity analysis
+    # has checked the censored site, but is not a declaration constraint.
+    retained = (; (k => v for (k, v) in pairs(kwargs) if !_erased_censoring_endpoint(v))...)
+    CanonicalExpr(_hof_variant(spec, x).head, _hof_call_args(spec, x)...; retained...)
 end
 _hof_impl_call(x::CanonicalExpr{typeof(builtin.interval_censored)}; kwargs...) =
     CanonicalExpr(builtin.interval_evidence_impl, x.args...; kwargs...)
@@ -640,20 +643,25 @@ end
 # The same call in `weighted`'s family slot is rewritten too. Every other keyword
 # use of `interval_censored` is left for `_check_hof_keywords` to refuse.
 const _IntervalCensoredHead = Union{Val{:interval_censored},typeof(builtin.interval_censored)}
+const _CensoredHead = Union{Val{:censored},typeof(builtin.censored)}
 const _WeightedHead = Union{Val{:weighted},typeof(builtin.weighted)}
-canonical(x::SamplingExpr{<:Any,<:CanonicalExpr{<:Union{_IntervalCensoredHead,_WeightedHead}}}) = begin
+canonical(x::SamplingExpr{<:Any,<:CanonicalExpr{<:Union{_IntervalCensoredHead,_CensoredHead,_WeightedHead}}}) = begin
     lhs, rhs = x.args
-    rewritten = _interval_keyword_rhs(lhs, rhs)
+    rewritten = _observation_endpoint_rhs(lhs, rhs)
     rewritten === rhs ? x : CanonicalExpr(:(~), lhs, rewritten)
 end
-_interval_keyword_rhs(lhs, rhs) = rhs
-_interval_keyword_rhs(lhs, rhs::CanonicalExpr{<:_WeightedHead}) = begin
+_observation_endpoint_rhs(lhs, rhs) = rhs
+_observation_endpoint_rhs(lhs, rhs::CanonicalExpr{<:_WeightedHead}) = begin
     isempty(rhs.args) && return rhs
-    family = _interval_keyword_rhs(lhs, rhs.args[1])
+    # Token-form weighted(censored, w, family, args...; lower=y).
+    if rhs.args[1] === :censored || rhs.args[1] === builtin.censored
+        return _self_censoring_endpoints(lhs, rhs)
+    end
+    family = _observation_endpoint_rhs(lhs, rhs.args[1])
     family === rhs.args[1] && return rhs
     CanonicalExpr(head(rhs), family, rhs.args[2:end]...; rhs.kwargs...)
 end
-_interval_keyword_rhs(lhs, rhs::CanonicalExpr{<:_IntervalCensoredHead}) = begin
+_observation_endpoint_rhs(lhs, rhs::CanonicalExpr{<:_IntervalCensoredHead}) = begin
     kw = rhs.kwargs
     given(k) = haskey(kw, k) && !_is_compile_time_nothing(kw[k])
     given(:upper) && length(rhs.args) == 1 && rhs.args[1] isa CanonicalExpr || return rhs
@@ -662,6 +670,17 @@ _interval_keyword_rhs(lhs, rhs::CanonicalExpr{<:_IntervalCensoredHead}) = begin
         observed === nothing ? (return rhs) : CanonicalExpr(_observed_lower_endpoint, observed)
     rest = (; (k => v for (k, v) in pairs(kw) if !(k in BOUND_KEYS))...)
     CanonicalExpr(head(rhs), rhs.args[1], lower, kw[:upper]; rest...)
+end
+_observation_endpoint_rhs(lhs, rhs::CanonicalExpr{<:_CensoredHead}) =
+    _self_censoring_endpoints(lhs, rhs)
+_self_censoring_endpoints(lhs, rhs) = begin
+    observed = _observed_endpoint(lhs)
+    observed === nothing && return rhs
+    matches(k, v) = k in BOUND_KEYS && isequal(v, observed)
+    any(matches(k, v) for (k, v) in pairs(rhs.kwargs)) || return rhs
+    kw = (; (k => (matches(k, v) ? CanonicalExpr(_observed_censoring_endpoint, observed) : v)
+             for (k, v) in pairs(rhs.kwargs))...)
+    CanonicalExpr(head(rhs), rhs.args...; kw...)
 end
 _observed_endpoint(lhs::Symbol) = lhs
 _observed_endpoint(lhs::CanonicalExprV{:getindex}) = lhs
@@ -672,11 +691,15 @@ _observed_endpoint(lhs) = nothing
 # leave an erased function token: its predictive RNG does not use endpoints.
 # Activity analysis still rejects an interval used as an actual latent prior.
 function _observed_lower_endpoint end
+_omitted_observation_lhs(lhs; info) = begin
+    key = _sampling_lhs_key(lhs)
+    _declared_observation_lhs(lhs; info) &&
+        (key ∉ keys(info) || qual(info[key]) !== :data)
+end
 forward!(x::CanonicalExpr{typeof(_observed_lower_endpoint)}; info) = begin
     lhs = only(x.args)
     key = _sampling_lhs_key(lhs)
-    if _declared_observation_lhs(lhs; info) &&
-       (key ∉ keys(info) || qual(info[key]) !== :data)
+    if _omitted_observation_lhs(lhs; info)
         return stan_expr(_observed_lower_endpoint)
     end
     key === nothing || key in keys(info) || error(
@@ -686,6 +709,18 @@ forward!(x::CanonicalExpr{typeof(_observed_lower_endpoint)}; info) = begin
     )
     forward!(lhs; info)
 end
+# A self-bound endpoint is data belonging to the observation event. Defer its
+# read until binding is known, without erasing the censored-family marker that
+# prevents a missing response used by fitted descendants becoming a prior.
+function _observed_censoring_endpoint end
+forward!(x::CanonicalExpr{typeof(_observed_censoring_endpoint)}; info) = begin
+    lhs = only(x.args)
+    _omitted_observation_lhs(lhs; info) && return stan_expr(_observed_censoring_endpoint)
+    forward!(lhs; info)
+end
+_erased_censoring_endpoint(x) = false
+_erased_censoring_endpoint(x::StanExpr2{<:types.func}) =
+    _family_function(x) === _observed_censoring_endpoint
 # Token form of a nested combinator — `weighted(censored, w, normal, mu, sigma;
 # lower=lo)` — lowers its family to the implementation call, exactly as the
 # combinator alone would: `weighted(lower_clamping, w, normal, lo, mu, sigma)`.
@@ -963,8 +998,33 @@ _hof_rng_args(spec, rhs::CanonicalExpr) = begin
     _family_function(args[i]) === builtin.std_normal || return args
     (args[1:i-1]..., stan_expr(builtin.normal), args[i+1:end]..., stan_expr(0.0), stan_expr(1.0))
 end
+# Only the predictive law loses omitted self endpoints. Independent endpoints
+# still clamp, and activity analysis has already checked the original family.
+_predictive_rhs(rhs) = rhs
+_predictive_rhs(rhs::CanonicalExpr{<:Union{typeof(builtin.lower_clamping),typeof(builtin.upper_clamping)}}) = begin
+    family, bound, args... = rhs.args
+    _erased_censoring_endpoint(bound) || return rhs
+    CanonicalExpr(_family_function(family), args...)
+end
+_predictive_rhs(rhs::CanonicalExpr{typeof(builtin.clamping)}) = begin
+    family, lower, upper, args... = rhs.args
+    lo, hi = _erased_censoring_endpoint(lower), _erased_censoring_endpoint(upper)
+    lo && hi && return CanonicalExpr(_family_function(family), args...)
+    lo && return CanonicalExpr(builtin.upper_clamping, family, upper, args...)
+    hi && return CanonicalExpr(builtin.lower_clamping, family, lower, args...)
+    rhs
+end
+_predictive_rhs(rhs::CanonicalExpr{typeof(builtin.weighted)}) = begin
+    family, weight, args... = rhs.args
+    inner = CanonicalExpr(_family_function(family), args...)
+    rewritten = _predictive_rhs(inner)
+    rewritten === inner && return rhs
+    CanonicalExpr(builtin.weighted, stan_expr(head(rewritten)), weight, rewritten.args...)
+end
 # Scalar token path: native Stan rng, no token forwarding.
 rng_expr(token::StanExpr2{<:types.tokenof,0}, rhs::CanonicalExpr) = begin
+    predictive = _predictive_rhs(rhs)
+    predictive === rhs || return rng_expr(token, predictive)
     spec = _distribution_hof(head(rhs))
     isnothing(spec) && return stan_call(rng_expr(head(rhs)), rhs.args...)
     _distribution_hof_family(spec, rhs)
@@ -972,6 +1032,8 @@ rng_expr(token::StanExpr2{<:types.tokenof,0}, rhs::CanonicalExpr) = begin
 end
 # Sized token path: prepend token so per-shape @deffun overloads dispatch.
 rng_expr(token::StanExpr2{<:types.tokenof}, rhs::CanonicalExpr) = begin
+    predictive = _predictive_rhs(rhs)
+    predictive === rhs || return rng_expr(token, predictive)
     spec = _distribution_hof(head(rhs))
     isnothing(spec) && return stan_call(rng_expr(head(rhs)), token, rhs.args...)
     _distribution_hof_family(spec, rhs)
