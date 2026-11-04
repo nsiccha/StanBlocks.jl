@@ -129,12 +129,18 @@ y ~ interval_censored(normal(mu, sigma); lower=lo, upper=hi)  # (lo, hi]
 y ~ weighted(interval_censored(normal(mu, sigma); upper=hi), w)
 ```
 
-Each keyword call emits the same Stan as its positional form
+With `y` bound, each keyword call emits the same Stan as its positional form
 (`interval_censored(normal(mu, sigma), y, hi)`), in a `plate` cell too.
 `upper=` is required. The keywords need the family call: in the token form
 (`interval_censored(normal, …; upper=hi)`) the endpoints cannot be told apart
-from the family's arguments, so that is an error. A declared observation
-without data has no value to serve as the lower endpoint and needs `lower=`.
+from the family's arguments, so that is an error.
+
+Omitting a declared observation keeps the same upper-only statement for
+prediction. It contributes no interval likelihood and draws from the base
+family, with `y_gen` aliasing that draw. Retained `upper` and family arguments
+supply the shape, including dense vectors and ragged groups with empty groups;
+no dummy `lower` is needed. Binding `y` still measures `(y, hi]`, and actual
+latent interval priors remain refused.
 
 Every combinator refuses a keyword it does not take: `censored(…; uper=hi)`
 fails at trace time instead of silently dropping the bound.

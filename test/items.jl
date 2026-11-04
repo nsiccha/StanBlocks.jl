@@ -1324,9 +1324,9 @@ where it used to be dropped silently.
         @test BridgeStan.log_density(indexed_problem.model, theta; propto = false) ≈ oracle(theta) atol = 1e-10
     end
 
-    # A declared observation with no data has no lower endpoint to default to.
+    # Omitting a declared observation keeps the same statement for prediction.
     unbound(body, data) = StanBlocks.SlicModel(body, Dict{Symbol,Any}(pairs(data)...), @__MODULE__, (:y,))
-    @test_throws "takes the interval's lower endpoint from the observed `y`, which has no data" stan_code(unbound(quote
+    @test stanc_compiles(unbound(quote
         mu ~ normal(0.0, 1.0)
         y ~ interval_censored(normal(mu, 0.8); upper = hi)
     end, (; hi)))
