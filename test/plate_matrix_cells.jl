@@ -223,6 +223,73 @@ end
     @test stanc_compiles(reshaped)
 end
 
+"""
+A later plate may size its cells by an earlier plate's varying-size matrix
+cells (snag `stan-descriptor-00d25ad7`): `q[g]` takes `p[g]`'s row count, so
+transformed data fills `q__pl_len[g] = p__pl_rows[g]`. `p__pl_rows` is filled
+in ONE loop with `p__pl_cols`, `p__pl_len` and every sibling cell's lengths;
+`stan_descriptor` used to refuse to replay that loop for `p__pl_rows` alone
+("a statement that writes it also writes `p__pl_cols`"). It now runs it as a
+unit and binds every array it fills.
+"""
+@testitem "slic: the descriptor sizes a plate cell by an earlier plate's matrix rows" tags=[:slic, :plate, :ragged, :regression, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    @deffun rows_by_three(x::vector[T], r::real)::matrix[T, 3] = begin
+        out::matrix[T, 3]
+        for t in 1:T
+            out[t, 1] = r * x[t]
+            out[t, 2] = x[t]
+            out[t, 3] = r
+        end
+        out
+    end
+    @deffun shifted_first_column(x::matrix[T, K], r::real)::vector[T] = begin
+        out::vector[T]
+        for t in 1:T
+            out[t] = r + x[t, 1]
+        end
+        out
+    end
+    data = (; x = collect(0.1:0.1:0.9), idx = [[1, 2, 3], [4, 5], [6, 7, 8, 9]])
+    alone = @slic data begin
+        r ~ normal(0, 1)
+        @plate for g in eachindex(idx)
+            p[g] = rows_by_three(x[idx[g]], r)
+        end
+        @plate for g in eachindex(idx)
+            q[g] = shifted_first_column(p[g], r)
+        end
+    end
+    # A second cell in the first plate is sized in the same loop.
+    with_sibling = @slic data begin
+        r ~ normal(0, 1)
+        @plate for g in eachindex(idx)
+            p[g] = rows_by_three(x[idx[g]], r)
+            s[g] = x[idx[g]] .* r
+        end
+        @plate for g in eachindex(idx)
+            q[g] = shifted_first_column(p[g], r)
+        end
+    end
+    td = stan_block(stan_code(with_sibling), "transformed data")
+    @test occursin("p__pl_cols[g] = 3;", td)
+    @test occursin("s__pl_len[g] = ", td)
+    @test occursin("q__pl_len[g] = p__pl_rows[g];", td)
+    for m in (alone, with_sibling)
+        segments = Dict(o.name => o.segments for o in stan_descriptor(m).outputs)
+        @test segments[:p] == [9, 15, 27]          # 3x3, 2x3 and 4x3 cells
+        @test segments[:q] == [3, 5, 9]
+        @test stanc_compiles(m)
+    end
+    @test Dict(o.name => o.segments for o in stan_descriptor(with_sibling).outputs)[:s] == [3, 5, 9]
+    # Against new data, the replay reads the CURRENT groups.
+    rebound = with_sibling(; x = collect(0.1:0.1:0.5), idx = [[1], [2, 3, 4, 5]])
+    segments = Dict(o.name => o.segments for o in stan_descriptor(rebound).outputs)
+    @test segments[:p] == [3, 15]
+    @test segments[:q] == [1, 5]
+    @test segments[:s] == [1, 5]
+end
+
 @testitem "slic: a matrix plate cell local has the density of its inline spelling" tags=[:slic, :plate, :ragged, :regression, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using LogDensityProblems, Random
     using StanBlocks.LinearAlgebra: Diagonal, dot, logdet

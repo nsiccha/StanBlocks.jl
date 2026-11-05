@@ -4,6 +4,17 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.28
+
+- **The descriptor evaluates size loops that fill several tables.** A
+  `@plate for` loop may size its cells by an earlier plate's varying-size
+  matrix cells (`q[g] = f(p[g])` with `q__pl_len[g] = p__pl_rows[g]`).
+  `stan_descriptor` now runs a transformed-data loop that fills several
+  arrays (a matrix cell's `f__pl_rows`, `f__pl_cols` and `f__pl_len`, with
+  every sibling cell's lengths) once, and binds every array it fills. It used
+  to stop with "a statement that writes it also writes …". The emitted Stan is
+  unchanged.
+
 ## v0.2.27
 
 - **Scalar predictive RNGs accept type tokens.** Custom distributions may

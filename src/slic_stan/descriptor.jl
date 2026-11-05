@@ -643,21 +643,30 @@ _plate_layout_binding(ref::Symbol, layout, ends) =
 # transformed-data name by running the statements that define it. Every binding
 # is memoised in `env`.
 
-# The top-level transformed-data statements that declare or write each name, in
-# program order: `J = maximum(subject)` alone, or a bare declaration
-# (`vector[n] tau__lower;`) followed by the loops that fill it elementwise
-# (`for (i in 1:2) tau__lower[i] = rate[i];`). The compiler builds every
-# per-coordinate bound the second way (`_slice_bound_carrier!`,
+# The top-level transformed-data statements, in program order, each with every
+# name it declares or writes: `J = maximum(subject)` alone, or a bare
+# declaration (`vector[n] tau__lower;`) followed by the loops that fill it
+# elementwise (`for (i in 1:2) tau__lower[i] = rate[i];`). The compiler builds
+# every per-coordinate bound the second way (`_slice_bound_carrier!`,
 # `_plate_slice_bound_carrier!`, `_plate_ragged_bound_carrier!`,
-# `_plate_hoist_cell_constraints!`).
+# `_plate_hoist_cell_constraints!`). One loop may fill several arrays: a ragged
+# plate sizes every cell it stores in one loop, a matrix cell's `f__pl_rows`,
+# `f__pl_cols` and `f__pl_len` among them (`_plate_ragged_sizing`).
 _td_statements!(x, acc) = acc
 _td_statements!(x::AbstractVector, acc) = (foreach(s -> _td_statements!(s, acc), x); acc)
 _td_statements!(x::StanBlock, acc) = _td_statements!(content(x), acc)
 _td_statements!(x::BlockExpr, acc) = _td_statements!(x.args, acc)
 _td_statements!(x::DocumentExpr, acc) = _td_statements!(x.args[2], acc)
 _td_statements!(x::Union{StanExpr,CanonicalExpr}, acc) = begin
-    for name in _td_writes!(Set{Symbol}(), x)
-        push!(get!(Vector{Any}, acc, name), x)
+    writes = _td_writes!(Set{Symbol}(), x)
+    isempty(writes) || push!(acc, (; statement=x, writes))
+    acc
+end
+# The statements, by index, that declare or write each name.
+_td_writers(statements) = begin
+    acc = Dict{Symbol,Vector{Int}}()
+    for (i, s) in enumerate(statements), name in s.writes
+        push!(get!(Vector{Int}, acc, name), i)
     end
     acc
 end
@@ -678,14 +687,17 @@ _td_written_base!(acc, x::Symbol) = push!(acc, x)
 _td_written_base!(acc, x::DeclExpr) = _td_written_base!(acc, x.args[1])
 _td_written_base!(acc, x::CanonicalExpr{typeof(getindex)}) = _td_written_base!(acc, x.args[1])
 
-_descriptor_scope(m::StanModel, data) = (;
-    m, data,
-    env=Dict{Symbol,Any}(pairs(data)),
-    statements=_td_statements!(block(m, :transformed_data), Dict{Symbol,Vector{Any}}()),
-    layouts=_ragged_plate_layouts(m),
-    mod=get(meta(m), :mod, @__MODULE__),
-    active=Symbol[],
-)
+_descriptor_scope(m::StanModel, data) = begin
+    statements = _td_statements!(block(m, :transformed_data), NamedTuple[])
+    (;
+        m, data,
+        env=Dict{Symbol,Any}(pairs(data)),
+        statements, writers=_td_writers(statements),
+        layouts=_ragged_plate_layouts(m),
+        mod=get(meta(m), :mod, @__MODULE__),
+        active=Symbol[],
+    )
+end
 _scope_bind!(scope, name::Symbol) = begin
     haskey(scope.env, name) && return nothing
     layout = get(scope.layouts, name, nothing)
@@ -694,39 +706,69 @@ _scope_bind!(scope, name::Symbol) = begin
         scope.env[name] = _plate_layout_binding(name, layout, ends)
         return nothing
     end
-    statements = get(scope.statements, name, ())
-    isempty(statements) && error(
+    haskey(scope.writers, name) || error(
         "`", name, "` is neither a data input nor a transformed-data value.",
     )
     name in scope.active && error(
         "transformed-data `", name, "` depends on itself through ",
         join(("`$a`" for a in scope.active), " -> "), ".",
     )
-    push!(scope.active, name)
-    try
-        scope.env[name] = _td_replay(scope, name, statements)
+    targets, indices = _td_unit(scope, name)
+    append!(scope.active, targets)
+    values = try
+        _td_replay(scope, name, targets, indices)
     finally
-        pop!(scope.active)
+        resize!(scope.active, length(scope.active) - length(targets))
+    end
+    # A co-written name another route already bound (a plate's `lens` from its
+    # layout) keeps that binding: both evaluate the same recipe.
+    for (target, value) in values
+        haskey(scope.env, target) || (scope.env[target] = value)
     end
     nothing
+end
+# The names that must be evaluated together with `name`, and the statements, in
+# program order, that write them: every statement that writes one of them, and
+# every name such a statement writes. A size loop that fills `p__pl_rows`,
+# `p__pl_cols` and `p__pl_len` runs once, with their three declarations, and
+# binds all three (snag `stan-descriptor-00d25ad7`).
+_td_unit(scope, name::Symbol) = begin
+    targets, indices, queue = Symbol[name], Set{Int}(), Symbol[name]
+    while !isempty(queue)
+        for i in get(scope.writers, pop!(queue), ())
+            i in indices && continue
+            push!(indices, i)
+            for w in scope.statements[i].writes
+                w in targets && continue
+                push!(targets, w)
+                push!(queue, w)
+            end
+        end
+    end
+    targets, sort!(collect(indices))
 end
 _scope_value(scope, x) = begin
     foreach(name -> _scope_bind!(scope, name), _plate_layout_names!(Set{Symbol}(), x))
     _plate_layout_value(x, scope.env, scope.mod)
 end
 
-# Run the statements that define transformed-data `name`, as Stan runs them, and
-# return its value. `env` holds the loop indices and `name` itself while they
-# run; every other name it reads binds through the scope. A statement that
-# writes another name too, or one this replay has no rule for, fails by name
-# rather than leave part of the value unset.
-_td_replay(scope, name::Symbol, statements) = begin
+# Run the statements that define transformed-data `name` and the names written
+# with it (`targets`, from `_td_unit`), as Stan runs them, and return each
+# target's value. `env` holds the loop indices and the targets while they run;
+# every other name they read binds through the scope. A statement this replay
+# has no rule for fails by name rather than leave part of a value unset.
+_td_replay(scope, name::Symbol, targets, indices) = begin
     env = Dict{Symbol,Any}()
-    for s in statements
-        _td_run!(scope, env, name, s)
+    job = (; name, targets)
+    for i in indices
+        _td_run!(scope, env, job, scope.statements[i].statement)
     end
-    haskey(env, name) || error("transformed-data `", name, "` is declared but never assigned.")
-    env[name]
+    map(targets) do target
+        haskey(env, target) || error(
+            "transformed-data `", target, "` is declared but never assigned.",
+        )
+        target => env[target]
+    end
 end
 _td_value(scope, env, x) = begin
     for n in _plate_layout_names!(Set{Symbol}(), x)
@@ -736,15 +778,15 @@ _td_value(scope, env, x) = begin
     end
     _plate_layout_value(x, env, scope.mod)
 end
-_td_run!(scope, env, name, x::StanExpr) = _td_run!(scope, env, name, expr(x))
-_td_run!(scope, env, name, x::DocumentExpr) = _td_run!(scope, env, name, x.args[2])
-_td_run!(scope, env, name, x::BlockExpr) = foreach(s -> _td_run!(scope, env, name, s), x.args)
-_td_run!(scope, env, name, x::ForExpr) = begin
+_td_run!(scope, env, job, x::StanExpr) = _td_run!(scope, env, job, expr(x))
+_td_run!(scope, env, job, x::DocumentExpr) = _td_run!(scope, env, job, x.args[2])
+_td_run!(scope, env, job, x::BlockExpr) = foreach(s -> _td_run!(scope, env, job, s), x.args)
+_td_run!(scope, env, job, x::ForExpr) = begin
     spec, body = x.args
     index = _td_loop_index(spec.args[1])
     for i in _td_value(scope, env, spec.args[2])
         env[index] = i
-        _td_run!(scope, env, name, body)
+        _td_run!(scope, env, job, body)
     end
     delete!(env, index)
     nothing
@@ -752,36 +794,38 @@ end
 _td_loop_index(x::Symbol) = x
 _td_loop_index(x::StanExpr{Symbol}) = expr(x)
 # A bare declaration allocates the value as Stan does: reals start as NaN.
-_td_run!(scope, env, name, x::DeclExpr) = begin
+_td_run!(scope, env, job, x::DeclExpr) = begin
     target = x.args[1]
-    _td_target(name, expr(target))
+    name = _td_target(job, expr(target))
     dims = _declared_dims(scope, "transformed-data array", name, target)
     env[name] = center_type(target) <: types.int ? fill(typemin(Int), dims) : fill(NaN, dims)
     nothing
 end
-_td_run!(scope, env, name, x::CanonicalExprV{:(=)}) =
-    _td_assign!(scope, env, name, x.args[1], _td_value(scope, env, x.args[2]))
-_td_run!(scope, env, name, x) = error(
-    "stan_descriptor: cannot evaluate transformed-data `", name, "`: it is written by a `",
+_td_run!(scope, env, job, x::CanonicalExprV{:(=)}) =
+    _td_assign!(scope, env, job, x.args[1], _td_value(scope, env, x.args[2]))
+_td_run!(scope, env, job, x) = error(
+    "stan_descriptor: cannot evaluate transformed-data `", job.name, "`: it is written by a `",
     x isa CanonicalExpr ? head(x) : typeof(x), "` statement, which the descriptor cannot run.",
 )
-_td_assign!(scope, env, name, lhs::StanExpr, value) = _td_assign!(scope, env, name, expr(lhs), value)
-_td_assign!(scope, env, name, lhs::DeclExpr, value) = _td_assign!(scope, env, name, lhs.args[1], value)
+_td_assign!(scope, env, job, lhs::StanExpr, value) = _td_assign!(scope, env, job, expr(lhs), value)
+_td_assign!(scope, env, job, lhs::DeclExpr, value) = _td_assign!(scope, env, job, lhs.args[1], value)
 # Stan assigns by value. Copy an array, so a later indexed fill never writes
 # into the data value (or other binding) it was assigned from.
-_td_assign!(scope, env, name, lhs::Symbol, value) =
-    (_td_target(name, lhs); env[name] = _td_owned(value); nothing)
+_td_assign!(scope, env, job, lhs::Symbol, value) =
+    (env[_td_target(job, lhs)] = _td_owned(value); nothing)
 _td_owned(x) = x
 _td_owned(x::AbstractArray) = copy(x)
-_td_assign!(scope, env, name, lhs::CanonicalExpr{typeof(getindex)}, value) = begin
-    _td_target(name, expr(lhs.args[1]))
+_td_assign!(scope, env, job, lhs::CanonicalExpr{typeof(getindex)}, value) = begin
+    name = _td_target(job, expr(lhs.args[1]))
     haskey(env, name) || error("transformed-data `", name, "` is filled before it is declared.")
     setindex!(env[name], value, (_td_value(scope, env, i) for i in lhs.args[2:end])...)
     nothing
 end
-_td_target(name, base) = base === name || error(
-    "stan_descriptor: cannot evaluate transformed-data `", name, "`: a statement that ",
-    "writes it also writes `", base, "`.",
+# `_td_unit` collects every name its statements write, so a write outside the
+# targets means the replay and `_td_writes!` disagree on what a statement writes.
+_td_target(job, base) = base in job.targets ? base : error(
+    "stan_descriptor: cannot evaluate transformed-data `", job.name, "`: a statement that ",
+    "writes it also writes `", base, "`, which is not recorded as one of its writes.",
 )
 
 _ragged_plate_segments(scope, name::Symbol, layout) = begin
