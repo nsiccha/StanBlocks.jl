@@ -4,6 +4,16 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.27
+
+- **Scalar predictive RNGs accept type tokens.** Custom distributions may
+  provide `foo_rng(real, args...)::real` or `foo_rng(int, args...)::int`.
+  Automatic predictions and scalar `predictive` calls prefer an existing
+  typed tokenless overload, then select the scalar-token overload. This also
+  applies to value families, distribution combinators, and `family_support`;
+  errors in matching RNG bodies remain visible, and sized-container dispatch
+  is unchanged.
+
 ## v0.2.26
 
 - **Matrix views pass through ordinary helpers.** `EachCol` and `EachRow`

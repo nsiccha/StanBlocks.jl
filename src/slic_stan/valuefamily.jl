@@ -757,6 +757,13 @@ _tracetype(x::CanonicalExpr{<:ValueUDF}, context) = begin
 end
 tracetype(x::CanonicalExpr{<:ValueUDF}) = _tracetype(x, nothing)
 
+# Scalar predictive selection may try a token only when no plain overload
+# exists. Ambiguity, size binding and body errors still go through the ordinary
+# tracer and must not be mistaken for a missing signature.
+_rng_candidate(call::CanonicalExpr{<:ValueUDF}, context) =
+    any(o -> _value_overload_matches(o, o.patterns, call.args), head(call).overloads) ?
+        _stan_expr(call, context) : nothing
+
 # The `@lhs` rule, at runtime: the sampling call carries the density's args
 # minus the observation, and its type is the observation's type with sizes
 # bound from the call.
