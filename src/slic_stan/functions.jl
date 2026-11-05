@@ -1326,7 +1326,20 @@ begin
         print(io, sigtype(ct))
         String(take!(io))
     end
-    sigtype(x::StanType{<:types.tup}) = begin 
+    # Stan has no singleton tuple. A one-field usertype keeps its nominal
+    # tracing/dispatch identity, but crosses the Stan boundary as its field.
+    # Keep sig_expr nominal too: func_name distinguishes usertype helpers.
+    # Combine array dimensions before rendering (Stan cannot nest array prefixes).
+    _singleton_usertype(x::StanType) = false
+    _singleton_usertype(x::StanType{<:types.usertype}) = length(x.info.arg_types) == 1
+    _usertype_storage_type(x::StanType) = begin
+        _singleton_usertype(x) || return x
+        field = _usertype_storage_type(only(x.info.arg_types))
+        StanType(center_type(field), (stan_size(x)..., stan_size(field)...), info(field))
+    end
+    sigtype(x::StanType{<:types.tup}) = begin
+        storage = _usertype_storage_type(x)
+        storage === x || return sigtype(storage)
         io = IOBuffer()
         stan_ndim(x) > 0 && print(io, "array[", join(fill("", stan_ndim(x)), ", "), "] ")
         print(io, "tuple(", join(map(sigtype, x.info.arg_types), ", "), ")")

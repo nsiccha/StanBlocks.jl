@@ -169,6 +169,8 @@ Base.show(io::StanIO, x::StanType) = begin
 end
 Base.show(io::IO, x::StanType{<:types.tup}) = show(StanIO(io), x)
 Base.show(io::StanIO, x::StanType{<:types.tup}) = begin
+    storage = _usertype_storage_type(x)
+    storage === x || return show(io, storage)
     stan_ndim(x) > 0 && autoprint(io, "array[", Join(stan_size(x), ", "), "] ")
     autoprint(io, "tuple(", Join(x.info.arg_types, ", ") , ")")
 end
@@ -307,8 +309,11 @@ Base.show(io::IO, x::CanonicalExpr{typeof(range)}) = autoprint(io, "linspaced_ve
 Base.show(io::IO, x::CanonicalExpr{typeof(getindex)}) = autoprint(io, x.args[1], "[", Join(x.args[2:end], ", "), "]")
 # Field access (`obj.name`, lowered via `forward!(::GetPropertyExpr)` to
 # `Base.getfield(obj, position)`) renders as Stan's positional tuple
-# access `obj.N`.
-Base.show(io::IO, x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = print(io, x.args[1], ".", x.args[2])
+# access `obj.N`, or the object itself for a transparent one-field usertype.
+Base.show(io::IO, x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = begin
+    print(io, x.args[1])
+    _singleton_usertype(type(x.args[1])) || print(io, ".", x.args[2])
+end
 # Julia tuple indexing `p[i]` on a plain positional tuple is the same
 # positional access as `getfield(p, i)` — Julia permits both on a tuple — so
 # it must render as Stan's `p.N`, not the generic `p[i]` bracket above (which

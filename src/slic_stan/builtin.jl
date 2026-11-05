@@ -3594,8 +3594,8 @@ end
 @eval builtin const EachCol = $EachCol
 @eval builtin const EachRow = $EachRow
 
-# Tuple-representation accessors — fire when the view is a BOUND name (a @deffun /
-# submodel param), not a construction (mirrors the RaggedVector UDFs).
+# Accessors for a bound view (a @deffun / submodel param), rather than a
+# construction. Its single matrix field is transparent in emitted Stan.
 @deffun begin
     Base.length(ec::EachCol)::int = cols(ec.X)
     Base.lastindex(ec::EachCol)::int = cols(ec.X)
@@ -3623,7 +3623,10 @@ end
 forward!(x::StanExpr{Symbol,<:StanType{<:EachCol}}; info) = x
 forward!(x::StanExpr{Symbol,<:StanType{<:EachRow}}; info) = x
 
-_is_view_construction(v::StanExpr) = expr(v) isa CanonicalExpr
+# A function returning a view is a call too, but its first argument need not
+# be the backing matrix. Only an actual view constructor can be peeled here.
+_is_view_construction(v::StanExpr) =
+    expr(v) isa CanonicalExpr{<:StanExpr2{<:types.tokenof{<:Union{EachCol,EachRow}}}}
 _view_mat(v::StanExpr) = expr(v).args[1]
 
 # `EachCol(X)[j]` → `col(X, j)`; `EachRow(X)[i]` → `row(X, i)` (construction case).
