@@ -605,6 +605,18 @@ end
 _plate_bind_local!(::StanModel, _name, _value) = nothing
 _plate_bind_local!(info::SubModel, name, value) = (locals(info)[name] = value)
 
+_plate_restore_locals!(::StanModel, _cell_types) = nothing
+_plate_restore_locals!(info::SubModel, cell_types) = begin
+    root = _plate_root_info(info)
+    for f in keys(locals(info))
+        f isa Symbol || continue
+        g = _plate_global_name(info, f)
+        haskey(cell_types, g) || continue
+        g in keys(root) && _plate_bind_local!(info, f, root[g])
+    end
+    nothing
+end
+
 _forward_plate_assignment!(x, name, lhs, rhs_raw; info) = begin
     rhs = forward!(rhs_raw; info)
     _check_assignment_rhs(name, rhs)
@@ -5117,11 +5129,10 @@ _forward_loop_core!(;
         end
         emitted_loop = _loop_scratch_wrap(emitted_loop, scratch_globals)
     end
-    # The emit trace bound a submodel's local spelling of each array to the
-    # current cell (`hh_h[hh_t]`); after the loop it names the whole array again.
-    for f in public_global
-        f in keys(root) && _plate_bind_local!(info, public_local[f], root[f])
-    end
+    # The emit trace binds submodel locals to current cells (`hh_h[hh_t]`).
+    # After the loop every promoted local names its whole collection again,
+    # including do-form side outputs, not only annotated loops' public arrays.
+    _plate_restore_locals!(info, cell_types)
     # After the loop a ragged binding's name reads as the `RaggedVector` view over
     # its flat memory, which has the same Stan name, for the rest of the trace.
     # The view keeps the memory's layout and observation marks, which lookups by
