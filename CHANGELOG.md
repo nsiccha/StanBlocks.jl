@@ -4,7 +4,7 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
-## v0.2.30
+## v0.2.31
 
 - **Plate cells collect tuples.** A called sub-model that returns a named
   or positional tuple can be bound inside a plate cell and read by field
@@ -16,6 +16,18 @@ breaking digit).
   without named properties (real)". A tuple component whose size varies by
   cell is refused, and so is a field read of a whole array of tuples
   (`ks.lo`; read `ks[i].lo`).
+
+## v0.2.30
+
+- **A support bound built with `stan_call` keeps its qualifier.** A custom
+  family's `autokwargs` may compute a bound from the family's arguments,
+  `(; lower=stan_call(-, x.args[1], 1.0), …)`. A number passed to
+  `stan_call` is now a data literal, as in a model body (an `Irrational` such
+  as `pi` becomes its `Float64` value; it used to fail to convert).
+  `stan_descriptor` used to refuse such a bound with "has qualifier
+  `undefined`", because a float literal carried no qualifier; it now reports
+  `nothing` for a bound that reads a parameter and evaluates one that reads
+  only data. The emitted Stan is unchanged.
 
 ## v0.2.29
 

@@ -1,4 +1,30 @@
-stan_call(f, args...) = stan_expr(CanonicalExpr(f, map(stan_expr, args)...))
+"""
+    stan_call(f, args...)
+
+The typed SLIC expression for the Stan call `f(args...)`, built outside a traced
+body: for example a bound that a custom family's `autokwargs` method computes
+from the family's arguments. Each argument is a `StanExpr` (such as `x.args[1]`
+of the call `autokwargs(x)` receives) or a Julia number. A number is a literal
+and converts exactly as one written in a traced body does: it is data, and an
+`Irrational` (`pi`) is its `Float64` value. The result's qualifier is the
+largest of its arguments' (`data < parameter < quantities`), so
+`stan_call(-, x.args[1], pi)` reads a parameter exactly when `x.args[1]` does.
+"""
+stan_call(f, args...) = stan_expr(CanonicalExpr(f, map(_call_arg, args)...))
+# A raw argument of a compiler- or extension-built call. A Julia number is a
+# literal, and `forward!` converts a literal in a traced body through
+# `_literal_expr` too. A bare `stan_expr(1.0)` carries no qualifier, and
+# `:undefined` is the largest symbol in `_stan_expr`'s `maximum(qual, args)`, so
+# one float literal made the whole call's qualifier unknown and
+# `stan_descriptor` refused the bound (snag `autokwargs-suppo-412811f6`).
+_call_arg(x::Number) = _literal_expr(x)
+_call_arg(x) = stan_expr(x)
+# Built-in mathematical constants (π, ℯ, γ, φ, catalan — all `Irrational`s)
+# resolve to their `Float64` value. Per user decision `3bbtrv` (comment: "only
+# pi and e or other built in constants"): the built-in constants resolve;
+# arbitrary module-level numbers do not (no `::Number` resolution method).
+_literal_expr(x::Irrational) = _literal_expr(Float64(x))
+_literal_expr(x::Number) = maybedata(x, x)
 """
 """
 function stan_expr end
@@ -651,12 +677,9 @@ forward!(x::LineNumberNode; info) = (_set_lnn!(_get_lnn_ref(info), x); x)
 _set_lnn!(r::Ref, x) = (r[] = x; nothing)
 _set_lnn!(_, _) = nothing
 forward!(x::QuoteNode; info) = x.value
-# Built-in mathematical constants (π, ℯ, γ, φ, catalan — all `Irrational`s)
-# resolve to their `Float64` value. Per user decision `3bbtrv` (comment: "only
-# pi and e or other built in constants"): the built-in constants resolve;
-# arbitrary module-level numbers do not (no `::Number` resolution method).
-forward!(x::Irrational; info) = forward!(Float64(x); info)
-forward!(x::Number; info) = maybedata(x, x)
+# A numeric literal is data; a built-in `Irrational` is its `Float64` value
+# (`_literal_expr`, shared with `stan_call`).
+forward!(x::Number; info) = _literal_expr(x)
 get_module(info::StanModel) = get(info.meta, :mod, Main)
 get_module(info::AbstractDict) = get(info, :__mod__, Main)
 get_module(info::NamedTuple) = get(info, :__mod__, Main)
