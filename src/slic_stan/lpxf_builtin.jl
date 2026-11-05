@@ -978,7 +978,7 @@ likelihood_expr(lhs, rhs::CanonicalExpr) = begin
 end
 likelihood_expr(rhs) = error("$rhs is missing `likelihood_expr`")
 # gq `~` synthesis: `rng_expr(token, rhs)` builds either `rng_fn(args...)` (for
-# scalar tokens — matches Stan's native rng signatures) or `rng_fn(token, args...)`
+# scalar tokens — prefers Stan's native rng signatures) or `rng_fn(token, args...)`
 # (for sized tokens — dispatched into per-shape `*_rng` @deffun overloads).
 # The token is a `tokenof{T}` StanExpr carrying the wanted output shape.
 rng_expr(token, rhs::StanExpr) = rng_expr(token, expr(rhs))
@@ -1021,12 +1021,28 @@ _predictive_rhs(rhs::CanonicalExpr{typeof(builtin.weighted)}) = begin
     rewritten === inner && return rhs
     CanonicalExpr(builtin.weighted, stan_expr(head(rewritten)), weight, rewritten.args...)
 end
-# Scalar token path: native Stan rng, no token forwarding.
+# Probe only signature availability; errors in a matching body still propagate.
+# ValueUDF specializes this hook to distinguish an absent overload from its
+# deliberately loud no-overload diagnostic.
+_rng_candidate(call::CanonicalExpr, context) = _stan_expr(call, context)
+_resolved_rng(draw) = draw !== nothing && center_type(draw) !== types.anything
+_scalar_rng_fallback(token, call::CanonicalExpr, plain, context) = begin
+    _resolved_rng(plain) && return plain
+    sized = _rng_candidate(CanonicalExpr(head(call), token, call.args...), context)
+    _resolved_rng(sized) && return sized
+    # Preserve the original diagnostic when neither signature matches.
+    plain === nothing ? _stan_expr(call, context) : plain
+end
+_scalar_rng_expr(token, call::CanonicalExpr, context=nothing) =
+    _scalar_rng_fallback(token, call, _rng_candidate(call, context), context)
+
+# Scalar token path: keep an existing tokenless RNG preferred, then try the
+# explicit scalar token. Container tokens keep their existing mandatory slot.
 rng_expr(token::StanExpr2{<:types.tokenof,0}, rhs::CanonicalExpr) = begin
     predictive = _predictive_rhs(rhs)
     predictive === rhs || return rng_expr(token, predictive)
     spec = _distribution_hof(head(rhs))
-    isnothing(spec) && return stan_call(rng_expr(head(rhs)), rhs.args...)
+    isnothing(spec) && return _scalar_rng_expr(token, CanonicalExpr(rng_expr(head(rhs)), rhs.args...))
     _distribution_hof_family(spec, rhs)
     stan_call(_hof_rng(spec, rhs), _hof_rng_args(spec, rhs)...)
 end
@@ -1151,6 +1167,19 @@ _family_selector_target(::typeof(builtin.predictive), family) = rng_expr(family)
 _family_selector_target(::typeof(builtin.logcdf), family) = logcdf_expr(family)
 _family_selector_target(::typeof(builtin.logccdf), family) = logccdf_expr(family)
 _family_selector_target(selector, family, rest) = _family_selector_target(selector, family)
+_family_selector_call(selector, family, rest; info) =
+    CanonicalExpr(_family_selector_target(selector, family, rest), rest...)
+_family_selector_call(::typeof(builtin.predictive), family, rest; info) = begin
+    call = CanonicalExpr(rng_expr(family), rest...)
+    # Explicit tokens are the caller's selection, including sized containers.
+    center_type(first(rest)) <: types.tokenof && return call
+    context = _trace_context(info)
+    plain = _rng_candidate(call, context)
+    _resolved_rng(plain) && return call
+    ct = _probability_kind(family) === :lpmf ? types.int : types.real
+    token = StanExpr(ct, StanType(types.tokenof{ct}; value=ct, qual=:data))
+    expr(_scalar_rng_fallback(token, call, plain, context))
+end
 # A nested combinator (`weighted`'s `density(lower_clamping, y, normal, lo, mu,
 # sigma)`) has no fixed companion: its `_lpdf`/`_lpmf` twin follows its own base
 # family, which trails the observation. Select it exactly as its `~` would.
@@ -1170,7 +1199,6 @@ expand_inline_or_trace(
 ) = begin
     family = _family_function(x.args[1])
     rest = x.args[2:end]
-    selected = _family_selector_target(head(x), family, rest)
-    isempty(rest) ? forward!(selected; info) :
-        forward!(CanonicalExpr(selected, rest...); info)
+    isempty(rest) ? forward!(_family_selector_target(head(x), family, rest); info) :
+        forward!(_family_selector_call(head(x), family, rest; info); info)
 end

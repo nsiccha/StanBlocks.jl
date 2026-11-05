@@ -89,7 +89,9 @@ function _family_support(f, args)
     # @lhs signature. Unlike autotype's permissive model fallback, an unknown
     # result must not become a scalar-real certificate here.
     if center_type(rt) === types.anything && !haskey(support, :type)
-        rt = type(_stan_expr(CanonicalExpr(rng_expr(f), actuals...), context))
+        scalar = kind === :discrete ? types.int : types.real
+        token = StanExpr(scalar, StanType(types.tokenof{scalar}; value=scalar, qual=:data))
+        rt = type(_scalar_rng_expr(token, CanonicalExpr(rng_expr(f), actuals...), context))
     end
     ct = _unwrap_type_kwarg(get(support, :type, center_type(rt)))
     if ct === types.anything
