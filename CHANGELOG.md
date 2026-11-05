@@ -4,6 +4,15 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.29
+
+- **Plate side outputs retain their collection shape inside submodels.**
+  After a `plate` finishes, its fresh bindings resolve to their whole
+  collections in the enclosing submodel. Returning a vector-valued side
+  output through `EachCol`, including through aliases and nested submodels,
+  preserves the matrix with one column per cell instead of retaining a
+  single cell's vector type.
+
 ## v0.2.28
 
 - **The descriptor evaluates size loops that fill several tables.** A
