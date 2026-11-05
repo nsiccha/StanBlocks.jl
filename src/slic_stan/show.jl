@@ -320,7 +320,10 @@ end
 # is invalid on a tuple: stanc rejects it). The `<:types.usertype` getindex
 # method below is strictly more specific, so a usertype's element access still
 # routes to its Stan helper rather than positional access.
-Base.show(io::IO, x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = print(io, x.args[1], ".", x.args[2])
+Base.show(io::IO, x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) =
+    # An array of tuples (a plate's collected tuple cells) takes the bracket.
+    stan_ndim(type(x.args[1])) > 0 ? autoprint(io, x.args[1], "[", x.args[2], "]") :
+        print(io, x.args[1], ".", x.args[2])
 # User-defined `Base.getindex(::usertype, ::int)` methods (e.g.
 # `RaggedVector` group access) route through a real Stan helper function
 # rather than Stan's native `r[i]` (which on a tuple-rendered usertype
