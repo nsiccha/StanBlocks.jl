@@ -4,6 +4,19 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.30
+
+- **Plate cells collect tuples.** A called sub-model that returns a named
+  or positional tuple can be bound inside a plate cell and read by field
+  (`cell ~ sub(…); y[i] ~ normal(cell.lo, 1)`), as at model scope. The cell
+  binding is collected as `array[outer...] tuple(…)` and the field read lowers
+  to `cell[i].1`; a do-form plate whose cell returns a tuple collects it the
+  same way. The binding used to be collected as a `vector` of reals, and the
+  field read failed with "Trying to access property `lo` of object of type
+  without named properties (real)". A tuple component whose size varies by
+  cell is refused, and so is a field read of a whole array of tuples
+  (`ks.lo`; read `ks[i].lo`).
+
 ## v0.2.29
 
 - **Plate side outputs retain their collection shape inside submodels.**

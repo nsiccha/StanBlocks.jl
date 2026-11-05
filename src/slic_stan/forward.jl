@@ -3377,6 +3377,12 @@ _plate_check_collected_agreement(cell, C, A, rv) = begin
 end
 
 _plate_cell_shape(T, name) = begin
+    # A tuple cell (a called submodel's `return (; lo = …, hi = …)`, a positional
+    # tuple, or a nested loop's `array[…] tuple(…)` collection) is collected as
+    # `array[outer…, A…] tuple(…)` and read back as a whole element, so
+    # `cell.lo` lowers to `cell[i].1`. A `@usertype` record is a tuple too, but
+    # its Stan storage is its own; it keeps its previous classification.
+    _plate_is_tuple_cell(T) && return :tuple
     stan_ndim(T) == 0 && return :scalar
     # A sampled 1-D int cell (a per-cell integer response) collects to a Stan
     # `array[outer…, K] int`, indexed by its plate axes as a whole element.
@@ -3412,8 +3418,30 @@ _plate_cell_shape(T, name) = begin
     end
     error(
         "plate: unsupported per-cell type `", sigtype(T), "` for `", name,
-        "` — scalar, vector[K], int[K], array[T] vector[K], or matrix[R, C] only (MVP)."
+        "` — scalar, vector[K], int[K], array[T] vector[K], matrix[R, C] or a tuple only (MVP)."
     )
+end
+_plate_is_tuple_cell(T) = T isa StanType && center_type(T) <: types.tup &&
+    !(center_type(T) <: types.usertype)
+# The component types a collected tuple cell declares: each component's center
+# type and size, recursively for a nested tuple. The cell's own trace-time facts
+# (its qualifier, value, declaration role) describe one cell, not the collection.
+_plate_tuple_components(ats) = map(_plate_tuple_component, ats)
+_plate_tuple_component(t::StanType) = center_type(t) <: types.tup ?
+    StanType(center_type(t), stan_size(t); arg_types=_plate_tuple_components(t.info.arg_types)) :
+    StanType(center_type(t), stan_size(t))
+# A Stan tuple component has one size for every array element, so a component
+# whose size depends on the cell (`vector[K[i]]`) cannot be collected.
+_plate_tuple_size_free(T, idxs) = all(_plate_tuple_components_list(T)) do t
+    !any(s -> _plate_depends_on(s, idxs), stan_size(t))
+end
+_plate_tuple_components_list(T) = begin
+    out = StanType[]
+    for t in values(T.info.arg_types)
+        push!(out, t)
+        center_type(t) <: types.tup && append!(out, _plate_tuple_components_list(t))
+    end
+    out
 end
 
 # A vector cell is ragged when its inferred length depends on the plate's own
@@ -3537,6 +3565,14 @@ _plate_type_expr(ct::Symbol, sizes) = Expr(:ref, ct, sizes...)
 _plate_outer_decl(f, T::StanType, outer) = begin
     isempty(outer) && error("plate: `outer` must contain at least one dimension.")
     shape = _plate_cell_shape(T, f)
+    if shape === :tuple
+        # `array[outer…, A…] tuple(…)`: the plate axes lead, then the cell's own
+        # array axes (a nested loop's tuple collection). The tuple type itself is
+        # the declared center; `forward!(::DeclExpr)` accepts it in place of a
+        # center-type name.
+        token = StanType(center_type(T); arg_types=_plate_tuple_components(T.info.arg_types))
+        return Expr(:(::), f, Expr(:ref, token, outer..., stan_size(T)...))
+    end
     if shape === :scalar
         # An integer cell (`k = 2p + 1`, or a step-invariant index a nested scan
         # lifts out of its recurrence) stays an integer, usable as an index:
@@ -3784,7 +3820,7 @@ _plate_cell_index(f, T::StanType, idxs) = begin
     # as a whole element (`cell[g]`); the plain-vector matrix packing takes a
     # column (`cell[:, g]`) instead. A fixed `array[N…] int[K]` cell and an
     # `array[N…] matrix[R, C]` cell likewise read back as a whole element.
-    shape in (:constrained_vector, :constrained_matrix, :array_vector, :int_array, :matrix) &&
+    shape in (:constrained_vector, :constrained_matrix, :array_vector, :int_array, :matrix, :tuple) &&
         return Expr(:ref, f, idxs...)
     indices = Any[idxs[2:end]...; Symbol(":"); idxs[1]]
     Expr(:ref, f, indices...)
@@ -4844,6 +4880,11 @@ _forward_loop_core!(;
                 "Declare the ragged constrained parameter at model scope and index it."
             )
         end
+        _plate_is_tuple_cell(T) && !_plate_tuple_size_free(T, index_aliases) && error(
+            "plate: tuple cell `", get(spellings, f, f), "::", sigtype(T), "` has a component ",
+            "whose size varies by cell, which a Stan `array[…] tuple(…)` cannot declare. ",
+            "Return the varying-size value as its own cell binding instead of a tuple field."
+        )
         _plate_is_ragged_cell(T, index_aliases) || continue
         ragged_plans[f] = _plate_ragged_plan(f, T, outer_dims, idxs, plan_taken; info)
         # Sampling a varying-size matrix cell would target its `to_matrix`
@@ -6162,6 +6203,10 @@ forward!(x::GetPropertyExpr; info) = begin
     _is_broadcast_call(x) && return _forward_broadcast_call!(x; info)
     obj, name = forward!(x.args; info)
     @assert _is_ntup_stan_expr(obj) "Trying to access property `$name` of object of type without named properties ($(type(obj)))!"
+    stan_ndim(type(obj)) == 0 || error(
+        "Field `", name, "` of `", short_expr(x.args[1]), "`: it is an array of tuples (`",
+        sigtype(type(obj)), "`), one per cell; index one element first, e.g. `",
+        short_expr(x.args[1]), "[i].", name, "`.")
     names = keys(obj.type.info.arg_types)
     @assert name in names
     # Field access lowers to `Base.getfield(obj, position)` so it stays
@@ -6180,8 +6225,13 @@ forward!(x::DeclExpr; info) = begin
     else
         (type_ann, )
     end
+    # A plate's tuple-cell collection (`_plate_outer_decl`) names its center as
+    # the tuple type itself: there is no surface spelling for `array[N] tuple(…)`.
+    typed_center = ct isa StanType{<:types.tup}
     t = if ct isa Symbol
         StanType(gettype(ct), forward!.(s; info))
+    elseif typed_center
+        StanType(center_type(ct), forward!.(s; info); arg_types=ct.info.arg_types)
     else
         # Computed type annotation (`typeof(...)` / `return_type_of(...)`, optionally
         # `[dims]`-sized). Forward the base to a `tokenof{CT}` token, take its
@@ -6199,7 +6249,7 @@ forward!(x::DeclExpr; info) = begin
     # lets one compiler-injected decl serve both inline fills and plate params.
     # A COMPUTED-type decl (`::typeof(...)`/`return_type`, merged from devibe)
     # keeps its natural qual from `_decl_computed_type` — no fresh-decl override.
-    ct isa Symbol && _is_model_decl_scope(info) &&
+    (ct isa Symbol || typed_center) && _is_model_decl_scope(info) &&
         (t = remake(t; fresh_decl=true, decl_role=:unfilled, qual=:parameter))
     rv = StanExpr(lhs, t)
     lhs isa Symbol || return StanExpr(expr(forward!(lhs; info)), t)

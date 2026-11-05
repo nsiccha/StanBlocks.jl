@@ -390,7 +390,12 @@ tracetype(x::CanonicalExpr{<:typeof(Base.getfield),<:Tuple{<:StanExpr2{<:types.t
 # (which yields `anything` and blocks any downstream use beyond `sum`). The
 # user-defined `Base.getindex(::usertype, ::int)` methods register their own
 # strictly-more-specific tracetype, so a usertype's element access is unaffected.
-tracetype(x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = x.args[1].type.info.arg_types[x.args[2].type.info.value]
+tracetype(x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) =
+    # An ARRAY of tuples (a plate's collected tuple cells) is indexed like any
+    # array: `cells[i]` is the tuple element, not its `i`-th field.
+    stan_ndim(type(x.args[1])) > 0 ?
+        invoke(tracetype, Tuple{CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr,Vararg{Any}}}}, x) :
+        x.args[1].type.info.arg_types[x.args[2].type.info.value]
 # `T[d1, …, dS]`: getindex on a 0-dim type token upgrades it to a sized token.
 # Retained `value = T` carries the center Stan type across resizings.
 tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tokenof{T},0},Vararg{Any}}}) where {T} = StanType(
