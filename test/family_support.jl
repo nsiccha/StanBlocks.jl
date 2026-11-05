@@ -76,6 +76,60 @@ using TestItemRunner
         fetch.([Threads.@spawn family_support(shifted, :(lo::real)) for _ in 1:4]))
 end
 
+"""
+Snag `autokwargs-suppo-412811f6` (from a downstream regression package): a
+custom family whose support moves with its argument registered
+`(; lower=stan_call(-, x.args[1], 1.0), upper=…)`. `stan_call` converted the
+float literal with no qualifier; `:undefined` outranks every other qualifier in
+the call's maximum, so `stan_descriptor` refused the bound, for a parameter and
+a data argument alike, and `pi` did not convert at all. `stan_call` now converts
+a number as a traced body does: a literal is data, an `Irrational` its `Float64`.
+"""
+@testitem "slic: a stan_call support bound is qualified like a written one" tags=[:slic, :descriptor, :regression] begin
+    using StanBlocks
+    const SB = StanBlocks
+    p = SB.stan_expr(:p, 0.5; qual=:parameter)
+    a = SB.stan_expr(:a, 0.5; qual=:data)
+    @test SB.qual(SB.stan_call(-, p, 1.0)) === :parameter
+    @test SB.qual(SB.stan_call(-, a, 1.0)) === :data
+    @test SB.qual(SB.stan_call(+, a, pi)) === :data
+    @test SB.qual(SB.stan_call(-, 2.0, 1)) === :data
+
+    @deffun begin
+        @lpxf window_lpdf(y::real, mu::real)::real = uniform_lpdf(y, mu - pi, mu + pi)
+        window_rng(mu::real)::real = uniform_rng(mu - pi, mu + pi)
+    end
+    SB.autokwargs(x::SB.CanonicalExpr{typeof(window),<:Tuple{<:SB.StanExpr2{SB.types.real,0}}}) =
+        (; lower=SB.stan_call(-, x.args[1], pi), upper=SB.stan_call(+, x.args[1], pi))
+    theta_bounds(m) = only(o.constraint_values for o in stan_descriptor(m).outputs if o.name === :theta)
+
+    # The bound reads a parameter: no data value, exactly as for a written
+    # `lower=mu - pi` bound.
+    hooked = @slic begin
+        mu ~ normal(0., 1.)
+        theta ~ window(mu)
+        y ~ normal(theta, 1.)
+    end
+    written = @slic begin
+        mu ~ normal(0., 1.)
+        theta ~ normal(mu, 1.; lower=mu - pi, upper=mu + pi)
+        y ~ normal(theta, 1.)
+    end
+    @test theta_bounds(written(; y=0.5)) === (lower=nothing, upper=nothing)
+    @test theta_bounds(hooked(; y=0.5)) === (lower=nothing, upper=nothing)
+    @test occursin("real<lower=(mu - 3.141592653589793), upper=(mu + 3.141592653589793)> theta;",
+        stan_code(hooked(; y=0.5)))
+    # The prior-only program still draws `theta` with the family's own RNG.
+    @test occursin("theta = window_rng(mu)", stan_code(hooked))
+
+    # A data argument: the bound evaluates.
+    data_arg = @slic begin
+        theta ~ window(c)
+        y ~ normal(theta, 1.)
+    end
+    @test theta_bounds(data_arg(; c=0.25, y=0.5)) === (lower=0.25 - Float64(pi), upper=0.25 + Float64(pi))
+end
+
 @testitem "slic: same-name ordinary families retain module identity" tags=[:slic, :regression, :stanc] begin
     using StanBlocks
     const SB = StanBlocks

@@ -108,7 +108,7 @@ stan_expr(x::CanonicalExpr) = _stan_expr(x, TraceContext())
 # `_arg1_…` placeholder could then be deanonymized against the wrong expression.
 _trace_stan_expr(x::CanonicalExpr, info) = _stan_expr(x, _trace_context(info))
 _trace_stan_arg(x::CanonicalExpr, info) = _trace_stan_expr(x, info)
-_trace_stan_arg(x, _info) = stan_expr(x)
+_trace_stan_arg(x, _info) = _call_arg(x)
 _trace_stan_call(f, args...; info) = _trace_stan_expr(
     CanonicalExpr(f, map(a -> _trace_stan_arg(a, info), args)...), info
 )
