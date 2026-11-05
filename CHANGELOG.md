@@ -4,6 +4,14 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.26
+
+- **Matrix views pass through ordinary helpers.** `EachCol` and `EachRow`
+  retain their indexing and length semantics when passed to or returned from
+  non-inline `@deffun` functions. One-field usertypes use their field's Stan
+  representation in signatures, declarations and field access, preserving
+  nominal helper dispatch without an invalid singleton tuple.
+
 ## v0.2.25
 
 - **Plate renaming preserves keyword names.** Submodel calls such as

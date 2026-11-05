@@ -145,7 +145,8 @@ end
 # Stan-side render of a usertype constructor call: emit a positional Stan
 # tuple literal, mirroring how `(;a, b)` named-tuple literals render. The
 # usertype's nominal tag is *Julia-side only* — Stan sees a plain
-# `tuple(T1, T2, ...)` value.
+# `tuple(T1, T2, ...)` value. With one field these parentheses already emit
+# the field itself, matching the transparent singleton usertype storage type.
 Base.show(io::IO, x::CanonicalExpr{<:StanExpr2{<:types.tokenof{<:types.usertype}}}) =
     autoprint(io, "(", Join(x.args, ", "), ")")
 
@@ -161,8 +162,9 @@ Declare a custom Stan-renderable record type. Lowers to a real Julia
 annotations are SLIC types and are kept only for documentation —
 fields are stored as `Any` so plain Julia construction works for
 data plumbing. Method dispatch on the type tag (`Base.length(r::RaggedVector)`)
-works via standard Julia. Stan-side, values render as positional
-tuples; field access (`r.mem`) reuses the existing `ntup` machinery.
+works via standard Julia. Stan-side, records with multiple fields render as
+positional tuples; a one-field record uses its field's representation.
+Field access (`r.mem`) reuses the existing `ntup` tracing machinery.
 """
 macro usertype(struct_def)
     Meta.isexpr(struct_def, :struct) || error(
