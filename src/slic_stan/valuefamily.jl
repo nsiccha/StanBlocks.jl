@@ -745,7 +745,7 @@ _family_function(v::ValueFamily) = _value_position_error(v, "cannot serve as a f
 _family_function(v::ValueUDF) = _value_position_error(v, "cannot serve as an HOF family (a ValueUDF is not a family)")
 
 # One companion call's result type: match, bind sizes, resolve the return.
-_tracetype(x::CanonicalExpr{<:ValueUDF}, context) = begin
+_tracetype_by_head(::ValueUDF, x::CanonicalExpr{<:ValueUDF}, context) = begin
     udf = head(x)
     o = _value_match_overload(udf, x.args, false)
     bindings = _value_bind_sizes!(OrderedDict{Symbol,Any}(), o, x.args, false)
@@ -755,7 +755,7 @@ _tracetype(x::CanonicalExpr{<:ValueUDF}, context) = begin
     scope = _value_lift_scope(udf, o, x.args, context)
     forward_return!(canonical(o.body), string(o.label); info=scope).type
 end
-tracetype(x::CanonicalExpr{<:ValueUDF}) = _tracetype(x, nothing)
+tracetype_by_head(::ValueUDF, x::CanonicalExpr{<:ValueUDF}) = _tracetype(x, nothing)
 
 # Scalar predictive selection may try a token only when no plain overload
 # exists. Ambiguity, size binding and body errors still go through the ordinary
@@ -767,7 +767,7 @@ _rng_candidate(call::CanonicalExpr{<:ValueUDF}, context) =
 # The `@lhs` rule, at runtime: the sampling call carries the density's args
 # minus the observation, and its type is the observation's type with sizes
 # bound from the call.
-_tracetype(x::CanonicalExpr{<:ValueFamily}, context) = begin
+_tracetype_by_head(::ValueFamily, x::CanonicalExpr{<:ValueFamily}, context) = begin
     family = head(x)
     o = _value_match_overload(family.density, x.args, true)
     bindings = OrderedDict{Symbol,Any}()
@@ -789,7 +789,7 @@ _tracetype(x::CanonicalExpr{<:ValueFamily}, context) = begin
     obs_ast = obs_ast == :(anything[]) ? :(real[]) : obs_ast
     _value_declared_type(o, obs_ast, bindings, context)
 end
-tracetype(x::CanonicalExpr{<:ValueFamily}) = _tracetype(x, nothing)
+tracetype_by_head(::ValueFamily, x::CanonicalExpr{<:ValueFamily}) = _tracetype(x, nothing)
 
 # --- Lifting (mirrors the `@deffun` non-`@inline` `fundef`) ------------------
 
@@ -842,7 +842,7 @@ _value_lift(udf::ValueUDF, o::ValueUDFOverload, x::CanonicalExpr, context) = beg
     )
 end
 
-_fundef(x::CanonicalExpr{<:ValueUDF}, context) = begin
+_fundef_by_head(::ValueUDF, x::CanonicalExpr{<:ValueUDF}, context) = begin
     udf = head(x)
     o = _value_match_overload(udf, x.args, false)
     _with_slic_diagnostic(
@@ -851,7 +851,7 @@ _fundef(x::CanonicalExpr{<:ValueUDF}, context) = begin
         _value_lift(udf, o, x, context)
     end
 end
-fundef(x::CanonicalExpr{<:ValueUDF}) = _fundef(x, nothing)
+fundef_by_head(::ValueUDF, x::CanonicalExpr{<:ValueUDF}) = _fundef(x, nothing)
 
 # Fetch with a same-key divergence check: two value UDFs that share a
 # (label, arg-shape) key in ONE trace must carry the same body — `@deffun`

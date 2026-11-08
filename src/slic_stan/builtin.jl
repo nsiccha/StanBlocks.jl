@@ -400,9 +400,11 @@ else
     core = _sequence_core(center_type(t))
     isnothing(core) ? StanType(types.anything) : StanType(core, sizes)
 end
-tracetype(x::CanonicalExpr{<:Union{typeof(builtin.head),typeof(builtin.tail)},<:Tuple{<:StanExpr,<:StanExpr2{<:types.int,0}}}) =
-    _sequence_type(type(x.args[1]), (x.args[2], stan_size(type(x.args[1]))[2:end]...))
-tracetype(x::CanonicalExpr{typeof(builtin.reverse),<:Tuple{<:StanExpr}}) =
+for H in _head_types(Union{typeof(builtin.head),typeof(builtin.tail)})
+    @eval tracetype_by_head(::$H, x::CanonicalExpr{<:Union{typeof(builtin.head),typeof(builtin.tail)},<:Tuple{<:StanExpr,<:StanExpr2{<:types.int,0}}}) =
+        _sequence_type(type(x.args[1]), (x.args[2], stan_size(type(x.args[1]))[2:end]...))
+end
+tracetype_by_head(::typeof(builtin.reverse), x::CanonicalExpr{typeof(builtin.reverse),<:Tuple{<:StanExpr}}) =
     _sequence_type(type(x.args[1]), stan_size(type(x.args[1])))
 
 for name in (:real, :int, :vector, :row_vector, :matrix, :ordered, :simplex, :positive_ordered, :cov_matrix, :corr_matrix, :cholesky_factor_cov, :cholesky_factor_corr)
@@ -4951,7 +4953,7 @@ const NoTolODESolver = Union{typeof.((ode_rk45, ode_ckrk, ode_adams, ode_bdf))..
 const ODESolver = Union{TolODESolver, NoTolODESolver}
 const ReduceSumFunction = Union{typeof.((reduce_sum, reduce_sum_static))...}
 
-tracetype(x::CanonicalExpr{<:ODESolver}) = StanType(
+tracetype_by_head(::ODESolver, x::CanonicalExpr{<:ODESolver}) = StanType(
     types.vector, (stan_size(x.args[4], 1), stan_size(x.args[2], 1))
 )
 
@@ -4971,16 +4973,16 @@ tracetype(x::CanonicalExpr{<:ODESolver}) = StanType(
 _pmx_solve_tracetype(x, ncmt) = StanType(
     types.matrix, (stan_expr(ncmt, ncmt), stan_size(x.args[1], 1))
 )
-tracetype(x::CanonicalExpr{typeof(pmx_solve_onecpt)}) = _pmx_solve_tracetype(x, 2)
-tracetype(x::CanonicalExpr{typeof(pmx_solve_twocpt)}) = _pmx_solve_tracetype(x, 3)
+tracetype_by_head(::typeof(pmx_solve_onecpt), x::CanonicalExpr{typeof(pmx_solve_onecpt)}) = _pmx_solve_tracetype(x, 2)
+tracetype_by_head(::typeof(pmx_solve_twocpt), x::CanonicalExpr{typeof(pmx_solve_twocpt)}) = _pmx_solve_tracetype(x, 3)
 # The effect-compartment variants append one effect compartment to the same
 # closed-form models and take the same argument layout.
-tracetype(x::CanonicalExpr{typeof(pmx_solve_onecpt_effcpt)}) = _pmx_solve_tracetype(x, 3)
-tracetype(x::CanonicalExpr{typeof(pmx_solve_twocpt_effcpt)}) = _pmx_solve_tracetype(x, 4)
+tracetype_by_head(::typeof(pmx_solve_onecpt_effcpt), x::CanonicalExpr{typeof(pmx_solve_onecpt_effcpt)}) = _pmx_solve_tracetype(x, 3)
+tracetype_by_head(::typeof(pmx_solve_twocpt_effcpt), x::CanonicalExpr{typeof(pmx_solve_twocpt_effcpt)}) = _pmx_solve_tracetype(x, 4)
 # `pmx_solve_linode(time, …, ss, K, biovar, tlag)` solves `y' = K y` by matrix
 # exponential. nCmt is the row count of `K`: a `matrix`, or an `array[] matrix`
 # (one system matrix per event), whose rows are its second-to-last dimension.
-tracetype(x::CanonicalExpr{typeof(pmx_solve_linode)}) = StanType(
+tracetype_by_head(::typeof(pmx_solve_linode), x::CanonicalExpr{typeof(pmx_solve_linode)}) = StanType(
     types.matrix, (stan_size(x.args[9], stan_ndim(x.args[9]) - 1), stan_size(x.args[1], 1))
 )
 
@@ -5036,11 +5038,11 @@ _pmx_check_arguments(x::CanonicalExpr, has_theta = true) = begin
         "got `$(sigtype(n))`."
     )
 end
-tracetype(x::CanonicalExpr{<:PMXODESolver}) = begin
+tracetype_by_head(::PMXODESolver, x::CanonicalExpr{<:PMXODESolver}) = begin
     _pmx_check_functor_call(x)
     StanType(types.matrix, (x.args[2], stan_size(x.args[3], 1)))
 end
-tracetype(x::CanonicalExpr{<:PMXCoupledSolver}) = begin
+tracetype_by_head(::PMXCoupledSolver, x::CanonicalExpr{<:PMXCoupledSolver}) = begin
     _pmx_check_functor_call(x)
     n_cmt = stan_expr(CanonicalExpr(+, stan_expr(_pmx_n_pk(x)), x.args[2]))
     StanType(types.matrix, (n_cmt, stan_size(x.args[3], 1)))
@@ -5370,13 +5372,13 @@ _jb_infer(x::CanonicalExpr, context=nothing) = begin
     container = center_type(elem_rt) <: types.int ? center_type(elem_rt) : types.vector
     (; f, dargs, ai, n, container)
 end
-tracetype(x::CanonicalExpr{typeof(jbroadcasted)}) = _tracetype(x, nothing)
-_tracetype(x::CanonicalExpr{typeof(jbroadcasted)}, context) = begin
+tracetype_by_head(::typeof(jbroadcasted), x::CanonicalExpr{typeof(jbroadcasted)}) = _tracetype(x, nothing)
+_tracetype_by_head(::typeof(jbroadcasted), x::CanonicalExpr{typeof(jbroadcasted)}, context) = begin
     inf = _jb_infer(x, context)
     StanType(inf.container, (inf.n,))
 end
-fundef(x::CanonicalExpr{typeof(jbroadcasted)}) = _fundef(x, nothing)
-_fundef(x::CanonicalExpr{typeof(jbroadcasted)}, context) = begin
+fundef_by_head(::typeof(jbroadcasted), x::CanonicalExpr{typeof(jbroadcasted)}) = _fundef(x, nothing)
+_fundef_by_head(::typeof(jbroadcasted), x::CanonicalExpr{typeof(jbroadcasted)}, context) = begin
     inf = _jb_infer(x, context)
     k = length(inf.dargs)
     argnames = [Symbol("x", i) for i in 1:k]
@@ -5449,7 +5451,7 @@ reduce_sum_args!(x::StanExpr; d) = begin
     d[end][2]
 end
 reduce_sum_args!(x::Tuple; d) = reduce_sum_args!.(x; d)
-fundef(x::CanonicalExpr{typeof(reduce_sum_reconstruct)}) = if any(_is_tup_arg, x.args) 
+fundef_by_head(::typeof(reduce_sum_reconstruct), x::CanonicalExpr{typeof(reduce_sum_reconstruct)}) = if any(_is_tup_arg, x.args) 
     deconstructed_args = []
     reconstructed_args = reduce_sum_args!(x.args; d=deconstructed_args)
     StanFunction3(
@@ -5467,7 +5469,7 @@ reduce_sum_args2!(x::StanExpr2{<:types.tup}; d) = for (i, arg_type) in enumerate
     reduce_sum_args2!(StanExpr(Symbol(expr(x), ".", i), arg_type); d)
 end
 reduce_sum_args2!(x::StanExpr; d) = push!(d, x)
-fundef(x::CanonicalExpr{typeof(reduce_sum_deconstruct)}) = begin 
+fundef_by_head(::typeof(reduce_sum_deconstruct), x::CanonicalExpr{typeof(reduce_sum_deconstruct)}) = begin 
     deconstructed_args = []
     original_args = [
         Symbol("arg", i)=>anon_expr(Symbol("arg", i), x.args[i]) for i in eachindex(x.args)

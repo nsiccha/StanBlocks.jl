@@ -4,6 +4,20 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.32
+
+- **Loading a package with many `@deffun` functions is no longer quadratic.**
+  Each `@deffun`/`@defsig` definition registers its tracing rules on tables
+  keyed by the function first, so loading a package image that defines N
+  functions now costs time linear in N. The rules used to share one method
+  table entry list, and every rule a package image added was type-intersected
+  with all the rules already there: a downstream module with 250 `@deffun`
+  functions spent 15 of its 19 s `using` time on that. Emitted Stan is
+  unchanged. Internal: rules for a call node are written on
+  `tracetype_by_head` / `_tracetype_by_head` / `fundef_by_head` /
+  `_fundef_by_head` / `inline_body_by_head`, whose first argument is the
+  call's head; the public functions keep one bridge each.
+
 ## v0.2.31
 
 - **Plate cells collect tuples.** A called sub-model that returns a named

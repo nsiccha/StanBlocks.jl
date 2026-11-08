@@ -157,7 +157,57 @@ _reject_untyped_args(::Union{ForExpr,WhileExpr,IfExpr,ElseIfExpr,BlockExpr}) = n
 # positional signature would drop them and emit `mean(x)`. Methods sit beside the
 # `_slic_callable` table (builtin.jl).
 _reject_call_kwargs(@nospecialize(x::CanonicalExpr)) = nothing
-tracetype(x::CanonicalExpr) = StanType(types.anything)
+
+# --- Head-first dispatch tables ------------------------------------------------
+#
+# `tracetype`, `_tracetype`, `fundef`, `_fundef` and `inline_body` answer per call
+# node, keyed on the node's head and argument types. Every one of their rules for
+# a `CanonicalExpr` is written on a `*_by_head` twin whose FIRST argument is the
+# head itself, with the node's signature otherwise unchanged:
+#
+#     tracetype_by_head(::typeof(getindex), x::CanonicalExpr{typeof(getindex),<:Tuple{…}}) = …
+#
+# and each public function keeps one bridge that passes the stored head along,
+# `tracetype(x::CanonicalExpr) = tracetype_by_head(x.head, x)`. The head argument
+# is redundant for matching (`x.head isa H` exactly when `x isa CanonicalExpr{H}`)
+# and, because rules that can answer the same call carry the same head type
+# (below), for precedence: the most specific matching rule is the one it was
+# without the head argument.
+#
+# It exists for the method TABLE. Julia files a method by its first argument's
+# type name, and every `CanonicalExpr` shares one. Each `@deffun`/`@defsig`
+# definition adds several methods, so with the node first they all sat in one
+# unsplit list, and adding a method type-intersected it with every method
+# already there: quadratic in the number of definitions. A package with 250
+# `@deffun` functions spent 15 of its 19 s `using` time there (snag
+# `deffun-methods-m-806280c3`). With the head first, `typeof(f)` is a type name of
+# its own, so a new method meets only the overloads of its own function and the
+# few rules whose head is an abstract type (a callable struct, a closure value)
+# or the fallbacks. Write a new rule for a call node on the `*_by_head` twin; a method
+# on the public function for a `CanonicalExpr` would bypass the table.
+#
+# A rule whose head bound is a `Union` (`@defsig Union{typeof.(fs)...} => …`) is
+# registered once per member, each time with its node signature unchanged
+# (`_head_types`). Rules that can answer the same call then always share one
+# leaf first argument, so they rank by their node signatures exactly as without
+# it. A `Union` first argument would rank by head and by arguments separately:
+# `beta_rng(args...)` (exact head, any arguments) and the `(vector[n], vector[n])`
+# row of a `Union` of RNGs would each win one position, an ambiguity, where the
+# row wins on the node alone.
+#
+# `_backing_provenance(h, ::Val{kind}, x)` takes its head first for the same
+# reason. `getfield(x, :head)` is the stored head object: `head(x)` unwraps a
+# `Val{:sym}` head to the symbol.
+function tracetype_by_head end
+function _tracetype_by_head end
+function fundef_by_head end
+function _fundef_by_head end
+# The head types a rule's head bound stands for, one table entry each.
+_head_types(@nospecialize(H)) = H isa Union ? Base.uniontypes(H) : Any[H]
+tracetype(x::CanonicalExpr) = tracetype_by_head(getfield(x, :head), x)
+tracetype_by_head(_, x::CanonicalExpr) = StanType(types.anything)
+_tracetype(x::CanonicalExpr, context) = _tracetype_by_head(getfield(x, :head), x, context)
+_tracetype_by_head(_, x::CanonicalExpr, context) = tracetype(x)
 
 """
     return_type_of(f, args...) -> StanType
@@ -230,15 +280,15 @@ return_type_of(f, args...) = throw(ArgumentError(
     "as its first argument, got $(typeof(f))."
 ))
 
-tracetype(x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}) =
+tracetype_by_head(::typeof(return_type_of), x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}) =
     _tracetype(x, nothing)
-_tracetype(x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}, context) = begin
+_tracetype_by_head(::typeof(return_type_of), x::CanonicalExpr{typeof(return_type_of),<:Tuple{<:StanExpr2{<:types.func},Vararg{Any}}}, context) = begin
     farg = x.args[1]
     rt = _checked_return_type(getvalue(farg), x.args[2:end], context)
     ct = center_type(rt)
     StanType(types.tokenof{ct}, stan_size(rt); value=ct, qual=:data)
 end
-tracetype(x::CanonicalExpr{typeof(return_type_of)}) = error(
+tracetype_by_head(::typeof(return_type_of), x::CanonicalExpr{typeof(return_type_of)}) = error(
     "return_type_of expects a non-inline @deffun or @defsig-registered function " *
     "as its first argument; closures, inline functions, and sub-models require a " *
     "full call-site trace and are not supported by this query."
@@ -293,8 +343,11 @@ _reject_ragged_vector_arithmetic(x::CanonicalExpr) = begin
         "one group with `rv[g]` or process per group via the descriptor's `segments`."
     )
 end
-tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = _tracetype(x, nothing)
-_tracetype(x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}, context) = if length(x.args) > 2
+for H in _head_types(Union{typeof.((+, -, ^, *, /))...})
+    @eval tracetype_by_head(::$H, x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}) = _tracetype(x, nothing)
+    @eval _tracetype_by_head(::$H, x::CanonicalExpr{<:Union{typeof.((+, -, ^, *, /))...}}, context) = _tracetype_arithmetic(x, context)
+end
+_tracetype_arithmetic(x, context) = if length(x.args) > 2
     context = _context_or_new(context)
     f = head(x)
     nested = _stan_expr(CanonicalExpr(f, x.args[2:end]...), context)
@@ -311,12 +364,12 @@ end
 # RaggedVector operands with an actionable message, and leave any other untabulated
 # combination (`vector .* row_vector`, `matrix .* vector`, `.÷`) to the generic
 # `anything` floor, which errors as soon as the result is used.
-tracetype(x::CanonicalExpr{<:Base.BroadcastFunction}) = begin
+tracetype_by_head(::Base.BroadcastFunction, x::CanonicalExpr{<:Base.BroadcastFunction}) = begin
     _reject_scalar_array_elementwise(x)
     _reject_ragged_vector_arithmetic(x)
-    invoke(tracetype, Tuple{CanonicalExpr}, x)
+    invoke(tracetype_by_head, Tuple{Any,CanonicalExpr}, getfield(x, :head), x)
 end
-tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype(
+tracetype_by_head(::typeof(getindex), x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1))
 )
 # Selecting scalar indices from the leading array-prefix of an
@@ -332,7 +385,7 @@ tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon}}) = tracetype
 # `array[...] int` — that call is the size-keeping `remake(t)`, and the element
 # came back typed as the whole array.
 _peeled_type(t, sizes) = StanType(center_type(t), Tuple(sizes), info(t); value=missing)
-tracetype(x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr,Vararg{Any}}}) = begin
+tracetype_by_head(::typeof(getindex), x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr,Vararg{Any}}}) = begin
     value = x.args[1]
     nl = l_ndim(type(value))
     indices = x.args[2:end]
@@ -346,36 +399,36 @@ tracetype(x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr,Vararg{Any}}}) 
         core = StanExpr(missing, core_type)
         return tracetype(CanonicalExpr(getindex, core, rest...))
     end
-    invoke(tracetype, Tuple{CanonicalExpr}, x)
+    invoke(tracetype_by_head, Tuple{Any,CanonicalExpr}, getfield(x, :head), x)
 end
-tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any}}) = tracetype(
+tracetype_by_head(::typeof(getindex), x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1), x.args[3])
 )
-tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Colon}}) = tracetype(
+tracetype_by_head(::typeof(getindex), x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Colon}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], x.args[2], _colon_range_expr(x.args[1], 2))
 )
 # A colon on axis `j` is the full range of that axis (`index_shape`, so a
 # constrained square matrix's second axis is its one declared size).
 _colon_range_expr(x, j) = StanExpr(missing, StanType(types.int, (index_shape(x)[j],)))
-tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Colon}}) = tracetype(
+tracetype_by_head(::typeof(getindex), x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Colon}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1), x.args[3])
 )
-tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Colon,<:Colon}}) = tracetype(
+tracetype_by_head(::typeof(getindex), x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Colon,<:Colon}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], x.args[2], _colon_range_expr(x.args[1], 2), x.args[4])
 )
-tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any,<:Colon}}) = tracetype(
+tracetype_by_head(::typeof(getindex), x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any,<:Colon}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1), x.args[3], x.args[4])
 )
-tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Colon,<:Any}}) = tracetype(
+tracetype_by_head(::typeof(getindex), x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Colon,<:Any}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1), x.args[3], x.args[4])
 )
-tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Any,<:Colon}}) = tracetype(
+tracetype_by_head(::typeof(getindex), x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Any,<:Colon}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], x.args[2], x.args[3], _colon_range_expr(x.args[1], 3))
 )
-tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Colon,<:Any}}) = tracetype(
+tracetype_by_head(::typeof(getindex), x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Any,<:Colon,<:Any}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], x.args[2], _colon_range_expr(x.args[1], 2), x.args[4])
 )
-tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any,<:Any}}) = tracetype(
+tracetype_by_head(::typeof(getindex), x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any,<:Any}}) = tracetype(
     CanonicalExpr(head(x), x.args[1], _colon_range_expr(x.args[1], 1), x.args[3], x.args[4])
 )
 # Field access via `Base.getfield(obj, position)` — `forward!(::GetPropertyExpr)`
@@ -383,47 +436,52 @@ tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:Any,<:Colon,<:Any,<:Any}})
 # its own dispatch lane (rather than reusing `getindex`) so user-defined
 # `Base.getindex(::usertype, ::int)` methods don't accidentally catch
 # field accesses on usertypes.
-tracetype(x::CanonicalExpr{<:typeof(Base.getfield),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = x.args[1].type.info.arg_types[x.args[2].type.info.value]
+tracetype_by_head(::typeof(Base.getfield), x::CanonicalExpr{<:typeof(Base.getfield),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) = x.args[1].type.info.arg_types[x.args[2].type.info.value]
 # Julia tuple indexing `p[i]` on a plain positional tuple resolves to the same
 # element type as `getfield(p, i)` — Julia permits both — so it reads the type
 # from the tuple's `arg_types` rather than falling to the generic getindex rule
 # (which yields `anything` and blocks any downstream use beyond `sum`). The
 # user-defined `Base.getindex(::usertype, ::int)` methods register their own
 # strictly-more-specific tracetype, so a usertype's element access is unaffected.
-tracetype(x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) =
+tracetype_by_head(::typeof(getindex), x::CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr2{<:types.tup}, <:StanExpr2{<:types.int}}}) =
     # An ARRAY of tuples (a plate's collected tuple cells) is indexed like any
     # array: `cells[i]` is the tuple element, not its `i`-th field.
     stan_ndim(type(x.args[1])) > 0 ?
-        invoke(tracetype, Tuple{CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr,Vararg{Any}}}}, x) :
+        invoke(
+            tracetype_by_head,
+            Tuple{typeof(getindex),CanonicalExpr{<:typeof(getindex),<:Tuple{<:StanExpr,Vararg{Any}}}},
+            getfield(x, :head), x,
+        ) :
         x.args[1].type.info.arg_types[x.args[2].type.info.value]
 # `T[d1, …, dS]`: getindex on a 0-dim type token upgrades it to a sized token.
 # Retained `value = T` carries the center Stan type across resizings.
-tracetype(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tokenof{T},0},Vararg{Any}}}) where {T} = StanType(
+tracetype_by_head(::typeof(getindex), x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:types.tokenof{T},0},Vararg{Any}}}) where {T} = StanType(
     types.tokenof{T}, x.args[2:end]; value=T
 )
 # `typeof(x)` wraps x's inferred Stan type into a token of the same shape.
-tracetype(x::CanonicalExpr{typeof(Base.typeof),<:Tuple{<:StanExpr}}) = begin
+tracetype_by_head(::typeof(Base.typeof), x::CanonicalExpr{typeof(Base.typeof),<:Tuple{<:StanExpr}}) = begin
     xt = type(x.args[1])
     StanType(types.tokenof{center_type(xt)}, stan_size(xt); value=center_type(xt))
 end
 
-tracetype(x::CanonicalExpr{Colon}) = StanType(types.int, (stan_call(+,stan_expr(1,1),stan_call(-,x.args[2],x.args[1])), ))
-tracetype(x::BracesExpr) = StanType(types.real, (stan_expr(length(x.args),length(x.args)),))
-tracetype(x::VectExpr) = StanType(types.vector, (stan_expr(length(x.args),length(x.args)),))
-tracetype(x::TupleExpr) = StanType(types.tup; arg_types=map(type, x.args))
-tracetype(x::KwExpr) = type(x.args[2])
-tracetype(x::NamedTupleExpr) = StanType(types.ntup; arg_types=(;[
+tracetype_by_head(::Colon, x::CanonicalExpr{Colon}) = StanType(types.int, (stan_call(+,stan_expr(1,1),stan_call(-,x.args[2],x.args[1])), ))
+tracetype_by_head(::Val{:braces}, x::BracesExpr) = StanType(types.real, (stan_expr(length(x.args),length(x.args)),))
+tracetype_by_head(::Val{:vect}, x::VectExpr) = StanType(types.vector, (stan_expr(length(x.args),length(x.args)),))
+tracetype_by_head(::Val{:tuple}, x::TupleExpr) = StanType(types.tup; arg_types=map(type, x.args))
+tracetype_by_head(::Val{:kw}, x::KwExpr) = type(x.args[2])
+tracetype_by_head(::Val{:nt}, x::NamedTupleExpr) = StanType(types.ntup; arg_types=(;[
     kw.args[1]=>type(kw.args[2]) for kw in map(expr, x.args)
 ]...))
-tracetype(x::DeclExpr) = x.args[1].type
-tracetype(x::ForExpr) = StanType(types.anything)
-tracetype(x::WhileExpr) = StanType(types.anything)
-tracetype(x::IfExpr) = StanType(types.anything)
-tracetype(x::ElseIfExpr) = StanType(types.anything)
+tracetype_by_head(::Val{:(::)}, x::DeclExpr) = x.args[1].type
+tracetype_by_head(::Val{:for}, x::ForExpr) = StanType(types.anything)
+tracetype_by_head(::Val{:while}, x::WhileExpr) = StanType(types.anything)
+tracetype_by_head(::Val{:if}, x::IfExpr) = StanType(types.anything)
+tracetype_by_head(::Val{:elseif}, x::ElseIfExpr) = StanType(types.anything)
 # Julia gives short-circuit operators dedicated AST heads (`:&&` / `:||`),
 # rather than callable function heads like `&` / `|`. Their Stan result is a
 # scalar boolean (rendered as `int` elsewhere in the SLIC type system).
-tracetype(x::Union{LogicalAndExpr,LogicalOrExpr}) = StanType(types.bool)
+tracetype_by_head(::Val{:&&}, x::LogicalAndExpr) = StanType(types.bool)
+tracetype_by_head(::Val{:||}, x::LogicalOrExpr) = StanType(types.bool)
 # A ternary `cond ? a : b` is a real EXPRESSION, so its result type is the join
 # of the two branch types (not the opaque `anything` an `if`-statement carries).
 # `typejoin` follows the SLIC lattice (`int <: real`, `bool <: int`, constrained
@@ -433,11 +491,11 @@ tracetype(x::Union{LogicalAndExpr,LogicalOrExpr}) = StanType(types.bool)
 # branch is itself untyped (`anything`), the join is `anything` and the ordinary
 # `center_type != anything` assignment guard rejects it (now without crashing,
 # since `TernaryExpr` renders via its own `show`).
-tracetype(x::TernaryExpr) = StanType(
+tracetype_by_head(::Val{:ternary}, x::TernaryExpr) = StanType(
     typejoin(center_type(x.args[2]), center_type(x.args[3])),
     stan_size(x.args[2]),
 )
-tracetype(x::BlockExpr) = error("tracetype(::BlockExpr) not implemented — block expressions don't carry a result type; refactor the caller to trace the final expression instead.")#tracetype(expr(x.args[end]))
+tracetype_by_head(::Val{:block}, x::BlockExpr) = error("tracetype(::BlockExpr) not implemented — block expressions don't carry a result type; refactor the caller to trace the final expression instead.")#tracetype(expr(x.args[end]))
 
 autokwargs(::CanonicalExpr) = (;)
 # `type=T` kwarg: `forward!(::Type{<:types.anything})` wraps the symbol as a
@@ -1261,14 +1319,19 @@ begin
             end
         end
 
+        # Head-first rows, one per head the `ftype` bound covers (see
+        # "Head-first dispatch tables" above).
+        hvar = gensym(:head)
         xexpr = :(x::$CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
         xbody = Expr(:block, source, [
             xassign(xtuple(ensure_xlhs.(lhsi.args[2:end])...), xformal_size(lhsi, :(x.args[$i])))
             for (i, lhsi) in enumerate(lhs)
         ]..., :(info = (;$(dim_names...), __trace_context__ = $_context_or_new(context))), xsig_expr(rv))
         quote
-            $stan.tracetype($xexpr) = $stan._tracetype(x, nothing)
-            $stan._tracetype($xexpr, context) = $xbody
+            for $hvar in $stan._head_types($ftype)
+                $stan.tracetype_by_head(::$hvar, $xexpr) = $stan._tracetype(x, nothing)
+                $stan._tracetype_by_head(::$hvar, $xexpr, context) = $xbody
+            end
         end
     end
     funbody(x::Expr) = begin
@@ -2314,7 +2377,7 @@ begin
         # container arg (`I_mat::matrix`) registers a `tracetype` (or `inline_body`)
         # method keyed on `ndim == 0` via `xsig_type`, which no real
         # matrix/vector argument (`ndim >= 1`) can ever match: the call falls
-        # through to the generic `tracetype(::CanonicalExpr)` fallback, resolves
+        # through to the generic `tracetype_by_head(_, ::CanonicalExpr)` fallback, resolves
         # to `::anything`, and only surfaces LATER as the opaque `tracetype not
         # defined for … = f(::matrix, ::vector)::anything!` assertion
         # (`forward.jl`), naming neither the argument nor the fix. Reject it HERE,
@@ -2445,6 +2508,10 @@ begin
             ))
         end
 
+        # Every rule this definition registers is keyed on its head first (see
+        # "Head-first dispatch tables" above): one method table entry per
+        # overload, filed under `typeof(f)`.
+        hexpr = :(::$ftype)
         xexpr = :(x::$CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
         if _is_symbol(f)
             push!(stmts, :(function $f end))
@@ -2504,7 +2571,7 @@ begin
                     for s in _shim_kwarg_specs
                 ]...)
             end
-            push!(stmts, :($stan.inline_body($xexpr) = (
+            push!(stmts, :($stan.inline_body_by_head($hexpr, $xexpr) = (
                 arg_names = $arg_names_tuple,
                 vararg_name = $vararg_qn,
                 body = $(QuoteNode(inline_body_ast)),
@@ -2513,13 +2580,13 @@ begin
             )))
         else
             push!(stmts, quote
-                $stan.tracetype($xexpr) = $stan._tracetype(x, nothing)
-                $stan._tracetype($xexpr, context) = $(Expr(:block, source, capture_mod, deconstruct, promote_info, inject_context, inject_mod, rv_expr))
+                $stan.tracetype_by_head($hexpr, $xexpr) = $stan._tracetype(x, nothing)
+                $stan._tracetype_by_head($hexpr, $xexpr, context) = $(Expr(:block, source, capture_mod, deconstruct, promote_info, inject_context, inject_mod, rv_expr))
             end)
             if !ismissing(body)
                 push!(stmts, quote
-                    $stan.fundef($xexpr) = $stan._fundef(x, nothing)
-                    $stan._fundef($xexpr, context) = $stan._with_slic_diagnostic(
+                    $stan.fundef_by_head($hexpr, $xexpr) = $stan._fundef(x, nothing)
+                    $stan._fundef_by_head($hexpr, $xexpr, context) = $stan._with_slic_diagnostic(
                         :slic_lowering_error,
                         "function",
                         context,
@@ -2534,12 +2601,12 @@ begin
                 # and for a UDF whose signature simply did not match (a bug).
                 # Each marker is signature-specific; the name-level query below
                 # asks whether ANY such method exists for this function singleton.
-                marker = _backed_marker(:udf, f, xexpr, stan)
+                marker = _backed_marker(:udf, f, hexpr, xexpr, stan)
             else
                 # A body-less signature declares a function Stan ALREADY has —
                 # StanBlocks owes it no definition. See `_check_lpxf_resolves`
                 # for why a name needs both markers rather than one.
-                marker = _backed_marker(:native, f, xexpr, stan)
+                marker = _backed_marker(:native, f, hexpr, xexpr, stan)
             end
             isnothing(marker) || push!(stmts, marker)
         end
@@ -2554,6 +2621,7 @@ begin
             )
             base_f = _lpxf_base(f)
             base_ftype = :(typeof($base_f))
+            base_hexpr = :(::$base_ftype)
             base_xexpr = :(_x::$CanonicalExpr{<:$base_ftype,<:Tuple{$(lhs_type[2:end]...)}})
             y_type = arg_types[1] == :(anything[]) ? :(real[]) : arg_types[1]
             y_expr = StanExpr(
@@ -2583,9 +2651,9 @@ begin
             ))
             push!(stmts, :(function $base_f end))
             push!(stmts, quote
-                $stan.tracetype($base_xexpr) = $stan._tracetype(_x, nothing)
-                $stan._tracetype($base_xexpr, context) = $(Expr(:block, source, reconstruct, base_deconstruct, xsig_expr(y_type)))
-                $stan.fundef($base_xexpr) = nothing
+                $stan.tracetype_by_head($base_hexpr, $base_xexpr) = $stan._tracetype(_x, nothing)
+                $stan._tracetype_by_head($base_hexpr, $base_xexpr, context) = $(Expr(:block, source, reconstruct, base_deconstruct, xsig_expr(y_type)))
+                $stan.fundef_by_head($base_hexpr, $base_xexpr) = nothing
             end)
         end
         if is_lpxf
@@ -2598,6 +2666,10 @@ end
 
 fundef(x) = nothing
 _fundef(x, _context) = fundef(x)
+fundef(x::CanonicalExpr) = fundef_by_head(getfield(x, :head), x)
+fundef_by_head(_, x::CanonicalExpr) = nothing
+_fundef(x::CanonicalExpr, context) = _fundef_by_head(getfield(x, :head), x, context)
+_fundef_by_head(_, x::CanonicalExpr, context) = fundef(x)
 
 # --- Provenance markers for `@deffun`-registered names ------------------------
 #
@@ -2624,23 +2696,25 @@ _fundef(x, _context) = fundef(x)
 #
 # `_has_backing` asks the method table whether ANY signature for the exact
 # function singleton has the requested provenance. This query runs only on the
-# unresolved-density diagnostic path. The exact head parameter is important:
+# unresolved-density diagnostic path. The marker takes the head FIRST, like the
+# rules it sits beside (see "Head-first dispatch tables"), so the query reads only
+# that function's markers. The exact head parameter is important:
 # `CanonicalExpr{<:typeof(h)}` is a broad UnionAll in a `methods` query, while
 # `CanonicalExpr{typeof(h)}` excludes unrelated function singleton types.
 function _backing_provenance end
 _has_backing(kind, h::Function) = !isempty(methods(
     _backing_provenance,
-    Tuple{Val{kind},CanonicalExpr{typeof(h)}},
+    Tuple{typeof(h),Val{kind},CanonicalExpr{typeof(h)}},
 ))
 _has_backing(_, _) = false
 udf_backed(h) = _has_backing(:udf, h)
 native_backed(h) = _has_backing(:native, h)
 
-_backed_marker(kind, f, xexpr, stan) = begin
+_backed_marker(kind, f, hexpr, xexpr, stan) = begin
     _is_symbol(f) || return nothing
     marker = Expr(:., stan, QuoteNode(:_backing_provenance))
     kind_type = Expr(:curly, Val, QuoteNode(kind))
-    Expr(:(=), Expr(:call, marker, Expr(:(::), kind_type), xexpr), nothing)
+    Expr(:(=), Expr(:call, marker, hexpr, Expr(:(::), kind_type), xexpr), nothing)
 end
 Base.@nospecializeinfer sig_expr(@nospecialize(x)) = x
 Base.@nospecializeinfer sig_expr(@nospecialize(x::Union{Tuple,NamedTuple})) = _anymap(sig_expr, x)

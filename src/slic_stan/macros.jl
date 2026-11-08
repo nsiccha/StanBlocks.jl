@@ -280,7 +280,7 @@ Inside a `@deffun` block, opt this method into base-level LHS inference. Without
 `@lhs`, only the `_lpdf`-keyed tracetype is registered (so the method dispatches
 when called explicitly), but `lhs ~ foo(args...)` cannot trace because the base
 `foo` has no tracetype keyed on its argument signature. `@lhs` registers
-`tracetype(::CanonicalExpr{<:typeof(foo), <:Tuple{lhs_type[2:end]...}})` so the
+`tracetype_by_head(::typeof(foo), ::CanonicalExpr{<:typeof(foo), <:Tuple{lhs_type[2:end]...}})` so the
 sampling form works.
 
 Compose with `@lpxf` (any order — `@lhs @lpxf …` or `@lpxf @lhs …`) to also
