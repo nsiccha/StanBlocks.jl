@@ -124,15 +124,16 @@ _closure_stan_expr(record) = StanExpr(record, StanType(
 # A call whose head is a closure StanExpr: pull the record off the head's
 # StanType and feed `expand_inline!` directly. Same machinery as
 # `@deffun @inline` UDFs — the closure record just lives in the StanExpr
-# rather than in a `inline_body(::CanonicalExpr{<:typeof(f)})` method.
-inline_body(x::CanonicalExpr{<:StanExpr2{<:types.closure}}) = type(head(x)).info.value
+# rather than in an `inline_body_by_head(::typeof(f), ::CanonicalExpr{<:typeof(f)})`
+# method.
+inline_body_by_head(::StanExpr2{<:types.closure}, x::CanonicalExpr{<:StanExpr2{<:types.closure}}) = type(head(x)).info.value
 
 # --- Custom types via `@usertype` (tagged ntups) ---
 
 # `Foo(field_values...)`: dispatch on `tokenof{<:usertype}` head. Build a
 # tagged ntup-shaped StanType whose `arg_types` named tuple matches the
 # Julia struct's `fieldnames` paired with the call args' types.
-tracetype(x::CanonicalExpr{<:StanExpr2{<:types.tokenof{<:types.usertype}}}) = begin
+tracetype_by_head(::StanExpr2{<:types.tokenof{<:types.usertype}}, x::CanonicalExpr{<:StanExpr2{<:types.tokenof{<:types.usertype}}}) = begin
     T = type(head(x)).info.value
     fields = fieldnames(T)
     length(fields) == length(x.args) || error(
@@ -212,8 +213,8 @@ _usertype_field(stmt, typename) =
 # captures...)` shape that this `fundef` consumes — matching what a
 # `@deffun` UDF would consume but with the closure StanExpr at head and
 # the captures appended as trailing positional args.
-fundef(x::CanonicalExpr{<:StanExpr2{<:types.closure}}) = _fundef(x, nothing)
-_fundef(x::CanonicalExpr{<:StanExpr2{<:types.closure}}, context) = begin
+fundef_by_head(::StanExpr2{<:types.closure}, x::CanonicalExpr{<:StanExpr2{<:types.closure}}) = _fundef(x, nothing)
+_fundef_by_head(::StanExpr2{<:types.closure}, x::CanonicalExpr{<:StanExpr2{<:types.closure}}, context) = begin
     cl = type(head(x)).info.value
     arg_names = collect(cl.arg_names)
     n_params = length(arg_names)

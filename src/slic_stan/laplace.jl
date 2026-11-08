@@ -377,8 +377,8 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(_laplace_density)}; info) = begin
     density
 end
 
-tracetype(::CanonicalExpr{<:LaplaceMarginal}) = StanType(types.real)
-tracetype(x::CanonicalExpr{<:LaplaceLatent}) = StanType(types.vector, (x.args[4],))
+tracetype_by_head(::LaplaceMarginal, ::CanonicalExpr{<:LaplaceMarginal}) = StanType(types.real)
+tracetype_by_head(::LaplaceLatent, x::CanonicalExpr{<:LaplaceLatent}) = StanType(types.vector, (x.args[4],))
 
 # The call Stan sees: (likelihood, (its captures), block size, covariance,
 # (its captures)[, controls]). The latent's length (argument 4) only types the

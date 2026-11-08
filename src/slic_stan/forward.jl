@@ -186,8 +186,13 @@ end
 # `inline_body` is the dispatch hook populated by `@deffun @inline f(...)`
 # and `@deffun f!(...)`. A non-`nothing` return signals the call site should
 # substitute its args into the stored body AST and re-trace in the caller's
-# scope rather than emitting a Stan-function call.
+# scope rather than emitting a Stan-function call. Rules for a call node are
+# written on `inline_body_by_head`, keyed on the call's head first (see
+# "Head-first dispatch tables" in functions.jl).
 inline_body(::Any) = nothing
+function inline_body_by_head end
+inline_body(x::CanonicalExpr) = inline_body_by_head(getfield(x, :head), x)
+inline_body_by_head(_, x::CanonicalExpr) = nothing
 expand_inline_or_trace(x::CanonicalExpr; info) = begin
     meta = inline_body(x)
     isnothing(meta) && return fold_shape_query(_stan_expr(x, _trace_context(info)))
