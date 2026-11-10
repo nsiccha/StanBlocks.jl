@@ -412,11 +412,43 @@ end
 # ordinary user-authored `derived[i] ~ dist(...)` remains rejected by the
 # generic already-bound-LHS rule, while the lowering below may deliberately add
 # density to the transformed ragged value.
+# Each certificate is `name => family`, the constrained center (`:ordered`, …).
 _ragged_density_targets(info) = begin
     context = _trace_context(info)
     context === nothing ? () : context.ragged_density_targets
 end
-_is_ragged_density_target(name::Symbol; info) = name in _ragged_density_targets(info)
+_is_ragged_density_target(name::Symbol; info) =
+    any(t -> first(t) === name, _ragged_density_targets(info))
+_ragged_density_family(name::Symbol; info) = begin
+    targets = _ragged_density_targets(info)
+    i = findlast(t -> first(t) === name, targets)
+    i === nothing ? nothing : last(targets[i])
+end
+# A ragged `ordered` / `positive_ordered` is filled by `ordered_jacobian` /
+# `positive_ordered_jacobian` and carries no further bound. A prior whose family
+# has a bounded support (`exponential`: lower=0) would then propose values
+# outside it, each rejected at run time, so the prior is silently truncated by
+# rejection (todo 04zbyc9). Refuse it at trace time and name the spelling that
+# carries the bound. `positive_ordered` already satisfies `lower=0`.
+_check_ragged_implied_support(name, family, rhs) = nothing
+_check_ragged_implied_support(name, family::Symbol, rhs::StanExpr) = begin
+    family in (:ordered, :positive_ordered) || return nothing
+    call = expr(rhs)
+    call isa CanonicalExpr || return nothing
+    implied = autokwargs(call)
+    isempty(implied) && return nothing
+    lower_zero = keys(implied) == (:lower,) && implied.lower isa Number && iszero(implied.lower)
+    family === :positive_ordered && lower_zero && return nothing
+    bounds = join((v isa Number ? "$k=$v" : "$k" for (k, v) in pairs(implied)), ", ")
+    fix = lower_zero ?
+        "Declare `$name::positive_ordered[…]`, whose elements are positive and ordered." :
+        "Use a family with unbounded support, or a fixed-size `$name::$family[K]`, which carries the bound."
+    error(
+        "Ragged `$name::$family[…] ~ $(head(call))(…)`: the family's support is bounded ($bounds), ",
+        "but a ragged `$family` carries no bound, so the sampler would propose values outside ",
+        "the support and reject them at run time. ", fix,
+    )
+end
 
 # Trace-time marker used only while rewriting distribution arguments for one
 # ragged group.  `builtin.jl` supplies the type-aware expansion after the
@@ -2361,8 +2393,8 @@ _ragged_density_stmt(name, Ks, rhs_raw, g) = _ragged_rhs_is_flat(rhs_raw) ?
     nothing : :(for $g in 1:length($Ks)
                     $name[$g] ~ $(_ragged_group_rhs(rhs_raw, g))
                 end)
-_trace_ragged_stmts(stmts, name; info, certify_density::Bool=false) = begin
-    targets = (_ragged_density_targets(info)..., name)
+_trace_ragged_stmts(stmts, name; info, certify_density::Bool=false, family=nothing) = begin
+    targets = (_ragged_density_targets(info)..., name => family)
     traced = _with_trace_state(info, :ragged_density_targets, targets) do
         _do_retrace_inline_body(stmts; info)
     end
@@ -2412,7 +2444,7 @@ _forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info) = begin
     ]
     density = _ragged_density_stmt(name, Ks, rhs_raw, g)
     density === nothing || push!(stmts, density)
-    _trace_ragged_stmts(stmts, name; info, certify_density=density !== nothing)
+    _trace_ragged_stmts(stmts, name; info, certify_density=density !== nothing, family=ct)
 end
 
 _forward_ragged_matrix_constrained!(name, ct, sizes, rhs_raw; info) = begin
@@ -2528,6 +2560,7 @@ _forward_indexed_sampling!(x; info, user_slice::Bool=false) = begin
             "` is not backed by a RaggedVector/RaggedMatrix."
         )
         validate_sampling_rhs(lhs, rhs; info)
+        _check_ragged_implied_support(k, _ragged_density_family(k; info), rhs)
         return remake(x, lhs, rhs)
     end
     retainted = false
