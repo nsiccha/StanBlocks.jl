@@ -362,8 +362,13 @@ backward!(x::SamplingExpr; info) = begin
             # existing prior-predictive treatment of unused Symbol samples. The
             # separate outer declaration reads this updated qualifier later.
             # A values-free `maybecv` observation's storage is re-drawn the same
-            # way, but what its draw reads stays likelihood-reachable.
-            _cv_observation_storage(info[key]; info) &&
+            # way, but what its draw reads stays likelihood-reachable. So does
+            # what a cv-tainted cell's prior reads when the unconditioned trace
+            # reaches the cell: only the cell is re-drawn, and an untainted
+            # hyperparameter stays a fitted parameter, as on the bare-Symbol
+            # path above (todo 00m5uxb).
+            (_cv_observation_storage(info[key]; info) ||
+             (cv(info[key]) && lqual(info[key]) == :affects_likelihood)) &&
                 (rhs = _restore_sampling_kwargs(backward!(rhs; info), rhs))
             info[key] = remake(info[key]; qual=:quantities)
             remake(x, remake(lhs; qual=:quantities), rhs)
