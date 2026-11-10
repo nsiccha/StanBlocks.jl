@@ -867,6 +867,18 @@ jcall(::Val{:to_array_2d}, ::_JuliaScope, x, m::Integer, n::Integer) = Base.resh
 jcall(::Val{:to_matrix}, ::_JuliaScope, x, m::Integer, n::Integer) = Base.reshape(collect(x), m, n)
 jcall(::Val{:append_array}, ::_JuliaScope, xs...) = vcat(xs...)
 jcall(::Val{:append_row}, ::_JuliaScope, xs...) = vcat(xs...)
+# Stan's `append_row` of row vectors stacks them into a matrix, one row each.
+# Julia holds a row vector as a plain vector (or as a one-row matrix, `x'`), so
+# `vcat` would concatenate them into one long vector. The `@juliacompat` lowering
+# picks this tag when every argument is declared `row_vector` (todo 15foikj).
+_julia_as_row(x::AbstractVector) = Base.reshape(x, 1, length(x))
+function _julia_as_row(x::AbstractMatrix)
+    size(x, 1) == 1 || throw(DimensionMismatch(
+        "append_row: expected a row vector (one row), got a $(size(x, 1))×$(size(x, 2)) matrix"))
+    x
+end
+jcall(::Val{:append_row_of_rows}, ::_JuliaScope, xs::Union{AbstractVector,AbstractMatrix}...) =
+    vcat(map(_julia_as_row, xs)...)
 jcall(::Val{:append_row}, ::_JuliaScope, x::AbstractMatrix, y::AbstractVector) =
     vcat(x, Base.reshape(y, 1, length(y)))
 jcall(::Val{:append_row}, ::_JuliaScope, x::AbstractVector, y::AbstractMatrix) =
@@ -1801,6 +1813,29 @@ begin
         names
     end
 
+    # Names the signature or the body declares `row_vector` (`x::row_vector[n]`).
+    _deffun_julia_type_center(t::Symbol) = t
+    _deffun_julia_type_center(t::Expr) = t.head === :ref ? t.args[1] : nothing
+    _deffun_julia_type_center(_) = nothing
+    _deffun_julia_row_vectors!(rows, _) = rows
+    _deffun_julia_row_vectors!(rows, x::Expr) = begin
+        x.head === :(::) && length(x.args) == 2 && x.args[1] isa Symbol &&
+            _deffun_julia_type_center(x.args[2]) === :row_vector && push!(rows, x.args[1])
+        foreach(a -> _deffun_julia_row_vectors!(rows, a), x.args)
+        rows
+    end
+    # `append_row(r1, r2, …)` of declared row vectors is a matrix in Stan, but
+    # Julia's `vcat` of the plain vectors that hold them is one long vector. Lower
+    # it to the row-stacking tag (`jcall(::Val{:append_row_of_rows}, …)`).
+    _deffun_julia_row_appends(x, rows) = x
+    _deffun_julia_row_appends(x::Expr, rows) = begin
+        args = map(a -> _deffun_julia_row_appends(a, rows), x.args)
+        x.head === :call && args[1] === :append_row && length(args) > 1 &&
+            all(a -> a isa Symbol && a in rows, args[2:end]) &&
+            return Expr(:call, :append_row_of_rows, args[2:end]...)
+        Expr(x.head, args...)
+    end
+
     _deffun_julia_unsupported_call(s::Symbol) =
         any(suffix -> endswith(string(s), suffix), ("_lpdf", "_lpmf", "_lcdf", "_lccdf", "_cdf", "_rng")) ||
         startswith(string(s), "ode_") ||
@@ -1944,6 +1979,10 @@ begin
         arg_names = filter(!isnothing, _julia_arg_name.(flat_args))
         locals = Set{Symbol}(arg_names)
         julia_source_body = Meta.isexpr(body, :block) ? body : Expr(:block, source, body)
+        rows = _deffun_julia_row_vectors!(Set{Symbol}(
+            _julia_arg_name(a) for a in flat_args if Meta.isexpr(a, :(::)) && length(a.args) == 2 &&
+                _deffun_julia_type_center(a.args[2]) === :row_vector), julia_source_body)
+        isempty(rows) || (julia_source_body = _deffun_julia_row_appends(julia_source_body, rows))
         _deffun_julia_local_names!(locals, julia_source_body)
         promote_args = Any[n for n in arg_names if n !== :_]
 
