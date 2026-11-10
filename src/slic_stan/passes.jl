@@ -1566,6 +1566,10 @@ end
 function lpxf_expr end
 function rng_expr end
 function likelihood_expr end
+# Whether `f` is a sampling family: true wherever its density hook is registered
+# (the built-in table in lpxf_builtin.jl, `lpxf_register` below, `ValueFamily`).
+# A family's call refuses keywords its `~` does not consume (`_check_call_keywords`).
+_sampling_family(f) = false
 
 const _LPXF_SUFFIXES = ("_lpdf", "_lpmf", "_lcdf", "_lccdf")
 _lpxf_base(name::Symbol) = begin
@@ -1600,5 +1604,6 @@ lpxf_register(name::Symbol; source=LineNumberNode(0, :none)) = begin
         $M.lpxf_expr(::typeof($base)) = $name
         $M.rng_expr(::typeof($base)) = $rng
         $M.likelihood_expr(::typeof($base)) = $lpxfs
+        $M._sampling_family(::typeof($base)) = true
     end
 end
