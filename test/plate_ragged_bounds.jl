@@ -19,7 +19,7 @@ cell explored outside its support (todo 144j6sn). It is declared now through a
             y[g] ~ normal(sum(zz), 1)
         end
     end
-    for (m, fill) in ((scalar_bound, r"rep_vector\(L\[g\]"), (element_bound, r"= getindex_RaggedVector\(Lv, g\)|Lv"))
+    for (m, fill) in ((scalar_bound, r"rep_vector\(L\[g\]"), (element_bound, r"__lower\[ragged_start\(\w+, g\):ragged_end\(\w+, g\)\] = getindex_RaggedVector\(Lv, g\);"))
         code = stan_code(m)
         @test occursin(r"vector<lower=\w+>\[sum\(", stan_block(code, "parameters"))
         @test occursin(fill, stan_block(code, "transformed data"))
