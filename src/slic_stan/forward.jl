@@ -3769,6 +3769,30 @@ _plate_ragged_bound_carrier!(plan, key, T::StanType, outer, idx, cell_names; inf
     end
     info[carrier]
 end
+# The `key=` bound of a varying-length cell's flat memory when it depends on the
+# cell (`zz::vector[K[g]] ~ normal(0, 1; lower=L[g])`): a `transformed data`
+# vector laid out like the memory, filled per cell at
+# `ragged_start(ends, g):ragged_end(ends, g)`. A scalar bound is repeated over the
+# cell; a bound with one value per element is assigned as it is. Without it a
+# sampled cell explored outside its support (todo 144j6sn). Re-tracing the bound
+# inside the fill loop rebinds the plate index, as `_plate_hoist_cell_constraints!`
+# does for a scalar cell.
+_plate_ragged_cell_bound_carrier!(plan, key, value, outer, idx; info, pending) = begin
+    center_type(value) <: types.int && stan_ndim(type(value)) > 0 && error(
+        "plate: the `", key, "=` bound of `", plan.logical, "` depends on the cell and is ",
+        "an integer array; write it as a real vector.")
+    carrier = _slice_carrier_name(plan.mem, key; info)
+    lo, hi = :(ragged_start($(plan.ends), $idx)), :(ragged_end($(plan.ends), $idx))
+    fill = stan_ndim(type(value)) == 0 ?
+        :(rep_vector($(expr(value)), $(plan.size_expr))) : expr(value)
+    loop = Expr(:for, Expr(:(=), idx, :(1:$outer)),
+        Expr(:block, :($carrier[$lo:$hi] = $fill)))
+    for s in (Expr(:(::), carrier, :(vector[sum($(plan.lens))])), loop)
+        emitted = forward!(canonical(s); info)
+        pending !== nothing && push!(pending, emitted)
+    end
+    info[carrier]
+end
 _plate_promoted_constraints(f, T::StanType, index_aliases) = begin
     cons = constraints(T)
     isempty(cons) && return (cons, Pair{Symbol,Any}[])
@@ -5020,17 +5044,19 @@ _forward_loop_core!(;
             mem_decl = Expr(:(::), plan.mem, Expr(:ref, mem_ct, :(sum($(plan.lens)))))
             emitted = forward!(canonical(mem_decl); info)
             # The cell's support reaches its flat memory: a bound every coordinate
-            # of every cell shares is a scalar bound, and a nested scan's setup and
-            # recurrence with different supports take a per-element bound vector.
-            # A constraint that depends on the cell (`lower=L[g]`, a declared
-            # missing cell's `censored(…; lower=ll)` threshold) is not declared on
-            # the flat memory yet: a re-drawn cell's draw honours it, a sampled
-            # cell explores without it.
+            # of every cell shares is a scalar bound, a nested scan's setup and
+            # recurrence with different supports take a per-element bound vector,
+            # and a data bound that depends on the cell (`lower=L[g]`) takes a
+            # bound vector filled per cell (`_plate_ragged_cell_bound_carrier!`).
             T, per_coordinate = _plate_fold_inner_slices(plan.logical, plan.cell_type, index_aliases)
-            cons, _ = _plate_promoted_constraints(plan.logical, T, index_aliases)
+            cons, hoist = _plate_promoted_constraints(plan.logical, T, index_aliases)
             for key in per_coordinate
                 cons = merge(cons, (; key => _plate_ragged_bound_carrier!(
                     plan, key, T, outer_dims[1], idxs[1], keys(all_cell_types); info, pending)))
+            end
+            for (key, value) in hoist
+                cons = merge(cons, (; key => _plate_ragged_cell_bound_carrier!(
+                    plan, key, value, outer_dims[1], idxs[1]; info, pending)))
             end
             emitted = _plate_constrain_decl(plan.mem, emitted, cons; info)
             pending !== nothing && push!(pending, emitted)
