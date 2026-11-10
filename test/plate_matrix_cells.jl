@@ -187,6 +187,9 @@ end
     @test occursin("loop_c_A[ragged_start(loop_c_A__pl_end, c):ragged_end(loop_c_A__pl_end, c)] = to_vector(reshape(getindex_RaggedVector(agg, c), n_groups[c], n_zones[c]));", td)
     @test count("getindex_RaggedVector(agg, c)", code) == 1
     @test !occursin("loop_c_A;", stan_block(code, "transformed parameters"))
+    # `length` keeps Stan's builtin name next to an explicit `num_elements`.
+    @test occursin("for(c in 1:num_elements(n_zones))", td)
+    @test !occursin(r"num_elements__\d", code)
     @test stanc_compiles(summed)
 
     # With no likelihood the cell is a generated quantity, its matrix a local there.

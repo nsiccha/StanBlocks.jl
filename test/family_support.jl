@@ -223,3 +223,24 @@ end
     @test occursin("normal__2_lpdf", native_code)
     @test occursin("normal_lpdf(y | mu, 3.0)", native_code)
 end
+
+# StanBlocks prints some Julia functions as a Stan builtin: `length` is
+# `num_elements`, `abs2` is `square`. Used next to that builtin, such a function
+# shares its Stan name with a callable from another module, but it is the same
+# Stan function, not a second definition. Renaming it to `num_elements__2`
+# called a function Stan does not define (todo 0yuprgh).
+@testitem "slic: a Julia spelling of a Stan builtin keeps the builtin's name" tags=[:slic, :regression] begin
+    using StanBlocks
+    squared = stan_code(@slic (; x = [1.0, 2.0]) begin
+        mu ~ normal(0, 1)
+        x ~ normal(abs2(mu) + square(mu), 1)
+    end)
+    @test occursin("square(mu)", squared)
+    @test !occursin(r"square__\d", squared)
+    counted = stan_code(@slic (; x = [1.0, 2.0]) begin
+        mu ~ normal(0, 1)
+        x ~ normal(mu + length(x) + num_elements(x), 1)
+    end)
+    @test occursin("num_elements(x)", counted)
+    @test !occursin(r"num_elements__\d", counted)
+end
