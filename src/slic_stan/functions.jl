@@ -3011,6 +3011,7 @@ func_name(x::Function) = string(x)
 # No global registry, module-name guessing, object-id suffix or AST mutation.
 _callable_stem(name) = replace(name, r"_(rng|lu?p[md]fs?|lccdf|lcdf)$" => "")
 _callable_key(f::Function) = (parentmodule(f), _callable_stem(_stan_callable_name(string(func_name(f)))))
+_keeps_stan_name(f::Function) = native_backed(f) || _spells_stan_library(f)
 _collect_name_callables!(acc, x) = nothing
 _collect_name_callables!(acc, f::Function) = (push!(acc, f); nothing)
 _collect_name_callables!(acc, xs::Union{Tuple,NamedTuple}) =
@@ -3038,9 +3039,10 @@ function _emission_names(functions)
     names = Dict{Tuple{Module,String},String}()
     for (stem, group) in groups
         length(group) > 1 || continue
-        # Native functions must keep Stan's name. Otherwise the first module
+        # Native functions, and Julia functions spelled as one (`length` is
+        # `num_elements`), must keep Stan's name. Otherwise the first module
         # keeps the old spelling, so unrelated model output remains unchanged.
-        native = Set(mod for (mod, fs) in group if any(native_backed, fs))
+        native = Set(mod for (mod, fs) in group if any(_keeps_stan_name, fs))
         keep = isempty(native) ? first(keys(group)) : nothing
         i = 2
         for mod in keys(group)
@@ -3088,10 +3090,17 @@ for (f, nm) in (
     (&, "and"), (|, "or"), (>=, "gte"), (>, "gt"), (==, "eq"), (!=, "ne"),
     (<=, "lte"), (<, "lt"), (+, "add"), (-, "sub"), (*, "mul"),
     (/, "div"), (÷, "idiv"), (^, "pow"),
-    # Julia functions with different Stan names
-    (length, "num_elements"), (minimum, "min"), (maximum, "max"), (abs2, "square"),
 )
     @eval func_name(::typeof($f)) = $nm
+end
+# Julia functions that StanBlocks spells as a Stan library function. A native
+# call such as `length(n)` prints as Stan's `num_elements(n)`, so
+# `_emission_names` must never give such a function a module-qualified alias.
+# Stan has no `num_elements__2` (todo 0yuprgh).
+_spells_stan_library(f) = false
+for (f, nm) in ((length, "num_elements"), (minimum, "min"), (maximum, "max"), (abs2, "square"))
+    @eval func_name(::typeof($f)) = $nm
+    @eval _spells_stan_library(::typeof($f)) = true
 end
 func_args(args::NamedTuple) = begin
     # Dedup captured params by NAME across all closure args. A captured model

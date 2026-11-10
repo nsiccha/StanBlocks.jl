@@ -4,6 +4,21 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.33
+
+- **A Julia function spelled as a Stan builtin keeps Stan's name.**
+  StanBlocks prints `length` as Stan's `num_elements`, `abs2` as `square`,
+  and `minimum`/`maximum` as `min`/`max`. When a program also used the Stan
+  builtin directly (`num_elements`, `square`), the cross-module callable
+  naming of v0.2.23 treated `Base` as a second module defining that name and
+  renamed it, so the program called `num_elements__2(n)`, which Stan does
+  not define. stanc rejected it with "A returning function was expected but
+  an undeclared identifier \"num_elements__2\" was supplied". A plate over
+  `eachindex(n)` whose cell reshapes ragged data hit this. Such a function now
+  keeps the builtin's name, as a natively declared function always did.
+  Same-name functions from two user modules are still told apart
+  (`shared__2_lpdf`).
+
 ## v0.2.32
 
 - **Loading a package with many `@deffun` functions is no longer quadratic.**
