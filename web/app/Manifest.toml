@@ -384,7 +384,7 @@ version = "2.9.1"
 deps = ["BridgeStan", "FileWatching", "JSON", "LinearAlgebra", "LogDensityProblems", "Markdown", "OrderedCollections", "SHA", "SpecialFunctions", "StanLogDensityProblems", "Statistics", "Tables"]
 path = "../.."
 uuid = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
-version = "0.2.38"
+version = "0.2.39"
 weakdeps = ["PosteriorDB"]
 
     [deps.StanBlocks.extensions]
