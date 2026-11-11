@@ -2219,7 +2219,45 @@ end
 # (`_declare_lowered_ordered!`, passes.jl), so every constraint must be a
 # scalar. Other centers keep their constraints as folded. (A runtime check:
 # the `types` submodule is defined later, in functions.jl.)
-_ordered_constraints(ct, cons, rhs; name, type_expr, implied) = begin
+# Stan declares no bound or affine transform on a `simplex` or on a covariance,
+# correlation or Cholesky-factor matrix: the type's own transform is its whole
+# constraint, so `simplex<lower=0, upper=1>[3] p;` is a stanc syntax error (todo
+# 09b3kz5). A bound every element already satisfies, `[0, 1]` for a simplex and
+# `[-1, 1]` for a correlation (what `beta` or `lkj_*` imply), restates the type and
+# leaves the declaration, and the call when written there, since it truncates
+# nothing. Any other constraint is refused, naming the fix. `ordered` and
+# `positive_ordered` take theirs through a lowered transform instead
+# (`_declare_lowered_ordered!`, passes.jl). The ranges are `_element_range`
+# (functions.jl, beside the `types` it dispatches on).
+_transform_only_center(ct) = _is_native_constrained_ct(ct) &&
+    !(ct <: Union{types.ordered,types.positive_ordered})
+_transform_only_constraints(ct, cons; label, implied=()) = begin
+    _transform_only_center(ct) || return cons
+    lo, hi = _element_range(ct)
+    restates(k) = k in BOUND_KEYS && begin
+        v = _bound_value(cons[k])
+        v isa Real && (k === :lower ? v <= lo : v >= hi)
+    end
+    extra = Tuple(k for k in keys(cons) if !restates(k))
+    isempty(extra) || error(
+        label, " has ", _constraint_sources(extra, implied), ", but Stan declares no ",
+        "bound or affine transform on a `", nameof(ct), "`: its own transform is the whole ",
+        "constraint", isfinite(lo) ? ", and each element already lies in [$lo, $hi]" : "",
+        ". Drop the constraint, use a family whose support the type admits, or declare a ",
+        "plain `", ct <: types.vector ? "vector" : "matrix", "` if the constraint should ",
+        "replace the `", nameof(ct), "` one.",
+    )
+    (;)
+end
+_center_constraints(ct, cons, rhs; name, type_expr, implied) = begin
+    if _transform_only_center(ct)
+        cons = _transform_only_constraints(ct, cons;
+            label="`$name::$(pretty_type_expr(type_expr))`", implied)
+        written = Tuple(k for k in BOUND_KEYS if k in keys(rhs.kwargs))
+        isempty(written) ||
+            (rhs = remake(rhs, rhs.args...; Base.structdiff(rhs.kwargs, NamedTuple{written})...))
+        return (cons, rhs)
+    end
     ct in (types.ordered, types.positive_ordered) || return (cons, rhs)
     _check_scalar_ordered_constraints(cons; name, type_expr, implied)
     ct === types.positive_ordered || return (cons, rhs)
@@ -2316,12 +2354,12 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # ONLY, silently dropping the constraint — so a positive scale
     # `tau::vector[K] ~ normal(0,1; lower=0)` emitted an UNCONSTRAINED
     # `vector[K] tau`. An `ordered` / `positive_ordered` center keeps its
-    # constraints too (`_ordered_constraints` below); Stan cannot declare them,
+    # constraints too (`_center_constraints` below); Stan cannot declare them,
     # so the emitter lowers them (`_declare_lowered_ordered!`, passes.jl).
     implied_kw = autokwargs(rhs_canonical)
     cons_kw = merge(implied_kw, (; kwargs_resolved...))
     cons = _fold_constraints(name, cons_kw; implied=keys(implied_kw))
-    cons, rhs_canonical = _ordered_constraints(ct_resolved, cons, rhs_canonical;
+    cons, rhs_canonical = _center_constraints(ct_resolved, cons, rhs_canonical;
         name, type_expr, implied=keys(implied_kw))
     base_lhs_type = StanType(ct_resolved, sizes_forwarded; cons...)
     # Reject a typed LHS whose support disagrees with the RHS distribution's

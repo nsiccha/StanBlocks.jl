@@ -516,6 +516,11 @@ autotype(x::StanExpr) = begin
     _fold_constraints(nothing, kw; implied=keys(implied))   # validates; result unused
     autotype(type(x); kw...)
 end
+# The range every element of a transform-only center already lies in
+# (`_transform_only_constraints`, forward.jl).
+_element_range(::Type{types.simplex}) = (0.0, 1.0)
+_element_range(::Type{<:Union{types.corr_matrix,types.cholesky_factor_corr}}) = (-1.0, 1.0)
+_element_range(::Type) = (-Inf, Inf)
 autotype(x::StanType; kwargs...) = begin
     ct = _unwrap_type_kwarg(get(kwargs, :type, center_type(x)))
     nsize = [
@@ -525,6 +530,9 @@ autotype(x::StanType; kwargs...) = begin
     size = length(nsize) > 0 ? (nsize..., ) : get(kwargs, :size, stan_size(x))
     (ct in (types.anything, types.real)) && (ct = [types.real, types.vector, types.matrix][1+length(size)])
     cons = _fold_constraints(nothing, kwargs)
+    # A `simplex` / matrix center takes no declaration bound (forward.jl).
+    _transform_only_center(ct) &&
+        (cons = _transform_only_constraints(ct, cons; label="A `$(nameof(ct))` declaration"))
     StanType(ct, size; cons...)
 end
 
