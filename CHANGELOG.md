@@ -4,6 +4,21 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.36
+
+Three distribution-companion fixes for models that failed during tracing.
+
+- **Observed `std_normal()` has pointwise log likelihoods.** Vector and matrix
+  observations now get a `y_likelihood` with their own shape.
+- **Student-t predictive draws accept a vector scale beside scalar degrees of
+  freedom and location.** The shared three-argument RNG signatures and sized
+  companions also accept row vectors, for `student_t`, `skew_normal`,
+  `exp_mod_normal`, `skew_double_exponential` and `pareto_type_2`.
+- **Two-argument predictive RNGs accept either vector orientation.** Models
+  such as `y ~ normal(M[1, :], exp(M[2, :]))` now draw their predictive twin.
+  The shared signatures cover mixed column/row arguments and a row beside a
+  scalar across the continuous two-argument families.
+
 ## v0.2.35
 
 Seven fixes for valid SLIC that emitted Stan which stanc rejects, and one
