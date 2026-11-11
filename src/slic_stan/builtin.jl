@@ -1673,14 +1673,21 @@ import Statistics
     # it approaches 0 (log(erfc(·)) - log 2 is only absolutely accurate there,
     # so log1m_exp of it lost all digits once the mass was within 1e-16 of 1;
     # snag bounded-lognorma-c225e536).
+    # An infinite bound is answered before (x - loc)/scale is formed, as for
+    # Student-t: that node's scale-partial -(x - loc)/scale² is infinite there,
+    # and Stan's reverse pass multiplies it by a zero adjoint, 0·∞ = NaN, so
+    # an interval's -∞ end or a truncation's ±∞ data bound had a NaN gradient
+    # with the right value (todo 0x8rwg0).
     normal_lcdf_stable(x::real, loc::real, scale::real)::real =
-        (x - loc) / scale < -35 ? std_normal_lcdf_tail((x - loc) / scale) :
+        is_inf(x) ? (x < 0 ? negative_infinity() : 0.) :
+        ((x - loc) / scale < -35 ? std_normal_lcdf_tail((x - loc) / scale) :
             ((x - loc) / scale <= 0 ? log(erfc(-(x - loc) / (scale * sqrt(2.)))) - log(2.) :
-                log1m(0.5 * erfc((x - loc) / (scale * sqrt(2.)))))
+                log1m(0.5 * erfc((x - loc) / (scale * sqrt(2.))))))
     normal_lccdf_stable(x::real, loc::real, scale::real)::real =
-        (x - loc) / scale > 35 ? std_normal_lcdf_tail((loc - x) / scale) :
+        is_inf(x) ? (x > 0 ? negative_infinity() : 0.) :
+        ((x - loc) / scale > 35 ? std_normal_lcdf_tail((loc - x) / scale) :
             ((x - loc) / scale >= 0 ? log(erfc((x - loc) / (scale * sqrt(2.)))) - log(2.) :
-                log1m(0.5 * erfc(-(x - loc) / (scale * sqrt(2.)))))
+                log1m(0.5 * erfc(-(x - loc) / (scale * sqrt(2.))))))
     # The two z < 0 branches are `std_normal_scaled_lcdf(z)`'s, written out with
     # the same arithmetic: a call to an `_lcdf`-named function has no Julia
     # method (the `@juliacompat` family-name rule), so `std_normal_scaled_lcdf`
