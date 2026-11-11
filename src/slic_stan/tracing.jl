@@ -133,7 +133,7 @@ end
     stan_model(slic::SlicModel) -> StanModel
 
 Trace `slic` end-to-end (forward / backward / distribute passes), returning the
-inferred [`StanModel`](@ref StanBlocks.StanModel) — a fully resolved
+inferred `StanModel` — a fully resolved
 representation of the Stan blocks plus the data dictionary.
 
 Tracing is the expensive step. A `StanModel` is **cheap to re-data**: call

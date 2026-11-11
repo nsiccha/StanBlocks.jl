@@ -23,8 +23,7 @@ const _INTERFACE_BLOCKS = Dict(
 
 Describe a traced program for a consumer that runs its Stan code outside Julia,
 through BridgeStan (from Python, for example, with nutpie for sampling). `model`
-is a [`SlicModel`](@ref StanBlocks.SlicModel), a [`StanModel`](@ref
-StanBlocks.StanModel) or a [`ModelDescriptor`](@ref StanBlocks.ModelDescriptor).
+is a `SlicModel`, a `StanModel` or a [`ModelDescriptor`](@ref StanBlocks.ModelDescriptor).
 The result holds only strings, numbers, booleans, `nothing`, vectors and
 dictionaries, so `JSON.json(stan_interface(m))` is the interface file; it is
 regenerated with the program and pinned to it by `program_id`. CmdStan is not a
@@ -105,11 +104,10 @@ end
     stan_data_json(model) -> String
 
 The data `model` binds, as the Stan JSON data file its program reads — the same
-bytes [`instantiate`](@ref StanBlocks.instantiate) hands BridgeStan. Matrices
+bytes `instantiate` hands BridgeStan. Matrices
 are written as lists of rows and Stan tuples (a ragged input, a table) as
 objects keyed by component position. `model` is a
-[`SlicModel`](@ref StanBlocks.SlicModel), a [`StanModel`](@ref
-StanBlocks.StanModel) or a [`ModelDescriptor`](@ref StanBlocks.ModelDescriptor);
+`SlicModel`, a `StanModel` or a [`ModelDescriptor`](@ref StanBlocks.ModelDescriptor);
 write it with `write(path, stan_data_json(model))` and pass the path to
 BridgeStan's `StanModel`. A non-finite real is written as the bare token
 `Infinity`, `-Infinity` or `NaN`, which Stan's JSON reader takes (and Python's
