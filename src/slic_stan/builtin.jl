@@ -4615,12 +4615,20 @@ end
     typeof(÷) => begin 
         (int, int) => int
     end
+    # `/` of two integers is real, as in Julia: the emitted quotient promotes
+    # its numerator (`_lower_integer_quotient`, forward.jl; decision `12ehvh9`),
+    # and an elementwise `1 ./ Ks` infers its element type from this row.
+    typeof(/) => begin
+        (int, int) => real
+    end
+    Union{typeof.((+, -, ^, *))...} => begin
+        (int, int) => int
+    end
     Union{typeof.((+, -, ^, *, /))...} => begin
         (real,) => real
         (vector[n],) => vector[n]
         (row_vector[n],) => row_vector[n]
         (int, real) => real
-        (int, int) => int
         (real, int) => real
         (real, real) => real
         # NOTE: scalar-array operand rows (`(int[n], int[n])`, `(int[n], int)`,
