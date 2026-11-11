@@ -2305,7 +2305,6 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # later probability/RNG passes would lose the selected bound mode.
     rhs_forwarded = forward!(rhs_raw; info)::StanExpr
     rhs_canonical = expr(rhs_forwarded)
-    args_resolved = collect(rhs_canonical.args)
     kwargs_resolved = rhs_canonical.kwargs
     # Fold the RHS distribution's constraints into the DECLARED type: the
     # explicit `lower=`/`upper=`/`offset=`/`multiplier=` kwargs AND the
@@ -2338,8 +2337,10 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # `alpha::vector[J] ~ normal(mu, tau)` stayed a `parameter` while the
     # documented-equivalent `alpha ~ normal(mu, tau; n=J)` correctly moved to
     # generated quantities (snag typed-lhs-size). `stan.cv(base_lhs_type)` folds
-    # in the same `any(cv, stan_size)` the autotype path uses.
-    cv_args = any(stan.cv, args_resolved) || stan.cv(base_lhs_type)
+    # in the same `any(cv, stan_size)` the autotype path uses. The call's own taint
+    # (`stan.cv(rhs_forwarded)`, as the bare-LHS path reads it) covers its
+    # arguments and a keyword bound such as `lower = a + s` (todo 1k3hvkc).
+    cv_args = stan.cv(rhs_forwarded) || stan.cv(base_lhs_type)
     # A prior or declared size reading a random draw makes the parameter a
     # generated quantity too (the bare-LHS path above; `_reads_draw`, passes.jl).
     qual = cv_args || _reads_draw(rhs_forwarded) || _reads_draw(base_lhs_type) ? :quantities : :parameter

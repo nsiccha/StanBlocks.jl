@@ -99,7 +99,11 @@ Base.@nospecializeinfer _stan_expr(@nospecialize(x::CanonicalExpr), context) = b
     tt = deanon_type(_tracetype(anon_canonical(x, tok), context), x, tok)
     args = Any[x.args...]
     q = _rng_qual(x, maximum(qual, args; init=:data))
-    StanExpr(x, remake(tt; qual=q, cv=any(cv, args) || cv(tt)))
+    # A keyword a call keeps (a distribution's `lower=`/`upper=`) taints it like an
+    # argument: `normal(0, 1; lower=a + s)` is the `truncated` law, whose lowering
+    # takes the bound positionally (todo 1k3hvkc).
+    marked = any(cv, args) || any(cv, values(x.kwargs)) || cv(tt)
+    StanExpr(x, remake(tt; qual=q, cv=marked))
 end
 stan_expr(x::CanonicalExpr) = _stan_expr(x, TraceContext())
 # Every compiler-internal conversion that runs while a trace is active must use
