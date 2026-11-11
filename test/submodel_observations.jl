@@ -16,7 +16,7 @@
     @test occursin("s_obs_likelihood", stan_block(code, "generated quantities"))
     @test stanc_compiles(fitted)
     let m=0.3, p=instantiate(fitted)
-        normal_lp(y, mu) = sum(@. -0.5 * (y - mu)^2 -0.5 * log(2pi))
+        normal_lp(y, mu) = sum(-0.5 .* (y .- mu).^2 .- 0.5 * log(2pi))
         expected = normal_lp([m], 0.0) + normal_lp([1.0, 2.0], m) + normal_lp([0.1], m)
         @test BridgeStan.log_density(p.model, [m]; propto=false, jacobian=false) ≈ expected
     end

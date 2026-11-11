@@ -209,9 +209,9 @@ the Julia methods give the same values.
     p = instantiate(stan_model(model))
     names = BridgeStan.param_names(p.model; include_tp=true, include_gq=true)
     mu = 0.3
-    values = BridgeStan.param_constrain(p.model, [mu]; include_tp=true, include_gq=true,
+    draw_values = BridgeStan.param_constrain(p.model, [mu]; include_tp=true, include_gq=true,
         rng=BridgeStan.StanRNG(p.model, 1))
-    stan(name) = values[[s == name || startswith(s, name * ".") for s in names]]
+    stan(name) = draw_values[[s == name || startswith(s, name * ".") for s in names]]
     @test stan("total") ≈ [prefix_sum(x .+ mu)] rtol=1e-15
     @test stan("mid") ≈ seg(x .+ mu, 2, 2) rtol=1e-15
     @test stan("lagged") ≈ [lagged_products(x .+ mu)] rtol=1e-15
