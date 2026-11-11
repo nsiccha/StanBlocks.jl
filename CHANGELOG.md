@@ -4,6 +4,17 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.40
+
+- **Descriptors evaluate native-only data computations.** Data-only bounds,
+  sizes and ragged layouts can use Stan-only helpers, including algebraic
+  solvers, in `stan_descriptor` and `compile_slic_bundle`. Available Julia
+  implementations retain their direct path; unsupported expressions are batched
+  into a cached BridgeStan projection of the required data dependencies.
+  Descriptor construction can therefore compile a native artifact. Rebinding
+  uses current data, parameter-dependent bounds remain `nothing`, and numerical
+  errors propagate without switching implementations.
+
 ## v0.2.39
 
 - **Inline helpers retain their defining module.** A cross-module

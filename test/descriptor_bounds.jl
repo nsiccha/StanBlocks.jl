@@ -10,8 +10,8 @@ current data, by the scope that resolves `dims`: data arithmetic, transformed-da
 values, data vectors, Stan's integer division, literal per-coordinate vectors
 with unbounded (`negative_infinity()`) coordinates, and the per-coordinate arrays
 the compiler fills in transformed-data loops. A bound that reads a parameter has
-no data value and reports `nothing`; a data-only bound computed by a Stan-only
-function fails closed, as a size does.
+no data value and reports `nothing`. Native-only metadata is covered separately
+in `descriptor_native.jl`, where a BridgeStan toolchain is required.
 """
 @testitem "slic: descriptor outputs report their evaluated constraint values" tags=[:slic, :plate, :scan, :ragged, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     bound_values(m, name) = only(o.constraint_values for o in stan_descriptor(m).outputs if o.name === name)
@@ -143,21 +143,13 @@ function fails closed, as a size does.
     @test bound_values(param, :b) === (lower = nothing,)
     @test only(o.constraints for o in stan_descriptor(param).outputs if o.name === :b).lower isa StanBlocks.StanExpr
 
-    # A data-only bound computed by a Stan-only function fails closed, naming
-    # the output, the key and the fix; `@juliacompat` gives it a value.
+    # Printing remains structural; an available Julia twin evaluates directly.
     @deffun bounds_stanonly_floor(x::real)::real = 2.0 * x
     @deffun @juliacompat bounds_jc_floor(x::real)::real = 2.0 * x
     stan_only = @slic (; f = 0.2, y = [1.0, 2.0]) begin
         a ~ normal(0., 1.; lower = bounds_stanonly_floor(f))
         y ~ normal(a, 1.0)
     end
-    msg = try
-        stan_descriptor(stan_only)
-        nothing
-    catch err
-        sprint(showerror, err)
-    end
-    @test !isnothing(msg) && occursin("`lower` constraint of output `a`", msg) && occursin("@juliacompat", msg)
     # Printing the model never evaluates a bound, so it still works.
     @test occursin("outputs", sprint(show, MIME"text/plain"(), StanBlocks.stan_model(stan_only)))
     @test bound_values(@slic((; f = 0.2, y = [1.0, 2.0]), begin
