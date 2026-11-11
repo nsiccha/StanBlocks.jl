@@ -1,4 +1,5 @@
 using Documenter, DocumenterVitepress, StanBlocks
+using NodeJS_20_jll: node, npm
 
 include("examples.jl")
 include("lint.jl")
@@ -42,6 +43,13 @@ makedocs(
 
 # Figures and their runtime are generated/copied only into the build tree.
 DocsExamples.publish_assets(joinpath(@__DIR__, "build", ".documenter", "public"))
+# VitePress builds here, after the figures are in place, not inside makedocs. Only
+# makedocs' own build installs the npm packages, so install them for a clean checkout.
+cd(@__DIR__) do
+    node(; adjust_PATH = true, adjust_LIBPATH = true) do _
+        run(`$(npm) install --no-audit --no-fund`)
+    end
+end
 DocumenterVitepress.build_docs(joinpath(@__DIR__, "build"))
 DocumenterVitepress.deploydocs(
     repo = "github.com/nsiccha/StanBlocks.jl",

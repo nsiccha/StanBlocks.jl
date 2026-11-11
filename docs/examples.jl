@@ -4,20 +4,23 @@ import HTMXObjects # Loads AlgebraOfVega's captioned, theme-aware HTML extension
 using BridgeStan, Markdown, SHA, TOML, Statistics, Printf
 
 const ROOT = dirname(@__DIR__)
-const MODELS = Dict{String,Module}()
+const EXAMPLES = ("golf", "pooling", "epidemic")
+# Each example's model and data come from including its research source into a fresh
+# module. That happens here, while this module loads, not lazily inside a page helper:
+# Julia 1.12 and later hide bindings created after the calling function's world age, so
+# a helper that included the source could not then read `model` or the data from it.
+const MODELS = Dict{String,Module}(map(EXAMPLES) do name
+    mod = Module(Symbol("Docs_", name))
+    Base.include(mod, joinpath(ROOT, "research", name, "model.jl"))
+    name => mod
+end)
 const RESULTS = Dict{String,Any}()
 const FIGURES = Dict{String,String}()
 const RECEIPTS = Dict{String,Dict{String,Any}}()
 const BLUE = "#2a78d6"
 const ORANGE = "#eb6834"
 
-function example_module(name)
-    get!(MODELS, name) do
-        mod = Module(Symbol("Docs_", name))
-        Base.include(mod, joinpath(ROOT, "research", name, "model.jl"))
-        mod
-    end
-end
+example_module(name) = MODELS[name]
 
 function model_block(name)
     mod = example_module(name)
