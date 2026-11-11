@@ -2852,7 +2852,10 @@ _elementwise_pointwise(f) = false
 for lpmfs in (bernoulli_lpmfs, bernoulli_logit_lpmfs, binomial_lpmfs, binomial_logit_lpmfs)
     @eval _elementwise_pointwise(::typeof($lpmfs)) = true
 end
+# `std_normal` has no parameters; its observation's `y_likelihood` twin used to
+# fail to trace for want of `std_normal_lpdfs` (todo 0s2pan0).
 for (base, params) in (
+    (:std_normal_lpdf, ()),
     (:normal_lpdf, (:loc, :scale)),
     (:cauchy_lpdf, (:loc, :scale)),
     (:lognormal_lpdf, (:loc, :scale)),
@@ -3793,14 +3796,14 @@ for dist in (:student_t, :skew_normal, :exp_mod_normal,
     else
         to_vector($drng(nu, a, b))
     end
-    # Vector LEADING arg (per-observation location): both leading args are vectors.
-    @eval @deffun $drng(real[n],   loc::vector[n], scale::vector[n], b)::real[n]   = if n == 0
+    # Either vector orientation is a per-observation leading argument.
+    @eval @deffun $drng(real[n],   loc::any_vector[n], scale::any_vector[n], b)::real[n]   = if n == 0
         rv::real[n]
         rv
     else
         $drng(loc, scale, b)
     end
-    @eval @deffun $drng(vector[n], loc::vector[n], scale::vector[n], b)::vector[n] = if n == 0
+    @eval @deffun $drng(vector[n], loc::any_vector[n], scale::any_vector[n], b)::vector[n] = if n == 0
         rv::vector[n]
         rv
     else
@@ -3811,13 +3814,13 @@ for dist in (:student_t, :skew_normal, :exp_mod_normal,
     # broadcasts the scalar natively, so delegate straight through like the
     # vector-vector overloads above (the family's `@defsig` lists
     # `(vector[n], real, real)` / `(vector[n], real, vector[n])`).
-    @eval @deffun $drng(real[n],   loc::vector[n], scale::real, b)::real[n]   = if n == 0
+    @eval @deffun $drng(real[n],   loc::any_vector[n], scale::real, b)::real[n]   = if n == 0
         rv::real[n]
         rv
     else
         $drng(loc, scale, b)
     end
-    @eval @deffun $drng(vector[n], loc::vector[n], scale::real, b)::vector[n] = if n == 0
+    @eval @deffun $drng(vector[n], loc::any_vector[n], scale::real, b)::vector[n] = if n == 0
         rv::vector[n]
         rv
     else
@@ -3879,11 +3882,8 @@ for (dist, params) in (
     flat_args = [:(matrix_variate_arg($p, m, n)) for p in params]
     @eval @deffun $dlpdf(obs::matrix[m, n], $(params...))::real =
         $dlupdf(to_vector(obs), $(flat_args...))
-    # `std_normal` has no vector pointwise companion to reshape (a vector
-    # observation of it has no `y_likelihood` either).
-    dist === :std_normal ||
-        @eval @deffun $dlpdfs(obs::matrix[m, n], $(params...))::matrix[m, n] =
-            to_matrix($dlpdfs(to_vector(obs), $(flat_args...)), m, n)
+    @eval @deffun $dlpdfs(obs::matrix[m, n], $(params...))::matrix[m, n] =
+        to_matrix($dlpdfs(to_vector(obs), $(flat_args...)), m, n)
     @eval @deffun $drng(matrix[m, n], $(params...))::matrix[m, n] =
         to_matrix($drng(vector[m * n], $(flat_args...)), m, n)
 end
@@ -4718,15 +4718,12 @@ end
         (real, int) => real
         (real, real) => real
         (int, int[n]) => real[n]
-        (int, vector[n]) => real[n]
-        (int, row_vector[n]) => real[n]
+        (int, any_vector[n]) => real[n]
         (real, int[n]) => real[n]
-        (real, vector[n]) => real[n]
-        (real, row_vector[n]) => real[n]
+        (real, any_vector[n]) => real[n]
         (int[n], real) => real[n]
-        (vector[n], real) => real[n]
-        (row_vector[n], real) => real[n]
-        (vector[n], vector[n]) => real[n]
+        (any_vector[n], real) => real[n]
+        (any_vector[n], any_vector[n]) => real[n]
     end
     typeof(exponential_rng) => begin
         (real,)=>real
@@ -4737,10 +4734,9 @@ end
                     double_exponential_rng, logistic_rng, gumbel_rng,
                     pareto_rng, scaled_inv_chi_square_rng, neg_binomial_2_rng))...} => begin
         (real, real) => real
-        (real, vector[n]) => real[n]
-        (real, row_vector[n]) => real[n]
-        (vector[n], real) => real[n]
-        (vector[n], vector[n]) => real[n]
+        (real, any_vector[n]) => real[n]
+        (any_vector[n], real) => real[n]
+        (any_vector[n], any_vector[n]) => real[n]
     end
     Union{typeof.((chi_square_rng, inv_chi_square_rng, rayleigh_rng))...} => begin
         (real,) => real
@@ -4749,12 +4745,15 @@ end
     Union{typeof.((student_t_rng, skew_normal_rng, exp_mod_normal_rng,
                     skew_double_exponential_rng, pareto_type_2_rng))...} => begin
         (real, real, real) => real
-        (real, vector[n], real) => real[n]
-        (real, vector[n], vector[n]) => real[n]
-        (vector[n], real, real) => real[n]
-        (vector[n], real, vector[n]) => real[n]
-        (vector[n], vector[n], real) => real[n]
-        (vector[n], vector[n], vector[n]) => real[n]
+        # Every argument vectorises in either orientation, including a shaped
+        # third argument beside two scalars (the student_t scale case).
+        (real, real, any_vector[n]) => real[n]
+        (real, any_vector[n], real) => real[n]
+        (real, any_vector[n], any_vector[n]) => real[n]
+        (any_vector[n], real, real) => real[n]
+        (any_vector[n], real, any_vector[n]) => real[n]
+        (any_vector[n], any_vector[n], real) => real[n]
+        (any_vector[n], any_vector[n], any_vector[n]) => real[n]
     end
     typeof(beta_binomial_rng) => begin
         (int[n], real, real) => int[n]
