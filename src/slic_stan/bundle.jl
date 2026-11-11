@@ -264,7 +264,7 @@ LHS namespaces.
 
 The result is a named tuple with:
 
-- `model`: the traced [`StanModel`](@ref), ready for cheap data rebinding;
+- `model`: the traced `StanModel`, ready for cheap data rebinding;
 - `descriptor`: its [`ModelDescriptor`](@ref), with `name` forwarded to
   [`stan_descriptor`](@ref);
 - `code`: the generated Stan source.
@@ -275,40 +275,6 @@ macro-expansion semantics: macros inside a supplied expression can execute
 Julia code during expansion. Validate untrusted source before calling this
 function and isolate its execution when it comes from an anonymous user.
 
-# Example
-
-```julia
-definitions = [:(latent(scale) = begin
-    z ~ normal(shift_zero(0.0), scale)
-    return z
-end)]
-anonymous_submodels = ["local-prior" => (:local_prior => quote
-    z ~ normal(location, scale)
-    return z
-end)]
-udf_definitions = ["shift-zero" => :(shift_zero(x::real)::real = begin
-    x + 0.25
-end), "safe-log" => (;
-    definition=:(safe_log(x::real)::real = begin
-        log(x)
-    end),
-    markers=:stanonly,
-    assertions=((;
-        condition=:(x > 0),
-        message="safe_log: x must be positive",
-    ),),
-)]
-body = "parent" => quote
-    mu ~ latent(1.0)
-    offset ~ local_prior(; location=0.0, scale=1.0)
-    y ~ normal(mu + offset, 1.0)
-end
-
-result = compile_slic_bundle((; y=[0.1, -0.2]), definitions, body;
-    udf_definitions, anonymous_submodels, name=:hierarchical)
-result.code
-result.descriptor.inputs
-```
 """
 function compile_slic_bundle(data, definitions, body;
         udf_definitions=(), anonymous_submodels=(), name=nothing)

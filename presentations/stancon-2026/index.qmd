@@ -530,7 +530,7 @@ standard workflows above, inspectable compiler below.
 ### Links
 
 - Live transpiler: <https://sb.siccha.de>
-- Feature atlas: <https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas>
+- Model guide: <https://nsiccha.github.io/StanBlocks.jl/dev/guides/models>
 - Package + source: <https://github.com/nsiccha/StanBlocks.jl>
 - Email: [nikolassiccha@gmail.com](mailto:nikolassiccha@gmail.com)
 
@@ -746,8 +746,8 @@ A small language is useful only when its “no” is explicit.
 - [Enzyme.jl documentation](https://enzyme.mit.edu/julia/stable/) and Turing's [March 2026 performance update](https://turinglang.org/news/posts/2026-03-09-newsletter-18/).
 - Community context: Julia Discourse on [performant programming](https://discourse.julialang.org/t/discussion-on-the-future-for-performant-programming-in-julia/99509) and [the 2024 AD landscape](https://discourse.julialang.org/t/state-of-ad-in-2024/112601); Hacker News on [AD correctness](https://news.ycombinator.com/item?id=45289829).
 - Maria I. Gorinova, Andrew D. Gordon & Charles Sutton, [*Probabilistic Programming with Densities in SlicStan*](https://doi.org/10.1145/3290348), POPL 2019; [source](https://github.com/mgorinova/SlicStan).
-- [StanBlocks.jl source](https://github.com/nsiccha/StanBlocks.jl) and [authoring support guide](https://nsiccha.github.io/StanBlocks.jl/dev/authoring).
+- [StanBlocks.jl source](https://github.com/nsiccha/StanBlocks.jl) and [model guide](https://nsiccha.github.io/StanBlocks.jl/dev/guides/models).
 - [BayesianRegressionModels.jl](https://github.com/nsiccha/BayesianRegressionModels.jl) and its [worked model catalogue](https://nsiccha.github.io/BayesianRegressionModels.jl/).
-- Companion [StanCon 2026 feature atlas](https://nsiccha.github.io/StanBlocks.jl/dev/feature-atlas).
+- Current [documentation](https://nsiccha.github.io/StanBlocks.jl/dev/).
 
 <span class="small muted">Talk slot: 13:40–14:00, Tuesday 18 August 2026, Ångström Laboratory, Uppsala.</span>

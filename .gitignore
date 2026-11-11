@@ -46,3 +46,12 @@ cache
 tmp
 *_files
 CLAUDE.md
+
+# Regenerable sandbox compilation products
+web/sandbox/*.stan
+web/sandbox/*.stanc
+web/sandbox/*.status
+
+# Local documentation dependencies
+docs/node_modules/
+web/status/*.status

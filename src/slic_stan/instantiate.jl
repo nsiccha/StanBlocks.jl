@@ -1,8 +1,7 @@
 """
     stan_code(model) -> String
 
-Return the generated Stan source for `model` (a [`SlicModel`](@ref
-StanBlocks.SlicModel) or [`StanModel`](@ref StanBlocks.StanModel)) as a
+Return the generated Stan source for `model` (a `SlicModel` or `StanModel`) as a
 plain `String`. This is the intentional source-inspection API: ordinary
 terminal, Markdown, and HTML display shows a semantic model summary and never
 calls this function automatically.
@@ -13,7 +12,7 @@ rendering pass runs. Output covers the full Stan program — `data`,
 `transformed_data`, `parameters`, `transformed_parameters`, `model`, and
 `generated_quantities` blocks — with automatic block placement applied.
 
-Pair with [`transpiles`](@ref StanBlocks.transpiles) for boolean smoke
+Pair with `transpiles` for boolean smoke
 tests and [`stan_instantiate`](@ref StanBlocks.stan_instantiate) to
 compile the generated code via BridgeStan.
 """
@@ -66,8 +65,8 @@ bridgestan_data(x::Dict) = JSON.json(prepare_for_stan(x);
     instantiate(model; nan_on_error=true, make_args=["STAN_THREADS=true"], warn=false, path=…) -> StanProblem
     stan_instantiate(model; ...) -> StanProblem
 
-Compile `model` (a [`SlicModel`](@ref StanBlocks.SlicModel) or
-[`StanModel`](@ref StanBlocks.StanModel)) via BridgeStan and return a
+Compile `model` (a `SlicModel` or
+`StanModel`) via BridgeStan and return a
 `StanLogDensityProblems.StanProblem`. The returned value implements the
 `LogDensityProblems` interface — call `LogDensityProblems.dimension`,
 `logdensity`, and `logdensity_and_gradient` on it.

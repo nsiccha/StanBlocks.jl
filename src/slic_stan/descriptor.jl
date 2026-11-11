@@ -55,7 +55,7 @@ StanBlocks.stan_descriptor).
   `fields`). Re-binding the container re-derives it, so a consumer must never
   ask for it separately.
   Neither an `inlined` nor a `derived` input is part of
-  [`required_inputs`](@ref StanBlocks.required_inputs), and neither belongs in a
+  `required_inputs`, and neither belongs in a
   generated form.
 - `observed::Bool` — this variable appears on the left of a `~` (it is data the
   model conditions on), as opposed to a covariate or a size.
@@ -78,13 +78,8 @@ StanBlocks.stan_descriptor).
   center type, size expressions and bound value as for the input itself, and its
   own components (a ragged field of `NamedTuple` data nests one level). The input's own
   `type` and `size` describe only the tuple (`size` is its array dims, `()` for
-  a single tuple). For `y = [[0.1, 0.2], [0.3]]`, emitted as
-  `tuple(vector[y_mem_n], array[y_ends_n] int) y`:
-
-  ```julia
-  y.fields.mem   # (type = :vector, size = (:y_mem_n,), value = [0.1, 0.2, 0.3], fields = (;))
-  y.fields.ends  # (type = :int, size = (:y_ends_n,), value = [2, 3], fields = (;))
-  ```
+  a single tuple). A ragged vector exposes its flattened values in `mem`
+  and cumulative segment ends in `ends`.
 
   An integer ragged vector reports `mem.type == :int`.
 """
@@ -261,7 +256,7 @@ by [`stan_descriptor`](@ref StanBlocks.stan_descriptor).
 
 # Fields
 - `id::String` — stable identity, derived from the generated Stan source (the
-  same key [`instantiate`](@ref StanBlocks.instantiate) caches the compiled
+  same key `instantiate` caches the compiled
   artifact under). Two models with byte-identical Stan share an `id`; changing
   the model changes it. Independent of the process, of tracing order, and of
   the gensym'd `name`.
@@ -1089,8 +1084,8 @@ end
 """
     stan_descriptor(model; name=nothing) -> ModelDescriptor
 
-Reflect `model` (a [`SlicModel`](@ref StanBlocks.SlicModel) or an
-already-traced [`StanModel`](@ref StanBlocks.StanModel)) as one
+Reflect `model` (a `SlicModel` or an
+already-traced `StanModel`) as one
 descriptor-bearing, executable declaration: stable identity, inputs, outputs
 with their generative semantics, included Stan definitions, and the operations
 DERIVED from them.
@@ -1142,35 +1137,11 @@ parameter reports `nothing`. A data-only bound computed through a Stan-only
 `@deffun` makes `stan_descriptor` throw, naming the output and the key, as a
 size does.
 
-# Example
-
-```julia
-m = @slic (; y) begin
-    sigma ~ exponential(1.)
-    mu ~ normal(0., 10.)
-    y ~ normal(mu, sigma)
-end
-
-d = stan_descriptor(m; name=:simple)
-d.id                                        # "…" — stable, content-derived
-required_inputs(d)                          # (:y,) — not the derived size `y_n`
-[i.name for i in d.inputs if i.observed]    # [:y]
-[o.name for o in d.outputs if o.generative == :draw]   # [:y_gen]
-[(o.name, o.dims) for o in d.outputs]       # [(:sigma, ()), (:mu, ()), …, (:y_gen, (length(y),))]
-d.outputs[1].constraint_values              # (lower = 0.0,): `sigma`'s support
-[f.name for f in d.definitions]             # emitted `functions` inventory
-[op.name for op in d.operations]            # [:transpile, :instantiate, :fit, :predict, :pointwise_loglik]
-
-stan_execute(d, :transpile)                 # the Stan source
-prob = stan_execute(d, :fit)                # a BridgeStan-backed StanProblem
-stan_execute(d, :predict; problem=prob, draws=theta_unc, seed=1)   # (; y_gen = […])
-```
-
 See also [`stan_operation`](@ref StanBlocks.stan_operation),
 [`stan_execute`](@ref StanBlocks.stan_execute),
 [`stan_definition`](@ref StanBlocks.stan_definition),
 [`stan_definition_closure`](@ref StanBlocks.stan_definition_closure),
-[`required_inputs`](@ref StanBlocks.required_inputs).
+`required_inputs`.
 """
 stan_descriptor(x::SlicModel; kwargs...) = stan_descriptor(stan_model(x); kwargs...)
 stan_descriptor(m::StanModel; name=nothing) = begin
@@ -1410,7 +1381,7 @@ Run operation `name` of descriptor `d`. Errors loudly if `d` does not offer it
 - `:instantiate`, `:fit` → a `StanLogDensityProblems.StanProblem` implementing
   the `LogDensityProblems` interface. Data keyword arguments re-bind inputs
   before compiling (`stan_execute(d, :fit; y=newy)`); reserved
-  [`instantiate`](@ref StanBlocks.instantiate) keywords (`path`,
+  `instantiate` keywords (`path`,
   `nan_on_error`, `make_args`, `warn`) are forwarded to it. Refuses, naming
   them, if any required input is still unbound.
 - `:predict`, `:pointwise_loglik` → a `NamedTuple` mapping each of the
