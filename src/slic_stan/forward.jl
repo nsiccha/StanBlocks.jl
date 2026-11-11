@@ -6019,11 +6019,24 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
         end
     end
     # ── 7. Desugar current-index accesses of the loop's own arrays ───────────
-    desugar(e) = begin
+    cell_access(e) = e isa Expr && e.head === :ref && e.args[1] isa Symbol &&
+        e.args[1] in public && is_cell_index(e.args[2:end])
+    desugar(e; target=false) = begin
         e isa Expr || return e
-        (e.head === :ref && e.args[1] isa Symbol && e.args[1] in public && is_cell_index(e.args[2:end])) &&
-            return e.args[1]
-        Expr(e.head, Any[desugar(a) for a in e.args]...)
+        cell_access(e) && return e.args[1]
+        # A read that indexes into the current cell (`p[g][:, 1]`, a column of a
+        # matrix cell) becomes the call `getindex(p, :, 1)`, which canonicalizes
+        # exactly as `p[:, 1]` does. As a ref it reached the probe's `lagfree`
+        # (step 8), which takes every ref on a loop array for a lag or literal
+        # read of that array and strips it, so the new cell was typed as `p`'s
+        # whole matrix (todo 1epfgwv). An assignment target keeps its ref.
+        (!target && e.head === :ref && cell_access(e.args[1])) && return Expr(
+            :call, :getindex, e.args[1].args[1], Any[desugar(a) for a in e.args[2:end]]...)
+        e.head === :(=) && return Expr(:(=), desugar(e.args[1]; target=true),
+            Any[desugar(a; target) for a in e.args[2:end]]...)
+        (e.head === :call && e.args[1] === :~ && length(e.args) == 3) && return Expr(
+            :call, :~, desugar(e.args[2]; target=true), desugar(e.args[3]; target))
+        Expr(e.head, Any[desugar(a; target) for a in e.args]...)
     end
     body_stmts = Any[desugar(s) for s in body_raw]
     # A RAGGED data observation indexed by the plate variable (`yr[i] ~ …`, `yr`
