@@ -99,7 +99,7 @@ version = "1.6.0"
 deps = ["Mmap", "SHA", "ScopedValues", "Serialization", "Treebars"]
 git-tree-sha1 = "80097f56265624f057e110f16f44af6800002732"
 repo-rev = "bad865e9a87f29116d5cfbcf36352a0555076e09"
-repo-url = "/home/niko/github/nsiccha/DynamicObjects.jl"
+repo-url = "https://github.com/nsiccha/DynamicObjects.jl.git"
 uuid = "23d02862-63fe-4c6e-8fdb-1d52cbbd39d5"
 version = "0.5.0"
 
@@ -123,7 +123,7 @@ uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
 deps = ["Markdown", "OrderedCollections"]
 git-tree-sha1 = "c14e0176df5e89037acffebc175327f5bda6152f"
 repo-rev = "4ae6cd023b1db2a692d8c0612e989d7a02a0f661"
-repo-url = "/home/niko/github/nsiccha/HTMX.jl"
+repo-url = "https://github.com/nsiccha/HTMX.jl.git"
 uuid = "27f3e1ef-6ef8-44dc-9e9a-2fb23ed44e83"
 version = "1.1.0"
 
@@ -131,7 +131,7 @@ version = "1.1.0"
 deps = ["CodecZlib", "CommonMark", "Dates", "DynamicObjects", "HTMX", "HTTP", "LazyArtifacts", "LibGit2", "Random", "Sockets", "Tables"]
 git-tree-sha1 = "37bb3994fb5d063bd6d4d91b46c11379fe004ebd"
 repo-rev = "6ad33d8816c24881dc0eb5978c25b3dd1af05974"
-repo-url = "/home/niko/github/nsiccha/HTMXObjects.jl"
+repo-url = "https://github.com/nsiccha/HTMXObjects.jl.git"
 uuid = "b12ef442-5798-4353-80f3-9562b03a0cb6"
 version = "0.1.0"
 weakdeps = ["Treebars"]
@@ -498,7 +498,7 @@ version = "0.11.3"
 deps = ["Dates", "OrderedCollections"]
 git-tree-sha1 = "69c8517562abb403c0b2a6fa18a6aad6a073789d"
 repo-rev = "2386bb179601cc61d5e5dac70a5ecaa7075ddcc0"
-repo-url = "/home/niko/github/nsiccha/Treebars.jl"
+repo-url = "https://github.com/nsiccha/Treebars.jl.git"
 uuid = "e1e568c4-3a56-40a4-95fa-9b9c6c16fccb"
 version = "0.1.0"
 

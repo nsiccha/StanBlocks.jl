@@ -1,0 +1,12 @@
+method = "normalized log-scale quadrature"
+stanblocks_version = "0.2.33"
+stan_source_sha256 = "18cf8947c75cd77fe558daa6b4023028ddc25a01ca6bc47cfca9b62cda53a63e"
+key = "c0ed7e556442cca2df5462bbb90ce1cc07bf1de919294e633a29a2d67f8fa944"
+summary_sha256 = "6f43cec8edaa16b981221e80b53b0a674b4219bb3948079ae5fe95887934f0f5"
+created_utc = "2026-11-10T23:56:03.264"
+median_refinement_rad = 0.0
+boundary_mass = 0.0
+density_difference_range = 2.929036782006733e-7
+grid_points = 4001
+julia = "1.10.12"
+refined_grid_points = 8001

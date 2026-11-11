@@ -232,18 +232,7 @@ by the transpiler and prints as Stan syntax, for example `real`, `vector[3]`,
 or `matrix[2, 4]`.
 
 Inside an `@deffun` body, `return_type_of(f, args...)` is a transpile-time type
-token and may be used in a computed type annotation:
-
-```julia
-@deffun element_type(x::real)::real = x
-@deffun copy_like(x::vector[n]) = begin
-    out::return_type_of(element_type, x[1])[n]
-    for i in 1:n
-        out[i] = x[i]
-    end
-    out
-end
-```
+token and may be used in a computed type annotation.
 
 The query is intentionally bounded to non-inline `@deffun` functions and
 `@defsig`-registered SLIC callables whose result is a scalar or sized Stan

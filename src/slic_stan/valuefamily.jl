@@ -434,8 +434,9 @@ names `@deffun` families use). The family then stands in the family slot of
 the distribution HOFs — `weighted`, `truncated`, `censored`,
 `interval_censored`, token form (`censored(family, args…; lower=lo)`) or call
 form (`censored(family(args…); lower=lo)`) — exactly like an `@lpxf` family;
-each bounded form needs the companion(s) the `stanblocks-use` §8.1 table
-lists, and `weighted` needs none.
+left censoring needs a log-CDF, right censoring a log-CCDF, and interval
+censoring or truncation the relevant tail probabilities. Weighting needs
+no additional companion.
 
 Companion bodies spell sibling labels bare (`density` calling `pointwise`,
 RNG recursing across overloads, a CCDF calling the CDF, …) exactly as in
@@ -445,7 +446,7 @@ constructor. Splice the family into a generated body
 (`Expr(:call, family, args…)`) or bind it in a module and reference it by
 name.
 
-v1 FOLLOW-UPS (each fails loudly today): explicit user bounds at a value `~`
+Unsupported operations: explicit user bounds at a value `~`
 site (put bounds in `support=`, or write `truncated(family, …)`),
 companion selectors (`density(family, …)`) and `@deffun` function-argument
 positions, data-dict carriage, ragged observations.

@@ -1,5 +1,10 @@
 """
-Defines `SlicModel`s (see `test/slic.jl` for usage examples).
+    @slic [data] body
+    @slic name(args...) = body
+
+Define a probabilistic model using Julia syntax. Bind data with the optional
+leading argument or call the resulting model with keyword inputs. A named
+definition creates a callable submodel whose positional arguments bind by name.
 
 The defining module is captured automatically via `__module__`, so that `@deffun` functions
 defined in the same module (e.g. a package extension) are found during symbol resolution.
@@ -130,12 +135,11 @@ _slic_doc_method!(mod::Module, name::Symbol, sig) = begin
 end
 
 """
-Utility macro to define function signatures (see `src/slic_stan/builtin.jl` for usage examples).
+    @defsig signature
 
-**Note:**
-
-This macro is mainly useful for bulk built-in function signature definitions.
-StanBlocks.jl users should generally prefer using @deffun.
+Register type-inference signatures for existing Stan functions. Prefer
+`@deffun` when defining a function body. This lower-level registration is
+primarily for extending the set of functions the tracer recognizes.
 """
 macro defsig(x)
     _slic_definition_expr(__module__, defsig(x; source=__source__))
@@ -177,13 +181,7 @@ transparently.
 # Inlining
 
 Annotating with `@inline` (or giving the function a Julia-convention trailing `!`
-in its name) causes every call to be expanded at the call site instead of
-producing a Stan function:
-
-```julia
-@deffun @inline scale(x::vector[n], s::real)::vector[n] = x * s
-@deffun set_first!(buf::vector[n])::vector[n] = (buf[1] = 42.; buf)
-```
+in its name) expands each call at its call site.
 
 Inline UDFs do not appear in Stan's `functions {}` block. Multi-statement
 bodies, vararg parameters, and higher-order function arguments are all
@@ -192,21 +190,6 @@ the enclosing block.
 
 `@inline` cannot be combined with `@lhs` / `@lpxf`.
 
-# Example
-
-```julia
-@deffun garch11_lpdf(y::vector[T], mu::real, alpha0::real, alpha1::real, beta1::real)::real = begin
-    sigma2 = alpha0
-    rv = 0.
-    for t in 1:T
-        rv += normal_lpdf(y[t], mu, sqrt(sigma2))
-        sigma2 = alpha0 + alpha1 * square(y[t] - mu) + beta1 * sigma2
-    end
-    return rv
-end
-```
-
-See `src/slic_stan/builtin.jl` for many more examples.
 """
 macro deffun(x)
     expanded = _inherit_source_file(
@@ -218,11 +201,7 @@ end
     @juliacompat definition
 
 Opt an eligible bodyful `@deffun` definition into the bounded deterministic
-Julia compatibility target while retaining the same SLIC/Stan lowering:
-
-```julia
-@deffun @juliacompat affine(x::real, a::real)::real = a * x + 1.0
-```
+Julia compatibility target while retaining the same SLIC/Stan lowering.
 
 It may wrap one definition or a `begin ... end` group inside `@deffun`.
 Signature-only/type-token glue, qualified or pre-existing function extensions,
@@ -239,11 +218,7 @@ end
 
 Explicitly mark a `@deffun` definition as Stan-only. This is the default, so
 the annotation is normally optional; it remains useful as documentation and
-to opt one member out of a surrounding `@juliacompat begin ... end` group:
-
-```julia
-@deffun @stanonly foo_rng(x::real)::real = stan_rng_primitive(x)
-```
+to opt one member out of a surrounding `@juliacompat begin ... end` group.
 
 It may wrap one definition or a `begin ... end` group inside `@deffun`.
 """
@@ -259,11 +234,8 @@ Register the three SLIC dispatch hooks (`lpxf_expr`, `rng_expr`, `likelihood_exp
 for one or more user-defined log-probability functions.
 
 The argument(s) must be bare symbols ending in `_lpdf`, `_lpmf`, `_lcdf`, or `_lccdf`.
-For each `foo_lpdf` (or `_lpmf`/etc.), the macro emits the registrations:
-
-    StanBlocks.lpxf_expr(::typeof(foo))       = foo_lpdf
-    StanBlocks.rng_expr(::typeof(foo))        = foo_rng
-    StanBlocks.likelihood_expr(::typeof(foo)) = foo_lpdfs
+For each name, it associates the base family with the density, random-number
+generator and pointwise log-density companions.
 
 The companion `foo_rng` and `foo_lpdfs` (resp. `_lpmfs`/`_lcdfs`/`_lccdfs`) names
 must already exist when the registrations execute. This macro does not parse
@@ -303,14 +275,6 @@ Without an explicit message, a default `"assertion failed: <cond>"` is used.
 Use inside `@deffun` bodies (control flow is not allowed in `@slic` model
 bodies — wrap the check in a helper if needed at the model level).
 
-# Example
-
-```julia
-@deffun safe_log(x::real)::real = begin
-    @stan_assert x > 0 "safe_log: argument must be positive"
-    return log(x)
-end
-```
 """
 macro stan_assert(cond, msg=nothing)
     msg_expr = msg === nothing ? string("assertion failed: ", cond) : msg
