@@ -4718,15 +4718,12 @@ end
         (real, int) => real
         (real, real) => real
         (int, int[n]) => real[n]
-        (int, vector[n]) => real[n]
-        (int, row_vector[n]) => real[n]
+        (int, any_vector[n]) => real[n]
         (real, int[n]) => real[n]
-        (real, vector[n]) => real[n]
-        (real, row_vector[n]) => real[n]
+        (real, any_vector[n]) => real[n]
         (int[n], real) => real[n]
-        (vector[n], real) => real[n]
-        (row_vector[n], real) => real[n]
-        (vector[n], vector[n]) => real[n]
+        (any_vector[n], real) => real[n]
+        (any_vector[n], any_vector[n]) => real[n]
     end
     typeof(exponential_rng) => begin
         (real,)=>real
@@ -4737,10 +4734,9 @@ end
                     double_exponential_rng, logistic_rng, gumbel_rng,
                     pareto_rng, scaled_inv_chi_square_rng, neg_binomial_2_rng))...} => begin
         (real, real) => real
-        (real, vector[n]) => real[n]
-        (real, row_vector[n]) => real[n]
-        (vector[n], real) => real[n]
-        (vector[n], vector[n]) => real[n]
+        (real, any_vector[n]) => real[n]
+        (any_vector[n], real) => real[n]
+        (any_vector[n], any_vector[n]) => real[n]
     end
     Union{typeof.((chi_square_rng, inv_chi_square_rng, rayleigh_rng))...} => begin
         (real,) => real
