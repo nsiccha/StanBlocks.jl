@@ -1,0 +1,2551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Observed effects (orange) and conditional posterior means with central 95% intervals (blue). The population mean and standard deviation are fixed inputs; these intervals exclude uncertainty in those inputs.</title>
+<style>body{font-family:system-ui,sans-serif;margin:1rem}</style>
+<script src="../vendor/vega.min.js?v=463f3db6a40b20e9" data-aov-vendor="vega.min.js"></script><script src="../vendor/vega-lite.min.js?v=58c27358e26f2d31" data-aov-vendor="vega-lite.min.js"></script><script src="../vendor/vega-embed.min.js?v=12d02acfbe3ec59e" data-aov-vendor="vega-embed.min.js"></script><link rel="stylesheet" href="../vendor/aov.css?v=5261f1e4be6049af" data-aov-vendor="aov.css"><script src="../vendor/aov-runtime.js?v=761bbc1f8912fffc" data-aov-vendor="aov-runtime.js"></script><style>@layer htmxo {
+figure.captioned { margin: 0 0 1rem 0; }
+/* The header takes what the toggle of a long text leaves of the row. */
+figcaption.caption { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.5rem; margin-bottom: 0.5rem; }
+figcaption.caption > .caption-header { flex: 1 1 16rem; min-width: 0; }
+.caption-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0.25rem 1rem; }
+/* The title keeps 16rem beside the actions, else they wrap below it. An empty
+   placeholder (the uncaptioned download header) takes no basis, so its button
+   stays on the right. */
+.caption-header > :first-child:not(:empty) { flex: 1 1 16rem; min-width: 0; }
+.caption-actions { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; }
+}
+/* Caption buttons — INTENTIONALLY UNLAYERED, at (0,2,0) so they beat Pico's
+   unlayered button and [type=button] rules (0,0,1)/(0,1,0) in any order. */
+.caption-actions > .caption-action { padding: 0.1rem 0.5rem; font-size: 0.85em; margin: 0; }
+/* The toggle of a long text, drawn like those buttons: the one disclosure that
+   is not the Pico bridge's full-width box, because it repeats on every figure
+   and a row of its own would push the figure down. The `<details>` gives up its
+   box, so its label and its content are items of the caption's row; closed
+   content stays out of that row. INTENTIONALLY UNLAYERED, and stronger than
+   Pico's and the bridge's `details` rules in any order. */
+figcaption.caption > details.caption-long { display: contents; }
+figcaption.caption > details.caption-long > summary {
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 0.1rem 0.5rem;
+    border: var(--pico-border-width, 1px) solid var(--pico-secondary, currentColor);
+    border-radius: var(--pico-border-radius, 0.25rem);
+    background: transparent;
+    color: var(--pico-secondary, inherit);
+    font-size: 0.85em;
+    font-weight: 400;
+    line-height: var(--pico-line-height, 1.5);
+}
+figcaption.caption > details.caption-long > summary:is(:hover, :focus-visible) {
+    border-color: var(--pico-secondary-hover, currentColor);
+    background: transparent;
+    color: var(--pico-secondary-hover, inherit);
+}
+figcaption.caption > details.caption-long > summary::before {
+    width: 0.85rem;
+    height: 0.85rem;
+    margin-inline-end: 0.25rem;
+    background-size: 0.85rem auto;
+}
+figcaption.caption > details.caption-long::details-content { position: absolute; padding: 0; }
+figcaption.caption > details.caption-long[open]::details-content {
+    position: static;
+    flex: 1 0 100%;
+    box-sizing: border-box;
+    padding: 0.75rem 1rem;
+    border: var(--pico-border-width, 1px) solid var(--pico-form-element-border-color, currentColor);
+    border-radius: var(--pico-border-radius, 0.25rem);
+}
+figcaption.caption > details.caption-long > :last-child > :last-child { margin-bottom: 0; }
+</style><script>// The cell that starts at a column. A cell spanning columns counts under its
+// first, and a row has none at the others, so it is not ordered by them.
+function htmxoCellAt(row, col) {
+    let at = 0;
+    for (const cell of row.cells) {
+        if (at === col) return cell;
+        at += cell.colSpan;
+        if (at > col) return undefined;
+    }
+    return undefined;
+}
+function sortTable(col, th) {
+    // Accept sortTable(th): with a single <th> element, use its leaf-column
+    // marker in a grouped header, else its position in the header row. Lets a
+    // hand-built RICH header
+    // (one holding a button/link — which can't be a plain auto-wired String
+    // header) opt into sorting WITHOUT hardcoding its column index. Legacy
+    // sortTable(col, th) (col a number) is unchanged.
+    if (th === undefined && col && col.nodeType === 1) {
+        th = col;
+        col = th.dataset.htmxoSortCol ? Number(th.dataset.htmxoSortCol) - 1
+            : Array.prototype.indexOf.call(th.parentNode.children, th);
+    }
+    const tbody = th.closest('table').querySelector('tbody');
+    // Paired-row pattern: a sortable row may carry a sibling row whose id
+    // starts with "detail-" instead of "row-" (or any custom prefix → the
+    // companion's id mirrors it). We sort only the primary rows and keep
+    // each detail row pinned to its parent. Rows without an id are treated
+    // as primary too. Skip primaries whose first cell is empty (sub-headers).
+    // `:scope > tr` keeps inner tables (e.g. a markdown table inside a
+    // detail row) from being treated as primaries.
+    const all = Array.from(tbody.querySelectorAll(':scope > tr'));
+    const isCompanion = r => r.id && r.id.startsWith('detail-');
+    const primaries = all.filter(r => !isCompanion(r) && htmxoCellAt(r, col));
+    const companions = htmxoTableCompanions(all);
+    const asc = th.dataset.sortDir !== 'asc';
+    th.dataset.sortDir = asc ? 'asc' : 'desc';
+    // `aria-sort` mirrors `data-sort-dir` on the active <th>: it is the
+    // standard accessible marker, and it is what `sortable_table`'s
+    // `default_sort=` stamps server-side. Exactly one <th> in the table
+    // carries either attribute — clear both from the other header cells.
+    th.setAttribute('aria-sort', asc ? 'ascending' : 'descending');
+    th.closest('thead').querySelectorAll('th').forEach(h => {
+        if (h !== th) { delete h.dataset.sortDir; h.removeAttribute('aria-sort'); }
+    });
+    // Sort key: prefer `data-sort-value` if the cell sets one, else the
+    // exact number a number cell or a group sum carries for the CSV
+    // (`data-htmxo-number`; the shown `1.234,5` would read as 1.234), else the
+    // visible text. This lets callers force a semantic order (e.g. status:
+    // proposed → approved → rejected) without re-encoding the displayed text.
+    // `sortable_table(...; default_sort)` writes its rows in this same order
+    // on the server (`_default_sort_rows`): change the two together.
+    const sortKey = cell => (cell.dataset.sortValue ?? cell.dataset.htmxoNumber ?? (cell.querySelector(':scope > [data-htmxo-row-label]') || cell).textContent).trim();
+    // A column with several sort keys (`ColumnSpec(...; sort_keys)`) sorts by
+    // its active key: the value at that place in each cell's
+    // `data-htmxo-sort-keys`. A missing value sorts last in both directions.
+    const keys = th.dataset.htmxoSortKeys ? JSON.parse(th.dataset.htmxoSortKeys) : null;
+    const key = keys ? Number(th.dataset.htmxoSortKey || 0) : 0;
+    const keyed = new Map();
+    const keyOf = row => {
+        if (!keyed.has(row)) keyed.set(row, htmxoSortValue(htmxoCellAt(row, col), key, keys.length, sortKey));
+        return keyed.get(row);
+    };
+    // Two texts that start with the same number compare as whole texts, each
+    // run of digits read as its number: '2 x 5' before '2 x 10'.
+    const natural = new Intl.Collator(undefined, {numeric: true}).compare;
+    const byValue = keys ? (a, b) => {
+        const av = keyOf(a), bv = keyOf(b);
+        if (av === null || bv === null) return av === bv ? 0 : av === null ? 1 : -1;
+        const c = typeof av === 'number' && typeof bv === 'number' ? av - bv : String(av).localeCompare(String(bv));
+        return asc ? c : -c;
+    } : (a, b) => {
+        const av = sortKey(htmxoCellAt(a, col));
+        const bv = sortKey(htmxoCellAt(b, col));
+        const an = parseFloat(av), bn = parseFloat(bv);
+        // `an - bn` is 0 for the same number and NaN for two infinities: both tie.
+        const c = !isNaN(an) && !isNaN(bn) ? (an - bn) || natural(av, bv) : av.localeCompare(bv);
+        return asc ? c : -c;
+    };
+    // A pinned row (`data-htmxo-pinned`) stays ahead of the others in every
+    // sort; pinned rows sort among themselves.
+    const pinned = r => r.dataset.htmxoPinned !== undefined && r.dataset.htmxoPinned !== 'false';
+    const compare = (a, b) => (pinned(b) - pinned(a)) || byValue(a, b);
+    const append = r => {
+        tbody.appendChild(r);
+        const c = companions.get(r.id);
+        if (c) tbody.appendChild(c);
+    };
+    if (th.closest('table').hasAttribute('data-htmxo-hierarchy')) {
+        // Sort each sibling set, then emit whole subtrees in preorder. Detail
+        // rows and their loaded DOM move with their master without rebuilding.
+        const siblings = new Map();
+        all.filter(r => !isCompanion(r)).forEach(r => {
+            const parent = r.dataset.htmxoParent || '';
+            if (!siblings.has(parent)) siblings.set(parent, []);
+            siblings.get(parent).push(r);
+        });
+        const visit = parent => {
+            const rows = siblings.get(parent) || [];
+            rows.sort((a, b) => htmxoCellAt(a, col) && htmxoCellAt(b, col) ? compare(a, b) : 0);
+            rows.forEach(r => { append(r); visit(r.id); });
+        };
+        visit('');
+    } else {
+        primaries.sort(compare).forEach(append);
+    }
+    // Sort caret in a dedicated trailing <span> per <th>: the old approach
+    // assigned th.textContent, which flattens EVERY child node to a text node,
+    // so sorting any column destroyed interactive content living in a header
+    // (a batch-action button, a link — e.g. the KB agents table's Model ⟳
+    // refresh and its bulk ↻/⏸/▶/🗑 buttons both went inert after a sort).
+    // Managing a caret span leaves rich header content untouched.
+    th.closest('thead').querySelectorAll('th').forEach(h => {
+        const oldCaret = h.querySelector(':scope > .htmxo-sort-caret');
+        if (oldCaret) oldCaret.remove();
+    });
+    const caret = document.createElement('span');
+    caret.className = 'htmxo-sort-caret';
+    caret.textContent = asc ? ' ▲' : ' ▼';
+    // A key other than the column's first is named after the caret.
+    if (keys && key > 0) {
+        const name = document.createElement('small');
+        name.className = 'htmxo-sort-key';
+        name.textContent = ' ' + keys[key];
+        caret.appendChild(name);
+    }
+    th.appendChild(caret);
+    // The ▾ menus mark the order now in force.
+    const order = key + ':' + (asc ? 'asc' : 'desc');
+    th.closest('thead').querySelectorAll('.htmxo-sort-pick').forEach(b =>
+        b.setAttribute('aria-pressed', String(b.closest('th') === th && b.dataset.htmxoSortPick === order)));
+}
+
+// A cell's value for sort key `key` of its column's `n`: from its
+// `data-htmxo-sort-keys`, else (a group row) its `data-sort-value` or text.
+function htmxoSortValue(cell, key, n, sortKey) {
+    if (cell && cell.dataset.htmxoSortKeys) {
+        const values = JSON.parse(cell.dataset.htmxoSortKeys);
+        if (values.length !== n) throw new Error('sortTable: a cell carries ' + values.length +
+            ' sort values for the ' + n + ' sort keys of its column');
+        return values[key] ?? null;
+    }
+    const text = cell ? sortKey(cell) : '';
+    const number = parseFloat(text);
+    return text === '' ? null : isNaN(number) ? text : number;
+}
+
+// The ▾ beside a multi-key column's label: open or close its menu, a
+// popover placed under the button so no scroll box or sticky header clips
+// it. A click elsewhere, Escape or moving the focus out closes it.
+function htmxoSortMenu(button, event) {
+    if (event) event.stopPropagation();
+    const menu = button.nextElementSibling;
+    if (menu.matches(':popover-open')) { htmxoSortMenuClose(menu, true); return; }
+    document.querySelectorAll('.htmxo-sort-menu:popover-open').forEach(m => htmxoSortMenuClose(m, false));
+    menu.showPopover();
+    button.setAttribute('aria-expanded', 'true');
+    const place = () => {
+        const r = button.getBoundingClientRect();
+        menu.style.left = Math.max(4, Math.min(r.left, window.innerWidth - menu.offsetWidth - 4)) + 'px';
+        menu.style.top = (r.bottom + 2) + 'px';
+    };
+    place();
+    const close = e => {
+        if (e.type === 'keydown' ? e.key === 'Escape'
+            : e.type === 'focusout' ? e.relatedTarget && !menu.contains(e.relatedTarget) && e.relatedTarget !== button
+            : !menu.contains(e.target) && !button.contains(e.target))
+            htmxoSortMenuClose(menu, e.type === 'keydown');
+    };
+    document.addEventListener('pointerdown', close, true);
+    document.addEventListener('keydown', close, true);
+    menu.addEventListener('focusout', close);
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    menu.htmxoSortMenuDone = () => {
+        document.removeEventListener('pointerdown', close, true);
+        document.removeEventListener('keydown', close, true);
+        menu.removeEventListener('focusout', close);
+        window.removeEventListener('scroll', place, true);
+        window.removeEventListener('resize', place);
+    };
+    (menu.querySelector('.htmxo-sort-pick[aria-pressed="true"]') || menu.querySelector('.htmxo-sort-pick')).focus();
+}
+function htmxoSortMenuClose(menu, refocus) {
+    if (menu.htmxoSortMenuDone) { menu.htmxoSortMenuDone(); menu.htmxoSortMenuDone = null; }
+    if (menu.matches(':popover-open')) menu.hidePopover();
+    const button = menu.previousElementSibling;
+    button.setAttribute('aria-expanded', 'false');
+    if (refocus) button.focus();
+}
+// A ▲/▼ in the menu: sort the column by that key in that direction.
+function htmxoSortPick(button, key, dir, event) {
+    if (event) event.stopPropagation();
+    const th = button.closest('th'), menu = button.closest('.htmxo-sort-menu');
+    th.dataset.htmxoSortKey = String(key);
+    // `sortTable` flips the direction it finds.
+    th.dataset.sortDir = dir === 'asc' ? 'desc' : 'asc';
+    sortTable(th);
+    if (menu) htmxoSortMenuClose(menu, true);
+}
+
+// Pair lookup uses literal ids, so punctuation in a hand-built key cannot
+// turn into a CSS selector. Shared by sorting and filtering.
+function htmxoTableCompanions(rows) {
+    const details = new Map(rows.filter(r => r.id.startsWith('detail-')).map(r => [r.id, r]));
+    const companions = new Map();
+    rows.forEach(r => {
+        const dash = r.id.indexOf('-');
+        if (dash >= 0 && !r.id.startsWith('detail-')) {
+            const detail = details.get('detail-' + r.id.slice(dash + 1));
+            if (detail) companions.set(r.id, detail);
+        }
+    });
+    return companions;
+}
+
+// The searchable wrapper around a table, from an element inside it (the
+// search input, a row) or a selector/element naming the wrapper or the table.
+function htmxoSearchRoot(target) {
+    const el = typeof target === 'string' ? document.querySelector(target) : target;
+    const root = el && (el.closest('.htmxo-searchable-table') || el.querySelector('.htmxo-searchable-table'));
+    if (!root) throw new Error('htmxoSearchRoot: no searchable table at ' + target);
+    return root;
+}
+
+// A table's search state: the field's query, the named predicates and the
+// branches the user opened or closed (row id -> 'true'/'false'). Like the
+// selection it is keyed per table (its body id) and page path, so a
+// re-render of the table keeps the user's search, the app's filters and the
+// open groups; a table without an id keeps its state on the wrapper element.
+window.htmxoSearchState = window.htmxoSearchState || new Map();
+function htmxoSearchOf(root) {
+    const id = root.querySelector('table').tBodies[0].id;
+    const fresh = () => ({input: '', filters: new Map(), open: new Map()});
+    if (!id) return root.htmxoSearch || (root.htmxoSearch = fresh());
+    const scope = id + '|' + location.pathname;
+    if (!window.htmxoSearchState.has(scope)) window.htmxoSearchState.set(scope, fresh());
+    return window.htmxoSearchState.get(scope);
+}
+
+// Note a branch the user opened or closed (see `htmxoSearchOf`).
+function htmxoTreeRemember(row) {
+    const root = row.closest('.htmxo-searchable-table');
+    if (root) htmxoSearchOf(root).open.set(row.id, row.dataset.htmxoTreeOpen);
+}
+
+// Re-open (or close) the remembered branches of a rendered table; a lazy
+// group the user had open loads its rows again. True when a branch changed.
+function htmxoTreeRestore(root, state) {
+    let changed = false;
+    if (!state.open.size) return changed;
+    root.querySelector('table').tBodies[0].querySelectorAll(':scope > tr[data-htmxo-tree-open]').forEach(r => {
+        const open = state.open.get(r.id);
+        if (open === undefined) return;
+        if ('htmxoLazyRows' in r.dataset) { if (open === 'true') htmxoLoadRows(r); return; }
+        if (r.dataset.htmxoTreeOpen !== open) { r.dataset.htmxoTreeOpen = open; changed = true; }
+    });
+    return changed;
+}
+
+// Register (or, with a null predicate, remove) a named row predicate on a
+// searchable table and re-filter it. A row is shown when every predicate
+// returns true; `predicate(row, ctx)` gets ctx = {query, input, text}: the
+// normalised lower-case phrase, the field's raw value, and the row's
+// lower-case search text (ancestor text included in a hierarchy). The
+// built-in phrase match is the predicate named 'search', so registering
+// 'search' replaces it (e.g. a regex mode) while other names compose with it.
+// Registrations belong to the table's search state (see `htmxoSearchOf`), so
+// registering a name again replaces it.
+function htmxoTableFilter(target, name, predicate) {
+    const root = htmxoSearchRoot(target);
+    const filters = htmxoSearchOf(root).filters;
+    if (predicate) filters.set(name, predicate);
+    else filters.delete(name);
+    htmxoFilterTable(root);
+}
+
+// Set a table's query as if typed ('' clears it) and filter.
+function htmxoTableSearch(target, query) {
+    const root = htmxoSearchRoot(target);
+    const input = root.querySelector(':scope > .htmxo-table-toolbar > label > input[type="search"]');
+    root.htmxoSearchSeen = true;
+    if (input) input.value = query;
+    htmxoFilterTable(root);
+}
+
+// The leaves of a group whose rows have not loaded yet, as `[key, search
+// text]` pairs (`data-htmxo-lazy-leaves`), parsed once per value. A linked
+// table's leaves whose `link_key` is not their key carry it third.
+function htmxoLazyLeaves(row) {
+    const source = row.dataset.htmxoLazyLeaves;
+    if (!source) return [];
+    if (row.htmxoLazyLeavesSource !== source) {
+        row.htmxoLazyLeavesSource = source;
+        row.htmxoLazyLeavesParsed = JSON.parse(source);
+    }
+    return row.htmxoLazyLeavesParsed;
+}
+
+function htmxoFilterTable(target) {
+    const root = htmxoSearchRoot(target);
+    const input = root.querySelector(':scope > .htmxo-table-toolbar > label > input[type="search"]');
+    const table = root.querySelector('table');
+    const all = Array.from(table.tBodies[0].rows);
+    const rows = all.filter(r => !r.id.startsWith('detail-'));
+    const byId = new Map(rows.filter(r => r.id).map(r => [r.id, r]));
+    const companions = htmxoTableCompanions(all);
+    const state = htmxoSearchOf(root);
+    // On a re-rendered table's first pass, an empty field takes the user's
+    // last query; a value the field already holds (rendered by the server,
+    // typed by the user) wins.
+    if (input && !root.htmxoSearchSeen) {
+        root.htmxoSearchSeen = true;
+        if (!input.value) input.value = state.input;
+    }
+    const raw = input ? input.value : '';
+    state.input = raw;
+    const query = raw.toLocaleLowerCase().trim().replace(/\s+/g, ' ');
+    const registered = state.filters;
+    // A German table writes a negative number with the minus sign `−`
+    // (`TableTexts.minus`); the `-` a keyboard types finds it, and back.
+    const unsigned = t => t.replace(/\u2212/g, '-');
+    const phrase = (row, ctx) => unsigned(ctx.text).includes(unsigned(ctx.query));
+    const filters = [['search', registered.get('search') || phrase],
+        ...Array.from(registered).filter(([name]) => name !== 'search')];
+    const visible = new Set();
+    const rejectedBy = new Map();
+    // "Collapse all" during a search keeps only the matching rows and their
+    // ancestors, hiding the descendants a matching group would reveal. It
+    // lasts until the search is cleared; the stored branch state is untouched.
+    if (query.length === 0) delete root.dataset.htmxoSearchCollapsed;
+    const collapsed = query.length > 0 && 'htmxoSearchCollapsed' in root.dataset;
+    const direct = new Set();
+    // A branch whose rows have not loaded yet also matches its rows' text.
+    const ownText = r => r.dataset.htmxoSearch ?? Array.from(r.cells).map(c => (c.querySelector(':scope > [data-htmxo-row-label]') || c).textContent).join(' ');
+    const text = r => (ownText(r) + htmxoLazyLeaves(r).map(([, t]) => ' ' + t).join('')).toLocaleLowerCase();
+    rows.forEach(row => {
+        const path = [];
+        for (let r = row; r; r = byId.get(r.dataset.htmxoParent)) path.push(r);
+        // Ancestor text participates: a group match includes its descendants,
+        // and a leaf match retains the entire path needed to understand it.
+        const ctx = {query, input: raw, text: path.reverse().map(text).join(' ').replace(/\s+/g, ' ')};
+        const failed = filters.find(([, keep]) => !keep(row, ctx));
+        if (failed) rejectedBy.set(row, failed[0]);
+        else path.forEach(r => visible.add(r));
+        const own = {query, input: raw, text: text(row)};
+        if (collapsed && !failed && filters.every(([, keep]) => keep(row, own))) path.forEach(r => direct.add(r));
+    });
+    rows.forEach(row => {
+        let ancestorsOpen = true;
+        for (let p = byId.get(row.dataset.htmxoParent); p; p = byId.get(p.dataset.htmxoParent)) {
+            if (p.dataset.htmxoTreeOpen === 'false') ancestorsOpen = false;
+        }
+        row.hidden = !visible.has(row) || (query.length === 0 && !ancestorsOpen) || (collapsed && !direct.has(row));
+        if (visible.has(row)) delete row.dataset.htmxoFiltered; else row.dataset.htmxoFiltered = '';
+    });
+    const shownParents = new Set(rows.filter(r => !r.hidden).map(r => r.dataset.htmxoParent));
+    rows.forEach(row => {
+        const branch = row.querySelector('[data-htmxo-tree-toggle]');
+        if (branch) {
+            // An unloaded branch stays expandable during a search: loading it
+            // reveals the rows that matched.
+            const pending = 'htmxoLazyRows' in row.dataset;
+            const open = pending ? false : query.length > 0 ? !collapsed || shownParents.has(row.id) : row.dataset.htmxoTreeOpen === 'true';
+            row.setAttribute('aria-expanded', open);
+            branch.setAttribute('aria-expanded', open);
+            if (!branch.hasAttribute('data-htmxo-tree-label'))
+                branch.textContent = open ? '▾' : '▸';
+            branch.disabled = query.length > 0 && !pending;
+        }
+        const detail = companions.get(row.id);
+        if (detail) {
+            const state = row.dataset.htmxoDetailOpen ?? row.getAttribute('aria-expanded');
+            if (state !== null) {
+                detail.hidden = row.hidden || state !== 'true';
+            } else if (row.hidden) {
+                // A hand-built pair records no open state: remember that the
+                // filter hid an open detail, and reopen it when the row returns.
+                if (!detail.hidden) { detail.hidden = true; detail.dataset.htmxoFilterHidden = ''; }
+            } else if ('htmxoFilterHidden' in detail.dataset) {
+                detail.hidden = false;
+                delete detail.dataset.htmxoFilterHidden;
+            }
+            if (!detail.hidden) htmxoLoadSlot(detail.querySelector('[data-loaded]'));
+        }
+    });
+    // The count is of the table's items, not its rows (`_table_item_counts`
+    // on the server): a group row, or a tree grouping's row that is no leaf,
+    // is none, a leaf listed under several groups (or branches) is one, and
+    // an item is shown when the search and the predicates keep
+    // it, whether or not its group or branch is open. The leaves of a group
+    // that has not loaded yet count once each, shown when the group's row is
+    // kept and the 'search' predicate keeps their own text.
+    const items = new Map();
+    const tally = (key, shown, by) => {
+        const was = items.get(key);
+        if (!was || (shown && !was.shown)) items.set(key, {shown, by});
+    };
+    const search = filters[0][1];
+    rows.forEach(row => {
+        if ('htmxoBranch' in row.dataset) return;
+        if (!('htmxoGroup' in row.dataset)) {
+            tally('htmxoLeaf' in row.dataset ? 'leaf:' + row.dataset.htmxoLeaf : row, visible.has(row), rejectedBy.get(row));
+            return;
+        }
+        const leaves = htmxoLazyLeaves(row);
+        if (!leaves.length) return;
+        const kept = visible.has(row), path = [ownText(row).toLocaleLowerCase()];
+        for (let r = byId.get(row.dataset.htmxoParent); r; r = byId.get(r.dataset.htmxoParent)) path.unshift(text(r));
+        // The unloaded leaves this pass hides, for hover linking.
+        row.htmxoLazyFiltered = new Set();
+        leaves.forEach(([key, t]) => {
+            const ctx = {query, input: raw, text: (path.join(' ') + ' ' + t.toLocaleLowerCase()).replace(/\s+/g, ' ')};
+            const shown = kept && search(row, ctx);
+            if (!shown) row.htmxoLazyFiltered.add(key);
+            tally('leaf:' + key, shown, kept ? 'search' : rejectedBy.get(row));
+        });
+    });
+    // hiddenBy counts the hidden items per predicate that first rejected
+    // them; listeners may push short notes that the count line appends.
+    const hiddenBy = {};
+    let shown = 0;
+    items.forEach(item => { if (item.shown) shown++; else hiddenBy[item.by] = (hiddenBy[item.by] || 0) + 1; });
+    const detail = {shown, total: items.size, query, hiddenBy, notes: []};
+    root.dispatchEvent(new CustomEvent('htmxo:table-filtered', {bubbles: true, detail}));
+    const count = root.querySelector(':scope > .htmxo-table-toolbar > label > [data-htmxo-table-count]');
+    if (count) count.textContent = htmxoText(root, 'count', {shown: detail.shown, total: detail.total}) +
+        detail.notes.map(note => ' · ' + note).join('');
+    root.querySelector(':scope > [data-htmxo-table-empty]').hidden = visible.size !== 0;
+}
+
+// "Expand all" / "Collapse all": every collapsible branch, or, while a
+// search is active, the matching paths (see `htmxoFilterTable`).
+function htmxoTreeAll(button, open) {
+    const root = htmxoSearchRoot(button);
+    const input = root.querySelector(':scope > .htmxo-table-toolbar > label > input[type="search"]');
+    const searching = Boolean(input && input.value.trim());
+    if (searching) {
+        if (open) delete root.dataset.htmxoSearchCollapsed;
+        else root.dataset.htmxoSearchCollapsed = '';
+    } else {
+        root.querySelector('table').tBodies[0].querySelectorAll(':scope > tr[data-htmxo-tree-open]')
+            .forEach(r => { r.dataset.htmxoTreeOpen = String(open); htmxoTreeRemember(r); });
+    }
+    if (open) root.querySelector('table').tBodies[0].querySelectorAll(':scope > tr[data-htmxo-lazy-rows]')
+        .forEach(r => htmxoLoadRows(r, !searching));
+    htmxoFilterTable(root);
+}
+
+// A branch rendered with `data-htmxo-lazy-rows` fetches its rows on first
+// expand: the response's <tbody data-htmxo-group-rows> rows go in after the
+// branch row, then the current sort, search and selection apply to them.
+// With `expand` (Expand all), the branches among them open as well, and the
+// lazy ones load in turn.
+function htmxoLoadRows(row, expand) {
+    if (row.htmxoLoading) return row.htmxoLoading;
+    row.setAttribute('aria-busy', 'true');
+    row.htmxoLoading = fetch(row.dataset.htmxoLazyRows, {headers: {'HX-Request': 'true'}})
+        .then(r => r.ok ? r.text() : Promise.reject(new Error(htmxoText(row, 'rows_failed', {status: r.status}))))
+        .then(html => {
+            const template = document.createElement('template');
+            template.innerHTML = html;
+            const body = template.content.querySelector('tbody[data-htmxo-group-rows]');
+            if (!body) throw new Error(htmxoText(row, 'rows_missing'));
+            const rows = Array.from(body.rows);
+            const wrapper = row.closest('[data-htmxo-group-scope]');
+            if (wrapper) htmxoRescope(rows, body.dataset.htmxoGroupScope, wrapper.dataset.htmxoGroupScope);
+            row.after(...rows);
+            ['htmxoLazyRows', 'htmxoLazyLeaves', 'htmxoSelectMembers'].forEach(k => delete row.dataset[k]);
+            delete row.htmxoMembers;
+            row.removeAttribute('aria-busy');
+            row.querySelector('[data-htmxo-tree-toggle]').setAttribute('aria-controls',
+                rows.filter(r => r.dataset.htmxoParent === row.id).map(r => r.id).join(' '));
+            if (window.htmx) rows.forEach(r => htmx.process(r));
+            row.dataset.htmxoTreeOpen = 'true';
+            htmxoTreeRemember(row);
+            if (expand) rows.forEach(r => {
+                if ('htmxoLazyRows' in r.dataset) htmxoLoadRows(r, true);
+                else if ('htmxoTreeOpen' in r.dataset) { r.dataset.htmxoTreeOpen = 'true'; htmxoTreeRemember(r); }
+            });
+            htmxoResort(row.closest('table'));
+            htmxoFilterTable(row);
+        })
+        .catch(err => {
+            row.removeAttribute('aria-busy');
+            row.htmxoLoading = null;
+            if (window.htmxoToast) window.htmxoToast(err.message, 'error');
+        });
+    return row.htmxoLoading;
+}
+
+// Re-apply the table's current client-side sort (after rows were added).
+function htmxoResort(table) {
+    const th = table.querySelector('thead th[data-sort-dir]');
+    if (!th) return;
+    th.dataset.sortDir = th.dataset.sortDir === 'asc' ? 'desc' : 'asc';
+    sortTable(th);
+}
+
+function htmxoTreeToggle(button) {
+    const row = button.closest('tr');
+    if ('htmxoLazyRows' in row.dataset) { htmxoLoadRows(row); return; }
+    row.dataset.htmxoTreeOpen = row.dataset.htmxoTreeOpen === 'true' ? 'false' : 'true';
+    htmxoTreeRemember(row);
+    // Hierarchical tables always have a search scaffold, even when its field
+    // is hidden. One visibility pass owns both collapse and filtering.
+    htmxoFilterTable(row);
+}
+function htmxoTreeRow(row, event) {
+    if (htmxoRowControl(row, event.target)) return;
+    const button = row.querySelector('[data-htmxo-tree-toggle]');
+    if (button && !button.disabled) htmxoTreeToggle(button);
+}
+
+// --- Row updates: `master_detail_table(...; update_rows, update_groups)` ---
+// An action route answers with the rows it changed, rendered by the table's
+// own call: a <tbody data-htmxo-row-update>. Each row replaces its namesake
+// in place and keeps what the user did to it (open branch and detail,
+// selection, search, focus) but takes the update's content, its detail's
+// too, except elements marked hx-preserve (below); a leaf that moves to
+// another group takes its open detail and the focus along, its new groups
+// opening if the reader had it open in view; a row new to the table, or
+// whose place among its siblings changed, goes where the table's own render
+// puts it, unless its group is not loaded, and a sorted table re-applies its
+// sort; a row in the update's scope that it no longer lists leaves, with its
+// detail and child rows. The group rows a browser regroup asks for
+// (`group_masters`) replace the browser's and leave the leaf rows alone. Any
+// htmx response holding such a body is applied this way, whatever the
+// requesting element's hx-target, and a poller that answer ends leaves with
+// the target as it was; `htmxoUpdateRows(html)` applies one fetched by other
+// means.
+function htmxoUpdateRows(update, origin) {
+    if (typeof update === 'string') {
+        const template = document.createElement('template');
+        template.innerHTML = update;
+        update = template.content.querySelector('tbody[data-htmxo-row-update]');
+    }
+    if (!update) throw new Error('htmxoUpdateRows: no <tbody data-htmxo-row-update> to apply');
+    const isDetail = r => r.id.startsWith('detail-');
+    const detailId = r => 'detail-' + r.id.slice(r.id.indexOf('-') + 1);
+    const incoming = Array.from(update.rows);
+    const list = name => JSON.parse(update.getAttribute(name) || '[]');
+    const ids = new Set(list('data-htmxo-update-ids'));
+    const leaves = new Set(list('data-htmxo-update-leaves'));
+    const groups = new Set(list('data-htmxo-update-groups'));
+    // The table: by its body id, else the one holding a row the update
+    // names, else the one around the element that asked for it.
+    const bodyOf = id => { const el = id && document.getElementById(id); return el && el.parentElement && el.parentElement.tagName === 'TBODY' ? el.parentElement : null; };
+    let tbody = update.dataset.htmxoRowUpdate ? document.getElementById(update.dataset.htmxoRowUpdate) : null;
+    const named = [...incoming.flatMap(r => [r.id, r.dataset.htmxoParent]), ...ids, ...groups];
+    for (let i = 0; !tbody && i < named.length; i++) tbody = bodyOf(named[i]);
+    // The element that asked may sit beside the table, in its toolbar (the
+    // hidden element asking for `group_masters`).
+    if (!tbody && origin && origin.closest) {
+        const around = origin.closest('[data-htmxo-grouped]');
+        const t = origin.closest('table') || (around && around.querySelector('table'));
+        tbody = t && t.tBodies[0];
+    }
+    // The group rows of a browser regroup (`group_masters`) have nothing to
+    // do once their table has left the page, or the reader has regrouped
+    // again: they are dropped, quietly.
+    const groupMasters = 'htmxoGroupMasters' in update.dataset;
+    if (!tbody && groupMasters) return;
+    if (!tbody) throw new Error('htmxoUpdateRows: no table on the page holds these rows');
+    // Rows rendered for another grouping than the table shows would land
+    // under the wrong groups: refuse them.
+    if ('htmxoGrouped' in update.dataset) {
+        const wrapper = tbody.closest('[data-htmxo-grouped]');
+        const shown = wrapper ? wrapper.dataset.htmxoGrouped : null;
+        if (shown !== update.dataset.htmxoGrouped && groupMasters) return;
+        if (shown !== update.dataset.htmxoGrouped) throw new Error('htmxoUpdateRows: the rows are grouped by ' +
+            JSON.stringify(update.dataset.htmxoGrouped) + ' but the table by ' + JSON.stringify(shown));
+    }
+    // The table's `group_order` as the update ranks it: a group key the
+    // change brought keeps its place in the next regroup in the browser.
+    if ('htmxoGroupOrder' in update.dataset) {
+        const wrapper = tbody.closest('[data-htmxo-regroup]');
+        if (wrapper) {
+            const cfg = JSON.parse(wrapper.dataset.htmxoRegroup);
+            cfg.order = JSON.parse(update.dataset.htmxoGroupOrder);
+            wrapper.dataset.htmxoRegroup = JSON.stringify(cfg);
+        }
+    }
+    // Group rows rendered under another name than the table's (a table
+    // without an id whose leaves changed since it was rendered) take the
+    // table's name, and so do the groups the update speaks for and the
+    // siblings it places rows between.
+    if ('htmxoGroupScope' in update.dataset) {
+        const wrapper = tbody.closest('[data-htmxo-group-scope]');
+        if (wrapper) {
+            const rename = htmxoRescope(incoming, update.dataset.htmxoGroupScope, wrapper.dataset.htmxoGroupScope);
+            const renamed = [...groups].map(rename);
+            groups.clear();
+            renamed.forEach(g => groups.add(g));
+            const placed = update.getAttribute('data-htmxo-update-places');
+            if (placed) update.setAttribute('data-htmxo-update-places', JSON.stringify(Object.fromEntries(
+                Object.entries(JSON.parse(placed)).map(([id, around]) => [rename(id), around.map(rename)]))));
+        }
+    }
+    const table = tbody.closest('table');
+    const masters = () => Array.from(tbody.rows).filter(r => !isDetail(r));
+    const byId = new Map(masters().map(r => [r.id, r]));
+    const own = id => { const el = document.getElementById(id); return el && el.parentElement === tbody ? el : null; };
+    const under = (r, set) => { for (let p = r; p; p = byId.get(p.dataset.htmxoParent)) if (set.has(p.id)) return true; return false; };
+    const parentOf = r => r.dataset.htmxoParent || '';
+    const detailOpen = r => Boolean(own(detailId(r))) && (r.dataset.htmxoDetailOpen ?? r.getAttribute('aria-expanded')) === 'true';
+    // A row the reader has open in view: shown, with its detail open.
+    const openInView = r => !r.hidden && detailOpen(r);
+    // Focus in a row being replaced returns to the same control (or the row)
+    // in its replacement, in the row itself or in its detail.
+    const active = document.activeElement;
+    let focusRow = active && active.closest ? active.closest('tr') : null;
+    while (focusRow && focusRow.parentElement !== tbody) focusRow = focusRow.parentElement && focusRow.parentElement.closest('tr');
+    const focusMaster = focusRow && isDetail(focusRow) ? masters().find(m => detailId(m) === focusRow.id) : focusRow;
+    const focus = focusRow ? {id: (focusMaster || focusRow).id, inDetail: Boolean(focusMaster) && focusMaster !== focusRow,
+        index: htmxoFocusables(focusRow).indexOf(active)} : null;
+    // Rows of the scope that the update no longer lists leave, with their
+    // detail rows and child rows; their parents' toggles name fewer rows.
+    const listed = new Set(incoming.filter(r => !isDetail(r)).map(r => r.id));
+    const scoped = r => ids.has(r.id) || ('htmxoLeaf' in r.dataset && leaves.has(r.dataset.htmxoLeaf)) || under(r, groups);
+    const removed = new Set(masters().filter(r => scoped(r) && !listed.has(r.id)).map(r => r.id));
+    const doomed = masters().filter(r => under(r, removed));
+    const touched = new Set(doomed.map(r => byId.get(r.dataset.htmxoParent)).filter(p => p && !under(p, removed)));
+    // A leaf that moves to another group leaves as one row and arrives as
+    // another (a leaf's row id names its group): what the reader did to the
+    // copy that leaves goes to the copy that arrives.
+    const leaving = new Map();
+    doomed.forEach(r => {
+        if (!('htmxoLeaf' in r.dataset)) return;
+        const was = leaving.get(r.dataset.htmxoLeaf) || {open: false, inView: false, focus: false};
+        leaving.set(r.dataset.htmxoLeaf, {open: was.open || detailOpen(r), inView: was.inView || openInView(r),
+            focus: was.focus || (focus !== null && focus.id === r.id)});
+    });
+    const details = new Map(incoming.filter(isDetail).map(r => [r.id, r]));
+    // hx-preserve, as htmx's own swaps honour it: an element of the update
+    // marked hx-preserve, with an id, gives way to the page's element of that
+    // id, moved with its state (a <details> the reader opened, content loaded
+    // into it, what was typed). A lazy detail loads again, so the preserved
+    // elements of the content it had wait in it, hidden, for that load's swap
+    // to claim them; a moved leaf's go to its first new copy (as `handed`
+    // below). Meanwhile they stay off the rows that leave.
+    const claimed = new Map(), parked = new Map();
+    incoming.forEach(r => htmxoPreservedIn(r).forEach(p => {
+        const el = document.getElementById(p.id);
+        if (el && !claimed.has(el) && !update.contains(el) && !el.contains(tbody)) claimed.set(el, p);
+    }));
+    const handOver = (from, to) => {
+        if (from && to && to.querySelector('.htmxo-md-detail-slot'))
+            htmxoPreservedIn(from).forEach(el => { if (!claimed.has(el)) parked.set(el, to); });
+    };
+    const arriving = new Map();
+    incoming.forEach(r => {
+        if (isDetail(r)) return;
+        if (byId.has(r.id)) handOver(own(detailId(byId.get(r.id))), details.get(detailId(r)));
+        else if ('htmxoLeaf' in r.dataset && !arriving.has(r.dataset.htmxoLeaf)) arriving.set(r.dataset.htmxoLeaf, details.get(detailId(r)));
+    });
+    doomed.forEach(r => { if ('htmxoLeaf' in r.dataset) handOver(own(detailId(r)), arriving.get(r.dataset.htmxoLeaf)); });
+    const held = htmxoPreserveHold([...claimed.keys(), ...parked.keys()]);
+    doomed.forEach(r => {
+        const d = own(detailId(r));
+        htmxoRowDiscard(r);
+        if (d) htmxoRowDiscard(d);
+        byId.delete(r.id);
+    });
+    // The last row of `r` with its detail and child rows.
+    const end = r => {
+        const self = new Set([r.id]);
+        let last = r;
+        for (let n = r.nextElementSibling; n && (isDetail(n) || under(n, self)); n = n.nextElementSibling) last = n;
+        return last;
+    };
+    // Where the full table has each row among its siblings: the update names
+    // the siblings around each row whose preceding sibling it does not list
+    // ('' at either end); any other row follows the listed one before it.
+    const places = JSON.parse(update.getAttribute('data-htmxo-update-places') || '{}');
+    const lastListed = new Map();
+    const placeOf = row => {
+        const prev = lastListed.get(parentOf(row));
+        lastListed.set(parentOf(row), row.id);
+        return places[row.id] || (prev ? [prev, null] : null);
+    };
+    // Move a row, with its detail and child rows, there: after the sibling
+    // before it, else first, else before the sibling after it. With neither
+    // sibling on the page the row stays where it is.
+    const place = (row, [prev, next]) => {
+        const sibling = id => { const r = id ? byId.get(id) : null; return r && r !== row && parentOf(r) === parentOf(row) ? r : null; };
+        const parent = byId.get(parentOf(row));
+        let after = sibling(prev), before = null;
+        if (after) after = end(after);
+        else if (prev === '') { after = parent ? own(detailId(parent)) || parent : null; if (!after) before = tbody.firstElementChild; }
+        else if (!(before = sibling(next))) return false;
+        const block = [];
+        for (let n = row, last = end(row); n; n = n === last ? null : n.nextElementSibling) block.push(n);
+        if (after ? after.nextElementSibling === row : before === row || block[block.length - 1].nextElementSibling === before) return false;
+        if (after) after.after(...block); else before.before(...block);
+        return true;
+    };
+    const fresh = [];
+    // The rows to keep in view, with whether to open their detail; the row
+    // the focus returns to, and whether it moved to another group.
+    const follow = [];
+    let focusTo = focus && focus.id, focusMoved = false;
+    const incomingById = new Map(incoming.map(r => [r.id, r]));
+    incoming.filter(r => !isDetail(r)).forEach(row => {
+        const detail = details.get(detailId(row)) || null;
+        const old = byId.get(row.id);
+        const at = placeOf(row);
+        // The copy a moved leaf arrives as (the first, for a leaf listed in
+        // several groups) takes its open detail and the focus, and stays in
+        // view if the reader had the leaf open in view.
+        const handed = !old && 'htmxoLeaf' in row.dataset ? leaving.get(row.dataset.htmxoLeaf) : null;
+        if (handed) {
+            leaving.delete(row.dataset.htmxoLeaf);
+            if (handed.inView) follow.push({id: row.id, open: handed.open});
+            if (handed.focus) { focusTo = row.id; focusMoved = true; }
+        }
+        if (old) {
+            const oldDetail = own(detailId(old));
+            // So does a row that moves to another parent (in a tree).
+            if (parentOf(old) !== parentOf(row)) {
+                if (openInView(old)) follow.push({id: row.id, open: true});
+                if (focusTo === row.id) focusMoved = true;
+            }
+            htmxoCarryRow(old, row, oldDetail, detail);
+            old.before(row);
+            if (detail) row.after(detail);
+            htmxoRowDiscard(old);
+            if (oldDetail) htmxoRowDiscard(oldDetail);
+        } else {
+            const parentId = row.dataset.htmxoParent;
+            const parent = parentId ? byId.get(parentId) : null;
+            // A row whose group is not on the page, or not loaded, waits for it.
+            if (parentId && (!parent || 'htmxoLazyRows' in parent.dataset)) return;
+            const last = parent ? end(parent) : tbody.lastElementChild;
+            if (last) last.after(row); else tbody.append(row);
+            if (detail) row.after(detail);
+            if (handed && handed.open && detail) htmxoMdShow(row, detail, true);
+        }
+        byId.set(row.id, row);
+        const shifted = Boolean(at) && place(row, at);
+        if (!old || shifted) { const parent = byId.get(parentOf(row)); if (parent) touched.add(parent); }
+        touched.add(row);
+        fresh.push(row);
+        if (detail) fresh.push(detail);
+    });
+    htmxoPreservePlace(held, claimed, parked);
+    // The new rows are htmx content like any swapped in: processed, then
+    // announced with htmx:load (the table's own restore runs once, below).
+    if (window.htmx) {
+        fresh.forEach(el => htmx.process(el));
+        window.htmxoRowsUpdating = true;
+        try { fresh.forEach(el => htmx.trigger(el, 'htmx:load')); } finally { window.htmxoRowsUpdating = false; }
+    }
+    // A sorted table re-applies its sort to the rows the update placed or
+    // changed, before focus returns (moving a row drops its focus).
+    if (fresh.length) htmxoResort(table);
+    htmxoTallyScale(table);
+    // A branch toggle names the child rows the branch now has.
+    const kidsOf = new Map();
+    if (touched.size) masters().forEach(r => {
+        const p = r.dataset.htmxoParent;
+        if (p) { if (!kidsOf.has(p)) kidsOf.set(p, []); kidsOf.get(p).push(r.id); }
+    });
+    touched.forEach(b => {
+        const toggle = b.isConnected && b.querySelector(':scope > td [data-htmxo-tree-toggle]');
+        if (!toggle) return;
+        const kids = kidsOf.get(b.id) || [];
+        if (kids.length) toggle.setAttribute('aria-controls', kids.join(' '));
+        else toggle.removeAttribute('aria-controls');
+    });
+    // A row kept in view opens the groups above it, outermost first; at a
+    // group that has not loaded its rows the rest waits for them (below).
+    const parentId = id => { const r = byId.get(id) || incomingById.get(id); return r ? parentOf(r) : ''; };
+    const above = id => { const path = []; for (let p = parentId(id); p; p = parentId(p)) path.unshift(p); return path; };
+    const openGroup = r => { if (r.dataset.htmxoTreeOpen === 'false') { r.dataset.htmxoTreeOpen = 'true'; htmxoTreeRemember(r); } };
+    const later = follow.filter(f => {
+        for (const p of above(f.id)) {
+            const r = own(p);
+            if (!r) return false;
+            if ('htmxoLazyRows' in r.dataset) return true;
+            openGroup(r);
+        }
+        return false;
+    });
+    const root = tbody.closest('.htmxo-searchable-table');
+    const select = tbody.closest('[data-htmxo-select]');
+    const ownRoot = root && root.querySelector('table') === table, ownSelect = select && select.querySelector('table') === table;
+    // The focus returns below, once the rows show, in place of the
+    // selection's return to the row (noted as its row left).
+    if (focus && ownSelect) htmxoSelectionOf(select).refocus = null;
+    if (ownRoot) htmxoFilterTable(root);
+    else if (ownSelect) htmxoSelectionUpdate(select);
+    fresh.forEach(d => { if (isDetail(d) && !d.hidden) htmxoLoadSlot(d.querySelector('[data-loaded]')); });
+    // To the same control, in the row's replacement or in the copy a moved
+    // leaf arrived as, scrolled into view if it moved to another group; while
+    // that control is not there (a lazy detail loads again), to the row or its
+    // detail control; while the row does not show, to the nearest group row
+    // above it that does.
+    const lost = () => !document.activeElement || document.activeElement === document.body;
+    const shown = el => Boolean(el) && el.getClientRects().length > 0;
+    const focusAt = (id, scroll) => {
+        const row = own(id);
+        const holder = row && (focus.inDetail ? own(detailId(row)) : row);
+        let target = holder && (focus.index >= 0 ? htmxoFocusables(holder)[focus.index] : holder.hasAttribute('tabindex') ? holder : null);
+        for (let r = row, rid = id; !shown(target) && rid; rid = parentId(rid), r = own(rid)) {
+            target = !shown(r) ? null : r.hasAttribute('tabindex') ? r :
+                (r === row && r.querySelector('[data-htmxo-detail-toggle]')) || r.querySelector('[data-htmxo-tree-toggle]');
+        }
+        if (!shown(target)) return null;
+        target.focus({preventScroll: true});
+        if (scroll) target.scrollIntoView({block: 'nearest'});
+        return target;
+    };
+    const placed = focus && lost() ? focusAt(focusTo, focusMoved) : null;
+    later.forEach(f => (async () => {
+        for (const p of above(f.id)) {
+            const r = own(p);
+            if (!r) return;
+            if ('htmxoLazyRows' in r.dataset) await htmxoLoadRows(r);
+            else openGroup(r);
+        }
+        const row = own(f.id), d = row && own(detailId(row));
+        if (!row) return;
+        if (d && f.open) htmxoMdShow(row, d, true);
+        if (ownRoot) htmxoFilterTable(root);
+        if (focusTo === f.id && (lost() || (placed && document.activeElement === placed))) focusAt(f.id, true);
+    })());
+}
+
+// What a replaced row keeps from the one it replaces: the state the user
+// gave it, which the server does not know.
+function htmxoCarryRow(old, row, oldDetail, detail) {
+    if ('htmxoTreeOpen' in old.dataset && 'htmxoTreeOpen' in row.dataset) row.dataset.htmxoTreeOpen = old.dataset.htmxoTreeOpen;
+    // A lazy group stays lazy until the table loads it; once loaded, its rows
+    // are on the page and the update's lazy marks no longer apply.
+    if (!('htmxoLazyRows' in old.dataset))
+        ['htmxoLazyRows', 'htmxoLazyLeaves', 'htmxoSelectMembers'].forEach(k => delete row.dataset[k]);
+    row.hidden = old.hidden;
+    if ('htmxoFiltered' in old.dataset) row.dataset.htmxoFiltered = ''; else delete row.dataset.htmxoFiltered;
+    ['aria-selected', 'tabindex'].forEach(a => { if (old.hasAttribute(a)) row.setAttribute(a, old.getAttribute(a)); });
+    if ('htmxoActive' in old.dataset) row.dataset.htmxoActive = '';
+    if (oldDetail && detail) {
+        htmxoMdShow(row, detail, (old.dataset.htmxoDetailOpen ?? old.getAttribute('aria-expanded')) === 'true');
+        if (row.hidden) detail.hidden = true;
+    }
+}
+
+function htmxoFocusables(row) {
+    return Array.from(row.querySelectorAll('a[href],button,input,select,textarea,summary,[tabindex]'));
+}
+
+// The elements in `el` marked hx-preserve with an id, outermost first: a
+// preserved element brings those inside it along.
+function htmxoPreservedIn(el) {
+    return Array.from(el.querySelectorAll('[hx-preserve][id],[data-hx-preserve][id]')).filter(p => {
+        const outer = p.parentElement.closest('[hx-preserve][id],[data-hx-preserve][id]');
+        return !outer || outer === el || !el.contains(outer);
+    });
+}
+// Move `el` before `before` in `parent`, keeping its state (focus, a running
+// iframe) where the browser can, as htmx does. The page's moveBefore guard
+// (the master/detail runtime) keeps a datalist inside `el` from stopping Chrome.
+function htmxoMove(parent, el, before) {
+    if (parent.moveBefore && el.isConnected && parent.isConnected) parent.moveBefore(el, before);
+    else parent.insertBefore(el, before);
+}
+// Hold preserved elements off the page's rows, hidden, while a row update
+// replaces those rows, noting where each was.
+function htmxoPreserveHold(els) {
+    if (!els.length) return null;
+    const homes = new Map(els.map(el => [el, [el.parentNode, el.nextSibling]]));
+    const pantry = Object.assign(document.createElement('div'), {hidden: true});
+    document.body.append(pantry);
+    els.forEach(el => htmxoMove(pantry, el, null));
+    return {pantry, homes};
+}
+// Put each held element in place of the update's element it was claimed by,
+// or in a hidden holder in the lazy detail whose load claims it; one whose
+// place did not reach the page goes back where it was, or leaves with its row.
+function htmxoPreservePlace(held, claimed, parked) {
+    if (!held) return;
+    const back = el => {
+        const [parent, next] = held.homes.get(el);
+        if (parent.isConnected) htmxoMove(parent, el, next && next.parentNode === parent ? next : null);
+        else htmxoRowDiscard(el);
+    };
+    claimed.forEach((p, el) => {
+        if (!p.isConnected) return back(el);
+        htmxoMove(p.parentNode, el, p);
+        p.remove();
+    });
+    parked.forEach((d, el) => {
+        const slot = d.isConnected && d.querySelector('.htmxo-md-detail-slot');
+        if (!slot) return back(el);
+        let hold = slot.querySelector(':scope > [data-htmxo-preserved]');
+        if (!hold) {
+            hold = Object.assign(document.createElement('div'), {hidden: true});
+            hold.dataset.htmxoPreserved = '';
+            slot.append(hold);
+        }
+        htmxoMove(hold, el, null);
+    });
+    held.pantry.remove();
+}
+
+// Remove a row as an htmx swap would, so htmx releases what it bound there.
+function htmxoRowDiscard(el) {
+    if (window.htmx && htmx.swap) htmx.swap(el, '', {swapStyle: 'delete', swapDelay: 0, settleDelay: 0});
+    else el.remove();
+}
+
+if (!window.htmxoRowUpdateBound) {
+    window.htmxoRowUpdateBound = true;
+    document.addEventListener('htmx:beforeSwap', e => {
+        const d = e.detail;
+        if (!d.shouldSwap || typeof d.serverResponse !== 'string' || !d.serverResponse.includes('data-htmxo-row-update')) return;
+        const template = document.createElement('template');
+        template.innerHTML = d.serverResponse;
+        const update = template.content.querySelector('tbody[data-htmxo-row-update]');
+        if (!update) return;
+        d.shouldSwap = false;
+        // Nothing replaces a poller this answer ends: it leaves here, with what
+        // it displaced back first, since that can be the row being updated.
+        // The element that asked is then the one that started the operation.
+        const ended = window.htmxoPollerAnswered ? window.htmxoPollerAnswered(d, update) : null;
+        const asked = ended && ended.elt && ended.elt.isConnected ? ended.elt : d.requestConfig && d.requestConfig.elt;
+        try {
+            htmxoUpdateRows(update, asked);
+        } catch (err) {
+            if (window.htmxoToast) window.htmxoToast(err.message, 'error');
+            throw err;
+        }
+    });
+}
+
+// A swapped-in table with a stored query, predicates or open branches
+// filters as it loads. A row update (`htmxoUpdateRows`) makes its own pass
+// over the table its rows join.
+function htmxoSearchRestore(elt) {
+    if (!elt || !elt.querySelectorAll) return;
+    const roots = new Set(elt.querySelectorAll('.htmxo-searchable-table'));
+    const around = !window.htmxoRowsUpdating && elt.closest && elt.closest('.htmxo-searchable-table');
+    if (around) roots.add(around);
+    roots.forEach(root => {
+        const state = htmxoSearchOf(root);
+        const reopened = htmxoTreeRestore(root, state);
+        if (state.input || state.filters.size || reopened) htmxoFilterTable(root);
+    });
+}
+if (!window.htmxoSearchBound) {
+    window.htmxoSearchBound = true;
+    document.addEventListener('htmx:load', e => htmxoSearchRestore(e.target));
+}
+// Included inside swapped-in content, this script runs after that content's
+// htmx load event: restore what is already in the document.
+if (document.body) htmxoSearchRestore(document.body);
+
+// --- Sticky toolbar and header: `sortable_table(...; sticky=true)` ---
+// The header sticks just below its table's toolbar, so the toolbar's height
+// goes into `--htmxo-table-toolbar-h` on its parent and the header's into
+// `--htmxo-table-head-h` on the table (rows scroll into view below both). A
+// `.table-wrap` is `data-htmxo-width="fits"` while its table fits it, which
+// drops the sideways scroll box so the header can stick to the window, else
+// `"wide"`: a window-tall box scrolling both ways with the header at its top.
+// Measurements run in a task of their own, never inside the observer's
+// callback, whose layout changes would re-notify in the same frame; a newly
+// found element is measured that way too, without waiting for the
+// observer's first notice. A table inside another table's cell does not
+// stick to the window, but its wrapper is measured all the same, so a wide
+// one becomes that box too, sized to fit below the outer table's line and
+// header. Its own line and header are not measured: its rows keep scrolling
+// into view below the outer ones, whose heights they inherit.
+// Only the observer and a newly found element measure. A swap anywhere on the
+// page can drop the values the server did not render (a morph, or htmx's
+// settle giving a same-id element its new `style`), so after every swap the
+// last measured values are put back as they were, reading no layout: reading
+// it there forced the browser to lay out the whole page again on each swap,
+// one cell's update included. A swap that changes a size reaches the
+// observer, which measures after the browser's own layout.
+window.htmxoStickyTracked = window.htmxoStickyTracked || new Set();
+window.htmxoStickyHeld = window.htmxoStickyHeld || new WeakMap();
+function htmxoStickyMeasure(el) {
+    if (!el.isConnected) return;
+    if (el.classList.contains('htmxo-table-toolbar')) {
+        const height = el.offsetHeight + 'px';
+        window.htmxoStickyHeld.set(el, height);
+        el.parentElement.style.setProperty('--htmxo-table-toolbar-h', height);
+        return;
+    }
+    const table = el.tagName === 'TABLE' ? el : el.querySelector(':scope > table');
+    if (!table) return;
+    const held = {};
+    if (!table.parentElement.closest('td, th')) {
+        held.head = (table.tHead ? table.tHead.offsetHeight : 0) + 'px';
+        table.style.setProperty('--htmxo-table-head-h', held.head);
+    }
+    const wrap = table.parentElement;
+    if (wrap.classList.contains('table-wrap')) {
+        // The table's own width, not `wrap.scrollWidth`, which also counts anything
+        // poking out of a cell: a few pixels in one open row would box the whole
+        // table, shortening the page and moving the row just clicked off screen.
+        held.width = table.offsetWidth > wrap.clientWidth + 1 ? 'wide' : 'fits';
+        if (wrap.dataset.htmxoWidth !== held.width) wrap.dataset.htmxoWidth = held.width;
+    }
+    window.htmxoStickyHeld.set(table, held);
+}
+// Put back what a swap dropped from a measured element; an element not
+// measured yet is measured.
+function htmxoStickyRestore(el) {
+    if (!el.isConnected) return;
+    if (el.classList.contains('htmxo-table-toolbar')) {
+        const height = window.htmxoStickyHeld.get(el);
+        if (!height) return htmxoStickyQueue(el);
+        if (el.parentElement.style.getPropertyValue('--htmxo-table-toolbar-h') !== height)
+            el.parentElement.style.setProperty('--htmxo-table-toolbar-h', height);
+        return;
+    }
+    const table = el.tagName === 'TABLE' ? el : el.querySelector(':scope > table');
+    if (!table) return;
+    const held = window.htmxoStickyHeld.get(table);
+    if (!held) return htmxoStickyQueue(el);
+    if (held.head && table.style.getPropertyValue('--htmxo-table-head-h') !== held.head)
+        table.style.setProperty('--htmxo-table-head-h', held.head);
+    const wrap = table.parentElement;
+    if (held.width && wrap.dataset.htmxoWidth !== held.width) wrap.dataset.htmxoWidth = held.width;
+}
+function htmxoStickyQueue(el) {
+    (window.htmxoStickyPending || (window.htmxoStickyPending = new Set())).add(el);
+    if (window.htmxoStickyFrame) return;
+    window.htmxoStickyFrame = setTimeout(() => {
+        window.htmxoStickyFrame = 0;
+        const pending = Array.from(window.htmxoStickyPending);
+        window.htmxoStickyPending.clear();
+        pending.forEach(htmxoStickyMeasure);
+    }, 0);
+}
+// Observe the sticky toolbars and tables in `elt` (and the table wrappers,
+// whose width changes alone when a wide table's window widens); forget
+// elements that have left the document.
+function htmxoStickyTrack(elt) {
+    if (!elt || !elt.querySelectorAll || typeof ResizeObserver !== 'function') return;
+    const tracked = window.htmxoStickyTracked;
+    const ro = window.htmxoStickyObserver || (window.htmxoStickyObserver =
+        new ResizeObserver(entries => entries.forEach(e => htmxoStickyQueue(e.target))));
+    tracked.forEach(el => { if (!el.isConnected) { ro.unobserve(el); tracked.delete(el); } });
+    // No top-level `const`: this file may run more than once per page.
+    const sticky = '.htmxo-table-toolbar[data-htmxo-sticky], table[data-htmxo-sticky]';
+    const found = Array.from(elt.querySelectorAll(sticky));
+    if (elt.matches && elt.matches(sticky)) found.push(elt);
+    found.forEach(el => {
+        if (!el.isConnected || (el.tagName !== 'TABLE' && el.parentElement.closest('td, th'))) return;
+        const wrap = el.tagName === 'TABLE' && el.parentElement.classList.contains('table-wrap') ? el.parentElement : null;
+        [el, wrap].forEach(t => {
+            if (!t) return;
+            if (tracked.has(t)) return htmxoStickyRestore(t);
+            tracked.add(t);
+            // A toolbar or table by its border box, the height and width
+            // measured; the wrapper by its content box, which a scrollbar changes.
+            ro.observe(t, {box: t === wrap ? 'content-box' : 'border-box'});
+            htmxoStickyQueue(t);
+        });
+    });
+}
+function htmxoStickyRestoreAll() {
+    window.htmxoStickyTracked.forEach(htmxoStickyRestore);
+}
+if (!window.htmxoStickyBound) {
+    window.htmxoStickyBound = true;
+    document.addEventListener('htmx:load', e => htmxoStickyTrack(e.target));
+    // A morph drops the values at the swap, htmx's settle at the settle.
+    document.addEventListener('htmx:afterSwap', htmxoStickyRestoreAll);
+    document.addEventListener('htmx:afterSettle', htmxoStickyRestoreAll);
+    document.addEventListener('DOMContentLoaded', () => htmxoStickyTrack(document.body));
+}
+if (document.body) htmxoStickyTrack(document.body);
+
+// --- Columns keep their widths: every sortable_table (`data-htmxo-columns`) ---
+// Auto table layout sizes the columns over the rows that are shown, so a
+// detail opening, a lazy detail or lazy group rows arriving, a group or
+// branch expanding or a search hiding rows moved every column. The runtime
+// sizes the columns once with that same layout over every row the table
+// holds, shown or hidden ("sizing": the CSS shows hidden rows collapsed;
+// detail rows stay out), then holds them ("held": `table-layout: fixed`, one
+// `<col>` per column). A table filling its room holds shares of it, so a
+// scrollbar coming or going narrows the columns together; a wider or
+// narrower one holds pixels. It sizes them again when the room changes by
+// more than two scrollbars, when the browser regroups the table and once web
+// fonts have loaded. A table that is not laid out yet (a closed tab or detail
+// row) is sized when it first shows. A morph keeps the element but drops the
+// colgroup and marks the server did not render: they are put back on the
+// swap, before the browser paints. Putting them back reads no layout, as a
+// table already sized or not laid out yet reads none on a swap: the room's
+// observer is what notices a new width. Reading it on every swap made the
+// browser lay out the whole page there, for each update of a single cell.
+window.htmxoColumnsHeld = window.htmxoColumnsHeld || new WeakMap();
+window.htmxoColumnsWatched = window.htmxoColumnsWatched || new Map();
+// Tables whose room had no width when last measured (a closed tab or detail).
+window.htmxoColumnsUnlaid = window.htmxoColumnsUnlaid || new WeakSet();
+// The header cell of each column: the one spanning that column alone (a
+// grouped header's leaf, or a cell spanning both header rows).
+function htmxoColumnCells(table) {
+    const cells = [], taken = [];
+    if (!table.tHead) return cells;
+    Array.from(table.tHead.rows).forEach((row, r) => {
+        let c = 0;
+        Array.from(row.cells).forEach(cell => {
+            while (taken[r] && taken[r][c]) c++;
+            for (let i = 0; i < Math.max(cell.rowSpan, 1); i++)
+                for (let j = 0; j < cell.colSpan; j++) (taken[r + i] = taken[r + i] || [])[c + j] = true;
+            if (cell.colSpan === 1) cells[c] = cell;
+            c += cell.colSpan;
+        });
+    });
+    return cells;
+}
+function htmxoColumnsApply(table, held) {
+    let group = table.querySelector(':scope > colgroup[data-htmxo-columns]');
+    if (!group) {
+        group = document.createElement('colgroup');
+        group.setAttribute('data-htmxo-columns', '');
+        table.insertBefore(group, table.caption ? table.caption.nextSibling : table.firstChild);
+    }
+    group.replaceChildren(...held.widths.map(w => {
+        const col = document.createElement('col');
+        col.style.width = held.fill ? (100 * w / held.width) + '%' : w + 'px';
+        return col;
+    }));
+    table.style.width = held.fill ? '100%' : held.width + 'px';
+    table.dataset.htmxoColumns = 'held';
+}
+// How much an ancestor's transform or zoom (a report tile scaled to fit)
+// scales the table's client rects, given its rect width `box`: the held
+// widths are layout pixels, so a zoomed table must look as it does unzoomed.
+// A table's box is its border box (the browser's own table style), whose
+// width getComputedStyle reports in layout pixels; offsetWidth, in whole
+// pixels, stands in for any other box. A difference within either's
+// rounding is no scale.
+function htmxoColumnsScale(table, box) {
+    const style = getComputedStyle(table), exact = style.boxSizing === 'border-box';
+    const layout = exact ? parseFloat(style.width) : table.offsetWidth;
+    return layout > 0 && Math.abs(box - layout) >= (exact ? 0.01 : 1) ? box / layout : 1;
+}
+function htmxoColumnsMeasure(table, force) {
+    if (!table.isConnected || !('htmxoColumns' in table.dataset)) return;
+    const cells = htmxoColumnCells(table);
+    if (!cells.length || cells.length !== cells.filter(Boolean).length) return;
+    const room = table.parentElement.clientWidth;
+    window.htmxoColumnsUnlaid[room ? 'delete' : 'add'](table);
+    if (!room) return;
+    const held = window.htmxoColumnsHeld.get(table);
+    if (held && !force && held.widths.length === cells.length && Math.abs(held.room - room) <= 40) {
+        if (table.dataset.htmxoColumns !== 'held' ||
+            !table.querySelector(':scope > colgroup[data-htmxo-columns]')) htmxoColumnsApply(table, held);
+        return;
+    }
+    const group = table.querySelector(':scope > colgroup[data-htmxo-columns]');
+    if (group) group.remove();
+    // Size with the table's own width, if the app gave it one.
+    const own = held ? held.own : table.style.width;
+    table.style.width = own;
+    table.dataset.htmxoColumns = 'sizing';
+    const box = table.getBoundingClientRect().width, scale = htmxoColumnsScale(table, box);
+    const width = box / scale;
+    const next = {room, own, width, fill: Math.abs(width - room) < 1,
+                  widths: cells.map(c => c.getBoundingClientRect().width / scale)};
+    window.htmxoColumnsHeld.set(table, next);
+    htmxoColumnsApply(table, next);
+}
+// The observer's notices are measured in a task of their own: the layout a
+// measurement changes would re-notify inside the callback.
+function htmxoColumnsQueue(table, force) {
+    const pending = window.htmxoColumnsPending || (window.htmxoColumnsPending = new Map());
+    pending.set(table, pending.get(table) || !!force);
+    if (window.htmxoColumnsFrame) return;
+    window.htmxoColumnsFrame = setTimeout(() => {
+        window.htmxoColumnsFrame = 0;
+        const due = Array.from(pending);
+        pending.clear();
+        due.forEach(([t, f]) => htmxoColumnsMeasure(t, f));
+    }, 0);
+}
+// Size the tables in `elt` not seen before, put back what a swap dropped,
+// observe each table's room and forget tables that left the document.
+function htmxoColumnsTrack(elt) {
+    if (!elt || !elt.querySelectorAll) return;
+    const watched = window.htmxoColumnsWatched;
+    const ro = typeof ResizeObserver === 'function' && (window.htmxoColumnsObserver ||
+        (window.htmxoColumnsObserver = new ResizeObserver(entries => entries.forEach(e => {
+            const t = e.target.querySelector(':scope > table[data-htmxo-columns]');
+            if (t) htmxoColumnsQueue(t);
+        }))));
+    watched.forEach((room, t) => {
+        if (t.isConnected && t.parentElement === room) return;
+        if (ro) ro.unobserve(room);
+        watched.delete(t);
+    });
+    const found = Array.from(elt.querySelectorAll('table[data-htmxo-columns]'));
+    if (elt.matches && elt.matches('table[data-htmxo-columns]')) found.unshift(elt);
+    found.forEach(t => {
+        if (!t.isConnected) return;
+        if (watched.has(t) && ro && (htmxoColumnsRestore(t) || window.htmxoColumnsUnlaid.has(t))) return;
+        if (!watched.has(t) && t.parentElement) {
+            watched.set(t, t.parentElement);
+            if (ro) ro.observe(t.parentElement);
+        }
+        htmxoColumnsMeasure(t);
+    });
+}
+// Put back the widths a table holds if a swap dropped them, reading no
+// layout. False when it holds none, or none for its present columns.
+function htmxoColumnsRestore(table) {
+    const held = window.htmxoColumnsHeld.get(table), cells = htmxoColumnCells(table);
+    if (!held || held.widths.length !== cells.length || cells.length !== cells.filter(Boolean).length) return false;
+    if (table.dataset.htmxoColumns !== 'held' ||
+        !table.querySelector(':scope > colgroup[data-htmxo-columns]')) htmxoColumnsApply(table, held);
+    return true;
+}
+if (!window.htmxoColumnsBound) {
+    window.htmxoColumnsBound = true;
+    // `htmx:afterSwap` runs before the browser paints the swap: a new table
+    // is sized and a morphed one held again without a frame in between.
+    document.addEventListener('htmx:afterSwap', () => htmxoColumnsTrack(document.body));
+    document.addEventListener('htmx:load', e => htmxoColumnsTrack(e.target));
+    document.addEventListener('htmxo:regrouped', e => {
+        const t = e.target.querySelector('table[data-htmxo-columns]');
+        if (t) htmxoColumnsMeasure(t, true);
+    });
+    document.addEventListener('DOMContentLoaded', () => htmxoColumnsTrack(document.body));
+    if (document.fonts && document.fonts.status !== 'loaded')
+        document.fonts.ready.then(() => window.htmxoColumnsWatched.forEach((room, t) => htmxoColumnsQueue(t, true)));
+}
+if (document.body) htmxoColumnsTrack(document.body);
+
+// --- Row selection: `selectable` on sortable_table / master_detail_table ---
+// State is keyed per selection (input name, form, page path) and per row key,
+// never held by row elements, so it survives sorting, filtering, a row's
+// outerHTML swap and a full table re-render. This file may be included more
+// than once per page: top-level code declares only functions and guards its
+// listeners.
+window.htmxoSelectionState = window.htmxoSelectionState || new Map();
+
+function htmxoSelectionRoot(target) {
+    const el = typeof target === 'string' ? document.querySelector(target) : target;
+    const root = el && (el.closest('[data-htmxo-select]') || el.querySelector('[data-htmxo-select]'));
+    if (!root) throw new Error('htmxoSelectionRoot: no selectable table at ' + target);
+    return root;
+}
+// A selectable row is a keyed body row (`data-htmxo-select-key`, else an id)
+// that is not a `detail-<key>` companion: the rule `_selectable_row` renders
+// by. Rows are recognised by their key, not by the `aria-selected` the table
+// render adds, so a row an app re-renders on its own rejoins its key's state.
+function htmxoSelectionRows(root) {
+    return Array.from(root.querySelector('table').tBodies[0].rows)
+        .filter(r => 'htmxoSelectKey' in r.dataset || (r.id !== '' && !r.id.startsWith('detail-')));
+}
+function htmxoSelectionKey(row) { return row.dataset.htmxoSelectKey ?? row.id; }
+function htmxoSelectionOf(root) {
+    const scope = [root.dataset.htmxoSelect, root.dataset.htmxoSelectForm || '', location.pathname].join('|');
+    let state = window.htmxoSelectionState.get(scope);
+    if (!state) {
+        // First sight of this selection: rows the server rendered selected.
+        state = {keys: new Set(htmxoSelectionRows(root).filter(r => r.getAttribute('aria-selected') === 'true').map(htmxoSelectionKey)),
+                 anchor: null, active: null, refocus: null};
+        window.htmxoSelectionState.set(scope, state);
+    }
+    return state;
+}
+
+// Apply the keyed state to the current rows; rebuild the submitted inputs,
+// the count and `data-htmxo-needs-selection` controls; announce the change.
+function htmxoSelectionUpdate(root) {
+    const state = htmxoSelectionOf(root);
+    const rows = htmxoSelectionRows(root);
+    const present = new Set(rows.map(htmxoSelectionKey));
+    // Rows of a branch that has not loaded yet: present, never shown. Their
+    // value (null: not submitted) comes from the branch row.
+    const pending = new Map();
+    rows.forEach(r => {
+        if (!r.dataset.htmxoSelectMembers) return;
+        r.htmxoMembers = r.htmxoMembers || JSON.parse(r.dataset.htmxoSelectMembers);
+        Object.entries(r.htmxoMembers).forEach(([k, v]) => { if (!present.has(k)) pending.set(k, v); });
+    });
+    // A key whose row left the table (deleted, re-rendered away) is dropped.
+    state.keys = new Set(Array.from(state.keys).filter(k => present.has(k) || pending.has(k)));
+    if (!present.has(state.anchor)) state.anchor = null;
+    if (!present.has(state.active)) state.active = null;
+    const focusable = rows.find(r => htmxoSelectionKey(r) === state.active) || rows.find(r => !r.hidden) || rows[0];
+    rows.forEach(r => {
+        const key = htmxoSelectionKey(r);
+        r.setAttribute('aria-selected', state.keys.has(key) ? 'true' : 'false');
+        if (key === state.active) r.dataset.htmxoActive = ''; else delete r.dataset.htmxoActive;
+        r.tabIndex = r === focusable ? 0 : -1;
+    });
+    // A swap removed the focused row (noted on its cleanup): its replacement
+    // takes the focus, unless the user has put it somewhere else meanwhile.
+    if (state.refocus != null) {
+        const key = state.refocus;
+        state.refocus = null;
+        const replacement = focusable && htmxoSelectionKey(focusable) === key ? focusable :
+            rows.find(r => htmxoSelectionKey(r) === key && !r.hidden);
+        const lost = !document.activeElement || document.activeElement === document.body;
+        if (replacement && lost) replacement.focus({preventScroll: true});
+    }
+    // A key may label several rows (a leaf listed under several groups): the
+    // selection, its inputs and its counts are per key, one row standing in.
+    const selectedRows = rows.filter(r => state.keys.has(htmxoSelectionKey(r)));
+    const byKey = new Map();
+    selectedRows.forEach(r => {
+        const k = htmxoSelectionKey(r);
+        if (!byKey.has(k)) byKey.set(k, []);
+        byKey.get(k).push(r);
+    });
+    // Shown first, then hidden only by a collapsed branch, then filtered out.
+    const why = r => !r.hidden ? 0 : !('htmxoFiltered' in r.dataset) && r.dataset.htmxoParent ? 1 : 2;
+    const selected = Array.from(byKey.values(), copies => copies.reduce((a, b) => why(b) < why(a) ? b : a));
+    const submitted = selected.filter(r => r.dataset.htmxoSelectSubmit !== 'false');
+    const unloaded = Array.from(state.keys).filter(k => !present.has(k));
+    const name = root.dataset.htmxoSelect, form = root.dataset.htmxoSelectForm;
+    const input = (inputName, value) => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = inputName;
+        input.value = value;
+        if (form) input.setAttribute('form', form);
+        return input;
+    };
+    root.querySelector(':scope > [data-htmxo-selection-inputs]').replaceChildren(
+        ...submitted.map(r => input(r.dataset.htmxoSelectName || name, r.dataset.htmxoSelectValue ?? htmxoSelectionKey(r))),
+        ...unloaded.filter(k => pending.get(k) !== null).map(k => input(name, pending.get(k))));
+    const filtered = selected.filter(r => why(r) === 2).length;
+    const folded = selected.filter(r => why(r) === 1).length + unloaded.length;
+    const hidden = filtered + folded;
+    const notes = [filtered && htmxoText(root, 'selected_filtered', {count: filtered}),
+        folded && htmxoText(root, 'selected_collapsed', {count: folded})].filter(Boolean);
+    const count = root.querySelector(':scope > .htmxo-table-toolbar > .htmxo-selection-bar > [data-htmxo-selection-count], ' +
+        ':scope > .htmxo-searchable-table > .htmxo-table-toolbar > .htmxo-selection-bar > [data-htmxo-selection-count]');
+    if (count) count.textContent = htmxoText(root, 'selected', {count: selected.length + unloaded.length}) +
+        (notes.length ? ' (' + notes.join(', ') + ')' : '');
+    document.querySelectorAll('[data-htmxo-needs-selection]').forEach(control => {
+        if (control.dataset.htmxoNeedsSelection === name)
+            control.disabled = submitted.length === 0 && !unloaded.some(k => pending.get(k) !== null);
+    });
+    root.dispatchEvent(new CustomEvent('htmxo:selection-changed', {bubbles: true,
+        detail: {name, keys: [...selected.map(htmxoSelectionKey), ...unloaded], rows: selectedRows, submitted, hidden}}));
+}
+
+// Select exactly `keys` (row keys; [] clears), e.g. after a bulk action.
+function htmxoSelectRows(target, keys) {
+    const root = htmxoSelectionRoot(target);
+    htmxoSelectionOf(root).keys = new Set(keys);
+    htmxoSelectionUpdate(root);
+}
+function htmxoSelectedKeys(target) {
+    const root = htmxoSelectionRoot(target);
+    const rows = htmxoSelectionRows(root);
+    const present = new Set(rows.map(htmxoSelectionKey));
+    // Once per key (a leaf may be listed under several groups), plus selected
+    // rows of a branch that has not loaded yet.
+    return Array.from(new Set([...rows.filter(r => r.getAttribute('aria-selected') === 'true').map(htmxoSelectionKey),
+        ...Array.from(htmxoSelectionOf(root).keys).filter(k => !present.has(k))]));
+}
+
+function htmxoSelectionShown(root) { return htmxoSelectionRows(root).filter(r => !r.hidden); }
+function htmxoSelectionRange(root, from, to) {
+    const shown = htmxoSelectionShown(root);
+    const a = shown.indexOf(from), b = shown.indexOf(to);
+    return a < 0 || b < 0 ? [to] : shown.slice(Math.min(a, b), Math.max(a, b) + 1);
+}
+// A click (or Space/Enter, as a toggle) on `row`: plain selects only it,
+// Ctrl/Cmd toggles it, Shift selects the shown range from the anchor.
+function htmxoSelectionClick(root, row, mods) {
+    const state = htmxoSelectionOf(root);
+    const key = htmxoSelectionKey(row);
+    const anchor = htmxoSelectionRows(root).find(r => htmxoSelectionKey(r) === state.anchor);
+    if (mods.shiftKey && anchor) {
+        state.keys = new Set(htmxoSelectionRange(root, anchor, row).map(htmxoSelectionKey));
+    } else {
+        if (mods.ctrlKey || mods.metaKey) {
+            if (state.keys.has(key)) state.keys.delete(key); else state.keys.add(key);
+        } else {
+            state.keys = new Set([key]);
+        }
+        state.anchor = key;
+    }
+    state.active = key;
+    htmxoSelectionUpdate(root);
+    row.focus({preventScroll: true});
+}
+function htmxoSelectionKeydown(root, row, e) {
+    const state = htmxoSelectionOf(root);
+    const key = htmxoSelectionKey(row);
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        state.keys = new Set(htmxoSelectionShown(root).map(htmxoSelectionKey));
+    } else if (e.ctrlKey || e.metaKey || e.altKey) {
+        return;
+    } else if (e.key === ' ' || e.key === 'Enter') {
+        htmxoSelectionClick(root, row, {shiftKey: e.shiftKey, ctrlKey: true});
+        e.preventDefault();
+        return;
+    } else if (['ArrowDown', 'ArrowUp', 'j', 'J', 'k', 'K'].includes(e.key)) {
+        // j/k alias ↓/↑ as in mail and review lists; Shift (not the letter's
+        // case, which Caps Lock also flips) extends the range.
+        const shown = htmxoSelectionShown(root);
+        const at = shown.indexOf(row);
+        const down = e.key === 'ArrowDown' || e.key === 'j' || e.key === 'J';
+        const next = shown[down ? Math.min(at + 1, shown.length - 1) : Math.max(at - 1, 0)];
+        if (!next) return;
+        if (e.shiftKey) {
+            if (state.anchor === null) state.anchor = key;
+            const anchor = shown.find(r => htmxoSelectionKey(r) === state.anchor) || row;
+            state.keys = new Set(htmxoSelectionRange(root, anchor, next).map(htmxoSelectionKey));
+        } else {
+            state.keys = new Set([htmxoSelectionKey(next)]);
+            state.anchor = htmxoSelectionKey(next);
+        }
+        state.active = htmxoSelectionKey(next);
+        htmxoSelectionUpdate(root);
+        next.focus({preventScroll: true});
+        next.scrollIntoView({block: 'nearest', inline: 'nearest'});
+        e.preventDefault();
+        return;
+    } else if (e.key === 'Escape') {
+        state.keys = new Set([key]);
+        state.anchor = key;
+    } else {
+        return;
+    }
+    state.active = key;
+    htmxoSelectionUpdate(root);
+    e.preventDefault();
+}
+
+// The selectable row an event targets, unless it lands on a control of its
+// own (`htmxoRowControl`), which keeps its own behaviour. Returns [root, row]
+// or null.
+function htmxoSelectionTarget(e) {
+    const row = e.target.closest && e.target.closest('tr[aria-selected]');
+    const root = row && row.closest('[data-htmxo-select]');
+    if (!root || !htmxoSelectionRows(root).includes(row)) return null;
+    return htmxoRowControl(row, e.target) ? null : [root, row];
+}
+// The search query a regroup carries to the re-rendered table.
+function htmxoGroupedQuery(el) {
+    const input = el.closest('[data-htmxo-grouped]').querySelector('.htmxo-searchable-table > .htmxo-table-toolbar > label > input[type="search"]');
+    return input ? input.value : '';
+}
+// The `group_by` values that render a regroupable table's current grouping
+// again (one value per level), e.g. for an action's
+// `hx-vals`: `js:{group_by: htmxoGroupBy('#tx')}`. `target` is a selector or
+// an element in or around the table.
+function htmxoGroupBy(target) {
+    const el = typeof target === 'string' ? document.querySelector(target) : target;
+    const wrapper = el && ((el.closest && el.closest('[data-htmxo-group-by]')) ||
+        (el.querySelector && el.querySelector('[data-htmxo-group-by]')));
+    if (!wrapper) throw new Error('htmxoGroupBy: no regroupable table at ' + target);
+    return JSON.parse(wrapper.dataset.htmxoGroupBy);
+}
+// A request from inside a regroupable table that carries `group_by` (in its
+// URL, a form field or `hx-vals`) sends the table's current grouping, once.
+// The browser regroups without rendering the rows again, so a `group_by` the
+// server wrote into a row's action URL, form or `detail_url` names the
+// grouping of that render; an update rendered for it would be refused. The
+// pills' own request asks for the grouping they are changing to.
+if (!window.htmxoGroupByBound) {
+    window.htmxoGroupByBound = true;
+    document.addEventListener('htmx:configRequest', e => {
+        const d = e.detail, el = d.elt;
+        const wrapper = el && el.closest && el.closest('[data-htmxo-group-by]');
+        if (!wrapper || el.closest('.htmxo-group-pills')) return;
+        const url = new URL(d.path, document.baseURI);
+        const inUrl = url.searchParams.has('group_by'), inParams = d.parameters.group_by !== undefined;
+        if (!inUrl && !inParams) return;
+        const levels = JSON.parse(wrapper.dataset.htmxoGroupBy);
+        if (inParams) d.parameters.group_by = levels;
+        // A GET sends its parameters in the URL as well: keep one copy.
+        const urlLevels = inParams && d.useUrlParams ? [] : levels;
+        if (!inUrl || JSON.stringify(url.searchParams.getAll('group_by')) === JSON.stringify(urlLevels)) return;
+        url.searchParams.delete('group_by');
+        urlLevels.forEach(v => url.searchParams.append('group_by', v));
+        d.path = url.origin === location.origin ? url.pathname + url.search + url.hash : url.href;
+    });
+}
+
+// --- Grouping pills: master_detail_table(...; groupings, group_by) ---
+// The active pills name the grouping levels, outermost first. A change sets
+// the pending levels and fires `htmxo-regroup`, which the pills' own hx-get
+// answers by re-rendering the table (`htmxoGroupPending` supplies the values).
+function htmxoGroupLevels(pills) {
+    return Array.from(pills.querySelectorAll(':scope > [data-htmxo-group-level]'), p => p.dataset.htmxoGroupName);
+}
+function htmxoGroupPending(pills) {
+    const names = pills.htmxoPending || htmxoGroupLevels(pills);
+    // No level is the flat view: its grouping's name, else an empty value
+    // (an empty list would send nothing and leave the route's default).
+    return names.length ? names : [pills.dataset.htmxoGroupFlat ?? ''];
+}
+function htmxoGroupRequest(pills, names, focusId) {
+    // The tree grouping (`name => :children`) stands alone: turning it on
+    // turns the other levels off, and a level turned on replaces it.
+    const tree = pills.dataset.htmxoGroupTree, current = htmxoGroupLevels(pills);
+    if (tree !== undefined && names.length > 1 && names.includes(tree))
+        names = current.includes(tree) ? names.filter(n => n !== tree) : [tree];
+    if (names.join('\u0000') === current.join('\u0000')) return;
+    const wrapper = pills.closest('[data-htmxo-grouped]');
+    pills.htmxoPending = names;
+    // A server render that replaces the pills hands the focus back too.
+    window.htmxoGroupFocus = focusId ? {id: focusId, pills} : null;
+    if ('htmxoRegroup' in wrapper.dataset) {
+        htmxoRegroup(wrapper, names);
+        // Moving a pill drops the focus; a ‹/› now at the bar's end hands it
+        // to its pill's toggle.
+        const el = focusId && document.getElementById(focusId), pill = el && el.closest('.htmxo-group-pill');
+        const target = el && !el.disabled ? el : pill && pill.querySelector('button');
+        if (target) target.focus();
+        return;
+    }
+    htmx.trigger(pills, 'htmxo-regroup');
+}
+function htmxoGroupToggle(button) {
+    // The last level of a table without a flat grouping stays on.
+    if (button.getAttribute('aria-disabled') === 'true') return;
+    const pill = button.closest('.htmxo-group-pill'), pills = pill.parentElement, name = pill.dataset.htmxoGroupName;
+    const names = htmxoGroupLevels(pills);
+    htmxoGroupRequest(pills, names.includes(name) ? names.filter(n => n !== name) : [...names, name], button.id);
+}
+// Move an active pill `by` levels (-1: outward, 1: inward).
+function htmxoGroupShift(pill, by, focusId) {
+    const pills = pill.parentElement, names = htmxoGroupLevels(pills);
+    const from = names.indexOf(pill.dataset.htmxoGroupName), to = from + by;
+    if (from < 0 || to < 0 || to >= names.length) return;
+    names.splice(to, 0, names.splice(from, 1)[0]);
+    htmxoGroupRequest(pills, names, focusId);
+}
+function htmxoGroupMove(button, by) { htmxoGroupShift(button.closest('.htmxo-group-pill'), by, button.id); }
+function htmxoGroupKey(button, e) {
+    const by = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
+    if (!by || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    e.preventDefault();
+    htmxoGroupShift(button.closest('.htmxo-group-pill'), by, button.id);
+}
+// Dragging a pill onto an active one puts it at that level (before or after
+// it, by the pointer); dropping an inactive pill elsewhere on the bar adds
+// it as the innermost level.
+function htmxoGroupDrag(e) {
+    const pill = e.target.closest && e.target.closest('.htmxo-group-pill');
+    if (!pill) return;
+    window.htmxoGroupDragged = pill;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', pill.dataset.htmxoGroupName);
+}
+function htmxoGroupDropSpot(e) {
+    const dragged = window.htmxoGroupDragged, pills = e.currentTarget;
+    if (!dragged || dragged.parentElement !== pills) return null;
+    const over = e.target.closest && e.target.closest('.htmxo-group-pill[data-htmxo-group-level]');
+    if (over === dragged) return null;
+    if (over) {
+        const box = over.getBoundingClientRect();
+        return {pill: over, after: e.clientX > box.left + box.width / 2};
+    }
+    return 'htmxoGroupLevel' in dragged.dataset ? null : {pill: null, after: true};
+}
+function htmxoGroupMark(pills, spot) {
+    pills.querySelectorAll('[data-htmxo-drop]').forEach(p => delete p.dataset.htmxoDrop);
+    if (spot && spot.pill) spot.pill.dataset.htmxoDrop = spot.after ? 'after' : 'before';
+}
+function htmxoGroupDragOver(e) {
+    const spot = htmxoGroupDropSpot(e);
+    htmxoGroupMark(e.currentTarget, spot);
+    if (!spot) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+}
+function htmxoGroupDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) htmxoGroupMark(e.currentTarget, null);
+}
+function htmxoGroupDrop(e) {
+    const pills = e.currentTarget, spot = htmxoGroupDropSpot(e), dragged = window.htmxoGroupDragged;
+    htmxoGroupMark(pills, null);
+    if (!spot) return;
+    e.preventDefault();
+    const name = dragged.dataset.htmxoGroupName;
+    const names = htmxoGroupLevels(pills).filter(n => n !== name);
+    names.splice(spot.pill ? names.indexOf(spot.pill.dataset.htmxoGroupName) + (spot.after ? 1 : 0) : names.length, 0, name);
+    htmxoGroupRequest(pills, names, null);
+}
+function htmxoGroupDragEnd(e) {
+    window.htmxoGroupDragged = null;
+    htmxoGroupMark(e.currentTarget, null);
+}
+// --- Regrouping in the browser: master_detail_table(...; groupings) ---
+// A regroupable table whose leaves are all on the page regroups here, with no
+// request, and builds the rows `_grouped_master_detail_table` would render for
+// the new grouping: its leaf rows move under group rows made from the table's
+// template row (`template[data-htmxo-group-template]`); a leaf listed in
+// several groups gets a copy per group; leaves the grouping leaves out wait in
+// `template[data-htmxo-unplaced]`. The wrapper's `data-htmxo-regroup` says how
+// (grouping names, flat name, nested or not, the `group_summary` columns).
+// Keep `htmxoRegroup`, `htmxoSummaryText` and `htmxoGroupPillsSync` in step
+// with that function, `_md_summary_cell` and `_md_group_pills`.
+function htmxoRegroupConfig(wrapper) {
+    if (wrapper.htmxoRegroupSource !== wrapper.dataset.htmxoRegroup) {
+        wrapper.htmxoRegroupSource = wrapper.dataset.htmxoRegroup;
+        wrapper.htmxoRegroupConfig = JSON.parse(wrapper.htmxoRegroupSource);
+    }
+    return wrapper.htmxoRegroupConfig;
+}
+// `_md_safe_key` and JSON.jl string arrays, as the server writes them.
+function htmxoSafeKey(key) { return String(key).replace(/[^A-Za-z0-9_\-]/gu, '--'); }
+// A group row's id holds the name of its table (`data-htmxo-group-scope`,
+// see `_grouped_master_detail_table`). Give `rows`, rendered under the name
+// `from`, the name `to` of the table they join: their group rows' ids and
+// what names them (a row's `data-htmxo-parent`, a toggle's `aria-controls`).
+// Leaf ids (`row-group--<path>--<key>`) hold the caller's key and stay.
+// Returns the renaming of an id.
+function htmxoRescope(rows, from, to) {
+    if (!from || !to || from === to) return id => id;
+    const a = 'row-' + htmxoSafeKey(from + 'group:'), b = 'row-' + htmxoSafeKey(to + 'group:');
+    const rename = id => id.startsWith(a) ? b + id.slice(a.length) : id;
+    rows.forEach(r => {
+        r.id = rename(r.id);
+        if (r.dataset.htmxoParent) r.dataset.htmxoParent = rename(r.dataset.htmxoParent);
+        r.querySelectorAll('[data-htmxo-tree-toggle][aria-controls]').forEach(t => t.setAttribute('aria-controls',
+            t.getAttribute('aria-controls').split(' ').map(rename).join(' ')));
+    });
+    return rename;
+}
+function htmxoJsonList(xs) { return JSON.stringify(xs.map(String)); }
+// A group summary over its leaves' inputs (`_md_summary_value`), folded left
+// to right, and written as the table writes numbers (`_md_summary_cell`). A
+// leaf known only within bounds comes as `[lo, hi]` (for a :ratio, in the
+// numerator's place); the group's summary is then the range `{lo, hi}`, its
+// low ends and its high ends folded apart.
+function htmxoSummaryValue(reduce, inputs) {
+    if (reduce === 'count') return inputs.length;
+    if (reduce === 'tally') {
+        // Each category's number added up, in first-appearance order.
+        const counts = new Map();
+        inputs.forEach(parts => (parts || []).forEach(([c, n]) => counts.set(c, (counts.get(c) || 0) + n)));
+        return counts.size ? counts : null;
+    }
+    const lo = v => Array.isArray(v) ? v[0] : v, hi = v => Array.isArray(v) ? v[1] : v;
+    if (reduce === 'ratio') {
+        let num = 0, top = 0, den = 0, any = false, ranged = false;
+        inputs.forEach(v => {
+            if (!v || v[0] === null || v[1] === null) return;
+            num += lo(v[0]); top += hi(v[0]); den += v[1]; any = true;
+            ranged = ranged || Array.isArray(v[0]);
+        });
+        if (!any || den === 0) return null;
+        if (!ranged) return num / den;
+        // A negative denominator turns the ends round.
+        return den > 0 ? {lo: num / den, hi: top / den} : {lo: top / den, hi: num / den};
+    }
+    const xs = inputs.filter(v => v !== null && v !== undefined);
+    if (!xs.length) return null;
+    const fold = xs => {
+        if (reduce === 'min') return Math.min(...xs);
+        if (reduce === 'max') return Math.max(...xs);
+        const sum = xs.reduce((a, b) => a + b);
+        return reduce === 'mean' ? sum / xs.length : sum;
+    };
+    return xs.some(Array.isArray) ? {lo: fold(xs.map(lo)), hi: fold(xs.map(hi))} : fold(xs);
+}
+// `_md_number_cell`: a group summary's number `x` in `cell` (its text in
+// `target`), and the number the ⬇ CSV writes; a range `{lo, hi}` as both ends
+// joined by the `range` text (`range_signed` with a negative end), sorting by
+// its low end, or as one number when both ends round alike.
+function htmxoSummaryFill(cell, target, x, s, table) {
+    const decimal = htmxoText(table, 'decimal'), thousands = htmxoText(table, 'thousands'), minus = htmxoText(table, 'minus');
+    const text = v => htmxoSummaryText(v, s, decimal, thousands, false, minus), key = v => htmxoSummaryText(v, s, '.', '', true);
+    delete cell.dataset.sortValue;
+    if (x === null) {
+        target.textContent = '';
+        cell.removeAttribute('data-htmxo-number');
+        return;
+    }
+    if (typeof x === 'object') {
+        const lower = text(x.lo), upper = text(x.hi);
+        if (lower !== upper) {
+            const signed = minus !== '' && (lower.startsWith(minus) || upper.startsWith(minus));
+            target.textContent = htmxoText(table, signed ? 'range_signed' : 'range', {lower, upper});
+            cell.dataset.sortValue = key(x.lo);
+            cell.dataset.htmxoNumber = key(x.lo) + '–' + key(x.hi);
+            return;
+        }
+        x = x.lo;
+    }
+    target.textContent = text(x);
+    cell.dataset.htmxoNumber = key(x);
+}
+// `_format_fixed`; `minus` is the sign (a machine-read key keeps `-`).
+function htmxoFixed(x, digits, decimal, thousands, minus = '-') {
+    const scaled = Math.round(Math.abs(x) * [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10][digits]);
+    const s = BigInt(scaled).toString().padStart(digits + 1, '0');
+    const out = (x < 0 && scaled !== 0 ? minus : '') + htmxoGrouped(s.slice(0, s.length - digits), thousands);
+    return digits > 0 ? out + decimal + s.slice(s.length - digits) : out;
+}
+// `_round_sig`: x to k significant digits, halves away from zero, as
+// [negative, digits, point] for ±0.digits × 10^point, by the same steps.
+function htmxoSigDigits(x, k) {
+    const a = Math.abs(x), pow10 = n => Number('1e' + n);
+    if (!isFinite(a)) throw new RangeError('cannot round ' + x + ' to significant digits: it is not a finite number');
+    if (a === 0) return [false, '', 0];
+    let e = Math.floor(Math.log10(a));
+    while (a < pow10(e)) e--;
+    while (a >= pow10(e + 1)) e++;
+    const d = k - 1 - e;
+    const s = String(Math.round(d > 300 ? a * 1e300 * pow10(d - 300) : d >= 0 ? a * pow10(d) : a / pow10(-d)));
+    return [x < 0, s.replace(/0+$/, ''), s.length + e + 1 - k];
+}
+// `_format_digits`: ±0.ds × 10^point, as a power of ten (`sci`) or positionally.
+function htmxoDigitsText(negative, ds, point, decimal, thousands, sci, minus = '-') {
+    if (!ds) return '0';
+    const sup = n => (n < 0 ? '⁻' : '') + String(Math.abs(n)).replace(/[0-9]/g, c => '⁰¹²³⁴⁵⁶⁷⁸⁹'[c]);
+    const out = negative ? minus : '';
+    if (sci) return out + ds[0] + (ds.length > 1 ? decimal + ds.slice(1) : '') + '·10' + sup(point - 1);
+    if (point <= 0) return out + '0' + decimal + '0'.repeat(-point) + ds;
+    if (point >= ds.length) return out + htmxoGrouped(ds + '0'.repeat(point - ds.length), thousands);
+    return out + htmxoGrouped(ds.slice(0, point), thousands) + decimal + ds.slice(point);
+}
+// `_md_summary_cell`: a summary `s` as the table writes it, or as the ⬇ CSV
+// does (`csv`: no power of ten, and `-` whatever `minus` is).
+function htmxoSummaryText(x, s, decimal, thousands, csv, minus = '-') {
+    if (csv) minus = '-';
+    if (!s.sigdigits) return htmxoFixed(x, s.digits, decimal, thousands, minus);
+    const [negative, ds, point] = htmxoSigDigits(x, s.sigdigits);
+    return htmxoDigitsText(negative, ds, point, decimal, thousands, !csv && (point <= -4 || point >= 16), minus);
+}
+// `_md_summary_cell(::Val{:tally})`: a :tally cell's total, then one bar
+// segment per category with a count, in the table's category order (others
+// after them, grey), named for the screen reader as the Markdown writes it.
+// The bar takes its length from the scale of the column's rows of `level`
+// (`htmxoTallyScale`).
+function htmxoTallyFill(cell, counts, s, decimal, thousands, level, minus = '-') {
+    const value = cell.querySelector('[data-htmxo-tally]');
+    let total = 0;
+    if (counts) counts.forEach(n => { total += n; });
+    value.replaceChildren();
+    value.removeAttribute('role');
+    value.removeAttribute('aria-label');
+    value.dataset.htmxoTally = String(total);
+    value.setAttribute('style', '--htmxo-tally-total:' + total + ';--htmxo-tally-max:var(--htmxo-tally-max-' + cell.cellIndex + '-' + level + ')');
+    if (!counts) {
+        cell.removeAttribute('data-htmxo-number');
+        return;
+    }
+    const num = x => htmxoSummaryText(x, s, decimal, thousands, false, minus);
+    const known = new Set(s.categories.map(c => c.key));
+    const shown = [...s.categories, ...Array.from(counts.keys()).filter(k => !known.has(k))
+        .map(k => ({key: k, label: k, color: 'var(--htmxo-category-other)'}))]
+        .filter(c => counts.get(c.key)).map(c => [c, counts.get(c.key)]);
+    const text = shown.length ? num(total) + ' (' + shown.map(([c, n]) => c.label + ': ' + num(n)).join('; ') + ')' : num(total);
+    const span = cls => { const el = document.createElement('span'); if (cls) el.className = cls; return el; };
+    const sum = span('htmxo-tally-total'), track = span('htmxo-tally-track'), bar = span('htmxo-tally-bar');
+    sum.textContent = num(total);
+    shown.forEach(([c, n]) => {
+        const segment = span();
+        segment.setAttribute('style', '--htmxo-tally-n:' + n + ';--htmxo-tally-color:' + c.color);
+        segment.title = c.label + ': ' + num(n);
+        bar.append(segment);
+    });
+    track.append(bar);
+    value.append(sum, track);
+    value.setAttribute('role', 'img');
+    value.setAttribute('aria-label', text);
+    cell.dataset.htmxoNumber = htmxoSummaryText(total, s, '.', '', true);
+}
+// The scale :tally bars share: the table sets, for each column and level
+// (`aria-level`), the longest total among its rows, hidden ones included (so
+// opening a group or searching never rescales), as the custom property
+// `--htmxo-tally-max-<column>-<level>` each bar names. A cell an app builds
+// (`summary_cell`) gets that name here. Run again whenever rows arrive: a
+// regroup, a row update, lazy rows, a page load.
+function htmxoTallyScale(table) {
+    const longest = new Map();
+    table.querySelectorAll(':scope > tbody > tr > td [data-htmxo-tally]').forEach(v => {
+        const cell = v.closest('td');
+        if (cell.closest('table') !== table) return;
+        const name = '--htmxo-tally-max-' + cell.cellIndex + '-' + (cell.parentElement.getAttribute('aria-level') || '0');
+        if (!v.style.getPropertyValue('--htmxo-tally-max')) v.style.setProperty('--htmxo-tally-max', 'var(' + name + ')');
+        longest.set(name, Math.max(longest.get(name) || 0, Number(v.dataset.htmxoTally) || 0));
+    });
+    longest.forEach((max, name) => table.style.setProperty(name, String(max || 1)));
+}
+if (!window.htmxoTallyBound) {
+    window.htmxoTallyBound = true;
+    const scaleIn = elt => {
+        if (!elt || !elt.querySelectorAll) return;
+        const inside = elt.closest && elt.closest('table');
+        const tables = new Set(inside ? [inside] : Array.from(elt.querySelectorAll('[data-htmxo-tally]'), v => v.closest('table')));
+        tables.forEach(t => { if (t) htmxoTallyScale(t); });
+    };
+    // A row update scales its table once, after all its rows are in.
+    document.addEventListener('htmx:load', e => { if (!window.htmxoRowsUpdating) scaleIn(e.target); });
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => scaleIn(document.body));
+    else scaleIn(document.body);
+}
+// Give a leaf's rows the row key `safe`: the ids, the row's own toggle call
+// (`master_detail_toggle_js`) and the controls naming its detail.
+function htmxoRekeyLeaf(row, detail, safe) {
+    const old = row.id.slice(4), call = "var show=htmxoMdToggle(this,event,'";
+    if (old === safe) return;
+    row.id = 'row-' + safe;
+    const click = row.getAttribute('onclick');
+    if (click && click.startsWith(call + old + "'")) row.setAttribute('onclick', call + safe + click.slice(call.length + old.length));
+    row.querySelectorAll('[aria-controls="detail-' + old + '"]').forEach(b => b.setAttribute('aria-controls', 'detail-' + safe));
+    if (!detail) return;
+    detail.id = 'detail-' + safe;
+    const slot = detail.querySelector('[id="detail-slot-' + old + '"]');
+    if (slot) slot.id = 'detail-slot-' + safe;
+}
+// Regroup a table by `levels` (grouping names, outermost first; none for the
+// flat view). Branches the reader opened and the selection, search and sort
+// apply to the new rows as after a re-render, and a group holding a leaf
+// whose detail is open opens.
+function htmxoRegroup(wrapper, levels) {
+    const cfg = htmxoRegroupConfig(wrapper);
+    const table = wrapper.querySelector('table'), body = table.tBodies[0];
+    const store = wrapper.querySelector('template[data-htmxo-unplaced]');
+    // A tree grouping (`name => :children`) shows the app's tree, which waits
+    // in `template[data-htmxo-tree]` while another grouping shows and comes
+    // back as the reader left it. The other groupings are built from copies
+    // of each leaf's first row in the tree, the row the server lists.
+    const stash = cfg.tree != null ? wrapper.querySelector('template[data-htmxo-tree]') : null;
+    if (stash && levels.includes(cfg.tree)) {
+        if (store) store.content.replaceChildren();
+        body.replaceChildren(stash.content);
+        if (window.htmx) Array.from(body.rows).forEach(r => htmx.process(r));
+        htmxoRegrouped(wrapper, table, levels, cfg);
+        return;
+    }
+    let source = Array.from(body.rows);
+    const fresh = new Set();
+    if (stash && JSON.parse(wrapper.dataset.htmxoGrouped).includes(cfg.tree)) {
+        const firsts = htmxoTableCompanions(source), seen = new Set(), copies = [];
+        source.forEach(r => {
+            if (!('htmxoLeaf' in r.dataset) || seen.has(r.dataset.htmxoLeaf)) return;
+            seen.add(r.dataset.htmxoLeaf);
+            [r, firsts.get(r.id)].forEach(x => { if (x) { const copy = x.cloneNode(true); copies.push(copy); fresh.add(copy); } });
+        });
+        source.forEach(r => stash.content.append(r));
+        source = copies;
+    }
+    const stored = store ? Array.from(store.content.children) : [];
+    stored.forEach(r => fresh.add(r));
+    const rows = [...source, ...stored], companions = htmxoTableCompanions(rows);
+    // One entry per leaf, in the order of the table's items. A leaf's own
+    // rows are its copy with the detail open, else the first; they move
+    // with what the reader loaded into them, and further copies clone them.
+    const leaves = new Map();
+    rows.forEach(r => {
+        if (!('htmxoLeaf' in r.dataset)) return;
+        const open = r.dataset.htmxoDetailOpen === 'true', have = leaves.get(r.dataset.htmxoLeaf);
+        if (have && (have.open || !open)) return;
+        leaves.set(r.dataset.htmxoLeaf, {key: r.dataset.htmxoLeaf, row: r, detail: companions.get(r.id) || null, open,
+            order: Number(r.dataset.htmxoLeafOrder), keys: JSON.parse(r.dataset.htmxoLeafKeys),
+            values: r.dataset.htmxoLeafValues ? JSON.parse(r.dataset.htmxoLeafValues) : [], placed: false});
+    });
+    const members = Array.from(leaves.values()).sort((a, b) => a.order - b.order);
+    const template = wrapper.querySelector('template[data-htmxo-group-template]');
+    // The rows' ids carry the place the table was swapped into
+    // (`instance_scope_script`); the ids built here carry it too.
+    const place = window.htmxoInstanceSuffix ? window.htmxoInstanceSuffix(wrapper) : '';
+    const out = [];
+    const keysAt = (m, depth) => depth < levels.length ? m.keys[levels[depth]] || [] : [];
+    // The groups of `list` at a level, in first-appearance order, or in the
+    // grouping's `group_order` (`_md_group_ranks`: a key it has no place for
+    // goes after, in first-appearance order).
+    const groupsAt = (list, depth) => {
+        const order = [], byKey = new Map();
+        list.forEach(m => keysAt(m, depth).forEach(k => {
+            if (!byKey.has(k)) { byKey.set(k, []); order.push(k); }
+            byKey.get(k).push(m);
+        }));
+        const ranked = cfg.order && cfg.order[levels[depth]];
+        if (ranked) {
+            const rank = new Map(ranked.map((k, i) => [k, i])), at = k => rank.has(k) ? rank.get(k) : ranked.length;
+            order.sort((a, b) => at(a) - at(b));
+        }
+        return order.map(k => [k, byKey.get(k)]);
+    };
+    const leaf = (m, path, parent, level) => {
+        let row = m.row, detail = m.detail;
+        if (m.placed) {
+            row = row.cloneNode(true);
+            detail = detail && detail.cloneNode(true);
+            fresh.add(row);
+            if (detail) { fresh.add(detail); htmxoMdShow(row, detail, false); }
+        }
+        m.placed = true;
+        htmxoRekeyLeaf(row, detail, htmxoSafeKey(path.length ? 'group:' + path.join('/') + '/' + m.key : m.key) + place);
+        row.dataset.htmxoParent = parent;
+        row.setAttribute('aria-level', String(level));
+        out.push(row);
+        if (detail) out.push(detail);
+        return row.id;
+    };
+    const group = (path, list, parent, level) => {
+        const row = template.content.querySelector('tr').cloneNode(true), name = path[path.length - 1];
+        const gid = 'group:' + path.join('/'), id = 'row-' + htmxoSafeKey(wrapper.dataset.htmxoGroupScope + gid) + place, children = [];
+        out.push(row);
+        if (path.length < levels.length) {
+            groupsAt(list, path.length).forEach(([k, ms]) => children.push(group([...path, k], ms, id, level + 1)));
+            list.filter(m => !keysAt(m, path.length).length).forEach(m => children.push(leaf(m, path, id, level + 1)));
+        } else list.forEach(m => children.push(leaf(m, path, id, level + 1)));
+        const open = String(cfg.open || list.some(m => m.open));
+        row.id = id;
+        row.dataset.htmxoParent = parent;
+        row.setAttribute('aria-level', String(level));
+        // A table whose branches are not collapsible keeps its groups open,
+        // with no toggle (`branches_collapsible=false`).
+        if ('htmxoTreeOpen' in row.dataset) {
+            row.dataset.htmxoTreeOpen = open;
+            row.setAttribute('aria-expanded', open);
+            const toggle = row.querySelector('[data-htmxo-tree-toggle]');
+            toggle.setAttribute('aria-controls', children.join(' '));
+            toggle.setAttribute('aria-expanded', open);
+        }
+        if ('htmxoSelectKey' in row.dataset) {
+            row.dataset.htmxoSelectKey = gid;
+            row.dataset.htmxoSelectValue = htmxoJsonList(path);
+        }
+        if ('htmxoSearch' in row.dataset) row.dataset.htmxoSearch = name;
+        row.querySelector('[data-htmxo-group-label]').textContent = name;
+        row.querySelector('[data-htmxo-group-count]').textContent = '(' + htmxoGrouped(String(list.length), htmxoText(table, 'thousands')) + ')';
+        // `_md_summary_cell`: the shown summary, and the CSV's number.
+        // A cell whose row adds controls to it (the first) keeps its value
+        // in an element of its own.
+        cfg.summary.forEach((s, i) => {
+            const cell = row.querySelector('[data-htmxo-group-summary="' + i + '"]');
+            const x = htmxoSummaryValue(s.reduce, list.map(m => m.values[i]));
+            const target = cell.querySelector('[data-htmxo-summary-value]') || cell;
+            if (s.reduce === 'tally') htmxoTallyFill(cell, x, s, htmxoText(table, 'decimal'), htmxoText(table, 'thousands'), level, htmxoText(table, 'minus'));
+            else htmxoSummaryFill(cell, target, x, s, table);
+        });
+        fresh.add(row);
+        return id;
+    };
+    if (levels.length) groupsAt(members, 0).forEach(([k, ms]) => group([k], ms, '', 1));
+    else members.forEach(m => leaf(m, [], '', 1));
+    const rest = document.createDocumentFragment(), placedRows = document.createDocumentFragment();
+    members.filter(m => !m.placed).forEach(m => { rest.append(m.row); if (m.detail) rest.append(m.detail); });
+    out.forEach(r => placedRows.append(r));
+    body.replaceChildren(placedRows);
+    if (store) store.content.replaceChildren(rest);
+    if (window.htmx) out.forEach(r => { if (fresh.has(r)) htmx.process(r); });
+    htmxoRegrouped(wrapper, table, levels, cfg);
+}
+// After a regroup: the wrapper names the grouping, the pills show it, and
+// the sort, open branches, search and selection apply to the new rows.
+function htmxoRegrouped(wrapper, table, levels, cfg) {
+    wrapper.dataset.htmxoGrouped = htmxoJsonList(levels);
+    wrapper.dataset.htmxoGroupBy = htmxoJsonList(levels.length ? levels : [cfg.flat ?? '']);
+    const pills = wrapper.querySelector('.htmxo-group-pills');
+    if (pills) htmxoGroupPillsSync(pills, levels);
+    htmxoTallyScale(table);
+    htmxoResort(table);
+    const root = wrapper.querySelector('.htmxo-searchable-table');
+    if (root) { htmxoTreeRestore(root, htmxoSearchOf(root)); htmxoFilterTable(root); }
+    wrapper.dispatchEvent(new CustomEvent('htmxo:regrouped', {bubbles: true, detail: {groupBy: JSON.parse(wrapper.dataset.htmxoGroupBy)}}));
+    // Group rows from `group_master` come from the server's render of the new
+    // grouping; in a recorded page the element has no request left.
+    const refresh = cfg.refresh && wrapper.querySelector('[data-htmxo-group-refresh][hx-get]');
+    if (refresh && window.htmx) htmx.trigger(refresh, 'htmxo-regroup');
+}
+// Set the pills the way `_md_group_pills` renders them for `levels`.
+function htmxoGroupPillsSync(pills, levels) {
+    const cfg = htmxoRegroupConfig(pills.closest('[data-htmxo-grouped]'));
+    const n = levels.length, keepLast = !('htmxoGroupFlat' in pills.dataset) && n === 1;
+    // An inactive pill that replaces the levels instead of adding one: the
+    // tree grouping's, and every pill while the tree shows.
+    const tree = pills.dataset.htmxoGroupTree;
+    const replaces = name => n === 0 || (tree !== undefined && (name === tree || levels.includes(tree)));
+    const byName = new Map(Array.from(pills.querySelectorAll(':scope > .htmxo-group-pill'), p => [p.dataset.htmxoGroupName, p]));
+    const end = pills.querySelector(':scope > input[type="hidden"]');
+    [...levels, ...cfg.names.filter(x => !levels.includes(x))].forEach(name => {
+        const pill = byName.get(name), level = levels.indexOf(name) + 1;
+        const button = pill.querySelector(':scope > button:not(.htmxo-group-move)');
+        pill.querySelectorAll(':scope > .htmxo-group-move').forEach(b => b.remove());
+        button.querySelectorAll(':scope > .htmxo-group-level').forEach(s => s.remove());
+        button.removeAttribute('aria-disabled');
+        button.setAttribute('aria-pressed', String(level > 0));
+        if (!level) {
+            delete pill.dataset.htmxoGroupLevel;
+            button.title = htmxoText(pills, replaces(name) ? 'group_add' : 'group_add_inner', {name});
+            button.removeAttribute('onkeydown');
+        } else {
+            pill.dataset.htmxoGroupLevel = String(level);
+            button.title = htmxoText(pills, n > 1 ? 'group_level' : keepLast ? 'group_kept' : 'group_stop', {level, name});
+            if (keepLast) button.setAttribute('aria-disabled', 'true');
+            button.setAttribute('onkeydown', 'htmxoGroupKey(this,event)');
+            if (n > 1) {
+                const mark = document.createElement('span');
+                mark.className = 'htmxo-group-level';
+                mark.setAttribute('aria-hidden', 'true');
+                mark.textContent = String(level);
+                button.prepend(mark);
+                [['‹', -1, level === 1, 'earlier'], ['›', 1, level === n, 'later']].forEach(([glyph, by, edge, where]) => {
+                    const move = document.createElement('button');
+                    move.type = 'button';
+                    move.id = button.id + '-' + where;
+                    move.className = 'htmxo-group-move';
+                    move.setAttribute('aria-label', htmxoText(pills, 'group_' + where, {name}));
+                    move.setAttribute('onclick', 'htmxoGroupMove(this,' + by + ')');
+                    if (edge) move.disabled = true;
+                    move.textContent = glyph;
+                    pill.append(move);
+                });
+            }
+        }
+        pills.insertBefore(pill, end);
+    });
+    // A bulk form receives the grouping with the selection.
+    const inputs = Array.from(pills.querySelectorAll(':scope > input[type="hidden"][name="group_by"]'));
+    if (!inputs.length) return;
+    const form = inputs[0].getAttribute('form');
+    inputs.forEach(i => i.remove());
+    (n ? levels : [pills.dataset.htmxoGroupFlat ?? '']).forEach(v => {
+        const input = document.createElement('input');
+        input.type = 'hidden'; input.name = 'group_by'; input.value = v;
+        input.setAttribute('form', form);
+        pills.append(input);
+    });
+}
+// htmx returns focus to the pill control the user pressed (same id) after
+// the table is re-rendered; one that is now disabled (a ‹/› at the end of
+// the bar) hands it to its pill's toggle.
+if (!window.htmxoGroupFocusBound) {
+    window.htmxoGroupFocusBound = true;
+    document.addEventListener('htmx:afterSettle', () => {
+        const f = window.htmxoGroupFocus;
+        if (!f || f.pills.isConnected) return;
+        window.htmxoGroupFocus = null;
+        const active = document.activeElement;
+        if (active && active !== document.body && active.isConnected && !active.disabled) return;
+        const el = document.getElementById(f.id), pill = el && el.closest('.htmxo-group-pill');
+        const target = el && !el.disabled ? el : pill && pill.querySelector('button');
+        if (target) target.focus();
+    });
+}
+function htmxoSelectionRestore(elt) {
+    if (!elt || !elt.querySelectorAll) return;
+    // A table rendered with a prefilled query filters as soon as it loads.
+    const searches = Array.from(elt.querySelectorAll('.htmxo-searchable-table'));
+    // A row update makes its own pass over the table its rows join.
+    const aroundSearch = !window.htmxoRowsUpdating && elt.closest && elt.closest('.htmxo-searchable-table');
+    if (aroundSearch) searches.push(aroundSearch);
+    searches.forEach(r => {
+        const input = r.querySelector(':scope > .htmxo-table-toolbar > label > input[type="search"]');
+        if (input && input.value.trim()) htmxoFilterTable(r);
+    });
+    const roots = new Set(elt.querySelectorAll('[data-htmxo-select]'));
+    const around = !window.htmxoRowsUpdating && elt.closest && elt.closest('[data-htmxo-select]');
+    if (around) roots.add(around);
+    roots.forEach(htmxoSelectionUpdate);
+}
+if (!window.htmxoSelectionBound) {
+    window.htmxoSelectionBound = true;
+    // Shift-click extends a range; it must not select page text.
+    document.addEventListener('mousedown', e => {
+        if (e.shiftKey && htmxoSelectionTarget(e)) e.preventDefault();
+    });
+    document.addEventListener('click', e => {
+        const control = e.target.closest && e.target.closest('[data-htmxo-select-all],[data-htmxo-select-clear]');
+        if (control) {
+            const root = control.closest('[data-htmxo-select]');
+            htmxoSelectRows(root, 'htmxoSelectAll' in control.dataset ? htmxoSelectionShown(root).map(htmxoSelectionKey) : []);
+            return;
+        }
+        const hit = htmxoSelectionTarget(e);
+        if (hit) htmxoSelectionClick(hit[0], hit[1], e);
+    });
+    document.addEventListener('keydown', e => {
+        const hit = !e.defaultPrevented && e.target.matches && e.target.matches('tr[aria-selected]') && htmxoSelectionTarget(e);
+        if (hit) htmxoSelectionKeydown(hit[0], hit[1], e);
+    });
+    document.addEventListener('htmxo:table-filtered', e => {
+        const root = e.target.closest('[data-htmxo-select]');
+        if (root) htmxoSelectionUpdate(root);
+    });
+    // htmx cleans up each element it swaps out while it is still in the
+    // document: note the key of a row that holds the focus (itself or one of
+    // its controls), which removing it would drop to the page body.
+    document.addEventListener('htmx:beforeCleanupElement', e => {
+        const row = e.target;
+        if (!(row instanceof HTMLTableRowElement) || !row.contains(document.activeElement)) return;
+        const root = row.closest('[data-htmxo-select]');
+        if (root && htmxoSelectionRows(root).includes(row)) htmxoSelectionOf(root).refocus = htmxoSelectionKey(row);
+    });
+    // htmx announces every processed root (the body, then each swap) with a
+    // bubbling htmx:load; a page without htmx restores once, on load.
+    document.addEventListener('htmx:load', e => htmxoSelectionRestore(e.target));
+    document.addEventListener('DOMContentLoaded', () => htmxoSelectionRestore(document.body));
+}
+// Included inside swapped-in content, this script runs after that content's
+// htmx load event: restore what is already in the document.
+if (document.body) htmxoSelectionRestore(document.body);
+
+// --- Hover linking: `link` on sortable_table / render_table / master_detail_table ---
+// Tables, plots and maps showing the same items name one link group. A hover
+// (or keyboard focus) announces the items it is on to the page as an
+// `htmxo:link` event on `document`, detail {group, key, keys, source}: `keys`
+// lists the items (one row: its own; a group or branch row: every item below
+// it too, a branch's own first) and is empty when the hover ends; `key` is the
+// row's own item, else the one item a group holds, else null. Every
+// participant of the group highlights the items in `keys` (an announcement
+// without `keys` names `key` alone). Anything joins by listening for the event
+// and dispatching it; `htmxoLink(group, key | [keys] | null)` dispatches it
+// from page script. The latest announcement per group is kept, so a table
+// rendered, regrouped or filtered later shows it too.
+window.htmxoLinkState = window.htmxoLinkState || new Map();
+function htmxoLinkAnnounce(group, key, keys, source) {
+    document.dispatchEvent(new CustomEvent('htmxo:link', {detail: {group: String(group),
+        key: key == null ? null : String(key), keys: keys.map(String), source: source || null}}));
+}
+function htmxoLink(group, keys, source) {
+    const list = keys == null ? [] : Array.isArray(keys) ? keys.map(String) : [String(keys)];
+    htmxoLinkAnnounce(group, list.length === 1 ? list[0] : null, list, source);
+}
+// A row's item key: `data-htmxo-link-key`, else its selection key. A group
+// row (`data-htmxo-group`) is no item: its selection key names the group.
+function htmxoLinkKey(row) { return 'htmxoGroup' in row.dataset ? null : row.dataset.htmxoLinkKey ?? row.dataset.htmxoSelectKey; }
+// The body row of a linked table that holds `el`, as {group, row}, else null.
+// A detail row stands for its master, and the rows of a table nested in a
+// detail for the row around them.
+function htmxoLinkRow(el) {
+    for (let tr = el && el.closest ? el.closest('tr') : null; tr; tr = tr.parentElement.closest('tr')) {
+        const table = tr.parentElement.parentElement;
+        if (!table || !table.matches('table[data-htmxo-link]') || tr.parentElement !== table.tBodies[0]) continue;
+        const row = tr.id.startsWith('detail-') ? document.getElementById('row-' + tr.id.slice(7)) : tr;
+        return row ? {group: table.dataset.htmxoLink, row} : null;
+    }
+    return null;
+}
+// The items `row` stands for, as {key, keys}, else null: its own key, and on
+// a group or branch row every item below it, open or collapsed, loaded or not
+// (a lazy group's unloaded leaves by their link key), except those the search
+// or a filter hides, so a hover names what the table shows.
+function htmxoLinkItems(row) {
+    const own = htmxoLinkKey(row), keys = new Set(own == null ? [] : [own]);
+    const lazy = r => htmxoLazyLeaves(r).forEach(([k, , link]) => {
+        if (!(r.htmxoLazyFiltered && r.htmxoLazyFiltered.has(k))) keys.add(link ?? k);
+    });
+    lazy(row);
+    // A row's rows follow it in the body, so one pass finds everything below.
+    const below = new Set([row.id]);
+    if (row.id) for (const r of row.parentElement.rows) {
+        if (!r.id || r.id.startsWith('detail-') || !below.has(r.dataset.htmxoParent)) continue;
+        below.add(r.id);
+        if ('htmxoFiltered' in r.dataset) continue;
+        const k = htmxoLinkKey(r);
+        if (k != null) keys.add(k);
+        lazy(r);
+    }
+    const list = Array.from(keys);
+    return list.length ? {key: own ?? (list.length === 1 ? list[0] : null), keys: list} : null;
+}
+// The pointer or the focus moved from `from` to `to`: the row it left ends
+// its hover, unless another row of its group takes over or the group shows
+// something else (a plot's hover), and the row it entered announces its
+// items. A hovered row that a swap or a regroup replaced ends its hover too.
+function htmxoLinkMove(to, from) {
+    const left = htmxoLinkRow(from), entered = htmxoLinkRow(to);
+    if (left && entered && left.row === entered.row) return;
+    const items = entered && htmxoLinkItems(entered.row);
+    const shown = left && window.htmxoLinkState.get(left.group);
+    const own = shown && (shown.source === left.row || !(shown.source && shown.source.isConnected));
+    if (own && shown.keys.size && !(items && entered.group === left.group))
+        htmxoLinkAnnounce(left.group, null, [], left.row);
+    if (items) htmxoLinkAnnounce(entered.group, items.key, items.keys, entered.row);
+}
+// How many levels a group row whose rows have not loaded sits above its
+// leaves: the grouping levels below its own (`data-htmxo-grouped` holds a
+// JSON list of the levels).
+function htmxoLinkLazyDepth(row) {
+    const wrapper = row.closest('[data-htmxo-grouped]');
+    const levels = wrapper ? JSON.parse(wrapper.dataset.htmxoGrouped).length : 1;
+    return Math.max(1, levels + 1 - Number(row.getAttribute('aria-level') || 1));
+}
+// Scroll `row` into view inside the nearest scroll box around it, never the
+// page: a hover on a plot must not move the plot away from the pointer.
+function htmxoLinkReveal(row) {
+    for (let box = row.parentElement; box && box !== document.body && box !== document.documentElement; box = box.parentElement) {
+        if (box.scrollHeight <= box.clientHeight || !/auto|scroll/.test(getComputedStyle(box).overflowY)) continue;
+        const r = row.getBoundingClientRect(), b = box.getBoundingClientRect();
+        if (r.top < b.top || r.bottom > b.bottom) box.scrollTop += (r.top + r.bottom - b.top - b.bottom) / 2;
+        return;
+    }
+}
+// Mark the rows of `table` that hold its group's current items. A highlight
+// never changes the table: a row inside a collapsed group or branch lights up
+// the innermost shown row above it instead (`data-htmxo-linked="inside"`, its
+// first cell noting how many levels down the item is, or how many items it
+// holds), and a row the search or a filter hides lights up nothing. The row a
+// hover is on lights up as itself. With `reveal`, the first lit row scrolls
+// into view inside the table's own scroll box.
+function htmxoLinkApply(table, reveal) {
+    const body = table.tBodies[0];
+    if (!body) return;
+    body.querySelectorAll(':scope > tr[data-htmxo-linked]').forEach(r => {
+        delete r.dataset.htmxoLinked;
+        if (r.cells[0]) delete r.cells[0].dataset.htmxoLinkedNote;
+    });
+    const state = window.htmxoLinkState.get(table.dataset.htmxoLink);
+    if (!state || !state.keys.size) return;
+    const rows = Array.from(body.rows);
+    const byId = new Map(rows.filter(r => r.id).map(r => [r.id, r]));
+    // Each lit row: the fewest levels down an item sits, and its items.
+    const lit = new Map();
+    const light = (row, depth, key) => {
+        for (; row && row.hidden; depth++) row = byId.get(row.dataset.htmxoParent);
+        if (!row) return;
+        const at = lit.get(row) || lit.set(row, {depth, keys: new Set()}).get(row);
+        at.depth = Math.min(at.depth, depth);
+        at.keys.add(key);
+    };
+    rows.forEach(r => {
+        if (r.id.startsWith('detail-') || 'htmxoFiltered' in r.dataset) return;
+        const k = htmxoLinkKey(r);
+        if (k != null && state.keys.has(k)) light(r, 0, k);
+        htmxoLazyLeaves(r).forEach(([lk, , link]) => {
+            if (state.keys.has(link ?? lk) && !(r.htmxoLazyFiltered && r.htmxoLazyFiltered.has(lk)))
+                light(r, htmxoLinkLazyDepth(r), link ?? lk);
+        });
+    });
+    if (state.source && state.source.parentElement === body && !state.source.hidden)
+        lit.set(state.source, {depth: 0, keys: new Set()});
+    lit.forEach(({depth, keys}, row) => {
+        row.dataset.htmxoLinked = depth ? 'inside' : '';
+        if (depth && row.cells[0]) row.cells[0].dataset.htmxoLinkedNote = keys.size > 1 ?
+            htmxoText(table, 'linked_inside_many', {count: keys.size}) :
+            htmxoText(table, depth > 1 ? 'linked_deep' : 'linked_inside', {levels: depth});
+    });
+    const first = reveal && rows.find(r => lit.has(r));
+    if (first) htmxoLinkReveal(first);
+}
+// Show the current keys again in the linked tables in or around `elt`.
+function htmxoLinkRestore(elt) {
+    if (!elt || !elt.querySelectorAll) return;
+    const tables = new Set(elt.querySelectorAll('table[data-htmxo-link]'));
+    const around = elt.closest && elt.closest('table[data-htmxo-link]');
+    if (around) tables.add(around);
+    tables.forEach(t => htmxoLinkApply(t, false));
+}
+if (!window.htmxoLinkBound) {
+    window.htmxoLinkBound = true;
+    document.addEventListener('pointerover', e => htmxoLinkMove(e.target, e.relatedTarget));
+    document.addEventListener('pointerout', e => { if (!e.relatedTarget) htmxoLinkMove(null, e.target); });
+    document.addEventListener('focusin', e => htmxoLinkMove(e.target, e.relatedTarget));
+    document.addEventListener('focusout', e => { if (!e.relatedTarget) htmxoLinkMove(null, e.target); });
+    document.addEventListener('htmxo:link', e => {
+        const d = e.detail || {};
+        if (d.group == null) return;
+        const group = String(d.group);
+        const keys = Array.isArray(d.keys) ? d.keys : d.key == null ? [] : [d.key];
+        window.htmxoLinkState.set(group, {key: d.key == null ? null : String(d.key),
+            keys: new Set(keys.map(String)), source: d.source || null});
+        // The tables the hover did not start in bring their match into view.
+        document.querySelectorAll('table[data-htmxo-link]').forEach(t => {
+            if (t.dataset.htmxoLink === group) htmxoLinkApply(t, !(d.source && t.contains(d.source)));
+        });
+    });
+    document.addEventListener('htmxo:table-filtered', e => htmxoLinkRestore(e.target));
+    document.addEventListener('htmxo:regrouped', e => htmxoLinkRestore(e.target));
+    document.addEventListener('htmx:load', e => htmxoLinkRestore(e.target));
+}
+
+// Read a table's CURRENT client-side sort state. `target` is a CSS selector
+// or an element (the <table>, or any node inside or around it). Returns
+// {sort_col, sort_dir} — 1-based column index, 'asc'|'desc' — plus
+// `sort_key`, the active key's name, for a column with several sort keys; or
+// {} when the table is unsorted, so it spreads cleanly into an htmx hx-vals:
+//
+//     hx-vals="js:{...htmxoSortState('#my-table')}"
+//
+// Read it BEFORE the swap, not after. A `morph:*` (idiomorph) swap syncs
+// attributes against the server's HTML and REMOVES any the server did not
+// render — so the client-set `data-sort-dir` / `aria-sort` and the caret
+// span are all gone once the morph lands, and the server's child order is
+// re-imposed on the rows. Ride the state out with the request, render the
+// rows in that order, and stamp it back with
+// `sortable_table(...; default_sort=col => dir)` (or `(col=, key=, dir=)`).
+function htmxoSortState(target) {
+    const root = typeof target === 'string' ? document.querySelector(target) : target;
+    if (!root) return {};
+    const table = root.tagName === 'TABLE' ? root
+        : (root.closest('table') || root.querySelector('table'));
+    if (!table) return {};
+    const th = table.querySelector('thead th[data-sort-dir]');
+    if (!th) return {};
+    const state = {
+        sort_col: th.dataset.htmxoSortCol ? Number(th.dataset.htmxoSortCol)
+            : Array.prototype.indexOf.call(th.parentNode.children, th) + 1,
+        sort_dir: th.dataset.sortDir,
+    };
+    // A column with several sort keys: the name of the active one.
+    if (th.dataset.htmxoSortKeys)
+        state.sort_key = JSON.parse(th.dataset.htmxoSortKeys)[Number(th.dataset.htmxoSortKey || 0)];
+    return state;
+}
+if (!window.htmxoMoveBeforeGuarded) {
+    window.htmxoMoveBeforeGuarded = true;
+    [window.Element, window.Document, window.DocumentFragment].forEach(function (C) {
+        var native = C && C.prototype.moveBefore;
+        if (!native) return;
+        C.prototype.moveBefore = function (node, child) {
+            var lists = node && node.querySelector && node.querySelector('datalist')
+                ? Array.prototype.map.call(node.querySelectorAll('input[list]'), function (i) { return [i, i.getAttribute('list')]; })
+                : [];
+            lists.forEach(function (l) { l[0].removeAttribute('list'); });
+            try { return native.call(this, node, child); }
+            finally { lists.forEach(function (l) { l[0].setAttribute('list', l[1]); }); }
+        };
+    });
+}
+if (!window.htmxoLoadOnceGuarded) {
+    window.htmxoLoadOnceGuarded = true;
+    document.addEventListener('htmx:confirm', function (event) {
+        var d = event.detail, cause = d && d.triggeringEvent, elt = d && d.elt;
+        if (!cause || cause.type !== 'load' || !elt || !elt.getAttribute) return;
+        var trigger = elt.getAttribute('hx-trigger') || elt.getAttribute('data-hx-trigger') || '';
+        if (/(^|,)\s*load(?![\w:-])/.test(trigger)) event.preventDefault();
+    }, true);
+}
+// A table text (`TableTexts`) with its {placeholders} filled in: from the
+// nearest `data-htmxo-texts` the table's `texts=` wrote, else English.
+var htmxoTableTextsDefault = {"search":"Search","count":"{shown} of {total} rows shown","empty":"No matching rows","selected":"{count} selected","selected_filtered":"{count} hidden by the filter","selected_collapsed":"{count} in collapsed groups","select_all":"Select all shown","clear_selection":"Clear","expand_all":"Expand all","collapse_all":"Collapse all","toggle_children":"Toggle child rows","details":"Details","group_by":"Group by","group_add":"Group by {name}","group_add_inner":"Also group by {name}, as the innermost level","group_level":"Level {level}: stop grouping by {name}; drag or press ←/→ to reorder","group_kept":"Grouped by {name}; add another grouping to change it","group_stop":"Stop grouping by {name}","group_earlier":"Move {name} earlier","group_later":"Move {name} later","loading":"Loading…","retrying":"Connection lost — retrying…","load_failed":"Failed to load — click to retry","rows_failed":"Loading rows failed ({status})","rows_missing":"Loading rows failed: no rows in the response","csv":"⬇ CSV","more":"More","decimal":".","thousands":",","minus":"-","linked_inside":"↳ inside","linked_deep":"↳ {levels} levels down","linked_inside_many":"↳ {count} inside","sort_by":"Sort by","sort_ascending":"{name}, ascending","sort_descending":"{name}, descending","sort_estimate":"Estimate","sort_lower":"Lower bound","sort_upper":"Upper bound","sort_width":"Interval width","sort_relative_width":"Relative width","interval":"{estimate} ({lower}–{upper})","interval_signed":"{estimate} ({lower} to {upper})","range":"{lower}–{upper}","range_signed":"{lower} to {upper}"};
+// `_print_grouped`: an integer's digits with `thousands` every three from the right.
+function htmxoGrouped(whole, thousands) {
+    let out = '';
+    for (let i = 0; i < whole.length; i++) {
+        if (i > 0 && (whole.length - i) % 3 === 0) out += thousands;
+        out += whole[i];
+    }
+    return out;
+}
+function htmxoText(el, name, values) {
+    var holder = el && el.closest ? el.closest('[data-htmxo-texts]') : null, texts = htmxoTableTextsDefault;
+    if (holder) {
+        if (holder.htmxoTextsSource !== holder.dataset.htmxoTexts) {
+            holder.htmxoTextsSource = holder.dataset.htmxoTexts;
+            holder.htmxoTexts = JSON.parse(holder.htmxoTextsSource);
+        }
+        texts = holder.htmxoTexts;
+    }
+    // `_table_text`: a number takes the table's `thousands`, a string stays as it is.
+    return texts[name].replace(/[{]([A-Za-z_]+)[}]/g, function(m, k) {
+        if (!values || !(k in values)) return m;
+        return typeof values[k] === 'number' ? htmxoGrouped(String(values[k]), texts.thousands) : String(values[k]);
+    });
+}
+// The control of its own that a click inside `row` landed on (a link, button,
+// form field, label, per-row form, <details> drop-out or editable text), which
+// keeps its own behaviour instead of toggling or selecting the row; null for a
+// click on the row itself. Only a control inside the row counts, so a table
+// inside a <form> or a <details> still toggles. The row toggle, the tree row
+// and row selection all ask this.
+function htmxoRowControl(row, target) {
+    var control = target.closest && target.closest('a,button,input,textarea,select,label,form,details,[contenteditable]');
+    return control && row.contains(control) ? control : null;
+}
+function htmxoMdToggle(row, event, key, slot) {
+    if (htmxoRowControl(row, event.target)) return;
+    var d = document.getElementById('detail-' + key); if (!d) return;
+    // A flat row's detail says whether it is open; a tree row's may be hidden
+    // only because a search or a closed branch hides it.
+    var show = row.dataset.htmxoParent === undefined ? d.hidden : row.dataset.htmxoDetailOpen !== 'true';
+    htmxoMdShow(row, d, show);
+    if (show && slot) {
+        var s = document.getElementById(slot === 1 ? 'detail-slot-' + key : slot);
+        htmxoLoadSlot(s);
+    }
+    return show;
+}
+// Open or close a row's detail `d`, mirroring the state on the row and on its
+// detail control. A row update re-applies it to the rows it replaces.
+// `aria-expanded` is valid on a row only inside a treegrid, so a flat table's
+// row (`data-htmxo-detail-open` without `data-htmxo-parent`) keeps its state in
+// the data attribute, and its detail control tells assistive technology.
+function htmxoMdShow(row, d, show) {
+    d.hidden = !show;
+    if (row.dataset.htmxoDetailOpen !== undefined) row.dataset.htmxoDetailOpen = String(show);
+    if (row.dataset.htmxoTreeOpen === undefined &&
+        (row.dataset.htmxoDetailOpen === undefined || row.dataset.htmxoParent !== undefined))
+        row.setAttribute('aria-expanded', show);
+    var control = row.querySelector('[data-htmxo-detail-toggle]');
+    if (control) {
+        control.setAttribute('aria-expanded', show);
+        if (control.hasAttribute('data-htmxo-disclosure'))
+            control.textContent = show ? '▾' : '▸';
+    }
+}
+function htmxoLoadSlot(s) {
+    if (s && s.dataset.loaded !== '1' && s.dataset.loading !== '1') htmxoMdFire(s);
+}
+// Fire a slot's load, latched single-flight while its request runs. htmx binds
+// the elements a swap inserts only in its settle step, a tick after the swap,
+// so a row clicked in between fired the event at no listener and stayed
+// latched for good (snag `lazy-master-deta-01052813`); binding the slot first
+// lets that click load. A bound slot whose attributes are unchanged is left as
+// it is. A trigger that sends no request (a declined `htmx:confirm`, say)
+// releases the latch, so the next expand tries again.
+function htmxoMdFire(s) {
+    htmx.process(s);
+    var sent = false, mark = function(event) { if (event.target === s) sent = true; };
+    s.addEventListener('htmx:beforeSend', mark);
+    s.dataset.loading = '1'; htmx.trigger(s, 'htmxo-md-load');
+    s.removeEventListener('htmx:beforeSend', mark);
+    if (!sent) delete s.dataset.loading;
+}
+// A row's detail control activates exactly what a click on the row does, so
+// toggle extensions a caller concatenated onto the row handler run for it too.
+function htmxoMdControl(button, event) {
+    event.stopPropagation();
+    var row = button.closest('tr'), key = row.id.slice(4);
+    if (row.hasAttribute('data-htmxo-tree-row-toggle'))
+        htmxoMdToggle(row, {target: row}, key, document.getElementById('detail-slot-' + key) ? 1 : 0);
+    else if (row.onclick) row.onclick({target: row});
+    else htmxoMdToggle(row, {target: row}, key, document.getElementById('detail-slot-' + key) ? 1 : 0);
+}
+// The slot's status line: its placeholder's, never one in the preserved
+// elements a row update left waiting in the slot for this load.
+function htmxoMdStatus(s) {
+    return Array.from(s.querySelectorAll('[data-status]')).find(function(p) { return !p.closest('[data-htmxo-preserved]'); }) || null;
+}
+function htmxoMdBefore(s, event) {
+    if (event.detail.requestConfig.elt !== s) return;
+    s.dataset.loading = '1'; delete s.dataset.failed; s.__htmxoMdAborted = false;
+    var p = htmxoMdStatus(s); if (p) p.textContent = htmxoText(s, 'loading');
+}
+function htmxoMdReady(s, event) {
+    if (event.target !== s || event.detail.target !== s) return;
+    // htmx normally initializes inserted nodes during its delayed settle
+    // phase. Bind the new children before afterSwap bubbles to consumers,
+    // so an immediately clicked form already owns its submit event.
+    // Leave the active requester and htmx's visual settle tasks untouched.
+    Array.from(s.children).forEach(function(child) {
+        htmx.process(child);
+    });
+}
+var htmxoMdRetryDelays = [1000, 3000];
+function htmxoMdTransient(s, event) {
+    var status = event.detail.xhr ? event.detail.xhr.status : 0;
+    return !s.__htmxoMdAborted && (status === 0 || status === 502 || status === 503 || status === 504);
+}
+function htmxoMdAfter(s, event) {
+    if (event.detail.requestConfig.elt !== s) return;
+    var p = htmxoMdStatus(s), n = +(s.dataset.retries || 0);
+    if (event.detail.successful) {
+        delete s.dataset.loading; delete s.dataset.retries;
+        s.dataset.loaded = '1'; delete s.dataset.failed;
+    } else if (htmxoMdTransient(s, event) && n < htmxoMdRetryDelays.length) {
+        // Still latched as loading: the retry owns the next request, and the
+        // slot's own status line reports it, so the shell raises no failure
+        // toast for this attempt (a failure the retries cannot cure does).
+        event.detail.htmxoFailureShown = true;
+        s.dataset.retries = String(n + 1);
+        if (p) p.textContent = htmxoText(s, 'retrying');
+        setTimeout(function() {
+            if (document.contains(s) && s.dataset.loaded !== '1') htmx.trigger(s, 'htmxo-md-load');
+        }, htmxoMdRetryDelays[n]);
+    } else {
+        delete s.dataset.loading; delete s.dataset.retries;
+        s.dataset.loaded = '0'; s.dataset.failed = '1';
+        if (p) p.textContent = htmxoText(s, 'load_failed');
+    }
+}
+function htmxoMdRetry(s) {
+    if (s.dataset.failed === '1' && !s.dataset.loading) htmxoMdFire(s);
+}
+if (!window.__htmxoMdReady) {
+    window.__htmxoMdReady = true;
+    // An explicit abort is a request to stop, never a transient failure.
+    document.addEventListener('htmx:abort', function(event) {
+        var s = event.target;
+        if (s.classList && s.classList.contains('htmxo-md-detail-slot')) s.__htmxoMdAborted = true;
+    }, true);
+    // hx-on--after-swap listens to htmx's later kebab-case alias. Capture
+    // the original event before a consumer can click the inserted forms.
+    document.addEventListener('htmx:afterSwap', function(event) {
+        var s = event.target;
+        if (s.classList && s.classList.contains('htmxo-md-detail-slot')) htmxoMdReady(s, event);
+    }, true);
+}
+</script>
+</head>
+<body>
+<figure class="captioned"><figcaption class="caption"><div class="caption-header"><span><strong>Observed effects (orange) and conditional posterior means with central 95% intervals (blue). The population mean and standard deviation are fixed inputs; these intervals exclude uncertainty in those inputs.</strong></span><span class="caption-actions"><button type="button" class="outline caption-action" popovertarget="stanblocks-pooling-download-menu">⬇ Export <span aria-hidden="true">▾</span></button><div id="stanblocks-pooling-download-menu" class="aov-download-menu" popover="auto" onbeforetoggle="AoV._downloadMenuToggle(this, event)"><button type="button" popovertarget="stanblocks-pooling-download-menu" popovertargetaction="hide" onclick="AoV.downloadPlotData(&#39;stanblocks-pooling&#39;, &#39;stanblocks-pooling&#39;, {})">⬇ CSV</button><button type="button" popovertarget="stanblocks-pooling-download-menu" popovertargetaction="hide" onclick="AoV.downloadPlotImage(&#39;stanblocks-pooling&#39;, &#39;png&#39;, &#39;stanblocks-pooling&#39;)">⬇ PNG</button><button type="button" popovertarget="stanblocks-pooling-download-menu" popovertargetaction="hide" onclick="AoV.downloadPlotImage(&#39;stanblocks-pooling&#39;, &#39;svg&#39;, &#39;stanblocks-pooling&#39;)">⬇ SVG</button><button type="button" popovertarget="stanblocks-pooling-download-menu" popovertargetaction="hide" onclick="AoV.downloadPlotHtml(&#39;stanblocks-pooling&#39;, &#39;stanblocks-pooling&#39;)">⬇ HTML</button></div></span></div></figcaption><div class="aov-plot-area"><div id="stanblocks-pooling" class="u-w-full"></div><script>AoV.embed('stanblocks-pooling', {"$schema":"https://vega.github.io/schema/vega-lite/v5.json","config":{"axis":{"labelLimit":0},"header":{"labelLimit":0},"legend":{"labelLimit":0}},"data":{"values":{"n":8,"columns":{"school":{"start":1.0,"step":1.0},"observed":[28.0,8.0,-3.0,7.0,-1.0,1.0,18.0,12.0],"upper":[24.923270717665897,17.859038243496805,15.777764718796751,17.6699797602194,12.558981621229764,14.95504763352257,22.859038243496805,19.96335645946381],"estimate":[8.615384615384617,4.0,-0.8426966292134832,3.1674208144796374,-0.5524861878453039,0.4524886877828054,9.0,2.830188679245283],"lower":[-7.6925014868966635,-9.859038243496803,-17.463157977223716,-11.335138131260127,-13.663953996920371,-14.050070257956959,-4.859038243496803,-14.302979100973246]}}},"height":300,"layer":[{"encoding":{"tooltip":[{"field":"school","type":"quantitative"},{"field":"lower","type":"quantitative"},{"field":"upper","type":"quantitative"}],"x":{"field":"school","scale":{"zero":false},"title":"School","type":"quantitative"},"y":{"field":"lower","scale":{"zero":false},"title":"Treatment effect (points)","type":"quantitative"},"y2":{"field":"upper","type":"quantitative"}},"mark":{"color":"#2a78d6","type":"errorbar"}},{"data":{"values":{"n":8,"columns":{"school":{"start":1.0,"step":1.0},"observed":[28.0,8.0,-3.0,7.0,-1.0,1.0,18.0,12.0],"upper":[24.923270717665897,17.859038243496805,15.777764718796751,17.6699797602194,12.558981621229764,14.95504763352257,22.859038243496805,19.96335645946381],"estimate":[8.615384615384617,4.0,-0.8426966292134832,3.1674208144796374,-0.5524861878453039,0.4524886877828054,9.0,2.830188679245283],"lower":[-7.6925014868966635,-9.859038243496803,-17.463157977223716,-11.335138131260127,-13.663953996920371,-14.050070257956959,-4.859038243496803,-14.302979100973246]}}},"encoding":{"tooltip":[{"field":"school","type":"quantitative"},{"field":"estimate","type":"quantitative"}],"x":{"field":"school","scale":{"zero":false},"title":"School","type":"quantitative"},"y":{"field":"estimate","scale":{"zero":false},"title":"Treatment effect (points)","type":"quantitative"}},"mark":{"color":"#2a78d6","filled":true,"type":"point"}},{"data":{"values":{"n":8,"columns":{"school":{"start":1.0,"step":1.0},"observed":[28.0,8.0,-3.0,7.0,-1.0,1.0,18.0,12.0],"upper":[24.923270717665897,17.859038243496805,15.777764718796751,17.6699797602194,12.558981621229764,14.95504763352257,22.859038243496805,19.96335645946381],"estimate":[8.615384615384617,4.0,-0.8426966292134832,3.1674208144796374,-0.5524861878453039,0.4524886877828054,9.0,2.830188679245283],"lower":[-7.6925014868966635,-9.859038243496803,-17.463157977223716,-11.335138131260127,-13.663953996920371,-14.050070257956959,-4.859038243496803,-14.302979100973246]}}},"encoding":{"tooltip":[{"field":"school","type":"quantitative"},{"field":"observed","type":"quantitative"}],"x":{"field":"school","scale":{"zero":false},"title":"School","type":"quantitative"},"y":{"field":"observed","scale":{"zero":false},"title":"Treatment effect (points)","type":"quantitative"}},"mark":{"color":"#eb6834","filled":true,"type":"point"}}],"width":560}, {actions: false}).then(function(){});</script></div><details class="aov-data-preview" ontoggle="if(this.open) AoV._lazyRenderDataView(this, &#39;raw&#39;)"><summary>Show data</summary><div class="aov-data-raw-body" id="stanblocks-pooling-data-preview" data-aov-plot-id="stanblocks-pooling" data-aov-labels="{}"></div></details></figure>
+</body>
+</html>

@@ -1,0 +1,181 @@
+    details[title] > summary > svg { width: 14px !important; height: 14px !important; }
+    .chart-wrapper { height: auto !important; }
+
+    /* Vega's tooltip: its container is the surface (coloured by the runtime's
+       _tooltipTheme). A page's table and heading rules stay out of it: Pico
+       paints every cell in the page's background and its tables and headings
+       in the page's text colour, which on any other surface shows as dark
+       cells in a light frame, or as light text on it. */
+    #vg-tooltip-element td { background-color: transparent; }
+    #vg-tooltip-element table, #vg-tooltip-element td, #vg-tooltip-element h2 { color: inherit; }
+
+    /* AoV-specific role classes. Generic concepts (gallery
+       grid, sortable table, status badges, …) live upstream in
+       HTMXObjects; this block only carries roles peculiar to
+       the AoV gallery shell. */
+    .aov-plot-area { width: 100%; min-width: 0; max-width: 100%; overflow-x: auto; }
+    /* A plot that scrolls in its frame is a tab stop (the runtime's
+       _syncScrollFrame). The ring stays inside the frame, where a clipping
+       ancestor cannot cut it off, and follows the text colour in both themes. */
+    .aov-plot-area:focus-visible { outline: 2px solid currentColor; outline-offset: -2px; }
+    /* cell_charts: a table cell's total and its small chart stay on one line.
+       The total sits in a slot as wide as its column's widest total (set by
+       the runtime, `_cellAlign`), right-aligned with equal-width digits, so
+       every chart of the column starts at the same x. */
+    td.aov-cells { white-space: nowrap; }
+    td.aov-cells > .aov-cell-total { display: inline-block; text-align: end; font-variant-numeric: tabular-nums; }
+    /* config(frame=…) player after a plot: play/pause, slider, frame label. */
+    .aov-frame { display: flex; align-items: center; gap: 0.5em; margin: 0.25em 0; }
+    .aov-frame > .aov-frame-play { width: auto; margin: 0; padding: 0.2em 0.7em; line-height: 1.2; }
+    .aov-frame > .aov-frame-slider { flex: 1; min-width: 4em; margin: 0; }
+    .aov-frame > .aov-frame-value { min-width: 4ch; font-variant-numeric: tabular-nums; }
+    /* The player's colours: never a theme's primary colour (Pico fills a
+       button, its focus ring and a focused range thumb azure) or the
+       browser's accent blue (a bare range input). The play button is a
+       text-colour outline, set through the variables Pico paints buttons
+       with: these rules outrank Pico's own (`[type=button]`, and with
+       `:hover`/`:active`/`:focus`) in any source order and give way to a
+       page's more specific button theme on the same variables
+       (HTMXObjects' `pico_bridge()`), so the button matches the page's
+       other buttons wherever the page styles them. It reads them itself,
+       so a page without Pico gets the same look. */
+    button.aov-frame-play,
+    button.aov-frame-play:is(:hover, :active, :focus) {
+        --pico-background-color: transparent;
+        --pico-color: currentColor;
+        --pico-border-color: color-mix(in srgb, currentColor 40%, transparent);
+        --pico-box-shadow: none;
+    }
+    button.aov-frame-play:hover { --pico-background-color: color-mix(in srgb, currentColor 10%, transparent); }
+    button.aov-frame-play:focus-visible { --pico-box-shadow: 0 0 0 2px currentColor; }
+    button.aov-frame-play {
+        background-color: var(--pico-background-color); color: var(--pico-color);
+        border: 1px solid var(--pico-border-color); border-radius: 0.25rem;
+        box-shadow: var(--pico-box-shadow);
+    }
+    input.aov-frame-slider:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+    /* A focused or dragged Pico thumb keeps Pico's idle slate. */
+    input.aov-frame-slider {
+        color: inherit; accent-color: currentColor;
+        --pico-range-thumb-active-color: var(--pico-secondary-background, currentColor);
+    }
+    /* A coloured ribbon's Ribbons | Intervals switch (built by the runtime,
+       `_ribbonViewControls`): the pressed button is the drawing shown. In a
+       captioned figure the two buttons are the action row's first buttons
+       and take its look; elsewhere they are a joined compact pair right
+       after the plot. Outranks Pico's `[role=group]` (full width, a bottom
+       margin, wide buttons) in any source order.
+       The pressed button's tint lowers its text contrast, so its text moves
+       30% of the way to the theme's contrast colour (Pico's near-black in
+       light, near-white in dark), keeping it at WCAG AA (4.5:1). On Pico's
+       slate outline (HTMXObjects' `pico_bridge()`) that is Pico's own hover
+       slate: 6.1:1 light, 6.5:1 dark, where the tint alone gave 4.4:1. */
+    button[data-aov-ribbon-view-for][aria-pressed="true"] {
+        color: color-mix(in srgb, var(--pico-color, currentColor) 70%, var(--pico-contrast, currentColor));
+        background-color: color-mix(in srgb, currentColor 15%, transparent);
+        font-weight: 600;
+    }
+    div.aov-ribbon-view[role="group"] { display: inline-flex; width: auto; margin: 0.25em 0; }
+    div.aov-ribbon-view[role="group"] > button {
+        flex: none; width: auto; margin: 0; padding: 0.1rem 0.6rem; font-size: 0.85em;
+    }
+    div.aov-ribbon-view[role="group"] > button:not(:first-child) {
+        margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0;
+    }
+    div.aov-ribbon-view[role="group"] > button:not(:last-child) {
+        border-top-right-radius: 0; border-bottom-right-radius: 0;
+    }
+    /* A caption's download menu (`with_plot_caption`). The runtime sets its
+       top and right (`_downloadMenuToggle`). With a fixed left too, the auto
+       left margin holds a menu narrower than that room against its button's
+       right edge, and a wider one against the viewport's left edge. The rows
+       read as a list, not as a stack of buttons, and take the page's colours:
+       these rules outrank Pico's `button` and `[type=button]` in any order. */
+    .aov-download-menu {
+        inset: auto; left: 4px; width: max-content; margin: 0 0 0 auto;
+        padding: 0.25rem; overflow-y: auto; border-radius: 0.25rem;
+        border: 1px solid var(--pico-muted-border-color, color-mix(in srgb, currentColor 30%, transparent));
+        background-color: var(--pico-background-color, Canvas);
+        color: var(--pico-color, CanvasText);
+        box-shadow: 0 2px 8px rgb(0 0 0 / 25%);
+    }
+    .aov-download-menu > button {
+        display: block; width: 100%; margin: 0; padding: 0.25rem 0.5rem;
+        font-size: 0.85em; text-align: start; white-space: nowrap;
+        border: 0; border-radius: 0.2rem; box-shadow: none;
+        background-color: transparent; color: inherit;
+    }
+    .aov-download-menu > button:is(:hover, :focus-visible) {
+        background-color: color-mix(in srgb, currentColor 12%, transparent);
+    }
+    .aov-download-menu > button:focus-visible { outline: 2px solid currentColor; outline-offset: -2px; }
+    .aov-grid-page { width: 100vw; padding: 0.5rem; font-size: 0.5em; }
+    /* Dense compact grid (16 cols) and gallery static grid (4 cols).
+       Both compose with upstream `.htmxo-grid`, supplying only the
+       column-count + gap variables; child styling stays scoped here. */
+    .aov-grid-dense  { --htmxo-grid-cols: 16; --htmxo-grid-gap: 0.25rem; }
+    .aov-grid-static { --htmxo-grid-cols: 4;  --htmxo-grid-gap: 0.5rem; }
+    /* Compact gallery cells: <figure> in a grid container; <figcaption> is the title. */
+    .aov-grid-dense > figure, .aov-grid-static > figure {
+        margin: 0; border: 1px solid var(--pico-muted-border-color);
+        border-radius: 0.2rem; padding: 0.2rem;
+        overflow: hidden; min-width: 0;
+    }
+    .aov-grid-dense > figure > figcaption, .aov-grid-static > figure > figcaption {
+        font-weight: bold; white-space: nowrap; overflow: hidden;
+        text-overflow: ellipsis; margin-bottom: 0.1rem;
+    }
+    /* Static gallery cards: <article><header><a/><button/></header><img/></article>. */
+    .aov-grid-static > article {
+        margin: 0; padding: 0.5rem; min-width: 0; overflow: hidden;
+    }
+    .aov-grid-static > article > header {
+        padding: 0 0 0.25rem; margin: 0;
+        display: flex; align-items: center; flex-wrap: wrap;
+    }
+    .aov-grid-static > article > header > a {
+        font-size: 0.9em; font-weight: bold; text-decoration: none;
+    }
+    .aov-grid-dense > figure img, .aov-grid-static > figure img,
+    .aov-grid-static > article img { width: 100%; }
+    .aov-cb-mid { vertical-align: middle; margin-right: 0.3em; }
+    .aov-context-bar { padding: 0.5rem 0; font-size: 0.75em; opacity: 0.6; display: flex; gap: 1em; align-items: center; }
+    /* Plot nav: a strip of role=button anchors. The first one
+       ("← Gallery") pushes everything after it to the right. */
+    .aov-plot-nav { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-bottom: 1rem; align-items: center; }
+    .aov-plot-nav > a:first-child { margin-right: auto; }
+    .aov-plot-nav > a { margin: 0.1rem; font-size: 0.85em; padding: 0.3rem 0.6rem; }
+
+    /* Responsive demo cells. The demo's whole point is to
+       showcase widths, so the cell width is the cell's *role*
+       and lives on a `data-cell` attribute. */
+    .aov-demo-page > [data-cell="half"]          { width: 50%; }
+    .aov-demo-page > [data-cell="three-fifths"]  { width: 60%; }
+    .aov-demo-page > [data-cell="row"]           { display: flex; gap: 1rem; }
+    .aov-demo-page > [data-cell="row"] > div     { flex: 1; }
+
+    /* Semantic roles. Bare <pre> and <small> rely on Pico defaults. */
+    .aov-code-scroll { max-height: 25rem; overflow-y: auto; }
+    .aov-static-section { margin-bottom: 2rem; }
+    .aov-static-section h3 { margin-bottom: 0.5rem; }
+    .aov-detail h4, .aov-demo-page h4 { margin-top: 1.5rem; }
+    .aov-detail .aov-json-details { margin-top: 1rem; }
+    .aov-card-with-specs > details { margin-top: 0.5rem; }
+    .aov-card-with-specs > details + details { margin-top: 0.25rem; }
+    .aov-brush-stats { margin-top: 1rem; }
+
+    /* Captioned-plot data preview: <details data-mode="pretty|raw">
+       wraps a role=group toggle and two [data-view] body divs. The
+       mode attribute drives visibility; aria-pressed drives the
+       button state. */
+    .aov-data-preview[data-mode="pretty"] > [data-view="raw"] { display: none; }
+    .aov-data-preview[data-mode="raw"]    > [data-view="pretty"] { display: none; }
+    /* A data table's frame (the runtime's `_frameTables`). A table wider than
+       its place scrolls here, and the page keeps its width. The overflow alone
+       would still widen a grid or flex column around the figure, whose minimum
+       width counts a scroller's content; the containment stops that. The height
+       bound keeps the horizontal scrollbar in reach, which on a long table would
+       otherwise sit far below the table's first rows. A printout shows it all. */
+    .aov-table-frame { width: 100%; max-height: 70vh; overflow: auto; contain: inline-size; }
+    .aov-table-frame:focus-visible { outline: 2px solid currentColor; outline-offset: -2px; }
+    @media print { .aov-table-frame { max-height: none; overflow: visible; contain: none; } }

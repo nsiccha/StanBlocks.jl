@@ -1,0 +1,136 @@
+sigma_deg = [1.4832852810534216, 1.5271006717328335, 1.5722103437517227]
+sigma_rad = [0.025888211900751672, 0.026652934731155042, 0.02744024703237942]
+
+[[predictions]]
+replicate_lower = 0.9424809424809425
+attempts = 1443
+probability_median = 0.9555484849779838
+distance_ft = 2.0
+observed = 0.9327789327789328
+replicate_upper = 0.9674289674289674
+[[predictions]]
+replicate_lower = 0.7881844380403458
+attempts = 694
+probability_median = 0.8195972013120598
+distance_ft = 3.0
+observed = 0.8314121037463977
+replicate_upper = 0.8501440922190202
+[[predictions]]
+replicate_lower = 0.6395604395604395
+attempts = 455
+probability_median = 0.6848832796209501
+distance_ft = 4.0
+observed = 0.7406593406593407
+replicate_upper = 0.7296703296703296
+[[predictions]]
+replicate_lower = 0.5240793201133145
+attempts = 353
+probability_median = 0.5783721039965775
+distance_ft = 5.0
+observed = 0.5892351274787535
+replicate_upper = 0.6317280453257791
+[[predictions]]
+replicate_lower = 0.4375
+attempts = 272
+probability_median = 0.49691983498669257
+distance_ft = 6.0
+observed = 0.5477941176470589
+replicate_upper = 0.5588235294117647
+[[predictions]]
+replicate_lower = 0.37109375
+attempts = 256
+probability_median = 0.434017757871733
+distance_ft = 7.0
+observed = 0.53125
+replicate_upper = 0.49609375
+[[predictions]]
+replicate_lower = 0.32083333333333336
+attempts = 240
+probability_median = 0.38449196164887445
+distance_ft = 8.0
+observed = 0.4625
+replicate_upper = 0.44583333333333336
+[[predictions]]
+replicate_lower = 0.28110599078341014
+attempts = 217
+probability_median = 0.344706809823943
+distance_ft = 9.0
+observed = 0.31797235023041476
+replicate_upper = 0.41013824884792627
+[[predictions]]
+replicate_lower = 0.25
+attempts = 200
+probability_median = 0.3121519003087796
+distance_ft = 10.0
+observed = 0.335
+replicate_upper = 0.38
+[[predictions]]
+replicate_lower = 0.22784810126582278
+attempts = 237
+probability_median = 0.28507570154315776
+distance_ft = 11.0
+observed = 0.31645569620253167
+replicate_upper = 0.3459915611814346
+[[predictions]]
+replicate_lower = 0.20297029702970298
+attempts = 202
+probability_median = 0.26223329501873005
+distance_ft = 12.0
+observed = 0.25742574257425743
+replicate_upper = 0.32673267326732675
+[[predictions]]
+replicate_lower = 0.18229166666666666
+attempts = 192
+probability_median = 0.24272173473011316
+distance_ft = 13.0
+observed = 0.23958333333333334
+replicate_upper = 0.3072916666666667
+[[predictions]]
+replicate_lower = 0.16666666666666666
+attempts = 174
+probability_median = 0.22587308116982618
+distance_ft = 14.0
+observed = 0.3103448275862069
+replicate_upper = 0.28735632183908044
+[[predictions]]
+replicate_lower = 0.1497005988023952
+attempts = 167
+probability_median = 0.21118409052053044
+distance_ft = 15.0
+observed = 0.16766467065868262
+replicate_upper = 0.2754491017964072
+[[predictions]]
+replicate_lower = 0.14427860696517414
+attempts = 201
+probability_median = 0.19826919076891936
+distance_ft = 16.0
+observed = 0.13432835820895522
+replicate_upper = 0.2537313432835821
+[[predictions]]
+replicate_lower = 0.13333333333333333
+attempts = 195
+probability_median = 0.18682843257409654
+distance_ft = 17.0
+observed = 0.15897435897435896
+replicate_upper = 0.24102564102564103
+[[predictions]]
+replicate_lower = 0.1256544502617801
+attempts = 191
+probability_median = 0.17662523269320052
+distance_ft = 18.0
+observed = 0.17277486910994763
+replicate_upper = 0.23036649214659685
+[[predictions]]
+replicate_lower = 0.10884353741496598
+attempts = 147
+probability_median = 0.16747063859275868
+distance_ft = 19.0
+observed = 0.1360544217687075
+replicate_upper = 0.23129251700680273
+[[predictions]]
+replicate_lower = 0.10526315789473684
+attempts = 152
+probability_median = 0.1592120151996439
+distance_ft = 20.0
+observed = 0.15789473684210525
+replicate_upper = 0.21710526315789475
