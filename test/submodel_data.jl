@@ -97,7 +97,7 @@ data name with different values are refused.
 
     # One data name, one value: a model name equal to a call's data name must agree.
     clash = model(:(begin hx ~ $k2(); y ~ normal(hx + hx_k, 1.0) end), (; y = 0.1, hx_k = 5.0))
-    @test occursin("Two bindings declare the data variable `hx_k` with different values: 2.0 and 5.0", errmsg(clash))
+    @test occursin("Two bindings declare the data variable `hx_k` with different values: 5.0 and 2.0", errmsg(clash))
     agree = model(:(begin hx ~ $k2(); y ~ normal(hx + hx_k, 1.0) end), (; y = 0.1, hx_k = 2.0))
     @test stanc_compiles(agree)
 end

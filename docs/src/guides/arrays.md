@@ -3,6 +3,11 @@
 Represent vectors, matrices, unequal-length groups and sequential latent states
 without writing an unsupported model-level loop.
 
+Continuous elementwise families also accept matrix-shaped parameters and
+observations. From v0.2.37, `z ~ normal(M, 1.0)` infers `M`'s matrix shape;
+the typed form is `z::matrix[R, C] ~ normal(M, 1.0)`. Every argument must be
+a scalar or a matrix of that shape.
+
 ## Vectors and matrices
 
 A numeric Julia vector binds as a Stan vector when the family expects real
@@ -50,6 +55,13 @@ with layout metadata. Read the descriptor's `dims` and `segments` when
 reconstructing values instead of inferring shapes from generated variable
 names. The do-block spelling `plate(...) do ... end` broadcasts a reusable
 submodel; [partial pooling](../examples/pooling.md) shows that form.
+
+For several independent axes, use one annotated loop such as
+`@plate for j in 1:J, s in 1:S` and index outputs as `x[j, s]`.
+Collecting a `plate(...) do` result inside an annotated loop is not supported;
+from v0.2.37 the error names the multiple-axis form. Likewise, observe shared
+data outside a loop or index it by cell, rather than repeating the entire
+observation in every cell.
 
 ## Unequal-length groups
 

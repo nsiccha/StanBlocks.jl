@@ -937,8 +937,7 @@ end
 # so a second binding of it with another value would silently read the first
 # (snag `submodel-instanc-09f67aba`: two submodel instances fixing `rho_iso` to
 # 0.3 and 0.9 both read 0.3).
-Base.push!(b::DataBlock, x::StanExpr{Symbol}; info) = begin
-    existing = get(content(b), expr(x), nothing)
+_check_data_binding(existing, x) = begin
     existing === nothing || isequal(getvalue(existing), getvalue(x)) || error(
         "Two bindings declare the data variable `", expr(x), "` with different values: ",
         repr(getvalue(existing); context=:limit => true), " and ",
@@ -947,6 +946,11 @@ Base.push!(b::DataBlock, x::StanExpr{Symbol}; info) = begin
         "receiving LHS, `hx_k` for its `k` in `hx ~ sub(…)`, so such a name can ",
         "collide with one the model binds.)"
     )
+    nothing
+end
+Base.push!(b::DataBlock, x::StanExpr{Symbol}; info) = begin
+    existing = get(content(b), expr(x), nothing)
+    _check_data_binding(existing, x)
     # A typed `~` declares its data with the type it names (`_forward_typed_bound!`,
     # forward.jl). That declaration replaces the one inferred from the value,
     # whichever statement reached the block first, so Stan checks the data
@@ -1462,6 +1466,10 @@ _indexed_ragged_obs_assignments(x::SamplingExpr, spec; info) = begin
     ]
 end
 _indexed_gq_assignments(x::SamplingExpr; info) = begin
+    expr(x.args[1]) isa Symbol && qual(x) == :data && error(
+        "A plate or scan cannot repeatedly observe the whole data binding `", expr(x.args[1]),
+        "`: its predictive and likelihood outputs need distinct per-cell storage. ",
+        "Observe it outside the loop, or index the observed data by the loop's cell.")
     expr(x.args[1]) isa Symbol && error(
         "Compiler-owned loop contains a non-indexed generated-quantities sample. Plate locals must use an outer declaration and indexed sampling.")
     k = _scan_obs_base(x.args[1]; info)

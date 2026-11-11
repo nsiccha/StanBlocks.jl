@@ -427,7 +427,19 @@ validate_sampled_rhs(lhs, rhs::StanExpr{<:CanonicalExpr}; info) = begin
     isnothing(spec) || _validate_distribution_hof(spec, lhs, expr(rhs))
     nothing
 end
-_distribution_sample_shape(at, rhs::StanExpr{<:CanonicalExpr}) = _hof_sample_shape(at, expr(rhs))
+_distribution_sample_shape(at, rhs::StanExpr{<:CanonicalExpr}) = begin
+    call = expr(rhs)
+    if _matrix_variate_family(head(call))
+        # The native scalar-token RNG has no matrix overload. Its sized
+        # companion does: use a plain matrix argument to supply that shape,
+        # retaining the family's inferred support. Joint families do not opt in.
+        for arg in call.args
+            center_type(arg) === types.matrix && stan_ndim(arg) == 2 || continue
+            return StanType(types.matrix, stan_size(arg), info(at))
+        end
+    end
+    _hof_sample_shape(at, call)
+end
 _hof_sample_shape(at, rhs::CanonicalExpr) = begin
     spec = _distribution_hof(head(rhs))
     isnothing(spec) && return at

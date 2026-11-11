@@ -4,6 +4,31 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.37
+
+Three tracing fixes, clearer plate diagnostics, and regression coverage for an
+already-working flat-vector cell.
+
+- **Submodels can observe their own bound data.** A call `s ~ sub()` registers
+  its observation as `s_obs`, so backward analysis, predictive outputs and
+  missing-value imputation can find it. Inputs read by outer plate cells stay
+  shared data of their original shape; conflicting bindings still fail.
+- **Untyped elementwise samples infer matrix arguments' shape.**
+  `z ~ normal(M, 1.0)` with a matrix `M` now declares a matrix `z`, including
+  prior-only draws, parameter-valued arguments and plate cells. The same rule
+  covers the continuous elementwise families with matrix companions.
+- **Plain-matrix LKJ-Cholesky observations have a sized predictive draw.**
+  `Omega ~ lkj_corr_cholesky(eta)` now emits its matrix twin; typed Cholesky
+  observations and the correlation-matrix LKJ family remain supported.
+- **Unsupported repeated observations and nested collecting plates name the
+  limitation.** Repeating a whole data binding in a loop needs distinct
+  per-cell predictive storage. Collecting a do-plate inside another loop
+  names the multiple-axis `@plate for` form instead of an apparent name clash.
+- **Flat-vector plate cells are covered by regressions.** The original
+  `tau::vector[K] ~ flat(; lower=0.0)` example already compiles on v0.2.36;
+  the new coverage checks its support, lack of a density statement, and slice
+  priors.
+
 ## v0.2.36
 
 Three distribution-companion fixes for models that failed during tracing.

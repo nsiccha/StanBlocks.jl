@@ -146,9 +146,9 @@ The generated record keeps its integer field and remains a named output.
         @test grad ≈ expected_grad atol=1e-10
     end
     names = BridgeStan.param_names(p.model; include_tp=true, include_gq=true)
-    values = BridgeStan.param_constrain(p.model, [0.3]; include_tp=true, include_gq=true,
+    draw_values = BridgeStan.param_constrain(p.model, [0.3]; include_tp=true, include_gq=true,
         rng=BridgeStan.StanRNG(p.model, 1234))
-    draw = Dict(zip(names, values))
+    draw = Dict(zip(names, draw_values))
     @test draw["record:1"] ≈ 0.3
     @test draw["record:2"] == 2
     @test draw["mu"] ≈ 2.3
