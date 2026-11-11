@@ -2717,6 +2717,7 @@ begin
                 body = $(QuoteNode(inline_body_ast)),
                 kwargs = $kwarg_meta,
                 source = $source,
+                mod = $(isnothing(def_mod) ? :($parentmodule(typeof($head(x)))) : def_mod),
             )))
         else
             push!(stmts, quote

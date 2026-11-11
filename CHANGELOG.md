@@ -4,6 +4,14 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.38
+
+- **Inline helpers retain their defining module.** A cross-module
+  `@deffun @inline` call resolves sibling helpers and omitted keyword defaults
+  where it was defined, including inside another UDF or submodel. Explicit
+  arguments and later caller statements keep the caller's scope. This fixes
+  silently wrong densities when the two modules define the same helper name.
+
 ## v0.2.37
 
 Three tracing fixes, clearer plate diagnostics, and regression coverage for an
