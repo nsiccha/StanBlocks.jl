@@ -24,7 +24,7 @@ _fold_dims_index(x, _args...) = x
 _fold_dims_index(x, query::StanExpr{<:CanonicalExpr{typeof(builtin.dims)}}, index::StanExpr{<:Integer}) = begin
     arg = expr(query).args[1]::StanExpr
     i = expr(index)
-    sz = stan_size(arg)
+    sz = _dims_query_shape(arg)
     if 1 <= i <= length(sz)
         candidate = sz[i]
         qual(candidate) == :data ? fold_shape_query(candidate) : x
@@ -32,6 +32,10 @@ _fold_dims_index(x, query::StanExpr{<:CanonicalExpr{typeof(builtin.dims)}}, inde
         x
     end
 end
+_dims_query_shape(x) = stan_size(x)
+_dims_query_shape(x::StanExpr2{<:types.row_vector}) = (
+    stan_size(x)[1:end-1]..., StanExpr(1, StanType(types.int)), last(stan_size(x)),
+)
 fetch_data!(x::StanType{<:types.tup}; info) = fetch_data!((stan_size(x), x.info.arg_types); info)
 
 # A distribution HOF has one base-family token among its arguments and owns a

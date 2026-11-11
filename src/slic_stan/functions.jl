@@ -594,7 +594,8 @@ _capture_dim_binds(f::StanFunction3) = begin
                 e = expr(sz)
                 (e isa Symbol && !(e in seen)) || continue
                 push!(seen, e)
-                push!(cands, e => "int $(e) = dims($(k))[$(i)];")
+                axis = stan_dim_index(center_type(cap), stan_ndim(cap), i)
+                push!(cands, e => "int $(e) = dims($(k))[$(axis)];")
             end
         end
     end
@@ -2154,12 +2155,10 @@ begin
     # UDFs (`ValueUDF`, valuefamily.jl): which dims get an emitted preamble
     # binding, which get runtime shape checks, which trace-time size names stay
     # hidden, and the access→dim alias table for typed-assignment validation.
-    # Pure data in (the parsed signature + body/return ASTs), pure data out —
-    # `@deffun` splices the results into its generated `tracetype`/`fundef`
-    # methods; `ValueUDF` precomputes them once at construction. Keep the two
-    # consumers on this single analysis so one body emits one Stan function
-    # whichever surface defined it.
-    _udf_size_analysis(f, arg_names, arg_types, is_token, body, rv) = begin
+    # Both surfaces analyze names at definition time, then resolve native axes
+    # against actual argument types when lifting a specialization. Keep them on
+    # this single analysis so one body emits one Stan function on either surface.
+    _udf_size_analysis(f, arg_names, arg_types, is_token, body, rv; actuals=nothing) = begin
         # Collect every signature-dimension binding as a candidate first.  A
         # named dimension only belongs in the emitted function preamble when
         # this UDF's body / return annotation references it, or when a later
@@ -2207,7 +2206,7 @@ begin
         # only when a dim has >= 2 sites, so the enumeration is always
         # meaningful (user request 2026-08-14).
         fun_size_sites = OrderedDict{Symbol,Vector{Any}}()
-        for (arg_name, arg_type, tok) in zip(arg_names, arg_types, is_token)
+        for (arg_index, (arg_name, arg_type, tok)) in enumerate(zip(arg_names, arg_types, is_token))
             for (i, dim_name) in enumerate(arg_type.args[2:end])
                 _is_symbol(dim_name) || continue
                 dim_name == :(_) && continue
@@ -2218,7 +2217,11 @@ begin
                     ndims = length(arg_type.args) - 1
                     ndims == 1 ? string(arg_name) : string(arg_name, ".", i)
                 else
-                    string("dims(", arg_name, ")[", i, "]")
+                    ct, nd = actuals === nothing ?
+                        (gettype(arg_type.args[1]), length(arg_type.args) - 1) :
+                        (center_type(actuals[arg_index]), stan_ndim(actuals[arg_index]))
+                    axis = stan_dim_index(ct, nd, i)
+                    string("dims(", arg_name, ")[", axis, "]")
                 end
                 push!(get!(fun_size_sites, dim_name, Any[]), (arg_name, i, access, tok))
             end
@@ -2551,9 +2554,7 @@ begin
 
         _sizes = _udf_size_analysis(f, arg_names, arg_types, is_token, body, rv)
         fun_sizes = _sizes.fun_sizes
-        fun_checks = _sizes.fun_checks
         hidden_size_names = _sizes.hidden_size_names
-        fun_size_alias_names = _sizes.fun_size_alias_names
         fun_size_candidates = _sizes.fun_size_candidates
         # The trace-time deconstruction binds exactly the size names this
         # definition emits Stan bindings for; everything else destructures to
@@ -2571,11 +2572,17 @@ begin
             :(info = (;$(sig_names...), $(keys(fun_sizes)...),))
         )
         deconstruct = make_deconstruct(hidden_size_names)
-        size_aliases = (; fun_size_alias_names...)
+        # Abstract formals can receive either orientation. Resolve their native
+        # dims accesses from the specialization's actual types before anonymizing.
+        actual_sizes = gensym(:actual_sizes)
+        analyze_actual_sizes = :($actual_sizes = $_udf_size_analysis(
+            $(QuoteNode(f)), $(QuoteNode(arg_names)), $(QuoteNode(arg_types)),
+            $(QuoteNode(is_token)), $(QuoteNode(body)), $(QuoteNode(rv)); actuals=x.args))
         anon_deconstruct = Expr(
             :block,
+            analyze_actual_sizes,
             deconstruct.args...,
-            :(info = merge($anon_info(info), (; __size_alias_names__ = $size_aliases))),
+            :(info = merge($anon_info(info), (; __size_alias_names__ = (; $actual_sizes.fun_size_alias_names...)))),
             :((;$(sig_names...), $(keys(fun_sizes)...),) = info),
             :(info = $OrderedDict{Symbol,Any}(pairs(info)))
         )
@@ -2590,7 +2597,7 @@ begin
         # Inline UDFs re-trace their body in the CALLER's scope, where the size
         # names (`n` in `x::vector[n]`) — which the non-inline path binds via the
         # emitted `int n = dims(x)[i];` preamble — are undefined. Prepend explicit
-        # `n = dims(x)[i]` bindings so an inline body's `out::vector[n]` (fresh
+        # logical-dimension bindings so an inline body's `out::vector[n]` (fresh
         # result) resolves. Only for dims the body actually uses, once per dim
         # (first arg wins); non-token args only (token dims are dispatch glue).
         # The inline rename machinery turns each into a fresh local, so these
@@ -2605,7 +2612,7 @@ begin
                     (_is_symbol(dn) && dn !== :(_) && !(dn in arg_names) && !(dn in _seen_dims)) || continue
                     _ast_mentions(original_body, dn) || continue
                     push!(_seen_dims, dn)
-                    push!(_size_binds, :($dn = dims($an)[$i]))
+                    push!(_size_binds, :($dn = $_inline_formal_dim($an, $i)))
                 end
             end
             isempty(_size_binds) || (inline_body_ast = Expr(:block, _size_binds..., original_body.args...))
@@ -2632,8 +2639,8 @@ begin
                 $sig_rv,
                 $f,
                 (;$(sig_names...), ),vcat(
-                    $(collect(values(fun_sizes))),
-                    $(fun_checks),
+                    collect(values($actual_sizes.fun_sizes)),
+                    $actual_sizes.fun_checks,
                     $forward!($(canonical(body)); info)
                 ),
                 $stan._deref_lnn($stan._current_lnn(info)),
@@ -2869,6 +2876,18 @@ _square_matrix_sig_size(size::Tuple) = (size..., last(size))
 # key uses). Colon desugaring and a `matrix[..., m, n]` formal read sizes here.
 index_shape(x) = stan_size(x)
 index_shape(x::StanExpr2{<:types.square_matrix}) = _square_matrix_sig_size(stan_size(x))
+
+# Stan's dims reports both Eigen axes: a row vector is (1, n). Our type
+# stores only n, preceded by any Stan array dimensions. Map that final
+# logical axis to the column axis wherever we read a runtime extent.
+stan_dim_index(ct, ndims, i) = i
+stan_dim_index(::Type{<:types.row_vector}, ndims, i) = i == ndims ? i + 1 : i
+
+# Inline bodies bind dimension names after argument substitution, when abstract
+# formals have concrete shapes. This tracing-only operation emits no Stan call.
+function _inline_formal_dim end
+expand_inline_or_trace(x::CanonicalExpr{typeof(_inline_formal_dim)}; info) =
+    index_shape(x.args[1])[expr(x.args[2])]
 sig_expr(x::StanType{<:types.square_matrix}) = StanType(
     types.matrix, map(sig_expr_size, _square_matrix_sig_size(stan_size(x)))
 )
@@ -3046,7 +3065,7 @@ Base.@nospecializeinfer anon_expr(key, @nospecialize(x::Tuple)) = begin
     (out...,)
 end
 anon_expr(key, x::StanExpr) = StanExpr(key, StanType(center_type(x), ([
-    StanExpr("dims($key)[$i]", StanType(types.int))
+    StanExpr(string("dims(", key, ")[", stan_dim_index(center_type(x), stan_ndim(x), i), "]"), StanType(types.int))
     for (i, s) in enumerate(stan_size(x))
 ]...,)))
 anon_expr(key, x::StanExpr2{<:types.func}) = StanExpr(type(x).info.value, type(x))

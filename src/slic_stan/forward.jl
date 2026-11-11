@@ -1185,7 +1185,7 @@ _bind_hoisted!(name, t::StanType, rhs; info) = begin
     _trace_stan_expr(CanonicalExpr(Symbol(".="), info[name], rhs), info)
 end
 _hoisted_value(name, t; info) = StanExpr(name, remake(t, [
-    maybe_lazy_size(name, i, sizei; info) for (i, sizei) in enumerate(stan_size(t))
+    maybe_lazy_size(name, i, sizei, t; info) for (i, sizei) in enumerate(stan_size(t))
 ]...; value=missing, decl_role=:derived))
 
 _forward_if!(x, info) = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
@@ -1517,17 +1517,18 @@ forward!(x::AssignmentExpr{Symbol}; info) = begin
     )
     forward!(remake(x, name, resolved); info)
 end
-maybe_lazy_size(key::Symbol, i, sizei; info) = sizei
+maybe_lazy_size(key::Symbol, i, sizei, t; info) = sizei
 is_simple_size(x::StanExpr) = is_simple_size(expr(x))
 is_simple_size(x::CanonicalExpr{<:Union{typeof.((+,-,*,÷))...}}) = all(is_simple_size, x.args)
 is_simple_size(x::CanonicalExpr) = false
 is_simple_size(x::Symbol) = true
 is_simple_size(x::Number) = true
 is_simple_size(x) = false#error(typeof(x))
-maybe_lazy_size(key::Symbol, i, sizei::StanExpr{<:CanonicalExpr}; info) = if is_simple_size(sizei) || qual(sizei) == :data
+maybe_lazy_size(key::Symbol, i, sizei::StanExpr{<:CanonicalExpr}, t; info) = if is_simple_size(sizei) || qual(sizei) == :data
     sizei
 else
-    forward!(canonical(:(dims($key)[$i])); info)
+    axis = stan_dim_index(center_type(t), stan_ndim(t), i)
+    forward!(canonical(:(dims($key)[$axis])); info)
 end
 # A reassigned local has no single defining expression, so a result size routed
 # through it cannot be expressed in the UDF's arguments: tombstone any
@@ -1609,7 +1610,7 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     end
     rv = remake(x, info[name], rhs)
     info[name] = StanExpr(name, remake(type(rhs), [
-        maybe_lazy_size(name, i, sizei; info)
+        maybe_lazy_size(name, i, sizei, type(rhs); info)
         for (i, sizei) in enumerate(stan_size(type(rhs)))
     ]...; value=missing, decl_role=:derived))
     rv
