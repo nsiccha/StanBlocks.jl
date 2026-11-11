@@ -45,7 +45,7 @@
                 assert abs(float(jax.jit(model.kernel)(x)) - expected) < 1e-10
                 assert abs(float(jax.jit(jax.grad(model.kernel))(x)) - gradient) < 1e-10
             """)
-            @test success(`$python $check`)
+            @test success(pipeline(`$python $check`; stdout=stdout, stderr=stderr))
         end
     end
 
@@ -85,7 +85,7 @@ end
             np.testing.assert_allclose(jax.jit(jax.grad(model.kernel))(x),
                 [[ea, divided], [divided, eb]], rtol=1e-9, atol=1e-10)
             """)
-            @test success(`$python $check`)
+            @test success(pipeline(`$python $check`; stdout=stdout, stderr=stderr))
         end
     end
 end
@@ -121,7 +121,174 @@ end
             assert abs(float(jax.jit(model.kernel)(3.0, **prepared)) - 36.0) < 1e-10
             assert abs(float(jax.jit(jax.grad(model.kernel))(3.0, **prepared)) - 12.0) < 1e-10
             """)
-            @test success(`$python $check`)
+            @test success(pipeline(`$python $check`; stdout=stdout, stderr=stderr))
+        end
+    end
+end
+
+@testitem "ReactiveKernels source preserves shared dimension diagnostics" tags=[:reactivekernels] begin
+    using ReactiveKernels
+    @deffun @juliacompat source_guarded_sum(x::vector[n], y::vector[n])::real = sum(x + y)
+    @kernel guarded_kernel(x::Vector{Float64}, y::Vector{Float64}, scale::Float64) = begin
+        offset = source_guarded_sum(x, y)
+        result = scale * offset
+        return result
+    end
+    @test source_guarded_sum([1.0, 2.0], [3.0, 4.0]) == 10.0
+    @test_throws DimensionMismatch source_guarded_sum([1.0], [3.0, 4.0])
+    device = jax_source(guarded_kernel; have=(:x, :y, :scale), want=:result)
+    host = jax_source(guarded_kernel; have=(:x, :y, :scale), want=:result,
+        data=(:x, :y))
+    python = get(ENV, "RK_JAX_PYTHON", "")
+    if isempty(python)
+        @test_skip "Set RK_JAX_PYTHON to check dimension diagnostics"
+    else
+        mktempdir() do dir
+            write(joinpath(dir, "guards.py"), device)
+            write(joinpath(dir, "host_guards.py"), host)
+            check = joinpath(dir, "check.py")
+            write(check, """
+            import jax
+            import jax.numpy as jnp
+            import numpy as np
+            import guards, host_guards
+            x, y = jnp.array([1., 2.]), jnp.array([3., 4.])
+            assert float(jax.jit(guards.kernel)(x=x, y=y, scale=2.)) == 20.
+            np.testing.assert_allclose(jax.grad(lambda xx: guards.kernel(x=xx, y=y, scale=2.))(x), [2., 2.])
+            prepared = host_guards.prepare_data(x=np.asarray(x), y=np.asarray(y))
+            assert float(host_guards.kernel(scale=2., **prepared)) == 20.
+            for call in (lambda: jax.jit(guards.kernel)(x=x[:1], y=y, scale=2.),
+                         lambda: host_guards.prepare_data(x=np.asarray(x[:1]), y=np.asarray(y))):
+                try:
+                    call()
+                except Exception as error:
+                    message = str(error)
+                    assert 'dim mismatch' in message, message
+                    assert 'inferred from' in message and 'sizes:' in message, message
+                else:
+                    raise AssertionError('mismatched dimensions were accepted')
+            """)
+            @test success(pipeline(`$python $check`; stdout=stdout, stderr=stderr))
+        end
+    end
+end
+
+@testitem "ReactiveKernels source supports typed indexed buffers" tags=[:reactivekernels] begin
+    using ReactiveKernels
+    @deffun @juliacompat source_recurrence(x::vector[n], rate::real)::vector[n] = begin
+        y::vector[n]
+        y[1] = x[1]
+        for i in 2:n
+            y[i] = rate * y[i - 1] + x[i]
+        end
+        y
+    end
+    @kernel recurrence_kernel(x::Vector{Float64}, rate::Float64, scale::Float64) = begin
+        path = source_recurrence(x, rate)
+        result = scale * sum(path)
+        return result
+    end
+    @kernel recurrence_f32(x::Vector{Float32}, rate::Float32) = begin
+        result = source_recurrence(x, rate)
+        return result
+    end
+    @test source_recurrence([1.0, 2.0, 3.0], 0.5) == [1.0, 2.5, 4.25]
+    @test eltype(source_recurrence(Float32[1, 2, 3], 0.5f0)) === Float32
+    device = jax_source(recurrence_kernel; have=(:x, :rate, :scale), want=:result)
+    host = jax_source(recurrence_kernel; have=(:x, :rate, :scale), want=:result,
+        data=(:x, :rate))
+    f32 = jax_source(recurrence_f32; have=(:x, :rate), want=:result)
+    python = get(ENV, "RK_JAX_PYTHON", "")
+    if isempty(python)
+        @test_skip "Set RK_JAX_PYTHON to check indexed buffers"
+    else
+        mktempdir() do dir
+            write(joinpath(dir, "recurrence.py"), device)
+            write(joinpath(dir, "host_recurrence.py"), host)
+            write(joinpath(dir, "recurrence_f32.py"), f32)
+            check = joinpath(dir, "check.py")
+            write(check, """
+            import jax
+            import jax.numpy as jnp
+            import numpy as np
+            import recurrence, host_recurrence, recurrence_f32
+            for n in (3, 6, 40):
+                x = np.arange(1., n + 1) / n
+                for rate in (-0.3, 0.5, 0.8):
+                    path, deriv = x.copy(), np.zeros_like(x)
+                    for i in range(1, n):
+                        path[i] = rate * path[i-1] + x[i]
+                        deriv[i] = path[i-1] + rate * deriv[i-1]
+                    before = x.copy()
+                    np.testing.assert_allclose(jax.jit(recurrence.kernel)(x=jnp.asarray(x), rate=rate, scale=1.), np.sum(path), rtol=1e-10)
+                    np.testing.assert_allclose(jax.grad(lambda r: recurrence.kernel(x=jnp.asarray(x), rate=r, scale=1.))(rate), np.sum(deriv), rtol=1e-10)
+                    prepared = host_recurrence.prepare_data(x=x, rate=rate)
+                    np.testing.assert_allclose(host_recurrence.kernel(scale=1., **prepared), np.sum(path), rtol=1e-10)
+                    np.testing.assert_array_equal(x, before)
+            f32 = jax.jit(recurrence_f32.kernel)(x=jnp.array([1., 2., 3.], dtype=jnp.float32), rate=jnp.float32(0.5))
+            assert f32.dtype == jnp.float32
+            np.testing.assert_allclose(f32, [1., 2.5, 4.25])
+            """)
+            @test success(pipeline(`$python $check`; stdout=stdout, stderr=stderr))
+        end
+    end
+end
+
+@testitem "ReactiveKernels matrix mapping preserves host inputs and rejects padding" tags=[:reactivekernels] begin
+    using ReactiveKernels
+    @deffun @juliacompat source_exponential(x) = matrix_exp(x)
+    @kernel matrix_product(A::Matrix{Float64}, v::Vector{Float64}, scale::Float64) = begin
+        E = source_exponential(A)
+        result = scale * sum(E * v)
+        return result
+    end
+    @kernel padded_matrix(rows::Vector{Vector{Float64}}) = begin
+        cells = plate(rows) do x
+            E = source_exponential(x * x')
+            sum(E)
+        end
+        result = sum(cells)
+        return result
+    end
+    @test_throws r"unpadded dense matrix" jax_source(padded_matrix;
+        have=(:rows,), want=:result)
+    device = jax_source(matrix_product; have=(:A, :v, :scale), want=:result)
+    host = jax_source(matrix_product; have=(:A, :v, :scale), want=:result,
+        data=(:A, :v))
+    python = get(ENV, "RK_JAX_PYTHON", "")
+    if isempty(python)
+        @test_skip "Set RK_JAX_PYTHON to check matrix host preparation"
+    else
+        mktempdir() do dir
+            write(joinpath(dir, "matrix.py"), device)
+            write(joinpath(dir, "host_matrix.py"), host)
+            check = joinpath(dir, "check.py")
+            write(check, """
+            import jax
+            import jax.numpy as jnp
+            import numpy as np
+            from scipy.linalg import expm
+            import matrix, host_matrix
+            for n in (2, 3):
+                A, v = -np.diag(np.arange(1., n + 1)), np.arange(2., n + 2)
+                expected = 2. * np.sum(expm(A) @ v)
+                np.testing.assert_allclose(jax.jit(matrix.kernel)(A=jnp.asarray(A), v=jnp.asarray(v), scale=2.), expected, rtol=1e-10)
+                gradient = jax.grad(lambda a: matrix.kernel(A=a, v=jnp.asarray(v), scale=2.))(jnp.asarray(A))
+                numerical = np.empty_like(A)
+                for i in range(n):
+                    for j in range(n):
+                        delta = np.zeros_like(A)
+                        delta[i, j] = 1e-6
+                        numerical[i, j] = np.sum((expm(A + delta) - expm(A - delta)) @ v) / 1e-6
+                np.testing.assert_allclose(gradient, numerical, rtol=1e-7, atol=1e-8)
+                before_A, before_v = A.copy(), v.copy()
+                prepared = host_matrix.prepare_data(A=A, v=v)
+                assert all(isinstance(value, (np.ndarray, np.generic, float, int)) for value in prepared.values())
+                np.testing.assert_array_equal(A, before_A)
+                np.testing.assert_array_equal(v, before_v)
+                np.testing.assert_allclose(host_matrix.kernel(scale=2., **prepared), expected, rtol=1e-10)
+            """)
+            @test success(pipeline(`$python $check`; stdout=stdout, stderr=stderr))
         end
     end
 end

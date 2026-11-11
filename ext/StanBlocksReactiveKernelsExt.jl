@@ -17,9 +17,25 @@ function ReactiveKernels._jax_function_call(ctx::ReactiveKernels._JaxContext,
         "jax.scipy.linalg.expm(" * argument.code * ")")
 end
 
+# Buffer element promotion is native Julia type work, not numerical work for
+# JAX. Expose the equivalent concrete constructor; RK owns allocation shapes,
+# indexed updates and host-array ownership in the translated body.
+function allocation_source(f, argument_types)
+    result_type = Base.promote_op(f, argument_types.parameters...)
+    isconcretetype(result_type) && result_type <: Array || return nothing
+    element = eltype(result_type)
+    isconcretetype(element) || return nothing
+    names = (:kind, :dims,
+        (Symbol(:argument_, i) for i in 3:length(argument_types.parameters))...)
+    TraceableSource(names, :(Array{$element}(undef, dims)), StanBlocks)
+end
+
 function deffun_source(f, argument_types::Type{<:Tuple})
     StanBlocks._with_slic_read() do
         hasmethod(f, argument_types) || return nothing
+        if f === StanBlocks._deffun_julia_alloc || f === StanBlocks._deffun_julia_alloc_type
+            return allocation_source(f, argument_types)
+        end
         method = which(f, argument_types)
         source = StanBlocks._deffun_julia_source(method.sig)
         isnothing(source) && return nothing
