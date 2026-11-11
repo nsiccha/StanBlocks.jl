@@ -1,4 +1,4 @@
-using Documenter, DocumenterVitepress, StanBlocks
+using Documenter, DocumenterVitepress, StanBlocks, BridgeStan
 using NodeJS_20_jll: node, npm
 
 include("examples.jl")
@@ -26,6 +26,17 @@ const PAGES = [
     ],
 ]
 DocsLint.check(PAGES)
+
+# The model-source panels run stanc before an example compiles a model, so
+# BridgeStan's lazy compiler setup has not run yet on a fresh machine.
+let path = BridgeStan.get_bridgestan_path(; download = true)
+    StanBlocks.with_toolchain_lock(path) do
+        target = Sys.iswindows() ? "bin/stanc.exe" : "bin/stanc"
+        stanc = joinpath(path, target)
+        isfile(stanc) || run(`make -C $path $target`)
+        isfile(stanc) || error("BridgeStan setup has no stanc binary at $stanc")
+    end
+end
 
 makedocs(
     sitename = "StanBlocks.jl",
