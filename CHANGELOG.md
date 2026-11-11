@@ -4,6 +4,14 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.38
+
+- Add `solve_newton`, `solve_powell` and their `_tol` variants in `@slic` and
+  `@deffun` bodies, using Stan's native algebraic solvers and implicit
+  gradients. Residuals may be named functions or closures capturing parameters.
+- Preserve one tracing context when collecting function definitions, so
+  solver closures inside helpers and in the model get distinct generated names.
+
 ## v0.2.37
 
 Three tracing fixes, clearer plate diagnostics, and regression coverage for an

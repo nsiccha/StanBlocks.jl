@@ -912,7 +912,7 @@ fetch_data!(x::StanExpr{<:ForExpr}; info) = begin
     fetch_data!(fe.args[2]; info)           # the loop body
 end
 fetch_data!(x::CanonicalExpr; info) = begin
-    fetch_functions!(x; info=block(info, :functions).content)
+    fetch_functions!(x; info=block(info, :functions).content, context=_trace_context(info))
     fetch_data!(x.args; info)
 end
 fetch_data!(x::CanonicalExprV{:kw}; info) = fetch_data!(x.args[2]; info)
