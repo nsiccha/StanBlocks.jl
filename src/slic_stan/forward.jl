@@ -296,7 +296,11 @@ _assert_builtin_registered(name::Symbol, def_mod::Module) = begin
         "` to the `@builtin_module [ … ]` list."
     )
 end
-expand_inline!(x::CanonicalExpr, meta; info) = begin
+expand_inline!(x::CanonicalExpr, meta; info) =
+    _with_inline_module(info, get(meta, :mod, nothing)) do scoped_info
+        _expand_inline!(x, meta; info=scoped_info)
+    end
+_expand_inline!(x::CanonicalExpr, meta; info) = begin
     arg_names = collect(meta.arg_names)
     n_pos = length(arg_names)
     @assert length(x.args) >= n_pos "@inline: call to $(head(x)) has $(length(x.args)) args, expected ≥ $n_pos."
@@ -367,37 +371,28 @@ expand_inline!(x::CanonicalExpr, meta; info) = begin
         subst[k] = v
     end
     rewritten = [inline_substitute(s, subst, rename, meta.vararg_name) for s in stmts]
-    _retrace_inline_body(rewritten, get(meta, :mod, nothing); info)
+    _do_retrace_inline_body(rewritten; info)
 end
 
-# Re-trace the substituted inline body in the caller's `info`. A *closure*
-# meta carries `mod` (its definition module — snapshotted as `cl.mod` when the
-# lambda was traced); re-point `info[:__mod__]` at it around the re-trace so
-# nested user-module UDF lookups inside the closure body resolve there, mirroring
-# `fundef(::closure)`'s `info[:__mod__] = cl.mod` and 92f08ae's def_mod threading.
-# Without this, a closure inlined inside a builtin helper (e.g.
-# `simple_reduce_sum_helper`, whose module is StanBlocks, calling `f(...)`
-# directly) would re-trace with `__mod__ = StanBlocks` and fail to find the
-# user's UDF. Save/restore keeps the caller's scope (and sibling expansions of
-# the same UDF) unaffected, and nests correctly. Regular `@deffun @inline` UDF
-# metas carry no `mod`, so their established caller-scope resolution is unchanged.
-# Only `AbstractDict` `info` is overridden: `StanModel`/`SubModel` resolve the
-# module elsewhere (and there a closure's `mod` already equals the model's
-# module, so no override is needed) — and `StanModel` `setindex!` would set a
-# *var*, which must not happen.
-_retrace_inline_body(rewritten, mod; info) =
-    if mod === nothing || !(info isa AbstractDict)
-        _do_retrace_inline_body(rewritten; info)
-    else
-        had = haskey(info, :__mod__)
-        old = had ? info[:__mod__] : nothing
-        info[:__mod__] = mod
-        try
-            _do_retrace_inline_body(rewritten; info)
-        finally
-            had ? (info[:__mod__] = old) : delete!(info, :__mod__)
-        end
+# Inline bodies and omitted keyword defaults belong to the defining module.
+# Arguments are already forwarded in the caller before expansion. Keep the
+# caller's storage and trace context, but scope module lookup to the definition;
+# sibling statements and nested expansions must recover their original module.
+_with_inline_module(body, info, ::Nothing) = body(info)
+_with_inline_module(body, info::Union{StanModel,SubModel}, mod::Module) =
+    body(remake(info; mod))
+_with_inline_module(body, info::NamedTuple, mod::Module) =
+    body(merge(info, (; __mod__=mod)))
+_with_inline_module(body, info::AbstractDict, mod::Module) = begin
+    had = haskey(info, :__mod__)
+    old = had ? info[:__mod__] : nothing
+    info[:__mod__] = mod
+    try
+        body(info)
+    finally
+        had ? (info[:__mod__] = old) : delete!(info, :__mod__)
     end
+end
 _do_retrace_inline_body(rewritten; info) = begin
     pending = _get_inline_pending(info)
     stmts = map(canonical, rewritten)
@@ -3055,8 +3050,15 @@ _slice_declared_bound(k, v, records, key, extra; info) = begin
         "(`", k, "::", sigtype(T), "[…] ~ flat(; ", key, "=…)`) so every slice shares it.")
     N = _slice_int(stan_size(T)[1]; values=false)
     covered = get(T.info, :slice_tiled, false)
-    coords = all(r -> r.literal !== nothing, records) ?
-        sort!(unique(reduce(vcat, Any[r.literal for r in records]))) : nothing
+    coords = if all(r -> r.literal !== nothing, records)
+        literals = Any[]
+        for record in records
+            append!(literals, record.literal)
+        end
+        sort!(unique!(literals))
+    else
+        nothing
+    end
     if !covered && N !== nothing && coords !== nothing
         covered = coords == collect(1:N)
     end

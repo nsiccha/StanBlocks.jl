@@ -603,7 +603,13 @@ end
 # The draws a `:quantities` expression reads: each bound name that holds one, or
 # the `_rng` call itself when it appears inline.
 _draw_reads(x) = String[]
-_draw_reads(x::Union{Tuple,AbstractVector}) = reduce(vcat, map(_draw_reads, x); init=String[])
+_draw_reads(x::Union{Tuple,AbstractVector}) = begin
+    reads = String[]
+    for value in x
+        append!(reads, _draw_reads(value))
+    end
+    reads
+end
 _draw_reads(x::StanExpr) = qual(x) == :quantities ? _draw_reads(expr(x), x) : String[]
 _draw_reads(::Symbol, x::StanExpr) = [_stan_snippet(x)]
 _draw_reads(e::CanonicalExpr, x::StanExpr) =
@@ -816,7 +822,13 @@ _loop_select(stmts, v::Val{B}; info) where {B} = begin
                 _loop_distribution_stmts(stmt, v; info) : Any[])
         end
     end
-    isempty(scratch) && return reduce(vcat, groups; init=Any[])
+    if isempty(scratch)
+        out = Any[]
+        for group in groups
+            append!(out, group)
+        end
+        return out
+    end
     needed = Set{Symbol}()
     keep = falses(length(stmts))
     for k in reverse(eachindex(stmts))
@@ -827,7 +839,11 @@ _loop_select(stmts, v::Val{B}; info) where {B} = begin
             j < k && _uses_model_local(groups[k], (name,)) && push!(needed, name)
         end
     end
-    reduce(vcat, (groups[k] for k in eachindex(stmts) if keep[k]); init=Any[])
+    out = Any[]
+    for k in eachindex(stmts)
+        keep[k] && append!(out, groups[k])
+    end
+    out
 end
 _loop_distribution_stmts(x::SamplingExpr, ::Val{:generated_quantities}; info) =
     _indexed_gq_assignments(x; info)

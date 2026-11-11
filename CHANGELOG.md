@@ -4,6 +4,22 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.39
+
+- **Inline helpers retain their defining module.** A cross-module
+  `@deffun @inline` call resolves sibling helpers and omitted keyword defaults
+  where it was defined, including inside another UDF or submodel. Explicit
+  arguments and later caller statements keep the caller's scope. This fixes
+  silently wrong densities when the two modules define the same helper name.
+- **Ragged composition errors identify dense totals.** Top-level ragged
+  `multinomial` and `dirichlet_multinomial` calls with an array of totals now
+  explain that each group needs a scalar total and show explicit `@plate for`
+  indexing. They no longer claim that the existing predictive RNG is missing.
+- **Statement flattening avoids repeated copies.** Model composition, loop
+  statement groups, draw-read diagnostics, literal slice coordinates and the
+  builtin-name list use append buffers instead of concatenation folds. Large
+  blocks retain their statement order without quadratic copying.
+
 ## v0.2.38
 
 - Add `solve_newton`, `solve_powell` and their `_tol` variants in `@slic` and

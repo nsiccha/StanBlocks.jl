@@ -2,7 +2,7 @@
 
 julia_version = "1.10.12"
 manifest_format = "2.0"
-project_hash = "be25164beba08c94b671e2b0c45d4377bc484aed"
+project_hash = "9755125e911cc46357d9e5156450b1cc8da531a4"
 
 [[deps.ArgCheck]]
 git-tree-sha1 = "f9e9a66c9b7be1ad7372bbd9b062d9230c30c5ce"
@@ -24,12 +24,6 @@ deps = ["Downloads", "Inflate", "TOML", "Tar"]
 git-tree-sha1 = "3037ad381e5595495008cf529c7adb7146b689ac"
 uuid = "c88b6f0a-829e-4b0b-94b7-f06ab5908f5a"
 version = "2.9.0"
-
-[[deps.CodeTracking]]
-deps = ["InteractiveUtils", "REPL", "UUIDs"]
-git-tree-sha1 = "cfb7a2e89e245a9d5016b70323db412b3a7438d5"
-uuid = "da1fd8a2-8d9e-5ec2-8556-3022fb5608a2"
-version = "3.0.2"
 
 [[deps.CodecZlib]]
 deps = ["TranscodingStreams", "Zlib_jll"]
@@ -60,11 +54,6 @@ weakdeps = ["Dates", "LinearAlgebra"]
 
     [deps.Compat.extensions]
     CompatLinearAlgebraExt = "LinearAlgebra"
-
-[[deps.Compiler]]
-git-tree-sha1 = "382d79bfe72a406294faca39ef0c3cef6e6ce1f1"
-uuid = "807dbc54-b67e-4c79-8afb-eafe4df6f2e1"
-version = "0.1.1"
 
 [[deps.CompilerSupportLibraries_jll]]
 deps = ["Artifacts", "Libdl"]
@@ -198,12 +187,6 @@ version = "1.14.3"
     [deps.JSON3.weakdeps]
     ArrowTypes = "31f734f8-188a-4ce0-8406-c8a06bd891cd"
 
-[[deps.JuliaInterpreter]]
-deps = ["CodeTracking", "InteractiveUtils", "Random", "UUIDs"]
-git-tree-sha1 = "58927c485919bf17ea308d9d82156de1adf4b006"
-uuid = "aa1ae85d-cabe-5617-a682-6adf51b2e16a"
-version = "0.10.12"
-
 [[deps.LazyArtifacts]]
 deps = ["Artifacts", "Pkg"]
 uuid = "4af54fe1-eca0-43a8-85a7-787d91b784e3"
@@ -264,12 +247,6 @@ version = "1.0.3"
 [[deps.Logging]]
 uuid = "56ddb016-857b-54e1-b83d-db4d58db5568"
 
-[[deps.LoweredCodeUtils]]
-deps = ["CodeTracking", "Compiler", "JuliaInterpreter"]
-git-tree-sha1 = "3733419e9a71156b389f3e331672d2e95436783f"
-uuid = "6f1432cf-f94c-5a45-995e-cdbf5db27b0b"
-version = "3.6.2"
-
 [[deps.Markdown]]
 deps = ["Base64"]
 uuid = "d6f4376e-aef5-505a-96c1-9c027394607a"
@@ -293,7 +270,7 @@ version = "1.2.0"
 [[deps.OpenBLAS_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
 uuid = "4536629a-c528-5b80-bd46-f80d51c5b363"
-version = "0.3.23+5"
+version = "0.3.34+1"
 
 [[deps.OpenLibm_jll]]
 deps = ["Artifacts", "Libdl"]
@@ -370,18 +347,6 @@ git-tree-sha1 = "c1332beecf9cf267e99b83ab878a3460f047964f"
 uuid = "802f3686-a58f-41ce-bb0c-3c43c75bba36"
 version = "1.6.1"
 
-[[deps.Revise]]
-deps = ["CodeTracking", "FileWatching", "InteractiveUtils", "JuliaInterpreter", "LibGit2", "LoweredCodeUtils", "OrderedCollections", "Preferences", "REPL", "UUIDs"]
-git-tree-sha1 = "d97d78d4fc5f858d8ce44f6b88bc972f2023f51d"
-uuid = "295af30f-e4ad-537b-8983-00126c2a3abe"
-version = "3.14.0"
-
-    [deps.Revise.extensions]
-    DistributedExt = "Distributed"
-
-    [deps.Revise.weakdeps]
-    Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
-
 [[deps.SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 version = "0.7.0"
@@ -419,7 +384,7 @@ version = "2.9.1"
 deps = ["BridgeStan", "FileWatching", "JSON", "LinearAlgebra", "LogDensityProblems", "Markdown", "OrderedCollections", "SHA", "SpecialFunctions", "StanLogDensityProblems", "Statistics", "Tables"]
 path = "../.."
 uuid = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
-version = "0.2.1"
+version = "0.2.39"
 weakdeps = ["PosteriorDB"]
 
     [deps.StanBlocks.extensions]

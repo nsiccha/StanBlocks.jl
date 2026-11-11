@@ -18,6 +18,10 @@ show(stdout, MIME"text/plain"(), saturating_response(2.0, 3.0)); println()
 The same definition is included when a model calls it. Unlike a submodel, a
 function introduces no probability statements or latent parameters of its own.
 
+An `@deffun @inline` helper expands into its caller while resolving sibling
+helpers and omitted keyword defaults in its defining module. Explicit
+arguments resolve in the caller's module, as do statements after the call.
+
 ```@example functions
 response = @slic (; x=2.0, y=0.45) begin
     half ~ lognormal(0, 1)
