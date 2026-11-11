@@ -947,8 +947,18 @@ Base.push!(b::DataBlock, x::StanExpr{Symbol}; info) = begin
         "receiving LHS, `hx_k` for its `k` in `hx ~ sub(…)`, so such a name can ",
         "collide with one the model binds.)"
     )
+    # A typed `~` declares its data with the type it names (`_forward_typed_bound!`,
+    # forward.jl). That declaration replaces the one inferred from the value,
+    # whichever statement reached the block first, so Stan checks the data
+    # against the declared type however the model orders its uses.
+    if existing !== nothing && _declared_data(x) && !_declared_data(existing)
+        fetch_data!(type(x); info)
+        content(b)[expr(x)] = x
+        return x
+    end
     _declare!(b, x; info)
 end
+_declared_data(x::StanExpr) = get(type(x).info, :declared_data, false)
 # Stan declares no bound or affine transform on `ordered` / `positive_ordered`:
 # `ordered<lower=0>[3] c;` is a stanc syntax error. A parameter whose typed LHS
 # carries one (forward.jl, `_ordered_constraints`) is declared as a

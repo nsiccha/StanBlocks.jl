@@ -2285,6 +2285,8 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     ct isa Symbol || error("Typed-LHS sampling: type center must be a Symbol, got `$ct`")
     ct_resolved = gettype(ct)
     sizes_forwarded = isempty(sizes) ? () : Tuple(forward!(collect(sizes); info))
+    name in keys(info) &&
+        return _forward_typed_bound!(x, name, ct_resolved, sizes_forwarded, type_expr, rhs_raw; info)
     # Stan requires every native constrained-type size (`simplex[N]`, `ordered[N]`,
     # …) to be a SCALAR int. A NON-scalar size — e.g. `p::simplex[Ks]` with a data
     # int-vector `Ks` — is a RAGGED / varying-per-group constrained parameter. Stan
@@ -2351,6 +2353,41 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     validate_sampling_rhs(info[name], rhs_stan; info)
     remake(x, info[name], rhs_stan)
+end
+# A typed `name::T ~ dist` on a name the model already binds observes it, as
+# `name ~ dist` does: binding a sampled name conditions on it (stanblocks-use
+# §11). The typed path used to overwrite a data binding with a fresh parameter,
+# which prior-only lowering turned into a draw, so the data was dropped silently
+# (todo 1h0fnry). The data is declared with the type `T` names: its center and
+# sizes, plus the bounds the distribution implies or the call states wherever
+# they read data alone. Stan then checks the data against `T` as it loads it.
+# A name bound to anything but data takes the untyped path, which refuses it.
+_forward_typed_bound!(x, name, ct, sizes, type_expr, rhs_raw; info) = begin
+    bound = info[name]
+    stan.qual(bound) == :data || return forward!(remake(x, name, rhs_raw); info)
+    rhs = forward!(rhs_raw; info)::StanExpr
+    call = expr(rhs)
+    implied = autokwargs(call)
+    cons = _fold_constraints(name, merge(implied, call.kwargs); implied=keys(implied))
+    bounds = (; (k => v for (k, v) in pairs(cons) if k in BOUND_KEYS && _reads_data_only(v))...)
+    declared = StanType(ct, sizes, type(bound).info; bounds..., declared_data=true)
+    _holds_data(declared, type(bound)) || error(
+        "`", name, "::", pretty_type_expr(type_expr), " ~ …` observes the data `", name,
+        "`, a `", sigtype(type(bound)), "`, which a `", sigtype(declared), "` cannot hold. ",
+        "Declare the data's own type, or drop the annotation: `", name, " ~ …` observes ",
+        "the data as it is.",
+    )
+    info[name] = StanExpr(expr(bound), declared)
+    forward!(remake(x, name, rhs); info)
+end
+_reads_data_only(v::Real) = true
+_reads_data_only(v::StanExpr) = stan.qual(v) == :data
+_reads_data_only(v) = false
+# The declared type takes the data's container and element kind; an integer
+# datum may be declared real, as Stan reads an int where a real is declared.
+_holds_data(declared::StanType, data::StanType) = begin
+    d, b = sigtype(declared), sigtype(data)
+    d == b || d == replace(b, "int" => "real")
 end
 # Desugar a RAGGED constrained parameter (`p::simplex[Ks] ~ …`, `Ks` a data
 # int-vector of per-group dims) into constructs SB can emit. Vector families use
