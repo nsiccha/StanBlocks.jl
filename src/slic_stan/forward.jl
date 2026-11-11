@@ -2213,12 +2213,24 @@ _check_lhs_rhs_support(lhs_type, support, rhs_discrete, name, type_expr) = begin
     )
     nothing
 end
-# The constraints of a typed `ordered` / `positive_ordered` LHS. Stan declares
-# none on these types; the emitter instead applies one elementwise, increasing
-# Stan constraint transform to an `ordered` free vector
-# (`_declare_lowered_ordered!`, passes.jl), so every constraint must be a
-# scalar. Other centers keep their constraints as folded. (A runtime check:
-# the `types` submodule is defined later, in functions.jl.)
+# A joint vector family (`multi_normal`, `dirichlet`, …) draws a vector, and Stan
+# takes it on a vector or an array of vectors, never a `matrix`, whose columns or
+# rows would be a guess: `z::matrix[D, K] ~ multi_normal(…)` transpiled to a
+# statement stanc rejects (todo 0yeqj57). An elementwise family keeps its matrix
+# variate (`_check_matrix_variate_args`, lpxf_builtin.jl).
+_check_matrix_lhs_vector_family(lhs_type, support, rhs, name, type_expr, sizes) = begin
+    center_type(lhs_type) === types.matrix && center_type(support) <: types.any_vector || return
+    _matrix_variate_family(head(rhs)) && return
+    rows, cols = length(sizes) == 2 ? string.(sizes) : ("D", "K")
+    error(
+        "Typed-LHS sampling `", name, "::", pretty_type_expr(type_expr), "` declares a ",
+        "`matrix`, but its distribution draws a `", sigtype(support), "`: Stan takes a ",
+        "joint vector family on a vector or an array of vectors, never on a matrix. ",
+        "Declare `", name, "::vector[", cols, ", ", rows, "]` (an array of ", cols,
+        " vectors of length ", rows, ", one draw each), or draw each column in a ",
+        "`plate(; outer = ", cols, ") do k … end` cell.",
+    )
+end
 # Stan declares no bound or affine transform on a `simplex` or on a covariance,
 # correlation or Cholesky-factor matrix: the type's own transform is its whole
 # constraint, so `simplex<lower=0, upper=1>[3] p;` is a stanc syntax error (todo
@@ -2249,6 +2261,12 @@ _transform_only_constraints(ct, cons; label, implied=()) = begin
     )
     (;)
 end
+# The constraints of a typed constrained LHS. Stan declares none on `ordered` /
+# `positive_ordered` either; the emitter instead applies one elementwise,
+# increasing Stan constraint transform to an `ordered` free vector
+# (`_declare_lowered_ordered!`, passes.jl), so every constraint must be a
+# scalar. Other centers keep their constraints as folded. (A runtime check:
+# the `types` submodule is defined later, in functions.jl.)
 _center_constraints(ct, cons, rhs; name, type_expr, implied) = begin
     if _transform_only_center(ct)
         cons = _transform_only_constraints(ct, cons;
@@ -2369,6 +2387,8 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # time, before the constraint fold and cv routing below act on it.
     _check_lhs_rhs_support(base_lhs_type, type(rhs_forwarded),
         _rhs_is_discrete(rhs_canonical), name, type_expr)
+    _check_matrix_lhs_vector_family(base_lhs_type, type(rhs_forwarded), rhs_canonical,
+        name, type_expr, sizes)
     # A parameter whose DECLARED SIZE is cv-tainted must relocate to generated
     # quantities exactly like the bare-LHS path — a held-out size (`J =
     # maximum(subject)` under CV) means nothing informs the parameter, so it is a
