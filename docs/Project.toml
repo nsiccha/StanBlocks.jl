@@ -1,15 +1,16 @@
 [deps]
-DynamicObjects = "23d02862-63fe-4c6e-8fdb-1d52cbbd39d5"
-HTMX = "27f3e1ef-6ef8-44dc-9e9a-2fb23ed44e83"
-HTMXObjects = "b12ef442-5798-4353-80f3-9562b03a0cb6"
-Treebars = "e1e568c4-3a56-40a4-95fa-9b9c6c16fccb"
 AlgebraOfVega = "a2420894-485a-4f42-a4fc-c4323ec6fb2b"
 BridgeStan = "c88b6f0a-829e-4b0b-94b7-f06ab5908f5a"
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 DocumenterVitepress = "4710194d-e776-4893-9690-8d956a29c365"
+DynamicObjects = "23d02862-63fe-4c6e-8fdb-1d52cbbd39d5"
+HTMX = "27f3e1ef-6ef8-44dc-9e9a-2fb23ed44e83"
+HTMXObjects = "b12ef442-5798-4353-80f3-9562b03a0cb6"
 LogDensityProblems = "6fdf6af0-433a-55f7-b3ed-c6c6e0b8df7c"
+NodeJS_20_jll = "c7aee132-11e1-519c-8219-0a43005e73c2"
 StanBlocks = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
+Treebars = "e1e568c4-3a56-40a4-95fa-9b9c6c16fccb"
 
 [compat]
 AlgebraOfVega = "0.2.29"
@@ -17,26 +18,27 @@ Distributions = "0.25"
 Documenter = "1"
 DocumenterVitepress = "0.2, 0.3"
 LogDensityProblems = "2"
+NodeJS_20_jll = "20"
 
 [sources.AlgebraOfVega]
-url = "https://github.com/nsiccha/AlgebraOfVega.jl"
 rev = "f96a064557589494d2a1b6ae75c16449758009fb"
+url = "https://github.com/nsiccha/AlgebraOfVega.jl"
+
+[sources.DynamicObjects]
+rev = "fc41273bce8b3aaf736bb0b23c36c97e773a1c7c"
+url = "https://github.com/nsiccha/DynamicObjects.jl"
+
+[sources.HTMX]
+rev = "0b8dc2f94e879bf31237bd28e751cf2ebc8d95f6"
+url = "https://github.com/nsiccha/HTMX.jl"
+
+[sources.HTMXObjects]
+rev = "0dce4099357c224236ca9b9a2f7d2dfd0e3334b7"
+url = "https://github.com/nsiccha/HTMXObjects.jl"
 
 [sources.StanBlocks]
 path = ".."
 
-[sources.DynamicObjects]
-url = "https://github.com/nsiccha/DynamicObjects.jl"
-rev = "fc41273bce8b3aaf736bb0b23c36c97e773a1c7c"
-
-[sources.HTMX]
-url = "https://github.com/nsiccha/HTMX.jl"
-rev = "0b8dc2f94e879bf31237bd28e751cf2ebc8d95f6"
-
-[sources.HTMXObjects]
-url = "https://github.com/nsiccha/HTMXObjects.jl"
-rev = "0dce4099357c224236ca9b9a2f7d2dfd0e3334b7"
-
 [sources.Treebars]
-url = "https://github.com/nsiccha/Treebars.jl"
 rev = "e03f2c7be5579fafce38d8759b531a6e22996ba5"
+url = "https://github.com/nsiccha/Treebars.jl"
