@@ -2852,7 +2852,10 @@ _elementwise_pointwise(f) = false
 for lpmfs in (bernoulli_lpmfs, bernoulli_logit_lpmfs, binomial_lpmfs, binomial_logit_lpmfs)
     @eval _elementwise_pointwise(::typeof($lpmfs)) = true
 end
+# `std_normal` has no parameters; its observation's `y_likelihood` twin used to
+# fail to trace for want of `std_normal_lpdfs` (todo 0s2pan0).
 for (base, params) in (
+    (:std_normal_lpdf, ()),
     (:normal_lpdf, (:loc, :scale)),
     (:cauchy_lpdf, (:loc, :scale)),
     (:lognormal_lpdf, (:loc, :scale)),
@@ -3879,11 +3882,8 @@ for (dist, params) in (
     flat_args = [:(matrix_variate_arg($p, m, n)) for p in params]
     @eval @deffun $dlpdf(obs::matrix[m, n], $(params...))::real =
         $dlupdf(to_vector(obs), $(flat_args...))
-    # `std_normal` has no vector pointwise companion to reshape (a vector
-    # observation of it has no `y_likelihood` either).
-    dist === :std_normal ||
-        @eval @deffun $dlpdfs(obs::matrix[m, n], $(params...))::matrix[m, n] =
-            to_matrix($dlpdfs(to_vector(obs), $(flat_args...)), m, n)
+    @eval @deffun $dlpdfs(obs::matrix[m, n], $(params...))::matrix[m, n] =
+        to_matrix($dlpdfs(to_vector(obs), $(flat_args...)), m, n)
     @eval @deffun $drng(matrix[m, n], $(params...))::matrix[m, n] =
         to_matrix($drng(vector[m * n], $(flat_args...)), m, n)
 end
