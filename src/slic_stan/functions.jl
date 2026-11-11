@@ -152,11 +152,25 @@ end
 # Statement nodes carry `anything` by construction (an `elseif` branch is an
 # `anything`-typed argument of its `if`), and their bodies are statements.
 _reject_untyped_args(::Union{ForExpr,WhileExpr,IfExpr,ElseIfExpr,BlockExpr}) = nothing
-# A builtin whose Stan function takes no keyword arguments while its Julia twin
-# does (`mean(x; dims=1)`, `std(x; corrected=false)`) refuses them here: its
-# positional signature would drop them and emit `mean(x)`. Methods sit beside the
-# `_slic_callable` table (builtin.jl).
-_reject_call_kwargs(@nospecialize(x::CanonicalExpr)) = nothing
+# A call becomes a typed Stan call here, and a Stan function takes no keyword
+# arguments: the emitter prints the positional ones only, so `exp(x; foo=1)`
+# emitted `exp(x)` and `sum(v; dims=1)` emitted `sum(v)` (todo 18nseyb). A keyword
+# rides on the typed node only where a later pass reads it: a distribution call's
+# bounds and shape (`autotype`, the `~` lowering), whose key set its family or
+# combinator checks as it is forwarded (`_check_call_keywords`, lpxf_builtin.jl).
+# Every other keyword consumer lowers its call before it gets here (an `@deffun`'s
+# kwcall shim, `plate`, a sub-model call, …). The `Statistics` twins, whose Julia
+# forms take keywords, say so in their own message beside the `_slic_callable`
+# table (builtin.jl).
+_reject_call_kwargs(@nospecialize(x::CanonicalExpr)) =
+    isempty(x.kwargs) || _keeps_call_kwargs(head(x)) || error(
+        "`", _kwarg_callee_name(head(x)), "` has no keyword argument `",
+        join(keys(x.kwargs), "`, `"), "`: a Stan function takes positional arguments ",
+        "only, so the emitted call would drop it. Pass the value positionally, or, for ",
+        "a function of your own, declare the keyword in its `@deffun` signature.",
+    )
+_keeps_call_kwargs(f) = _sampling_family(f) || !isnothing(_distribution_hof(f))
+_kwarg_callee_name(f) = applicable(nameof, f) ? nameof(f) : f
 
 # --- Head-first dispatch tables ------------------------------------------------
 #
