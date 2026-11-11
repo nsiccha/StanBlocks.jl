@@ -3796,14 +3796,14 @@ for dist in (:student_t, :skew_normal, :exp_mod_normal,
     else
         to_vector($drng(nu, a, b))
     end
-    # Vector LEADING arg (per-observation location): both leading args are vectors.
-    @eval @deffun $drng(real[n],   loc::vector[n], scale::vector[n], b)::real[n]   = if n == 0
+    # Either vector orientation is a per-observation leading argument.
+    @eval @deffun $drng(real[n],   loc::any_vector[n], scale::any_vector[n], b)::real[n]   = if n == 0
         rv::real[n]
         rv
     else
         $drng(loc, scale, b)
     end
-    @eval @deffun $drng(vector[n], loc::vector[n], scale::vector[n], b)::vector[n] = if n == 0
+    @eval @deffun $drng(vector[n], loc::any_vector[n], scale::any_vector[n], b)::vector[n] = if n == 0
         rv::vector[n]
         rv
     else
@@ -3814,13 +3814,13 @@ for dist in (:student_t, :skew_normal, :exp_mod_normal,
     # broadcasts the scalar natively, so delegate straight through like the
     # vector-vector overloads above (the family's `@defsig` lists
     # `(vector[n], real, real)` / `(vector[n], real, vector[n])`).
-    @eval @deffun $drng(real[n],   loc::vector[n], scale::real, b)::real[n]   = if n == 0
+    @eval @deffun $drng(real[n],   loc::any_vector[n], scale::real, b)::real[n]   = if n == 0
         rv::real[n]
         rv
     else
         $drng(loc, scale, b)
     end
-    @eval @deffun $drng(vector[n], loc::vector[n], scale::real, b)::vector[n] = if n == 0
+    @eval @deffun $drng(vector[n], loc::any_vector[n], scale::real, b)::vector[n] = if n == 0
         rv::vector[n]
         rv
     else
@@ -4749,12 +4749,15 @@ end
     Union{typeof.((student_t_rng, skew_normal_rng, exp_mod_normal_rng,
                     skew_double_exponential_rng, pareto_type_2_rng))...} => begin
         (real, real, real) => real
-        (real, vector[n], real) => real[n]
-        (real, vector[n], vector[n]) => real[n]
-        (vector[n], real, real) => real[n]
-        (vector[n], real, vector[n]) => real[n]
-        (vector[n], vector[n], real) => real[n]
-        (vector[n], vector[n], vector[n]) => real[n]
+        # Every argument vectorises in either orientation, including a shaped
+        # third argument beside two scalars (the student_t scale case).
+        (real, real, any_vector[n]) => real[n]
+        (real, any_vector[n], real) => real[n]
+        (real, any_vector[n], any_vector[n]) => real[n]
+        (any_vector[n], real, real) => real[n]
+        (any_vector[n], real, any_vector[n]) => real[n]
+        (any_vector[n], any_vector[n], real) => real[n]
+        (any_vector[n], any_vector[n], any_vector[n]) => real[n]
     end
     typeof(beta_binomial_rng) => begin
         (int[n], real, real) => int[n]
