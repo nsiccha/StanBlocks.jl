@@ -7,5 +7,5 @@ TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 
 [sources]
 OutputSignatures = {url = "https://github.com/nsiccha/OutputSignatures.jl.git", rev = "f971381f760e91986b3a728a719341e7e7761f55"}
-ReactiveKernels = {url = "https://github.com/nsiccha/ReactiveKernels.jl.git", rev = "cbaf5662b2c9eae7edb6f2466ceda1f70dc0e781"}
+ReactiveKernels = {url = "https://github.com/nsiccha/ReactiveKernels.jl.git", rev = "58ea76b9f0ce09427563d066958d3a57760b05fc"}
 StanBlocks = {path = "../.."}

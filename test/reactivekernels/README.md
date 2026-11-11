@@ -6,7 +6,7 @@ julia --startup-file=no test/reactivekernels/setup.jl
 julia --startup-file=no --project=test/reactivekernels test/reactivekernels/runtests.jl
 ```
 
-Set `RK_JAX_PYTHON` to a Python executable with JAX and NumPy installed to
+Set `RK_JAX_PYTHON` to a Python executable with JAX, NumPy and SciPy installed to
 also run the emitted modules and check their values and gradients. Without
 it, those checks are reported as skipped. The environment pins published
 ReactiveKernels and OutputSignatures commits, and develops this StanBlocks
