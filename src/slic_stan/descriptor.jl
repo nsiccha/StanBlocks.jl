@@ -24,8 +24,8 @@
 #     no likelihood term offers no `:fit`; a model with no `_gen` twin offers no
 #     `:predict`. Each operation carries its own executor.
 #
-# Everything here is read-only reflection over an already-traced `StanModel`;
-# nothing in this file participates in tracing or emission.
+# Reflection never mutates the traced model. Data-only metadata without Julia
+# implementations is evaluated by the native projection in descriptor_native.jl.
 
 """
     ModelInput
@@ -551,15 +551,6 @@ _plate_layout_call(f, mod, args...; kwargs...) = begin
     if (f === length || f === lastindex) && length(args) == 1 &&
             _plate_layout_ragged_value(args[1])
         return length(args[1].ends)
-    elseif f === ragged_start && length(args) == 2
-        ends, i = _plate_layout_ragged_value(args[1]) ? args[1].ends : args[1], args[2]
-        return i == 1 ? 1 : ends[i - 1] + 1
-    elseif f === ragged_end && length(args) == 2
-        ends, i = _plate_layout_ragged_value(args[1]) ? args[1].ends : args[1], args[2]
-        return ends[i]
-    elseif f === ragged_length && length(args) == 2
-        ends, i = _plate_layout_ragged_value(args[1]) ? args[1].ends : args[1], args[2]
-        return ends[i] - (i == 1 ? 0 : ends[i - 1])
     elseif f === getindex && length(args) == 2 && _plate_layout_ragged_value(args[1]) && args[2] isa Integer
         # `ys[i]`, group `i` (a scan nested in `@plate for y in ys` runs to
         # `length(ys[i])`); a value with group structure alone stands in by length.
@@ -569,6 +560,14 @@ _plate_layout_call(f, mod, args...; kwargs...) = begin
     end
     _plate_layout_jcall(f, args...; kwargs...)
 end
+# Dispatch makes these descriptor-local implementations visible to the native
+# capability planner as well as the evaluator.
+_plate_layout_ends(x) = _plate_layout_ragged_value(x) ? x.ends : x
+_plate_layout_call(::typeof(ragged_start), mod, x, i; kwargs...) =
+    i == 1 ? 1 : _plate_layout_ends(x)[i - 1] + 1
+_plate_layout_call(::typeof(ragged_end), mod, x, i; kwargs...) = _plate_layout_ends(x)[i]
+_plate_layout_call(::typeof(ragged_length), mod, x, i; kwargs...) =
+    _plate_layout_ends(x)[i] - (i == 1 ? 0 : _plate_layout_ends(x)[i - 1])
 _plate_layout_call(f::Symbol, mod, args...; kwargs...) = begin
     if f in (:length, :lastindex) && length(args) == 1 &&
             _plate_layout_ragged_value(args[1])
@@ -691,6 +690,7 @@ _descriptor_scope(m::StanModel, data) = begin
         layouts=_ragged_plate_layouts(m),
         mod=get(meta(m), :mod, @__MODULE__),
         active=Symbol[],
+        native=Dict{Any,Any}(),
     )
 end
 _scope_bind!(scope, name::Symbol) = begin
@@ -743,6 +743,7 @@ _td_unit(scope, name::Symbol) = begin
     targets, sort!(collect(indices))
 end
 _scope_value(scope, x) = begin
+    haskey(scope.native, x) && return scope.native[x]
     foreach(name -> _scope_bind!(scope, name), _plate_layout_names!(Set{Symbol}(), x))
     _plate_layout_value(x, scope.env, scope.mod)
 end
@@ -891,17 +892,14 @@ end
 # `modeloutput-dims-5ab23309`).
 
 # Evaluate a data-only expression a declaration carries; `what` names it for the
-# error. Such an expression always has a value under the bound data, so failing
-# to compute one means it calls a function with no Julia method (a Stan-only
-# `@deffun`), which `@juliacompat` gives one. The cause is kept, since a
-# transformed-data statement the scope cannot run fails here too.
+# error. Native-only expressions have already been evaluated as a batch;
+# numerical errors on the Julia path retain their original cause.
 _descriptor_value(scope, x, what...) = try
     _scope_value(scope, x)
 catch e
     error(
         "stan_descriptor: cannot evaluate ", what..., ". It is a data-only expression, ",
-        "so one that calls a Stan-only `@deffun` needs a Julia method: mark that ",
-        "function `@juliacompat`. Cause: ", sprint(showerror, e),
+        "evaluated through Julia or a deterministic native Stan projection. Cause: ", sprint(showerror, e),
     )
 end
 _declared_dim(scope, owner, name::Symbol, i, s) = begin
@@ -1122,10 +1120,12 @@ bound data, together with the transformed-data values and ragged-plate layouts
 that size reads. A constrained square matrix declared by one size fills both of
 its matrix axes, so `cholesky_factor_corr[K]` reports `(K, K)`; for every
 non-tuple output `prod(dims)` is its number of BridgeStan `param_names` entries.
-Every top-level Stan size is a data-only expression, so it always has a value; if
-Julia cannot compute one (a size computed through a Stan-only `@deffun` with no
-Julia method), `stan_descriptor` throws, naming the output and the expression.
-Mark that function `@juliacompat` to give it a Julia method.
+Every top-level Stan size is a data-only expression. Available Julia
+implementations evaluate directly; unsupported deterministic expressions use a
+parameter-free native Stan projection of their required data dependencies.
+This may compile a BridgeStan artifact, cached in the normal immutable artifact
+store. Each evaluation binds the current data. Numerical errors propagate on
+the selected path; they never trigger a retry with another implementation.
 
 # Evaluated constraints
 
@@ -1134,8 +1134,8 @@ the same way, with Stan's semantics: `real<lower=fmax(0.0, (2 * floor_))>` with
 `floor_ = 0.3` reports `(lower = 0.6,)`, and a per-coordinate bound reports one
 value per coordinate (`-Inf`/`Inf` where unbounded). A bound that reads a
 parameter reports `nothing`. A data-only bound computed through a Stan-only
-`@deffun` makes `stan_descriptor` throw, naming the output and the key, as a
-size does.
+`@deffun`, including an algebraic root, uses the native projection as a size
+does. No model likelihood or predictive draws are evaluated for metadata.
 
 See also [`stan_operation`](@ref StanBlocks.stan_operation),
 [`stan_execute`](@ref StanBlocks.stan_execute),
@@ -1149,6 +1149,7 @@ stan_descriptor(m::StanModel; name=nothing) = begin
     data = content(block(m, :data))
 
     scope = _descriptor_scope(m, data)
+    _descriptor_native!(scope)
     outputs = vcat(
         _block_outputs(scope, :parameters, :parameter),
         _block_outputs(scope, :transformed_parameters, :transformed_parameter),

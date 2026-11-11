@@ -1,7 +1,7 @@
 name = "StanBlocks"
 uuid = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
 authors = ["Nikolas Siccha <nikolassiccha@gmail.com>"]
-version = "0.2.40"
+version = "0.2.41"
 
 [deps]
 BridgeStan = "c88b6f0a-829e-4b0b-94b7-f06ab5908f5a"
@@ -32,7 +32,7 @@ JSON = "1"
 LogDensityProblems = "2.1"
 OrderedCollections = "1.8"
 PosteriorDB = "0.5, 0.6"
-ReactiveKernels = "0.1.173"
+ReactiveKernels = "0.1.175"
 SpecialFunctions = "2"
 StanLogDensityProblems = "0.1"
 Tables = "1"

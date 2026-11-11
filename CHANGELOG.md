@@ -4,16 +4,27 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
-## v0.2.40
+## v0.2.41
 
 - **Generated Julia helpers can supply source to ReactiveKernels.** Loading
-  ReactiveKernels 0.1.173 or newer activates an optional extension that exposes
+  ReactiveKernels 0.1.175 or newer activates an optional extension that exposes
   complete named positional `@deffun @juliacompat` bodies to `jax_source`.
   Loops, branches and dimension guards can translate on device and in host
   `prepare_data`, within ReactiveKernels' supported source subset. The source
   follows method dispatch, survives downstream precompilation and is ignored
   after the recorded Julia method is replaced. Ordinary dense `matrix_exp`
   calls use the JAX/SciPy matrix exponential; padded ragged matrices are refused.
+
+## v0.2.40
+
+- **Descriptors evaluate native-only data computations.** Data-only bounds,
+  sizes and ragged layouts can use Stan-only helpers, including algebraic
+  solvers, in `stan_descriptor` and `compile_slic_bundle`. Available Julia
+  implementations retain their direct path; unsupported expressions are batched
+  into a cached BridgeStan projection of the required data dependencies.
+  Descriptor construction can therefore compile a native artifact. Rebinding
+  uses current data, parameter-dependent bounds remain `nothing`, and numerical
+  errors propagate without switching implementations.
 
 ## v0.2.39
 

@@ -2772,6 +2772,8 @@ begin
                 $stan._tracetype_by_head($hexpr, $xexpr, context) = $(Expr(:block, source, capture_mod, deconstruct, promote_info, inject_context, inject_mod, rv_expr))
             end)
             if !ismissing(body)
+                push!(stmts, :($stan._descriptor_julia_by_head($hexpr, $xexpr) =
+                    $(is_juliacompat && !is_stanonly)))
                 push!(stmts, quote
                     $stan.fundef_by_head($hexpr, $xexpr) = $stan._fundef(x, nothing)
                     $stan._fundef_by_head($hexpr, $xexpr, context) = $stan._with_slic_diagnostic(
@@ -2856,6 +2858,9 @@ fundef(x) = nothing
 _fundef(x, _context) = fundef(x)
 fundef(x::CanonicalExpr) = fundef_by_head(getfield(x, :head), x)
 fundef_by_head(_, x::CanonicalExpr) = nothing
+# A descriptor can inspect this capability without running an author function.
+# Exact call signatures keep mixed Stan-only / Julia-compatible overloads apart.
+_descriptor_julia_by_head(_, ::CanonicalExpr) = nothing
 _fundef(x::CanonicalExpr, context) = _fundef_by_head(getfield(x, :head), x, context)
 _fundef_by_head(_, x::CanonicalExpr, context) = fundef(x)
 
