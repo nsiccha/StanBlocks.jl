@@ -56,6 +56,60 @@
     @test isnothing(ext.deffun_source(source_loop, Tuple{Float32,Int}))
 end
 
+@testitem "ReactiveKernels scalar extrema preserve NaN semantics" tags=[:reactivekernels] begin
+    using ReactiveKernels
+    @deffun @juliacompat source_extrema(x::real, y::real, maximum::int)::real = begin
+        if maximum == 0
+            fmin(x, y)
+        else
+            fmax(x, y)
+        end
+    end
+    @kernel extrema_kernel(x::Float64, y::Float64, maximum::Int) = begin
+        result = source_extrema(x, y, maximum)
+        return result
+    end
+    src = jax_source(extrema_kernel; have=(:x, :y, :maximum), want=:result)
+    host = jax_source(extrema_kernel; have=(:x, :y, :maximum), want=:result,
+        data=(:x, :y, :maximum))
+    for maximum in (0, 1), (x, y) in ((-2.0, 3.0), (3.0, -2.0),
+            (NaN, 3.0), (3.0, NaN), (NaN, NaN), (-Inf, Inf))
+        expected = isnan(x) ? y : isnan(y) ? x : maximum == 0 ? min(x, y) : max(x, y)
+        @test isequal(source_extrema(x, y, maximum), expected)
+    end
+    python = get(ENV, "RK_JAX_PYTHON", "")
+    if isempty(python)
+        @test_skip "Set RK_JAX_PYTHON to check JAX values and gradients"
+    else
+        mktempdir() do dir
+            write(joinpath(dir, "extrema_kernel.py"), src)
+            write(joinpath(dir, "extrema_host.py"), host)
+            check = joinpath(dir, "check.py")
+            write(check, """
+            import jax
+            import numpy as np
+            import extrema_kernel as model
+            import extrema_host as host
+            run = jax.jit(model.kernel)
+            grad = jax.jit(jax.grad(model.kernel, argnums=(0, 1)))
+            for maximum in (0, 1):
+                for x, y in ((-2.0, 3.0), (3.0, -2.0),
+                             (np.nan, 3.0), (3.0, np.nan), (np.nan, np.nan),
+                             (-np.inf, np.inf)):
+                    expected = np.fmin(x, y) if maximum == 0 else np.fmax(x, y)
+                    np.testing.assert_allclose(run(x, y, maximum), expected)
+                    prepared = host.prepare_data(x=x, y=y, maximum=maximum)
+                    np.testing.assert_allclose(host.kernel(**prepared), expected)
+                for x, y in ((-2.0, 3.0), (3.0, -2.0)):
+                    first = (x < y) if maximum == 0 else (x > y)
+                    np.testing.assert_allclose(grad(x, y, maximum),
+                                               (float(first), float(not first)))
+            """)
+            @test success(pipeline(`$python $check`; stdout=stdout, stderr=stderr))
+        end
+    end
+end
+
 @testitem "ReactiveKernels matrix exponential compatibility" tags=[:reactivekernels] begin
     using ReactiveKernels
     @deffun @juliacompat source_matrix_exp(x) = matrix_exp(x)

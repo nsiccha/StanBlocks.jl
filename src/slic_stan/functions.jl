@@ -858,8 +858,8 @@ jcall(::Val{:positive_infinity}, ::_JuliaScope) = Inf
 jcall(::Val{:not_a_number}, ::_JuliaScope) = NaN
 # Stan's `fmin`/`fmax` are C's: a NaN argument yields the other one, where
 # Julia's `min`/`max` return NaN.
-jcall(::Val{:fmin}, ::_JuliaScope, x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : min(x, y)
-jcall(::Val{:fmax}, ::_JuliaScope, x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : max(x, y)
+jcall(::Val{:fmin}, ::_JuliaScope, x::Number, y::Number) = _julia_fmin(x, y)
+jcall(::Val{:fmax}, ::_JuliaScope, x::Number, y::Number) = _julia_fmax(x, y)
 # This package binds `hypot` to its own builtin, which has no Julia method.
 # Stan Math's `hypot` is C++'s `std::hypot` and Julia's is the same IEEE
 # function: no intermediate square that overflows or underflows, `Inf` when
@@ -1152,6 +1152,9 @@ macro _julia_source(definition)
         $f, Tuple{$(types...)}, $(QuoteNode(names)), $(QuoteNode(body)), $(QuoteNode(__module__))))
     esc(_slic_definition_expr(__module__, Expr(:block, definition, registration)))
 end
+
+@_julia_source _julia_fmin(x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : min(x, y)
+@_julia_source _julia_fmax(x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : max(x, y)
 
 @_julia_source _deffun_julia_check_dim(x, i::Integer, expected, fname, argname) = begin
     actual = size(x, i)
