@@ -3050,8 +3050,15 @@ _slice_declared_bound(k, v, records, key, extra; info) = begin
         "(`", k, "::", sigtype(T), "[…] ~ flat(; ", key, "=…)`) so every slice shares it.")
     N = _slice_int(stan_size(T)[1]; values=false)
     covered = get(T.info, :slice_tiled, false)
-    coords = all(r -> r.literal !== nothing, records) ?
-        sort!(unique(reduce(vcat, Any[r.literal for r in records]))) : nothing
+    coords = if all(r -> r.literal !== nothing, records)
+        literals = Any[]
+        for record in records
+            append!(literals, record.literal)
+        end
+        sort!(unique!(literals))
+    else
+        nothing
+    end
     if !covered && N !== nothing && coords !== nothing
         covered = coords == collect(1:N)
     end

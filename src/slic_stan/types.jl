@@ -491,8 +491,20 @@ end
 #
 # This REPLACES the old positional-call splice (`submodel(quote … end)`); a
 # positional sub-model call now errors loudly (see the call operator below).
-unblock(x::BlockExpr) = mapreduce(unblock, vcat, x.args; init=[])
-unblock(x::Expr) = x.head === :block ? mapreduce(unblock, vcat, x.args; init=[]) : [x]
+# Flatten into one erased buffer: a vcat fold copies the accumulated statements
+# at every step, and specializing on each statement tuple adds compiler work.
+Base.@nospecializeinfer _unblock_into!(out::Vector{Any}, @nospecialize(x)) = begin
+    if x isa BlockExpr || (x isa Expr && x.head === :block)
+        for arg in x.args
+            _unblock_into!(out, arg)
+        end
+    elseif !(x isa LineNumberNode)
+        push!(out, x)
+    end
+    out
+end
+unblock(x::BlockExpr) = _unblock_into!(Any[], x)
+unblock(x::Expr) = x.head === :block ? _unblock_into!(Any[], x) : [x]
 unblock(x::LineNumberNode) = []
 unblock(x) = [x]
 # Canonicalise ONLY to derive the replacement key and to validate the statement
@@ -512,7 +524,11 @@ _check_splice_stmt(raw, _canonical) = error(
 )
 _splice_body(x::SlicModel, args...) = begin
     rep = OrderedDict{Any,Any}()
-    for raw in mapreduce(unblock, vcat, args; init=[])
+    statements = Any[]
+    for arg in args
+        _unblock_into!(statements, arg)
+    end
+    for raw in statements
         c = canonical(raw)
         _check_splice_stmt(raw, c)
         rep[replace_name(c)] = raw

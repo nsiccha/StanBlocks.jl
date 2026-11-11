@@ -7,7 +7,18 @@ builtin_module_names(x::Symbol) = endswith(string(x), r"_lp[md]f") ? [
     Symbol(string(x)[1:end-length("_lpdf")], "_lccdf")
     Symbol(string(x)[1:end-length("_lpdf")], "_lcdf")
 ] : x
-builtin_module_names(x::Expr) = mapreduce(builtin_module_names, vcat, x.args; init=[])
+builtin_module_names(x::Expr) = _builtin_module_names!(Any[], x)
+_builtin_module_names!(out, x::Expr) = begin
+    for arg in x.args
+        _builtin_module_names!(out, arg)
+    end
+    out
+end
+_builtin_module_names!(out, x::Symbol) = begin
+    names = builtin_module_names(x)
+    names isa Symbol ? push!(out, names) : append!(out, names)
+    out
+end
 _head_or_type(x::Expr) = x.head
 _head_or_type(x) = typeof(x)
 macro builtin_module(x)

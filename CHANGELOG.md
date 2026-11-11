@@ -15,6 +15,10 @@ breaking digit).
   `multinomial` and `dirichlet_multinomial` calls with an array of totals now
   explain that each group needs a scalar total and show explicit `@plate for`
   indexing. They no longer claim that the existing predictive RNG is missing.
+- **Statement flattening avoids repeated copies.** Model composition, loop
+  statement groups, draw-read diagnostics, literal slice coordinates and the
+  builtin-name list use append buffers instead of concatenation folds. Large
+  blocks retain their statement order without quadratic copying.
 
 ## v0.2.37
 
