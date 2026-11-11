@@ -805,6 +805,8 @@ tracetype_by_head(::ValueFamily, x::CanonicalExpr{<:ValueFamily}) = _tracetype(x
 # module + context), same preamble/checks/body assembly.
 _value_lift(udf::ValueUDF, o::ValueUDFOverload, x::CanonicalExpr, context) = begin
     actuals = x.args
+    sizes = _udf_size_analysis(o.label, o.formal_names, o.formal_types,
+        [p.istoken for p in o.patterns], o.body, o.rettype; actuals)
     scope = OrderedDict{Symbol,Any}()
     for (name, target) in pairs(udf.links)
         scope[name] = target
@@ -827,10 +829,10 @@ _value_lift(udf::ValueUDF, o::ValueUDFOverload, x::CanonicalExpr, context) = beg
     # `1:dims(b)[1]`). Only the analysis's canonical `fun_sizes` keys reach
     # the body scope (the analysis already drops `_`, formal-name, and
     # unreferenced dims); hidden/dropped dims never do.
-    for dim in keys(o.fun_sizes)
+    for dim in keys(sizes.fun_sizes)
         scope[dim] = StanExpr(dim, StanType(types.int))
     end
-    scope[:__size_alias_names__] = o.size_aliases
+    scope[:__size_alias_names__] = (; sizes.fun_size_alias_names...)
     scope[:__mod__] = o.mod
     _attach_trace_context!(scope, context)
     body_block = forward!(canonical(o.body); info=scope)
@@ -844,7 +846,7 @@ _value_lift(udf::ValueUDF, o::ValueUDFOverload, x::CanonicalExpr, context) = beg
     StanFunction3(
         string("// value UDF ", o.label, "\n"),
         sig_rv, udf, args_nt,
-        vcat(collect(values(o.fun_sizes)), o.fun_checks, body_block),
+        vcat(collect(values(sizes.fun_sizes)), sizes.fun_checks, body_block),
         _deref_lnn(_current_lnn(scope)),
     )
 end
