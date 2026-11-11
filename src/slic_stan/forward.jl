@@ -2335,6 +2335,8 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     if _is_native_constrained_ct(ct_resolved) && any(sz -> stan_ndim(type(sz)) > 0, sizes_forwarded)
         return _forward_ragged_constrained!(name, ct, collect(sizes), rhs_raw; info)
     end
+    _elementwise_constrained_array(ct_resolved, sizes, rhs_raw; info) &&
+        return _forward_constrained_array_plate!(name, ct, collect(sizes), rhs_raw; info)
     _is_canonical_expr(rhs_raw) || error(
         "Typed-LHS sampling `$name::$(pretty_type_expr(type_expr)) ~ rhs` requires rhs to be a distribution call"
     )
@@ -2391,6 +2393,31 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     validate_sampling_rhs(info[name], rhs_stan; info)
     remake(x, info[name], rhs_stan)
+end
+# An array of `ordered` / `positive_ordered` / `simplex` vectors under an
+# elementwise family, `c::ordered[2, 3] ~ normal(0, 1)`, is one prior per vector.
+# Stan's elementwise families take no `array[] vector`, so the whole-array `c ~
+# normal(0, 1);` was a stanc error, and a prior-only program had no re-draw for
+# the array (todo 15dof8q). It is the plate of those vectors, whose cells collect
+# as the same `array[2] ordered[3]` and which already samples each cell, re-draws
+# it sorted, and follows cv: `c ~ plate(; outer = (2,)) do i; c::ordered[3] ~
+# normal(0, 1); c end`. A multivariate family (`dirichlet`) takes the array as is.
+_elementwise_constrained_array(ct, sizes, rhs; info) = begin
+    ct isa Type && ct <: types.vector && _is_native_constrained_ct(ct) && length(sizes) > 1 ||
+        return false
+    _is_canonical_expr(rhs) || return false
+    h = _forward_head(head(rhs), info)
+    h isa StanExpr2{<:types.func} && _matrix_variate_family(_family_function(h))
+end
+_forward_constrained_array_plate!(name, ct, sizes, rhs_raw; info) = begin
+    outer, inner = sizes[1:end-1], sizes[end]
+    idxs = [Symbol(:__, name, :_axis, k) for k in eachindex(outer)]
+    cell = Expr(:block,
+        Expr(:call, :~, Expr(:(::), name, Expr(:ref, ct, inner)), rhs_raw), name)
+    plate = Expr(:do,
+        Expr(:call, :plate, Expr(:parameters, Expr(:kw, :outer, Expr(:tuple, outer...)))),
+        Expr(:->, Expr(:tuple, idxs...), cell))
+    forward!(canonical(Expr(:call, :~, name, plate)); info)
 end
 # A typed `name::T ~ dist` on a name the model already binds observes it, as
 # `name ~ dist` does: binding a sampled name conditions on it (stanblocks-use
