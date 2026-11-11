@@ -412,11 +412,43 @@ end
 # ordinary user-authored `derived[i] ~ dist(...)` remains rejected by the
 # generic already-bound-LHS rule, while the lowering below may deliberately add
 # density to the transformed ragged value.
+# Each certificate is `name => family`, the constrained center (`:ordered`, …).
 _ragged_density_targets(info) = begin
     context = _trace_context(info)
     context === nothing ? () : context.ragged_density_targets
 end
-_is_ragged_density_target(name::Symbol; info) = name in _ragged_density_targets(info)
+_is_ragged_density_target(name::Symbol; info) =
+    any(t -> first(t) === name, _ragged_density_targets(info))
+_ragged_density_family(name::Symbol; info) = begin
+    targets = _ragged_density_targets(info)
+    i = findlast(t -> first(t) === name, targets)
+    i === nothing ? nothing : last(targets[i])
+end
+# A ragged `ordered` / `positive_ordered` is filled by `ordered_jacobian` /
+# `positive_ordered_jacobian` and carries no further bound. A prior whose family
+# has a bounded support (`exponential`: lower=0) would then propose values
+# outside it, each rejected at run time, so the prior is silently truncated by
+# rejection (todo 04zbyc9). Refuse it at trace time and name the spelling that
+# carries the bound. `positive_ordered` already satisfies `lower=0`.
+_check_ragged_implied_support(name, family, rhs) = nothing
+_check_ragged_implied_support(name, family::Symbol, rhs::StanExpr) = begin
+    family in (:ordered, :positive_ordered) || return nothing
+    call = expr(rhs)
+    call isa CanonicalExpr || return nothing
+    implied = autokwargs(call)
+    isempty(implied) && return nothing
+    lower_zero = keys(implied) == (:lower,) && implied.lower isa Number && iszero(implied.lower)
+    family === :positive_ordered && lower_zero && return nothing
+    bounds = join((v isa Number ? "$k=$v" : "$k" for (k, v) in pairs(implied)), ", ")
+    fix = lower_zero ?
+        "Declare `$name::positive_ordered[…]`, whose elements are positive and ordered." :
+        "Use a family with unbounded support, or a fixed-size `$name::$family[K]`, which carries the bound."
+    error(
+        "Ragged `$name::$family[…] ~ $(head(call))(…)`: the family's support is bounded ($bounds), ",
+        "but a ragged `$family` carries no bound, so the sampler would propose values outside ",
+        "the support and reject them at run time. ", fix,
+    )
+end
 
 # Trace-time marker used only while rewriting distribution arguments for one
 # ragged group.  `builtin.jl` supplies the type-aware expansion after the
@@ -2253,6 +2285,8 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     ct isa Symbol || error("Typed-LHS sampling: type center must be a Symbol, got `$ct`")
     ct_resolved = gettype(ct)
     sizes_forwarded = isempty(sizes) ? () : Tuple(forward!(collect(sizes); info))
+    name in keys(info) &&
+        return _forward_typed_bound!(x, name, ct_resolved, sizes_forwarded, type_expr, rhs_raw; info)
     # Stan requires every native constrained-type size (`simplex[N]`, `ordered[N]`,
     # …) to be a SCALAR int. A NON-scalar size — e.g. `p::simplex[Ks]` with a data
     # int-vector `Ks` — is a RAGGED / varying-per-group constrained parameter. Stan
@@ -2273,7 +2307,6 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # later probability/RNG passes would lose the selected bound mode.
     rhs_forwarded = forward!(rhs_raw; info)::StanExpr
     rhs_canonical = expr(rhs_forwarded)
-    args_resolved = collect(rhs_canonical.args)
     kwargs_resolved = rhs_canonical.kwargs
     # Fold the RHS distribution's constraints into the DECLARED type: the
     # explicit `lower=`/`upper=`/`offset=`/`multiplier=` kwargs AND the
@@ -2306,8 +2339,10 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # `alpha::vector[J] ~ normal(mu, tau)` stayed a `parameter` while the
     # documented-equivalent `alpha ~ normal(mu, tau; n=J)` correctly moved to
     # generated quantities (snag typed-lhs-size). `stan.cv(base_lhs_type)` folds
-    # in the same `any(cv, stan_size)` the autotype path uses.
-    cv_args = any(stan.cv, args_resolved) || stan.cv(base_lhs_type)
+    # in the same `any(cv, stan_size)` the autotype path uses. The call's own taint
+    # (`stan.cv(rhs_forwarded)`, as the bare-LHS path reads it) covers its
+    # arguments and a keyword bound such as `lower = a + s` (todo 1k3hvkc).
+    cv_args = stan.cv(rhs_forwarded) || stan.cv(base_lhs_type)
     # A prior or declared size reading a random draw makes the parameter a
     # generated quantity too (the bare-LHS path above; `_reads_draw`, passes.jl).
     qual = cv_args || _reads_draw(rhs_forwarded) || _reads_draw(base_lhs_type) ? :quantities : :parameter
@@ -2318,6 +2353,41 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     validate_sampling_rhs(info[name], rhs_stan; info)
     remake(x, info[name], rhs_stan)
+end
+# A typed `name::T ~ dist` on a name the model already binds observes it, as
+# `name ~ dist` does: binding a sampled name conditions on it (stanblocks-use
+# §11). The typed path used to overwrite a data binding with a fresh parameter,
+# which prior-only lowering turned into a draw, so the data was dropped silently
+# (todo 1h0fnry). The data is declared with the type `T` names: its center and
+# sizes, plus the bounds the distribution implies or the call states wherever
+# they read data alone. Stan then checks the data against `T` as it loads it.
+# A name bound to anything but data takes the untyped path, which refuses it.
+_forward_typed_bound!(x, name, ct, sizes, type_expr, rhs_raw; info) = begin
+    bound = info[name]
+    stan.qual(bound) == :data || return forward!(remake(x, name, rhs_raw); info)
+    rhs = forward!(rhs_raw; info)::StanExpr
+    call = expr(rhs)
+    implied = autokwargs(call)
+    cons = _fold_constraints(name, merge(implied, call.kwargs); implied=keys(implied))
+    bounds = (; (k => v for (k, v) in pairs(cons) if k in BOUND_KEYS && _reads_data_only(v))...)
+    declared = StanType(ct, sizes, type(bound).info; bounds..., declared_data=true)
+    _holds_data(declared, type(bound)) || error(
+        "`", name, "::", pretty_type_expr(type_expr), " ~ …` observes the data `", name,
+        "`, a `", sigtype(type(bound)), "`, which a `", sigtype(declared), "` cannot hold. ",
+        "Declare the data's own type, or drop the annotation: `", name, " ~ …` observes ",
+        "the data as it is.",
+    )
+    info[name] = StanExpr(expr(bound), declared)
+    forward!(remake(x, name, rhs); info)
+end
+_reads_data_only(v::Real) = true
+_reads_data_only(v::StanExpr) = stan.qual(v) == :data
+_reads_data_only(v) = false
+# The declared type takes the data's container and element kind; an integer
+# datum may be declared real, as Stan reads an int where a real is declared.
+_holds_data(declared::StanType, data::StanType) = begin
+    d, b = sigtype(declared), sigtype(data)
+    d == b || d == replace(b, "int" => "real")
 end
 # Desugar a RAGGED constrained parameter (`p::simplex[Ks] ~ …`, `Ks` a data
 # int-vector of per-group dims) into constructs SB can emit. Vector families use
@@ -2361,8 +2431,8 @@ _ragged_density_stmt(name, Ks, rhs_raw, g) = _ragged_rhs_is_flat(rhs_raw) ?
     nothing : :(for $g in 1:length($Ks)
                     $name[$g] ~ $(_ragged_group_rhs(rhs_raw, g))
                 end)
-_trace_ragged_stmts(stmts, name; info, certify_density::Bool=false) = begin
-    targets = (_ragged_density_targets(info)..., name)
+_trace_ragged_stmts(stmts, name; info, certify_density::Bool=false, family=nothing) = begin
+    targets = (_ragged_density_targets(info)..., name => family)
     traced = _with_trace_state(info, :ragged_density_targets, targets) do
         _do_retrace_inline_body(stmts; info)
     end
@@ -2412,7 +2482,7 @@ _forward_ragged_vector_constrained!(name, ct, sizes, rhs_raw; info) = begin
     ]
     density = _ragged_density_stmt(name, Ks, rhs_raw, g)
     density === nothing || push!(stmts, density)
-    _trace_ragged_stmts(stmts, name; info, certify_density=density !== nothing)
+    _trace_ragged_stmts(stmts, name; info, certify_density=density !== nothing, family=ct)
 end
 
 _forward_ragged_matrix_constrained!(name, ct, sizes, rhs_raw; info) = begin
@@ -2528,6 +2598,7 @@ _forward_indexed_sampling!(x; info, user_slice::Bool=false) = begin
             "` is not backed by a RaggedVector/RaggedMatrix."
         )
         validate_sampling_rhs(lhs, rhs; info)
+        _check_ragged_implied_support(k, _ragged_density_family(k; info), rhs)
         return remake(x, lhs, rhs)
     end
     retainted = false
@@ -3730,6 +3801,30 @@ _plate_ragged_bound_carrier!(plan, key, T::StanType, outer, idx, cell_names; inf
     fills = _slice_bound_fills(key, plan.size_expr, default, records, Symbol(carrier, :_i),
         i -> Expr(:ref, carrier, _ragged_offset(start, i)); covered=get(T.info, :slice_tiled, false))
     loop = Expr(:for, Expr(:(=), idx, :(1:$outer)), Expr(:block, fills...))
+    for s in (Expr(:(::), carrier, :(vector[sum($(plan.lens))])), loop)
+        emitted = forward!(canonical(s); info)
+        pending !== nothing && push!(pending, emitted)
+    end
+    info[carrier]
+end
+# The `key=` bound of a varying-length cell's flat memory when it depends on the
+# cell (`zz::vector[K[g]] ~ normal(0, 1; lower=L[g])`): a `transformed data`
+# vector laid out like the memory, filled per cell at
+# `ragged_start(ends, g):ragged_end(ends, g)`. A scalar bound is repeated over the
+# cell; a bound with one value per element is assigned as it is. Without it a
+# sampled cell explored outside its support (todo 144j6sn). Re-tracing the bound
+# inside the fill loop rebinds the plate index, as `_plate_hoist_cell_constraints!`
+# does for a scalar cell.
+_plate_ragged_cell_bound_carrier!(plan, key, value, outer, idx; info, pending) = begin
+    center_type(value) <: types.int && stan_ndim(type(value)) > 0 && error(
+        "plate: the `", key, "=` bound of `", plan.logical, "` depends on the cell and is ",
+        "an integer array; write it as a real vector.")
+    carrier = _slice_carrier_name(plan.mem, key; info)
+    lo, hi = :(ragged_start($(plan.ends), $idx)), :(ragged_end($(plan.ends), $idx))
+    fill = stan_ndim(type(value)) == 0 ?
+        :(rep_vector($(expr(value)), $(plan.size_expr))) : expr(value)
+    loop = Expr(:for, Expr(:(=), idx, :(1:$outer)),
+        Expr(:block, :($carrier[$lo:$hi] = $fill)))
     for s in (Expr(:(::), carrier, :(vector[sum($(plan.lens))])), loop)
         emitted = forward!(canonical(s); info)
         pending !== nothing && push!(pending, emitted)
@@ -4987,17 +5082,19 @@ _forward_loop_core!(;
             mem_decl = Expr(:(::), plan.mem, Expr(:ref, mem_ct, :(sum($(plan.lens)))))
             emitted = forward!(canonical(mem_decl); info)
             # The cell's support reaches its flat memory: a bound every coordinate
-            # of every cell shares is a scalar bound, and a nested scan's setup and
-            # recurrence with different supports take a per-element bound vector.
-            # A constraint that depends on the cell (`lower=L[g]`, a declared
-            # missing cell's `censored(…; lower=ll)` threshold) is not declared on
-            # the flat memory yet: a re-drawn cell's draw honours it, a sampled
-            # cell explores without it.
+            # of every cell shares is a scalar bound, a nested scan's setup and
+            # recurrence with different supports take a per-element bound vector,
+            # and a data bound that depends on the cell (`lower=L[g]`) takes a
+            # bound vector filled per cell (`_plate_ragged_cell_bound_carrier!`).
             T, per_coordinate = _plate_fold_inner_slices(plan.logical, plan.cell_type, index_aliases)
-            cons, _ = _plate_promoted_constraints(plan.logical, T, index_aliases)
+            cons, hoist = _plate_promoted_constraints(plan.logical, T, index_aliases)
             for key in per_coordinate
                 cons = merge(cons, (; key => _plate_ragged_bound_carrier!(
                     plan, key, T, outer_dims[1], idxs[1], keys(all_cell_types); info, pending)))
+            end
+            for (key, value) in hoist
+                cons = merge(cons, (; key => _plate_ragged_cell_bound_carrier!(
+                    plan, key, value, outer_dims[1], idxs[1]; info, pending)))
             end
             emitted = _plate_constrain_decl(plan.mem, emitted, cons; info)
             pending !== nothing && push!(pending, emitted)
@@ -5922,11 +6019,24 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
         end
     end
     # ── 7. Desugar current-index accesses of the loop's own arrays ───────────
-    desugar(e) = begin
+    cell_access(e) = e isa Expr && e.head === :ref && e.args[1] isa Symbol &&
+        e.args[1] in public && is_cell_index(e.args[2:end])
+    desugar(e; target=false) = begin
         e isa Expr || return e
-        (e.head === :ref && e.args[1] isa Symbol && e.args[1] in public && is_cell_index(e.args[2:end])) &&
-            return e.args[1]
-        Expr(e.head, Any[desugar(a) for a in e.args]...)
+        cell_access(e) && return e.args[1]
+        # A read that indexes into the current cell (`p[g][:, 1]`, a column of a
+        # matrix cell) becomes the call `getindex(p, :, 1)`, which canonicalizes
+        # exactly as `p[:, 1]` does. As a ref it reached the probe's `lagfree`
+        # (step 8), which takes every ref on a loop array for a lag or literal
+        # read of that array and strips it, so the new cell was typed as `p`'s
+        # whole matrix (todo 1epfgwv). An assignment target keeps its ref.
+        (!target && e.head === :ref && cell_access(e.args[1])) && return Expr(
+            :call, :getindex, e.args[1].args[1], Any[desugar(a) for a in e.args[2:end]]...)
+        e.head === :(=) && return Expr(:(=), desugar(e.args[1]; target=true),
+            Any[desugar(a; target) for a in e.args[2:end]]...)
+        (e.head === :call && e.args[1] === :~ && length(e.args) == 3) && return Expr(
+            :call, :~, desugar(e.args[2]; target=true), desugar(e.args[3]; target))
+        Expr(e.head, Any[desugar(a; target) for a in e.args]...)
     end
     body_stmts = Any[desugar(s) for s in body_raw]
     # A RAGGED data observation indexed by the plate variable (`yr[i] ~ …`, `yr`

@@ -476,3 +476,75 @@ end
         end
     end
 end
+
+"""
+A cell may index into another public cell of the same `@plate for` loop:
+`mu[g] = p[g][:, 1]` is a column of the matrix cell `p[g]`. The pre-pass rewrote
+`p[g]` to `p` and then, in the discovery probe, stripped every ref on a loop
+array as if it were a lag or literal read, so `p[:, 1]` became `p` and `mu` was
+declared with `p`'s whole matrix type while the loop filled it with a vector
+(todo 1epfgwv). `mu` is now typed by the indexed value, as `col(p[g], 1)` is.
+"""
+@testitem "slic: a plate cell indexing a matrix cell is typed by the indexed value" tags=[:slic, :plate, :ragged, :regression, :descriptor, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    idx = [[1, 2, 3], [4, 5], [6, 7, 8, 9]]
+    # Fixed-size cells: a column is a `vector[3]`, as `col(p[g], 1)` is.
+    fixed = @slic (; idx) begin
+        r ~ normal(0, 1)
+        @plate for g in eachindex(idx)
+            p[g] = rep_matrix(r, 3, 2)
+            mu[g] = p[g][:, 1]
+        end
+    end
+    code = stan_code(fixed)
+    # Vector cells are stored as the columns of one matrix.
+    @test occursin(r"\n\s*matrix\[3, num_elements_RaggedVector\(idx\)\] mu;", code)
+    @test occursin("mu[:, g] = p[g][:, 1];", code)
+    @test !occursin(r"matrix\[3, 2\] mu;", code)
+    @test stanc_compiles(fixed)
+    by_col = @slic (; idx) begin
+        r ~ normal(0, 1)
+        @plate for g in eachindex(idx)
+            p[g] = rep_matrix(r, 3, 2)
+            mu[g] = col(p[g], 1)
+        end
+    end
+    decl(c, name) = match(Regex("\\n\\s*(\\S.*) $(name);"), c).captures[1]
+    @test decl(code, "mu") == decl(stan_code(by_col), "mu")
+    # A row is a `row_vector`, which a plate cell does not hold yet: refused by
+    # name, where it used to be declared as the whole matrix.
+    row_cell = @slic (; idx) begin
+        r ~ normal(0, 1)
+        @plate for g in eachindex(idx)
+            p[g] = rep_matrix(r, 3, 2)
+            nu[g] = p[g][2, :]
+        end
+    end
+    msg = try (stan_code(row_cell); "") catch e; sprint(showerror, e) end
+    @test occursin("unsupported per-cell type `row_vector` for `nu`", msg)
+
+    # Varying-size cells: a column has the cell's row count.
+    @deffun rows_by_three_v(x::vector[T], r::real)::matrix[T, 3] = begin
+        out::matrix[T, 3]
+        for t in 1:T
+            out[t, 1] = r * x[t]
+            out[t, 2] = x[t]
+            out[t, 3] = r
+        end
+        out
+    end
+    varying = @slic (; x = collect(0.1:0.1:0.9), idx) begin
+        r ~ normal(0, 1)
+        @plate for g in eachindex(idx)
+            p[g] = rows_by_three_v(x[idx[g]], r)
+            mu[g] = p[g][:, 2]
+        end
+    end
+    code = stan_code(varying)
+    @test !occursin("mu__pl_rows", code)
+    @test !occursin("mu__pl_cols", code)
+    segments = Dict(o.name => o.segments for o in stan_descriptor(varying).outputs)
+    @test segments[:p] == [9, 15, 27]
+    @test segments[:mu] == [3, 5, 9]
+    @test stanc_compiles(varying)
+end
