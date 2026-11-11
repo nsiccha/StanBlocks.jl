@@ -253,8 +253,21 @@ expand_inline_or_trace(x::CanonicalExpr{<:Base.BroadcastFunction}; info) =
 # `/` and `^` had no method of their own: an `@inline` overload still takes the
 # generic route first.
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(/),typeof(^)}}; info) =
-    isnothing(inline_body(x)) ? _lower_arithmetic(x, _no_arithmetic_lowering; info) :
+    isnothing(inline_body(x)) ? _lower_arithmetic(x, _quotient_lowering(head(x)); info) :
         invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info)
+# Julia's `/` on two integers is real division (`3 / 2 == 1.5`); Stan's rounds
+# toward zero. A SLIC body reads as Julia, and a `@juliacompat` method runs it as
+# Julia, so the quotient is real: the numerator is promoted, `(k * 1.0) / 2`.
+# Integer division is `÷` (`%/%`). A place that needs an integer from `/` (a size,
+# an `int` local, `m /= 2`) now fails loudly there instead of rounding (decision
+# `12ehvh9`, todo 14vbs5d).
+_quotient_lowering(::typeof(/)) = _lower_integer_quotient
+_quotient_lowering(_) = _no_arithmetic_lowering
+_lower_integer_quotient(x::CanonicalExpr; info) = begin
+    length(x.args) == 2 || return nothing
+    all(a -> center_type(a) <: types.int && stan_ndim(a) == 0, x.args) || return nothing
+    forward!(CanonicalExpr(/, CanonicalExpr(*, x.args[1], 1.0), x.args[2]); info)
+end
 # `isdefined(builtin, x)` returns true even for names inherited from Base
 # (e.g. `accumulate!`), which would mask user-defined SLIC UDFs that share
 # Base's name. Restrict to bindings actually owned by the `builtin` module.
@@ -1533,9 +1546,23 @@ _tombstone_reassigned!(::Any; info) = nothing
 # did not tombstone, so `m = n; m += 1; rep_vector(0.0, m)` declared the
 # caller's result `vector[n]` for an `n + 1`-element value.
 _forward_updating_assignment!(x::CanonicalExpr; info) = begin
-    rv = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+    args = forward!(x.args; info)
+    _check_integer_quotient_update(x, args)
+    rv = _trace_stan_expr(remake(x, args...), info)
     _tombstone_reassigned!(x.args[1]; info)
     rv
+end
+# `m /= 2` is `m = m / 2`, a real in Julia (`_lower_integer_quotient`), which an
+# integer `m` cannot hold; Stan would round toward zero instead.
+_check_integer_quotient_update(x, args) = nothing
+_check_integer_quotient_update(x::CanonicalExprV{Symbol("/=")}, args) = begin
+    center_type(args[1]) <: types.int || return
+    m = args[1] isa StanExpr ? expr(args[1]) : args[1]
+    error(
+        "`", m, " /= …` divides the integer `", m, "`: `/` gives a real (as in Julia), ",
+        "which an integer cannot hold. Write `", m, " = ", m, " ÷ …` for integer ",
+        "division, or bind a real.",
+    )
 end
 forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args
@@ -1554,6 +1581,12 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
         # (`acc = acc + xi`) and scalar loop state (`t = t + dt` inside a `while`) both
         # take this path. `@slic` model/submodel scope keeps single-assignment
         # discipline via the assert below.
+        # A reassignment keeps the local's type, so an integer local cannot take a
+        # real value (`m = m / 2` is real, as in Julia); stanc would refuse it.
+        center_type(info[name]) <: types.int && center_type(rhs) <: types.real &&
+            !(center_type(rhs) <: types.int) && error(
+            "`", name, " = …` stores a real into the integer `", name, "` (`/` gives a ",
+            "real, as in Julia). Write `÷` for integer division, or bind a real local.")
         _tombstone_reassigned!(name; info)
         return _trace_stan_expr(CanonicalExpr(Symbol(".="), info[name], rhs), info)
     end
@@ -2341,6 +2374,7 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     ct isa Symbol || error("Typed-LHS sampling: type center must be a Symbol, got `$ct`")
     ct_resolved = gettype(ct)
     sizes_forwarded = isempty(sizes) ? () : Tuple(forward!(collect(sizes); info))
+    foreach(s -> _check_integer_size(s, "The size of `$name`"), sizes_forwarded)
     name in keys(info) &&
         return _forward_typed_bound!(x, name, ct_resolved, sizes_forwarded, type_expr, rhs_raw; info)
     # Stan requires every native constrained-type size (`simplex[N]`, `ordered[N]`,

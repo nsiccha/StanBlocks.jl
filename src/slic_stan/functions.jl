@@ -516,6 +516,15 @@ autotype(x::StanExpr) = begin
     _fold_constraints(nothing, kw; implied=keys(implied))   # validates; result unused
     autotype(type(x); kw...)
 end
+# A size is an integer. `n = k / 2` is a real, as in Julia (`_lower_integer_quotient`,
+# forward.jl), and stanc refuses a real size, so it is refused here, naming `÷`.
+_check_integer_size(s::StanExpr, what) =
+    stan_ndim(s) == 0 && center_type(s) <: types.real && !(center_type(s) <: types.int) &&
+    error(what, " is the real `", expr(s), "`, but a size must be an integer. `/` ",
+        "gives a real (as in Julia); write `÷` for integer division.")
+_check_integer_size(s::AbstractFloat, what) = error(
+    what, " is the real `", s, "`, but a size must be an integer.")
+_check_integer_size(s, what) = nothing
 # The range every element of a transform-only center already lies in
 # (`_transform_only_constraints`, forward.jl).
 _element_range(::Type{types.simplex}) = (0.0, 1.0)
@@ -528,6 +537,8 @@ autotype(x::StanType; kwargs...) = begin
         for key in (:m, :n, :o) if key in keys(kwargs)
     ]
     size = length(nsize) > 0 ? (nsize..., ) : get(kwargs, :size, stan_size(x))
+    (length(nsize) > 0 || haskey(kwargs, :size)) &&
+        foreach(s -> _check_integer_size(s, "A declared size"), size)
     (ct in (types.anything, types.real)) && (ct = [types.real, types.vector, types.matrix][1+length(size)])
     cons = _fold_constraints(nothing, kwargs)
     # A `simplex` / matrix center takes no declaration bound (forward.jl).
@@ -835,10 +846,10 @@ function jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::AbstractArray{<:Real}, y::
     _julia_log_sum_exp.(x, y)
 end
 jcall(::Val{:square}, ::_JuliaScope, x) = x * x
-# Stan divides two integers as integers, truncating toward zero like C++ (and
-# `div`); Julia's `/` would return a float. A size `vector[n / 2]`, a bound
-# `lower=k / 2` and a `@juliacompat` body's `n / 2` all depend on it.
-jcall(::Val{:/}, ::_JuliaScope, x::Integer, y::Integer) = div(x, y)
+# `/` on two integers is Julia's real division here as in the emitted Stan, which
+# promotes the numerator (`_lower_integer_quotient`, forward.jl; decision
+# `12ehvh9`); integer division is `÷`, Stan's `%/%`. It used to be `div` here, to
+# match Stan's then-truncating `k / 2`.
 # Stan's non-finite constants, which an unbounded coordinate of a per-coordinate
 # bound is spelled with (`show.jl` prints non-finite floats this way).
 jcall(::Val{:negative_infinity}, ::_JuliaScope) = -Inf
