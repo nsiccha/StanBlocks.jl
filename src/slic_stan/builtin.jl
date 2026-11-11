@@ -3405,6 +3405,15 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(builtin.mean),<:Tuple{<:StanExpr2
     _ragged_reduce(builtin.ragged_mean, only(x.args); info)
 _ragged_reduce(f, rv; info) =
     _trace_stan_call(f, _ragged_field(rv, 1; info), _ragged_field(rv, 2; info); info)
+# Stan's reductions take a one-dimensional array, a vector or a matrix, never an
+# `array[m, n] int` (dense `Matrix{Int}` data, an integer `RaggedMatrix` group):
+# `sum(D)` traced and stanc rejected it (todo 03a19oe). Like Julia's `sum` of a
+# matrix it reduces every element, which is the reduction of `to_array_1d(D)`.
+const _ArrayReduction = Union{typeof.((sum, prod, builtin.mean, max, min, maximum, minimum))...}
+expand_inline_or_trace(x::CanonicalExpr{<:_ArrayReduction,<:Tuple{<:StanExpr2{<:types.real}}}; info) =
+    stan_ndim(only(x.args)) >= 2 && isnothing(inline_body(x)) ?
+        forward!(CanonicalExpr(head(x), CanonicalExpr(builtin.to_array_1d, only(x.args))); info) :
+        invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info)
 # `length(rv)` / `lastindex(rv)` → number of groups = `num_elements(ends)`.
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedVector}}}; info) =
     _is_ragged_construction(x.args[1]) ? _trace_stan_call(length, _ragged_ends(x.args[1]); info) : fold_shape_query(_trace_stan_expr(x, info))
@@ -4606,12 +4615,20 @@ end
     typeof(÷) => begin 
         (int, int) => int
     end
+    # `/` of two integers is real, as in Julia: the emitted quotient promotes
+    # its numerator (`_lower_integer_quotient`, forward.jl; decision `12ehvh9`),
+    # and an elementwise `1 ./ Ks` infers its element type from this row.
+    typeof(/) => begin
+        (int, int) => real
+    end
+    Union{typeof.((+, -, ^, *))...} => begin
+        (int, int) => int
+    end
     Union{typeof.((+, -, ^, *, /))...} => begin
         (real,) => real
         (vector[n],) => vector[n]
         (row_vector[n],) => row_vector[n]
         (int, real) => real
-        (int, int) => int
         (real, int) => real
         (real, real) => real
         # NOTE: scalar-array operand rows (`(int[n], int[n])`, `(int[n], int)`,

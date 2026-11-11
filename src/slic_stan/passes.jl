@@ -961,7 +961,7 @@ end
 _declared_data(x::StanExpr) = get(type(x).info, :declared_data, false)
 # Stan declares no bound or affine transform on `ordered` / `positive_ordered`:
 # `ordered<lower=0>[3] c;` is a stanc syntax error. A parameter whose typed LHS
-# carries one (forward.jl, `_ordered_constraints`) is declared as a
+# carries one (forward.jl, `_center_constraints`) is declared as a
 # compiler-owned `<name>_free` of type `ordered` and the same shape instead, and
 # `<name>` becomes the transformed parameter that one of Stan's own constraint
 # transforms makes of it (`_ordered_transform`). Each transform is strictly

@@ -1074,6 +1074,15 @@ rng_expr(token::StanExpr2{<:types.tokenof}, rhs::CanonicalExpr) = begin
     _distribution_hof_family(spec, rhs)
     stan_call(_hof_rng(spec, rhs), token, _hof_rng_args(spec, rhs)...)
 end
+# A `row_vector` draw, the twin of a matrix-row observation `y[i, :] ~ …`, is the
+# transpose of the family's `vector` draw. The sized companions draw vectors, and
+# no family defines a `row_vector` one, so the twin called an undeclared
+# `lognormal_row_vector_rng` (todo 0uc7rmf).
+rng_expr(token::StanExpr2{<:types.tokenof{types.row_vector}}, rhs::CanonicalExpr) = begin
+    column = StanExpr(types.vector,
+        StanType(types.tokenof{types.vector}, stan_size(token); value=types.vector, qual=:data))
+    stan_call(adjoint, rng_expr(column, rhs))
+end
 rng_expr(x) = begin
     spec = _distribution_hof(x)
     isnothing(spec) && error("$x is missing `rng_expr`")
