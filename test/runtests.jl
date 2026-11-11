@@ -68,6 +68,10 @@ const TEST_SELECTION = parse_test_args(ARGS)
 test_path(ti) = replace(relpath(ti.filename, pkgdir(StanBlocks)), '\\' => '/')
 
 function selected(ti)
+    # The optional integration environment installs RK's unregistered
+    # dependencies explicitly; ordinary Pkg.test needs only registered deps.
+    :reactivekernels in ti.tags &&
+        get(ENV, "STANBLOCKS_TEST_REACTIVEKERNELS", "") != "true" && return false
     path = test_path(ti)
     selection = TEST_SELECTION
     matches = all(name -> occursin(lowercase(name), lowercase(ti.name)), selection.names) &&

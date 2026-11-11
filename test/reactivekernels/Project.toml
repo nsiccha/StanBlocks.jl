@@ -1,0 +1,11 @@
+[deps]
+OutputSignatures = "86cfaae4-1704-4c69-ba62-d919d81ae5f8"
+ReactiveKernels = "78e9f072-d36b-4c73-b7a3-751b0eb26cf9"
+StanBlocks = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
+
+[sources]
+OutputSignatures = {url = "https://github.com/nsiccha/OutputSignatures.jl.git", rev = "f971381f760e91986b3a728a719341e7e7761f55"}
+ReactiveKernels = {url = "https://github.com/nsiccha/ReactiveKernels.jl.git", rev = "3a3742d2706f90a2b5a49b30fb98f6b9d91df94b"}
+StanBlocks = {path = "../.."}

@@ -858,8 +858,8 @@ jcall(::Val{:positive_infinity}, ::_JuliaScope) = Inf
 jcall(::Val{:not_a_number}, ::_JuliaScope) = NaN
 # Stan's `fmin`/`fmax` are C's: a NaN argument yields the other one, where
 # Julia's `min`/`max` return NaN.
-jcall(::Val{:fmin}, ::_JuliaScope, x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : min(x, y)
-jcall(::Val{:fmax}, ::_JuliaScope, x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : max(x, y)
+jcall(::Val{:fmin}, ::_JuliaScope, x::Number, y::Number) = _julia_fmin(x, y)
+jcall(::Val{:fmax}, ::_JuliaScope, x::Number, y::Number) = _julia_fmax(x, y)
 # This package binds `hypot` to its own builtin, which has no Julia method.
 # Stan Math's `hypot` is C++'s `std::hypot` and Julia's is the same IEEE
 # function: no intermediate square that overflows or underflows, `Inf` when
@@ -1129,7 +1129,34 @@ _deffun_julia_alloc(::Val{:real}, dims::Tuple, args...) = Array{_deffun_julia_re
 _deffun_julia_alloc(::Val{:anything}, dims::Tuple, args...) = Array{Any}(undef, dims)
 _deffun_julia_alloc_type(::Type{T}, dims::Tuple) where {T} = Array{T}(undef, dims)
 
-_deffun_julia_check_dim(x, i::Integer, expected, fname, argname) = begin
+# Method-backed metadata survives precompilation of downstream packages. Keep
+# the original Method identity so ordinary Julia replacements cannot inherit
+# stale generated source.
+_deffun_julia_source(::Type) = nothing
+function _register_deffun_julia_source!(f, argument_types, names, body, mod)
+    method = which(f, argument_types)
+    source = (method, names, body, mod)
+    source_function = GlobalRef(@__MODULE__, :_deffun_julia_source)
+    slic_eval(mod, :($source_function(::Type{$(method.sig)}) = $(QuoteNode(source))))
+    nothing
+end
+
+# Record the same source for Julia compatibility helpers invoked by generated
+# bodies. This macro accepts ordinary positional Julia methods only.
+macro _julia_source(definition)
+    call, body = definition.args
+    names = Tuple(a isa Symbol ? a : a.args[1] for a in call.args[2:end])
+    types = Any[a isa Symbol ? Any : a.args[2] for a in call.args[2:end]]
+    f = call.args[1]
+    registration = :($_register_deffun_julia_source!(
+        $f, Tuple{$(types...)}, $(QuoteNode(names)), $(QuoteNode(body)), $(QuoteNode(__module__))))
+    esc(_slic_definition_expr(__module__, Expr(:block, definition, registration)))
+end
+
+@_julia_source _julia_fmin(x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : min(x, y)
+@_julia_source _julia_fmax(x::Number, y::Number) = isnan(x) ? y : isnan(y) ? x : max(x, y)
+
+@_julia_source _deffun_julia_check_dim(x, i::Integer, expected, fname, argname) = begin
     actual = size(x, i)
     actual == expected || throw(DimensionMismatch(
         string(fname, ": dim mismatch — `", argname, "` dim ", i,
@@ -1141,19 +1168,20 @@ end
 # dim was inferred from and lists every site that must share it with its
 # actual runtime size. `sites` is a tuple of `(argname, dimindex, size)`
 # triples the caller precomputes at the check point (all site args in scope).
-_deffun_julia_check_dim(x, i::Integer, expected, fname, argname, dimname, origin_argname, origin_i, sites) = begin
+@_julia_source _deffun_julia_check_dim(x, i::Integer, expected, fname, argname, dimname, origin_argname, origin_i, sites) = begin
     actual = size(x, i)
-    actual == expected && return nothing
-    sizes_clause = join(
-        (string("`", s[1], "` dim ", s[2], " (= ", s[3], ")") for s in sites),
-        ", ",
-    )
-    throw(DimensionMismatch(
-        string(fname, ": dim mismatch — `", argname, "` dim ", i,
-               " (= ", actual, ") does not match `", dimname, "` (= ", expected,
-               "), inferred from `", origin_argname, "` dim ", origin_i,
-               ". `", dimname, "` sizes: ", sizes_clause, ".")
-    ))
+    if actual != expected
+        sizes_clause = join(
+            (string("`", s[1], "` dim ", s[2], " (= ", s[3], ")") for s in sites),
+            ", ",
+        )
+        throw(DimensionMismatch(
+            string(fname, ": dim mismatch — `", argname, "` dim ", i,
+                   " (= ", actual, ") does not match `", dimname, "` (= ", expected,
+                   "), inferred from `", origin_argname, "` dim ", origin_i,
+                   ". `", dimname, "` sizes: ", sizes_clause, ".")
+        ))
+    end
     nothing
 end
 
@@ -1182,6 +1210,7 @@ end
 # Re-evaluating the same definition is allowed; a
 # distinct SLIC signature collapsing onto the same Julia signature errors.
 const _deffun_julia_signatures = IdDict{Any,Dict{Any,Any}}()
+
 _register_deffun_julia_signature!(f, julia_key, slic_key) = _with_slic_definitions() do
     registered = get(_deffun_julia_signatures, f, nothing)
     if isnothing(registered)
@@ -1964,6 +1993,10 @@ begin
     _deffun_julia_call_symbol(_) = nothing
 
     _deffun_julia_call(f, args, locals, def_mod, fname) = begin
+        # A Julia range keeps its syntax in the emitted body. There is no
+        # Stan compatibility shim for colon; calling it directly preserves
+        # the definition module's binding and structured loop information.
+        f === :(:) && return Expr(:call, f, args...)
         params = !isempty(args) && Meta.isexpr(args[1], :parameters) ? (args[1],) : ()
         positional = isempty(params) ? args : args[2:end]
         s = _deffun_julia_call_symbol(f)
@@ -2144,9 +2177,23 @@ begin
         julia_key = Tuple(item[2] for item in mapped_pos)
         slic_key = Tuple(item[3] for item in mapped_pos)
         julia_def = Expr(:(=), julia_call, julia_body)
+        # Keyword/default/vararg wrappers keep their existing lowered-code
+        # route. Only a complete positional body has this argument binding.
+        source_registration = nothing
+        if isnothing(params) && all(a -> a isa Symbol ||
+                (Meta.isexpr(a, :(::)) && length(a.args) == 2), first.(mapped_pos)) &&
+                all(n -> !isnothing(n) && n !== :_, _julia_arg_name.(positional))
+            types = map(first.(mapped_pos)) do arg
+                Meta.isexpr(arg, :(::)) ? arg.args[2] : Any
+            end
+            source_registration = :($stan._register_deffun_julia_source!(
+                $f, Tuple{$(types...)}, $(QuoteNode(Tuple(arg_names))),
+                $(QuoteNode(julia_body)), $(QuoteNode(def_mod))))
+        end
         quote
             if $stan._register_deffun_julia_signature!($f, $(QuoteNode(julia_key)), $(QuoteNode(slic_key)))
                 $julia_def
+                $source_registration
             end
         end
     end

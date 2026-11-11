@@ -22,6 +22,19 @@ An `@deffun @inline` helper expands into its caller while resolving sibling
 helpers and omitted keyword defaults in its defining module. Explicit
 arguments resolve in the caller's module, as do statements after the call.
 
+Loading ReactiveKernels 0.1.175 or newer alongside StanBlocks enables an
+optional source provider for complete named positional `@deffun @juliacompat`
+methods.
+ReactiveKernels' `jax_source` can translate their loops and branches, including
+host `prepare_data`; dimension guards remain active. Source follows Julia
+dispatch and survives precompilation. Replacing a method stops use of its old
+source. Keyword, default, vararg and anonymous arguments retain the existing
+lowered-code route. Ordinary dense `matrix_exp` calls use JAX/SciPy's matrix
+exponential; padded ragged matrices are unsupported. See the
+[ReactiveKernels JAX guide](https://nsiccha.github.io/ReactiveKernels.jl/dev/jax)
+for the supported source subset. Native execution and Stan emission retain
+their existing implementations.
+
 ```@example functions
 response = @slic (; x=2.0, y=0.45) begin
     half ~ lognormal(0, 1)

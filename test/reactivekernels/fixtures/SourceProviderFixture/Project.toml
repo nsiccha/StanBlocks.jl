@@ -1,0 +1,6 @@
+name = "SourceProviderFixture"
+uuid = "7fb4c945-6d9e-4f7f-a191-53a8fe2aa92d"
+version = "0.1.0"
+
+[deps]
+StanBlocks = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
