@@ -194,7 +194,7 @@ _forward_call_kwargs(
     resolved_head::StanExpr2{<:types.func};
     info,
 ) = begin
-    _check_hof_keywords(_family_function(resolved_head), x)
+    _check_call_keywords(_family_function(resolved_head), x)
     spec = _distribution_hof(_family_function(resolved_head))
     optional = isnothing(spec) ? () :
         (get(spec, :optional_kwargs, ())..., get(spec, :forwarded_kwargs, ())...)
@@ -210,15 +210,33 @@ _forward_call_kwargs(
     ]...)
     forward!(kept; info)
 end
-# A public combinator refuses a keyword it does not take: dropping it changed the
-# model without a word (`censored(normal(mu, s); lower=lo, uper=hi)` lost its upper
-# bound; snag in-cell-interval-c354f5f4). Its own bounds pass, and so do the
-# keywords any sampling call may carry for the declaration it implies (`autotype`,
-# functions.jl). Only the public heads are checked: the implementation calls they
-# lower to keep their bounds as kwargs for `autotype`.
+# A sampling family or public combinator refuses a keyword it does not take:
+# dropping it changed the model without a word (`y ~ normal(mu, s; uper = hi)` lost
+# its truncation, todo 1o5urqm; `censored(normal(mu, s); lower=lo, uper=hi)` its
+# upper bound, snag in-cell-interval-c354f5f4). Any sampling call may carry the
+# keywords of the declaration it implies: its shape (`autotype`, functions.jl) and
+# its constraints (a bound truncates, `offset`/`multiplier` reparametrize). A
+# family takes exactly those, plus the marker `restricted` lowers to; a combinator
+# takes its own bounds besides the shape. Only the public combinator heads are
+# checked: the implementation calls they lower to keep their bounds as kwargs for
+# `autotype`. Any other call is left alone.
 const _SAMPLING_SHAPE_KWARGS = (:type, :m, :n, :o, :size)
-_check_hof_keywords(f, x::CanonicalExpr) = nothing
-_check_hof_keywords(
+_check_call_keywords(f, x::CanonicalExpr) =
+    _sampling_family(f) ? _check_family_keywords(f, x) : nothing
+_check_family_keywords(f, x::CanonicalExpr) = begin
+    unknown = Tuple(
+        k for k in keys(x.kwargs)
+        if !(k in _SAMPLING_SHAPE_KWARGS || k in CONSTRAINT_KEYS || k === _RESTRICTED_KEY)
+    )
+    isempty(unknown) || error(
+        "$(nameof(f)): no keyword argument `", join(unknown, "`, `"), "`. A sampling ",
+        "family takes the bounds `lower=`/`upper=` (a bound truncates the family), ",
+        "the transform `offset=`/`multiplier=` and the shape keywords ",
+        "`type`/`n`/`m`/`o`/`size`; its parameters are positional.",
+    )
+    nothing
+end
+_check_call_keywords(
     f::Union{typeof(builtin.truncated),typeof(builtin.censored),typeof(builtin.weighted),
         typeof(builtin.restricted)},
     x::CanonicalExpr,
@@ -232,7 +250,7 @@ _check_hof_keywords(
     )
     nothing
 end
-_check_hof_keywords(f::typeof(builtin.interval_censored), x::CanonicalExpr) = begin
+_check_call_keywords(f::typeof(builtin.interval_censored), x::CanonicalExpr) = begin
     bounds = Tuple(k for k in keys(x.kwargs) if k in BOUND_KEYS)
     isempty(bounds) || error(
         "interval_censored: ",
@@ -641,7 +659,7 @@ end
 # is traced, to the positional `y ~ interval_censored(normal(mu, s), y, hi)`, so
 # every later pass (ragged and plate twins, the descriptor) sees only that form.
 # The same call in `weighted`'s family slot is rewritten too. Every other keyword
-# use of `interval_censored` is left for `_check_hof_keywords` to refuse.
+# use of `interval_censored` is left for `_check_call_keywords` to refuse.
 const _IntervalCensoredHead = Union{Val{:interval_censored},typeof(builtin.interval_censored)}
 const _CensoredHead = Union{Val{:censored},typeof(builtin.censored)}
 const _WeightedHead = Union{Val{:weighted},typeof(builtin.weighted)}
@@ -942,6 +960,7 @@ for lpxf_rhs in (
     @eval lpxf_expr(::typeof(builtin.$base_rhs)) = builtin.$lpxf_rhs
     @eval rng_expr(::typeof(builtin.$base_rhs)) = builtin.$rng_rhs
     @eval likelihood_expr(::typeof(builtin.$base_rhs)) = builtin.$lpxfs_rhs
+    @eval _sampling_family(::typeof(builtin.$base_rhs)) = true
 end
 
 # Dual-kind closure families: one bare `~` name serving BOTH real and integer

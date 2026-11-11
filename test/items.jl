@@ -3163,6 +3163,11 @@ rebound names bare, so every Julia-side matrix build recursed until
             shim_append_row_mr(x::matrix[n, k], r::row_vector[k])::matrix[n + 1, k] = append_row(x, r)
             shim_append_row_rm(r::row_vector[k], x::matrix[n, k])::matrix[n + 1, k] = append_row(r, x)
             shim_rep_matrix_rv(b::vector[k], m::int)::matrix[m, k] = rep_matrix(b', m)
+            shim_stack2(x::row_vector[n], y::row_vector[n])::matrix[2, n] = append_row(x, y)
+            shim_stack_local(x::vector[n])::matrix[2, n] = begin
+                r::row_vector[n] = to_row_vector(x)
+                append_row(r, r)
+            end
         end
     end)
     call(f, args...) = Base.invokelatest(getproperty(shims, f), args...)
@@ -3178,6 +3183,9 @@ rebound names bare, so every Julia-side matrix build recursed until
     @test call(:shim_to_matrix, v) == [1.0 3.0; 2.0 4.0]
     @test call(:shim_reshape, v) == [1.0 3.0; 2.0 4.0]
     @test call(:shim_append_row3, a, b, c) == vcat(a, b, c)
+    # Row vectors stack into a matrix, one row each, as in Stan (todo 15foikj).
+    @test call(:shim_stack2, [1.0, 2.0], [3.0, 4.0]) == [1.0 2.0; 3.0 4.0]
+    @test call(:shim_stack_local, [1.0, 2.0]) == [1.0 2.0; 1.0 2.0]
     @test call(:shim_append_row_mr, [a b], [1.0, 2.0]) == [a b; 1.0 2.0]
     @test call(:shim_append_row_rm, [1.0, 2.0], [a b]) == [1.0 2.0; a b]
     # `b'` reaches Julia as a one-row matrix; Stan stacks `m` copies of it.

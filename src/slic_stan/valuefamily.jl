@@ -671,6 +671,12 @@ end
 # selectors, HOF tokens — each names the v1 boundary).
 forward!(v::ValueFamily; info) = v
 forward!(v::ValueUDF; info) = v
+# A raw family head refuses the keywords its `~` does not consume, as a function
+# family's head does (`_check_call_keywords`, lpxf_builtin.jl).
+_forward_call_kwargs(x::CanonicalExpr, v::ValueFamily; info) = begin
+    _check_call_keywords(v, x)
+    forward!(x.kwargs; info)
+end
 
 _forward_module_value(v::ValueFamily, info) = v
 _forward_module_value(v::ValueUDF, info) = v
@@ -891,6 +897,7 @@ end
 lpxf_expr(v::ValueFamily) = v.density
 rng_expr(v::ValueFamily) = v.rng
 likelihood_expr(v::ValueFamily) = v.pointwise
+_sampling_family(::ValueFamily) = true
 # The bounded HOFs select these (`logcdf`/`logccdf` in their bodies); a missing
 # one names the constructor keyword, as `@deffun` names the missing function.
 logcdf_expr(v::ValueFamily) = isnothing(v.lcdf) ? _value_missing_cdf(v, :lcdf) : v.lcdf

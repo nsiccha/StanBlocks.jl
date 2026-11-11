@@ -99,7 +99,11 @@ Base.@nospecializeinfer _stan_expr(@nospecialize(x::CanonicalExpr), context) = b
     tt = deanon_type(_tracetype(anon_canonical(x, tok), context), x, tok)
     args = Any[x.args...]
     q = _rng_qual(x, maximum(qual, args; init=:data))
-    StanExpr(x, remake(tt; qual=q, cv=any(cv, args) || cv(tt)))
+    # A keyword a call keeps (a distribution's `lower=`/`upper=`) taints it like an
+    # argument: `normal(0, 1; lower=a + s)` is the `truncated` law, whose lowering
+    # takes the bound positionally (todo 1k3hvkc).
+    marked = any(cv, args) || any(cv, values(x.kwargs)) || cv(tt)
+    StanExpr(x, remake(tt; qual=q, cv=marked))
 end
 stan_expr(x::CanonicalExpr) = _stan_expr(x, TraceContext())
 # Every compiler-internal conversion that runs while a trace is active must use
@@ -362,8 +366,13 @@ backward!(x::SamplingExpr; info) = begin
             # existing prior-predictive treatment of unused Symbol samples. The
             # separate outer declaration reads this updated qualifier later.
             # A values-free `maybecv` observation's storage is re-drawn the same
-            # way, but what its draw reads stays likelihood-reachable.
-            _cv_observation_storage(info[key]; info) &&
+            # way, but what its draw reads stays likelihood-reachable. So does
+            # what a cv-tainted cell's prior reads when the unconditioned trace
+            # reaches the cell: only the cell is re-drawn, and an untainted
+            # hyperparameter stays a fitted parameter, as on the bare-Symbol
+            # path above (todo 00m5uxb).
+            (_cv_observation_storage(info[key]; info) ||
+             (cv(info[key]) && lqual(info[key]) == :affects_likelihood)) &&
                 (rhs = _restore_sampling_kwargs(backward!(rhs; info), rhs))
             info[key] = remake(info[key]; qual=:quantities)
             remake(x, remake(lhs; qual=:quantities), rhs)
@@ -938,8 +947,18 @@ Base.push!(b::DataBlock, x::StanExpr{Symbol}; info) = begin
         "receiving LHS, `hx_k` for its `k` in `hx ~ sub(…)`, so such a name can ",
         "collide with one the model binds.)"
     )
+    # A typed `~` declares its data with the type it names (`_forward_typed_bound!`,
+    # forward.jl). That declaration replaces the one inferred from the value,
+    # whichever statement reached the block first, so Stan checks the data
+    # against the declared type however the model orders its uses.
+    if existing !== nothing && _declared_data(x) && !_declared_data(existing)
+        fetch_data!(type(x); info)
+        content(b)[expr(x)] = x
+        return x
+    end
     _declare!(b, x; info)
 end
+_declared_data(x::StanExpr) = get(type(x).info, :declared_data, false)
 # Stan declares no bound or affine transform on `ordered` / `positive_ordered`:
 # `ordered<lower=0>[3] c;` is a stanc syntax error. A parameter whose typed LHS
 # carries one (forward.jl, `_ordered_constraints`) is declared as a
@@ -1561,6 +1580,10 @@ end
 function lpxf_expr end
 function rng_expr end
 function likelihood_expr end
+# Whether `f` is a sampling family: true wherever its density hook is registered
+# (the built-in table in lpxf_builtin.jl, `lpxf_register` below, `ValueFamily`).
+# A family's call refuses keywords its `~` does not consume (`_check_call_keywords`).
+_sampling_family(f) = false
 
 const _LPXF_SUFFIXES = ("_lpdf", "_lpmf", "_lcdf", "_lccdf")
 _lpxf_base(name::Symbol) = begin
@@ -1595,5 +1618,6 @@ lpxf_register(name::Symbol; source=LineNumberNode(0, :none)) = begin
         $M.lpxf_expr(::typeof($base)) = $name
         $M.rng_expr(::typeof($base)) = $rng
         $M.likelihood_expr(::typeof($base)) = $lpxfs
+        $M._sampling_family(::typeof($base)) = true
     end
 end
