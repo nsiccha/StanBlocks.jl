@@ -4,6 +4,52 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.34
+
+Ten fixes for models that transpiled cleanly but meant something other than
+what their source says.
+
+- **A keyword nothing reads is refused, not dropped.** A sampling family
+  (built-in, `@lpxf` or `ValueFamily`) takes only `lower`/`upper`,
+  `offset`/`multiplier` and the shape keywords `type`/`n`/`m`/`o`/`size`, so
+  `y ~ normal(mu, s; uper = hi)` no longer emits `y ~ normal(mu, s);` without
+  its truncation. Any other call that becomes a plain Stan call refuses every
+  keyword: `sum(v; dims=1)` used to emit `sum(v)`, and an `@deffun` declared
+  without keywords dropped one. Keywords still reach every consumer that reads
+  them: a distribution's bounds and shape, an `@deffun`'s declared keywords, a
+  sub-model's inputs and `plate`'s.
+- **A typed sampling statement on bound data observes it.** `sigma::real ~
+  exponential(1.0)` with `sigma` bound used to overwrite the data with a fresh
+  parameter and draw it from its prior. It now observes the data, as `sigma ~
+  exponential(1.0)` does, declared with the named type: `real<lower=0.0>
+  sigma`, `cholesky_factor_corr[K] Omega`. Stan checks the data against that
+  type on load, and a type that cannot hold the data's shape is refused.
+- **`maybecv` taints a prior through a keyword bound.** `x ~ normal(0, 1;
+  lower = a + s)` with `s` marked now re-draws `x` in generated quantities,
+  as `truncated(normal(0, 1); lower = a + s)` always did. The keyword
+  spelling, `restricted(…)`, a typed declaration and a plate cell used to
+  keep `x` fitted.
+- **A cv-tainted plate cell keeps its hyperparameter fitted.** Only the cell
+  is re-drawn. An untainted `s` that only the cell prior `c ~ normal(0, s)`
+  reads used to be re-drawn from its own prior, while the flat spelling kept
+  it fitted.
+- **A varying-length plate cell keeps a bound that depends on the cell.**
+  `zz::vector[K[g]] ~ normal(0, 1; lower = L[g])` declares the bound on the
+  cell's flat memory, where the sampler used to explore outside it.
+- **A plate cell that indexes a matrix cell is typed by the value it reads.**
+  In `@plate for`, `mu[g] = p[g][:, 1]` is a vector cell. It used to be
+  declared with `p`'s whole matrix type. A row read, `p[g][2, :]`, is refused
+  by name, as a plate cell does not hold a `row_vector` yet.
+- **A ragged ordered prior from a bounded family is refused.**
+  `c::ordered[Ks] ~ exponential(1.0)` was truncated by rejection; it now names
+  `positive_ordered[Ks]`.
+- **The normal tail masses have a finite gradient at an infinite bound.**
+  `interval_censored(normal, -Inf, hi, mu, s)` had the right value and a NaN
+  gradient. The stable normal log-CDF/CCDF now answer `±Inf` first, as the
+  Student-t, skew-normal and exp-mod-normal ones already did.
+- **`@juliacompat` `append_row` of two row vectors is a matrix**, as in
+  Stan. The Julia method used to return a vector of twice the length.
+
 ## v0.2.33
 
 - **A Julia function spelled as a Stan builtin keeps Stan's name.**
