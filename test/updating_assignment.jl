@@ -144,15 +144,20 @@ at run time.
         z = $call
         y ~ normal(sum(z) + s, 1.0)
     end, (; x = [1.0, 2.0, 3.0], idx = [3, 1, 2], y = 0.3), @__MODULE__)
-    for (call, name) in ((:(grown_add(x)), "m"), (:(grown_div(x)), "m"), (:(grown_broadcast(idx)), "v"))
-        err = try
-            stan_code(model(call))
-            nothing
-        catch e
-            sprint(showerror, e)
-        end
+    errmsg(call) = try
+        stan_code(model(call))
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    for (call, name) in ((:(grown_add(x)), "m"), (:(grown_broadcast(idx)), "v"))
+        err = errmsg(call)
         @test err !== nothing &&
             occursin("inferred result size references function-local `$name`, which is reassigned", err)
     end
+    # `m /= 2` on an integer is refused before its size is read: `/` gives a real,
+    # as in Julia (decision 12ehvh9, todo 14vbs5d).
+    err = errmsg(:(grown_div(x)))
+    @test err !== nothing && occursin("`m /= …` divides the integer `m`", err)
     @test occursin("vector[(x_n + 1)] z = grown_ok(x);", stan_code(model(:(grown_ok(x)))))
 end

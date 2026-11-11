@@ -41,8 +41,8 @@ function fails closed, as a size does.
     @test rho.constraint_values === (lower = 0.6,)
     @test bound_values(reported, :b) === (lower = 0.6, upper = 5.0)
     @test bound_values(reported, :i) == (lower = 3, upper = 7 * log(7))
-    # Stan divides two ints as ints: `lower=(k / 2)` is 3, not 3.5.
-    @test bound_values(reported, :j) === (lower = 3,)
+    # `/` of two ints is real division, as in Julia (decision 12ehvh9): 3.5.
+    @test bound_values(reported, :j) === (lower = 3.5,)
     @test bound_values(reported, :c) == (lower = [0.1, 0.2, 0.0],)
     @test bound_values(reported, :a) === (lower = 0.4,)
     @test bound_values(reported, :w) === (offset = 1.0, multiplier = 2.0)
@@ -53,7 +53,7 @@ function fails closed, as a size does.
     # Rebound data gives rebound values.
     rebound = StanBlocks.stan_model(reported)(; floor_ = 1.0, k = 9, lo = [0.5, 0.6, 0.7], xs = [2.0])
     @test bound_values(rebound, :rho) === (lower = 2.0,)
-    @test bound_values(rebound, :j) === (lower = 4,)
+    @test bound_values(rebound, :j) === (lower = 4.5,)
     @test bound_values(rebound, :c) == (lower = [0.5, 0.6, 0.7],)
     @test bound_values(rebound, :a) === (lower = 2.0,)
 
@@ -167,28 +167,46 @@ function fails closed, as a size does.
 end
 
 """
-Verify `slic: the Julia layer divides two ints as Stan does`.
+Verify `slic: the Julia layer and the emitted Stan divide two ints as Julia does`.
 
-Snag read-the-numeric-9a6adfef: Stan divides two integers as integers,
-truncating toward zero, but `/` in StanBlocks' Julia layer fell through to
-Julia's float division. A `@juliacompat` helper returned `3.5` where the Stan
-function returns `3`, and `stan_descriptor` threw for the valid size
-`vector[n / 2]`. Stan's non-finite constants had no Julia value either.
+Snag read-the-numeric-9a6adfef made the Julia layer divide two integers as
+Stan then did, truncating toward zero, so a `@juliacompat` helper and the Stan
+function agreed on `7 / 2 == 3`. Decision 12ehvh9 (todo 14vbs5d) chose Julia's
+reading instead: `/` of two integers is real division in the emitted Stan
+(`(n * 1.0) / 2`) and in the Julia layer alike, and integer division is `÷`
+(Stan's `%/%`). A size from `/` is a real, so it is refused naming `÷`.
+Stan's non-finite constants have Julia values too.
 """
-@testitem "slic: the Julia layer divides two ints as Stan does" tags=[:slic, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
-    @deffun @juliacompat divint_half(n::int)::int = n / 2
-    @test Base.invokelatest(divint_half, 7) === 3
-    # Stan, like C++, truncates toward zero.
-    @test Base.invokelatest(divint_half, -7) === -3
-    @test StanBlocks.jcall(Val(:/), StanBlocks, 7, 2) === 3
+@testitem "slic: the Julia layer and the emitted Stan divide two ints as Julia does" tags=[:slic, :descriptor, :regression] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    @deffun @juliacompat divint_half(n::int)::real = n / 2
+    @deffun @juliacompat divint_quot(n::int)::int = n ÷ 2
+    @test Base.invokelatest(divint_half, 7) === 3.5
+    @test Base.invokelatest(divint_half, -7) === -3.5
+    # `÷` truncates toward zero, as Stan's `%/%` does.
+    @test Base.invokelatest(divint_quot, 7) === 3
+    @test Base.invokelatest(divint_quot, -7) === -3
+    @test StanBlocks.jcall(Val(:/), StanBlocks, 7, 2) === 3.5
     @test StanBlocks.jcall(Val(:/), StanBlocks, 7.0, 2) === 3.5
     @test StanBlocks.jcall(Val(:/), StanBlocks, 7, 2.0) === 3.5
-    @test occursin("(n / 2)", stan_code(@slic((; n = 7, y = [1.0, 2.0]), begin
-        z ~ std_normal(; n = n / 2)
+    @test occursin("return ((n * 1.0) / 2);", stan_code(@slic((; n = 7, y = 1.0), begin
+        y ~ normal(divint_half(n), 1.0)
+    end)))
+    refused = try
+        stan_code(@slic((; n = 7, y = [1.0, 2.0]), begin
+            z ~ std_normal(; n = n / 2)
+            y ~ normal(sum(z), 1.0)
+        end))
+        ""
+    catch e
+        sprint(showerror, e)
+    end
+    @test occursin("a size must be an integer", refused) && occursin("÷", refused)
+    @test occursin("(n %/% 2)", stan_code(@slic((; n = 7, y = [1.0, 2.0]), begin
+        z ~ std_normal(; n = n ÷ 2)
         y ~ normal(sum(z), 1.0)
     end)))
     @test only(o.dims for o in stan_descriptor(@slic((; n = 7, y = [1.0, 2.0]), begin
-        z ~ std_normal(; n = n / 2)
+        z ~ std_normal(; n = n ÷ 2)
         y ~ normal(sum(z), 1.0)
     end)).outputs if o.name === :z) == (3,)
     # Stan's non-finite constants have Julia values too.
@@ -299,7 +317,7 @@ Verify `slic: descriptor constraint values are the bounds Stan applies`.
 
 Snag read-the-numeric-9a6adfef: each parameter's `constraint_values`, put
 through Stan's constraining transform, reproduces BridgeStan's
-`param_constrain`. This covers integer division (`lower=(k / 2)` is 3), literal
+`param_constrain`. This covers integer `/`, which is real division (`lower=(k / 2)` is 3.5), literal
 and compiler-filled per-coordinate bounds, a hoisted plate cell bound, a `@scan`
 nested in a `@plate for`, and a varying-length cell's flat memory.
 """

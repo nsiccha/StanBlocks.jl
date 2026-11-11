@@ -4,6 +4,40 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.35
+
+Seven fixes for valid SLIC that emitted Stan which stanc rejects, and one
+change of meaning the user chose.
+
+- **`/` on two integers divides as in Julia** (decision `12ehvh9`). `k / 2` is
+  `1.5` for `k = 3`, emitted `(k * 1.0) / 2`, in the Stan program and the
+  `@juliacompat` method alike; it used to be Stan's truncating `1`, even under
+  a declared `::real` result. Integer division is `÷` (Stan's `%/%`). Where an
+  integer is needed from `/` (a size, an `int` local, `m /= 2`), the program
+  fails at trace time naming `÷`. `stan_descriptor` reports `lower = k / 2`
+  as `3.5`.
+- **A rebound `@deffun` argument reads a local copy.** `mg = mg ./ s` in a
+  body emitted an assignment to a function argument, which Stan forbids; in
+  Julia it rebinds a local, which the emitted Stan now does too. A write into
+  an argument (`v[1] = …`, `v .= …`) or a rebound loop variable is refused
+  when the Stan function is built; the Julia method keeps Julia's behavior.
+- **A `simplex` or matrix center declares no bound.** `p::simplex[3] ~
+  beta(1, 1)` emitted the syntax error `simplex<lower=0, upper=1>[3] p;`. A
+  bound every element already meets is dropped; any other is refused, naming
+  the fix.
+- **An array of constrained vectors under an elementwise family is the plate
+  of its vectors.** `c::ordered[2, 3] ~ normal(0, 1)` emitted `c ~ normal(…)`
+  on an `array[] vector`, and its prior-only program failed to trace.
+- **A matrix LHS refuses a joint vector family.** `z::matrix[D, K] ~
+  multi_normal(…)` is refused, naming `z::vector[K, D]` and the plate spelling.
+- **A matrix-row observation draws its twin as a transposed vector**, where it
+  called an undeclared `<family>_row_vector_rng`.
+- **A function argument's Stan suffix no longer ends a specialised name**:
+  `y ~ hop(base_lpdf, mu)` called `hop_base_lpdf(mu)`, which stanc reads as a
+  density name; it is `hop_base_lpdf_arg` now.
+- **`sum`, `prod`, `mean`, `max` and `min` of a 2-D integer array** reduce
+  every element (`sum(to_array_1d(D))`), where stanc rejected `sum(D)`.
+
 ## v0.2.34
 
 Ten fixes for models that transpiled cleanly but meant something other than

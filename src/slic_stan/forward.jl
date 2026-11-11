@@ -253,8 +253,21 @@ expand_inline_or_trace(x::CanonicalExpr{<:Base.BroadcastFunction}; info) =
 # `/` and `^` had no method of their own: an `@inline` overload still takes the
 # generic route first.
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(/),typeof(^)}}; info) =
-    isnothing(inline_body(x)) ? _lower_arithmetic(x, _no_arithmetic_lowering; info) :
+    isnothing(inline_body(x)) ? _lower_arithmetic(x, _quotient_lowering(head(x)); info) :
         invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info)
+# Julia's `/` on two integers is real division (`3 / 2 == 1.5`); Stan's rounds
+# toward zero. A SLIC body reads as Julia, and a `@juliacompat` method runs it as
+# Julia, so the quotient is real: the numerator is promoted, `(k * 1.0) / 2`.
+# Integer division is `÷` (`%/%`). A place that needs an integer from `/` (a size,
+# an `int` local, `m /= 2`) now fails loudly there instead of rounding (decision
+# `12ehvh9`, todo 14vbs5d).
+_quotient_lowering(::typeof(/)) = _lower_integer_quotient
+_quotient_lowering(_) = _no_arithmetic_lowering
+_lower_integer_quotient(x::CanonicalExpr; info) = begin
+    length(x.args) == 2 || return nothing
+    all(a -> center_type(a) <: types.int && stan_ndim(a) == 0, x.args) || return nothing
+    forward!(CanonicalExpr(/, CanonicalExpr(*, x.args[1], 1.0), x.args[2]); info)
+end
 # `isdefined(builtin, x)` returns true even for names inherited from Base
 # (e.g. `accumulate!`), which would mask user-defined SLIC UDFs that share
 # Base's name. Restrict to bindings actually owned by the `builtin` module.
@@ -1533,9 +1546,23 @@ _tombstone_reassigned!(::Any; info) = nothing
 # did not tombstone, so `m = n; m += 1; rep_vector(0.0, m)` declared the
 # caller's result `vector[n]` for an `n + 1`-element value.
 _forward_updating_assignment!(x::CanonicalExpr; info) = begin
-    rv = _trace_stan_expr(remake(x, forward!(x.args; info)...), info)
+    args = forward!(x.args; info)
+    _check_integer_quotient_update(x, args)
+    rv = _trace_stan_expr(remake(x, args...), info)
     _tombstone_reassigned!(x.args[1]; info)
     rv
+end
+# `m /= 2` is `m = m / 2`, a real in Julia (`_lower_integer_quotient`), which an
+# integer `m` cannot hold; Stan would round toward zero instead.
+_check_integer_quotient_update(x, args) = nothing
+_check_integer_quotient_update(x::CanonicalExprV{Symbol("/=")}, args) = begin
+    center_type(args[1]) <: types.int || return
+    m = args[1] isa StanExpr ? expr(args[1]) : args[1]
+    error(
+        "`", m, " /= …` divides the integer `", m, "`: `/` gives a real (as in Julia), ",
+        "which an integer cannot hold. Write `", m, " = ", m, " ÷ …` for integer ",
+        "division, or bind a real.",
+    )
 end
 forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
     name, rhs = x.args
@@ -1554,6 +1581,12 @@ forward!(x::AssignmentExpr{Symbol,<:StanExpr}; info) = begin
         # (`acc = acc + xi`) and scalar loop state (`t = t + dt` inside a `while`) both
         # take this path. `@slic` model/submodel scope keeps single-assignment
         # discipline via the assert below.
+        # A reassignment keeps the local's type, so an integer local cannot take a
+        # real value (`m = m / 2` is real, as in Julia); stanc would refuse it.
+        center_type(info[name]) <: types.int && center_type(rhs) <: types.real &&
+            !(center_type(rhs) <: types.int) && error(
+            "`", name, " = …` stores a real into the integer `", name, "` (`/` gives a ",
+            "real, as in Julia). Write `÷` for integer division, or bind a real local.")
         _tombstone_reassigned!(name; info)
         return _trace_stan_expr(CanonicalExpr(Symbol(".="), info[name], rhs), info)
     end
@@ -2213,13 +2246,69 @@ _check_lhs_rhs_support(lhs_type, support, rhs_discrete, name, type_expr) = begin
     )
     nothing
 end
-# The constraints of a typed `ordered` / `positive_ordered` LHS. Stan declares
-# none on these types; the emitter instead applies one elementwise, increasing
-# Stan constraint transform to an `ordered` free vector
+# A joint vector family (`multi_normal`, `dirichlet`, …) draws a vector, and Stan
+# takes it on a vector or an array of vectors, never a `matrix`, whose columns or
+# rows would be a guess: `z::matrix[D, K] ~ multi_normal(…)` transpiled to a
+# statement stanc rejects (todo 0yeqj57). An elementwise family keeps its matrix
+# variate (`_check_matrix_variate_args`, lpxf_builtin.jl).
+_check_matrix_lhs_vector_family(lhs_type, support, rhs, name, type_expr, sizes) = begin
+    center_type(lhs_type) === types.matrix && center_type(support) <: types.any_vector || return
+    _matrix_variate_family(head(rhs)) && return
+    rows, cols = length(sizes) == 2 ? string.(sizes) : ("D", "K")
+    error(
+        "Typed-LHS sampling `", name, "::", pretty_type_expr(type_expr), "` declares a ",
+        "`matrix`, but its distribution draws a `", sigtype(support), "`: Stan takes a ",
+        "joint vector family on a vector or an array of vectors, never on a matrix. ",
+        "Declare `", name, "::vector[", cols, ", ", rows, "]` (an array of ", cols,
+        " vectors of length ", rows, ", one draw each), or draw each column in a ",
+        "`plate(; outer = ", cols, ") do k … end` cell.",
+    )
+end
+# Stan declares no bound or affine transform on a `simplex` or on a covariance,
+# correlation or Cholesky-factor matrix: the type's own transform is its whole
+# constraint, so `simplex<lower=0, upper=1>[3] p;` is a stanc syntax error (todo
+# 09b3kz5). A bound every element already satisfies, `[0, 1]` for a simplex and
+# `[-1, 1]` for a correlation (what `beta` or `lkj_*` imply), restates the type and
+# leaves the declaration, and the call when written there, since it truncates
+# nothing. Any other constraint is refused, naming the fix. `ordered` and
+# `positive_ordered` take theirs through a lowered transform instead
+# (`_declare_lowered_ordered!`, passes.jl). The ranges are `_element_range`
+# (functions.jl, beside the `types` it dispatches on).
+_transform_only_center(ct) = _is_native_constrained_ct(ct) &&
+    !(ct <: Union{types.ordered,types.positive_ordered})
+_transform_only_constraints(ct, cons; label, implied=()) = begin
+    _transform_only_center(ct) || return cons
+    lo, hi = _element_range(ct)
+    restates(k) = k in BOUND_KEYS && begin
+        v = _bound_value(cons[k])
+        v isa Real && (k === :lower ? v <= lo : v >= hi)
+    end
+    extra = Tuple(k for k in keys(cons) if !restates(k))
+    isempty(extra) || error(
+        label, " has ", _constraint_sources(extra, implied), ", but Stan declares no ",
+        "bound or affine transform on a `", nameof(ct), "`: its own transform is the whole ",
+        "constraint", isfinite(lo) ? ", and each element already lies in [$lo, $hi]" : "",
+        ". Drop the constraint, use a family whose support the type admits, or declare a ",
+        "plain `", ct <: types.vector ? "vector" : "matrix", "` if the constraint should ",
+        "replace the `", nameof(ct), "` one.",
+    )
+    (;)
+end
+# The constraints of a typed constrained LHS. Stan declares none on `ordered` /
+# `positive_ordered` either; the emitter instead applies one elementwise,
+# increasing Stan constraint transform to an `ordered` free vector
 # (`_declare_lowered_ordered!`, passes.jl), so every constraint must be a
 # scalar. Other centers keep their constraints as folded. (A runtime check:
 # the `types` submodule is defined later, in functions.jl.)
-_ordered_constraints(ct, cons, rhs; name, type_expr, implied) = begin
+_center_constraints(ct, cons, rhs; name, type_expr, implied) = begin
+    if _transform_only_center(ct)
+        cons = _transform_only_constraints(ct, cons;
+            label="`$name::$(pretty_type_expr(type_expr))`", implied)
+        written = Tuple(k for k in BOUND_KEYS if k in keys(rhs.kwargs))
+        isempty(written) ||
+            (rhs = remake(rhs, rhs.args...; Base.structdiff(rhs.kwargs, NamedTuple{written})...))
+        return (cons, rhs)
+    end
     ct in (types.ordered, types.positive_ordered) || return (cons, rhs)
     _check_scalar_ordered_constraints(cons; name, type_expr, implied)
     ct === types.positive_ordered || return (cons, rhs)
@@ -2285,6 +2374,7 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     ct isa Symbol || error("Typed-LHS sampling: type center must be a Symbol, got `$ct`")
     ct_resolved = gettype(ct)
     sizes_forwarded = isempty(sizes) ? () : Tuple(forward!(collect(sizes); info))
+    foreach(s -> _check_integer_size(s, "The size of `$name`"), sizes_forwarded)
     name in keys(info) &&
         return _forward_typed_bound!(x, name, ct_resolved, sizes_forwarded, type_expr, rhs_raw; info)
     # Stan requires every native constrained-type size (`simplex[N]`, `ordered[N]`,
@@ -2297,6 +2387,8 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     if _is_native_constrained_ct(ct_resolved) && any(sz -> stan_ndim(type(sz)) > 0, sizes_forwarded)
         return _forward_ragged_constrained!(name, ct, collect(sizes), rhs_raw; info)
     end
+    _elementwise_constrained_array(ct_resolved, sizes, rhs_raw; info) &&
+        return _forward_constrained_array_plate!(name, ct, collect(sizes), rhs_raw; info)
     _is_canonical_expr(rhs_raw) || error(
         "Typed-LHS sampling `$name::$(pretty_type_expr(type_expr)) ~ rhs` requires rhs to be a distribution call"
     )
@@ -2316,12 +2408,12 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # ONLY, silently dropping the constraint — so a positive scale
     # `tau::vector[K] ~ normal(0,1; lower=0)` emitted an UNCONSTRAINED
     # `vector[K] tau`. An `ordered` / `positive_ordered` center keeps its
-    # constraints too (`_ordered_constraints` below); Stan cannot declare them,
+    # constraints too (`_center_constraints` below); Stan cannot declare them,
     # so the emitter lowers them (`_declare_lowered_ordered!`, passes.jl).
     implied_kw = autokwargs(rhs_canonical)
     cons_kw = merge(implied_kw, (; kwargs_resolved...))
     cons = _fold_constraints(name, cons_kw; implied=keys(implied_kw))
-    cons, rhs_canonical = _ordered_constraints(ct_resolved, cons, rhs_canonical;
+    cons, rhs_canonical = _center_constraints(ct_resolved, cons, rhs_canonical;
         name, type_expr, implied=keys(implied_kw))
     base_lhs_type = StanType(ct_resolved, sizes_forwarded; cons...)
     # Reject a typed LHS whose support disagrees with the RHS distribution's
@@ -2329,6 +2421,8 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # time, before the constraint fold and cv routing below act on it.
     _check_lhs_rhs_support(base_lhs_type, type(rhs_forwarded),
         _rhs_is_discrete(rhs_canonical), name, type_expr)
+    _check_matrix_lhs_vector_family(base_lhs_type, type(rhs_forwarded), rhs_canonical,
+        name, type_expr, sizes)
     # A parameter whose DECLARED SIZE is cv-tainted must relocate to generated
     # quantities exactly like the bare-LHS path — a held-out size (`J =
     # maximum(subject)` under CV) means nothing informs the parameter, so it is a
@@ -2353,6 +2447,31 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     validate_sampling_rhs(info[name], rhs_stan; info)
     remake(x, info[name], rhs_stan)
+end
+# An array of `ordered` / `positive_ordered` / `simplex` vectors under an
+# elementwise family, `c::ordered[2, 3] ~ normal(0, 1)`, is one prior per vector.
+# Stan's elementwise families take no `array[] vector`, so the whole-array `c ~
+# normal(0, 1);` was a stanc error, and a prior-only program had no re-draw for
+# the array (todo 15dof8q). It is the plate of those vectors, whose cells collect
+# as the same `array[2] ordered[3]` and which already samples each cell, re-draws
+# it sorted, and follows cv: `c ~ plate(; outer = (2,)) do i; c::ordered[3] ~
+# normal(0, 1); c end`. A multivariate family (`dirichlet`) takes the array as is.
+_elementwise_constrained_array(ct, sizes, rhs; info) = begin
+    ct isa Type && ct <: types.vector && _is_native_constrained_ct(ct) && length(sizes) > 1 ||
+        return false
+    _is_canonical_expr(rhs) || return false
+    h = _forward_head(head(rhs), info)
+    h isa StanExpr2{<:types.func} && _matrix_variate_family(_family_function(h))
+end
+_forward_constrained_array_plate!(name, ct, sizes, rhs_raw; info) = begin
+    outer, inner = sizes[1:end-1], sizes[end]
+    idxs = [Symbol(:__, name, :_axis, k) for k in eachindex(outer)]
+    cell = Expr(:block,
+        Expr(:call, :~, Expr(:(::), name, Expr(:ref, ct, inner)), rhs_raw), name)
+    plate = Expr(:do,
+        Expr(:call, :plate, Expr(:parameters, Expr(:kw, :outer, Expr(:tuple, outer...)))),
+        Expr(:->, Expr(:tuple, idxs...), cell))
+    forward!(canonical(Expr(:call, :~, name, plate)); info)
 end
 # A typed `name::T ~ dist` on a name the model already binds observes it, as
 # `name ~ dist` does: binding a sampled name conditions on it (stanblocks-use

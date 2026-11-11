@@ -151,8 +151,8 @@ StanBlocks.stan_descriptor).
   current data, with the same keys, so a consumer that reproduces Stan's
   constraining transform never evaluates an emitted expression itself.
   `real<lower=fmax(0.0, (2 * floor_))>` with `floor_ = 0.3` reports
-  `(lower = 0.6,)`. Evaluation follows Stan: `lower=(k / 2)` with the integer
-  `k = 7` is `3`. A per-coordinate bound is an array with one entry per
+  `(lower = 0.6,)`. Evaluation follows the emitted Stan: `lower=(k / 2)` with the integer
+  `k = 7` is `3.5`, as in Julia (integer division is `k ÷ 2`). A per-coordinate bound is an array with one entry per
   coordinate, `-Inf` or `Inf` where a coordinate is unbounded, including the
   bound arrays the compiler fills in `transformed data`; a bound that names a
   data input is that input's value. A bound that reads a parameter or a

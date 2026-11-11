@@ -516,6 +516,20 @@ autotype(x::StanExpr) = begin
     _fold_constraints(nothing, kw; implied=keys(implied))   # validates; result unused
     autotype(type(x); kw...)
 end
+# A size is an integer. `n = k / 2` is a real, as in Julia (`_lower_integer_quotient`,
+# forward.jl), and stanc refuses a real size, so it is refused here, naming `÷`.
+_check_integer_size(s::StanExpr, what) =
+    stan_ndim(s) == 0 && center_type(s) <: types.real && !(center_type(s) <: types.int) &&
+    error(what, " is the real `", expr(s), "`, but a size must be an integer. `/` ",
+        "gives a real (as in Julia); write `÷` for integer division.")
+_check_integer_size(s::AbstractFloat, what) = error(
+    what, " is the real `", s, "`, but a size must be an integer.")
+_check_integer_size(s, what) = nothing
+# The range every element of a transform-only center already lies in
+# (`_transform_only_constraints`, forward.jl).
+_element_range(::Type{types.simplex}) = (0.0, 1.0)
+_element_range(::Type{<:Union{types.corr_matrix,types.cholesky_factor_corr}}) = (-1.0, 1.0)
+_element_range(::Type) = (-Inf, Inf)
 autotype(x::StanType; kwargs...) = begin
     ct = _unwrap_type_kwarg(get(kwargs, :type, center_type(x)))
     nsize = [
@@ -523,8 +537,13 @@ autotype(x::StanType; kwargs...) = begin
         for key in (:m, :n, :o) if key in keys(kwargs)
     ]
     size = length(nsize) > 0 ? (nsize..., ) : get(kwargs, :size, stan_size(x))
+    (length(nsize) > 0 || haskey(kwargs, :size)) &&
+        foreach(s -> _check_integer_size(s, "A declared size"), size)
     (ct in (types.anything, types.real)) && (ct = [types.real, types.vector, types.matrix][1+length(size)])
     cons = _fold_constraints(nothing, kwargs)
+    # A `simplex` / matrix center takes no declaration bound (forward.jl).
+    _transform_only_center(ct) &&
+        (cons = _transform_only_constraints(ct, cons; label="A `$(nameof(ct))` declaration"))
     StanType(ct, size; cons...)
 end
 
@@ -827,10 +846,10 @@ function jcall(::Val{:log_sum_exp}, ::_JuliaScope, x::AbstractArray{<:Real}, y::
     _julia_log_sum_exp.(x, y)
 end
 jcall(::Val{:square}, ::_JuliaScope, x) = x * x
-# Stan divides two integers as integers, truncating toward zero like C++ (and
-# `div`); Julia's `/` would return a float. A size `vector[n / 2]`, a bound
-# `lower=k / 2` and a `@juliacompat` body's `n / 2` all depend on it.
-jcall(::Val{:/}, ::_JuliaScope, x::Integer, y::Integer) = div(x, y)
+# `/` on two integers is Julia's real division here as in the emitted Stan, which
+# promotes the numerator (`_lower_integer_quotient`, forward.jl; decision
+# `12ehvh9`); integer division is `÷`, Stan's `%/%`. It used to be `div` here, to
+# match Stan's then-truncating `k / 2`.
 # Stan's non-finite constants, which an unbounded coordinate of a per-coordinate
 # bound is spelled with (`show.jl` prints non-finite floats this way).
 jcall(::Val{:negative_infinity}, ::_JuliaScope) = -Inf
@@ -1635,6 +1654,74 @@ begin
             )
         end
         foreach(a -> _reject_udf_forms!(a, fname), x.args)
+    end
+    # Stan passes function arguments and loop variables read-only: `mg = mg ./ s`
+    # in a body emitted `mg = (mg ./ s);`, which stanc rejects ("Cannot assign to
+    # function argument or loop identifier", todo 1d4vme2). In Julia that rebinds
+    # a local name, so an argument the body rebinds (`=`, `+=`, …) is read through
+    # a local copy from the body's first statement on. A write INTO an argument
+    # (`mg[1] = …`, `mg .= …`) would change the caller's array in Julia, which
+    # Stan cannot, and a rebound loop variable has no Stan spelling: both are
+    # refused, naming the fix.
+    _udf_assign_head(h) = h === :(=) || begin
+        s = string(h)
+        length(s) >= 2 && s[end] == '=' && !(s in ("==", "!=", "<=", ">=", "===", "!==", "=>"))
+    end
+    _udf_assign_target(x::Expr) = begin
+        t = x.args[1]
+        Meta.isexpr(t, :(::)) ? t.args[1] : t
+    end
+    _udf_rebinds!(acc, x, names) = acc
+    _udf_rebinds!(acc, x::Expr, names) = begin
+        x.head === :-> && return acc   # a closure binds its own names
+        if x.head === :for
+            foreach(a -> _udf_rebinds!(acc, a, names), x.args[2:end])
+            return acc
+        end
+        if _udf_assign_head(x.head) && !isempty(x.args)
+            t = _udf_assign_target(x)
+            broadcast = startswith(string(x.head), ".")
+            if t isa Symbol && t in names
+                push!(broadcast ? acc.written : acc.rebound, t)
+            elseif Meta.isexpr(t, :ref) && t.args[1] isa Symbol && t.args[1] in names
+                push!(acc.written, t.args[1])
+            end
+        end
+        foreach(a -> _udf_rebinds!(acc, a, names), x.args)
+        acc
+    end
+    _udf_new_rebinds(names) = (; rebound=Set{Symbol}(), written=Set{Symbol}())
+    _rebound_loop_var(::Any) = nothing
+    _rebound_loop_var(x::Expr) = begin
+        if x.head === :for && Meta.isexpr(x.args[1], :(=)) && x.args[1].args[1] isa Symbol
+            v = x.args[1].args[1]
+            acc = _udf_rebinds!(_udf_new_rebinds(()), x.args[2], (v,))
+            isempty(acc.rebound) && isempty(acc.written) || return v
+        end
+        for a in x.args
+            v = _rebound_loop_var(a)
+            v === nothing || return v
+        end
+        nothing
+    end
+    # The body to trace, and the refusal its Stan definition raises instead, if any.
+    # The refusal waits for that definition: the Julia method of a `@juliacompat`
+    # function that only Julia calls still behaves as Julia does.
+    _copy_rebound_args(body, args, fname) = begin
+        v = _rebound_loop_var(body)
+        v === nothing || return (body,
+            "@deffun ($fname): the loop body assigns its loop variable `$v`, which Stan " *
+            "keeps read-only. Bind a local instead (`j = $v + 1`) and use that.")
+        acc = _udf_rebinds!(_udf_new_rebinds(args), body, args)
+        isempty(acc.written) || return (body,
+            "@deffun ($fname): the body writes into its argument `$(minimum(acc.written))` " *
+            "(an indexed or broadcast `.=` write). Stan passes arguments read-only, and in " *
+            "Julia the write would change the caller's array. Copy it into a local first " *
+            "(`$(minimum(acc.written))_copy = $(minimum(acc.written))`) and write into the copy.")
+        isempty(acc.rebound) && return (body, nothing)
+        local_of = Dict(a => Symbol(a, "__local") for a in acc.rebound)
+        copies = Any[Expr(:(=), local_of[a], a) for a in args if a in acc.rebound]
+        (Expr(:block, copies..., _subst_syms(body, local_of).args...), nothing)
     end
 
     deffun(x::LineNumberNode; kwargs...) = x
@@ -2526,6 +2613,9 @@ begin
         if !ismissing(body)
             @assert Meta.isexpr(body, :block) "@deffun: function body must be a `begin ... end` block, got `$body`."
             _reject_udf_forms!(body, f)
+            # An inlined UDF (`@inline`, or a `!` name) runs in its caller's scope,
+            # where writing into an argument writes the caller's variable, as meant.
+            body, stan_refusal = is_inline ? (body, nothing) : _copy_rebound_args(body, arg_names, f)
             # `void` UDFs run for side effects only — don't wrap the trailing
             # expression in a `return`, and force the inferred return type.
             if rv != :void
@@ -2548,6 +2638,7 @@ begin
                 ),
                 $stan._deref_lnn($stan._current_lnn(info)),
             ))
+            stan_refusal === nothing || (stan_fundef = :(error($stan_refusal)))
         end
 
         # Every rule this definition registers is keyed on its head first (see
@@ -3009,7 +3100,8 @@ Base.@nospecializeinfer func_name(@nospecialize(f), @nospecialize(args)) = begin
     _specialized_func_name(receiver, func_name(args))
 end
 _specialized_func_name(receiver, fragments) = begin
-    suffix_idxs = findfirst(r"_(rng|lu?p[md]fs?|lccdf|lcdf)$", receiver)
+    fragments = _escape_density_fragment(fragments)
+    suffix_idxs = findfirst(_STAN_SUFFIX, receiver)
     if isnothing(suffix_idxs)
         join(vcat(receiver, fragments), "_")
     else
@@ -3017,6 +3109,21 @@ _specialized_func_name(receiver, fragments) = begin
         base = receiver[1:suffix_idxs[1]-1]
         join(vcat(base, fragments), "_") * suffix
     end
+end
+# A `~` statement names a density by its family (`simplex_prior`) plus the
+# specialisation fragments, so a last fragment that is a function argument named
+# with a density suffix (`uniform_simplex_lpdf`) sampled as
+# `simplex_prior_…_uniform_simplex_lpdf(…)`, which still ends in `_lpdf`, and
+# stanc rejects it (todo 06lvabf). That fragment gets `_arg`, the same for the
+# family and its density (`…_uniform_simplex_lpdf_arg_lpdf`), which keeps the
+# `~` and the definition in lockstep. Other fragments keep their names.
+const _STAN_SUFFIX = r"_(rng|lu?p[md]fs?|lccdf|lcdf)$"
+const _DENSITY_SUFFIX = r"_lu?p[md]f$"
+_escape_density_fragment(fragments) = begin
+    isempty(fragments) && return fragments
+    last = fragments[end]
+    last isa AbstractString && occursin(_DENSITY_SUFFIX, last) || return fragments
+    vcat(fragments[1:end-1], last * "_arg")
 end
 func_name(args::NamedTuple) = func_name(values(args))
 Base.@nospecializeinfer func_name(@nospecialize(args::Tuple)) = begin
