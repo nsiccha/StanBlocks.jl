@@ -2925,14 +2925,17 @@ _reject_undefined_usertype_call(@nospecialize(x::CanonicalExpr)) = begin
         "to end (`f(x.mem)`)."
     )
 end
-Base.@nospecializeinfer fetch_functions!(@nospecialize(x::CanonicalExpr); info) = begin
+# The function registry is only a dictionary of emitted definitions; it does
+# not own tracing state. Thread the model's context through this walk so a
+# closure first encountered in a UDF cannot reuse a model-level closure's id.
+Base.@nospecializeinfer fetch_functions!(@nospecialize(x::CanonicalExpr); info, context=nothing) = begin
     sx = sig_expr(x)
     _haskey_erased(info, sx) && return
-    def = _fundef(x, _trace_context(info))
+    def = _fundef(x, context)
     isnothing(def) && _reject_undefined_usertype_call(x)
     _setindex_erased!(info, def, sx)
     isnothing(def) && return
-    fetch_subfunctions!(def.body; info)
+    fetch_subfunctions!(def.body; info, context)
 end
 # A sampling statement is emitted VERBATIM as Stan (`lhs ~ dist(args…)`, show.jl),
 # while the `dist_lpdf` UDF standing behind it is pulled into the functions block
@@ -2976,14 +2979,14 @@ _check_lpxf_resolves(lpxf) = begin
         "or add a `@deffun` overload for this shape."
     )
 end
-fetch_functions!(x::SamplingExpr; info) = begin
+fetch_functions!(x::SamplingExpr; info, context=nothing) = begin
     lhs, rhs = x.args
     lpmf = _dual_lpmf_call(lhs, rhs)
     lpxf = isnothing(lpmf) ? lpxf_expr(lhs, rhs) : lpmf
     _check_lpxf_resolves(lpxf)
-    fetch_functions!(expr(lpxf); info)
+    fetch_functions!(expr(lpxf); info, context)
     if qual(lhs) == :data || lqual(lhs) == :undefined
-        fetch_functions!(expr(likelihood_expr(lhs, rhs)); info)
+        fetch_functions!(expr(likelihood_expr(lhs, rhs)); info, context)
         # Mirror the gq push: wrap `lhs` into a tokenof token so the per-shape
         # `*_rng` @deffun overloads dispatch. Without this, `rng_expr` misses
         # entirely — it no longer accepts plain StanExprs as the first arg.
@@ -2993,19 +2996,19 @@ fetch_functions!(x::SamplingExpr; info) = begin
         lhs_ct = center_type(lhs)
         token = StanExpr(lhs_ct, StanType(types.tokenof{lhs_ct}, stan_size(lhs); value=lhs_ct, qual=:data))
         draw = qual(lhs) == :data ? rng_expr(token, rhs) : redraw_rng_expr(token, rhs)
-        fetch_functions!(expr(draw); info)
+        fetch_functions!(expr(draw); info, context)
     end
 end
-fetch_subfunctions!(x; info) = nothing
+fetch_subfunctions!(x; info, context=nothing) = nothing
 # A side-effect walk over heterogeneous containers: one compiled loop, not a
 # `map` per container type (snag `stanblocks-trans-f759fe4f`).
-Base.@nospecializeinfer fetch_subfunctions!(@nospecialize(xs::Union{Tuple,NamedTuple,Vector}); info) =
-    (for x in xs; fetch_subfunctions!(x; info); end; nothing)
-Base.@nospecializeinfer fetch_subfunctions!(@nospecialize(x::StanExpr); info) = fetch_subfunctions!((expr(x), type(x)); info)
-Base.@nospecializeinfer fetch_subfunctions!(@nospecialize(x::StanType); info) = fetch_subfunctions!((stan_size(x), x.info); info)
-Base.@nospecializeinfer fetch_subfunctions!(@nospecialize(x::CanonicalExpr); info) = begin 
-    fetch_functions!(x; info)
-    fetch_subfunctions!((x.args, x.kwargs); info)
+Base.@nospecializeinfer fetch_subfunctions!(@nospecialize(xs::Union{Tuple,NamedTuple,Vector}); info, context=nothing) =
+    (for x in xs; fetch_subfunctions!(x; info, context); end; nothing)
+Base.@nospecializeinfer fetch_subfunctions!(@nospecialize(x::StanExpr); info, context=nothing) = fetch_subfunctions!((expr(x), type(x)); info, context)
+Base.@nospecializeinfer fetch_subfunctions!(@nospecialize(x::StanType); info, context=nothing) = fetch_subfunctions!((stan_size(x), x.info); info, context)
+Base.@nospecializeinfer fetch_subfunctions!(@nospecialize(x::CanonicalExpr); info, context=nothing) = begin
+    fetch_functions!(x; info, context)
+    fetch_subfunctions!((x.args, x.kwargs); info, context)
 end
 # `tok` namespaces a call's anonymized-arg placeholders (`_arg<tok>_<i>`) per
 # `stan_expr`/`anon_canonical` invocation. Without it, every nesting level

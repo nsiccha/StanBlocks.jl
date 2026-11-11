@@ -867,7 +867,7 @@ fundef_by_head(::ValueUDF, x::CanonicalExpr{<:ValueUDF}) = _fundef(x, nothing)
 # would silently first-win here (method redefinition across surfaces), but
 # programmatic labels collide only by bug. The stored definition's parent is
 # the first-seen UDF value, so the comparison needs no extra table.
-fetch_functions!(x::CanonicalExpr{<:ValueUDF}; info) = begin
+fetch_functions!(x::CanonicalExpr{<:ValueUDF}; info, context=nothing) = begin
     sx = sig_expr(x)
     if sx in keys(info)
         prior = info[sx]
@@ -886,9 +886,9 @@ fetch_functions!(x::CanonicalExpr{<:ValueUDF}; info) = begin
         end
         return
     end
-    info[sx] = _fundef(x, _trace_context(info))
+    info[sx] = _fundef(x, context)
     isnothing(info[sx]) && return
-    fetch_subfunctions!(info[sx].body; info)
+    fetch_subfunctions!(info[sx].body; info, context)
 end
 
 # --- Family hooks (the `@lpxf` triad + `@lhs` support, as values) -------------

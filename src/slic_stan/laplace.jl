@@ -402,9 +402,9 @@ Base.show(io::IO, x::CanonicalExpr{<:LaplaceFunction}) = begin
     length(x.args) > 4 && push!(parts, _LaplaceTuple(x.args[5:end]))
     autoprint(io, head(x), "(", Join(parts, ", "), ")")
 end
-fetch_functions!(x::CanonicalExpr{<:LaplaceFunction}; info) = begin
-    fetch_functions!(_laplace_ll_call(x); info)
-    fetch_functions!(_laplace_cov_call(x); info)
+fetch_functions!(x::CanonicalExpr{<:LaplaceFunction}; info, context=nothing) = begin
+    fetch_functions!(_laplace_ll_call(x); info, context)
+    fetch_functions!(_laplace_cov_call(x); info, context)
 end
 
 # The latents integrated out so far, by name (`_reject_draw_in_likelihood`).

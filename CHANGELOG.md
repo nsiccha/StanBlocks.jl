@@ -4,7 +4,7 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
-## v0.2.38
+## v0.2.39
 
 - **Inline helpers retain their defining module.** A cross-module
   `@deffun @inline` call resolves sibling helpers and omitted keyword defaults
@@ -19,6 +19,14 @@ breaking digit).
   statement groups, draw-read diagnostics, literal slice coordinates and the
   builtin-name list use append buffers instead of concatenation folds. Large
   blocks retain their statement order without quadratic copying.
+
+## v0.2.38
+
+- Add `solve_newton`, `solve_powell` and their `_tol` variants in `@slic` and
+  `@deffun` bodies, using Stan's native algebraic solvers and implicit
+  gradients. Residuals may be named functions or closures capturing parameters.
+- Preserve one tracing context when collecting function definitions, so
+  solver closures inside helpers and in the model get distinct generated names.
 
 ## v0.2.37
 

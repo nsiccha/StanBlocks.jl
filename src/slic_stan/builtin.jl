@@ -144,6 +144,8 @@ end
     ode_ckrk ode_ckrk_tol
     ode_adams ode_adams_tol
     ode_bdf ode_bdf_tol
+    solve_newton solve_newton_tol
+    solve_powell solve_powell_tol
     # Stan's embedded Laplace approximation (Stan >= 2.37), lowered from
     # `z ~ laplace_marginal(prior) do z … end` (laplace.jl).
     laplace_marginal laplace_marginal_tol laplace_latent_rng laplace_latent_tol_rng
@@ -4999,10 +5001,26 @@ end
 const TolODESolver = Union{typeof.((ode_rk45_tol, ode_ckrk_tol, ode_adams_tol, ode_bdf_tol))...}
 const NoTolODESolver = Union{typeof.((ode_rk45, ode_ckrk, ode_adams, ode_bdf))...}
 const ODESolver = Union{TolODESolver, NoTolODESolver}
+const TolAlgebraSolver = Union{typeof.((solve_newton_tol, solve_powell_tol))...}
+const NoTolAlgebraSolver = Union{typeof.((solve_newton, solve_powell))...}
+const AlgebraSolver = Union{TolAlgebraSolver, NoTolAlgebraSolver}
 const ReduceSumFunction = Union{typeof.((reduce_sum, reduce_sum_static))...}
 
 tracetype_by_head(::ODESolver, x::CanonicalExpr{<:ODESolver}) = StanType(
     types.vector, (stan_size(x.args[4], 1), stan_size(x.args[2], 1))
+)
+
+# Stan's algebraic solvers return a vector with the initial guess's extent.
+# The residual receives that vector followed by the caller's variadic inputs;
+# solver tolerances are controls, not residual arguments.
+for H in _head_types(AlgebraSolver)
+    @eval tracetype_by_head(::$H, x::CanonicalExpr{<:$H,<:Tuple{Any,StanExpr2{<:types.vector,1},Vararg}}) =
+        StanType(types.vector, (stan_size(x.args[2], 1),))
+end
+_algebra_args(x::CanonicalExpr{<:NoTolAlgebraSolver}) = x.args[3:end]
+_algebra_args(x::CanonicalExpr{<:TolAlgebraSolver}) = x.args[6:end]
+fetch_functions!(x::CanonicalExpr{<:AlgebraSolver}; info, context=nothing) = fetch_functions!(
+    CanonicalExpr(x.args[1], x.args[2], _algebra_args(x)..., _closure_captures(x.args[1])...); info, context
 )
 
 # ── Torsten `pmx_solve_*` analytical (closed-form) PK solvers ──
@@ -5121,9 +5139,9 @@ _pmx_rhs_call(x::CanonicalExpr{<:PMXFunctorSolver}, context) = CanonicalExpr(
     x.args[1], _jb_elem(x.args[3], context), _pmx_states(x)...,
     _pmx_row(x.args[11], context), _pmx_data_rows(x, context)...,
 )
-fetch_functions!(x::CanonicalExpr{<:PMXFunctorSolver}; info) = begin
-    rhs = _pmx_rhs_call(x, _trace_context(info))
-    fetch_functions!(rhs; info)
+fetch_functions!(x::CanonicalExpr{<:PMXFunctorSolver}; info, context=nothing) = begin
+    rhs = _pmx_rhs_call(x, context)
+    fetch_functions!(rhs; info, context)
     # A right-hand side with no method for Torsten's call gets no definition and
     # would reach stanc as an undeclared identifier.
     get(info, sig_expr(rhs), nothing) === nothing && error(
@@ -5460,29 +5478,29 @@ _fundef_by_head(::typeof(jbroadcasted), x::CanonicalExpr{typeof(jbroadcasted)}, 
     )
 end
 
-fetch_functions!(x::CanonicalExpr{<:TolODESolver}; info) = fetch_functions!(
-    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[8:end]..., _closure_captures(x.args[1])...); info
+fetch_functions!(x::CanonicalExpr{<:TolODESolver}; info, context=nothing) = fetch_functions!(
+    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[8:end]..., _closure_captures(x.args[1])...); info, context
 )
 
-fetch_functions!(x::CanonicalExpr{<:NoTolODESolver}; info) = fetch_functions!(
-    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[5:end]..., _closure_captures(x.args[1])...); info
+fetch_functions!(x::CanonicalExpr{<:NoTolODESolver}; info, context=nothing) = fetch_functions!(
+    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[5:end]..., _closure_captures(x.args[1])...); info, context
 )
 
 function reduce_sum_reconstruct end
 function reduce_sum_deconstruct end
 _is_tup_arg(arg::StanExpr2{<:types.tup}) = true
 _is_tup_arg(_) = false
-fetch_functions!(x::CanonicalExpr{<:ReduceSumFunction}; info) = begin
+fetch_functions!(x::CanonicalExpr{<:ReduceSumFunction}; info, context=nothing) = begin
     fetch_functions!(
-        CanonicalExpr(x.args[1], x.args[2], stan_expr(1), stan_expr(1), x.args[4:end]...); info
+        CanonicalExpr(x.args[1], x.args[2], stan_expr(1), stan_expr(1), x.args[4:end]...); info, context
     )
     if any(_is_tup_arg, x.args) 
         fetch_functions!(
-            CanonicalExpr(reduce_sum_reconstruct, x.args[1], x.args[2], stan_expr(1), stan_expr(1), x.args[4:end]...); info
+            CanonicalExpr(reduce_sum_reconstruct, x.args[1], x.args[2], stan_expr(1), stan_expr(1), x.args[4:end]...); info, context
         )
         # Work around https://github.com/stan-dev/math/issues/3041
         fetch_functions!(
-            CanonicalExpr(reduce_sum_deconstruct, stan_expr(reduce_sum_reconstruct), x.args[2], x.args[3], x.args[1], x.args[4:end]...); info
+            CanonicalExpr(reduce_sum_deconstruct, stan_expr(reduce_sum_reconstruct), x.args[2], x.args[3], x.args[1], x.args[4:end]...); info, context
         )
     end
 end

@@ -225,11 +225,11 @@ Base.show(io::IO, x::CanonicalExpr) = begin
         autoprint(io, fname, "(", Join(fargs, ", "), ")")
     end
 end
-Base.show(io::IO, x::CanonicalExpr{<:ODESolver}) = autoprint(io, head(x), "(", Join(
-    # ODE solvers fold the function arg into the receiver name (mangled
+Base.show(io::IO, x::CanonicalExpr{<:Union{ODESolver,AlgebraSolver}}) = autoprint(io, head(x), "(", Join(
+    # Higher-order solvers fold the function arg into the receiver name (mangled
     # via `func_name(args[1], rest)`), then emit the remaining args. If
     # `args[1]` is a closure, its captures must *also* be threaded as
-    # trailing args so Stan's ODE solver forwards them to the lifted
+    # trailing args so Stan's solver forwards them to the lifted
     # function — `expand_call_args` only catches closures in the args
     # being rendered, not the function-position arg.
     (_emitted_func_name(io, x.args[1], x.args[2:end]), stan_call_args(x.args[2:end])...,
