@@ -1644,6 +1644,74 @@ begin
         end
         foreach(a -> _reject_udf_forms!(a, fname), x.args)
     end
+    # Stan passes function arguments and loop variables read-only: `mg = mg ./ s`
+    # in a body emitted `mg = (mg ./ s);`, which stanc rejects ("Cannot assign to
+    # function argument or loop identifier", todo 1d4vme2). In Julia that rebinds
+    # a local name, so an argument the body rebinds (`=`, `+=`, …) is read through
+    # a local copy from the body's first statement on. A write INTO an argument
+    # (`mg[1] = …`, `mg .= …`) would change the caller's array in Julia, which
+    # Stan cannot, and a rebound loop variable has no Stan spelling: both are
+    # refused, naming the fix.
+    _udf_assign_head(h) = h === :(=) || begin
+        s = string(h)
+        length(s) >= 2 && s[end] == '=' && !(s in ("==", "!=", "<=", ">=", "===", "!==", "=>"))
+    end
+    _udf_assign_target(x::Expr) = begin
+        t = x.args[1]
+        Meta.isexpr(t, :(::)) ? t.args[1] : t
+    end
+    _udf_rebinds!(acc, x, names) = acc
+    _udf_rebinds!(acc, x::Expr, names) = begin
+        x.head === :-> && return acc   # a closure binds its own names
+        if x.head === :for
+            foreach(a -> _udf_rebinds!(acc, a, names), x.args[2:end])
+            return acc
+        end
+        if _udf_assign_head(x.head) && !isempty(x.args)
+            t = _udf_assign_target(x)
+            broadcast = startswith(string(x.head), ".")
+            if t isa Symbol && t in names
+                push!(broadcast ? acc.written : acc.rebound, t)
+            elseif Meta.isexpr(t, :ref) && t.args[1] isa Symbol && t.args[1] in names
+                push!(acc.written, t.args[1])
+            end
+        end
+        foreach(a -> _udf_rebinds!(acc, a, names), x.args)
+        acc
+    end
+    _udf_new_rebinds(names) = (; rebound=Set{Symbol}(), written=Set{Symbol}())
+    _rebound_loop_var(::Any) = nothing
+    _rebound_loop_var(x::Expr) = begin
+        if x.head === :for && Meta.isexpr(x.args[1], :(=)) && x.args[1].args[1] isa Symbol
+            v = x.args[1].args[1]
+            acc = _udf_rebinds!(_udf_new_rebinds(()), x.args[2], (v,))
+            isempty(acc.rebound) && isempty(acc.written) || return v
+        end
+        for a in x.args
+            v = _rebound_loop_var(a)
+            v === nothing || return v
+        end
+        nothing
+    end
+    # The body to trace, and the refusal its Stan definition raises instead, if any.
+    # The refusal waits for that definition: the Julia method of a `@juliacompat`
+    # function that only Julia calls still behaves as Julia does.
+    _copy_rebound_args(body, args, fname) = begin
+        v = _rebound_loop_var(body)
+        v === nothing || return (body,
+            "@deffun ($fname): the loop body assigns its loop variable `$v`, which Stan " *
+            "keeps read-only. Bind a local instead (`j = $v + 1`) and use that.")
+        acc = _udf_rebinds!(_udf_new_rebinds(args), body, args)
+        isempty(acc.written) || return (body,
+            "@deffun ($fname): the body writes into its argument `$(minimum(acc.written))` " *
+            "(an indexed or broadcast `.=` write). Stan passes arguments read-only, and in " *
+            "Julia the write would change the caller's array. Copy it into a local first " *
+            "(`$(minimum(acc.written))_copy = $(minimum(acc.written))`) and write into the copy.")
+        isempty(acc.rebound) && return (body, nothing)
+        local_of = Dict(a => Symbol(a, "__local") for a in acc.rebound)
+        copies = Any[Expr(:(=), local_of[a], a) for a in args if a in acc.rebound]
+        (Expr(:block, copies..., _subst_syms(body, local_of).args...), nothing)
+    end
 
     deffun(x::LineNumberNode; kwargs...) = x
     # Macrocall args may start with a LineNumberNode carrying the call site;
@@ -2534,6 +2602,9 @@ begin
         if !ismissing(body)
             @assert Meta.isexpr(body, :block) "@deffun: function body must be a `begin ... end` block, got `$body`."
             _reject_udf_forms!(body, f)
+            # An inlined UDF (`@inline`, or a `!` name) runs in its caller's scope,
+            # where writing into an argument writes the caller's variable, as meant.
+            body, stan_refusal = is_inline ? (body, nothing) : _copy_rebound_args(body, arg_names, f)
             # `void` UDFs run for side effects only — don't wrap the trailing
             # expression in a `return`, and force the inferred return type.
             if rv != :void
@@ -2556,6 +2627,7 @@ begin
                 ),
                 $stan._deref_lnn($stan._current_lnn(info)),
             ))
+            stan_refusal === nothing || (stan_fundef = :(error($stan_refusal)))
         end
 
         # Every rule this definition registers is keyed on its head first (see
