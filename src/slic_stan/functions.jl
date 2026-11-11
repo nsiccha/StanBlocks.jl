@@ -3100,7 +3100,7 @@ Base.@nospecializeinfer func_name(@nospecialize(f), @nospecialize(args)) = begin
     _specialized_func_name(receiver, func_name(args))
 end
 _specialized_func_name(receiver, fragments) = begin
-    fragments = map(_escape_suffixed_fragment, fragments)
+    fragments = _escape_density_fragment(fragments)
     suffix_idxs = findfirst(_STAN_SUFFIX, receiver)
     if isnothing(suffix_idxs)
         join(vcat(receiver, fragments), "_")
@@ -3110,15 +3110,21 @@ _specialized_func_name(receiver, fragments) = begin
         join(vcat(base, fragments), "_") * suffix
     end
 end
-# A function-valued argument named with a Stan suffix (`uniform_simplex_lpdf`)
-# keeps it in the specialised name, so `simplex_prior_lpdf(…, uniform_simplex_lpdf)`
-# was named `simplex_prior_…_uniform_simplex_lpdf_lpdf` and its `~` statement,
-# `simplex_prior_…_uniform_simplex_lpdf(…)`, still ended in `_lpdf`, which stanc
-# rejects (todo 06lvabf). A fragment ending in such a suffix gets `_arg`, so only
-# the receiver's own suffix ends the name.
+# A `~` statement names a density by its family (`simplex_prior`) plus the
+# specialisation fragments, so a last fragment that is a function argument named
+# with a density suffix (`uniform_simplex_lpdf`) sampled as
+# `simplex_prior_…_uniform_simplex_lpdf(…)`, which still ends in `_lpdf`, and
+# stanc rejects it (todo 06lvabf). That fragment gets `_arg`, the same for the
+# family and its density (`…_uniform_simplex_lpdf_arg_lpdf`), which keeps the
+# `~` and the definition in lockstep. Other fragments keep their names.
 const _STAN_SUFFIX = r"_(rng|lu?p[md]fs?|lccdf|lcdf)$"
-_escape_suffixed_fragment(s::AbstractString) = occursin(_STAN_SUFFIX, s) ? s * "_arg" : s
-_escape_suffixed_fragment(s) = s
+const _DENSITY_SUFFIX = r"_lu?p[md]f$"
+_escape_density_fragment(fragments) = begin
+    isempty(fragments) && return fragments
+    last = fragments[end]
+    last isa AbstractString && occursin(_DENSITY_SUFFIX, last) || return fragments
+    vcat(fragments[1:end-1], last * "_arg")
+end
 func_name(args::NamedTuple) = func_name(values(args))
 Base.@nospecializeinfer func_name(@nospecialize(args::Tuple)) = begin
     out = []
