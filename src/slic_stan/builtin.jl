@@ -3209,8 +3209,20 @@ end
 # failure surfaces from deep inside `tracetype` as an internal
 # `` `tracetype` not defined for _arg30_2::anything ``, which names neither the
 # family nor what is missing. Re-raise with both.
+_ragged_dense_total_arg(::CanonicalExpr) = nothing
+_ragged_dense_total_arg(rhs::CanonicalExpr{<:Union{typeof(builtin.multinomial),typeof(builtin.dirichlet_multinomial)}}) =
+    length(rhs.args) == 2 && stan_ndim(rhs.args[2]) > 0 ? rhs.args[2] : nothing
 _ragged_missing_sized_rng(rhs::CanonicalExpr, ct, detail) = begin
     family = _ragged_base_family(rhs)
+    total = _ragged_dense_total_arg(rhs)
+    total === nothing || error(
+        "Ragged observation: family `", nameof(family), "` needs a scalar integer total ",
+        "`N` per group, but received `", sigtype(type(total)), "`. Its sized predictive ",
+        "companion exists. Ragged broadcasting slices ragged carriers; dense arguments ",
+        "are passed whole to each group. Use `@plate for k in 1:G` and index each ",
+        "per-group value explicitly, for example `ys[k] ~ ", nameof(family),
+        "(parameters[k], totals[k])`. ", detail,
+    )
     rng = try string(nameof(rng_expr(head(rhs)))) catch; string(nameof(family), "_rng") end
     error(
         "Ragged observation: family `", nameof(family), "` has no SIZED predictive ",

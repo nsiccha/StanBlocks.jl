@@ -11,6 +11,10 @@ breaking digit).
   where it was defined, including inside another UDF or submodel. Explicit
   arguments and later caller statements keep the caller's scope. This fixes
   silently wrong densities when the two modules define the same helper name.
+- **Ragged composition errors identify dense totals.** Top-level ragged
+  `multinomial` and `dirichlet_multinomial` calls with an array of totals now
+  explain that each group needs a scalar total and show explicit `@plate for`
+  indexing. They no longer claim that the existing predictive RNG is missing.
 
 ## v0.2.37
 
