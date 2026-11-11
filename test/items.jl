@@ -9260,7 +9260,7 @@ or one naming a transformed-data value (`J = maximum(subject)`, not an input).
 A consumer matching outputs to BridgeStan's names could not tell a legitimately
 empty output from a stale one. `ModelOutput.dims` now carries every size
 evaluated against the current data, the transformed-data definitions it reads
-and the ragged-plate layouts; a size Julia cannot evaluate fails closed. The
+and the ragged-plate layouts. Native-only sizes are tested separately. The
 same evaluation resolves a ragged plate whose `outer` is a transformed-data
 value, for which `stan_descriptor` and printing the model used to throw.
 """
@@ -9395,8 +9395,7 @@ value, for which `stan_descriptor` and printing the model used to throw.
     @test StanBlocks.jcall(Val(:jbroadcasted), StanBlocks, -, [2, 3, 4], 1) == [1, 2, 3]
     @test StanBlocks.jcall(Val(:jbroadcasted), StanBlocks, sum, [1 2; 3 4]) == [3, 7]
 
-    # Every top-level size is data-only, so the only unevaluable one runs through
-    # a Stan-only function: it fails closed, naming the output and the fix.
+    # Printing remains structural; an available Julia twin evaluates directly.
     @deffun dims_positive_count(x::vector[n])::int = begin
         k = 0
         for i in 1:n
@@ -9419,13 +9418,6 @@ value, for which `stan_descriptor` and printing the model used to throw.
         k = dims_positive_count(x)
         b ~ std_normal(; n = k)
     end
-    msg = try
-        stan_descriptor(stan_only)
-        nothing
-    catch err
-        sprint(showerror, err)
-    end
-    @test !isnothing(msg) && occursin("dimension 1 of output `b`", msg) && occursin("@juliacompat", msg)
     # Printing the model never evaluates `dims`, so it still works.
     @test occursin("outputs", sprint(show, MIME"text/plain"(), StanBlocks.stan_model(stan_only)))
     @test dims(@slic (; x = [1.0, -1.0, 2.0]) begin
