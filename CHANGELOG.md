@@ -4,6 +4,14 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.42
+
+- **Builtin implementations explain themselves in generated Stan.** Comments
+  above StanBlocks-defined functions describe their probabilities, numerical
+  methods, shapes and boundary behavior. This includes distribution wrappers,
+  stable tail calculations, predictive draws and ragged-container helpers;
+  their executable Stan code is unchanged.
+
 ## v0.2.41
 
 - **Generated Julia helpers can supply source to ReactiveKernels.** Loading
