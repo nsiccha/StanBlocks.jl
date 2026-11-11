@@ -1,4 +1,4 @@
-@testitem "ReactiveKernels receives dispatched juliacompat source" begin
+@testitem "ReactiveKernels receives dispatched juliacompat source" tags=[:reactivekernels] begin
     using ReactiveKernels
 
     @deffun @juliacompat source_loop(x::real, n::int)::real = begin
@@ -56,7 +56,7 @@
     @test isnothing(ext.deffun_source(source_loop, Tuple{Float32,Int}))
 end
 
-@testitem "ReactiveKernels matrix exponential compatibility" begin
+@testitem "ReactiveKernels matrix exponential compatibility" tags=[:reactivekernels] begin
     using ReactiveKernels
     @deffun @juliacompat source_matrix_exp(x) = matrix_exp(x)
     @kernel matrix_kernel(x::Matrix{Float64}) = begin
@@ -84,6 +84,42 @@ end
             assert abs(float(jax.jit(model.kernel)(x)) - ea - eb) < 1e-10
             np.testing.assert_allclose(jax.jit(jax.grad(model.kernel))(x),
                 [[ea, divided], [divided, eb]], rtol=1e-9, atol=1e-10)
+            """)
+            @test success(`$python $check`)
+        end
+    end
+end
+
+@testitem "ReactiveKernels uses generated source in host data preparation" tags=[:reactivekernels] begin
+    using ReactiveKernels
+    @deffun @juliacompat source_host_loop(x::real, n::int)::real = begin
+        total = 0.0
+        for i in 1:n
+            total = total + x * i
+        end
+        total
+    end
+    @kernel prepared_kernel(x::Float64, n::Int, scale::Float64) = begin
+        offset = source_host_loop(x, n)
+        result = scale * offset
+        return result
+    end
+    src = jax_source(prepared_kernel; have=(:x, :n, :scale), want=:result,
+        data=(; x=2.0, n=3))
+    @test occursin("def prepare_data", string(src))
+    python = get(ENV, "RK_JAX_PYTHON", "")
+    if isempty(python)
+        @test_skip "Set RK_JAX_PYTHON to check host preparation and JAX gradients"
+    else
+        mktempdir() do dir
+            write(joinpath(dir, "prepared_kernel.py"), src)
+            check = joinpath(dir, "check.py")
+            write(check, """
+            import jax
+            import prepared_kernel as model
+            prepared = model.prepare_data(x=2.0, n=3)
+            assert abs(float(jax.jit(model.kernel)(3.0, **prepared)) - 36.0) < 1e-10
+            assert abs(float(jax.jit(jax.grad(model.kernel))(3.0, **prepared)) - 12.0) < 1e-10
             """)
             @test success(`$python $check`)
         end

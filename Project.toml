@@ -43,9 +43,8 @@ julia = "1.10"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 PosteriorDB = "1c4bc282-d2f5-44f9-b6d1-8c4424a23ad4"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
-ReactiveKernels = "78e9f072-d36b-4c73-b7a3-751b0eb26cf9"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 
 [targets]
-test = ["Enzyme", "PosteriorDB", "Random", "ReactiveKernels", "Test", "TestItemRunner"]
+test = ["Enzyme", "PosteriorDB", "Random", "Test", "TestItemRunner"]
