@@ -4614,6 +4614,7 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
         fresh = Pair{Symbol,Any}[]
         for k in keys(root)
             (k in before || k in helpers) && continue
+            get(type(root[k]).info, :submodel_data, false) && continue
             push!(fresh, k => _resolve_return_size_type(type(root[k]), size_table, "plate cell"))
         end
         (fresh=fresh, ret_type=ret === nothing ? nothing :
@@ -5057,6 +5058,10 @@ _forward_loop_core!(;
     if rv !== nothing
         global_rv = _plate_global_name(info, rv)
         haskey(cell_types, global_rv) && error("plate: result `$rv` collides with a fresh binding in the do-block.")
+        rv in keys(info) && _plate_context_entry(rv; info) !== nothing && error(
+            "plate: collecting a `plate(...) do` result inside another compiler-owned loop ",
+            "is not supported. For independent axes, use one `@plate for j in 1:J, s in 1:S` ",
+            "and index the cell arrays explicitly.")
         rv in keys(info) && error("plate: result `$rv` is already bound in model scope.")
         all_cell_types[rv] = rv_type
     end

@@ -253,7 +253,26 @@ maybedata!(x::StanModel, key, value::AbstractString) = nothing
 # values shared one data variable and the second value was dropped (snag
 # `submodel-instanc-09f67aba`). A caller expression passed as a keyword
 # (`sub(; k = caller_k)`) is already a `StanExpr` and keeps the caller's name.
-maybedata!(x::SubModel, key, value) = locals(x)[key] = maybedata(_plate_global_name(x, key), value)
+maybedata!(x::SubModel, key, value) = begin
+    bound = maybedata(_plate_global_name(x, key), value)
+    if !(value isa StanExpr) && expr(bound) isa Symbol
+        root = _plate_root_info(x)
+        name = expr(bound)
+        existing = get(vars(root), name, nothing)
+        existing === nothing || qual(existing) == :data || error(
+            "Sub-model data `", name, "` conflicts with an existing ", qual(existing),
+            "-qualified binding. Rename one of them.")
+        _check_data_binding(existing, bound)
+        if existing === nothing
+            # Backward analysis and observation twins resolve flattened names
+            # at the root. A bound input is shared across plate cells, so its
+            # discovery probe must not promote it into per-cell storage.
+            bound = remake(bound; submodel_data=true)
+            root[name] = bound
+        end
+    end
+    locals(x)[key] = bound
+end
 
 # --- Partly-missing-vector imputation helpers --------------------------------
 

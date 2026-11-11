@@ -3849,7 +3849,8 @@ end
 #     is how `to_vector` lays the variate out.
 # No `@lhs`: it would register a base `normal(::real, ::real)` tracetype
 # returning a matrix, which every untyped `x ~ normal(0, 1)` would then pick
-# up. The variate's shape always comes from a typed LHS or from the data.
+# up. The variate's shape comes from a typed LHS, observed data, or a matrix
+# argument of an untyped fresh sample (`_distribution_sample_shape`).
 @eval builtin function matrix_variate_arg end
 const matrix_variate_arg = builtin.matrix_variate_arg
 @deffun matrix_variate_arg(x::real, m::int, n::int)::real = x
@@ -4203,6 +4204,7 @@ end
 @deffun wishart_cholesky_rng(matrix[n,m], nu, L)::matrix[n,m] = wishart_cholesky_rng(nu, L)
 @deffun inv_wishart_cholesky_rng(matrix[n,m], nu, L)::matrix[n,m] = inv_wishart_cholesky_rng(nu, L)
 @deffun lkj_corr_rng(matrix[n,m], eta)::matrix[n,m] = lkj_corr_rng(n, eta)
+@deffun lkj_corr_cholesky_rng(matrix[n,m], eta)::matrix[n,m] = lkj_corr_cholesky_rng(n, eta)
 
 # =============================================================================
 # Longitudinal dose/time-response building blocks.

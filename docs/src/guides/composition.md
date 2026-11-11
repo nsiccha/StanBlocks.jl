@@ -47,6 +47,13 @@ Use a module-level `const` binding for a reusable component that should retain
 its identity. Definitions in another module retain their defining scope; import
 the component into the caller and supply its inputs through the call.
 
+A component may also bind its own observed data with `@slic (; obs=values)`.
+From v0.2.37, calling it as `s ~ component()` observes those values under the
+scoped name `s_obs`, with the usual predictive and likelihood outputs. This
+also covers partly-missing vectors and observations indexed by an annotated
+loop inside the component. An outer plate cannot repeat that whole observation
+in every cell: observe it outside that plate or index the data by cell.
+
 ## Replacement
 
 `Base.merge` with a quoted statement replaces the declaration with the same
