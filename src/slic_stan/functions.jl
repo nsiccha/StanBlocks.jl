@@ -3100,7 +3100,8 @@ Base.@nospecializeinfer func_name(@nospecialize(f), @nospecialize(args)) = begin
     _specialized_func_name(receiver, func_name(args))
 end
 _specialized_func_name(receiver, fragments) = begin
-    suffix_idxs = findfirst(r"_(rng|lu?p[md]fs?|lccdf|lcdf)$", receiver)
+    fragments = map(_escape_suffixed_fragment, fragments)
+    suffix_idxs = findfirst(_STAN_SUFFIX, receiver)
     if isnothing(suffix_idxs)
         join(vcat(receiver, fragments), "_")
     else
@@ -3109,6 +3110,15 @@ _specialized_func_name(receiver, fragments) = begin
         join(vcat(base, fragments), "_") * suffix
     end
 end
+# A function-valued argument named with a Stan suffix (`uniform_simplex_lpdf`)
+# keeps it in the specialised name, so `simplex_prior_lpdf(…, uniform_simplex_lpdf)`
+# was named `simplex_prior_…_uniform_simplex_lpdf_lpdf` and its `~` statement,
+# `simplex_prior_…_uniform_simplex_lpdf(…)`, still ended in `_lpdf`, which stanc
+# rejects (todo 06lvabf). A fragment ending in such a suffix gets `_arg`, so only
+# the receiver's own suffix ends the name.
+const _STAN_SUFFIX = r"_(rng|lu?p[md]fs?|lccdf|lcdf)$"
+_escape_suffixed_fragment(s::AbstractString) = occursin(_STAN_SUFFIX, s) ? s * "_arg" : s
+_escape_suffixed_fragment(s) = s
 func_name(args::NamedTuple) = func_name(values(args))
 Base.@nospecializeinfer func_name(@nospecialize(args::Tuple)) = begin
     out = []
