@@ -106,6 +106,8 @@ end
     end
     src = jax_source(prepared_kernel; have=(:x, :n, :scale), want=:result,
         data=(; x=2.0, n=3))
+    all_prepared = jax_source(prepared_kernel; have=(:x, :n, :scale), want=:result,
+        data=(:x, :n, :scale))
     @test occursin("def prepare_data", string(src))
     python = get(ENV, "RK_JAX_PYTHON", "")
     if isempty(python)
@@ -113,13 +115,20 @@ end
     else
         mktempdir() do dir
             write(joinpath(dir, "prepared_kernel.py"), src)
+            write(joinpath(dir, "all_prepared_kernel.py"), all_prepared)
             check = joinpath(dir, "check.py")
             write(check, """
             import jax
             import prepared_kernel as model
+            import all_prepared_kernel as all_data
             prepared = model.prepare_data(x=2.0, n=3)
             assert abs(float(jax.jit(model.kernel)(3.0, **prepared)) - 36.0) < 1e-10
             assert abs(float(jax.jit(jax.grad(model.kernel))(3.0, **prepared)) - 12.0) < 1e-10
+            for n in (0, 1, 19):
+                prepared_all = all_data.prepare_data(x=2.0, n=n, scale=3.0)
+                expected = 3.0 * n * (n + 1)
+                assert abs(float(all_data.kernel(**prepared_all)) - expected) < 1e-10
+                assert abs(float(jax.jit(all_data.kernel)(**prepared_all)) - expected) < 1e-10
             """)
             @test success(pipeline(`$python $check`; stdout=stdout, stderr=stderr))
         end

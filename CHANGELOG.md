@@ -7,7 +7,7 @@ breaking digit).
 ## v0.2.40
 
 - **Generated Julia helpers can supply source to ReactiveKernels.** Loading
-  ReactiveKernels 0.1.170 or newer activates an optional extension that exposes
+  ReactiveKernels 0.1.172 or newer activates an optional extension that exposes
   complete named positional `@deffun @juliacompat` bodies to `jax_source`.
   Loops, branches and dimension guards can translate on device and in host
   `prepare_data`, within ReactiveKernels' supported source subset. The source
