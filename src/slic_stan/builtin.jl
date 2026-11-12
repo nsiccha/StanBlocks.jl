@@ -436,13 +436,16 @@ import Statistics
 @deffun begin 
     reduce_sum(args...)::real
     reduce_sum_static(args...)::real
+    "Sum one contribution per input element using parallel slices with grainsize 1; shared arguments are passed unchanged."
     @stanonly simple_reduce_sum(f, x, args...)::real = reduce_sum(simple_reduce_sum_helper, x, 1, f, args...)
     # Stan's `reduce_sum` only accepts `T[]` arrays as its data argument, not
     # `vector` (or its `simplex`/`ordered`/`positive_ordered` subtypes, or
     # `row_vector`). Auto-convert via `to_array_1d` so users can call
     # `simple_reduce_sum(f, ::any_vector, ...)` directly. `any_vector` covers
     # all 1-d vector-like Stan types in the SLIC hierarchy.
+    "Sum one contribution per input element using parallel slices with grainsize 1; shared arguments are passed unchanged."
     @stanonly simple_reduce_sum(f, x::any_vector[n], args...)::real = reduce_sum(simple_reduce_sum_helper, to_array_1d(x), 1, f, args...)
+    "Sum the per-element contribution over this slice; shared arguments are unchanged."
     @juliacompat simple_reduce_sum_helper(x_slice::anything[n], slice_start, slice_end, f, args...)::real = begin
         rv = 0.
         for i in 1:n
@@ -511,6 +514,7 @@ import Statistics
     mdivide_left_tri_low(::matrix[m,m], ::matrix[m,n])::matrix[m,n]
     linspaced_array(n, x, y)::real[n]
     linspaced_int_array(n, args...)::int[n]
+    "Return n evenly spaced integers, with an empty array when n is zero."
     @stanonly robust_linspaced_int_array(n, args...)::int[n] = if n == 0
         rv::int[n]
         rv 
@@ -577,8 +581,10 @@ import Statistics
     # name (`weighted_normal_lpdf`, `weighted_poisson_lpmf`, ...). The selector
     # calls below resolve through the same @lpxf registry as sampling/GQ.
     @stanonly begin
+    "Multiply the base log density or mass by the common observation weight."
     weighted_lpdf(y, family, weight::real, args...) =
         weight * density(family, y, args...)
+    "Multiply the base log density or mass by the common observation weight."
     weighted_lpmf(y, family, weight::real, args...) =
         weight * density(family, y, args...)
     # `lp` is deliberately UNannotated: `pointwise` carries its own size. A
@@ -587,40 +593,51 @@ import Statistics
     # different-but-runtime-equal size (e.g. `vector[dims(args3)[1]]`). Forcing
     # `lp::vector[n]` here rejects that custom case at trace time; the
     # `weight .* lp` runtime dim-guard still enforces the equality.
+    "Sum the elementwise products of observation weights and base log probabilities."
     weighted_lpdf(y::anything[n], family, weight::vector[n], args...) = begin
         lp = pointwise(family, y, args...)
         sum(weight .* lp)
     end
+    "Sum the elementwise products of observation weights and base log probabilities."
     weighted_lpmf(y::anything[n], family, weight::vector[n], args...) = begin
         lp = pointwise(family, y, args...)
         sum(weight .* lp)
     end
+    "Multiply each pointwise log probability by the common observation weight."
     weighted_lpdfs(y, family, weight::real, args...) =
         weight * pointwise(family, y, args...)
+    "Multiply each pointwise log probability by the common observation weight."
     weighted_lpmfs(y, family, weight::real, args...) =
         weight * pointwise(family, y, args...)
+    "Return the elementwise products of observation weights and base log probabilities."
     weighted_lpdfs(y::anything[n], family, weight::vector[n], args...)::vector[n] = begin
         lp = pointwise(family, y, args...)
         weight .* lp
     end
+    "Return the elementwise products of observation weights and base log probabilities."
     weighted_lpmfs(y::anything[n], family, weight::vector[n], args...)::vector[n] = begin
         lp = pointwise(family, y, args...)
         weight .* lp
     end
+    "Draw from the base distribution; likelihood weights do not change its predictive distribution."
     weighted_rng(family, weight, args...) =
         predictive(family, args...)
     # Sized forms forward the token to the base family's own companion, so they
     # inherit that family's guard — no guard here (audit todo 19n8abc).
+    "Draw from the base distribution; likelihood weights do not change its predictive distribution."
     weighted_rng(real[n], family, weight, args...) =
         predictive(family, real[n], args...)
+    "Draw from the base distribution; likelihood weights do not change its predictive distribution."
     weighted_rng(vector[n], family, weight, args...) =
         predictive(family, vector[n], args...)
+    "Draw from the base distribution; likelihood weights do not change its predictive distribution."
     weighted_rng(int[n], family, weight, args...) =
         predictive(family, int[n], args...)
 
     # Mathematical truncation (`truncated`) ---------------------------------
     # Public optional kwargs select one of these lower/upper/two-sided
     # implementation families at trace time. Only concrete bounds reach Stan.
+    "Return the base log probability minus log P(Y >= lo), with -infinity outside the allowed interval."
     lower_conditioning_lpdf(y::real, family, lo, args...)::real = begin
         rv::real[1]
         rv[1] = negative_infinity()
@@ -629,6 +646,7 @@ import Statistics
         end
         rv[1]
     end
+    "Return the base log probability minus log P(Y >= lo), with -infinity outside the allowed interval."
     lower_conditioning_lpmf(y::int, family, lo, args...)::real = begin
         rv::real[1]
         rv[1] = negative_infinity()
@@ -637,22 +655,29 @@ import Statistics
         end
         rv[1]
     end
+    "Sum the base log probability minus log P(Y >= lo), with -infinity outside the allowed interval over observations."
     lower_conditioning_lpdf(y::anything[n], family, lo, args...)::real =
         sum(lower_conditioning_lpdfs(y, family, lo, args...))
+    "Sum the base log probability minus log P(Y >= lo), with -infinity outside the allowed interval over observations."
     lower_conditioning_lpmf(y::anything[n], family, lo, args...)::real =
         sum(lower_conditioning_lpmfs(y, family, lo, args...))
+    "Return the base log probability minus log P(Y >= lo), with -infinity outside the allowed interval for each observation."
     lower_conditioning_lpdfs(y::real, family, lo, args...) =
         lower_conditioning_lpdf(y, family, lo, args...)
+    "Return the base log probability minus log P(Y >= lo), with -infinity outside the allowed interval for each observation."
     lower_conditioning_lpmfs(y::int, family, lo, args...) =
         lower_conditioning_lpmf(y, family, lo, args...)
+    "Return the base log probability minus log P(Y >= lo), with -infinity outside the allowed interval for each observation."
     lower_conditioning_lpdfs(y::anything[n], family, lo, args...)::vector[n] =
         jbroadcasted(lower_conditioning_lpdf, y, family, lo, args...)
+    "Return the base log probability minus log P(Y >= lo), with -infinity outside the allowed interval for each observation."
     lower_conditioning_lpmfs(y::anything[n], family, lo, args...)::vector[n] =
         jbroadcasted(lower_conditioning_lpmf, y, family, lo, args...)
     # A truncated draw redraws the base family until it lands in range, then,
     # after 100 misses, inverts the base CDF on the range (`*_inverse_rng`
     # below). The mixture is exact: a redraw that lands is a draw from the
     # truncated law, and so is the inversion.
+    "Draw from the base distribution conditional on Y >= lo; use inverse-CDF sampling after 100 unsuccessful base draws."
     lower_conditioning_rng(family, lo, args...) = begin
         draw::typeof(predictive(family, args...))[1]
         attempts::int[1]
@@ -667,18 +692,23 @@ import Statistics
         end
         draw[1]
     end
+    "Draw from the base distribution conditional on Y >= lo; use inverse-CDF sampling after 100 unsuccessful base draws."
     lower_conditioning_cell_rng(dummy, family, lo, args...) =
         lower_conditioning_rng(family, lo, args...)
     # `jbroadcasted` emits an explicit `for i in 1:n` loop of scalar cell draws,
     # so an empty token runs zero iterations — no guard, here or in the five
     # sibling HOF families below, which share this shape (todo 19n8abc).
+    "Draw independently from the base distribution conditional on Y >= lo; use inverse-CDF sampling after 100 unsuccessful base draws."
     lower_conditioning_rng(vector[n], family, lo, args...)::vector[n] =
         jbroadcasted(lower_conditioning_cell_rng, rep_vector(0., n), family, lo, args...)
+    "Draw independently from the base distribution conditional on Y >= lo; use inverse-CDF sampling after 100 unsuccessful base draws."
     lower_conditioning_rng(real[n], family, lo, args...)::real[n] =
         to_array_1d(jbroadcasted(lower_conditioning_cell_rng, rep_vector(0., n), family, lo, args...))
+    "Draw independently from the base distribution conditional on Y >= lo; use inverse-CDF sampling after 100 unsuccessful base draws."
     lower_conditioning_rng(int[n], family, lo, args...) =
         jbroadcasted(lower_conditioning_cell_rng, rep_array(0, n), family, lo, args...)
 
+    "Return the base log probability minus log P(Y <= hi), with -infinity outside the allowed interval."
     upper_conditioning_lpdf(y::real, family, hi, args...)::real = begin
         rv::real[1]
         rv[1] = negative_infinity()
@@ -687,6 +717,7 @@ import Statistics
         end
         rv[1]
     end
+    "Return the base log probability minus log P(Y <= hi), with -infinity outside the allowed interval."
     upper_conditioning_lpmf(y::int, family, hi, args...)::real = begin
         rv::real[1]
         rv[1] = negative_infinity()
@@ -695,18 +726,25 @@ import Statistics
         end
         rv[1]
     end
+    "Sum the base log probability minus log P(Y <= hi), with -infinity outside the allowed interval over observations."
     upper_conditioning_lpdf(y::anything[n], family, hi, args...)::real =
         sum(upper_conditioning_lpdfs(y, family, hi, args...))
+    "Sum the base log probability minus log P(Y <= hi), with -infinity outside the allowed interval over observations."
     upper_conditioning_lpmf(y::anything[n], family, hi, args...)::real =
         sum(upper_conditioning_lpmfs(y, family, hi, args...))
+    "Return the base log probability minus log P(Y <= hi), with -infinity outside the allowed interval for each observation."
     upper_conditioning_lpdfs(y::real, family, hi, args...) =
         upper_conditioning_lpdf(y, family, hi, args...)
+    "Return the base log probability minus log P(Y <= hi), with -infinity outside the allowed interval for each observation."
     upper_conditioning_lpmfs(y::int, family, hi, args...) =
         upper_conditioning_lpmf(y, family, hi, args...)
+    "Return the base log probability minus log P(Y <= hi), with -infinity outside the allowed interval for each observation."
     upper_conditioning_lpdfs(y::anything[n], family, hi, args...)::vector[n] =
         jbroadcasted(upper_conditioning_lpdf, y, family, hi, args...)
+    "Return the base log probability minus log P(Y <= hi), with -infinity outside the allowed interval for each observation."
     upper_conditioning_lpmfs(y::anything[n], family, hi, args...)::vector[n] =
         jbroadcasted(upper_conditioning_lpmf, y, family, hi, args...)
+    "Draw from the base distribution conditional on Y <= hi; use inverse-CDF sampling after 100 unsuccessful base draws."
     upper_conditioning_rng(family, hi, args...) = begin
         draw::typeof(predictive(family, args...))[1]
         attempts::int[1]
@@ -721,16 +759,21 @@ import Statistics
         end
         draw[1]
     end
+    "Draw from the base distribution conditional on Y <= hi; use inverse-CDF sampling after 100 unsuccessful base draws."
     upper_conditioning_cell_rng(dummy, family, hi, args...) =
         upper_conditioning_rng(family, hi, args...)
+    "Draw independently from the base distribution conditional on Y <= hi; use inverse-CDF sampling after 100 unsuccessful base draws."
     upper_conditioning_rng(vector[n], family, hi, args...)::vector[n] =
         jbroadcasted(upper_conditioning_cell_rng, rep_vector(0., n), family, hi, args...)
+    "Draw independently from the base distribution conditional on Y <= hi; use inverse-CDF sampling after 100 unsuccessful base draws."
     upper_conditioning_rng(real[n], family, hi, args...)::real[n] =
         to_array_1d(jbroadcasted(upper_conditioning_cell_rng, rep_vector(0., n), family, hi, args...))
+    "Draw independently from the base distribution conditional on Y <= hi; use inverse-CDF sampling after 100 unsuccessful base draws."
     upper_conditioning_rng(int[n], family, hi, args...) =
         jbroadcasted(upper_conditioning_cell_rng, rep_array(0, n), family, hi, args...)
 
     # Two-sided inclusive truncation.
+    "Return the base log probability minus log P(lo <= Y <= hi), with -infinity outside the allowed interval."
     conditioning_lpdf(y::real, family, lo, hi, args...)::real = begin
         rv::real[1]
         rv[1] = negative_infinity()
@@ -746,6 +789,7 @@ import Statistics
         end
         rv[1]
     end
+    "Return the base log probability minus log P(lo <= Y <= hi), with -infinity outside the allowed interval."
     conditioning_lpmf(y::int, family, lo, hi, args...)::real = begin
         rv::real[1]
         rv[1] = negative_infinity()
@@ -761,18 +805,25 @@ import Statistics
         end
         rv[1]
     end
+    "Sum the base log probability minus log P(lo <= Y <= hi), with -infinity outside the allowed interval over observations."
     conditioning_lpdf(y::anything[n], family, lo, hi, args...)::real =
         sum(conditioning_lpdfs(y, family, lo, hi, args...))
+    "Sum the base log probability minus log P(lo <= Y <= hi), with -infinity outside the allowed interval over observations."
     conditioning_lpmf(y::anything[n], family, lo, hi, args...)::real =
         sum(conditioning_lpmfs(y, family, lo, hi, args...))
+    "Return the base log probability minus log P(lo <= Y <= hi), with -infinity outside the allowed interval for each observation."
     conditioning_lpdfs(y::real, family, lo, hi, args...) =
         conditioning_lpdf(y, family, lo, hi, args...)
+    "Return the base log probability minus log P(lo <= Y <= hi), with -infinity outside the allowed interval for each observation."
     conditioning_lpmfs(y::int, family, lo, hi, args...) =
         conditioning_lpmf(y, family, lo, hi, args...)
+    "Return the base log probability minus log P(lo <= Y <= hi), with -infinity outside the allowed interval for each observation."
     conditioning_lpdfs(y::anything[n], family, lo, hi, args...)::vector[n] =
         jbroadcasted(conditioning_lpdf, y, family, lo, hi, args...)
+    "Return the base log probability minus log P(lo <= Y <= hi), with -infinity outside the allowed interval for each observation."
     conditioning_lpmfs(y::anything[n], family, lo, hi, args...)::vector[n] =
         jbroadcasted(conditioning_lpmf, y, family, lo, hi, args...)
+    "Return 1 when x lies outside the inclusive interval [lo, hi], and 0 otherwise."
     conditioning_outside(x, lo, hi)::int = begin
         rv::int[1]
         rv[1] = 0
@@ -785,6 +836,7 @@ import Statistics
         end
         rv[1]
     end
+    "Draw from the base distribution conditional on lo <= Y <= hi; use inverse-CDF sampling after 100 unsuccessful base draws."
     conditioning_rng(family, lo, hi, args...) = begin
         draw::typeof(predictive(family, args...))[1]
         attempts::int[1]
@@ -811,16 +863,22 @@ import Statistics
     # CCDF when it lies above the base median. The first argument is the missed
     # draw, which only selects the integer or real method. A range whose mass is
     # not representable in floating point on its scale rejects, saying so.
+    "Return log P(Y > x), a decreasing scale for inverse-CDF sampling."
     conditioning_ccdf_tail(family, x, args...)::real = conditioning_logccdf(family, x, args...)
+    "Return -log P(Y <= x), a decreasing scale for inverse-CDF sampling."
     conditioning_cdf_tail(family, x, args...)::real = -logcdf(family, x, args...)
     # The last point below the range: `lo - 1` for a count, `lo` for a real.
+    "Return the last integer below the inclusive lower bound, lo - 1."
     conditioning_edge(x::int, lo) = lo - 1
+    "Return the continuous lower bound as the CDF interval edge."
     conditioning_edge(x::real, lo) = lo
     # (a + b) ÷ 2, without forming a + b or b - a, either of which can leave
     # Stan's 32-bit integers.
+    "Compute the integer midpoint with truncation toward zero without overflowing a + b."
     conditioning_midpoint(a::int, b::int)::int =
         a ÷ 2 + b ÷ 2 + ((a - 2 * (a ÷ 2)) + (b - 2 * (b ÷ 2))) ÷ 2
     # The smallest x in (a, b] with tail(x) <= t, given tail(a) > t >= tail(b).
+    "Bisect (a, b] to find the smallest integer with decreasing tail value at most t."
     conditioning_bisect(x::int, tail, family, t::real, a::int, b::int, args...)::int = begin
         bracket::int[2]
         bracket[1] = a
@@ -835,6 +893,7 @@ import Statistics
         end
         bracket[2]
     end
+    "Bisect (a, b] until no representable midpoint remains; return its upper endpoint with tail value at most t."
     conditioning_bisect(x::real, tail, family, t::real, a, b, args...)::real = begin
         bracket::real[2]
         mid::real[1]
@@ -854,6 +913,7 @@ import Statistics
     # The open end of a one-sided range: from a known end, double the step until
     # tail crosses t. A count stops at Stan's largest integer, a real at the
     # family's support, where its CDF is still defined.
+    "Expand an upper bracket until its decreasing tail value is at most t; reject beyond the representable support."
     conditioning_bracket_up(x::int, tail, family, t::real, a::int, args...)::int = begin
         b::int[1]
         step::int[1]
@@ -874,6 +934,7 @@ import Statistics
         end
         b[1]
     end
+    "Expand an upper bracket until its decreasing tail value is at most t; reject beyond the representable support."
     conditioning_bracket_up(x::real, tail, family, t::real, a, args...)::real = begin
         support = conditioning_support_upper(family, args...)
         b::real[1]
@@ -892,6 +953,7 @@ import Statistics
         end
         b[1]
     end
+    "Expand a lower bracket until its decreasing tail value exceeds t; reject beyond the representable support."
     conditioning_bracket_down(x::int, tail, family, t::real, b::int, args...)::int = begin
         a::int[1]
         step::int[1]
@@ -912,6 +974,7 @@ import Statistics
         end
         a[1]
     end
+    "Expand a lower bracket until its decreasing tail value exceeds t; reject beyond the representable support."
     conditioning_bracket_down(x::real, tail, family, t::real, b, args...)::real = begin
         support = conditioning_support_lower(family, args...)
         a::real[1]
@@ -930,6 +993,7 @@ import Statistics
         end
         a[1]
     end
+    "Draw from the base distribution conditional on Y >= lo by inverse-CDF sampling on a stable tail scale."
     lower_conditioning_inverse_rng(x, family, lo, args...) = begin
         edge = conditioning_edge(x, lo)
         log_mass = conditioning_logccdf(family, edge, args...)
@@ -940,6 +1004,7 @@ import Statistics
         conditioning_bisect(x, conditioning_ccdf_tail, family, t, edge,
             conditioning_bracket_up(x, conditioning_ccdf_tail, family, t, edge, args...), args...)
     end
+    "Draw from the base distribution conditional on Y <= hi by inverse-CDF sampling on a stable tail scale."
     upper_conditioning_inverse_rng(x, family, hi, args...) = begin
         log_mass = logcdf(family, hi, args...)
         if is_nan(log_mass) == 1 || log_mass == negative_infinity()
@@ -949,6 +1014,7 @@ import Statistics
         conditioning_bisect(x, conditioning_cdf_tail, family, t,
             conditioning_bracket_down(x, conditioning_cdf_tail, family, t, hi, args...), hi, args...)
     end
+    "Draw from the base distribution conditional on lo <= Y <= hi by inverse-CDF sampling on a stable tail scale."
     conditioning_inverse_rng(x, family, lo, hi, args...) = begin
         if lo > hi
             reject("truncated: lower bound must not exceed upper bound")
@@ -977,12 +1043,16 @@ import Statistics
         end
         draw[1]
     end
+    "Draw from the base distribution conditional on lo <= Y <= hi; use inverse-CDF sampling after 100 unsuccessful base draws."
     conditioning_cell_rng(dummy, family, lo, hi, args...) =
         conditioning_rng(family, lo, hi, args...)
+    "Draw independently from the base distribution conditional on lo <= Y <= hi; use inverse-CDF sampling after 100 unsuccessful base draws."
     conditioning_rng(vector[n], family, lo, hi, args...)::vector[n] =
         jbroadcasted(conditioning_cell_rng, rep_vector(0., n), family, lo, hi, args...)
+    "Draw independently from the base distribution conditional on lo <= Y <= hi; use inverse-CDF sampling after 100 unsuccessful base draws."
     conditioning_rng(real[n], family, lo, hi, args...)::real[n] =
         to_array_1d(jbroadcasted(conditioning_cell_rng, rep_vector(0., n), family, lo, hi, args...))
+    "Draw independently from the base distribution conditional on lo <= Y <= hi; use inverse-CDF sampling after 100 unsuccessful base draws."
     conditioning_rng(int[n], family, lo, hi, args...)::int[n] =
         jbroadcasted(conditioning_cell_rng, rep_array(0, n), family, lo, hi, args...)
 
@@ -990,6 +1060,7 @@ import Statistics
     # `rng` is a family's resolved vector draw. Stan's `ordered` check is strict,
     # so a tie is a rejection too. An ordered vector has no CDF to invert, so
     # the redraws stop with a `reject` after 100000 attempts.
+    "Return 1 if adjacent entries fail strict increasing order, and 0 otherwise."
     ordered_rejection_unsorted(x::vector[n])::int = begin
         rv::int[1]
         rv[1] = 0
@@ -1000,6 +1071,7 @@ import Statistics
         end
         rv[1]
     end
+    "Redraw the whole vector until its entries are strictly increasing; reject after 100000 unsuccessful draws."
     ordered_rejection_rng(vector[n], rng, args...)::vector[n] = begin
         draw::vector[n]
         attempts::int[1]
@@ -1016,6 +1088,7 @@ import Statistics
     end
 
     # Threshold censoring (`censored`) --------------------------------------
+    "Return the censored log likelihood: log P(Y <= lo) at lo, the base log probability in the interior, and -infinity outside the limits."
     lower_clamping_lpdf(y::real, family, lo, args...)::real = begin
         rv::real[1]
         rv[1] = negative_infinity()
@@ -1028,6 +1101,7 @@ import Statistics
         end
         rv[1]
     end
+    "Return the censored log likelihood: log P(Y <= lo) at lo, the base log probability in the interior, and -infinity outside the limits."
     lower_clamping_lpmf(y::int, family, lo, args...)::real = begin
         rv::real[1]
         rv[1] = negative_infinity()
@@ -1040,18 +1114,25 @@ import Statistics
         end
         rv[1]
     end
+    "Sum the censored log likelihood: log P(Y <= lo) at lo, the base log probability in the interior, and -infinity outside the limits over observations."
     lower_clamping_lpdf(y::anything[n], family, lo, args...)::real =
         sum(lower_clamping_lpdfs(y, family, lo, args...))
+    "Sum the censored log likelihood: log P(Y <= lo) at lo, the base log probability in the interior, and -infinity outside the limits over observations."
     lower_clamping_lpmf(y::anything[n], family, lo, args...)::real =
         sum(lower_clamping_lpmfs(y, family, lo, args...))
+    "Return the censored log likelihood: log P(Y <= lo) at lo, the base log probability in the interior, and -infinity outside the limits for each observation."
     lower_clamping_lpdfs(y::real, family, lo, args...) =
         lower_clamping_lpdf(y, family, lo, args...)
+    "Return the censored log likelihood: log P(Y <= lo) at lo, the base log probability in the interior, and -infinity outside the limits for each observation."
     lower_clamping_lpmfs(y::int, family, lo, args...) =
         lower_clamping_lpmf(y, family, lo, args...)
+    "Return the censored log likelihood: log P(Y <= lo) at lo, the base log probability in the interior, and -infinity outside the limits for each observation."
     lower_clamping_lpdfs(y::anything[n], family, lo, args...)::vector[n] =
         jbroadcasted(lower_clamping_lpdf, y, family, lo, args...)
+    "Return the censored log likelihood: log P(Y <= lo) at lo, the base log probability in the interior, and -infinity outside the limits for each observation."
     lower_clamping_lpmfs(y::anything[n], family, lo, args...)::vector[n] =
         jbroadcasted(lower_clamping_lpmf, y, family, lo, args...)
+    "Draw from the base distribution and return max(Y, lo), placing out-of-range draws at their censoring limits."
     lower_clamping_rng(family, lo, args...) = begin
         draw::typeof(predictive(family, args...))[1]
         draw[1] = predictive(family, args...)
@@ -1060,15 +1141,20 @@ import Statistics
         end
         draw[1]
     end
+    "Draw from the base distribution and return max(Y, lo), placing out-of-range draws at their censoring limits."
     lower_clamping_cell_rng(dummy, family, lo, args...) =
         lower_clamping_rng(family, lo, args...)
+    "Draw from the base distribution and return max(Y, lo), placing out-of-range draws at their censoring limits."
     lower_clamping_rng(vector[n], family, lo, args...)::vector[n] =
         jbroadcasted(lower_clamping_cell_rng, rep_vector(0., n), family, lo, args...)
+    "Draw from the base distribution and return max(Y, lo), placing out-of-range draws at their censoring limits."
     lower_clamping_rng(real[n], family, lo, args...)::real[n] =
         to_array_1d(jbroadcasted(lower_clamping_cell_rng, rep_vector(0., n), family, lo, args...))
+    "Draw from the base distribution and return max(Y, lo), placing out-of-range draws at their censoring limits."
     lower_clamping_rng(int[n], family, lo, args...) =
         jbroadcasted(lower_clamping_cell_rng, rep_array(0, n), family, lo, args...)
 
+    "Return the censored log likelihood: log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits."
     upper_clamping_lpdf(y::real, family, hi, args...)::real = begin
         rv::real[1]
         rv[1] = negative_infinity()
@@ -1081,6 +1167,7 @@ import Statistics
         end
         rv[1]
     end
+    "Return the censored log likelihood: log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits."
     upper_clamping_lpmf(y::int, family, hi, args...)::real = begin
         rv::real[1]
         rv[1] = negative_infinity()
@@ -1093,18 +1180,25 @@ import Statistics
         end
         rv[1]
     end
+    "Sum the censored log likelihood: log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits over observations."
     upper_clamping_lpdf(y::anything[n], family, hi, args...)::real =
         sum(upper_clamping_lpdfs(y, family, hi, args...))
+    "Sum the censored log likelihood: log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits over observations."
     upper_clamping_lpmf(y::anything[n], family, hi, args...)::real =
         sum(upper_clamping_lpmfs(y, family, hi, args...))
+    "Return the censored log likelihood: log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits for each observation."
     upper_clamping_lpdfs(y::real, family, hi, args...) =
         upper_clamping_lpdf(y, family, hi, args...)
+    "Return the censored log likelihood: log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits for each observation."
     upper_clamping_lpmfs(y::int, family, hi, args...) =
         upper_clamping_lpmf(y, family, hi, args...)
+    "Return the censored log likelihood: log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits for each observation."
     upper_clamping_lpdfs(y::anything[n], family, hi, args...)::vector[n] =
         jbroadcasted(upper_clamping_lpdf, y, family, hi, args...)
+    "Return the censored log likelihood: log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits for each observation."
     upper_clamping_lpmfs(y::anything[n], family, hi, args...)::vector[n] =
         jbroadcasted(upper_clamping_lpmf, y, family, hi, args...)
+    "Draw from the base distribution and return min(Y, hi), placing out-of-range draws at their censoring limits."
     upper_clamping_rng(family, hi, args...) = begin
         draw::typeof(predictive(family, args...))[1]
         draw[1] = predictive(family, args...)
@@ -1113,16 +1207,21 @@ import Statistics
         end
         draw[1]
     end
+    "Draw from the base distribution and return min(Y, hi), placing out-of-range draws at their censoring limits."
     upper_clamping_cell_rng(dummy, family, hi, args...) =
         upper_clamping_rng(family, hi, args...)
+    "Draw from the base distribution and return min(Y, hi), placing out-of-range draws at their censoring limits."
     upper_clamping_rng(vector[n], family, hi, args...)::vector[n] =
         jbroadcasted(upper_clamping_cell_rng, rep_vector(0., n), family, hi, args...)
+    "Draw from the base distribution and return min(Y, hi), placing out-of-range draws at their censoring limits."
     upper_clamping_rng(real[n], family, hi, args...)::real[n] =
         to_array_1d(jbroadcasted(upper_clamping_cell_rng, rep_vector(0., n), family, hi, args...))
+    "Draw from the base distribution and return min(Y, hi), placing out-of-range draws at their censoring limits."
     upper_clamping_rng(int[n], family, hi, args...) =
         jbroadcasted(upper_clamping_cell_rng, rep_array(0, n), family, hi, args...)
 
     # Two-sided censoring.
+    "Return the censored log likelihood: log P(Y <= lo) at lo and log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits."
     clamping_lpdf(y::real, family, lo, hi, args...)::real = begin
         rv::real[1]
         if lo >= hi
@@ -1144,6 +1243,7 @@ import Statistics
         end
         rv[1]
     end
+    "Return the censored log likelihood: log P(Y <= lo) at lo and log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits."
     clamping_lpmf(y::int, family, lo, hi, args...)::real = begin
         rv::real[1]
         if lo >= hi
@@ -1165,18 +1265,25 @@ import Statistics
         end
         rv[1]
     end
+    "Sum the censored log likelihood: log P(Y <= lo) at lo and log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits over observations."
     clamping_lpdf(y::anything[n], family, lo, hi, args...)::real =
         sum(clamping_lpdfs(y, family, lo, hi, args...))
+    "Sum the censored log likelihood: log P(Y <= lo) at lo and log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits over observations."
     clamping_lpmf(y::anything[n], family, lo, hi, args...)::real =
         sum(clamping_lpmfs(y, family, lo, hi, args...))
+    "Return the censored log likelihood: log P(Y <= lo) at lo and log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits for each observation."
     clamping_lpdfs(y::real, family, lo, hi, args...) =
         clamping_lpdf(y, family, lo, hi, args...)
+    "Return the censored log likelihood: log P(Y <= lo) at lo and log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits for each observation."
     clamping_lpmfs(y::int, family, lo, hi, args...) =
         clamping_lpmf(y, family, lo, hi, args...)
+    "Return the censored log likelihood: log P(Y <= lo) at lo and log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits for each observation."
     clamping_lpdfs(y::anything[n], family, lo, hi, args...)::vector[n] =
         jbroadcasted(clamping_lpdf, y, family, lo, hi, args...)
+    "Return the censored log likelihood: log P(Y <= lo) at lo and log P(Y >= hi) at hi, the base log probability in the interior, and -infinity outside the limits for each observation."
     clamping_lpmfs(y::anything[n], family, lo, hi, args...)::vector[n] =
         jbroadcasted(clamping_lpmf, y, family, lo, hi, args...)
+    "Draw from the base distribution and return min(max(Y, lo), hi), placing out-of-range draws at their censoring limits."
     clamping_rng(family, lo, hi, args...) = begin
         draw::typeof(predictive(family, args...))[1]
         draw[1] = predictive(family, args...)
@@ -1189,12 +1296,16 @@ import Statistics
         end
         draw[1]
     end
+    "Draw from the base distribution and return min(max(Y, lo), hi), placing out-of-range draws at their censoring limits."
     clamping_cell_rng(dummy, family, lo, hi, args...) =
         clamping_rng(family, lo, hi, args...)
+    "Draw from the base distribution and return min(max(Y, lo), hi), placing out-of-range draws at their censoring limits."
     clamping_rng(vector[n], family, lo, hi, args...)::vector[n] =
         jbroadcasted(clamping_cell_rng, rep_vector(0., n), family, lo, hi, args...)
+    "Draw from the base distribution and return min(max(Y, lo), hi), placing out-of-range draws at their censoring limits."
     clamping_rng(real[n], family, lo, hi, args...)::real[n] =
         to_array_1d(jbroadcasted(clamping_cell_rng, rep_vector(0., n), family, lo, hi, args...))
+    "Draw from the base distribution and return min(max(Y, lo), hi), placing out-of-range draws at their censoring limits."
     clamping_rng(int[n], family, lo, hi, args...)::int[n] =
         jbroadcasted(clamping_cell_rng, rep_array(0, n), family, lo, hi, args...)
 
@@ -1206,6 +1317,7 @@ import Statistics
     # side of the median holding less of it: log(F(hi) - F(lo)) alone loses an
     # interval above the median, where both log CDFs round to 0 (snag
     # odl-native-and-s-929bc7d0).
+    "Return log P(lo < Y <= hi) for each observed interval; the observation marker carries shape only."
     interval_evidence_impl_lpdf(y, family, lo, hi, args...)::real = begin
         rv::real[1]
         if lo >= hi
@@ -1214,6 +1326,7 @@ import Statistics
         rv[1] = interval_logmass(family, lo, hi, args...)
         rv[1]
     end
+    "Return log P(lo < Y <= hi) for each observed interval; the observation marker carries shape only."
     interval_evidence_impl_lpmf(y, family, lo, hi, args...)::real = begin
         rv::real[1]
         if lo >= hi
@@ -1224,34 +1337,46 @@ import Statistics
     end
     # An infinite end is answered without evaluating the family there:
     # (-∞, hi] is the log CDF at hi, (lo, ∞) the log CCDF at lo.
+    "Compute log P(lo < Y <= hi) from the more accurate tail, handling infinite endpoints directly."
     interval_logmass_cdf(family, lo, hi, args...)::real =
         is_inf(lo) ? (is_inf(hi) ? 0. : logcdf(family, hi, args...)) :
             (is_inf(hi) ? conditioning_logccdf(family, lo, args...) :
                 interval_logmass_cdf_finite(
                     logcdf(family, lo, args...), conditioning_logccdf(family, lo, args...),
                     logcdf(family, hi, args...), conditioning_logccdf(family, hi, args...)))
+    "Compute interval log probability from log CDFs and log survival probabilities at its finite endpoints."
     interval_logmass_cdf_finite(la::real, ua::real, lb::real, ub::real)::real =
         std_interval_cdf_lmass(la, ua, lb, ub, std_interval_cdf_gap(la, ua, lb, ub))
+    "Sum log P(lo < Y <= hi) for each observed interval; the observation marker carries shape only."
     interval_evidence_impl_lpdf(y::anything[n], family, lo, hi, args...)::real =
         sum(interval_evidence_impl_lpdfs(y, family, lo, hi, args...))
+    "Sum log P(lo < Y <= hi) for each observed interval; the observation marker carries shape only."
     interval_evidence_impl_lpmf(y::anything[n], family, lo, hi, args...)::real =
         sum(interval_evidence_impl_lpmfs(y, family, lo, hi, args...))
+    "Return log P(lo < Y <= hi) for each observed interval; the observation marker carries shape only."
     interval_evidence_impl_lpdfs(y::anything[n], family, lo, hi, args...)::vector[n] =
         jbroadcasted(interval_evidence_impl_lpdf, y, family, lo, hi, args...)
+    "Return log P(lo < Y <= hi) for each observed interval; the observation marker carries shape only."
     interval_evidence_impl_lpmfs(y::anything[n], family, lo, hi, args...)::vector[n] =
         jbroadcasted(interval_evidence_impl_lpmf, y, family, lo, hi, args...)
+    "Return log P(lo < Y <= hi) for each observed interval; the observation marker carries shape only."
     interval_evidence_impl_lpdfs(y, family, lo, hi, args...) =
         interval_evidence_impl_lpdf(y, family, lo, hi, args...)
+    "Return log P(lo < Y <= hi) for each observed interval; the observation marker carries shape only."
     interval_evidence_impl_lpmfs(y, family, lo, hi, args...) =
         interval_evidence_impl_lpmf(y, family, lo, hi, args...)
+    "Draw on the original base-distribution scale; interval evidence does not censor the predictive draw."
     interval_evidence_impl_rng(family, lo, hi, args...) =
         predictive(family, args...)
     # Sized forms forward the token to the base family's own companion — same
     # inherited-guard posture as `weighted_rng` above (todo 19n8abc).
+    "Draw on the original base-distribution scale; interval evidence does not censor the predictive draw."
     interval_evidence_impl_rng(real[n], family, lo, hi, args...) =
         predictive(family, real[n], args...)
+    "Draw on the original base-distribution scale; interval evidence does not censor the predictive draw."
     interval_evidence_impl_rng(vector[n], family, lo, hi, args...) =
         predictive(family, vector[n], args...)
+    "Draw on the original base-distribution scale; interval evidence does not censor the predictive draw."
     interval_evidence_impl_rng(int[n], family, lo, hi, args...) =
         predictive(family, int[n], args...)
     end
@@ -1260,8 +1385,11 @@ import Statistics
     # `real dummy_lpdf(<y>, <args>) { return 0.; }` per call-site signature, so
     # the native `y ~ dummy(args...);` resolves. `dummy_lpdfs` is the gq
     # pointwise-likelihood term, `dummy_rng` the gq draw — both trivially 0.
+    "Contribute zero log density regardless of the observation or parameters."
     @stanonly dummy_lpdf(y, args...) = 0.
+    "Return a zero pointwise log-density contribution regardless of the arguments."
     @stanonly dummy_lpdfs(y, args...) = 0.
+    "Return zero as the predictive value of the no-op family."
     @stanonly dummy_rng(args...) = 0.
     std_normal_lpdf(args...)
     normal_lpdf(args...)
@@ -1325,6 +1453,7 @@ import Statistics
     bernoulli_logit_rng(::real)::int
     bernoulli_logit_rng(::vector[n])::int[n]
     bernoulli_logit_glm_rng(X::matrix[m,n], alpha, beta)::int[m]
+    "Draw one Bernoulli response per design row with log odds alpha + X*beta; an empty design gives an empty result."
     @stanonly bernoulli_logit_glm_rng(X::matrix[m,n], alpha::real, beta) = bernoulli_logit_glm_rng(X, rep_vector(alpha, m), beta)
     # `bernoulli_logit_glm_rng` above is the ONLY `*_glm_rng` Stan Math ships
     # (checked against `stanc --dump-stan-math-signatures`, 2.39.0). Declaring
@@ -1334,36 +1463,42 @@ import Statistics
     # Empty-segment guard (todo 19n8abc): a 0-row `X` with a scalar `sigma` /
     # `phi` replays the 2-arg-loop segfault, so the lowered plain forms
     # early-return exactly like their sized-token overloads below.
+    "Draw one normal response per design row with mean alpha + X*beta; an empty design gives an empty result."
     @stanonly normal_id_glm_rng(X::matrix[m,n], alpha::real, beta, sigma)::vector[m] = if m == 0
         rv::vector[m]
         rv
     else
         to_vector(normal_rng(rep_vector(alpha, m) + X * beta, sigma))
     end
+    "Draw one normal response per design row with mean alpha + X*beta; an empty design gives an empty result."
     @stanonly normal_id_glm_rng(X::matrix[m,n], alpha::vector[m], beta, sigma)::vector[m] = if m == 0
         rv::vector[m]
         rv
     else
         to_vector(normal_rng(alpha + X * beta, sigma))
     end
+    "Draw one Poisson response per design row with log mean alpha + X*beta; an empty design gives an empty result."
     @stanonly poisson_log_glm_rng(X::matrix[m,n], alpha::real, beta)::int[m] = if m == 0
         rv::int[m]
         rv
     else
         poisson_log_rng(rep_vector(alpha, m) + X * beta)
     end
+    "Draw one Poisson response per design row with log mean alpha + X*beta; an empty design gives an empty result."
     @stanonly poisson_log_glm_rng(X::matrix[m,n], alpha::vector[m], beta)::int[m] = if m == 0
         rv::int[m]
         rv
     else
         poisson_log_rng(alpha + X * beta)
     end
+    "Draw one negative-binomial response per design row with log mean alpha + X*beta; an empty design gives an empty result."
     @stanonly neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::real, beta, phi)::int[m] = if m == 0
         rv::int[m]
         rv
     else
         neg_binomial_2_log_rng(rep_vector(alpha, m) + X * beta, phi)
     end
+    "Draw one negative-binomial response per design row with log mean alpha + X*beta; an empty design gives an empty result."
     @stanonly neg_binomial_2_log_glm_rng(X::matrix[m,n], alpha::vector[m], beta, phi)::int[m] = if m == 0
         rv::int[m]
         rv
@@ -1374,7 +1509,9 @@ import Statistics
     binomial_rng(args...)::int
     binomial_logit_rng(n::int[m], p::vector[m])::int[m]
     binomial_logit_rng(n::vector[m], p::vector[m])::int[m]
+    "Reuse a scalar unchanged at every position of an elementwise broadcast."
     @juliacompat broadcasted_getindex(x, i) = x
+    "Read element i of a container used in elementwise broadcasting."
     @juliacompat broadcasted_getindex(x::anything[m], i) = x[i]
     # `jbroadcasted(f, args...)` is a TRACE-LEVEL construct (custom tracetype +
     # fundef below, not a fixed-arity @deffun): arbitrary arity, any array-arg
@@ -1383,6 +1520,7 @@ import Statistics
     @stanonly begin
     # Empty-segment guard (todo 19n8abc): same scalar-`1` mix as the
     # `std_normal_rng` sized overloads below — `n == 0` returns the empty draw.
+    "Draw n independent standard normal values as a vector; n = 0 returns an empty vector."
     vector_std_normal_rng(n::int)::vector[n] = if n == 0
         rv::vector[n]
         rv
@@ -1391,10 +1529,15 @@ import Statistics
     end
     # Sized-token rng overloads are generated via `@eval @deffun` loops below
     # (after the block closes). See comment at the @eval block.
+    "Return one normalized bernoulli log probability per observation, retaining shared distribution parameters."
     bernoulli_lpmfs(args...) = bernoulli_lpmf(args...)
+    "Return one normalized bernoulli log probability per observation, retaining shared distribution parameters."
     bernoulli_lpmfs(obs::anything[n], args...) = jbroadcasted(bernoulli_lpmfs, obs, args...)
+    "Return one normalized bernoulli logit log probability per observation, retaining shared distribution parameters."
     bernoulli_logit_lpmfs(args...) = bernoulli_logit_lpmf(args...)
+    "Return one normalized bernoulli logit log probability per observation, retaining shared distribution parameters."
     bernoulli_logit_lpmfs(obs::anything[n], args...) = jbroadcasted(bernoulli_logit_lpmfs, obs, args...)
+    "Return one Bernoulli log probability per design row with log odds alpha + X[i, :]*beta."
     bernoulli_logit_glm_lpmfs(y::int[n], X::matrix[n,k], alpha, beta) = begin
         rv::vector[n]
         for i in 1:n
@@ -1402,6 +1545,7 @@ import Statistics
         end
         rv
     end
+    "Return one normal log probability per design row with mean alpha + X[i, :]*beta."
     normal_id_glm_lpdfs(y::anything[n], X::matrix[n,k], alpha, beta, sigma) = begin
         rv::vector[n]
         for i in 1:n
@@ -1409,6 +1553,7 @@ import Statistics
         end
         rv
     end
+    "Return one Poisson log probability per design row with log mean alpha + X[i, :]*beta."
     poisson_log_glm_lpmfs(y::int[n], X::matrix[n,k], alpha, beta) = begin
         rv::vector[n]
         for i in 1:n
@@ -1416,6 +1561,7 @@ import Statistics
         end
         rv
     end
+    "Return one negative-binomial log probability per design row with log mean alpha + X[i, :]*beta."
     neg_binomial_2_log_glm_lpmfs(y::int[n], X::matrix[n,k], alpha, beta, phi) = begin
         rv::vector[n]
         for i in 1:n
@@ -1423,9 +1569,13 @@ import Statistics
         end
         rv
     end
+    "Return one normalized binomial log probability per observation, retaining shared distribution parameters."
     binomial_lpmfs(args...) = binomial_lpmf(args...)
+    "Return one normalized binomial log probability per observation, retaining shared distribution parameters."
     binomial_lpmfs(y::int[n], args...) = jbroadcasted(binomial_lpmfs, y, args...)
+    "Return one normalized binomial logit log probability per observation, retaining shared distribution parameters."
     binomial_logit_lpmfs(args...) = binomial_logit_lpmf(args...)
+    "Return one normalized binomial logit log probability per observation, retaining shared distribution parameters."
     binomial_logit_lpmfs(y::int[n], args...) = jbroadcasted(binomial_logit_lpmfs, y, args...)
     # Stan's native multinomial density omits the total count N because it is
     # recoverable as sum(obs), while multinomial_rng requires N. SLIC's auto-GQ
@@ -1433,16 +1583,20 @@ import Statistics
     # explicit-N overload that keeps density and predictive calls symmetric.
     # The batched form is one composition per row and produces one pointwise
     # likelihood value / predictive draw per row.
+    "Return the normalized multinomial log probability per count composition, checking each supplied total against its observed sum."
     @lhs multinomial_lpmf(obs::int[K], probs::vector[K], N::int)::real = begin
         if sum(obs) != N
             reject("multinomial: explicit N must equal sum(obs)")
         end
         multinomial_lpmf(obs, probs)
     end
+    "Return one normalized multinomial log probability per count composition, checking each supplied total against its observed sum."
     multinomial_lpmfs(obs::int[K], probs::vector[K], N::int)::real =
         multinomial_lpmf(obs, probs, N)
+    "Sum normalized multinomial log probability per count composition, checking each supplied total against its observed sum."
     @lhs multinomial_lpmf(obs::int[n,K], probs::vector[K], row_N::int[n])::real =
         sum(multinomial_lpmfs(obs, probs, row_N))
+    "Return one normalized multinomial log probability per count composition, checking each supplied total against its observed sum."
     multinomial_lpmfs(obs::int[n,K], probs::vector[K], row_N::int[n])::vector[n] = begin
         rv::vector[n]
         for i in 1:n
@@ -1453,8 +1607,10 @@ import Statistics
     # Single draw sized by the one container (`N` is a count, not a vectorized
     # arg); the row form is an explicit loop — both outside the guarded class
     # (audit todo 19n8abc).
+    "Draw multinomial count compositions with the supplied total count for each observation."
     multinomial_rng(int[K], probs::vector[K], N::int)::int[K] =
         multinomial_rng(probs, N)
+    "Draw multinomial count compositions with the supplied total count for each observation."
     multinomial_rng(int[n,K], probs::vector[K], row_N::int[n])::int[n,K] = begin
         rv::int[n,K]
         for i in 1:n
@@ -1470,16 +1626,20 @@ import Statistics
     # pointwise twin carries the multinomial coefficient and Gamma terms. Both
     # RNG forms sit outside the empty-segment guarded class, as multinomial's
     # do (audit todo 19n8abc).
+    "Return the normalized Dirichlet-multinomial log probability per count composition, checking each supplied total against its observed sum."
     @lhs dirichlet_multinomial_lpmf(obs::int[K], alpha::vector[K], N::int)::real = begin
         if sum(obs) != N
             reject("dirichlet_multinomial: explicit N must equal sum(obs)")
         end
         dirichlet_multinomial_lpmf(obs, alpha)
     end
+    "Return one normalized Dirichlet-multinomial log probability per count composition, checking each supplied total against its observed sum."
     dirichlet_multinomial_lpmfs(obs::int[K], alpha::vector[K], N::int)::real =
         dirichlet_multinomial_lpmf(obs, alpha, N)
+    "Sum normalized Dirichlet-multinomial log probability per count composition, checking each supplied total against its observed sum."
     @lhs dirichlet_multinomial_lpmf(obs::int[n,K], alpha::vector[K], row_N::int[n])::real =
         sum(dirichlet_multinomial_lpmfs(obs, alpha, row_N))
+    "Return one normalized Dirichlet-multinomial log probability per count composition, checking each supplied total against its observed sum."
     dirichlet_multinomial_lpmfs(obs::int[n,K], alpha::vector[K], row_N::int[n])::vector[n] = begin
         rv::vector[n]
         for i in 1:n
@@ -1487,8 +1647,10 @@ import Statistics
         end
         rv
     end
+    "Draw dirichlet multinomial count compositions with the supplied total count for each observation."
     dirichlet_multinomial_rng(int[K], alpha::vector[K], N::int)::int[K] =
         dirichlet_multinomial_rng(alpha, N)
+    "Draw dirichlet multinomial count compositions with the supplied total count for each observation."
     dirichlet_multinomial_rng(int[n,K], alpha::vector[K], row_N::int[n])::int[n,K] = begin
         rv::int[n,K]
         for i in 1:n
@@ -1500,6 +1662,7 @@ import Statistics
     # per column. Stan's categorical-logit primitive accepts only one vector of
     # logits at a time, so provide the density and pointwise companions for the
     # public matrix form explicitly instead of relying on row-wise broadcasting.
+    "Sum categorical log probabilities, using column i of eta as the logits for observation i."
     categorical_logit_lpmf(y::int[n], eta::matrix[k,n])::real = begin
         rv = 0.0
         for i in 1:n
@@ -1507,6 +1670,7 @@ import Statistics
         end
         rv
     end
+    "Return one categorical log probability per observation, using its own column of logits."
     categorical_logit_lpmfs(y::int[n], eta::matrix[k,n])::vector[n] = begin
         rv::vector[n]
         for i in 1:n
@@ -1519,7 +1683,9 @@ import Statistics
     # carries the REQUIRED `::real` (rule documented below): the singular
     # `categorical_lpmf(args...)` stub is itself unannotated (snag
     # sbbrmi-of-s-diri-78c6f9e7).
+    "Return one normalized categorical log probability per observation, retaining shared distribution parameters."
     categorical_lpmfs(args...)::real = categorical_lpmf(args...)
+    "Return one normalized categorical log probability per observation, retaining shared distribution parameters."
     categorical_lpmfs(y::int[n], p::vector[k])::vector[n] = begin
         rv::vector[n]
         for i in 1:n
@@ -1533,21 +1699,34 @@ import Statistics
     # `anything`, which `stanc` rejects. This surfaced when a constrained per-cell
     # parameter inside a plate (`cell[g] ~ dirichlet(…)`) fetched `dirichlet_lpdfs`
     # (snag plate-constraine-90607054).
+    "Return the multi normal log density for each whole multivariate observation, without splitting its coordinates."
     multi_normal_lpdfs(args...)::real = multi_normal_lpdf(args...)
+    "Return the multi normal cholesky log density for each whole multivariate observation, without splitting its coordinates."
     multi_normal_cholesky_lpdfs(args...)::real = multi_normal_cholesky_lpdf(args...)
+    "Return the multi normal prec log density for each whole multivariate observation, without splitting its coordinates."
     multi_normal_prec_lpdfs(args...)::real = multi_normal_prec_lpdf(args...)
+    "Return the multi student t log density for each whole multivariate observation, without splitting its coordinates."
     multi_student_t_lpdfs(args...)::real = multi_student_t_lpdf(args...)
+    "Return the multi student t cholesky log density for each whole multivariate observation, without splitting its coordinates."
     multi_student_t_cholesky_lpdfs(args...)::real = multi_student_t_cholesky_lpdf(args...)
+    "Return the wishart log density for each whole multivariate observation, without splitting its coordinates."
     wishart_lpdfs(args...)::real = wishart_lpdf(args...)
+    "Return the inv wishart log density for each whole multivariate observation, without splitting its coordinates."
     inv_wishart_lpdfs(args...)::real = inv_wishart_lpdf(args...)
+    "Return the wishart cholesky log density for each whole multivariate observation, without splitting its coordinates."
     wishart_cholesky_lpdfs(args...)::real = wishart_cholesky_lpdf(args...)
+    "Return the inv wishart cholesky log density for each whole multivariate observation, without splitting its coordinates."
     inv_wishart_cholesky_lpdfs(args...)::real = inv_wishart_cholesky_lpdf(args...)
+    "Return the lkj corr log density for each whole multivariate observation, without splitting its coordinates."
     lkj_corr_lpdfs(args...)::real = lkj_corr_lpdf(args...)
+    "Return the dirichlet log density for each whole multivariate observation, without splitting its coordinates."
     dirichlet_lpdfs(args...)::real = dirichlet_lpdf(args...)
     # Explicit-size spelling of the array density below; the sizes are implied by
     # `L` itself, so it delegates.
+    "Evaluate the LKJ Cholesky-factor log density; the explicit size arguments describe the factor array."
     @lhs lkj_corr_cholesky_lpdf(L::cholesky_factor_corr[m,n], x::real, m::int, n::int)::real =
         lkj_corr_cholesky_lpdf(L, x)
+    "Return the lkj corr cholesky log density for each whole multivariate observation, without splitting its coordinates."
     lkj_corr_cholesky_lpdfs(args...)::real = lkj_corr_cholesky_lpdf(args...)
     # A CONSTRAINED-MATRIX element (`cholesky_factor_corr[K]`, e.g. a per-stratum
     # plate cell, snag stanblocks-plate-248f67d3) is itself ndim-1, so the
@@ -1555,9 +1734,13 @@ import Statistics
     # fallback and then broadcast over the constraint size — peeling the matrix
     # to `anything`. Route the element to the density DIRECTLY: more specific
     # center, same arity, so the ndim-2 whole-array broadcast is untouched.
+    "Return the lkj corr cholesky log density for each whole multivariate observation, without splitting its coordinates."
     lkj_corr_cholesky_lpdfs(L::cholesky_factor_corr[m], x::real)::real = lkj_corr_cholesky_lpdf(L, x)
+    "Return the lkj corr cholesky log density for each whole multivariate observation, without splitting its coordinates."
     lkj_corr_cholesky_lpdfs(L::anything[n], x) = jbroadcasted(lkj_corr_cholesky_lpdfs, L, x)
+    "Return one normalized ordered logistic log probability per observation, retaining shared distribution parameters."
     ordered_logistic_lpmfs(args...) = ordered_logistic_lpmf(args...)
+    "Return one normalized ordered logistic log probability per observation, retaining shared distribution parameters."
     ordered_logistic_lpmfs(y::int[n], eta::vector[n], c::vector[m]) = begin
         rv::vector[n]
         for i in 1:n
@@ -1565,6 +1748,7 @@ import Statistics
         end
         rv
     end
+    "Draw one ordered-logistic category per predictor using the shared cutpoints."
     ordered_logistic_rng(eta::vector[n], c::vector[m])::int[n] = begin
         rv::int[n]
         for i in 1:n
@@ -1573,11 +1757,13 @@ import Statistics
         rv
     end
     # Token form delegates to the explicit-loop form above — no guard (todo 19n8abc).
+    "Draw one ordered-logistic category per predictor using the shared cutpoints."
     ordered_logistic_rng(int[n], eta::vector[n], c::vector[m])::int[n] = ordered_logistic_rng(eta, c)
     # Single native arg — same immunity as the 1-arg loops (todo 19n8abc):
     # no `n == 0` guard. The `to_vector` is load-bearing: the vectorized
     # native returns `array[] real`, so without it stanc rejects the helper
     # (snag replaying-a-zero-ab1b204c).
+    "Draw n independent exponential values with the common rate and return a vector."
     vector_exponential_rng(rate::real, n::int)::vector[n] = to_vector(exponential_rng(rep_vector(rate, n)))
     end
     # Stan's `lkj_corr_cholesky_rng(int K, real eta)` returns a K×K Cholesky
@@ -1672,12 +1858,15 @@ import Statistics
     # emg-standardized-3a08ab62, an overflowed residual in a downstream SMC).
     # u = -∞ already reaches -Inf through the z < -35 branch.
     @juliacompat begin
+    "Approximate log Phi(z) + z^2/2 in the far negative normal tail using the Mills expansion."
     std_normal_scaled_lcdf_tail(z::real)::real = begin
         w = inv(square(z))
         -log(-z) - 0.9189385332046728 +
             log1p(w * (-1 + w * (3 + w * (-15 + w * (105 + w * (-945 + w * 10395))))))
     end
+    "Approximate log Phi(z) in the far negative normal tail without underflowing the probability."
     std_normal_lcdf_tail(z::real)::real = -0.5 * square(z) + std_normal_scaled_lcdf_tail(z)
+    "Compute log Phi(z) + z^2/2, using a tail expansion when z is below -35."
     std_normal_scaled_lcdf(z::real)::real =
         z < -35 ? std_normal_scaled_lcdf_tail(z) :
             log(erfc(-z / sqrt(2.))) - log(2.) + 0.5 * square(z)
@@ -1691,11 +1880,13 @@ import Statistics
     # and Stan's reverse pass multiplies it by a zero adjoint, 0·∞ = NaN, so
     # an interval's -∞ end or a truncation's ±∞ data bound had a NaN gradient
     # with the right value (todo 0x8rwg0).
+    "Compute log P(Y <= x) for a normal distribution, preserving small tail probabilities and handling infinite bounds directly."
     normal_lcdf_stable(x::real, loc::real, scale::real)::real =
         is_inf(x) ? (x < 0 ? negative_infinity() : 0.) :
         ((x - loc) / scale < -35 ? std_normal_lcdf_tail((x - loc) / scale) :
             ((x - loc) / scale <= 0 ? log(erfc(-(x - loc) / (scale * sqrt(2.)))) - log(2.) :
                 log1m(0.5 * erfc((x - loc) / (scale * sqrt(2.))))))
+    "Compute log P(Y > x) for a normal distribution, preserving small tail probabilities and handling infinite bounds directly."
     normal_lccdf_stable(x::real, loc::real, scale::real)::real =
         is_inf(x) ? (x > 0 ? negative_infinity() : 0.) :
         ((x - loc) / scale > 35 ? std_normal_lcdf_tail((loc - x) / scale) :
@@ -1705,6 +1896,7 @@ import Statistics
     # the same arithmetic: a call to an `_lcdf`-named function has no Julia
     # method (the `@juliacompat` family-name rule), so `std_normal_scaled_lcdf`
     # itself stays Stan-only in this group.
+    "Evaluate the exponentially modified normal log density from u = (y - mu)/sigma and tau = lambda*sigma without cancelling large quadratic terms."
     exp_mod_normal_standardized_core(u::real, log_lambda::real, tau::real)::real = begin
         z = u - tau
         z < -35 ? log_lambda - 0.5 * square(u) + std_normal_scaled_lcdf_tail(z) :
@@ -1712,8 +1904,10 @@ import Statistics
                 (is_inf(u) ? negative_infinity() :
                     log_lambda + tau * (0.5 * tau - u) + normal_lcdf_stable(z, 0., 1.)))
     end
+    "Evaluate the exponentially modified normal log density using a scaled normal tail to avoid underflow and cancellation."
     exp_mod_normal_lpdf_stable(y::real, mu::real, sigma::real, lambda::real)::real =
         exp_mod_normal_standardized_core((y - mu) / sigma, log(lambda), lambda * sigma)
+    "Evaluate the exponentially modified normal log density from a standardized residual, log scale and log rate, including extreme scale-rate products."
     exp_mod_normal_lpdf_standardized(u::real, log_sigma::real, log_lambda::real)::real = begin
         log_tau = log_sigma + log_lambda
         r = log_tau > 20 ? u * exp(-log_tau) : 1.
@@ -1723,6 +1917,7 @@ import Statistics
     end
     # -0.2257913526447274 = log(2) - log(2π)/2. At an infinite z the limit is
     # -Inf for every α, answered before α·z, which is 0·∞ = NaN at α = 0.
+    "Evaluate the skew-normal log density using a stable normal log CDF; an infinite standardized residual has log density -infinity."
     skew_normal_lpdf_stable(y::real, xi::real, omega::real, alpha::real)::real = begin
         z = (y - xi) / omega
         is_inf(z) ? negative_infinity() :
@@ -1732,6 +1927,7 @@ import Statistics
     # φ(x)/Φ(-x) = x + 1/(x + 2/(x + 3/(x + …))), x ≥ 2. 8 + 400/x² terms of the
     # backward recurrence reach 2e-16 (measured for x ≥ 1.5). `_excess` is the
     # part after x, so φ(x)/Φ(-x) - x is formed without cancellation.
+    "Choose the continued-fraction depth so (depth - 8)*x^2 is at least 400."
     std_normal_inv_mills_cf_depth(x::real)::int = begin
         n = 8
         while (n - 8) * square(x) < 400
@@ -1739,6 +1935,7 @@ import Statistics
         end
         n
     end
+    "Compute phi(x)/Phi(-x) - x by a backward continued fraction, avoiding subtraction of nearly equal terms."
     std_normal_inv_mills_cf_excess(x::real)::real = begin
         t = 0.
         k = std_normal_inv_mills_cf_depth(x)
@@ -1748,18 +1945,22 @@ import Statistics
         end
         t
     end
+    "Compute phi(x)/Phi(-x) by Laplace's continued fraction in the positive tail."
     std_normal_inv_mills_cf(x::real)::real = x + std_normal_inv_mills_cf_excess(x)
     # log Φ(c) + c²/2 to a few ulps of its own size; -0.918… = -log(2π)/2.
+    "Compute log Phi(c) + c^2/2 with a continued fraction in the negative tail."
     std_normal_scaled_lcdf_mills(c::real)::real =
         c <= -2 ? -log(std_normal_inv_mills_cf(-c)) - 0.9189385332046728 :
             (c < 0 ? log(erfc(-c / sqrt(2.))) - log(2.) + 0.5 * square(c) :
                 log1m(0.5 * erfc(c / sqrt(2.))) + 0.5 * square(c))
     # The inverse Mills ratio φ(c)/Φ(c); 0.797… = √(2/π).
+    "Compute the inverse Mills ratio phi(c)/Phi(c), using a continued fraction in the negative tail."
     std_normal_inv_mills(c::real)::real =
         c <= -2 ? std_normal_inv_mills_cf(-c) :
             0.7978845608028654 * exp(-0.5 * square(c)) / erfc(-c / sqrt(2.))
     # S'(c) for S(c) = log Φ(c) + c²/2: φ(c)/Φ(c) + c, positive and increasing,
     # without the cancellation of φ(c)/Φ(c) ≈ -c for c ≪ 0.
+    "Compute the positive derivative phi(c)/Phi(c) + c without negative-tail cancellation."
     std_normal_scaled_lcdf_slope(c::real)::real =
         c <= -2 ? std_normal_inv_mills_cf_excess(-c) : std_normal_inv_mills(c) + c
 
@@ -1793,6 +1994,7 @@ import Statistics
     # e^-700. F is then τ(uΦ(u) + φ(u)) to first order, the
     # mass of the exponential's first stretch; with τ formed, D was 0 and
     # log F -Inf (snag emg-standardized-3a08ab62).
+    "Compute S(u) - S(u - tau), where S(x) = log Phi(x) + x^2/2, integrating its derivative when the difference is small."
     exp_mod_normal_std_cdf_gap(u::real, tau::real)::real = begin
         gap = 0.
         if tau <= (u <= 0 ? 0.5 * fmax(1., -u) : 0.5 / fmax(1., u))
@@ -1814,6 +2016,7 @@ import Statistics
     # least about τ²/8, beyond Float64, and log F = log Φ(u) (log1p(-u/τ) would
     # leave its domain once u > τ). F ≤ Φ(u), so log F is -Inf where log Φ(u)
     # is (u below about -1.3e154), not -Inf - (-Inf) = NaN; F(+∞) = 1.
+    "Compute log P(Z + E <= u), with Z standard normal and E exponential of rate exp(log_tau), retaining extreme-rate limits."
     exp_mod_normal_std_logcdf(u::real, log_tau::real)::real = begin
         lphi = normal_lcdf_stable(u, 0., 1.)
         log_gap = log_tau < -709 && is_inf(u) == 0 ? log_tau + log(std_normal_scaled_lcdf_slope(u)) : 0.
@@ -1832,6 +2035,7 @@ import Statistics
     # The sum Q(u) + φ(u)Φ(u - τ)/φ(u - τ): accurate relative to its own size
     # where it is at most 1/2; below the median it is 1 - F with F formed by
     # cancellation, so there the log CCDF is log1m_exp of the log CDF instead.
+    "Compute the log survival probability of a standard normal plus an exponential as a sum of two nonnegative tail terms."
     exp_mod_normal_std_logccdf_sum(u::real, log_tau::real)::real =
         log_tau > 709 ?
             (u * exp(-log_tau) < 0.5 ?
@@ -1839,18 +2043,22 @@ import Statistics
                     -0.5 * square(u) - 0.9189385332046728 - log_tau - log1p(-u * exp(-log_tau))) :
                 negative_infinity()) :
             log_sum_exp(normal_lccdf_stable(u, 0., 1.), exp_mod_normal_standardized_core(u, 0., exp(log_tau)))
+    "Compute log P(Z + E > u), switching to the complement of the CDF when that preserves relative accuracy."
     exp_mod_normal_std_logccdf(u::real, log_tau::real)::real = begin
         s = exp_mod_normal_std_logccdf_sum(u, log_tau)
         s > -0.6931471805599453 ? log1m_exp(exp_mod_normal_std_logcdf(u, log_tau)) : s
     end
     # Both from one log CDF: below the median the log CCDF is its log1m_exp.
+    "Compute the log survival probability, reusing the supplied log CDF lc below the median."
     exp_mod_normal_std_logccdf_given(u::real, log_tau::real, lc::real)::real =
         lc < -0.6931471805599453 ? log1m_exp(lc) : exp_mod_normal_std_logccdf_sum(u, log_tau)
     # An infinite bound is answered before (y - μ)/σ is formed: that node's
     # σ-partial is infinite there (Stan's reverse pass runs every node).
+    "Compute log P(Y <= y) for an exponentially modified normal distribution without subtracting nearly equal tail probabilities."
     exp_mod_normal_lcdf_stable(y::real, mu::real, sigma::real, lambda::real)::real =
         is_inf(y) ? (y < 0 ? negative_infinity() : 0.) :
             exp_mod_normal_std_logcdf((y - mu) / sigma, log(lambda) + log(sigma))
+    "Compute log P(Y > y) for an exponentially modified normal distribution, handling infinite bounds directly."
     exp_mod_normal_lccdf_stable(y::real, mu::real, sigma::real, lambda::real)::real =
         is_inf(y) ? (y > 0 ? negative_infinity() : 0.) :
             exp_mod_normal_std_logccdf((y - mu) / sigma, log(lambda) + log(sigma))
@@ -1866,21 +2074,26 @@ import Statistics
     # below Float64, so is the interval's: the gap is then -Inf, which makes
     # the mass -Inf, where the difference was -Inf - (-Inf) = NaN (snag
     # emg-standardized-3a08ab62).
+    "Choose the log probability ratio for an interval difference from the less cancellation-prone tail."
     std_interval_cdf_gap(la::real, ua::real, lb::real, ub::real)::real =
         ua < la ? (is_inf(ua) ? negative_infinity() : ub - ua) :
             (lb < ub ? (is_inf(lb) ? negative_infinity() : la - lb) : log_sum_exp(la, ub))
+    "Recover interval log probability from endpoint log CDFs, log survival probabilities and their selected log ratio."
     std_interval_cdf_lmass(la::real, ua::real, lb::real, ub::real, gap::real)::real =
         ua < la ? ua + log1m_exp(gap) : (lb < ub ? lb + log1m_exp(gap) : log1m_exp(gap))
     # An 8-point Gauss–Legendre rule on [-1, 1] and its log weights: the log mass
     # of (c - h, c + h] is lhw + log_sum_exp(log w + lpdf(c + h·x)), h = exp(lhw).
+    "Return the eight Gauss-Legendre quadrature nodes on [-1, 1]."
     std_interval_legendre_nodes()::vector[8] =
         [-0.9602898564975363, -0.7966664774136267, -0.525532409916329, -0.1834346424956498,
          0.1834346424956498, 0.525532409916329, 0.7966664774136267, 0.9602898564975363]
+    "Return the logarithms of the eight Gauss-Legendre quadrature weights on [-1, 1]."
     std_interval_legendre_logweights()::vector[8] =
         [-2.290374582723506, -1.5033629969804017, -1.159296978552829, -1.014223944532757,
          -1.014223944532757, -1.159296978552829, -1.5033629969804017, -2.290374582723506]
     # (a, b] in standardized units, with its center c and log half-width lhw
     # (a = c - h, b = c + h, h = exp(lhw)), and log τ.
+    "Compute exponentially modified normal log mass on (a, b], integrating the density when endpoint probabilities are too close."
     exp_mod_normal_std_interval_core(a::real, b::real, c::real, lhw::real, log_tau::real)::real = begin
         la = exp_mod_normal_std_logcdf(a, log_tau)
         ua = exp_mod_normal_std_logccdf_given(a, log_tau, la)
@@ -1901,6 +2114,7 @@ import Statistics
         out
     end
     # log P(lo < Y ≤ hi). lo == hi is an empty interval (-Inf); lo > hi rejects.
+    "Compute log P(lo < Y <= hi) for an exponentially modified normal; equal bounds give -infinity and reversed bounds reject."
     exp_mod_normal_interval_lprob(lo::real, hi::real, mu::real, sigma::real, lambda::real)::real = begin
         if hi < lo
             reject("exp_mod_normal_interval_lprob: lo must not exceed hi")
@@ -1917,6 +2131,7 @@ import Statistics
     # where they leave Float64. Past e^709 the half-width covers every double.
     # Otherwise an infinite center (an overflowed residual) leaves an empty
     # interval, log mass -Inf, answered before c ± h is formed.
+    "Compute exponentially modified normal log mass around a standardized center with half-width exp(log_half_width), retaining log scale and log rate."
     exp_mod_normal_interval_lprob_standardized(center::real, log_half_width::real, log_sigma::real,
             log_lambda::real)::real =
         log_half_width > 709 ? 0. :
@@ -1948,9 +2163,11 @@ import Statistics
     # F(z; α) = 1 - F(-z; -α).
     # M(x), x ≥ 0: erfc·exp below 10 (relative error ≤ x²/2 ulps), the
     # continued fraction (≤ 12 terms) beyond.
+    "Compute the normal Mills ratio Phi(-x)/phi(x) for nonnegative x, using a continued fraction in the far tail."
     skew_normal_std_mills(x::real)::real =
         x < 10 ? 1.2533141373155003 * erfc(0.7071067811865476 * x) * exp(0.5 * square(x)) :
             1 / std_normal_inv_mills_cf(x)
+    "Integrate exp(-b*w - w^2/2) times the normal Mills ratio at H + d*w over w >= 0 using fixed Gaussian quadrature."
     skew_normal_tail_integral(b::real, H::real, d::real)::real = begin
         s = 0.
         if b <= 4.0
@@ -2005,6 +2222,7 @@ import Statistics
     end
     # log P(Z ≤ -h), h ≥ 0, α ≥ 0; -1.1447… = log 2 - log(2π) = -log π. At
     # h = ∞ it is -Inf, answered before α·h (0·∞ = NaN at α = 0).
+    "Compute log P(Z <= -h) for a standard skew-normal with h >= 0 and nonnegative shape a, using a positive tail integral."
     skew_normal_std_lower_tail(h::real, a::real)::real = begin
         k = hypot(1., a)
         is_inf(h) ? negative_infinity() :
@@ -2016,6 +2234,7 @@ import Statistics
     # 1 - F(z) = 2Q(z) - F(-z) ≤ 2Q(z), so where log Q(z) is -Inf (z past about
     # 1.3e154, where z²/2 overflows) the log CCDF is -Inf too, not
     # -Inf - (-Inf) = NaN (snag emg-standardized-3a08ab62).
+    "Compute the standard skew-normal log CDF for nonnegative shape a, combining a stable lower tail with symmetry."
     skew_normal_std_logcdf_pos(z::real, a::real)::real = begin
         out = 0.
         if z <= 0
@@ -2031,6 +2250,7 @@ import Statistics
     end
     # Above 0 and still below the median (1 - F > 1/2) the log CCDF is
     # log1m_exp of the positive-sum F, exact as it approaches 0.
+    "Compute the standard skew-normal log survival probability for nonnegative shape a, preserving the small complementary tail."
     skew_normal_std_logccdf_pos(z::real, a::real)::real = begin
         out = 0.
         if z <= 0
@@ -2044,16 +2264,21 @@ import Statistics
         end
         out
     end
+    "Compute the standard skew-normal log CDF, reflecting both value and shape when the shape is negative."
     skew_normal_std_logcdf(z::real, a::real)::real =
         a >= 0 ? skew_normal_std_logcdf_pos(z, a) : skew_normal_std_logccdf_pos(-z, -a)
+    "Compute the standard skew-normal log survival probability, reflecting negative shapes into the positive-shape calculation."
     skew_normal_std_logccdf(z::real, a::real)::real =
         a >= 0 ? skew_normal_std_logccdf_pos(z, a) : skew_normal_std_logcdf_pos(-z, -a)
+    "Compute log P(Y <= y) for a skew-normal distribution using a positive tail integral and exact infinite-bound limits."
     skew_normal_lcdf_stable(y::real, xi::real, omega::real, alpha::real)::real =
         is_inf(y) ? (y < 0 ? negative_infinity() : 0.) : skew_normal_std_logcdf((y - xi) / omega, alpha)
+    "Compute log P(Y > y) for a skew-normal distribution using a positive tail integral and exact infinite-bound limits."
     skew_normal_lccdf_stable(y::real, xi::real, omega::real, alpha::real)::real =
         is_inf(y) ? (y > 0 ? negative_infinity() : 0.) : skew_normal_std_logccdf((y - xi) / omega, alpha)
     # As `exp_mod_normal_std_interval_core`: (a, b] in standardized units, its
     # center c and log half-width lhw.
+    "Compute standard skew-normal log mass on (a, b], integrating the density when endpoint probabilities are too close."
     skew_normal_std_interval_core(a::real, b::real, c::real, lhw::real, alpha::real)::real = begin
         la = skew_normal_std_logcdf(a, alpha)
         ua = skew_normal_std_logccdf(a, alpha)
@@ -2073,6 +2298,7 @@ import Statistics
         end
         out
     end
+    "Compute log P(lo < Y <= hi) for a skew-normal; equal bounds give -infinity and reversed bounds reject."
     skew_normal_interval_lprob(lo::real, hi::real, xi::real, omega::real, alpha::real)::real = begin
         if hi < lo
             reject("skew_normal_interval_lprob: lo must not exceed hi")
@@ -2085,6 +2311,7 @@ import Statistics
     end
     # (z - h, z + h] of the standard law Z = (Y - ξ)/ω, h = exp(log_half_width);
     # an infinite center is an empty interval, as for exp_mod_normal above.
+    "Compute standard skew-normal log mass on center +/- exp(log_half_width), preserving extreme-width limits."
     skew_normal_interval_lprob_standardized(center::real, log_half_width::real, alpha::real)::real =
         log_half_width > 709 ? 0. :
             (is_inf(center) ? negative_infinity() :
@@ -2127,6 +2354,7 @@ import Statistics
     # partial still adds 0·∞ = NaN (r^-1/2 at t = 0, 2t at t = ±∞). So each branch
     # is a ternary, and the only node formed before its branch is chosen is the
     # far-tail log prefactor, whose partials are finite there.
+    "Sum the positive incomplete-beta tail series until its next term is negligible or the iteration limit is reached."
     std_student_t_tail_series(x::real, a::real)::real = begin
         s = 1.0
         term = 1.0
@@ -2138,6 +2366,7 @@ import Statistics
         end
         s
     end
+    "Compute the smaller Student-t tail in log space, using an incomplete-beta series when the probability would underflow."
     std_student_t_ltail_far(t::real, nu::real)::real = begin
         u = square(t) / nu
         a = 0.5 * nu
@@ -2145,23 +2374,28 @@ import Statistics
         lp > -700 ? beta_lcdf(inv(1 + u), a, 0.5) - log(2.) :
             lp + log(std_student_t_tail_series(inv(1 + u), a))
     end
+    "Compute log P(T > abs(t)) for a standard Student-t with nu degrees of freedom."
     std_student_t_ltail(t::real, nu::real)::real =
         square(t) <= 4 ? beta_lccdf(square(t) / (nu + square(t)), 0.5, 0.5 * nu) - log(2.) :
             std_student_t_ltail_far(t, nu)
+    "Approximate the standard Student-t log CDF near zero with a smooth series that retains the derivative at the center."
     std_student_t_lcdf_center(t::real, nu::real)::real = begin
         u = square(t) / nu
         c = 0.5 * nu + 0.5
         log1p(2 * t * exp(-lbeta(0.5, 0.5 * nu) - 0.5 * log(nu)) *
             (1 - c * u / 3 * (1 - 0.3 * (c + 1) * u))) - log(2.)
     end
+    "Compute the standard Student-t log CDF using a central series, stable tails and symmetry."
     std_student_t_lcdf(t::real, nu::real)::real =
         is_inf(t) ? (t < 0 ? negative_infinity() : 0.) :
             (square(t) * fmax(1., 0.5 * nu + 0.5) < 1e-8 * nu ? std_student_t_lcdf_center(t, nu) :
                 (t < 0 ? std_student_t_ltail(t, nu) : log1m_exp(std_student_t_ltail(t, nu))))
     # An infinite bound is answered before (y - μ)/σ is formed: that node's
     # σ-partial -(y - μ)/σ² is infinite there (an interval's -∞ lower end).
+    "Compute log P(Y <= y) for a Student-t distribution, retaining derivatives at the location and handling infinite bounds directly."
     student_t_lcdf_stable(y::real, nu::real, mu::real, sigma::real)::real =
         is_inf(y) ? (y < 0 ? negative_infinity() : 0.) : std_student_t_lcdf((y - mu) / sigma, nu)
+    "Compute log P(Y > y) for a Student-t distribution by reflecting the standardized residual."
     student_t_lccdf_stable(y::real, nu::real, mu::real, sigma::real)::real =
         is_inf(y) ? (y > 0 ? negative_infinity() : 0.) : std_student_t_lcdf((mu - y) / sigma, nu)
     # LogNormal log-CDF/CCDF: the stable normal pair at log y, so a support
@@ -2169,8 +2403,10 @@ import Statistics
     # keeps a finite value and gradient where Stan's `lognormal_lccdf` takes
     # log(erfc(·)) and returns -Inf. y ≤ 0 and y = ∞ are answered before
     # log y is formed: its partial 1/y is infinite at 0 (the tape trap above).
+    "Compute log P(Y <= y) for a lognormal via the stable normal CDF of log(y); nonpositive y has zero probability."
     lognormal_lcdf_stable(y::real, mu::real, sigma::real)::real =
         y <= 0 ? negative_infinity() : (is_inf(y) ? 0. : normal_lcdf_stable(log(y), mu, sigma))
+    "Compute log P(Y > y) for a lognormal via the stable normal survival probability of log(y); nonpositive y has survival probability one."
     lognormal_lccdf_stable(y::real, mu::real, sigma::real)::real =
         y <= 0 ? 0. : (is_inf(y) ? negative_infinity() : normal_lccdf_stable(log(y), mu, sigma))
     # Normalized moments of X | X ≥ L, X ~ LogNormal(μ, σ), L > 0. With
@@ -2213,6 +2449,7 @@ import Statistics
     # are in the `@juliacompat` group above, which the skew-normal and
     # exponentially modified normal CDFs share.
     # Mean and variance together: [E, Var].
+    "Return [mean, variance] of a lognormal conditional on Y >= lb, using stable Mills-ratio differences for severe truncation."
     lognormal_truncated_moments(mu::real, sigma::real, lb::real)::vector[2] = begin
         rv::vector[2]
         if lb <= 0
@@ -2314,8 +2551,10 @@ import Statistics
         end
         rv
     end
+    "Return the mean of a lognormal conditional on Y >= lb; a nonpositive bound leaves the original distribution."
     lognormal_truncated_mean(mu::real, sigma::real, lb::real)::real =
         lognormal_truncated_moments(mu, sigma, lb)[1]
+    "Return the variance of a lognormal conditional on Y >= lb; a nonpositive bound leaves the original distribution."
     lognormal_truncated_variance(mu::real, sigma::real, lb::real)::real =
         lognormal_truncated_moments(mu, sigma, lb)[2]
     # Stan Math computes these three CCDFs as `log(1 - inc_beta(…))`, which is
@@ -2325,10 +2564,13 @@ import Statistics
     # tail directly, to full relative precision. Selected only by the truncated
     # draws' inversion (`conditioning_logccdf`, lpxf_builtin.jl); the densities
     # keep Stan's companions. snag truncated-rng-re-bd555cae.
+    "Compute log P(Y > n) for a negative binomial with mean mu and precision phi using the complementary incomplete-beta identity."
     neg_binomial_2_lccdf_precise(n::int, mu::real, phi::real)::real =
         n < 0 ? 0.0 : log(inc_beta(n + 1.0, phi, mu / (mu + phi)))
+    "Compute log P(Y > n) for a negative binomial with shape alpha and inverse scale beta using the complementary incomplete-beta identity."
     neg_binomial_lccdf_precise(n::int, alpha::real, beta::real)::real =
         n < 0 ? 0.0 : log(inc_beta(n + 1.0, alpha, 1.0 / (1.0 + beta)))
+    "Compute log P(Y > n) for Binomial(N, theta) directly from the appropriate incomplete-beta tail."
     binomial_lccdf_precise(n::int, N::int, theta::real)::real =
         n < 0 ? 0.0 : (n >= N ? negative_infinity() : log(inc_beta(n + 1.0, N - n, theta)))
     end
@@ -2396,24 +2638,32 @@ import Statistics
     discrete_range_lccdf(args...)
     student_t_cdf(args...)
 
+    "Concatenate three or more inputs along rows, preserving their argument order."
     @juliacompat append_row(x, y, z, args...) = append_row(append_row(x, y), z, args...)
+    "Concatenate three or more inputs along columns, preserving their argument order."
     @juliacompat append_col(x, y, z, args...) = append_col(append_col(x, y), z, args...)
 
     # hcat for building a design matrix from column vectors. Narrow on purpose:
     # Stan's matrix / array-of-vectors / array-of-ints are distinct types, so
     # add more signatures only as sbimpl (or other callers) actually need them.
+    "Form a matrix by concatenating the supplied columns in order."
     @juliacompat hcat(x::vector[n])::matrix[n,1] = to_matrix(x, n, 1)
+    "Form a matrix by concatenating the supplied columns in order."
     @juliacompat hcat(x::vector[n], y::vector[n])::matrix[n,2] = append_col(x, y)
+    "Form a matrix by concatenating the supplied columns in order."
     @juliacompat hcat(x::matrix[m, n], y::vector[m])::matrix[m, n+1] = append_col(x, y)
+    "Form a matrix by concatenating the supplied columns in order."
     @juliacompat hcat(x, y, z, args...) = hcat(hcat(x, y), z, args...)
 
     # reshape: vector -> matrix, matching Base.reshape(v, m, k) with fully
     # specified dims. Grow as needed.
+    "Reshape in column-major order, preserving element type and requiring the same number of entries."
     @juliacompat reshape(v::vector[n], m::int, k::int)::matrix[m, k] = to_matrix(v, m, k)
     # An integer array reshapes to a 2-D integer array (`array[m, k] int`), column-major
     # like Base.reshape: Stan's `to_matrix` would make it real, and Stan has no integer
     # reshape. An integer `RaggedMatrix` group is read through this (snag
     # pass-a-vector-ma-b68fc7c9).
+    "Reshape in column-major order, preserving element type and requiring the same number of entries."
     @juliacompat reshape(v::int[n], m::int, k::int)::int[m, k] = begin
         @stan_assert n == m * k "reshape: an integer array of length n cannot be reshaped to m rows and k columns unless n == m * k."
         out::int[m, k]
@@ -2432,6 +2682,7 @@ import Statistics
     # separate real `map` / int `imap` (`ibroadcasted`) variants are needed
     # (prong 3). `x::anything[n]` accepts a `vector` / `row_vector` / `array[] T`
     # (1-dim); `jbroadcasted` remains the arbitrary-arity elementwise construct.
+    "Apply f separately to each input element; the result element type follows f and the input length is preserved."
     @juliacompat jmap(f, x::anything[n]) = begin
         rv::typeof(f(x[1]))[n]
         for i in 1:n
@@ -2444,14 +2695,19 @@ import Statistics
     # for back-compat with existing models; new code should prefer the
     # `RaggedVector` usertype + Julia-dispatched `Base.length` /
     # `Base.getindex` methods declared below.
+    "Return the number of groups in the ragged value."
     ragged_n(x::ntup)::int = size(x.ends)
+    "Return the total number of entries across all ragged groups."
     ragged_total(x::ntup)::int = num_elements(x.mem)
+    "Return the one-based start of group i in flat storage: 1 for the first group, otherwise the previous inclusive end plus 1."
     ragged_start(x::ntup, i::int)::int = if i == 1
         1
     else
         1 + x.ends[i-1]
     end
+    "Return the inclusive end of group i in flat storage."
     ragged_end(x::ntup, i::int)::int = x.ends[i]
+    "Return the length of group i from its inclusive start and end; an empty group has length zero."
     ragged_length(x::ntup, i::int)::int = ragged_end(x, i) - ragged_start(x, i) + 1
 
     # New distribution lpdf/lpmf stubs
@@ -2596,6 +2852,7 @@ import Statistics
     gp_dot_prod_cov(x::real[n], sigma::real)::matrix[n,n]
     gp_dot_prod_cov(x1::real[m], x2::real[n], sigma::real)::matrix[m,n]
 
+    "Invert a permutation of 1:n so the result at position x[i] equals i."
     Base.invperm(x::int[n])::int[n] = begin
         rv = rep_array(0, n)
         for i in 1:n
@@ -2607,6 +2864,7 @@ import Statistics
     # Assemble a full vector from observed and imputed-missing parts.
     # Emitted into `transformed_parameters` by the body pre-pass when a
     # partly-missing data vector is detected (auto-detect Union{Missing}).
+    "Reassemble observed and imputed entries into their original positions using the two index arrays."
     @juliacompat merge_missing(y_obs::vector[n_obs], y_mis::vector[n_mis], ii_obs::int[n_obs], ii_mis::int[n_mis])::vector[n_obs+n_mis] = begin
         y::vector[n_obs+n_mis]
         for i in 1:n_obs
@@ -2641,8 +2899,10 @@ end
 # through this HOF transpiles and compiles. (The matrix-parameterized `kalman`
 # family below remains the ergonomic shortcut for the linear-Gaussian case.)
 @deffun @stanonly begin
+    "Sum the conditional log probabilities from a user-supplied predict/update filter, integrating out the latent states."
     @lpxf sequential_marginalize_lpdf(y::anything[T], b0, predict, observe, simulate)::real =
         sum(sequential_marginalize_lpdfs(y, b0, predict, observe, simulate))
+    "Return one conditional log probability per time step from a user-supplied predict/update filter, integrating out the latent states."
     sequential_marginalize_lpdfs(y::anything[T], b0, predict, observe, simulate)::vector[T] = begin
         # Internal locals are `sm_`-prefixed so they never collide with a hoisted
         # closure capture: predict/observe/simulate close over model variables
@@ -2663,6 +2923,7 @@ end
     end
     # Explicit `for sm_t in 1:T` loop — empty input runs zero iterations, no
     # guard (audit todo 19n8abc). Same for the `kalman` / `hmm_forward` draws.
+    "Simulate an observation series by alternating prediction and simulation from the initial belief."
     sequential_marginalize_rng(vector[T], b0, predict, observe, simulate)::vector[T] = begin
         # See `_lpdfs` above: `sm_`-prefixed locals stay clear of hoisted captures.
         sm_yy::vector[T]
@@ -2688,9 +2949,11 @@ end
 # `_lpdfs` gives the per-step one-step-ahead conditionals and `_rng`
 # forward-simulates the series.
 @deffun @stanonly begin
+    "Sum the conditional log probabilities from the linear-Gaussian Kalman filter, integrating out the latent states."
     @lpxf kalman_lpdf(y::vector[T], m0::vector[K], P0::matrix[K,K],
                       A::matrix[K,K], Q::matrix[K,K], c::vector[K], r::real)::real =
         sum(kalman_lpdfs(y, m0, P0, A, Q, c, r))
+    "Return one conditional log probability per time step from the linear-Gaussian Kalman filter, integrating out the latent states."
     kalman_lpdfs(y::vector[T], m0::vector[K], P0::matrix[K,K],
                  A::matrix[K,K], Q::matrix[K,K], c::vector[K], r::real)::vector[T] = begin
         ll::vector[T]
@@ -2708,6 +2971,7 @@ end
         end
         ll
     end
+    "Simulate an observation series using the one-step predictive normal and its updated filtering state."
     kalman_rng(vector[T], m0::vector[K], P0::matrix[K,K],
                A::matrix[K,K], Q::matrix[K,K], c::vector[K], r::real)::vector[T] = begin
         yy::vector[T]
@@ -2734,9 +2998,11 @@ end
 # lpxf/rng/likelihood dispatch hooks, and one @lpxf per base name is the limit.
 # Multiple dispatch selects this overload from the matrix argument shapes.
 @deffun @stanonly begin
+    "Sum the conditional log probabilities from the linear-Gaussian Kalman filter, integrating out the latent states."
     @lhs kalman_lpdf(y::matrix[T,d], m0::vector[K], P0::matrix[K,K],
                      A::matrix[K,K], Q::matrix[K,K], C::matrix[d,K], R::matrix[d,d])::real =
         sum(kalman_lpdfs(y, m0, P0, A, Q, C, R))
+    "Return one conditional log probability per time step from the linear-Gaussian Kalman filter, integrating out the latent states."
     kalman_lpdfs(y::matrix[T,d], m0::vector[K], P0::matrix[K,K],
                  A::matrix[K,K], Q::matrix[K,K], C::matrix[d,K], R::matrix[d,d])::vector[T] = begin
         ll::vector[T]
@@ -2754,6 +3020,7 @@ end
         end
         ll
     end
+    "Simulate an observation series using the one-step predictive normal and its updated filtering state."
     kalman_rng(matrix[T,d], m0::vector[K], P0::matrix[K,K],
                A::matrix[K,K], Q::matrix[K,K], C::matrix[d,K], R::matrix[d,d])::matrix[T,d] = begin
         yy::matrix[T,d]
@@ -2799,12 +3066,15 @@ end
 # `@lpxf` (that would overwrite the base hooks). The `_lpdfs` leg is shared and
 # obs-generic (`anything[T]`); the `int[T]` rng overload serves the GQ draw.
 @deffun @stanonly begin
+    "Sum the conditional log probabilities from the finite-state hidden Markov forward filter, integrating out the latent states."
     @lpxf hmm_forward_lpdf(y::anything[T], rho::vector[K], Gamma::matrix[K,K],
                            emit, emit_rng)::real =
         sum(hmm_forward_lpdfs(y, rho, Gamma, emit, emit_rng))
+    "Sum the conditional log probabilities from the finite-state hidden Markov forward filter, integrating out the latent states."
     hmm_forward_lpmf(y::int[T], rho::vector[K], Gamma::matrix[K,K],
                      emit, emit_rng)::real =
         sum(hmm_forward_lpdfs(y, rho, Gamma, emit, emit_rng))
+    "Return one conditional log probability per time step from the finite-state hidden Markov forward filter, integrating out the latent states."
     hmm_forward_lpdfs(y::anything[T], rho::vector[K], Gamma::matrix[K,K],
                       emit, emit_rng)::vector[T] = begin
         hmm_ll::vector[T]
@@ -2818,6 +3088,7 @@ end
         end
         hmm_ll
     end
+    "Simulate latent transitions and emissions, applying a transition before the first observation."
     hmm_forward_rng(vector[T], rho::vector[K], Gamma::matrix[K,K],
                     emit, emit_rng)::vector[T] = begin
         hmm_yy::vector[T]
@@ -2831,6 +3102,7 @@ end
         end
         hmm_yy
     end
+    "Simulate latent transitions and emissions, applying a transition before the first observation."
     hmm_forward_rng(int[T], rho::vector[K], Gamma::matrix[K,K],
                     emit, emit_rng)::int[T] = begin
         hmm_yy::int[T]
@@ -2902,8 +3174,8 @@ for (base, params) in (
     (:student_t_lpdf, (:nu, :loc, :scale)),
 )
     lpdfs = Symbol(base, :s)
-    @eval @deffun @stanonly $lpdfs(args...) = $base(args...)
-    @eval @deffun @stanonly $lpdfs(obs::anything[n], $(params...)) = jbroadcasted($lpdfs, obs, $(params...))
+    @eval @deffun @doc "Return the normalized log probability for a single observation." @stanonly $lpdfs(args...) = $base(args...)
+    @eval @deffun @doc "Return one normalized log probability per observation, broadcasting distribution parameters elementwise." @stanonly $lpdfs(obs::anything[n], $(params...)) = jbroadcasted($lpdfs, obs, $(params...))
     @eval _elementwise_pointwise(::typeof($lpdfs)) = true
 end
 
@@ -2981,17 +3253,20 @@ stan_type(expr, value::AbstractVector{<:AbstractMatrix{<:Real}}; kwargs...) =
 # declarations. Overloads of the legacy `x::ntup` accessors above — additive,
 # so no `@builtin_module` manifest edit (and no live-app const wedge, §R13).
 @deffun begin
+    "Return the one-based start of group i in flat storage: 1 for the first group, otherwise the previous inclusive end plus 1."
     @juliacompat ragged_start(ends::int[k], i::int)::int = if i == 1
         1
     else
         1 + ends[i-1]
     end
+    "Return the inclusive end of group i in flat storage."
     @juliacompat ragged_end(ends::int[k], i::int)::int = ends[i]
     # Data-qualified group length: `ragged_length(ends, g)` is legal in a Stan
     # size declaration, so a downstream `z::vector[ragged_length(ends, g)]` param
     # can be sized by a group. (`length(rv[g])` would instead be `num_elements`
     # of a parameter-valued slice, which — like `length(<any param vector>)` —
     # is not folded to a data size, §R9; size from `ends` for a top-level decl.)
+    "Return the length of group i from its inclusive start and end; an empty group has length zero."
     @juliacompat ragged_length(ends::int[k], i::int)::int = ragged_end(ends, i) - ragged_start(ends, i) + 1
 end
 
@@ -3002,12 +3277,18 @@ end
 # top-level (transformed) parameter DECLARATION, not as a function arg), so
 # passing the whole RaggedVector into a function keeps its size info intact.
 @deffun begin
+    "Return the number of groups, which is also the final one-based index."
     Base.length(rv::RaggedVector)::int = size(rv.ends)
+    "Return the number of groups, which is also the final one-based index."
     Base.lastindex(rv::RaggedVector)::int = size(rv.ends)
+    "Return the contiguous flat-storage slice for ragged group i."
     Base.getindex(rv::RaggedVector, i::int)::typeof(rv.mem[1])[ragged_length(rv, i)] =
         rv.mem[ragged_start(rv, i):ragged_end(rv, i)]
+    "Return the number of groups, which is also the final one-based index."
     Base.length(rv::RaggedMatrix)::int = size(rv.ends)
+    "Return the number of groups, which is also the final one-based index."
     Base.lastindex(rv::RaggedMatrix)::int = size(rv.ends)
+    "Reconstruct ragged matrix i from its flat slice in column-major order and its stored row and column counts."
     Base.getindex(rv::RaggedMatrix, i::int)::matrix[rv.rows[i],rv.cols[i]] =
         to_matrix(
             rv.mem[ragged_start(rv, i):ragged_end(rv, i)],
@@ -3026,6 +3307,7 @@ end
     # lowered to this 2-arg impl by the inline hook below. Snag
     # plate-return-tup-5c3fa1c8 (BRM); NO auto-lowering — this is the explicit
     # downstream override the plate contract intends.
+    "Place each ragged group in one matrix column; reject unless every group has the same length."
     as_matrix(mem::vector[m], ends::int[n])::matrix[ragged_length(ends, 1), n] = begin
         k = ragged_length(ends, 1)
         for i in 1:n
@@ -3043,11 +3325,13 @@ end
 # evaluated in Julia by the descriptor: `@juliacompat`. Snag selecting-severa-027a8191.
 @deffun begin
     # Length of the selected group `g`, which must be one of the groups.
+    "Return the selected group length after checking that its one-based index is in range."
     @juliacompat ragged_select_length(ends::int[n], g::int)::int = begin
         @stan_assert g >= 1 && g <= n "RaggedVector selection: rv[idx] selects groups 1 to length(rv), and idx holds a value outside that range."
         ragged_length(ends, g)
     end
     # Number of entries in the groups `idx`.
+    "Sum the lengths of the selected groups, including repeated selections."
     @juliacompat ragged_select_total(ends::int[n], idx::int[k])::int = begin
         total = 0
         for j in 1:k
@@ -3056,6 +3340,7 @@ end
         total
     end
     # Inclusive ends of the groups `idx`, laid end to end: the selection's own ends.
+    "Return cumulative inclusive ends for the selected groups in selection order."
     @juliacompat ragged_select_ends(ends::int[n], idx::int[k])::int[k] = begin
         rv::int[k]
         total = 0
@@ -3066,6 +3351,7 @@ end
         rv
     end
     # Positions in `mem` of the groups `idx`, laid end to end: `mem[...]` gathers them.
+    "Return flat-storage indices that gather the selected groups in order, preserving repeated selections."
     @juliacompat ragged_select_index(ends::int[n], idx::int[k])::int[ragged_select_total(ends, idx)] = begin
         total = ragged_select_total(ends, idx)
         rv::int[total]
@@ -3079,6 +3365,7 @@ end
         rv
     end
     # `rv[1] + rv[2] + … + rv[n]`; every group must have the length of group 1.
+    "Add ragged groups elementwise; reject unless every group has the same length."
     ragged_sum(mem::vector[m], ends::int[n])::vector[ragged_length(ends, 1)] = begin
         k = ragged_length(ends, 1)
         rv = rep_vector(0.0, k)
@@ -3088,6 +3375,7 @@ end
         end
         rv
     end
+    "Add ragged groups elementwise; reject unless every group has the same length."
     ragged_sum(mem::int[m], ends::int[n])::int[ragged_length(ends, 1)] = begin
         k = ragged_length(ends, 1)
         rv = rep_array(0, k)
@@ -3100,6 +3388,7 @@ end
         end
         rv
     end
+    "Average ragged groups elementwise; every group must have the same length."
     ragged_mean(mem::anything[m], ends::int[n])::vector[ragged_length(ends, 1)] =
         to_vector(ragged_sum(mem, ends)) / n
 end
@@ -3545,6 +3834,7 @@ end
 # re-tracing: the whole-object `ends` go through `ragged_common_ends`, and each
 # group slice validates only its own two boundaries (`ragged_matched_group`).
 @deffun begin
+    "Return the first group-end array after verifying that both ragged operands have identical partitions."
     ragged_common_ends(ends::int[n], other::int[m])::int[n] = begin
         @stan_assert n == m "RaggedVector arithmetic: the two operands have different numbers of groups; elementwise arithmetic needs the same group ends."
         for i in 1:n
@@ -3552,6 +3842,7 @@ end
         end
         ends
     end
+    "Return group i after checking that its boundaries agree in both ragged operands."
     ragged_matched_group(ends::int[n], other::int[m], i::int)::int = begin
         @stan_assert n == m "RaggedVector arithmetic: the two operands have different numbers of groups; elementwise arithmetic needs the same group ends."
         @stan_assert ends[i] == other[i] "RaggedVector arithmetic: the two operands have different group ends; elementwise arithmetic needs the same group ends."
@@ -3643,11 +3934,17 @@ end
 # Accessors for a bound view (a @deffun / submodel param), rather than a
 # construction. Its single matrix field is transparent in emitted Stan.
 @deffun begin
+    "Return the number of columns, which is also the final one-based index."
     Base.length(ec::EachCol)::int = cols(ec.X)
+    "Return the number of columns, which is also the final one-based index."
     Base.lastindex(ec::EachCol)::int = cols(ec.X)
+    "Return the selected matrix column with its original orientation."
     Base.getindex(ec::EachCol, j::int)::vector[rows(ec.X)] = col(ec.X, j)
+    "Return the number of rows, which is also the final one-based index."
     Base.length(er::EachRow)::int = rows(er.X)
+    "Return the number of rows, which is also the final one-based index."
     Base.lastindex(er::EachRow)::int = rows(er.X)
+    "Return the selected matrix row with its original orientation."
     Base.getindex(er::EachRow, i::int)::row_vector[cols(er.X)] = row(er.X, i)
 end
 
@@ -3703,13 +4000,13 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr
 # Empty-segment guard (todo 19n8abc): the native call mixes a container with
 # the scalar `1`, so the token-0 draw needs the same early return as the 2-arg
 # loop below. (The zero-arg `std_normal_rng()` scalar form is unaffected.)
-@deffun std_normal_rng(real[n])::real[n] = if n == 0
+@deffun @doc "Draw n independent standard normal values; n = 0 returns an empty result." std_normal_rng(real[n])::real[n] = if n == 0
     rv::real[n]
     rv
 else
     normal_rng(rep_vector(0, n), 1)
 end
-@deffun std_normal_rng(vector[n])::vector[n] = if n == 0
+@deffun @doc "Draw n independent standard normal values; n = 0 returns an empty result." std_normal_rng(vector[n])::vector[n] = if n == 0
     rv::vector[n]
     rv
 else
@@ -3733,25 +4030,25 @@ for dist in (:normal, :cauchy, :lognormal, :gamma, :inv_gamma, :beta, :uniform,
              :weibull, :frechet, :double_exponential, :logistic, :gumbel,
              :pareto, :scaled_inv_chi_square, :von_mises, :loglogistic)
     drng = Symbol(dist, :_rng)
-    @eval @deffun $drng(real[n],   a::real, b::real)::real[n]   = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(real[n],   a::real, b::real)::real[n]   = if n == 0
         rv::real[n]
         rv
     else
         $drng(rep_vector(a, n), b)
     end
-    @eval @deffun $drng(vector[n], a::real, b::real)::vector[n] = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(vector[n], a::real, b::real)::vector[n] = if n == 0
         rv::vector[n]
         rv
     else
         to_vector($drng(rep_vector(a, n), b))
     end
-    @eval @deffun $drng(real[n],   a, b)::real[n]   = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(real[n],   a, b)::real[n]   = if n == 0
         rv::real[n]
         rv
     else
         $drng(a, b)
     end
-    @eval @deffun $drng(vector[n], a, b)::vector[n] = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(vector[n], a, b)::vector[n] = if n == 0
         rv::vector[n]
         rv
     else
@@ -3764,10 +4061,10 @@ end
 # by construction, no guard.
 for dist in (:exponential, :chi_square, :inv_chi_square, :rayleigh)
     drng = Symbol(dist, :_rng)
-    @eval @deffun $drng(real[n],   a::real)::real[n]   = $drng(rep_vector(a, n))
-    @eval @deffun $drng(vector[n], a::real)::vector[n] = to_vector($drng(rep_vector(a, n)))
-    @eval @deffun $drng(real[n],   a)::real[n]   = $drng(a)
-    @eval @deffun $drng(vector[n], a)::vector[n] = to_vector($drng(a))
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(real[n],   a::real)::real[n]   = $drng(rep_vector(a, n))
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(vector[n], a::real)::vector[n] = to_vector($drng(rep_vector(a, n)))
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(real[n],   a)::real[n]   = $drng(a)
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(vector[n], a)::vector[n] = to_vector($drng(a))
 end
 
 # 3-arg continuous families. Two leading-arg regimes:
@@ -3797,38 +4094,38 @@ for dist in (:student_t, :skew_normal, :exp_mod_normal,
     # directly when the size token is 0. The `else` branch is the exact
     # previous body, so non-empty draws are unchanged. Same `if n == 0`
     # idiom as `robust_linspaced_int_array` above.
-    @eval @deffun $drng(real[n],   nu::real, a::real, b::real)::real[n]   = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(real[n],   nu::real, a::real, b::real)::real[n]   = if n == 0
         rv::real[n]
         rv
     else
         $drng(nu, rep_vector(a, n), b)
     end
-    @eval @deffun $drng(vector[n], nu::real, a::real, b::real)::vector[n] = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(vector[n], nu::real, a::real, b::real)::vector[n] = if n == 0
         rv::vector[n]
         rv
     else
         to_vector($drng(nu, rep_vector(a, n), b))
     end
-    @eval @deffun $drng(real[n],   nu::real, a, b)::real[n]   = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(real[n],   nu::real, a, b)::real[n]   = if n == 0
         rv::real[n]
         rv
     else
         $drng(nu, a, b)
     end
-    @eval @deffun $drng(vector[n], nu::real, a, b)::vector[n] = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(vector[n], nu::real, a, b)::vector[n] = if n == 0
         rv::vector[n]
         rv
     else
         to_vector($drng(nu, a, b))
     end
     # Either vector orientation is a per-observation leading argument.
-    @eval @deffun $drng(real[n],   loc::any_vector[n], scale::any_vector[n], b)::real[n]   = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(real[n],   loc::any_vector[n], scale::any_vector[n], b)::real[n]   = if n == 0
         rv::real[n]
         rv
     else
         $drng(loc, scale, b)
     end
-    @eval @deffun $drng(vector[n], loc::any_vector[n], scale::any_vector[n], b)::vector[n] = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(vector[n], loc::any_vector[n], scale::any_vector[n], b)::vector[n] = if n == 0
         rv::vector[n]
         rv
     else
@@ -3839,13 +4136,13 @@ for dist in (:student_t, :skew_normal, :exp_mod_normal,
     # broadcasts the scalar natively, so delegate straight through like the
     # vector-vector overloads above (the family's `@defsig` lists
     # `(vector[n], real, real)` / `(vector[n], real, vector[n])`).
-    @eval @deffun $drng(real[n],   loc::any_vector[n], scale::real, b)::real[n]   = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(real[n],   loc::any_vector[n], scale::real, b)::real[n]   = if n == 0
         rv::real[n]
         rv
     else
         $drng(loc, scale, b)
     end
-    @eval @deffun $drng(vector[n], loc::any_vector[n], scale::real, b)::vector[n] = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(vector[n], loc::any_vector[n], scale::real, b)::vector[n] = if n == 0
         rv::vector[n]
         rv
     else
@@ -3878,8 +4175,8 @@ end
 # argument of an untyped fresh sample (`_distribution_sample_shape`).
 @eval builtin function matrix_variate_arg end
 const matrix_variate_arg = builtin.matrix_variate_arg
-@deffun matrix_variate_arg(x::real, m::int, n::int)::real = x
-@deffun matrix_variate_arg(x::matrix[o, p], m::int, n::int)::vector[o * p] = begin
+@deffun @doc "Reuse a scalar distribution parameter across every matrix entry." matrix_variate_arg(x::real, m::int, n::int)::real = x
+@deffun @doc "Flatten a matrix parameter columnwise after checking that its shape matches the observed matrix." matrix_variate_arg(x::matrix[o, p], m::int, n::int)::vector[o * p] = begin
     @stan_assert o == m && p == n "matrix variate: a matrix argument of an elementwise family must have the variate's own shape."
     to_vector(x)
 end
@@ -3906,11 +4203,11 @@ for (dist, params) in (
     @eval @deffun $dlupdf(args...)::real
     @eval _matrix_variate_family(::typeof(builtin.$dist)) = true
     flat_args = [:(matrix_variate_arg($p, m, n)) for p in params]
-    @eval @deffun $dlpdf(obs::matrix[m, n], $(params...))::real =
+    @eval @deffun @doc "Sum independent entrywise log densities of a matrix, allowing scalar or matching-matrix parameters and omitting parameter-independent terms." $dlpdf(obs::matrix[m, n], $(params...))::real =
         $dlupdf(to_vector(obs), $(flat_args...))
-    @eval @deffun $dlpdfs(obs::matrix[m, n], $(params...))::matrix[m, n] =
+    @eval @deffun @doc "Return one normalized log density per matrix entry in the original matrix shape." $dlpdfs(obs::matrix[m, n], $(params...))::matrix[m, n] =
         to_matrix($dlpdfs(to_vector(obs), $(flat_args...)), m, n)
-    @eval @deffun $drng(matrix[m, n], $(params...))::matrix[m, n] =
+    @eval @deffun @doc "Draw independent values for each matrix entry, allowing scalar or matching-matrix parameters." $drng(matrix[m, n], $(params...))::matrix[m, n] =
         to_matrix($drng(vector[m * n], $(flat_args...)), m, n)
 end
 
@@ -3918,21 +4215,21 @@ end
 # arg — same immunity as the 1-arg continuous loop above (todo 19n8abc).
 for dist in (:bernoulli, :bernoulli_logit, :poisson, :poisson_log)
     drng = Symbol(dist, :_rng)
-    @eval @deffun $drng(int[n], p::real)::int[n] = $drng(rep_vector(p, n))
-    @eval @deffun $drng(int[n], p)::int[n]       = $drng(p)
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(int[n], p::real)::int[n] = $drng(rep_vector(p, n))
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(int[n], p)::int[n]       = $drng(p)
 end
 
 # 2-arg discrete families. Same scalar+container mix as the 2-arg continuous
 # loop (todo 19n8abc) — same empty-segment guard, `else` branch unchanged.
 for dist in (:neg_binomial, :neg_binomial_2, :neg_binomial_2_log)
     drng = Symbol(dist, :_rng)
-    @eval @deffun $drng(int[n], a::real, b::real)::int[n] = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(int[n], a::real, b::real)::int[n] = if n == 0
         rv::int[n]
         rv
     else
         $drng(rep_vector(a, n), b)
     end
-    @eval @deffun $drng(int[n], a, b)::int[n]             = if n == 0
+    @eval @deffun @doc "Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type." $drng(int[n], a, b)::int[n]             = if n == 0
         rv::int[n]
         rv
     else
@@ -3943,7 +4240,7 @@ end
 # binomial: N::int[n] is already a container, so Stan broadcasts scalar p natively.
 # Empty-segment guard (todo 19n8abc): a scalar `p` beside an empty `N`
 # replays the 2-arg-loop segfault, so both overloads early-return.
-@deffun binomial_rng(int[n], N::int[n], p)::int[n] = if n == 0
+@deffun @doc "Draw n independent binomial values, broadcasting scalar parameters across observations." binomial_rng(int[n], N::int[n], p)::int[n] = if n == 0
     rv::int[n]
     rv
 else
@@ -3952,7 +4249,7 @@ end
 # The lpmf also broadcasts a scalar trial count across vector observations.
 # Expand it to the observation length so Stan's native RNG returns int[n]
 # instead of the token call falling through to the scalar catch-all.
-@deffun binomial_rng(int[n], N::int, p)::int[n] = if n == 0
+@deffun @doc "Draw n independent binomial values, broadcasting scalar parameters across observations." binomial_rng(int[n], N::int, p)::int[n] = if n == 0
     rv::int[n]
     rv
 else
@@ -3964,7 +4261,7 @@ end
 # unwrap that token while asserting the output and matrix row counts agree.
 # Empty-segment guard (todo 19n8abc): a 0-row design matrix early-returns
 # the empty draw instead of reaching a vectorized native over `m` rows.
-@deffun bernoulli_logit_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] = if m == 0
+@deffun @doc "Draw one Bernoulli response per design row with log odds alpha + X*beta; an empty design gives an empty result." bernoulli_logit_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] = if m == 0
     rv::int[m]
     rv
 else
@@ -3974,25 +4271,25 @@ end
 # The other three GLM families have no native Stan rng at all; their plain
 # forms (declared with bodies above) lower to the base family's rng over
 # `alpha + X * beta`. The token path just unwraps, exactly as bernoulli does.
-@deffun normal_id_glm_rng(vector[m], X::matrix[m,n], alpha, beta, sigma)::vector[m] = if m == 0
+@deffun @doc "Draw one normal response per design row with mean alpha + X*beta; an empty design gives an empty result." normal_id_glm_rng(vector[m], X::matrix[m,n], alpha, beta, sigma)::vector[m] = if m == 0
     rv::vector[m]
     rv
 else
     normal_id_glm_rng(X, alpha, beta, sigma)
 end
-@deffun normal_id_glm_rng(real[m], X::matrix[m,n], alpha, beta, sigma)::real[m] = if m == 0
+@deffun @doc "Draw one normal response per design row with mean alpha + X*beta; an empty design gives an empty result." normal_id_glm_rng(real[m], X::matrix[m,n], alpha, beta, sigma)::real[m] = if m == 0
     rv::real[m]
     rv
 else
     to_array_1d(normal_id_glm_rng(X, alpha, beta, sigma))
 end
-@deffun poisson_log_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] = if m == 0
+@deffun @doc "Draw one Poisson response per design row with log mean alpha + X*beta; an empty design gives an empty result." poisson_log_glm_rng(int[m], X::matrix[m,n], alpha, beta)::int[m] = if m == 0
     rv::int[m]
     rv
 else
     poisson_log_glm_rng(X, alpha, beta)
 end
-@deffun neg_binomial_2_log_glm_rng(int[m], X::matrix[m,n], alpha, beta, phi)::int[m] = if m == 0
+@deffun @doc "Draw one negative-binomial response per design row with log mean alpha + X*beta; an empty design gives an empty result." neg_binomial_2_log_glm_rng(int[m], X::matrix[m,n], alpha, beta, phi)::int[m] = if m == 0
     rv::int[m]
     rv
 else
@@ -4007,7 +4304,7 @@ end
 # under stanc.
 # Empty-segment guard (todo 19n8abc): same scalar-mix shape as `binomial_rng`
 # above — `inv_logit(eta)` is scalar whenever `eta` is.
-@deffun binomial_logit_rng(int[n], N::int[n], eta)::int[n] = if n == 0
+@deffun @doc "Draw n independent binomial logit values, broadcasting scalar parameters across observations." binomial_logit_rng(int[n], N::int[n], eta)::int[n] = if n == 0
     rv::int[n]
     rv
 else
@@ -4016,7 +4313,7 @@ end
 # Stan's lpmf also broadcasts a scalar trial count across vector observations.
 # Give the RNG an array-valued argument so it returns one draw per observation;
 # this covers both vector `eta` and the all-scalar `N`/`eta` case.
-@deffun binomial_logit_rng(int[n], N::int, eta)::int[n] = if n == 0
+@deffun @doc "Draw n independent binomial logit values, broadcasting scalar parameters across observations." binomial_logit_rng(int[n], N::int, eta)::int[n] = if n == 0
     rv::int[n]
     rv
 else
@@ -4025,13 +4322,13 @@ end
 
 # beta_binomial: (trials, alpha, beta). Empty-segment guard (todo 19n8abc):
 # scalar shape args beside the `N` container replay the scalar-mix failure.
-@deffun beta_binomial_rng(int[n], N::int[n], a::real, b::real)::int[n] = if n == 0
+@deffun @doc "Draw n independent beta binomial values, broadcasting scalar parameters across observations." beta_binomial_rng(int[n], N::int[n], a::real, b::real)::int[n] = if n == 0
     rv::int[n]
     rv
 else
     beta_binomial_rng(N, a, b)
 end
-@deffun beta_binomial_rng(int[n], N::int[n], a, b)::int[n] = if n == 0
+@deffun @doc "Draw n independent beta binomial values, broadcasting scalar parameters across observations." beta_binomial_rng(int[n], N::int[n], a, b)::int[n] = if n == 0
     rv::int[n]
     rv
 else
@@ -4039,7 +4336,7 @@ else
 end
 # The lpmf also broadcasts a scalar trial count across vector observations.
 # Expand it to the observation length so Stan's native RNG returns int[n].
-@deffun beta_binomial_rng(int[n], N::int, a, b)::int[n] = if n == 0
+@deffun @doc "Draw n independent beta binomial values, broadcasting scalar parameters across observations." beta_binomial_rng(int[n], N::int, a, b)::int[n] = if n == 0
     rv::int[n]
     rv
 else
@@ -4049,19 +4346,19 @@ end
 # dirichlet: native already returns vector[n]; token path just unwraps. Single
 # draw sized by the one container arg — no scalar-inflated vectorized loop, so
 # outside the guarded class (audit todo 19n8abc).
-@deffun dirichlet_rng(vector[n], alpha::vector[n])::vector[n] = dirichlet_rng(alpha)
+@deffun @doc "Draw one probability simplex with the supplied concentration vector." dirichlet_rng(vector[n], alpha::vector[n])::vector[n] = dirichlet_rng(alpha)
 
 # categorical / categorical_logit: repeat one shared probability/logit vector.
 # Explicit `for i in 1:n` loops with scalar native calls — empty input runs
 # zero iterations, so no guard (audit todo 19n8abc).
-@deffun categorical_rng(int[n], p::vector[k])::int[n] = begin
+@deffun @doc "Draw n independent categories from the shared probability vector." categorical_rng(int[n], p::vector[k])::int[n] = begin
     rv::int[n]
     for i in 1:n
         rv[i] = categorical_rng(p)
     end
     rv
 end
-@deffun categorical_logit_rng(int[n], eta::vector[k])::int[n] = begin
+@deffun @doc "Draw n independent categories from the shared logits." categorical_logit_rng(int[n], eta::vector[k])::int[n] = begin
     rv::int[n]
     for i in 1:n
         rv[i] = categorical_logit_rng(eta)
@@ -4071,7 +4368,7 @@ end
 
 # Plate-produced varying logits use matrix[k, n], with one categorical vector
 # per observation column. Match the density overload above in auto-GQ draws.
-@deffun categorical_logit_rng(int[n], eta::matrix[k,n])::int[n] = begin
+@deffun @doc "Draw one category per column of logits." categorical_logit_rng(int[n], eta::matrix[k,n])::int[n] = begin
     rv::int[n]
     for i in 1:n
         rv[i] = categorical_logit_rng(eta[:, i])
@@ -4082,16 +4379,16 @@ end
 # multi_normal / multi_normal_cholesky: native already returns vector[n].
 # Single draws sized by the location vector alone — no scalar-inflated
 # vectorized loop, so outside the guarded class (audit todo 19n8abc).
-@deffun multi_normal_rng(vector[n], loc::vector[n], cov)::vector[n]          = multi_normal_rng(loc, cov)
-@deffun multi_normal_cholesky_rng(vector[n], loc::vector[n], scale)::vector[n] = multi_normal_cholesky_rng(loc, scale)
+@deffun @doc "Draw independent multi normal vector observations, retaining the requested single-vector or array-of-vectors shape." multi_normal_rng(vector[n], loc::vector[n], cov)::vector[n]          = multi_normal_rng(loc, cov)
+@deffun @doc "Draw independent multi normal cholesky vector observations, retaining the requested single-vector or array-of-vectors shape." multi_normal_cholesky_rng(vector[n], loc::vector[n], scale)::vector[n] = multi_normal_cholesky_rng(loc, scale)
 # Precision-parameterized MVN: Stan Math ships no `multi_normal_prec_rng`
 # (verified via `stanc --dump-stan-math-signatures`), so the sized-token draw
 # routes through the covariance form. Exact: N(mu, Omega^-1) == N(mu, inv(Omega)).
-@deffun multi_normal_prec_rng(vector[n], loc::vector[n], prec)::vector[n] =
+@deffun @doc "Draw independent multi normal prec vector observations, retaining the requested single-vector or array-of-vectors shape." multi_normal_prec_rng(vector[n], loc::vector[n], prec)::vector[n] =
     multi_normal_rng(loc, inverse(prec))
-@deffun multi_student_t_rng(vector[n], nu, loc::vector[n], scale)::vector[n] =
+@deffun @doc "Draw independent multi student t vector observations, retaining the requested single-vector or array-of-vectors shape." multi_student_t_rng(vector[n], nu, loc::vector[n], scale)::vector[n] =
     multi_student_t_rng(nu, loc, scale)
-@deffun multi_student_t_cholesky_rng(vector[n], nu, loc::vector[n], scale)::vector[n] =
+@deffun @doc "Draw independent multi student t cholesky vector observations, retaining the requested single-vector or array-of-vectors shape." multi_student_t_cholesky_rng(vector[n], nu, loc::vector[n], scale)::vector[n] =
     multi_student_t_cholesky_rng(nu, loc, scale)
 
 # Array-of-vector draws (`array[m] vector[n]`, SLIC `vector[m, n]`). The density
@@ -4105,6 +4402,7 @@ end
 # sized by its location vector alone, so outside the guarded class (todo 19n8abc).
 # snag centered-ranef-p-892a7790.
 @deffun begin
+    "Draw independent multi normal vector observations, retaining the requested single-vector or array-of-vectors shape."
     multi_normal_rng(vector[m, n], loc::vector[n], cov)::vector[m, n] = begin
         rv::vector[m, n]
         for i in 1:m
@@ -4112,6 +4410,7 @@ end
         end
         rv
     end
+    "Draw independent multi normal vector observations, retaining the requested single-vector or array-of-vectors shape."
     multi_normal_rng(vector[m, n], loc::vector[m, n], cov)::vector[m, n] = begin
         rv::vector[m, n]
         for i in 1:m
@@ -4119,6 +4418,7 @@ end
         end
         rv
     end
+    "Draw independent multi normal cholesky vector observations, retaining the requested single-vector or array-of-vectors shape."
     multi_normal_cholesky_rng(vector[m, n], loc::vector[n], scale)::vector[m, n] = begin
         rv::vector[m, n]
         for i in 1:m
@@ -4126,6 +4426,7 @@ end
         end
         rv
     end
+    "Draw independent multi normal cholesky vector observations, retaining the requested single-vector or array-of-vectors shape."
     multi_normal_cholesky_rng(vector[m, n], loc::vector[m, n], scale)::vector[m, n] = begin
         rv::vector[m, n]
         for i in 1:m
@@ -4133,6 +4434,7 @@ end
         end
         rv
     end
+    "Draw independent multi normal prec vector observations, retaining the requested single-vector or array-of-vectors shape."
     multi_normal_prec_rng(vector[m, n], loc::vector[n], prec)::vector[m, n] = begin
         cov = inverse(prec)
         rv::vector[m, n]
@@ -4141,6 +4443,7 @@ end
         end
         rv
     end
+    "Draw independent multi normal prec vector observations, retaining the requested single-vector or array-of-vectors shape."
     multi_normal_prec_rng(vector[m, n], loc::vector[m, n], prec)::vector[m, n] = begin
         cov = inverse(prec)
         rv::vector[m, n]
@@ -4149,6 +4452,7 @@ end
         end
         rv
     end
+    "Draw independent multi student t vector observations, retaining the requested single-vector or array-of-vectors shape."
     multi_student_t_rng(vector[m, n], nu, loc::vector[n], scale)::vector[m, n] = begin
         rv::vector[m, n]
         for i in 1:m
@@ -4156,6 +4460,7 @@ end
         end
         rv
     end
+    "Draw independent multi student t vector observations, retaining the requested single-vector or array-of-vectors shape."
     multi_student_t_rng(vector[m, n], nu, loc::vector[m, n], scale)::vector[m, n] = begin
         rv::vector[m, n]
         for i in 1:m
@@ -4163,6 +4468,7 @@ end
         end
         rv
     end
+    "Draw independent multi student t cholesky vector observations, retaining the requested single-vector or array-of-vectors shape."
     multi_student_t_cholesky_rng(vector[m, n], nu, loc::vector[n], scale)::vector[m, n] = begin
         rv::vector[m, n]
         for i in 1:m
@@ -4170,6 +4476,7 @@ end
         end
         rv
     end
+    "Draw independent multi student t cholesky vector observations, retaining the requested single-vector or array-of-vectors shape."
     multi_student_t_cholesky_rng(vector[m, n], nu, loc::vector[m, n], scale)::vector[m, n] = begin
         rv::vector[m, n]
         for i in 1:m
@@ -4206,15 +4513,15 @@ for (dist, params, draw) in (
 )
     dlpdf = Symbol(dist, :_lpdf)
     drng = Symbol(dist, :_rng)
-    @eval @deffun $dlpdf(L::square_matrix[m, n], $(params...))::real = begin
+    @eval @deffun @doc "Sum log densities over the array of square-matrix observations." $dlpdf(L::square_matrix[m, n], $(params...))::real = begin
         rv = 0.0
         for i in 1:m
             rv += $dlpdf(L[i], $(params...))
         end
         rv
     end
-    @eval @deffun $drng(square_matrix[n], $(params...))::matrix[n, n] = $draw
-    @eval @deffun $drng(square_matrix[m, n], $(params...))::matrix[m, n, n] = begin
+    @eval @deffun @doc "Draw one square matrix of the requested dimension from the base matrix distribution." $drng(square_matrix[n], $(params...))::matrix[n, n] = $draw
+    @eval @deffun @doc "Draw an array of independent square matrices from the base matrix distribution." $drng(square_matrix[m, n], $(params...))::matrix[m, n, n] = begin
         rv::matrix[m, n, n]
         for i in 1:m
             rv[i] = $draw
@@ -4224,12 +4531,12 @@ for (dist, params, draw) in (
 end
 # Matrix-draw families observed as plain data: the gq token is a 2-dim matrix,
 # so the sized-token slot is `matrix[n,m]`. Each delegates to its native form.
-@deffun wishart_rng(matrix[n,m], nu, Sigma)::matrix[n,m] = wishart_rng(nu, Sigma)
-@deffun inv_wishart_rng(matrix[n,m], nu, Sigma)::matrix[n,m] = inv_wishart_rng(nu, Sigma)
-@deffun wishart_cholesky_rng(matrix[n,m], nu, L)::matrix[n,m] = wishart_cholesky_rng(nu, L)
-@deffun inv_wishart_cholesky_rng(matrix[n,m], nu, L)::matrix[n,m] = inv_wishart_cholesky_rng(nu, L)
-@deffun lkj_corr_rng(matrix[n,m], eta)::matrix[n,m] = lkj_corr_rng(n, eta)
-@deffun lkj_corr_cholesky_rng(matrix[n,m], eta)::matrix[n,m] = lkj_corr_cholesky_rng(n, eta)
+@deffun @doc "Draw a wishart matrix with the requested matrix dimensions." wishart_rng(matrix[n,m], nu, Sigma)::matrix[n,m] = wishart_rng(nu, Sigma)
+@deffun @doc "Draw a inv wishart matrix with the requested matrix dimensions." inv_wishart_rng(matrix[n,m], nu, Sigma)::matrix[n,m] = inv_wishart_rng(nu, Sigma)
+@deffun @doc "Draw a wishart cholesky matrix with the requested matrix dimensions." wishart_cholesky_rng(matrix[n,m], nu, L)::matrix[n,m] = wishart_cholesky_rng(nu, L)
+@deffun @doc "Draw a inv wishart cholesky matrix with the requested matrix dimensions." inv_wishart_cholesky_rng(matrix[n,m], nu, L)::matrix[n,m] = inv_wishart_cholesky_rng(nu, L)
+@deffun @doc "Draw a lkj corr matrix with the requested matrix dimensions." lkj_corr_rng(matrix[n,m], eta)::matrix[n,m] = lkj_corr_rng(n, eta)
+@deffun @doc "Draw a lkj corr cholesky matrix with the requested matrix dimensions." lkj_corr_cholesky_rng(matrix[n,m], eta)::matrix[n,m] = lkj_corr_cholesky_rng(n, eta)
 
 # =============================================================================
 # Longitudinal dose/time-response building blocks.
@@ -4245,6 +4552,7 @@ end
     # (`normal_lcdf`), at/above the upper LOQ the right-tail mass
     # (`normal_lccdf`), otherwise the usual density. Indexed-accumulator idiom
     # (real[1]) keeps a single trailing return without early-return-in-branch.
+    "Return the censored normal log likelihood: use the lower or upper tail at the observation outside the limits, and the density inside."
     truncated_normal_lpdf(obs::real, loc::real, scale::real, lloq::real, uloq::real)::real = begin
         rv::real[1]
         rv[1] = normal_lpdf(obs, loc, scale)
@@ -4258,6 +4566,7 @@ end
         rv[1]
     end
     # Pointwise vector form (generated_quantities log-lik term).
+    "Return pointwise censored normal log likelihood: use the lower or upper tail at the observation outside the limits, and the density inside."
     truncated_normal_lpdfs(obs::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
         rv::vector[n]
         for i in 1:n
@@ -4267,6 +4576,7 @@ end
     end
     # Vector form = sum of pointwise; `@lhs` opts it into base-level
     # `obs ~ truncated_normal(loc, scale, lloq, uloq)` sampling.
+    "Sum censored normal log likelihood: use the lower or upper tail at the observation outside the limits, and the density inside."
     @lhs truncated_normal_lpdf(obs::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::real =
         sum(truncated_normal_lpdfs(obs, loc, scale, lloq, uloq))
     # Posterior-predictive draw: sample then clamp into [lloq, uloq]. Per-element
@@ -4279,6 +4589,7 @@ end
     # now records every guarded occurrence), so the whole-vector form transpiles
     # too; the per-element draw is kept because it is correct Stan, costs nothing,
     # and reads like its `_lpdfs` sibling.
+    "Draw independent normal values and clamp each draw to its lower and upper quantification limits."
     truncated_normal_rng(loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
         rv::vector[n]
         for i in 1:n
@@ -4289,6 +4600,7 @@ end
     # Sized-token gq path (delegates to the native form; cf. multi_normal_rng).
     # Bare `vector[n]` (no `::`) is the token slot, matching the tokenof shape.
     # The delegate is the explicit per-element loop above — no guard (todo 19n8abc).
+    "Draw independent normal values and clamp each draw to its lower and upper quantification limits."
     truncated_normal_rng(vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] =
         truncated_normal_rng(loc, scale, lloq, uloq)
 
@@ -4301,6 +4613,7 @@ end
     # the GQ log-lik + predictive draw. The tail masses take the stable
     # `student_t_lcdf_stable`/`student_t_lccdf_stable`: Stan's native pair has a
     # NaN gradient when `loc` equals the limit (snag native-student-t-b7023f91).
+    "Return the censored Student-t log likelihood: use the lower or upper tail at the corresponding quantification limit outside the limits, and the density inside."
     truncated_student_t_lpdf(obs::real, dof::real, loc::real, scale::real, lloq::real, uloq::real)::real = begin
         rv::real[1]
         rv[1] = student_t_lpdf(obs, dof, loc, scale)
@@ -4314,6 +4627,7 @@ end
         rv[1]
     end
     # Pointwise vector form (generated_quantities log-lik term).
+    "Return pointwise censored Student-t log likelihood: use the lower or upper tail at the corresponding quantification limit outside the limits, and the density inside."
     truncated_student_t_lpdfs(obs::vector[n], dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
         rv::vector[n]
         for i in 1:n
@@ -4323,12 +4637,14 @@ end
     end
     # Vector form = sum of pointwise; `@lhs` opts it into base-level
     # `obs ~ truncated_student_t(dof, loc, scale, lloq, uloq)` sampling.
+    "Sum censored Student-t log likelihood: use the lower or upper tail at the corresponding quantification limit outside the limits, and the density inside."
     @lhs truncated_student_t_lpdf(obs::vector[n], dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::real =
         sum(truncated_student_t_lpdfs(obs, dof, loc, scale, lloq, uloq))
     # Posterior-predictive draw: sample then clamp into [lloq, uloq]. Per-element
     # `student_t_rng(dof[i], loc[i], scale[i])`, same rationale as
     # `truncated_normal_rng` above (originally forced by the size-alias gap, now
     # kept for symmetry with the `_lpdfs` loop).
+    "Draw independent Student-t values and clamp each draw to its lower and upper quantification limits."
     truncated_student_t_rng(dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] = begin
         rv::vector[n]
         for i in 1:n
@@ -4339,6 +4655,7 @@ end
     # Sized-token gq path (delegates to the native form; cf. multi_normal_rng).
     # Bare `vector[n]` (no `::`) is the token slot, matching the tokenof shape.
     # The delegate is the explicit per-element loop above — no guard (todo 19n8abc).
+    "Draw independent Student-t values and clamp each draw to its lower and upper quantification limits."
     truncated_student_t_rng(vector[n], dof::vector[n], loc::vector[n], scale::vector[n], lloq::vector[n], uloq::vector[n])::vector[n] =
         truncated_student_t_rng(dof, loc, scale, lloq, uloq)
     end
@@ -4347,11 +4664,13 @@ end
     # Single-peak time response: with xi = (log t - loc)*exp(log_slope), the
     # value exp(log_inv_logit(xi)+log_inv_logit(-xi))*mag peaks once at log t=loc
     # and →0 as t→0 or t→∞ (log_slope stored unconstrained → exp() positive).
+    "Return mag * logistic(xi) * logistic(-xi) elementwise, with xi = (log_time - loc)*exp(log_slope); the peak at loc is mag/4."
     @juliacompat biomarker_time_response(log_time::vector[n], loc::vector[n], log_slope::vector[n], mag::vector[n])::vector[n] = begin
         xi::vector[n] = (log_time - loc) .* exp(log_slope)
         exp(log_inv_logit(xi) + log_inv_logit(-xi)) .* mag
     end
     # Log dose response (sigmoid in log space): caller exp()s it in the compose.
+    "Return log logistic((log_dose - loc)*exp(log_slope)) elementwise."
     @juliacompat biomarker_dose_response(log_dose::vector[n], loc::vector[n], log_slope::vector[n])::vector[n] = begin
         xi::vector[n] = (log_dose - loc) .* exp(log_slope)
         log_inv_logit(xi)
@@ -4360,6 +4679,7 @@ end
     # --- index / broadcast helpers (transformed-data) ------------------------
     # Column-major linear indices: `xy` with `vec(M)[xy] == M[x,y]` for an
     # (max(x) × max(y)) matrix `M`.
+    "Convert paired row and column indices to column-major linear indices, using max(x) as the row count."
     @juliacompat linear_idxs(x::int[n], y::int[n])::int[n] = begin
         m = max(x)
         rv::int[n]
@@ -4369,6 +4689,7 @@ end
         rv
     end
     # Elementwise max(x[i], y) / (x[i] > y) for a vector x and scalar y.
+    "Return the maximum of each vector entry and the shared scalar y."
     @juliacompat broadcasted_max(x::vector[n], y::real)::vector[n] = begin
         rv::vector[n]
         for i in 1:n
@@ -4376,6 +4697,7 @@ end
         end
         rv
     end
+    "Return 1.0 where a vector entry exceeds y, and 0.0 elsewhere."
     @juliacompat broadcasted_gt(x::vector[n], y::real)::vector[n] = begin
         rv::vector[n]
         for i in 1:n
@@ -4389,6 +4711,7 @@ end
     # column ONCE (`cmt` is data), and both `y[idx]` and `mu[idx]` share it at zero
     # runtime/gradient cost. Boolean-mask indexing (which Stan lacks) is thus
     # expressed as ordinary integer-array indexing over a precomputed index.
+    "Return the one-based positions of nonzero entries in a 0/1 integer mask."
     Base.findall(m::int[n])::int[sum(m)] = begin
         k = sum(m)
         rv::int[k]
@@ -4989,9 +5312,11 @@ _reject_call_kwargs(x::CanonicalExpr{<:Union{typeof.((mean, sd, variance, quanti
 # transpile but fail stanc's signature check.
 @deffun begin
     @stanonly begin
+    "Evaluate the squared-exponential covariance with one length scale per coordinate, accepting length scales as a vector."
     gp_exp_quad_cov(x::vector[n,d], sigma::real,
                     length_scale::vector[d])::matrix[n,n] =
         gp_exp_quad_cov(x, sigma, to_array_1d(length_scale))
+    "Evaluate the squared-exponential covariance with one length scale per coordinate, accepting length scales as a vector."
     gp_exp_quad_cov(x1::vector[m,d], x2::vector[n,d], sigma::real,
                     length_scale::vector[d])::matrix[m,n] =
         gp_exp_quad_cov(x1, x2, sigma, to_array_1d(length_scale))
@@ -5186,6 +5511,7 @@ _pmx_rhs_label(_) = "f"
 @deffun begin
     @stanonly begin
     # A per-event `theta`/`x_r`/`x_i` argument with `extra` appended to each row.
+    "Append the same extra values to every event row, preserving the element type and row count."
     pmx_append_each(rows::real[n, k], extra::real[m])::real[n, k + m] = begin
         out::real[n, k + m]
         for i in 1:n
@@ -5193,6 +5519,7 @@ _pmx_rhs_label(_) = "f"
         end
         out
     end
+    "Append the same extra values to every event row, preserving the element type and row count."
     pmx_append_each(rows::int[n, k], extra::int[m])::int[n, k + m] = begin
         out::int[n, k + m]
         for i in 1:n
