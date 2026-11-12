@@ -355,3 +355,117 @@ end
         end
     end
 end
+
+@testitem "ReactiveKernels translates Stan's log_sum_exp" tags=[:reactivekernels] begin
+    # Snag `jax-source-has-n-a3964196`: the Julia twin's special cases are
+    # branches, so `jax_source` refused any helper calling `log_sum_exp`.
+    using ReactiveKernels
+    @deffun @juliacompat begin
+        source_log_sum_exp(x::real, y::real)::real = log_sum_exp(x, y)
+        source_log_sum_exp(v::vector[n])::real = log_sum_exp(v)
+        source_log_sum_exp(u::vector[n], v::vector[n])::vector[n] = log_sum_exp(u, v)
+        source_soft_maximum(x::real, a::real, s::real)::real = s * log_sum_exp(x / s, a / s)
+    end
+    @kernel lse_pair(x::Float64, y::Float64) = begin
+        result = source_log_sum_exp(x, y)
+        return result
+    end
+    @kernel lse_vector(v::Vector{Float64}) = begin
+        result = source_log_sum_exp(v)
+        return result
+    end
+    @kernel lse_elementwise(u::Vector{Float64}, v::Vector{Float64}) = begin
+        result = source_log_sum_exp(u, v)
+        return result
+    end
+    @kernel lse_cells(x::Vector{Float64}, a::Vector{Float64}, s::Float64) = begin
+        result = sum(source_soft_maximum.(x, a, s))
+        return result
+    end
+    @kernel lse_rows(rows::Vector{Vector{Float64}}) = begin
+        cells = plate(rows) do x
+            source_log_sum_exp(x)
+        end
+        result = sum(cells)
+        return result
+    end
+    sources = Dict(name => string(src) for (name, src) in (
+        "lse_pair" => jax_source(lse_pair; have=(:x, :y), want=:result),
+        "lse_pair_host" => jax_source(lse_pair; have=(:x, :y), want=:result, data=(:x, :y)),
+        "lse_vector" => jax_source(lse_vector; have=(:v,), want=:result),
+        "lse_elementwise" => jax_source(lse_elementwise; have=(:u, :v), want=:result),
+        "lse_cells" => jax_source(lse_cells; have=(:x, :a, :s), want=:result),
+        "lse_rows" => jax_source(lse_rows; have=(:rows,), want=:result, data=(:rows,))))
+    @test occursin("_rk_logaddexp", sources["lse_pair"])
+    @test occursin("_rk_logsumexp", sources["lse_vector"])
+
+    # Expected values are the Julia twin's, Stan Math's special cases included.
+    py(x::Real) = isnan(x) ? "nan" : isinf(x) ? (x > 0 ? "inf" : "-inf") : repr(Float64(x))
+    py(x::AbstractVector) = "[" * join(py.(x), ", ") * "]"
+    py(x::AbstractString) = x
+    pairs = [(1.0, 2.0), (2.0, 1.0), (0.5, 0.5), (-Inf, 3.0), (3.0, -Inf), (-Inf, -Inf),
+             (Inf, Inf), (Inf, 1.0), (NaN, 1.0), (1.0, NaN), (-800.0, -801.0), (700.0, 710.0)]
+    vectors = [[1.0, 2.0, 3.0], Float64[], [-Inf, -Inf], [Inf, 1.0], [-Inf, 0.0],
+               [NaN, 1.0], [-1000.0, -1000.5]]
+    u, v = [1.0, -Inf, 0.5, 40.0], [2.0, 3.0, 0.5, -Inf]
+    x, a, s = [0.1, 0.4, 2.0], [0.0, 1.5, 30.0], 0.2
+    rows = [[0.5], [1.0, 2.0, 3.0], [-1.0, 0.25]]
+    for (p, q) in pairs
+        @test isequal(source_log_sum_exp(p, q), StanBlocks._julia_log_sum_exp(p, q))
+    end
+    @test source_log_sum_exp(u, v) == StanBlocks._julia_log_sum_exp.(u, v)
+    expected = (
+        pairs = "[" * join(("($(py(p)), $(py(q)), $(py(source_log_sum_exp(p, q))))"
+                            for (p, q) in pairs), ", ") * "]",
+        vectors = "[" * join(("($(py(z)), $(py(source_log_sum_exp(z))))" for z in vectors), ", ") * "]",
+        elementwise = py(source_log_sum_exp(u, v)),
+        cells = py(sum(source_soft_maximum.(x, a, s))),
+        rows = py(sum(source_log_sum_exp.(rows))))
+    python = get(ENV, "RK_JAX_PYTHON", "")
+    if isempty(python)
+        @test_skip "Set RK_JAX_PYTHON to check log_sum_exp values and gradients"
+    else
+        mktempdir() do dir
+            for (name, src) in sources
+                write(joinpath(dir, name * ".py"), src)
+            end
+            check = joinpath(dir, "check.py")
+            write(check, """
+            import jax
+            import jax.numpy as jnp
+            import numpy as np
+            from numpy import inf, nan
+            import lse_pair, lse_pair_host, lse_vector, lse_elementwise, lse_cells, lse_rows
+            pair = jax.jit(lse_pair.kernel)
+            pair_grad = jax.jit(jax.grad(lse_pair.kernel, argnums=(0, 1)))
+            for x, y, expected in $(expected.pairs):
+                np.testing.assert_allclose(pair(x, y), expected, rtol=1e-14)
+                prepared = lse_pair_host.prepare_data(x=x, y=y)
+                np.testing.assert_allclose(lse_pair_host.kernel(**prepared), expected, rtol=1e-14)
+                if np.isfinite(expected) and not np.isnan(x) and not np.isnan(y):
+                    # exp(x - result) and exp(y - result), 1/2 each at a tie,
+                    # and no NaN beside a -inf argument.
+                    np.testing.assert_allclose(pair_grad(x, y),
+                        (np.exp(x - expected), np.exp(y - expected)), rtol=1e-12, atol=1e-300)
+            vector = jax.jit(lse_vector.kernel)
+            vector_grad = jax.jit(jax.grad(lse_vector.kernel))
+            for v, expected in $(expected.vectors):
+                v = jnp.asarray(v, dtype=jnp.float64)
+                np.testing.assert_allclose(vector(v), expected, rtol=1e-14)
+                if np.isfinite(expected):
+                    np.testing.assert_allclose(vector_grad(v), np.exp(np.asarray(v) - expected),
+                                               rtol=1e-12, atol=1e-300)
+            u, v = jnp.array($(py(u))), jnp.array($(py(v)))
+            np.testing.assert_allclose(jax.jit(lse_elementwise.kernel)(u, v), $(expected.elementwise), rtol=1e-14)
+            x, a = jnp.array($(py(x))), jnp.array($(py(a)))
+            np.testing.assert_allclose(jax.jit(lse_cells.kernel)(x, a, $(py(s))), $(expected.cells), rtol=1e-14)
+            for gradient in jax.grad(lse_cells.kernel, argnums=(0, 1, 2))(x, a, $(py(s))):
+                assert np.all(np.isfinite(gradient))
+            # Padding of the shorter rows takes no part in each row's reduction.
+            prepared = lse_rows.prepare_data(rows=[np.array(r) for r in $(py(py.(rows)))])
+            np.testing.assert_allclose(jax.jit(lse_rows.kernel)(**prepared), $(expected.rows), rtol=1e-14)
+            """)
+            @test success(pipeline(`$python $check`; stdout=stdout, stderr=stderr))
+        end
+    end
+end
