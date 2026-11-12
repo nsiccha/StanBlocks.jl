@@ -4,6 +4,18 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.43
+
+- **`@deffun` arguments may take any name again.** An argument named like a
+  Base function (`values`, `collect`, `vcat`, `merge`, `pairs`) or like a
+  local of the generated tracing code (`info`, `context`) failed to transpile
+  since v0.2.37, with `objects of type StanExpr… are not callable`. Argument
+  and signature-dimension names, including `@defsig` dimensions, now bind to
+  private locals, and the generated code calls Base functions by value, so a
+  module that defines its own `values`, `merge` or `size` keeps working too.
+  `@juliacompat` methods accept an argument named `size`. Emitted Stan is
+  unchanged.
+
 ## v0.2.42
 
 - **Builtin implementations explain themselves in generated Stan.** Comments
