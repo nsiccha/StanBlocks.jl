@@ -4,6 +4,15 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.44
+
+- **`@deffun` docstrings may interpolate argument names again.** A docstring
+  such as `"Applies `$op` to `a` and `b`"` failed to transpile in v0.2.43 with
+  `UndefVarError: op not defined`, because argument and dimension names had
+  become private locals. The docstring now reads the traced arguments as it
+  did in v0.2.42, function-valued arguments included, and the generated
+  Stan comment is unchanged from v0.2.42.
+
 ## v0.2.43
 
 - **`@deffun` arguments may take any name again.** An argument named like a

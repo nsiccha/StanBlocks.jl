@@ -10,6 +10,11 @@ named like those Base functions broke every `@deffun` in it the same way.
 
 Each colliding definition below has a twin whose argument is plainly named
 `v`; the emitted Stan must be identical up to that renaming.
+
+A docstring that interpolates an argument (`"Applies `\$op` to …"`) is
+evaluated in that method too, and read the bare author name after the names
+became private: `UndefVarError: op not defined` (snag
+`deffun-docstring-22b77696`). It reads the traced argument again.
 """
 @testmodule DeffunArgumentNameFixtures begin
     module Names
@@ -80,11 +85,39 @@ Each colliding definition below has a twin whose argument is plainly named
             y ~ normal(shadowed_scale(rep_vector(s, 2), 2.0) .+ shadowed_jc(rep_vector(s, 2), 0.5), 1.0)
         end
     end
+
+    # Docstrings that interpolate argument and dimension names (snag
+    # `deffun-docstring-22b77696`): a function-valued argument, and one named
+    # like a Base function the tracing method calls.
+    module Documented
+        using StanBlocks
+        @deffun begin
+            """
+            Applies `$op` to each pair of `a` and `b`.
+            """
+            doc_pairwise(op, a::vector[m], b::row_vector[n])::matrix[m,n] = begin
+                out::matrix[m,n]
+                for i in 1:m
+                    for j in 1:n
+                        out[i,j] = op(a[i], b[j])
+                    end
+                end
+                out
+            end
+            "Scales `$values` (length `$n`) by `$k`."
+            doc_scale(values::vector[n], k::real)::vector[n] = values .* k
+        end
+        const model = @slic (; y = [0.3, 0.1], t = [1.0, 2.0], d = [0.5, 1.5, 2.5]) begin
+            s ~ normal(0.0, 1.0)
+            M = doc_pairwise(-, t, d')
+            y ~ normal(doc_scale(rep_vector(s, 2), 2.0) .+ M[:, 1], 1.0)
+        end
+    end
 end
 
 @testitem "slic: @deffun arguments and @defsig dimensions may take any name" tags=[:slic, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup, DeffunArgumentNameFixtures] begin
     using .StanBlocksTestSetup: stanc_compiles
-    using .DeffunArgumentNameFixtures: Names, Shadowing
+    using .DeffunArgumentNameFixtures: Names, Shadowing, Documented
     uses(call) = StanBlocks.stan.SlicModel(quote
         s ~ normal(0.0, 1.0)
         y ~ normal($call, 1.0)
@@ -127,4 +160,11 @@ end
     # A module's own `values`/`merge`/`pairs`/`collect`/`vcat`/`size` globals.
     @test stanc_compiles(Shadowing.model)
     @test Shadowing.shadowed_jc([1.0, 2.0], 3.0) == [3.0, 6.0]
+
+    # A docstring reads the traced arguments, as it did before names became
+    # private: the function passed for `op`, and each formal as declared.
+    documented = stan_code(Documented.model)
+    @test occursin("// Applies `-::func` to each pair of `a` and `b`.\n", documented)
+    @test occursin("// Scales `values::vector[dims(values)[1]]` (length `n::int`) by `k::real`.\n", documented)
+    @test stanc_compiles(Documented.model)
 end
