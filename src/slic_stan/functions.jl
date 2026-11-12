@@ -1350,11 +1350,15 @@ begin
         ct = gettype(ct)
         :(<:$StanExpr2{<:$types.tokenof{<:$ct},$(length(size))})
     end
-    xsig_expr(x::Expr) = begin
+    # A bare size symbol IS its bound value: with `local_of`, the private local
+    # the hygienic deconstruction bound it to (`_hygienic_local!`). A name the
+    # deconstruction did not bind (a module constant) is read as written.
+    xsig_expr(x::Expr; local_of=Dict{Symbol,Symbol}()) = begin
         @assert x.head == :ref "xsig_expr expects a `T[dims...]` `:ref` expression, got `$x` (head `$(x.head)`)."
         ct, size... = x.args
         ct = gettype(ct)
-        size = xtuple([:($forward!($arg; info)) for arg in canonical.(size)]...)
+        bound(arg) = arg isa Symbol ? get(local_of, arg, arg) : arg
+        size = xtuple([:($forward!($(bound(arg)); info)) for arg in canonical.(size)]...)
         :($StanType($ct, $size))
     end
 
@@ -1387,10 +1391,16 @@ begin
         # "Head-first dispatch tables" above).
         hvar = gensym(:head)
         xexpr = :(x::$CanonicalExpr{<:$ftype,<:Tuple{$(lhs_type...)}})
+        # Dimension names bind hygienically, as in `@deffun` (`_hygienic_local!`):
+        # a dimension named `x` or `context` must not rebind the method's own.
+        local_of = Dict{Symbol,Symbol}()
+        info_nt = _hygienic_namedtuple(local_of, dim_names)
+        push!(info_nt.args[1].args, Expr(:kw, :__trace_context__, :($_context_or_new(context))))
         xbody = Expr(:block, source, [
-            xassign(xtuple(ensure_xlhs.(lhsi.args[2:end])...), xformal_size(lhsi, :(x.args[$i])))
+            xassign(xtuple(_hygienic_local!.(Ref(local_of), ensure_xlhs.(lhsi.args[2:end]))...),
+                xformal_size(lhsi, :(x.args[$i])))
             for (i, lhsi) in enumerate(lhs)
-        ]..., :(info = (;$(dim_names...), __trace_context__ = $_context_or_new(context))), xsig_expr(rv))
+        ]..., :(info = $info_nt), xsig_expr(rv; local_of))
         quote
             for $hvar in $stan._head_types($ftype)
                 $stan.tracetype_by_head(::$hvar, $xexpr) = $stan._tracetype(x, nothing)
@@ -1495,6 +1505,25 @@ begin
     # (modulo the function name). Shared by the `@deffun`/`@defsig` arg-shape
     # deconstruction (`make_deconstruct`) and the `@lhs` base path.
     ensure_xlhs(::Integer; kwargs...) = Symbol("_")
+
+    # Hygienic binding of author-chosen names (arguments, signature
+    # dimensions) in the tracing methods `@deffun` and `@defsig` emit. Those
+    # methods are evaluated in the author's module and keep their own locals
+    # (`x`, `info`, `context`), so an author name must never become a Julia
+    # local there: it would shadow them, or a Base function the method calls
+    # (snag `deffun-argument-03fb3f25`). `local_of` maps each author name to
+    # ONE gensym, created on first use, so every binding of a name (a
+    # dimension two arguments share) still writes the same local. The
+    # `_` placeholder stays `_`.
+    _hygienic_local!(local_of, name::Symbol) =
+        name === :_ ? name : get!(() -> gensym(name), local_of, name)
+    # `(; a = <local of a>, n = <local of n>)`: `info` keeps the author names.
+    _hygienic_namedtuple(local_of, names...) = Expr(:tuple, Expr(:parameters,
+        (Expr(:kw, n, _hygienic_local!(local_of, n)) for ns in names for n in ns)...))
+    # The hygienic counterpart of `(; a, n) = src`.
+    _hygienic_rebind(local_of, src, names...) = Expr(:block,
+        (:($(_hygienic_local!(local_of, n)) = $getproperty($src, $(QuoteNode(n))))
+         for ns in names for n in ns)...)
 
     hasvararg(args) = length(args) > 0 && Meta.isexpr(args[end], :(...))
     maybedoc(x::AbstractString) = length(strip(x)) == 0 ? "" : strip(replace("\n" * strip(x), "\n"=>"\n// ")) * "\n"
@@ -2143,7 +2172,8 @@ begin
                     push!(seen_dims, dim)
                     push!(known, dim)
                     push!(locals, dim)
-                    push!(dim_preamble, :($dim = size($name, $i)))
+                    # `Base.size` by value: an argument may be named `size`.
+                    push!(dim_preamble, :($dim = $Base.size($name, $i)))
                 else
                     syms = _deffun_julia_dim_symbols!(Set{Symbol}(), dim)
                     unknown = setdiff(syms, known)
@@ -2156,7 +2186,7 @@ begin
                         # site's runtime size at the check point.
                         origin_arg, origin_i = first(julia_dim_sites[dim])
                         sites_expr = Expr(:tuple, (
-                            :(($(QuoteNode(an)), $ii, size($an, $ii)))
+                            :(($(QuoteNode(an)), $ii, $Base.size($an, $ii)))
                             for (an, ii) in julia_dim_sites[dim]
                         )...)
                         push!(dim_preamble, :($stan._deffun_julia_check_dim(
@@ -2609,14 +2639,20 @@ begin
         # is a separate, Stan-less tracetype whose result reads the observation
         # argument's declared shape), so build the block from a parameterised
         # helper rather than baking one `hidden` in.
+        # Argument and dimension names bind hygienically (`_hygienic_local!`);
+        # `info` carries them under the author's names, and tracing resolves
+        # the body's names through `info`, never through Julia scope.
+        local_of = Dict{Symbol,Symbol}()
+        hyg(name) = _hygienic_local!(local_of, name)
         make_deconstruct(hidden) = Expr(:block,
-            xassign(xtuple(arg_names..., (isnothing(vararg) ? () : (vararg,))...), :(x.args)),
+            xassign(xtuple(hyg.(arg_names)...,
+                (isnothing(vararg) ? () : (Expr(:..., hyg(vararg.args[1])),))...), :(x.args)),
             [
-                xassign(xtuple(ensure_xlhs.(args_type.args[2:end]; hidden)...),
-                    tok ? :($stan_size($args_name)) : xformal_size(args_type, args_name))
+                xassign(xtuple(hyg.(ensure_xlhs.(args_type.args[2:end]; hidden))...),
+                    tok ? :($stan_size($(hyg(args_name)))) : xformal_size(args_type, hyg(args_name)))
                 for (args_name, args_type, tok) in zip(arg_names, arg_types, is_token)
             ]...,
-            :(info = (;$(sig_names...), $(keys(fun_sizes)...),))
+            :(info = $(_hygienic_namedtuple(local_of, sig_names, keys(fun_sizes))))
         )
         deconstruct = make_deconstruct(hidden_size_names)
         # Abstract formals can receive either orientation. Resolve their native
@@ -2629,13 +2665,13 @@ begin
             :block,
             analyze_actual_sizes,
             deconstruct.args...,
-            :(info = merge($anon_info(info), (; __size_alias_names__ = (; $actual_sizes.fun_size_alias_names...)))),
-            :((;$(sig_names...), $(keys(fun_sizes)...),) = info),
-            :(info = $OrderedDict{Symbol,Any}(pairs(info)))
+            :(info = $merge($anon_info(info), (; __size_alias_names__ = (; $actual_sizes.fun_size_alias_names...)))),
+            _hygienic_rebind(local_of, :info, sig_names, keys(fun_sizes)),
+            :(info = $OrderedDict{Symbol,Any}($pairs(info)))
         )
 
         stmts = []
-        rv_expr = xsig_expr(ensure_xref(rv))
+        rv_expr = xsig_expr(ensure_xref(rv); local_of)
         stan_fundef = nothing
         # For inline UDFs we keep the original (un-`ensure_xreturn`'d) body
         # for substitution; the canonicalized + return-wrapped form is only
@@ -2685,14 +2721,14 @@ begin
                 $docstring,
                 $sig_rv,
                 $f,
-                (;$(sig_names...), ),vcat(
-                    collect(values($actual_sizes.fun_sizes)),
+                $(_hygienic_namedtuple(local_of, sig_names)), $vcat(
+                    $collect($values($actual_sizes.fun_sizes)),
                     $actual_sizes.fun_checks,
                     $forward!($(canonical(body)); info)
                 ),
                 $stan._deref_lnn($stan._current_lnn(info)),
             ))
-            stan_refusal === nothing || (stan_fundef = :(error($stan_refusal)))
+            stan_refusal === nothing || (stan_fundef = :($error($stan_refusal)))
         end
 
         # Every rule this definition registers is keyed on its head first (see
@@ -2734,7 +2770,7 @@ begin
         # `tracetype`'s `info` is typically a NamedTuple (immutable), so
         # convert to OrderedDict before injecting `:__mod__`. (`fundef`
         # uses `anon_deconstruct` which already does the conversion.)
-        promote_info = :(info = $OrderedDict{Symbol,Any}(pairs(info)))
+        promote_info = :(info = $OrderedDict{Symbol,Any}($pairs(info)))
         inject_context = :($_attach_trace_context!(info, context))
         if is_inline
             # Inline UDFs do not produce a Stan function (no `functions {}`
@@ -2842,7 +2878,7 @@ begin
             push!(stmts, :(function $base_f end))
             push!(stmts, quote
                 $stan.tracetype_by_head($base_hexpr, $base_xexpr) = $stan._tracetype(_x, nothing)
-                $stan._tracetype_by_head($base_hexpr, $base_xexpr, context) = $(Expr(:block, source, reconstruct, base_deconstruct, xsig_expr(y_type)))
+                $stan._tracetype_by_head($base_hexpr, $base_xexpr, context) = $(Expr(:block, source, reconstruct, base_deconstruct, xsig_expr(y_type; local_of)))
                 $stan.fundef_by_head($base_hexpr, $base_xexpr) = nothing
             end)
         end
