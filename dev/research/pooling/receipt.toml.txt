@@ -1,5 +1,5 @@
 method = "documentation build calculation"
-stanblocks_version = "0.2.43"
+stanblocks_version = "0.2.44"
 julia = "1.13.3"
 model_source_sha256 = "6749cbc611c21bc9b04d769879e02426870ec9890e84133c07e05e088dfdbc49"
 stan_source_sha256 = "a112191a8c549d7953579535b68f54196ad97d6c8cd3cc92d92a0cd127a3ebcc"
