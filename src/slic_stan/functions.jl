@@ -1524,6 +1524,17 @@ begin
     _hygienic_rebind(local_of, src, names...) = Expr(:block,
         (:($(_hygienic_local!(local_of, n)) = $getproperty($src, $(QuoteNode(n))))
          for ns in names for n in ns)...)
+    # A docstring is author code too: `"Applies `$op` to `a`"` reads the
+    # argument `op`. It runs in a `let` of its own that binds exactly the
+    # author names it mentions to their private locals, so it reads the same
+    # traced values as before they became private, and cannot shadow anything
+    # outside itself (snag `deffun-docstring-22b77696`).
+    _hygienic_doc(local_of, doc, names...) = begin
+        bound = unique(n for ns in names for n in ns
+                       if n !== :_ && haskey(local_of, n) && _ast_mentions(doc, n))
+        isempty(bound) ? doc :
+            Expr(:let, Expr(:block, (:($n = $(local_of[n])) for n in bound)...), doc)
+    end
 
     hasvararg(args) = length(args) > 0 && Meta.isexpr(args[end], :(...))
     maybedoc(x::AbstractString) = length(strip(x)) == 0 ? "" : strip(replace("\n" * strip(x), "\n"=>"\n// ")) * "\n"
@@ -2718,7 +2729,7 @@ begin
                 make_stan_type(rv)
             end
             stan_fundef = :($StanFunction3(
-                $docstring,
+                $(_hygienic_doc(local_of, docstring, sig_names, keys(fun_sizes))),
                 $sig_rv,
                 $f,
                 $(_hygienic_namedtuple(local_of, sig_names)), $vcat(
