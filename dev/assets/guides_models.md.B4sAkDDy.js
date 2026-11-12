@@ -23,6 +23,7 @@ import{_ as i,o as a,c as n,a2 as e}from"./chunks/framework.BmHDInP0.js";const g
 <span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;">check </span><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">=</span><span style="--shiki-light:#005CC5;--shiki-dark:#79B8FF;"> stanc_check</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;">(code)</span></span>
 <span class="line"><span style="--shiki-light:#005CC5;--shiki-dark:#79B8FF;">@assert</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;"> check</span><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">.</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;">ok check</span><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">.</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;">output</span></span>
 <span class="line"><span style="--shiki-light:#005CC5;--shiki-dark:#79B8FF;">println</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;">(code)</span></span></code></pre></div><div class="language- vp-adaptive-theme"><button title="Copy Code" class="copy"></button><span class="lang"></span><pre class="shiki shiki-themes github-light github-dark vp-code" tabindex="0"><code><span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">functions {</span></span>
+<span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">// Return one normalized log probability per observation, broadcasting distribution parameters elementwise.</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">vector normal_lpdfs(</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">    vector obs,</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">    real loc,</span></span>
@@ -42,6 +43,7 @@ import{_ as i,o as a,c as n,a2 as e}from"./chunks/framework.BmHDInP0.js";const g
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">    }</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">    return rv;</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">}</span></span>
+<span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">// Return the normalized log probability for a single observation.</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">real normal_lpdfs(</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">    real args1,</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">    real args2,</span></span>
@@ -49,9 +51,11 @@ import{_ as i,o as a,c as n,a2 as e}from"./chunks/framework.BmHDInP0.js";const g
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">) {</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">    return normal_lpdf(args1 | args2, args3);</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">}</span></span>
+<span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">// Read element i of a container used in elementwise broadcasting.</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">real broadcasted_getindex(vector x, int i) {</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">    return x[i];</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">}</span></span>
+<span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">// Draw independent values of the requested size, broadcasting scalar parameters and preserving the requested container type.</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">vector normal_vector_rng(</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">    int anontok__1,</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">    real a,</span></span>
