@@ -4,6 +4,19 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.45
+
+- **`log_sum_exp` in a `@juliacompat` helper reaches JAX.** `jax_source` of a
+  kernel that calls such a helper failed with `JAXEmissionError: the function
+  _julia_log_sum_exp has loops or branches`, because the Julia twin spells
+  Stan's special cases as early returns. The ReactiveKernels extension now
+  translates `log_sum_exp` of two scalars, also elementwise over two
+  containers and when the helper is broadcast, as ReactiveKernels' tie-exact
+  `logaddexp`, and `log_sum_exp` of an array as its `logsumexp`, which
+  excludes a ragged row's padding. Values match the Julia twin, including
+  `-Inf`, `+Inf`, NaN and empty arguments, and the derivative at a tie is 1/2
+  per argument. Emitted Stan and the Julia methods are unchanged.
+
 ## v0.2.44
 
 - **`@deffun` docstrings may interpolate argument names again.** A docstring

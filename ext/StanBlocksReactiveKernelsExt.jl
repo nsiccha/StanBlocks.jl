@@ -17,6 +17,20 @@ function ReactiveKernels._jax_function_call(ctx::ReactiveKernels._JaxContext,
         "jax.scipy.linalg.expm(" * argument.code * ")")
 end
 
+# Stan's `log_sum_exp` is ReactiveKernels' tie-exact translation of the
+# LogExpFunctions function of the same shape, value for value (snag
+# `jax-source-has-n-a3964196`). Of two scalars, also elementwise when
+# broadcast, it is `logaddexp`: a `-Inf` argument gives the other, two `+Inf`
+# give `+Inf`, and a tie's derivative is 1/2 per argument. Of an array it is
+# `logsumexp`: `-Inf` when empty, a non-finite maximum as is, and the padding
+# of a ragged row excluded. The Julia twin spells those cases as early
+# returns, which RK does not translate.
+ReactiveKernels._jax_elementwise(::typeof(StanBlocks._julia_log_sum_exp)) =
+    ReactiveKernels._jax_elementwise(ReactiveKernels.LogExpFunctions.logaddexp)
+ReactiveKernels._jax_function_call(ctx::ReactiveKernels._JaxContext,
+        ::typeof(StanBlocks._julia_log_sum_exp), args::Vector{ReactiveKernels._PyVal}) =
+    ReactiveKernels._jax_function_call(ctx, ReactiveKernels.LogExpFunctions.logsumexp, args)
+
 # Buffer element promotion is native Julia type work, not numerical work for
 # JAX. Expose the equivalent concrete constructor; RK owns allocation shapes,
 # indexed updates and host-array ownership in the translated body.
