@@ -813,23 +813,25 @@ jcall(::Val{:erf}, ::_JuliaScope, x::Number) = SpecialFunctions.erf(x)
 jcall(::Val{:is_inf}, ::_JuliaScope, x::Real) = isinf(x)
 # The four integer-order Bessel functions share Stan's existing elementwise
 # container dispatch. SpecialFunctions supplies the scalar numerical kernels;
-# keep Stan's NaN checks for J/I and positive-argument boundary for Y/K.
-function jcall(::Val{:bessel_first_kind}, ::_JuliaScope, n::Integer, x::Real)
+# keep Stan's NaN checks for J/I and positive-argument boundary for Y/K. Each
+# is a named twin, as the gamma family's are, so a backend translates the
+# function rather than the `jcall` method.
+function _julia_bessel_first_kind(n::Integer, x::Real)
     isnan(x) && throw(DomainError(x, "bessel_first_kind: x must not be NaN"))
     return SpecialFunctions.besselj(n, x)
 end
-function jcall(::Val{:bessel_second_kind}, ::_JuliaScope, n::Integer, x::Real)
+function _julia_bessel_second_kind(n::Integer, x::Real)
     x <= 0 && throw(DomainError(x, "bessel_second_kind: x must be positive"))
     return SpecialFunctions.bessely(n, x)
 end
-function jcall(::Val{:modified_bessel_first_kind}, ::_JuliaScope, n::Integer, x::Real)
+function _julia_modified_bessel_first_kind(n::Integer, x::Real)
     isnan(x) && throw(DomainError(x, "modified_bessel_first_kind: x must not be NaN"))
     # Stan's Boost kernels for orders 0/1 return NaN at either infinity;
     # AMOS rejects those inputs. Other orders still raise a numerical error.
     isinf(x) && (n == 0 || n == 1) && return oftype(float(x), NaN)
     return SpecialFunctions.besseli(n, x)
 end
-function jcall(::Val{:modified_bessel_second_kind}, ::_JuliaScope, n::Integer, x::Real)
+function _julia_modified_bessel_second_kind(n::Integer, x::Real)
     x <= 0 && throw(DomainError(x, "modified_bessel_second_kind: x must be positive"))
     # AMOS (used by besselk) rejects positive infinity. Preserve Stan's
     # non-finite results explicitly, including the positive-infinity limit.
@@ -837,6 +839,12 @@ function jcall(::Val{:modified_bessel_second_kind}, ::_JuliaScope, n::Integer, x
     isinf(x) && return zero(float(x))
     return SpecialFunctions.besselk(n, x)
 end
+jcall(::Val{:bessel_first_kind}, ::_JuliaScope, n::Integer, x::Real) = _julia_bessel_first_kind(n, x)
+jcall(::Val{:bessel_second_kind}, ::_JuliaScope, n::Integer, x::Real) = _julia_bessel_second_kind(n, x)
+jcall(::Val{:modified_bessel_first_kind}, ::_JuliaScope, n::Integer, x::Real) =
+    _julia_modified_bessel_first_kind(n, x)
+jcall(::Val{:modified_bessel_second_kind}, ::_JuliaScope, n::Integer, x::Real) =
+    _julia_modified_bessel_second_kind(n, x)
 # This package binds `log2` to its own builtin (Stan's zero-argument `log2()`
 # shares the name), which has no Julia method.
 jcall(::Val{:log2}, ::_JuliaScope, x::Number) = Base.log2(x)
