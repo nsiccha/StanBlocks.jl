@@ -205,6 +205,7 @@ _local_decl_type(T::StanType) = begin
     ct = center_type(T)
     ct <: types.square_matrix ?
         StanType(types.matrix, _square_matrix_sig_size(stan_size(T)), _unconstrained_info(T)) :
+    ct <: types.stochastic_matrix ? StanType(types.matrix, stan_size(T), _unconstrained_info(T)) :
     ct <: types.vector ? StanType(types.vector, stan_size(T), _unconstrained_info(T)) :
         StanType(ct, stan_size(T), _unconstrained_info(T))
 end

@@ -6,6 +6,13 @@ module types
     abstract type corr_matrix <: square_matrix end
     abstract type cholesky_factor_cov <: square_matrix end
     abstract type cholesky_factor_corr <: square_matrix end
+    # Stan ≥ 2.36 matrices whose rows (`row_stochastic_matrix[N, M]`) or columns
+    # (`column_stochastic_matrix[N, M]`) are each a simplex. Unlike the square
+    # families they keep both declared sizes (`r_ndim == 2`), and like them they
+    # are a plain `matrix` at a Stan function signature (`sigtype`).
+    abstract type stochastic_matrix <: matrix end
+    abstract type row_stochastic_matrix <: stochastic_matrix end
+    abstract type column_stochastic_matrix <: stochastic_matrix end
     abstract type any_vector <: anything end
     abstract type vector <: any_vector end
     abstract type row_vector <: any_vector end
@@ -49,6 +56,14 @@ module types
     abstract type void <: anything end
 end
 function stan_code end
+# The Stan type names a model writes as a declaration center (`x::simplex[K]`,
+# `G::row_stochastic_matrix[K, L]`); each is also a `builtin` constant
+# (builtin.jl), so a sized type token traces as a value.
+const DECLARATION_TYPES = (
+    :real, :int, :vector, :row_vector, :matrix, :ordered, :simplex, :positive_ordered,
+    :cov_matrix, :corr_matrix, :cholesky_factor_cov, :cholesky_factor_corr,
+    :row_stochastic_matrix, :column_stochastic_matrix,
+)
 # Types flow through SLIC like functions: wrap once on entry, then dispatch
 # via the resulting StanExpr's `tokenof{T}` center type. Sized forms and
 # `typeof(x)` hit their own tracetype rules (see below).
@@ -65,6 +80,7 @@ Base.show(io::IO, ::Type{<:types.tup}) = print(io, "tuple(...)")
 r_ndim(::Type{types.anything}) = 0
 r_ndim(::Type{types.matrix}) = 2
 r_ndim(::Type{<:types.square_matrix}) = 1
+r_ndim(::Type{<:types.stochastic_matrix}) = 2
 r_ndim(::Type{<:types.any_vector}) = 1
 r_ndim(::Type{<:types.complex}) = 0
 r_ndim(::Type{<:types.func}) = 0
@@ -527,7 +543,7 @@ _check_integer_size(s::AbstractFloat, what) = error(
 _check_integer_size(s, what) = nothing
 # The range every element of a transform-only center already lies in
 # (`_transform_only_constraints`, forward.jl).
-_element_range(::Type{types.simplex}) = (0.0, 1.0)
+_element_range(::Type{<:Union{types.simplex,types.stochastic_matrix}}) = (0.0, 1.0)
 _element_range(::Type{<:Union{types.corr_matrix,types.cholesky_factor_corr}}) = (-1.0, 1.0)
 _element_range(::Type) = (-Inf, Inf)
 autotype(x::StanType; kwargs...) = begin
@@ -1321,12 +1337,15 @@ begin
     # binds a natively-constrained square matrix (`cholesky_factor_corr`,
     # `cholesky_factor_cov`, `cov_matrix`, `corr_matrix`): Stan passes it as a
     # plain `matrix`, but it carries ONE declared size (`r_ndim(square_matrix)
-    # == 1`), so it has one dim fewer than the formal. The plain branch is
+    # == 1`), so it has one dim fewer than the formal. A row- or
+    # column-stochastic matrix keeps both sizes, so it binds with the formal's
+    # dim count, an array of them as an array of matrices. The plain branch is
     # EXACTLY `types.matrix`: an ARRAY of constrained matrices has the formal's
     # dim count but is not a matrix, so it must not match. `xformal_size` reads
     # the bound value's sizes back in the formal's shape.
     xformal_type(ct, ndims) = if ct === types.matrix && ndims >= 2
-        :(Union{$StanExpr2{$ct, $ndims}, $StanExpr2{<:$types.square_matrix, $(ndims - 1)}})
+        :(Union{$StanExpr2{$ct, $ndims}, $StanExpr2{<:$types.square_matrix, $(ndims - 1)},
+            $StanExpr2{<:$types.stochastic_matrix, $ndims}})
     else
         :($StanExpr2{<:$ct, $ndims})
     end
@@ -1456,6 +1475,7 @@ begin
     # `matrix`. Otherwise a `cov_matrix` argument emitted `cov_matrix args3` in a
     # generated companion (`multi_normal_lpdfs`, `multi_normal_vector_rng`, …).
     sigtype(x::Type{<:types.square_matrix}) = types.matrix
+    sigtype(x::Type{<:types.stochastic_matrix}) = types.matrix
     sigtype(x::Type{<:types.vector}) = types.vector
     # `bool` is Stan-identical to `int` (it emits as `array[] int`), so its
     # signature type — which drives Stan-function NAMING and DEDUP — must be
@@ -1883,6 +1903,7 @@ begin
     _julia_matrix_type(ct::Symbol) = ct in (
         :matrix, :square_matrix, :cov_matrix, :corr_matrix,
         :cholesky_factor_cov, :cholesky_factor_corr,
+        :stochastic_matrix, :row_stochastic_matrix, :column_stochastic_matrix,
     )
     _julia_scalar_type(ct::Symbol) = ct in (:anything, :int, :real, :complex)
     _deffun_julia_glue_type(t::Symbol) = t in (:tup, :ntup, :tokenof)

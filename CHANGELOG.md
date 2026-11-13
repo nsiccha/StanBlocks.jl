@@ -4,6 +4,28 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.48
+
+- **`row_stochastic_matrix` and `column_stochastic_matrix` declarations.** A
+  typed declaration of either Stan 2.36 type (`G::row_stochastic_matrix[K, L]
+  ~ …`, each row a simplex; `column_stochastic_matrix`, each column a simplex)
+  failed at trace time with the bare `TypeError: in <:, expected Type, got a
+  value of type Symbol`. Both now declare natively with their two sizes, and a
+  Stan function takes either as a plain `matrix`, so matrix builtins and
+  `@deffun` arguments accept them. `~ dirichlet(alpha)` on one samples a
+  dirichlet per row (column) with the shared concentration `alpha`; in a
+  prior-only program it is re-drawn in generated quantities, row (column) by
+  row, as a plain `matrix`. Any other prior keeps the matrix a sampled
+  parameter, since no other family draws a stochastic matrix. A plate cell collects as
+  `array[outer...] row_stochastic_matrix[K, L]`. A bound every element meets
+  (`beta`) is dropped and any other refused, as for `simplex`; an array of them
+  outside a plate, a cell-varying plate size and a size per group are refused
+  naming the supported form.
+- **An unknown declaration type names the declarable types.** Any unregistered
+  center in a typed declaration (`G::sum_to_zero_matrix[K, K] ~ …`) failed with
+  the same bare `TypeError`; it now names the type and lists the ones a typed
+  declaration accepts.
+
 ## v0.2.47
 
 - **`lgamma`, `digamma`, `trigamma`, `lchoose` and `modified_bessel_first_kind`

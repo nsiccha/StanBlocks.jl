@@ -106,6 +106,8 @@ end
     multi_student_t_cholesky_lpdf
     gaussian_dlm_obs_lpdf
     dirichlet_lpdf
+    dirichlet_rows_lpdf
+    dirichlet_columns_lpdf
     lkj_corr_lpdf
     lkj_corr_cholesky_lpdf
     wishart_lpdf
@@ -420,7 +422,7 @@ end
 tracetype_by_head(::typeof(builtin.reverse), x::CanonicalExpr{typeof(builtin.reverse),<:Tuple{<:StanExpr}}) =
     _sequence_type(type(x.args[1]), stan_size(type(x.args[1])))
 
-for name in (:real, :int, :vector, :row_vector, :matrix, :ordered, :simplex, :positive_ordered, :cov_matrix, :corr_matrix, :cholesky_factor_cov, :cholesky_factor_corr)
+for name in DECLARATION_TYPES
     T = getproperty(types, name)
     @eval builtin const $name = $T
 end
@@ -1434,6 +1436,9 @@ import Statistics
     # (`r_ndim(square_matrix) == 1`) needs these to type the density call.
     lkj_corr_lpdf(L::square_matrix[n], eta::real)::real
     lkj_corr_cholesky_lpdf(L::square_matrix[n], eta::real)::real
+    # Likewise a sized dirichlet density: one row or column of a stochastic
+    # matrix (`dirichlet_rows_lpdf` / `dirichlet_columns_lpdf`).
+    dirichlet_lpdf(w::vector[n], alpha::vector[n])::real
     wishart_lpdf(W::square_matrix[n], nu::real, Sigma::matrix[n,n])::real
     inv_wishart_lpdf(W::square_matrix[n], nu::real, Sigma::matrix[n,n])::real
     wishart_cholesky_lpdf(L::square_matrix[n], nu::real, LSigma::matrix[n,n])::real
@@ -4352,6 +4357,77 @@ end
 # draw sized by the one container arg — no scalar-inflated vectorized loop, so
 # outside the guarded class (audit todo 19n8abc).
 @deffun @doc "Draw one probability simplex with the supplied concentration vector." dirichlet_rng(vector[n], alpha::vector[n])::vector[n] = dirichlet_rng(alpha)
+
+# Row- and column-stochastic matrices (Stan ≥ 2.36) have a simplex in every row
+# (column), so `G::row_stochastic_matrix[m, n] ~ dirichlet(alpha)` is one
+# dirichlet per row (column) with a shared concentration. A Stan function takes
+# either kind as a plain `matrix` (`sigtype`), so one `dirichlet_lpdf(matrix,
+# vector)` per kind would render the same Stan signature twice. Each kind is
+# instead its own internal family, `dirichlet_rows` / `dirichlet_columns`, which
+# the typed declaration selects (`_stochastic_family`, forward.jl). Stan has no
+# matrix `dirichlet_rng`: a re-draw fills one row (column) per native draw. A
+# loop over an empty dimension runs zero times, so neither re-draw is in the
+# guarded class (audit todo 19n8abc).
+@deffun begin
+    "Sum the dirichlet log density of every row of the row-stochastic matrix, each with the same concentration vector."
+    @lhs dirichlet_rows_lpdf(G::row_stochastic_matrix[m, n], alpha::vector[n])::real = begin
+        rv = 0.0
+        for i in 1:m
+            rv += dirichlet_lpdf(G[i, :]', alpha)
+        end
+        rv
+    end
+    "Sum the dirichlet log density of every column of the column-stochastic matrix, each with the same concentration vector."
+    @lhs dirichlet_columns_lpdf(G::column_stochastic_matrix[m, n], alpha::vector[m])::real = begin
+        rv = 0.0
+        for j in 1:n
+            rv += dirichlet_lpdf(G[:, j], alpha)
+        end
+        rv
+    end
+    "Return the summed row-wise dirichlet log density of the whole row-stochastic matrix."
+    dirichlet_rows_lpdfs(args...)::real = dirichlet_rows_lpdf(args...)
+    "Return the summed column-wise dirichlet log density of the whole column-stochastic matrix."
+    dirichlet_columns_lpdfs(args...)::real = dirichlet_columns_lpdf(args...)
+    "Draw a row-stochastic matrix whose rows are independent dirichlet draws with the supplied concentration vector."
+    dirichlet_rows_rng(row_stochastic_matrix[m, n], alpha::vector[n])::matrix[m, n] = begin
+        rv::matrix[m, n]
+        for i in 1:m
+            rv[i, :] = dirichlet_rng(alpha)'
+        end
+        rv
+    end
+    "Draw a column-stochastic matrix whose columns are independent dirichlet draws with the supplied concentration vector."
+    dirichlet_columns_rng(column_stochastic_matrix[m, n], alpha::vector[m])::matrix[m, n] = begin
+        rv::matrix[m, n]
+        for j in 1:n
+            rv[:, j] = dirichlet_rng(alpha)
+        end
+        rv
+    end
+end
+
+# A row- (column-) stochastic matrix declared `~ dirichlet(alpha)` samples one
+# dirichlet per row (column): the typed declaration (forward.jl) swaps the family
+# for its kind's internal one above before tracing the call.
+# It is declared with exactly its two sizes. An array of them is the plate of its
+# cells, which collects as `array[outer...] <kind>[N, M]` and samples or
+# re-draws each cell.
+_check_stochastic_sizes(ct::Type{<:types.stochastic_matrix}, sizes; name, type_expr) =
+    length(sizes) == 2 || error(
+        "Typed-LHS sampling `", name, "::", pretty_type_expr(type_expr), "`: a `", nameof(ct),
+        "` takes exactly two sizes, `", nameof(ct), "[N, M]`.",
+        length(sizes) > 2 ? string(" For an array of them, sample each in a plate cell: `", name,
+            " ~ plate(; outer = …) do i; ", name, "::", nameof(ct), "[N, M] ~ …; ", name, " end`.") : "",
+    )
+_stochastic_dirichlet(::Type{types.row_stochastic_matrix}) = builtin.dirichlet_rows
+_stochastic_dirichlet(::Type{types.column_stochastic_matrix}) = builtin.dirichlet_columns
+_stochastic_family(ct::Type{<:types.stochastic_matrix}, rhs; info) = begin
+    _is_canonical_expr(rhs) || return rhs
+    h = _forward_head(head(rhs), info)
+    h isa StanExpr2{<:types.func} && _family_function(h) === builtin.dirichlet || return rhs
+    CanonicalExpr(_stochastic_dirichlet(ct), rhs.args...; rhs.kwargs...)
+end
 
 # categorical / categorical_logit: repeat one shared probability/logit vector.
 # Explicit `for i in 1:n` loops with scalar native calls — empty input runs

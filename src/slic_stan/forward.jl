@@ -2186,10 +2186,12 @@ _strip_submodel_returns(rhs::SlicModel) = begin
 end
 # A native constrained center type carries an implicit Stan constraint
 # transform (simplex/ordered/positive_ordered — proper subtypes of `vector` —
-# and cov_matrix/corr_matrix/cholesky_factor_* — subtypes of `square_matrix`).
-# Plain `vector`/`row_vector`/`matrix`/`int`/… are NOT native-constrained.
+# cov_matrix/corr_matrix/cholesky_factor_* — subtypes of `square_matrix` — and
+# row_/column_stochastic_matrix). Plain `vector`/`row_vector`/`matrix`/`int`/…
+# are NOT native-constrained.
 _is_native_constrained_ct(T) = T isa Type && (
-    (T <: types.vector && T !== types.vector) || T <: types.square_matrix
+    (T <: types.vector && T !== types.vector) || T <: types.square_matrix ||
+    T <: types.stochastic_matrix
 )
 # Decision `0909w6i` ("the lhs is always right"): the DECLARED LHS type must be
 # PRODUCIBLE by the RHS distribution's support. Two mismatches are unconditional
@@ -2242,6 +2244,12 @@ _check_lhs_rhs_support(lhs_type, support, rhs_discrete, name, type_expr) = begin
     )
     nothing
 end
+# A stochastic matrix's typed declaration: its sizes (`_check_stochastic_sizes`)
+# and the family it samples from (`_stochastic_family`), the written one except
+# for `dirichlet`. Both are defined for that center in builtin.jl, beside the
+# families it selects; the `types` module does not exist yet here.
+_check_stochastic_sizes(ct, sizes; name, type_expr) = nothing
+_stochastic_family(ct, rhs; info) = rhs
 # A joint vector family (`multi_normal`, `dirichlet`, …) draws a vector, and Stan
 # takes it on a vector or an array of vectors, never a `matrix`, whose columns or
 # rows would be a guess: `z::matrix[D, K] ~ multi_normal(…)` transpiled to a
@@ -2356,23 +2364,30 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
         "Typed-LHS sampling currently requires a Symbol LHS, got `$name`. ",
         "For more complex LHS shapes, use a bare assignment + sampling pair."
     )
-    promoted = _plate_promoted_lhs(name; info)
-    if promoted !== nothing
-        rhs = forward!(rhs_raw; info)::StanExpr
-        return _forward_plate_sampling!(x, name, promoted, rhs; info)
-    end
     type_expr = decl.args[2]
     ct, sizes... = if _is_getindex_expr(type_expr)
         type_expr.args
     else
         (type_expr,)
     end
+    ct isa Symbol && (rhs_raw = _stochastic_family(gettype(ct), rhs_raw; info))
+    promoted = _plate_promoted_lhs(name; info)
+    if promoted !== nothing
+        rhs = forward!(rhs_raw; info)::StanExpr
+        return _forward_plate_sampling!(x, name, promoted, rhs; info)
+    end
     ct isa Symbol || error("Typed-LHS sampling: type center must be a Symbol, got `$ct`")
     ct_resolved = gettype(ct)
+    _check_stochastic_sizes(ct_resolved, sizes; name, type_expr)
     sizes_forwarded = isempty(sizes) ? () : Tuple(forward!(collect(sizes); info))
     foreach(s -> _check_integer_size(s, "The size of `$name`"), sizes_forwarded)
     name in keys(info) &&
         return _forward_typed_bound!(x, name, ct_resolved, sizes_forwarded, type_expr, rhs_raw; info)
+    ct_resolved isa Type || error(
+        "Typed-LHS sampling `", name, "::", pretty_type_expr(type_expr), "`: `", ct,
+        "` is not a Stan type SLIC can declare. Declare `", name, "` with one of ",
+        join(("`$t`" for t in DECLARATION_TYPES), ", "), ".",
+    )
     # Stan requires every native constrained-type size (`simplex[N]`, `ordered[N]`,
     # …) to be a SCALAR int. A NON-scalar size — e.g. `p::simplex[Ks]` with a data
     # int-vector `Ks` — is a RAGGED / varying-per-group constrained parameter. Stan
@@ -3607,6 +3622,10 @@ _plate_cell_shape(T, name) = begin
     # indexed by its plate axes as a whole element. Its varying-size form is
     # flat memory (`_plate_ragged_plan`). Snag binding-a-per-ce-e16efa8d.
     center_type(T) === types.matrix && stan_ndim(T) >= 2 && return :matrix
+    # A row- or column-stochastic matrix keeps both sizes and its own center, so
+    # it collects like a plain matrix cell, as `array[outer...] <ct>[R, C]`, and
+    # Stan applies its constraint transform to each cell.
+    center_type(T) <: types.stochastic_matrix && stan_ndim(T) >= 2 && return :matrix
     if center_type(T) <: types.vector && stan_ndim(T) == 1
         # A native-constrained vector cell (simplex/ordered/positive_ordered) is
         # stored as a Stan `array[N…] <ct>[K]` so Stan applies the constraint
@@ -5099,12 +5118,15 @@ _forward_loop_core!(;
         # data-varying constrained dimension, so an index-dependent `K` must be
         # refused loudly instead of emitting `array[n_g] cholesky_factor_corr[K[g]]`
         # for stanc to reject (the same rule the ragged constrained plan states).
-        if _is_native_constrained_ct(center_type(T)) && stan_ndim(T) == 1 &&
-           _plate_depends_on(stan_size(T)[1], idxs)
+        if _is_native_constrained_ct(center_type(T)) &&
+           (stan_ndim(T) == 1 || center_type(T) <: types.stochastic_matrix) &&
+           any(s -> _plate_depends_on(s, idxs), stan_size(T))
+            stochastic = center_type(T) <: types.stochastic_matrix
             error(
-                "plate: varying-size constrained cell `$f::$(sigtype(T))` is not ",
-                "supported — Stan cannot declare `array[...] <ct>[K[plate_i]]`. ",
-                "Declare the ragged constrained parameter at model scope and index it."
+                "plate: varying-size constrained cell `$f::$(stochastic ? nameof(center_type(T)) : sigtype(T))` ",
+                "is not supported — Stan cannot declare `array[...] <ct>[K[plate_i]]`. ",
+                stochastic ? "Give every cell the same size." :
+                    "Declare the ragged constrained parameter at model scope and index it."
             )
         end
         _plate_is_tuple_cell(T) && !_plate_tuple_size_free(T, index_aliases) && error(
