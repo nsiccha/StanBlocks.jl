@@ -574,15 +574,14 @@ end
     xs = [-Inf, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 2.5, 30.0, 1e100, Inf, NaN]
     poles = (-2.0, -1.0, 0.0)
     gamma_rows(f, derivative, xs) = [(x, f(x), x in poles ? 0.0 :
-                                      isfinite(f(x)) ? derivative(x) : NaN) for x in xs]
+                                      isfinite(x) && isfinite(f(x)) ? derivative(x) : NaN) for x in xs]
     lgamma_rows = [(x, source_lgamma(x), x in poles || !isfinite(x) ? NaN : SpecialFunctions.digamma(x))
                    for x in xs]
     digamma_rows = gamma_rows(source_digamma, SpecialFunctions.trigamma, xs)
-    # RK's `trigamma` (`jax.scipy.special.polygamma(1, x)`) is NaN at +Inf and
-    # underflows to 0 from about 1e154, where SpecialFunctions' is 0 and 1/x:
-    # an RK defect, reported to ReactiveKernels; +Inf waits on it.
+    # RK's `trigamma` is 0 at +Inf and 1/x past where `jax.scipy.special`'s
+    # polygamma underflows (from RK 0.1.227, RK snag `rk-specialfuncti-72970c82`).
     trigamma_rows = gamma_rows(source_trigamma, x -> SpecialFunctions.polygamma(2, x),
-                               filter(!=(Inf), xs))
+                               vcat(xs, 1e200))
     cells = [0.3, 2.5, 7.0, -1.5]
     cells_value = sum(x -> source_lgamma(x) + source_digamma(x) + source_trigamma(x), cells)
     cells_gradient = [SpecialFunctions.digamma(x) + SpecialFunctions.trigamma(x) +
@@ -669,17 +668,13 @@ end
             pair, pair_grad = jax.jit(bessel_pair.kernel), jax.jit(jax.grad(bessel_pair.kernel, argnums=1))
             zero, zero_grad = jax.jit(bessel_zero.kernel), jax.jit(jax.grad(bessel_zero.kernel))
             for n, x, expected, gradient in $(table(bessel_rows)):
-                # RK's besseli of a traced order 0 has derivative 1 at exactly 0
-                # (its exp(|x|) factor's subgradient), where I_0'(0) = I_1(0) = 0:
-                # an RK defect, reported to ReactiveKernels; that point waits on it.
-                runs = [(pair, pair_grad, (n, x), not (n == 0 and x == 0.0))]
-                runs += [(zero, zero_grad, (x,), True)] if n == 0 else []
-                for value, derivative, args, differentiable in runs:
+                runs = [(pair, pair_grad, (n, x))] + ([(zero, zero_grad, (x,))] if n == 0 else [])
+                for value, derivative, args in runs:
                     if expected is None:
                         raises(value, *args)
                         continue
                     close(value(*args), expected, 1e-12)
-                    if gradient is not None and differentiable:
+                    if gradient is not None:
                         close(derivative(*args), gradient, 1e-10)
             """)
             @test success(pipeline(`$python $check`; stdout=stdout, stderr=stderr))
