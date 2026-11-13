@@ -952,7 +952,7 @@ for lpxf_rhs in (
     :double_exponential_lpdf, :logistic_lpdf, :gumbel_lpdf,
     :skew_normal_lpdf, :exp_mod_normal_lpdf, :skew_double_exponential_lpdf,
     :pareto_lpdf, :pareto_type_2_lpdf, :wiener_lpdf,
-    :dirichlet_lpdf, :multi_normal_lpdf, :multi_normal_prec_lpdf, :multi_normal_cholesky_lpdf,
+    :dirichlet_lpdf, :dirichlet_rows_lpdf, :dirichlet_columns_lpdf, :multi_normal_lpdf, :multi_normal_prec_lpdf, :multi_normal_cholesky_lpdf,
     :multi_gp_lpdf, :multi_gp_cholesky_lpdf,
     :multi_student_t_lpdf, :multi_student_t_cholesky_lpdf,
     :gaussian_dlm_obs_lpdf,

@@ -259,7 +259,17 @@ _restore_sampling_kwargs(new, old) = new
 # P(sorted | θ) that a whole-program prior draw would need. Ragged constrained
 # parameters take their own sampled path (`ragged_density`).
 _ordered_center(x) = center_type(x) in (types.ordered, types.positive_ordered)
-_gq_redrawable(x, rhs) = (!_ordered_center(x) || _exchangeable_prior(rhs)) && _restricted_redrawable(rhs)
+_gq_redrawable(x, rhs) = (!_ordered_center(x) || _exchangeable_prior(rhs)) &&
+    _restricted_redrawable(rhs) && _stochastic_redrawable(x, rhs)
+# A row- or column-stochastic matrix re-draws only from its per-row (column)
+# dirichlet (`dirichlet_rows` / `dirichlet_columns`), whose `_rng` fills one
+# simplex per row (column). No other family draws a stochastic matrix, so any
+# other prior stays a SAMPLED parameter, like a non-exchangeable ordered prior.
+_stochastic_redrawable(x, rhs) = !(center_type(x) <: types.stochastic_matrix) ||
+    _sampling_head(rhs) in (builtin.dirichlet_rows, builtin.dirichlet_columns)
+_sampling_head(rhs::StanExpr) = _sampling_head(expr(rhs))
+_sampling_head(rhs::CanonicalExpr) = head(rhs)
+_sampling_head(rhs) = nothing
 # A `restricted(...)` prior is the family's plain kernel on its bounds, so the
 # fitted joint drops the normaliser P(lo <= x <= hi | θ), exactly as an ordered
 # prior drops P(sorted | θ). Its truncated re-draw is exact given its arguments
