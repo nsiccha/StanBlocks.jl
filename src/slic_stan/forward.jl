@@ -6395,14 +6395,96 @@ _forward_broadcast_call!(x::GetPropertyExpr; info) = begin
     any(_broadcast_call_iterated, fwd) ||
         return forward!(CanonicalExpr(f, fwd...); info)
     _reject_broadcast_call_density(f)
-    for a in fwd
-        _broadcast_call_iterated(a) || continue
-        _reject_broadcast_call_shape(f, a)
+    kind = _broadcast_call_container(f, fwd)
+    # A Stan builtin that applies elementwise over this container (`exp`,
+    # `log1p`, `inv_logit`, `fmax`, … — builtin.jl `_ELEMENTWISE_*`) IS the
+    # undotted Stan call: emit Stan's own vectorized function, which keeps the
+    # container's shape. In Julia the undotted `exp(M)` is the matrix
+    # exponential, so the dotted spelling is the only one both backends read as
+    # elementwise (snag `dotted-call-over-fc81a4d9`).
+    _broadcast_call_is_native(f, fwd; info) &&
+        return forward!(CanonicalExpr(f, fwd...); info)
+    # Any other `f` (a user `@deffun`, a closure, a builtin without a container
+    # overload): the generalised `jbroadcasted` element loop — the same
+    # construct scalar-array operator lowering uses — applies `f` per element
+    # and infers the output container from its return type.
+    _lower_broadcast_call(Val(kind), f, fwd; info)
+end
+# The container a dotted call broadcasts over: `:flat` (a `vector` or a 1-D
+# scalar array, which the element loop indexes alike), `:row_vector`, or
+# `:matrix`. Julia broadcasts same-shape arguments elementwise; arguments of
+# different containers would EXPAND to a common shape (`M .+ v` adds `v` to every
+# column), which these lowerings do not express, so they are refused (todo
+# `18g5sfz` tracks shape-expanding broadcasts between native containers).
+_broadcast_call_kind(t::StanType) = begin
+    ct = center_type(t)
+    l_ndim(t) == 0 && ct <: types.matrix && return :matrix
+    l_ndim(t) == 0 && ct <: types.row_vector && return :row_vector
+    stan_ndim(t) == 1 ? :flat : nothing
+end
+_broadcast_call_container(f, fwd) = begin
+    iterated = filter(_broadcast_call_iterated, fwd)
+    for a in iterated
+        t = type(a)
+        isnothing(_broadcast_call_kind(t)) && error(
+            "SLIC: dotted call `", short_expr(f), ".(...)` over `", sigtype(t),
+            "` is not supported — elementwise lowering handles `vector`, `row_vector`, ",
+            "`matrix` and 1-D scalar-array arguments; each element of `", sigtype(t),
+            "` is itself a container. Index down to one of those first.",
+        )
     end
-    # Some non-scalar arg: the generalised `jbroadcasted` element loop (the
-    # same construct scalar-array operator lowering uses) applies `f` per
-    # element and infers the output container from its return type.
+    kind = _broadcast_call_kind(type(first(iterated)))
+    for a in iterated
+        _broadcast_call_kind(type(a)) === kind && continue
+        error(
+            "SLIC: dotted call `", short_expr(f), ".(...)` mixes a `",
+            sigtype(type(first(iterated))), "` and a `", sigtype(type(a)), "` argument — ",
+            "Julia broadcasting would expand them to a common shape, which SLIC does not ",
+            "lower yet. Pass arguments of one container kind (scalars may mix with any), ",
+            "e.g. expand a vector explicitly with `rep_matrix(v, n)`.",
+        )
+    end
+    kind
+end
+# Whether the dotted call is a Stan builtin that vectorizes elementwise over these
+# native containers, with a registered overload for exactly these arguments. A
+# scalar ARRAY stays on the element loop: Stan's array overload returns an array,
+# where the loop (and so far every dotted call) returns a `vector`. Only a named
+# callee is resolved here — resolving a closure literal would trace it twice.
+_broadcast_call_is_native(f, fwd; info) = begin
+    (f isa Symbol || f isa GlobalRef) || return false
+    all(a -> !_broadcast_call_iterated(a) || l_ndim(type(a)) == 0, fwd) || return false
+    callee = _broadcast_callee(_forward_head(f, info))
+    _is_native_elementwise(callee) || return false
+    t = _tracetype(CanonicalExpr(callee, fwd...), _trace_context(info))
+    center_type(t) !== types.anything
+end
+# The resolved callee's function value; the `StanExpr2{<:types.func}` method is
+# in builtin.jl (`types` is defined after this file).
+_broadcast_callee(h) = h
+_lower_broadcast_call(::Val{:flat}, f, fwd; info) =
     forward!(CanonicalExpr(builtin.jbroadcasted, f, fwd...); info)
+# A `row_vector` indexes like a vector, so it runs the same loop; the loop
+# returns a `vector`, converted back to keep the row shape. An int element stays
+# the loop's `array[] int`: Stan has no integer row vector.
+_lower_broadcast_call(::Val{:row_vector}, f, fwd; info) = begin
+    rv = forward!(CanonicalExpr(builtin.jbroadcasted, f, fwd...); info)
+    center_type(type(rv)) <: types.int && return rv
+    forward!(CanonicalExpr(builtin.to_row_vector, rv); info)
+end
+# A `matrix` is flattened column-major (`to_vector`, every matrix argument
+# alike), run through the 1-D loop, and folded back to the first matrix's shape:
+# `to_matrix` for a real element, `reshape` (an `array[m, n] int`) for an int
+# one, as Julia's `f.(M)` keeps the element type. Linear in the element count.
+_lower_broadcast_call(::Val{:matrix}, f, fwd; info) = begin
+    m, n = stan_size(type(fwd[findfirst(_broadcast_call_iterated, fwd)]))
+    flat = Any[
+        _broadcast_call_iterated(a) ? forward!(CanonicalExpr(builtin.to_vector, a); info) : a
+        for a in fwd
+    ]
+    rv = forward!(CanonicalExpr(builtin.jbroadcasted, f, flat...); info)
+    fold = center_type(type(rv)) <: types.int ? builtin.reshape : builtin.to_matrix
+    _trace_stan_call(fold, rv, m, n; info)
 end
 # Stan requires a user-defined function whose name ends `_lpdf`/`_lpmf` (and the
 # `_lupdf`/`_lupmf`/`_lcdf`/`_lccdf`/`_cdf`/`_ccdf` siblings) to return `real` —
@@ -6421,25 +6503,6 @@ _reject_broadcast_call_density(f::Symbol) = begin
     )
 end
 _reject_broadcast_call_density(f) = nothing
-# The `jbroadcasted` loop is 1-D and column-oriented: it cannot express a
-# `row_vector` (which would come back a `vector`) or a 2-D+ container (whose
-# slices are not scalars). Fail closed naming the undotted spelling — Stan
-# vectorizes natively over matrices, so the undotted call is usually the fix.
-_reject_broadcast_call_shape(f, a) = begin
-    t = type(a)
-    stan_ndim(t) == 1 || error(
-        "SLIC: dotted call `", short_expr(f), ".(...)` over `", sigtype(t),
-        "` is not supported — elementwise lowering handles 1-D `vector` / scalar-array ",
-        "arguments only. Write the undotted call `", short_expr(f), "(...)`: Stan ",
-        "vectorizes natively over matrices.",
-    )
-    center_type(t) === types.row_vector && error(
-        "SLIC: dotted call `", short_expr(f), ".(...)` over a `row_vector` is not ",
-        "supported — the element loop returns a `vector`, losing the row shape. Convert ",
-        "with `to_vector(...)` first, or write the undotted call.",
-    )
-    nothing
-end
 forward!(x::GetPropertyExpr; info) = begin
     @assert length(x.args) == 2
     _is_broadcast_call(x) && return _forward_broadcast_call!(x; info)

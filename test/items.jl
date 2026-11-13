@@ -6571,14 +6571,17 @@ end
     # non-scalar arg lowers through the generalised `jbroadcasted` element
     # loop, and an all-scalar call re-traces as the undotted call (snag
     # `dotted-function-1e6f1764`). GATE ON `stanc_compiles`: the loop must emit
-    # valid Stan, not merely transpile.
+    # valid Stan, not merely transpile. A builtin Stan vectorizes over a native
+    # `vector` (`exp`) emits that vectorized call instead of the loop (snag
+    # `dotted-call-over-fc81a4d9`); `log_sum_exp` below still runs the loop.
     @testset "snag minimal: exp.(t) over a plate-sliced column" begin
         model = @slic (;nsub=2, tcol=[[0.1,0.2,0.3],[0.4,0.5,0.6]]) begin
             pred ~ plate(tcol; outer=(nsub,)) do t
                 exp.(t)
             end
         end
-        @test occursin("jbroadcasted_exp", stan_code(model))
+        @test occursin(r"\bexp\(", stan_code(model))
+        @test !occursin("jbroadcasted_exp", stan_code(model))
         @test stanc_compiles(model)
     end
     @testset "nested dotted call over a dotted operator: exp.(-k .* t)" begin
@@ -6588,7 +6591,8 @@ end
                 exp.(-k .* t)
             end
         end
-        @test occursin("jbroadcasted_exp", stan_code(model))
+        @test occursin(r"\bexp\(", stan_code(model))
+        @test !occursin("jbroadcasted_exp", stan_code(model))
         @test stanc_compiles(model)
     end
     @testset "outside any plate: y = exp.(v)" begin
@@ -6596,7 +6600,8 @@ end
             y = exp.(v)
             z ~ normal(y, 1.0)
         end
-        @test occursin("jbroadcasted_exp", stan_code(model))
+        @test occursin(r"\bexp\(", stan_code(model))
+        @test !occursin("jbroadcasted_exp", stan_code(model))
         @test stanc_compiles(model)
     end
     @testset "multi-arg dotted call: log_sum_exp.(a, b)" begin
@@ -6629,32 +6634,18 @@ end
         @test transpiles(model)
         @test stanc_compiles(model)
     end
-    @testset "reject floor: matrix arg names the undotted spelling" begin
-        err = try
-            stan_code(@slic (;M=[1.0 2.0; 3.0 4.0]) begin
-                Y = exp.(M)
-                z ~ normal(0, 1)
-            end)
-            nothing
-        catch e
-            e
+    # A matrix and a row vector used to stop here naming the undotted call; they
+    # lower elementwise now (snag `dotted-call-over-fc81a4d9`, covered in
+    # test/dotted_containers.jl).
+    @testset "matrix and row_vector args lower elementwise" begin
+        model = @slic (;M=[1.0 2.0; 3.0 4.0], w=[1.0,2.0,3.0]) begin
+            rv = to_row_vector(w)
+            Y = exp.(M)
+            R = exp.(rv)
+            z ~ normal(sum(Y) + sum(R), 1)
         end
-        @test err !== nothing
-        @test occursin("undotted call `exp(...)`", sprint(showerror, err))
-    end
-    @testset "reject floor: row_vector arg names the fix" begin
-        err = try
-            stan_code(@slic (;w=[1.0,2.0,3.0]) begin
-                rv = to_row_vector(w)
-                Y = exp.(rv)
-                z ~ normal(0, 1)
-            end)
-            nothing
-        catch e
-            e
-        end
-        @test err !== nothing
-        @test occursin("to_vector", sprint(showerror, err))
+        @test occursin("exp(M)", stan_code(model))
+        @test stanc_compiles(model)
     end
     @testset "reject floor: _lpdf callee names the undotted spelling" begin
         # The loop would return a `vector` from a `_lpdf`-named function, which
