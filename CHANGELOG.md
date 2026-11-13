@@ -4,6 +4,30 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.47
+
+- **`lgamma`, `digamma`, `trigamma`, `lchoose` and `modified_bessel_first_kind`
+  in a `@juliacompat` helper reach JAX.** `jax_source` of a kernel calling one
+  of them failed with `JAXEmissionError`, because each Julia twin branches
+  (SpecialFunctions' `logabsgamma`, the pole guards, Stan Math's
+  `binomial_coefficient_log`, the Bessel domain guards). The ReactiveKernels
+  extension now translates each as Stan's rule over ReactiveKernels' own
+  translation of the SpecialFunctions function, for scalar calls and when the
+  helper is broadcast: `lgamma` is `log|gamma(x)|`, `+Inf` at the poles and
+  both infinities; `digamma` is NaN and `trigamma` `+Inf` at zero, the
+  negative integers and `-Inf`, with a zero derivative there; `lchoose`
+  follows Stan Math branch for branch, with its domain errors as runtime
+  checks of the JAX module; `modified_bessel_first_kind` is NaN at either
+  infinity for orders 0 and 1 and raises where the Julia twin raises (a NaN
+  argument, either infinity for other orders, overflow). Values match the
+  Julia twins, poles and non-finite arguments included, in JAX and in host
+  data preparation. `bessel_first_kind`, `bessel_second_kind` and
+  `modified_bessel_second_kind` remain without a JAX translation (JAX has no
+  accurate Bessel J, Y or K); `jax_source` now names that boundary instead of
+  reporting a branch. Emitted Stan, the Julia values and native evaluation are
+  unchanged; the four Bessel twins are now named functions
+  (`_julia_bessel_first_kind`, …) that the `jcall` methods call.
+
 ## v0.2.46
 
 - **Dotted calls are elementwise over a `matrix` and a `row_vector`.**
