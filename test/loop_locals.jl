@@ -22,7 +22,7 @@ transformed-data storage, `~` locals and indexed arrays stay stored, and the
         end
     end
     code = stan_code(ragged)
-    decl = "vector[(1 + (ragged_end_RaggedVector(x, i) - ragged_start_RaggedVector(x, i)))] loop_i_m = jbroadcasted_exp((b .* getindex_RaggedVector(x, i)));"
+    decl = "vector[(1 + (ragged_end_RaggedVector(x, i) - ragged_start_RaggedVector(x, i)))] loop_i_m = exp((b .* getindex_RaggedVector(x, i)));"
     @test occursin(decl, stan_block(code, "model"))
     @test occursin(decl, stan_block(code, "generated quantities"))
     @test !occursin("loop_i_m__pl", code)

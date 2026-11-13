@@ -4,6 +4,25 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.46
+
+- **Dotted calls are elementwise over a `matrix` and a `row_vector`.**
+  `exp.(M)` with `M` a `matrix` stopped at trace time with `dotted call
+  `exp.(...)` over `matrix` is not supported` and named the undotted `exp(M)`
+  as the fix, yet plain Julia reads `exp(M)` as the matrix exponential, so a
+  model body that also runs as Julia had no elementwise spelling. A dotted call
+  to a Stan builtin that applies elementwise (`exp`, `log`, `log1p`,
+  `inv_logit`, `fmax`, `fma`, … — the builtins Stan vectorises) over `vector`,
+  `row_vector` or `matrix` arguments, mixed with scalars, now emits Stan's
+  vectorized call (`exp.(M)` becomes `exp(M)`; `exp.(v)` over a `vector`
+  becomes `exp(v)` instead of a generated loop function). Any other function (a
+  `@deffun`, a closure, `log_sum_exp`) runs the element loop: over a `matrix`
+  the arguments are flattened column-major and the result is folded back
+  (`to_matrix`, or `array[m, n] int` for an int element); over a `row_vector`
+  the result stays a `row_vector`. Arguments of different containers
+  (`f.(M, v)`, which Julia would expand) and nested or multi-dimensional arrays
+  are still refused at trace time.
+
 ## v0.2.45
 
 - **`log_sum_exp` in a `@juliacompat` helper reaches JAX.** `jax_source` of a

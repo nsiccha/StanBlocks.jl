@@ -2674,6 +2674,11 @@ import Statistics
         end
         out
     end
+    # A row vector (what a matrix row `M[i, :]` traces as) reshapes column-major
+    # like a vector; Stan's `to_matrix` takes it directly (snag
+    # `dotted-call-over-fc81a4d9`). Stan-only: a Julia row is not a Julia vector.
+    "Reshape in column-major order, preserving element type and requiring the same number of entries."
+    reshape(v::row_vector[n], m::int, k::int)::matrix[m, k] = to_matrix(v, m, k)
 
     # `jmap(f, x)` — element-wise map whose output CONTAINER is inferred from
     # `f`'s per-element return type (`typeof(f(x[1]))`): an `int`-returning `f`
@@ -4746,6 +4751,13 @@ const _ELEMENTWISE_INT_BINARY = (binary_log_loss, bessel_first_kind, bessel_seco
 const _ELEMENTWISE_NARY = (
     ((f, 2) for f in (_ELEMENTWISE_BINARY..., _ELEMENTWISE_INT_BINARY...))..., (fma, 3),
 )
+# Whether Stan applies `f` elementwise over a container, so that a dotted call
+# `f.(x)` over native containers is the undotted Stan call `f(x)` (forward.jl
+# `_broadcast_call_is_native`; the `@defsig` groups below decide which argument
+# shapes have an overload).
+_is_native_elementwise(f) =
+    any(g -> g === f, _ELEMENTWISE_UNARY) || any(((g, _),) -> g === f, _ELEMENTWISE_NARY)
+_broadcast_callee(h::StanExpr2{<:types.func}) = type(h).info.value
 for f in _ELEMENTWISE_UNARY
     @eval jcall(tag::Val{$(QuoteNode(nameof(f)))}, scope::_JuliaScope, x::AbstractArray) =
         _julia_elementwise(tag, scope, x)
