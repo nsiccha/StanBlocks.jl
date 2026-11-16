@@ -1,0 +1,3 @@
+[[landing_check]]
+name = "docs-lint"
+run = ["julia", "--startup-file=no", "docs/lint.jl"]
