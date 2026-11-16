@@ -26,3 +26,8 @@ function check(pages)
     end
 end
 end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    include("pages.jl")
+    DocsLint.check(PAGES)
+end
