@@ -381,14 +381,18 @@ version = "2.9.1"
     ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
 
 [[deps.StanBlocks]]
-deps = ["BridgeStan", "FileWatching", "JSON", "LinearAlgebra", "LogDensityProblems", "Markdown", "OrderedCollections", "SHA", "SpecialFunctions", "StanLogDensityProblems", "Statistics", "Tables"]
+deps = ["BridgeStan", "FileWatching", "JSON", "LinearAlgebra", "LogDensityProblems", "Markdown", "OrderedCollections", "SHA", "SpecialFunctions", "StanLogDensityProblems", "StaticArrays", "Statistics", "Tables"]
 path = "../.."
 uuid = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
-version = "0.2.39"
-weakdeps = ["PosteriorDB"]
+version = "0.2.49"
 
     [deps.StanBlocks.extensions]
     PosteriorDBExt = "PosteriorDB"
+    StanBlocksReactiveKernelsExt = "ReactiveKernels"
+
+    [deps.StanBlocks.weakdeps]
+    PosteriorDB = "1c4bc282-d2f5-44f9-b6d1-8c4424a23ad4"
+    ReactiveKernels = "78e9f072-d36b-4c73-b7a3-751b0eb26cf9"
 
 [[deps.StanLogDensityProblems]]
 deps = ["BridgeStan", "LogDensityProblems"]
@@ -399,6 +403,25 @@ weakdeps = ["PosteriorDB", "SHA"]
 
     [deps.StanLogDensityProblems.extensions]
     StanLogDensityProblemsPosteriorDBExt = ["PosteriorDB", "SHA"]
+
+[[deps.StaticArrays]]
+deps = ["LinearAlgebra", "PrecompileTools", "Random", "StaticArraysCore"]
+git-tree-sha1 = "c8bf24c3f713c724e7bceaf9d0bb6729dbd3c8cc"
+uuid = "90137ffa-7385-5640-81b9-e52037218182"
+version = "1.9.25"
+
+    [deps.StaticArrays.extensions]
+    StaticArraysChainRulesCoreExt = "ChainRulesCore"
+    StaticArraysStatisticsExt = "Statistics"
+
+    [deps.StaticArrays.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+    Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+
+[[deps.StaticArraysCore]]
+git-tree-sha1 = "bf7e2d0d9ed9ac2a652fd598c0f784910cc759f2"
+uuid = "1e83bf80-4336-4d27-bf5d-d5a4f845583c"
+version = "1.4.5"
 
 [[deps.Statistics]]
 deps = ["LinearAlgebra", "SparseArrays"]
