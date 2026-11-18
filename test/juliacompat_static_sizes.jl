@@ -286,3 +286,223 @@ BridgeStan evaluates the chain as a transformed parameter.
         rng=BridgeStan.StanRNG(p.model, 1))
     @test only(draw[names .== "walked"]) ≈ st_walk(exp(mu), 0.4, 0.2, dts) rtol=1e-13
 end
+
+@testsnippet JuliaCompatStaticSlices begin
+    using StanBlocks
+    import StanBlocks.stan: @deffun
+    using StanBlocks.StaticArrays: SVector, SMatrix
+    @deffun @juliacompat begin
+        # Slices whose bounds are known when the method compiles: literals, a
+        # dimension of a static argument, `end`, and arithmetic of those.
+        sl_block(G::matrix[n, n])::matrix[2, 2] = G[1:2, 1:2]
+        sl_corner(G::matrix[n, n]) = G[2:end, (n - 1):n]
+        sl_column(G::matrix[n, n]) = G[1:2, 2]
+        sl_nested(x::vector[n])::real = sum(x[1:3]) + x[2:end][1]
+        sl_sequence(x::vector[n]) = head(x, 2) + tail(x, 2) + segment(x, 2, 2)
+        # A slice of a local rebuilt in a branch keeps the local's type.
+        sl_dose(P::matrix[n, n], state::vector[n], amount, count::int)::vector[n] = begin
+            rv::vector[n]
+            rv .= state
+            rv[1] += amount
+            if count > 1
+                affine = rep_matrix(0., n + 1, n + 1)
+                for i in 1:n
+                    for j in 1:n
+                        affine[i, j] = P[i, j]
+                    end
+                end
+                affine[1, n + 1] = amount
+                affine[n + 1, n + 1] = 1.
+                augmented = matrix_power(affine, count - 1) * append_row(rv, 1.)
+                rv = augmented[1:n]
+            end
+            rv
+        end
+        # A literal block of a larger generator, every step and every read.
+        sl_step(A::matrix[3, 3], dt)::matrix[3, 3] = begin
+            P = rep_matrix(0., 3, 3)
+            for i in 1:3
+                P[i, i] = 1.
+            end
+            if dt > 0
+                P = matrix_exp(A * dt)
+            end
+            P
+        end
+        sl_sites(G::matrix[n, n], dt)::matrix[n, n] = begin
+            P = rep_matrix(0., n, n)
+            for i in 1:n
+                P[i, i] = exp(G[i, i] * dt)
+            end
+            A = G[1:3, 1:3]
+            E = sl_step(A, dt)
+            for i in 1:3
+                for j in 1:3
+                    P[i, j] = E[i, j]
+                end
+            end
+            P
+        end
+        sl_walk(G::matrix[n, n], dts::vector[m])::real = begin
+            g = [1., 2., 3.]
+            state = rep_vector(0., n)
+            state[1] = 1.
+            acc = 0.
+            for t in 1:m
+                state = sl_sites(G, dts[t]) * state
+                acc += g' * state[1:3]
+            end
+            acc
+        end
+        # Bounds known only at run time, and a slice past the static limit.
+        sl_runtime(x::vector[n], m::int) = x[1:m]
+        sl_large(x::vector[n]) = x[1:101]
+        sl_square(G::matrix[n, n]) = G[1:11, 1:11]
+    end
+
+    # The same walk in plain Julia on dense arrays.
+    function ref_sites(G, dt)
+        P = Matrix(StanBlocks.LinearAlgebra.Diagonal(exp.(StanBlocks.LinearAlgebra.diag(G) .* dt)))
+        P[1:3, 1:3] = dt > 0 ? exp(G[1:3, 1:3] * dt) : one(G[1:3, 1:3])
+        P
+    end
+    function ref_slice_walk(G, dts)
+        state = zeros(size(G, 1))
+        state[1] = 1.0
+        acc = 0.0
+        for dt in dts
+            state = ref_sites(G, dt) * state
+            acc += [1.0, 2.0, 3.0]' * state[1:3]
+        end
+        acc
+    end
+    allocated(f::F, args::Vararg{Any,N}) where {F,N} = (f(args...); @allocated f(args...))
+    # A four-state generator: a three-state block and a fourth, decaying site.
+    slice_generator(a, b, c) = SMatrix{4,4}(-a, a, 0.0, 0.0, 0.0, -b, b, b / 2, 0.0, 0.0, -c, 0.0, 0.0, 0.0, 0.0, -0.3)
+end
+
+"""
+A `@juliacompat` slice whose bounds are known when its Julia method compiles,
+`x[1:3]`, `G[1:3, 1:3]`, `x[1:n]` with `n` a dimension of a static argument,
+`x[2:end]` of a static `x`, or `head`/`tail`/`segment` with literal sizes, is
+a static `SVector`/`SMatrix` (at most 100 elements), whether `x` is static or
+dense (snag `juliacompat-stat-75c9ba31`). Before, every such slice built a
+dense array on every call.
+"""
+@testitem "slic: @juliacompat slices with compile-time bounds are static" tags=[:slic, :regression] setup=[StanBlocksImports, JuliaCompatStaticSlices] begin
+    G = slice_generator(0.7, 0.4, 0.2)
+    D = Matrix(G)
+    x = SVector(1.0, 2.0, 3.0, 4.0, 5.0)
+    dts = collect(range(0.05, 0.3; length=10))
+
+    # Literal bounds give a static slice of a static and of a dense argument.
+    @test sl_block(G) isa SMatrix{2,2,Float64}
+    @test sl_block(D) isa SMatrix{2,2,Float64}
+    @test sl_block(D) == D[1:2, 1:2]
+    @test allocated(sl_block, D) == 0
+    @test sl_column(D) isa SVector{2,Float64}
+    @test sl_column(D) == D[1:2, 2]
+    # `end` and a signature dimension are static along a static axis only.
+    @test sl_corner(G) isa SMatrix{3,2,Float64}
+    @test sl_corner(G) == D[2:end, 3:4]
+    @test sl_corner(D) isa Matrix{Float64}
+    @test sl_corner(D) == D[2:end, 3:4]
+    @test sl_nested(x) == 6.0 + 2.0
+    @test allocated(sl_nested, x) == 0
+    @test sl_sequence(x) isa SVector{2,Float64}
+    @test sl_sequence(x) == [1.0 + 4.0 + 2.0, 2.0 + 5.0 + 3.0]
+    @test sl_sequence(Vector(x)) == sl_sequence(x)
+    @test allocated(sl_sequence, x) == 0
+
+    # A slice reassigned to a static local keeps it static: the method infers
+    # one concrete type and allocates nothing.
+    P = SMatrix{2,2}(0.9, 0.1, 0.0, 0.8)
+    s = SVector(1.0, 0.0)
+    @test sl_dose(P, s, 2.0, 3) isa SVector{2,Float64}
+    @test sl_dose(P, s, 2.0, 3) ≈ P * (P * [3.0, 0.0] + [2.0, 0.0]) + [2.0, 0.0] rtol=1e-14
+    @test sl_dose(P, s, 2.0, 1) == [3.0, 0.0]
+    @test Base.return_types(sl_dose, (typeof(P), typeof(s), Float64, Int)) == [SVector{2,Float64}]
+    @test allocated(sl_dose, P, s, 2.0, 3) == 0
+
+    # A literal block of a static or a dense generator, every step and every
+    # read: the walk infers `Float64`, and allocates nothing when the
+    # generator is static.
+    @test sl_sites(G, 0.1) isa SMatrix{4,4,Float64}
+    @test sl_sites(G, 0.1) ≈ ref_sites(D, 0.1) rtol=1e-13
+    @test sl_walk(G, dts) ≈ ref_slice_walk(D, dts) rtol=1e-13
+    @test sl_walk(D, dts) ≈ ref_slice_walk(D, dts) rtol=1e-13
+    @test Base.return_types(sl_walk, (typeof(G), Vector{Float64})) == [Float64]
+    @test Base.return_types(sl_walk, (Matrix{Float64}, Vector{Float64})) == [Float64]
+    @test Base.return_types(sl_sites, (Matrix{Float64}, Float64)) == [Matrix{Float64}]
+    @test allocated(sl_walk, G, dts) == 0
+    @test allocated(sl_sites, G, 0.1) == 0
+
+    # Run-time bounds, and slices past the static limit, stay dense.
+    @test sl_runtime(x, 2) isa Vector{Float64}
+    @test sl_runtime(x, 2) == [1.0, 2.0]
+    @test sl_large(collect(1.0:120.0)) isa Vector{Float64}
+    @test sl_large(collect(1.0:120.0)) == collect(1.0:101.0)
+    @test sl_square(rand(12, 12)) isa Matrix{Float64}
+
+    # Stan's range checks still hold.
+    @test_throws BoundsError sl_block(SMatrix{1,1}(1.0))
+    @test_throws BoundsError sl_block(ones(1, 1))
+    @test_throws BoundsError sl_sequence(SVector(1.0, 2.0))
+    @test_throws BoundsError sl_nested(SVector(1.0, 2.0))
+
+    # The source recorded for ReactiveKernels' JAX translation keeps the dense
+    # slice; the method itself reads the static one.
+    method = which(sl_walk, Tuple{Matrix{Float64},Vector{Float64}})
+    mentions(x::Expr, name) = any(a -> mentions(a, name), x.args)
+    mentions(x::QuoteNode, name) = x.value === name
+    mentions(x::GlobalRef, name) = x.name === name
+    mentions(x, name) = x === name
+    source = StanBlocks._deffun_julia_source(method.sig)
+    @test !isnothing(source)
+    @test !any(name -> mentions(source[3], name), (:_julia_getindex, :_julia_static_range))
+    @test any(st -> mentions(st, :_julia_getindex), Base.uncompressed_ir(method).code)
+end
+
+"""
+Enzyme differentiates a walk through static slices, and the gradient matches
+finite differences of the dense reference.
+"""
+@testitem "slic: @juliacompat static slices are Enzyme differentiable" tags=[:slic, :ad, :regression] setup=[StanBlocksImports, EnzymeGradient, JuliaCompatStaticSlices] begin
+    dts = collect(range(0.05, 0.3; length=10))
+    walk(x) = sl_walk(slice_generator(x[1], x[2], x[3]), dts)
+    x = [0.7, 0.4, 0.2]
+    value, (dx,) = gradient(walk, x)
+    @test value ≈ ref_slice_walk(Matrix(slice_generator(x...)), dts) rtol=1e-13
+    h = 1e-6
+    fd = map(1:3) do i
+        e = zeros(3)
+        e[i] = h
+        (ref_slice_walk(Matrix(slice_generator((x + e)...)), dts) -
+         ref_slice_walk(Matrix(slice_generator((x - e)...)), dts)) / 2h
+    end
+    @test dx ≈ fd rtol=1e-6
+end
+
+"""
+The emitted Stan of the slicing helpers and their Julia methods agree:
+BridgeStan evaluates the walk as a transformed parameter.
+"""
+@testitem "slic: static slices in @juliacompat helpers match their emitted Stan" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup, JuliaCompatStaticSlices] begin
+    using .StanBlocksTestSetup: stanc_compiles
+    dts = collect(range(0.05, 0.3; length=10))
+    G = Matrix(slice_generator(0.7, 0.4, 0.2))
+    model = @slic (; G, dts, obs=0.2) begin
+        mu ~ normal(0.0, 1.0)
+        obs ~ normal(mu, 1.0)
+        walked = sl_walk(exp(mu) * G, dts)
+        dosed = sum(sl_dose(sl_block(G), [1.0, 0.0], exp(mu), 3))
+    end
+    @test stanc_compiles(model)
+    p = instantiate(stan_model(model))
+    names = BridgeStan.param_names(p.model; include_tp=true, include_gq=true)
+    mu = -0.3
+    draw = BridgeStan.param_constrain(p.model, [mu]; include_tp=true, include_gq=true,
+        rng=BridgeStan.StanRNG(p.model, 1))
+    @test only(draw[names .== "walked"]) ≈ sl_walk(exp(mu) * G, dts) rtol=1e-13
+    @test only(draw[names .== "dosed"]) ≈ sum(sl_dose(sl_block(G), [1.0, 0.0], exp(mu), 3)) rtol=1e-13
+end
