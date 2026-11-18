@@ -94,6 +94,19 @@ _REPO_ROOT = dirname(dirname(@__DIR__))
 _SANDBOX_GALLERY_DIR = joinpath(_REPO_ROOT, "web", "sandbox")
 _sandbox_gallery = Gallery(_SANDBOX_GALLERY_DIR)
 
+# Where the `/sandbox` editor writes: Run, Rename, Delete, Toggle expect and the
+# compile/stanc results. Unset, this is `web/sandbox` itself, as in a
+# development checkout. A deployment whose checkout must stay clean (the gordito
+# one-off service, `deploy/gordito/launch.sh`: the KB refuses to restart or
+# switch a dirty checkout) sets `STANBLOCKS_SANDBOX_DIR` to a folder outside
+# it. The editor then lists the repository's snippets plus the saved ones, reads
+# each snippet file from the save folder first, and leaves the repository's
+# snippets as committed. Read when the app builds its sandbox, not at precompile.
+function _sandbox_save_dir()
+    dir = strip(get(ENV, "STANBLOCKS_SANDBOX_DIR", ""))
+    isempty(dir) ? _SANDBOX_GALLERY_DIR : abspath(expanduser(dir))
+end
+
 # Recording configuration. The IP that actually drives `record!` lives
 # upstream as `HTMXObjects.RECORDING_STATE` (its own `:parallel` cache);
 # this `SbAppData` only carries the wiring (`recording_dir`,
@@ -404,18 +417,24 @@ const APPDATA = SbAppData()
     # sub-bundle. See `SbAppData.record_gallery` for the recording driver,
     # which hardcodes the public URL list.
     @include sandbox = begin
+        # The repository's snippets, and the folder every write goes to (the
+        # same folder unless STANBLOCKS_SANDBOX_DIR names another; see
+        # `_sandbox_save_dir`).
         path = _SANDBOX_GALLERY_DIR
+        save_path = _sandbox_save_dir()
+
+        # A snippet's file (`suffix` "" for the code, ".status", ".expect", …):
+        # the save folder's copy when it has one, else the repository's.
+        snippet_file(name, suffix) = let saved = joinpath(save_path, name * ".jl" * suffix)
+            isfile(saved) ? saved : joinpath(path, name * ".jl" * suffix)
+        end
 
         snippets() = begin
             isdir(path) || mkpath(path)
-            local out = Pair{String,String}[]
-            for f in sort(readdir(path))
-                endswith(f, ".jl") || continue
-                local name = f[1:end-3]
-                local code = read(joinpath(path, f), String)
-                push!(out, name => code)
-            end
-            out
+            isdir(save_path) || mkpath(save_path)
+            local names = sort!(unique!([f[1:end-3] for dir in unique([path, save_path])
+                                         for f in readdir(dir) if endswith(f, ".jl")]))
+            Pair{String,String}[name => read(snippet_file(name, ""), String) for name in names]
         end
 
         # Per-`code` derivations: transpile, render the result, render the
@@ -481,10 +500,17 @@ const APPDATA = SbAppData()
         # Per-snippet bundle. Owns ALL per-name derivations and per-snippet
         # routes (mounted at `/sandbox/snippet/<name>/...`).
         @include snippet(name::String) = begin
-            file_path = joinpath(__parent__.path, name * ".jl")
+            file_path = __parent__.snippet_file(name, "")
+            # Writes (code and sidecars) go to the save folder.
+            saved_path = joinpath(__parent__.save_path, name * ".jl")
+            # Only a snippet with code in the save folder can be renamed or
+            # deleted: with a separate save folder, a repository snippet stays
+            # as committed (saving an edit of it adds a copy that takes
+            # precedence). Without one, every snippet qualifies, as before.
+            writable = isfile(saved_path)
             code = read(file_path, String)
 
-            read_sidecar(suffix; default=nothing) = let p = "$file_path.$suffix"
+            read_sidecar(suffix; default=nothing) = let p = __parent__.snippet_file(name, ".$suffix")
                 isfile(p) ? read(p, String) : default
             end
             status = read_sidecar("status")
@@ -553,9 +579,10 @@ const APPDATA = SbAppData()
                         h.button(should_fail ? "xfail" : "should pass";
                             type="button", class="pdb-icon-btn", data_variant="text",
                             hx_get=snippet_url/"toggle_expect", hx_target="#$id", hx_swap="outerHTML"),
-                        h.button("✕"; type="button", class="pdb-icon-btn", data_variant="del",
-                            hx_delete=snippet_url/"delete", hx_target="#$id", hx_swap="outerHTML",
-                            hx_confirm="Delete snippet '$name'?"),
+                        writable ?
+                            h.button("✕"; type="button", class="pdb-icon-btn", data_variant="del",
+                                hx_delete=snippet_url/"delete", hx_target="#$id", hx_swap="outerHTML",
+                                hx_confirm="Delete snippet '$name'?") : "",
                         standalone ? "" : h.a("⧉"; href=snippet_url, target="_blank", class="pdb-icon-link"),
                         show_macroexpand ?
                             h.a("macro"; href=snippet_url/"macroexpand", target="_blank",
@@ -577,18 +604,21 @@ const APPDATA = SbAppData()
                 # errors render as a contained error article.
                 index(; standalone=false) = safely(; obj=__parent__) do
                     d = __parent__.draft(code)
-                    write("$file_path.status", "PASS")
-                    write("$file_path.stan", d.result.code)
+                    mkpath(dirname(saved_path))
+                    write("$saved_path.status", "PASS")
+                    write("$saved_path.stan", d.result.code)
                     sc = stanc_check(d.result.code)
-                    write("$file_path.stanc", sc.ok ? "OK" : sc.output)
+                    write("$saved_path.stanc", sc.ok ? "OK" : sc.output)
                     refresh_url = standalone ? snippet_url : snippet_url/"refresh"
                     badge = should_fail ?
                         SemanticStatus(:warn; detail="XPASS — expected failure but transpiled; toggle 'should pass' if intentional") :
                         SemanticStatus(:ok; detail="PASS")
                     h.div(; id, class="htmxo-status-banner", data_status="success")(
                         snippet_header(
-                            h.strong(name; contenteditable="true", class="pdb-name-input",
-                                _="on blur if my textContent.trim() is not '$name' fetch $(snippet_url/"rename")?to=\${my.textContent.trim()} then put the result into #$id.outerHTML"),
+                            writable ?
+                                h.strong(name; contenteditable="true", class="pdb-name-input",
+                                    _="on blur if my textContent.trim() is not '$name' fetch $(snippet_url/"rename")?to=\${my.textContent.trim()} then put the result into #$id.outerHTML") :
+                                h.strong(name),
                             badge,
                             stanc_badge(sc.ok);
                             refresh_url,
@@ -646,23 +676,35 @@ const APPDATA = SbAppData()
             @get rename(; to="") = begin
                 local target = strip(to)
                 isempty(target) && return card.index()
-                local new_path = joinpath(__parent__.path, target * ".jl")
-                isfile(file_path) && mv(file_path, new_path; force=true)
+                writable || error("snippet '$name' is a repository snippet, and this app saves to " *
+                    "$(__parent__.save_path), not into its checkout; rename it in a development checkout")
+                local new_path = joinpath(__parent__.save_path, target * ".jl")
+                # The sidecars move with the code, so none is left under the
+                # old name for a later snippet of that name to show.
+                for suffix in ("", ".status", ".expect", ".stanc", ".stan")
+                    isfile(saved_path * suffix) && mv(saved_path * suffix, new_path * suffix; force=true)
+                end
                 __parent__.snippet(String(target)).card.index()
             end
 
             @get toggle_expect() = begin
-                ep = "$file_path.expect"
+                ep = "$saved_path.expect"
+                mkpath(dirname(ep))
                 write(ep, expect == "fail" ? "pass" : "fail")
                 __parent__.snippet(name).card.lazy
             end
 
             @delete delete() = begin
-                for suffix in ("", ".status", ".expect", ".stanc")
-                    fp = file_path * suffix
+                writable || error("snippet '$name' is a repository snippet, and this app saves to " *
+                    "$(__parent__.save_path), not into its checkout; delete it in a development checkout")
+                for suffix in ("", ".status", ".expect", ".stanc", ".stan")
+                    fp = saved_path * suffix
                     isfile(fp) && rm(fp)
                 end
-                ""
+                # Deleting a saved copy of a repository snippet shows the
+                # repository's version again.
+                isfile(joinpath(__parent__.path, name * ".jl")) ?
+                    __parent__.snippet(name).card.lazy : ""
             end
         end
 
@@ -715,12 +757,12 @@ const APPDATA = SbAppData()
                 t0 = time()
                 ok, msg = try
                     r = __parent__.draft(code).result
-                    write(joinpath(__parent__.path, name * ".jl.stan"), r.code)
+                    write(joinpath(__parent__.save_path, name * ".jl.stan"), r.code)
                     true, ""
                 catch e
                     false, String(first(split(sprint(showerror, e), "\n")))
                 end
-                write(joinpath(__parent__.path, name * ".jl.status"), ok ? "PASS" : msg)
+                write(joinpath(__parent__.save_path, name * ".jl.status"), ok ? "PASS" : msg)
                 (name=name, ok=ok, msg=msg, dt=time() - t0)
             end
 
@@ -789,8 +831,8 @@ const APPDATA = SbAppData()
                     snippet_name = "$(base)_$i"
                 end
             end
-            isdir(path) || mkpath(path)
-            write(joinpath(path, snippet_name * ".jl"), code)
+            isdir(save_path) || mkpath(save_path)
+            write(joinpath(save_path, snippet_name * ".jl"), code)
             if from_card
                 snippet(snippet_name).card.index(standalone=standalone=="1")
             else
