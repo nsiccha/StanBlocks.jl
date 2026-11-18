@@ -114,3 +114,20 @@ actually offers before attempting prediction.
 Use the [model API reference](../reference/models.md) for these registration
 interfaces. The [epidemic example](../examples/epidemic.md) shows a typed ODE
 right-hand side, its emitted Stan definition and a numerical trajectory.
+
+## Analytic ODE Jacobians
+
+Stan's ODE solvers differentiate their right-hand side by nested automatic
+differentiation. The solver variants on the `dde-solver` branches of
+`nsiccha/math` and `nsiccha/stanc3` also accept a second function, the
+right-hand side's Jacobian with respect to the state and to the real scalars
+of the trailing arguments, and compute sensitivities from it. A model passes
+that function in the second argument: `ode_rk45(rhs, jac, y0, t0, ts, args...)`,
+and likewise for the other solvers and their `_tol` forms. With Symbolics.jl
+loaded, `jacobian(rhs)` in that position derives the Jacobian from the traced
+definition of `rhs` when the program is emitted. The initial state and every
+non-scalar trailing argument need literal sizes, because the Jacobian has one
+column per scalar. `ode_jacobian_error(rhs, jac, t, y, args...)` returns the
+largest difference between a Jacobian function and Stan's automatic
+derivative at one point. Stock stanc rejects these calls, so such a program
+compiles only against a BridgeStan tree built from those branches.

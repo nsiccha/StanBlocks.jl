@@ -4,6 +4,29 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.51
+
+- **ODE solvers take an analytic Jacobian UDF, and `jacobian(f)` derives
+  one.** The `dde-solver` line of `nsiccha/math` and `nsiccha/stanc3` adds an
+  overload of every ODE solver with a second function `jac` right after `f`:
+  `jac` takes `f`'s arguments and returns the N×(N+P) matrix
+  `[df/dy | df/dargs]`, and the solver computes sensitivities from it instead
+  of nesting autodiff through `f`. `ode_rk45`, `ode_bdf`, `ode_ckrk`,
+  `ode_adams` and their `_tol` forms now accept such a `jac` (a `@deffun` or a
+  closure) and emit Stan's call, and `ode_jacobian_error(f, jac, t, y,
+  args...)` checks one against autodiff. In the Jacobian slot,
+  `jacobian(f)` names the Jacobian of `f` itself, which StanBlocks derives
+  with Symbolics.jl when it emits the program (`using Symbolics` loads the
+  new `StanBlocksSymbolicsExt`). `f`'s traced definition is evaluated on one
+  symbolic variable per state and per real scalar of the trailing arguments,
+  at the sizes of the call, which must therefore be literals. Stan builtins
+  with a DiffRules rule (`inv_logit`, `log1p_exp`, `log1m_exp`, `lgamma`,
+  `erf`, …) stay calls to those builtins, and shared subexpressions become
+  locals. The generated function is named after `f` and those sizes
+  (`f_jacobian_3`). Stock stanc 2.39 rejects the overloads, so programs that
+  use them need the `dde-solver` toolchain; programs that do not are
+  unchanged (todo `0bkkkf2`, decision `1hhvapq`).
+
 ## v0.2.50
 
 - **`@juliacompat` slices with compile-time bounds are static.** A slice read
