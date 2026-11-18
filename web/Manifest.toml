@@ -407,15 +407,17 @@ version = "2.9.1"
 deps = ["BridgeStan", "FileWatching", "JSON", "LinearAlgebra", "LogDensityProblems", "Markdown", "OrderedCollections", "SHA", "SpecialFunctions", "StanLogDensityProblems", "StaticArrays", "Statistics", "Tables"]
 path = ".."
 uuid = "2e771a56-c23a-4e0b-9282-20c2e37157e9"
-version = "0.2.49"
+version = "0.2.51"
 
     [deps.StanBlocks.extensions]
     PosteriorDBExt = "PosteriorDB"
     StanBlocksReactiveKernelsExt = "ReactiveKernels"
+    StanBlocksSymbolicsExt = "Symbolics"
 
     [deps.StanBlocks.weakdeps]
     PosteriorDB = "1c4bc282-d2f5-44f9-b6d1-8c4424a23ad4"
     ReactiveKernels = "78e9f072-d36b-4c73-b7a3-751b0eb26cf9"
+    Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"
 
 [[deps.StanLogDensityProblems]]
 deps = ["BridgeStan", "LogDensityProblems"]

@@ -146,6 +146,9 @@ end
     ode_ckrk ode_ckrk_tol
     ode_adams ode_adams_tol
     ode_bdf ode_bdf_tol
+    # `ode_*(f, jacobian(f), …)`: the derived analytic Jacobian UDF (ODEJacobian),
+    # and Stan's check of a Jacobian UDF against autodiff.
+    jacobian ode_jacobian_error
     solve_newton solve_newton_tol
     solve_powell solve_powell_tol
     # Stan's embedded Laplace approximation (Stan >= 2.37), lowered from
@@ -5419,8 +5422,47 @@ const NoTolAlgebraSolver = Union{typeof.((solve_newton, solve_powell))...}
 const AlgebraSolver = Union{TolAlgebraSolver, NoTolAlgebraSolver}
 const ReduceSumFunction = Union{typeof.((reduce_sum, reduce_sum_static))...}
 
+# Argument positions of an ODE solver call. Stan's overloads take
+# `(f, y0, t0, times, [rel_tol, abs_tol, max_num_steps,] args...)` or, with an
+# analytic Jacobian UDF, `(f, jac, y0, …)` (the `nsiccha/stanc3` `dde-solver`
+# line): a function in the second slot shifts everything after it by one.
+_is_function_token(::StanExpr2{<:Union{types.func,types.closure}}) = true
+_is_function_token(_) = false
+_ode_has_jacobian(x::CanonicalExpr{<:ODESolver}) = _is_function_token(x.args[2])
+# `ode_jacobian_error(f, jac, t, y, args...)` returns the largest difference
+# between `jac` and the autodiff Jacobian of `f` at `(t, y, args...)`, relative
+# to max(1, |entry|). Its arguments are those of the solver's `f` and `jac`.
+const ODEJacobianCheck = typeof(ode_jacobian_error)
+const ODEJacobianCall = Union{ODESolver,ODEJacobianCheck}
+_ode_has_jacobian(x::CanonicalExpr{ODEJacobianCheck}) = true
+_ode_t0(x::CanonicalExpr{ODEJacobianCheck}) = x.args[3]
+_ode_y0(x::CanonicalExpr{ODEJacobianCheck}) = x.args[4]
+_ode_rest(x::CanonicalExpr{ODEJacobianCheck}) = x.args[3:end]
+_ode_variadic(x::CanonicalExpr{ODEJacobianCheck}) = (x.args[5:end]..., _closure_captures(x.args[1])...)
+tracetype_by_head(::ODEJacobianCheck, x::CanonicalExpr{ODEJacobianCheck}) = begin
+    length(x.args) >= 4 && _is_function_token(x.args[1]) && _is_function_token(x.args[2]) || error(
+        "`ode_jacobian_error(f, jac, t, y, args...)` takes the right-hand side `f`, its ",
+        "Jacobian `jac`, a time and a state; got `", short_expr(x), "`."
+    )
+    StanType(types.real)
+end
+_ode_offset(x::CanonicalExpr{<:ODESolver}) = _ode_has_jacobian(x) ? 1 : 0
+_ode_controls(::CanonicalExpr{<:TolODESolver}) = 3
+_ode_controls(::CanonicalExpr{<:NoTolODESolver}) = 0
+_ode_y0(x::CanonicalExpr{<:ODESolver}) = x.args[2 + _ode_offset(x)]
+_ode_t0(x::CanonicalExpr{<:ODESolver}) = x.args[3 + _ode_offset(x)]
+_ode_times(x::CanonicalExpr{<:ODESolver}) = x.args[4 + _ode_offset(x)]
+# Everything after `f` (and `jac`), as rendered at the call site.
+_ode_rest(x::CanonicalExpr{<:ODESolver}) = x.args[(2 + _ode_offset(x)):end]
+# The trailing arguments Stan forwards to `f` (and `jac`): the caller's, then
+# the captures of a closure `f`, which the call threads after them.
+_ode_variadic(x::CanonicalExpr{<:ODESolver}) =
+    (x.args[(5 + _ode_offset(x) + _ode_controls(x)):end]..., _closure_captures(x.args[1])...)
+# The arguments Stan calls `f` and `jac` with: `(t, y, args...)`.
+_ode_rhs_call_args(x::CanonicalExpr{<:ODEJacobianCall}) = (_ode_t0(x), _ode_y0(x), _ode_variadic(x)...)
+
 tracetype_by_head(::ODESolver, x::CanonicalExpr{<:ODESolver}) = StanType(
-    types.vector, (stan_size(x.args[4], 1), stan_size(x.args[2], 1))
+    types.vector, (stan_size(_ode_times(x), 1), stan_size(_ode_y0(x), 1))
 )
 
 # Stan's algebraic solvers return a vector with the initial guess's extent.
@@ -5893,13 +5935,124 @@ _fundef_by_head(::typeof(jbroadcasted), x::CanonicalExpr{typeof(jbroadcasted)}, 
     )
 end
 
-fetch_functions!(x::CanonicalExpr{<:TolODESolver}; info, context=nothing) = fetch_functions!(
-    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[8:end]..., _closure_captures(x.args[1])...); info, context
-)
+fetch_functions!(x::CanonicalExpr{<:ODEJacobianCall}; info, context=nothing) = begin
+    rhs_args = _ode_rhs_call_args(x)
+    fetch_functions!(CanonicalExpr(x.args[1], rhs_args...); info, context)
+    _ode_has_jacobian(x) &&
+        fetch_functions!(CanonicalExpr(_ode_jacobian_arg(x), rhs_args...); info, context)
+    nothing
+end
 
-fetch_functions!(x::CanonicalExpr{<:NoTolODESolver}; info, context=nothing) = fetch_functions!(
-    CanonicalExpr(x.args[1], x.args[3], x.args[2], x.args[5:end]..., _closure_captures(x.args[1])...); info, context
+# ── Analytic Jacobian UDFs for the ODE solvers: `ode_rk45(f, jacobian(f), …)` ──
+# Stan's `dde-solver` line (`nsiccha/math` + `nsiccha/stanc3`) adds an overload
+# of every ODE solver taking a second function `jac` right after `f`. `jac`
+# takes `f`'s arguments `(t, y, args...)` and returns one N×(N+P) matrix
+# `[df/dy | df/dargs]`, where P counts the real scalars of the trailing
+# arguments in order (matrices column-major, arrays element by element) and
+# integers get no columns. The solvers then compute sensitivities from it
+# instead of nesting autodiff through `f`.
+#
+# A hand-written `jac` (a `@deffun`, or a closure) passes through as Stan's
+# call. `jacobian(f)` in that slot instead names the Jacobian of `f` itself:
+# StanBlocks derives it symbolically from `f`'s traced body when the program
+# is emitted, which needs Symbolics.jl loaded (`StanBlocksSymbolicsExt`).
+"""
+    ODEJacobian(f, sizes)
+
+The Jacobian UDF that `jacobian(f)` names in the second slot of an ODE solver
+call. `f` is the right-hand side: a function value, or a closure `StanExpr`.
+`sizes` is `nothing` on the token `jacobian(f)` traces to; the solver call
+pins it to `(N, size of each trailing argument...)`, which the generated
+function is specific to, so it is part of the emitted name.
+"""
+struct ODEJacobian <: Function
+    f
+    sizes
+end
+ODEJacobian(f) = ODEJacobian(f, nothing)
+Base.:(==)(a::ODEJacobian, b::ODEJacobian) = a.f == b.f && a.sizes == b.sizes
+Base.hash(J::ODEJacobian, h::UInt) = hash(J.sizes, hash(J.f, hash(ODEJacobian, h)))
+_function_token(J::ODEJacobian) = StanExpr(J, StanType(types.func{ODEJacobian}; value=J, qual=:data))
+
+_ode_jacobian_rhs(f::StanExpr2{<:types.func}) = getvalue(f)
+_ode_jacobian_rhs(f::StanExpr2{<:types.closure}) = f
+_ode_jacobian_rhs(f) = error(
+    "`jacobian(f)` takes the ODE right-hand side: a `@deffun`, a function or a ",
+    "closure. Got `", short_expr(f), "`."
 )
+expand_inline_or_trace(x::CanonicalExpr{typeof(builtin.jacobian)}; info) = begin
+    length(x.args) == 1 || error(
+        "`jacobian(f)` takes one argument, the ODE right-hand side `f`; got ",
+        length(x.args), "."
+    )
+    _function_token(ODEJacobian(_ode_jacobian_rhs(only(x.args))))
+end
+
+_same_rhs(a::StanExpr2{<:types.func}, b) = getvalue(a) === b
+_same_rhs(a::StanExpr2{<:types.closure}, b::StanExpr2{<:types.closure}) =
+    type(a).info.value.id == type(b).info.value.id
+_same_rhs(a, b) = false
+_ode_literal_sizes(what, a) = begin
+    sizes = map(_literal_int, stan_size(type(a)))
+    any(isnothing, sizes) && error(
+        "`jacobian(f)`: ", what, " `", short_expr(a), "` is a `", type(a),
+        "`. The derived Jacobian is a matrix with one column per state and per ",
+        "real scalar of the trailing arguments, so every size must be a literal ",
+        "when the program is emitted."
+    )
+    Tuple(sizes)
+end
+# The sizes the generated Jacobian is specific to: the state count, then each
+# trailing argument's sizes, in the order Stan passes them.
+_ode_jacobian_sizes(x::CanonicalExpr{<:ODEJacobianCall}) = (
+    only(_ode_literal_sizes("the initial state", _ode_y0(x))),
+    map(a -> _ode_literal_sizes("the trailing argument", a), _ode_variadic(x))...,
+)
+# The function Stan calls as `jac`: a hand-written one as is, `jacobian(f)` as
+# the Jacobian of this call's `f` at this call's sizes.
+_ode_jacobian_arg(x::CanonicalExpr{<:ODEJacobianCall}) = begin
+    jac = x.args[2]
+    J = hasvalue(jac) ? getvalue(jac) : nothing
+    if J isa ODEJacobian
+        _same_rhs(x.args[1], J.f) || error(
+            "`", short_expr(x), "`: `jacobian(g)` in the Jacobian slot must name ",
+            "the solver's own right-hand side `f`; it differs here."
+        )
+        return _function_token(ODEJacobian(J.f, _ode_jacobian_sizes(x)))
+    end
+    # Stan passes `jac` exactly `f`'s arguments, including the captures of a
+    # closure `f` that the call threads after the caller's.
+    jac_captures = _closure_captures(jac)
+    isempty(jac_captures) || jac_captures == _closure_captures(x.args[1]) || error(
+        "`", short_expr(x), "`: a closure Jacobian is called with `f`'s arguments ",
+        "only, so it cannot capture values `f` does not capture."
+    )
+    jac
+end
+
+func_name(J::ODEJacobian) = _ode_jacobian_name(join(vcat(func_name(J.f)), "_"), J)
+_named_fragment(J::ODEJacobian, names) =
+    _ode_jacobian_name(join(vcat(_named_fragment(J.f, names)), "_"), J)
+_ode_jacobian_name(base, J::ODEJacobian) = isnothing(J.sizes) ? string(base, "_jacobian") :
+    string(base, "_jacobian_", join((join(s, "x") for s in J.sizes if !isempty(s)), "_"))
+_collect_name_callables!(acc, J::ODEJacobian) = _collect_name_callables!(acc, J.f)
+
+# The derivation lives in `StanBlocksSymbolicsExt`, which adds the method.
+function _symbolic_ode_jacobian end
+fundef_by_head(::ODEJacobian, x::CanonicalExpr{ODEJacobian}) = _fundef(x, nothing)
+_fundef_by_head(J::ODEJacobian, x::CanonicalExpr{ODEJacobian}, context) = begin
+    isnothing(J.sizes) && error("`jacobian(f)` is only meaningful in the Jacobian slot of an ODE solver call.")
+    isempty(methods(_symbolic_ode_jacobian)) && error(
+        "`jacobian(f)` derives the Jacobian of `", join(vcat(func_name(J.f)), "_"),
+        "` with Symbolics.jl: load it (`using Symbolics`) before emitting the program."
+    )
+    rhs = _fundef(CanonicalExpr(J.f, x.args...), context)
+    isnothing(rhs) && error(
+        "`jacobian(f)`: `", join(vcat(func_name(J.f)), "_"), "` has no Stan definition ",
+        "at these argument types, so there is no body to differentiate."
+    )
+    _symbolic_ode_jacobian(J, rhs, x, context)
+end
 
 function reduce_sum_reconstruct end
 function reduce_sum_deconstruct end

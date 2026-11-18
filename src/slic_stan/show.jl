@@ -226,7 +226,17 @@ Base.show(io::IO, x::CanonicalExpr) = begin
         autoprint(io, fname, "(", Join(fargs, ", "), ")")
     end
 end
-Base.show(io::IO, x::CanonicalExpr{<:Union{ODESolver,AlgebraSolver}}) = autoprint(io, head(x), "(", Join(
+# An ODE solver with a Jacobian UDF names it right after `f`. Neither function
+# takes part in the other's name: each is mangled on the arguments after both.
+Base.show(io::IO, x::CanonicalExpr{<:ODEJacobianCall}) = begin
+    rest = _ode_rest(x)
+    jac = _ode_has_jacobian(x) ? (_emitted_func_name(io, _ode_jacobian_arg(x), rest),) : ()
+    autoprint(io, head(x), "(", Join((
+        _emitted_func_name(io, x.args[1], rest), jac..., stan_call_args(rest)...,
+        _closure_captures(x.args[1])...), ", "
+    ), ")")
+end
+Base.show(io::IO, x::CanonicalExpr{<:AlgebraSolver}) = autoprint(io, head(x), "(", Join(
     # Higher-order solvers fold the function arg into the receiver name (mangled
     # via `func_name(args[1], rest)`), then emit the remaining args. If
     # `args[1]` is a closure, its captures must *also* be threaded as

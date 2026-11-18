@@ -72,6 +72,9 @@ function selected(ti)
     # dependencies explicitly; ordinary Pkg.test needs only registered deps.
     :reactivekernels in ti.tags &&
         get(ENV, "STANBLOCKS_TEST_REACTIVEKERNELS", "") != "true" && return false
+    # Likewise Symbolics.jl, which only the `jacobian(f)` items need.
+    :symbolics in ti.tags &&
+        get(ENV, "STANBLOCKS_TEST_SYMBOLICS", "") != "true" && return false
     path = test_path(ti)
     selection = TEST_SELECTION
     matches = all(name -> occursin(lowercase(name), lowercase(ti.name)), selection.names) &&
