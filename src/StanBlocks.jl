@@ -24,6 +24,7 @@ using BridgeStan
 import SHA
 import LinearAlgebra
 import SpecialFunctions
+import StaticArrays
 using FileWatching: Pidfile, watch_file
 import Tables   # light interface package: lets a DataFrame / Tables.jl source be a data kwarg (see `_table_stan_type`)
 

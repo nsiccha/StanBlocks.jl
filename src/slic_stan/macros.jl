@@ -208,6 +208,15 @@ Signature-only/type-token glue, qualified or pre-existing function extensions,
 and probability/RNG/ODE/`reduce_sum`-family definitions remain Stan-only.
 Within a `@juliacompat begin ... end` group, a nested `@stanonly` definition
 explicitly opts that member back out.
+
+A container whose sizes the Julia method can know when it compiles is a
+StaticArrays `SVector`/`SMatrix` of at most 100 elements: a vector literal of
+numbers, and a `rep_vector`, `rep_matrix`, `rep_array`, `to_matrix` or sized
+local whose sizes are integer literals, dimensions of static-size arguments,
+`rows`/`cols`/`num_elements` of a static value, `+`, `-` or `*` of those, a
+local assigned once from one, or what an `int` helper returns from one.
+Indexed writes rebuild such a local. A size known only at run time keeps a
+dense `Array`.
 """
 macro juliacompat(x)
     error("@juliacompat may only appear inside an @deffun block")

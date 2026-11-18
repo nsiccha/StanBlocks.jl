@@ -4,6 +4,30 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.49
+
+- **`@juliacompat` helpers with compile-time sizes run on StaticArrays.** A
+  Julia method allocated a dense `Array` for every container and checked every
+  dimension at run time, even where each size was a constant: a 3x3 generator
+  of vector literals, a `rep_matrix(0., 3, 3)` filled by index, a
+  `rep_vector(0., 12)` of constants. A container whose sizes the method can
+  know when it compiles is now a StaticArrays `SVector`/`SMatrix` (at most 100
+  elements), and its dimension checks fold away. Such a size is an integer
+  literal, a dimension of a static-size argument, `rows`/`cols`/`num_elements`
+  of a static value, `+`, `-` or `*` of those, a local assigned once from one,
+  or what an `int` helper returns from one (`n_states(::typeof(system))::int =
+  3` sizes `rep_vector(0., n_states(system))`). Vector literals of numbers are
+  static vectors; `rep_vector`, `rep_matrix`, `rep_array`, `to_matrix` and
+  sized locals take static sizes; `append_row`, `append_col`, `to_row_vector`,
+  `matrix_exp`, `matrix_power` and arithmetic keep them. An indexed write,
+  `.=` or updating write (`P[i, j] += x`) to a local rebinds it, so a static
+  local is rebuilt without allocating and a dense one is still written in
+  place. Sizes known only at run time keep dense arrays, and so does the source
+  the ReactiveKernels extension hands to JAX. StaticArrays is a new dependency.
+  A synthetic three-state propagator walk went from 32 allocations (3.3 KiB)
+  and 738 ns to none and 70 ns per value, and from 89 allocations and 6.05 µs
+  to 10 and 592 ns per Enzyme gradient (snag `juliacompat-fixe-b2a30659`).
+
 ## v0.2.48
 
 - **`row_stochastic_matrix` and `column_stochastic_matrix` declarations.** A
