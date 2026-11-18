@@ -18,6 +18,16 @@ show(stdout, MIME"text/plain"(), saturating_response(2.0, 3.0)); println()
 The same definition is included when a model calls it. Unlike a submodel, a
 function introduces no probability statements or latent parameters of its own.
 
+The Julia method allocates no heap memory for containers whose sizes it can
+know when it compiles. Those are StaticArrays vectors and matrices of at most
+100 elements: vector literals of numbers, and `rep_vector`, `rep_matrix`,
+`rep_array`, `to_matrix` results or sized locals whose sizes are integer
+literals, dimensions of static-size arguments, `rows`, `cols` or `num_elements`
+of a static value, sums, differences and products of those, a local assigned
+once from one, or the result of an `int` helper returning one. Writing into
+such a local by index rebuilds it. Sizes known only at run time keep dense
+arrays, as do the sources the ReactiveKernels provider below hands to JAX.
+
 An `@deffun @inline` helper expands into its caller while resolving sibling
 helpers and omitted keyword defaults in its defining module. Explicit
 arguments resolve in the caller's module, as do statements after the call.

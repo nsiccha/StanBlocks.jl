@@ -896,40 +896,114 @@ jcall(::Val{:dims}, ::_JuliaScope, x) = collect(size(x))
 jcall(::Val{:rows}, ::_JuliaScope, x) = size(x, 1)
 jcall(::Val{:cols}, ::_JuliaScope, x) = size(x, 2)
 jcall(::Val{:num_elements}, ::_JuliaScope, x) = length(x)
+# Static sizes (snag `juliacompat-fixe-b2a30659`). The `@juliacompat` lowering
+# passes a size it can know when the helper compiles as StaticArrays' static
+# axis `SOneTo{n}`: an integer literal, a signature dimension or `rows`/`cols`/
+# `num_elements` of a static-size value, `+`, `-` or `*` of such sizes, and what
+# an `int` helper returns from them (`_deffun_julia_expr`). Any other size is an
+# `Int`. A container whose sizes are all static and whose length is at most
+# `_JULIA_STATIC_LENGTH` is a StaticArrays `SArray`, which lives on the stack;
+# one with a runtime size stays a dense `Array`. The limit is StaticArrays' own
+# rule of thumb: past about 100 elements a dense array is faster.
+const _JuliaStaticSize = StaticArrays.SOneTo
+const _JuliaStaticSizes = Tuple{_JuliaStaticSize,Vararg{_JuliaStaticSize}}
+const _JuliaSize = Union{Integer,_JuliaStaticSize}
+const _JULIA_STATIC_LENGTH = 100
+_julia_static_size(::Val{n}) where {n} = n >= 0 ? _JuliaStaticSize{n}() : n
+_julia_size_int(x) = x
+_julia_size_int(::_JuliaStaticSize{n}) where {n} = n
+_julia_static_fits(sizes::_JuliaStaticSizes) = prod(map(_julia_size_int, sizes)) <= _JULIA_STATIC_LENGTH
+# `rows`, `cols` and `num_elements` of a value, as a static size when its type has it.
+_julia_axis_size(axis::_JuliaStaticSize) = axis
+_julia_axis_size(axis) = length(axis)
+_julia_static_dim(x, ::Val{i}) where {i} = _julia_axis_size(axes(x, i))
+_julia_static_length(x::StaticArrays.StaticArray) = _julia_static_size(Val(length(x)))
+_julia_static_length(x) = length(x)
+# Size arithmetic: static when both sizes are and the result is not negative,
+# otherwise the lowered call it replaces.
+_julia_size_op(::Val{op}, ::_JuliaScope, ::_JuliaStaticSize{a}, ::_JuliaStaticSize{b}) where {op,a,b} =
+    _julia_static_size(Val(getproperty(Base, op)(a, b)))
+_julia_size_op(tag::Val, scope::_JuliaScope, a, b) = jcall(tag, scope, _julia_size_int(a), _julia_size_int(b))
+# A helper call in a size position: the value of the helper's size twin, which
+# `_deffun_julia_expr` defines for each `int` `@juliacompat` method, or else
+# the lowered call itself.
+_julia_size_twin(f, args::Vararg{Any,N}) where {N} = nothing
+_julia_size_callee(::_JuliaCallScope{M}, ::Val{name}) where {M,name} =
+    isdefined(M, name) ? getglobal(M, name) : nothing
+_julia_size_callee(mod::Module, ::Val{name}) where {name} =
+    isdefined(mod, name) ? getglobal(mod, name) : nothing
+function _julia_size_call(tag::Val, scope::_JuliaScope, args::Vararg{Any,N}) where {N}
+    size = _julia_size_twin(_julia_size_callee(scope, tag), args...)
+    size === nothing ? jcall(tag, scope, args...) : size
+end
+# A container of `x` with the given sizes: static when every size is static and
+# the result is small, otherwise dense. A static vector or matrix is built from
+# `ntuple(f, Val(n))`: StaticArrays' own `fill` over static axes counts its
+# entries with an `Int`, and from 11 entries on its result infers `Any`.
+_julia_static_array(x, ::Tuple{_JuliaStaticSize{n}}) where {n} = StaticArrays.SVector{n}(ntuple(_ -> x, Val(n)))
+_julia_static_array(x, ::Tuple{_JuliaStaticSize{m},_JuliaStaticSize{n}}) where {m,n} =
+    StaticArrays.SMatrix{m,n}(ntuple(_ -> x, Val(m * n)))
+_julia_static_array(x, sizes::Tuple) = fill(x, map(_julia_size_int, sizes))
+_julia_fill(x::Number, sizes::_JuliaStaticSizes) =
+    _julia_static_fits(sizes) ? _julia_static_array(x, sizes) : fill(x, map(_julia_size_int, sizes))
+_julia_fill(x, sizes::Tuple) = fill(x, map(_julia_size_int, sizes))
+_julia_check_row(name, x::AbstractMatrix) = size(x, 1) == 1 || throw(DimensionMismatch(
+    "$name: expected a row vector (one row), got a $(size(x, 1))×$(size(x, 2)) matrix"))
+const _JuliaStaticValue = Union{StaticArrays.StaticArray,
+    LinearAlgebra.AdjOrTrans{<:Any,<:StaticArrays.StaticVector}}
+_julia_repeat_static(x::_JuliaStaticValue, sizes::_JuliaStaticSizes, ::_JuliaStaticSize{k}, stack) where {k} =
+    k > 0 && _julia_static_fits(sizes) ? stack(ntuple(_ -> x, Val(k))...) : nothing
+_julia_repeat_static(x, sizes, copies, stack) = nothing
+
 jcall(::Val{:rep_vector}, ::_JuliaScope, x, n::Integer) = fill(x, n)
+jcall(::Val{:rep_vector}, ::_JuliaScope, x, n::_JuliaStaticSize) = _julia_fill(x, (n,))
 jcall(::Val{:rep_array}, ::_JuliaScope, x, dims::Integer...) = fill(x, dims...)
+jcall(::Val{:rep_array}, ::_JuliaScope, x, dims::_JuliaSize...) = _julia_fill(x, dims)
 jcall(::Val{:rep_matrix}, ::_JuliaScope, x::Number, m::Integer, n::Integer) = fill(x, m, n)
+jcall(::Val{:rep_matrix}, ::_JuliaScope, x::Number, m::_JuliaSize, n::_JuliaSize) = _julia_fill(x, (m, n))
 jcall(::Val{:rep_matrix}, ::_JuliaScope, x::AbstractVector, n::Integer) = repeat(x, 1, n)
+function jcall(tag::Val{:rep_matrix}, scope::_JuliaScope, x::AbstractVector, n::_JuliaStaticSize)
+    stacked = _julia_repeat_static(x, (_julia_axis_size(axes(x, 1)), n), n, Base.hcat)
+    stacked === nothing ? jcall(tag, scope, x, _julia_size_int(n)) : stacked
+end
 # A row vector that reaches Julia as a one-row matrix (`v'`) stacks `m` copies.
 # A row vector held as a plain `Vector` takes the method above (todo `15foikj`).
 function jcall(::Val{:rep_matrix}, ::_JuliaScope, x::AbstractMatrix, m::Integer)
-    size(x, 1) == 1 || throw(DimensionMismatch(
-        "rep_matrix: expected a row vector (one row), got a $(size(x, 1))×$(size(x, 2)) matrix"))
+    _julia_check_row(:rep_matrix, x)
     repeat(x, m, 1)
+end
+function jcall(tag::Val{:rep_matrix}, scope::_JuliaScope, x::AbstractMatrix, m::_JuliaStaticSize)
+    _julia_check_row(:rep_matrix, x)
+    stacked = _julia_repeat_static(x, (m, _julia_axis_size(axes(x, 2))), m, vcat)
+    stacked === nothing ? jcall(tag, scope, x, _julia_size_int(m)) : stacked
 end
 jcall(::Val{:to_vector}, ::_JuliaScope, x) = vec(x)
 jcall(::Val{:to_row_vector}, ::_JuliaScope, x) = vec(x)
 jcall(::Val{:to_array_1d}, ::_JuliaScope, x) = collect(vec(x))
 jcall(::Val{:to_array_2d}, ::_JuliaScope, x, m::Integer, n::Integer) = Base.reshape(collect(x), m, n)
 jcall(::Val{:to_matrix}, ::_JuliaScope, x, m::Integer, n::Integer) = Base.reshape(collect(x), m, n)
+# A static value refilled into static sizes stays static; StaticArrays checks
+# that the lengths agree, as Stan does.
+jcall(tag::Val{:to_matrix}, scope::_JuliaScope, x, m::_JuliaSize, n::_JuliaSize) =
+    jcall(tag, scope, x, _julia_size_int(m), _julia_size_int(n))
+jcall(::Val{:to_matrix}, ::_JuliaScope, x::StaticArrays.StaticArray, ::_JuliaStaticSize{m}, ::_JuliaStaticSize{n}) where {m,n} =
+    Base.reshape(x, StaticArrays.Size(m, n))
 jcall(::Val{:append_array}, ::_JuliaScope, xs...) = vcat(xs...)
 jcall(::Val{:append_row}, ::_JuliaScope, xs...) = vcat(xs...)
 # Stan's `append_row` of row vectors stacks them into a matrix, one row each.
 # Julia holds a row vector as a plain vector (or as a one-row matrix, `x'`), so
 # `vcat` would concatenate them into one long vector. The `@juliacompat` lowering
 # picks this tag when every argument is declared `row_vector` (todo 15foikj).
+# A static vector's row is a static one-row matrix.
 _julia_as_row(x::AbstractVector) = Base.reshape(x, 1, length(x))
-function _julia_as_row(x::AbstractMatrix)
-    size(x, 1) == 1 || throw(DimensionMismatch(
-        "append_row: expected a row vector (one row), got a $(size(x, 1))×$(size(x, 2)) matrix"))
-    x
-end
+_julia_as_row(x::StaticArrays.StaticVector) = Base.reshape(x, StaticArrays.Size(1, length(x)))
+_julia_as_row(x::AbstractMatrix) = (_julia_check_row(:append_row, x); x)
 jcall(::Val{:append_row_of_rows}, ::_JuliaScope, xs::Union{AbstractVector,AbstractMatrix}...) =
     vcat(map(_julia_as_row, xs)...)
 jcall(::Val{:append_row}, ::_JuliaScope, x::AbstractMatrix, y::AbstractVector) =
-    vcat(x, Base.reshape(y, 1, length(y)))
+    vcat(x, _julia_as_row(y))
 jcall(::Val{:append_row}, ::_JuliaScope, x::AbstractVector, y::AbstractMatrix) =
-    vcat(Base.reshape(x, 1, length(x)), y)
+    vcat(_julia_as_row(x), y)
 jcall(::Val{:append_col}, ::_JuliaScope, xs...) = Base.hcat(xs...)
 jcall(::Val{:hcat}, ::_JuliaScope, xs...) = Base.hcat(xs...)
 jcall(::Val{:reshape}, ::_JuliaScope, x, dims::Integer...) = Base.reshape(x, dims...)
@@ -980,7 +1054,7 @@ function _deffun_julia_matrix_exp(x::AbstractMatrix{<:Real})
         scale_norm /= 2
         squarings += 1
     end
-    result = Matrix{T}(LinearAlgebra.I, n, n)
+    result = _julia_identity(x, T)
     term = result
     for k in 1:24
         term = term * scaled / k
@@ -991,6 +1065,10 @@ function _deffun_julia_matrix_exp(x::AbstractMatrix{<:Real})
     end
     result
 end
+# The identity of `x`'s size and kind: a static matrix stays static, so the
+# series and its squarings never leave the stack.
+_julia_identity(x::StaticArrays.StaticMatrix, ::Type{T}) where {T} = StaticArrays.similar_type(x, T)(LinearAlgebra.I)
+_julia_identity(x, ::Type{T}) where {T} = Matrix{T}(LinearAlgebra.I, size(x)...)
 jcall(::Val{:matrix_exp}, ::_JuliaScope, x::AbstractMatrix{<:Real}) = _deffun_julia_matrix_exp(x)
 function jcall(::Val{:matrix_power}, ::_JuliaScope, x::AbstractMatrix{<:Real}, n::Integer)
     n >= 0 || throw(DomainError(n, "matrix_power requires a nonnegative integer exponent"))
@@ -1148,10 +1226,48 @@ _deffun_julia_real_type(args...) = begin
     T = Base.afoldl((S, x) -> promote_type(S, _deffun_julia_numeric_type(x)), Union{}, args...)
     T <: Integer ? Float64 : T
 end
-_deffun_julia_alloc(::Val{:int}, dims::Tuple, args...) = Array{Int}(undef, dims)
-_deffun_julia_alloc(::Val{:real}, dims::Tuple, args...) = Array{_deffun_julia_real_type(args...)}(undef, dims)
-_deffun_julia_alloc(::Val{:anything}, dims::Tuple, args...) = Array{Any}(undef, dims)
-_deffun_julia_alloc_type(::Type{T}, dims::Tuple) where {T} = Array{T}(undef, dims)
+_deffun_julia_alloc(tag::Val, dims::Tuple, args...) =
+    _deffun_julia_alloc_dense(tag, map(_julia_size_int, dims), args...)
+_deffun_julia_alloc_dense(::Val{:int}, dims::Tuple, args...) = Array{Int}(undef, dims)
+_deffun_julia_alloc_dense(::Val{:real}, dims::Tuple, args...) = Array{_deffun_julia_real_type(args...)}(undef, dims)
+_deffun_julia_alloc_dense(::Val{:anything}, dims::Tuple, args...) = Array{Any}(undef, dims)
+# A typed local with static sizes is a static array holding Stan's value for an
+# unassigned local (NaN for a real, the smallest int for an int) until the body
+# fills it; a dense local stays uninitialized.
+_deffun_julia_alloc(tag::Val{:real}, dims::_JuliaStaticSizes, args...) = _julia_static_fits(dims) ?
+    _julia_static_array(_deffun_julia_real_type(args...)(NaN), dims) :
+    _deffun_julia_alloc_dense(tag, map(_julia_size_int, dims), args...)
+_deffun_julia_alloc(tag::Val{:int}, dims::_JuliaStaticSizes, args...) = _julia_static_fits(dims) ?
+    _julia_static_array(typemin(Int), dims) : _deffun_julia_alloc_dense(tag, map(_julia_size_int, dims), args...)
+_deffun_julia_alloc_type(::Type{T}, dims::Tuple) where {T} = Array{T}(undef, map(_julia_size_int, dims))
+
+# Writes in a `@juliacompat` body. The lowering rebinds the written local to
+# the result (`P = _deffun_julia_setindex!!(P, v, i, j)` for `P[i, j] = v`): a
+# static array is rebuilt with the new entries, without allocating, and any
+# other array is written in place and returned, as before.
+_deffun_julia_setindex!!(A, v, I::Vararg{Any,N}) where {N} = (setindex!(A, v, I...); A)
+_deffun_julia_setindex!!(A::StaticArrays.SArray, v, I::Vararg{Integer,N}) where {N} = Base.setindex(A, v, I...)
+_deffun_julia_setindex!!(A::StaticArrays.SArray, v, I::Vararg{Any,N}) where {N} =
+    _julia_static_update(M -> setindex!(M, v, I...), A)
+_deffun_julia_dotassign!!(A, src) = (A .= src; A)
+_deffun_julia_dotassign!!(A::StaticArrays.SArray, src) = convert(typeof(A), Base.broadcast(_julia_second, A, src))
+_deffun_julia_dotsetindex!!(A, src, I::Vararg{Any,N}) where {N} = (Base.dotview(A, I...) .= src; A)
+_deffun_julia_dotsetindex!!(A::StaticArrays.SArray, src, I::Vararg{Any,N}) where {N} =
+    _julia_static_update(M -> (Base.dotview(M, I...) .= src), A)
+_julia_second(_, x) = x
+function _julia_static_update(write!, A::StaticArrays.SArray)
+    M = StaticArrays.MArray(A)
+    write!(M)
+    StaticArrays.similar_type(A)(M)
+end
+# A local that a closure in the body also reads is written in place, because
+# rebinding it would box it: it holds a mutable copy of a static value.
+_deffun_julia_mutable(x::StaticArrays.SArray) = StaticArrays.MArray(x)
+_deffun_julia_mutable(x) = x
+# A vector literal of numbers is a static vector.
+_deffun_julia_vect(xs::Vararg{Number,N}) where {N} =
+    N <= _JULIA_STATIC_LENGTH ? StaticArrays.SVector{N}(xs...) : Base.vect(xs...)
+_deffun_julia_vect(xs::Vararg{Any,N}) where {N} = Base.vect(xs...)
 
 # Method-backed metadata survives precompilation of downstream packages. Keep
 # the original Method identity so ordinary Julia replacements cannot inherit
@@ -2092,40 +2208,137 @@ begin
     _deffun_julia_local_type(t::Symbol) = (t, Any[])
     _deffun_julia_local_type(t::Expr) = t.head === :ref ? (t.args[1], Any[t.args[2:end]...]) : (t, Any[])
 
-    _deffun_julia_transform(x, locals, def_mod, fname, promote_args) = x
-    _deffun_julia_transform(x::Expr, locals, def_mod, fname, promote_args) = begin
-        if x.head === :(=) && Meta.isexpr(x.args[1], :(::))
+    # Builtins whose arguments at these positions are sizes. The static lowering
+    # passes each one as a static size when the compiler can know it.
+    _deffun_julia_size_positions(f::Symbol, nargs) =
+        f === :rep_vector ? (nargs == 2 ? (2,) : ()) :
+        f in (:rep_array, :rep_matrix) ? Tuple(2:nargs) :
+        f === :to_matrix && nargs == 3 ? (2, 3) : ()
+    _deffun_julia_size_positions(f, nargs) = ()
+    _deffun_julia_plain_args(args) = !any(a -> Meta.isexpr(a, (:parameters, :kw, :...)), args)
+    # Julia's updating operators, written into an indexed local.
+    _deffun_julia_update_op(head::Symbol) = head in (
+        :+=, :-=, :*=, :/=, :\=, :^=, :÷=, :%=, :|=, :&=, :⊻=, :<<=, :>>=, :>>>=,
+    ) ? Symbol(chop(string(head))) : nothing
+    # An index of `base` that a rewritten write no longer reads inside its
+    # brackets: a bare `:` is `Colon()`, and `begin`/`end` are the bounds of
+    # `base` (an inner index keeps its own), as Julia lowers them.
+    _deffun_julia_index(x, base, d, n) = x === :(:) ? :($(Base.Colon)()) : _deffun_julia_index_bounds(x, base, d, n)
+    _deffun_julia_index_bounds(x, base, d, n) =
+        x === :end ? (n == 1 ? :($Base.lastindex($base)) : :($Base.lastindex($base, $d))) :
+        x === :begin ? (n == 1 ? :($Base.firstindex($base)) : :($Base.firstindex($base, $d))) : x
+    _deffun_julia_index_bounds(x::Expr, base, d, n) = x.head === :ref ? x :
+        Expr(x.head, map(a -> _deffun_julia_index_bounds(a, base, d, n), x.args)...)
+
+    # The size lowering, for a size position of the static lowering: a static
+    # size where the compiler can know it (`_julia_static_size`, an `Int`
+    # otherwise), and the ordinary lowering for anything else.
+    _deffun_julia_size(x, locals, def_mod, fname, promote_args, static) = begin
+        recur(a) = _deffun_julia_transform(a, locals, def_mod, fname, promote_args, static)
+        size(a) = _deffun_julia_size(a, locals, def_mod, fname, promote_args, static)
+        scope = :($stan._JuliaCallScope{$def_mod}())
+        x isa Int && x >= 0 && return :($stan._JuliaStaticSize{$x}())
+        x isa Symbol && return get(static.sizes, x, x)
+        Meta.isexpr(x, :__deffun_julia_size__) && return size(x.args[1])
+        if Meta.isexpr(x, :call) && x.args[1] isa Symbol && !(x.args[1] in locals) &&
+                _deffun_julia_plain_args(x.args[2:end])
+            f, args = x.args[1], x.args[2:end]
+            if f in (:rows, :cols) && length(args) == 1
+                return :($stan._julia_static_dim($(recur(args[1])), $Val{$(f === :rows ? 1 : 2)}()))
+            elseif f === :num_elements && length(args) == 1
+                return :($stan._julia_static_length($(recur(args[1]))))
+            elseif f in (:+, :-, :*) && length(args) >= 2
+                tag = :($Val{$(QuoteNode(f))}())
+                return foldl((a, b) -> :($stan._julia_size_op($tag, $scope, $a, $b)), map(size, args))
+            elseif f !== :(:) && !_deffun_julia_unsupported_call(f)
+                return :($stan._julia_size_call($Val{$(QuoteNode(f))}(), $scope, $(map(recur, args)...)))
+            end
+        end
+        recur(x)
+    end
+
+    # The ordinary (dense) lowering when `static` is `nothing`: the body the
+    # source of the method records for ReactiveKernels, whose JAX translation
+    # owns allocation and indexed updates itself. The Julia method itself takes
+    # the static lowering (`_deffun_julia_expr`), which also passes literal and
+    # static sizes as static sizes, makes a vector literal of numbers a static
+    # vector, and rebinds a written local (`_deffun_julia_setindex!!`), so that
+    # a body whose sizes the compiler can know runs on StaticArrays.
+    # `static.sizes` maps a size local to its static companion; `static.locals`
+    # holds every name the body binds or declares; `static.captured` holds the
+    # written locals a closure reads, which are written in place.
+    _deffun_julia_transform(x, locals, def_mod, fname, promote_args, static=nothing) = x
+    _deffun_julia_transform(x::Expr, locals, def_mod, fname, promote_args, static=nothing) = begin
+        recur(a) = _deffun_julia_transform(a, locals, def_mod, fname, promote_args, static)
+        size(a) = isnothing(static) ? recur(a) : _deffun_julia_size(a, locals, def_mod, fname, promote_args, static)
+        # A written local in the static lowering (`_deffun_julia_setindex!!`).
+        rebinds(base) = !isnothing(static) && base isa Symbol && base in static.locals && !(base in static.captured)
+        # A local a closure reads holds a mutable copy of a static value.
+        mutable_rhs(name, rhs) = !isnothing(static) && name in static.captured ?
+            :($stan._deffun_julia_mutable($rhs)) : rhs
+        update_op = _deffun_julia_update_op(x.head)
+        if !isnothing(static) && x.head === :__deffun_julia_size__
+            return size(x.args[1])
+        elseif (x.head === :(=) || !isnothing(update_op)) && Meta.isexpr(x.args[1], :ref) &&
+                rebinds(x.args[1].args[1]) && _deffun_julia_plain_args(x.args[1].args[2:end])
+            base, indices = x.args[1].args[1], x.args[1].args[2:end]
+            n = length(indices)
+            temps = [gensym(:index) for _ in indices]
+            value = gensym(:value)
+            rhs = recur(x.args[2])
+            stmts = Any[:($t = $(recur(_deffun_julia_index(i, base, d, n))))
+                        for (d, (t, i)) in enumerate(zip(temps, indices))]
+            # Julia's own lowering of `a[i] op= v`: `op` as the definition
+            # module binds it.
+            push!(stmts, :($value = $(isnothing(update_op) ? rhs :
+                Expr(:call, update_op, :($base[$(temps...)]), rhs))))
+            push!(stmts, :($base = $stan._deffun_julia_setindex!!($base, $value, $(temps...))))
+            push!(stmts, value)
+            return Expr(:block, stmts...)
+        elseif x.head === :.= && rebinds(x.args[1])
+            return :($(x.args[1]) = $stan._deffun_julia_dotassign!!($(x.args[1]), $(recur(x.args[2]))))
+        elseif x.head === :.= && Meta.isexpr(x.args[1], :ref) && rebinds(x.args[1].args[1]) &&
+                _deffun_julia_plain_args(x.args[1].args[2:end])
+            base, indices = x.args[1].args[1], x.args[1].args[2:end]
+            n = length(indices)
+            indices = [recur(_deffun_julia_index(i, base, d, n)) for (d, i) in enumerate(indices)]
+            return :($base = $stan._deffun_julia_dotsetindex!!($base, $(recur(x.args[2])), $(indices...)))
+        elseif x.head === :vect && !isnothing(static) && !isempty(x.args) && _deffun_julia_plain_args(x.args)
+            return :($stan._deffun_julia_vect($(map(recur, x.args)...)))
+        elseif x.head === :(=) && Meta.isexpr(x.args[1], :(::))
             lhs, rhs = x.args
             name, t = lhs.args
             name isa Symbol || error(
                 "@deffun ($fname): Julia emission supports typed local declarations only for bare-symbol locals; remove `@juliacompat`."
             )
             ct, dims = _deffun_julia_local_type(t)
-            rhs = _deffun_julia_transform(rhs, locals, def_mod, fname, promote_args)
-            tdims = map(d -> _deffun_julia_transform(d, locals, def_mod, fname, promote_args), dims)
+            rhs = recur(rhs)
+            tdims = map(recur, dims)
             if ct isa Symbol
                 tag = _deffun_julia_alloc_tag(ct)
-                return Expr(:(=), name, :($stan._deffun_julia_validate(
+                return Expr(:(=), name, mutable_rhs(name, :($stan._deffun_julia_validate(
                     $rhs, $Val{$(QuoteNode(tag))}(), ($(tdims...),), $(QuoteNode(name))
-                )))
+                ))))
             end
-            return Expr(:(=), name, :($stan._deffun_julia_validate_dims(
+            return Expr(:(=), name, mutable_rhs(name, :($stan._deffun_julia_validate_dims(
                 $rhs, ($(tdims...),), $(QuoteNode(name))
-            )))
+            ))))
+        elseif x.head === :(=) && x.args[1] isa Symbol
+            return Expr(:(=), x.args[1], mutable_rhs(x.args[1], recur(x.args[2])))
         elseif x.head === :(::) && length(x.args) == 2 && x.args[1] isa Symbol
             name, t = x.args
             ct, dims = _deffun_julia_local_type(t)
             isempty(dims) && error(
                 "@deffun ($fname): Julia emission cannot allocate unsized local `$name::$t`; initialize it or remove `@juliacompat`."
             )
-            tdims = map(d -> _deffun_julia_transform(d, locals, def_mod, fname, promote_args), dims)
+            tdims = map(size, dims)
             if ct isa Symbol
                 tag = _deffun_julia_alloc_tag(ct)
-                return Expr(:(=), name, :($stan._deffun_julia_alloc(
+                return Expr(:(=), name, mutable_rhs(name, :($stan._deffun_julia_alloc(
                     $Val{$(QuoteNode(tag))}(), ($(tdims...),), $(promote_args...)
-                )))
+                ))))
             elseif Meta.isexpr(ct, :call) && ct.args[1] === :typeof
-                type_expr = _deffun_julia_transform(ct, locals, def_mod, fname, promote_args)
+                type_expr = recur(ct)
                 return Expr(:(=), name, :($stan._deffun_julia_alloc_type($type_expr, ($(tdims...),))))
             end
             error(
@@ -2133,10 +2346,95 @@ begin
             )
         elseif x.head === :call
             f = x.args[1]
-            args = map(a -> _deffun_julia_transform(a, locals, def_mod, fname, promote_args), x.args[2:end])
+            positions = isnothing(static) || !_deffun_julia_plain_args(x.args[2:end]) || f in locals ? () :
+                _deffun_julia_size_positions(f, length(x.args) - 1)
+            args = [i in positions ? size(a) : recur(a) for (i, a) in enumerate(x.args[2:end])]
             return _deffun_julia_call(f, args, locals, def_mod, fname)
         end
-        Expr(x.head, map(a -> _deffun_julia_transform(a, locals, def_mod, fname, promote_args), x.args)...)
+        Expr(x.head, map(recur, x.args)...)
+    end
+
+    # Names a size position of the body reads (directly or through `+`, `-`,
+    # `*`): the candidates for a static companion.
+    _deffun_julia_size_symbols!(out, x::Symbol) = push!(out, x)
+    _deffun_julia_size_symbols!(out, x::Expr) = begin
+        Meta.isexpr(x, :call) && x.args[1] in (:+, :-, :*) &&
+            foreach(a -> _deffun_julia_size_symbols!(out, a), x.args[2:end])
+        Meta.isexpr(x, :__deffun_julia_size__) && _deffun_julia_size_symbols!(out, x.args[1])
+        out
+    end
+    _deffun_julia_size_symbols!(out, _) = out
+    _deffun_julia_size_uses!(out, x, locals) = out
+    _deffun_julia_size_uses!(out, x::Expr, locals) = begin
+        if x.head === :call && !(x.args[1] in locals) && _deffun_julia_plain_args(x.args[2:end])
+            for i in _deffun_julia_size_positions(x.args[1], length(x.args) - 1)
+                _deffun_julia_size_symbols!(out, x.args[i + 1])
+            end
+        elseif x.head === :(::) && length(x.args) == 2 && Meta.isexpr(x.args[2], :ref)
+            foreach(d -> _deffun_julia_size_symbols!(out, d), x.args[2].args[2:end])
+        end
+        x.head === :__deffun_julia_size__ && _deffun_julia_size_symbols!(out, x.args[1])
+        foreach(a -> _deffun_julia_size_uses!(out, a, locals), x.args)
+        out
+    end
+    # Every binding of a name in the body (assignments, updates, loop variables,
+    # closure arguments), and the locals written by index or `.=`.
+    _deffun_julia_bindings!(counts, written, x) = counts
+    _deffun_julia_bindings!(counts, written, x::Expr) = begin
+        bind(n) = n isa Symbol && (counts[n] = get(counts, n, 0) + 1)
+        target(lhs) = Meta.isexpr(lhs, :(::)) ? lhs.args[1] : lhs
+        if x.head === :(=) || x.head === :.= || !isnothing(_deffun_julia_update_op(x.head))
+            lhs = target(x.args[1])
+            if Meta.isexpr(lhs, :ref)
+                lhs.args[1] isa Symbol && push!(written, lhs.args[1])
+            elseif x.head === :.=
+                lhs isa Symbol && push!(written, lhs)
+            else
+                foreach(bind ∘ target, Meta.isexpr(lhs, :tuple) ? lhs.args : (lhs,))
+            end
+        elseif x.head === :(::) && length(x.args) == 2
+            bind(x.args[1])
+        elseif x.head === :for
+            spec = x.args[1]
+            for s in (Meta.isexpr(spec, :block) ? spec.args : (spec,))
+                Meta.isexpr(s, :(=)) && bind(s.args[1])
+            end
+        elseif x.head === :->
+            lhs = x.args[1]
+            foreach(a -> bind(_julia_arg_name(a)), Meta.isexpr(lhs, :tuple) ? lhs.args : (lhs,))
+        end
+        foreach(a -> _deffun_julia_bindings!(counts, written, a), x.args)
+        counts
+    end
+    # Names a closure in the body (a lambda, a `do` block, a comprehension) reads.
+    _deffun_julia_closure_names!(out, x, inside=false) = (inside && x isa Symbol && push!(out, x); out)
+    _deffun_julia_closure_names!(out, x::Expr, inside=false) = begin
+        inside = inside || x.head in (:->, :do, :comprehension, :generator)
+        foreach(a -> _deffun_julia_closure_names!(out, a, inside), x.args)
+        out
+    end
+    # The expressions an `int` helper returns, marked as size positions for its
+    # size twin: the body's last expression (through `if` branches) and every
+    # `return`. A closure keeps its own returns.
+    _deffun_julia_mark_size_returns(x, tail) = tail ? Expr(:__deffun_julia_size__, x) : x
+    _deffun_julia_mark_size_returns(x::LineNumberNode, tail) = x
+    _deffun_julia_mark_size_returns(x::Expr, tail) = begin
+        mark(a, t) = _deffun_julia_mark_size_returns(a, t)
+        if x.head === :block
+            last = findlast(a -> !(a isa LineNumberNode), x.args)
+            Expr(:block, (mark(a, tail && i == last) for (i, a) in enumerate(x.args))...)
+        elseif x.head in (:if, :elseif)
+            Expr(x.head, mark(x.args[1], false), (mark(a, tail) for a in x.args[2:end])...)
+        elseif x.head === :return
+            Expr(:return, mark(x.args[1], true))
+        elseif x.head in (:->, :function, :do)
+            x
+        elseif tail && !(x.head in (:(=), :for, :while, :(::), :.=, :local, :global)) &&
+                isnothing(_deffun_julia_update_op(x.head))
+            Expr(:__deffun_julia_size__, x)
+        else
+            Expr(x.head, (mark(a, false) for a in x.args)...)
+        end
     end
 
     _deffun_julia_dim_symbols!(out, x::Symbol) = (push!(out, x); out)
@@ -2162,12 +2460,31 @@ begin
         mapped = map(_deffun_julia_mapped_arg, flat_args)
         mapped_pos = mapped[1:length(positional)]
         mapped_kw = mapped[length(positional)+1:end]
+        # Julia does not specialize a method on an argument it only passes on
+        # when that argument is a function or a vararg tail: such a helper
+        # compiles once for `::Function` or `Vararg{Float64}`, and every call
+        # through it dispatches at run time and boxes its results. A system
+        # tag passed through a walk (`walk(system, x...) = step(system, x...)`)
+        # is that case. Each untyped positional argument therefore gets its
+        # own static parameter, and a vararg tail `Vararg{Any,N}`, which Julia
+        # always specializes; dispatch is unchanged.
+        static_params = Symbol[]
+        specialized(arg) = if arg isa Symbol
+            push!(static_params, gensym(:T))
+            Expr(:(::), arg, static_params[end])
+        elseif Meta.isexpr(arg, :(...)) && arg.args[1] isa Symbol
+            push!(static_params, gensym(:N))
+            Expr(:(::), arg.args[1], :($Vararg{$Any,$(static_params[end])}))
+        else
+            arg
+        end
         julia_call_args = Any[]
         if !isnothing(params)
             push!(julia_call_args, Expr(:parameters, first.(mapped_kw)...))
         end
-        append!(julia_call_args, first.(mapped_pos))
-        julia_call = Expr(:call, f, julia_call_args...)
+        append!(julia_call_args, map(specialized, first.(mapped_pos)))
+        with_params(call) = isempty(static_params) ? call : Expr(:where, call, static_params...)
+        julia_call = with_params(Expr(:call, f, julia_call_args...))
 
         arg_names = filter(!isnothing, _julia_arg_name.(flat_args))
         locals = Set{Symbol}(arg_names)
@@ -2196,6 +2513,7 @@ begin
         known = Set{Symbol}(arg_names)
         dim_preamble = Any[]
         seen_dims = Set{Symbol}()
+        dim_origin = OrderedDict{Symbol,Tuple{Symbol,Int}}()
         for (arg, item) in zip(flat_args, mapped)
             name = _julia_arg_name(arg)
             isnothing(name) && continue
@@ -2214,6 +2532,7 @@ begin
                     push!(locals, dim)
                     # `Base.size` by value: an argument may be named `size`.
                     push!(dim_preamble, :($dim = $Base.size($name, $i)))
+                    dim_origin[dim] = (name, i)
                 else
                     syms = _deffun_julia_dim_symbols!(Set{Symbol}(), dim)
                     unknown = setdiff(syms, known)
@@ -2242,27 +2561,84 @@ begin
             end
         end
 
+        # Keyword/default/vararg wrappers keep their existing lowered-code
+        # route. Only a complete positional body has this argument binding.
+        positional_only = isnothing(params) && all(a -> a isa Symbol ||
+                (Meta.isexpr(a, :(::)) && length(a.args) == 2), first.(mapped_pos)) &&
+                all(n -> !isnothing(n) && n !== :_, _julia_arg_name.(positional))
+
+        # The Julia method runs the static lowering (`_deffun_julia_transform`;
+        # snag `juliacompat-fixe-b2a30659`). A local that a size position reads
+        # gets a static companion: a signature dimension the body never rebinds
+        # takes the static size of its argument's axis, and a local assigned
+        # once, at the top of the body, the size lowering of its value. An `int`
+        # helper also gets a size twin, whose returned expressions are size
+        # positions: a call to it in a size position of another body reads the
+        # twin, so `n_states(x)::int = 3` sizes `rep_vector(0., n_states(x))`.
+        counts, written = Dict{Symbol,Int}(), Set{Symbol}()
+        _deffun_julia_bindings!(counts, written, julia_source_body)
+        # A size twin needs plain positional arguments; an anonymous one, as
+        # in `n_states(::typeof(system))::int = 3`, is fine.
+        twin_body = isnothing(params) && rv === :int &&
+            all(a -> a isa Symbol || Meta.isexpr(a, :(::)), first.(mapped_pos)) ?
+            _deffun_julia_mark_size_returns(julia_source_body, true) : nothing
+        uses = _deffun_julia_size_uses!(Set{Symbol}(), julia_source_body, locals)
+        isnothing(twin_body) || _deffun_julia_size_uses!(uses, twin_body, locals)
+        top_name(st) = Meta.isexpr(st, :(=)) ? (st.args[1] isa Symbol ? st.args[1] :
+            Meta.isexpr(st.args[1], :(::)) && st.args[1].args[1] isa Symbol && st.args[1].args[2] === :int ?
+            st.args[1].args[1] : nothing) : nothing
+        top = Dict{Symbol,Any}()
+        for st in julia_source_body.args
+            name = top_name(st)
+            isnothing(name) || name in arg_names || name in seen_dims || get(counts, name, 0) != 1 ||
+                (top[name] = st.args[2])
+        end
+        while true
+            n = length(uses)
+            foreach(((name, value),) -> name in uses && _deffun_julia_size_symbols!(uses, value), top)
+            length(uses) == n && break
+        end
+        sizes = Dict{Symbol,Symbol}(name => Symbol("##size#", name) for name in uses
+            if haskey(top, name) || (haskey(dim_origin, name) && !haskey(counts, name)))
+        static = (; sizes, locals=union(locals, keys(counts)),
+            captured=intersect(written, _deffun_julia_closure_names!(Set{Symbol}(), julia_source_body)))
+        size_preamble = Any[:($(sizes[dim]) = $stan._julia_static_dim($name, $Val{$i}()))
+            for (dim, (name, i)) in dim_origin if haskey(sizes, dim)]
+        static_body(b) = Expr(:block, source, dim_preamble..., size_preamble..., map(b.args) do st
+            name = top_name(st)
+            (isnothing(name) || !haskey(top, name) || !haskey(sizes, name)) &&
+                return _deffun_julia_transform(st, locals, def_mod, f, promote_args, static)
+            companion = sizes[name]
+            value = _deffun_julia_size(st.args[2], locals, def_mod, f, promote_args, static)
+            assign = Expr(:(=), st.args[1], :($stan._julia_size_int($companion)))
+            Expr(:block, :($companion = $value), _deffun_julia_transform(assign, locals, def_mod, f, promote_args, static))
+        end...)
+        julia_body = static_body(julia_source_body)
+        # The method's recorded source keeps the dense lowering: the same values,
+        # in the form ReactiveKernels' JAX translation reads.
         transformed = _deffun_julia_transform(julia_source_body, locals, def_mod, f, promote_args)
-        julia_body = Expr(:block, source, dim_preamble..., transformed.args...)
+        source_body = Expr(:block, source, dim_preamble..., transformed.args...)
         julia_key = Tuple(item[2] for item in mapped_pos)
         slic_key = Tuple(item[3] for item in mapped_pos)
         julia_def = Expr(:(=), julia_call, julia_body)
-        # Keyword/default/vararg wrappers keep their existing lowered-code
-        # route. Only a complete positional body has this argument binding.
+        empty!(static_params)
+        twin_call = Expr(:call, :($stan._julia_size_twin), Expr(:(::), :($typeof($f))),
+            map(specialized, first.(mapped_pos))...)
+        twin_def = isnothing(twin_body) ? nothing :
+            Expr(:(=), with_params(twin_call), static_body(twin_body))
         source_registration = nothing
-        if isnothing(params) && all(a -> a isa Symbol ||
-                (Meta.isexpr(a, :(::)) && length(a.args) == 2), first.(mapped_pos)) &&
-                all(n -> !isnothing(n) && n !== :_, _julia_arg_name.(positional))
+        if positional_only
             types = map(first.(mapped_pos)) do arg
                 Meta.isexpr(arg, :(::)) ? arg.args[2] : Any
             end
             source_registration = :($stan._register_deffun_julia_source!(
                 $f, Tuple{$(types...)}, $(QuoteNode(Tuple(arg_names))),
-                $(QuoteNode(julia_body)), $(QuoteNode(def_mod))))
+                $(QuoteNode(source_body)), $(QuoteNode(def_mod))))
         end
         quote
             if $stan._register_deffun_julia_signature!($f, $(QuoteNode(julia_key)), $(QuoteNode(slic_key)))
                 $julia_def
+                $twin_def
                 $source_registration
             end
         end
