@@ -12,6 +12,11 @@
 # --startup-file=no keeps a host startup.jl from loading it.
 set -euo pipefail
 export PATH="$HOME/.local/bin:$HOME/.julia/juliaup/bin:/usr/local/bin:/usr/bin:/bin"
+# Snippets the /sandbox editor saves (Run, Rename, Delete, Toggle expect) go to
+# a folder outside the checkout: the KB restarts and switches the service only
+# from a clean checkout, and recreates a lost one. See web/README.md.
+export STANBLOCKS_SANDBOX_DIR="${STANBLOCKS_SANDBOX_DIR:-$HOME/.local/share/stanblocks/sandbox}"
+mkdir -p "$STANBLOCKS_SANDBOX_DIR"
 port="${1:-8091}"
 cd "$(dirname "$0")/../.."
 # The KB instantiates this committed, pinned environment on every start,
