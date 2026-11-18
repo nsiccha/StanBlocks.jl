@@ -1,3 +1,11 @@
 [[landing_check]]
 name = "docs-lint"
 run = ["julia", "--startup-file=no", "docs/lint.jl"]
+
+# Every committed Manifest.toml agrees with the in-repo packages it develops
+# by `path`: the deployed app instantiates web/app as committed, so a new
+# StanBlocks dependency without a re-pin takes the app down at `using`
+# (snag opened-p-stanblo-37c68cc6).
+[[landing_check]]
+name = "pinned-envs"
+run = ["julia", "--startup-file=no", "deploy/check_pinned_envs.jl"]
