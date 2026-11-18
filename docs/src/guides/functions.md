@@ -24,9 +24,12 @@ know when it compiles. Those are StaticArrays vectors and matrices of at most
 `rep_array`, `to_matrix` results or sized locals whose sizes are integer
 literals, dimensions of static-size arguments, `rows`, `cols` or `num_elements`
 of a static value, sums, differences and products of those, a local assigned
-once from one, or the result of an `int` helper returning one. Writing into
-such a local by index rebuilds it. Sizes known only at run time keep dense
-arrays, as do the sources the ReactiveKernels provider below hands to JAX.
+once from one, or the result of an `int` helper returning one. A slice such
+as `x[1:3]`, `G[1:n, 1:n]` or `x[2:end]` of a static `x`, and `head`, `tail`
+or `segment` with such sizes, is static as well, of a static or a dense value.
+Writing into such a local by index rebuilds it. Sizes known only at run time
+keep dense arrays, as do the sources the ReactiveKernels provider below hands
+to JAX.
 
 An `@deffun @inline` helper expands into its caller while resolving sibling
 helpers and omitted keyword defaults in its defining module. Explicit

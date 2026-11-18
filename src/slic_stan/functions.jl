@@ -954,6 +954,40 @@ const _JuliaStaticValue = Union{StaticArrays.StaticArray,
 _julia_repeat_static(x::_JuliaStaticValue, sizes::_JuliaStaticSizes, ::_JuliaStaticSize{k}, stack) where {k} =
     k > 0 && _julia_static_fits(sizes) ? stack(ntuple(_ -> x, Val(k))...) : nothing
 _julia_repeat_static(x, sizes, copies, stack) = nothing
+# Static slices (snag `juliacompat-stat-75c9ba31`). The `@juliacompat` lowering
+# reads `x[a:b]` as `_julia_getindex(x, _julia_static_range(a, b))`, with each
+# bound in a size position. When both bounds are static sizes the range is
+# StaticArrays' `SUnitRange`, and the slice is an `SArray`, of a static or a
+# dense `x` alike, when it holds at most `_JULIA_STATIC_LENGTH` elements.
+# Otherwise every index is the ordinary range, and the slice is dense as before.
+_julia_static_range(::_JuliaStaticSize{a}, ::_JuliaStaticSize{b}) where {a,b} =
+    StaticArrays.SUnitRange{a,max(b - a + 1, 0)}()
+_julia_static_range(a, b) = _julia_size_int(a):_julia_size_int(b)
+_julia_dense_index(r::StaticArrays.SUnitRange) = first(r):last(r)
+_julia_dense_index(i) = i
+# Elements an index contributes to the slice, as far as its type tells.
+_julia_slice_count(axis, ::StaticArrays.SUnitRange{a,n}) where {a,n} = n
+_julia_slice_count(axis, index::StaticArrays.StaticArray) = length(index)
+_julia_slice_count(::_JuliaStaticSize{n}, ::Colon) where {n} = n
+_julia_slice_count(axis, index) = 1
+_julia_slice_axes(x, ::Tuple{Any}) = (_julia_static_length(x),)
+_julia_slice_axes(x, ::NTuple{N,Any}) where {N} = ntuple(d -> _julia_axis_size(axes(x, d)), Val(N))
+_julia_slice_fits(x, I::Tuple) =
+    prod(map(_julia_slice_count, _julia_slice_axes(x, I), I)) <= _JULIA_STATIC_LENGTH
+_julia_getindex(x, I::Vararg{Any,N}) where {N} =
+    _julia_slice_fits(x, I) ? x[I...] : x[map(_julia_dense_index, I)...]
+# `end` and `begin` in such an index, for its `n` indices: a static size along
+# a static axis, so that `x[2:end]` of a static `x` is static too.
+_julia_static_lastindex(x::StaticArrays.StaticArray, ::Val, ::Val{1}) = _julia_static_length(x)
+_julia_static_lastindex(x, ::Val, ::Val{1}) = lastindex(x)
+_julia_static_lastindex(x, ::Val{d}, ::Val) where {d} = _julia_axis_last(axes(x, d))
+_julia_axis_last(axis::_JuliaStaticSize) = axis
+_julia_axis_last(axis) = last(axis)
+_julia_static_firstindex(::StaticArrays.StaticArray, ::Val, ::Val{1}) = _JuliaStaticSize{1}()
+_julia_static_firstindex(x, ::Val, ::Val{1}) = firstindex(x)
+_julia_static_firstindex(x, ::Val{d}, ::Val) where {d} = _julia_axis_first(axes(x, d))
+_julia_axis_first(::_JuliaStaticSize) = _JuliaStaticSize{1}()
+_julia_axis_first(axis) = first(axis)
 
 jcall(::Val{:rep_vector}, ::_JuliaScope, x, n::Integer) = fill(x, n)
 jcall(::Val{:rep_vector}, ::_JuliaScope, x, n::_JuliaStaticSize) = _julia_fill(x, (n,))
@@ -1095,15 +1129,35 @@ function _julia_segment_range(v, i, n)
 end
 jcall(::Val{:segment}, ::_JuliaScope, v::AbstractVector, i::Integer, n::Integer) =
     v[_julia_segment_range(v, i, n)]
+# A static `n` (and `i`) from the `@juliacompat` lowering slices through
+# `_julia_getindex` after the same checks, so the result is static whenever the
+# slice's bounds are (snag `juliacompat-stat-75c9ba31`). `a + s * b + c` of two
+# sizes is static when both are and the result is not negative.
+_julia_size_affine(::_JuliaStaticSize{a}, ::Val{s}, ::_JuliaStaticSize{b}, ::Val{c}) where {a,s,b,c} =
+    _julia_static_size(Val(a + s * b + c))
+_julia_size_affine(a, ::Val{s}, b, ::Val{c}) where {s,c} = _julia_size_int(a) + s * _julia_size_int(b) + c
+function jcall(::Val{:head}, ::_JuliaScope, v::AbstractVector, n::_JuliaStaticSize)
+    _julia_slice_length(v, _julia_size_int(n))
+    _julia_getindex(v, _julia_static_range(_JuliaStaticSize{1}(), n))
+end
+function jcall(::Val{:tail}, ::_JuliaScope, v::AbstractVector, n::_JuliaStaticSize)
+    _julia_slice_length(v, _julia_size_int(n))
+    last = _julia_static_lastindex(v, Val(1), Val(1))
+    _julia_getindex(v, _julia_static_range(_julia_size_affine(last, Val(-1), n, Val(1)), last))
+end
+function jcall(::Val{:segment}, ::_JuliaScope, v::AbstractVector, i::_JuliaSize, n::_JuliaSize)
+    _julia_segment_range(v, _julia_size_int(i), _julia_size_int(n))
+    _julia_getindex(v, _julia_static_range(i, _julia_size_affine(i, Val(1), n, Val(-1))))
+end
 _julia_rewrap(::LinearAlgebra.Adjoint, x) = adjoint(x)
 _julia_rewrap(::LinearAlgebra.Transpose, x) = transpose(x)
-jcall(tag::Val{:head}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec, n::Integer) =
+jcall(tag::Val{:head}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec, n::_JuliaSize) =
     _julia_rewrap(v, jcall(tag, scope, parent(v), n))
-jcall(tag::Val{:tail}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec, n::Integer) =
+jcall(tag::Val{:tail}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec, n::_JuliaSize) =
     _julia_rewrap(v, jcall(tag, scope, parent(v), n))
 jcall(tag::Val{:reverse}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec) =
     _julia_rewrap(v, jcall(tag, scope, parent(v)))
-jcall(tag::Val{:segment}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec, i::Integer, n::Integer) =
+jcall(tag::Val{:segment}, scope::_JuliaScope, v::LinearAlgebra.AdjOrTransAbsVec, i::_JuliaSize, n::_JuliaSize) =
     _julia_rewrap(v, jcall(tag, scope, parent(v), i, n))
 # Stan Math 5.3.0 `sum_to_zero_constrain` / `sum_to_zero_free`
 # (`prim/constraint/sum_to_zero_*.hpp`), loop for loop with 1-based indices. The
@@ -2213,7 +2267,9 @@ begin
     _deffun_julia_size_positions(f::Symbol, nargs) =
         f === :rep_vector ? (nargs == 2 ? (2,) : ()) :
         f in (:rep_array, :rep_matrix) ? Tuple(2:nargs) :
-        f === :to_matrix && nargs == 3 ? (2, 3) : ()
+        f === :to_matrix && nargs == 3 ? (2, 3) :
+        f in (:head, :tail) && nargs == 2 ? (2,) :
+        f === :segment && nargs == 3 ? (2, 3) : ()
     _deffun_julia_size_positions(f, nargs) = ()
     _deffun_julia_plain_args(args) = !any(a -> Meta.isexpr(a, (:parameters, :kw, :...)), args)
     # Julia's updating operators, written into an indexed local.
@@ -2229,6 +2285,44 @@ begin
         x === :begin ? (n == 1 ? :($Base.firstindex($base)) : :($Base.firstindex($base, $d))) : x
     _deffun_julia_index_bounds(x::Expr, base, d, n) = x.head === :ref ? x :
         Expr(x.head, map(a -> _deffun_julia_index_bounds(a, base, d, n), x.args)...)
+    # A static slice (`_julia_getindex`): a read `x[i...]` with a range index
+    # `a:b`, of a local, an argument or a computed value, with plain indices.
+    _deffun_julia_range(x) = Meta.isexpr(x, :call) && length(x.args) == 3 && x.args[1] === :(:)
+    _deffun_julia_static_slice(x::Expr, static) = !isnothing(static) && x.head === :ref &&
+        length(x.args) >= 2 && any(_deffun_julia_range, x.args[2:end]) &&
+        _deffun_julia_plain_args(x.args[2:end]) &&
+        (!(x.args[1] isa Symbol) || x.args[1] in static.locals)
+    # `end` and `begin` in its indices, which no longer sit in brackets: the
+    # marker lowers to a static size in a size position (a range bound) and to
+    # an `Int` anywhere else.
+    _deffun_julia_slice_bounds(x, base, d, n) = x === :end || x === :begin ?
+        Expr(:__deffun_julia_bound__, base, d, n, x) : x
+    _deffun_julia_slice_bounds(x::Expr, base, d, n) = x.head === :ref ? x :
+        Expr(x.head, map(a -> _deffun_julia_slice_bounds(a, base, d, n), x.args)...)
+    _deffun_julia_bound(x) = begin
+        base, d, n, which = x.args
+        f = which === :end ? :_julia_static_lastindex : :_julia_static_firstindex
+        :($stan.$f($base, $Val{$d}(), $Val{$n}()))
+    end
+    _deffun_julia_mentions_bound(x) = x === :end || x === :begin
+    _deffun_julia_mentions_bound(x::Expr) = x.head !== :ref && any(_deffun_julia_mentions_bound, x.args)
+    _deffun_julia_slice(x, locals, def_mod, fname, promote_args, static) = begin
+        recur(a) = _deffun_julia_transform(a, locals, def_mod, fname, promote_args, static)
+        size(a) = _deffun_julia_size(a, locals, def_mod, fname, promote_args, static)
+        base, indices = x.args[1], x.args[2:end]
+        n = length(indices)
+        # A computed value read with `end`/`begin` is evaluated once.
+        bind = !(base isa Symbol) && any(_deffun_julia_mentions_bound, indices)
+        name = bind ? gensym(:sliced) : base
+        lowered = map(enumerate(indices)) do (d, i)
+            i === :(:) && return :($(Base.Colon)())
+            i = _deffun_julia_slice_bounds(i, name, d, n)
+            _deffun_julia_range(i) || return recur(i)
+            :($stan._julia_static_range($(size(i.args[2])), $(size(i.args[3]))))
+        end
+        call = :($stan._julia_getindex($(bind ? name : recur(base)), $(lowered...)))
+        bind ? Expr(:let, Expr(:(=), name, recur(base)), Expr(:block, call)) : call
+    end
 
     # The size lowering, for a size position of the static lowering: a static
     # size where the compiler can know it (`_julia_static_size`, an `Int`
@@ -2240,6 +2334,7 @@ begin
         x isa Int && x >= 0 && return :($stan._JuliaStaticSize{$x}())
         x isa Symbol && return get(static.sizes, x, x)
         Meta.isexpr(x, :__deffun_julia_size__) && return size(x.args[1])
+        Meta.isexpr(x, :__deffun_julia_bound__) && return _deffun_julia_bound(x)
         if Meta.isexpr(x, :call) && x.args[1] isa Symbol && !(x.args[1] in locals) &&
                 _deffun_julia_plain_args(x.args[2:end])
             f, args = x.args[1], x.args[2:end]
@@ -2305,6 +2400,15 @@ begin
             return :($base = $stan._deffun_julia_dotsetindex!!($base, $(recur(x.args[2])), $(indices...)))
         elseif x.head === :vect && !isnothing(static) && !isempty(x.args) && _deffun_julia_plain_args(x.args)
             return :($stan._deffun_julia_vect($(map(recur, x.args)...)))
+        elseif !isnothing(static) && x.head === :__deffun_julia_bound__
+            return :($stan._julia_size_int($(_deffun_julia_bound(x))))
+        elseif !isnothing(static) && endswith(string(x.head), "=") && !isempty(x.args) &&
+                Meta.isexpr(x.args[1], :ref)
+            # Any other write into an indexed place keeps its indices as written.
+            target = x.args[1]
+            return Expr(x.head, Expr(:ref, map(recur, target.args)...), map(recur, x.args[2:end])...)
+        elseif _deffun_julia_static_slice(x, static)
+            return _deffun_julia_slice(x, locals, def_mod, fname, promote_args, static)
         elseif x.head === :(=) && Meta.isexpr(x.args[1], :(::))
             lhs, rhs = x.args
             name, t = lhs.args
@@ -2372,6 +2476,10 @@ begin
             end
         elseif x.head === :(::) && length(x.args) == 2 && Meta.isexpr(x.args[2], :ref)
             foreach(d -> _deffun_julia_size_symbols!(out, d), x.args[2].args[2:end])
+        elseif x.head === :ref
+            for i in x.args[2:end]
+                _deffun_julia_range(i) && foreach(b -> _deffun_julia_size_symbols!(out, b), i.args[2:3])
+            end
         end
         x.head === :__deffun_julia_size__ && _deffun_julia_size_symbols!(out, x.args[1])
         foreach(a -> _deffun_julia_size_uses!(out, a, locals), x.args)

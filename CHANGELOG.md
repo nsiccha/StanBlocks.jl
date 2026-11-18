@@ -4,6 +4,24 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.50
+
+- **`@juliacompat` slices with compile-time bounds are static.** A slice read
+  `x[a:b]` or `G[a:b, c:d]` built a dense `Array` on every call even when its
+  bounds were constants, so a helper that took the 3x3 block `G[1:3, 1:3]` of a
+  static generator, or `x[1:n]` with `n` a dimension of a static argument,
+  allocated on every step. A range index whose bounds are sizes the method can
+  know when it compiles (the sizes v0.2.49 makes static, and `end` or `begin`
+  along a static axis) is now StaticArrays' `SUnitRange`, and the slice is an
+  `SVector`/`SMatrix` of at most 100 elements, of a static or a dense value
+  alike; `head`, `tail` and `segment` with such sizes are static too. A local
+  reassigned from such a slice therefore keeps one concrete type. Run-time
+  bounds and larger slices stay dense, and writes into a slice and the source
+  the ReactiveKernels extension hands to JAX are unchanged. A synthetic
+  four-state walk reading a literal 3x3 block every step and a 3-element
+  slice every read infers `Float64` and allocates nothing (snag
+  `juliacompat-stat-75c9ba31`).
+
 ## v0.2.49
 
 - **`@juliacompat` helpers with compile-time sizes run on StaticArrays.** A
