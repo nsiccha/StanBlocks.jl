@@ -24,6 +24,14 @@ breaking digit).
   local is rebuilt without allocating and a dense one is still written in
   place. Sizes known only at run time keep dense arrays, and so does the source
   the ReactiveKernels extension hands to JAX. StaticArrays is a new dependency.
+- **A `@juliacompat` method specializes on its untyped arguments and vararg
+  tail.** Julia compiled a helper that only passed on a function argument or
+  a vararg tail once, for `::Function` or `Vararg{Float64}`. A system tag passed
+  through an event walk (`walk(system, data, theta...)` calling
+  `generator(system, theta...)`) then dispatched every call at run time and
+  boxed every result. Each untyped positional argument now has its own static
+  parameter and a vararg tail is `Vararg{Any,N}`, which Julia always
+  specializes; dispatch is unchanged.
   A synthetic three-state propagator walk went from 32 allocations (3.3 KiB)
   and 738 ns to none and 70 ns per value, and from 89 allocations and 6.05 µs
   to 10 and 592 ns per Enzyme gradient (snag `juliacompat-fixe-b2a30659`).

@@ -2460,12 +2460,31 @@ begin
         mapped = map(_deffun_julia_mapped_arg, flat_args)
         mapped_pos = mapped[1:length(positional)]
         mapped_kw = mapped[length(positional)+1:end]
+        # Julia does not specialize a method on an argument it only passes on
+        # when that argument is a function or a vararg tail: such a helper
+        # compiles once for `::Function` or `Vararg{Float64}`, and every call
+        # through it dispatches at run time and boxes its results. A system
+        # tag passed through a walk (`walk(system, x...) = step(system, x...)`)
+        # is that case. Each untyped positional argument therefore gets its
+        # own static parameter, and a vararg tail `Vararg{Any,N}`, which Julia
+        # always specializes; dispatch is unchanged.
+        static_params = Symbol[]
+        specialized(arg) = if arg isa Symbol
+            push!(static_params, gensym(:T))
+            Expr(:(::), arg, static_params[end])
+        elseif Meta.isexpr(arg, :(...)) && arg.args[1] isa Symbol
+            push!(static_params, gensym(:N))
+            Expr(:(::), arg.args[1], :($Vararg{$Any,$(static_params[end])}))
+        else
+            arg
+        end
         julia_call_args = Any[]
         if !isnothing(params)
             push!(julia_call_args, Expr(:parameters, first.(mapped_kw)...))
         end
-        append!(julia_call_args, first.(mapped_pos))
-        julia_call = Expr(:call, f, julia_call_args...)
+        append!(julia_call_args, map(specialized, first.(mapped_pos)))
+        with_params(call) = isempty(static_params) ? call : Expr(:where, call, static_params...)
+        julia_call = with_params(Expr(:call, f, julia_call_args...))
 
         arg_names = filter(!isnothing, _julia_arg_name.(flat_args))
         locals = Set{Symbol}(arg_names)
@@ -2602,9 +2621,11 @@ begin
         julia_key = Tuple(item[2] for item in mapped_pos)
         slic_key = Tuple(item[3] for item in mapped_pos)
         julia_def = Expr(:(=), julia_call, julia_body)
-        twin_def = isnothing(twin_body) ? nothing : Expr(:(=),
-            Expr(:call, :($stan._julia_size_twin), Expr(:(::), :($typeof($f))), first.(mapped_pos)...),
-            static_body(twin_body))
+        empty!(static_params)
+        twin_call = Expr(:call, :($stan._julia_size_twin), Expr(:(::), :($typeof($f))),
+            map(specialized, first.(mapped_pos))...)
+        twin_def = isnothing(twin_body) ? nothing :
+            Expr(:(=), with_params(twin_call), static_body(twin_body))
         source_registration = nothing
         if positional_only
             types = map(first.(mapped_pos)) do arg

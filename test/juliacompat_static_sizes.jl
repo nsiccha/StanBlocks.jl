@@ -67,6 +67,16 @@
             end
             P
         end
+        # A system tag and a vararg tail passed through a walk: Julia only
+        # specializes the method on them because the lowering types them.
+        st_rate(::typeof(st_system), a, b) = a * b
+        st_tag_walk(system, x::vector[n], theta...) = begin
+            state = rep_vector(0., st_size_of(system))
+            for i in 1:n
+                state[1] += st_rate(system, theta...) * x[i]
+            end
+            state
+        end
         st_dose(x::vector[n], amount)::vector[n + 1] = begin
             augmented = append_row(x, 1.)
             augmented[1] += amount
@@ -177,6 +187,13 @@ rather than mutated. Before, every call allocated dense arrays.
     @test st_start(st_system, 2.0) == [2.0, 0.0, 0.0]
     # Through a closure: a function passed among the arguments is not specialized on.
     @test allocated(x -> st_start(st_system, x), 2.0) == 0
+    @test st_tag_walk(st_system, [1.0, 2.0], 2.0, 3.0) isa SVector{3,Float64}
+    @test st_tag_walk(st_system, [1.0, 2.0], 2.0, 3.0) == [18.0, 0.0, 0.0]
+    @test allocated(x -> st_tag_walk(st_system, x, 2.0, 3.0), [1.0, 2.0]) == 0
+    @test all(Base.specializations(only(methods(st_tag_walk)))) do mi
+        !(mi isa Core.MethodInstance) || (mi.specTypes.parameters[2] !== Function &&
+            !Base.isvarargtype(mi.specTypes.parameters[end]))
+    end
     @test st_propagator(G, 0.1) isa SMatrix{3,3,Float64}
     @test st_propagator(G, 0.1) ≈ StanBlocks.LinearAlgebra.exp(0.1 * Matrix(G)) rtol=1e-13
     @test st_propagator(G, -1.0) == [1.0 0.0 0.0; 0.0 1.0 0.0; 0.0 0.0 1.0]
