@@ -1318,6 +1318,25 @@ end
 # rebinding it would box it: it holds a mutable copy of a static value.
 _deffun_julia_mutable(x::StaticArrays.SArray) = StaticArrays.MArray(x)
 _deffun_julia_mutable(x) = x
+# A local rebound inside an `if` branch or a loop body, below the binding it
+# replaces (`_deffun_julia_mark_rebinds`): a value of the other kind (static or
+# dense) takes the kind of the one it replaces, so the paths that join
+# afterwards have one type, as Stan's declared local has one type. A dense value
+# converted to a static one must have its size, as Stan checks the size of an
+# assignment to a local that is not empty. A value of the same kind, and any
+# value replacing an empty static one, is kept as it is.
+_deffun_julia_rebind(old, new, name, fname) = new
+_deffun_julia_rebind(::StaticArrays.SArray{<:Any,<:Any,N}, new::StaticArrays.SArray{<:Any,<:Any,N}, name, fname) where {N} = new
+function _deffun_julia_rebind(old::StaticArrays.SArray{S,<:Any,N,L}, new::AbstractArray{<:Any,N}, name, fname) where {S,N,L}
+    L == 0 && return new
+    Base.size(new) == Base.size(old) || _deffun_julia_rebind_mismatch(old, new, name, fname)
+    StaticArrays.similar_type(old, eltype(new))(new)
+end
+_deffun_julia_rebind(::Array{<:Any,N}, new::StaticArrays.SArray{<:Any,<:Any,N}, name, fname) where {N} = Array(new)
+@noinline _deffun_julia_rebind_mismatch(old, new, name, fname) = throw(DimensionMismatch(
+    "@deffun $fname: local `$name` holds a $(join(Base.size(old), '×')) value and is rebound to a " *
+    "$(join(Base.size(new), '×')) value; a local keeps its size, as Stan's declared local does."
+))
 # A vector literal of numbers is a static vector.
 _deffun_julia_vect(xs::Vararg{Number,N}) where {N} =
     N <= _JULIA_STATIC_LENGTH ? StaticArrays.SVector{N}(xs...) : Base.vect(xs...)
@@ -2374,6 +2393,12 @@ begin
         update_op = _deffun_julia_update_op(x.head)
         if !isnothing(static) && x.head === :__deffun_julia_size__
             return size(x.args[1])
+        elseif x.head === :__deffun_julia_rebind__
+            # `_deffun_julia_mark_rebinds`; an update `x op= v` is Julia's
+            # `x = op(x, v)`, with `op` as the definition module binds it.
+            name, value = x.args[1], recur(x.args[2])
+            length(x.args) == 3 && (value = Expr(:call, x.args[3].value, name, value))
+            return :($name = $stan._deffun_julia_rebind($name, $value, $(QuoteNode(name)), $(QuoteNode(fname))))
         elseif (x.head === :(=) || !isnothing(update_op)) && Meta.isexpr(x.args[1], :ref) &&
                 rebinds(x.args[1].args[1]) && _deffun_julia_plain_args(x.args[1].args[2:end])
             base, indices = x.args[1].args[1], x.args[1].args[2:end]
@@ -2513,6 +2538,52 @@ begin
         end
         foreach(a -> _deffun_julia_bindings!(counts, written, a), x.args)
         counts
+    end
+    # Marks the rebindings of the static lowering that `_deffun_julia_rebind`
+    # converts (todo 1i3c11o): an assignment or update of a local inside an
+    # `if` branch or a loop body (or `let`) below the binding it replaces, whose
+    # value joins the other paths afterwards. `levels` maps a bound name to the
+    # nesting level of its binding; a nested block binds into a copy, because
+    # its bindings do not reach the statements after it. A straight-line
+    # rebinding stays as written: no other path joins it. Closures,
+    # comprehensions and the right-hand sides are left alone, and so is a
+    # local a closure reads (written in place instead).
+    _deffun_julia_mark_rebinds(x, levels, level, captured) = x
+    _deffun_julia_mark_rebinds(x::Expr, levels, level, captured) = begin
+        nested(b, inner=copy(levels)) = _deffun_julia_mark_rebinds(b, inner, level + 1, captured)
+        bind!(name) = name isa Symbol && get!(levels, name, level)
+        rebound(name) = name isa Symbol && !(name in captured) && get(levels, name, level) < level
+        # The names a `for` iteration or a `let` binds: new locals of the block.
+        fresh!(inner, s) = s isa Symbol ? (inner[s] = level + 1) :
+            Meta.isexpr(s, (:(=), :(::))) ? fresh!(inner, s.args[1]) :
+            Meta.isexpr(s, (:tuple, :block)) ? foreach(a -> fresh!(inner, a), s.args) : nothing
+        op = _deffun_julia_update_op(x.head)
+        if x.head === :block
+            Expr(:block, map(a -> _deffun_julia_mark_rebinds(a, levels, level, captured), x.args)...)
+        elseif x.head in (:if, :elseif)
+            Expr(x.head, x.args[1], map(nested, x.args[2:end])...)
+        elseif x.head === :while
+            Expr(x.head, x.args[1], nested(x.args[2]))
+        elseif x.head in (:for, :let)
+            inner = copy(levels)
+            fresh!(inner, x.args[1])
+            Expr(x.head, x.args[1], nested(x.args[2], inner))
+        elseif x.head === :(=) && x.args[1] isa Symbol
+            rebound(x.args[1]) && return Expr(:__deffun_julia_rebind__, x.args[1], x.args[2])
+            bind!(x.args[1])
+            x
+        elseif !isnothing(op) && x.args[1] isa Symbol
+            rebound(x.args[1]) ? Expr(:__deffun_julia_rebind__, x.args[1], x.args[2], QuoteNode(op)) : x
+        elseif x.head === :(=) && Meta.isexpr(x.args[1], (:(::), :tuple))
+            lhs = x.args[1]
+            foreach(bind!, Meta.isexpr(lhs, :(::)) ? lhs.args[1:1] : lhs.args)
+            x
+        elseif x.head === :(::) && length(x.args) == 2
+            bind!(x.args[1])
+            x
+        else
+            x
+        end
     end
     # Names a closure in the body (a lambda, a `do` block, a comprehension) reads.
     _deffun_julia_closure_names!(out, x, inside=false) = (inside && x isa Symbol && push!(out, x); out)
@@ -2712,7 +2783,9 @@ begin
             captured=intersect(written, _deffun_julia_closure_names!(Set{Symbol}(), julia_source_body)))
         size_preamble = Any[:($(sizes[dim]) = $stan._julia_static_dim($name, $Val{$i}()))
             for (dim, (name, i)) in dim_origin if haskey(sizes, dim)]
-        static_body(b) = Expr(:block, source, dim_preamble..., size_preamble..., map(b.args) do st
+        # The arguments are bound on entry, at the body's own level.
+        marked(b) = _deffun_julia_mark_rebinds(b, Dict{Symbol,Int}(n => 0 for n in arg_names), 0, static.captured)
+        static_body(b) = Expr(:block, source, dim_preamble..., size_preamble..., map(marked(b).args) do st
             name = top_name(st)
             (isnothing(name) || !haskey(top, name) || !haskey(sizes, name)) &&
                 return _deffun_julia_transform(st, locals, def_mod, f, promote_args, static)

@@ -4,6 +4,24 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.52
+
+- **A `@juliacompat` local rebound in a branch or a loop keeps one type.**
+  Since v0.2.49 a literal size makes a container static whatever the arguments
+  are, while a value computed from a dense argument stays dense. A local given
+  both, such as `P = rep_matrix(0., 3, 3)` followed by
+  `if dt > 0; P = matrix_exp(A * dt); end`, therefore inferred
+  `Union{Matrix, SMatrix}` when `A` was a `Matrix`. A local rebound inside an
+  `if` branch or a loop body (`P = …` or an update such as `P *= A`) now takes
+  the kind, static or dense, of the value it replaces, so the paths infer one
+  type: here an `SMatrix{3,3}` for a dense `A` as for a static one. This
+  matches Stan, whose declared local has one type. A dense value converted to
+  a static one must have its size, and one of another size raises a
+  `DimensionMismatch` naming the local, as Stan's assignment to a sized local
+  does. A static value of another size, a value replacing an empty local, a
+  straight-line rebinding and the source recorded for ReactiveKernels are
+  unchanged (todo `1i3c11o`).
+
 ## v0.2.51
 
 - **ODE solvers take an analytic Jacobian UDF, and `jacobian(f)` derives

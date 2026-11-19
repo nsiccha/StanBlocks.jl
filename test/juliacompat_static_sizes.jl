@@ -506,3 +506,167 @@ BridgeStan evaluates the walk as a transformed parameter.
     @test only(draw[names .== "walked"]) ≈ sl_walk(exp(mu) * G, dts) rtol=1e-13
     @test only(draw[names .== "dosed"]) ≈ sum(sl_dose(sl_block(G), [1.0, 0.0], exp(mu), 3)) rtol=1e-13
 end
+
+@testsnippet JuliaCompatRebinds begin
+    using StanBlocks
+    import StanBlocks.stan: @deffun
+    using StanBlocks.StaticArrays: SVector, SMatrix
+    @deffun @juliacompat begin
+        # A static local reassigned in a branch from a value of the arguments.
+        rb_step(A::matrix[3, 3], dt)::matrix[3, 3] = begin
+            P = rep_matrix(0., 3, 3)
+            for i in 1:3
+                P[i, i] = 1.
+            end
+            if dt > 0
+                P = matrix_exp(A * dt)
+            end
+            P
+        end
+        # An update in a loop body: a static times a dense matrix is dense.
+        rb_power(A::matrix[3, 3], m::int)::matrix[3, 3] = begin
+            P = rep_matrix(0., 3, 3)
+            for i in 1:3
+                P[i, i] = 1.
+            end
+            for t in 1:m
+                P *= A
+            end
+            P
+        end
+        # A static local reassigned in a branch from an argument of any size.
+        rb_load(A::matrix[n, n], dt)::matrix[3, 3] = begin
+            P = rep_matrix(0., 3, 3)
+            if dt > 0
+                P = A
+            end
+            P
+        end
+        # A dense local reassigned in a branch from a static value.
+        rb_reset(A::matrix[n, n], dt)::matrix[n, n] = begin
+            P = A
+            if dt <= 0
+                P = rep_matrix(0., 3, 3)
+            end
+            P
+        end
+        # A straight-line rebinding: no other path joins it.
+        rb_straight(A::matrix[3, 3], dt)::matrix[3, 3] = begin
+            P = rep_matrix(0., 3, 3)
+            P = matrix_exp(A * dt)
+            P
+        end
+        # An empty local grows, as Stan's empty local does.
+        rb_grow(x::vector[n]) = begin
+            v = rep_vector(0., 0)
+            if n > 0
+                v = append_row(v, x[1])
+            end
+            v
+        end
+    end
+    mentions(x::Expr, name) = any(a -> mentions(a, name), x.args)
+    mentions(x::QuoteNode, name) = x.value === name
+    mentions(x::GlobalRef, name) = x.name === name
+    mentions(x, name) = x === name
+end
+
+"""
+A local rebound inside an `if` branch or a loop body keeps the kind, static or
+dense, of the value it replaces (todo `1i3c11o`). Since v0.2.49 a literal size
+makes a local static whatever the arguments are, while a value computed from a
+dense argument stays dense, so a local given both inferred
+`Union{Matrix, SMatrix}` for a dense argument. The paths now join on one type,
+as Stan's declared local has one type, and a dense value of another size raises
+the size mismatch Stan raises for it.
+"""
+@testitem "slic: a @juliacompat local rebound in a branch or loop keeps its kind" tags=[:slic, :regression] setup=[StanBlocksImports, JuliaCompatRebinds] begin
+    A = [0.1 0.2 0.0; 0.0 -0.3 0.1; 0.05 0.0 -0.2]
+    SA = SMatrix{3,3}(A)
+    I3 = [1.0 0.0 0.0; 0.0 1.0 0.0; 0.0 0.0 1.0]
+    # A dense and a static argument infer the same static result.
+    for T in (Matrix{Float64}, SMatrix{3,3,Float64,9})
+        @test Base.return_types(rb_step, (T, Float64)) == [SMatrix{3,3,Float64,9}]
+        @test Base.return_types(rb_power, (T, Int)) == [SMatrix{3,3,Float64,9}]
+    end
+    @test Base.return_types(rb_load, (Matrix{Float64}, Float64)) == [SMatrix{3,3,Float64,9}]
+    @test rb_step(A, 0.5) ≈ StanBlocks.LinearAlgebra.exp(0.5 * A) rtol=1e-13
+    @test rb_step(A, 0.5) ≈ rb_step(SA, 0.5) rtol=1e-15
+    @test rb_step(A, -0.5) == I3
+    @test rb_power(A, 3) ≈ A^3 rtol=1e-14
+    @test rb_power(A, 0) == I3
+    @test rb_load(A, 1.0) == A
+    @test rb_load(A, -1.0) == zeros(3, 3)
+    allocated(f::F, args::Vararg{Any,N}) where {F,N} = (f(args...); @allocated f(args...))
+    @test allocated(rb_step, SA, 0.5) == 0
+    @test allocated(rb_power, SA, 3) == 0
+
+    # A dense local stays dense.
+    @test Base.return_types(rb_reset, (Matrix{Float64}, Float64)) == [Matrix{Float64}]
+    @test rb_reset(A, 0.5) == A
+    @test rb_reset(A, -0.5) == zeros(3, 3)
+    # A straight-line rebinding is the value it is assigned, as before.
+    @test rb_straight(A, 0.5) isa Matrix{Float64}
+    @test rb_straight(SA, 0.5) isa SMatrix{3,3,Float64}
+
+    # Stan's size check: a dense value of another size raises, and an empty
+    # local takes a value of any size.
+    err = @test_throws DimensionMismatch rb_load(ones(4, 4), 1.0)
+    @test occursin("local `P` holds a 3×3 value and is rebound to a 4×4 value", sprint(showerror, err.value))
+    @test rb_grow([2.0, 3.0]) == [2.0]
+    @test isempty(rb_grow(Float64[]))
+
+    # The method's recorded source, which ReactiveKernels translates to JAX,
+    # keeps the dense lowering; the method itself converts.
+    method = which(rb_step, Tuple{Matrix{Float64},Float64})
+    source = StanBlocks._deffun_julia_source(method.sig)
+    @test !isnothing(source)
+    @test !mentions(source[3], :_deffun_julia_rebind)
+    @test any(st -> mentions(st, :_deffun_julia_rebind), Base.uncompressed_ir(method).code)
+    straight = which(rb_straight, Tuple{Matrix{Float64},Float64})
+    @test !any(st -> mentions(st, :_deffun_julia_rebind), Base.uncompressed_ir(straight).code)
+end
+
+"""
+Enzyme differentiates through the conversion of a rebound local, and the
+gradient matches finite differences of the dense reference.
+"""
+@testitem "slic: rebound @juliacompat locals are Enzyme differentiable" tags=[:slic, :ad, :regression] setup=[StanBlocksImports, EnzymeGradient, JuliaCompatRebinds] begin
+    f(x) = sum(rb_power(reshape(x, 3, 3), 3)) + sum(rb_load(reshape(x, 3, 3), 1.0))
+    ref(x) = sum(reshape(x, 3, 3)^3) + sum(x)
+    x = [0.1, 0.0, 0.05, 0.2, -0.3, 0.0, 0.0, 0.1, -0.2]
+    value, (dx,) = gradient(f, x)
+    @test value ≈ ref(x) rtol=1e-14
+    h = 1e-6
+    fd = map(eachindex(x)) do i
+        e = zeros(length(x))
+        e[i] = h
+        (ref(x + e) - ref(x - e)) / 2h
+    end
+    @test dx ≈ fd rtol=1e-6
+end
+
+"""
+The emitted Stan of helpers with rebound locals and their Julia methods agree
+for a dense argument: BridgeStan evaluates them as transformed parameters.
+"""
+@testitem "slic: rebound @juliacompat locals match their emitted Stan" tags=[:slic, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup, JuliaCompatRebinds] begin
+    using .StanBlocksTestSetup: stanc_compiles
+    A = [0.1 0.2 0.0; 0.0 -0.3 0.1; 0.05 0.0 -0.2]
+    model = @slic (; A, obs=0.2) begin
+        mu ~ normal(0.0, 1.0)
+        obs ~ normal(mu, 1.0)
+        stepped = sum(rb_step(exp(mu) * A, 0.5))
+        powered = sum(rb_power(exp(mu) * A, 3))
+        loaded = sum(rb_load(exp(mu) * A, 1.0))
+    end
+    @test stanc_compiles(model)
+    p = instantiate(stan_model(model))
+    names = BridgeStan.param_names(p.model; include_tp=true, include_gq=true)
+    mu = -0.3
+    draw = BridgeStan.param_constrain(p.model, [mu]; include_tp=true, include_gq=true,
+        rng=BridgeStan.StanRNG(p.model, 1))
+    @test only(draw[names .== "stepped"]) ≈ sum(rb_step(exp(mu) * A, 0.5)) rtol=1e-13
+    @test only(draw[names .== "powered"]) ≈ sum(rb_power(exp(mu) * A, 3)) rtol=1e-13
+    @test only(draw[names .== "loaded"]) ≈ sum(rb_load(exp(mu) * A, 1.0)) rtol=1e-13
+end
