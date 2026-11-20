@@ -3600,8 +3600,9 @@ end
 # would land in the transformed-data COPY of the plate loop that `distribute!` splits
 # off — out of scope in the model COPY where the cmt-keyed obs uses it (stanc
 # "Identifier not in scope"). Recomputing the index inline keeps it in the using
-# block; the plate emitter mirrors this for an explicit `idx = findall(...)` local
-# (forward.jl). Snag plate-cell-int.
+# block. An explicit `idx = findall(...)` cell local is a binding the plate emitter
+# can promote instead: a data-only one is stored once in transformed data and read
+# back per cell (forward.jl). Snags plate-cell-int, use-a-native-sli-0c201703.
 expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2,<:StanExpr2{<:types.bool}}}; info) =
     _getindex_bool_mask(x; info)
 _getindex_bool_mask(x::CanonicalExpr; info) = begin
@@ -3612,7 +3613,9 @@ end
 # Bind an index computation to a fresh `<stem><id>` in its own statement, so a
 # data-derived one lands in `transformed data` (computed once) and every use reads
 # the name. With no statement context, or inside a plate loop, it stays inline (see
-# above).
+# above). The binding is marked `index_hoist`: a plate's discovery probe traces
+# the cell without the plate context, so it sees this binding although the cell's
+# emit trace never makes it, and the loop core must not promote it.
 _hoist_index(val, stem; info) = begin
     pending = _get_inline_pending(info)
     (pending === nothing || _plate_context(info) !== nothing) && return val
@@ -3622,6 +3625,7 @@ _hoist_index(val, stem; info) = begin
         id = _next_inline_id(info); name = Symbol(stem, id)
     end
     push!(pending, forward!(CanonicalExpr(:(=), name, val); info))
+    info[name] = remake(info[name]; index_hoist=true)
     info[name]
 end
 # A ragged value indexed by a boolean mask selects groups like the integer indices

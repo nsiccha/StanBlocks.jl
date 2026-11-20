@@ -4,6 +4,25 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.53
+
+- **A data-only `array[] int` in a plate cell is stored once in transformed
+  data.** An index array computed from the cell's data, such as a permutation
+  `perm = sort_indices_asc(x)` or `idx = findall(c .== 1)`, used to be inlined
+  into its uses. That reached only a binding written at the cell's top level.
+  Inside a called `@slic` sub-model the binding was left as a loop local of the
+  transformed-data loop, and stanc refused the transformed-parameters loop that
+  read it (`Identifier "z_p_perm" not in scope`). Such a binding, at the top
+  level or inside a sub-model, is now stored like a data-only vector cell: an
+  `array[N, K] int` for fixed-width cells (extra plate axes lead), or flat
+  `array[] int` memory with `__pl_len`/`__pl_end` for a per-cell length. It is
+  filled once in `transformed data` and read back per cell, so the index is no
+  longer recomputed on every log-density evaluation. An int array that reads a
+  parameter, the boolean-mask sugar `y[c .== 1]`, and a per-cell length under
+  several plate axes or in a plate inside a called sub-model keep the inline
+  form. Transformed data is not an output, so draws and the descriptor are
+  unchanged (snag `use-a-native-sli-0c201703`).
+
 ## v0.2.52
 
 - **A `@juliacompat` local rebound in a branch or a loop keeps one type.**
