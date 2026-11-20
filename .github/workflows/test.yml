@@ -66,9 +66,10 @@ jobs:
       # `julia-buildpkg` instantiates the PACKAGE project (`.`), not `test/`.
       # The suite runs out of `test/Project.toml` (TestItemRunner lives there),
       # so that env needs its own instantiate with the package developed into
-      # it — the same invocation used locally.
+      # it. `test/ci_instantiate.jl` also adds the packages `test/Project.toml`
+      # sources by url (BridgeStan's dogfood line), which Julia 1.10 ignores.
       - name: Instantiate test environment
-        run: julia --project=test -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
+        run: julia --project=test test/ci_instantiate.jl
       - name: Run tests that need no Stan build
         run: julia --project=test -e 'include("test/runtests.jl")' -- --skip-tag=bridgestan --skip-tag=stanc
 
@@ -95,7 +96,7 @@ jobs:
           version: ${{ matrix.julia-version }}
       - uses: julia-actions/cache@v2
       - name: Instantiate test environment
-        run: julia --project=test -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
+        run: julia --project=test test/ci_instantiate.jl
       # `instantiate` compiles each model through BridgeStan's Makefile, which
       # builds Stan's objects under `~/.bridgestan` on first use. Caching that
       # directory is what turns a cold multi-minute Stan build into a warm one.

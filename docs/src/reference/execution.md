@@ -13,8 +13,6 @@ stan_code
 stanc_check
 stan_instantiate
 stan_library
-StanBlocks.release_tape_memory
-StanBlocks.reuse_tape_memory
 ```
 
 ## Inspection and operations
