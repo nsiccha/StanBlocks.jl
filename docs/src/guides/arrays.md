@@ -59,6 +59,13 @@ reconstructing values instead of inferring shapes from generated variable
 names. The do-block spelling `plate(...) do ... end` broadcasts a reusable
 submodel; [partial pooling](../examples/pooling.md) shows that form.
 
+A submodel that returns a tuple, such as `return (; curve = gain * x, scale)`,
+can be bound in a cell and read by field (`cell.curve`). A tuple whose
+components have the same size in every cell is collected as an array of
+tuples. From v0.2.57 one whose component length differs by cell is a local of
+the loop instead, recomputed where it is read and never an output: bind a
+field as its own cell value (`curve = cell.curve`) to keep it after the loop.
+
 For several independent axes, use one annotated loop such as
 `@plate for j in 1:J, s in 1:S` and index outputs as `x[j, s]`.
 Collecting a `plate(...) do` result inside an annotated loop is not supported;

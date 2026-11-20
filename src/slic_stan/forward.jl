@@ -5006,9 +5006,21 @@ _forward_loop_core!(;
     # keeps its transformed-data storage: computed once, and transformed data is
     # not an output either. A nested annotated loop's scratch is that loop's own
     # local, so this loop does not promote it.
+    #
+    # A tuple cell with a component whose size depends on the cell (a called
+    # submodel's `return (; curve = gain * x, scale)` over a per-cell `x`) is
+    # scratch in both forms: a Stan `array[…] tuple(…)` has one size per
+    # component, so it has no collected form, and the submodel's parameters it
+    # is built from are stored already. Each block's loop copy that reads it
+    # declares it with that cell's sizes, `tuple(vector[n], real) cell = (…)`,
+    # and `cell.curve` reads `cell.1` (decision `1u3kvwv`, snag
+    # a-plate-cell-bin-0b519903). A plate RESULT such a tuple is refused below.
+    cell_positions = Set{Symbol}(Iterators.flatten((idxs, params,
+        (_plate_global_name(info, s) for s in Iterators.flatten((idxs, params))))))
     candidates = Set{Symbol}(_plate_global_name(info, get(fresh_rename, s, s)) for s in scratch)
     scratch_globals = Set{Symbol}(f for (f, T) in fresh
-        if f in candidates && _decl_role(T) !== :sampled && qual(T) !== :data)
+        if (f in candidates && _decl_role(T) !== :sampled && qual(T) !== :data) ||
+            (_plate_is_tuple_cell(T) && !_plate_tuple_size_free(T, cell_positions)))
     fresh = Pair{Symbol,Any}[p for p in fresh
         if !(p.first in scratch_globals) && !get(p.second.info, :loop_scratch, false)]
     # Discovery sees a declared missing observation under its hygienic cell
@@ -5082,8 +5094,6 @@ _forward_loop_core!(;
     # keeps the inline path: storing it would only copy data, and the aliased
     # program stays identical to the direct one (snag plate-cell-local-6cbd9608).
     # (Snag use-a-native-sli-0c201703.)
-    cell_positions = Set{Symbol}(Iterators.flatten((idxs, params,
-        (_plate_global_name(info, s) for s in Iterators.flatten((idxs, params))))))
     alias_names = Set{Symbol}()
     for s in body_stmts
         fi = _plate_fresh_info(s)
@@ -5174,10 +5184,14 @@ _forward_loop_core!(;
                     "Declare the ragged constrained parameter at model scope and index it."
             )
         end
+        # Only a plate RESULT reaches here: a cell binding of such a tuple is
+        # loop-local scratch (above).
         _plate_is_tuple_cell(T) && !_plate_tuple_size_free(T, index_aliases) && error(
-            "plate: tuple cell `", get(spellings, f, f), "::", sigtype(T), "` has a component ",
-            "whose size varies by cell, which a Stan `array[…] tuple(…)` cannot declare. ",
-            "Return the varying-size value as its own cell binding instead of a tuple field."
+            "plate: `", get(spellings, f, f), "::", sigtype(T), "` collects a tuple across cells, ",
+            "but a component's size varies by cell, which a Stan `array[…] tuple(…)` cannot ",
+            "declare. Collect the fields instead: bind each varying field in the cell ",
+            "(`curve = c.curve`) and end the cell with a fixed-size value (`c.scale`). A tuple ",
+            "read only inside its cell needs no change."
         )
         _plate_is_ragged_cell(T, index_aliases) || continue
         ragged_plans[f] = _plate_ragged_plan(f, T, outer_dims, idxs, plan_taken; info)
