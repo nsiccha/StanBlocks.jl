@@ -4,6 +4,20 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.57
+
+- **A plate cell reads a submodel's tuple whose component length differs by
+  cell.** A called `@slic` submodel returning, say, `(; curve = gain * x,
+  scale)` over a per-cell `x` was refused in both `@plate for` and
+  `plate(...) do` ("tuple cell … has a component whose size varies by cell"),
+  because a Stan `array[…] tuple(…)` has one size per component. Such a tuple is
+  now a Stan local inside each block's loop that reads it, declared with that
+  cell's sizes, and `cell.curve` reads its field; the submodel's parameters stay
+  stored per cell as before, and the tuple itself is not an output. A field
+  bound as its own cell value (`curve = cell.curve`) is still stored. A plate
+  whose result is such a tuple still has no collected form and is refused with
+  that spelling (snag `a-plate-cell-bin-0b519903`, decision `1u3kvwv`).
+
 ## v0.2.56
 
 - **The tape-memory stopgap is gone; BridgeStan's own call replaces it.**
