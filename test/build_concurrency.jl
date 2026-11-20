@@ -482,23 +482,17 @@ end
                 libraries = fetch.(builds)
                 @test allunique(libraries) && read.(libraries, String) == sources
                 # The shared files were built once, under the toolchain lock;
-                # both models compiled at the same time without it, each after
-                # its own tape-memory object (snag stan-tape-memory-288a1422).
-                # A tape object may compile while the other build holds the
-                # lock for its shared phase, so its lock state is not asserted.
+                # both models compiled at the same time without it.
                 shared = ["bin/stanc locked", "src/bridge.o locked",
                           "lib/sundials.a locked", "lib/tbb.so locked"]
-                @test buildlog(home)[1:4] == shared
-                @test all(startswith("tape "), buildlog(home)[5:6])
-                @test buildlog(home)[7:8] == ["model unlocked", "model unlocked"]
+                @test buildlog(home) == [shared; "model unlocked"; "model unlocked"]
                 # Another build variant's own shared file is built under the lock too.
                 variant = StanBlocks._artifact_library(code; make_args=[args; "VARIANT=hess"])
                 @test read(variant, String) == code
-                @test buildlog(home)[end-2:end] ==
-                    ["src/bridge_hess.o locked", "tape unlocked", "model unlocked"]
+                @test buildlog(home)[end-1:end] == ["src/bridge_hess.o locked", "model unlocked"]
                 # A published library is returned again without another build.
                 @test StanBlocks._artifact_library(sources[1]; make_args=args) == libraries[1]
-                @test length(buildlog(home)) == 11
+                @test length(buildlog(home)) == 8
             end
             # A Makefile that names no shared targets keeps the old, conservative
             # shape: the whole compile holds the toolchain lock.
@@ -508,8 +502,7 @@ end
             withenv("BRIDGESTAN" => home, "STANBLOCKS_BUILD_DIR" => joinpath(dir, "build"),
                     "STANBLOCKS_TEST_RENDEZVOUS" => rendezvous) do
                 @test read(StanBlocks._artifact_library(code; make_args=args), String) == code
-                # The tape object needs only headers, so it compiles first.
-                @test buildlog(home) == ["tape locked", "bin/stanc locked", "src/bridge.o locked",
+                @test buildlog(home) == ["bin/stanc locked", "src/bridge.o locked",
                     "lib/sundials.a locked", "lib/tbb.so locked", "model locked"]
             end
         end
@@ -550,15 +543,14 @@ end
                 @test read(build("// 1\n" * code), String) == "// 1\n" * code
                 shared = ["bin/stanc locked", "src/bridge.o locked",
                           "lib/sundials.a locked", "lib/tbb.so locked"]
-                @test readlines(log) == [shared; "tape unlocked"; "model unlocked"]
+                @test readlines(log) == [shared; "model unlocked"]
                 foreach(path -> chmod(path, 0o555), (home, unnamed, user))
                 try
                     withenv("HOME" => user) do
                         # Its shared files current, the tree compiles a distinct model
                         # without the lock, and nothing is written into it.
                         @test read(build("// 2\n" * code), String) == "// 2\n" * code
-                        @test readlines(log) == [shared; "tape unlocked"; "model unlocked";
-                                                 "tape unlocked"; "model unlocked"]
+                        @test readlines(log) == [shared; "model unlocked"; "model unlocked"]
                         @test !ispath(lockfile)
                         # A flag variant whose bridge object is missing is not built:
                         # the call names the file and the tree instead.
@@ -569,7 +561,7 @@ end
                         end
                         @test err isa ErrorException
                         @test occursin("./src/bridge_hess.o", err.msg) && occursin(home, err.msg)
-                        @test length(readlines(log)) == 8
+                        @test length(readlines(log)) == 6
                         # refused: a tree that cannot hold the toolchain lock and whose
                         # Makefile names no shared targets gives no way to tell that a
                         # model build writes only next to its source (`0cb7c06` keeps
@@ -594,7 +586,7 @@ end
                     try
                         sleep(3)
                         @test !istaskdone(waiter)
-                        @test length(readlines(log)) == 8
+                        @test length(readlines(log)) == 6
                     finally
                         chmod(home, 0o755)
                         put!(release, nothing)
@@ -849,23 +841,32 @@ end
             make_args = ["STAN_THREADS=true", "USER_HEADER=$header"]
             stanc_args = ["--allow-undefined", "--warn-pedantic"]
 
-            # Control: up to 2.9.0, BridgeStan.compile_model emits one STANCFLAGS
-            # assignment per stanc argument and make keeps the last, so only
-            # --warn-pedantic reaches stanc, which then rejects the declared
-            # but undefined function (roualdes/bridgestan#349). The fix (#350)
-            # joins them into one assignment, so later releases build the
-            # direct call too. A checkout of BridgeStan's main between 2.9.0
-            # and the next release carries the fix under version 2.9.0.
+            # Control: up to release 2.9.0, BridgeStan.compile_model emits one
+            # STANCFLAGS assignment per stanc argument and make keeps the last,
+            # so only --warn-pedantic reaches stanc, which then rejects the
+            # declared but undefined function (roualdes/bridgestan#349). The fix
+            # (#350) joins them into one assignment, so a BridgeStan.jl with it
+            # builds the direct call too. Its version does not tell: BridgeStan's
+            # main and our dogfood line carry the fix under version 2.9.0. So a
+            # stand-in `make` records the arguments this BridgeStan.jl passes.
             toolchain = realpath(BridgeStan.get_bridgestan_path(; download=false))
+            recorder, recorded = joinpath(dir, "record_make.sh"), joinpath(dir, "make_args.txt")
+            write(recorder, "#!/bin/sh\nprintf '%s\\n' \"\$@\" > '$recorded'\n")
+            chmod(recorder, 0o755)
+            probe = joinpath(dir, "probe.stan")
+            write(probe, "")
+            withenv(() -> BridgeStan.compile_model(probe; stanc_args=["--O1", "--warn-pedantic"]),
+                "MAKE" => recorder, "BRIDGESTAN" => toolchain)
+            joins_stanc_args = count(startswith("STANCFLAGS="), readlines(recorded)) == 1
             direct = joinpath(dir, "direct.stan")
             write(direct, source)
             compile_direct() = StanBlocks.with_toolchain_lock(toolchain) do
                 BridgeStan.compile_model(direct; make_args, stanc_args)
             end
-            if pkgversion(BridgeStan) <= v"2.9.0"
-                @test_throws ErrorException compile_direct()
-            else
+            if joins_stanc_args
                 @test density(compile_direct()) == -0.5
+            else
+                @test_throws ErrorException compile_direct()
             end
 
             one = stan_library(source; make_args, stanc_args)

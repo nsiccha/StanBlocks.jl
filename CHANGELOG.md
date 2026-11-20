@@ -4,6 +4,24 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.56
+
+- **The tape-memory stopgap is gone; BridgeStan's own call replaces it.**
+  `StanBlocks.release_tape_memory` and `StanBlocks.reuse_tape_memory` (v0.2.54)
+  are removed, and libraries no longer link `src/slic_stan/tape_memory.cpp`,
+  which read Stan Math's private arena bookkeeping from outside. The release now
+  lives where the memory does: Stan Math's dogfood line has
+  `stan::math::release_memory()`, and BridgeStan's dogfood line
+  (`nsiccha/bridgestan`, branch `dogfood`) exposes it as `bs_release_memory` and
+  `BridgeStan.release_memory(model)`, which runs on every Julia thread. For a
+  problem from `stan_instantiate`, call `BridgeStan.release_memory(problem.model)`.
+  StanBlocks builds with whichever BridgeStan.jl the environment has, so the call
+  needs BridgeStan.jl from that line (a `[sources]` entry with
+  `subdir = "julia"`); StanBlocks' own test environment takes it from there. The
+  artifact key no longer covers the removed file, so every library compiles once
+  more on first use after upgrading (snag `stan-tape-memory-288a1422`, decision
+  `1f3gj3e`).
+
 ## v0.2.55
 
 - **A family's own functions take a whole ragged value and apply the family

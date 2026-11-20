@@ -32,13 +32,15 @@ can take longer than subsequent calls because generated libraries are cached
 by their source and build inputs. Build errors propagate; use
 `nan_on_error=false` when diagnosing invalid density evaluations.
 
-A gradient is recorded on the evaluating thread's reverse-mode tape. Stan
-keeps that thread's tape memory, about twice the largest gradient it has
-evaluated, for as long as the thread lives, separately for every compiled
-library. Destroying the problem or running Julia's garbage collector does not
-return it. A long-lived process that has finished a fit can hand it back with
-`StanBlocks.release_tape_memory(problem)`, which runs on every Julia thread and
-leaves later gradients unchanged.
+A gradient is recorded in the evaluating thread's autodiff memory. Stan keeps
+that memory, about twice the largest gradient the thread has evaluated, for as
+long as the thread lives, separately for every compiled library; destroying the
+problem or running Julia's garbage collector does not return it. BridgeStan.jl
+from BridgeStan's dogfood line (`nsiccha/bridgestan`, branch `dogfood`, package
+in `julia/`) provides `BridgeStan.release_memory(problem.model)`, which hands it
+back on every Julia thread and leaves later gradients unchanged. StanBlocks
+compiles with the BridgeStan.jl of the environment, so libraries support that
+call when the environment takes BridgeStan.jl from that line.
 
 ## Operations
 

@@ -4,10 +4,7 @@
 # to STANBLOCKS_TEST_BUILD_LOG, for a home the build may not write) by whether
 # the toolchain lock file exists. A model recipe first waits, at most 30 s,
 # until STANBLOCKS_TEST_RENDEZVOUS holds two entries, its own included, so two
-# builds that cannot run at the same time fail instead of passing. The tape-memory
-# object StanBlocks compiles beside each model logs "tape locked|unlocked", and
-# a model recipe fails unless LDLIBS names that object first, as the real link
-# rule needs it.
+# builds that cannot run at the same time fail instead of passing.
 STANC ?= ./bin/stanc
 BRIDGE_O = ./src/bridge$(if $(VARIANT),_$(VARIANT)).o
 SUNDIALS_TARGETS = ./lib/sundials.a
@@ -23,12 +20,7 @@ $(SHARED):
 	@echo "$@ $(locked)" >> $(LOG)
 	@touch $@
 
-%.o : %.cpp
-	@echo "tape $(locked)" >> $(LOG)
-	@cp $< $@
-
 %_model.so : %.stan $(SHARED)
-	@test -f "$(firstword $(LDLIBS))" || { echo "no tape object in LDLIBS: $(LDLIBS)" >&2; exit 1; }
 	@touch "$(RENDEZVOUS)/$(notdir $*)"
 	@n=0; until [ $$(ls "$(RENDEZVOUS)" | wc -l) -ge 2 ]; do n=$$((n+1)); [ $$n -lt 300 ] || exit 1; sleep 0.1; done
 	@echo "model $(locked)" >> $(LOG)
