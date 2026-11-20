@@ -4,6 +4,32 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.54
+
+- **A library's reverse-mode tape memory can be handed back:
+  `StanBlocks.release_tape_memory(model)`.** Stan Math records a gradient on
+  the evaluating thread's arena and keeps the arena's memory for as long as
+  the thread lives: `recover_memory` rewinds it after each gradient and keeps
+  every block. Each compiled library has its own copy of Stan Math, so a
+  long-lived process sampling on many threads held one arena per thread and
+  library, about twice the largest gradient each thread had evaluated there,
+  and destroying the model, Julia's collector and `malloc_trim` returned none
+  of it. BridgeStan has no call for it. Every library StanBlocks builds
+  (`stan_instantiate`, `stan_library`) now links a small C++ file,
+  `src/slic_stan/tape_memory.cpp`, compiled with the model's own flags.
+  `release_tape_memory` runs its release on every Julia thread: it tells the
+  kernel that the pages of the arena's blocks and of the tape's pointer lists
+  hold nothing (`MADV_DONTNEED` on Linux, `MADV_FREE_REUSABLE` on macOS),
+  frees nothing and changes no Stan code, skips a thread whose tape is in use,
+  and then asks glibc to trim what the gradients freed. The next gradient
+  writes into the same blocks and evaluates exactly as before. It returns a
+  task whose result counts the threads released, busy and unused.
+  `StanBlocks.reuse_tape_memory(model)` tells macOS, before a thread's next
+  gradient, that the memory is in use again, so the process is charged for
+  it; elsewhere it does nothing. The file's source is part of every artifact's
+  identity, so every library compiles once more on first use after upgrading
+  (snag `stan-tape-memory-288a1422`).
+
 ## v0.2.53
 
 - **A data-only `array[] int` in a plate cell is stored once in transformed
