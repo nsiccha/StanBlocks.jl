@@ -3,8 +3,9 @@ StanBlocks compiles with the environment's BridgeStan. Built through BridgeStan'
 dogfood line (`nsiccha/bridgestan`, branch `dogfood`; decision `1f3gj3e`), a
 library exports `bs_release_memory`, and `BridgeStan.release_memory` hands each
 Julia thread's autodiff memory back to the system. StanBlocks has no tape-memory
-code of its own any more: v0.2.56 removed the v0.2.54 stopgap that read Stan
-Math's private arena bookkeeping (snag `stan-tape-memory-288a1422`). This item
+code of its own any more: the stopgap `release_tape_memory`, which read Stan
+Math's private arena bookkeeping, is removed (snag `stan-tape-memory-288a1422`,
+CHANGELOG). This item
 pins that the libraries StanBlocks builds support BridgeStan's call, including
 one that links a caller's C++ header, and that a release leaves gradients as
 they were. The test environment takes BridgeStan.jl from that line
