@@ -195,9 +195,15 @@ inline_body(x::CanonicalExpr) = inline_body_by_head(getfield(x, :head), x)
 inline_body_by_head(_, x::CanonicalExpr) = nothing
 expand_inline_or_trace(x::CanonicalExpr; info) = begin
     meta = inline_body(x)
-    isnothing(meta) && return fold_shape_query(_stan_expr(x, _trace_context(info)))
-    expand_inline!(x, meta; info)
+    isnothing(meta) || return expand_inline!(x, meta; info)
+    rv = fold_shape_query(_stan_expr(x, _trace_context(info)))
+    something(_ragged_companion_call(x, rv; info), rv)
 end
+# A family companion (`foo_lpdf`, `foo_lpdfs`, `foo_rng`, …) called on a whole
+# `RaggedVector` with no Stan definition for that shape applies the family per
+# group (decision `11dxlp0`). `builtin.jl` supplies the method once the usertype
+# exists; it returns `nothing` for every other call, which keeps its trace.
+_ragged_companion_call(x, rv; info) = nothing
 # ── Elementwise arithmetic on scalar arrays → lower to the `jbroadcasted` loop ──
 # Stan has no elementwise arithmetic on `array[] int`/`array[] real` (nor a
 # dotted `.+`/`.-` — `broadcast_callee` collapses those to plain `+`/`-`), so a

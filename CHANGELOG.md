@@ -4,6 +4,25 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.55
+
+- **A family's own functions take a whole ragged value and apply the family
+  group by group.** `y ~ foo(args…)` over a nested vector already lowered one
+  group at a time, but calling one of the family's functions directly on the
+  whole value, typically inside a `@deffun`, failed: `normal_lpdf(ys, mu, s)`
+  traced with no Stan definition behind it and was refused as
+  `normal_RaggedVector_lpdf`, and at the top level it typed as `anything`. Now
+  `foo_lpdf(ys, args…)` (or `_lpmf`) adds the density of every group,
+  `foo_lpdfs(ys, args…)` returns one aggregate density per group (the grain of
+  a ragged observation's `<obs>_likelihood`), and `foo_rng(args…)` with a ragged
+  argument draws each group from the family's sized
+  `foo_rng(vector[n], args…)` and returns a ragged value with that argument's
+  groups. Ragged arguments are taken group by group; scalar and dense ones are
+  shared. Builtin families, custom `@deffun` families, discrete families over
+  integer groups and distribution combinators such as `weighted` all work. A
+  family that defines its own method for a whole ragged value keeps it, so a
+  program that compiled before compiles as before (decision `11dxlp0`).
+
 ## v0.2.54
 
 - **A library's reverse-mode tape memory can be handed back:

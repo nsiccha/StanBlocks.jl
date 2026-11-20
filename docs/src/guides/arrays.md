@@ -85,6 +85,19 @@ continuous families. A group-level likelihood cannot in general be split into
 independent element contributions: a multivariate family may couple the
 entries of the group.
 
+A family's own functions take a whole ragged value too, for example inside a
+`@deffun` (from v0.2.55). `foo_lpdf(y, args...)` adds the density of every
+group, `foo_lpdfs(y, args...)` returns one aggregate density per group, and
+`foo_rng(mus, args...)` draws each group of the ragged argument `mus` from the
+family's sized `foo_rng(vector[n], ...)`, returning a ragged value with the same
+groups. Ragged arguments are taken group by group; scalars and dense values are
+shared by every group. A family that defines its own method for a whole ragged
+value keeps it.
+
+```julia
+@deffun group_density(y::RaggedVector, mus::RaggedVector, s::real)::real = normal_lpdf(y, mus, s)
+```
+
 ## Sequential states
 
 `@scan` gives a recurrence an explicit initial state. Its trailing loop may

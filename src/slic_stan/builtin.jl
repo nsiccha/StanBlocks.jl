@@ -169,6 +169,8 @@ end
     ragged_common_ends ragged_matched_group
     ragged_select_length ragged_select_total ragged_select_ends ragged_select_index
     ragged_sum ragged_mean
+    # A family companion applied per group of a RaggedVector (decision 11dxlp0).
+    ragged_group_density ragged_group_pointwise ragged_group_rng ragged_group_args
     # Stan 2.37 exposed constraint transforms (Feature 1) — @deffun sigs below.
     sum_to_zero_constrain sum_to_zero_unconstrain sum_to_zero_jacobian
     simplex_constrain simplex_unconstrain simplex_jacobian
@@ -3579,6 +3581,149 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(_ragged_group_density)}; info) = 
     rhs = _assert_ragged_family_carrier(_ragged_group_call(x), center_type(x.args[1]))
     # The AGGREGATE density of the whole group — one scalar. Never `_lpdfs`.
     lpxf_expr(x.args[1], rhs)
+end
+
+# --- direct family-companion calls on a ragged value ------------------------
+# Decision `11dxlp0` (groupwise direct-call adapters). A `ys ~ foo(args…)` over a
+# ragged `ys` already lowers group by group (above). A DIRECT call of one of the
+# family's companions on a whole RaggedVector, typically inside another
+# `@deffun`, used to fail: it traced with no Stan definition behind it and was
+# refused as `foo_RaggedVector_lpdf`, or it typed as `anything`. Such a call now
+# applies the same per-group protocol, with ragged arguments sliced per group and
+# scalar or dense arguments shared:
+#
+#   foo_lpdf(ys, args…)    sum over g of foo_lpdf(ys[g], args_g…)        (real)
+#   foo_lpdfs(ys, args…)   [foo_lpdf(ys[g], args_g…) for g]   (vector[length(ys)])
+#   foo_rng(args…)         each group from foo_rng(vector[n_g], args_g…), as a
+#                          RaggedVector with the first ragged argument's ends
+#
+# `foo_lpdfs` is groupwise, like a ragged observation's `<obs>_likelihood`: a
+# group's density is joint for a vector family (`multi_normal`), so concatenating
+# elementwise `_lpdfs` would change what the family means. Element-level
+# pointwise values for factorising families are todo `1kf2m4c`.
+#
+# Only calls with no Stan definition take this path: a family that defines its
+# own method for the whole RaggedVector (or accepts it untyped) keeps it, so no
+# program that already compiled changes.
+const _COMPANION_KINDS = ("_lpdfs" => :pointwise, "_lpmfs" => :pointwise,
+    "_lpdf" => :density, "_lpmf" => :density, "_rng" => :draw)
+_companion_kind(f) = nothing
+_companion_kind(f::Function) = begin
+    name = String(nameof(f))
+    i = findfirst(((suffix, _),) -> endswith(name, suffix), _COMPANION_KINDS)
+    isnothing(i) ? nothing : (last(_COMPANION_KINDS[i]), name[1:end-length(first(_COMPANION_KINDS[i]))])
+end
+_is_ragged_value(a) = a isa StanExpr && center_type(a) <: RaggedVector
+# The argument whose groups the call ranges over: the variate of a density, the
+# first ragged argument of a draw. A draw that already takes a size token keeps
+# the sized-token protocol.
+_ragged_companion_carrier(::Val, args) =
+    !isempty(args) && _is_ragged_value(first(args)) ? 1 : nothing
+_ragged_companion_carrier(::Val{:draw}, args) =
+    any(a -> a isa StanExpr2{<:types.tokenof}, args) ? nothing : findfirst(_is_ragged_value, args)
+# The family's other companions share its module and base name (`foo_lpdfs` →
+# `foo_lpdf`, `foo_rng` → `foo`); this is the naming every family registration
+# uses (`builtin_module_names`, `@lpxf`).
+_companion_sibling(f::Function, name) = begin
+    mod = parentmodule(f)
+    sym = Symbol(name)
+    isdefined(mod, sym) || error(
+        "`", nameof(f), "` on a RaggedVector applies the family per group, which needs ",
+        "its companion `", name, "`; `", mod, "` defines no `", name, "`."
+    )
+    getproperty(mod, sym)
+end
+_ragged_companion_call(x::CanonicalExpr, rv; info) = begin
+    any(_is_ragged_value, x.args) || return nothing   # every traced call passes here
+    kind_base = _companion_kind(head(x))
+    isnothing(kind_base) && return nothing
+    kind, base = kind_base
+    i = _ragged_companion_carrier(Val(kind), x.args)
+    isnothing(i) && return nothing
+    _fundef(x, _trace_context(info)) === nothing || return nothing
+    isempty(x.kwargs) || error(
+        "`", short_expr(x), "` applies `", nameof(head(x)), "` per group of a RaggedVector; ",
+        "the per-group call takes positional arguments only, but keyword argument(s) ",
+        join(keys(x.kwargs), ", "), " were given."
+    )
+    _lower_ragged_companion(Val(kind), head(x), base, x.args, i; info)
+end
+_lower_ragged_companion(::Val{:density}, f, base, args, i; info) =
+    forward!(CanonicalExpr(ragged_group_density, f, args...); info)
+_lower_ragged_companion(::Val{:pointwise}, f, base, args, i; info) = begin
+    density = _companion_sibling(f, chop(String(nameof(f))))
+    forward!(CanonicalExpr(ragged_group_pointwise, density, args...); info)
+end
+_lower_ragged_companion(::Val{:draw}, f, base, args, i; info) = begin
+    layout = args[i]
+    ct = _probability_kind(_companion_sibling(f, base)) === :lpmf ? types.int : types.vector
+    mem = forward!(CanonicalExpr(Base.getfield, layout, 1); info)
+    ends = forward!(CanonicalExpr(Base.getfield, layout, 2); info)
+    total = _trace_stan_call(num_elements, mem; info)
+    token = StanExpr(ct, StanType(types.tokenof{ct}, (total,); value=ct, qual=:data))
+    draws = forward!(CanonicalExpr(ragged_group_rng, token, f, layout, args...); info)
+    # A draw must be made once: a RaggedVector over an unbound call would redraw
+    # it at every use of the result, so the memory is bound first.
+    forward!(CanonicalExpr(RaggedVector, _bind_ragged_draw(draws, nameof(f); info), ends); info)
+end
+_bind_ragged_draw(draws, fname; info) = begin
+    pending = _get_inline_pending(info)
+    pending === nothing && error(
+        "`", fname, "` on a RaggedVector draws every group into one memory vector, which ",
+        "needs a statement to bind it to; call it on the right of an assignment."
+    )
+    id = _next_inline_id(info)
+    name = Symbol(:ragged_draw__, id)
+    while name in keys(info)
+        id = _next_inline_id(info); name = Symbol(:ragged_draw__, id)
+    end
+    push!(pending, forward!(CanonicalExpr(:(=), name, draws); info))
+    info[name]
+end
+# `ragged_group_args(g, args…)` inside the adapters below: the arguments of group
+# `g`, each ragged one sliced (`_ragged_group_arg`), every other one shared. It
+# is a trace-time marker that splats into the per-group call and emits nothing.
+expand_inline_or_trace(x::CanonicalExpr{typeof(ragged_group_args)}; info) = begin
+    g, args = first(x.args), x.args[2:end]
+    Tuple(forward!(CanonicalExpr(_ragged_group_arg, a, g); info) for a in args)
+end
+@deffun begin
+    @stanonly begin
+    "Add a family's log density over the groups of a RaggedVector, slicing ragged arguments per group."
+    ragged_group_density(lpxf, y::RaggedVector, args...)::real = begin
+        acc = 0.0
+        for g in 1:length(y)
+            acc .= acc + lpxf(y[g], ragged_group_args(g, args...)...)
+        end
+        acc
+    end
+    "Return one log density per group of a RaggedVector, slicing ragged arguments per group."
+    ragged_group_pointwise(lpxf, y::RaggedVector, args...)::vector[length(y)] = begin
+        out::vector[length(y)]
+        for g in 1:length(y)
+            out[g] = lpxf(y[g], ragged_group_args(g, args...)...)
+        end
+        out
+    end
+    "Draw every group of a RaggedVector layout from a family's sized companion, slicing ragged arguments per group."
+    ragged_group_rng(vector[m], rng, layout::RaggedVector, args...)::vector[m] = begin
+        out::vector[m]
+        for g in 1:length(layout)
+            out[ragged_start(layout.ends, g):ragged_end(layout.ends, g)] =
+                rng(vector[ragged_length(layout.ends, g)], ragged_group_args(g, args...)...)
+        end
+        out
+    end
+    "Draw every group of a RaggedVector layout from a family's sized companion, slicing ragged arguments per group."
+    ragged_group_rng(int[m], rng, layout::RaggedVector, args...)::int[m] = begin
+        out::int[m]
+        for g in 1:length(layout)
+            out[ragged_start(layout.ends, g):ragged_end(layout.ends, g)] =
+                rng(int[ragged_length(layout.ends, g)], ragged_group_args(g, args...)...)
+        end
+        out
+    end
+    end
 end
 
 # `v[mask]` with `mask :: bool[n]` (an element-wise comparison result such as
