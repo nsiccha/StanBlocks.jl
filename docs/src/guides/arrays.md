@@ -94,8 +94,15 @@ groups. Ragged arguments are taken group by group; scalars and dense values are
 shared by every group. A family that defines its own method for a whole ragged
 value keeps it.
 
-```julia
-@deffun group_density(y::RaggedVector, mus::RaggedVector, s::real)::real = normal_lpdf(y, mus, s)
+```@example arrays
+const RaggedVector = StanBlocks.RaggedVector
+@deffun group_density(y::RaggedVector, mus::RaggedVector, s::real)::real =
+    normal_lpdf(y, mus, s)
+grouped = @slic (; y=[[0.2, -0.1], [0.4]], mus=[[0.0, 0.1], [0.3]]) begin
+    s ~ exponential(1)
+    lp = group_density(y, mus, s)
+end
+println(stan_code(grouped))
 ```
 
 ## Sequential states
