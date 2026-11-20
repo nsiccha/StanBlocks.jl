@@ -482,17 +482,23 @@ end
                 libraries = fetch.(builds)
                 @test allunique(libraries) && read.(libraries, String) == sources
                 # The shared files were built once, under the toolchain lock;
-                # both models compiled at the same time without it.
+                # both models compiled at the same time without it, each after
+                # its own tape-memory object (snag stan-tape-memory-288a1422).
+                # A tape object may compile while the other build holds the
+                # lock for its shared phase, so its lock state is not asserted.
                 shared = ["bin/stanc locked", "src/bridge.o locked",
                           "lib/sundials.a locked", "lib/tbb.so locked"]
-                @test buildlog(home) == [shared; "model unlocked"; "model unlocked"]
+                @test buildlog(home)[1:4] == shared
+                @test all(startswith("tape "), buildlog(home)[5:6])
+                @test buildlog(home)[7:8] == ["model unlocked", "model unlocked"]
                 # Another build variant's own shared file is built under the lock too.
                 variant = StanBlocks._artifact_library(code; make_args=[args; "VARIANT=hess"])
                 @test read(variant, String) == code
-                @test buildlog(home)[end-1:end] == ["src/bridge_hess.o locked", "model unlocked"]
+                @test buildlog(home)[end-2:end] ==
+                    ["src/bridge_hess.o locked", "tape unlocked", "model unlocked"]
                 # A published library is returned again without another build.
                 @test StanBlocks._artifact_library(sources[1]; make_args=args) == libraries[1]
-                @test length(buildlog(home)) == 8
+                @test length(buildlog(home)) == 11
             end
             # A Makefile that names no shared targets keeps the old, conservative
             # shape: the whole compile holds the toolchain lock.
@@ -502,7 +508,8 @@ end
             withenv("BRIDGESTAN" => home, "STANBLOCKS_BUILD_DIR" => joinpath(dir, "build"),
                     "STANBLOCKS_TEST_RENDEZVOUS" => rendezvous) do
                 @test read(StanBlocks._artifact_library(code; make_args=args), String) == code
-                @test buildlog(home) == ["bin/stanc locked", "src/bridge.o locked",
+                # The tape object needs only headers, so it compiles first.
+                @test buildlog(home) == ["tape locked", "bin/stanc locked", "src/bridge.o locked",
                     "lib/sundials.a locked", "lib/tbb.so locked", "model locked"]
             end
         end
@@ -543,14 +550,15 @@ end
                 @test read(build("// 1\n" * code), String) == "// 1\n" * code
                 shared = ["bin/stanc locked", "src/bridge.o locked",
                           "lib/sundials.a locked", "lib/tbb.so locked"]
-                @test readlines(log) == [shared; "model unlocked"]
+                @test readlines(log) == [shared; "tape unlocked"; "model unlocked"]
                 foreach(path -> chmod(path, 0o555), (home, unnamed, user))
                 try
                     withenv("HOME" => user) do
                         # Its shared files current, the tree compiles a distinct model
                         # without the lock, and nothing is written into it.
                         @test read(build("// 2\n" * code), String) == "// 2\n" * code
-                        @test readlines(log) == [shared; "model unlocked"; "model unlocked"]
+                        @test readlines(log) == [shared; "tape unlocked"; "model unlocked";
+                                                 "tape unlocked"; "model unlocked"]
                         @test !ispath(lockfile)
                         # A flag variant whose bridge object is missing is not built:
                         # the call names the file and the tree instead.
@@ -561,7 +569,7 @@ end
                         end
                         @test err isa ErrorException
                         @test occursin("./src/bridge_hess.o", err.msg) && occursin(home, err.msg)
-                        @test length(readlines(log)) == 6
+                        @test length(readlines(log)) == 8
                         # refused: a tree that cannot hold the toolchain lock and whose
                         # Makefile names no shared targets gives no way to tell that a
                         # model build writes only next to its source (`0cb7c06` keeps
@@ -586,7 +594,7 @@ end
                     try
                         sleep(3)
                         @test !istaskdone(waiter)
-                        @test length(readlines(log)) == 6
+                        @test length(readlines(log)) == 8
                     finally
                         chmod(home, 0o755)
                         put!(release, nothing)

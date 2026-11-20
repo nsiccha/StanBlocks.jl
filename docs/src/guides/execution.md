@@ -32,6 +32,14 @@ can take longer than subsequent calls because generated libraries are cached
 by their source and build inputs. Build errors propagate; use
 `nan_on_error=false` when diagnosing invalid density evaluations.
 
+A gradient is recorded on the evaluating thread's reverse-mode tape. Stan
+keeps that thread's tape memory, about twice the largest gradient it has
+evaluated, for as long as the thread lives, separately for every compiled
+library. Destroying the problem or running Julia's garbage collector does not
+return it. A long-lived process that has finished a fit can hand it back with
+`StanBlocks.release_tape_memory(problem)`, which runs on every Julia thread and
+leaves later gradients unchanged.
+
 ## Operations
 
 The descriptor is generated from the traced program. Its operation entries

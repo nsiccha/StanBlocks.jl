@@ -418,6 +418,13 @@ function _toolchain_paths(home, make_args, environment; dependencies=String[])
     (; paths, stamps=[root => _build_tree_stamp(root) for root in roots])
 end
 
+# The C functions that hand a thread's reverse-mode tape memory back to the
+# system (`tape_memory.cpp`, called from `tape_memory.jl`). Every library links
+# them, so their source is part of every artifact's identity.
+const _TAPE_SOURCE_FILE = joinpath(@__DIR__, "tape_memory.cpp")
+include_dependency(_TAPE_SOURCE_FILE)
+const _TAPE_SOURCE = read(_TAPE_SOURCE_FILE, String)
+
 function _native_build_context(home, make_args; stanc_args=String[], dependencies=String[])
     # Source distributions and build configuration are read-only while in use.
     # Include compiler binaries and the documented make/local override so an
@@ -440,7 +447,8 @@ function _native_build_context(home, make_args; stanc_args=String[], dependencie
        cpu=(; target=Sys.CPU_NAME, models=sort!(unique(info.model for info in Sys.cpu_info()))),
        environment,
        files=[name => _build_file_digest(joinpath(home, name)) for name in files],
-       compilers=_build_compilers(make_args))
+       compilers=_build_compilers(make_args),
+       tape=bytes2hex(SHA.sha256(_TAPE_SOURCE)))
     # The home's own trees are identified by its BridgeStan version and path.
     # Only builds that name other toolchain paths, or pass stanc arguments,
     # gain an entry, so the keys of builds that do neither are unchanged.
@@ -558,6 +566,42 @@ function _published_library(sc, context, filename)
     library
 end
 
+# make, and the shell its recipes run in, read a path with forward slashes.
+_make_path(path) = Sys.iswindows() ? replace(path, '\\' => '/') : path
+
+# Compile the tape-memory functions (`tape_memory.cpp`) into an object in a
+# model's staging directory, with that model's make arguments: make's built-in
+# `%.o: %.cpp` rule runs in the BridgeStan home, so the object gets the flags
+# the model's own object gets (threading, optimization, include paths, symbol
+# visibility). Returns the object's path, or `nothing` for a home without a
+# Makefile, which `BridgeStan.compile_model` reports itself.
+function _compile_tape_object(home, make_args, staging)
+    isfile(joinpath(home, "Makefile")) || return nothing
+    source = joinpath(staging, "stanblocks_tape.cpp")
+    write(source, _TAPE_SOURCE)
+    object = _make_path(splitext(source)[1] * ".o")
+    cmd = Cmd(`$(BridgeStan.get_make()) $make_args $object`; dir=home)
+    mktemp(staging) do path, io
+        success(pipeline(cmd; stdout=io, stderr=io)) && return
+        close(io)
+        error("Compiling the tape-memory functions StanBlocks links into every model ",
+            "library (", _TAPE_SOURCE_FILE, ") failed for make_args=", repr(make_args),
+            ".\nCommand: $cmd\nOutput:\n", read(path, String))
+    end
+    object
+end
+
+# Link `object` into the model library. BridgeStan's link rule lists
+# `$(LDLIBS)` after the model's object; make keeps the last assignment a
+# variable gets on its command line, and one there replaces the environment's,
+# so the object joins the caller's own `LDLIBS` in a single assignment.
+function _link_tape_object(make_args, object)
+    object === nothing && return make_args
+    given = [chopprefix(arg, "LDLIBS=") for arg in make_args if startswith(arg, "LDLIBS=")]
+    libs = isempty(given) ? get(ENV, "LDLIBS", "") : last(given)
+    String[filter(!startswith("LDLIBS="), make_args); rstrip(string("LDLIBS=", object, ' ', libs))]
+end
+
 "The published immutable library for Stan source `sc`, compiled first if absent."
 function _artifact_library(sc; filename="model.stan", make_args, stanc_args=String[], dependencies=String[])
     args, stanc = _split_stanc_make_args(make_args, stanc_args)
@@ -581,7 +625,8 @@ function _artifact_library(sc; filename="model.stan", make_args, stanc_args=Stri
         compile() = mktempdir(dirname(source); prefix="build-") do staging
             staged_source = joinpath(staging, basename(source))
             write(staged_source, sc)
-            built = BridgeStan.compile_model(staged_source; make_args=args,
+            tape = _compile_tape_object(home, args, staging)
+            built = BridgeStan.compile_model(staged_source; make_args=_link_tape_object(args, tape),
                 stanc_args=_compile_stanc_args(stanc))
             # A published library is complete and is NEVER overwritten.
             # Failed compilation only leaves private staging files.

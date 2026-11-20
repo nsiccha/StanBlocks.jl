@@ -134,6 +134,12 @@ time; evaluating it from several crashes the process. Keep BridgeStan's
 threading/ABI configuration consistent across libraries loaded in one process.
 Stan enables threading for any nonempty `STAN_THREADS` value, including
 `false`; an empty value disables it.
+
+Each thread keeps its tape's memory for as long as it lives, separately for
+every library: about twice the largest gradient it has evaluated there.
+Every library StanBlocks builds links functions that hand that memory back;
+[`StanBlocks.release_tape_memory`](@ref) runs them on every Julia thread, for
+example once a fit is over.
 """
 instantiate(x::SlicModel; kwargs...) = instantiate(stan_model(x); kwargs...)
 function instantiate(x::StanModel; nan_on_error=true, make_args=["STAN_THREADS=true"], warn=false, path=nothing)
@@ -159,9 +165,11 @@ The library is `<build-dir>/<key>/model_<key>_model.so`, beside its source
 `model_<key>.stan`, where `<build-dir>` is `\$STANBLOCKS_BUILD_DIR`, else
 `tempdir()/stanblocks`. The key covers everything `stan_instantiate`'s does
 (source text, ordered `make_args`, build root, BridgeStan version and
-location, CPU and compiler identities, build environment, `make/local`, and
-the state of every toolchain path the build names), plus the `stanc_args` and
-the state of every dependency below. A change to any of them selects a new
+location, CPU and compiler identities, build environment, `make/local`, the
+state of every toolchain path the build names, and the source of the
+tape-memory functions every library links, see
+[`StanBlocks.release_tape_memory`](@ref)), plus the `stanc_args` and the state
+of every dependency below. A change to any of them selects a new
 library; a published library is never rebuilt or overwritten, so one already
 loaded by a process stays valid. Identical calls return the same path without
 compiling.
