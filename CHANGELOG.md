@@ -16,8 +16,11 @@ breaking digit).
   `BridgeStan.release_memory(model)`, which runs on every Julia thread. For a
   problem from `stan_instantiate`, call `BridgeStan.release_memory(problem.model)`.
   StanBlocks builds with whichever BridgeStan.jl the environment has, so the call
-  needs BridgeStan.jl from that line (a `[sources]` entry with
-  `subdir = "julia"`); StanBlocks' own test environment takes it from there. The
+  needs BridgeStan.jl from that line: a `[sources]` entry with `subdir = "julia"`
+  on Julia 1.11 and later; on Julia 1.10, which ignores
+  `[sources]`, `Pkg.add(url=…, subdir="julia", rev=…)`. Its default source home
+  is then the dogfood source, so no `BRIDGESTAN` is needed. StanBlocks' own test
+  environment and CI take it from there (`test/ci_instantiate.jl`). The
   artifact key no longer covers the removed file, so every library compiles once
   more on first use after upgrading (snag `stan-tape-memory-288a1422`, decision
   `1f3gj3e`).
