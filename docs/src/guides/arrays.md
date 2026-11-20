@@ -47,6 +47,9 @@ println(stan_code(independent))
 Within a cell, an indexed left-hand side is an output available after the
 loop. A fresh unindexed probability statement introduces a cell-local
 parameter. A fresh unindexed assignment is scratch work, not an output array.
+One computed from data alone, an integer index array such as
+`sort_indices_asc(x)` included, is filled once in `transformed data` and read
+back per cell.
 Do not read another cell's output from an independent plate.
 
 Cells can also contain vectors or matrices. Fixed matrix dimensions retain

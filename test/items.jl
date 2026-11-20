@@ -10168,10 +10168,11 @@ end
     # feeding cmt-keyed multi-output do-block obs. Both the auto-sugar `y[c .== 1]` and
     # the explicit `idx = findall(c .== 1)` forms used to abort with `plate: unsupported
     # per-cell type array[] int` — the index array was discovered as a fresh cell binding
-    # and promoted to an unrepresentable outer collection. It must NOT be collected across
-    # cells: it is inlined at each use so the index is recomputed in whichever block
-    # `distribute!` routes the use to (avoiding a loop-local stranded in the data-loop copy
-    # when the model-loop copy references it — stanc "Identifier not in scope").
+    # and promoted to an unrepresentable outer collection. The sugar's index has no binding
+    # and is recomputed inline in the block that uses it; the explicit binding is data-only,
+    # so it is stored once in transformed data as flat `array[] int` memory and read back
+    # per cell (snag use-a-native-sli-0c201703). Neither may be a loop-local stranded in the
+    # data-loop copy that the model-loop copy references (stanc "Identifier not in scope").
     data = (;
         ts  = [[0.5, 0.7, 0.9, 0.4], [0.6, 0.8, 0.3, 0.9]],
         ys  = [[0.6, 0.8, 1.0, 0.5], [0.7, 0.9, 0.4, 1.1]],
@@ -10211,12 +10212,18 @@ end
     for m in (sugar, explicit)
         @test transpiles(m)
         @test stanc_compiles(m)
-        code = stan_code(m)
-        # The findall index is recomputed INLINE in the model block, never a stranded
-        # loop-local declaration in transformed data.
-        @test occursin("findall(jbroadcasted_eq(cs.1[", stan_block(code, "model"))
-        @test !occursin("boolmask_idx", stan_block(code, "transformed data"))
-        @test !occursin(r"int (mu_ipk|mu_ipd)", stan_block(code, "transformed data"))
+        @test !occursin("boolmask_idx", stan_block(stan_code(m), "transformed data"))
+    end
+    # The sugar's findall is recomputed INLINE in the model block.
+    @test occursin("findall(jbroadcasted_eq(cs.1[", stan_block(stan_code(sugar), "model"))
+    # The explicit index arrays are filled once in transformed data and read per cell.
+    let code = stan_code(explicit), td = stan_block(code, "transformed data")
+        @test occursin("array[sum(mu_ipk__pl_len)] int mu_ipk;", td)
+        @test occursin("array[sum(mu_ipd__pl_len)] int mu_ipd;", td)
+        @test occursin("] = findall(jbroadcasted_eq(cs.1[", td)
+        @test !occursin("findall", stan_block(code, "model"))
+        @test occursin("mu_ipk[ragged_start(mu_ipk__pl_end, plate_i__pl_1):ragged_end(mu_ipk__pl_end, plate_i__pl_1)]",
+            stan_block(code, "model"))
     end
     # End-to-end BridgeStan: both forms match the fixed-slice reference logdensity AND
     # are gradient-finite.
