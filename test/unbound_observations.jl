@@ -255,9 +255,13 @@ Deterministic int cells (findall/boolean-mask) keep inlining (plate-cell-int).
     @test occursin(r"array\[sum\(pred_bb__pl_len\)\] int pred_bb;", gq)
     @test occursin("tcat_int_rng(", gq)
     @test occursin("tresp_int_rng(", gq)
-    # The findall index still inlines at its use (plate-cell-int preserved).
-    @test occursin("findall(", gq)
-    @test !occursin("boolmask_idx", stan_block(code, "transformed data"))
+    # The data-only findall index is filled once in transformed data and read
+    # back per cell, never a stranded loop local (snag use-a-native-sli-0c201703).
+    td = stan_block(code, "transformed data")
+    @test occursin(r"array\[sum\(pred_ipk__pl_len\)\] int pred_ipk;", td)
+    @test occursin("] = findall(", td)
+    @test !occursin("findall(", gq)
+    @test !occursin("boolmask_idx", td)
     d = stan_descriptor(m)
     for name in (:pred_cc, :pred_bb)
         output = only(o for o in d.outputs if o.name === name)

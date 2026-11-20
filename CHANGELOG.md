@@ -17,7 +17,8 @@ breaking digit).
   `array[N, K] int` for fixed-width cells (extra plate axes lead), or flat
   `array[] int` memory with `__pl_len`/`__pl_end` for a per-cell length. It is
   filled once in `transformed data` and read back per cell, so the index is no
-  longer recomputed on every log-density evaluation. An int array that reads a
+  longer recomputed on every log-density evaluation. A pure alias such as
+  `c = cs[i]` computes nothing and stays inline. An int array that reads a
   parameter, the boolean-mask sugar `y[c .== 1]`, and a per-cell length under
   several plate axes or in a plate inside a called sub-model keep the inline
   form. Transformed data is not an output, so draws and the descriptor are

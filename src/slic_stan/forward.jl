@@ -3369,6 +3369,11 @@ end
 # The (name, type annotation) a `~`/`=` statement binds when its LHS is a bare or
 # typed Symbol, else `nothing`. Fresh binding discovery itself is trace-based
 # (`_plate_discover` below).
+# The right-hand side of a pure alias: a name, or plain indexing of a name by
+# names and integer literals (`c`, `cs[i]`). It computes nothing.
+_plate_alias_rhs(x::Symbol) = true
+_plate_alias_rhs(x) = x isa Expr && x.head === :ref && x.args[1] isa Symbol &&
+    all(a -> a isa Symbol || a isa Integer, x.args[2:end])
 _plate_fresh_info(s) = begin
     lhs = if s isa Expr && s.head === :call && length(s.args) >= 3 && s.args[1] === :~
         s.args[2]                         # `lhs ~ dist`  (raw `~` ⇒ Expr(:call, :~, lhs, rhs))
@@ -5067,17 +5072,26 @@ _forward_loop_core!(;
     # `distribute!` routes with the parameter-dependent statements that read it.
     # Nor is a compiler hoist (`_hoist_index`, marked `index_hoist`) stored: only
     # the discovery probe makes it, so it is dropped like the sugar's index above.
+    # A cell-level pure ALIAS (`r = c`, `r = cs[i]`) computes nothing, so it
+    # keeps the inline path: storing it would only copy data, and the aliased
+    # program stays identical to the direct one (snag plate-cell-local-6cbd9608).
     # (Snag use-a-native-sli-0c201703.)
     cell_positions = Set{Symbol}(Iterators.flatten((idxs, params,
         (_plate_global_name(info, s) for s in Iterators.flatten((idxs, params))))))
-    stores_data_int(T) = qual(T) === :data && stan_ndim(T) == 1 &&
-        !get(T.info, :index_hoist, false) && (
+    alias_names = Set{Symbol}()
+    for s in body_stmts
+        fi = _plate_fresh_info(s)
+        fi !== nothing && s isa Expr && s.head === :(=) && _plate_alias_rhs(s.args[2]) &&
+            push!(alias_names, _plate_global_name(info, fi[1]))
+    end
+    stores_data_int(f, T) = qual(T) === :data && stan_ndim(T) == 1 &&
+        !get(T.info, :index_hoist, false) && !(f in alias_names) && (
         !_plate_is_ragged_cell(T, cell_positions) ||
             (length(outer_dims) == 1 && !(info isa SubModel)))
     inline_int_names = Set{Symbol}(
         f for (f, T) in fresh if center_type(T) <: types.int && stan_ndim(T) >= 1 &&
             !(center_type(T) === types.int && _decl_role(T) === :sampled) &&
-            !_is_loop_collection(T) && !stores_data_int(T)
+            !_is_loop_collection(T) && !stores_data_int(f, T)
     )
     if !isempty(inline_int_names)
         fresh = Pair{Symbol,Any}[p for p in fresh if !(p.first in inline_int_names)]

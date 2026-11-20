@@ -8,7 +8,8 @@ at the cell's top level: one inside a called `@slic` sub-model was left as a
 loop local in the transformed-data copy of the loop, and stanc refused the
 transformed-parameters copy that read it ("Identifier ... not in scope").
 An int array that reads a parameter cannot be stored (Stan has no integer
-parameters) and is still computed in the block that uses it.
+parameters) and is still computed in the block that uses it, and a pure alias
+(`c = cs[i]`) computes nothing and stays inline.
 """
 @testitem "slic: a data-only int-array cell binding is stored once in transformed data" tags=[:slic, :plate, :ragged, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
@@ -115,6 +116,25 @@ parameters) and is still computed in the block that uses it.
     @test occursin("array[sum(loop_i_perm__pl_len)] int loop_i_perm;", stan_block(code, "transformed data"))
     @test !occursin("sort_indices_asc", stan_block(code, "model"))
     @test stanc_compiles(looped)
+
+    # A pure alias of a data int array computes nothing: it stays inline, so the
+    # program is the direct spelling's (no transformed-data copy).
+    cs = [[3, 1, 2], [2, 1], [4, 2, 1, 3]]
+    aliased = @slic (; xs, cs, ys = xs) begin
+        b ~ normal(0.0, 1.0)
+        @plate for i in eachindex(ys)
+            c = cs[i]
+            ys[i] ~ normal(b * xs[i][c], 1.0)
+        end
+    end
+    plain = @slic (; xs, cs, ys = xs) begin
+        b ~ normal(0.0, 1.0)
+        @plate for i in eachindex(ys)
+            ys[i] ~ normal(b * xs[i][cs[i]], 1.0)
+        end
+    end
+    @test stan_code(aliased) == stan_code(plain)
+    @test stanc_compiles(aliased)
 
     # An index array that reads a parameter stays where it is used.
     @slic param_sorted(x, b) = begin
