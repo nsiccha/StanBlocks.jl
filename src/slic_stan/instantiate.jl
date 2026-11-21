@@ -217,6 +217,107 @@ function stan_library(source::AbstractString; make_args=["STAN_THREADS=true"],
         stanc_args=String[arg for arg in stanc_args], dependencies=files)
 end
 """
+    stick_simplex_stan() -> String
+
+Return the Stan definitions of the log-space stick-breaking simplex, the frame
+SLIC samples `p::simplex[K] ~ dirichlet(a)` in when `a` depends on parameters
+(`stanblocks-use` §4), for a hand-written Stan program. They go inside the
+program's `functions` block, pasted or through `#include` of the file
+[`stick_simplex_include`](@ref StanBlocks.stick_simplex_include) writes, and
+are used exactly as SLIC emits them:
+
+```stan
+parameters { vector[K - 1] p_free; }
+transformed parameters {
+  vector[K] p_log = dirichlet_stick_log_simplex(p_free, a);
+  vector[K] p = exp(p_log);
+}
+model { target += dirichlet_stick_lpdf(p_free | a); }
+```
+
+`dirichlet_stick_log_simplex(s, a)` (also for `array[] vector s`) returns
+`log p`, which stays finite where `p` underflows to 0.
+`dirichlet_stick_lpdf(s | a)` is the log density of the free coordinates `s`,
+the frame's Jacobian included, computed per stick without forming the weights.
+Both use the fully non-centred frame, stick scales `A = a` and `B = b` (the
+sum of the later concentrations). `stick_log_simplex(s, A, B)` and
+`stick_dirichlet_lpdf(s | a, A, B)` take the per-stick scales directly, for
+another frame (`A = B = 1` is the plain stick-breaking logit).
+"""
+stick_simplex_stan() = begin
+    model = SlicModel(_STICK_SIMPLEX_USES, (; K=3, N=2, a=[1.0, 1.0, 1.0], y=0.5), @__MODULE__)
+    m = match(r"^functions \{\n(.*?)\n\}\ndata \{"s, stan_code(model))
+    m === nothing && error("stick_simplex_stan: the traced program has no functions block")
+    # Each definition is its comment lines, its signature and its body, which
+    # closes with a `}` in the first column. Keep the stick-simplex ones: the
+    # observation's own companions are defined in the same block.
+    defs = String[]
+    found = Set{Symbol}()
+    current = String[]
+    for line in split(m.captures[1], '\n')
+        push!(current, line)
+        line == "}" || continue
+        # The signature is the first line after the comment: its first call
+        # parenthesis follows the function's name.
+        sig = something(findfirst(l -> !startswith(l, "//"), current), 1)
+        name = match(r"(\w+)\(", current[sig])
+        if name !== nothing && Symbol(name.captures[1]) in _STICK_SIMPLEX_FUNCTIONS
+            push!(defs, join(current, '\n'))
+            push!(found, Symbol(name.captures[1]))
+        end
+        empty!(current)
+    end
+    found == Set(_STICK_SIMPLEX_FUNCTIONS) || error(
+        "stick_simplex_stan: the traced program defines ", sort!(collect(found)),
+        " of ", collect(_STICK_SIMPLEX_FUNCTIONS))
+    string(join(defs, '\n'), "\n")
+end
+const _STICK_SIMPLEX_FUNCTIONS = (:stick_log_simplex, :stick_dirichlet_lpdf,
+    :dirichlet_stick_log_simplex, :dirichlet_stick_lpdf)
+# One use of each overload, so the functions block holds every definition.
+const _STICK_SIMPLEX_USES = quote
+    c ~ lognormal(0.0, 1.0)
+    p::simplex[K] ~ dirichlet(c * a)
+    q::simplex[N, K] ~ dirichlet(c * a)
+    y ~ normal(p[1] + q[1][1], 1.0)
+end
+"""
+    stick_simplex_include(dir=joinpath(<build-dir>, "include")) -> String
+
+Write [`stick_simplex_stan`](@ref StanBlocks.stick_simplex_stan)'s definitions
+to `dir/stick_simplex.stan` and return its path. Include it inside a
+hand-written program's `functions` block,
+
+```stan
+functions {
+  #include stick_simplex.stan
+}
+```
+
+and compile with the directory on the include path, for example
+`stan_library(source; stanc_args=["--include-paths=" * dirname(path)],
+dependencies=[path])`. `<build-dir>` is `\$STANBLOCKS_BUILD_DIR`, else
+`tempdir()/stanblocks`. The file is replaced atomically, and only when its
+text changes.
+"""
+stick_simplex_include(dir=joinpath(_default_build_dir(), "include")) = begin
+    text = string("// Log-space stick-breaking simplex for x ~ dirichlet(a), written by ",
+        "StanBlocks.stick_simplex_include()\n", stick_simplex_stan())
+    path = joinpath(mkpath(dir), "stick_simplex.stan")
+    isfile(path) && read(path, String) == text && return path
+    tmp, io = mktemp(dir)
+    try
+        write(io, text)
+        close(io)
+        mv(tmp, path; force=true)
+    catch
+        close(io)
+        rm(tmp; force=true)
+        rethrow()
+    end
+    path
+end
+"""
     _guard_ragged_stan_version(sc)
 
 Loudly reject compiling `sc` when it uses a `*_jacobian` constraint transform

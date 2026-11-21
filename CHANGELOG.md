@@ -4,6 +4,37 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.59
+
+- **A simplex whose Dirichlet concentration depends on parameters is sampled in
+  a log-space stick-breaking frame.** Stan holds a `simplex` in linear space: at
+  concentrations near 1e-3 its weights fall below about e^-1000, round to 0, and
+  `dirichlet` answers `+Inf` with a non-finite gradient, which samplers report as
+  divergences; a sampled concentration also rescales the coordinates it governs,
+  a funnel no linear metric fits. `p::simplex[K] ~ dirichlet(a)` (and the bare
+  `p ~ dirichlet(a)`, an array `p::simplex[N, K]`, or a simplex plate cell) whose
+  `a` reads a parameter now emits a `p_free` parameter of `K - 1` coordinates,
+  transformed parameters `p_log = dirichlet_stick_log_simplex(p_free, a)` and
+  `p = exp(p_log)`, and `target += dirichlet_stick_lpdf(p_free | a)` in the model
+  block. Stick `k` is `V_k ~ Beta(a_k, b_k)`, written in a fully non-centred
+  coordinate, `logit V_k = log σ(s_k)/a_k − log σ(−s_k)/b_k` (decision
+  `1r1i2of`). Its density is computed per stick
+  without forming the weights and stays exact at any concentration. The model is
+  unchanged: `p` keeps its values and output column, and prior-only programs and
+  re-draws are as before. The model-block term includes the frame's Jacobian, so
+  a `jacobian = false` evaluation includes it as well (the density of `p` alone
+  is unbounded near zero weights for a concentration below 1). A data
+  concentration keeps Stan's simplex; `dirichlet(a; frame = :native)` keeps it for
+  a sampled one (the choice for a large concentration the data pin tightly,
+  where a non-centred stick can couple to it) and `frame = :stick` takes the
+  stick frame for a data one.
+  Callers that pass a constrained `p` by name (an init, `param_unconstrain`) pass
+  `p_free` instead (snag `hierarchical-spa-1a7808bd`, decision `18ro7g0`).
+- **Hand-written Stan programs can include the same functions.**
+  `StanBlocks.stick_simplex_stan()` returns their definitions and
+  `StanBlocks.stick_simplex_include()` writes them to `stick_simplex.stan` for
+  `#include` inside a `functions` block.
+
 ## v0.2.58
 
 - **Concatenating many columns takes time and Stan source proportional to
