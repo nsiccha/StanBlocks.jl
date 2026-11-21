@@ -9,7 +9,7 @@ every ragged cell inside a sub-model was refused ("ragged vector cells inside
 a called @slic submodel are not supported yet").
 
 Such a sub-model called inside a plate cell stores its plate over the
-flattened inner index (v0.2.62, `test/nested_plates.jl`).
+flattened inner index (`test/nested_plates.jl`).
 """
 @testitem "slic: a ragged plate inside a called sub-model" tags=[:slic, :plate, :ragged, :submodel, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
