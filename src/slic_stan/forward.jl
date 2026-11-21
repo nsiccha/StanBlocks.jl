@@ -597,16 +597,31 @@ end
 # enclosing loop's promoted storage. A bound name an enclosing context owns is
 # this loop's own unless an earlier loop of the same emit trace took it
 # (`claimed`), so the emit trace makes the probe's choices again, in order.
-_plate_fresh_name!(base::Symbol, taken; info) = begin
+# A nested plate's flattened storage (`_forward_flat_nested!`) is bound before
+# its emit trace, by the enclosing loop, and marked with the nested plate's
+# `owner` key: that plate takes such a name as its own, in both traces.
+_plate_fresh_name!(base::Symbol, taken; info, owner=nothing) = begin
     for k in Iterators.countfrom(1)
         name = k == 1 ? base : Symbol(base, :_, k)
         name in taken && continue
         name in keys(info) || return name
+        owner !== nothing && _plate_flat_owner(info[name]) === owner && return name
         entry = _plate_context_entry(name; info)
         (entry === nothing || entry.global_name in entry.owner.claimed) && continue
         push!(entry.owner.claimed, entry.global_name)
         return name
     end
+end
+# The nested plate that owns a flattened carrier or view (`_forward_flat_nested!`),
+# or `nothing`.
+_plate_flat_owner(x::StanExpr) = _plate_flat_owner(type(x))
+_plate_flat_owner(T::StanType) = get(T.info, :nested_flat_owner, nothing)
+_plate_flat_owner(_) = nothing
+# The one-axis loop this plate is traced inside — `(; idx, dim, recipes, flat_owner)`
+# — or `nothing` at model scope.
+_plate_enclosing(info) = begin
+    context = _trace_context(info)
+    context === nothing ? nothing : context.plate_enclosing
 end
 # A discovery probe's names are discarded with its bindings: restore the claims
 # of every enclosing context, and the result-less plate names, after it.
@@ -4171,6 +4186,12 @@ _plate_probe(info::StanModel) =
 _plate_in_enclosing_loop(info) =
     _plate_context(info) !== nothing || get(meta(_plate_root_info(info)), :plate_probe, false)
 _plate_probe(info::SubModel) = SubModel(_plate_probe(parent(info)), name(info), copy(locals(info)))
+_plate_hide_flat!(probe::StanModel, owner) =
+    foreach(k -> delete!(vars(probe), k), [k for (k, v) in pairs(vars(probe)) if _plate_flat_owner(v) === owner])
+_plate_hide_flat!(probe::SubModel, owner) = begin
+    foreach(k -> delete!(locals(probe), k), [k for (k, v) in pairs(locals(probe)) if _plate_flat_owner(v) === owner])
+    _plate_hide_flat!(parent(probe), owner)
+end
 
 # Per-cell input accessor for a positional plate iterable. A DENSE iterable slices
 # with ordinary `it[idxs...]` (scalar element or dense sub-slice). A CERTIFIED
@@ -4674,10 +4695,13 @@ _plate_size_defs!(defs, x::AssignmentExpr) = begin
     nothing
 end
 
-_plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanModel,SubModel}) =
+_plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanModel,SubModel}, hide_owner=nothing) =
     _plate_discard_probe_names(info) do; _with_trace_state(info, :inline_pending, Any[]) do
         probe = _plate_probe(info)
         root = _plate_root_info(probe)
+        # A nested plate's own flattened storage is already bound in its emit
+        # trace; its cells are fresh to its own discovery all the same.
+        hide_owner === nothing || _plate_hide_flat!(probe, hide_owner)
         before = Set(keys(root))
         for idx in idxs
             probe[idx] = StanExpr(idx, StanType(types.int; qual=:data))
@@ -4738,6 +4762,11 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
         defs = OrderedDict{Symbol,Any}()
         traced === nothing || _plate_size_defs!(defs, traced)
         merge!(size_table, defs)
+        # A nested plate's flattened tables are declared at the root before this
+        # loop (`_forward_flat_nested!`): a size may name them as they are.
+        for k in keys(root)
+            k isa Symbol && _plate_flat_owner(root[k]) !== nothing && (size_table[k] = StanExpr(k, StanType(types.int)))
+        end
         # The annotated-loop sugar has no collected result (`ret_expr === nothing`).
         ret = ret_expr === nothing ? nothing : forward!(canonical(ret_expr); info=probe)
         # idx/param helper bindings flatten to their global names in the root; skip
@@ -5019,6 +5048,14 @@ _forward_loop_core!(;
     # enclosing loop promotes from the first pass must match the second).
     ns = ns !== nothing ? ns : rv !== nothing ? rv :
         isempty(public) ? Symbol(:loop, id) : first(sort!(collect(public)))
+    # A one-axis do-form plate traced inside an enclosing one-axis loop lays its
+    # storage out over the flattened inner index (`_forward_flat_nested!`). Its
+    # carriers are keyed by `flat_owner` so both of its traces pick the same names.
+    enclosing = kind === :plate && length(idxs) == 1 ? _plate_enclosing(info) : nothing
+    enclosing === nothing || enclosing.flat_owner === nothing || error(
+        label, ": a collecting plate nested two levels deep inside other compiler-owned ",
+        "loops is not supported yet; nest at most one plate inside another.")
+    flat_owner = enclosing === nothing ? nothing : _plate_global_name(info, ns)
 
     # HYGIENE (multiple-plate snag): a fresh cell-local (`z ~ std_normal()`) emits
     # a model-scope Stan parameter named exactly `z` and binds `info[:z]`. Two
@@ -5057,7 +5094,7 @@ _forward_loop_core!(;
             (f in params || f in public || haskey(fresh_rename, f)) && continue
             f in keys(info) && !(f in shadow) && _reject_unmarked_shadow(label, f, s; info)
             fresh_rename[f] = get(hygiene, f) do
-                _plate_fresh_name!(Symbol(ns, :_, f), Iterators.flatten((values(hygiene), values(fresh_rename), public)); info)
+                _plate_fresh_name!(Symbol(ns, :_, f), Iterators.flatten((values(hygiene), values(fresh_rename), public)); info, owner=flat_owner)
             end
         end
     end
@@ -5085,13 +5122,39 @@ _forward_loop_core!(;
     # trace below uses these StanTypes rather than re-parsing LHS syntax.
     probe_body = probe_transform === nothing ? body_stmts :
         probe_transform(setup_stmts, body_stmts)
-    discovered = _plate_discover(probe_body, ret_expr, params, iterables, idxs; info)
+    # A plate nested in this loop's cell learns this loop's index and count here,
+    # and leaves the declarations of its flattened storage as `recipes`: they are
+    # traced at the root before this loop's own, so this loop's sizes may read them.
+    # The count is resolved at the root only when a nested plate asks for it, so
+    # a loop with none traces exactly as before.
+    child_enclosing = length(idxs) != 1 || outer_lo[1] != 1 ? nothing : (;
+        idx=_plate_global_name(info, only(idxs)),
+        dim=Ref{Any}(() -> _with_trace_state(() -> _with_trace_state(info, :plate_context, nothing) do
+            forward!(canonical(outer_dims[1]); info)
+        end, info, :inline_pending, Any[])),
+        recipes=Any[], flat_owner,
+    )
+    discovered = _with_trace_state(info, :plate_enclosing, child_enclosing) do
+        _plate_discover(probe_body, ret_expr, params, iterables, idxs; info, hide_owner=flat_owner)
+    end
+    if child_enclosing !== nothing && !isempty(child_enclosing.recipes)
+        recipe_pending = _get_inline_pending(info)
+        recipe_root = _plate_root_info(info)
+        for recipe in child_enclosing.recipes
+            emitted = _plate_trace_recipe(recipe; info=recipe_root)
+            recipe_pending === nothing || push!(recipe_pending, emitted)
+        end
+        empty!(child_enclosing.recipes)
+    end
     # Discovery keys its bindings by GLOBAL name, so a submodel's probe junk and
     # setup names carry its prefix (`hh___loopprobe_1`, `hh_eps1`).
     excluded = Set{Symbol}(_plate_global_name(info, s) for s in probe_exclude)
     fresh = probe_transform === nothing ? discovered.fresh :
         Pair{Symbol,Any}[p for p in discovered.fresh
                          if !_is_probe_junk_name(p.first; info) && !(p.first in excluded)]
+    # A nested plate's flattened storage and its per-cell views are laid out
+    # across this loop's cells already: never this loop's cell bindings.
+    fresh = Pair{Symbol,Any}[p for p in fresh if _plate_flat_owner(p.second) === nothing]
     # The trajectory of data a nested `@scan` observes (`_observed_scan_shadow`)
     # is laid out like the data, not per cell: declare it once, before this loop,
     # unless an enclosing loop already did.
@@ -5132,6 +5195,18 @@ _forward_loop_core!(;
     rv_type = rv === nothing ? nothing :
         rv_ct === nothing ? discovered.ret_type :
         _plate_resolve_cell_type(rv_ct, discovered.ret_type, outer_dims, rv; info)
+
+    # A cell that returns a nested plate's ragged result (`fitted ~ component(…)`,
+    # whose plate collects `vector[K[s]]` cells) collects as a two-level ragged
+    # value: one flat vector named after the result, filled per cell over the
+    # nested plate's flattened layout, and read as a `NestedRaggedVector` after
+    # the loop (`_forward_flat_nested!`).
+    two_level = rv === nothing ? nothing : _plate_two_level_record(rv_type, idxs; info)
+    if rv !== nothing && two_level === nothing && rv_type isa StanType && center_type(rv_type) <: RaggedVector
+        error(label, ": the cell returns a RaggedVector, which a plate collects only when it ",
+            "is the result of a plate nested in the cell (a two-level ragged value). Return ",
+            "a vector, or collect the plate nested in the cell.")
+    end
 
     # An int-array plate RESULT stays unsupported (MVP): sampled int SIDE cells
     # promote, but collecting the loop's own return as an int array has no
@@ -5237,9 +5312,15 @@ _forward_loop_core!(;
             "plate: collecting a `plate(...) do` result inside another compiler-owned loop ",
             "is not supported. For independent axes, use one `@plate for j in 1:J, s in 1:S` ",
             "and index the cell arrays explicitly.")
-        rv in keys(info) && error("plate: result `$rv` is already bound in model scope.")
-        all_cell_types[rv] = rv_type
+        rv in keys(info) && (flat_owner === nothing || _plate_flat_owner(info[rv]) !== flat_owner) &&
+            error("plate: result `$rv` is already bound in model scope.")
+        two_level === nothing && (all_cell_types[rv] = rv_type)
     end
+
+    flat_owner === nothing || return _forward_flat_nested!(;
+        enclosing, flat_owner, rv, rv_type, idxs, outer_dims, params, input_subst,
+        body_stmts, ret_expr, cell_types, all_cell_types, unbound_cells, label, info,
+    )
 
     # Collapse exactly one direct fixed-vector multivariate prior into a whole-
     # array sample. Discovery has already proved the cell type; recognition now
@@ -5318,10 +5399,13 @@ _forward_loop_core!(;
         kinds = sort!(unique!([center_type(plan.cell_type) === types.int ? "int" :
                                plan.shape !== nothing ? "matrix" : "vector"
                                for plan in values(ragged_plans)]))
+        # Inside a one-axis loop's cell the plate is flattened instead
+        # (`_forward_flat_nested!`); a multi-axis loop or a `@scan` keeps this.
         _plate_in_enclosing_loop(info) && error(
             "plate: ragged ", join(kinds, "/"), " cells inside a called @slic submodel that is ",
-            "itself called inside a plate or annotated loop are not supported yet — use a fixed ",
-            "`vector[K]` cell here, or call the submodel at model scope."
+            "itself called inside a multi-axis plate or a @scan are not supported yet — call it ",
+            "inside a one-axis plate or `@plate for`, use a fixed `vector[K]` cell here, or call ",
+            "the submodel at model scope."
         )
         kinds == ["vector"] || error(
             "plate: ragged ", join(filter(!=("vector"), kinds), "/"), " cells inside a called ",
@@ -5345,7 +5429,10 @@ _forward_loop_core!(;
                     if !(_plate_is_bare_decl(s) && haskey(cell_types, _plate_global_name(info, s.args[1])))]
     if rv !== nothing
         ret_cell = _subst_syms(ret_expr, input_subst)
-        if haskey(ragged_plans, rv)
+        if two_level !== nothing
+            span = :(nested_ragged_start($(two_level.ends), $(two_level.groups), $(idxs[1])):nested_ragged_end($(two_level.ends), $(two_level.groups), $(idxs[1])))
+            push!(loop_body, :($rv[$span] = ($ret_cell).mem))
+        elseif haskey(ragged_plans, rv)
             plan = ragged_plans[rv]
             # Traced in this scope, so it reads the loop index by its own name.
             fill = _plate_ragged_span(plan, idxs[1])
@@ -5564,6 +5651,12 @@ _forward_loop_core!(;
         f in public_global && _plate_bind_local!(info, public_local[f], tgt[f])
         pending !== nothing && push!(pending, emitted)
     end
+    if two_level !== nothing
+        emitted = forward!(canonical(:($rv :: vector[$(stan_size(type(two_level.mem))[1])])); info)
+        pending !== nothing && push!(pending, emitted)
+        # `segments`: the ends of every innermost vector, as for the nested result.
+        info[rv] = remake(info[rv]; ragged_observation_ends=expr(two_level.ends))
+    end
     if vectorized_sample !== nothing
         emitted = _plate_emit_vectorized_sample!(
             vectorized_sample, plate_outer, index_aliases; info,
@@ -5599,8 +5692,10 @@ _forward_loop_core!(;
         # own carriers and arrays from the start, then each nested loop's choice.
         claimed=union(Set{Symbol}(_plate_global_name(info, g) for g in values(fresh_rename)), public_global),
     )
-    emitted_loop = _with_trace_state(info, :plate_context, ctx) do
-        forward!(canonical(loop); info)
+    emitted_loop = _with_trace_state(info, :plate_enclosing, child_enclosing) do
+        _with_trace_state(info, :plate_context, ctx) do
+            forward!(canonical(loop); info)
+        end
     end
     # The emit trace bound each scratch local as a plain `name = rhs` inside the
     # loop body. Mark the statement for distribution, and the binding for an
@@ -5632,6 +5727,11 @@ _forward_loop_core!(;
         target[plan.logical] = remake(view; marks..., ragged_storage=mem)
     end
     isempty(ragged_plans) || _plate_restore_locals!(info, cell_types)
+    if two_level !== nothing
+        storage_rv = info[rv]
+        view = forward!(canonical(:(NestedRaggedVector($rv, $(two_level.ends), $(two_level.groups)))); info)
+        info[rv] = remake(view; ragged_storage=storage_rv)
+    end
     # A missing observation's indexed samples draw once into their promoted
     # storage. Alias that completed storage after the loop, just as a top-level
     # declared missing response does; the alias inherits a ragged layout when
@@ -5642,6 +5742,166 @@ _forward_loop_core!(;
         push!(twins, CanonicalExpr(_unbound_ragged_twin, _cv_public_name(f; info), get(storage, f, root[f])))
     end
     isempty(twins) ? emitted_loop : CanonicalExpr(:block, emitted_loop, twins...)
+end
+# ── A collecting plate nested in another loop's cell: flattened storage ─────
+# Todo `0j4f77k` (F2 of snag `emit-stan-code-f-2c7ed92c`). A one-axis do-form
+# plate traced inside the cell of an enclosing one-axis loop (a plate, a
+# `@plate for`, or a called submodel inside one) stores every cell over the
+# FLATTENED inner index: outer cell `e`, inner cell `s` is
+#
+#     k = ragged_start(<ns>__pl_nend, e) + s - 1
+#
+# where `<ns>__pl_n[e]` is the inner count of outer cell `e` (data) and
+# `<ns>__pl_nend` its cumulative sum, so the inner plate's storage is one
+# collection of `sum(<ns>__pl_n)` cells, the layout a `NestedRaggedVector` has.
+# Promoting each inner collection per outer cell instead would resolve the inner
+# cell's own names to the whole outer cell in its second trace, and an outer
+# sizing table could not read inner tables filled inside the outer loop.
+#
+# The storage is declared once, at the root, before the enclosing loop: the
+# first trace (inside the enclosing loop's discovery) binds it and leaves its
+# declarations as `recipes`, which the enclosing loop traces at the real root
+# before its own declarations; the second trace finds it bound and marked with
+# this plate's owner key. The enclosing loop never promotes a marked binding.
+# Seen from the enclosing cell, the plate result is its slice of the storage.
+# The record of a cell value that is outer cell `idx`'s group of a nested
+# plate's flattened ragged result (`NestedRaggedVector(mem, ends, nend)[idx]`).
+_plate_two_level_record(T, idxs; info) = begin
+    (T isa StanType && length(idxs) == 1 && center_type(T) <: RaggedVector) || return nothing
+    record = get(T.info, :nested_ragged_group, nothing)
+    record === nothing && return nothing
+    group = record.group isa StanExpr ? expr(record.group) : record.group
+    group === _plate_global_name(info, only(idxs)) ? record : nothing
+end
+_plate_recipe_name(x::Expr) =
+    x.head === :(::) && x.args[1] isa Symbol ? x.args[1] :
+    x.head === :(=) && x.args[1] isa Symbol ? x.args[1] : nothing
+_plate_recipe_name(_) = nothing
+_plate_trace_recipe(recipe; info) = begin
+    # A sizing loop runs over the enclosing loop's index name, which that loop's
+    # discovery has bound: a traced `for` unbinds its index, so restore it.
+    stmt = recipe.stmt
+    idx = stmt isa Expr && stmt.head === :for ? stmt.args[1].args[1] : nothing
+    saved = idx !== nothing && idx in keys(info) ? info[idx] : nothing
+    emitted = _with_trace_state(info, :plate_context, nothing) do
+        forward!(canonical(stmt); info)
+    end
+    saved === nothing || (info[idx] = saved)
+    name = _plate_recipe_name(recipe.stmt)
+    name === nothing && return emitted
+    isempty(recipe.cons) || (emitted = _plate_constrain_decl(name, emitted, recipe.cons; info))
+    info[name] = remake(info[name]; nested_flat_owner=recipe.owner, get(recipe, :marks, (;))...)
+    emitted
+end
+_forward_flat_nested!(; enclosing, flat_owner, rv, rv_type, idxs, outer_dims, params,
+        input_subst, body_stmts, ret_expr, cell_types, all_cell_types, unbound_cells, label, info) = begin
+    isempty(unbound_cells) || error(
+        label, ": a declared missing observation in a plate nested in another loop's ",
+        "cell is not supported yet.")
+    root = _plate_root_info(info)
+    e = enclosing.idx
+    enclosing.dim[] isa Function && (enclosing.dim[] = enclosing.dim[]())
+    E = enclosing.dim[]
+    s = _plate_global_name(info, only(idxs))
+    index_aliases = Set{Symbol}()
+    for a in Iterators.flatten((idxs, params))
+        push!(index_aliases, a)
+        push!(index_aliases, _plate_global_name(info, a))
+    end
+    # The inner count of the current outer cell, spelled at the root.
+    n_e = _with_trace_state(info, :plate_context, nothing) do
+        forward!(canonical(outer_dims[1]); info)
+    end
+    qual(n_e) === :data || error(
+        label, ": the count of a plate nested in another loop's cell must be data; `",
+        _plate_spelling(outer_dims[1]), "` is ", qual(n_e), "-qualified.")
+    taken = Set{Symbol}(keys(all_cell_types))
+    counts = _plate_fresh_name!(Symbol(flat_owner, :__pl_n), taken; info=root, owner=flat_owner)
+    push!(taken, counts)
+    nend = _plate_fresh_name!(Symbol(flat_owner, :__pl_nend), taken; info=root, owner=flat_owner)
+    total = :(sum($counts))
+    k = :(ragged_start($nend, $e) + $s - 1)
+    rv_g = rv === nothing ? nothing : _plate_global_name(info, rv)
+    recipes = Any[
+        (; stmt=:($counts :: int[$E]), owner=flat_owner, cons=(;)),
+        (; stmt=Expr(:for, Expr(:(=), e, :(1:$E)), Expr(:block, :($counts[$e] = $n_e))), owner=flat_owner, cons=(;)),
+        (; stmt=:($nend = cumulative_sum($counts)), owner=flat_owner, cons=(;)),
+    ]
+    cells = Pair{Symbol,Any}[]
+    accessors = Dict{Symbol,Any}()
+    # A cell whose length varies by inner cell is flat memory over `k`, with its
+    # lengths and inclusive ends over `k` in transformed data.
+    ragged = Dict{Symbol,Any}()
+    for (f, T) in all_cell_types
+        g = f === rv ? rv_g : f
+        push!(cells, g => T)
+        cons, hoist = _plate_promoted_constraints(g, T, index_aliases)
+        isempty(hoist) || error(
+            label, ": `", f, "` has a support that depends on the cell, which a plate nested ",
+            "in another loop's cell does not support yet.")
+        if !_plate_is_ragged_cell(T, index_aliases)
+            # A scalar cell's storage is grouped by outer cell (`stan_descriptor`'s `segments`).
+            marks = _plate_cell_shape(T, f) === :scalar ? (; ragged_observation_ends=nend) : (;)
+            push!(recipes, (; stmt=_plate_outer_decl(g, T, Any[total]), owner=flat_owner, cons, marks))
+            accessors[g] = _plate_cell_index(g, T, Any[k])
+            continue
+        end
+        (center_type(T) === types.vector && stan_ndim(T) == 1) || error(
+            label, ": `", f, "::", sigtype(T), "` varies in size from cell to cell; a plate ",
+            "nested in another loop's cell supports that for `vector` cells only.")
+        size = stan_size(T)[1]
+        qual(size) === :data || error(
+            label, ": the length of `", f, "` must be data-computable, got a ", qual(size),
+            "-qualified size.")
+        lens = _plate_fresh_name!(Symbol(g, :__pl_len), taken; info=root, owner=flat_owner)
+        push!(taken, lens)
+        ends = _plate_fresh_name!(Symbol(g, :__pl_end), taken; info=root, owner=flat_owner)
+        push!(taken, ends)
+        sizing = Expr(:for, Expr(:(=), e, :(1:$E)), Expr(:block,
+            Expr(:for, Expr(:(=), s, :(1:$counts[$e])), Expr(:block, :($lens[$k] = $(expr(size)))))))
+        append!(recipes, Any[
+            (; stmt=:($lens :: int[$total]), owner=flat_owner, cons=(;)),
+            (; stmt=sizing, owner=flat_owner, cons=(;)),
+            (; stmt=:($ends = cumulative_sum($lens)), owner=flat_owner, cons=(;)),
+            (; stmt=:($g :: vector[sum($lens)]), owner=flat_owner, cons,
+               marks=(; ragged_observation_ends=ends)),
+        ])
+        accessors[g] = _plate_ragged_span(g, ends, k)
+        ragged[g] = (; lens, ends)
+    end
+    # First trace: bind the storage, and hand its declarations to the enclosing loop.
+    if !(counts in keys(root))
+        for recipe in recipes
+            _plate_trace_recipe(recipe; info=root)
+            push!(enclosing.recipes, recipe)
+        end
+    end
+    loop_body = Any[_subst_syms(st, input_subst) for st in body_stmts]
+    rv === nothing || push!(loop_body, :($rv = $(_subst_syms(ret_expr, input_subst))))
+    loop = Expr(:for, Expr(:(=), only(idxs), :(1:$(outer_dims[1]))), Expr(:block, loop_body...))
+    ctx = (
+        idxs=Symbol[s], cell_types=Dict{Symbol,Any}(cells), cell_accessors=accessors,
+        cell_fills=Dict{Symbol,Any}(), kind=:plate, scan_arrays=Set{Symbol}(),
+        parent=_plate_context(info), claimed=Set{Symbol}(first.(cells)),
+    )
+    # A plate nested in this one's cell would be a third level.
+    deeper = (; idx=s, dim=Ref{Any}(n_e), recipes=Any[], flat_owner)
+    emitted = _with_trace_state(info, :plate_enclosing, deeper) do
+        _with_trace_state(info, :plate_context, ctx) do
+            forward!(canonical(loop); info)
+        end
+    end
+    if rv !== nothing
+        span = :(ragged_start($nend, $e):ragged_end($nend, $e))
+        view_expr = haskey(ragged, rv_g) ? :(NestedRaggedVector($rv_g, $(ragged[rv_g].ends), $nend)[$e]) :
+            _plate_cell_shape(rv_type, rv) === :vector ? :($rv_g[:, $span]) : :($rv_g[$span])
+        view = _with_trace_state(info, :plate_context, nothing) do
+            forward!(canonical(view_expr); info=root)
+        end
+        view = remake(view; nested_flat_owner=flat_owner, ragged_storage=root[rv_g])
+        info isa SubModel ? _plate_bind_local!(info, rv, view) : (root[rv_g] = view)
+    end
+    emitted
 end
 # ── Annotated top-level loops: `@plate for … end` / `@scan begin … end` ──────
 # Sugar over the shared inliner above (decisions `10mrh0f`, `1ntdzr8`,

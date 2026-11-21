@@ -497,7 +497,8 @@ end
 # pairing — so this reads the DATA, not the emitted Stan. Dense observations
 # have no segmentation and report `nothing`.
 _ragged_segments(x) = begin
-    center_type(x) <: RaggedVector || center_type(x) <: RaggedMatrix || return nothing
+    center_type(x) <: RaggedVector || center_type(x) <: RaggedMatrix ||
+        center_type(x) <: NestedRaggedVector || return nothing
     v = getvalue(x)
     v isa NamedTuple && haskey(v, :ends) || return nothing
     collect(Int, v.ends)
@@ -549,10 +550,23 @@ _plate_layout_jcall(f::Function, args...; kwargs...) = begin
     jcall(f, args...; kwargs...)
 end
 
+# A two-level ragged value (`NestedRaggedVector` data, `groups` ending each
+# outer group in inner vectors) counts and indexes its outer groups.
+_plate_layout_count(x) = haskey(x, :groups) ? length(x.groups) : length(x.ends)
+_plate_layout_nested_group(x, e) = begin
+    lo = e == 1 ? 1 : x.groups[e - 1] + 1
+    before = lo == 1 ? 0 : x.ends[lo - 1]
+    ends = x.ends[lo:x.groups[e]] .- before
+    mem = x.mem === nothing ? nothing : x.mem[before + 1:before + (isempty(ends) ? 0 : ends[end])]
+    (; mem, ends)
+end
 _plate_layout_call(f, mod, args...; kwargs...) = begin
     if (f === length || f === lastindex) && length(args) == 1 &&
             _plate_layout_ragged_value(args[1])
-        return length(args[1].ends)
+        return _plate_layout_count(args[1])
+    elseif f === getindex && length(args) == 2 && _plate_layout_ragged_value(args[1]) &&
+            args[2] isa Integer && haskey(args[1], :groups)
+        return _plate_layout_nested_group(args...)
     elseif f === getindex && length(args) == 2 && _plate_layout_ragged_value(args[1]) && args[2] isa Integer
         # `ys[i]`, group `i` (a scan nested in `@plate for y in ys` runs to
         # `length(ys[i])`); a value with group structure alone stands in by length.
@@ -573,7 +587,7 @@ _plate_layout_call(::typeof(ragged_length), mod, x, i; kwargs...) =
 _plate_layout_call(f::Symbol, mod, args...; kwargs...) = begin
     if f in (:length, :lastindex) && length(args) == 1 &&
             _plate_layout_ragged_value(args[1])
-        return length(args[1].ends)
+        return _plate_layout_count(args[1])
     elseif f in (:ragged_start, :ragged_end, :ragged_length)
         callable = f === :ragged_start ? ragged_start :
             (f === :ragged_end ? ragged_end : ragged_length)

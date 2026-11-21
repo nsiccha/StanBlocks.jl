@@ -8,8 +8,8 @@ scope, apart from loop-index names (snag `emit-stan-code-f-2c7ed92c`). Before,
 every ragged cell inside a sub-model was refused ("ragged vector cells inside
 a called @slic submodel are not supported yet").
 
-Such a sub-model called inside a plate cell or an annotated loop is still
-refused: its carriers would have to be promoted through the enclosing loop.
+Such a sub-model called inside a plate cell stores its plate over the
+flattened inner index (v0.2.62, `test/nested_plates.jl`).
 """
 @testitem "slic: a ragged plate inside a called sub-model" tags=[:slic, :plate, :ragged, :submodel, :regression, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stanc_compiles, stan_block
@@ -84,8 +84,7 @@ refused: its carriers would have to be promoted through the enclosing loop.
         @test gc == gr
     end
 
-    # Called inside a plate cell, the carriers would need promotion through
-    # the enclosing loop: refused, naming the remedy.
+    # Called inside a plate cell over three-level data (v0.2.62).
     in_cell = @slic begin
         gain ~ normal(0, 1)
         signal ~ plate(grid) do xs
@@ -102,5 +101,5 @@ refused: its carriers would have to be promoted through the enclosing loop.
     catch err
         sprint(showerror, err)
     end
-    @test_broken isempty(message)
+    @test isempty(message)
 end

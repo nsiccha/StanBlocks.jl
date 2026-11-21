@@ -1,4 +1,4 @@
-@testitem "slic: nested collecting do-plate names the supported multiple-axis form" tags=[:slic, :plate, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+@testitem "slic: a collecting do-plate nested in @plate for, and the multiple-axis form" tags=[:slic, :plate, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup] begin
     using .StanBlocksTestSetup: stan_block, stanc_compiles
     nested = @slic (; J=2, S=3, y=[0.1, 0.2]) begin
         @plate for j in 1:J
@@ -9,14 +9,12 @@
             y[j] ~ normal(sum(tau_s), 1.0)
         end
     end
-    message = try
-        stan_code(nested)
-        ""
-    catch err
-        sprint(showerror, err)
-    end
-    @test occursin("collecting a `plate(...) do` result inside another compiler-owned loop", message)
-    @test occursin("@plate for j in 1:J, s in 1:S", message)
+    # The nested plate stores its cells over the flattened index (v0.2.62; it was
+    # refused as "collecting a `plate(...) do` result inside another
+    # compiler-owned loop" since v0.2.37).
+    code = stan_code(nested)
+    @test occursin("matrix[2, sum(loop_j_tau_s__pl_n)] loop_j_tau_s_tau;", stan_block(code, "parameters"))
+    @test stanc_compiles(nested)
 
     # Independent axes can share one annotated loop; each indexed binding
     # keeps both coordinates in its storage and observations.
