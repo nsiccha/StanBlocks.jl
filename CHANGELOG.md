@@ -4,6 +4,26 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.60
+
+- **A called `@slic` submodel may hold a plate whose cells vary in length.**
+  A submodel such as `loc ~ plate(y, at, signal) do ys, picks, xs; fitted =
+  shift .+ xs[picks]; ys ~ normal(fitted, 1); fitted; end` over ragged `y`/`at`
+  was refused when called (`fitted ~ readout(; y = y1, at = at1, signal)`):
+  "ragged vector cells inside a called @slic submodel are not supported yet".
+  Each call now declares the plate's flat memory and its transformed-data
+  length and end tables at model scope under the call's names (`f1_loc`,
+  `f1_loc__pl_len`, `f1_loc__pl_end`, …) and fills them over the call's own loop
+  index, so two calls of one submodel read shared model-scope values (a
+  trajectory plate) and keep separate results. A sampled cell of a size read off
+  the cell index (`plate(; outer = length(K)) do g; z::vector[K[g]] ~
+  std_normal(); z; end`) works the same way. The program equals the one with
+  each call's plate written out at model scope, apart from loop-index names; the
+  descriptor reports the same outputs and `segments`. Still refused: integer and
+  matrix cells whose size varies, inside a submodel, and any such submodel
+  called inside a plate cell or an annotated loop, now naming that case (snag
+  `emit-stan-code-f-2c7ed92c`).
+
 ## v0.2.59
 
 - **A simplex whose Dirichlet concentration depends on parameters is sampled in

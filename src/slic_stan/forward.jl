@@ -3797,7 +3797,11 @@ end
 # `to_matrix(<its span>, rows[i], cols[i])` and is written as
 # `<its span> = to_vector(…)` (`fill`), and after the loop `f` names the
 # `RaggedMatrix` view. For a vector cell the span is both.
-_plate_ragged_plan(f, T::StanType, outer, idxs, taken; info) = begin
+#
+# Inside a called sub-model the carriers live at the model root under the
+# binding's flattened name (`mem`), and the accessor reads the flattened loop
+# index (`idx`): the emit trace forwards every cell accessor at the root.
+_plate_ragged_plan(f, T::StanType, outer, idxs, taken; info, mem=f, idx=nothing) = begin
     length(outer) == 1 || error(
         "plate: ragged vector/int/matrix cells currently require a one-dimensional ",
         "`outer`; got $(length(outer)) axes for `$f`."
@@ -3816,18 +3820,17 @@ _plate_ragged_plan(f, T::StanType, outer, idxs, taken; info) = begin
             "dimensions cannot depend on parameters or generated quantities."
         )
     end
-    mem = f
-    lens = _plate_fresh_name!(Symbol(f, :__pl_len), taken; info)
+    lens = _plate_fresh_name!(Symbol(mem, :__pl_len), taken; info)
     push!(taken, lens)
-    ends = _plate_fresh_name!(Symbol(f, :__pl_end), taken; info)
+    ends = _plate_fresh_name!(Symbol(mem, :__pl_end), taken; info)
     push!(taken, ends)
-    idx = only(idxs)
-    span = :($mem[ragged_start($ends, $idx):ragged_end($ends, $idx)])
+    idx = something(idx, only(idxs))
+    span = _plate_ragged_span(mem, ends, idx)
     matrix || return (; logical=f, cell_type=T, mem, lens, ends,
         size_expr=expr(stan_size(T)[1]), accessor=span, fill=span, shape=nothing)
-    rows = _plate_fresh_name!(Symbol(f, :__pl_rows), taken; info)
+    rows = _plate_fresh_name!(Symbol(mem, :__pl_rows), taken; info)
     push!(taken, rows)
-    cols = _plate_fresh_name!(Symbol(f, :__pl_cols), taken; info)
+    cols = _plate_fresh_name!(Symbol(mem, :__pl_cols), taken; info)
     push!(taken, cols)
     nr, nc = expr.(stan_size(T))
     # Canonical, so `stan_descriptor` can evaluate it as the layout's cell size.
@@ -3835,6 +3838,8 @@ _plate_ragged_plan(f, T::StanType, outer, idxs, taken; info) = begin
        accessor=:(to_matrix($span, $rows[$idx], $cols[$idx])), fill=span,
        shape=(; rows, cols, size_exprs=(nr, nc)))
 end
+_plate_ragged_span(mem, ends, idx) = :($mem[ragged_start($ends, $idx):ragged_end($ends, $idx)])
+_plate_ragged_span(plan, idx) = _plate_ragged_span(plan.mem, plan.ends, idx)
 # The transformed-data size tables of a ragged plan, and the statements that
 # fill them for cell `idx`.
 _plate_ragged_size_carriers(plan) = _plate_ragged_size_carriers(plan, plan.shape)
@@ -4159,7 +4164,12 @@ end
 # submodel-scoped plate flattens into the probe-ROOT the same way it will at emit
 # time (`t_z`), without polluting the real parent's vars. `blocks` stay SHARED —
 # `forward!` only binds vars + returns canonical; block routing is a later pass.
-_plate_probe(info::StanModel) = StanModel(meta(info), copy(vars(info)), blocks(info))
+_plate_probe(info::StanModel) =
+    StanModel((; meta(info)..., plate_probe=true), copy(vars(info)), blocks(info))
+# Whether `info` is traced inside a compiler-owned loop around it: an enclosing
+# loop's emit trace (its promotion context) or its discovery probe (a probe model).
+_plate_in_enclosing_loop(info) =
+    _plate_context(info) !== nothing || get(meta(_plate_root_info(info)), :plate_probe, false)
 _plate_probe(info::SubModel) = SubModel(_plate_probe(parent(info)), name(info), copy(locals(info)))
 
 # Per-cell input accessor for a positional plate iterable. A DENSE iterable slices
@@ -4668,7 +4678,10 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
                 # distinct Stan variable. Preserve that alias in discovered size
                 # expressions (`K[g]` becomes `K[plate_i]`) so ragged dependency
                 # analysis sees the same index that emit-time substitution uses.
-                probe[param] = StanExpr(idx, StanType(types.int; qual=:data))
+                # A submodel binds the parameter to the index's flattened name
+                # rather than flattening the parameter into a name of its own.
+                probe isa SubModel ? _plate_bind_local!(probe, param, probe[idx]) :
+                    (probe[param] = StanExpr(idx, StanType(types.int; qual=:data)))
             end
         else
             for (a, it) in zip(params, iterables)
@@ -5261,7 +5274,11 @@ _forward_loop_core!(;
             "read only inside its cell needs no change."
         )
         _plate_is_ragged_cell(T, index_aliases) || continue
-        ragged_plans[f] = _plate_ragged_plan(f, T, outer_dims, idxs, plan_taken; info)
+        ragged_plans[f] = info isa SubModel && length(idxs) == 1 ?
+            _plate_ragged_plan(f, T, outer_dims, idxs, plan_taken; info=_plate_root_info(info),
+                mem=f === rv ? _plate_global_name(info, rv) : f,
+                idx=_plate_global_name(info, only(idxs))) :
+            _plate_ragged_plan(f, T, outer_dims, idxs, plan_taken; info)
         # Sampling a varying-size matrix cell would target its `to_matrix`
         # reader, which neither a `~` nor a generated-quantities re-draw can
         # assign to yet.
@@ -5271,19 +5288,27 @@ _forward_loop_core!(;
             "and reshape it (`Z = to_matrix(z, rows, cols)`), or give the matrix a fixed size."
         )
     end
-    # A ragged cell's flat-memory carriers (lens/ends/mem) are declared in the
-    # plate's own `info` scope and indexed by the raw loop index; hoisting them out
-    # of a called submodel (parent-scope carriers + flattened index) is not wired
-    # yet. Fixed `vector[K]` and scalar cells ARE supported inside a submodel.
+    # A ragged VECTOR cell's flat-memory carriers (lens/ends/mem) of a plate
+    # inside a called submodel are declared at the root under flattened names and
+    # indexed by the flattened loop index (`_plate_ragged_plan`). Integer and
+    # matrix ragged cells there are not wired yet, nor is that submodel called
+    # inside another compiler-owned loop, whose carriers would need promotion
+    # through the enclosing loop.
     if info isa SubModel && !isempty(ragged_plans)
         # Name the actual ragged centers so the refusal stays precise for both
         # the vector shape the contract pins and the newer int shape.
         kinds = sort!(unique!([center_type(plan.cell_type) === types.int ? "int" :
                                plan.shape !== nothing ? "matrix" : "vector"
                                for plan in values(ragged_plans)]))
-        error(
-            "plate: ragged ", join(kinds, "/"), " cells inside a called @slic submodel are not supported yet — ",
-            "use a fixed `vector[K]` cell here, or lift the ragged plate to model scope."
+        _plate_in_enclosing_loop(info) && error(
+            "plate: ragged ", join(kinds, "/"), " cells inside a called @slic submodel that is ",
+            "itself called inside a plate or annotated loop are not supported yet — use a fixed ",
+            "`vector[K]` cell here, or call the submodel at model scope."
+        )
+        kinds == ["vector"] || error(
+            "plate: ragged ", join(filter(!=("vector"), kinds), "/"), " cells inside a called ",
+            "@slic submodel are not supported yet — use a fixed-size cell here, or lift the ",
+            "ragged plate to model scope."
         )
     end
     cell_accessors = Dict{Symbol,Any}(
@@ -5304,8 +5329,10 @@ _forward_loop_core!(;
         ret_cell = _subst_syms(ret_expr, input_subst)
         if haskey(ragged_plans, rv)
             plan = ragged_plans[rv]
-            push!(loop_body, plan.shape === nothing ? :($(plan.fill) = $ret_cell) :
-                :($(plan.fill) = to_vector($ret_cell)))
+            # Traced in this scope, so it reads the loop index by its own name.
+            fill = _plate_ragged_span(plan, idxs[1])
+            push!(loop_body, plan.shape === nothing ? :($fill = $ret_cell) :
+                :($fill = to_vector($ret_cell)))
         else
             push!(loop_body, :($(_plate_cell_index(rv, rv_type, idxs)) = $ret_cell))
         end
@@ -5333,29 +5360,42 @@ _forward_loop_core!(;
     # expressions, not merely `K[i]`), then cumulative ends and flat storage.
     # The logical RaggedVector binding is installed after the emit trace so it
     # captures the memory declaration's final promoted qualifier.
+    # Inside a called submodel they are declared at the root under flattened
+    # names (`_plate_ragged_plan`), sized by the outer count resolved in the
+    # submodel's scope, and filled over the flattened loop index; the submodel
+    # binds each carrier's name to it, so its own statements (the result fill,
+    # the view after the loop) resolve them.
+    sub_ragged = info isa SubModel && !isempty(ragged_plans)
+    rinfo = sub_ragged ? _plate_root_info(info) : info
+    ragged_outer = !sub_ragged ? outer_dims[1] :
+        _with_trace_state(info, :plate_context, nothing) do
+            forward!(canonical(outer_dims[1]); info)
+        end
+    ragged_idx = sub_ragged ? _plate_global_name(info, idxs[1]) : idxs[1]
+    bind_carrier!(name) = sub_ragged && _plate_bind_local!(info, name, rinfo[name])
     for plan in values(ragged_plans), carrier in _plate_ragged_size_carriers(plan)
-        emitted = forward!(canonical(:($carrier :: int[$(outer_dims[1])])); info)
+        emitted = forward!(canonical(:($carrier :: int[$ragged_outer])); info=rinfo)
         pending !== nothing && push!(pending, emitted)
     end
     if !isempty(ragged_plans)
         sizing_body = Any[
-            s for plan in values(ragged_plans) for s in _plate_ragged_sizing(plan, idxs[1])
+            s for plan in values(ragged_plans) for s in _plate_ragged_sizing(plan, ragged_idx)
         ]
         sizing_loop = Expr(
             :for,
-            Expr(:(=), idxs[1], :(1:$(outer_dims[1]))),
+            Expr(:(=), ragged_idx, :(1:$ragged_outer)),
             Expr(:block, sizing_body...),
         )
-        emitted = forward!(canonical(sizing_loop); info)
+        emitted = forward!(canonical(sizing_loop); info=rinfo)
         pending !== nothing && push!(pending, emitted)
         for plan in values(ragged_plans)
-            emitted = forward!(canonical(:($(plan.ends) = cumulative_sum($(plan.lens)))); info)
+            emitted = forward!(canonical(:($(plan.ends) = cumulative_sum($(plan.lens)))); info=rinfo)
             pending !== nothing && push!(pending, emitted)
             # Flat storage follows the cell center: `vector[total]` for a
             # continuous cell, `array[total] int` for a sampled integer cell.
             mem_ct = center_type(plan.cell_type) === types.int ? :int : :vector
             mem_decl = Expr(:(::), plan.mem, Expr(:ref, mem_ct, :(sum($(plan.lens)))))
-            emitted = forward!(canonical(mem_decl); info)
+            emitted = forward!(canonical(mem_decl); info=rinfo)
             # The cell's support reaches its flat memory: a bound every coordinate
             # of every cell shares is a scalar bound, a nested scan's setup and
             # recurrence with different supports take a per-element bound vector,
@@ -5363,6 +5403,10 @@ _forward_loop_core!(;
             # bound vector filled per cell (`_plate_ragged_cell_bound_carrier!`).
             T, per_coordinate = _plate_fold_inner_slices(plan.logical, plan.cell_type, index_aliases)
             cons, hoist = _plate_promoted_constraints(plan.logical, T, index_aliases)
+            sub_ragged && !(isempty(per_coordinate) && isempty(hoist)) && error(
+                "plate: `", get(spellings, plan.logical, plan.logical), "` has a support that ",
+                "differs by coordinate or depends on the cell, which a ragged cell inside a called ",
+                "@slic submodel does not support yet — write the plate at model scope.")
             for key in per_coordinate
                 cons = merge(cons, (; key => _plate_ragged_bound_carrier!(
                     plan, key, T, outer_dims[1], idxs[1], keys(all_cell_types); info, pending)))
@@ -5371,13 +5415,13 @@ _forward_loop_core!(;
                 cons = merge(cons, (; key => _plate_ragged_cell_bound_carrier!(
                     plan, key, value, outer_dims[1], idxs[1]; info, pending)))
             end
-            emitted = _plate_constrain_decl(plan.mem, emitted, cons; info)
+            emitted = _plate_constrain_decl(plan.mem, emitted, cons; info=rinfo)
             pending !== nothing && push!(pending, emitted)
             if plan.logical in unbound_cells
                 # A values-free `maybecv` cell: tainting the storage before the
                 # loop samples it makes the loop's draw a generated quantity.
                 marked = _is_cv_observation(plan.logical; info) ? (; cv=true) : (;)
-                info[plan.mem] = remake(info[plan.mem]; unbound_observation=plan.logical, marked...)
+                rinfo[plan.mem] = remake(rinfo[plan.mem]; unbound_observation=plan.logical, marked...)
             end
             # Retain the carrier's OWN data-computable layout recipe for public
             # descriptor reflection.  The logical RaggedVector binding below
@@ -5395,14 +5439,16 @@ _forward_loop_core!(;
             # the per-group length array the flat memory is sized by
             # (`sum(lens)`), so the descriptor can resolve that size too (snag
             # `stan-descriptor-aa56f7f3`).
-            info[plan.mem] = remake(info[plan.mem]; ragged_plate_layout=(;
+            rinfo[plan.mem] = remake(rinfo[plan.mem]; ragged_plate_layout=(;
                 logical=plan.logical,
                 ends=plan.ends,
                 lens=plan.lens,
-                outer=_plate_as_canonical(outer_dims[1]),
-                index=idxs[1],
+                outer=_plate_as_canonical(ragged_outer),
+                index=ragged_idx,
                 cell_size=plan.size_expr,
             ))
+            foreach(bind_carrier!, (plan.mem, plan.ends, plan.lens))
+            plan.shape === nothing || foreach(bind_carrier!, (plan.shape.rows, plan.shape.cols))
         end
     end
     # Outer collection declarations. FRESH cell collections carry GLOBAL names, so
@@ -5562,8 +5608,12 @@ _forward_loop_core!(;
         view = forward!(canonical(_plate_ragged_view(plan)); info)
         marks = (; (k => v for (k, v) in pairs(type(mem).info)
                     if k in (:ragged_plate_layout, :unbound_observation))...)
-        info[plan.logical] = remake(view; marks..., ragged_storage=mem)
+        # A fresh cell binding of a submodel's plate has its flattened name
+        # already: replace it at the root and rebind the submodel's spelling.
+        target = info isa SubModel && plan.logical !== rv ? root : info
+        target[plan.logical] = remake(view; marks..., ragged_storage=mem)
     end
+    isempty(ragged_plans) || _plate_restore_locals!(info, cell_types)
     # A missing observation's indexed samples draw once into their promoted
     # storage. Alias that completed storage after the loop, just as a top-level
     # declared missing response does; the alias inherits a ragged layout when
