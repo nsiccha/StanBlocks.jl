@@ -4190,7 +4190,11 @@ _plate_is_ragged_iterable(::Nothing) = false
 _plate_is_ragged_iterable(T::StanType) =
     center_type(T) <: types.ntup && keys(T.info.arg_types) == (:mem, :ends)
 _plate_input_accessor(it, idxs, info) = begin
-    (length(idxs) == 1 && _plate_is_ragged_iterable(_plate_iterable_type(it, info))) || return Expr(:ref, it, idxs...)
+    T = _plate_iterable_type(it, info)
+    (length(idxs) == 1 && _plate_is_ragged_iterable(T)) || return Expr(:ref, it, idxs...)
+    # Group `e` of a NestedRaggedVector (`y = x[e]`): `y[i]` reads `x`'s own tables
+    # (builtin.jl), the same `mem[ragged_start(ends, k):ragged_end(ends, k)]` slice.
+    haskey(T.info, :nested_ragged_group) && return Expr(:ref, it, idxs...)
     idx = only(idxs)
     :($it.mem[ragged_start($it.ends, $idx):ragged_end($it.ends, $idx)])
 end
@@ -4242,7 +4246,8 @@ end
 # as `(size, unit)` with `size === nothing` when unresolvable. Dense containers
 # read `stan_size`; a certified ragged carrier counts its `ends` (one entry per
 # group, 1-D only, matching `_plate_input_accessor`'s ragged scope), and so does
-# a `RaggedMatrix` (one matrix per group, read through its getindex);
+# a `RaggedMatrix` (one matrix per group, read through its getindex); a
+# `NestedRaggedVector` counts its outer `groups` (one RaggedVector per cell);
 # EachCol/EachRow count the wrapped matrix's columns/rows. Anything else
 # (scalars — already loud downstream — tuples, closures, unrecognized views)
 # yields no sizes and stays unchecked. `_plate_iterable_lengths` resolves them to
@@ -4251,6 +4256,11 @@ _plate_iterable_sizes(T::StanType) = begin
     if _plate_is_ragged_iterable(T) || center_type(T) <: RaggedMatrix
         ends = _plate_arg_type(T, :ends)
         n = ends isa StanType && !isempty(stan_size(ends)) ? stan_size(ends)[1] : nothing
+        return Any[(n, "groups")]
+    end
+    if center_type(T) <: NestedRaggedVector
+        groups = _plate_arg_type(T, :groups)
+        n = groups isa StanType && !isempty(stan_size(groups)) ? stan_size(groups)[1] : nothing
         return Any[(n, "groups")]
     end
     if center_type(T) <: builtin.EachCol
@@ -4709,6 +4719,14 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
             v = probe[k]
             v isa StanExpr && (size_table[k] = v)
             _return_size_harvest!(caller_syms, v)
+        end
+        # A binding whose value reads the caller name it shadows (a submodel
+        # keyword `at = at[e]`): the trace substitutes the value wherever the
+        # local is read, so that name in a size is the caller's, already in
+        # emission form.
+        for (k, v) in collect(size_table)
+            expr(v) === k && continue
+            k in _return_size_harvest!(Set{Symbol}(), v) && (size_table[k] = StanExpr(k, StanType(types.int)))
         end
         for s in caller_syms
             haskey(size_table, s) || (size_table[s] = StanExpr(s, StanType(types.int)))

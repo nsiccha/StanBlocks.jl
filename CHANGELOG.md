@@ -4,6 +4,27 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.61
+
+- **Vector data nested three deep is a vector of RaggedVectors.** Data such as
+  readings per subject per endpoint, `Vector{Vector{Vector{<:Real}}}` (real or
+  integer), was refused at ingest: "Do not know how to handle
+  `stan_type(x, …)`". It now ingests as a `NestedRaggedVector`, one data tuple
+  `tuple(vector, array[] int, array[] int)` holding every innermost vector in
+  `mem`, their inclusive ends in `ends`, and each outer group's last vector in
+  `groups` (`to_ragged` gives the encoding; integer memory stays integer).
+  `x[e]` is outer group `e` as a `RaggedVector` wherever the model reads it (the
+  model body, a submodel keyword such as `f1 ~ component(; y = x[1], …)`, a
+  `@deffun` argument), `x[e][s]` one vector, `length(x)` the outer count,
+  `length(x[e])` the group's count, and `x[idx]` selects outer groups. A plate
+  positional over `x` gives each cell its group's RaggedVector, and positional
+  lengths are checked in outer groups. Reads of one group go to the outer
+  tables, so a cell copies no shifted ends. The descriptor reports the input's
+  `mem`, `ends` and `groups`. Not yet: a whole group observed as one
+  (`x[e] ~ normal(…)`, or a RaggedVector plate cell `y ~ normal(…)`), predictive
+  twins for observations of nested groups, and a collecting plate nested in a
+  plate cell (snag `emit-stan-code-f-2c7ed92c`, follow-up F1).
+
 ## v0.2.60
 
 - **A called `@slic` submodel may hold a plate whose cells vary in length.**

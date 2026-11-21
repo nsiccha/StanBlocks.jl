@@ -169,6 +169,8 @@ end
     ragged_common_ends ragged_matched_group
     ragged_select_length ragged_select_total ragged_select_ends ragged_select_index
     ragged_sum ragged_mean
+    # Two-level ragged offsets (`NestedRaggedVector`).
+    ragged_prefix nested_ragged_start nested_ragged_end nested_ragged_ends
     # A family companion applied per group of a RaggedVector (decision 11dxlp0).
     ragged_group_density ragged_group_pointwise ragged_group_rng ragged_group_args
     # Stan 2.37 exposed constraint transforms (Feature 1) — @deffun sigs below.
@@ -3299,11 +3301,22 @@ end
     rows :: int[]
     cols :: int[]
 end
+# Two-level ragged data (`Vector{Vector{Vector{<:Real}}}`): a vector of
+# RaggedVectors. `mem` concatenates every innermost vector, `ends` holds the
+# inclusive end of each innermost vector in `mem` (as a RaggedVector's `ends`), and
+# `groups` the inclusive end of each outer group counted in innermost vectors. So
+# `x[e]` is the RaggedVector of group `e`'s vectors and `x[e][s]` one vector.
+@usertype struct NestedRaggedVector
+    mem    :: vector
+    ends   :: int[]
+    groups :: int[]
+end
 # Built-in usertypes get aliased into the `builtin` submodule so SLIC's
 # `_is_builtin_name` lookup picks them up at any user `@slic` site —
 # same convention used for `vector`/`real`/etc. above.
 @eval builtin const RaggedVector = $RaggedVector
 @eval builtin const RaggedMatrix = $RaggedMatrix
+@eval builtin const NestedRaggedVector = $NestedRaggedVector
 
 # Ragged DATA (`Vector{Vector{<:Real}}`) → nominal `RaggedVector` at ingest, so it is a
 # first-class indexable container in ANY model body (`y[g]` slices to the g-th group
@@ -3330,6 +3343,12 @@ _ragged_data_type(T, expr, r::NamedTuple; kwargs...) = StanType(T, tuple();
 # one, so `X[g]` is the g-th matrix anywhere (snag `ragged-matrix-da-163255e9`).
 stan_type(expr, value::AbstractVector{<:AbstractMatrix{<:Real}}; kwargs...) =
     _ragged_data_type(RaggedMatrix, expr, to_ragged(value); kwargs...)
+# Three-level vector DATA (`Vector{Vector{Vector{<:Real}}}`, e.g. readings per
+# subject per endpoint) ingests as a `NestedRaggedVector`: one data tuple
+# `tuple(vector, array[] int, array[] int)`, integer memory staying integer as for
+# a RaggedVector. `x[e]` is group `e`'s RaggedVector anywhere the model reads it.
+stan_type(expr, value::AbstractVector{<:AbstractVector{<:AbstractVector{<:Real}}}; kwargs...) =
+    _ragged_data_type(NestedRaggedVector, expr, to_ragged(value); kwargs...)
 
 # A `RaggedVector` is a COMPILE-TIME pairing of its two components, never a
 # materialised Stan tuple. Reason: when `mem` is parameter-derived
@@ -3416,6 +3435,47 @@ end
         end
         to_matrix(mem, k, n)
     end
+end
+
+# Two-level ragged offsets (`NestedRaggedVector`). Outer group `e` spans the
+# innermost vectors `ragged_start(groups, e):ragged_end(groups, e)`, so its flat
+# memory runs from the entry after the vectors before it to the end of its last
+# vector, and its own RaggedVector ends are those vectors' ends counted from that
+# start. Every value depends only on the data `ends` and `groups`, so it sizes
+# declarations: `@juliacompat`.
+@deffun begin
+    "Return the number of flat-storage entries in groups 1 through j; zero when j is zero."
+    @juliacompat ragged_prefix(ends::int[k], j::int)::int = if j == 0
+        0
+    else
+        ends[j]
+    end
+    "Return the one-based flat-storage start of outer group e of a two-level ragged value."
+    @juliacompat nested_ragged_start(ends::int[k], groups::int[m], e::int)::int =
+        ragged_prefix(ends, ragged_start(groups, e) - 1) + 1
+    "Return the inclusive flat-storage end of outer group e of a two-level ragged value."
+    @juliacompat nested_ragged_end(ends::int[k], groups::int[m], e::int)::int =
+        ragged_prefix(ends, ragged_end(groups, e))
+    "Return the inner ends of outer group e, counted from that group's own flat-storage start."
+    @juliacompat nested_ragged_ends(ends::int[k], groups::int[m], e::int)::int[ragged_length(groups, e)] = begin
+        lo = ragged_start(groups, e)
+        n = ragged_length(groups, e)
+        before = ragged_prefix(ends, lo - 1)
+        rv::int[n]
+        for j in 1:n
+            rv[j] = ends[lo + j - 1] - before
+        end
+        rv
+    end
+end
+# A bound `NestedRaggedVector` (a data tuple, a `@deffun` argument) counts its
+# outer groups; `x[e]` is lowered by the hook below, since a `@deffun` cannot
+# return a RaggedVector.
+@deffun begin
+    "Return the number of outer groups, which is also the final one-based index."
+    Base.length(rv::NestedRaggedVector)::int = size(rv.groups)
+    "Return the number of outer groups, which is also the final one-based index."
+    Base.lastindex(rv::NestedRaggedVector)::int = size(rv.groups)
 end
 
 # Group selection `rv[idx]` and group reductions `sum(rv)` / `mean(rv)` over a
@@ -3901,6 +3961,9 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:R
         rv, i = x.args
         record = _ragged_elementwise_record(rv)
         record === nothing || return _ragged_elementwise_group(record, i; info)
+        nested = _nested_ragged_record(rv)
+        nested === nothing || return forward!(CanonicalExpr(getindex,
+            CanonicalExpr(RaggedVector, nested.mem, nested.ends), _nested_ragged_inner(nested, i; info)); info)
         ends = _ragged_ends(rv)
         lo = _trace_stan_call(builtin.ragged_start, ends, i; info)
         hi = _trace_stan_call(builtin.ragged_end, ends, i; info)
@@ -3980,8 +4043,13 @@ expand_inline_or_trace(x::CanonicalExpr{<:_ArrayReduction,<:Tuple{<:StanExpr2{<:
         forward!(CanonicalExpr(head(x), CanonicalExpr(builtin.to_array_1d, only(x.args))); info) :
         invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info)
 # `length(rv)` / `lastindex(rv)` → number of groups = `num_elements(ends)`.
-expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedVector}}}; info) =
-    _is_ragged_construction(x.args[1]) ? _trace_stan_call(length, _ragged_ends(x.args[1]); info) : fold_shape_query(_trace_stan_expr(x, info))
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedVector}}}; info) = begin
+    rv = only(x.args)
+    _is_ragged_construction(rv) || return fold_shape_query(_trace_stan_expr(x, info))
+    nested = _nested_ragged_record(rv)
+    nested === nothing || return _trace_stan_call(builtin.ragged_length, nested.groups, nested.group; info)
+    _trace_stan_call(length, _ragged_ends(rv); info)
+end
 expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:RaggedMatrix}}}; info) =
     _is_ragged_construction(x.args[1]) ? _trace_stan_call(length, _ragged_ends(x.args[1]); info) : fold_shape_query(_trace_stan_expr(x, info))
 # `rv.mem` / `rv.ends` (and the matrix shape fields) → the stored component;
@@ -3991,6 +4059,62 @@ expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr
     _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
 expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:RaggedMatrix},<:StanExpr2{<:types.int}}}; info) =
     _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
+
+# --- NestedRaggedVector: a vector of RaggedVectors ----------------------------
+# `x[e]` is outer group `e` as a RaggedVector construction: its memory is the flat
+# span of the group's vectors and its ends are theirs counted from that span's
+# start, so the RaggedVector consumers (`x[e][s]`, `length(x[e])`, a plate
+# positional, a submodel keyword, `@deffun` arguments) take it. The construction
+# records `(x, e)`, so a read of one inner vector or of the group's length goes to
+# `x`'s own tables instead of rebuilding the shifted ends. `x[idx]` selects outer
+# groups as Julia's `vvv[idx]` does.
+_nested_ragged_field(x, i; info) = forward!(CanonicalExpr(Base.getfield, x, i); info)
+_nested_ragged_record(rv) = get(type(rv).info, :nested_ragged_group, nothing)
+_nested_ragged_group(x, e; info) = begin
+    mem, ends, groups = (_nested_ragged_field(x, k; info) for k in 1:3)
+    lo = _trace_stan_call(builtin.nested_ragged_start, ends, groups, e; info)
+    hi = _trace_stan_call(builtin.nested_ragged_end, ends, groups, e; info)
+    span = _trace_stan_call(getindex, mem, _trace_stan_call(Colon(), lo, hi; info); info)
+    inner = _trace_stan_call(builtin.nested_ragged_ends, ends, groups, e; info)
+    rv = forward!(CanonicalExpr(RaggedVector, span, inner); info)
+    remake(rv; nested_ragged_group=(; mem, ends, groups, group=e))
+end
+# Innermost vector `s` of outer group `e`: vector `ragged_start(groups, e) + s - 1`.
+_nested_ragged_inner(record, s; info) = begin
+    lo = _trace_stan_call(builtin.ragged_start, record.groups, record.group; info)
+    expr(s) isa Integer || return _trace_stan_call(+, lo, _trace_stan_call(-, s, 1; info); info)
+    expr(s) == 1 ? lo : _trace_stan_call(+, lo, expr(s) - 1; info)
+end
+_nested_ragged_select(x, idx; info) = begin
+    mem, ends, groups = (_nested_ragged_field(x, k; info) for k in 1:3)
+    idx = _index_array(idx; info)
+    # The innermost vectors of the selected groups, in order; then their entries.
+    inner = _hoist_index(_trace_stan_call(builtin.ragged_select_index, groups, idx; info), :ragged_select_index_; info)
+    sel_groups = _hoist_index(_trace_stan_call(builtin.ragged_select_ends, groups, idx; info), :ragged_select_ends_; info)
+    sel_ends = _hoist_index(_trace_stan_call(builtin.ragged_select_ends, ends, inner; info), :ragged_select_ends_; info)
+    sel_index = _hoist_index(_trace_stan_call(builtin.ragged_select_index, ends, inner; info), :ragged_select_index_; info)
+    sel_mem = forward!(CanonicalExpr(getindex, mem, sel_index); info)
+    forward!(CanonicalExpr(NestedRaggedVector, sel_mem, sel_ends, sel_groups); info)
+end
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:NestedRaggedVector},<:StanExpr2{<:types.bool}}}; info) =
+    _getindex_bool_mask(x; info)
+expand_inline_or_trace(x::CanonicalExpr{typeof(getindex),<:Tuple{<:StanExpr2{<:NestedRaggedVector},<:StanExpr2{<:types.int}}}; info) =
+    _is_group_selection(x.args[2]) ? _nested_ragged_select(x.args...; info) : _nested_ragged_group(x.args...; info)
+expand_inline_or_trace(x::CanonicalExpr{<:Union{typeof(length),typeof(lastindex)},<:Tuple{<:StanExpr2{<:NestedRaggedVector}}}; info) =
+    _is_ragged_construction(x.args[1]) ? _trace_stan_call(length, expr(x.args[1]).args[3]; info) : fold_shape_query(_trace_stan_expr(x, info))
+expand_inline_or_trace(x::CanonicalExpr{typeof(Base.getfield),<:Tuple{<:StanExpr2{<:NestedRaggedVector},<:StanExpr2{<:types.int}}}; info) =
+    _is_ragged_construction(x.args[1]) ? expr(x.args[1]).args[expr(x.args[2])] : fold_shape_query(_trace_stan_expr(x, info))
+forward!(x::AssignmentExpr{Symbol,<:StanExpr2{<:NestedRaggedVector}}; info) = begin
+    name, rhs = x.args
+    name in keys(info) && _is_submodel_info(info) && return nothing
+    name in keys(info) && error(
+        "NestedRaggedVector: rebinding `$name` is not supported — a NestedRaggedVector is a " *
+        "SLIC-side compile-time pairing of its (mem, ends, groups) components."
+    )
+    info[name] = rhs
+    nothing
+end
+forward!(x::StanExpr{Symbol,<:StanType{<:NestedRaggedVector}}; info) = x
 
 # --- Per-element reads of a ragged group --------------------------------------
 # Snag scan-per-step-re-621a8f94 (reported by BRM). A plate cell sees a ragged

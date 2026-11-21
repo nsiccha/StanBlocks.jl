@@ -11,6 +11,7 @@ using TestItemRunner
     # View usertypes are not exported; alias so @deffun signatures can name them.
     const RaggedVector = StanBlocks.RaggedVector
     const RaggedMatrix = StanBlocks.RaggedMatrix
+    const NestedRaggedVector = StanBlocks.NestedRaggedVector
     using PosteriorDB
 end
 

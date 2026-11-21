@@ -833,6 +833,21 @@ to_ragged(x::AbstractVector{<:AbstractMatrix{T}}) where {T<:Real} = (;
     rows=Int[size(m, 1) for m in x],
     cols=Int[size(m, 2) for m in x],
 )
+"""
+Encode a vector of vectors of real-valued subvectors (two ragged levels) as a nested
+ragged vector: a `NamedTuple` with `mem::Vector` (every innermost subvector,
+concatenated), `ends::Vector{Int}` (the inclusive 1-based end of each innermost
+subvector in `mem`) and `groups::Vector{Int}` (the inclusive end of each outer group,
+counted in innermost subvectors). Integer subvectors keep integer memory.
+
+Passing a `Vector{<:AbstractVector{<:AbstractVector{<:Real}}}` directly as a data
+kwarg to a `SlicModel` applies this transformation automatically.
+"""
+to_ragged(x::AbstractVector{<:AbstractVector{<:AbstractVector{T}}}) where {T<:Real} = (;
+    mem=_flat_groups(T, Iterators.flatten(x)),
+    ends=cumsum(Int[length(v) for group in x for v in group]),
+    groups=cumsum(Int[length(group) for group in x]),
+)
 _ragged_matrix_eltype(::Type{T}) where {T<:Real} = float(T)
 _ragged_matrix_eltype(::Type{T}) where {T<:Integer} = promote_type(T, Int)
 # `stan_type(expr, ::AbstractVector{<:AbstractVector{<:Real}})` and its matrix twin —
