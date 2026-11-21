@@ -79,7 +79,9 @@ StanBlocks.stan_descriptor).
   own components (a ragged field of `NamedTuple` data nests one level). The input's own
   `type` and `size` describe only the tuple (`size` is its array dims, `()` for
   a single tuple). A ragged vector exposes its flattened values in `mem`
-  and cumulative segment ends in `ends`.
+  and cumulative segment ends in `ends`; a nested ragged vector
+  (`type = :NestedRaggedVector`) adds `groups`, the last inner vector of each
+  outer group.
 
   An integer ragged vector reports `mem.type == :int`.
 """
