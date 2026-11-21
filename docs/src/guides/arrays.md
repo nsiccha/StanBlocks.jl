@@ -68,14 +68,18 @@ field as its own cell value (`curve = cell.curve`) to keep it after the loop.
 
 For several independent axes, use one annotated loop such as
 `@plate for j in 1:J, s in 1:S` and index outputs as `x[j, s]`.
-Collecting a `plate(...) do` result inside an annotated loop is not supported;
-from v0.2.37 the error names the multiple-axis form. Likewise, observe shared
+From v0.2.62 a `plate(...) do` may also be collected in the cell of a one-axis
+plate or annotated loop, directly or inside a called submodel, one level deep:
+its cells are stored over one flattened inner index, and a cell that returns
+a ragged nested result collects a two-level value, read as `x[e][s]`. Likewise, observe shared
 data outside a loop or index it by cell, rather than repeating the entire
 observation in every cell.
 
 ## Unequal-length groups
 
-Nested vectors preserve group boundaries. For a ragged observation, the
+Nested vectors preserve group boundaries. From v0.2.61 vectors nested three
+deep (readings per subject per endpoint) are one two-level ragged value: `x[e]`
+is group `e` as a ragged value and `x[e][s]` one vector. For a ragged observation, the
 pointwise log likelihood is one aggregate value per group, while predictive
 values use flat storage plus group-end metadata.
 
