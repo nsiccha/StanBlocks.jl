@@ -4,6 +4,21 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.58
+
+- **Concatenating many columns takes time and Stan source proportional to
+  their number.** `hcat`, `append_col` and `append_row` of three or more
+  operands (and Julia's `[a b c]`) now emit a balanced tree of Stan's binary
+  `append_col` / `append_row` in place of the call. Before, each arity was a
+  generated overload that peeled off one operand, so 48 columns emitted 48
+  `hcat` overloads (55 KB of Stan, about a minute to generate) and copied the
+  growing matrix once per column at run time. Now the same design matrix is
+  5.6 KB, generated in 0.14 s, with 47 native calls nested 6 deep. A run of
+  scalars in `append_col` / `append_row` becomes one literal (`[1.0, 2.0]'`),
+  since Stan cannot join two scalars. The accepted operand shapes, their order,
+  the result type and the error for an unsupported shape are unchanged, and so
+  is a one- or two-operand `hcat` (snag `generate-stan-wi-ade7712e`).
+
 ## v0.2.57
 
 - **A plate cell reads a submodel's tuple whose component length differs by
