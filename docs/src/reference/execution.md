@@ -13,6 +13,8 @@ stan_code
 stanc_check
 stan_instantiate
 stan_library
+StanBlocks.stick_simplex_stan
+StanBlocks.stick_simplex_include
 ```
 
 ## Inspection and operations

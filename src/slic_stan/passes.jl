@@ -567,10 +567,169 @@ end
 distribute!(x; info) = _distribute_statement!(x; info)
 _distribute_statement!(x; info) = begin
     _push_expr!(info, x)
-    for b in distribution_blocks(x; info)
-        push!(block(info, b), _ragged_scoped(b, x; info); info)
+    blocks = distribution_blocks(x; info)
+    if blocks == (:parameters, :model) && _stick_simplex_prior(x; info)
+        _distribute_stick_simplex!(x; info)
+    else
+        for b in blocks
+            push!(block(info, b), _ragged_scoped(b, x; info); info)
+        end
     end
     _pop_expr!(info)
+end
+# A simplex parameter whose `dirichlet` concentration depends on parameters is
+# sampled in the log-space stick-breaking frame (snag `hierarchical-spa-1a7808bd`,
+# decision `18ro7g0`; the functions are in builtin.jl). Stan's own `simplex`
+# holds its weights in linear space: at a small concentration they underflow to
+# 0, where `dirichlet` answers +Inf, and a sampled concentration makes a funnel.
+# `dirichlet(a; frame = :native)` keeps Stan's simplex, `frame = :stick` asks for
+# the stick frame whatever `a` is (`_take_dirichlet_frame`, forward.jl). The
+# model is unchanged: `p` keeps its values, output column and prior, and
+# prior-only programs, re-draws and the descriptor read the same statement. Only
+# its emission differs:
+#     parameters             vector[K - 1] p_free;
+#     transformed parameters vector[K] p_log = dirichlet_stick_log_simplex(p_free, a);
+#                            simplex[K] p = exp(p_log);
+#     model                  target += dirichlet_stick_lpdf(p_free | a);
+# The model-block term is the density of `p_free`, the stick frame's Jacobian
+# included, so a `jacobian = false` evaluation includes it too: the density of
+# `p` alone grows without bound as a weight nears 0 when a concentration is
+# below 1, and cannot be added to the Jacobian without cancelling (builtin.jl).
+# An array of simplexes (`p::simplex[N, K]`) lowers the same way, element by element.
+_stick_simplex_prior(x; info) = false
+_stick_simplex_prior(x::SamplingExpr; info) = begin
+    lhs, rhs = x.args
+    lhs isa StanExpr && expr(lhs) isa Symbol && rhs isa StanExpr || return false
+    center_type(lhs) === types.simplex || return false
+    call = expr(rhs)
+    call isa CanonicalExpr && _sampling_head(rhs) === builtin.dirichlet || return false
+    decl = expr(lhs) in keys(info) ? info[expr(lhs)] : lhs
+    frame = _dirichlet_frame(type(decl))
+    frame === :native && return false
+    frame === :stick && return true
+    any(a -> qual(a) == :parameter, call.args)
+end
+_dirichlet_frame(t::StanType) = get(info(t), :dirichlet_frame, :auto)
+# A size one smaller than `K`: an `int` literal, or the data expression `K - 1`.
+_stick_free_size(K::Integer) = K - 1
+_stick_free_size(K::StanExpr) =
+    StanExpr(CanonicalExpr(-, K, 1), remake(type(K); value=hasvalue(K) ? getvalue(K) - 1 : missing))
+_distribute_stick_simplex!(x; info) = begin
+    lhs, rhs = x.args
+    name, t = expr(lhs), type(lhs)
+    a = only(expr(rhs).args)
+    sizes = stan_size(t)
+    free_name, log_name = _stick_owned_names(name)
+    _check_stick_owned_free(name; info)
+    _uses_model_local(a, get(meta(info), :_model_local_transforms, ())) && error(
+        "The concentration of `", name, " ~ dirichlet(…)` reads a value that contains an ",
+        "integer and is therefore computed in the model block, but the stick-breaking ",
+        "simplex `", name, "` is computed from it in transformed parameters. Compute the ",
+        "concentration from data or from real-valued parameters only, or keep Stan's own ",
+        "simplex with `dirichlet(…; frame = :native)`.",
+    )
+    free = StanExpr(free_name, StanType(types.vector,
+        (sizes[1:end-1]..., _stick_free_size(sizes[end])); qual=:parameter))
+    info[free_name] = free
+    push!(block(info, :parameters), free; info)
+    log_x = StanExpr(log_name, StanType(types.vector, sizes; qual=:parameter))
+    info[log_name] = log_x
+    tp = block(info, :transformed_parameters)
+    map_call = StanExpr(CanonicalExpr(builtin.dirichlet_stick_log_simplex, free, a), type(log_x))
+    push!(tp, CanonicalExpr(:(=), log_x, map_call); info)
+    push!(tp, CanonicalExpr(:(=), lhs, StanExpr(CanonicalExpr(exp, log_x), t)); info)
+    density = StanExpr(CanonicalExpr(builtin.dirichlet_stick_lpdf, free, a),
+        StanType(types.real; qual=:parameter))
+    push!(block(info, :model), CanonicalExpr(_stick_simplex_target, density); info)
+    nothing
+end
+function _stick_simplex_target end
+Base.show(io::IO, x::CanonicalExpr{typeof(_stick_simplex_target)}) = print(io, "target += ", only(x.args))
+_stick_owned_names(name) = (Symbol(name, :_free), Symbol(name, :_log))
+_check_stick_owned_free(name; info) = for owned in _stick_owned_names(name)
+    owned in keys(info) && error(
+        "Cannot declare the compiler-owned `", owned, "` behind the simplex `", name,
+        "` (`", name, " ~ dirichlet(…)` is sampled in the stick-breaking frame): the ",
+        "model already defines `", owned, "`. Rename the model's `", owned, "`, or ",
+        "keep Stan's own simplex with `dirichlet(…; frame = :native)`.",
+    )
+end
+# The plate form: a simplex cell `t::simplex[K] ~ dirichlet(a)` whose choice
+# `_mark_stick_cells!` (forward.jl) recorded on its outer declaration. The
+# declaration becomes the free coordinates plus two transformed-parameter
+# arrays, and each cell's `~` fills them in transformed parameters and adds its
+# density in the model block (`_loop_distribution_stmts` below):
+#     parameters             array[N] vector[K - 1] theta_t_free;
+#     transformed parameters array[N] vector[K] theta_t_log;  array[N] simplex[K] theta_t;
+#                            for (i in 1:N) {
+#                              theta_t_log[i] = dirichlet_stick_log_simplex(theta_t_free[i], a);
+#                              theta_t[i] = exp(theta_t_log[i]);
+#                            }
+#     model                  for (i in 1:N) target += dirichlet_stick_lpdf(theta_t_free[i] | a);
+_stick_cells(t::StanType) = get(info(t), :stick_cells, false)
+_declare_stick_cells!(b, x; info) = begin
+    name, t = expr(x), type(x)
+    free_name, log_name = _stick_owned_names(name)
+    haskey(content(b), free_name) && return nothing
+    _check_stick_owned_free(name; info)
+    sizes = stan_size(t)
+    free = StanExpr(free_name, StanType(types.vector,
+        (sizes[1:end-1]..., _stick_free_size(sizes[end])); qual=:parameter))
+    info[free_name] = free
+    _declare!(b, free; info)
+    tp = block(info, :transformed_parameters)
+    log_x = StanExpr(log_name, StanType(types.vector, sizes; qual=:parameter))
+    info[log_name] = log_x
+    push!(tp, StanExpr(CanonicalExpr(:(::), log_x), type(log_x)); info)
+    push!(tp, StanExpr(CanonicalExpr(:(::), x), t); info)
+    nothing
+end
+# A cell's indexed `~` on such a declaration.
+_stick_cell_sample(x; info) = false
+_stick_cell_sample(x::SamplingExpr; info) = begin
+    lhs, rhs = x.args
+    lhs isa StanExpr && !(expr(lhs) isa Symbol) && qual(x) == :parameter || return false
+    _sampling_head(rhs) === builtin.dirichlet || return false
+    base = _getindex_chain_base(lhs)
+    base !== nothing && base in keys(info) && _stick_cells(type(info[base]))
+end
+_loop_distribution_blocks(x::SamplingExpr; info) = begin
+    blocks = distribution_blocks(x; info)
+    blocks == (:model,) && _stick_cell_sample(x; info) ? (:transformed_parameters, :model) : blocks
+end
+# `base[i…]` of a cell, re-based onto a compiler-owned array of `vector`s whose
+# innermost length is `last`.
+_stick_reindex(x::StanExpr{Symbol}, base, last) = base
+_stick_reindex(x::StanExpr{<:CanonicalExpr}, base, last) = begin
+    e = expr(x)
+    head(e) === getindex || error(
+        "internal: a stick-breaking simplex cell reached a non-getindex lhs node (head ", head(e), ").")
+    sizes = stan_size(type(x))
+    StanExpr(remake(e, _stick_reindex(e.args[1], base, last), e.args[2:end]...),
+        StanType(types.vector, (sizes[1:end-1]..., last); qual=:parameter))
+end
+_stick_cell_parts(x; info) = begin
+    lhs, rhs = x.args
+    base = _getindex_chain_base(lhs)
+    free_name, log_name = _stick_owned_names(base)
+    K = stan_size(type(lhs))[end]
+    (; lhs, a=only(expr(rhs).args),
+       free=_stick_reindex(lhs, info[free_name], _stick_free_size(K)),
+       log_x=_stick_reindex(lhs, info[log_name], K))
+end
+_loop_distribution_stmts(x::SamplingExpr, v::Val{:transformed_parameters}; info) = begin
+    _stick_cell_sample(x; info) || return Any[_loop_distribution_stmt(x, v; info)]
+    c = _stick_cell_parts(x; info)
+    map_call = StanExpr(CanonicalExpr(builtin.dirichlet_stick_log_simplex, c.free, c.a), type(c.log_x))
+    Any[CanonicalExpr(:(=), c.log_x, map_call),
+        CanonicalExpr(:(=), c.lhs, StanExpr(CanonicalExpr(exp, c.log_x), type(c.lhs)))]
+end
+_loop_distribution_stmts(x::SamplingExpr, v::Val{:model}; info) = begin
+    _stick_cell_sample(x; info) || return Any[_loop_distribution_stmt(x, v; info)]
+    c = _stick_cell_parts(x; info)
+    density = StanExpr(CanonicalExpr(builtin.dirichlet_stick_lpdf, c.free, c.a),
+        StanType(types.real; qual=:parameter))
+    Any[CanonicalExpr(_stick_simplex_target, density)]
 end
 qual(x::AssignmentExpr) = qual(x.args[1])
 qual(x::SamplingExpr) = qual(x.args[1])
@@ -999,6 +1158,7 @@ _declared_data(x::StanExpr) = get(type(x).info, :declared_data, false)
 # builtin adds its own log-Jacobian to the target. The builtins take arrays of
 # vectors too, so a plate's `array[n] ordered[k]` carrier lowers the same way.
 Base.push!(b::ParametersBlock, x::StanExpr{Symbol}; info) =
+    _stick_cells(type(x)) ? _declare_stick_cells!(b, x; info) :
     _lowered_ordered(type(x)) ? _declare_lowered_ordered!(b, x; info) : _declare!(b, x; info)
 _lowered_ordered(t::StanType) = _ordered_center(t) && !isempty(constraints(t))
 _unconstrained_info(t::StanType) = Base.structdiff(info(t), NamedTuple{CONSTRAINT_KEYS})

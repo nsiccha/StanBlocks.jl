@@ -70,6 +70,21 @@ inside it depends on another unknown quantity. A parameter with `flat()` or a
 bare typed declaration has no proper prior; it needs an identifiable likelihood
 and an explicit modeling justification.
 
+A simplex whose Dirichlet concentration depends on parameters, as in
+`theta::simplex[K] ~ dirichlet(alpha * beta)`, is sampled in a log-space
+stick-breaking frame rather than as Stan's own `simplex`. Stan holds a simplex
+in linear space, so at small concentrations its weights round to zero and the
+Dirichlet density becomes infinite, and a sampled concentration rescales the
+coordinates it governs. The emitted program instead declares `theta_free`,
+computes `theta_log` and `theta` in transformed parameters, and adds the
+density of `theta_free` in the model block. The model and its outputs are
+unchanged. That density includes the frame's Jacobian, so an evaluation
+without the Jacobian includes it too; for a concentration below 1 the density
+of `theta` alone is unbounded near zero weights. Write
+`dirichlet(a; frame=:native)` to keep Stan's simplex, or `frame=:stick` to use
+the stick frame for a data concentration. Hand-written Stan programs can use
+the same functions through `StanBlocks.stick_simplex_include()`.
+
 Annotations such as `beta::vector[k]` or `L::cholesky_factor_corr[k]` specify a
 Stan carrier when inference from the probability statement is insufficient.
 They belong to the model language; they do not require Julia types with those

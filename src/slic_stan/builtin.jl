@@ -174,6 +174,9 @@ end
     # Stan 2.37 exposed constraint transforms (Feature 1) — @deffun sigs below.
     sum_to_zero_constrain sum_to_zero_unconstrain sum_to_zero_jacobian
     simplex_constrain simplex_unconstrain simplex_jacobian
+    # The log-space stick-breaking simplex of `simplex ~ dirichlet(a)` with a
+    # parameter-dependent `a` (passes.jl `_distribute_stick_simplex!`).
+    stick_log_simplex stick_dirichlet_lpdf dirichlet_stick_scale dirichlet_stick_log_simplex dirichlet_stick_lpdf
     ordered_constrain ordered_unconstrain ordered_jacobian
     positive_ordered_constrain positive_ordered_unconstrain positive_ordered_jacobian
     cholesky_factor_corr_jacobian cholesky_factor_cov_jacobian
@@ -4554,6 +4557,106 @@ end
         rv::matrix[m, n]
         for j in 1:n
             rv[:, j] = dirichlet_rng(alpha)
+        end
+        rv
+    end
+end
+
+# The stick-breaking simplex in log space (snag `hierarchical-spa-1a7808bd`,
+# decision `18ro7g0`). Stan holds a `simplex` in linear space: at a small
+# concentration its weights fall below about e^-1000 and round to 0, where
+# `dirichlet` answers +Inf, and a coordinate's scale follows its concentration,
+# a funnel once the concentration is sampled. Stick k of x ~ Dirichlet(a) is
+# V_k ~ Beta(a_k, b_k) with b_k = a_{k+1} + … + a_K, written in the free
+# coordinate s_k through
+#     logit V_k = log_inv_logit(s_k) / A_k - log_inv_logit(-s_k) / B_k,
+# so `log x` is formed without forming `x`. The density is that of `s`, per
+# stick Beta(V_k | a_k, b_k) |dV_k/ds_k|, and stays a sum of moderate terms
+# however small a concentration gets. Splitting it into Dirichlet(x | a) plus
+# log|dx/ds| would not: both grow like log σ(s)/a and cancel, losing the
+# density entirely once a concentration falls below about 1e-15 (measured on
+# the reporter's model, todo `1ejsuw7`). The lowering of a parameter's
+# `simplex ~ dirichlet(a)` (passes.jl `_distribute_stick_simplex!`) calls the
+# map in transformed parameters and adds the density in the model block.
+# `stick_simplex_stan()` (instantiate.jl) prints these definitions for a
+# hand-written program.
+@deffun begin
+    """
+    Map free coordinates `s` to `log x` of the stick-breaking simplex x. Stick k
+    is V_k with logit V_k = log_inv_logit(s[k]) / A[k] - log_inv_logit(-s[k]) / B[k].
+    """
+    stick_log_simplex(s::vector[n], A::vector[n], B::vector[n])::vector[n + 1] = begin
+        lx::vector[n + 1]
+        lrest = 0.0
+        for k in 1:n
+            p = log_inv_logit(s[k]) / A[k]
+            q = log_inv_logit(-s[k]) / B[k]
+            l = log_sum_exp(p, q)
+            lx[k] = lrest + p - l
+            lrest += q - l
+        end
+        lx[n + 1] = lrest
+        lx
+    end
+    """
+    Return the log density of the free coordinates `s` of x ~ Dirichlet(a) in
+    the stick frame with scales `A`, `B`: per stick, Beta(V_k | a_k, b_k)
+    |dV_k/ds_k|, computed without forming V_k.
+    """
+    stick_dirichlet_lpdf(s::vector[n], a::vector[m], A::vector[n], B::vector[n])::real = begin
+        @stan_assert m == n + 1 "stick_dirichlet_lpdf: a simplex of K components has K - 1 free coordinates"
+        lp = 0.0
+        for k in 1:n
+            b = sum(a[(k + 1):m])
+            ls = log_inv_logit(s[k])
+            lm = log_inv_logit(-s[k])
+            l = log_sum_exp(ls / A[k], lm / B[k])
+            lp += a[k] / A[k] * ls + b / B[k] * lm - (a[k] + b) * l - lbeta(a[k], b) +
+                log(inv_logit(-s[k]) / A[k] + inv_logit(s[k]) / B[k])
+        end
+        lp
+    end
+    """
+    Return the stick scale of a concentration in the frame centred by
+    concentration: a^(1 - c(a)), c(a) = a^2 / (a^2 + 1). A stick is non-centred
+    (scale a) where its concentration is small and close to the plain
+    stick-breaking logit (scale 1) where it is large.
+    """
+    dirichlet_stick_scale(a::real)::real = exp(log(a) / (square(a) + 1))
+    "Map free coordinates `s` to `log x` of x ~ Dirichlet(a) in the stick frame centred by concentration."
+    dirichlet_stick_log_simplex(s::vector[n], a::vector[m])::vector[m] = begin
+        @stan_assert m == n + 1 "dirichlet_stick_log_simplex: a simplex of K components has K - 1 free coordinates"
+        A::vector[n]
+        B::vector[n]
+        for k in 1:n
+            A[k] = dirichlet_stick_scale(a[k])
+            B[k] = dirichlet_stick_scale(sum(a[(k + 1):m]))
+        end
+        stick_log_simplex(s, A, B)
+    end
+    "Return the log density of the free coordinates `s` of x ~ Dirichlet(a) in the stick frame centred by concentration."
+    dirichlet_stick_lpdf(s::vector[n], a::vector[m])::real = begin
+        A::vector[n]
+        B::vector[n]
+        for k in 1:n
+            A[k] = dirichlet_stick_scale(a[k])
+            B[k] = dirichlet_stick_scale(sum(a[(k + 1):m]))
+        end
+        stick_dirichlet_lpdf(s, a, A, B)
+    end
+    "Map each element of an array of free coordinates to `log x` of a Dirichlet(a) simplex in the stick frame centred by concentration."
+    dirichlet_stick_log_simplex(s::vector[N, n], a::vector[m])::vector[N, m] = begin
+        lx::vector[N, m]
+        for i in 1:N
+            lx[i] = dirichlet_stick_log_simplex(s[i], a)
+        end
+        lx
+    end
+    "Return the summed log density of an array of free coordinates of Dirichlet(a) simplexes in the stick frame centred by concentration."
+    dirichlet_stick_lpdf(s::vector[N, n], a::vector[m])::real = begin
+        rv = 0.0
+        for i in 1:N
+            rv += dirichlet_stick_lpdf(s[i], a)
         end
         rv
     end

@@ -687,12 +687,33 @@ _forward_plate_assignment!(x, name, lhs, rhs_raw; info) = begin
     fwd
 end
 
-_forward_plate_sampling!(x, name, lhs, rhs::StanExpr; info) = begin
+_forward_plate_sampling!(x, name, lhs, rhs::StanExpr; info, frame=(;)) = begin
     fwd = _with_trace_state(info, :plate_context, nothing) do
         forward!(remake(x, lhs, rhs); info=_plate_root_info(info))
     end
+    _mark_stick_cells!(name, fwd, frame; info)
     _plate_bind_local!(info, name, fwd.args[1])
     fwd
+end
+# A simplex cell `t::simplex[K] ~ dirichlet(a)` takes the stick-breaking frame by
+# the same rule as a whole declaration (passes.jl `_stick_simplex_prior`). The
+# cell's outer declaration is emitted before the loop that samples it, so the
+# choice is recorded on it here (`stick_cells`, read by `_declare_stick_cells!`
+# and `_stick_cell_sample`, passes.jl).
+_mark_stick_cells!(name, fwd, frame; info) = begin
+    lhs, rhs = fwd.args
+    root = _plate_root_info(info)
+    base = lhs isa StanExpr ? _getindex_chain_base(lhs) : nothing
+    # The cell reads as a `vector` (an element of the outer array); its outer
+    # declaration says whether it is a simplex.
+    simplex = base !== nothing && base in keys(root) && center_type(root[base]) === types.simplex &&
+        rhs isa StanExpr && _sampling_head(rhs) === builtin.dirichlet
+    simplex || (isempty(frame) ? (return nothing) : _misplaced_dirichlet_frame(name))
+    choice = get(frame, :dirichlet_frame, :auto)
+    choice === :native && return nothing
+    choice === :stick || any(a -> qual(a) == :parameter, expr(rhs).args) || return nothing
+    root[base] = remake(root[base]; stick_cells=true)
+    nothing
 end
 
 # Unwrap an inline-UDF body into a vector of effective statements. A `:return`
@@ -1747,8 +1768,49 @@ forward!(x::AssignmentExpr; info) = begin
     end
     fwd
 end
+# `dirichlet(a; frame = :stick | :native)` chooses how a simplex PARAMETER is
+# sampled: `:stick` in the log-space stick-breaking frame, `:native` as Stan's
+# own `simplex`; without it, the stick frame is taken when `a` depends on
+# parameters (passes.jl `_stick_simplex_prior`, decision `18ro7g0`). The keyword
+# belongs to the declaration, not the density, so it is taken off the call
+# before the call is traced and recorded on the declared type.
+_take_dirichlet_frame(rhs; info) = (rhs, (;))
+_take_dirichlet_frame(rhs::CanonicalExpr; info) = begin
+    haskey(rhs.kwargs, :frame) || return (rhs, (;))
+    h = _forward_head(head(rhs), info)
+    h isa StanExpr2{<:types.func} && _family_function(h) === builtin.dirichlet ||
+        return (rhs, (;))
+    v = rhs.kwargs.frame
+    v = v isa QuoteNode ? v.value : v
+    v in (:stick, :native) || error(
+        "`dirichlet(…; frame = …)` takes `:stick` (the log-space stick-breaking frame) ",
+        "or `:native` (Stan's own simplex), got `", repr(v), "`.")
+    kwargs = Base.structdiff(rhs.kwargs, NamedTuple{(:frame,)})
+    (CanonicalExpr(head(rhs), rhs.args...; kwargs...), (; dirichlet_frame=v))
+end
+_misplaced_dirichlet_frame(name) = error(
+    "`", name, " ~ dirichlet(…; frame = …)`: `frame` chooses how a simplex parameter is ",
+    "sampled, but `", name, "` is not a fresh `simplex` parameter here (it is observed ",
+    "data or another type). Drop `frame`.")
+_forward_framed_sampling!(x, name, rhs, frame; info) = begin
+    name in keys(info) && _misplaced_dirichlet_frame(name)
+    promoted = _plate_promoted_lhs(name; info)
+    promoted === nothing ||
+        return _forward_plate_sampling!(x, name, promoted, forward!(rhs; info)::StanExpr; info, frame)
+    rv = forward!(remake(x, name, rhs); info)
+    decl = info[name]
+    center_type(decl) === types.simplex && stan_ndim(type(decl)) == 1 ||
+        _misplaced_dirichlet_frame(name)
+    info[name] = StanExpr(name, remake(type(decl); frame...))
+    remake(rv, info[name], rv.args[2])
+end
+_unsupported_dirichlet_frame(name, where) = error(
+    "`", name, " ~ dirichlet(…; frame = …)`: the stick-breaking frame is not available ",
+    "for ", where, " yet; drop `frame` to keep Stan's own simplex.")
 forward!(x::SamplingExpr{Symbol}; info) = begin
     name, rhs = x.args
+    rhs, frame = _take_dirichlet_frame(rhs; info)
+    isempty(frame) || return _forward_framed_sampling!(x, name, rhs, frame; info)
     # A whole ragged-vector OBSERVATION fed to a top-level distribution is
     # BROADCAST ACROSS its groups — never flattened. `ys ~ dist(mu, args…)` with a
     # data `RaggedVector` LHS lowers to a compiler-owned per-group loop
@@ -2376,17 +2438,21 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     else
         (type_expr,)
     end
+    rhs_raw, frame = _take_dirichlet_frame(rhs_raw; info)
+    isempty(frame) || ct === :simplex || (ct in (:row_stochastic_matrix, :column_stochastic_matrix) ?
+        _unsupported_dirichlet_frame(name, "a stochastic matrix") : _misplaced_dirichlet_frame(name))
     ct isa Symbol && (rhs_raw = _stochastic_family(gettype(ct), rhs_raw; info))
     promoted = _plate_promoted_lhs(name; info)
     if promoted !== nothing
         rhs = forward!(rhs_raw; info)::StanExpr
-        return _forward_plate_sampling!(x, name, promoted, rhs; info)
+        return _forward_plate_sampling!(x, name, promoted, rhs; info, frame)
     end
     ct isa Symbol || error("Typed-LHS sampling: type center must be a Symbol, got `$ct`")
     ct_resolved = gettype(ct)
     _check_stochastic_sizes(ct_resolved, sizes; name, type_expr)
     sizes_forwarded = isempty(sizes) ? () : Tuple(forward!(collect(sizes); info))
     foreach(s -> _check_integer_size(s, "The size of `$name`"), sizes_forwarded)
+    name in keys(info) && !isempty(frame) && _misplaced_dirichlet_frame(name)
     name in keys(info) &&
         return _forward_typed_bound!(x, name, ct_resolved, sizes_forwarded, type_expr, rhs_raw; info)
     ct_resolved isa Type || error(
@@ -2402,6 +2468,7 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # + a compile-time ragged carrier, reusing the loop-fill routing landed on
     # `slic-model-slice-b3a85769` @ 29c3b59. See brief 2026-07-15T18-26-44-152-1b6sc6m.
     if _is_native_constrained_ct(ct_resolved) && any(sz -> stan_ndim(type(sz)) > 0, sizes_forwarded)
+        isempty(frame) || _unsupported_dirichlet_frame(name, "a ragged `simplex[Ks]`")
         return _forward_ragged_constrained!(name, ct, collect(sizes), rhs_raw; info)
     end
     _elementwise_constrained_array(ct_resolved, sizes, rhs_raw; info) &&
@@ -2460,7 +2527,7 @@ forward!(x::SamplingExpr{<:DeclExpr}; info) = begin
     # A `flat(…)` declaration may be followed by slice statements
     # (`_record_slice_support!`); mark it so they recognise their target.
     flat = _is_flat_rhs(rhs_canonical) ? (; flat_decl=true) : (;)
-    info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args, decl_role=:sampled, flat...))
+    info[name] = StanExpr(name, remake(base_lhs_type; qual, cv=cv_args, decl_role=:sampled, flat..., frame...))
     rhs_stan = StanExpr(rhs_canonical, info[name].type)
     validate_sampling_rhs(info[name], rhs_stan; info)
     remake(x, info[name], rhs_stan)
