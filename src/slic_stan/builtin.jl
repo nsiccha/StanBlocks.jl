@@ -2651,6 +2651,11 @@ import Statistics
     discrete_range_lccdf(args...)
     student_t_cdf(args...)
 
+    # The three-or-more-operand definitions below give the Julia methods and the
+    # operand shapes `_concat_tree_shape` accepts. In a trace those calls lower to a
+    # balanced tree of binary calls instead (see "Concatenation of three or more
+    # operands" below), so their Stan overloads are emitted only for a call that
+    # the tree does not take, which then fails with this definition's diagnostic.
     "Concatenate three or more inputs along rows, preserving their argument order."
     @juliacompat append_row(x, y, z, args...) = append_row(append_row(x, y), z, args...)
     "Concatenate three or more inputs along columns, preserving their argument order."
@@ -2894,6 +2899,84 @@ import Statistics
         y
     end
 end
+
+# --- Concatenation of three or more operands ----------------------------------
+# `hcat`, `append_col` and `append_row` of three or more operands lower at trace
+# time to a balanced tree of Stan's binary `append_col` / `append_row` (snag
+# `generate-stan-wi-ade7712e`). Their vararg definitions peel one operand per
+# call, and Stan has no varargs, so each arity was its own UDF: K columns gave K
+# overloads of up to K parameters, O(K²) source and trace work (K = 48: 55 KB of
+# Stan, about a minute to generate), and a left-nested chain that copies
+# O(n·K²) values per evaluation. The tree is K - 1 native calls nested
+# ⌈log₂ K⌉ deep and copies O(n·K·log K).
+#
+# Only the operand shapes the vararg definitions accept take the tree, and each
+# gives the result type the definition gives; any other call keeps the
+# definition and its diagnostic. Two scalars cannot meet in a binary call, so a
+# run of them becomes one literal first. The Julia methods are unchanged.
+const _NaryConcat = Union{typeof(hcat),typeof(append_col),typeof(append_row)}
+_concat_binary(::typeof(append_row)) = append_row
+_concat_binary(_) = append_col
+_concat_is(a::StanExpr, T) = (ct = center_type(a); ct <: T && stan_ndim(a) == r_ndim(ct))
+_concat_is(_, T) = false
+_concat_scalar(a::StanExpr) = stan_ndim(a) == 0 && center_type(a) <: types.real
+_concat_scalar(::Real) = true
+_concat_scalar(_) = false
+# The shapes whose left fold the vararg definition accepts. `hcat` has a
+# signature for a vector or matrix followed by a vector.
+_concat_tree_shape(::typeof(hcat), args) =
+    _concat_is(first(args), Union{types.vector,types.matrix}) &&
+    all(a -> _concat_is(a, types.vector), args[2:end])
+_concat_tree_shape(f, args) = _concat_containers(f, args) || _concat_with_scalars(f, args)
+_concat_containers(::typeof(append_col), args) =
+    all(a -> _concat_is(a, Union{types.vector,types.matrix}), args) ||
+    all(a -> _concat_is(a, types.row_vector), args)
+_concat_containers(::typeof(append_row), args) =
+    all(a -> _concat_is(a, types.vector), args) ||
+    all(a -> _concat_is(a, Union{types.row_vector,types.matrix}), args)
+# A scalar joins only its partner (`append_col(row_vector, real)`,
+# `append_row(vector, real)`), and the left fold starts by joining the first two
+# operands, so they cannot both be scalars.
+_concat_partner(::typeof(append_col)) = types.row_vector
+_concat_partner(::typeof(append_row)) = types.vector
+_concat_with_scalars(f, args) =
+    !(_concat_scalar(args[1]) && _concat_scalar(args[2])) &&
+    all(a -> _concat_scalar(a) || _concat_is(a, _concat_partner(f)), args)
+# Each run of two or more adjacent scalars becomes one literal of the partner
+# container: `[a, b]'`, a vector, for `append_row`, and its transpose for
+# `append_col`. A lone scalar then has a container on each side.
+_concat_pack(f, args; info) = begin
+    out = Any[]
+    i = firstindex(args)
+    while i <= lastindex(args)
+        j = i
+        while _concat_scalar(args[i]) && j < lastindex(args) && _concat_scalar(args[j + 1])
+            j += 1
+        end
+        push!(out, j == i ? args[i] : _concat_literal(f, args[i:j]; info))
+        i = j + 1
+    end
+    out
+end
+_concat_literal(::typeof(append_row), run; info) =
+    forward!(CanonicalExpr(Val(:vect), run...); info)
+_concat_literal(::typeof(append_col), run; info) =
+    forward!(CanonicalExpr(adjoint, CanonicalExpr(Val(:vect), run...)); info)
+_concat_tree(f, args; info) = length(args) == 1 ? only(args) : begin
+    mid = cld(length(args), 2)
+    forward!(CanonicalExpr(f,
+        _concat_tree(f, args[firstindex(args):mid]; info),
+        _concat_tree(f, args[mid+1:end]; info),
+    ); info)
+end
+expand_inline_or_trace(x::CanonicalExpr{<:_NaryConcat}; info) =
+    if length(x.args) >= 3 && isempty(x.kwargs) && isnothing(inline_body(x)) &&
+            _concat_tree_shape(head(x), x.args)
+        f = _concat_binary(head(x))
+        _concat_tree(f, _concat_pack(f, collect(x.args); info); info)
+    else
+        invoke(expand_inline_or_trace, Tuple{CanonicalExpr}, x; info)
+    end
 
 # --- Sequential marginalization ------------------------------------------------
 # `sequential_marginalize` is the general "integrate out a sequential latent" combinator: a
