@@ -15,11 +15,14 @@ breaking digit).
   length and end tables at model scope under the call's names (`f1_loc`,
   `f1_loc__pl_len`, `f1_loc__pl_end`, …) and fills them over the call's own loop
   index, so two calls of one submodel read shared model-scope values (a
-  trajectory plate) and keep separate results. The program equals the one with
+  trajectory plate) and keep separate results. A sampled cell of a size read off
+  the cell index (`plate(; outer = length(K)) do g; z::vector[K[g]] ~
+  std_normal(); z; end`) works the same way. The program equals the one with
   each call's plate written out at model scope, apart from loop-index names; the
-  descriptor reports the same outputs and `segments`. Such a submodel called
-  inside a plate cell or an annotated loop is still refused, now naming that
-  case (snag `emit-stan-code-f-2c7ed92c`).
+  descriptor reports the same outputs and `segments`. Still refused: integer and
+  matrix cells whose size varies, inside a submodel, and any such submodel
+  called inside a plate cell or an annotated loop, now naming that case (snag
+  `emit-stan-code-f-2c7ed92c`).
 
 ## v0.2.59
 

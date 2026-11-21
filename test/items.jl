@@ -10855,8 +10855,11 @@ Verify `slic: public plate inside a called submodel` in an isolated test item.
         @test g_ren ≈ g_ren_ref atol=1e-8
     end
 
-    # Ragged vector cells inside a submodel are not wired yet — must fail loud
-    # rather than emit invalid Stan (`matrix[K[sub_g], …]`).
+    # Ragged vector cells inside a submodel (snag `emit-stan-code-f-2c7ed92c`)
+    # store the call's flat memory under its flattened names, sized by the
+    # cell's data size read through the loop index (not invalid Stan such as
+    # `matrix[K[sub_g], …]`, nor the do-parameter's flattened name `b_g`): the
+    # same parameters, density and gradient as the plate written at model scope.
     @slic c3_plate_ragged_in_sub(K::int[3]) = begin
         b ~ plate(; outer=length(K)) do g
             z::vector[K[g]] ~ std_normal()
@@ -10864,10 +10867,26 @@ Verify `slic: public plate inside a called submodel` in an isolated test item.
         end
         return b
     end
-    @test_throws "ragged vector cells inside a called" stan_code(@slic (;K=[2, 3, 4], y=0.3) begin
+    ragged_called = @slic (;K=[2, 3, 4], y=0.3) begin
         b ~ c3_plate_ragged_in_sub(K)
         y ~ normal(sum(b[1]), 1.0)
-    end)
+    end
+    ragged_written = @slic (;K=[2, 3, 4], y=0.3) begin
+        b_b ~ plate(; outer=length(K)) do g
+            z::vector[K[g]] ~ std_normal()
+            z
+        end
+        y ~ normal(sum(b_b[1]), 1.0)
+    end
+    @test stanc_compiles(ragged_called)
+    @test occursin("vector[sum(b_b_z__pl_len)] b_b_z;", stan_block(stan_code(ragged_called), "parameters"))
+    p_rag = instantiate(stan_model(ragged_called))
+    p_rag_ref = instantiate(stan_model(ragged_written))
+    @test LogDensityProblems.dimension(p_rag) == LogDensityProblems.dimension(p_rag_ref) == 9
+    for v in (cos.(1:9) .* 0.7, sin.(1:9))
+        @test LogDensityProblems.logdensity_and_gradient(p_rag, v) ==
+              LogDensityProblems.logdensity_and_gradient(p_rag_ref, v)
+    end
 end
 
 """

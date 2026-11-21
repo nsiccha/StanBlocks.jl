@@ -4678,7 +4678,10 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
                 # distinct Stan variable. Preserve that alias in discovered size
                 # expressions (`K[g]` becomes `K[plate_i]`) so ragged dependency
                 # analysis sees the same index that emit-time substitution uses.
-                probe[param] = StanExpr(idx, StanType(types.int; qual=:data))
+                # A submodel binds the parameter to the index's flattened name
+                # rather than flattening the parameter into a name of its own.
+                probe isa SubModel ? _plate_bind_local!(probe, param, probe[idx]) :
+                    (probe[param] = StanExpr(idx, StanType(types.int; qual=:data)))
             end
         else
             for (a, it) in zip(params, iterables)
@@ -5285,21 +5288,27 @@ _forward_loop_core!(;
             "and reshape it (`Z = to_matrix(z, rows, cols)`), or give the matrix a fixed size."
         )
     end
-    # A ragged cell's flat-memory carriers (lens/ends/mem) of a plate inside a
-    # called submodel are declared at the root under flattened names and indexed
-    # by the flattened loop index (`_plate_ragged_plan`). That submodel called
-    # inside another compiler-owned loop would need the carriers promoted through
-    # the enclosing loop, which is not wired yet.
-    if info isa SubModel && !isempty(ragged_plans) && _plate_in_enclosing_loop(info)
+    # A ragged VECTOR cell's flat-memory carriers (lens/ends/mem) of a plate
+    # inside a called submodel are declared at the root under flattened names and
+    # indexed by the flattened loop index (`_plate_ragged_plan`). Integer and
+    # matrix ragged cells there are not wired yet, nor is that submodel called
+    # inside another compiler-owned loop, whose carriers would need promotion
+    # through the enclosing loop.
+    if info isa SubModel && !isempty(ragged_plans)
         # Name the actual ragged centers so the refusal stays precise for both
         # the vector shape the contract pins and the newer int shape.
         kinds = sort!(unique!([center_type(plan.cell_type) === types.int ? "int" :
                                plan.shape !== nothing ? "matrix" : "vector"
                                for plan in values(ragged_plans)]))
-        error(
+        _plate_in_enclosing_loop(info) && error(
             "plate: ragged ", join(kinds, "/"), " cells inside a called @slic submodel that is ",
             "itself called inside a plate or annotated loop are not supported yet — use a fixed ",
             "`vector[K]` cell here, or call the submodel at model scope."
+        )
+        kinds == ["vector"] || error(
+            "plate: ragged ", join(filter(!=("vector"), kinds), "/"), " cells inside a called ",
+            "@slic submodel are not supported yet — use a fixed-size cell here, or lift the ",
+            "ragged plate to model scope."
         )
     end
     cell_accessors = Dict{Symbol,Any}(
