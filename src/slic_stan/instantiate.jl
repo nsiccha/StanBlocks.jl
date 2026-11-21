@@ -239,10 +239,10 @@ model { target += dirichlet_stick_lpdf(p_free | a); }
 `log p`, which stays finite where `p` underflows to 0.
 `dirichlet_stick_lpdf(s | a)` is the log density of the free coordinates `s`,
 the frame's Jacobian included, computed per stick without forming the weights.
-Stick `k` is non-centred where its concentration is small and close to the
-plain stick-breaking logit where it is large. `stick_log_simplex(s, A, B)` and
-`stick_dirichlet_lpdf(s | a, A, B)` take the per-stick scales directly
-(`A = a`, `B = b` is the fully non-centred frame).
+Both use the fully non-centred frame, stick scales `A = a` and `B = b` (the
+sum of the later concentrations). `stick_log_simplex(s, A, B)` and
+`stick_dirichlet_lpdf(s | a, A, B)` take the per-stick scales directly, for
+another frame (`A = B = 1` is the plain stick-breaking logit).
 """
 stick_simplex_stan() = begin
     model = SlicModel(_STICK_SIMPLEX_USES, (; K=3, N=2, a=[1.0, 1.0, 1.0], y=0.5), @__MODULE__)
@@ -272,7 +272,7 @@ stick_simplex_stan() = begin
         " of ", collect(_STICK_SIMPLEX_FUNCTIONS))
     string(join(defs, '\n'), "\n")
 end
-const _STICK_SIMPLEX_FUNCTIONS = (:stick_log_simplex, :stick_dirichlet_lpdf, :dirichlet_stick_scale,
+const _STICK_SIMPLEX_FUNCTIONS = (:stick_log_simplex, :stick_dirichlet_lpdf,
     :dirichlet_stick_log_simplex, :dirichlet_stick_lpdf)
 # One use of each overload, so the functions block holds every definition.
 const _STICK_SIMPLEX_USES = quote

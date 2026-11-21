@@ -167,16 +167,15 @@ end
     end
     @test compared[] > 30
 
-    # Per stick, Beta(V | a, b) |dV/ds| in the frame centred by concentration,
+    # Per stick, Beta(V | a, b) |dV/ds| in the fully non-centred frame,
     # in 512-bit arithmetic: the emitted density matches it to 1e-9 however
     # small the concentration (a split into Dirichlet(x | a) + log|dx/ds| lost
     # it entirely below 1e-15).
     setprecision(BigFloat, 512) do
         lσ(s) = s > 0 ? -log1p(exp(-s)) : s - log1p(exp(s))
         σ(s) = 1 / (1 + exp(-s))
-        scale(a) = exp(log(a) / (a^2 + 1))
         exact(s, a) = sum(1:length(s)) do k
-            b = sum(a[k+1:end]); A, B = scale(a[k]), scale(b)
+            b = sum(a[k+1:end]); A, B = a[k], b
             ls, lm = lσ(s[k]), lσ(-s[k]); p, q = ls / A, lm / B
             l = max(p, q) + log1p(exp(-abs(p - q)))
             a[k] / A * ls + b / B * lm - (a[k] + b) * l - SF.logbeta(a[k], b) + log(σ(-s[k]) / A + σ(s[k]) / B)

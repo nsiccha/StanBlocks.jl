@@ -81,8 +81,10 @@ density of `theta_free` in the model block. The model and its outputs are
 unchanged. That density includes the frame's Jacobian, so an evaluation
 without the Jacobian includes it too; for a concentration below 1 the density
 of `theta` alone is unbounded near zero weights. Write
-`dirichlet(a; frame=:native)` to keep Stan's simplex, or `frame=:stick` to use
-the stick frame for a data concentration. Hand-written Stan programs can use
+`dirichlet(a; frame=:native)` to keep Stan's simplex, for example for a large
+concentration that the data determine tightly, where the non-centred stick
+frame can couple to it; write `frame=:stick` to use the stick frame for a data
+concentration. Hand-written Stan programs can use
 the same functions through `StanBlocks.stick_simplex_include()`.
 
 Annotations such as `beta::vector[k]` or `L::cholesky_factor_corr[k]` specify a

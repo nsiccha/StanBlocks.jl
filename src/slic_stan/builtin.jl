@@ -176,7 +176,7 @@ end
     simplex_constrain simplex_unconstrain simplex_jacobian
     # The log-space stick-breaking simplex of `simplex ~ dirichlet(a)` with a
     # parameter-dependent `a` (passes.jl `_distribute_stick_simplex!`).
-    stick_log_simplex stick_dirichlet_lpdf dirichlet_stick_scale dirichlet_stick_log_simplex dirichlet_stick_lpdf
+    stick_log_simplex stick_dirichlet_lpdf dirichlet_stick_log_simplex dirichlet_stick_lpdf
     ordered_constrain ordered_unconstrain ordered_jacobian
     positive_ordered_constrain positive_ordered_unconstrain positive_ordered_jacobian
     cholesky_factor_corr_jacobian cholesky_factor_cov_jacobian
@@ -4575,7 +4575,10 @@ end
 # however small a concentration gets. Splitting it into Dirichlet(x | a) plus
 # log|dx/ds| would not: both grow like log σ(s)/a and cancel, losing the
 # density entirely once a concentration falls below about 1e-15 (measured on
-# the reporter's model, todo `1ejsuw7`). The lowering of a parameter's
+# the reporter's model, todo `1ejsuw7`). SLIC's frame is fully non-centred,
+# A_k = a_k and B_k = b_k (decision `1r1i2of`): on the reporter's model it beat
+# centring a stick by its concentration (R-hat 1.044-1.049 against 1.049-1.061
+# over three seeds, and no underflow). The lowering of a parameter's
 # `simplex ~ dirichlet(a)` (passes.jl `_distribute_stick_simplex!`) calls the
 # map in transformed parameters and adds the density in the model block.
 # `stick_simplex_stan()` (instantiate.jl) prints these definitions for a
@@ -4616,35 +4619,24 @@ end
         end
         lp
     end
-    """
-    Return the stick scale of a concentration in the frame centred by
-    concentration: a^(1 - c(a)), c(a) = a^2 / (a^2 + 1). A stick is non-centred
-    (scale a) where its concentration is small and close to the plain
-    stick-breaking logit (scale 1) where it is large.
-    """
-    dirichlet_stick_scale(a::real)::real = exp(log(a) / (square(a) + 1))
-    "Map free coordinates `s` to `log x` of x ~ Dirichlet(a) in the stick frame centred by concentration."
+    "Map free coordinates `s` to `log x` of x ~ Dirichlet(a) in the fully non-centred stick frame (A = a, B = b)."
     dirichlet_stick_log_simplex(s::vector[n], a::vector[m])::vector[m] = begin
         @stan_assert m == n + 1 "dirichlet_stick_log_simplex: a simplex of K components has K - 1 free coordinates"
-        A::vector[n]
         B::vector[n]
         for k in 1:n
-            A[k] = dirichlet_stick_scale(a[k])
-            B[k] = dirichlet_stick_scale(sum(a[(k + 1):m]))
+            B[k] = sum(a[(k + 1):m])
         end
-        stick_log_simplex(s, A, B)
+        stick_log_simplex(s, a[1:n], B)
     end
-    "Return the log density of the free coordinates `s` of x ~ Dirichlet(a) in the stick frame centred by concentration."
+    "Return the log density of the free coordinates `s` of x ~ Dirichlet(a) in the fully non-centred stick frame (A = a, B = b)."
     dirichlet_stick_lpdf(s::vector[n], a::vector[m])::real = begin
-        A::vector[n]
         B::vector[n]
         for k in 1:n
-            A[k] = dirichlet_stick_scale(a[k])
-            B[k] = dirichlet_stick_scale(sum(a[(k + 1):m]))
+            B[k] = sum(a[(k + 1):m])
         end
-        stick_dirichlet_lpdf(s, a, A, B)
+        stick_dirichlet_lpdf(s, a, a[1:n], B)
     end
-    "Map each element of an array of free coordinates to `log x` of a Dirichlet(a) simplex in the stick frame centred by concentration."
+    "Map each element of an array of free coordinates to `log x` of a Dirichlet(a) simplex in the fully non-centred stick frame."
     dirichlet_stick_log_simplex(s::vector[N, n], a::vector[m])::vector[N, m] = begin
         lx::vector[N, m]
         for i in 1:N
@@ -4652,7 +4644,7 @@ end
         end
         lx
     end
-    "Return the summed log density of an array of free coordinates of Dirichlet(a) simplexes in the stick frame centred by concentration."
+    "Return the summed log density of an array of free coordinates of Dirichlet(a) simplexes in the fully non-centred stick frame."
     dirichlet_stick_lpdf(s::vector[N, n], a::vector[m])::real = begin
         rv = 0.0
         for i in 1:N
