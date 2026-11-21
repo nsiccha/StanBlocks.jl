@@ -98,8 +98,12 @@ mutable struct TraceContext
     # Latents an embedded-Laplace statement integrated out (laplace.jl), each a
     # draw that a later likelihood term may not read.
     laplace_latents::Set{Symbol}
+    # The one-axis compiler-owned loop a plate is traced inside, for a nested
+    # plate's flattened storage (forward.jl `_plate_enclosing`); `nothing` at
+    # model scope.
+    plate_enclosing::Any
 end
-TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0, OrderedDict{Symbol,Any}(), Dict{Symbol,_CVCell}(), Set{Symbol}(), Set{Symbol}())
+TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0, OrderedDict{Symbol,Any}(), Dict{Symbol,_CVCell}(), Set{Symbol}(), Set{Symbol}(), nothing)
 _context_or_new(context) = context === nothing ? TraceContext() : context
 """
 A named sub-model function, produced by `@slic f(args...) = body`. The value

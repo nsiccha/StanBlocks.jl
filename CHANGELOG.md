@@ -4,6 +4,36 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.62
+
+- **A collecting plate may be nested in a plate cell, directly or inside a
+  called sub-model.** `out ~ plate(ys) do y; inner ~ plate(y) do yi; … end;
+  inner; end`, the same inner plate in a `@plate for` cell, and a sub-model
+  holding a plate called in a plate cell (`locations ~ plate(readings, indices)
+  do y, at; fitted ~ component(; y, at, signal); fitted; end`) were refused
+  ("collecting a `plate(...) do` result inside another compiler-owned loop";
+  "ragged vector cells inside a called @slic submodel that is itself called
+  inside a plate"), or, for a sub-model's dense plate, failed internally. The
+  nested plate now stores its cells over the flattened inner index
+  `k = ragged_start(<ns>__pl_nend, e) + s - 1` (outer cell `e`, inner cell `s`):
+  one collection of `sum(<ns>__pl_n)` cells, with each outer cell's count and
+  the cumulative ends in transformed data, declared before the outer loop. A
+  dense cell is `vector[K]` (or `matrix[J, K]`), a cell whose length varies is
+  flat memory with its lengths and ends over `k`. Seen from outer cell `e`, the
+  nested result is its slice of that storage; a ragged one is group `e` of a
+  `NestedRaggedVector`, and an outer cell returning it collects as a two-level
+  value: one flat vector named after the outer result, read as a
+  `NestedRaggedVector` after the loop (`locations[e][s]`). The program has the
+  density of the same model written flat, or as one sub-model call per group at
+  model scope. Observations inside the nested plate get their predictive twins:
+  a ragged group of three-level data its `<obs>_gen` and one
+  `<obs>_likelihood` entry per innermost vector, one element of ragged data its
+  `<obs>_gen`; the descriptor reports `segments` for every flattened carrier
+  and for the two-level result (the ends of every innermost vector). Still
+  refused: a third level of nesting, a nested cell of varying-size int or
+  matrix type, and a sub-model's ragged plate called in a multi-axis plate or a
+  `@scan` (snag `emit-stan-code-f-2c7ed92c`, follow-up F2).
+
 ## v0.2.61
 
 - **Vector data nested three deep is a vector of RaggedVectors.** Data such as

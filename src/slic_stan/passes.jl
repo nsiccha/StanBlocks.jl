@@ -1562,7 +1562,9 @@ _indexed_ragged_obs_slice(lhs; info) = begin
     k in keys(info) || return nothing
     base = info[k]
     T = center_type(base)
-    qual(base) == :data && T isa Type && T <: RaggedVector || return nothing
+    # A `NestedRaggedVector`'s innermost vector `k` has the same projection over
+    # its `mem` and inner `ends` (a plate nested in a plate cell, todo `0j4f77k`).
+    qual(base) == :data && T isa Type && (T <: RaggedVector || T <: NestedRaggedVector) || return nothing
     (; base=k, mem=p.mem, group=p.group, slice=p.slice)
 end
 _scan_observed(x::StanExpr) = get(type(x).info, :scan_observed, nothing)
@@ -1591,7 +1593,21 @@ _indexed_obs_twin_target(lhs; info) = begin
     k = _indexed_obs_gen_base(lhs; info)
     k === nothing || return (; kind=:dense, base=k)
     spec = _indexed_ragged_obs_slice(lhs; info)
-    spec === nothing ? nothing : (; kind=:ragged, base=spec.base)
+    spec === nothing || return (; kind=:ragged, base=spec.base)
+    k = _ragged_obs_element_base(lhs; info)
+    k === nothing ? nothing : (; kind=:ragged_element, base=k)
+end
+# One element `ys.mem[pos]` of ragged data observed in a loop (a plate nested in a
+# plate cell over `ys`, todo `0j4f77k`): its draw is element `pos` of a flat
+# `ys_gen` laid out like `ys.mem`, and, as for a dense per-cell observation, it
+# has no pointwise likelihood.
+_ragged_obs_element_base(lhs; info) = begin
+    k = _ragged_mem_element_base(lhs)
+    (k isa Symbol && k in keys(info)) || return nothing
+    base = info[k]
+    T = center_type(base)
+    qual(base) == :data && T isa Type && (T <: RaggedVector || T <: NestedRaggedVector) || return nothing
+    stan_ndim(type(lhs)) == 0 ? k : nothing
 end
 # Rebuild an indexed LHS against a different base symbol, preserving every index
 # expression and the cell type (`y[i, j]` ⇒ `y_gen[i, j]`).
@@ -1670,8 +1686,16 @@ _indexed_gq_assignments(x::SamplingExpr; info) = begin
     k = _indexed_obs_gen_base(x.args[1]; info)
     k === nothing || return Any[_indexed_obs_gen_assignment(x, k)]
     spec = _indexed_ragged_obs_slice(x.args[1]; info)
-    spec === nothing ? Any[_indexed_rng_assignment(x; info)] :
-        _indexed_ragged_obs_assignments(x, spec; info)
+    spec === nothing || return _indexed_ragged_obs_assignments(x, spec; info)
+    k = _ragged_obs_element_base(x.args[1]; info)
+    k === nothing && return Any[_indexed_rng_assignment(x; info)]
+    lhs, rhs = x.args
+    lhs_ct = center_type(lhs)
+    token = StanExpr(lhs_ct, StanType(types.tokenof{lhs_ct}, (); value=lhs_ct, qual=:data))
+    gen = info[_gen_twin_name(k)]
+    target = StanExpr(CanonicalExpr(getindex, gen, expr(lhs).args[2]),
+        remake(type(lhs); value=missing, qual=:quantities))
+    Any[CanonicalExpr(:(=), target, rng_expr(token, rhs))]
 end
 
 # Walk a (possibly nested) compiler-owned loop for the bases needing twins.
@@ -1740,9 +1764,26 @@ _push_ragged_obs_decls!(b, k::Symbol; info) = begin
         push!(b, StanExpr(CanonicalExpr(:(::), decl), type(decl)); info)
     end
 end
+_push_ragged_element_gen_decl!(b, k::Symbol; info) = begin
+    gen = _gen_twin_name(k)
+    if gen in keys(info)
+        _obs_twin_source(info[gen]) === k && return
+        _assert_twin_free(k, "_gen", info)
+    end
+    base = info[k]
+    mem_type = type(base).info.arg_types.mem
+    mem = StanExpr(CanonicalExpr(Base.getfield, base,
+        StanExpr(1, StanType(types.int; value=1, qual=:data))), mem_type)
+    size = _trace_stan_call(builtin.num_elements, mem; info)
+    decl = StanExpr(gen, StanType(center_type(mem_type), (size,);
+        value=missing, qual=:quantities, obs_twin_source=k))
+    info[gen] = decl
+    push!(b, StanExpr(CanonicalExpr(:(::), decl), type(decl)); info)
+end
 _push_indexed_obs_twin_decls!(b, target; info) =
     target.kind === :dense ? _push_obs_gen_decl!(b, target.base; info) :
     target.kind === :ragged ? _push_ragged_obs_decls!(b, target.base; info) :
+    target.kind === :ragged_element ? _push_ragged_element_gen_decl!(b, target.base; info) :
     target.kind === :scan ? _push_scan_obs_likelihood_decl!(b, target.base; info) :
     error("internal: unknown indexed observation twin kind `", target.kind, "`.")
 # One real log density per observed element, laid out like the observation: a
