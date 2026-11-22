@@ -4,6 +4,17 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.63
+
+- **Fix: an annotated loop nested in another one compiles again.** v0.2.62
+  stored any one-axis plate traced inside another loop's cell over a flattened
+  inner index, including an annotated `@plate for i` nested in `@plate for j`,
+  which keeps its own composed-index nesting (`t[i, j]`). Such a model failed
+  with "Plate-generated indexed sampling of `loop_i_t_2[…]` requires the plate
+  emitter to register its outer declaration first". Only a `plate(...) do` nested
+  in a cell takes the flattened layout now; a nested annotated loop is stored
+  with its composed indices again, as on v0.2.61.
+
 ## v0.2.62
 
 - **A collecting plate may be nested in a plate cell, directly or inside a

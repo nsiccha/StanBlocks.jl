@@ -4969,7 +4969,7 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         ret_expr,
         setup_stmts=Any[], public=Set{Symbol}(), probe_transform=nothing,
         probe_exclude=Set{Symbol}(), scan_arrays=Set{Symbol}(), info, ns=rv, spellings,
-        cv_params, shadow=Set{Symbol}(shadow), label,
+        cv_params, shadow=Set{Symbol}(shadow), label, flatten_nested=true,
     )
 end
 
@@ -5034,7 +5034,7 @@ _forward_loop_core!(;
     body_stmts, ret_expr, setup_stmts, public, probe_transform, probe_exclude,
     scan_arrays, info, ns=nothing, hygiene=Dict{Symbol,Symbol}(),
     spellings=Dict{Symbol,Symbol}(), cv_params=Dict{Symbol,_CVCell}(),
-    scratch=Set{Symbol}(), shadow=Set{Symbol}(), label=string(kind),
+    scratch=Set{Symbol}(), shadow=Set{Symbol}(), label=string(kind), flatten_nested=false,
 ) = begin
     # Proven length mismatches between positionals and their outer axes (or
     # between siblings) are ill-typed — refuse before any renaming/hoisting.
@@ -5051,7 +5051,9 @@ _forward_loop_core!(;
     # A one-axis do-form plate traced inside an enclosing one-axis loop lays its
     # storage out over the flattened inner index (`_forward_flat_nested!`). Its
     # carriers are keyed by `flat_owner` so both of its traces pick the same names.
-    enclosing = kind === :plate && length(idxs) == 1 ? _plate_enclosing(info) : nothing
+    # Only the do-form opts in (`flatten_nested`): a nested annotated loop keeps
+    # the composed-index nesting of its own arrays.
+    enclosing = flatten_nested && length(idxs) == 1 ? _plate_enclosing(info) : nothing
     enclosing === nothing || enclosing.flat_owner === nothing || error(
         label, ": a collecting plate nested two levels deep inside other compiler-owned ",
         "loops is not supported yet; nest at most one plate inside another.")
