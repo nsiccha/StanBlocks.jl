@@ -4,6 +4,21 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.63
+
+- **The descriptor reports both levels of a two-level ragged output.**
+  `ModelOutput` gains `groups`: for the flat storage of a plate nested in a
+  plate cell (its stored results and bindings, also inside a called sub-model),
+  for an outer plate result that collects it, and for the twins of a
+  `NestedRaggedVector` observation, `segments` still ends each innermost vector
+  and `groups` ends each outer group, counted in innermost vectors, as a nested
+  input's `fields.groups` does. It is `nothing` for every other output, and a
+  rebound model reports rebound values. Before, a plate of subject plates
+  reported only the subject ends, so designs that differ only in how many
+  subjects each outer group holds had identical descriptors and a consumer
+  could not select an outer group's values. `stan_interface` publishes it as
+  `"groups"` (snag `read-the-endpoin-b2c91a4c`).
+
 ## v0.2.62
 
 - **A collecting plate may be nested in a plate cell, directly or inside a

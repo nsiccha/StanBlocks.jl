@@ -122,8 +122,10 @@ end
 
 _descriptor_requests!(out, x::StanExpr) = begin
     append!(out, index_shape(x))
-    ends = get(info(type(x)), :ragged_observation_ends, nothing)
-    ends === nothing || push!(out, ends)
+    for key in (:ragged_observation_ends, :ragged_observation_groups)
+        table = get(info(type(x)), key, nothing)
+        table === nothing || push!(out, table)
+    end
     for value in values(_descriptor_constraints(x))
         qual(value) === :data && push!(out, value)
     end

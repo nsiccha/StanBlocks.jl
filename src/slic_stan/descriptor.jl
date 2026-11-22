@@ -135,6 +135,15 @@ StanBlocks.stan_descriptor).
   layout; members may have different axes, so consumers must not copy segments
   from a sibling or an input. Publishing the layout here lets consumers restore
   groups without reaching into compiler-owned names or carrier tuples.
+- `groups::Union{Nothing,Vector{Int}}` — the outer level of a **two-level**
+  ragged quantity, `nothing` for every other one. A two-level quantity is the
+  twin of a `NestedRaggedVector` observation, or the flat carrier of a plate
+  nested in a plate cell (the nested plate's stored results and bindings, and an
+  outer plate result that collects them). Its `segments` end each innermost
+  vector; `groups` ends each outer group, counted in those vectors, exactly as
+  a `NestedRaggedVector` input's `fields.groups` does: outer group `e` holds
+  vectors `groups[e-1]+1 : groups[e]` (with `groups[0] ≡ 0`), so its flat span
+  ends at `segments[groups[e]]`, or is empty when it holds no vector.
 - `dims::Tuple{Vararg{Int}}` — the shape of the output's value, resolved against
   the model's current data: one nonnegative `Int` per axis (`()` for a scalar).
   It is `size` evaluated entry by entry, except that a constrained square matrix
@@ -176,6 +185,7 @@ struct ModelOutput
     generative::Symbol
     source::Union{Symbol,Nothing}
     segments::Union{Nothing,Vector{Int}}
+    groups::Union{Nothing,Vector{Int}}
     dims::Tuple{Vararg{Int}}
     constraint_values::NamedTuple
     fields::NamedTuple
@@ -505,6 +515,17 @@ _ragged_segments(x) = begin
 end
 _output_segments(source, data) =
     source === nothing || !haskey(data, source) ? nothing : _ragged_segments(data[source])
+# The outer level of a two-level observation's twins (`ModelOutput.groups`): a
+# `NestedRaggedVector` carries `(mem, ends, groups)`, `groups` ending each outer
+# group in innermost vectors. Every other observation reports `nothing`.
+_ragged_groups(x) = begin
+    center_type(x) <: NestedRaggedVector || return nothing
+    v = getvalue(x)
+    v isa NamedTuple && haskey(v, :groups) || return nothing
+    collect(Int, v.groups)
+end
+_output_groups(source, data) =
+    source === nothing || !haskey(data, source) ? nothing : _ragged_groups(data[source])
 
 # A ragged plate's transformed-data `ends = cumulative_sum(lens)` has no Julia
 # value on the traced StanExpr.  Lowering therefore retains the equivalent
@@ -893,6 +914,20 @@ _output_segments(scope, name::Symbol, source) = begin
         "stan_descriptor: ragged observation `", source, "` has non-integer group boundaries.")
     collect(Int, value)
 end
+# The outer table of a two-level flat carrier: a nested plate's storage over
+# the flattened inner index, or an outer result collecting it, records its
+# per-outer-cell ends (`<ns>__pl_nend`) next to its innermost `ends`.
+_output_groups(scope, name::Symbol, source) = begin
+    observed = _output_groups(source, scope.data)
+    observed === nothing || return observed
+    haskey(vars(scope.m), name) || return nothing
+    groups = get(info(type(vars(scope.m)[name])), :ragged_observation_groups, nothing)
+    groups === nothing && return nothing
+    value = _scope_value(scope, groups)
+    value isa AbstractVector{<:Integer} || error(
+        "stan_descriptor: two-level ragged output `", name, "` has non-integer outer group boundaries.")
+    collect(Int, value)
+end
 
 # --- resolved output dimensions (`ModelOutput.dims`) --------------------------
 #
@@ -976,7 +1011,8 @@ _block_output_rows(scope, blockname::Symbol, kind::Symbol) = begin
         push!(rows, (;
             name, kind, type=_descriptor_type(x), size=_descriptor_size(x),
             constraints=_descriptor_constraints(x), generative, source,
-            segments=_output_segments(scope, name, source), decl=x,
+            segments=_output_segments(scope, name, source),
+            groups=_output_groups(scope, name, source), decl=x,
         ))
     end
     rows
@@ -984,7 +1020,7 @@ end
 _block_outputs(scope, blockname::Symbol, kind::Symbol) = [
     ModelOutput(
         row.name, row.kind, row.type, row.size, row.constraints, row.generative,
-        row.source, row.segments, _declared_dims(scope, "output", row.name, row.decl),
+        row.source, row.segments, row.groups, _declared_dims(scope, "output", row.name, row.decl),
         _constraint_values(scope, "output", row.name, row.constraints),
         _output_fields(scope, row.name, type(row.decl)),
     )
@@ -1516,6 +1552,7 @@ Base.show(io::IO, ::MIME"text/plain", d::ModelDescriptor) = begin
         print(io, "  ", o.kind, "/", o.generative)
         o.source === nothing || print(io, " of ", o.source)
         o.segments === nothing || print(io, "  ", length(o.segments), " ragged group(s)")
+        o.groups === nothing || print(io, " in ", length(o.groups), " outer group(s)")
     end
     print(io, "\n  operations: ", join((op.name for op in d.operations), ", "))
 end

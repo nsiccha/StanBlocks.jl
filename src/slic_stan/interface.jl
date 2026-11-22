@@ -77,6 +77,12 @@ for other data:
   `index` has `cell_size` values.
 - `nothing` for a dense output.
 
+A two-level ragged output (`ModelOutput.groups`) also has `"groups"`: the
+inclusive end of each outer group, counted in the groups `"segments"` ends,
+for the bound data (`nothing` for every other output). No rule for rebuilding
+`"segments"` or `"groups"` from other data is published for a two-level output
+yet; both read `nothing` in `"segments_rule"` there.
+
 A tuple-typed output also lists its components in `"fields"`.
 
 The JSON a program receives is [`stan_data_json`](@ref
@@ -200,6 +206,7 @@ _interface_output(d::ModelDescriptor, o::ModelOutput, ragged, ints) = OrderedDic
     "source" => o.source === nothing ? nothing : string(o.source),
     "segments" => o.segments,
     "segments_rule" => _interface_segments_rule(d, o, ragged, ints),
+    "groups" => o.groups,
     "fields" => Any[
         OrderedDict{String,Any}(
             "key" => string(k), "name" => string(name), "type" => string(f.type),

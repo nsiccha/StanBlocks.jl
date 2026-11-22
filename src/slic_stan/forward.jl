@@ -5654,8 +5654,10 @@ _forward_loop_core!(;
     if two_level !== nothing
         emitted = forward!(canonical(:($rv :: vector[$(stan_size(type(two_level.mem))[1])])); info)
         pending !== nothing && push!(pending, emitted)
-        # `segments`: the ends of every innermost vector, as for the nested result.
-        info[rv] = remake(info[rv]; ragged_observation_ends=expr(two_level.ends))
+        # `segments`: the ends of every innermost vector, as for the nested result;
+        # `groups`: the ends of each outer cell, counted in those vectors.
+        info[rv] = remake(info[rv]; ragged_observation_ends=expr(two_level.ends),
+            ragged_observation_groups=expr(two_level.groups))
     end
     if vectorized_sample !== nothing
         emitted = _plate_emit_vectorized_sample!(
@@ -5863,8 +5865,10 @@ _forward_flat_nested!(; enclosing, flat_owner, rv, rv_type, idxs, outer_dims, pa
             (; stmt=:($lens :: int[$total]), owner=flat_owner, cons=(;)),
             (; stmt=sizing, owner=flat_owner, cons=(;)),
             (; stmt=:($ends = cumulative_sum($lens)), owner=flat_owner, cons=(;)),
+            # `stan_descriptor`'s `segments` end each inner cell, its `groups`
+            # each outer cell (counted in inner cells): a two-level layout.
             (; stmt=:($g :: vector[sum($lens)]), owner=flat_owner, cons,
-               marks=(; ragged_observation_ends=ends)),
+               marks=(; ragged_observation_ends=ends, ragged_observation_groups=nend)),
         ])
         accessors[g] = _plate_ragged_span(g, ends, k)
         ragged[g] = (; lens, ends)
