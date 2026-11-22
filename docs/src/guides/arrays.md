@@ -71,7 +71,10 @@ For several independent axes, use one annotated loop such as
 From v0.2.62 a `plate(...) do` may also be collected in the cell of a one-axis
 plate or annotated loop, directly or inside a called submodel, one level deep:
 its cells are stored over one flattened inner index, and a cell that returns
-a ragged nested result collects a two-level value, read as `x[e][s]`. Likewise, observe shared
+a ragged nested result collects a two-level value, read as `x[e][s]`. From
+v0.2.63 the descriptor reports both levels of such a value's flat storage:
+`segments` ends each inner vector and `groups` each outer group, counted in
+inner vectors, as a nested-vector input's `groups` does. Likewise, observe shared
 data outside a loop or index it by cell, rather than repeating the entire
 observation in every cell.
 

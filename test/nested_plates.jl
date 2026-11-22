@@ -245,3 +245,91 @@ end
         @test gc == gg
     end
 end
+
+"""
+A two-level ragged quantity reports both of its levels in the descriptor:
+`segments` ends each innermost vector of its flat storage and `groups` ends each
+outer group, counted in innermost vectors, as a `NestedRaggedVector` input's
+`groups` does. Before, a plate of subject plates reported only the subject
+ends, so two designs that differ only in how many subjects each outer group
+holds were indistinguishable (snag `read-the-endpoin-b2c91a4c`).
+"""
+@testitem "slic: a two-level ragged output reports its outer groups" tags=[:slic, :plate, :ragged, :submodel, :regression, :descriptor, :interface] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    import StanBlocks.stan: stan_descriptor
+    outputs(m) = Dict(o.name => o for o in stan_descriptor(m).outputs)
+
+    # Directly nested: five readings in four subjects, grouped differently.
+    nested = @slic begin
+        slope ~ normal(0, 1)
+        fitted ~ plate(xs) do group
+            subject_fit ~ plate(group) do x
+                slope .* x
+            end
+            subject_fit
+        end
+    end
+    for (xs, groups) in (
+            ([[[1.0, 2.0], Float64[]], [[3.0], [4.0, 5.0]]], [2, 4]),
+            ([[[1.0, 2.0], Float64[], [3.0]], [[4.0, 5.0]]], [3, 4]),
+            ([[Float64[]], [[1.0, 2.0], [3.0], [4.0, 5.0]]], [1, 4]),
+            ([Vector{Float64}[], [[1.0, 2.0], Float64[], [3.0], [4.0, 5.0]]], [0, 4]))
+        o = outputs(nested(; xs))
+        @test o[:fitted].segments == o[:fitted_subject_fit].segments == cumsum(length.(reduce(vcat, xs)))
+        @test o[:fitted].groups == o[:fitted_subject_fit].groups == groups
+        @test o[:fitted].dims == (5,)
+    end
+
+    # A one-level ragged result reports no outer groups.
+    single = @slic (; ys=[[0.1, 0.2], Float64[], [0.3]]) begin
+        mu ~ normal(0, 1)
+        out ~ plate(ys) do y
+            inner ~ plate(y) do yi
+                t ~ normal(mu, 1)
+                yi ~ normal(t, 1)
+                t
+            end
+            inner
+        end
+    end
+    o = outputs(single)
+    @test o[:out].segments == o[:out_inner_t].segments == [2, 2, 3]
+    @test o[:out].groups === o[:out_inner_t].groups === o[:ys_gen].groups === nothing
+
+    # Through a called component: the subject plate's stored result, the outer
+    # result and the twins of the three-level observation, on the fit and rebound.
+    component = @slic begin
+        shift ~ normal(0, 1)
+        loc ~ plate(y, at, signal) do ys, picks, xs
+            fitted = shift .+ xs[picks]
+            ys ~ normal(fitted, 1)
+            fitted
+        end
+        return loc
+    end
+    joint = @slic begin
+        gain ~ normal(0, 1)
+        signal ~ plate(grid) do xs
+            gain .* xs
+        end
+        locations ~ plate(y, at) do yg, atg
+            fitted ~ component(; y=yg, at=atg, signal=signal)
+            fitted
+        end
+    end
+    a = (; grid=[[1.0, 2.0], [3.0, 4.0, 5.0]], y=[[[0.1, 0.2], Float64[]], [[0.3], [0.4, 0.5]]],
+        at=[[[1, 2], Int[]], [[2], [1, 3]]])
+    b = (; y=[[[0.1, 0.2], Float64[], [0.3]], [[0.4, 0.5]]], at=[[[1, 2], Int[], [1]], [[1, 3]]])
+    fit = outputs(joint(; a...))
+    rebound = outputs(stan_model(joint(; a...))(; b...))
+    for (o, groups) in ((fit, [2, 4]), (rebound, [3, 4]))
+        # `loc` and its cell binding `fitted` are the component's stored values.
+        for name in (:locations, :locations_fitted_loc, :locations_fitted_loc_fitted, :y_gen, :y_likelihood)
+            @test o[name].segments == [2, 2, 3, 5]
+            @test o[name].groups == groups
+        end
+        @test o[:signal].groups === nothing
+    end
+    iface = Dict(e["name"] => e for e in stan_interface(joint(; a...))["outputs"])
+    @test iface["locations"]["groups"] == [2, 4]
+    @test iface["signal"]["groups"] === nothing
+end

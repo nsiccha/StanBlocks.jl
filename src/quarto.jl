@@ -55,8 +55,9 @@ _display_output_semantics(output) = begin
     output.source === nothing || (role = string(role, " of ", output.source))
     # A ragged observation's twins are group-shaped; say so, since the declared
     # size alone (a flat `num_elements`) does not.
-    output.segments === nothing ? role :
-        string(role, ", ", length(output.segments), " ragged groups")
+    output.segments === nothing && return role
+    role = string(role, ", ", length(output.segments), " ragged groups")
+    output.groups === nothing ? role : string(role, " in ", length(output.groups), " outer groups")
 end
 
 # The semantic half of `stan_descriptor`, intentionally excluding its stable id:

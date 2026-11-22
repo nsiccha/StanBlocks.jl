@@ -83,7 +83,8 @@ A Python application can consume the program and its data through BridgeStan.
 BridgeStan is the supported runtime; CmdStan's standalone generated-quantities
 workflow does not provide the same transformed-parameter replay contract.
 
-For ragged outputs, use descriptor `segments`; for container shapes, use
+For ragged outputs, use descriptor `segments`, and `groups` for the outer
+level of a two-level one; for container shapes, use
 `dims`; for evaluated bounds, use `constraint_values`. These fields describe
 the bound model and can change when inputs are rebound. A source hash alone
 does not identify the data or a posterior fit.
