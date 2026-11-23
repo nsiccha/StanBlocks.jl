@@ -690,9 +690,11 @@ _forward_plate_assignment!(x, name, lhs, rhs_raw; info) = begin
         "`$name = <void-call>(...)`: cannot bind the return value of a void UDF. ",
         "Drop the `$name = ` and call as a statement."
     )
-    # A ragged matrix cell is stored column-major in its flat span.
+    # A ragged matrix cell is stored column-major in its flat span; a two-level
+    # cell binding (a nested plate's group) stores its group's memory there.
     _plate_context_entry(name; info).fill === nothing ||
-        (rhs = _trace_stan_call(builtin.to_vector, rhs; info))
+        (rhs = center_type(rhs) <: RaggedVector ? forward!(CanonicalExpr(Base.getfield, rhs, 1); info) :
+            _trace_stan_call(builtin.to_vector, rhs; info))
     # `lhs` is already the promoted outer accessor. Suppress promotion while
     # forwarding it, otherwise its base Symbol becomes indexed a second time.
     fwd = _with_trace_state(info, :plate_context, nothing) do
@@ -4938,8 +4940,9 @@ _forward_plate!(rv::Symbol, rv_ct, plate; info) = begin
         end
     end
 
-    stmts = _nested_scan_containers(Any[s for s in body_raw.args if !(s isa LineNumberNode)],
-        params, iterables, idxs; info)
+    # A `begin … end` statement opens no scope and its value is its last line,
+    # so its lines are the cell's own: a cell may end in one (a spliced `$(block)`).
+    stmts = _nested_scan_containers(_plate_cell_lines(body_raw.args), params, iterables, idxs; info)
     isempty(stmts) && error("plate: empty do-block body.")
     # The cell collects its last line when that line is a value. A cell ending in
     # a `~`/`=` statement, or in `nothing`, has no value to collect (snag
@@ -5154,6 +5157,30 @@ _forward_loop_core!(;
     fresh = probe_transform === nothing ? discovered.fresh :
         Pair{Symbol,Any}[p for p in discovered.fresh
                          if !_is_probe_junk_name(p.first; info) && !(p.first in excluded)]
+    # A do-form cell binding that holds this cell's group of a nested plate's
+    # ragged value under a name of its own (`picked = member.picked`, a field of
+    # a sub-model's `return (; picked = rv_t, rv)`) collects as a two-level value,
+    # as such a result does (`two_level` below): one flat vector under its own
+    # name, filled over the nested plate's layout. Its value carries that plate's
+    # owner mark, which the filter below reads as the plate's own storage (snag
+    # `return-two-per-r-eae6be9c`). Only the cell's own `=` bindings collect:
+    # the nested plate's names are that layout already, and `member ~ sub(…)`
+    # names the sub-model's result, which a cell returning it collects.
+    two_level_cells = OrderedDict{Symbol,Any}()
+    if kind === :plate
+        assigned = Set{Symbol}()
+        for s in body_stmts
+            fi = _plate_fresh_info(s)
+            fi !== nothing && Meta.isexpr(s, :(=)) && push!(assigned, _plate_global_name(info, fi[1]))
+        end
+        for (f, T) in fresh
+            f in assigned || continue
+            record = _plate_two_level_record(T, idxs; info)
+            record === nothing || expr(record.mem) === f || (two_level_cells[f] = (; record, T))
+        end
+        isempty(two_level_cells) ||
+            (fresh = Pair{Symbol,Any}[p for p in fresh if !haskey(two_level_cells, p.first)])
+    end
     # A nested plate's flattened storage and its per-cell views are laid out
     # across this loop's cells already: never this loop's cell bindings.
     fresh = Pair{Symbol,Any}[p for p in fresh if _plate_flat_owner(p.second) === nothing]
@@ -5423,6 +5450,14 @@ _forward_loop_core!(;
         f => plan.fill for (f, plan) in ragged_plans
         if haskey(cell_types, f) && plan.shape !== nothing
     )
+    # A two-level cell binding reads as group `e` of its `NestedRaggedVector` and
+    # is written through that group's flat span (its memory, `_forward_plate_assignment!`).
+    for (f, (; record, T)) in two_level_cells
+        e = _plate_global_name(info, only(idxs))
+        cell_types[f] = T
+        cell_accessors[f] = :(NestedRaggedVector($f, $(record.ends), $(record.groups))[$e])
+        cell_fills[f] = :($f[nested_ragged_start($(record.ends), $(record.groups), $e):nested_ragged_end($(record.ends), $(record.groups), $e)])
+    end
 
     # Positional do-block params still lower syntactically to per-cell input
     # accessors. Fresh names stay untouched: the trace-local promotion context
@@ -5661,6 +5696,13 @@ _forward_loop_core!(;
         info[rv] = remake(info[rv]; ragged_observation_ends=expr(two_level.ends),
             ragged_observation_groups=expr(two_level.groups))
     end
+    # A two-level cell binding: the same layout under its global name, at the root.
+    for (f, (; record)) in two_level_cells
+        emitted = forward!(canonical(:($f :: vector[$(stan_size(type(record.mem))[1])])); info=root)
+        pending !== nothing && push!(pending, emitted)
+        root[f] = remake(root[f]; ragged_observation_ends=expr(record.ends),
+            ragged_observation_groups=expr(record.groups))
+    end
     if vectorized_sample !== nothing
         emitted = _plate_emit_vectorized_sample!(
             vectorized_sample, plate_outer, index_aliases; info,
@@ -5709,6 +5751,13 @@ _forward_loop_core!(;
             g in keys(root) && (root[g] = remake(root[g]; loop_scratch=true))
         end
         emitted_loop = _loop_scratch_wrap(emitted_loop, scratch_globals)
+    end
+    # After the loop a two-level cell binding reads as its `NestedRaggedVector`.
+    for f in keys(two_level_cells)
+        storage = root[f]
+        view = forward!(canonical(:(NestedRaggedVector($f, $(type(storage).info.ragged_observation_ends),
+            $(type(storage).info.ragged_observation_groups)))); info=root)
+        root[f] = remake(view; ragged_storage=storage)
     end
     # The emit trace binds submodel locals to current cells (`hh_h[hh_t]`).
     # After the loop every promoted local names its whole collection again,
@@ -5777,6 +5826,8 @@ _plate_two_level_record(T, idxs; info) = begin
     group = record.group isa StanExpr ? expr(record.group) : record.group
     group === _plate_global_name(info, only(idxs)) ? record : nothing
 end
+_plate_cell_lines(args) = Any[s for a in args for s in
+    (Meta.isexpr(a, :block) ? _plate_cell_lines(a.args) : (a,)) if !(s isa LineNumberNode)]
 _plate_recipe_name(x::Expr) =
     x.head === :(::) && x.args[1] isa Symbol ? x.args[1] :
     x.head === :(=) && x.args[1] isa Symbol ? x.args[1] : nothing
@@ -5897,14 +5948,33 @@ _forward_flat_nested!(; enclosing, flat_owner, rv, rv_type, idxs, outer_dims, pa
             forward!(canonical(loop); info)
         end
     end
-    if rv !== nothing
-        span = :(ragged_start($nend, $e):ragged_end($nend, $e))
-        view_expr = haskey(ragged, rv_g) ? :(NestedRaggedVector($rv_g, $(ragged[rv_g].ends), $nend)[$e]) :
-            _plate_cell_shape(rv_type, rv) === :vector ? :($rv_g[:, $span]) : :($rv_g[$span])
+    # Seen from outer cell `e`, a value this plate stores is that cell's slice of
+    # the storage: group `e` of a `NestedRaggedVector` for a ragged cell. Inside
+    # a called sub-model that holds for its cell bindings (`rv_t`) as for its
+    # result: without the rebind, a binding read after the loop (`return (; t =
+    # rv_t, rv)`) still named the emit trace's last inner cell, whose size reads
+    # the inner loop index (snag `return-two-per-r-eae6be9c`). At model scope the
+    # root keeps naming a cell binding's whole storage, read after the outer loop.
+    span = :(ragged_start($nend, $e):ragged_end($nend, $e))
+    outer_view(g, T, f) = begin
+        view_expr = haskey(ragged, g) ? :(NestedRaggedVector($g, $(ragged[g].ends), $nend)[$e]) :
+            _plate_cell_shape(T, f) === :vector ? :($g[:, $span]) : :($g[$span])
         view = _with_trace_state(info, :plate_context, nothing) do
             forward!(canonical(view_expr); info=root)
         end
-        view = remake(view; nested_flat_owner=flat_owner, ragged_storage=root[rv_g])
+        remake(view; nested_flat_owner=flat_owner, ragged_storage=root[g])
+    end
+    if info isa SubModel
+        for (g, T) in cells
+            g === rv_g && continue
+            view = outer_view(g, T, g)
+            for f in collect(keys(locals(info)))
+                f isa Symbol && _plate_global_name(info, f) === g && _plate_bind_local!(info, f, view)
+            end
+        end
+    end
+    if rv !== nothing
+        view = outer_view(rv_g, rv_type, rv)
         info isa SubModel ? _plate_bind_local!(info, rv, view) : (root[rv_g] = view)
     end
     emitted

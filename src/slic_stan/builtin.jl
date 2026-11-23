@@ -3588,8 +3588,17 @@ forward!(x::StanExpr{Symbol,<:StanType{<:RaggedMatrix}}; info) = x
 # instead a bound Symbol and stays a real Stan tuple: the accessor hooks below
 # fire ONLY for constructions and fall through (to the tuple-representation UDFs
 # above) otherwise. This lets either ragged carrier be passed to a function
-# without losing its size info.
-_is_ragged_construction(rv::StanExpr) = expr(rv) isa CanonicalExpr
+# without losing its size info. Only the constructor counts: another call that
+# yields a ragged value, such as field `k` of a tuple that holds ragged values
+# (`getfield(t, k)`, from a sub-model's `return (; a = rv_a, rv)` kept per
+# cell), is bound like a Symbol, so `t.a.mem` reads `t.1.1`, not the tuple
+# (snag `return-two-per-r-eae6be9c`).
+_is_ragged_construction(rv::StanExpr) = begin
+    e = expr(rv)
+    e isa CanonicalExpr || return false
+    h = head(e)
+    h isa StanExpr && expr(h) isa Type && expr(h) <: Union{RaggedVector,RaggedMatrix,NestedRaggedVector}
+end
 _ragged_mem(rv::StanExpr) = expr(rv).args[1]
 _ragged_ends(rv::StanExpr) = expr(rv).args[2]
 _ragged_rows(rv::StanExpr) = expr(rv).args[3]
