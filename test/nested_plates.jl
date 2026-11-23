@@ -333,3 +333,136 @@ holds were indistinguishable (snag `read-the-endpoin-b2c91a4c`).
     @test iface["locations"]["groups"] == [2, 4]
     @test iface["signal"]["groups"] === nothing
 end
+
+"""
+A sub-model whose plate is called in each cell of a plate may return several
+of that plate's values, a cell binding beside the result (`return (; picked =
+loc_picked, fitted = loc)`). The calling cell collects each field with an `=`
+binding of its own (`picked = c.picked`), named after it (`locations_picked`)
+and laid out two-level like the collected result (snag
+`return-two-per-r-eae6be9c`). Before, the sub-model's cell binding still named
+the nested loop's last cell after the loop, whose size reads the loop's index,
+and the plate failed with "inferred cell size references local
+`…plate_i__pl_…`, which cannot be expressed outside this cell".
+"""
+@testitem "slic: a cell collects every field a nested plate's sub-model returns" tags=[:slic, :plate, :ragged, :submodel, :regression, :descriptor, :stanc, :bridgestan] setup=[StanBlocksImports, StanBlocksTestSetup] begin
+    using .StanBlocksTestSetup: stanc_compiles, stan_block
+    import StanBlocks.stan: stan_descriptor
+    using LogDensityProblems, Random
+    outputs(m) = Dict(o.name => o for o in stan_descriptor(m).outputs)
+
+    two_fields = @slic begin
+        shift ~ normal(0, 1)
+        loc ~ plate(y, at, signal) do ys, picks, xs
+            picked = xs[picks]
+            fitted = shift .+ picked
+            ys ~ normal(fitted, 1)
+            fitted
+        end
+        return (; picked=loc_picked, fitted=loc)
+    end
+    result_only = @slic begin
+        shift ~ normal(0, 1)
+        loc ~ plate(y, at, signal) do ys, picks, xs
+            picked = xs[picks]
+            fitted = shift .+ picked
+            ys ~ normal(fitted, 1)
+            fitted
+        end
+        return loc
+    end
+    both = @slic begin
+        gain ~ normal(0, 1)
+        signal ~ plate(grid) do xs
+            gain .* xs
+        end
+        locations ~ plate(y, at) do yg, atg
+            c ~ two_fields(; y=yg, at=atg, signal=signal)
+            picked = c.picked
+            c.fitted
+        end
+    end
+    control = @slic begin
+        gain ~ normal(0, 1)
+        signal ~ plate(grid) do xs
+            gain .* xs
+        end
+        locations ~ plate(y, at) do yg, atg
+            fitted ~ result_only(; y=yg, at=atg, signal=signal)
+            fitted
+        end
+    end
+    # A cell ending in a `begin … end` block ends in that block's lines.
+    spliced = @slic begin
+        gain ~ normal(0, 1)
+        signal ~ plate(grid) do xs
+            gain .* xs
+        end
+        locations ~ plate(y, at) do yg, atg
+            c ~ two_fields(; y=yg, at=atg, signal=signal)
+            begin
+                picked = c.picked
+                c.fitted
+            end
+        end
+    end
+    # Five readings in four subjects, one of them empty; then a rebinding.
+    a = (; grid=[[1.0, 2.0], [3.0, 4.0, 5.0]], y=[[[0.1, 0.2], Float64[]], [[0.3], [0.4, 0.5]]],
+        at=[[[1, 2], Int[]], [[2], [1, 3]]])
+    b = (; y=[[[0.1, 0.2], Float64[], [0.3]], [[0.4, 0.5]]], at=[[[1, 2], Int[], [1]], [[1, 3]]])
+
+    code = stan_code(both(; a...))
+    @test code == stan_code(spliced(; a...))
+    gq = stan_block(code, "generated quantities")
+    @test occursin("vector[sum(locations_c_loc_picked__pl_len)] locations_picked;", gq)
+    # Each field's memory, read from the cell's tuple of the two returned values.
+    @test occursin(r"locations_picked\[\s*nested_ragged_start\(locations_c_loc_picked__pl_end, locations_c_loc__pl_nend, plate_i__pl_\d+\)", gq)
+    @test occursin("] = locations_c.1.1;", gq)
+    @test occursin("] = locations_c.2.1;", gq)
+    @test stanc_compiles(both(; a...))
+    fit = outputs(both(; a...))
+    rebound = outputs(stan_model(both(; a...))(; b...))
+    for (o, groups) in ((fit, [2, 4]), (rebound, [3, 4]))
+        for name in (:locations, :locations_picked, :locations_c_loc_picked, :locations_c_loc)
+            @test o[name].segments == [2, 2, 3, 5]
+            @test o[name].groups == groups
+            @test o[name].dims == (5,)
+        end
+    end
+
+    # Read in the cell, and after the loop as a `NestedRaggedVector`.
+    downstream = @slic begin
+        gain ~ normal(0, 1)
+        signal ~ plate(grid) do xs
+            gain .* xs
+        end
+        locations ~ plate(y, at) do yg, atg
+            c ~ two_fields(; y=yg, at=atg, signal=signal)
+            picked = c.picked
+            first_picked = sum(picked[1])
+            c.fitted
+        end
+        total ~ normal(sum(locations_picked[2][2]) + sum(locations[1][1]), 1)
+    end
+    @test stanc_compiles(downstream(; a..., total=0.5))
+
+    # Natively: the density of the result-only program, and each field's values.
+    rng = Xoshiro(20261123)
+    pb = instantiate(stan_model(both(; a...)))
+    pc = instantiate(stan_model(control(; a...)))
+    @test LogDensityProblems.dimension(pb) == LogDensityProblems.dimension(pc) == 3
+    names = BridgeStan.param_names(pb.model; include_tp=true, include_gq=true)
+    for _ in 1:2
+        x = randn(rng, 3)
+        lb, gb = LogDensityProblems.logdensity_and_gradient(pb, x)
+        lc, gc = LogDensityProblems.logdensity_and_gradient(pc, x)
+        @test lb == lc
+        @test gb == gc
+        draw = Dict(zip(names, BridgeStan.param_constrain(pb.model, x; include_tp=true,
+            include_gq=true, rng=BridgeStan.StanRNG(pb.model, 1))))
+        gain, shift = x[1], x[2:3]
+        picked = gain .* [1.0, 2.0, 2.0, 3.0, 5.0]
+        @test [draw["locations_picked.$i"] for i in 1:5] ≈ picked
+        @test [draw["locations.$i"] for i in 1:5] ≈ picked .+ shift[[1, 1, 2, 2, 2]]
+    end
+end

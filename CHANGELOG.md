@@ -4,6 +4,22 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.65
+
+- **Fix: every field a nested plate's submodel returns collects.** A submodel
+  called in a plate cell whose own plate is nested there may return several of
+  that plate's values, a cell binding beside the result
+  (`return (; picked = loc_picked, fitted = loc)`). Each `=` binding of a field
+  in the calling cell (`picked = c.picked`) now collects as a two-level value
+  under its own name (`locations_picked`), with the same `segments` and
+  `groups` as the collected result, and reads as a `NestedRaggedVector` after
+  the loop. Before, the submodel's cell binding still named the nested loop's
+  last cell, and the plate failed with "inferred cell size references local
+  `…plate_i__pl_…`, which cannot be expressed outside this cell"; a result read
+  from a field (`c.fitted`) was filled from the whole tuple, which stanc
+  rejected. A plate cell may also end in a `begin … end` block, which ends in
+  that block's last line.
+
 ## v0.2.64
 
 - **Fix: an annotated loop nested in another one compiles again.** v0.2.62
