@@ -4,6 +4,26 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.66
+
+- **Fix: a `maybecv` mark holds out an observation of a sub-model keyword
+  bound to a plate cell.** A sub-model called in a plate cell with the cell as
+  a keyword (`value ~ member(; ys = rows, m = m)` in `plate(ys) do rows`, or
+  `member(; ys = ys[e])` in `@plate for e`) may observe that keyword through
+  its own plate or annotated loop, or directly. When a marked input reaches
+  the observation's location, the observation now leaves the model block and
+  its `ys_gen` / `ys_likelihood` twins read the re-drawn values, while every
+  untainted parameter (a scale, the sub-model's own per-cell parameters) stays
+  a parameter, as for the same observation written at model scope. Before, the
+  held-out observation re-typed the keyword by minting a model-scope binding
+  that the enclosing plate then stored per cell: a plate in the sub-model
+  failed with "Sampling statement `read ~ ...` has LHS bound to a
+  parameter-qualified value", an annotated loop with "Could not find …_s in
+  model", and a sub-model observing its keyword directly transpiled as a prior
+  draw (the scale and the per-cell parameters re-drawn, the observation
+  replaced by a fresh draw, no `ys_likelihood`). Unmarked programs are
+  unchanged (snag `transpile-a-nest-9789d814`).
+
 ## v0.2.65
 
 - **Fix: every field a nested plate's submodel returns collects.** A submodel
