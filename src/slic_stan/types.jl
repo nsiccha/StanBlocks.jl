@@ -292,6 +292,15 @@ locals(x::SubModel) = x.locals
 remake(x::SubModel; kwargs...) = SubModel(remake(parent(x); kwargs...), name(x), locals(x))
 Base.getindex(x::SubModel, name) = getindex(locals(x), name)
 Base.setindex!(x::SubModel, value, name) = begin
+    # A local bound to a caller EXPRESSION — a keyword given a slice or a plate
+    # cell of caller data (`sub(; ys = rows)` in a plate cell) — has no root
+    # binding of its own, so new metadata for it (the cv taint of a held-out
+    # observation) re-types the alias in this scope only, as a plate's
+    # do-block parameter is re-typed at model scope. Flattening it minted a
+    # root binding `<lhs>_ys` that an enclosing plate then promoted to per-cell
+    # storage: the observation became a fresh draw, or a nested plate's
+    # observation a parameter (snag `transpile-a-nest-9789d814`).
+    _is_expression_alias(x, value, name) && return (locals(x)[name] = value)
     setindex!(parent(x), supvalue(x, value), supname(x, name))
     setindex!(locals(x), getindex(parent(x), supname(x, name)), name)
 end
@@ -312,6 +321,14 @@ Base.setindex!(x::SubModel, value::StanExpr{Symbol}, local_name) = begin
     parent_name = supname(x, local_name)
     setindex!(parent(x), StanExpr(parent_name, type(value)), parent_name)
     setindex!(locals(x), getindex(parent(x), parent_name), local_name)
+end
+# True when `value` re-types a local that holds a caller expression rather
+# than a flattened binding of this submodel.
+_is_expression_alias(x::SubModel, value, local_name) = begin
+    value isa StanExpr && !(expr(value) isa Symbol) || return false
+    current = get(locals(x), local_name, nothing)
+    current isa StanExpr && !(expr(current) isa Symbol) || return false
+    !(supname(x, local_name) in keys(parent(x)))
 end
 # The root name `local_name` aliases when `value` re-types that alias, else `nothing`.
 _submodel_alias(x::SubModel, value::StanExpr{Symbol}, local_name) = begin

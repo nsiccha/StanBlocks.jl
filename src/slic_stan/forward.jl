@@ -2889,6 +2889,12 @@ _forward_indexed_sampling!(x; info, user_slice::Bool=false) = begin
     # the base up again.  Guarded on an actual taint so every untainted emission
     # is byte-identical to before.
     retainted && (lhs = forward!(lhs_raw; info))
+    # A base that is a called submodel's keyword bound to a caller's group (a
+    # plate inside the submodel over `ys = rows`) is a RaggedVector
+    # construction, and its element read is rebuilt from the construction's
+    # parts, which do not carry the taint just put on the construction. The
+    # statement is held out all the same (snag `transpile-a-nest-9789d814`).
+    retainted && !cv(lhs) && (lhs = remake(lhs; cv=true))
     validate_sampling_rhs(lhs, rhs; info)
     remake(x, lhs, rhs)
 end
