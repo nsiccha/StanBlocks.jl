@@ -27,6 +27,7 @@ stan_operation
 stan_execute
 stan_interface
 stan_data_json
+stan_unc_names
 ```
 
 ## Descriptor types
