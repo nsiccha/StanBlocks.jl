@@ -37,6 +37,9 @@ Top level:
 - `"data"` — one entry per data-block variable, in data-block order (below).
 - `"parameters"` — the parameter variables in the order BridgeStan's
   `param_unc_names` / `param_names` list their coordinates.
+- `"unconstrained"` — the program's unconstrained coordinate names for the
+  bound data, as BridgeStan's `param_unc_names` lists them:
+  [`stan_unc_names`](@ref StanBlocks.stan_unc_names).
 - `"outputs"` — one entry per parameter, transformed parameter and generated
   quantity (below).
 
@@ -102,8 +105,95 @@ stan_interface(d::ModelDescriptor) = begin
         "name" => string(d.name),
         "data" => Any[_interface_input(i, rules) for i in inputs],
         "parameters" => String[string(o.name) for o in d.outputs if o.kind === :parameter],
+        "unconstrained" => stan_unc_names(d),
         "outputs" => Any[_interface_output(d, o, ragged, ints) for o in d.outputs],
     )
+end
+
+"""
+    stan_unc_names(model) -> Vector{String}
+
+The names of the program's unconstrained coordinates for the bound data, in the
+order and spelling BridgeStan's `param_unc_names` lists them, without compiling
+the program. `model` is a `SlicModel`, a `StanModel` or a
+[`ModelDescriptor`](@ref StanBlocks.ModelDescriptor). An RK or other Julia-side
+consumer of a fit's unconstrained draws can name them before, or without, a
+BridgeStan build of the same program.
+
+Each parameter, in declaration order, contributes the coordinates of its
+unconstrained representation: a plain or bounded container (any `lower`,
+`upper`, `offset` or `multiplier`) its own shape, `ordered[K]` and
+`positive_ordered[K]` `K`, `simplex[K]` `K - 1`, `cholesky_factor_corr[K]` and
+`corr_matrix[K]` `K(K - 1)/2`, `cholesky_factor_cov[K]` and `cov_matrix[K]`
+`K(K + 1)/2`, `row_stochastic_matrix[N, M]` an `N × (M - 1)` matrix and
+`column_stochastic_matrix[N, M]` an `(N - 1) × M` one; an array of any of them
+(`x::simplex[J, K]`, Stan `array[J] simplex[K] x`) puts its array axes first.
+A scalar is named `name`; a container coordinate `name.i.j…` over those axes,
+first index fastest, as for the constrained names (`ModelOutput.dims`). So
+`array[2] simplex[3] s` lists `s.1.1, s.2.1, s.1.2, s.2.2`, and
+`cholesky_factor_corr[3] L` lists `L.1, L.2, L.3`.
+
+Those are BridgeStan's names, not a layout. Stan's unconstrained vector stores
+a parameter with an array axis and at least one more axis (`array[N, K] real`,
+`array[N] vector[K]`, `array[N] simplex[K]`) one array element after another,
+last array index fastest, each element's own coordinates together, while its
+names run first index fastest. There the `i`-th name does not label the `i`-th
+entry, and a consumer that positions values by these names inherits that,
+exactly as with `param_unc_names`. A scalar, a vector, a matrix (stored first
+index fastest) and a one-axis array of scalars agree. A program without
+parameters has no names (BridgeStan lists `[""]`).
+
+The sizes are `ModelOutput.dims`, so a rebound model reports its rebound
+names, and nothing is compiled unless a size needs the descriptor's native
+projection (a size computed by a Stan-only definition; see
+[`stan_descriptor`](@ref StanBlocks.stan_descriptor)). A parameter whose
+declared type has no unconstrained rule here throws, naming it.
+"""
+function stan_unc_names end
+stan_unc_names(x::Union{SlicModel,StanModel}; kwargs...) = stan_unc_names(stan_descriptor(x; kwargs...))
+stan_unc_names(d::ModelDescriptor) = begin
+    names = String[]
+    for o in d.outputs
+        o.kind === :parameter || continue
+        array, element = _unc_shape(Val(o.type), o)
+        _unc_names!(names, string(o.name), (array..., element...))
+    end
+    names
+end
+
+# A parameter's array axes and the shape of each element's unconstrained
+# representation, from its center type and value shape `dims` (a square
+# constrained matrix fills two axes with its one size; `ModelOutput.dims`).
+# Stan's own sizes are stanc's `unconstrained` sized types.
+_unc_shape(::Val{:real}, o) = (o.dims, ())
+_unc_shape(::Union{Val{:vector},Val{:row_vector},Val{:ordered},Val{:positive_ordered}}, o) =
+    _unc_split(o, 1, K -> (K,))
+_unc_shape(::Val{:simplex}, o) = _unc_split(o, 1, K -> (K - 1,))
+_unc_shape(::Val{:matrix}, o) = _unc_split(o, 2, (N, M) -> (N, M))
+_unc_shape(::Val{:row_stochastic_matrix}, o) = _unc_split(o, 2, (N, M) -> (N, M - 1))
+_unc_shape(::Val{:column_stochastic_matrix}, o) = _unc_split(o, 2, (N, M) -> (N - 1, M))
+_unc_shape(::Union{Val{:cholesky_factor_corr},Val{:corr_matrix}}, o) =
+    _unc_split(o, 2, (K, _) -> (K * (K - 1) ÷ 2,))
+_unc_shape(::Union{Val{:cholesky_factor_cov},Val{:cov_matrix}}, o) =
+    _unc_split(o, 2, (K, _) -> (K * (K + 1) ÷ 2,))
+_unc_shape(::Val{T}, o) where {T} = error(
+    "stan_unc_names: parameter `", o.name, "` has type `", T,
+    "`, which has no unconstrained-coordinate rule.")
+_unc_split(o, n, f) = begin
+    length(o.dims) >= n || error(
+        "stan_unc_names: parameter `", o.name, "` of type `", o.type, "` has ",
+        length(o.dims), " axes, fewer than its element's ", n, ".")
+    o.dims[1:end-n], max.(0, f(o.dims[end-n+1:end]...))
+end
+
+# Stan's spelling: a scalar is its name, a coordinate `name.i.j…`, first index
+# fastest (Julia's `CartesianIndices` order).
+_unc_names!(names, name, axes::Tuple{}) = push!(names, name)
+_unc_names!(names, name, axes::Tuple) = begin
+    for I in CartesianIndices(axes)
+        push!(names, join((name, Tuple(I)...), '.'))
+    end
+    names
 end
 
 """

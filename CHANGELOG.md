@@ -4,6 +4,22 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.67
+
+- **New: `stan_unc_names(model)` names a program's unconstrained coordinates
+  without compiling it.** It returns the names BridgeStan's `param_unc_names`
+  lists for the bound data, in its order and spelling, from the traced model
+  or its descriptor: each parameter's unconstrained size per declared type
+  (`simplex[K]` `K - 1`, `cholesky_factor_corr[K]` and `corr_matrix[K]`
+  `K(K - 1)/2`, `cholesky_factor_cov[K]` and `cov_matrix[K]` `K(K + 1)/2`,
+  `row_stochastic_matrix[N, M]` `N × (M - 1)`, `column_stochastic_matrix[N, M]`
+  `(N - 1) × M`, any other container its own shape), named `name.i.j…` first
+  index fastest over its array axes and those. A Julia consumer of a fit's
+  unconstrained draws (a coordinate transport, a precompile workload) can now
+  name them before or without a BridgeStan build. `stan_interface` carries the
+  same list as `"unconstrained"`. A program without parameters gives no names,
+  where BridgeStan lists `[""]` (snag `build-brm-s-coor-a2964345`).
+
 ## v0.2.66
 
 - **Fix: a `maybecv` mark holds out an observation of a sub-model keyword

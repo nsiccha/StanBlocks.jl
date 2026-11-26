@@ -73,7 +73,10 @@ No fit runs during the documentation build.
 `stan_data_json` writes the data the emitted program reads, including derived
 sizes. `stan_interface` describes the encoding and output layout for a consumer
 outside Julia. Generate both alongside the Stan source so their identities
-remain consistent.
+remain consistent. `stan_unc_names` lists the program's unconstrained
+coordinate names exactly as BridgeStan's `param_unc_names` does, without
+building the program, for a Julia consumer of a fit's unconstrained draws; the
+interface carries the same list as `"unconstrained"`.
 
 ```@example execution
 println(stan_data_json(model))
