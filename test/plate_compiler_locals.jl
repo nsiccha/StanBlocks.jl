@@ -66,6 +66,22 @@ programs must have the same unconstrained coordinates, and the same density.
                     mu
                 end
             end),
+            # A comprehension written in the cell itself (no helper).
+            raw_bound = @slic(D, begin
+                b ~ normal(0, 1)
+                shared ~ plate(y) do yi
+                    selected = [v + b for v in x]
+                    mu = sum(selected)
+                    yi ~ normal(mu, 1)
+                    mu
+                end
+            end),
+            raw_direct = @slic(D, begin
+                b ~ normal(0, 1)
+                shared ~ plate(y) do yi
+                    yi ~ normal(sum([v + b for v in x]), 1)
+                end
+            end),
             # The likelihood reads the comprehension directly.
             direct = @slic(D, begin
                 b ~ normal(0, 1)
@@ -178,7 +194,8 @@ programs must have the same unconstrained coordinates, and the same density.
         Core.eval(@__MODULE__, MODELS)
     end
     # A mean of 3 + 2b: `sum(x .+ b)` for `x = [1, 2]`.
-    const SAME_MEAN = (:bound, :direct, :annotated, :submodel, :vector_local, :filled_local)
+    const SAME_MEAN = (:bound, :raw_bound, :raw_direct, :direct, :annotated, :submodel,
+        :vector_local, :filled_local)
 end
 
 @testitem "slic: an inlined helper's locals and a comprehension in a plate cell are loop scratch" tags=[:slic, :plate, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup, PlateCompilerLocalsFixtures] begin
@@ -195,6 +212,7 @@ end
         end
     end
     @test stan_unc_names(Inline.models.bound) == ["b"]
+    @test stan_unc_names(Inline.models.raw_bound) == stan_unc_names(Inline.models.raw_direct) == ["b"]
     # Read only by the likelihood and its predictive draw, the comprehension is
     # recomputed inside the model block's loop and the generated-quantities
     # loop; transformed parameters holds nothing.
