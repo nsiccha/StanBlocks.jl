@@ -67,6 +67,18 @@ forward!(x::Colon; info) = x
 forward!(x::StanExpr{Symbol}; info) = x
 forward!(x::StanExpr; info) = x
 _forward_call_kwargs(x::CanonicalExpr, resolved_head; info) = forward!(x.kwargs; info)
+# A called submodel's keyword bound to a values-free `maybecv` name (a model's
+# `y = maybecv(:y)`, or a plate cell's do-block parameter bound to one) has no
+# value to pass. It passes the mark instead, so the callee's array of that name
+# is unbound there and becomes the draw: an observed `@scan` over `obs` then
+# simulates its whole trajectory, as the same scan does at model scope (snag
+# `values-free-fore-ae8fef99`).
+_forward_call_kwargs(x::CanonicalExpr, resolved_head::SlicModel; info) =
+    map(v -> _forward_submodel_keyword(v; info), x.kwargs)
+_forward_submodel_keyword(v; info) = forward!(v; info)
+_forward_submodel_keyword(v::Symbol; info) =
+    !(v in keys(info)) && _is_cv_observation(v; info) ?
+        _ValuesFreeKeyword(_cv_public_name(v; info)) : forward!(v; info)
 # The positional twin of `_forward_call_kwargs`: a head that reads an argument
 # before it is traced (a distribution HOF's family slot, lpxf_builtin.jl).
 _forward_call_args(x::CanonicalExpr, resolved_head; info) = forward!(x.args; info)
@@ -3394,11 +3406,35 @@ end
 _vcat_size(x::StanExpr) = (n = _slice_int(x; values=false); n === nothing ? x : n)
 _vcat_size(x) = x
 
+# Whether a cell statement observes a values-free do-block parameter `a`: whole
+# (`a ~ …`), element by element in an observed `@scan` (`a[1] ~ …`, `a[t] ~ …`),
+# or by passing it to a called submodel's keyword (`node ~ f(; obs = a)`), whose
+# own scan or `~` observes it there.
+_observes_cv_param(s, a::Symbol) = begin
+    _is_scan_macrocall(s) && return _scan_observes_elements(s, a)
+    _is_raw_sampling(s) || return false
+    lhs = _annotated_untyped(s.args[2])
+    lhs === a && return true
+    rhs = s.args[3]
+    Meta.isexpr(rhs, :call) || return false
+    any(rhs.args[2:end]) do arg
+        Meta.isexpr(arg, :kw, 2) && return arg.args[2] === a
+        Meta.isexpr(arg, :parameters) || return false
+        any(p -> p === a || (Meta.isexpr(p, :kw, 2) && p.args[2] === a), arg.args)
+    end
+end
+_scan_observes_elements(x, a::Symbol) = x isa Expr && (
+    (_is_raw_sampling(x) && (lhs = _annotated_untyped(x.args[2]);
+        Meta.isexpr(lhs, :ref) && lhs.args[1] === a)) ||
+    any(e -> _scan_observes_elements(e, a), x.args))
 # A positional bound to a values-free `maybecv(:y)` (snag
 # `held-out-observa-58a2eb13`) has nothing to slice. Its do-block parameter is
 # the cell's observation of `y`: drop the pair from the slices, so the cell's
 # `y ~ …` traces as a fresh cell sample, a declared observation whose storage
-# the loop core taints cv and whose draw it aliases as `y_gen`. Returns the
+# the loop core taints cv and whose draw it aliases as `y_gen`. An observed
+# `@scan` over the parameter then simulates it as the cell's carried array, and
+# a called submodel's keyword bound to it simulates the callee's own array
+# (`_forward_call_kwargs`; snag `values-free-fore-ae8fef99`). Returns the
 # remaining params/iterables, the body, and each param's `_CVCell`.
 _plate_cv_positionals(rv, params, iterables, body_raw, outer; info) = begin
     cv_params = Dict{Symbol,_CVCell}()
@@ -3406,16 +3442,13 @@ _plate_cv_positionals(rv, params, iterables, body_raw, outer; info) = begin
     keep = Int[]
     for (k, (a, it)) in enumerate(zip(params, iterables))
         if it isa Symbol && !(it in keys(info)) && it in _cv_observations(info)
-            observed = any(body_raw.args) do s
-                _is_raw_sampling(s) || return false
-                lhs = s.args[2]
-                lhs === a || (Meta.isexpr(lhs, :(::)) && lhs.args[1] === a)
-            end
+            observed = any(s -> _observes_cv_param(s, a), body_raw.args)
             observed || error(
                 "plate: positional `", it, "` is bound to `maybecv(:", it, ")`, which has no ",
-                "values, so its do-block parameter `", a, "` must be observed whole in the cell ",
-                "(`", a, " ~ …`).")
-            cv_params[a] = (; marked=it, param=a, plate=rv)
+                "values, so the cell must observe its do-block parameter `", a, "`: whole ",
+                "(`", a, " ~ …`), element by element in an observed `@scan` (`", a, "[1] ~ …`, `",
+                a, "[t] ~ …`), or through a called submodel's keyword (`node ~ f(; obs = ", a, ")`).")
+            cv_params[a] = (; marked=it, param=a, plate=rv, via=:plate)
         else
             push!(keep, k)
         end

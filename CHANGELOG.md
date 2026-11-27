@@ -4,6 +4,30 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.68
+
+- **New: a values-free `maybecv` forecast of a series an observed `@scan`
+  observes.** Binding the series to `maybecv(:y)` (or `maybecv(:ys)` for
+  nested-vector groups) now forecasts it in every place an observed scan can
+  read it. That covers model scope, a called submodel's keyword
+  (`node ~ f(; obs = y)`), an inline scan over a `plate` cell's do-block
+  parameter, and a plate cell passing that parameter to a called scan submodel
+  (`plate(ys, mus) do y, m; node ~ f(; obs = y, mu = m, n = length(m), …)`).
+  The forecast draws the whole trajectory in generated quantities. Its first
+  step comes from the scan's own start, its lags read the draws, and
+  everything the observations read stays a parameter, so a fit's draws feed
+  it. The draw is named after the fit program's twin (`y_gen`, `ys_gen` with
+  the plate's segments). Given the same parameters and seed it equals that
+  twin. There is no `y` input, no `y_likelihood` and no `:fit`. A called
+  submodel's keyword bound to a values-free name passes no value, so the
+  callee's own array of that name is the draw. Before, the plate refused the
+  cell, because its do-block parameter was not observed whole (`y ~ …`), and a
+  model-scope keyword failed with "has no values to read". The cell's count
+  and the series' length come from another input. A length read off the
+  series, in the cell or in the submodel, is refused and the message names the
+  keyword. A slice of the parameter outside a scan stays refused (snag
+  `values-free-fore-ae8fef99`).
+
 ## v0.2.67
 
 - **New: `stan_unc_names(model)` names a program's unconstrained coordinates

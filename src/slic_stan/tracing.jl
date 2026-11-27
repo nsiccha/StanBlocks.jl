@@ -60,8 +60,11 @@ no `<name>_likelihood`, so the program offers `:predict` but not `:fit`.
 Bind it in place of the data of an observation written `name ~ …` at model
 scope, or of a `plate` positional whose do-block parameter the cell observes
 (`plate(y, R; outer = n) do y, R … y ~ … end`; the plate then needs `outer` or
-another positional for its count). Omitting `name` instead gives the
-prior-predictive program.
+another positional for its count). A series an observed `@scan` observes
+(`y[1] ~ …`, `y[t] ~ …` reading `y[t-1]`), at model scope, over a cell's
+do-block parameter, or in a called submodel the series is passed to as a
+keyword (`node ~ f(; obs = y)`), is drawn as its whole trajectory. Omitting
+`name` instead gives the prior-predictive program.
 """
 maybecv(expr; kwargs...) = begin
     _check_maybecv_kwargs(expr, kwargs)
@@ -102,7 +105,12 @@ _cv_observations(_) = ()
 # (`mu_y`); the trace context maps it to the marked data name (`y`).
 _cv_cell(f::Symbol; info) = begin
     context = _trace_context(info)
-    context === nothing ? nothing : get(context.cv_cells, f, nothing)
+    context === nothing && return nothing
+    cell = get(context.cv_cells, f, nothing)
+    # Inside a called submodel a keyword's array is read by its local spelling
+    # (`obs`) and stored by its flattened name (`node_obs`).
+    cell === nothing && info isa SubModel && (cell = get(context.cv_cells, _plate_global_name(info, f), nothing))
+    cell
 end
 _cv_public_name(f::Symbol; info) = (cell = _cv_cell(f; info); cell === nothing ? f : cell.marked)
 # A read of a values-free observation that `forward!` reaches before its `~`
@@ -113,6 +121,9 @@ _cv_values_read_error(f::Symbol; info) = begin
     subject, obs, where = cell === nothing ?
         ("`$(f)` is bound to `maybecv(:$(f))`, which", f,
             " (at model scope or as a `plate` positional's do-block parameter)") :
+        cell.via === :keyword ?
+        ("`$(cell.plate) ~ …`: keyword `$(cell.param)` is bound to the values-free " *
+            "`maybecv(:$(cell.marked))`, which", cell.param, " in the submodel") :
         ("plate `$(cell.plate)`: do-block parameter `$(cell.param)` is the cell's slice of " *
             "`$(cell.marked)`, bound to `maybecv(:$(cell.marked))`, which", cell.param, " in the cell")
     string(subject, " has no values to read. A values-free observation is only drawn, ",
@@ -272,6 +283,17 @@ maybedata!(x::SubModel, key, value) = begin
         end
     end
     locals(x)[key] = bound
+end
+# A keyword bound to a values-free name (`_forward_call_kwargs`) binds nothing:
+# the callee's own array of that name is drawn, as the marked observation.
+maybedata!(x::SubModel, key, value::_ValuesFreeKeyword) = begin
+    context = _trace_context(x)
+    context === nothing && error(
+        "`", key, " = …` passes a values-free `maybecv(:", value.marked, ")` observation to a ",
+        "called submodel outside a model trace.")
+    context.cv_cells[_plate_global_name(x, key)] =
+        (; marked=value.marked, param=key, plate=name(x), via=:keyword)
+    nothing
 end
 
 # --- Partly-missing-vector imputation helpers --------------------------------
