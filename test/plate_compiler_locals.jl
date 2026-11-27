@@ -157,6 +157,15 @@ programs must have the same unconstrained coordinates, and the same density.
                     m
                 end
             end),
+            # Outside any plate: the same sub-model called at model scope. Its
+            # comprehension's fill left the sub-model's view of the result
+            # stale, and the backward pass refused the fill as a write to a
+            # parameter.
+            submodel_model_scope = @slic(D, begin
+                b ~ normal(0, 1)
+                m ~ member(; x, b)
+                y ~ normal(m, 1)
+            end),
             vector_local = @slic(D, begin
                 b ~ normal(0, 1)
                 shared ~ plate(y) do yi
@@ -195,7 +204,7 @@ programs must have the same unconstrained coordinates, and the same density.
     end
     # A mean of 3 + 2b: `sum(x .+ b)` for `x = [1, 2]`.
     const SAME_MEAN = (:bound, :raw_bound, :raw_direct, :direct, :annotated, :submodel,
-        :vector_local, :filled_local)
+        :submodel_model_scope, :vector_local, :filled_local)
 end
 
 @testitem "slic: an inlined helper's locals and a comprehension in a plate cell are loop scratch" tags=[:slic, :plate, :regression, :stanc] setup=[StanBlocksImports, StanBlocksTestSetup, PlateCompilerLocalsFixtures] begin
