@@ -968,6 +968,9 @@ backward!(x::CanonicalExpr{typeof(_loop_scratch)}; info) =
 _loop_scratch_backward!(x::DocumentExpr; info) = remake(x, x.args[1], _loop_scratch_backward!(x.args[2]; info))
 _loop_scratch_backward!(x::StanExpr; info) = StanExpr(_loop_scratch_backward!(expr(x); info), type(x))
 _loop_scratch_backward!(x::AssignmentExpr; info) = remake(x, x.args[1], backward!(x.args[2]; info))
+# A comprehension's unit (its declaration, then its fill loop) passes reach on
+# through the fill, exactly as the same two statements do outside a plate.
+_loop_scratch_backward!(x::BlockExpr; info) = backward!(x; info)
 _loop_distribution_stmt(x, ::Val; info) = x
 _loop_distribution_stmts(x, v::Val; info) = Any[_loop_distribution_stmt(x, v; info)]
 _loop_distribution_stmt(x::StanExpr{<:ForExpr}, v::Val; info) = begin

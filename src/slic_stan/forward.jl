@@ -1515,6 +1515,12 @@ function forward!(x::ComprehensionExpr; info)
             result_type; fresh_decl=true, decl_role=:unfilled, qual=:parameter
         ))
         info[result_name] = StanExpr(result_name, result_type)
+        # The result is compiler scratch, named after itself (its stored, possibly
+        # submodel-flattened, name): a plate's discovery probe must not promote it
+        # to per-cell storage (`_is_comprehension_temp`). Naming it, not flagging
+        # it, keeps a user binding of it (`selected = [… for …]`, whose type is
+        # remade from this one) an ordinary cell binding.
+        info[result_name] = remake(info[result_name]; comprehension_temp=expr(info[result_name]))
         result = info[result_name]
         declaration = _trace_stan_expr(CanonicalExpr(:(::), result), info)
 
@@ -1529,7 +1535,18 @@ function forward!(x::ComprehensionExpr; info)
                 _is_block_canonical(body) ? body : CanonicalExpr(:block, body)), info)
         end
 
-        push!(pending, declaration, body)
+        # Inside a plate's emit trace the result is a local of the loop body. The
+        # loop's block copies are separate Stan scopes (transformed parameters,
+        # model, generated quantities), so the declaration and its fill travel
+        # together as one loop-scratch unit: every copy whose statements read the
+        # result recomputes it (passes.jl `_loop_select`), as the annotated-loop
+        # sugar's `tmp = …` does (user decision `1rgglep`). Snag
+        # inline-comprehen-20e73a74.
+        if _plate_context(info) === nothing
+            push!(pending, declaration, body)
+        else
+            push!(pending, CanonicalExpr(_loop_scratch, CanonicalExpr(:block, declaration, body)))
+        end
         info[result_name]
     finally
         _restore_scope!(info, saved)
@@ -1782,6 +1799,12 @@ forward!(x::AssignmentExpr; info) = begin
         else
             scope[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)), cv=tainted)
         end
+        # Reached by its flattened root name from inside a called submodel, the
+        # declaration may also have local views (this submodel's, any between it
+        # and the root). Refresh them: a later read of a stale view carries the
+        # pre-fill role back to the root, and the backward pass then refuses the
+        # fill (snag inline-comprehen-20e73a74: a comprehension in a submodel).
+        scope === info || _set_aliased!(info, k, type(scope[k]))
     end
     fwd
 end
@@ -4785,6 +4808,14 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
         for k in keys(root)
             (k in before || k in helpers) && continue
             get(type(root[k]).info, :submodel_data, false) && continue
+            # A comprehension's result (`forward!(::ComprehensionExpr)`) is
+            # compiler scratch, never a cell binding. The probe and the emit trace
+            # name it differently (a trace id), so storage promoted under the
+            # probe's name would be a free parameter nothing fills; and its size
+            # may name another such local, which no cell size can (snag
+            # inline-comprehen-20e73a74). The emit trace keeps it a loop-scratch
+            # local of each block copy that reads it.
+            _is_comprehension_temp(k, type(root[k])) && continue
             push!(fresh, k => _resolve_return_size_type(type(root[k]), size_table, "plate cell"))
         end
         (fresh=fresh, ret_type=ret === nothing ? nothing :
@@ -4997,6 +5028,11 @@ _loop_scratch_name(x::DocumentExpr) = _loop_scratch_name(x.args[2])
 # A typed `name::T = rhs` is traced whole, as a `StanExpr` (`forward!(::AssignmentExpr)`).
 _loop_scratch_name(x::StanExpr{<:CanonicalExprV{:(=)}}) = _loop_scratch_name(expr(x))
 _loop_scratch_name(x::AssignmentExpr) = (b = _loop_scratch_binding(x.args[1]); b === nothing ? nothing : expr(b))
+# A comprehension's scratch unit (`forward!(::ComprehensionExpr)`) is a block
+# of its result's declaration and fill loop, named by the declaration.
+_loop_scratch_name(x::BlockExpr) = _decl_lhs_symbol(expr(first(x.args)))
+_is_comprehension_temp(f::Symbol, T::StanType) = get(T.info, :comprehension_temp, nothing) === f
+_is_comprehension_temp(_, _) = false
 _loop_scratch_wrap(x, names) = _loop_scratch_name(x) in names ? CanonicalExpr(_loop_scratch, x) : x
 _loop_scratch_wrap(x::BlockExpr, names) = remake(x, Any[_loop_scratch_wrap(s, names) for s in x.args]...)
 _loop_scratch_wrap(x::StanExpr{<:ForExpr}, names) = begin
