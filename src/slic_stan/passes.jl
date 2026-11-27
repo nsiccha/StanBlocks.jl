@@ -963,11 +963,14 @@ _loop_distribution_blocks(::CanonicalExpr{typeof(_loop_scratch)}; info) = ()
 # applies (a computed `tmp::typeof(…) = …` is no fresh declaration). It only
 # passes likelihood reach on to what it reads, when a likelihood reads it.
 backward!(x::CanonicalExpr{typeof(_loop_scratch)}; info) =
-    lqual(info[_loop_scratch_name(only(x.args))]) == :affects_likelihood ?
+    any(n -> n in keys(info) && lqual(info[n]) == :affects_likelihood, _loop_scratch_names(x)) ?
         CanonicalExpr(_loop_scratch, _loop_scratch_backward!(only(x.args); info)) : x
 _loop_scratch_backward!(x::DocumentExpr; info) = remake(x, x.args[1], _loop_scratch_backward!(x.args[2]; info))
 _loop_scratch_backward!(x::StanExpr; info) = StanExpr(_loop_scratch_backward!(expr(x); info), type(x))
 _loop_scratch_backward!(x::AssignmentExpr; info) = remake(x, x.args[1], backward!(x.args[2]; info))
+# A compiler local's declaration and fill loop (forward.jl `_trace_scratch_wrap`)
+# pass reach on as the same statements do outside a plate.
+_loop_scratch_backward!(x::StanExpr{<:Union{DeclExpr,ForExpr}}; info) = backward!(x; info)
 _loop_distribution_stmt(x, ::Val; info) = x
 _loop_distribution_stmts(x, v::Val; info) = Any[_loop_distribution_stmt(x, v; info)]
 _loop_distribution_stmt(x::StanExpr{<:ForExpr}, v::Val; info) = begin
@@ -981,10 +984,10 @@ end
 # recomputes the scratch it reads, as a local of that copy's loop body.
 _loop_select(stmts, v::Val{B}; info) where {B} = begin
     groups = Vector{Any}[]
-    scratch = Pair{Int,Symbol}[]
+    scratch = Pair{Int,Any}[]
     for (k, stmt) in enumerate(stmts)
         if stmt isa CanonicalExpr{typeof(_loop_scratch)}
-            push!(scratch, k => _loop_scratch_name(only(stmt.args)))
+            push!(scratch, k => _loop_scratch_names(stmt))
             push!(groups, Any[stmt])
         else
             push!(groups, B in _loop_distribution_blocks(stmt; info) ?
@@ -1002,10 +1005,10 @@ _loop_select(stmts, v::Val{B}; info) where {B} = begin
     keep = falses(length(stmts))
     for k in reverse(eachindex(stmts))
         is_scratch = stmts[k] isa CanonicalExpr{typeof(_loop_scratch)}
-        is_scratch && !(_loop_scratch_name(only(stmts[k].args)) in needed) && continue
+        is_scratch && !any(in(needed), _loop_scratch_names(stmts[k])) && continue
         keep[k] = true
-        for (j, name) in scratch
-            j < k && _uses_model_local(groups[k], (name,)) && push!(needed, name)
+        for (j, names) in scratch
+            j < k && _uses_model_local(groups[k], names) && union!(needed, names)
         end
     end
     out = Any[]

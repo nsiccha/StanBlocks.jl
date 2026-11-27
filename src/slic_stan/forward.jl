@@ -377,7 +377,7 @@ _expand_inline!(x::CanonicalExpr, meta; info) = begin
         id = _next_inline_id(info)
         for name in locals
             name in arg_set && continue
-            rename[name] = Symbol(name, "__il_", id)
+            rename[name] = _inline_local_name(name, id)
         end
     end
     # Captures (closure case): each pre-resolved definition-site StanExpr
@@ -418,7 +418,7 @@ _do_retrace_inline_body(rewritten; info) = begin
         for i in firstindex(stmts):lastindex(stmts)-1
             _at_stmt!(frame, i)
             result = forward!(stmts[i]; info)
-            pending !== nothing && push!(pending, result)
+            pending !== nothing && push!(pending, _trace_scratch_wrap(result; info))
         end
         _at_stmt!(frame, lastindex(stmts))
         forward!(stmts[end]; info)
@@ -1443,13 +1443,14 @@ function _comprehension_iter(lhs, source_raw; info)
     vi, _value_iter_count(source), Pair{Symbol,Any}[lhs => _value_iter_elem(source, vi)]
 end
 
-# Fresh, non-underscore-leading comprehension result name.
+# Fresh, non-underscore-leading comprehension result name (`_is_trace_scratch_name`).
+_comprehension_result_name(id) = Symbol(:comprehension_result__lc_, id)
 function _fresh_comprehension_result(info)
     id = _next_inline_id(info)
-    name = Symbol(:comprehension_result__lc_, id)
+    name = _comprehension_result_name(id)
     while name in keys(info)
         id = _next_inline_id(info)
-        name = Symbol(:comprehension_result__lc_, id)
+        name = _comprehension_result_name(id)
     end
     name
 end
@@ -1541,7 +1542,8 @@ function forward!(x::ComprehensionExpr; info)
                 _is_block_canonical(body) ? body : CanonicalExpr(:block, body)), info)
         end
 
-        push!(pending, declaration, body)
+        # Inside a plate's emit trace the result is loop scratch (`_trace_scratch_wrap`).
+        push!(pending, _trace_scratch_wrap(declaration; info), _trace_scratch_wrap(body; info))
         info[result_name]
     finally
         _restore_scope!(info, saved)
@@ -1794,6 +1796,12 @@ forward!(x::AssignmentExpr; info) = begin
         else
             scope[k] = remake(base; qual=_promote_qual(qual(base), qual(rhs)), cv=tainted)
         end
+        # Reached by its flattened root name from inside a called submodel, the
+        # declaration may also have local views (this submodel's, any between it
+        # and the root). Refresh them: a later read of a stale view carries the
+        # pre-fill role back to the root, and the backward pass then refuses the
+        # fill (snag inline-comprehen-20e73a74: a comprehension in a submodel).
+        scope === info || _set_aliased!(info, k, type(scope[k]))
     end
     fwd
 end
@@ -4818,6 +4826,10 @@ _plate_discover(body_stmts, ret_expr, params, iterables, idxs; info::Union{StanM
         for k in keys(root)
             (k in before || k in helpers) && continue
             get(type(root[k]).info, :submodel_data, false) && continue
+            # An inlined helper's local or a comprehension's result is loop
+            # scratch, never a cell binding (`_is_trace_scratch_name`); its size
+            # may name another such local, which no cell size can.
+            _is_trace_scratch_name(k) && continue
             push!(fresh, k => _resolve_return_size_type(type(root[k]), size_table, "plate cell"))
         end
         (fresh=fresh, ret_type=ret === nothing ? nothing :
@@ -5031,6 +5043,55 @@ _loop_scratch_name(x::DocumentExpr) = _loop_scratch_name(x.args[2])
 _loop_scratch_name(x::StanExpr{<:CanonicalExprV{:(=)}}) = _loop_scratch_name(expr(x))
 _loop_scratch_name(x::AssignmentExpr) = (b = _loop_scratch_binding(x.args[1]); b === nothing ? nothing : expr(b))
 _loop_scratch_wrap(x, names) = _loop_scratch_name(x) in names ? CanonicalExpr(_loop_scratch, x) : x
+# The names one scratch statement writes, which `_loop_select` keeps it for.
+_loop_scratch_names(x::CanonicalExpr{typeof(_loop_scratch)}) = let s = only(x.args), n = _loop_scratch_name(s)
+    n === nothing ? something(_scratch_writes(s), ()) : (n,)
+end
+
+# ── Compiler locals of a plate cell are loop scratch (snag inline-comprehen-20e73a74) ──
+# Two producers name their locals with a per-trace id: an inlined helper's locals
+# (`<name>__il_<id>`, `_expand_inline!`) and a comprehension's result
+# (`comprehension_result__lc_<id>`, `forward!(::ComprehensionExpr)`). A plate traces
+# its cell twice, the discovery probe and then the emit trace, and the two traces
+# give such a local different names. Promoted under the probe's name, it was
+# storage the emit trace never filled: a parameter nothing reads, or an `int`
+# parameter Stan refuses. A local the emit trace bound in one block's loop copy
+# was out of scope in the others that read it. So discovery never promotes these
+# names (`_plate_discover`), and in the emit trace every statement that writes
+# only such names (its binding, declaration, fill or fill loop) is loop scratch:
+# each block copy whose statements read it recomputes it, as the annotated-loop
+# sugar's `tmp = …` (user decision `1rgglep`). Outside a plate they are unchanged.
+# LOCKSTEP: `_inline_local_name`, `_comprehension_result_name`.
+_inline_local_name(name, id) = Symbol(name, "__il_", id)
+_is_trace_scratch_name(s::Symbol) = let str = String(s)
+    occursin(r"__il_\d+$", str) || occursin(r"comprehension_result__lc_\d+$", str)
+end
+_is_trace_scratch_name(_) = false
+# The names a statement writes: a plain or typed binding's name, a declaration's,
+# a fill's base, and the bases a fill loop writes; `nothing` for any statement
+# that does something else (samples, branches, calls), which is never scratch.
+_scratch_writes(x) = nothing
+_scratch_writes(x::DocumentExpr) = _scratch_writes(x.args[2])
+_scratch_writes(x::StanExpr) = _scratch_writes(expr(x))
+_scratch_writes(x::DeclExpr) = (_decl_lhs_symbol(x),)
+_scratch_writes(x::AssignmentExpr) = let b = _base_lhs_symbol(x.args[1])
+    b isa Symbol ? (b,) : nothing
+end
+_scratch_writes(x::ForExpr) = begin
+    names = Symbol[]
+    for s in x.args[2].args
+        s isa LineNumberNode && continue
+        w = s isa CanonicalExpr{typeof(_loop_scratch)} ? _loop_scratch_names(s) : _scratch_writes(s)
+        w === nothing && return nothing
+        append!(names, w)
+    end
+    isempty(names) ? nothing : Tuple(unique(names))
+end
+_trace_scratch_wrap(x; info) = begin
+    _plate_context(info) === nothing && return x
+    w = _scratch_writes(x)
+    w !== nothing && all(_is_trace_scratch_name, w) ? CanonicalExpr(_loop_scratch, x) : x
+end
 _loop_scratch_wrap(x::BlockExpr, names) = remake(x, Any[_loop_scratch_wrap(s, names) for s in x.args]...)
 _loop_scratch_wrap(x::StanExpr{<:ForExpr}, names) = begin
     head, body = expr(x).args

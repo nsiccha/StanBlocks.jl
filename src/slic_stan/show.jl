@@ -140,6 +140,10 @@ block_print(io, ::StanBlock, ::LineNumberNode) = nothing
 block_print(io, ::StanBlock, x) = print(io, current_indent(io), x, line_terminator(x))
 block_print(io, ::StanBlock, x::SamplingExpr{<:Any,<:StanExpr{<:CanonicalExpr{typeof(flat)}}}) = nothing
 block_print(io, b::StanBlock, x::BlockExpr) = map(stmt->block_print(io, b, stmt), x.args)
+# A compiler local's declaration or fill loop as loop scratch (forward.jl
+# `_trace_scratch_wrap`) prints as the statement itself.
+block_print(io, b::StanBlock, x::CanonicalExpr{typeof(_loop_scratch),<:Tuple{StanExpr{<:Union{DeclExpr,ForExpr}}}}) =
+    block_print(io, b, only(x.args))
 # A local scope around a generated-quantities statement (passes.jl
 # `_ragged_scoped`): its leading declarations are Stan locals, not outputs.
 block_print(io, b::StanBlock, x::StanExpr{<:CanonicalExpr{typeof(_ragged_scope)}}) = begin
