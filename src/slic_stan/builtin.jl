@@ -287,6 +287,9 @@ end
     # or transformed parameters when the completed vector feeds a likelihood.
     maybe_index
     merge_missing
+    # The partly missing series an observed `@scan` reads back
+    # (missing_scans.jl): its observed and imputed values over its positions.
+    merge_scan_missing
 
     # erfc-stable normal log-CDF/CCDF companions (`@deffun` bodies + full
     # rationale beside the native CDF companions below). Selected for the
@@ -2897,6 +2900,38 @@ import Statistics
         end
         for i in 1:n_mis
             y[ii_mis[i]] = y_mis[i]
+        end
+        y
+    end
+
+    # The values a `@scan` reads back from a partly missing series, laid out
+    # like the series (`_missing_series_prelude`, missing_scans.jl). `ii[i]` is
+    # `k > 0` for the `k`-th observed value, `-k` for the `k`-th imputed one,
+    # and `0` for an entry after the series' last observed one, which no
+    # density reads (its draw is in generated quantities).
+    "Lay observed and imputed entries out over a series' positions using its position codes, with zero after the last observed entry."
+    @juliacompat merge_scan_missing(y_obs::vector[n_obs], y_mis::vector[n_mis], ii::int[n])::vector[n] = begin
+        y::vector[n]
+        for i in 1:n
+            if ii[i] > 0
+                y[i] = y_obs[ii[i]]
+            elseif ii[i] < 0
+                y[i] = y_mis[0 - ii[i]]
+            else
+                y[i] = 0.0
+            end
+        end
+        y
+    end
+    "Lay observed entries out over a series' positions using its position codes, with zero after the last observed entry."
+    @juliacompat merge_scan_missing(y_obs::vector[n_obs], ii::int[n])::vector[n] = begin
+        y::vector[n]
+        for i in 1:n
+            if ii[i] > 0
+                y[i] = y_obs[ii[i]]
+            else
+                y[i] = 0.0
+            end
         end
         y
     end

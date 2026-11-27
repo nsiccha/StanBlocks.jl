@@ -121,10 +121,14 @@ StanBlocks.stan_descriptor).
     `<obs>_gen` twin). `source` names the observation.
   - `:pointwise_loglik` — the per-element log-likelihood of an observation
     (the compiler-owned `<obs>_likelihood` companion). `source` names it.
+  - `:completed` — the completed series of an observation with `missing`
+    entries that an observed `@scan` reads back: its observed values where
+    given, the imputed or drawn values where missing, laid out like the
+    observation and named after it. `source` names the observation.
   - `:derived` — any other generated quantity: a prior-only sample, a
     cv-flipped re-draw of a latent, a model `return` value.
 - `source::Union{Symbol,Nothing}` — the observation a `:draw` /
-  `:pointwise_loglik` derives from; `nothing` otherwise.
+  `:pointwise_loglik` / `:completed` output derives from; `nothing` otherwise.
 - `segments::Union{Nothing,Vector{Int}}` — group boundaries when this quantity
   is either the twin of a **ragged** observation or the emitted flat-memory
   carrier of a ragged plate result/member; `nothing` for every dense quantity.
@@ -390,6 +394,8 @@ _observed_bases(x::BlockExpr, acc) = _observed_bases(x.args, acc)
 _observed_bases(x::DocumentExpr, acc) = _observed_bases(x.args[2], acc)
 _observed_bases(x::StanExpr{<:ForExpr}, acc) = _observed_bases(expr(x).args[2], acc)
 _observed_bases(x::StanExpr{<:CanonicalExpr}, acc) = _observed_bases(expr(x), acc)
+# The guarded observations of a partly missing series (missing_scans.jl).
+_observed_bases(x::IfExpr, acc) = (foreach(b -> _observed_bases(b, acc), x.args[2:end]); acc)
 # A sampling LHS may be an arbitrary data-qualified expression
 # (`(sum(a) + n) ~ normal(…)` is legal), so only a STRUCTURAL PROJECTION of a
 # named data variable counts as conditioning on it. Two node kinds project:
@@ -720,9 +726,15 @@ _td_written_base!(acc, x::CanonicalExpr{typeof(getindex)}) = _td_written_base!(a
 
 _descriptor_scope(m::StanModel, data) = begin
     statements = _td_statements!(block(m, :transformed_data), NamedTuple[])
+    env = Dict{Symbol,Any}(pairs(data))
+    # A partly missing series is bound to its position codes (missing_scans.jl),
+    # so a plate over it, or its twins, read their groups there.
+    for (name, codes) in _missing_series_codes(m)
+        haskey(data, codes) && !haskey(env, name) && (env[name] = data[codes])
+    end
     (;
         m, data,
-        env=Dict{Symbol,Any}(pairs(data)),
+        env,
         statements, writers=_td_writers(statements),
         layouts=_ragged_plate_layouts(m),
         mod=get(meta(m), :mod, @__MODULE__),
@@ -901,7 +913,7 @@ _ragged_plate_segments(scope, name::Symbol, layout) = begin
 end
 
 _output_segments(scope, name::Symbol, source) = begin
-    observed = _output_segments(source, scope.data)
+    observed = _output_segments(get(_missing_series_codes(scope.m), source, source), scope.data)
     observed === nothing || return observed
     haskey(vars(scope.m), name) || return nothing
     t = info(type(vars(scope.m)[name]))
@@ -1001,13 +1013,15 @@ _constraint_values(scope, owner, name::Symbol, constraints::NamedTuple) =
 _block_output_rows(scope, blockname::Symbol, kind::Symbol) = begin
     acc = OrderedDict{Symbol,Any}()
     _output_symbols(block(scope.m, blockname), acc)
-    datanames = keys(scope.data)
+    series = _missing_series_codes(scope.m)
+    datanames = union(keys(scope.data), keys(series))
     observations = _model_observations(scope.m)
     rows = NamedTuple[]
     for (name, x) in pairs(acc)
         always_inline(x) && continue
-        generative, source = kind === :generated_quantity ?
-            _generative_role(name, x, datanames, observations) : (:posterior, nothing)
+        generative, source = kind !== :generated_quantity ? (:posterior, nothing) :
+            haskey(series, name) && _missing_completed_of(x) === name ? (:completed, name) :
+            _generative_role(name, x, datanames, observations)
         push!(rows, (;
             name, kind, type=_descriptor_type(x), size=_descriptor_size(x),
             constraints=_descriptor_constraints(x), generative, source,
@@ -1158,7 +1172,7 @@ traced model supports it.
 | `:transpile` | always |
 | `:instantiate` | always (fails loudly at run time if a required input is unbound) |
 | `:fit` | the model has ≥1 parameter **and** ≥1 likelihood term — i.e. a non-held-out observation reaches the `model` block. A pure prior-predictive model, or one whose every observation is cv-held-out, offers no `:fit` |
-| `:predict` | ≥1 output with `generative == :draw` |
+| `:predict` | ≥1 output with `generative == :draw` (it returns the `:draw` and `:completed` outputs) |
 | `:pointwise_loglik` | ≥1 output with `generative == :pointwise_loglik` |
 
 Ask for one with [`stan_operation`](@ref StanBlocks.stan_operation) and run it
@@ -1389,7 +1403,8 @@ _derive_operations(d::ModelDescriptor) = begin
         ModelOperation(:fit, "Fit", req, params, _run_instantiate))
     draws = _outputs_with(d, :draw)
     isempty(draws) || push!(ops,
-        ModelOperation(:predict, "Predict", req, draws, _run_generated(:draw)))
+        ModelOperation(:predict, "Predict", req, (draws..., _outputs_with(d, :completed)...),
+            _run_generated(:draw)))
     lls = _outputs_with(d, :pointwise_loglik)
     isempty(lls) || push!(ops,
         ModelOperation(:pointwise_loglik, "Pointwise log-likelihood", req, lls,
@@ -1486,7 +1501,8 @@ _run_generated(role::Symbol) = (d::ModelDescriptor; draws=nothing, seed=nothing,
         "draws, and an unseeded draw would not be reproducible."
     )
     prob = problem === nothing ? _run_instantiate(d; kwargs...) : problem
-    wanted = _outputs_with(d, role)
+    wanted = role === :draw ? (_outputs_with(d, :draw)..., _outputs_with(d, :completed)...) :
+        _outputs_with(d, role)
     _draw_generated(prob, wanted, _draw_columns(draws), seed)
 end
 

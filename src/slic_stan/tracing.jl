@@ -217,6 +217,7 @@ _stan_model(x::SlicModel; info) = begin
     stage = :trace
     try
         traced = forward!(x; info)
+        _finish_missing_series!(traced; info)
         _restore_ragged_storage!(info)
         traced = _finalize_slice_supports!(traced; info)
         unobserved = setdiff(marks, context.cv_observed)
@@ -319,10 +320,11 @@ _joint_dist_names() = Set{Symbol}([
 #   - register y_obs / y_ii_obs / y_ii_mis in `info` (split vars as data)
 #   - register y_ii_mis_n explicitly so it can be used as a size symbol
 #   - return a Dict mapping original name → split metadata
-_scan_and_register_missing_vars!(data, info) = begin
+_scan_and_register_missing_vars!(data, info; only=nothing) = begin
     result = OrderedDict{Symbol,NamedTuple}()
     for (key, value) in pairs(data)
         _is_partly_missing_vec(value) || continue
+        only === nothing || key in only || continue
         eltype(value) <: Union{Missing,<:AbstractFloat} || error(
             "Partly-missing vector `$(key)`: auto-imputation only supports continuous " *
             "(floating-point) outcome vectors — Stan has no discrete parameters. " *
@@ -523,19 +525,29 @@ Descends forwards through the expression tree. Basically _always_ returns a Stan
 function forward! end
 forward!(x::SlicModel; info=StanModel()) = begin
     info = remake(info; mod=x.mod)
-    missing_vars = _scan_and_register_missing_vars!(data(x), info)
+    raw_body = model(x)
+    # A partly missing vector observed whole (`y ~ dist(…)`) takes §14's
+    # elementwise rewrite. Every other partly missing value is a series an
+    # observed `@scan` reads back (missing_scans.jl); one no scan observes is
+    # refused after tracing.
+    elementwise = _elementwise_missing_lhs(raw_body)
+    missing_vars = _scan_and_register_missing_vars!(data(x), info; only=elementwise)
+    series = _register_missing_series!(data(x), info; exclude=keys(missing_vars))
     for (key, value) in pairs(data(x))
         key in keys(missing_vars) && continue   # split vars already registered above
+        key in keys(series) && continue
         # A values-free `maybecv(:key)` is no data: `_stan_model` declared it.
         value isa CVMark && info isa StanModel && key in _cv_observations(info) && continue
-        maybedata!(info, key, value)
+        maybedata!(info, key, _narrow_complete(value))
     end
-    raw_body = model(x)
     _reject_observed_definitions(Meta.isexpr(raw_body, :block) ? raw_body.args : Any[raw_body], "model";
         allow_computed=true)
     raw_body = isempty(missing_vars) ? raw_body : _expand_missing_stmts(raw_body, missing_vars)
+    raw_body = isempty(series) ? raw_body : _missing_series_prelude(raw_body, series; info)
     body = canonical(raw_body)
     _reject_model_control_flow(body)
+    context = _trace_context(info)
+    context === nothing || (context.root_body = body)
     forward!(body; info)
 end
 

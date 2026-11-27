@@ -393,7 +393,9 @@ end
 (x::StanModel)(;kwargs...) = begin
     xkwargs = Dict{Symbol,Any}(pairs(kwargs))
     datakeys = keys(block(x, :data).content)
-    for (key, value) in pairs(kwargs)
+    # A partly missing series is bound as its observed values and position
+    # codes (missing_scans.jl).
+    for (key, value) in Iterators.flatten((pairs(kwargs), pairs(_missing_series_rebinds(x, kwargs))))
         key in datakeys && _rebind_data_entries!(xkwargs, key, value)
     end
     StanModel(x.meta, x.vars, merge(x.blocks, (;data=StanBlock(:data,OrderedDict([

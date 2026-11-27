@@ -147,8 +147,12 @@ show(stdout, MIME"text/plain"(), [(name=o.name, shape=o.dims) for o in stan_desc
 The initial statements and loop must fill every carried element exactly once;
 forward reads are not allowed. When the carried variable is itself observed,
 its predictive twin simulates a complete new trajectory, using earlier
-simulated values at the lagged positions. A one-step conditional prediction
-from observed history is a different operation.
+simulated values at the lagged positions. To continue the series from its
+observed history instead, end the data with `missing` entries. Each missing
+entry after the last observed one is drawn from its own step, given the values
+before it, and the completed series is an output under the data's own name,
+holding the observed values where they are given. A `missing` entry before the
+last observed one is imputed as a parameter.
 
 The [partial-pooling example](../examples/pooling.md) uses independent cells;
 [epidemic dynamics](../examples/epidemic.md) uses a deterministic ODE function

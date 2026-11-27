@@ -1788,6 +1788,7 @@ _push_indexed_obs_twin_decls!(b, target; info) =
     target.kind === :ragged ? _push_ragged_obs_decls!(b, target.base; info) :
     target.kind === :ragged_element ? _push_ragged_element_gen_decl!(b, target.base; info) :
     target.kind === :scan ? _push_scan_obs_likelihood_decl!(b, target.base; info) :
+    target.kind === :missing_completed ? _push_missing_completed_decl!(b, target.base; info) :
     error("internal: unknown indexed observation twin kind `", target.kind, "`.")
 # One real log density per observed element, laid out like the observation: a
 # `vector` for a 1-D array (or the flat memory of nested-vector data), a

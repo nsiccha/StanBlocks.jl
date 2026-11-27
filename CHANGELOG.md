@@ -4,6 +4,37 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.70
+
+- **New: a series an observed `@scan` reads back may hold `missing` entries.**
+  Bind the data with `missing` where there are no values (`y = [0.3, 0.1,
+  missing, missing]`, or nested vectors `ys = [[0.3, missing], [missing]]` in a
+  plate cell, its container clause, a `plate(ys) do y` cell parameter, or a
+  called submodel's `obs = ys[p]` keyword); the model body is unchanged. The
+  observed entries keep their conditional densities, so every parameter stays a
+  parameter and a fit's draws feed the program's `:predict`. Each missing entry
+  after a series' last observed one is drawn in generated quantities from its
+  own step, its lags reading the observed values or the earlier draws: the
+  forecast that continues the series from where it is. A series with no observed
+  entry is drawn whole from the setup law. A missing entry before the last
+  observed one is imputed as a parameter (`y_mis`) whose prior is its step, as
+  the imputation of a partly missing `y ~ dist(…)` treats a missing outcome a
+  likelihood reads; its law must cover the whole real line. The names follow
+  that imputation's: the completed series is
+  the output `y` (`ys` flat with the data's segments, descriptor role
+  `:completed`), the observed values are the data `y_obs` (with the position
+  codes `y_ii`), and the observed steps' log densities are `y_obs_likelihood`.
+  `y_gen` is still the whole trajectory from the setup law. After the model-body
+  statement holding the scan, `y` is the completed series. Refused, each with a
+  message naming the series: a read of the series' values outside its scan, a
+  series no scan or `~` observes, integer values, an imputed entry under a
+  bounded, censored, weighted or discrete law, and a carried array filled from
+  the series. Re-binding a traced model (`m(; y = new)`) re-splits the series.
+  Before, nested vectors with `missing` failed in `stan_type`, and a vector
+  failed with `Partly-missing vector(s) y never appear as the LHS of a ~
+  statement` (snag `bind-an-observed-62bb34a3`). Data whose element type admits
+  `missing` but holds none are ordinary data.
+
 ## v0.2.69
 
 - **Fix: an inlined helper's locals and a comprehension's result inside a plate
