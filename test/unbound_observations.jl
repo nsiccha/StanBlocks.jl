@@ -550,8 +550,9 @@ including through a `plate` positional.
         end
     end, Dict{Symbol,Any}(:ys => maybecv(:ys), :x => [[1.0, 2.0], [3.0]], :n => 2), @__MODULE__))
     @test occursin(r"pred\[plate_i__pl_1\] = sum\(\s*pred_y\[", stan_block(after, "generated quantities"))
-    # Refused: a marked positional has no slices, so only a whole `y ~ …` observes it.
-    @test_throws "must be observed whole" stan_code(StanBlocks.SlicModel(quote
+    # Refused: a marked positional has no slices, so a slice outside an observed
+    # `@scan` does not observe it (test/values_free_scans.jl has the scan forms).
+    @test_throws "the cell must observe its do-block parameter `y`" stan_code(StanBlocks.SlicModel(quote
         mu ~ plate(y, t) do y, t
             y[1] ~ normal(0.0, 1.0)
             t

@@ -48,9 +48,19 @@ struct CVMark
     name::Symbol
 end
 Base.show(io::IO, x::CVMark) = print(io, "maybecv(:", x.name, ")")
-# A plate cell observing a marked positional: the marked name, the author's
-# do-block parameter, and the plate.
-const _CVCell = @NamedTuple{marked::Symbol, param::Symbol, plate::Symbol}
+# A name standing for a values-free observation: the marked name, the author's
+# spelling, and where it stands for it. `via = :plate`: a plate cell's do-block
+# parameter, `param`, of plate `plate`. `via = :keyword`: a called submodel's
+# keyword `param`, of the call whose left-hand side is `plate`, bound to the
+# values-free name (`node ~ f(; obs = y)`), so the callee's own array `obs` is
+# the draw.
+const _CVCell = @NamedTuple{marked::Symbol, param::Symbol, plate::Symbol, via::Symbol}
+# What a called submodel's keyword receives for a values-free name (snag
+# `values-free-fore-ae8fef99`): no value, only the marked name the callee's
+# array of that name is drawn as (`_forward_call_kwargs`, `maybedata!`).
+struct _ValuesFreeKeyword
+    marked::Symbol
+end
 "The inferred Stan model, post-tracing. Can be instantiated via `stan_instantiate`."
 struct StanModel#{M,V,B}
     meta#::M
