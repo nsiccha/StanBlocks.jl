@@ -4,6 +4,29 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.68
+
+- **Fix: an inlined helper's locals and a comprehension's result inside a plate
+  cell are loop scratch, not parameters.** A plate traces its cell twice, a
+  discovery probe and then the trace that emits the loop, and an `@deffun
+  @inline` helper's locals and a comprehension's result carry a per-trace id in
+  their names, so the two traces named them differently. The probe's names were
+  promoted to per-cell storage the emitted loop never filled: a parameter
+  nothing reads (`matrix[…] comprehension_result__lc_<id>` for a helper
+  returning `[v + b for v in x]`, `matrix[…] t__il_<id>` for a vector local), or
+  an `array[…] int` parameter that stanc refuses (a helper's size binding, `n` of
+  `x::vector[n]`, read by a loop range or a two-axis comprehension). A
+  likelihood that read such a local directly referenced a name declared only in
+  another block's copy of the loop. Each is now a local of the loop body,
+  recomputed in every block copy (transformed parameters, model, generated
+  quantities) whose statements read it, as an annotated loop's `tmp = …` scratch
+  is: the program has the unconstrained coordinates, density and gradient it has
+  with the helper as a Stan function. This holds in a do-form plate, `@plate for`,
+  `@scan`, a plate nested in a loop's cell and a sub-model called in a cell. Also
+  fixed outside plates: a comprehension inlined into a called sub-model no longer
+  fails with `Cannot assign to a slice/element of parameter …` (snag
+  `inline-comprehen-20e73a74`).
+
 ## v0.2.67
 
 - **New: `stan_unc_names(model)` names a program's unconstrained coordinates
