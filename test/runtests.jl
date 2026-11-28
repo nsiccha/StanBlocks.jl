@@ -1,95 +1,62 @@
 using TestItemRunner
+import Test
 # Load the package without copying its exports into `Main`. Fresh-workspace
 # integration tests must not pass through `forward!`'s last-resort Main lookup.
 import StanBlocks
 
-function option_value(args, i, name)
-    i < length(args) || error("Missing value for $name")
-    return args[i + 1], i + 1
-end
-
-function parse_test_args(args)
-    names = String[]
-    tags = Symbol[]
-    skip_tags = Symbol[]
-    files = String[]
-    exact = nothing
-    list = false
-
-    i = 1
-    while i <= length(args)
-        arg = args[i]
-        if arg == "--list"
-            list = true
-        elseif startswith(arg, "--name=")
-            push!(names, split(arg, "="; limit=2)[2])
-        elseif arg == "--name"
-            value, i = option_value(args, i, arg)
-            push!(names, value)
-        elseif startswith(arg, "--tag=")
-            push!(tags, Symbol(lstrip(split(arg, "="; limit=2)[2], ':')))
-        elseif arg == "--tag"
-            value, i = option_value(args, i, arg)
-            push!(tags, Symbol(lstrip(value, ':')))
-        # `--tag` is an AND-SELECTION, so it cannot express "everything except
-        # X". CI needs exactly that: most of the suite is transpile-only and
-        # runs anywhere, while `:bridgestan` / `:stanc` items need a Stan
-        # toolchain the runner does not have. `--skip-tag` is the complement,
-        # and like `--tag` it accepts a leading colon.
-        elseif startswith(arg, "--skip-tag=")
-            push!(skip_tags, Symbol(lstrip(split(arg, "="; limit=2)[2], ':')))
-        elseif arg == "--skip-tag"
-            value, i = option_value(args, i, arg)
-            push!(skip_tags, Symbol(lstrip(value, ':')))
-        elseif startswith(arg, "--file=")
-            push!(files, replace(split(arg, "="; limit=2)[2], '\\' => '/'))
-        elseif arg == "--file"
-            value, i = option_value(args, i, arg)
-            push!(files, replace(value, '\\' => '/'))
-        elseif startswith(arg, "--htmxo-test=")
-            isnothing(exact) || error("--htmxo-test may only be specified once")
-            exact = split(arg, "="; limit=2)[2]
-        elseif arg == "--htmxo-test"
-            isnothing(exact) || error("--htmxo-test may only be specified once")
-            exact, i = option_value(args, i, arg)
-        else
-            error("Unknown test selector: $arg")
-        end
-        i += 1
-    end
-
-    exact_parts = isnothing(exact) ? nothing : split(replace(exact, '\\' => '/'), "::"; limit=2)
-    isnothing(exact_parts) || length(exact_parts) == 2 || error("--htmxo-test must be file::name")
-    return (; names, tags, skip_tags, files, exact_parts, list)
-end
+# The selectors, what they mean and why an empty selection is refused:
+# `test/selectors.jl`.
+include("selectors.jl")
+using .StanBlocksTestSelectors
 
 const TEST_SELECTION = parse_test_args(ARGS)
+const TEST_TALLY = SelectionTally(TEST_SELECTION)
+const SELECTION_CHECKED = Ref(false)
 
 test_path(ti) = replace(relpath(ti.filename, pkgdir(StanBlocks)), '\\' => '/')
 
-function selected(ti)
+# The environment variable an item needs set to "true" to run, or `nothing`.
+function test_gate(tags)
     # The optional integration environment installs RK's unregistered
     # dependencies explicitly; ordinary Pkg.test needs only registered deps.
-    :reactivekernels in ti.tags &&
-        get(ENV, "STANBLOCKS_TEST_REACTIVEKERNELS", "") != "true" && return false
+    :reactivekernels in tags && get(ENV, "STANBLOCKS_TEST_REACTIVEKERNELS", "") != "true" &&
+        return "STANBLOCKS_TEST_REACTIVEKERNELS"
     # Likewise Symbolics.jl, which only the `jacobian(f)` items need.
-    :symbolics in ti.tags &&
-        get(ENV, "STANBLOCKS_TEST_SYMBOLICS", "") != "true" && return false
-    path = test_path(ti)
-    selection = TEST_SELECTION
-    matches = all(name -> occursin(lowercase(name), lowercase(ti.name)), selection.names) &&
-              all(tag -> tag in ti.tags, selection.tags) &&
-              !any(tag -> tag in ti.tags, selection.skip_tags) &&
-              all(file -> occursin(lowercase(file), lowercase(path)), selection.files) &&
-              (isnothing(selection.exact_parts) ||
-               (path == selection.exact_parts[1] && ti.name == selection.exact_parts[2]))
+    :symbolics in tags && get(ENV, "STANBLOCKS_TEST_SYMBOLICS", "") != "true" &&
+        return "STANBLOCKS_TEST_SYMBOLICS"
+    return nothing
+end
 
-    if selection.list && matches
+function selected(ti)
+    path = test_path(ti)
+    matches = record!(TEST_TALLY, TEST_SELECTION, path, ti.name, ti.tags; gate=test_gate(ti.tags))
+    if TEST_SELECTION.list && matches
         tag_text = isempty(ti.tags) ? "" : " [" * join(string.(ti.tags), ", ") * "]"
         println(path, "::", ti.name, tag_text)
         return false
     end
     return matches
+end
+
+# Refuse a selection that tests nothing, or names a file, item name or tag no
+# item has. `--list` only warns: an empty listing is an honest answer.
+function check_selection()
+    SELECTION_CHECKED[] && return
+    SELECTION_CHECKED[] = true
+    problems = selection_problems(TEST_SELECTION, TEST_TALLY)
+    isempty(problems) && return
+    listing = join("  " .* problems, "\n")
+    TEST_SELECTION.list && return @warn "A run of this StanBlocks test selection would be refused:\n" * listing
+    error("StanBlocks test selection refused before any test item ran:\n" * listing *
+          "\nRun with --list to see which items a selection picks.")
+end
+
+# `@run_package_tests` calls the filter on every discovered item, then builds
+# the root test set with this constructor, and only then runs items. Checking
+# on that first call refuses a bad selection in seconds, not after a run.
+function checked_testset(name; kwargs...)
+    check_selection()
+    return Test.DefaultTestSet(name; kwargs...)
 end
 
 function annotate_github_failure(err)
@@ -115,7 +82,9 @@ function annotate_github_failure(err)
 end
 
 try
-    @run_package_tests filter=selected verbose=true
+    @run_package_tests filter=selected verbose=true testset=checked_testset
+    # In case a TestItemRunner version builds no test set before running.
+    check_selection()
 catch err
     annotate_github_failure(err)
     rethrow()
