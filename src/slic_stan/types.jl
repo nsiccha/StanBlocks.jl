@@ -112,8 +112,16 @@ mutable struct TraceContext
     # plate's flattened storage (forward.jl `_plate_enclosing`); `nothing` at
     # model scope.
     plate_enclosing::Any
+    # Partly missing series an observed `@scan` reads back (missing_scans.jl):
+    # each series by its data name; the completed series each consuming scan
+    # declared, which takes that name once the model-body statement holding
+    # the scan is traced; and that model body.
+    missing_series::OrderedDict{Symbol,Any}
+    missing_completed::OrderedDict{Symbol,Any}
+    missing_declared::Set{Symbol}
+    root_body::Any
 end
-TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0, OrderedDict{Symbol,Any}(), Dict{Symbol,_CVCell}(), Set{Symbol}(), Set{Symbol}(), nothing)
+TraceContext() = TraceContext(0, 0, 0, Any[], Ref{Any}(nothing), Any[], (), nothing, Any[], Any[], Set{Symbol}(), 0, OrderedDict{Symbol,Any}(), Dict{Symbol,_CVCell}(), Set{Symbol}(), Set{Symbol}(), nothing, OrderedDict{Symbol,Any}(), OrderedDict{Symbol,Any}(), Set{Symbol}(), nothing)
 _context_or_new(context) = context === nothing ? TraceContext() : context
 """
 A named sub-model function, produced by `@slic f(args...) = body`. The value

@@ -828,10 +828,14 @@ fold_shape_query(x::StanExpr) = x
 forward!(x::BlockExpr; info) = _with_trace_state(info, :inline_pending, Any[]) do
     new_args = Any[]
     pending = _get_inline_pending(info)
+    root_body = (context = _trace_context(info); context !== nothing && context.root_body === x)
     _with_stmt_frame(info, x.args) do frame
         for (i, arg) in enumerate(x.args)
             _at_stmt!(frame, i)
             resolved = forward!(arg; info)
+            # A partly missing series a scan of this statement consumed is,
+            # from the next model-body statement on, its completed series.
+            root_body && _bind_completed_series!(info)
             if !isempty(pending)
                 append!(new_args, pending)
                 empty!(pending)
@@ -6364,6 +6368,16 @@ _observed_scan_shadow(label, setup, body, t::Symbol, is_data; info) = begin
         end
         acc
     end
+    # A carried array with `missing` entries (missing_scans.jl): its
+    # observations are rewritten per role, and its completed series is drawn
+    # beside each shadow.
+    partly = Dict{Symbol,Any}()
+    for y in carried
+        ms = _missing_series(info[y])
+        ms === nothing || (partly[y] = ms)
+    end
+    mrw = isempty(partly) ? nothing :
+        _missing_scan_rewrite(label, partly, replayed, obs_ref, obs_lhs, refs!, flat; info)
     # The shadows follow the originals of their part (setup, or one step), in an
     # order where each reads only shadows already filled. Source order does not
     # give one: the original `err[t] = y[t] - nu` may precede `y[t] ~ …` because
@@ -6372,7 +6386,7 @@ _observed_scan_shadow(label, setup, body, t::Symbol, is_data; info) = begin
     expand(list) = begin
         out = Any[]; pending = Any[]
         for s in list
-            push!(out, flat(s))
+            mrw === nothing ? push!(out, flat(s)) : append!(out, mrw.model(s))
             if is_carried_obs(s) || (s isa Expr && s.head === :(=) && _scan_stmt_lhs_name(s) in replayed)
                 push!(pending, s)
             end
@@ -6388,6 +6402,7 @@ _observed_scan_shadow(label, setup, body, t::Symbol, is_data; info) = begin
                 "`) — a scan observes each element given earlier ones only.")
             s = popat!(pending, i)
             push!(out, shadow(s)); push!(filled, fill_key(s))
+            mrw === nothing || append!(out, mrw.completed(s))
         end
         out
     end
@@ -6402,6 +6417,10 @@ _is_loop_collection(x::StanType) = get(x.info, :loop_collection, false)
 # The name observed data `y` has at the root: the caller's data a submodel's
 # keyword alias stands for (`obs = y` ⇒ `y`), or `y` itself at model scope.
 _observed_root_name(y::Symbol; info) = begin
+    # A partly missing series is bound to its position codes; its trajectory
+    # is named after the series itself (missing_scans.jl).
+    ms = _missing_series(info[y])
+    ms === nothing || return ms.name
     b = expr(info[y])
     b isa Symbol && return b
     error("@scan: `", y, "` is observed and read back, so it must name data whose trajectory the ",
@@ -6420,8 +6439,13 @@ _declare_obs_shadow!(g::Symbol, y::Symbol; info, pending) = begin
     root = _plate_root_info(info)
     y_root = _observed_root_name(y; info)
     g_root = _gen_twin_name(y_root)
+    ms = _missing_series(base)
     if !(g_root in keys(root))
-        decl = if center_type(base) <: RaggedVector
+        decl = if ms !== nothing
+            # Laid out like the series' position codes, as reals.
+            ms.ragged ? Expr(:(::), g_root, :(vector[num_elements($(ms.codes).mem)])) :
+                Expr(:(::), g_root, Expr(:ref, :vector, stan_size(base)...))
+        elseif center_type(base) <: RaggedVector
             mem_ct = center_type(type(base).info.arg_types.mem)
             Expr(:(::), g_root, Expr(:ref, mem_ct === types.int ? :int : :vector, :(num_elements($y_root.mem))))
         else
@@ -6928,6 +6952,9 @@ _forward_annotated_loop!(kind::Symbol, raw; info) = begin
     # The observations of a carried data array get a per-element `_likelihood`
     # instead of the per-cell one-step-ahead draw (`_indexed_obs_twin_target`).
     for (y, g) in obs_twins
+        # A partly missing series' observations are of its `<y>_obs` values,
+        # marked when the scan was rewritten (`_missing_scan_rewrite`).
+        _missing_series(info[y]) === nothing || continue
         info[y] = remake(info[y]; scan_observed=_gen_twin_name(_observed_root_name(y; info)))
     end
     emitted
