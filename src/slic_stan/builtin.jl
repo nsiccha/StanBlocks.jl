@@ -1522,8 +1522,23 @@ import Statistics
     end
     beta_rng(args...)::real
     binomial_rng(args...)::int
-    binomial_logit_rng(n::int[m], p::vector[m])::int[m]
-    binomial_logit_rng(n::vector[m], p::vector[m])::int[m]
+    # Stan Math ships `binomial_logit_lpmf` but NO `binomial_logit_rng` in any
+    # signature (stanc 2.39 `--dump-stan-math-signatures`), so a native
+    # declaration here emits a call stanc rejects ("not implemented for
+    # distribution binomial_logit"). Every form lowers to `binomial_rng` over
+    # `inv_logit(eta)`, as the sized-token overloads further down do. The scalar
+    # form is the draw of a scalar observation (snag sbbrmi-on-a-brm-234397df):
+    # `y[i] ~ binomial_logit(n[i], eta)` in a plate cell, or a scalar `y`.
+    # Empty-segment guard (todo 19n8abc): a scalar beside an empty container is
+    # expanded to the container's length, so no native call mixes the two.
+    "Draw one binomial count with N trials and log odds eta."
+    @stanonly binomial_logit_rng(N::int, eta::real)::int = binomial_rng(N, inv_logit(eta))
+    "Draw one binomial count per trial count, each with the matching log odds."
+    @stanonly binomial_logit_rng(N::int[m], eta::vector[m])::int[m] = binomial_rng(N, inv_logit(eta))
+    "Draw one binomial count per log odds, all with the same N trials."
+    @stanonly binomial_logit_rng(N::int, eta::vector[m])::int[m] = binomial_rng(rep_array(N, m), inv_logit(eta))
+    "Draw one binomial count per trial count, all with the same log odds eta."
+    @stanonly binomial_logit_rng(N::int[m], eta::real)::int[m] = binomial_rng(N, rep_vector(inv_logit(eta), m))
     "Reuse a scalar unchanged at every position of an elementwise broadcast."
     @juliacompat broadcasted_getindex(x, i) = x
     "Read element i of a container used in elementwise broadcasting."
