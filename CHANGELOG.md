@@ -4,6 +4,21 @@ All notable changes to StanBlocks.jl are documented here. This project follows
 [semantic versioning](https://semver.org/) (pre-1.0: the minor version is the
 breaking digit).
 
+## v0.2.71
+
+- **Fix: a scalar `binomial_logit` observation gets its predictive draw.** Stan
+  Math has no `binomial_logit_rng` in any signature, so the draw of a scalar
+  observation, `y[i] ~ binomial_logit(n[i], eta)` in a plate cell or a scalar
+  `y ~ binomial_logit(n, eta)` at model scope, was emitted as a call stanc
+  rejects (`Function "binomial_logit_rng" is not implemented for distribution
+  "binomial_logit"`) or failed to trace. `binomial_logit_rng(N, eta)` is now
+  defined for an `int` or `array[] int` trial count with a `real` or `vector`
+  log odds, as `binomial_rng(N, inv_logit(eta))`, the lowering a vector
+  observation's draw already had. Before, the `array[] int` and `vector` form
+  was declared as a native Stan function, so a direct call of it failed in
+  stanc, and a `vector` trial count was declared too, which Stan's binomial
+  does not accept; that declaration is gone (snag `sbbrmi-on-a-brm-234397df`).
+
 ## v0.2.70
 
 - **New: a series an observed `@scan` reads back may hold `missing` entries.**
